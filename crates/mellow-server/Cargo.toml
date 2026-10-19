@@ -33,11 +33,11 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 zeroize.workspace = true
 
-# Apple platforms build SQLCipher on CommonCrypto; elsewhere OpenSSL is vendored so the binary needs no system libcrypto.
 # Owner check of the certificate directory (no libc binding of our own).
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
 
+# Apple platforms build SQLCipher on CommonCrypto; elsewhere OpenSSL is vendored so the binary needs no system libcrypto.
 [target.'cfg(target_vendor = "apple")'.dependencies]
 libsqlite3-sys = { workspace = true, features = ["bundled-sqlcipher"] }
 

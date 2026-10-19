@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::future::Future;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -52,6 +52,10 @@ struct ConnectionPolicy {
     maximum_connections: usize,
     /// Per IPv4 address or IPv6 /64, as for rate limits; generous for shared NAT addresses.
     maximum_connections_per_client_address: usize,
+    /// Per IPv6 /48: one free tunnel-broker /48 holds 65 536 /64s.
+    maximum_connections_per_ipv6_site: usize,
+    /// A connection whose peer accepts no written byte for this long is closed (slow reads).
+    write_stall_timeout: Duration,
 }
 
 const PRODUCTION_CONNECTION_POLICY: ConnectionPolicy = ConnectionPolicy {
@@ -60,6 +64,8 @@ const PRODUCTION_CONNECTION_POLICY: ConnectionPolicy = ConnectionPolicy {
     idle_read_timeout: Duration::from_secs(75),
     maximum_connections: 10_000,
     maximum_connections_per_client_address: 256,
+    maximum_connections_per_ipv6_site: 1_024,
+    write_stall_timeout: Duration::from_secs(30),
 };
 
 /// Creates the certificate directory, or checks an existing one: it holds private keys, so it
@@ -171,12 +177,8 @@ async fn serve_tls_with_policy(
         .http1()
         .timer(hyper_util::rt::TokioTimer::new())
         .header_read_timeout(policy.header_read_timeout);
-    server
-        .http_builder()
-        .http2()
-        .timer(hyper_util::rt::TokioTimer::new())
-        .keep_alive_interval(policy.header_read_timeout)
-        .keep_alive_timeout(policy.handshake_timeout);
+    // No HTTP/2 keep-alive pings: the client's automatic answers would count as activity and
+    // keep an idle connection alive forever. Mellow clients speak HTTP/1.1 anyway.
 
     let renewal = tokio::spawn(async move {
         while let Some(event) = acme_state.next().await {
@@ -351,63 +353,89 @@ impl AccountCache for PrivateDirectoryCache {
     }
 }
 
-/// Counts open connections, globally and per client address.
+/// Counts open connections, globally and per client address (and IPv6 site).
 #[derive(Debug)]
 struct ConnectionLimiter {
     total: Arc<Semaphore>,
-    per_client_address: Mutex<HashMap<String, usize>>,
+    per_address_group: Mutex<HashMap<String, usize>>,
     maximum_per_client_address: usize,
+    maximum_per_ipv6_site: usize,
 }
 
 impl ConnectionLimiter {
     fn new(policy: ConnectionPolicy) -> Self {
         Self {
             total: Arc::new(Semaphore::new(policy.maximum_connections)),
-            per_client_address: Mutex::default(),
+            per_address_group: Mutex::default(),
             maximum_per_client_address: policy.maximum_connections_per_client_address,
+            maximum_per_ipv6_site: policy.maximum_connections_per_ipv6_site,
         }
     }
 
-    /// `None` when either cap is reached; the connection is then dropped at once.
+    /// The groups a connection counts against, with their caps.
+    fn address_groups(&self, peer: SocketAddr) -> Vec<(String, usize)> {
+        let mut groups = vec![(
+            client_address_key(peer, &HeaderMap::new(), false),
+            self.maximum_per_client_address,
+        )];
+        if let IpAddr::V6(address) = peer.ip()
+            && address.to_ipv4_mapped().is_none()
+        {
+            let segments = address.segments();
+            groups.push((
+                format!("{:x}:{:x}:{:x}::/48", segments[0], segments[1], segments[2]),
+                self.maximum_per_ipv6_site,
+            ));
+        }
+        groups
+    }
+
+    /// `None` when any cap is reached; the connection is then dropped at once.
     fn try_reserve(self: &Arc<Self>, peer: SocketAddr) -> Option<ConnectionSlot> {
         let permit = self.total.clone().try_acquire_owned().ok()?;
-        let client_address = client_address_key(peer, &HeaderMap::new(), false);
+        let groups = self.address_groups(peer);
         let mut counts = self
-            .per_client_address
+            .per_address_group
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let count = counts.entry(client_address.clone()).or_insert(0);
-        if *count >= self.maximum_per_client_address {
+        let is_any_group_full = groups
+            .iter()
+            .any(|(group, maximum)| counts.get(group).copied().unwrap_or(0) >= *maximum);
+        if is_any_group_full {
             return None;
         }
-        *count += 1;
+        for (group, _) in &groups {
+            *counts.entry(group.clone()).or_insert(0) += 1;
+        }
         Some(ConnectionSlot {
             _permit: permit,
             limiter: self.clone(),
-            client_address,
+            address_groups: groups.into_iter().map(|(group, _)| group).collect(),
         })
     }
 }
 
-/// Held for the connection's lifetime; frees its place in both caps when dropped.
+/// Held for the connection's lifetime; frees its place in every cap when dropped.
 #[derive(Debug)]
 struct ConnectionSlot {
     _permit: OwnedSemaphorePermit,
     limiter: Arc<ConnectionLimiter>,
-    client_address: String,
+    address_groups: Vec<String>,
 }
 
 impl Drop for ConnectionSlot {
     fn drop(&mut self) {
         let mut counts = self
             .limiter
-            .per_client_address
+            .per_address_group
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(count) = counts.get_mut(&self.client_address) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                counts.remove(&self.client_address);
+        for group in &self.address_groups {
+            if let Some(count) = counts.get_mut(group) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    counts.remove(group);
+                }
             }
         }
     }
@@ -458,6 +486,8 @@ where
                     inner: stream,
                     idle_read_timeout: policy.idle_read_timeout,
                     idle_deadline: Box::pin(tokio::time::sleep(policy.idle_read_timeout)),
+                    write_stall_timeout: policy.write_stall_timeout,
+                    write_stall_deadline: None,
                     _slot: slot,
                 },
                 service,
@@ -466,13 +496,41 @@ where
     }
 }
 
-/// Fails reads once nothing has arrived for `idle_read_timeout`: covers the bytes hyper reads
-/// before its own timers start, and request bodies sent a byte at a time.
+/// Fails reads once nothing has arrived for `idle_read_timeout` (covers the bytes hyper reads
+/// before its own timers start, and request bodies sent a byte at a time), and writes once the
+/// peer has accepted nothing for `write_stall_timeout` (a client that stops reading).
 struct IdleTimeoutStream<Inner> {
     inner: Inner,
     idle_read_timeout: Duration,
     idle_deadline: Pin<Box<Sleep>>,
+    write_stall_timeout: Duration,
+    /// Armed while a write waits, cleared as soon as one makes progress.
+    write_stall_deadline: Option<Pin<Box<Sleep>>>,
     _slot: ConnectionSlot,
+}
+
+impl<Inner> IdleTimeoutStream<Inner> {
+    fn track_write<Output>(
+        &mut self,
+        context: &mut Context<'_>,
+        poll: Poll<io::Result<Output>>,
+    ) -> Poll<io::Result<Output>> {
+        if poll.is_ready() {
+            self.write_stall_deadline = None;
+            return poll;
+        }
+        let timeout = self.write_stall_timeout;
+        let deadline = self
+            .write_stall_deadline
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(timeout)));
+        match deadline.as_mut().poll(context) {
+            Poll::Ready(()) => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the client stopped reading",
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
 }
 
 impl<Inner: AsyncRead + Unpin> AsyncRead for IdleTimeoutStream<Inner> {
@@ -505,7 +563,8 @@ impl<Inner: AsyncWrite + Unpin> AsyncWrite for IdleTimeoutStream<Inner> {
         context: &mut Context<'_>,
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write(context, buffer)
+        let poll = Pin::new(&mut self.inner).poll_write(context, buffer);
+        self.track_write(context, poll)
     }
 
     fn poll_write_vectored(
@@ -513,7 +572,8 @@ impl<Inner: AsyncWrite + Unpin> AsyncWrite for IdleTimeoutStream<Inner> {
         context: &mut Context<'_>,
         buffers: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write_vectored(context, buffers)
+        let poll = Pin::new(&mut self.inner).poll_write_vectored(context, buffers);
+        self.track_write(context, poll)
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -521,7 +581,8 @@ impl<Inner: AsyncWrite + Unpin> AsyncWrite for IdleTimeoutStream<Inner> {
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(context)
+        let poll = Pin::new(&mut self.inner).poll_flush(context);
+        self.track_write(context, poll)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -547,6 +608,8 @@ mod tests {
         idle_read_timeout: Duration::from_millis(600),
         maximum_connections: 3,
         maximum_connections_per_client_address: 2,
+        maximum_connections_per_ipv6_site: 3,
+        write_stall_timeout: Duration::from_millis(600),
     };
 
     fn tls_config(certificate_directory: &Path) -> TlsConfig {
@@ -612,6 +675,65 @@ mod tests {
             .unwrap()
             .unwrap();
         pool.close().await;
+    }
+
+    fn guarded_stream(
+        inner: tokio::io::DuplexStream,
+    ) -> IdleTimeoutStream<tokio::io::DuplexStream> {
+        let limiter = Arc::new(ConnectionLimiter::new(FAST_POLICY));
+        IdleTimeoutStream {
+            inner,
+            idle_read_timeout: FAST_POLICY.idle_read_timeout,
+            idle_deadline: Box::pin(tokio::time::sleep(FAST_POLICY.idle_read_timeout)),
+            write_stall_timeout: FAST_POLICY.write_stall_timeout,
+            write_stall_deadline: None,
+            _slot: limiter.try_reserve("192.0.2.1:1".parse().unwrap()).unwrap(),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_peer_or_one_that_stops_reading_times_out() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let (inner, mut peer) = tokio::io::duplex(64);
+        let mut stream = guarded_stream(inner);
+        peer.write_all(b"x").await.unwrap();
+        let mut byte = [0_u8; 1];
+        stream.read_exact(&mut byte).await.unwrap();
+        let error = stream.read(&mut byte).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+
+        // The peer never reads: the 64-byte pipe fills, then writing stalls until the deadline.
+        let (inner, _peer_that_never_reads) = tokio::io::duplex(64);
+        let mut stream = guarded_stream(inner);
+        let error = stream.write_all(&[0; 1_024]).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn ipv6_connections_also_count_per_slash_48() {
+        let limiter = Arc::new(ConnectionLimiter::new(FAST_POLICY));
+        let peer = |text: &str| text.parse::<SocketAddr>().unwrap();
+        let slots: Vec<_> = [
+            "[2001:db8:1:1::1]:1",
+            "[2001:db8:1:2::1]:1",
+            "[2001:db8:1:3::1]:1",
+        ]
+        .into_iter()
+        .map(|address| limiter.try_reserve(peer(address)).unwrap())
+        .collect();
+        assert!(
+            limiter.try_reserve(peer("[2001:db8:1:4::1]:1")).is_none(),
+            "fourth /64 of the same /48"
+        );
+        drop(slots);
+        let fifth = limiter.try_reserve(peer("[2001:db8:1:4::1]:1"));
+        assert!(fifth.is_some());
+        let group_count =
+            |limiter: &ConnectionLimiter| limiter.per_address_group.lock().unwrap().len();
+        assert_eq!(group_count(&limiter), 2, "one /64 and one /48");
+        drop(fifth);
+        assert_eq!(group_count(&limiter), 0, "freed groups are removed");
     }
 
     #[test]
