@@ -65,6 +65,14 @@ pub enum ApiErrorCode {
     /// The server is overloaded (e.g. too many password checks at once); retry shortly.
     ServerBusy,
     NotFound,
+    /// Signed in, but this member lacks the permission the action needs.
+    MissingPermissions,
+    /// The invite code is unknown, expired or used up.
+    InvalidInvite,
+    /// The guild owner cannot leave their own guild (transfer or delete it first).
+    OwnerCannotLeave,
+    /// A quota was reached (channels per guild, owned guilds, active invites).
+    LimitReached,
     Internal,
 }
 
@@ -117,6 +125,14 @@ mod tests {
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains(r#""code":"INVALID_CREDENTIALS""#), "{json}");
+        for (code, wire) in [
+            (ApiErrorCode::MissingPermissions, "MISSING_PERMISSIONS"),
+            (ApiErrorCode::InvalidInvite, "INVALID_INVITE"),
+            (ApiErrorCode::OwnerCannotLeave, "OWNER_CANNOT_LEAVE"),
+            (ApiErrorCode::LimitReached, "LIMIT_REACHED"),
+        ] {
+            assert_eq!(serde_json::to_value(code).unwrap(), wire);
+        }
     }
 
     #[test]

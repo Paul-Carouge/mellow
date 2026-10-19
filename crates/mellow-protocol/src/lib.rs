@@ -2,12 +2,17 @@
 
 mod accounts;
 mod canonical_decimal;
+mod guilds;
 mod health;
 mod permissions;
 mod snowflake;
 
 pub use accounts::{
     ApiErrorBody, ApiErrorCode, CurrentUser, LoginRequest, RegisterRequest, SessionCreated,
+};
+pub use guilds::{
+    Channel, ChannelKind, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest, Guild,
+    GuildSummary, Invite, Member, PublicUser, UpdateChannelRequest,
 };
 pub use health::{HealthResponse, HealthStatus};
 pub use permissions::Permissions;
