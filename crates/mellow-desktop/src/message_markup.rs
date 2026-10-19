@@ -3,10 +3,12 @@ use slint::StyledText;
 /// Renders a message body written in Mellow's markdown subset.
 ///
 /// Raw HTML is escaped first: Slint's markdown accepts `<font color>` and `<u>`, which would let
-/// a sender restyle text to impersonate system messages. Constructs Slint cannot render (code
-/// blocks, block quotes, headings) make parsing fail, and the body is then shown as plain text.
+/// a sender restyle text to impersonate system messages. Backslashes are escaped too: otherwise a
+/// sender's `\<` would become an escaped backslash followed by a live tag. Constructs Slint cannot
+/// render (code blocks, block quotes, headings) make parsing fail, and the body is then shown as
+/// plain text.
 pub fn styled_text_from_message_body(body: &str) -> StyledText {
-    let body_without_html = body.replace('<', "\\<");
+    let body_without_html = body.replace('\\', "\\\\").replace('<', "\\<");
     StyledText::from_markdown(&body_without_html)
         .unwrap_or_else(|_| StyledText::from_plain_text(body))
 }
@@ -39,5 +41,16 @@ mod tests {
             styled_text_from_message_body(body),
             StyledText::from_plain_text(body)
         );
+    }
+
+    #[test]
+    fn an_escaped_backslash_cannot_turn_html_tags_back_on() {
+        for body in [r#"\<font color="red">SYSTEM\</font>"#, r"\\<u>notice</u>"] {
+            assert_eq!(
+                styled_text_from_message_body(body),
+                StyledText::from_plain_text(body),
+                "{body}"
+            );
+        }
     }
 }
