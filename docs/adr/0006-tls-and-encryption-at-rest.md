@@ -20,7 +20,7 @@ Users want privacy, but the MVP also needs server-side moderation, multi-device 
 
 ## Spike results (2026-10-19)
 - `sqlx` 0.9 works with SQLCipher by adding `libsqlite3-sys` (within the `>=0.30.1, <0.38` range sqlx accepts) with `bundled-sqlcipher`; Cargo feature unification switches the SQLite that sqlx bundles. `PRAGMA cipher_version` is checked at startup so the server refuses to run on plain SQLite.
-- Crypto backend: CommonCrypto on Apple platforms (no extra dependency); vendored OpenSSL elsewhere (`bundled-sqlcipher-vendored-openssl`), so the Linux and Windows binaries do not depend on a system libcrypto. This is the only OpenSSL in the build; TLS stays on rustls.
+- Crypto backend: CommonCrypto on Apple platforms (no extra dependency); vendored OpenSSL elsewhere (`bundled-sqlcipher-vendored-openssl`), so the Linux and Windows binaries do not depend on a system libcrypto. This is the only OpenSSL in the build; TLS stays on rustls, whose crypto provider is `aws-lc-rs` (a second C/assembly crypto library, with prefixed symbols, so it does not clash with OpenSSL).
 - The raw-key form (`PRAGMA key = "x'…'"`) is used, which skips SQLCipher's passphrase derivation since the master key is already random.
 - **Shutdown hazard found:** if a connection is still being closed on a sqlx worker thread while the process exits, SQLCipher crashes in `sqlite3FreeCodecArg` (reproduced on macOS). The server must call `SqlitePool::close().await` during graceful shutdown before returning from `main`.
 - **Key leak found and fixed:** sqlx logs connection pragmas, including the key, at DEBUG and at WARN when slow. Statement logging is disabled on database connections and an integration test asserts the key never appears in logs at TRACE level.
