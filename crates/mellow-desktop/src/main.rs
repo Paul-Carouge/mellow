@@ -1,15 +1,22 @@
-//! Slint spike for ADR-0010: can Slint render Mellow's message list well enough?
+//! Mellow desktop client: Discord-like shell on fake data until the client core exists (ADR-0012).
 
 mod fake_messages;
+mod fake_workspace;
 mod message_markup;
 mod scroll_benchmark;
+mod shell_rows;
 mod window_snapshot;
 
+use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
-use slint::{ComponentHandle as _, Model as _, SharedString, VecModel};
+use slint::{ComponentHandle as _, Model as _, ModelRc, SharedString, VecModel};
 
 use crate::fake_messages::{FakeMessage, fake_conversation};
+use crate::fake_workspace::{
+    FakeCategory, FakeServer, fake_categories, fake_role_groups, fake_servers,
+};
 use crate::generated_ui::{AppWindow, MessageRow};
 use crate::message_markup::styled_text_from_message_body;
 
@@ -27,86 +34,119 @@ mod generated_ui {
     slint::include_modules!();
 }
 
-const SPIKE_MESSAGE_COUNT: usize = 10_000;
+/// The busiest channel gets the 10 000-message history used by the scroll benchmark.
+const BUSIEST_CHANNEL_NAME: &str = "general";
+const BUSIEST_CHANNEL_MESSAGE_COUNT: usize = 10_000;
+const QUIET_CHANNEL_MESSAGE_COUNT: usize = 40;
 const CURRENT_USER_NAME: &str = "You";
+/// Shown when the rail's home entry (index -1 in `server_rail.slint`) is selected.
+const HOME_SERVER_NAME: &str = "Direct messages";
 
-fn message_row_from_fake_message(message: &FakeMessage) -> MessageRow {
-    message_row(
-        message.author,
-        &message.timestamp,
-        message.body,
-        message.starts_author_group,
-        message.reply_preview.unwrap_or_default(),
-        message.mentions_current_user,
-    )
+struct ShellState {
+    categories: Vec<FakeCategory>,
+    collapsed_category_indexes: BTreeSet<usize>,
+    selected_channel_name: String,
+    messages: Rc<VecModel<MessageRow>>,
+    /// Kept for the whole session: on X11 the copying application owns the clipboard content, so
+    /// dropping the handle right after a copy loses it when no clipboard manager runs.
+    clipboard: Option<arboard::Clipboard>,
 }
 
-fn message_row(
-    author: &str,
-    timestamp: &str,
-    body: &str,
-    starts_author_group: bool,
-    reply_preview: &str,
-    mentions_current_user: bool,
-) -> MessageRow {
+fn message_row(message: &FakeMessage) -> MessageRow {
     MessageRow {
-        author: author.into(),
-        author_initial: author
-            .chars()
-            .next()
-            .map(String::from)
-            .unwrap_or_default()
-            .into(),
-        timestamp: timestamp.into(),
-        body: styled_text_from_message_body(body),
-        body_plain: body.into(),
-        starts_author_group,
-        reply_preview: reply_preview.into(),
-        mentions_current_user,
+        author: message.author.into(),
+        author_initial: shell_rows::first_letter(message.author).into(),
+        timestamp: format!("Today at {}", message.time_of_day).into(),
+        short_time: message.time_of_day.clone().into(),
+        body: styled_text_from_message_body(message.body),
+        body_plain: message.body.into(),
+        starts_author_group: message.starts_author_group,
+        reply_preview: message.reply_preview.unwrap_or_default().into(),
+        mentions_current_user: message.mentions_current_user,
     }
 }
 
-fn main() -> Result<(), slint::PlatformError> {
-    let window = AppWindow::new()?;
+fn message_count_for_channel(channel_name: &str) -> usize {
+    if channel_name == BUSIEST_CHANNEL_NAME {
+        BUSIEST_CHANNEL_MESSAGE_COUNT
+    } else {
+        QUIET_CHANNEL_MESSAGE_COUNT
+    }
+}
 
-    let message_model = Rc::new(VecModel::from(
-        fake_conversation(SPIKE_MESSAGE_COUNT)
+fn refresh_channel_rows(window: &AppWindow, state: &ShellState) {
+    let rows = shell_rows::channel_rows(
+        &state.categories,
+        &state.collapsed_category_indexes,
+        &state.selected_channel_name,
+    );
+    window.set_channel_rows(ModelRc::new(VecModel::from(rows)));
+}
+
+fn open_channel(window: &AppWindow, state: &mut ShellState, channel_name: &str) {
+    channel_name.clone_into(&mut state.selected_channel_name);
+    let topic = state
+        .categories
+        .iter()
+        .flat_map(|category| &category.channels)
+        .find(|channel| channel.name == channel_name)
+        .map(|channel| channel.topic)
+        .unwrap_or_default();
+    state.messages.set_vec(
+        fake_conversation(message_count_for_channel(channel_name))
             .iter()
-            .map(message_row_from_fake_message)
+            .map(message_row)
             .collect::<Vec<_>>(),
-    ));
-    window.set_messages(message_model.clone().into());
+    );
+    window.set_selected_channel_name(channel_name.into());
+    window.set_selected_channel_topic(topic.into());
+    refresh_channel_rows(window, state);
+    scroll_to_latest_message_after_layout(window);
+}
 
+/// The list only knows its full height after a layout pass, so scroll on the next tick.
+fn scroll_to_latest_message_after_layout(window: &AppWindow) {
     let weak_window = window.as_weak();
-    window.on_send_message(move |text: SharedString| {
-        let last_author = message_model
-            .row_data(message_model.row_count().saturating_sub(1))
-            .map(|row| row.author);
-        let starts_author_group = last_author.as_deref() != Some(CURRENT_USER_NAME);
-        message_model.push(message_row(
-            CURRENT_USER_NAME,
-            "now",
-            &text,
-            starts_author_group,
-            "",
-            false,
-        ));
-        if let Some(window) = weak_window.upgrade() {
-            window.set_latest_announcement(format!("{CURRENT_USER_NAME}: {text}").into());
-            window.invoke_scroll_to_latest_message();
-        }
-    });
-    window.on_link_clicked(|_url| {
-        // shortcut: links are not opened in the spike, the click itself is what is being tested.
-    });
-
-    let weak_window = window.as_weak();
-    // The list only knows its full height after the first layout pass, so scroll on the next tick.
     slint::Timer::single_shot(std::time::Duration::ZERO, move || {
         if let Some(window) = weak_window.upgrade() {
             window.invoke_scroll_to_latest_message();
         }
     });
+}
+
+fn main() -> Result<(), slint::PlatformError> {
+    let window = AppWindow::new()?;
+    let servers = fake_servers();
+
+    let state = Rc::new(RefCell::new(ShellState {
+        categories: fake_categories(),
+        collapsed_category_indexes: BTreeSet::new(),
+        selected_channel_name: String::new(),
+        messages: Rc::new(VecModel::default()),
+        clipboard: None,
+    }));
+
+    window.set_servers(ModelRc::new(VecModel::from(shell_rows::server_items(
+        &servers,
+    ))));
+    window.set_selected_server_index(0);
+    window.set_server_name(
+        servers
+            .first()
+            .map(|server| server.name)
+            .unwrap_or_default()
+            .into(),
+    );
+    window.set_member_rows(ModelRc::new(VecModel::from(shell_rows::member_rows(
+        &fake_role_groups(),
+    ))));
+    window.set_current_user_name(CURRENT_USER_NAME.into());
+    window.set_current_user_initial(shell_rows::first_letter(CURRENT_USER_NAME).into());
+    window.set_messages(state.borrow().messages.clone().into());
+    open_channel(&window, &mut state.borrow_mut(), BUSIEST_CHANNEL_NAME);
+
+    connect_navigation_callbacks(&window, &state, servers);
+    connect_message_callbacks(&window, &state);
 
     if std::env::var_os(scroll_benchmark::ENABLE_SCROLL_BENCHMARK_VARIABLE).is_some() {
         scroll_benchmark::start(&window)?;
@@ -116,4 +156,106 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     window.run()
+}
+
+fn connect_navigation_callbacks(
+    window: &AppWindow,
+    state: &Rc<RefCell<ShellState>>,
+    servers: Vec<FakeServer>,
+) {
+    let weak_window = window.as_weak();
+    window.on_select_server(move |server_index| {
+        let Some(window) = weak_window.upgrade() else {
+            return;
+        };
+        window.set_selected_server_index(server_index);
+        let server_name = usize::try_from(server_index)
+            .ok()
+            .and_then(|index| servers.get(index))
+            // A negative index is the home entry.
+            .map_or(HOME_SERVER_NAME, |server| server.name);
+        window.set_server_name(server_name.into());
+        // shortcut: every fake server, and home, shares the same channels until the client core exists.
+    });
+
+    let weak_window = window.as_weak();
+    let shared_state = state.clone();
+    window.on_select_channel(move |channel_name: SharedString| {
+        if let Some(window) = weak_window.upgrade() {
+            open_channel(&window, &mut shared_state.borrow_mut(), &channel_name);
+        }
+    });
+
+    let weak_window = window.as_weak();
+    let shared_state = state.clone();
+    window.on_toggle_category(move |category_index| {
+        let Some(window) = weak_window.upgrade() else {
+            return;
+        };
+        let Ok(category_index) = usize::try_from(category_index) else {
+            return;
+        };
+        let mut state = shared_state.borrow_mut();
+        if !state.collapsed_category_indexes.remove(&category_index) {
+            state.collapsed_category_indexes.insert(category_index);
+        }
+        refresh_channel_rows(&window, &state);
+    });
+}
+
+fn connect_message_callbacks(window: &AppWindow, state: &Rc<RefCell<ShellState>>) {
+    let weak_window = window.as_weak();
+    let shared_state = state.clone();
+    window.on_send_message(move |text: SharedString| {
+        let Some(window) = weak_window.upgrade() else {
+            return;
+        };
+        if text.trim().is_empty() {
+            return;
+        }
+        let messages = shared_state.borrow().messages.clone();
+        let last_author = messages
+            .row_data(messages.row_count().saturating_sub(1))
+            .map(|row| row.author);
+        messages.push(MessageRow {
+            author: CURRENT_USER_NAME.into(),
+            author_initial: shell_rows::first_letter(CURRENT_USER_NAME).into(),
+            // shortcut: fake messages have no real clock; the client core will provide timestamps.
+            timestamp: "Today".into(),
+            short_time: SharedString::default(),
+            body: styled_text_from_message_body(&text),
+            body_plain: text.clone(),
+            starts_author_group: last_author.as_deref() != Some(CURRENT_USER_NAME),
+            reply_preview: SharedString::default(),
+            mentions_current_user: false,
+        });
+        window.set_latest_announcement(format!("{CURRENT_USER_NAME}: {text}").into());
+        window.invoke_scroll_to_latest_message();
+    });
+
+    let shared_state = state.clone();
+    window.on_copy_message_text(move |message_index| {
+        let mut state = shared_state.borrow_mut();
+        let Some(message) = usize::try_from(message_index)
+            .ok()
+            .and_then(|index| state.messages.row_data(index))
+        else {
+            return;
+        };
+        if state.clipboard.is_none() {
+            state.clipboard = arboard::Clipboard::new()
+                .inspect_err(|error| eprintln!("clipboard unavailable: {error}"))
+                .ok();
+        }
+        // A clipboard failure (e.g. a headless session) only loses this copy.
+        if let Some(clipboard) = state.clipboard.as_mut()
+            && let Err(error) = clipboard.set_text(message.body_plain.to_string())
+        {
+            eprintln!("copy text failed: {error}");
+        }
+    });
+
+    window.on_link_clicked(|_url| {
+        // shortcut: links are not opened yet; opening needs the confirmation dialog of DESIGN.md §5.4.
+    });
 }

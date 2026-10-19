@@ -1,0 +1,265 @@
+import { ListView } from "std-widgets.slint";
+import { MellowColor, MellowComponent, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
+import { Avatar, IconButton, MentionBadge, PresenceStatus } from "primitives.slint";
+
+// Categories and channels flattened into one list, so ListView can virtualize long servers.
+export struct ChannelListRow {
+    is-category: bool,
+    is-collapsed: bool,
+    category-index: int,
+    name: string,
+    // Uppercased in Rust: Slint has no text-transform, and screen readers must get `name`.
+    display-name: string,
+    has-unread: bool,
+    mention-count: int,
+}
+
+component CategoryHeader inherits Rectangle {
+    in property <string> name;
+    in property <string> display-name;
+    in property <bool> is-collapsed;
+    callback toggled();
+    height: MellowComponent.category-margin-top + MellowComponent.category-height;
+    accessible-role: button;
+    accessible-label: name;
+    accessible-expandable: true;
+    accessible-expanded: !is-collapsed;
+    accessible-action-default => { root.toggled(); }
+
+    property <color> text-color: touch.has-hover || focus-scope.has-focus
+        ? MellowComponent.category-text-hover : MellowComponent.category-text;
+
+    // Enter/Space toggle; Left collapses and Right expands, as on Discord (DESIGN.md §5.3).
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n"
+                || (event.text == Key.LeftArrow && !root.is-collapsed)
+                || (event.text == Key.RightArrow && root.is-collapsed) {
+                root.toggled();
+                return accept;
+            }
+            reject
+        }
+    }
+    touch := TouchArea { clicked => { root.toggled(); } }
+    HorizontalLayout {
+        padding-top: MellowComponent.category-margin-top;
+        padding-left: MellowComponent.category-padding-inline;
+        spacing: MellowSpace.space-3xs;
+        Text {
+            text: is-collapsed ? "▸" : "▾";
+            width: MellowComponent.category-chevron-size;
+            color: root.text-color;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        Text {
+            text: display-name;
+            accessible-role: none;
+            color: root.text-color;
+            font-size: MellowType.category.font-size;
+            font-weight: MellowType.category.font-weight;
+            letter-spacing: MellowType.category.letter-spacing;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    if focus-scope.has-focus: Rectangle {
+        y: MellowComponent.category-margin-top;
+        height: MellowComponent.category-height;
+        border-width: MellowComponent.focus-ring-width;
+        border-color: MellowComponent.focus-ring-color;
+        border-radius: MellowComponent.channel-row-radius;
+    }
+}
+
+component ChannelRow inherits Rectangle {
+    in property <string> name;
+    in property <bool> is-selected;
+    in property <bool> has-unread;
+    in property <int> mention-count;
+    callback clicked();
+    height: MellowComponent.channel-row-height + MellowComponent.channel-row-gap;
+    accessible-role: list-item;
+    accessible-label: name + (mention-count == 1 ? ", 1 mention" : mention-count > 1 ? ", " + mention-count + " mentions" : has-unread ? ", unread" : "");
+    accessible-item-selected: is-selected;
+    accessible-action-default => { root.clicked(); }
+
+    if has-unread && !is-selected: Rectangle {
+        x: 0;
+        width: MellowComponent.channel-row-unread-pill-width;
+        height: MellowComponent.channel-row-unread-pill-height;
+        border-radius: self.width / 2;
+        background: MellowComponent.channel-row-unread-pill-color;
+    }
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    row := Rectangle {
+        x: MellowComponent.channel-row-margin-inline;
+        width: parent.width - 2 * MellowComponent.channel-row-margin-inline;
+        height: MellowComponent.channel-row-height;
+        border-radius: MellowComponent.channel-row-radius;
+        background: is-selected ? MellowComponent.channel-row-background-selected
+            : touch.has-hover || focus-scope.has-focus ? MellowComponent.channel-row-background-hover : transparent;
+        border-width: focus-scope.has-focus ? MellowComponent.focus-ring-width : 0px;
+        border-color: MellowComponent.focus-ring-color;
+
+        property <color> text-color: is-selected ? MellowComponent.channel-row-text-selected
+            : touch.has-hover || focus-scope.has-focus ? MellowComponent.channel-row-text-hover
+            : has-unread ? MellowComponent.channel-row-text-unread : MellowComponent.channel-row-text-read;
+
+        touch := TouchArea { clicked => { root.clicked(); } }
+        HorizontalLayout {
+            padding-left: MellowComponent.channel-row-padding-inline;
+            padding-right: MellowComponent.channel-row-padding-inline;
+            spacing: MellowComponent.channel-row-icon-gap;
+            Text {
+                text: "#";
+                width: MellowComponent.channel-row-icon-size;
+                color: row.text-color;
+                font-size: MellowComponent.channel-row-icon-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+            Text {
+                text: name;
+                color: row.text-color;
+                font-size: MellowType.channel-name.font-size;
+                font-weight: has-unread || is-selected ? MellowType.message-author.font-weight : MellowType.channel-name.font-weight;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+                accessible-role: none;
+            }
+            if mention-count > 0: VerticalLayout {
+                alignment: center;
+                MentionBadge { count: mention-count; }
+            }
+        }
+    }
+}
+
+component UserPanel inherits Rectangle {
+    in property <string> display-name;
+    in property <string> initial;
+    in property <string> status-text;
+    height: MellowComponent.user-panel-height;
+    background: MellowComponent.user-panel-background;
+    HorizontalLayout {
+        padding-left: MellowComponent.user-panel-padding-inline;
+        padding-right: MellowComponent.user-panel-padding-inline;
+        spacing: MellowSpace.xs;
+        alignment: stretch;
+        VerticalLayout {
+            alignment: center;
+            Avatar {
+                initial: root.initial;
+                size: MellowComponent.user-panel-avatar-size;
+                has-presence: true;
+                status: PresenceStatus.online;
+                ring-color: MellowComponent.user-panel-background;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: display-name;
+                color: MellowComponent.user-panel-name-text;
+                font-size: MellowType.user-panel-name.font-size;
+                font-weight: MellowType.user-panel-name.font-weight;
+                overflow: elide;
+            }
+            Text {
+                text: status-text;
+                color: MellowComponent.user-panel-status-text;
+                font-size: MellowType.body-sm.font-size;
+                overflow: elide;
+            }
+        }
+        // shortcut: text glyphs stand in for the icon set (still to be chosen and bundled).
+        for button in [{ glyph: "🎙", label: "Mute" }, { glyph: "🎧", label: "Deafen" }, { glyph: "⚙", label: "User settings" }]: VerticalLayout {
+            alignment: center;
+            IconButton {
+                glyph: button.glyph;
+                label: button.label;
+                size: MellowComponent.user-panel-button-size;
+                icon-color: MellowComponent.user-panel-button-icon;
+                hover-background: MellowComponent.user-panel-button-background-hover;
+            }
+        }
+    }
+}
+
+export component ChannelSidebar inherits Rectangle {
+    in property <string> server-name;
+    in property <[ChannelListRow]> rows;
+    in property <string> selected-channel-name;
+    in property <string> current-user-name;
+    in property <string> current-user-initial;
+    callback toggle-category(int);
+    callback select-channel(string);
+
+    width: MellowComponent.sidebar-width;
+    background: MellowComponent.sidebar-background;
+
+    VerticalLayout {
+        Rectangle {
+            height: MellowComponent.sidebar-header-height;
+            HorizontalLayout {
+                padding-left: MellowComponent.sidebar-header-padding-inline;
+                padding-right: MellowComponent.sidebar-header-padding-inline;
+                Text {
+                    text: server-name;
+                    color: MellowComponent.sidebar-header-text;
+                    font-size: MellowType.heading-md.font-size;
+                    font-weight: MellowType.heading-md.font-weight;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    accessible-role: text;
+                }
+            }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: MellowColor.border-divider;
+            }
+        }
+
+        ListView {
+            accessible-role: list;
+            accessible-label: "Channels";
+            for row in rows: VerticalLayout {
+                if row.is-category: CategoryHeader {
+                    name: row.name;
+                    display-name: row.display-name;
+                    is-collapsed: row.is-collapsed;
+                    toggled => { root.toggle-category(row.category-index); }
+                }
+                if !row.is-category: ChannelRow {
+                    name: row.name;
+                    has-unread: row.has-unread;
+                    mention-count: row.mention-count;
+                    is-selected: row.name == selected-channel-name;
+                    clicked => { root.select-channel(row.name); }
+                }
+            }
+        }
+
+        UserPanel {
+            display-name: current-user-name;
+            initial: current-user-initial;
+            status-text: "Online";
+        }
+    }
+}

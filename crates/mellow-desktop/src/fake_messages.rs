@@ -21,7 +21,7 @@ const MENTION_MARKER: &str = "@you";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FakeMessage {
     pub author: &'static str,
-    pub timestamp: String,
+    pub time_of_day: String,
     pub body: &'static str,
     pub starts_author_group: bool,
     pub reply_preview: Option<&'static str>,
@@ -36,7 +36,7 @@ pub fn fake_conversation(message_count: usize) -> Vec<FakeMessage> {
             let minutes_of_day = (index * MINUTES_PER_MESSAGE) % MINUTES_PER_DAY;
             FakeMessage {
                 author: AUTHORS[author_turn % AUTHORS.len()],
-                timestamp: format!("{:02}:{:02}", minutes_of_day / 60, minutes_of_day % 60),
+                time_of_day: format!("{:02}:{:02}", minutes_of_day / 60, minutes_of_day % 60),
                 body,
                 starts_author_group: index % MESSAGES_PER_AUTHOR_TURN == 0,
                 reply_preview: (index % 11 == 5).then_some(SAMPLE_BODIES[0]),

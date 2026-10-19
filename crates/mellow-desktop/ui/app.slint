@@ -1,136 +1,68 @@
-import { ListView, ScrollView } from "std-widgets.slint";
-import { MellowColor, MellowSpace, MellowRadius, MellowType } from "tokens.slint";
+import { MellowColor, MellowSize, MellowTheme } from "tokens.slint";
+import { ServerRail, ServerItem } from "components/server_rail.slint";
+import { ChannelSidebar, ChannelListRow } from "components/channel_sidebar.slint";
+import { ChatPane, MessageRow } from "components/chat_pane.slint";
+import { MemberList, MemberListRow } from "components/member_list.slint";
+import { PresenceStatus } from "components/primitives.slint";
 
-export struct MessageRow {
-    author: string,
-    author-initial: string,
-    timestamp: string,
-    body: styled-text,
-    // Plain copy of the body, used for screen readers and the selectable rendering.
-    body-plain: string,
-    starts-author-group: bool,
-    reply-preview: string,
-    mentions-current-user: bool,
-}
+export { ServerItem, ChannelListRow, MessageRow, MemberListRow, PresenceStatus, MellowTheme }
 
-component MessageView inherits Rectangle {
-    in property <MessageRow> message;
-    in property <bool> is-text-selection-mode;
-    callback link-clicked(string);
-
-    background: message.mentions-current-user ? MellowColor.mention-background
-        : touch.has-hover ? MellowColor.state-hover : transparent;
-    accessible-role: list-item;
-    accessible-label: message.author + ", " + message.timestamp + ": " + message.body-plain;
-
-    touch := TouchArea { }
-
-    if message.mentions-current-user: Rectangle {
-        x: 0;
-        width: MellowType.mention-bar-width;
-        background: MellowColor.accent-primary;
-    }
-
-    HorizontalLayout {
-        padding-left: MellowSpace.medium;
-        padding-right: MellowSpace.medium;
-        padding-top: message.starts-author-group ? MellowSpace.medium : 0;
-        padding-bottom: MellowSpace.two-extra-small;
-        spacing: MellowSpace.small;
-
-        Rectangle {
-            width: MellowType.avatar-size;
-            height: message.starts-author-group ? MellowType.avatar-size : 0;
-            y: 0;
-            border-radius: self.width / 2;
-            background: message.starts-author-group ? MellowColor.accent-primary : transparent;
-            accessible-role: none;
-            if message.starts-author-group: Text {
-                text: message.author-initial;
-                color: MellowColor.accent-on-primary;
-                font-weight: MellowType.title-weight;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        VerticalLayout {
-            spacing: MellowSpace.two-extra-small;
-            max-width: MellowType.maximum-message-line-width;
-
-            if message.starts-author-group: HorizontalLayout {
-                spacing: MellowSpace.extra-small;
-                alignment: start;
-                Text {
-                    text: message.author;
-                    color: MellowColor.text-primary;
-                    font-size: MellowType.title-size;
-                    font-weight: MellowType.title-weight;
-                }
-                Text {
-                    text: message.timestamp;
-                    color: MellowColor.text-tertiary;
-                    font-size: MellowType.label-small-size;
-                    vertical-alignment: center;
-                }
-            }
-
-            if message.reply-preview != "": Text {
-                text: "↪ " + message.reply-preview;
-                color: MellowColor.text-secondary;
-                font-size: MellowType.body-small-size;
-                overflow: elide;
-            }
-
-            if !is-text-selection-mode: StyledText {
-                text: message.body;
-                default-color: MellowColor.text-primary;
-                default-font-size: MellowType.body-message-size;
-                link-color: MellowColor.link;
-                link-clicked(url) => { root.link-clicked(url); }
-            }
-            if is-text-selection-mode: TextInput {
-                text: message.body-plain;
-                read-only: true;
-                wrap: word-wrap;
-                color: MellowColor.text-primary;
-                font-size: MellowType.body-message-size;
-                selection-background-color: MellowColor.focus.with-alpha(0.35);
-            }
-        }
-    }
+// Window width breakpoints from DESIGN.md §4.2: each one is the sum of the panes it must fit.
+global LayoutBreakpoint {
+    out property <length> sidebar-visible: MellowSize.rail-width + MellowSize.sidebar-width + MellowSize.chat-min-width;
+    out property <length> all-panes: MellowSize.rail-width + MellowSize.sidebar-width + MellowSize.chat-min-width + MellowSize.member-list-width;
 }
 
 export component AppWindow inherits Window {
+    in property <[ServerItem]> servers;
+    in-out property <int> selected-server-index;
+    in property <string> server-name;
+    in property <[ChannelListRow]> channel-rows;
+    in property <string> selected-channel-name;
+    in property <string> selected-channel-topic;
     in property <[MessageRow]> messages;
+    in property <[MemberListRow]> member-rows;
+    in property <string> current-user-name;
+    in property <string> current-user-initial;
+    in property <string> latest-announcement;
     in-out property <string> composer-text;
     in-out property <bool> is-text-selection-mode;
-    in property <string> latest-announcement;
+    in-out property <bool> is-member-list-visible: true;
+
+    // Set from `changed width` rather than bound to `width`: a binding would make the layout depend
+    // on itself (the panes' presence changes the window's minimum width).
+    property <bool> is-wide-enough-for-member-list: true;
+    property <bool> is-wide-enough-for-sidebar: true;
+    changed width => {
+        self.is-wide-enough-for-member-list = self.width >= LayoutBreakpoint.all-panes;
+        self.is-wide-enough-for-sidebar = self.width >= LayoutBreakpoint.sidebar-visible;
+    }
+
+    callback select-server(int);
+    callback select-channel(string);
+    callback toggle-category(int);
     callback send-message(string);
     callback link-clicked(string);
-
-    title: "Mellow — Slint spike";
-    preferred-width: 1100px;
-    preferred-height: 760px;
-    min-width: 480px;
-    min-height: 560px;
-    background: MellowColor.surface-content;
-    default-font-size: MellowType.body-message-size;
-
-    // Scrolls up by `distance`; returns false once the top is reached (used by the scroll benchmark).
-    public function scroll-up-by(distance: length) -> bool {
-        message-list.content-y = min(0px, message-list.content-y + distance);
-        message-list.content-y < 0px
-    }
+    callback copy-message-text(int);
 
     public function scroll-to-latest-message() {
-        message-list.content-y = min(0px, message-list.visible-height - message-list.content-height);
+        chat.scroll-to-latest-message();
+    }
+    public function scroll-up-by(distance: length) -> bool {
+        chat.scroll-up-by(distance)
     }
 
-    forward-focus: composer;
+    title: "Mellow";
+    preferred-width: MellowSize.window-default-width;
+    preferred-height: MellowSize.window-default-height;
+    min-width: MellowSize.window-min-width;
+    min-height: MellowSize.window-min-height;
+    background: MellowColor.surface-chat;
 
-    // Key events bubble from the focused composer up to this scope, so F2 works anywhere.
-    FocusScope {
+    forward-focus: chat;
+
+    // Key events bubble up from the focused child to this scope, so shortcuts work anywhere.
+    key-handler := FocusScope {
         key-pressed(event) => {
             if event.text == Key.F2 {
                 root.is-text-selection-mode = !root.is-text-selection-mode;
@@ -139,77 +71,38 @@ export component AppWindow inherits Window {
             reject
         }
 
-        VerticalLayout {
-            Rectangle {
-                height: 48px;
-                background: MellowColor.surface-canvas;
-                HorizontalLayout {
-                    padding-left: MellowSpace.medium;
-                    padding-right: MellowSpace.medium;
-                    spacing: MellowSpace.medium;
-                    Text {
-                        text: "# general";
-                        color: MellowColor.text-primary;
-                        font-size: 20px;
-                        font-weight: 700;
-                        vertical-alignment: center;
-                    }
-                    Text {
-                        text: messages.length + " messages · F2 toggles text selection mode (" + (is-text-selection-mode ? "on" : "off") + ")";
-                        color: MellowColor.text-tertiary;
-                        vertical-alignment: center;
-                    }
-                }
+        HorizontalLayout {
+            // shortcut: below 792 px the rail and sidebar are hidden; the drawer (DESIGN.md §4.2) comes later.
+            if root.is-wide-enough-for-sidebar: ServerRail {
+                servers: root.servers;
+                selected-server-index: root.selected-server-index;
+                select-server(index) => { root.select-server(index); }
             }
-
-            message-list := ListView {
-                accessible-role: list;
-                accessible-label: "Messages in general";
-                for message in messages: MessageView {
-                    message: message;
-                    is-text-selection-mode: root.is-text-selection-mode;
-                    link-clicked(url) => { root.link-clicked(url); }
-                }
+            if root.is-wide-enough-for-sidebar: ChannelSidebar {
+                server-name: root.server-name;
+                rows: root.channel-rows;
+                selected-channel-name: root.selected-channel-name;
+                current-user-name: root.current-user-name;
+                current-user-initial: root.current-user-initial;
+                toggle-category(index) => { root.toggle-category(index); }
+                select-channel(name) => { root.select-channel(name); }
             }
-
-            // Screen readers announce new messages through this live region, not by re-reading the list.
-            Text {
-                height: 0;
-                text: latest-announcement;
-                accessible-role: text;
-                accessible-live-region: polite;
+            chat := ChatPane {
+                horizontal-stretch: 1;
+                channel-name: root.selected-channel-name;
+                channel-topic: root.selected-channel-topic;
+                messages: root.messages;
+                is-text-selection-mode: root.is-text-selection-mode;
+                latest-announcement: root.latest-announcement;
+                composer-text <=> root.composer-text;
+                is-member-list-visible <=> root.is-member-list-visible;
+                send-message(text) => { root.send-message(text); }
+                link-clicked(url) => { root.link-clicked(url); }
+                copy-message-text(index) => { root.copy-message-text(index); }
             }
-
-            Rectangle {
-                background: MellowColor.surface-content;
-                HorizontalLayout {
-                    padding: MellowSpace.medium;
-                    Rectangle {
-                        background: MellowColor.surface-raised;
-                        border-radius: MellowRadius.medium;
-                        border-width: composer.has-focus ? MellowType.focus-ring-width : 1px;
-                        border-color: composer.has-focus ? MellowColor.focus : MellowColor.border-strong;
-                        min-height: 48px;
-                        HorizontalLayout {
-                            padding-left: MellowSpace.medium;
-                            padding-right: MellowSpace.medium;
-                            composer := TextInput {
-                                text <=> root.composer-text;
-                                color: MellowColor.text-primary;
-                                font-size: MellowType.body-message-size;
-                                vertical-alignment: center;
-                                single-line: true;
-                                accessible-label: "Message #general";
-                                accepted => {
-                                    if self.text != "" {
-                                        root.send-message(self.text);
-                                        self.text = "";
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            // shortcut: below 1032 px the member list is hidden instead of becoming an overlay.
+            if root.is-member-list-visible && root.is-wide-enough-for-member-list: MemberList {
+                rows: root.member-rows;
             }
         }
     }

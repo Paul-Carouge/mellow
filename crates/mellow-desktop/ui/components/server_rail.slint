@@ -1,0 +1,140 @@
+import { MellowColor, MellowComponent, MellowSize, MellowType } from "../tokens.slint";
+import { MentionBadge } from "primitives.slint";
+
+export struct ServerItem {
+    name: string,
+    initials: string,
+    has-unread: bool,
+    mention-count: int,
+}
+
+// One rail entry: 48 px icon that morphs circle → squircle on hover/selection, with the
+// left pill showing unread (short), hover (medium) or selected (tall), as on Discord.
+component RailItem inherits Rectangle {
+    in property <string> label;
+    in property <string> initials;
+    in property <bool> is-selected;
+    in property <bool> has-unread;
+    in property <int> mention-count;
+    in property <bool> is-home: false;
+    callback clicked();
+
+    property <bool> is-active: is-selected || touch.has-hover || focus-scope.has-focus;
+
+    width: MellowComponent.rail-width;
+    height: MellowComponent.rail-item-size;
+    accessible-role: tab;
+    accessible-label: label + (mention-count == 1 ? ", 1 mention" : mention-count > 1 ? ", " + mention-count + " mentions" : has-unread ? ", unread" : "");
+    accessible-item-selected: is-selected;
+    accessible-action-default => { root.clicked(); }
+
+    pill := Rectangle {
+        x: -MellowComponent.rail-pill-width / 2;
+        width: MellowComponent.rail-pill-width;
+        height: is-selected ? MellowComponent.rail-pill-height-selected
+            : touch.has-hover ? MellowComponent.rail-pill-height-hover
+            : has-unread ? MellowComponent.rail-pill-height-unread : 0px;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.width / 2;
+        background: MellowComponent.rail-pill-color;
+        animate height { duration: MellowComponent.rail-morph-duration; easing: ease-out; }
+    }
+
+    icon := Rectangle {
+        width: MellowComponent.rail-item-size;
+        height: MellowComponent.rail-item-size;
+        border-radius: is-active ? MellowComponent.rail-icon-radius-active : MellowComponent.rail-icon-radius-rest;
+        background: is-active ? MellowComponent.rail-icon-background-active : MellowComponent.rail-icon-background-rest;
+        animate border-radius, background { duration: MellowComponent.rail-morph-duration; easing: ease-out; }
+        Text {
+            text: initials;
+            color: is-active ? MellowComponent.rail-icon-text-active : MellowComponent.rail-icon-text-rest;
+            font-size: is-home ? MellowType.heading-lg.font-size : MellowType.body.font-size;
+            font-weight: MellowType.message-author.font-weight;
+        }
+    }
+
+    if mention-count > 0: MentionBadge {
+        count: mention-count;
+        x: icon.x + icon.width - self.width + MellowComponent.badge-ring-width;
+        y: icon.y + icon.height - self.height + MellowComponent.badge-ring-width;
+        border-width: MellowComponent.badge-ring-width;
+        border-color: MellowComponent.rail-background;
+    }
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    touch := TouchArea {
+        x: icon.x;
+        width: icon.width;
+        clicked => { root.clicked(); }
+    }
+    if focus-scope.has-focus: Rectangle {
+        x: icon.x - MellowComponent.focus-ring-offset;
+        width: icon.width + 2 * MellowComponent.focus-ring-offset;
+        height: icon.height + 2 * MellowComponent.focus-ring-offset;
+        border-radius: icon.border-radius + MellowComponent.focus-ring-offset;
+        border-width: MellowComponent.focus-ring-width;
+        border-color: MellowComponent.focus-ring-color;
+    }
+}
+
+export component ServerRail inherits Rectangle {
+    in property <[ServerItem]> servers;
+    in-out property <int> selected-server-index;
+    callback select-server(int);
+
+    width: MellowComponent.rail-width;
+    background: MellowComponent.rail-background;
+    accessible-role: tab-list;
+    accessible-label: "Servers";
+
+    Flickable {
+        VerticalLayout {
+            padding-top: MellowComponent.rail-padding-top;
+            spacing: MellowComponent.rail-item-gap;
+            alignment: start;
+
+            // Home / direct messages. The glyph stands in for Mellow's logo, still to be designed.
+            RailItem {
+                label: "Direct messages";
+                initials: "M";
+                is-home: true;
+                // -1 is the home index; main.rs maps any negative index to HOME_SERVER_NAME.
+                is-selected: selected-server-index == -1;
+                clicked => { root.select-server(-1); }
+            }
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: MellowSize.rail-separator-width;
+                    height: MellowSize.rail-separator-height;
+                    border-radius: self.height / 2;
+                    background: MellowComponent.rail-separator-color;
+                }
+            }
+            for server[index] in servers: RailItem {
+                label: server.name;
+                initials: server.initials;
+                has-unread: server.has-unread;
+                mention-count: server.mention-count;
+                is-selected: index == selected-server-index;
+                clicked => { root.select-server(index); }
+            }
+            // shortcut: the "add a server" flow does not exist yet; the button is inert.
+            RailItem {
+                label: "Add a server";
+                initials: "+";
+                // An action, not a server to switch to.
+                accessible-role: button;
+            }
+        }
+    }
+}

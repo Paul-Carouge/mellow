@@ -7,7 +7,7 @@ A self-hostable, open-source (AGPL-3.0) Discord alternative. Rust everywhere exc
 
 Read before working:
 - [ARCHITECTURE.md](ARCHITECTURE.md) — components, layers, data model, protocol, security.
-- [DESIGN.md](DESIGN.md) — visual identity, design tokens, screens, accessibility.
+- [DESIGN.md](DESIGN.md) — visual identity, design tokens, screens, accessibility. The UI is a faithful Discord clone with Mellow's own brand (ADR-0012): match Discord's layout and behaviour, never its blurple, logo or fonts.
 - [docs/adr/](docs/adr/) — why things are the way they are. Do not contradict an accepted ADR silently: propose a new ADR that supersedes it.
 - [ROADMAP.md](ROADMAP.md) — milestones and current scope.
 
@@ -28,9 +28,10 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check
+cargo xtask tokens          # regenerate ui/tokens.slint after editing design/tokens.json (--check in CI)
 cargo run -p mellow-desktop
 ```
-Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (library, no binary yet) and `mellow-desktop` (Slint spike prototype) exist. Update this section when run commands appear.
+Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (library, no binary yet), `mellow-desktop` (Discord-like shell on fake data) and `xtask` (design token generator) exist. Update this section when run commands appear.
 CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux, macOS and Windows.
 
 ## Rules specific to this project

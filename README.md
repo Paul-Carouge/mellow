@@ -3,11 +3,11 @@
 A calm, self-hostable alternative to Discord, written in Rust.
 
 - **Self-hosting in minutes:** one server binary, one data directory, no Docker, no external database, one-command updates.
-- **Familiar:** servers, channels, direct messages, roles and permissions, attachments.
+- **Feels like Discord:** same layout and habits (servers, channels, DMs, roles, attachments), with Mellow's own brand.
 - **Native clients:** desktop (Linux, macOS, Windows) in Rust with Slint, Android in Kotlin with Material 3 Expressive.
 - **Private by default:** TLS everywhere, data encrypted at rest, no telemetry.
 
-> Status: design phase. Nothing is runnable yet. See [ROADMAP.md](ROADMAP.md).
+> Status: M0 foundations. A desktop UI prototype runs (`cargo run -p mellow-desktop`); there is no server yet. See [ROADMAP.md](ROADMAP.md).
 
 ## Documentation
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how the system is built.
@@ -23,6 +23,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo deny check
+cargo xtask tokens --check
 ```
 
 ## License

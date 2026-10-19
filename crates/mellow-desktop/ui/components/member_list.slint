@@ -1,0 +1,95 @@
+import { ListView } from "std-widgets.slint";
+import { MellowComponent, MellowSpace, MellowType } from "../tokens.slint";
+import { Avatar, PresenceStatus } from "primitives.slint";
+
+// Role group headers and members flattened into one list for virtualization.
+export struct MemberListRow {
+    is-group-header: bool,
+    label: string,
+    // Uppercased group label for display; Slint has no text-transform.
+    display-label: string,
+    member-count: int,
+    initial: string,
+    activity: string,
+    status: PresenceStatus,
+}
+
+component MemberRow inherits Rectangle {
+    in property <MemberListRow> member;
+    property <bool> is-offline: member.status == PresenceStatus.offline;
+    height: MellowComponent.member-row-height + MellowComponent.member-row-gap;
+    accessible-role: list-item;
+    accessible-label: member.label + (is-offline ? ", offline" : "") + (member.activity != "" ? ", " + member.activity : "");
+
+    row := Rectangle {
+        x: MellowComponent.member-row-margin-inline;
+        width: parent.width - 2 * MellowComponent.member-row-margin-inline;
+        height: MellowComponent.member-row-height;
+        border-radius: MellowComponent.member-row-radius;
+        background: touch.has-hover ? MellowComponent.member-row-background-hover : transparent;
+        touch := TouchArea { }
+        HorizontalLayout {
+            padding-left: MellowComponent.member-row-padding-inline;
+            padding-right: MellowComponent.member-row-padding-inline;
+            spacing: MellowSpace.sm;
+            VerticalLayout {
+                alignment: center;
+                // Only the avatar dims when offline; dimming the name would fail AA (DESIGN.md §2).
+                Avatar {
+                    opacity: is-offline ? MellowComponent.member-row-offline-avatar-opacity : 1.0;
+                    initial: member.initial;
+                    size: MellowComponent.member-row-avatar-size;
+                    has-presence: !is-offline;
+                    status: member.status;
+                    ring-color: touch.has-hover ? MellowComponent.member-row-background-hover : MellowComponent.member-list-background;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                Text {
+                    text: member.label;
+                    color: touch.has-hover ? MellowComponent.member-row-name-text-hover : MellowComponent.member-row-name-text;
+                    font-size: MellowType.member-name.font-size;
+                    font-weight: MellowType.member-name.font-weight;
+                    overflow: elide;
+                }
+                if member.activity != "": Text {
+                    text: member.activity;
+                    color: MellowComponent.member-row-activity-text;
+                    font-size: MellowType.body-sm.font-size;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}
+
+export component MemberList inherits Rectangle {
+    in property <[MemberListRow]> rows;
+    width: MellowComponent.member-list-width;
+    background: MellowComponent.member-list-background;
+
+    ListView {
+        accessible-role: list;
+        accessible-label: "Members";
+        for row in rows: VerticalLayout {
+            if row.is-group-header: Rectangle {
+                height: MellowComponent.member-list-group-height;
+                accessible-role: text;
+                accessible-label: row.label + ", " + row.member-count;
+                Text {
+                    x: MellowSpace.md;
+                    y: parent.height - self.height - MellowSpace.space-2xs;
+                    text: row.display-label + " — " + row.member-count;
+                    accessible-role: none;
+                    color: MellowComponent.member-list-group-text;
+                    font-size: MellowType.category.font-size;
+                    font-weight: MellowType.category.font-weight;
+                    letter-spacing: MellowType.category.letter-spacing;
+                }
+            }
+            if !row.is-group-header: MemberRow { member: row; }
+        }
+    }
+}

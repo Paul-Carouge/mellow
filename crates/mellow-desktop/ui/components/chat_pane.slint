@@ -1,0 +1,341 @@
+import { ListView } from "std-widgets.slint";
+import { MellowColor, MellowComponent, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
+import { Avatar, IconButton } from "primitives.slint";
+
+export struct MessageRow {
+    author: string,
+    author-initial: string,
+    timestamp: string,
+    // Time of day only, shown in the gutter when a grouped message is hovered.
+    short-time: string,
+    body: styled-text,
+    // Source text: copied by "Copy text", read by screen readers, shown in selection mode.
+    body-plain: string,
+    starts-author-group: bool,
+    reply-preview: string,
+    mentions-current-user: bool,
+}
+
+component HoverActionBar inherits Rectangle {
+    // True while the pointer is on the bar, which sticks out above its message row.
+    out property <bool> is-hovered: hover-area.has-hover;
+    callback reply();
+    callback copy-text();
+    height: MellowComponent.action-bar-height;
+    border-radius: MellowComponent.action-bar-radius;
+    border-width: 1px;
+    border-color: MellowComponent.action-bar-border;
+    background: MellowComponent.action-bar-background;
+    hover-area := TouchArea {
+        HorizontalLayout {
+            // shortcut: text glyphs stand in for the icon set (still to be chosen and bundled).
+            IconButton {
+                glyph: "↩";
+                label: "Reply";
+                size: MellowComponent.action-bar-button-size;
+                icon-color: MellowComponent.action-bar-icon;
+                hover-background: MellowComponent.action-bar-button-background-hover;
+                clicked => { root.reply(); }
+            }
+            IconButton {
+                glyph: "⧉";
+                label: "Copy text";
+                size: MellowComponent.action-bar-button-size;
+                icon-color: MellowComponent.action-bar-icon;
+                hover-background: MellowComponent.action-bar-button-background-hover;
+                clicked => { root.copy-text(); }
+            }
+            IconButton {
+                glyph: "⋯";
+                label: "More";
+                size: MellowComponent.action-bar-button-size;
+                icon-color: MellowComponent.action-bar-icon;
+                hover-background: MellowComponent.action-bar-button-background-hover;
+            }
+        }
+    }
+}
+
+component MessageView inherits Rectangle {
+    in property <MessageRow> message;
+    in property <bool> is-text-selection-mode;
+    callback link-clicked(string);
+    callback copy-text();
+
+    // The content lives inside `touch`, so hovering text or links keeps the row hovered; the action
+    // bar keeps it hovered too while the pointer is on its part above the row.
+    property <bool> is-hovered: touch.has-hover || action-bar.is-hovered;
+
+    background: message.mentions-current-user ? (is-hovered ? MellowComponent.mention-background-hover : MellowComponent.mention-background)
+        : is-hovered ? MellowComponent.message-background-hover : transparent;
+    accessible-role: list-item;
+    accessible-label: message.author + ", " + message.timestamp + ": " + message.body-plain;
+
+    if message.mentions-current-user: Rectangle {
+        x: 0;
+        width: MellowComponent.mention-bar-width;
+        background: MellowComponent.mention-bar-color;
+    }
+
+    touch := TouchArea {
+        layout := VerticalLayout {
+            padding-top: (message.starts-author-group ? MellowComponent.message-group-gap : 0px) + MellowComponent.message-padding-block;
+            padding-bottom: MellowComponent.message-padding-block;
+            padding-left: MellowComponent.message-gutter;
+            padding-right: MellowComponent.message-padding-trailing;
+            // The avatar sits outside the layout, so the row must still be tall enough to contain it.
+            min-height: message.starts-author-group
+                ? self.padding-top + MellowComponent.message-avatar-size + self.padding-bottom : 0px;
+
+            if message.reply-preview != "": Text {
+                text: "↪ " + message.reply-preview;
+                color: MellowColor.text-muted;
+                font-size: MellowType.body-sm.font-size;
+                overflow: elide;
+            }
+            if message.starts-author-group: HorizontalLayout {
+                spacing: MellowSpace.xs;
+                alignment: start;
+                Text {
+                    text: message.author;
+                    color: MellowComponent.message-author-text;
+                    font-size: MellowType.message-author.font-size;
+                    font-weight: MellowType.message-author.font-weight;
+                }
+                Text {
+                    text: message.timestamp;
+                    color: MellowComponent.message-timestamp-text;
+                    font-size: MellowType.message-timestamp.font-size;
+                    font-weight: MellowType.message-timestamp.font-weight;
+                    vertical-alignment: center;
+                }
+            }
+            if !is-text-selection-mode: StyledText {
+                text: message.body;
+                default-color: MellowComponent.message-body-text;
+                default-font-size: MellowType.message.font-size;
+                link-color: MellowColor.text-link;
+                link-clicked(url) => { root.link-clicked(url); }
+            }
+            if is-text-selection-mode: TextInput {
+                text: message.body-plain;
+                read-only: true;
+                wrap: word-wrap;
+                color: MellowComponent.message-body-text;
+                font-size: MellowType.message.font-size;
+                selection-background-color: MellowComponent.message-selection-background;
+            }
+        }
+
+        if message.starts-author-group: Avatar {
+            x: MellowComponent.message-avatar-inset;
+            y: layout.padding-top;
+            initial: message.author-initial;
+            size: MellowComponent.message-avatar-size;
+        }
+        if !message.starts-author-group && root.is-hovered: Text {
+            x: 0;
+            y: layout.padding-top;
+            width: MellowComponent.message-gutter;
+            text: message.short-time;
+            color: MellowComponent.message-timestamp-text;
+            font-size: MellowType.message-timestamp.font-size;
+            horizontal-alignment: center;
+        }
+    }
+
+    // Always instantiated: creating it on hover would destroy it under the pointer mid-click.
+    // shortcut: shown on hover only; showing it on keyboard focus (DESIGN.md §5.4) needs focusable rows.
+    action-bar := HoverActionBar {
+        visible: root.is-hovered;
+        x: parent.width - self.width - MellowComponent.action-bar-offset-trailing;
+        // The token is negative: the bar sits above the row's top edge, as on Discord.
+        y: MellowComponent.action-bar-offset-top;
+        copy-text => { root.copy-text(); }
+    }
+}
+
+export component ChatPane inherits Rectangle {
+    in property <string> channel-name;
+    in property <string> channel-topic;
+    in property <[MessageRow]> messages;
+    in property <bool> is-text-selection-mode;
+    in property <string> latest-announcement;
+    in-out property <string> composer-text;
+    in-out property <bool> is-member-list-visible;
+    callback send-message(string);
+    callback link-clicked(string);
+    callback copy-message-text(int);
+
+    // True while the newest message is in view; new messages and row-height refinements then keep
+    // the list anchored to the bottom, as on Discord. Scrolling up releases it.
+    property <bool> is-pinned-to-latest-message: true;
+    property <length> latest-message-content-y: min(0px, message-list.visible-height - message-list.content-height);
+
+    public function scroll-to-latest-message() {
+        is-pinned-to-latest-message = true;
+        message-list.content-y = latest-message-content-y;
+    }
+
+    // Scrolls up by `distance`; returns false once the top is reached (used by the scroll benchmark).
+    public function scroll-up-by(distance: length) -> bool {
+        is-pinned-to-latest-message = false;
+        message-list.content-y = min(0px, message-list.content-y + distance);
+        message-list.content-y < 0px
+    }
+
+    background: MellowColor.surface-chat;
+    min-width: MellowSize.chat-min-width;
+    // Typing goes to the composer when the chat pane gets focus, as on Discord.
+    forward-focus: composer;
+
+    VerticalLayout {
+        Rectangle {
+            height: MellowComponent.chat-header-height;
+            background: MellowComponent.chat-header-background;
+            HorizontalLayout {
+                padding-left: MellowComponent.chat-header-padding-inline;
+                padding-right: MellowComponent.chat-header-padding-inline;
+                spacing: MellowSpace.xs;
+                Text {
+                    text: "#";
+                    color: MellowComponent.chat-header-icon;
+                    font-size: MellowComponent.chat-header-icon-size;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: channel-name;
+                    color: MellowComponent.chat-header-name-text;
+                    font-size: MellowType.heading-md.font-size;
+                    font-weight: MellowType.heading-md.font-weight;
+                    vertical-alignment: center;
+                    accessible-role: text;
+                }
+                if channel-topic != "": Rectangle {
+                    width: 1px;
+                    height: MellowComponent.chat-header-divider-height;
+                    background: MellowColor.border-divider;
+                }
+                Text {
+                    text: channel-topic;
+                    color: MellowComponent.chat-header-topic-text;
+                    font-size: MellowType.body-sm.font-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        glyph: "👥";
+                        label: is-member-list-visible ? "Hide member list" : "Show member list";
+                        size: MellowComponent.chat-header-button-size;
+                        icon-color: is-member-list-visible ? MellowColor.text-heading : MellowComponent.chat-header-icon;
+                        hover-background: MellowColor.state-hover;
+                        clicked => { root.is-member-list-visible = !root.is-member-list-visible; }
+                    }
+                }
+            }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: MellowColor.border-divider;
+            }
+        }
+
+        message-list := ListView {
+            // ListView estimates unseen row heights and refines them while rendering, which moves
+            // content-y and content-height by itself; while pinned, snap back to the bottom.
+            changed content-height => {
+                if root.is-pinned-to-latest-message {
+                    self.content-y = root.latest-message-content-y;
+                }
+            }
+            changed visible-height => {
+                if root.is-pinned-to-latest-message {
+                    self.content-y = root.latest-message-content-y;
+                }
+            }
+            changed content-y => {
+                if root.is-pinned-to-latest-message && self.content-y != root.latest-message-content-y {
+                    self.content-y = root.latest-message-content-y;
+                }
+            }
+            // Only user scrolling (wheel, drag, scrollbar) decides whether the list stays pinned.
+            scrolled => {
+                root.is-pinned-to-latest-message = self.content-y <= root.latest-message-content-y + 1px;
+            }
+            accessible-role: list;
+            accessible-label: "Messages in " + channel-name;
+            for message[index] in messages: MessageView {
+                message: message;
+                is-text-selection-mode: root.is-text-selection-mode;
+                link-clicked(url) => { root.link-clicked(url); }
+                copy-text => { root.copy-message-text(index); }
+            }
+        }
+
+        // Screen readers announce new messages through this live region, not by re-reading the list.
+        Text {
+            height: 0px;
+            text: latest-announcement;
+            accessible-role: text;
+            accessible-live-region: polite;
+        }
+
+        HorizontalLayout {
+            padding-left: MellowComponent.composer-margin-inline;
+            padding-right: MellowComponent.composer-margin-inline;
+            Rectangle {
+                min-height: MellowComponent.composer-min-height;
+                border-radius: MellowComponent.composer-radius;
+                background: MellowComponent.composer-background;
+                // Discord shows no ring here; WCAG 2.4.7 needs one for keyboard users (ADR-0012).
+                border-width: composer.has-focus ? MellowComponent.focus-ring-width : 0px;
+                border-color: MellowComponent.focus-ring-color;
+                HorizontalLayout {
+                    padding-left: MellowComponent.composer-padding-inline;
+                    padding-right: MellowComponent.composer-padding-inline;
+                    spacing: MellowComponent.composer-padding-inline;
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: "+";
+                            label: "Upload a file";
+                            size: MellowComponent.composer-icon-size;
+                            icon-color: MellowComponent.composer-icon;
+                            hover-background: transparent;
+                        }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        if composer.text == "": Text {
+                            x: 0;
+                            text: "Message #" + channel-name;
+                            color: MellowComponent.composer-placeholder;
+                            font-size: MellowType.message.font-size;
+                            vertical-alignment: center;
+                            accessible-role: none;
+                        }
+                        composer := TextInput {
+                            text <=> root.composer-text;
+                            color: MellowComponent.composer-text;
+                            font-size: MellowType.message.font-size;
+                            vertical-alignment: center;
+                            single-line: true;
+                            accessible-label: "Message #" + channel-name;
+                            accepted => {
+                                if self.text != "" {
+                                    root.send-message(self.text);
+                                    self.text = "";
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Reserved band for "Aurore is typing…", as on Discord.
+        Rectangle { height: MellowComponent.composer-typing-height; }
+    }
+}

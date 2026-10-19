@@ -1,0 +1,142 @@
+import { MellowColor, MellowComponent, MellowRadius, MellowType } from "../tokens.slint";
+
+export enum PresenceStatus { online, idle, do-not-disturb, offline }
+
+// Status dot with a ring cut out of the surface behind it, like Discord. Shape differs per status
+// so it never relies on colour alone (DESIGN.md §7).
+export component PresenceDot inherits Rectangle {
+    in property <PresenceStatus> status;
+    in property <color> ring-color;
+    width: MellowComponent.status-size-small + 2 * MellowComponent.status-ring-width;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: ring-color;
+    accessible-role: image;
+    accessible-label: status == PresenceStatus.online ? "Online"
+        : status == PresenceStatus.idle ? "Idle"
+        : status == PresenceStatus.do-not-disturb ? "Do not disturb" : "Offline";
+
+    dot := Rectangle {
+        width: MellowComponent.status-size-small;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: status == PresenceStatus.online ? MellowComponent.status-online
+            : status == PresenceStatus.idle ? MellowComponent.status-idle
+            : status == PresenceStatus.do-not-disturb ? MellowComponent.status-dnd
+            : MellowComponent.status-offline;
+        // Idle: crescent (ring-coloured bite). Do not disturb: bar. Offline: hollow ring.
+        if status == PresenceStatus.idle: Rectangle {
+            x: -parent.width * 0.15;
+            y: -parent.height * 0.15;
+            width: parent.width * 0.65;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: ring-color;
+        }
+        if status == PresenceStatus.do-not-disturb: Rectangle {
+            width: parent.width * 0.6;
+            height: parent.height * 0.25;
+            border-radius: self.height / 2;
+            background: ring-color;
+        }
+        if status == PresenceStatus.offline: Rectangle {
+            width: parent.width * 0.4;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: ring-color;
+        }
+    }
+}
+
+// shortcut: initials on the accent colour until avatar images exist (M2 attachments).
+export component Avatar inherits Rectangle {
+    in property <string> initial;
+    in property <length> size;
+    in property <bool> has-presence: false;
+    in property <PresenceStatus> status;
+    in property <color> ring-color;
+    width: size;
+    height: size;
+    accessible-role: none;
+
+    Rectangle {
+        border-radius: self.width / 2;
+        background: MellowColor.accent-fill;
+        Text {
+            text: initial;
+            color: MellowColor.text-on-accent;
+            font-size: size * 0.4;
+            font-weight: MellowType.message-author.font-weight;
+        }
+    }
+    if has-presence: PresenceDot {
+        x: parent.width - self.width + MellowComponent.status-ring-width;
+        y: parent.height - self.height + MellowComponent.status-ring-width;
+        status: status;
+        ring-color: ring-color;
+    }
+}
+
+// Red count badge, as on Discord rails and channel rows.
+export component MentionBadge inherits Rectangle {
+    in property <int> count;
+    height: MellowComponent.badge-height;
+    // Explicit width: outside a layout a Rectangle would otherwise take its parent's width.
+    width: max(MellowComponent.badge-min-width, count-label.preferred-width + 2 * MellowComponent.badge-padding-inline);
+    border-radius: MellowComponent.badge-radius;
+    background: MellowComponent.badge-background;
+    accessible-role: text;
+    accessible-label: count + (count == 1 ? " mention" : " mentions");
+    HorizontalLayout {
+        padding-left: MellowComponent.badge-padding-inline;
+        padding-right: MellowComponent.badge-padding-inline;
+        count-label := Text {
+            text: count > 99 ? "99+" : count;
+            color: MellowComponent.badge-text;
+            font-size: MellowType.badge.font-size;
+            font-weight: MellowType.badge.font-weight;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Icon-sized square button with hover fill, used in the user panel and headers.
+export component IconButton inherits Rectangle {
+    in property <string> glyph;
+    in property <string> label;
+    in property <length> size;
+    in property <color> icon-color;
+    in property <color> hover-background;
+    callback clicked();
+    width: size;
+    height: size;
+    border-radius: MellowRadius.sm;
+    background: touch.has-hover || focus-scope.has-focus ? hover-background : transparent;
+    accessible-role: button;
+    accessible-label: label;
+    accessible-action-default => { root.clicked(); }
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    Text {
+        text: glyph;
+        color: icon-color;
+        font-size: size * 0.55;
+    }
+    if focus-scope.has-focus: Rectangle {
+        border-width: MellowComponent.focus-ring-width;
+        border-color: MellowComponent.focus-ring-color;
+        border-radius: parent.border-radius;
+    }
+}
