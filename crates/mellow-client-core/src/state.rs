@@ -126,12 +126,12 @@ impl ClientState {
 
     pub fn apply_event(&mut self, event: GatewayEvent, now_unix_milliseconds: u64) -> StateChange {
         match event {
-            GatewayEvent::MessageCreate(message) | GatewayEvent::MessageUpdate(message) => {
+            GatewayEvent::MessageCreate(message) => {
                 let channel_id = message.channel_id;
                 self.typing_until.remove(&(channel_id, message.author.id));
-                self.insert_messages(channel_id, vec![message]);
-                StateChange::Messages { channel_id }
+                self.insert_messages(channel_id, vec![message])
             }
+            GatewayEvent::MessageUpdate(message) => self.replace_cached_message(message),
             GatewayEvent::MessageDelete { channel_id, id, .. } => {
                 if let Some(messages) = self.messages_by_channel.get_mut(&channel_id) {
                     messages.retain(|message| message.id != id);
@@ -201,6 +201,9 @@ impl ClientState {
                 user_id,
                 ..
             } => {
+                // Expired entries are dropped here, so the map never outgrows who types now.
+                self.typing_until
+                    .retain(|_, until| *until > now_unix_milliseconds);
                 self.typing_until.insert(
                     (channel_id, user_id),
                     now_unix_milliseconds.saturating_add(TYPING_INDICATOR_LIFETIME_MILLISECONDS),
@@ -217,6 +220,26 @@ impl ClientState {
         }
     }
 
+    /// Only cached messages change: an edit of older history must not appear out of context, nor
+    /// mark a never-opened channel as unread.
+    fn replace_cached_message(&mut self, message: Message) -> StateChange {
+        let channel_id = message.channel_id;
+        let Some(cached) = self
+            .messages_by_channel
+            .get_mut(&channel_id)
+            .and_then(|messages| {
+                let index = messages
+                    .binary_search_by_key(&message.id, |existing| existing.id)
+                    .ok()?;
+                messages.get_mut(index)
+            })
+        else {
+            return StateChange::Nothing;
+        };
+        *cached = message;
+        StateChange::Messages { channel_id }
+    }
+
     /// Merges messages from history or from our own send (deduplicated by id, kept sorted and
     /// capped, keeping the newest).
     pub fn insert_messages(
@@ -225,16 +248,26 @@ impl ClientState {
         incoming: Vec<Message>,
     ) -> StateChange {
         let messages = self.messages_by_channel.entry(channel_id).or_default();
-        for message in incoming {
-            match messages.binary_search_by_key(&message.id, |existing| existing.id) {
-                Ok(index) => messages[index] = message,
-                Err(index) => messages.insert(index, message),
-            }
-        }
-        if messages.len() > MAXIMUM_CACHED_MESSAGES_PER_CHANNEL {
-            let excess = messages.len() - MAXIMUM_CACHED_MESSAGES_PER_CHANNEL;
-            messages.drain(..excess);
-        }
+        // One sort for the whole batch, whatever order a server sends: never O(n²) on the UI thread.
+        let mut incoming = incoming;
+        incoming.sort_by_key(|message| message.id);
+        let newest_incoming = incoming.split_off(
+            incoming
+                .len()
+                .saturating_sub(MAXIMUM_CACHED_MESSAGES_PER_CHANNEL),
+        );
+        // On equal ids the incoming copy (listed first) wins, so edits replace cached versions.
+        let mut merged: Vec<Message> = newest_incoming
+            .into_iter()
+            .chain(std::mem::take(messages))
+            .collect();
+        merged.sort_by_key(|message| message.id);
+        merged.dedup_by_key(|message| message.id);
+        let excess = merged
+            .len()
+            .saturating_sub(MAXIMUM_CACHED_MESSAGES_PER_CHANNEL);
+        merged.drain(..excess);
+        *messages = merged;
         StateChange::Messages { channel_id }
     }
 
@@ -397,6 +430,13 @@ mod tests {
         edited.content = "edited".into();
         state.apply_event(GatewayEvent::MessageUpdate(edited), NOW);
         assert_eq!(state.messages(GENERAL)[0].content, "edited");
+        let mut not_cached = message(3, OTHER);
+        not_cached.channel_id = Snowflake::from_raw(999);
+        assert_eq!(
+            state.apply_event(GatewayEvent::MessageUpdate(not_cached), NOW),
+            StateChange::Nothing
+        );
+        assert!(!state.has_unread(Snowflake::from_raw(999)));
         state.apply_event(
             GatewayEvent::MessageDelete {
                 guild_id: GUILD,

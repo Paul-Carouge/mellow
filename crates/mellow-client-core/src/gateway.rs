@@ -8,10 +8,12 @@ use mellow_protocol::{ClientFrame, GatewayEvent, Ready, ServerFrame};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, timeout};
 use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use url::Url;
 use zeroize::Zeroizing;
 
 use crate::instance::InstanceAddress;
+use crate::rest::RestClient;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The server sends `Hello` right away and answers `Identify` within its own 10 s limit.
@@ -21,6 +23,9 @@ const MAXIMUM_RECONNECT_DELAY: Duration = Duration::from_secs(60);
 /// Below the server's 45 s deadline, whatever interval it announces.
 const MAXIMUM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const MINIMUM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+/// A `Ready` for hundreds of guilds stays well below this; it bounds what a hostile instance can
+/// make the client buffer (tungstenite's default is 64 MiB).
+const MAXIMUM_GATEWAY_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 
 /// What the gateway reports to the app, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,11 +75,20 @@ pub async fn run_gateway(
     let mut resume_point = None;
     let mut consecutive_failures: u32 = 0;
     loop {
+        // Noticed even while every connection fails and nothing is sent.
+        if updates.is_closed() {
+            return;
+        }
         match run_connection(&url, &token, &mut resume_point, &updates).await {
             ConnectionEnd::UpdatesClosed => return,
-            ConnectionEnd::IdentifyRefused => {
+            ConnectionEnd::IdentifyRefused if is_token_refused(&instance, &token).await => {
                 let _ = updates.send(GatewayUpdate::SignedOut).await;
                 return;
+            }
+            // Refused for another reason (session cap, transient server error): retry later.
+            ConnectionEnd::IdentifyRefused => {
+                tokio::time::sleep(reconnect_delay(consecutive_failures, random_u64())).await;
+                consecutive_failures = consecutive_failures.saturating_add(1);
             }
             ConnectionEnd::Lost { was_connected } => {
                 if was_connected {
@@ -88,6 +102,18 @@ pub async fn run_gateway(
             }
         }
     }
+}
+
+/// The gateway refuses an identify the same way for a bad token and for a full session cap or a
+/// server error; only the REST API says which.
+async fn is_token_refused(instance: &InstanceAddress, token: &Zeroizing<String>) -> bool {
+    let Ok(mut rest) = RestClient::new(instance.clone()) else {
+        return false;
+    };
+    rest.set_token(token.clone());
+    rest.current_user()
+        .await
+        .is_err_and(|error| error.needs_new_login())
 }
 
 /// Exponential backoff with full jitter, so clients dropped together do not reconnect together.
@@ -108,6 +134,22 @@ fn random_u64() -> u64 {
         .finish()
 }
 
+async fn connect(
+    url: &Url,
+) -> Option<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+> {
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(MAXIMUM_GATEWAY_MESSAGE_BYTES))
+        .max_frame_size(Some(MAXIMUM_GATEWAY_MESSAGE_BYTES));
+    let connecting =
+        tokio_tungstenite::connect_async_with_config(url.as_str(), Some(config), false);
+    match timeout(CONNECT_TIMEOUT, connecting).await {
+        Ok(Ok((socket, _))) => Some(socket),
+        _ => None,
+    }
+}
+
 async fn run_connection(
     url: &Url,
     token: &Zeroizing<String>,
@@ -117,12 +159,7 @@ async fn run_connection(
     let lost = ConnectionEnd::Lost {
         was_connected: false,
     };
-    let Ok(Ok((socket, _))) = timeout(
-        CONNECT_TIMEOUT,
-        tokio_tungstenite::connect_async(url.as_str()),
-    )
-    .await
-    else {
+    let Some(socket) = connect(url).await else {
         return lost;
     };
     let (mut sink, mut stream) = socket.split();
@@ -225,7 +262,14 @@ where
         match stream.next().await? {
             Ok(WebSocketMessage::Text(text)) => match serde_json::from_str(&text) {
                 Ok(frame) => return Some(frame),
-                Err(error) => tracing::warn!(%error, "skipping an unknown gateway frame"),
+                // Never the error text itself: serde quotes the offending value, which may be
+                // message content.
+                Err(error) => tracing::warn!(
+                    category = ?error.classify(),
+                    line = error.line(),
+                    column = error.column(),
+                    "skipping an unknown gateway frame"
+                ),
             },
             Ok(WebSocketMessage::Close(_)) | Err(_) => return None,
             Ok(_) => {}
@@ -246,7 +290,186 @@ where
 
 #[cfg(test)]
 mod tests {
+    use mellow_protocol::{CurrentUser, Hello, Snowflake};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::WebSocketStream;
+
     use super::*;
+
+    const STEP_TIMEOUT: Duration = Duration::from_secs(10);
+
+    type ServerSocket = WebSocketStream<tokio::net::TcpStream>;
+
+    /// A scripted gateway: each test drives the server side frame by frame.
+    async fn scripted_gateway() -> (
+        TcpListener,
+        mpsc::Receiver<GatewayUpdate>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let instance = InstanceAddress::parse(&format!("http://{address}")).unwrap();
+        let (sender, updates) = mpsc::channel(16);
+        let client = tokio::spawn(run_gateway(
+            instance,
+            Zeroizing::new("mlw_t".into()),
+            sender,
+        ));
+        (listener, updates, client)
+    }
+
+    /// Accepts the next connection and sends `Hello` with the shortest heartbeat the client allows.
+    async fn accept(listener: &TcpListener) -> ServerSocket {
+        let (stream, _) = timeout(STEP_TIMEOUT, listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let hello = ServerFrame::Hello {
+            d: Hello {
+                heartbeat_interval_milliseconds: 1_000,
+            },
+        };
+        send(&mut socket, &hello).await;
+        socket
+    }
+
+    async fn send(socket: &mut ServerSocket, frame: &ServerFrame) {
+        let text = serde_json::to_string(frame).unwrap();
+        socket.send(WebSocketMessage::text(text)).await.unwrap();
+    }
+
+    async fn receive(socket: &mut ServerSocket) -> ClientFrame {
+        loop {
+            let message = timeout(STEP_TIMEOUT, socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if let WebSocketMessage::Text(text) = message {
+                return serde_json::from_str(&text).unwrap();
+            }
+        }
+    }
+
+    fn ready(session_id: &str) -> ServerFrame {
+        ServerFrame::Ready {
+            d: Box::new(Ready {
+                session_id: session_id.into(),
+                user: CurrentUser {
+                    id: Snowflake::from_raw(1),
+                    username: "aurore".into(),
+                    display_name: "Aurore".into(),
+                    email: "aurore@example.org".into(),
+                    is_instance_administrator: false,
+                },
+                guilds: Vec::new(),
+                read_states: Vec::new(),
+                online_user_ids: Vec::new(),
+            }),
+        }
+    }
+
+    async fn next_update(updates: &mut mpsc::Receiver<GatewayUpdate>) -> GatewayUpdate {
+        timeout(STEP_TIMEOUT, updates.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn resumes_from_the_last_sequence_and_identifies_again_when_refused() {
+        let (listener, mut updates, client) = scripted_gateway().await;
+
+        let mut first = accept(&listener).await;
+        assert!(matches!(
+            receive(&mut first).await,
+            ClientFrame::Identify { .. }
+        ));
+        send(&mut first, &ready("session-1")).await;
+        let typing = GatewayEvent::TypingStart {
+            guild_id: Snowflake::from_raw(5),
+            channel_id: Snowflake::from_raw(6),
+            user_id: Snowflake::from_raw(7),
+        };
+        send(
+            &mut first,
+            &ServerFrame::Dispatch {
+                sequence: 5,
+                event: typing.clone(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            next_update(&mut updates).await,
+            GatewayUpdate::Ready(_)
+        ));
+        assert_eq!(
+            next_update(&mut updates).await,
+            GatewayUpdate::Event(typing)
+        );
+        drop(first);
+        assert_eq!(next_update(&mut updates).await, GatewayUpdate::Disconnected);
+
+        let mut second = accept(&listener).await;
+        match receive(&mut second).await {
+            ClientFrame::Resume {
+                session_id,
+                last_sequence,
+                ..
+            } => {
+                assert_eq!((session_id.as_str(), last_sequence), ("session-1", 5));
+            }
+            other => panic!("expected a resume, got {other:?}"),
+        }
+        send(&mut second, &ServerFrame::InvalidSession).await;
+
+        // A refused resume is not a sign-out: the client identifies on a new connection.
+        let mut third = accept(&listener).await;
+        assert!(matches!(
+            receive(&mut third).await,
+            ClientFrame::Identify { .. }
+        ));
+        send(&mut third, &ready("session-2")).await;
+        assert!(matches!(
+            next_update(&mut updates).await,
+            GatewayUpdate::Ready(_)
+        ));
+        client.abort();
+    }
+
+    #[tokio::test]
+    async fn an_unacknowledged_heartbeat_makes_the_client_reconnect() {
+        let (listener, mut updates, client) = scripted_gateway().await;
+        let mut silent = accept(&listener).await;
+        assert!(matches!(
+            receive(&mut silent).await,
+            ClientFrame::Identify { .. }
+        ));
+        send(&mut silent, &ready("session-1")).await;
+        assert!(matches!(
+            next_update(&mut updates).await,
+            GatewayUpdate::Ready(_)
+        ));
+        assert_eq!(receive(&mut silent).await, ClientFrame::Heartbeat);
+
+        // No ack: at the next beat the client drops this socket and resumes elsewhere.
+        assert_eq!(next_update(&mut updates).await, GatewayUpdate::Disconnected);
+        let mut next = accept(&listener).await;
+        assert!(matches!(
+            receive(&mut next).await,
+            ClientFrame::Resume { .. }
+        ));
+        client.abort();
+    }
+
+    #[tokio::test]
+    async fn the_task_ends_when_nobody_listens() {
+        let (listener, updates, client) = scripted_gateway().await;
+        drop(updates);
+        drop(listener);
+        timeout(STEP_TIMEOUT, client).await.unwrap().unwrap();
+    }
 
     #[test]
     fn reconnect_delays_grow_with_jitter_and_stay_capped() {

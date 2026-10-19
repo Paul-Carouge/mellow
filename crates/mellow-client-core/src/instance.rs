@@ -25,12 +25,10 @@ impl InstanceAddress {
             format!("https://{text}")
         };
         let mut base = Url::parse(&with_scheme).map_err(|_| invalid("not a valid address"))?;
-        let is_loopback = match base.host() {
-            Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
-            Some(Host::Ipv4(address)) => address.is_loopback(),
-            Some(Host::Ipv6(address)) => address.is_loopback(),
-            None => return Err(invalid("missing host")),
-        };
+        if base.host().is_none() {
+            return Err(invalid("missing host"));
+        }
+        let is_loopback = is_loopback_host(&base);
         match base.scheme() {
             "https" => {}
             "http" if is_loopback => {}
@@ -75,6 +73,12 @@ impl InstanceAddress {
         Ok(url)
     }
 
+    /// True for `localhost` and loopback IPs, the only hosts allowed over plain http.
+    #[must_use]
+    pub fn is_loopback(&self) -> bool {
+        is_loopback_host(&self.base)
+    }
+
     /// The host name shown to people, e.g. `chat.example.org`.
     #[must_use]
     pub fn host(&self) -> &str {
@@ -84,6 +88,15 @@ impl InstanceAddress {
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.base.as_str()
+    }
+}
+
+fn is_loopback_host(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
     }
 }
 
