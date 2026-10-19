@@ -13,7 +13,9 @@ const DATABASE_KEY_LENGTH_BYTES: usize = 32;
 /// `SQLITE_NOTADB`: what SQLCipher reports when the key does not decrypt the file.
 const SQLITE_NOT_A_DATABASE_ERROR_CODE: &str = "26";
 
-/// The 256-bit SQLCipher key. Never printed, never logged.
+/// The 256-bit SQLCipher key. Never printed, never logged, wiped from memory when dropped.
+/// sqlx keeps its own copy of the pragma string for reconnections while the pool lives (ADR-0006).
+#[derive(zeroize::ZeroizeOnDrop)]
 pub struct DatabaseKey([u8; DATABASE_KEY_LENGTH_BYTES]);
 
 impl DatabaseKey {
@@ -23,15 +25,16 @@ impl DatabaseKey {
     }
 
     /// SQLCipher raw-key syntax, which skips its slow passphrase derivation since the key is already random.
-    fn to_sqlcipher_pragma_value(&self) -> String {
+    pub(crate) fn to_sqlcipher_pragma_value(&self) -> String {
         // A nibble is always below 16, so `from_digit` never drops one.
-        let key_hex: String = self
-            .0
-            .iter()
-            .flat_map(|byte| [byte >> 4, byte & 0x0F])
-            .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
-            .collect();
-        format!("\"x'{key_hex}'\"")
+        let key_hex: zeroize::Zeroizing<String> = zeroize::Zeroizing::new(
+            self.0
+                .iter()
+                .flat_map(|byte| [byte >> 4, byte & 0x0F])
+                .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
+                .collect(),
+        );
+        format!("\"x'{}'\"", key_hex.as_str())
     }
 }
 

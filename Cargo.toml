@@ -17,18 +17,26 @@ publish = false
 
 [workspace.dependencies]
 anyhow = "1.0.104"
+axum = "0.8.9"
+clap = { version = "4.6.7", features = ["derive"] }
+getrandom = "0.4.3"
+hkdf = "0.13.0"
 mellow-protocol = { path = "crates/mellow-protocol" }
 bitflags = "2.13.2"
 # Pulled in only to switch the SQLite bundled by sqlx to SQLCipher (ADR-0006). Must stay within the range sqlx-sqlite accepts (>=0.30.1, <0.38).
 libsqlite3-sys = { version = "0.37", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite-bundled"] }
+sha2 = "0.11.1"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite-bundled", "macros", "migrate"] }
 tempfile = "3.27.0"
 tracing = "0.1.44"
+zeroize = { version = "1.9.1", features = ["zeroize_derive"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 thiserror = "2.0.21"
-tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "net", "signal"] }
+toml = "1.1.8"
+tower = { version = "0.5.3", features = ["util"] }
 
 [workspace.lints.rust]
 # deny, not forbid: Slint-generated code needs a local `allow(unsafe_code)`.

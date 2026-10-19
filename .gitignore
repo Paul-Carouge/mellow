@@ -1,7 +1,7 @@
 /target/
 **/*.rs.bk
 .DS_Store
-/dev/data/
+/dev/
 *.key
 .env*
 
