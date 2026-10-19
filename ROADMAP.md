@@ -9,7 +9,7 @@ Each milestone ends with something usable end to end. Scope changes are made her
 - Spikes: sqlx + SQLCipher on all targets (ADR-0006, done on macOS, CI covers Linux and Windows), Slint message list with rich text and selection (ADR-0010, done: no blocker, see results), UniFFI async + callbacks on Android (ADR-0011).
 
 ## M1 — Text chat, single instance, desktop
-- `mellow-server init / serve`, config, SQLite storage, migrations, built-in TLS (ACME).
+- `mellow-server init / serve`, config, SQLite storage, migrations (done in M1.1: encrypted database, master key, pre-migration backups, health route, graceful shutdown); built-in TLS (ACME) still to do.
 - Accounts (register, login, sessions, logout per device), registration modes.
 - Guilds, categories, text channels, invites.
 - Messages: send, edit, delete, replies, history pagination, read states.

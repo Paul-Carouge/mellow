@@ -103,7 +103,7 @@ The server is one crate split into modules with a strict direction of dependency
 | `admin` | Admin web UI: server-rendered templates + htmx, embedded assets | duplicate domain logic |
 | `domain` | Use cases (send message, create channel, assign role…), permission checks, invariants | know about HTTP, WebSocket or SQL |
 | `storage` | Repositories over SQLite (sqlx), migrations, attachment files | make permission decisions |
-| `cli` | `serve`, `init`, `update`, `backup`, `admin` subcommands | — |
+| `commands` | `serve`, `init`, `update`, `backup`, `admin` subcommands (parsed by `main.rs`) | — |
 | `config` | Load and validate `mellow.toml` and environment overrides | — |
 
 The domain talks to storage through traits defined in `domain`, so domain tests run against an in-memory SQLite database without the network stack.
