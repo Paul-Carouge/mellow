@@ -7,6 +7,8 @@ import { ChannelSidebar, ChannelListRow } from "components/channel_sidebar.slint
 import { ChatPane, MessageRow } from "components/chat_pane.slint";
 import { MemberList, MemberListRow } from "components/member_list.slint";
 import { PresenceStatus } from "components/primitives.slint";
+import { LoginScreen } from "components/login_screen.slint";
+import { ConnectionBanner } from "components/connection_banner.slint";
 
 export { ServerItem, ChannelListRow, MessageRow, MemberListRow, PresenceStatus, MellowTheme }
 
@@ -21,6 +23,7 @@ export component AppWindow inherits Window {
     in-out property <int> selected-server-index;
     in property <string> server-name;
     in property <[ChannelListRow]> channel-rows;
+    in property <string> selected-channel-id;
     in property <string> selected-channel-name;
     in property <string> selected-channel-topic;
     in property <[MessageRow]> messages;
@@ -31,6 +34,17 @@ export component AppWindow inherits Window {
     in-out property <string> composer-text;
     in-out property <bool> is-text-selection-mode;
     in-out property <bool> is-member-list-visible: true;
+    in property <bool> is-signed-in;
+    // Empty hides the banner.
+    in property <string> connection-notice;
+    in-out property <string> login-instance-address;
+    in-out property <string> login-login;
+    in-out property <string> login-username;
+    in-out property <string> login-email;
+    in-out property <string> login-password;
+    in-out property <bool> login-is-registering;
+    in property <bool> login-is-busy;
+    in property <string> login-error-message;
 
     // Set from `changed width` rather than bound to `width`: a binding would make the layout depend
     // on itself (the panes' presence changes the window's minimum width).
@@ -47,6 +61,8 @@ export component AppWindow inherits Window {
     callback send-message(string);
     callback link-clicked(string);
     callback copy-message-text(int);
+    callback sign-in();
+    callback register();
 
     public function scroll-to-latest-message() {
         chat.scroll-to-latest-message();
@@ -66,11 +82,22 @@ export component AppWindow inherits Window {
     forward-focus: key-handler;
     // Typing goes to the composer on launch, as on Discord.
     init => {
-        chat.focus-composer();
+        if root.is-signed-in {
+            chat.focus-composer();
+        }
+    }
+    // The shell exists from the start (hidden), so its init focus has to be redone once it shows.
+    changed is-signed-in => {
+        if root.is-signed-in {
+            chat.focus-composer();
+        }
     }
 
     // Key events bubble up from the focused child to this scope, so shortcuts work anywhere.
     key-handler := FocusScope {
+        // Hidden rather than removed while signed out, so `chat` stays addressable; hidden items
+        // are skipped by Tab and left out of the accessibility tree.
+        visible: root.is-signed-in;
         key-pressed(event) => {
             if event.text == Key.F2 {
                 root.is-text-selection-mode = !root.is-text-selection-mode;
@@ -79,6 +106,10 @@ export component AppWindow inherits Window {
             reject
         }
 
+        VerticalLayout {
+        ConnectionBanner {
+            text: root.connection-notice;
+        }
         HorizontalLayout {
             // shortcut: below 792 px the rail and sidebar are hidden; the drawer (DESIGN.md §4.2) comes later.
             if root.is-wide-enough-for-sidebar: ServerRail {
@@ -89,7 +120,7 @@ export component AppWindow inherits Window {
             if root.is-wide-enough-for-sidebar: ChannelSidebar {
                 server-name: root.server-name;
                 rows: root.channel-rows;
-                selected-channel-name: root.selected-channel-name;
+                selected-channel-id: root.selected-channel-id;
                 current-user-name: root.current-user-name;
                 current-user-initial: root.current-user-initial;
                 toggle-category(index) => { root.toggle-category(index); }
@@ -113,5 +144,21 @@ export component AppWindow inherits Window {
                 rows: root.member-rows;
             }
         }
+        }
+    }
+
+    if !root.is-signed-in: LoginScreen {
+        width: root.width;
+        height: root.height;
+        instance-address <=> root.login-instance-address;
+        login <=> root.login-login;
+        username <=> root.login-username;
+        email <=> root.login-email;
+        password <=> root.login-password;
+        is-registering <=> root.login-is-registering;
+        is-busy: root.login-is-busy;
+        error-message: root.login-error-message;
+        sign-in => { root.sign-in(); }
+        register => { root.register(); }
     }
 }

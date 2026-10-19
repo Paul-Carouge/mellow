@@ -3,6 +3,8 @@
 use std::collections::BTreeSet;
 
 use crate::fake_workspace::{FakeCategory, FakePresence, FakeRoleGroup, FakeServer};
+use slint::SharedString;
+
 use crate::generated_ui::{ChannelListRow, MemberListRow, PresenceStatus, ServerItem};
 
 const MAXIMUM_SERVER_INITIALS: usize = 3;
@@ -44,6 +46,7 @@ pub fn channel_rows(
         .flat_map(|(category_index, category)| {
             let is_collapsed = collapsed_category_indexes.contains(&category_index);
             let header = ChannelListRow {
+                id: SharedString::default(),
                 is_category: true,
                 is_collapsed,
                 category_index: saturating_int(category_index),
@@ -61,6 +64,8 @@ pub fn channel_rows(
                         || channel.name == selected_channel_name
                 })
                 .map(move |channel| ChannelListRow {
+                    // Demo channel names are unique, so they double as ids.
+                    id: channel.name.into(),
                     is_category: false,
                     is_collapsed: false,
                     category_index: saturating_int(category_index),
@@ -112,7 +117,7 @@ fn presence_status(presence: FakePresence) -> PresenceStatus {
 }
 
 /// Slint models use `i32`; counts beyond it are displayed as the maximum ("99+" anyway).
-fn saturating_int(count: impl TryInto<i32>) -> i32 {
+pub fn saturating_int(count: impl TryInto<i32>) -> i32 {
     count.try_into().unwrap_or(i32::MAX)
 }
 

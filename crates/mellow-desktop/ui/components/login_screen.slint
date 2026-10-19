@@ -1,0 +1,406 @@
+import { ScrollView } from "std-widgets.slint";
+import { MellowComponent, MellowSpace, MellowType } from "../tokens.slint";
+
+// Which field should take keyboard focus: the first one the person still has to fill.
+enum LoginField { none, instance-address, login, email, username, password }
+
+// Outlined form field with an uppercase label above it (DESIGN.md §6.3).
+component AuthTextField inherits Rectangle {
+    // Sentence case: what screen readers announce.
+    in property <string> label;
+    // Uppercased copy of `label`: Slint has no text-transform (DESIGN.md §2.4).
+    in property <string> display-label;
+    in property <string> placeholder;
+    in property <string> helper;
+    in property <bool> is-password;
+    in property <bool> wants-focus;
+    // Bumped by the screen to move focus again, e.g. to the emptied password after an error.
+    in property <int> focus-request;
+    in-out property <string> text;
+    callback accepted();
+
+    property <bool> is-password-revealed;
+
+    // Fields are created per mode, so this also runs when the card switches to the other mode.
+    init => {
+        if wants-focus {
+            input.focus();
+        }
+    }
+    changed focus-request => {
+        if wants-focus {
+            input.focus();
+        }
+    }
+
+    VerticalLayout {
+        spacing: MellowComponent.text-field-label-gap;
+        Text {
+            text: root.display-label;
+            color: MellowComponent.text-field-label-text;
+            font-size: MellowType.category.font-size;
+            font-weight: MellowType.category.font-weight;
+            letter-spacing: MellowType.category.letter-spacing;
+            accessible-role: none;
+        }
+        Rectangle {
+            height: MellowComponent.text-field-height;
+            border-radius: MellowComponent.text-field-radius;
+            background: MellowComponent.text-field-background;
+            border-width: input.has-focus ? MellowComponent.focus-ring-width : MellowComponent.text-field-border-width;
+            border-color: input.has-focus ? MellowComponent.focus-ring-color : MellowComponent.text-field-border;
+
+            // The whole outlined box is the target, not only the line of text inside it.
+            TouchArea {
+                mouse-cursor: MouseCursor.text;
+                clicked => { input.focus(); }
+            }
+            HorizontalLayout {
+                padding-left: MellowComponent.text-field-padding-inline;
+                padding-right: root.is-password ? 0px : MellowComponent.text-field-padding-inline;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    if input.text == "": Text {
+                        x: 0;
+                        text: root.placeholder;
+                        color: MellowComponent.text-field-placeholder;
+                        font-size: MellowType.body-lg.font-size;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                    input := TextInput {
+                        text <=> root.text;
+                        single-line: true;
+                        input-type: root.is-password && !root.is-password-revealed ? InputType.password : InputType.text;
+                        color: MellowComponent.text-field-text;
+                        font-size: MellowType.body-lg.font-size;
+                        vertical-alignment: center;
+                        accessible-label: root.label;
+                        accessible-description: root.helper;
+                        accessible-placeholder-text: root.placeholder;
+                        accepted => { root.accepted(); }
+                    }
+                }
+                if root.is-password: reveal := Rectangle {
+                    // Square, full field height, so the toggle meets the 44 px target.
+                    width: MellowComponent.text-field-height;
+                    accessible-role: button;
+                    accessible-label: "Show password";
+                    accessible-checkable: true;
+                    accessible-checked: root.is-password-revealed;
+                    accessible-action-default => { root.is-password-revealed = !root.is-password-revealed; }
+
+                    reveal-focus := FocusScope {
+                        key-pressed(event) => {
+                            if event.text == " " || event.text == "\n" {
+                                root.is-password-revealed = !root.is-password-revealed;
+                                return accept;
+                            }
+                            reject
+                        }
+                    }
+                    reveal-touch := TouchArea {
+                        clicked => { root.is-password-revealed = !root.is-password-revealed; }
+                    }
+                    Image {
+                        // The icon shows the state the click leads to, as most password fields do.
+                        source: root.is-password-revealed ? @image-url("../../icons/eye-slash.svg") : @image-url("../../icons/eye.svg");
+                        colorize: reveal-touch.has-hover || reveal-focus.has-focus ? MellowComponent.text-field-icon-hover : MellowComponent.text-field-icon;
+                        width: MellowComponent.text-field-icon-size;
+                        height: self.width;
+                        accessible-role: none;
+                    }
+                    if reveal-focus.has-focus: Rectangle {
+                        border-width: MellowComponent.focus-ring-width;
+                        border-color: MellowComponent.focus-ring-color;
+                        border-radius: MellowComponent.text-field-radius;
+                    }
+                }
+            }
+        }
+        if root.helper != "": VerticalLayout {
+            padding-top: MellowComponent.text-field-helper-gap - MellowComponent.text-field-label-gap;
+            Text {
+                text: root.helper;
+                color: MellowComponent.text-field-helper-text;
+                font-size: MellowType.body-sm.font-size;
+                wrap: word-wrap;
+                // Already announced as the field's description.
+                accessible-role: none;
+            }
+        }
+    }
+}
+
+// Discord-style authentication card (DESIGN.md §5.1): sign in or register on a Mellow instance.
+export component LoginScreen inherits Rectangle {
+    in-out property <string> instance-address;
+    in-out property <string> login;
+    in-out property <string> username;
+    in-out property <string> email;
+    in-out property <string> password;
+    in-out property <bool> is-registering;
+    in property <bool> is-busy;
+    in property <string> error-message;
+    callback sign-in();
+    callback register();
+
+    property <LoginField> first-empty-field: instance-address == "" ? LoginField.instance-address
+        : is-registering ? (email == "" ? LoginField.email : username == "" ? LoginField.username
+            : password == "" ? LoginField.password : LoginField.none)
+        : login == "" ? LoginField.login : password == "" ? LoginField.password : LoginField.none;
+    property <int> focus-request-count;
+    property <length> card-margin: MellowComponent.auth-card-margin;
+
+    // A failed attempt clears the password: send the person back to the first field to fix.
+    changed error-message => {
+        if error-message != "" {
+            focus-request-count += 1;
+        }
+    }
+
+    function submit() {
+        if is-busy {
+            return;
+        }
+        if is-registering {
+            register();
+        } else {
+            sign-in();
+        }
+    }
+
+    background: MellowComponent.auth-card-backdrop;
+
+    scroll := ScrollView {
+        content-width: self.visible-width;
+        // Centred when it fits; scrolls on short windows and at large zoom instead of clipping.
+        content-height: max(self.visible-height, card.preferred-height + 2 * root.card-margin);
+
+        card := Rectangle {
+            width: min(MellowComponent.auth-card-max-width, scroll.visible-width - 2 * root.card-margin);
+            height: self.preferred-height;
+            x: (scroll.visible-width - self.width) / 2;
+            y: (scroll.content-height - self.height) / 2;
+            border-radius: MellowComponent.auth-card-radius;
+            background: MellowComponent.auth-card-background;
+
+            VerticalLayout {
+                padding: MellowComponent.auth-card-padding;
+                spacing: MellowComponent.auth-card-section-gap;
+
+                VerticalLayout {
+                    spacing: MellowComponent.auth-card-subtitle-gap;
+                    Text {
+                        text: root.is-registering ? "Create an account" : "Welcome back!";
+                        color: MellowComponent.auth-card-title-text;
+                        font-size: MellowType.heading-xl.font-size;
+                        font-weight: MellowType.heading-xl.font-weight;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                        accessible-role: text;
+                    }
+                    Text {
+                        text: root.is-registering
+                            ? "Your account will live on the Mellow instance you choose."
+                            : "Sign in to the Mellow instance your account lives on.";
+                        color: MellowComponent.auth-card-subtitle-text;
+                        font-size: MellowType.body-lg.font-size;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                        accessible-role: text;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: MellowComponent.text-field-field-gap;
+                    AuthTextField {
+                        label: "Instance address";
+                        display-label: "INSTANCE ADDRESS";
+                        placeholder: "chat.example.org";
+                        text <=> root.instance-address;
+                        wants-focus: root.first-empty-field == LoginField.instance-address;
+                        focus-request: root.focus-request-count;
+                        accepted => { root.submit(); }
+                    }
+                    if !root.is-registering: AuthTextField {
+                        label: "Username or email";
+                        display-label: "USERNAME OR EMAIL";
+                        text <=> root.login;
+                        wants-focus: root.first-empty-field == LoginField.login;
+                        focus-request: root.focus-request-count;
+                        accepted => { root.submit(); }
+                    }
+                    if root.is-registering: AuthTextField {
+                        label: "Email";
+                        display-label: "EMAIL";
+                        text <=> root.email;
+                        wants-focus: root.first-empty-field == LoginField.email;
+                        focus-request: root.focus-request-count;
+                        accepted => { root.submit(); }
+                    }
+                    if root.is-registering: AuthTextField {
+                        label: "Username";
+                        display-label: "USERNAME";
+                        // Mirrors the server's rule (mellow-server domain/account_rules.rs).
+                        helper: "2 to 32 characters: lowercase letters, digits, dots and underscores.";
+                        text <=> root.username;
+                        wants-focus: root.first-empty-field == LoginField.username;
+                        focus-request: root.focus-request-count;
+                        accepted => { root.submit(); }
+                    }
+                    AuthTextField {
+                        label: "Password";
+                        display-label: "PASSWORD";
+                        is-password: true;
+                        // Requirements up front when creating one (DESIGN.md §5.1); same server rule.
+                        helper: root.is-registering ? "At least 10 characters." : "";
+                        text <=> root.password;
+                        wants-focus: root.first-empty-field == LoginField.password;
+                        focus-request: root.focus-request-count;
+                        accepted => { root.submit(); }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: MellowSpace.xs;
+
+                    // Icon plus sentence, so the error never relies on the danger colour alone.
+                    if root.error-message != "": HorizontalLayout {
+                        spacing: MellowSpace.xs;
+                        VerticalLayout {
+                            alignment: start;
+                            Image {
+                                source: @image-url("../../icons/warning-circle.svg");
+                                colorize: MellowComponent.auth-card-error-text;
+                                width: MellowComponent.auth-card-error-icon-size;
+                                height: self.width;
+                                accessible-role: none;
+                            }
+                        }
+                        Text {
+                            text: root.error-message;
+                            color: MellowComponent.auth-card-error-text;
+                            font-size: MellowType.body.font-size;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                            // Announced through the live region below instead.
+                            accessible-role: none;
+                        }
+                    }
+
+                    submit-button := Rectangle {
+                        height: MellowComponent.button-height-large;
+                        border-radius: MellowComponent.button-radius;
+                        background: root.is-busy ? MellowComponent.button-primary-background
+                            : submit-touch.pressed ? MellowComponent.button-primary-background-pressed
+                            : submit-touch.has-hover ? MellowComponent.button-primary-background-hover
+                            : MellowComponent.button-primary-background;
+                        accessible-role: button;
+                        accessible-label: submit-label.text;
+                        accessible-enabled: !root.is-busy;
+                        accessible-action-default => { root.submit(); }
+
+                        submit-focus := FocusScope {
+                            key-pressed(event) => {
+                                if event.text == " " || event.text == "\n" {
+                                    root.submit();
+                                    return accept;
+                                }
+                                reject
+                            }
+                        }
+                        submit-touch := TouchArea {
+                            mouse-cursor: root.is-busy ? MouseCursor.default : MouseCursor.pointer;
+                            clicked => { root.submit(); }
+                        }
+                        // The label says what is happening while busy (DESIGN.md §6.1, loading state).
+                        submit-label := Text {
+                            text: root.is-registering
+                                ? (root.is-busy ? "Creating account…" : "Create account")
+                                : (root.is-busy ? "Signing in…" : "Sign in");
+                            color: MellowComponent.button-primary-text;
+                            font-size: MellowType.button.font-size;
+                            font-weight: MellowType.button.font-weight;
+                            accessible-role: none;
+                        }
+                        // Outset ring with a gap, so it stays visible against the apricot fill.
+                        if submit-focus.has-focus: Rectangle {
+                            x: -(MellowComponent.focus-ring-offset + MellowComponent.focus-ring-width);
+                            y: self.x;
+                            width: parent.width - 2 * self.x;
+                            height: parent.height - 2 * self.y;
+                            border-width: MellowComponent.focus-ring-width;
+                            border-color: MellowComponent.focus-ring-color;
+                            border-radius: MellowComponent.button-radius - self.x;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: MellowSpace.space-2xs;
+                        Text {
+                            text: root.is-registering ? "Already have an account?" : "Need an account?";
+                            color: MellowComponent.auth-card-hint-text;
+                            font-size: MellowType.body.font-size;
+                            vertical-alignment: center;
+                            accessible-role: text;
+                        }
+                        switch-link := Rectangle {
+                            // Text-sized link, but a full-height row so the target reaches 44 px.
+                            width: switch-text.preferred-width;
+                            height: MellowComponent.button-height-large;
+                            accessible-role: button;
+                            accessible-label: switch-text.text;
+                            accessible-action-default => { root.is-registering = !root.is-registering; }
+
+                            switch-focus := FocusScope {
+                                key-pressed(event) => {
+                                    if event.text == " " || event.text == "\n" {
+                                        root.is-registering = !root.is-registering;
+                                        return accept;
+                                    }
+                                    reject
+                                }
+                            }
+                            switch-touch := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.is-registering = !root.is-registering; }
+                            }
+                            switch-text := Text {
+                                text: root.is-registering ? "Sign in" : "Register";
+                                color: MellowComponent.auth-card-link-text;
+                                font-size: MellowType.body.font-size;
+                                font-weight: MellowType.button.font-weight;
+                                vertical-alignment: center;
+                                accessible-role: none;
+                            }
+                            // Underline on hover, as links do on Discord.
+                            if switch-touch.has-hover: Rectangle {
+                                y: (parent.height + switch-text.preferred-height) / 2;
+                                height: MellowComponent.auth-card-link-underline-width;
+                                background: MellowComponent.auth-card-link-text;
+                            }
+                            if switch-focus.has-focus: Rectangle {
+                                border-width: MellowComponent.focus-ring-width;
+                                border-color: MellowComponent.focus-ring-color;
+                                border-radius: MellowComponent.button-radius;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Errors are announced once, as soon as they appear; the visible copy above is not read twice.
+            Text {
+                x: 0;
+                y: 0;
+                width: 0px;
+                height: 0px;
+                text: root.error-message;
+                accessible-role: text;
+                accessible-live-region: assertive;
+            }
+        }
+    }
+}

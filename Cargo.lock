@@ -3278,8 +3278,15 @@ name = "mellow-desktop"
 version = "0.0.0"
 dependencies = [
  "arboard",
+ "chrono",
+ "mellow-client-core",
+ "mellow-protocol",
  "slint",
  "slint-build",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]

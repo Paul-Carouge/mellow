@@ -1,0 +1,44 @@
+import { MellowComponent, MellowType } from "../tokens.slint";
+
+// Full-width notice at the top of the shell while the gateway connects or reconnects, like
+// Discord's notice strips (DESIGN.md §6.37). Collapses to zero height when `text` is empty.
+export component ConnectionBanner inherits Rectangle {
+    in property <string> text;
+
+    property <bool> is-shown: text != "";
+
+    // Kept in the tree even when empty: screen readers announce a live region's changes, not
+    // its insertion, so the region must already exist when the notice appears.
+    height: is-shown ? max(MellowComponent.notice-bar-min-height, content.preferred-height) : 0px;
+    background: is-shown ? MellowComponent.notice-bar-warning-background : transparent;
+
+    content := HorizontalLayout {
+        alignment: center;
+        padding-left: MellowComponent.notice-bar-padding-inline;
+        padding-right: MellowComponent.notice-bar-padding-inline;
+        padding-top: MellowComponent.notice-bar-padding-block;
+        padding-bottom: MellowComponent.notice-bar-padding-block;
+        spacing: MellowComponent.notice-bar-icon-gap;
+        // Amber sits next to the apricot accent: the icon says "connection" without relying on colour.
+        if root.is-shown: VerticalLayout {
+            alignment: center;
+            Image {
+                source: @image-url("../../icons/wifi-slash.svg");
+                colorize: MellowComponent.notice-bar-warning-text;
+                width: MellowComponent.notice-bar-icon-size;
+                height: self.width;
+                accessible-role: none;
+            }
+        }
+        Text {
+            text: root.text;
+            color: MellowComponent.notice-bar-warning-text;
+            font-size: MellowType.button.font-size;
+            font-weight: MellowType.button.font-weight;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
+            accessible-live-region: polite;
+        }
+    }
+}

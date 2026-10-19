@@ -4,6 +4,8 @@ import { Avatar, IconButton, MentionBadge, PresenceStatus } from "primitives.sli
 
 // Categories and channels flattened into one list, so ListView can virtualize long servers.
 export struct ChannelListRow {
+    // Channel id (names are not unique within a guild); empty for category headers.
+    id: string,
     is-category: bool,
     is-collapsed: bool,
     category-index: int,
@@ -211,7 +213,7 @@ component UserPanel inherits Rectangle {
 export component ChannelSidebar inherits Rectangle {
     in property <string> server-name;
     in property <[ChannelListRow]> rows;
-    in property <string> selected-channel-name;
+    in property <string> selected-channel-id;
     in property <string> current-user-name;
     in property <string> current-user-initial;
     callback toggle-category(int);
@@ -257,8 +259,8 @@ export component ChannelSidebar inherits Rectangle {
                     name: row.name;
                     has-unread: row.has-unread;
                     mention-count: row.mention-count;
-                    is-selected: row.name == selected-channel-name;
-                    clicked => { root.select-channel(row.name); }
+                    is-selected: row.id == selected-channel-id;
+                    clicked => { root.select-channel(row.id); }
                 }
             }
         }
