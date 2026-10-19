@@ -6,6 +6,7 @@ This document is the reference for every visual and interaction decision in Mell
 
 ## Changelog
 
+- **2026-10-19, v0.3 — font and icons chosen by the user:** Figtree (bundled, OFL) replaces Noto Sans as the UI and message font, Noto Sans stays as the fallback for other scripts; the icon set is Phosphor (MIT), Fill weight, recoloured from tokens. Sections 2.4 and 2.9 are authoritative where older text below still says Noto Sans.
 - **2026-10-19, v0.2 — direction changed: faithful Discord interface, Mellow brand.** The user asked for an interface that is "really like Discord" and chose a faithful clone with Mellow's own brand ([ADR-0012](docs/adr/0012-clone-discord-interface-with-own-brand.md)). The previous direction (warm graphite surfaces, two planes, Atkinson Hyperlegible and Fraunces, square server icons, apricot mention badges, a calmer layout) is superseded. Mellow now copies Discord's layout, pane dimensions, density, interaction patterns, keyboard shortcuts and layered cool-grey dark theme, and keeps its own accent (apricot), logo, open-licence font (Noto Sans) and accessibility guarantees. The Slint spike results of [ADR-0010](docs/adr/0010-desktop-ui-with-slint.md) (inline-only rich text, selection within one message only) are reflected in the message list and copy patterns (sections 5.4 and 7.3).
 - **2026-10-19, v0.1 — first draft** (warm, "anti-Discord" identity).
 
@@ -46,7 +47,7 @@ Someone who uses Discord every day must be able to use Mellow without learning a
 
 ### 1.2 Mellow's brand wherever Discord's brand would be
 
-The interface is Discord's; the identity is Mellow's. The rule is mechanical: **every place Discord uses blurple, Mellow uses apricot (`color.accent.fill`), and white text on blurple becomes dark ink on apricot (`color.text.on-accent`)**. The Home button shows the Mellow logo, the font is Noto Sans, the emoji are open-licence artwork.
+The interface is Discord's; the identity is Mellow's. The rule is mechanical: **every place Discord uses blurple, Mellow uses apricot (`color.accent.fill`), and white text on blurple becomes dark ink on apricot (`color.text.on-accent`)**. The Home button shows the Mellow logo, the font is Figtree, the icons are Phosphor, the emoji are open-licence artwork.
 
 - Test: no token, asset or screenshot uses Discord's blurple (`#5865F2`) or any accent with a hue between 215° and 255° in OKLCH; no Discord logo, wordmark, mascot or gg sans/Whitney font file is in the repository.
 - Test: default avatars and empty states use Mellow's own artwork, never a mascot.
@@ -299,7 +300,8 @@ All fonts are bundled with the apps and the admin web UI, so the product looks t
 
 | Family | Licence | Role | Why |
 |---|---|---|---|
-| Noto Sans (variable, `wght`) | SIL OFL 1.1 | All UI and message text | Discord's own font stack lists Noto Sans immediately after its proprietary gg sans, so it is what many Discord users already see for text gg sans does not cover; its humanist proportions, open apertures and x-height sit close to gg sans at Discord's sizes, so Discord's dimensions work unchanged. One family covers Latin, Greek and Cyrillic, and sibling Noto families cover other scripts with matching metrics. |
+| Figtree (variable, `wght`) | SIL OFL 1.1 | All UI and message text | Chosen by the user (v0.3): a geometric, friendly sans close to the feel of Discord's gg sans, very legible at 16 px, 63 KB per style, bundled in the desktop binary. |
+| Noto Sans (variable, `wght`) | SIL OFL 1.1 | Fallback for scripts Figtree lacks (Greek, Cyrillic) | Discord's own font stack lists Noto Sans immediately after its proprietary gg sans, so it is what many Discord users already see for text gg sans does not cover; its humanist proportions, open apertures and x-height sit close to gg sans at Discord's sizes, so Discord's dimensions work unchanged. One family covers Latin, Greek and Cyrillic, and sibling Noto families cover other scripts with matching metrics. |
 | Source Code Pro | SIL OFL 1.1 | Inline code, code blocks, invite codes, IDs in the admin UI | Also part of Discord's code font fallback stack; clear distinction of `0O`, `1lI`. |
 | Twemoji (COLR font build) | CC-BY 4.0 (graphics) | Emoji | The emoji artwork Discord users recognise; open-licence with attribution in About. Noto Color Emoji is the fallback. See section 9. |
 | Noto Sans CJK, Arabic, Hebrew, Devanagari (subsets to decide) | SIL OFL 1.1 | Script fallback | Harmonious metrics with Noto Sans. |
@@ -1217,7 +1219,7 @@ Platform and technical:
 15. **Inline spoilers and underline**: `StyledText` cannot hide a span inside a sentence or render `__underline__`. Decide whether to render spoiler paragraphs as whole hidden blocks (current spec) or to extend the block splitter.
 16. **Composer formatting preview**: Slint's text input does not render inline styles, so the composer shows raw Markdown, as Discord did before its rich composer. Check later Slint versions.
 17. **Slint live regions and screen readers**: no one has listened to the spike with VoiceOver, NVDA or Orca yet; this is required before the message list is considered done. If live regions do not work on a platform, "Announce new messages" is unavailable there.
-18. **Variable fonts in Slint**: confirm that Noto Sans's `wght` axis renders in Slint; otherwise bundle static instances (400, 500, 600, 700, 800). Re-check the clipped accented capital ("É") seen in the spike once the real font is bundled.
+18. **Variable fonts in Slint**: confirm that Figtree's `wght` axis renders in Slint; otherwise bundle static instances (400, 500, 600, 700, 800). Re-check the clipped accented capital ("É") seen in the spike once the real font is bundled.
 19. **Zoom implementation in Slint**: confirm that multiplying length tokens by `zoom` covers every element (including std-widgets used for scrolling), or use the window scale factor if Slint exposes it.
 20. **Jump to message with estimated row heights**: `ListView` estimates variable heights; landing exactly on a target message must be prototyped.
 21. **Reduced-motion detection on Linux desktops** beyond GNOME: find reliable signals or rely on the in-app setting.

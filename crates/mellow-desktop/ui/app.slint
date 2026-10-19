@@ -1,4 +1,7 @@
-import { MellowColor, MellowSize, MellowTheme } from "tokens.slint";
+import { MellowColor, MellowSize, MellowTheme, MellowType } from "tokens.slint";
+// Bundled into the binary so every platform renders the same typeface (DESIGN.md §2.4).
+import "../fonts/Figtree[wght].ttf";
+import "../fonts/Figtree-Italic[wght].ttf";
 import { ServerRail, ServerItem } from "components/server_rail.slint";
 import { ChannelSidebar, ChannelListRow } from "components/channel_sidebar.slint";
 import { ChatPane, MessageRow } from "components/chat_pane.slint";
@@ -58,8 +61,13 @@ export component AppWindow inherits Window {
     min-width: MellowSize.window-min-width;
     min-height: MellowSize.window-min-height;
     background: MellowColor.surface-chat;
+    default-font-family: MellowType.message.font-family;
 
-    forward-focus: chat;
+    forward-focus: key-handler;
+    // Typing goes to the composer on launch, as on Discord.
+    init => {
+        chat.focus-composer();
+    }
 
     // Key events bubble up from the focused child to this scope, so shortcuts work anywhere.
     key-handler := FocusScope {

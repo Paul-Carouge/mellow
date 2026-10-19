@@ -103,7 +103,7 @@ export component MentionBadge inherits Rectangle {
 
 // Icon-sized square button with hover fill, used in the user panel and headers.
 export component IconButton inherits Rectangle {
-    in property <string> glyph;
+    in property <image> icon;
     in property <string> label;
     in property <length> size;
     in property <color> icon-color;
@@ -129,10 +129,13 @@ export component IconButton inherits Rectangle {
     touch := TouchArea {
         clicked => { root.clicked(); }
     }
-    Text {
-        text: glyph;
-        color: icon-color;
-        font-size: size * 0.55;
+    Image {
+        source: icon;
+        colorize: icon-color;
+        // Phosphor icons are drawn on a 256 grid; at 62.5 % of the button they match Discord's 20-in-32.
+        width: size * 0.625;
+        height: self.width;
+        accessible-role: none;
     }
     if focus-scope.has-focus: Rectangle {
         border-width: MellowComponent.focus-ring-width;

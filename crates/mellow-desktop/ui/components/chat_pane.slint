@@ -28,9 +28,8 @@ component HoverActionBar inherits Rectangle {
     background: MellowComponent.action-bar-background;
     hover-area := TouchArea {
         HorizontalLayout {
-            // shortcut: text glyphs stand in for the icon set (still to be chosen and bundled).
             IconButton {
-                glyph: "↩";
+                icon: @image-url("../../icons/arrow-bend-up-left.svg");
                 label: "Reply";
                 size: MellowComponent.action-bar-button-size;
                 icon-color: MellowComponent.action-bar-icon;
@@ -38,7 +37,7 @@ component HoverActionBar inherits Rectangle {
                 clicked => { root.reply(); }
             }
             IconButton {
-                glyph: "⧉";
+                icon: @image-url("../../icons/copy.svg");
                 label: "Copy text";
                 size: MellowComponent.action-bar-button-size;
                 icon-color: MellowComponent.action-bar-icon;
@@ -46,7 +45,7 @@ component HoverActionBar inherits Rectangle {
                 clicked => { root.copy-text(); }
             }
             IconButton {
-                glyph: "⋯";
+                icon: @image-url("../../icons/dots-three.svg");
                 label: "More";
                 size: MellowComponent.action-bar-button-size;
                 icon-color: MellowComponent.action-bar-icon;
@@ -186,8 +185,9 @@ export component ChatPane inherits Rectangle {
 
     background: MellowColor.surface-chat;
     min-width: MellowSize.chat-min-width;
-    // Typing goes to the composer when the chat pane gets focus, as on Discord.
-    forward-focus: composer;
+    public function focus-composer() {
+        composer.focus();
+    }
 
     VerticalLayout {
         Rectangle {
@@ -197,11 +197,15 @@ export component ChatPane inherits Rectangle {
                 padding-left: MellowComponent.chat-header-padding-inline;
                 padding-right: MellowComponent.chat-header-padding-inline;
                 spacing: MellowSpace.xs;
-                Text {
-                    text: "#";
-                    color: MellowComponent.chat-header-icon;
-                    font-size: MellowComponent.chat-header-icon-size;
-                    vertical-alignment: center;
+                VerticalLayout {
+                    alignment: center;
+                    Image {
+                        source: @image-url("../../icons/hash.svg");
+                        colorize: MellowComponent.chat-header-icon;
+                        width: MellowComponent.chat-header-icon-size;
+                        height: self.width;
+                        accessible-role: none;
+                    }
                 }
                 Text {
                     text: channel-name;
@@ -227,7 +231,7 @@ export component ChatPane inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     IconButton {
-                        glyph: "👥";
+                        icon: @image-url("../../icons/users.svg");
                         label: is-member-list-visible ? "Hide member list" : "Show member list";
                         size: MellowComponent.chat-header-button-size;
                         icon-color: is-member-list-visible ? MellowColor.text-heading : MellowComponent.chat-header-icon;
@@ -300,7 +304,7 @@ export component ChatPane inherits Rectangle {
                     VerticalLayout {
                         alignment: center;
                         IconButton {
-                            glyph: "+";
+                            icon: @image-url("../../icons/plus-circle.svg");
                             label: "Upload a file";
                             size: MellowComponent.composer-icon-size;
                             icon-color: MellowComponent.composer-icon;

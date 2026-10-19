@@ -46,12 +46,15 @@ component CategoryHeader inherits Rectangle {
         padding-top: MellowComponent.category-margin-top;
         padding-left: MellowComponent.category-padding-inline;
         spacing: MellowSpace.space-3xs;
-        Text {
-            text: is-collapsed ? "▸" : "▾";
-            width: MellowComponent.category-chevron-size;
-            color: root.text-color;
-            vertical-alignment: center;
-            accessible-role: none;
+        VerticalLayout {
+            alignment: center;
+            Image {
+                source: is-collapsed ? @image-url("../../icons/caret-right.svg") : @image-url("../../icons/caret-down.svg");
+                colorize: root.text-color;
+                width: MellowComponent.category-chevron-size;
+                height: self.width;
+                accessible-role: none;
+            }
         }
         Text {
             text: display-name;
@@ -122,14 +125,15 @@ component ChannelRow inherits Rectangle {
             padding-left: MellowComponent.channel-row-padding-inline;
             padding-right: MellowComponent.channel-row-padding-inline;
             spacing: MellowComponent.channel-row-icon-gap;
-            Text {
-                text: "#";
-                width: MellowComponent.channel-row-icon-size;
-                color: row.text-color;
-                font-size: MellowComponent.channel-row-icon-size;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                accessible-role: none;
+            VerticalLayout {
+                alignment: center;
+                Image {
+                    source: @image-url("../../icons/hash.svg");
+                    colorize: row.text-color;
+                    width: MellowComponent.channel-row-icon-size;
+                    height: self.width;
+                    accessible-role: none;
+                }
             }
             Text {
                 text: name;
@@ -187,11 +191,14 @@ component UserPanel inherits Rectangle {
                 overflow: elide;
             }
         }
-        // shortcut: text glyphs stand in for the icon set (still to be chosen and bundled).
-        for button in [{ glyph: "🎙", label: "Mute" }, { glyph: "🎧", label: "Deafen" }, { glyph: "⚙", label: "User settings" }]: VerticalLayout {
+        for button in [
+            { icon: @image-url("../../icons/microphone.svg"), label: "Mute" },
+            { icon: @image-url("../../icons/headphones.svg"), label: "Deafen" },
+            { icon: @image-url("../../icons/gear-six.svg"), label: "User settings" },
+        ]: VerticalLayout {
             alignment: center;
             IconButton {
-                glyph: button.glyph;
+                icon: button.icon;
                 label: button.label;
                 size: MellowComponent.user-panel-button-size;
                 icon-color: MellowComponent.user-panel-button-icon;

@@ -17,6 +17,9 @@ component RailItem inherits Rectangle {
     in property <bool> has-unread;
     in property <int> mention-count;
     in property <bool> is-home: false;
+    // When set, drawn instead of `initials` (e.g. the "add a server" action).
+    in property <image> icon;
+    in property <bool> has-icon: false;
     callback clicked();
 
     property <bool> is-active: is-selected || touch.has-hover || focus-scope.has-focus;
@@ -46,7 +49,14 @@ component RailItem inherits Rectangle {
         border-radius: is-active ? MellowComponent.rail-icon-radius-active : MellowComponent.rail-icon-radius-rest;
         background: is-active ? MellowComponent.rail-icon-background-active : MellowComponent.rail-icon-background-rest;
         animate border-radius, background { duration: MellowComponent.rail-morph-duration; easing: ease-out; }
-        Text {
+        if has-icon: Image {
+            source: root.icon;
+            colorize: is-active ? MellowComponent.rail-add-icon-hover : MellowComponent.rail-add-icon;
+            width: MellowComponent.rail-item-size / 2;
+            height: self.width;
+            accessible-role: none;
+        }
+        if !has-icon: Text {
             text: initials;
             color: is-active ? MellowComponent.rail-icon-text-active : MellowComponent.rail-icon-text-rest;
             font-size: is-home ? MellowType.heading-lg.font-size : MellowType.body.font-size;
@@ -131,7 +141,8 @@ export component ServerRail inherits Rectangle {
             // shortcut: the "add a server" flow does not exist yet; the button is inert.
             RailItem {
                 label: "Add a server";
-                initials: "+";
+                icon: @image-url("../../icons/plus.svg");
+                has-icon: true;
                 // An action, not a server to switch to.
                 accessible-role: button;
             }

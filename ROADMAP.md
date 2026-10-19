@@ -5,7 +5,7 @@ Each milestone ends with something usable end to end. Scope changes are made her
 ## M0 — Foundations
 - Workspace scaffold, CI (fmt, clippy, tests, cargo deny), lint configuration.
 - Design tokens file and generators (Slint done via `cargo xtask tokens`; Compose theme and admin CSS when those clients start).
-- Discord-like desktop shell with fake data: server rail, channel sidebar, chat, member list, user panel (ADR-0012, done; icons, Noto Sans bundling, drawer and member overlay below breakpoints still open).
+- Discord-like desktop shell with fake data: server rail, channel sidebar, chat, member list, user panel (ADR-0012, done with bundled Figtree and Phosphor icons; drawer and member overlay below breakpoints still open).
 - Spikes: sqlx + SQLCipher on all targets (ADR-0006, done on macOS, CI covers Linux and Windows), Slint message list with rich text and selection (ADR-0010, done: no blocker, see results), UniFFI async + callbacks on Android (ADR-0011).
 
 ## M1 — Text chat, single instance, desktop
