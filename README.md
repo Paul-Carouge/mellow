@@ -44,7 +44,19 @@ Registration is closed by default (`registration_mode = "open"` in `mellow.toml`
 - Read states: `PUT /api/v1/channels/{id}/read-state`, `GET /api/v1/users/@me/read-states`.
 - Typing: `POST /api/v1/channels/{id}/typing`.
 - Real time: WebSocket `GET /gateway?v=1` — `hello`, then `identify` (or `resume`) with the session token, `ready`, numbered `dispatch` events (messages, channels, members, guilds, typing, presence), `heartbeat` every 30 s.
-The server listens on `127.0.0.1:8080` over plain HTTP until built-in TLS lands (M1). Put a TLS reverse proxy (Caddy, nginx) on the same host in front of it and set `behind_tls_reverse_proxy = true` whenever one does, including on loopback: rate limits then use the client address from the proxy's `X-Forwarded-For` (trusted only from loopback). Without the flag, a non-loopback listen address is refused, since session tokens would travel unencrypted. Do not publish Mellow's port directly. Back up the master key file separately from the data directory; without it the database cannot be decrypted. In production, disable core dumps for the service (`LimitCORE=0` in its systemd unit): a dump would contain the key. The server currently runs on Linux and macOS only: on Windows it refuses to create or read a master key until the key file can be restricted to the service account.
+### Production: built-in TLS
+On a server with a public domain, let Mellow get its own Let's Encrypt certificate (no reverse proxy, no certbot):
+```bash
+mellow-server init --config /etc/mellow/mellow.toml --data-directory /var/lib/mellow --master-key-file /etc/mellow/keys/master.key --domain chat.example.org --contact-email admin@example.org
+mellow-server serve --config /etc/mellow/mellow.toml
+```
+Point the domain's DNS at the server and open port 443 (TCP); nothing else is needed, port 80 stays closed. The server listens on `[::]:443`, so it needs permission to bind a low port: `AmbientCapabilities=CAP_NET_BIND_SERVICE` in its systemd unit. Certificates and the ACME account key live in `certificates/` next to the master key (private to the service user, outside the data directory). Add `--use-staging-certificates` to try a setup against Let's Encrypt staging without hitting its rate limits; the resulting certificate is not trusted by clients. Wildcard names are not supported (ADR-0013).
+
+### Behind a reverse proxy
+Without `--domain`, the server listens on `127.0.0.1:8080` over plain HTTP. Put a TLS reverse proxy (Caddy, nginx) on the same host in front of it and set `behind_tls_reverse_proxy = true` whenever one does, including on loopback: rate limits then use the client address from the proxy's `X-Forwarded-For` (trusted only from loopback). Without the flag or `[tls]`, a non-loopback listen address is refused, since session tokens would travel unencrypted. Do not publish Mellow's plain HTTP port directly.
+
+### Keys and platforms
+Back up the master key file separately from the data directory; without it the database cannot be decrypted. In production, disable core dumps for the service (`LimitCORE=0` in its systemd unit): a dump would contain the key. The server currently runs on Linux and macOS only: on Windows it refuses to create or read a master key until the key file can be restricted to the service account.
 
 ## License
 AGPL-3.0-or-later.
