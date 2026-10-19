@@ -1,5 +1,5 @@
 import { ListView } from "std-widgets.slint";
-import { MellowColor, MellowComponent, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
+import { MellowColor, MellowComponent, MellowRadius, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
 import { Avatar, IconButton } from "primitives.slint";
 
 export struct MessageRow {
@@ -14,25 +14,44 @@ export struct MessageRow {
     starts-author-group: bool,
     reply-preview: string,
     mentions-current-user: bool,
+    // The signed-in user wrote it: only then are Edit and Delete offered.
+    is-own: bool,
+    is-edited: bool,
 }
 
 component HoverActionBar inherits Rectangle {
+    in property <bool> is-own;
     // True while the pointer is on the bar, which sticks out above its message row.
     out property <bool> is-hovered: hover-area.has-hover;
+    callback edit();
     callback reply();
     callback copy-text();
+    // True when Shift was held: delete without the confirmation dialog, as on Discord.
+    callback delete(bool);
     height: MellowComponent.action-bar-height;
     border-radius: MellowComponent.action-bar-radius;
     border-width: 1px;
     border-color: MellowComponent.action-bar-border;
     background: MellowComponent.action-bar-background;
+    // shortcut: Edit and Delete sit in the bar itself until the More menu (DESIGN.md §5.4) exists;
+    // Reply stays on your own messages for the same reason.
     hover-area := TouchArea {
         HorizontalLayout {
+            if root.is-own: IconButton {
+                icon: @image-url("../../icons/pencil-simple.svg");
+                label: "Edit";
+                size: MellowComponent.action-bar-button-size;
+                icon-color: MellowComponent.action-bar-icon;
+                hover-icon-color: MellowComponent.action-bar-icon-hover;
+                hover-background: MellowComponent.action-bar-button-background-hover;
+                clicked => { root.edit(); }
+            }
             IconButton {
                 icon: @image-url("../../icons/arrow-bend-up-left.svg");
                 label: "Reply";
                 size: MellowComponent.action-bar-button-size;
                 icon-color: MellowComponent.action-bar-icon;
+                hover-icon-color: MellowComponent.action-bar-icon-hover;
                 hover-background: MellowComponent.action-bar-button-background-hover;
                 clicked => { root.reply(); }
             }
@@ -41,16 +60,155 @@ component HoverActionBar inherits Rectangle {
                 label: "Copy text";
                 size: MellowComponent.action-bar-button-size;
                 icon-color: MellowComponent.action-bar-icon;
+                hover-icon-color: MellowComponent.action-bar-icon-hover;
                 hover-background: MellowComponent.action-bar-button-background-hover;
                 clicked => { root.copy-text(); }
+            }
+            if root.is-own: IconButton {
+                icon: @image-url("../../icons/trash.svg");
+                label: "Delete";
+                size: MellowComponent.action-bar-button-size;
+                icon-color: MellowComponent.action-bar-icon;
+                hover-icon-color: MellowComponent.action-bar-icon-danger-hover;
+                hover-background: MellowComponent.action-bar-button-background-hover;
+                clicked => { root.delete(self.is-shift-held-on-activation); }
             }
             IconButton {
                 icon: @image-url("../../icons/dots-three.svg");
                 label: "More";
                 size: MellowComponent.action-bar-button-size;
                 icon-color: MellowComponent.action-bar-icon;
+                hover-icon-color: MellowComponent.action-bar-icon-hover;
                 hover-background: MellowComponent.action-bar-button-background-hover;
             }
+        }
+    }
+}
+
+// "cancel" and "save" in the editor hint line: text-sized links in a full-height row.
+component HintLink inherits Rectangle {
+    in property <string> label;
+    in property <string> accessible-name;
+    callback activated();
+    width: link-text.preferred-width;
+    // WCAG 2.5.8 floor; Enter and Escape in the field are the primary way to save and cancel.
+    min-height: MellowSize.hit-desktop-min;
+    accessible-role: button;
+    accessible-label: accessible-name;
+    accessible-action-default => { root.activated(); }
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.activated();
+                return accept;
+            }
+            reject
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.activated(); }
+    }
+    link-text := Text {
+        text: label;
+        color: MellowComponent.message-editor-hint-link;
+        font-size: MellowType.message-subtext.font-size;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+    // Underline on hover, as links do on Discord.
+    if touch.has-hover: Rectangle {
+        y: (parent.height + link-text.preferred-height) / 2;
+        height: MellowComponent.auth-card-link-underline-width;
+        background: MellowComponent.message-editor-hint-link;
+    }
+    if focus-scope.has-focus: Rectangle {
+        border-width: MellowComponent.focus-ring-width;
+        border-color: MellowComponent.focus-ring-color;
+        border-radius: MellowRadius.xs;
+    }
+}
+
+// Inline editor that replaces a message body while it is edited, as on Discord.
+component MessageEditor inherits VerticalLayout {
+    // Held by ChatPane, not here: rebuilding the message rows recreates this editor, and the
+    // user's typing must survive that.
+    in-out property <string> draft;
+    callback save(string);
+    callback cancel();
+    spacing: MellowComponent.message-editor-hint-gap;
+
+    Rectangle {
+        min-height: MellowComponent.composer-min-height;
+        border-radius: MellowComponent.message-editor-radius;
+        background: MellowComponent.message-editor-background;
+        border-width: input.has-focus ? MellowComponent.focus-ring-width : 0px;
+        border-color: MellowComponent.focus-ring-color;
+        // Captures Enter before the multi-line field turns it into a new line; Shift+Enter still does.
+        FocusScope {
+            focus-on-click: false;
+            focus-on-tab-navigation: false;
+            capture-key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.cancel();
+                    return accept;
+                }
+                if event.text == Key.Return && !event.modifiers.shift {
+                    root.save(input.text);
+                    return accept;
+                }
+                reject
+            }
+            HorizontalLayout {
+                padding-left: MellowComponent.message-editor-padding-inline;
+                padding-right: MellowComponent.message-editor-padding-inline;
+                padding-top: MellowComponent.message-editor-padding-block;
+                padding-bottom: MellowComponent.message-editor-padding-block;
+                input := TextInput {
+                    text <=> root.draft;
+                    wrap: word-wrap;
+                    single-line: false;
+                    color: MellowComponent.message-editor-text;
+                    font-size: MellowType.message.font-size;
+                    selection-background-color: MellowComponent.message-selection-background;
+                    accessible-label: "Edit message";
+                    accessible-description: "Enter to save, Escape to cancel";
+                    init => {
+                        self.focus();
+                        // Caret at the end, as on Discord. Offsets are UTF-8 bytes (up to 4 per
+                        // character) and are clamped to the text length.
+                        self.set-selection-offsets(self.text.character-count * 4, self.text.character-count * 4);
+                    }
+                }
+            }
+        }
+    }
+    HorizontalLayout {
+        alignment: start;
+        Text {
+            text: "Esc to ";
+            color: MellowComponent.message-editor-hint-text;
+            font-size: MellowType.message-subtext.font-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        HintLink {
+            label: "cancel";
+            accessible-name: "Cancel editing";
+            activated => { root.cancel(); }
+        }
+        Text {
+            text: " · Enter to ";
+            color: MellowComponent.message-editor-hint-text;
+            font-size: MellowType.message-subtext.font-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        HintLink {
+            label: "save";
+            accessible-name: "Save changes";
+            activated => { root.save(input.text); }
         }
     }
 }
@@ -58,17 +216,26 @@ component HoverActionBar inherits Rectangle {
 component MessageView inherits Rectangle {
     in property <MessageRow> message;
     in property <bool> is-text-selection-mode;
+    in property <bool> is-editing;
+    in-out property <string> editing-draft;
     callback link-clicked(string);
     callback copy-text();
+    callback reply();
+    callback start-edit();
+    callback save-edit(string);
+    callback cancel-edit();
+    // True when Shift was held: delete without confirmation.
+    callback delete(bool);
 
     // The content lives inside `touch`, so hovering text or links keeps the row hovered; the action
     // bar keeps it hovered too while the pointer is on its part above the row.
     property <bool> is-hovered: touch.has-hover || action-bar.is-hovered;
 
     background: message.mentions-current-user ? (is-hovered ? MellowComponent.mention-background-hover : MellowComponent.mention-background)
-        : is-hovered ? MellowComponent.message-background-hover : transparent;
+        : is-hovered || is-editing ? MellowComponent.message-background-hover : transparent;
     accessible-role: list-item;
-    accessible-label: message.author + ", " + message.timestamp + ": " + message.body-plain;
+    accessible-label: message.author + ", " + message.timestamp + ": " + message.body-plain
+        + (message.is-edited ? " (edited)" : "");
 
     if message.mentions-current-user: Rectangle {
         x: 0;
@@ -109,20 +276,39 @@ component MessageView inherits Rectangle {
                     vertical-alignment: center;
                 }
             }
-            if !is-text-selection-mode: StyledText {
+            // "(edited)" follows the last line rather than flowing inside it: the body is a
+            // StyledText built in Rust, which Slint cannot append a differently styled run to.
+            // A direct child of the vertical layout: inside a horizontal one, StyledText loses its
+            // height-for-width and wrapped messages overlap the next row.
+            if !is-editing && !is-text-selection-mode: StyledText {
                 text: message.body;
                 default-color: MellowComponent.message-body-text;
                 default-font-size: MellowType.message.font-size;
                 link-color: MellowColor.text-link;
                 link-clicked(url) => { root.link-clicked(url); }
             }
-            if is-text-selection-mode: TextInput {
+            // shortcut: on its own line, since StyledText cannot carry a differently styled suffix;
+            // Discord puts it at the end of the last line.
+            if !is-editing && message.is-edited: Text {
+                text: "(edited)";
+                color: MellowComponent.message-edited-text;
+                font-size: MellowType.message-timestamp.font-size;
+                font-weight: MellowType.message-timestamp.font-weight;
+                // The row's accessible label already says "(edited)".
+                accessible-role: none;
+            }
+            if !is-editing && is-text-selection-mode: TextInput {
                 text: message.body-plain;
                 read-only: true;
                 wrap: word-wrap;
                 color: MellowComponent.message-body-text;
                 font-size: MellowType.message.font-size;
                 selection-background-color: MellowComponent.message-selection-background;
+            }
+            if is-editing: MessageEditor {
+                draft <=> root.editing-draft;
+                save(text) => { root.save-edit(text); }
+                cancel => { root.cancel-edit(); }
             }
         }
 
@@ -147,10 +333,14 @@ component MessageView inherits Rectangle {
     // shortcut: shown on hover only; showing it on keyboard focus (DESIGN.md §5.4) needs focusable rows.
     action-bar := HoverActionBar {
         visible: root.is-hovered;
+        is-own: root.message.is-own;
         x: parent.width - self.width - MellowComponent.action-bar-offset-trailing;
         // The token is negative: the bar sits above the row's top edge, as on Discord.
         y: MellowComponent.action-bar-offset-top;
+        edit => { root.start-edit(); }
+        reply => { root.reply(); }
         copy-text => { root.copy-text(); }
+        delete(skip-confirmation) => { root.delete(skip-confirmation); }
     }
 }
 
@@ -162,9 +352,31 @@ export component ChatPane inherits Rectangle {
     in property <string> latest-announcement;
     in-out property <string> composer-text;
     in-out property <bool> is-member-list-visible;
+    // Non-empty while replying: shows the "Replying to" bar above the composer.
+    in property <string> replying-to-author;
+    // Row shown with the inline editor, or -1.
+    in-out property <int> editing-message-index: -1;
+    // The editor's text, set from the message when editing starts.
+    in-out property <string> editing-message-draft;
+    // Row whose deletion awaits confirmation in the dialog (drawn by AppWindow), or -1.
+    in-out property <int> deleting-message-index: -1;
+    // Non-empty after a failed edit or delete: shown and announced above the composer.
+    in property <string> message-action-error;
     callback send-message(string);
     callback link-clicked(string);
     callback copy-message-text(int);
+    callback reply-to-message(int);
+    callback cancel-reply();
+    callback save-message-edit(int, string);
+    callback edit-last-own-message();
+    callback delete-message(int);
+
+    // Typing goes straight into the reply, as on Discord.
+    changed replying-to-author => {
+        if self.replying-to-author != "" {
+            composer.focus();
+        }
+    }
 
     // True while the newest message is in view; new messages and row-height refinements then keep
     // the list anchored to the bottom, as on Discord. Scrolling up releases it.
@@ -274,8 +486,38 @@ export component ChatPane inherits Rectangle {
             for message[index] in messages: MessageView {
                 message: message;
                 is-text-selection-mode: root.is-text-selection-mode;
+                is-editing: index == root.editing-message-index;
+                editing-draft <=> root.editing-message-draft;
                 link-clicked(url) => { root.link-clicked(url); }
                 copy-text => { root.copy-message-text(index); }
+                reply => { root.reply-to-message(index); }
+                start-edit => {
+                    root.editing-message-draft = message.body-plain;
+                    root.editing-message-index = index;
+                }
+                save-edit(text) => {
+                    root.editing-message-index = -1;
+                    // Saving an empty message asks to delete it; an unchanged one is not re-sent (DESIGN.md §5.5).
+                    if text == "" {
+                        root.deleting-message-index = index;
+                    } else if text != message.body-plain {
+                        root.save-message-edit(index, text);
+                    }
+                    if text != "" {
+                        composer.focus();
+                    }
+                }
+                cancel-edit => {
+                    root.editing-message-index = -1;
+                    composer.focus();
+                }
+                delete(skip-confirmation) => {
+                    if skip-confirmation {
+                        root.delete-message(index);
+                    } else {
+                        root.deleting-message-index = index;
+                    }
+                }
             }
         }
 
@@ -286,13 +528,83 @@ export component ChatPane inherits Rectangle {
             accessible-role: text;
             accessible-live-region: polite;
         }
+        // Edit and delete failures are announced at once: they answer an action the user just took.
+        Text {
+            height: 0px;
+            text: message-action-error;
+            accessible-role: text;
+            accessible-live-region: assertive;
+        }
 
-        HorizontalLayout {
+        if message-action-error != "": HorizontalLayout {
             padding-left: MellowComponent.composer-margin-inline;
             padding-right: MellowComponent.composer-margin-inline;
+            padding-bottom: MellowComponent.composer-error-padding-block;
+            Text {
+                text: message-action-error;
+                color: MellowComponent.composer-error-text;
+                font-size: MellowType.body.font-size;
+                wrap: word-wrap;
+                // Announced through the live region above instead.
+                accessible-role: none;
+            }
+        }
+
+        VerticalLayout {
+            padding-left: MellowComponent.composer-margin-inline;
+            padding-right: MellowComponent.composer-margin-inline;
+            if replying-to-author != "": Rectangle {
+                min-height: MellowComponent.composer-reply-bar-min-height;
+                border-top-left-radius: MellowComponent.composer-radius;
+                border-top-right-radius: MellowComponent.composer-radius;
+                background: MellowComponent.composer-reply-bar-background;
+                accessible-role: groupbox;
+                accessible-label: "Replying to " + replying-to-author;
+                HorizontalLayout {
+                    padding-left: MellowComponent.composer-reply-bar-padding-inline;
+                    // The close button's own padding already spaces its icon from the edge.
+                    padding-right: MellowSpace.space-2xs;
+                    Text {
+                        text: "Replying to ";
+                        color: MellowComponent.composer-reply-bar-text;
+                        font-size: MellowType.body.font-size;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                    Text {
+                        text: replying-to-author;
+                        color: MellowComponent.composer-reply-bar-author-text;
+                        font-size: MellowType.body.font-size;
+                        font-weight: MellowType.user-panel-name.font-weight;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                        accessible-role: none;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            icon: @image-url("../../icons/x-circle.svg");
+                            label: "Cancel reply";
+                            size: MellowComponent.composer-reply-bar-button-size;
+                            icon-color: MellowComponent.composer-reply-bar-icon;
+                            hover-icon-color: MellowComponent.composer-icon-hover;
+                            hover-background: MellowComponent.composer-reply-bar-button-background-hover;
+                            clicked => {
+                                root.cancel-reply();
+                                composer.focus();
+                            }
+                        }
+                    }
+                }
+            }
             Rectangle {
                 min-height: MellowComponent.composer-min-height;
-                border-radius: MellowComponent.composer-radius;
+                // Square top corners while the reply bar sits on top, as on Discord.
+                border-top-left-radius: replying-to-author != "" ? 0px : MellowComponent.composer-radius;
+                border-top-right-radius: self.border-top-left-radius;
+                border-bottom-left-radius: MellowComponent.composer-radius;
+                border-bottom-right-radius: MellowComponent.composer-radius;
                 background: MellowComponent.composer-background;
                 // Discord shows no ring here; WCAG 2.4.7 needs one for keyboard users (ADR-0012).
                 border-width: composer.has-focus ? MellowComponent.focus-ring-width : 0px;
@@ -321,17 +633,35 @@ export component ChatPane inherits Rectangle {
                             vertical-alignment: center;
                             accessible-role: none;
                         }
-                        composer := TextInput {
-                            text <=> root.composer-text;
-                            color: MellowComponent.composer-text;
-                            font-size: MellowType.message.font-size;
-                            vertical-alignment: center;
-                            single-line: true;
-                            accessible-label: "Message #" + channel-name;
-                            accepted => {
-                                if self.text != "" {
-                                    root.send-message(self.text);
-                                    self.text = "";
+                        // Escape and Up are captured before the field can use them.
+                        FocusScope {
+                            focus-on-click: false;
+                            focus-on-tab-navigation: false;
+                            capture-key-pressed(event) => {
+                                if event.text == Key.Escape && root.replying-to-author != "" {
+                                    root.cancel-reply();
+                                    return accept;
+                                }
+                                if event.text == Key.UpArrow && composer.text == "" {
+                                    root.edit-last-own-message();
+                                    return accept;
+                                }
+                                reject
+                            }
+                            composer := TextInput {
+                                text <=> root.composer-text;
+                                color: MellowComponent.composer-text;
+                                font-size: MellowType.message.font-size;
+                                vertical-alignment: center;
+                                single-line: true;
+                                accessible-label: "Message #" + channel-name;
+                                accessible-description: root.replying-to-author != ""
+                                    ? "Replying to " + root.replying-to-author + ". Escape cancels the reply." : "";
+                                accepted => {
+                                    if self.text != "" {
+                                        root.send-message(self.text);
+                                        self.text = "";
+                                    }
                                 }
                             }
                         }

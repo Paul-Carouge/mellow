@@ -162,11 +162,15 @@ fn reply_preview(reply_to_id: Option<Snowflake>, messages: &[Message]) -> String
     }
 }
 
-pub fn message_rows(messages: &[Message]) -> Vec<MessageRow> {
-    message_rows_at(messages, &Local::now())
+pub fn message_rows(messages: &[Message], current_user_id: Option<Snowflake>) -> Vec<MessageRow> {
+    message_rows_at(messages, current_user_id, &Local::now())
 }
 
-fn message_rows_at<Zone: TimeZone>(messages: &[Message], now: &DateTime<Zone>) -> Vec<MessageRow>
+fn message_rows_at<Zone: TimeZone>(
+    messages: &[Message],
+    current_user_id: Option<Snowflake>,
+    now: &DateTime<Zone>,
+) -> Vec<MessageRow>
 where
     Zone::Offset: std::fmt::Display,
 {
@@ -193,6 +197,8 @@ where
                 reply_preview: reply_preview(message.reply_to_id, messages).into(),
                 // shortcut: mentions are not parsed yet (M2).
                 mentions_current_user: false,
+                is_own: Some(message.author.id) == current_user_id,
+                is_edited: message.edited_at_unix_milliseconds.is_some(),
             }
         })
         .collect()
@@ -355,12 +361,19 @@ mod tests {
             first.clone(),
             message(at_minute(1, 0), author(1, "Aurore"), "again", None),
             message(at_minute(20, 0), author(1, "Aurore"), "later", None),
-            message(at_minute(20, 1), author(2, "Basile"), "hi", Some(first.id)),
+            Message {
+                edited_at_unix_milliseconds: Some(at_minute(21, 0).unix_milliseconds()),
+                ..message(at_minute(20, 1), author(2, "Basile"), "hi", Some(first.id))
+            },
         ];
-        let rows = message_rows_at(&messages, &Utc::now());
+        let rows = message_rows_at(&messages, Some(Snowflake::from_raw(2)), &Utc::now());
         let groups: Vec<_> = rows.iter().map(|row| row.starts_author_group).collect();
         assert_eq!(groups, [true, false, true, true]);
         assert_eq!(rows[3].reply_preview, "@Aurore hello");
         assert_eq!(rows[0].reply_preview, "");
+        let own: Vec<_> = rows.iter().map(|row| row.is_own).collect();
+        assert_eq!(own, [false, false, false, true]);
+        let edited: Vec<_> = rows.iter().map(|row| row.is_edited).collect();
+        assert_eq!(edited, [false, false, false, true]);
     }
 }

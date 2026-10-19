@@ -107,7 +107,11 @@ export component IconButton inherits Rectangle {
     in property <string> label;
     in property <length> size;
     in property <color> icon-color;
+    in property <color> hover-icon-color: icon-color;
     in property <color> hover-background;
+    // Whether Shift was held for the latest activation (click or key), read in `clicked` handlers:
+    // Shift+click on Delete skips the confirmation, as on Discord.
+    out property <bool> is-shift-held-on-activation;
     callback clicked();
     width: size;
     height: size;
@@ -115,11 +119,17 @@ export component IconButton inherits Rectangle {
     background: touch.has-hover || focus-scope.has-focus ? hover-background : transparent;
     accessible-role: button;
     accessible-label: label;
-    accessible-action-default => { root.clicked(); }
+    // Screen readers activate without a pointer event: a Shift left over from an earlier click
+    // must not skip a confirmation.
+    accessible-action-default => {
+        root.is-shift-held-on-activation = false;
+        root.clicked();
+    }
 
     focus-scope := FocusScope {
         key-pressed(event) => {
             if event.text == " " || event.text == "\n" {
+                root.is-shift-held-on-activation = event.modifiers.shift;
                 root.clicked();
                 return accept;
             }
@@ -127,11 +137,12 @@ export component IconButton inherits Rectangle {
         }
     }
     touch := TouchArea {
+        pointer-event(event) => { root.is-shift-held-on-activation = event.modifiers.shift; }
         clicked => { root.clicked(); }
     }
     Image {
         source: icon;
-        colorize: icon-color;
+        colorize: touch.has-hover || focus-scope.has-focus ? hover-icon-color : icon-color;
         // Phosphor icons are drawn on a 256 grid; at 62.5 % of the button they match Discord's 20-in-32.
         width: size * 0.625;
         height: self.width;
@@ -190,5 +201,55 @@ export component ContextMenuItem inherits Rectangle {
         border-width: MellowComponent.focus-ring-width;
         border-color: MellowComponent.focus-ring-color;
         border-radius: parent.border-radius + MellowComponent.focus-ring-offset;
+    }
+}
+
+// Dialog button (DESIGN.md §6.1): Secondary by default, Danger for the destructive action.
+// shortcut: Secondary and Danger only; the login screen keeps its own Primary button until a third use.
+export component Button inherits Rectangle {
+    in property <string> label;
+    in property <bool> is-danger: false;
+    out property <bool> has-keyboard-focus: focus-scope.has-focus;
+    callback clicked();
+    height: MellowComponent.button-height;
+    min-width: label-text.preferred-width + 2 * MellowComponent.button-padding-inline;
+    border-radius: MellowComponent.button-radius;
+    background: is-danger
+        ? (touch.has-hover ? MellowComponent.button-danger-background-hover : MellowComponent.button-danger-background)
+        : (touch.has-hover ? MellowComponent.button-secondary-background-hover : MellowComponent.button-secondary-background);
+    accessible-role: button;
+    accessible-label: label;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus-scope;
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.clicked(); }
+    }
+    label-text := Text {
+        text: label;
+        color: is-danger ? MellowComponent.button-danger-text : MellowComponent.button-secondary-text;
+        font-size: MellowType.button.font-size;
+        font-weight: MellowType.button.font-weight;
+        accessible-role: none;
+    }
+    // Outset ring with a gap, so it stays visible against the red and grey fills.
+    if focus-scope.has-focus: Rectangle {
+        x: -(MellowComponent.focus-ring-offset + MellowComponent.focus-ring-width);
+        y: self.x;
+        width: parent.width - 2 * self.x;
+        height: parent.height - 2 * self.y;
+        border-width: MellowComponent.focus-ring-width;
+        border-color: MellowComponent.focus-ring-color;
+        border-radius: MellowComponent.button-radius - self.x;
     }
 }

@@ -6,6 +6,7 @@ This document is the reference for every visual and interaction decision in Mell
 
 ## Changelog
 
+- **2026-10-19, v0.4 — message actions on desktop:** edit, delete and reply presentation (5.4, 5.5); `component.dialog.*`, `component.message.editor-*`, `component.composer.reply-bar-*` and `color.neutral.fill-hover` tokens.
 - **2026-10-19, v0.3 — font and icons chosen by the user:** Figtree (bundled, OFL) replaces Noto Sans as the UI and message font, Noto Sans stays as the fallback for other scripts; the icon set is Phosphor (MIT), Fill weight, recoloured from tokens. Sections 2.4 and 2.9 are authoritative where older text below still says Noto Sans.
 - **2026-10-19, v0.2 — direction changed: faithful Discord interface, Mellow brand.** The user asked for an interface that is "really like Discord" and chose a faithful clone with Mellow's own brand ([ADR-0012](docs/adr/0012-clone-discord-interface-with-own-brand.md)). The previous direction (warm graphite surfaces, two planes, Atkinson Hyperlegible and Fraunces, square server icons, apricot mention badges, a calmer layout) is superseded. Mellow now copies Discord's layout, pane dimensions, density, interaction patterns, keyboard shortcuts and layered cool-grey dark theme, and keeps its own accent (apricot), logo, open-licence font (Noto Sans) and accessibility guarantees. The Slint spike results of [ADR-0010](docs/adr/0010-desktop-ui-with-slint.md) (inline-only rich text, selection within one message only) are reflected in the message list and copy patterns (sections 5.4 and 7.3).
 - **2026-10-19, v0.1 — first draft** (warm, "anti-Discord" identity).
@@ -869,11 +870,13 @@ Discord lets people drag-select across several messages; Slint cannot (ADR-0010)
 
 On hover or focus, a bar appears at the trailing top of the message (`component.action-bar.*`: `surface.chat`, 1 px `border.divider`, `elevation.medium`). Buttons, each 32 px with a tooltip: Reply (others' messages) or Edit (your own), Copy text, More. More opens the message context menu: Reply, Edit (own), Copy text, Select text, Copy message link, Mark unread, Delete (own, or with "Manage messages", danger, last), plus moderation actions for moderators. Reactions, pins and forwarding are not in the MVP (section 9). Right-click on a message opens the same menu.
 
+Desktop, until the More menu exists: your own messages show Edit, Reply, Copy text, Delete and More, in that order; others' messages show Reply, Copy text and More. The Delete icon turns `text.danger` on hover, as on Discord. Delete opens the "Delete this message?" dialog (section 8: `component.dialog.*`, window-wide scrim, the message's author and text as a preview, focus on "Cancel", `Tab` cycles between the two buttons, `Esc` or a click on the scrim cancels); `Shift`+click deletes at once, as on Discord.
+
 #### Edited, deleted, pending, failed
 
 | State | Presentation |
 |---|---|
-| Edited | "(edited)" after the text, `type.message-timestamp` at 12 px, `text.muted`; tooltip and accessible description give the edit time |
+| Edited | "(edited)" after the text, `type.message-timestamp` at 12 px, `text.muted`; tooltip and accessible description give the edit time. Desktop: the body is a Rust-built `StyledText`, which can neither carry a differently styled suffix nor keep its wrapping inside a horizontal layout, so "(edited)" sits on its own line under the text rather than at the end of the last line; the row's accessible name ends with "(edited)" |
 | Deleted by author | Removed from the list for everyone |
 | Deleted by a moderator | Removed; the moderation log keeps the record |
 | Pending | Text in `text.muted`; after `motion.delay.pending-label` a "Sending…" label appears |
@@ -909,8 +912,9 @@ Layout: Discord's composer, a `surface.input` field with `radius.md`, min 44 px,
 - Shortcuts: `Ctrl+B` and `Ctrl+I` wrap the selection in bold and italic markers. `Ctrl+E` is reserved for the emoji picker, as on Discord.
 - Autocomplete popovers (`surface.popover`) for `@`, `#` and `:` (emoji shortcodes), above the field, navigable with arrows, `Tab`/`Enter` to insert, `Esc` to close.
 - Sending: `Enter` sends, `Shift+Enter` inserts a new line (desktop). Android: Enter inserts a new line and the send button sends; a setting swaps this for hardware keyboards.
-- Edit mode: `Up` in an empty composer edits your last message inline. The message shows "Esc to cancel · Enter to save" with the two words as link buttons, as on Discord. Saving an empty message asks to delete it.
-- Reply mode: a bar attached above the field (`surface.sidebar`): "Replying to Ana", a "@ On/Off" toggle for pinging the author (on by default, accessible label "Mention Ana"), and a close button (`Esc`).
+- Edit mode: `Up` in an empty composer edits your last message inline. The message shows "Esc to cancel · Enter to save" with the two words as link buttons, as on Discord. Saving an empty message asks to delete it. Desktop: the field (`component.message.editor-*`, `surface.input`, `radius.md`) takes focus with the caret at the end; `Shift+Enter` inserts a new line; saving unchanged text just closes the editor; focus returns to the composer.
+- Reply mode: a bar attached above the field (`surface.sidebar`): "Replying to Ana", a "@ On/Off" toggle for pinging the author (on by default, accessible label "Mention Ana"), and a close button (`Esc`). Desktop (`component.composer.reply-bar-*`): the field's top corners square off under the bar, the composer takes focus when a reply starts, and the close button is a filled x-circle labelled "Cancel reply"; the "@ On/Off" toggle comes with mention notifications.
+- Action errors: when an edit or delete fails, one line in `text.danger` sits above the composer (or the reply bar) and is announced assertively.
 - Attachments: attach button, drag and drop anywhere on the chat pane (overlay "Drop to attach to #general"), or paste. An attachment tray above the field shows thumbnails with "Add a description" (alt text), "Mark as spoiler" and "Remove". Upload progress is shown per file. Upload errors: "photo.heic is 48 MB. chat.example.org accepts files up to 25 MB."
 - Length: a counter appears at 90 % of the instance limit ("3,620 / 4,000"); beyond the limit it turns `text.danger`, sending is blocked and the field's accessible description says "Message is 120 characters too long."
 - Typing indicator: in the 24 px band, `type.typing`, `text.secondary`, with three dots: "Ana is typing…", "Ana and Léo are typing…", "Ana, Léo and 2 others are typing…", "Several people are typing…" (beyond 5). It is not announced by screen readers.

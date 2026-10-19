@@ -1,0 +1,138 @@
+import { MellowComponent, MellowType } from "../tokens.slint";
+import { Avatar, Button } from "primitives.slint";
+import { MessageRow } from "chat_pane.slint";
+
+// "Delete this message?" confirmation (DESIGN.md §6.35 and §8), modal over the whole window.
+export component DeleteMessageDialog inherits Rectangle {
+    in property <MessageRow> message;
+    callback cancel();
+    callback confirm();
+    background: MellowComponent.dialog-scrim;
+
+    // Destructive dialogs never focus the destructive button first (DESIGN.md §8).
+    init => { cancel-button.focus(); }
+
+    // Clicking the scrim closes the dialog, as on Discord, and nothing behind it reacts.
+    TouchArea {
+        clicked => { root.cancel(); }
+    }
+
+    FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            // Focus stays trapped in the dialog: Tab and Shift+Tab cycle between its two buttons.
+            if event.text == Key.Tab || event.text == Key.Backtab {
+                if cancel-button.has-keyboard-focus {
+                    delete-button.focus();
+                } else {
+                    cancel-button.focus();
+                }
+                return accept;
+            }
+            reject
+        }
+
+        card := Rectangle {
+            width: min(MellowComponent.dialog-width, root.width - 2 * MellowComponent.dialog-margin);
+            height: card-layout.preferred-height;
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            background: MellowComponent.dialog-background;
+            border-radius: MellowComponent.dialog-radius;
+            clip: true;
+            accessible-role: groupbox;
+            accessible-label: title.text;
+            accessible-description: body.text;
+
+            // Swallows clicks inside the card so they do not reach the scrim.
+            TouchArea { }
+
+            card-layout := VerticalLayout {
+                VerticalLayout {
+                    padding: MellowComponent.dialog-padding;
+                    spacing: MellowComponent.dialog-section-gap;
+                    title := Text {
+                        text: "Delete this message?";
+                        color: MellowComponent.dialog-title-text;
+                        font-size: MellowType.heading-lg.font-size;
+                        font-weight: MellowType.heading-lg.font-weight;
+                        wrap: word-wrap;
+                        accessible-role: none;
+                    }
+                    body := Text {
+                        text: "It will be removed for everyone.";
+                        color: MellowComponent.dialog-body-text;
+                        font-size: MellowType.body.font-size;
+                        wrap: word-wrap;
+                        accessible-role: none;
+                    }
+                    Rectangle {
+                        border-width: MellowComponent.dialog-preview-border-width;
+                        border-color: MellowComponent.dialog-preview-border;
+                        border-radius: MellowComponent.dialog-preview-radius;
+                        accessible-role: text;
+                        accessible-label: message.author + ": " + message.body-plain;
+                        HorizontalLayout {
+                            padding: MellowComponent.dialog-preview-padding;
+                            spacing: MellowComponent.dialog-preview-padding;
+                            VerticalLayout {
+                                alignment: start;
+                                Avatar {
+                                    initial: message.author-initial;
+                                    size: MellowComponent.dialog-preview-avatar-size;
+                                }
+                            }
+                            VerticalLayout {
+                                Text {
+                                    text: message.author;
+                                    color: MellowComponent.message-author-text;
+                                    font-size: MellowType.message-author.font-size;
+                                    font-weight: MellowType.message-author.font-weight;
+                                    overflow: elide;
+                                    accessible-role: none;
+                                }
+                                Text {
+                                    text: message.body-plain;
+                                    color: MellowComponent.message-body-text;
+                                    font-size: MellowType.message.font-size;
+                                    wrap: word-wrap;
+                                    overflow: elide;
+                                    max-height: MellowComponent.dialog-preview-body-max-height;
+                                    accessible-role: none;
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Tip: hold Shift while deleting to skip this next time.";
+                        color: MellowComponent.dialog-hint-text;
+                        font-size: MellowType.body-sm.font-size;
+                        wrap: word-wrap;
+                    }
+                }
+                Rectangle {
+                    background: MellowComponent.dialog-footer-background;
+                    HorizontalLayout {
+                        padding: MellowComponent.dialog-padding;
+                        spacing: MellowComponent.dialog-button-gap;
+                        alignment: end;
+                        cancel-button := Button {
+                            label: "Cancel";
+                            clicked => { root.cancel(); }
+                        }
+                        delete-button := Button {
+                            label: "Delete message";
+                            is-danger: true;
+                            clicked => { root.confirm(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

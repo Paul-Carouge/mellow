@@ -43,6 +43,8 @@ fn message_row(message: &FakeMessage) -> MessageRow {
         starts_author_group: message.starts_author_group,
         reply_preview: message.reply_preview.unwrap_or_default().into(),
         mentions_current_user: message.mentions_current_user,
+        is_own: message.author == CURRENT_USER_NAME,
+        is_edited: false,
     }
 }
 
@@ -197,6 +199,9 @@ fn connect_message_callbacks(window: &AppWindow, state: &Rc<RefCell<ShellState>>
             starts_author_group: last_author.as_deref() != Some(CURRENT_USER_NAME),
             reply_preview: SharedString::default(),
             mentions_current_user: false,
+            // shortcut: the demo shows Edit and Delete on its own messages but does not apply them.
+            is_own: true,
+            is_edited: false,
         });
         window.set_latest_announcement(format!("{CURRENT_USER_NAME}: {text}").into());
         window.invoke_scroll_to_latest_message();

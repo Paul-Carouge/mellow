@@ -3,6 +3,8 @@
 //! State lives on the UI thread; network calls run on a Tokio runtime and their results come
 //! back through Slint's event loop (`slint::spawn_local`), so no lock is ever shared with the UI.
 
+mod message_actions;
+
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
@@ -52,6 +54,10 @@ pub struct LiveShell {
     requested_history_channel_ids: HashSet<Snowflake>,
     requested_member_list_guild_ids: HashSet<Snowflake>,
     messages: Rc<VecModel<MessageRow>>,
+    /// The message id behind each row of `messages`, in the same order.
+    displayed_message_ids: Vec<Snowflake>,
+    /// The message the composer answers, shown as "Replying to …".
+    reply_to_message_id: Option<Snowflake>,
     /// See `clipboard::copy_text`.
     clipboard: Option<arboard::Clipboard>,
     /// Bumped whenever a session starts or ends, so late results of an earlier session (a 401
@@ -76,6 +82,8 @@ pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
         requested_history_channel_ids: HashSet::new(),
         requested_member_list_guild_ids: HashSet::new(),
         messages: Rc::new(VecModel::default()),
+        displayed_message_ids: Vec::new(),
+        reply_to_message_id: None,
         clipboard: None,
         session_generation: 0,
         pending_logouts: Vec::new(),
@@ -282,6 +290,25 @@ fn connect_callbacks(window: &AppWindow, shell: &SharedShell) {
             return;
         };
         clipboard::copy_text(&mut shell.clipboard, &message.body_plain);
+    });
+
+    let shell_for_callback = shell.clone();
+    window.on_reply_to_message(move |row_index| {
+        message_actions::reply_to_message(&shell_for_callback, row_index);
+    });
+    let shell_for_callback = shell.clone();
+    window.on_cancel_reply(move || message_actions::cancel_reply(&shell_for_callback));
+    let shell_for_callback = shell.clone();
+    window.on_edit_last_own_message(move || {
+        message_actions::edit_last_own_message(&shell_for_callback);
+    });
+    let shell_for_callback = shell.clone();
+    window.on_save_message_edit(move |row_index, text| {
+        message_actions::save_message_edit(&shell_for_callback, row_index, &text);
+    });
+    let shell_for_callback = shell.clone();
+    window.on_delete_message(move |row_index| {
+        message_actions::delete_message(&shell_for_callback, row_index);
     });
 
     window.on_link_clicked(|_url| {
@@ -583,7 +610,7 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
             refresh_header(&shell.borrow());
         }
         StateChange::Messages { channel_id } if Some(channel_id) == selected_channel_id => {
-            refresh_messages(&shell.borrow());
+            refresh_messages(&mut shell.borrow_mut());
             acknowledge_selected_channel(shell);
         }
         StateChange::Members { guild_id } if Some(guild_id) == selected_guild_id => {
@@ -673,6 +700,8 @@ fn end_session(shell: &SharedShell, message: &str) -> tokio::task::JoinHandle<bo
     shell.selected_guild_id = None;
     shell.selected_channel_id = None;
     shell.messages.set_vec(Vec::new());
+    shell.displayed_message_ids.clear();
+    message_actions::reset_message_actions(&mut shell);
     // Nothing of the previous account may stay on screen for the next one.
     refresh_header(&shell);
     refresh_server_items(&shell);
@@ -723,10 +752,13 @@ fn select_guild(
 fn open_channel(shell: &SharedShell, channel_id: Option<Snowflake>) {
     {
         let mut shell = shell.borrow_mut();
+        if shell.selected_channel_id != channel_id {
+            message_actions::reset_message_actions(&mut shell);
+        }
         shell.selected_channel_id = channel_id;
         refresh_header(&shell);
         refresh_channel_rows(&shell);
-        refresh_messages(&shell);
+        refresh_messages(&mut shell);
     }
     if let Some(channel_id) = channel_id {
         ensure_history_loaded(shell, channel_id);
@@ -879,10 +911,11 @@ fn send_message(shell: &SharedShell, text: SharedString) {
     if content.is_empty() {
         return;
     }
+    let reply_to_id = message_actions::take_reply(shell);
     let send_message_call = async move {
         let send_message_request = SendMessageRequest {
             content,
-            reply_to_id: None,
+            reply_to_id,
             nonce: None,
         };
         rest.send_message(channel_id, &send_message_request).await
@@ -903,11 +936,15 @@ fn send_message(shell: &SharedShell, text: SharedString) {
             }
             Err(error) => {
                 // shortcut: the text goes back to the composer instead of a "failed, retry" message row.
-                if let Some(window) = shell.borrow().window.upgrade()
+                let window = shell.borrow().window.upgrade();
+                if let Some(window) = window
                     && window.get_composer_text().is_empty()
                 {
                     window.set_composer_text(text);
                     window.set_latest_announcement(format!("Message not sent: {error}").into());
+                    if let Some(reply_to_id) = reply_to_id {
+                        message_actions::restore_reply(shell, reply_to_id);
+                    }
                 }
                 report_request_error(shell, &error, "send message");
             }
@@ -956,12 +993,17 @@ fn refresh_member_rows(shell: &LiveShell) {
     ))));
 }
 
-fn refresh_messages(shell: &LiveShell) {
+fn refresh_messages(shell: &mut LiveShell) {
     let messages = shell
         .selected_channel_id
         .map(|id| shell.state.messages(id))
         .unwrap_or_default();
-    shell.messages.set_vec(live_rows::message_rows(messages));
+    let current_user_id = shell.state.current_user().map(|user| user.id);
+    let rows = live_rows::message_rows(messages, current_user_id);
+    let message_ids = messages.iter().map(|message| message.id).collect();
+    let previous_message_ids = std::mem::replace(&mut shell.displayed_message_ids, message_ids);
+    shell.messages.set_vec(rows);
+    message_actions::remap_open_message_rows(shell, &previous_message_ids);
     // shortcut: always jumps to the latest message, even when the reader had scrolled up.
     if let Some(window) = shell.window.upgrade() {
         crate::scroll_to_latest_message_after_layout(&window);
