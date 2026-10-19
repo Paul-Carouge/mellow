@@ -188,9 +188,10 @@ The computation is a pure function in `domain`, unit-tested exhaustively, and is
 - Clients open one WebSocket per instance at `/gateway`, then send `Identify { token }` and receive `Ready` (user, guilds, channels, read states, DM list).
 - Events are JSON messages `{ "op": ..., "t": "MESSAGE_CREATE", "s": <sequence>, "d": { ... } }`.
 - Heartbeats every 30 s detect dead connections. On reconnect, a client sends `Resume { session_id, last_sequence }`. The server keeps a short per-session replay buffer; if the buffer no longer covers the gap, the client resynchronizes through REST.
-- Fan-out is in-process: each guild has a `tokio::sync::broadcast` channel; sessions subscribe to the guilds they belong to and filter events by permission. Slow consumers are disconnected and resume instead of blocking others.
+- Fan-out is in-process (`events::EventHub`): each event is serialized once and queued to the sessions of its guild or user. A session that falls behind is cut off and told to identify again instead of blocking others. No per-recipient permission filter yet: in M1 the `@everyone` role always holds `VIEW_CHANNEL`; filtering by effective channel permissions must land with roles and overwrites (M2, ADR-0007).
 - Presence (online, idle, do not disturb, offline) and typing indicators live in memory only.
-- A message's `nonce` goes back only to the sender's own sessions, never in the event broadcast to the guild.
+- Implementation (M1.4): a session outlives its WebSocket for 60 s with a replay buffer (1 024 dispatches, 2 MB, sharing the hub's serialized events), so `resume` replays what was missed; resuming with another user's token is refused. Logout cuts off the token's sessions at once; heartbeats (30 s, 45 s deadline) also revalidate the token, at most every 15 s. Limits: 4 KB client frames, identify within 10 s, 10 sessions per user (checked atomically), 10 gateway connections per 10 s per address, 10 000 connections in total, 10 s write timeout and 256 KB write buffer per socket. Presence is online/offline from live sessions; "offline" is published under the same lock that removes the last session.
+- A message's `nonce` comes back only in the sender's REST response; the `MESSAGE_CREATE` event, including to the sender's own sessions, never carries it.
 
 ### 4.9 Admin web UI
 

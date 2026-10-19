@@ -40,6 +40,8 @@ Registration is closed by default (`registration_mode = "open"` in `mellow.toml`
 - Invites: `POST /api/v1/guilds/{id}/invites`, `POST /api/v1/invites/{code}`.
 - Messages: `GET|POST /api/v1/channels/{id}/messages` (history with `before`/`after`/`limit`, chronological), `PATCH|DELETE /api/v1/channels/{id}/messages/{message_id}`.
 - Read states: `PUT /api/v1/channels/{id}/read-state`, `GET /api/v1/users/@me/read-states`.
+- Typing: `POST /api/v1/channels/{id}/typing`.
+- Real time: WebSocket `GET /gateway?v=1` — `hello`, then `identify` (or `resume`) with the session token, `ready`, numbered `dispatch` events (messages, channels, members, guilds, typing, presence), `heartbeat` every 30 s.
 The server listens on `127.0.0.1:8080` over plain HTTP until built-in TLS lands (M1). Put a TLS reverse proxy (Caddy, nginx) on the same host in front of it and set `behind_tls_reverse_proxy = true` whenever one does, including on loopback: rate limits then use the client address from the proxy's `X-Forwarded-For` (trusted only from loopback). Without the flag, a non-loopback listen address is refused, since session tokens would travel unencrypted. Do not publish Mellow's port directly. Back up the master key file separately from the data directory; without it the database cannot be decrypted. In production, disable core dumps for the service (`LimitCORE=0` in its systemd unit): a dump would contain the key. The server currently runs on Linux and macOS only: on Windows it refuses to create or read a master key until the key file can be restricted to the service account.
 
 ## License
