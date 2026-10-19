@@ -1,0 +1,32 @@
+[package]
+name = "mellow-client-core"
+description = "Client logic shared by the Mellow desktop and Android apps: connection, state, sync."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+futures-util.workspace = true
+mellow-protocol.workspace = true
+reqwest = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "net"] }
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
+tracing.workspace = true
+url.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+# Integration tests run a real in-process server; the client never depends on it otherwise.
+mellow-server = { path = "../mellow-server" }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
