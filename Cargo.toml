@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/mellow-protocol"]
+members = ["crates/mellow-protocol", "crates/mellow-server"]
 
 [workspace.package]
 version = "0.0.0"
