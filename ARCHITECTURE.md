@@ -160,6 +160,8 @@ audit_log        (id, guild_id, actor_id, action, target_id, changes, created_at
 
 A DM is a channel with `guild_id = NULL` and its participants in `dm_participants`. This keeps one message path for guild channels and DMs.
 
+Messages are deleted for real (no tombstone); `reply_to_id` has no foreign key, so a reply keeps pointing at a deleted original and clients show "Original message was deleted". Read states only move forward. History pages are returned oldest first.
+
 ### 4.6 Permissions
 
 Permissions are a 64-bit bitfield (`mellow-protocol::Permissions`, via `bitflags`). The effective permission of a member in a channel is computed in this order ([ADR-0007](docs/adr/0007-permission-model.md)):
@@ -177,7 +179,7 @@ The computation is a pure function in `domain`, unit-tested exhaustively, and is
 - Login returns an opaque, random 256-bit session token. Only its SHA-256 hash is stored. Tokens are sent as `Authorization: Bearer` on REST and in the gateway `Identify` message.
 - Clients store tokens in the OS keychain (desktop: `keyring`; Android: Keystore-backed encrypted storage).
 - Registration can be open, invite-only or closed, set by the instance admin.
-- Rate limiting on authentication endpoints and on message sending (per user and per channel). Authentication (M1.2): 20 attempts per minute per client address (IPv6 grouped by /64), 10 logins per 15 minutes per account and address, 100 per 15 minutes per account; attempts are counted before the password check. Concurrent Argon2 work is capped to the number of CPU cores.
+- Rate limiting on authentication endpoints and on message writes. Messages (M1.3b): 10 writes (send, edit, delete) per 10 s and 600 per hour per user, 30 messages per 10 s per channel, 30 read-state updates per 10 s per user; content capped at 4 000 characters and 8 000 bytes; bidi overrides, tags and invisible-only messages refused; `secure_delete` overwrites deleted content on disk. Authentication (M1.2): 20 attempts per minute per client address (IPv6 grouped by /64), 10 logins per 15 minutes per account and address, 100 per 15 minutes per account; attempts are counted before the password check. Concurrent Argon2 work is capped to the number of CPU cores.
 - Quotas (M1.3a): 500 channels per guild, 100 owned guilds per user, 1 000 active invites per guild, member lists capped at 1 000 until pagination; guild writes limited to 30 per minute per user and invite redemptions to 30 per minute per address. Quotas are checked in the same SQL statement or `BEGIN IMMEDIATE` transaction as the insert.
 - Accepted trade-offs: open registration reveals whether a username or email is taken (usernames are public anyway; emails are rate-limited); a username and its email count as two accounts for rate limiting.
 
@@ -188,6 +190,7 @@ The computation is a pure function in `domain`, unit-tested exhaustively, and is
 - Heartbeats every 30 s detect dead connections. On reconnect, a client sends `Resume { session_id, last_sequence }`. The server keeps a short per-session replay buffer; if the buffer no longer covers the gap, the client resynchronizes through REST.
 - Fan-out is in-process: each guild has a `tokio::sync::broadcast` channel; sessions subscribe to the guilds they belong to and filter events by permission. Slow consumers are disconnected and resume instead of blocking others.
 - Presence (online, idle, do not disturb, offline) and typing indicators live in memory only.
+- A message's `nonce` goes back only to the sender's own sessions, never in the event broadcast to the guild.
 
 ### 4.9 Admin web UI
 

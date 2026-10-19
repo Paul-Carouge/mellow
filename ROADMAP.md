@@ -11,13 +11,12 @@ Stacked pull requests, to merge in this order: #2 workspace + SQLCipher storage 
 - **CI does not run**: GitHub Actions refuses jobs because of the account's billing (Settings → Billing & plans). Until fixed, everything is verified on macOS only; SQLCipher on Linux and Windows is unproven, so ADR-0006 stays *Proposed*.
 
 ### Next, in order
-1. **M1.3b messages**: send, edit, delete, replies, history pagination, read states (branch `feat/server-messages`, not started).
-2. **M1.4 gateway**: WebSocket `Identify`/`Ready`/`Resume`, message and channel events, presence, typing.
-3. **M1.5 client core and desktop wiring**: `mellow-client-core` (connection, state, cache, outbox), login screen, shell on real data.
-4. **Built-in TLS (ACME)**, then M1 release candidate.
+1. **M1.4 gateway**: WebSocket `Identify`/`Ready`/`Resume`, message and channel events, presence, typing.
+2. **M1.5 client core and desktop wiring**: `mellow-client-core` (connection, state, cache, outbox), login screen, shell on real data.
+3. **Built-in TLS (ACME)**, then M1 release candidate.
 
 ### Known gaps and debts
-- Server: single SQLite writer task (ARCHITECTURE §4.3) not implemented; queries are runtime SQL, not compile-time checked (`sqlx` offline data to set up); `sessions.last_seen` never updated and expired sessions never purged; member list capped at 1 000 instead of paginated; rate limits in memory, per process, and the shared table fails closed when saturated; Windows refused until the master key file gets a protected DACL.
+- Server: single SQLite writer task (ARCHITECTURE §4.3) not implemented, so a message id can be issued before a concurrent one commits and an `after` cursor could skip it (generate ids inside the writer task); nonces are not deduplicated, so an outbox retry after a lost response creates a duplicate; `messages.author_id` has no `ON DELETE` rule or index, to settle with account deletion; queries are runtime SQL, not compile-time checked (`sqlx` offline data to set up); `sessions.last_seen` never updated and expired sessions never purged; member list capped at 1 000 instead of paginated; rate limits in memory, per process, and the shared table fails closed when saturated; Windows refused until the master key file gets a protected DACL.
 - Desktop: block-level message rendering (code blocks, quotes); drawer and member-list overlay below breakpoints; hover action bar and row navigation from the keyboard; screen-reader pass (VoiceOver/NVDA/Orca) never done; last avatar clipped by ~3 px; Mellow logo not designed; trade-dress review before any public release.
 - M0 leftovers: UniFFI async/callback spike for Android; Compose and admin CSS token generators.
 - M2 follow-ups recorded in ADR-0007: roles and channel overwrites, `VIEW_CHANNEL` filtering, bans checked on invite joins, invites of departed members.
@@ -32,7 +31,7 @@ Stacked pull requests, to merge in this order: #2 workspace + SQLCipher storage 
 - `mellow-server init / serve`, config, SQLite storage, migrations (done in M1.1: encrypted database, master key, pre-migration backups, health route, graceful shutdown); built-in TLS (ACME) still to do.
 - Accounts (register, login, sessions, logout per device), registration modes (done in M1.2: open/closed, invite-only comes with invites; `admin create-user`).
 - Guilds, categories, text channels, invites (done in M1.3a, with owner/@everyone permissions; named roles and overwrites in M2).
-- Messages: send, edit, delete, replies, history pagination, read states.
+- Messages: send, edit, delete, replies, history pagination, read states (done in M1.3b).
 - Gateway: Identify, Ready, Resume, message and channel events, presence, typing.
 - Desktop client: connect, login, server rail, channel list, message list, composer.
 
