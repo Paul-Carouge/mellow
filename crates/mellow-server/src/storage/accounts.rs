@@ -1,0 +1,195 @@
+//! Users and sessions tables (migration 0001).
+
+use mellow_protocol::Snowflake;
+use sqlx::SqlitePool;
+
+use crate::domain::session_token::SessionTokenSha256;
+
+/// `SQLITE_CONSTRAINT_UNIQUE` extended result code.
+const SQLITE_UNIQUE_CONSTRAINT_ERROR_CODE: &str = "2067";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredUser {
+    pub id: Snowflake,
+    pub username: String,
+    pub display_name: String,
+    pub email: String,
+    pub password_hash: String,
+    pub is_instance_administrator: bool,
+    pub is_disabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewUser {
+    pub id: Snowflake,
+    pub username: String,
+    pub display_name: String,
+    pub email: String,
+    pub password_hash: String,
+    pub is_instance_administrator: bool,
+    pub created_at_unix_milliseconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewSession {
+    pub id: Snowflake,
+    pub user_id: Snowflake,
+    pub token_sha256: SessionTokenSha256,
+    pub device_name: String,
+    pub created_at_unix_milliseconds: u64,
+    pub expires_at_unix_milliseconds: u64,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AccountStorageError {
+    #[error("this username is already taken")]
+    UsernameTaken,
+    #[error("this email address is already used")]
+    EmailTaken,
+    #[error("value does not fit SQLite's signed 64-bit integer")]
+    IntegerOutOfRange,
+    #[error("database error")]
+    Database(#[from] sqlx::Error),
+}
+
+type StoredUserRow = (i64, String, String, String, String, bool, Option<i64>);
+
+/// A macro, not a `const`, so queries can be built with `concat!` and stay `&'static str`
+/// (sqlx 0.9 refuses runtime-built SQL as an injection guard).
+macro_rules! select_user_columns {
+    () => {
+        "users.id, users.username, users.display_name, users.email, users.password_hash, \
+         users.is_instance_administrator, users.disabled_at_unix_milliseconds"
+    };
+}
+
+/// SQLite integers are signed; Snowflakes and Unix milliseconds fit until about 2095.
+fn to_sqlite_integer(value: u64) -> Result<i64, AccountStorageError> {
+    i64::try_from(value).map_err(|_| AccountStorageError::IntegerOutOfRange)
+}
+
+fn stored_user_from_row(row: StoredUserRow) -> Result<StoredUser, AccountStorageError> {
+    let (id, username, display_name, email, password_hash, is_instance_administrator, disabled_at) =
+        row;
+    Ok(StoredUser {
+        id: Snowflake::from_raw(
+            u64::try_from(id).map_err(|_| AccountStorageError::IntegerOutOfRange)?,
+        ),
+        username,
+        display_name,
+        email,
+        password_hash,
+        is_instance_administrator,
+        is_disabled: disabled_at.is_some(),
+    })
+}
+
+/// # Errors
+/// `UsernameTaken` / `EmailTaken` when a unique constraint rejects the row (case-insensitive).
+pub async fn insert_user(pool: &SqlitePool, user: &NewUser) -> Result<(), AccountStorageError> {
+    let result = sqlx::query(
+        "INSERT INTO users (id, username, display_name, email, password_hash, \
+         is_instance_administrator, created_at_unix_milliseconds) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(to_sqlite_integer(user.id.raw())?)
+    .bind(&user.username)
+    .bind(&user.display_name)
+    .bind(&user.email)
+    .bind(&user.password_hash)
+    .bind(user.is_instance_administrator)
+    .bind(to_sqlite_integer(user.created_at_unix_milliseconds)?)
+    .execute(pool)
+    .await;
+    match result {
+        Ok(_) => Ok(()),
+        Err(sqlx::Error::Database(database_error))
+            if database_error.code().as_deref() == Some(SQLITE_UNIQUE_CONSTRAINT_ERROR_CODE) =>
+        {
+            // SQLite names the violated column: "UNIQUE constraint failed: users.email".
+            if database_error.message().contains("users.email") {
+                Err(AccountStorageError::EmailTaken)
+            } else {
+                Err(AccountStorageError::UsernameTaken)
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Looks up by username or email, both case-insensitive (`COLLATE NOCASE`).
+///
+/// # Errors
+/// Fails on database errors only; an unknown login is `Ok(None)`.
+pub async fn find_user_by_login(
+    pool: &SqlitePool,
+    login: &str,
+) -> Result<Option<StoredUser>, AccountStorageError> {
+    let row: Option<StoredUserRow> = sqlx::query_as(concat!(
+        "SELECT ",
+        select_user_columns!(),
+        " FROM users WHERE users.username = ?1 OR users.email = ?1"
+    ))
+    .bind(login)
+    .fetch_optional(pool)
+    .await?;
+    row.map(stored_user_from_row).transpose()
+}
+
+/// # Errors
+/// Fails on database errors.
+pub async fn insert_session(
+    pool: &SqlitePool,
+    session: &NewSession,
+) -> Result<(), AccountStorageError> {
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, token_sha256, device_name, created_at_unix_milliseconds, \
+         last_seen_at_unix_milliseconds, expires_at_unix_milliseconds) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(to_sqlite_integer(session.id.raw())?)
+    .bind(to_sqlite_integer(session.user_id.raw())?)
+    .bind(session.token_sha256.as_slice())
+    .bind(&session.device_name)
+    .bind(to_sqlite_integer(session.created_at_unix_milliseconds)?)
+    .bind(to_sqlite_integer(session.created_at_unix_milliseconds)?)
+    .bind(to_sqlite_integer(session.expires_at_unix_milliseconds)?)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The user owning an unexpired session, whether or not the account is disabled (the caller decides).
+///
+/// # Errors
+/// Fails on database errors only.
+pub async fn find_user_by_session(
+    pool: &SqlitePool,
+    token_sha256: &SessionTokenSha256,
+    now_unix_milliseconds: u64,
+) -> Result<Option<StoredUser>, AccountStorageError> {
+    let row: Option<StoredUserRow> = sqlx::query_as(concat!(
+        "SELECT ",
+        select_user_columns!(),
+        " FROM sessions JOIN users ON users.id = sessions.user_id",
+        " WHERE sessions.token_sha256 = ? AND sessions.expires_at_unix_milliseconds > ?"
+    ))
+    .bind(token_sha256.as_slice())
+    .bind(to_sqlite_integer(now_unix_milliseconds)?)
+    .fetch_optional(pool)
+    .await?;
+    row.map(stored_user_from_row).transpose()
+}
+
+/// Idempotent: deleting an unknown session is not an error.
+///
+/// # Errors
+/// Fails on database errors.
+pub async fn delete_session(
+    pool: &SqlitePool,
+    token_sha256: &SessionTokenSha256,
+) -> Result<(), AccountStorageError> {
+    sqlx::query("DELETE FROM sessions WHERE token_sha256 = ?")
+        .bind(token_sha256.as_slice())
+        .execute(pool)
+        .await?;
+    Ok(())
+}

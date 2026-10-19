@@ -8,7 +8,8 @@ use anyhow::{Context as _, Result, bail};
 use tokio::net::TcpListener;
 
 use crate::config::ServerConfig;
-use crate::http::{AppState, router};
+use crate::domain::account_rules::RegistrationMode;
+use crate::http::{AppState, make_service};
 use crate::storage::{
     MasterKey, create_private_directory, migrate_with_backup, open_encrypted_database,
 };
@@ -19,6 +20,7 @@ pub struct InitializeOptions {
     pub data_directory: PathBuf,
     pub master_key_file: PathBuf,
     pub listen_address: SocketAddr,
+    pub registration_mode: RegistrationMode,
 }
 
 /// Creates the master key, the data directory with a migrated database, and the config file.
@@ -32,6 +34,8 @@ pub async fn initialize_instance(options: &InitializeOptions) -> Result<ServerCo
         master_key_file: std::path::absolute(&options.master_key_file)
             .context("cannot resolve the master key file path")?,
         listen_address: options.listen_address,
+        registration_mode: options.registration_mode,
+        behind_tls_reverse_proxy: false,
     };
     // Every check that can fail runs before the key is written, so a failed `init` leaves
     // nothing behind and can simply be run again.
@@ -139,11 +143,73 @@ pub async fn serve_instance(
                 "database migrated"
             );
         }
-        serve_until_shutdown(listener, AppState { pool: pool.clone() }, shutdown).await
+        serve_until_shutdown(listener, AppState::new(pool.clone(), config), shutdown).await
     }
     .await;
 
     // SQLCipher crashes if a connection is still closing when the process exits (ADR-0006).
+    pool.close().await;
+    result
+}
+
+pub struct CreateUserOptions {
+    pub username: String,
+    pub display_name: Option<String>,
+    pub email: String,
+    pub password: zeroize::Zeroizing<String>,
+    pub is_instance_administrator: bool,
+}
+
+/// The password is never printed (logs must not contain secrets).
+impl std::fmt::Debug for CreateUserOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CreateUserOptions")
+            .field("username", &self.username)
+            .field("display_name", &self.display_name)
+            .field("email", &self.email)
+            .field("password", &"<redacted>")
+            .field("is_instance_administrator", &self.is_instance_administrator)
+            .finish()
+    }
+}
+
+/// `mellow-server admin create-user`: works whatever the registration mode, so the first
+/// administrator can be created on a closed instance. Safe while `serve` runs (SQLite WAL).
+///
+/// # Errors
+/// Fails on a missing database or key, invalid input, or a taken username or email.
+pub async fn create_user(
+    config: &ServerConfig,
+    options: CreateUserOptions,
+) -> Result<mellow_protocol::CurrentUser> {
+    let database_path = config.database_path();
+    if !database_path.is_file() {
+        bail!(
+            "no database at {}; run `mellow-server init` first",
+            database_path.display()
+        );
+    }
+    let database_key = MasterKey::read_file(&config.master_key_file)?.derive_database_key();
+    let pool = open_encrypted_database(&database_path, &database_key).await?;
+    let result = async {
+        migrate_with_backup(&pool, &config.backup_directory()).await?;
+        Ok(
+            crate::domain::accounts::Accounts::new(pool.clone(), config.registration_mode)
+                .create_account(
+                    crate::domain::accounts::NewAccount {
+                        username: options.username,
+                        display_name: options.display_name,
+                        email: options.email,
+                        password: options.password,
+                        is_instance_administrator: options.is_instance_administrator,
+                    },
+                    crate::domain::clock::now_unix_milliseconds(),
+                )
+                .await?,
+        )
+    }
+    .await;
     pool.close().await;
     result
 }
@@ -160,7 +226,7 @@ pub(crate) async fn serve_until_shutdown(
     if let Ok(address) = listener.local_addr() {
         tracing::info!(%address, "listening");
     }
-    axum::serve(listener, router(state))
+    axum::serve(listener, make_service(state))
         .with_graceful_shutdown(shutdown)
         .await
         .context("HTTP server stopped with an error")
@@ -207,6 +273,7 @@ mod tests {
             data_directory: directory.join("data"),
             master_key_file: directory.join("keys").join("master.key"),
             listen_address: "127.0.0.1:0".parse().unwrap(),
+            registration_mode: RegistrationMode::Open,
         }
     }
 
@@ -299,7 +366,7 @@ mod tests {
         let (stop_sender, stop_receiver) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(serve_until_shutdown(
             listener,
-            AppState { pool: pool.clone() },
+            AppState::new(pool.clone(), &config),
             async {
                 let _ = stop_receiver.await;
             },
@@ -328,5 +395,47 @@ mod tests {
         let mut response = String::new();
         stream.read_to_string(&mut response).await.unwrap();
         response
+    }
+
+    fn new_user(username: &str, is_instance_administrator: bool) -> CreateUserOptions {
+        CreateUserOptions {
+            username: username.into(),
+            display_name: None,
+            email: format!("{username}@example.org"),
+            password: zeroize::Zeroizing::new("correct horse battery".into()),
+            is_instance_administrator,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_user_works_with_registration_closed_and_rejects_duplicates() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut options = options_in(directory.path());
+        options.registration_mode = RegistrationMode::Closed;
+        let config = initialize_instance(&options).await.unwrap();
+
+        let admin = create_user(&config, new_user("admin", true)).await.unwrap();
+        assert!(admin.is_instance_administrator);
+        assert!(
+            create_user(&config, new_user("admin", false))
+                .await
+                .is_err()
+        );
+        let printed = format!("{:?}", new_user("someone", false));
+        assert!(!printed.contains("correct horse"), "{printed}");
+    }
+
+    #[tokio::test]
+    async fn create_user_refuses_to_create_an_instance() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = initialize_instance(&options_in(directory.path()))
+            .await
+            .unwrap();
+        std::fs::remove_file(config.database_path()).unwrap();
+
+        let error = create_user(&config, new_user("admin", true))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("no database"), "{error:#}");
     }
 }

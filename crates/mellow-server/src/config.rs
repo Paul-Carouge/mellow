@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::account_rules::RegistrationMode;
+
 pub const DATA_DIRECTORY_VARIABLE: &str = "MELLOW_DATA_DIRECTORY";
 pub const MASTER_KEY_FILE_VARIABLE: &str = "MELLOW_MASTER_KEY_FILE";
 pub const LISTEN_ADDRESS_VARIABLE: &str = "MELLOW_LISTEN_ADDRESS";
@@ -21,6 +23,13 @@ pub struct ServerConfig {
     /// Kept outside the data directory so a copied data directory or backup reveals nothing (ADR-0006).
     pub master_key_file: PathBuf,
     pub listen_address: SocketAddr,
+    #[serde(default)]
+    pub registration_mode: RegistrationMode,
+    /// Set when a TLS reverse proxy on this host forwards to Mellow. Required to listen on a
+    /// non-loopback address (until built-in TLS lands, tokens would otherwise travel in clear),
+    /// and makes the client address come from the last `X-Forwarded-For` hop.
+    #[serde(default)]
+    pub behind_tls_reverse_proxy: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +59,10 @@ pub enum ConfigError {
         #[source]
         source: std::io::Error,
     },
+    #[error(
+        "listening on {address} would send session tokens unencrypted; listen on 127.0.0.1, or set behind_tls_reverse_proxy = true once a TLS reverse proxy fronts Mellow"
+    )]
+    PlainHttpOnPublicAddress { address: SocketAddr },
     #[error(
         "the master key file must not be inside the data directory ({path}), or backups would carry the key"
     )]
@@ -149,6 +162,11 @@ impl ServerConfig {
                 path: self.master_key_file.clone(),
             });
         }
+        if !self.listen_address.ip().is_loopback() && !self.behind_tls_reverse_proxy {
+            return Err(ConfigError::PlainHttpOnPublicAddress {
+                address: self.listen_address,
+            });
+        }
         Ok(())
     }
 
@@ -227,11 +245,11 @@ mod tests {
         let overrides = EnvironmentOverrides {
             data_directory: Some("/srv/mellow".into()),
             master_key_file: None,
-            listen_address: Some("0.0.0.0:9000".into()),
+            listen_address: Some("127.0.0.2:9000".into()),
         };
         let config = load_text(VALID_CONFIG, &overrides).unwrap();
         assert_eq!(config.data_directory, PathBuf::from("/srv/mellow"));
-        assert_eq!(config.listen_address, "0.0.0.0:9000".parse().unwrap());
+        assert_eq!(config.listen_address, "127.0.0.2:9000".parse().unwrap());
     }
 
     #[test]
@@ -290,6 +308,8 @@ mod tests {
             data_directory,
             master_key_file: link_to_data.join("master.key"),
             listen_address: DEFAULT_LISTEN_ADDRESS.parse().unwrap(),
+            registration_mode: RegistrationMode::Closed,
+            behind_tls_reverse_proxy: false,
         };
 
         assert!(
@@ -300,6 +320,28 @@ mod tests {
             config.ensure_master_key_outside_data_directory_on_disk(),
             Err(ConfigError::MasterKeyInsideDataDirectory { .. })
         ));
+    }
+
+    #[test]
+    fn public_addresses_need_a_tls_reverse_proxy_and_registration_defaults_to_closed() {
+        let public = VALID_CONFIG.replace("127.0.0.1:8080", "0.0.0.0:8080");
+        assert!(matches!(
+            load_text(&public, &EnvironmentOverrides::default()),
+            Err(ConfigError::PlainHttpOnPublicAddress { .. })
+        ));
+        let proxied = load_text(
+            &format!("{public}\nbehind_tls_reverse_proxy = true"),
+            &EnvironmentOverrides::default(),
+        )
+        .unwrap();
+        assert!(proxied.behind_tls_reverse_proxy);
+        assert_eq!(proxied.registration_mode, RegistrationMode::Closed);
+        let open = load_text(
+            &format!("{VALID_CONFIG}\nregistration_mode = \"open\""),
+            &EnvironmentOverrides::default(),
+        )
+        .unwrap();
+        assert_eq!(open.registration_mode, RegistrationMode::Open);
     }
 
     #[test]

@@ -1,16 +1,20 @@
-//! `mellow-server`: one binary to initialise and run a Mellow instance.
+//! `mellow-server`: one binary to initialise, administer and run a Mellow instance.
 
+use std::io::{BufRead as _, IsTerminal as _};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::Result;
-use clap::{Parser, Subcommand};
+use anyhow::{Context as _, Result};
+use clap::{Parser, Subcommand, ValueEnum};
 use mellow_server::commands::{
-    InitializeOptions, initialize_instance, serve_instance, shutdown_signal,
+    CreateUserOptions, InitializeOptions, create_user, initialize_instance, serve_instance,
+    shutdown_signal,
 };
 use mellow_server::config::{DEFAULT_LISTEN_ADDRESS, EnvironmentOverrides, ServerConfig};
+use mellow_server::domain::account_rules::RegistrationMode;
 use tracing_subscriber::EnvFilter;
+use zeroize::Zeroizing;
 
 const DEFAULT_CONFIG_PATH: &str = "mellow.toml";
 const DEFAULT_LOG_FILTER: &str = "info";
@@ -36,12 +40,55 @@ enum Command {
         master_key_file: PathBuf,
         #[arg(long, default_value = DEFAULT_LISTEN_ADDRESS)]
         listen_address: SocketAddr,
+        /// Who may create an account; the administrator can always create accounts.
+        #[arg(long, value_enum, default_value_t = RegistrationModeArgument::Closed)]
+        registration_mode: RegistrationModeArgument,
     },
     /// Run the server until Ctrl+C or SIGTERM.
     Serve {
         #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
         config: PathBuf,
     },
+    /// Instance administration.
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AdminCommand {
+    /// Create an account, e.g. the first administrator. Asks for the password (not echoed),
+    /// or reads one line from standard input when it is not a terminal.
+    CreateUser {
+        #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
+        config: PathBuf,
+        #[arg(long)]
+        username: String,
+        #[arg(long)]
+        email: String,
+        #[arg(long)]
+        display_name: Option<String>,
+        /// Give the account access to instance administration.
+        #[arg(long)]
+        administrator: bool,
+    },
+}
+
+/// Kept in the binary so the domain does not depend on clap.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum RegistrationModeArgument {
+    Open,
+    Closed,
+}
+
+impl From<RegistrationModeArgument> for RegistrationMode {
+    fn from(argument: RegistrationModeArgument) -> Self {
+        match argument {
+            RegistrationModeArgument::Open => Self::Open,
+            RegistrationModeArgument::Closed => Self::Closed,
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -69,6 +116,29 @@ fn main() -> ExitCode {
     }
 }
 
+fn load_config(path: &std::path::Path) -> Result<ServerConfig> {
+    Ok(ServerConfig::load(
+        path,
+        &EnvironmentOverrides::from_process_environment(),
+    )?)
+}
+
+fn read_password() -> Result<Zeroizing<String>> {
+    if std::io::stdin().is_terminal() {
+        return Ok(Zeroizing::new(
+            rpassword::prompt_password("Password: ").context("cannot read the password")?,
+        ));
+    }
+    let mut line = Zeroizing::new(String::new());
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .context("cannot read the password from standard input")?;
+    Ok(Zeroizing::new(
+        line.trim_end_matches(['\r', '\n']).to_owned(),
+    ))
+}
+
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Init {
@@ -76,30 +146,67 @@ async fn run(cli: Cli) -> Result<()> {
             data_directory,
             master_key_file,
             listen_address,
+            registration_mode,
         } => {
             let created = initialize_instance(&InitializeOptions {
                 config_path: config.clone(),
                 data_directory,
                 master_key_file,
                 listen_address,
+                registration_mode: registration_mode.into(),
             })
             .await?;
             eprintln!(
                 "Instance created.\n  config:     {}\n  data:       {}\n  master key: {}\n\n\
                  Back up the master key file now and keep it apart from the data directory:\n\
                  without it the database cannot be decrypted.\n\
-                 Start the server with: mellow-server serve --config {}",
+                 Create the first administrator with:\n  \
+                 mellow-server admin create-user --config {} --username <name> --email <address> --administrator\n\
+                 Then start the server with: mellow-server serve --config {}",
                 config.display(),
                 created.data_directory.display(),
                 created.master_key_file.display(),
+                config.display(),
                 config.display(),
             );
             Ok(())
         }
         Command::Serve { config } => {
-            let config =
-                ServerConfig::load(&config, &EnvironmentOverrides::from_process_environment())?;
-            serve_instance(&config, shutdown_signal()).await
+            serve_instance(&load_config(&config)?, shutdown_signal()).await
+        }
+        Command::Admin {
+            command:
+                AdminCommand::CreateUser {
+                    config,
+                    username,
+                    email,
+                    display_name,
+                    administrator,
+                },
+        } => {
+            let config = load_config(&config)?;
+            let user = create_user(
+                &config,
+                CreateUserOptions {
+                    username,
+                    display_name,
+                    email,
+                    password: read_password()?,
+                    is_instance_administrator: administrator,
+                },
+            )
+            .await?;
+            eprintln!(
+                "Created {} ({}){}.",
+                user.username,
+                user.id,
+                if user.is_instance_administrator {
+                    ", instance administrator"
+                } else {
+                    ""
+                }
+            );
+            Ok(())
         }
     }
 }
