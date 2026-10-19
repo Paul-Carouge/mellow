@@ -90,35 +90,35 @@ pub fn sign_out_before_exit(shell: &SharedShell) {
 }
 
 fn connect_callbacks(window: &AppWindow, shell: &SharedShell) {
-    let shared = shell.clone();
-    window.on_sign_in(move || submit_credentials(&shared, false));
-    let shared = shell.clone();
-    window.on_register(move || submit_credentials(&shared, true));
+    let shell_for_callback = shell.clone();
+    window.on_sign_in(move || submit_credentials(&shell_for_callback, false));
+    let shell_for_callback = shell.clone();
+    window.on_register(move || submit_credentials(&shell_for_callback, true));
 
-    let shared = shell.clone();
+    let shell_for_callback = shell.clone();
     window.on_select_server(move |server_index| {
         let guild_id = usize::try_from(server_index).ok().and_then(|index| {
-            shared
+            shell_for_callback
                 .borrow()
                 .state
                 .guilds()
                 .get(index)
                 .map(|guild| guild.id)
         });
-        select_guild(&shared, guild_id);
+        select_guild(&shell_for_callback, guild_id, None);
     });
 
-    let shared = shell.clone();
+    let shell_for_callback = shell.clone();
     window.on_select_channel(move |channel_id: SharedString| {
         if let Ok(channel_id) = channel_id.parse() {
-            open_channel(&shared, Some(channel_id));
+            open_channel(&shell_for_callback, Some(channel_id));
         }
     });
 
-    let shared = shell.clone();
+    let shell_for_callback = shell.clone();
     window.on_toggle_category(move |category_index| {
         {
-            let mut shell = shared.borrow_mut();
+            let mut shell = shell_for_callback.borrow_mut();
             let category_id = shell
                 .selected_guild_id
                 .and_then(|guild_id| shell.state.guild(guild_id))
@@ -135,15 +135,15 @@ fn connect_callbacks(window: &AppWindow, shell: &SharedShell) {
                 shell.collapsed_category_ids.insert(category_id);
             }
         }
-        refresh_channel_rows(&shared.borrow());
+        refresh_channel_rows(&shell_for_callback.borrow());
     });
 
-    let shared = shell.clone();
-    window.on_send_message(move |text: SharedString| send_message(&shared, text));
+    let shell_for_callback = shell.clone();
+    window.on_send_message(move |text: SharedString| send_message(&shell_for_callback, text));
 
-    let shared = shell.clone();
+    let shell_for_callback = shell.clone();
     window.on_copy_message_text(move |message_index| {
-        let mut shell = shared.borrow_mut();
+        let mut shell = shell_for_callback.borrow_mut();
         let Some(message) = usize::try_from(message_index)
             .ok()
             .and_then(|index| shell.messages.row_data(index))
@@ -228,10 +228,17 @@ fn submit_credentials(shell: &SharedShell, is_registering: bool) {
     });
 }
 
-/// Cleared first so the same message set twice is announced again by screen readers.
+/// Cleared, then set on the next tick: an identical message set twice in one go would leave the
+/// property unchanged, so screen readers would not announce it and focus would not move.
 fn show_login_error(window: &AppWindow, message: &str) {
     window.set_login_error_message(SharedString::default());
-    window.set_login_error_message(message.into());
+    let weak_window = window.as_weak();
+    let message = SharedString::from(message);
+    slint::Timer::single_shot(Duration::ZERO, move || {
+        if let Some(window) = weak_window.upgrade() {
+            window.set_login_error_message(message);
+        }
+    });
 }
 
 /// The copy of DESIGN.md §5.1; the server's own message for cases it explains best.
@@ -344,7 +351,7 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
     };
     match update {
         GatewayUpdate::Ready(ready) => {
-            let previous_guild_id = {
+            let (previous_guild_id, previous_channel_id) = {
                 let mut shell = shell.borrow_mut();
                 shell.state.apply_ready(*ready);
                 shell.requested_history_channel_ids.clear();
@@ -357,7 +364,7 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
                         shell_rows::first_letter(&user.display_name).into(),
                     );
                 }
-                shell.selected_guild_id
+                (shell.selected_guild_id, shell.selected_channel_id)
             };
             set_notice("");
             let guild_id = {
@@ -366,7 +373,8 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
                     .filter(|id| shell.state.guild(*id).is_some())
                     .or_else(|| shell.state.guilds().first().map(|guild| guild.id))
             };
-            select_guild(shell, guild_id);
+            // After a re-identify the reader stays where they were, as after a resume.
+            select_guild(shell, guild_id, previous_channel_id);
         }
         GatewayUpdate::Event(event) => {
             let change = shell
@@ -389,26 +397,26 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
     match change {
         StateChange::Nothing | StateChange::Typing { .. } => return,
         StateChange::Guilds => {
-            // The selected guild or channel may be gone.
-            let guild_still_exists =
-                selected_guild_id.is_some_and(|id| shell.borrow().state.guild(id).is_some());
-            if !guild_still_exists {
+            // The selected guild or channel may be gone; `None` is home, which never goes away.
+            let guild_is_gone =
+                selected_guild_id.is_some_and(|id| shell.borrow().state.guild(id).is_none());
+            if guild_is_gone {
                 let first_guild_id = shell.borrow().state.guilds().first().map(|guild| guild.id);
-                select_guild(shell, first_guild_id);
+                select_guild(shell, first_guild_id, None);
                 return;
             }
-            let channel_still_exists = {
+            let channel_is_gone = {
                 let shell = shell.borrow();
                 selected_guild_id
                     .and_then(|id| shell.state.guild(id))
                     .is_some_and(|guild| {
-                        guild
+                        !guild
                             .channels
                             .iter()
                             .any(|channel| Some(channel.id) == selected_channel_id)
                     })
             };
-            if !channel_still_exists {
+            if channel_is_gone {
                 let first_channel_id = selected_guild_id.and_then(|id| {
                     shell
                         .borrow()
@@ -418,6 +426,8 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
                 });
                 open_channel(shell, first_channel_id);
             }
+            // A rename or new topic of the open guild or channel.
+            refresh_header(&shell.borrow());
         }
         StateChange::Messages { channel_id } if Some(channel_id) == selected_channel_id => {
             refresh_messages(&shell.borrow());
@@ -443,7 +453,15 @@ fn end_session(shell: &SharedShell, message: &str) {
     shell.selected_guild_id = None;
     shell.selected_channel_id = None;
     shell.messages.set_vec(Vec::new());
+    // Nothing of the previous account may stay on screen for the next one.
+    refresh_header(&shell);
+    refresh_server_items(&shell);
+    refresh_channel_rows(&shell);
+    refresh_member_rows(&shell);
     if let Some(window) = shell.window.upgrade() {
+        window.set_current_user_name(SharedString::default());
+        window.set_current_user_initial(SharedString::default());
+        window.set_composer_text(SharedString::default());
         window.set_is_signed_in(false);
         window.set_connection_notice(SharedString::default());
         window.set_login_is_busy(false);
@@ -451,80 +469,85 @@ fn end_session(shell: &SharedShell, message: &str) {
     }
 }
 
-fn select_guild(shell: &SharedShell, guild_id: Option<Snowflake>) {
-    let first_channel_id = {
-        let mut shell_mut = shell.borrow_mut();
-        shell_mut.selected_guild_id = guild_id;
-        let guild = guild_id.and_then(|id| shell_mut.state.guild(id));
-        let first_channel_id = guild.and_then(live_rows::first_text_channel_id);
-        let server_name = guild.map_or(HOME_SERVER_NAME.to_owned(), |guild| guild.name.clone());
-        let server_index = guild_id
-            .and_then(|id| {
-                shell_mut
-                    .state
-                    .guilds()
+/// Opens `preferred_channel_id` when it belongs to the guild, otherwise its first text channel.
+fn select_guild(
+    shell: &SharedShell,
+    guild_id: Option<Snowflake>,
+    preferred_channel_id: Option<Snowflake>,
+) {
+    let channel_id = {
+        let mut shell = shell.borrow_mut();
+        shell.selected_guild_id = guild_id;
+        let guild = guild_id.and_then(|id| shell.state.guild(id));
+        let preferred = preferred_channel_id.filter(|channel_id| {
+            guild.is_some_and(|guild| {
+                guild
+                    .channels
                     .iter()
-                    .position(|guild| guild.id == id)
+                    .any(|channel| channel.id == *channel_id)
             })
-            .map_or(-1, shell_rows::saturating_int);
-        if let Some(window) = shell_mut.window.upgrade() {
-            window.set_server_name(server_name.into());
-            window.set_selected_server_index(server_index);
-        }
-        first_channel_id
-    };
-    {
-        let shell = shell.borrow();
+        });
+        let channel_id = preferred.or_else(|| guild.and_then(live_rows::first_text_channel_id));
         refresh_server_items(&shell);
         refresh_member_rows(&shell);
-    }
+        channel_id
+    };
     if let Some(guild_id) = guild_id {
         ensure_members_loaded(shell, guild_id);
     }
     // shortcut: home (direct messages) shows an empty channel list until DMs land in the client.
-    open_channel(shell, first_channel_id);
+    open_channel(shell, channel_id);
 }
 
 fn open_channel(shell: &SharedShell, channel_id: Option<Snowflake>) {
     {
-        let mut shell_mut = shell.borrow_mut();
-        shell_mut.selected_channel_id = channel_id;
-        let channel = shell_mut
-            .selected_guild_id
-            .and_then(|id| shell_mut.state.guild(id))
-            .and_then(|guild| {
-                guild
-                    .channels
-                    .iter()
-                    .find(|channel| Some(channel.id) == channel_id)
-            });
-        if let Some(window) = shell_mut.window.upgrade() {
-            window.set_selected_channel_id(
-                channel_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_default()
-                    .into(),
-            );
-            window.set_selected_channel_name(
-                channel
-                    .map(|channel| channel.name.as_str())
-                    .unwrap_or_default()
-                    .into(),
-            );
-            window.set_selected_channel_topic(
-                channel
-                    .map(|channel| channel.topic.as_str())
-                    .unwrap_or_default()
-                    .into(),
-            );
-        }
-        refresh_channel_rows(&shell_mut);
-        refresh_messages(&shell_mut);
+        let mut shell = shell.borrow_mut();
+        shell.selected_channel_id = channel_id;
+        refresh_header(&shell);
+        refresh_channel_rows(&shell);
+        refresh_messages(&shell);
     }
     if let Some(channel_id) = channel_id {
         ensure_history_loaded(shell, channel_id);
         acknowledge_selected_channel(shell);
     }
+}
+
+/// Server name, rail selection and channel header, from the current selection and state.
+fn refresh_header(shell: &LiveShell) {
+    let Some(window) = shell.window.upgrade() else {
+        return;
+    };
+    let guild = shell.selected_guild_id.and_then(|id| shell.state.guild(id));
+    let channel = guild.and_then(|guild| {
+        guild
+            .channels
+            .iter()
+            .find(|channel| Some(channel.id) == shell.selected_channel_id)
+    });
+    let server_index = guild
+        .and_then(|guild| {
+            shell
+                .state
+                .guilds()
+                .iter()
+                .position(|candidate| candidate.id == guild.id)
+        })
+        .map_or(-1, shell_rows::saturating_int);
+    window.set_server_name(
+        guild
+            .map_or(HOME_SERVER_NAME, |guild| guild.name.as_str())
+            .into(),
+    );
+    window.set_selected_server_index(server_index);
+    window.set_selected_channel_id(
+        channel
+            .map(|channel| channel.id.to_string())
+            .unwrap_or_default()
+            .into(),
+    );
+    window.set_selected_channel_name(channel.map_or("", |channel| channel.name.as_str()).into());
+    window.set_selected_channel_topic(channel.map_or("", |channel| channel.topic.as_str()).into());
 }
 
 fn ensure_history_loaded(shell: &SharedShell, channel_id: Snowflake) {
@@ -635,36 +658,40 @@ fn send_message(shell: &SharedShell, text: SharedString) {
     if content.is_empty() {
         return;
     }
-    let request = async move {
-        let request = SendMessageRequest {
+    let send_message_call = async move {
+        let send_message_request = SendMessageRequest {
             content,
             reply_to_id: None,
             nonce: None,
         };
-        rest.send_message(channel_id, &request).await
+        rest.send_message(channel_id, &send_message_request).await
     };
-    run_request(shell, request, move |shell, result| match result {
-        Ok(message) => {
-            let change = shell
-                .borrow_mut()
-                .state
-                .insert_messages(channel_id, vec![message]);
-            apply_state_change(shell, change);
-            if let Some(window) = shell.borrow().window.upgrade() {
-                window.invoke_scroll_to_latest_message();
+    run_request(
+        shell,
+        send_message_call,
+        move |shell, result| match result {
+            Ok(message) => {
+                let change = shell
+                    .borrow_mut()
+                    .state
+                    .insert_messages(channel_id, vec![message]);
+                apply_state_change(shell, change);
+                if let Some(window) = shell.borrow().window.upgrade() {
+                    window.invoke_scroll_to_latest_message();
+                }
             }
-        }
-        Err(error) => {
-            // shortcut: the text goes back to the composer instead of a "failed, retry" message row.
-            if let Some(window) = shell.borrow().window.upgrade()
-                && window.get_composer_text().is_empty()
-            {
-                window.set_composer_text(text);
-                window.set_latest_announcement(format!("Message not sent: {error}").into());
+            Err(error) => {
+                // shortcut: the text goes back to the composer instead of a "failed, retry" message row.
+                if let Some(window) = shell.borrow().window.upgrade()
+                    && window.get_composer_text().is_empty()
+                {
+                    window.set_composer_text(text);
+                    window.set_latest_announcement(format!("Message not sent: {error}").into());
+                }
+                report_request_error(shell, &error, "send message");
             }
-            report_request_error(shell, &error, "send message");
-        }
-    });
+        },
+    );
 }
 
 fn refresh_server_items(shell: &LiveShell) {
