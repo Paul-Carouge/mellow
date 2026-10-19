@@ -38,6 +38,18 @@ pub(crate) const LOGIN_ATTEMPTS_PER_ACCOUNT: RateLimit = RateLimit {
     window: Duration::from_mins(15),
 };
 
+/// Invite redemptions per client address: invite codes must not be guessable by brute force.
+pub(crate) const INVITE_ATTEMPTS_PER_ADDRESS: RateLimit = RateLimit {
+    maximum_events: 30,
+    window: Duration::from_secs(60),
+};
+
+/// Guild, channel and invite writes per user, so quotas fill slowly and cheaply.
+pub(crate) const GUILD_WRITES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 30,
+    window: Duration::from_secs(60),
+};
+
 #[derive(Debug, Default)]
 pub(crate) struct RateLimiter {
     state: Mutex<LimiterState>,

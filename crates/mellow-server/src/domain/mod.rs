@@ -4,6 +4,9 @@
 pub mod account_rules;
 pub mod accounts;
 pub mod clock;
+pub(crate) mod guild_rules;
+pub(crate) mod guilds;
 pub(crate) mod password;
+pub(crate) mod permissions;
 pub(crate) mod session_token;
-pub(crate) mod snowflake_generator;
+pub mod snowflake_generator;

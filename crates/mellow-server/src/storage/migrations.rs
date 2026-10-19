@@ -193,7 +193,8 @@ mod tests {
         let backups = directory.path().join("backups");
 
         let first_run = migrate_with_backup(&pool, &backups).await.unwrap();
-        assert_eq!(first_run.applied_versions, [1]);
+        let every_version: Vec<i64> = MIGRATOR.iter().map(|migration| migration.version).collect();
+        assert_eq!(first_run.applied_versions, every_version);
         assert_eq!(first_run.backup_path, None);
 
         let second_run = migrate_with_backup(&pool, &backups).await.unwrap();

@@ -2,6 +2,7 @@
 
 pub(crate) mod accounts;
 mod database;
+pub(crate) mod guilds;
 mod master_key;
 mod migrations;
 

@@ -194,20 +194,22 @@ pub async fn create_user(
     let pool = open_encrypted_database(&database_path, &database_key).await?;
     let result = async {
         migrate_with_backup(&pool, &config.backup_directory()).await?;
-        Ok(
-            crate::domain::accounts::Accounts::new(pool.clone(), config.registration_mode)
-                .create_account(
-                    crate::domain::accounts::NewAccount {
-                        username: options.username,
-                        display_name: options.display_name,
-                        email: options.email,
-                        password: options.password,
-                        is_instance_administrator: options.is_instance_administrator,
-                    },
-                    crate::domain::clock::now_unix_milliseconds(),
-                )
-                .await?,
+        Ok(crate::domain::accounts::Accounts::new(
+            pool.clone(),
+            config.registration_mode,
+            std::sync::Arc::default(),
         )
+        .create_account(
+            crate::domain::accounts::NewAccount {
+                username: options.username,
+                display_name: options.display_name,
+                email: options.email,
+                password: options.password,
+                is_instance_administrator: options.is_instance_administrator,
+            },
+            crate::domain::clock::now_unix_milliseconds(),
+        )
+        .await?)
     }
     .await;
     pool.close().await;

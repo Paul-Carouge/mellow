@@ -15,23 +15,15 @@ use crate::domain::accounts::AccountError;
 use crate::domain::clock::now_unix_milliseconds;
 use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiJson};
+use crate::http::authentication::{AuthenticatedUser, bearer_token};
 use crate::http::client_address::client_address_key;
 use crate::http::rate_limit::{
     AUTHENTICATION_ATTEMPTS_PER_ADDRESS, LOGIN_ATTEMPTS_PER_ACCOUNT,
     LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS,
 };
 
-const BEARER_PREFIX: &str = "Bearer ";
 /// Enough of SHA-256 to make rate-limit keys unique per login while keeping them small.
 const ACCOUNT_KEY_HASH_BYTES: usize = 16;
-
-fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
-    headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix(BEARER_PREFIX))
-        .ok_or_else(ApiError::unauthorized)
-}
 
 /// Fixed-size key for a login, so attacker-chosen logins cannot grow the limiter's memory.
 /// shortcut: a username and its email give two keys for one account; acceptable at these limits.
@@ -119,13 +111,6 @@ pub(crate) async fn logout(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub(crate) async fn current_user(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Json<CurrentUser>, ApiError> {
-    let user = state
-        .accounts
-        .authenticate(bearer_token(&headers)?, now_unix_milliseconds())
-        .await?;
-    Ok(Json(user))
+pub(crate) async fn current_user(AuthenticatedUser(user): AuthenticatedUser) -> Json<CurrentUser> {
+    Json(user)
 }

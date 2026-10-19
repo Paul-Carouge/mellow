@@ -102,16 +102,21 @@ impl std::fmt::Debug for NewAccount {
 #[derive(Debug)]
 pub struct Accounts {
     pool: SqlitePool,
-    ids: SnowflakeGenerator,
+    /// Shared with the other use cases so ids are unique across the whole process.
+    ids: std::sync::Arc<SnowflakeGenerator>,
     registration_mode: RegistrationMode,
 }
 
 impl Accounts {
     #[must_use]
-    pub fn new(pool: SqlitePool, registration_mode: RegistrationMode) -> Self {
+    pub fn new(
+        pool: SqlitePool,
+        registration_mode: RegistrationMode,
+        ids: std::sync::Arc<SnowflakeGenerator>,
+    ) -> Self {
         Self {
             pool,
-            ids: SnowflakeGenerator::default(),
+            ids,
             registration_mode,
         }
     }
@@ -336,7 +341,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn register_then_login_by_username_or_email_and_authenticate() {
         let (_directory, pool) = migrated_pool().await;
-        let accounts = Accounts::new(pool.clone(), RegistrationMode::Open);
+        let accounts = Accounts::new(
+            pool.clone(),
+            RegistrationMode::Open,
+            std::sync::Arc::default(),
+        );
 
         let registered = accounts
             .register(register_request("aurore", "Aurore@Example.org"), NOW)
@@ -362,7 +371,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn wrong_password_and_unknown_user_get_the_same_error() {
         let (_directory, pool) = migrated_pool().await;
-        let accounts = Accounts::new(pool.clone(), RegistrationMode::Open);
+        let accounts = Accounts::new(
+            pool.clone(),
+            RegistrationMode::Open,
+            std::sync::Arc::default(),
+        );
         accounts
             .register(register_request("aurore", "aurore@example.org"), NOW)
             .await
@@ -386,7 +399,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn duplicates_closed_registration_and_invalid_input_are_rejected() {
         let (_directory, pool) = migrated_pool().await;
-        let open = Accounts::new(pool.clone(), RegistrationMode::Open);
+        let open = Accounts::new(
+            pool.clone(),
+            RegistrationMode::Open,
+            std::sync::Arc::default(),
+        );
         open.register(register_request("aurore", "aurore@example.org"), NOW)
             .await
             .unwrap();
@@ -400,9 +417,13 @@ pub(crate) mod tests {
         let bad_username = open
             .register(register_request("Aurore!", "x@example.org"), NOW)
             .await;
-        let closed = Accounts::new(pool.clone(), RegistrationMode::Closed)
-            .register(register_request("chloe", "chloe@example.org"), NOW)
-            .await;
+        let closed = Accounts::new(
+            pool.clone(),
+            RegistrationMode::Closed,
+            std::sync::Arc::default(),
+        )
+        .register(register_request("chloe", "chloe@example.org"), NOW)
+        .await;
         pool.close().await;
 
         assert!(matches!(same_email, Err(AccountError::EmailTaken)));
@@ -419,7 +440,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn sessions_expire_and_logout_revokes_them() {
         let (_directory, pool) = migrated_pool().await;
-        let accounts = Accounts::new(pool.clone(), RegistrationMode::Open);
+        let accounts = Accounts::new(
+            pool.clone(),
+            RegistrationMode::Open,
+            std::sync::Arc::default(),
+        );
         let session = accounts
             .register(register_request("aurore", "aurore@example.org"), NOW)
             .await
@@ -444,7 +469,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn disabled_accounts_cannot_log_in_or_use_existing_sessions() {
         let (_directory, pool) = migrated_pool().await;
-        let accounts = Accounts::new(pool.clone(), RegistrationMode::Open);
+        let accounts = Accounts::new(
+            pool.clone(),
+            RegistrationMode::Open,
+            std::sync::Arc::default(),
+        );
         let session = accounts
             .register(register_request("aurore", "aurore@example.org"), NOW)
             .await

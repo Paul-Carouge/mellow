@@ -2,12 +2,14 @@
 
 use axum::Json;
 use axum::extract::FromRequest;
-use axum::extract::rejection::JsonRejection;
+use axum::extract::FromRequestParts;
+use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use mellow_protocol::{ApiErrorBody, ApiErrorCode};
 
 use crate::domain::accounts::AccountError;
+use crate::domain::guilds::GuildError;
 
 #[derive(Debug)]
 pub(crate) struct ApiError {
@@ -91,6 +93,51 @@ impl IntoResponse for ApiError {
             }),
         )
             .into_response()
+    }
+}
+
+impl From<GuildError> for ApiError {
+    fn from(error: GuildError) -> Self {
+        let (status, code) = match &error {
+            GuildError::InvalidInput(_) => {
+                (StatusCode::BAD_REQUEST, ApiErrorCode::ValidationFailed)
+            }
+            GuildError::NotFound => (StatusCode::NOT_FOUND, ApiErrorCode::NotFound),
+            GuildError::MissingPermissions => {
+                (StatusCode::FORBIDDEN, ApiErrorCode::MissingPermissions)
+            }
+            GuildError::InvalidInvite => (StatusCode::NOT_FOUND, ApiErrorCode::InvalidInvite),
+            GuildError::OwnerCannotLeave => (StatusCode::CONFLICT, ApiErrorCode::OwnerCannotLeave),
+            GuildError::LimitReached(_) => (StatusCode::CONFLICT, ApiErrorCode::LimitReached),
+            GuildError::Internal(source) => {
+                tracing::error!(error = %source, "internal error while handling a guild request");
+                return Self {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    code: ApiErrorCode::Internal,
+                    message: "Something went wrong on the server.".into(),
+                };
+            }
+        };
+        Self {
+            status,
+            code,
+            message: error.to_string(),
+        }
+    }
+}
+
+/// `Path` whose rejections (e.g. a malformed id) use our error format.
+#[derive(Debug, FromRequestParts)]
+#[from_request(via(axum::extract::Path), rejection(ApiError))]
+pub(crate) struct ApiPath<T>(pub(crate) T);
+
+impl From<PathRejection> for ApiError {
+    fn from(rejection: PathRejection) -> Self {
+        Self {
+            status: rejection.status(),
+            code: ApiErrorCode::ValidationFailed,
+            message: rejection.body_text(),
+        }
     }
 }
 

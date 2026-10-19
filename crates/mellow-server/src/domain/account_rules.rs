@@ -91,20 +91,31 @@ fn normalize_short_text(text: &str, maximum_length: usize) -> Option<String> {
     ((1..=maximum_length).contains(&length) && !has_hidden_characters).then(|| trimmed.to_owned())
 }
 
-/// Unicode format characters (category Cf) that are invisible or reorder text: they let a name
-/// impersonate another member or flip the text after it (CWE-451).
-fn is_invisible_format_character(character: char) -> bool {
+/// Invisible or text-reordering characters: Unicode `Default_Ignorable_Code_Point` (zero-width,
+/// bidi controls, fillers, variation selectors, tags), the interlinear annotation marks and the
+/// blank Braille pattern. They let a name look empty, impersonate another one, or flip the text
+/// after it (CWE-451).
+pub(crate) fn is_invisible_format_character(character: char) -> bool {
     matches!(
         character,
         '\u{00AD}'
+            | '\u{034F}'
             | '\u{061C}'
-            | '\u{180E}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{17B4}'..='\u{17B5}'
+            | '\u{180B}'..='\u{180F}'
             | '\u{200B}'..='\u{200F}'
             | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{206F}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{2800}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
             | '\u{FEFF}'
-            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{FFA0}'
+            | '\u{FFF0}'..='\u{FFFB}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0000}'..='\u{E0FFF}'
     )
 }
 
@@ -204,6 +215,10 @@ mod tests {
         assert!(normalize_display_name(&"é".repeat(33)).is_err());
         for hidden in [
             "\u{202E}nimda",
+            "\u{3164}",
+            "ab\u{E0041}",
+            "x\u{FE0F}",
+            "\u{2800}\u{2800}",
             "Aur\u{200B}ore",
             "\u{FEFF}Basile",
             "Chlo\u{2066}é",

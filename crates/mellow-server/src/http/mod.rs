@@ -3,7 +3,9 @@
 
 mod account_routes;
 mod api_error;
+mod authentication;
 mod client_address;
+mod guild_routes;
 mod rate_limit;
 
 use std::net::SocketAddr;
@@ -11,27 +13,36 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use mellow_protocol::{HealthResponse, HealthStatus};
 use sqlx::SqlitePool;
 
 use crate::config::ServerConfig;
 use crate::domain::accounts::Accounts;
+use crate::domain::guilds::Guilds;
+use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::http::rate_limit::RateLimiter;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AppState {
     pub(crate) pool: SqlitePool,
     pub(crate) accounts: Arc<Accounts>,
+    pub(crate) guilds: Arc<Guilds>,
     pub(crate) rate_limiter: Arc<RateLimiter>,
     pub(crate) is_behind_tls_reverse_proxy: bool,
 }
 
 impl AppState {
     pub(crate) fn new(pool: SqlitePool, config: &ServerConfig) -> Self {
+        let ids = Arc::new(SnowflakeGenerator::default());
         Self {
-            accounts: Arc::new(Accounts::new(pool.clone(), config.registration_mode)),
+            accounts: Arc::new(Accounts::new(
+                pool.clone(),
+                config.registration_mode,
+                ids.clone(),
+            )),
+            guilds: Arc::new(Guilds::new(pool.clone(), ids)),
             pool,
             rate_limiter: Arc::default(),
             is_behind_tls_reverse_proxy: config.behind_tls_reverse_proxy,
@@ -46,6 +57,36 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(account_routes::login))
         .route("/api/v1/auth/logout", post(account_routes::logout))
         .route("/api/v1/users/@me", get(account_routes::current_user))
+        .route(
+            "/api/v1/users/@me/guilds",
+            get(guild_routes::list_my_guilds),
+        )
+        .route("/api/v1/guilds", post(guild_routes::create_guild))
+        .route("/api/v1/guilds/{guild_id}", get(guild_routes::get_guild))
+        .route(
+            "/api/v1/guilds/{guild_id}/channels",
+            post(guild_routes::create_channel),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/invites",
+            post(guild_routes::create_invite),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/members",
+            get(guild_routes::list_members),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/members/@me",
+            delete(guild_routes::leave_guild),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}",
+            patch(guild_routes::update_channel).delete(guild_routes::delete_channel),
+        )
+        .route(
+            "/api/v1/invites/{code}",
+            post(guild_routes::join_with_invite),
+        )
         .fallback(|| async { api_error::ApiError::not_found() })
         .method_not_allowed_fallback(|| async { api_error::ApiError::method_not_allowed() })
         .with_state(state)
@@ -100,8 +141,10 @@ mod tests {
     const TEST_PEER: &str = "192.0.2.10:40000";
 
     fn test_state(pool: SqlitePool, registration_mode: RegistrationMode) -> AppState {
+        let ids = Arc::new(SnowflakeGenerator::default());
         AppState {
-            accounts: Arc::new(Accounts::new(pool.clone(), registration_mode)),
+            accounts: Arc::new(Accounts::new(pool.clone(), registration_mode, ids.clone())),
+            guilds: Arc::new(Guilds::new(pool.clone(), ids)),
             pool,
             rate_limiter: Arc::default(),
             is_behind_tls_reverse_proxy: false,
@@ -406,6 +449,181 @@ mod tests {
             assert_eq!(status, expected_status, "{path}");
             assert_eq!(json::<ApiErrorBody>(&body).code, expected_code, "{path}");
         }
+        pool.close().await;
+    }
+
+    async fn registered_token(state: &AppState, username: &str) -> String {
+        let (_, body) = send(
+            state,
+            post_json("/api/v1/auth/register", &registration(username)),
+        )
+        .await;
+        json::<SessionCreated>(&body).token
+    }
+
+    fn authorized(
+        method: &str,
+        path: &str,
+        token: &str,
+        body: Option<serde_json::Value>,
+    ) -> Request<Body> {
+        let builder = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"));
+        match body {
+            Some(body) => builder
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+            None => builder.body(Body::empty()).unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn guild_lifecycle_over_http() {
+        use mellow_protocol::{Guild, GuildSummary, Invite, Member, Permissions};
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let owner = registered_token(&state, "owner").await;
+        let guest = registered_token(&state, "guest").await;
+
+        let (status, body) = send(
+            &state,
+            authorized(
+                "POST",
+                "/api/v1/guilds",
+                &owner,
+                Some(serde_json::json!({"name": "Mellow Dev"})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let guild: Guild = json(&body);
+        let guild_path = format!("/api/v1/guilds/{}", guild.id);
+
+        let (status, body) = send(&state, authorized("GET", &guild_path, &guest, None)).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "outsiders cannot see the guild"
+        );
+        assert_eq!(json::<ApiErrorBody>(&body).code, ApiErrorCode::NotFound);
+
+        let (status, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &format!("{guild_path}/invites"),
+                &owner,
+                Some(serde_json::json!({})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let invite: Invite = json(&body);
+
+        let (status, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &format!("/api/v1/invites/{}", invite.code),
+                &guest,
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            json::<Guild>(&body).my_permissions,
+            Permissions::DEFAULT_EVERYONE
+        );
+
+        let (status, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &format!("{guild_path}/channels"),
+                &guest,
+                Some(serde_json::json!({"kind": "text", "name": "nope", "parent_id": null})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            json::<ApiErrorBody>(&body).code,
+            ApiErrorCode::MissingPermissions
+        );
+
+        let (_, body) = send(
+            &state,
+            authorized("GET", &format!("{guild_path}/members"), &guest, None),
+        )
+        .await;
+        assert_eq!(json::<Vec<Member>>(&body).len(), 2);
+        let (_, body) = send(
+            &state,
+            authorized("GET", "/api/v1/users/@me/guilds", &guest, None),
+        )
+        .await;
+        assert_eq!(json::<Vec<GuildSummary>>(&body)[0].name, "Mellow Dev");
+
+        let (status, body) = send(
+            &state,
+            authorized("GET", "/api/v1/guilds/not-an-id", &owner, None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json::<ApiErrorBody>(&body).code,
+            ApiErrorCode::ValidationFailed
+        );
+
+        let (status, _) = send(
+            &state,
+            authorized("GET", &guild_path, "mlw_not-a-real-token", None),
+        )
+        .await;
+        pool.close().await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn out_of_range_ids_are_not_found_and_invite_guessing_is_rate_limited() {
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let owner = registered_token(&state, "owner").await;
+        let guest = registered_token(&state, "guest").await;
+
+        let (status, _) = send(
+            &state,
+            authorized("GET", "/api/v1/guilds/18446744073709551615", &owner, None),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "ids beyond SQLite's range are simply not found"
+        );
+
+        for _ in 0..rate_limit::INVITE_ATTEMPTS_PER_ADDRESS.maximum_events {
+            send(
+                &state,
+                authorized("POST", "/api/v1/invites/guessing", &guest, None),
+            )
+            .await;
+        }
+        let (status, _) = send(
+            &state,
+            authorized("POST", "/api/v1/invites/guessing", &guest, None),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "invite codes cannot be brute forced"
+        );
         pool.close().await;
     }
 }
