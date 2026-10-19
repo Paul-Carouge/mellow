@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use mellow_protocol::{
     AcknowledgeRequest, ApiErrorBody, Channel, CreateChannelRequest, CreateGuildRequest,
-    CreateInviteRequest, CurrentUser, Guild, Invite, LoginRequest, Member, Message,
-    MessageHistoryQuery, RegisterRequest, SendMessageRequest, SessionCreated, Snowflake,
+    CreateInviteRequest, CurrentUser, EditMessageRequest, Guild, Invite, LoginRequest, Member,
+    Message, MessageHistoryQuery, RegisterRequest, SendMessageRequest, SessionCreated, Snowflake,
 };
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::Serialize;
@@ -293,6 +293,41 @@ impl RestClient {
             request,
             true,
         )
+        .await
+    }
+
+    /// Only the author may edit a message.
+    ///
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` for someone else's message.
+    pub async fn edit_message(
+        &self,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        request: &EditMessageRequest,
+    ) -> Result<Message, ClientError> {
+        let builder = self
+            .request(
+                Method::PATCH,
+                &format!("api/v1/channels/{channel_id}/messages/{message_id}"),
+                true,
+            )?
+            .json(request);
+        Self::send_and_decode_json(builder).await
+    }
+
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` without the right to delete it.
+    pub async fn delete_message(
+        &self,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+    ) -> Result<(), ClientError> {
+        Self::send_and_discard_body(self.request(
+            Method::DELETE,
+            &format!("api/v1/channels/{channel_id}/messages/{message_id}"),
+            true,
+        )?)
         .await
     }
 

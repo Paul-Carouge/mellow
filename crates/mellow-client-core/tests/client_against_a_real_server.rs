@@ -8,8 +8,8 @@ use std::time::Duration;
 use mellow_client_core::state::ClientState;
 use mellow_client_core::{ClientError, GatewayUpdate, InstanceAddress, RestClient, run_gateway};
 use mellow_protocol::{
-    ApiErrorCode, CreateInviteRequest, GatewayEvent, LoginRequest, MessageHistoryQuery,
-    RegisterRequest, SendMessageRequest,
+    ApiErrorCode, CreateInviteRequest, EditMessageRequest, GatewayEvent, LoginRequest, Message,
+    MessageHistoryQuery, RegisterRequest, SendMessageRequest, Snowflake,
 };
 use mellow_server::commands::{InitializeOptions, initialize_instance, serve_instance};
 use mellow_server::domain::account_rules::RegistrationMode;
@@ -99,12 +99,62 @@ async fn next_update(updates: &mut mpsc::Receiver<GatewayUpdate>) -> GatewayUpda
 async fn next_message_event(updates: &mut mpsc::Receiver<GatewayUpdate>) -> GatewayEvent {
     loop {
         if let GatewayUpdate::Event(
-            event @ (GatewayEvent::MessageCreate(_) | GatewayEvent::MessageDelete { .. }),
+            event @ (GatewayEvent::MessageCreate(_)
+            | GatewayEvent::MessageUpdate(_)
+            | GatewayEvent::MessageDelete { .. }),
         ) = next_update(updates).await
         {
             return event;
         }
     }
+}
+
+/// The member replies, the owner edits (after the member is refused), the member deletes its reply.
+async fn replies_edits_and_deletes_reach_the_gateway(
+    owner: &RestClient,
+    member: &RestClient,
+    general: Snowflake,
+    sent: &Message,
+    updates: &mut mpsc::Receiver<GatewayUpdate>,
+) {
+    let reply = member
+        .send_message(
+            general,
+            &SendMessageRequest {
+                content: "hi owner".into(),
+                reply_to_id: Some(sent.id),
+                nonce: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.reply_to_id, Some(sent.id));
+    assert_eq!(
+        next_message_event(updates).await,
+        GatewayEvent::MessageCreate(reply.clone())
+    );
+    let edit = EditMessageRequest {
+        content: "hello again".into(),
+    };
+    assert!(matches!(
+        member.edit_message(general, sent.id, &edit).await,
+        Err(ClientError::Api {
+            code: ApiErrorCode::MissingPermissions,
+            ..
+        })
+    ));
+    let edited = owner.edit_message(general, sent.id, &edit).await.unwrap();
+    assert_eq!(edited.content, "hello again");
+    assert!(edited.edited_at_unix_milliseconds.is_some());
+    assert_eq!(
+        next_message_event(updates).await,
+        GatewayEvent::MessageUpdate(edited)
+    );
+    member.delete_message(general, reply.id).await.unwrap();
+    assert!(matches!(
+        next_message_event(updates).await,
+        GatewayEvent::MessageDelete { id, .. } if id == reply.id
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -184,6 +234,9 @@ async fn rest_and_gateway_keep_the_state_in_sync_until_logout() {
         .unwrap();
     assert_eq!(history, vec![sent.clone()]);
     member.acknowledge(general, sent.id).await.unwrap();
+
+    replies_edits_and_deletes_reach_the_gateway(&owner, &member, general, &sent, &mut updates)
+        .await;
     member.start_typing(general).await.unwrap();
     assert_eq!(member.list_members(guild.id).await.unwrap().len(), 2);
 
