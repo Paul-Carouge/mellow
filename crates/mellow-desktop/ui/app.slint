@@ -1,0 +1,216 @@
+import { ListView, ScrollView } from "std-widgets.slint";
+import { MellowColor, MellowSpace, MellowRadius, MellowType } from "tokens.slint";
+
+export struct MessageRow {
+    author: string,
+    author-initial: string,
+    timestamp: string,
+    body: styled-text,
+    // Plain copy of the body, used for screen readers and the selectable rendering.
+    body-plain: string,
+    starts-author-group: bool,
+    reply-preview: string,
+    mentions-current-user: bool,
+}
+
+component MessageView inherits Rectangle {
+    in property <MessageRow> message;
+    in property <bool> is-text-selection-mode;
+    callback link-clicked(string);
+
+    background: message.mentions-current-user ? MellowColor.mention-background
+        : touch.has-hover ? MellowColor.state-hover : transparent;
+    accessible-role: list-item;
+    accessible-label: message.author + ", " + message.timestamp + ": " + message.body-plain;
+
+    touch := TouchArea { }
+
+    if message.mentions-current-user: Rectangle {
+        x: 0;
+        width: MellowType.mention-bar-width;
+        background: MellowColor.accent-primary;
+    }
+
+    HorizontalLayout {
+        padding-left: MellowSpace.medium;
+        padding-right: MellowSpace.medium;
+        padding-top: message.starts-author-group ? MellowSpace.medium : 0;
+        padding-bottom: MellowSpace.two-extra-small;
+        spacing: MellowSpace.small;
+
+        Rectangle {
+            width: MellowType.avatar-size;
+            height: message.starts-author-group ? MellowType.avatar-size : 0;
+            y: 0;
+            border-radius: self.width / 2;
+            background: message.starts-author-group ? MellowColor.accent-primary : transparent;
+            accessible-role: none;
+            if message.starts-author-group: Text {
+                text: message.author-initial;
+                color: MellowColor.accent-on-primary;
+                font-weight: MellowType.title-weight;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        VerticalLayout {
+            spacing: MellowSpace.two-extra-small;
+            max-width: MellowType.maximum-message-line-width;
+
+            if message.starts-author-group: HorizontalLayout {
+                spacing: MellowSpace.extra-small;
+                alignment: start;
+                Text {
+                    text: message.author;
+                    color: MellowColor.text-primary;
+                    font-size: MellowType.title-size;
+                    font-weight: MellowType.title-weight;
+                }
+                Text {
+                    text: message.timestamp;
+                    color: MellowColor.text-tertiary;
+                    font-size: MellowType.label-small-size;
+                    vertical-alignment: center;
+                }
+            }
+
+            if message.reply-preview != "": Text {
+                text: "↪ " + message.reply-preview;
+                color: MellowColor.text-secondary;
+                font-size: MellowType.body-small-size;
+                overflow: elide;
+            }
+
+            if !is-text-selection-mode: StyledText {
+                text: message.body;
+                default-color: MellowColor.text-primary;
+                default-font-size: MellowType.body-message-size;
+                link-color: MellowColor.link;
+                link-clicked(url) => { root.link-clicked(url); }
+            }
+            if is-text-selection-mode: TextInput {
+                text: message.body-plain;
+                read-only: true;
+                wrap: word-wrap;
+                color: MellowColor.text-primary;
+                font-size: MellowType.body-message-size;
+                selection-background-color: MellowColor.focus.with-alpha(0.35);
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    in property <[MessageRow]> messages;
+    in-out property <string> composer-text;
+    in-out property <bool> is-text-selection-mode;
+    in property <string> latest-announcement;
+    callback send-message(string);
+    callback link-clicked(string);
+
+    title: "Mellow — Slint spike";
+    preferred-width: 1100px;
+    preferred-height: 760px;
+    min-width: 480px;
+    min-height: 560px;
+    background: MellowColor.surface-content;
+    default-font-size: MellowType.body-message-size;
+
+    // Scrolls up by `distance`; returns false once the top is reached (used by the scroll benchmark).
+    public function scroll-up-by(distance: length) -> bool {
+        message-list.content-y = min(0px, message-list.content-y + distance);
+        message-list.content-y < 0px
+    }
+
+    public function scroll-to-latest-message() {
+        message-list.content-y = min(0px, message-list.visible-height - message-list.content-height);
+    }
+
+    forward-focus: composer;
+
+    // Key events bubble from the focused composer up to this scope, so F2 works anywhere.
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.F2 {
+                root.is-text-selection-mode = !root.is-text-selection-mode;
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            Rectangle {
+                height: 48px;
+                background: MellowColor.surface-canvas;
+                HorizontalLayout {
+                    padding-left: MellowSpace.medium;
+                    padding-right: MellowSpace.medium;
+                    spacing: MellowSpace.medium;
+                    Text {
+                        text: "# general";
+                        color: MellowColor.text-primary;
+                        font-size: 20px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: messages.length + " messages · F2 toggles text selection mode (" + (is-text-selection-mode ? "on" : "off") + ")";
+                        color: MellowColor.text-tertiary;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            message-list := ListView {
+                accessible-role: list;
+                accessible-label: "Messages in general";
+                for message in messages: MessageView {
+                    message: message;
+                    is-text-selection-mode: root.is-text-selection-mode;
+                    link-clicked(url) => { root.link-clicked(url); }
+                }
+            }
+
+            // Screen readers announce new messages through this live region, not by re-reading the list.
+            Text {
+                height: 0;
+                text: latest-announcement;
+                accessible-role: text;
+                accessible-live-region: polite;
+            }
+
+            Rectangle {
+                background: MellowColor.surface-content;
+                HorizontalLayout {
+                    padding: MellowSpace.medium;
+                    Rectangle {
+                        background: MellowColor.surface-raised;
+                        border-radius: MellowRadius.medium;
+                        border-width: composer.has-focus ? MellowType.focus-ring-width : 1px;
+                        border-color: composer.has-focus ? MellowColor.focus : MellowColor.border-strong;
+                        min-height: 48px;
+                        HorizontalLayout {
+                            padding-left: MellowSpace.medium;
+                            padding-right: MellowSpace.medium;
+                            composer := TextInput {
+                                text <=> root.composer-text;
+                                color: MellowColor.text-primary;
+                                font-size: MellowType.body-message-size;
+                                vertical-alignment: center;
+                                single-line: true;
+                                accessible-label: "Message #general";
+                                accepted => {
+                                    if self.text != "" {
+                                        root.send-message(self.text);
+                                        self.text = "";
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,46 @@
+// shortcut: hand-copied dark-theme values from DESIGN.md, replace with `cargo xtask tokens` output in M0.
+
+export global MellowColor {
+    out property <color> surface-canvas: #161312;
+    out property <color> surface-content: #1E1A18;
+    out property <color> surface-raised: #28231F;
+    out property <color> surface-sunken: #110F0E;
+    out property <color> border-subtle: #3A332E;
+    out property <color> border-strong: #756A62;
+    out property <color> text-primary: #F3ECE4;
+    out property <color> text-secondary: #C9BEB3;
+    out property <color> text-tertiary: #A39890;
+    out property <color> accent-primary: #F2A46E;
+    out property <color> accent-on-primary: #2B1608;
+    out property <color> mention-background: #3C2D24;
+    out property <color> link: #86C8E3;
+    out property <color> focus: #8FD6F2;
+    out property <color> state-hover: #F3ECE40F;
+}
+
+export global MellowSpace {
+    out property <length> two-extra-small: 4px;
+    out property <length> extra-small: 8px;
+    out property <length> small: 12px;
+    out property <length> medium: 16px;
+    out property <length> large: 24px;
+}
+
+export global MellowRadius {
+    out property <length> extra-small: 4px;
+    out property <length> medium: 12px;
+    out property <length> full: 999px;
+}
+
+export global MellowType {
+    out property <length> body-message-size: 16px;
+    out property <length> title-size: 16px;
+    out property <length> label-small-size: 12px;
+    out property <length> body-small-size: 13px;
+    out property <int> title-weight: 600;
+    // DESIGN.md caps message line length for readability.
+    out property <length> maximum-message-line-width: 736px;
+    out property <length> avatar-size: 40px;
+    out property <length> mention-bar-width: 2px;
+    out property <length> focus-ring-width: 2px;
+}
