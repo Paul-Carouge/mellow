@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["crates/mellow-protocol"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/Paul-Carouge/mellow"
+publish = false
+
+[workspace.dependencies]
+mellow-protocol = { path = "crates/mellow-protocol" }
+bitflags = "2.13.2"
+# Pulled in only to switch the SQLite bundled by sqlx to SQLCipher (ADR-0006). Must stay within the range sqlx-sqlite accepts (>=0.30.1, <0.38).
+libsqlite3-sys = { version = "0.37", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite-bundled"] }
+tempfile = "3.27.0"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
+thiserror = "2.0.21"
+tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"
