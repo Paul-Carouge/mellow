@@ -252,7 +252,7 @@ The client core contains everything that is not drawing pixels, so desktop and A
 | Abuse | Rate limiting per IP, per account, per channel |
 | Admin UI | CSRF tokens, strict CSP, `SameSite=Strict` cookies |
 | At rest | See [ADR-0006](docs/adr/0006-tls-and-encryption-at-rest.md) |
-| Supply chain | `Cargo.lock` committed, `cargo deny` and `cargo audit` in CI, signed releases |
+| Supply chain | `Cargo.lock` committed, `cargo deny` in CI (RustSec advisories, licenses, sources, banned crates) on every PR and weekly, actions pinned by SHA, signed releases |
 | Logs | Structured, no message content, no tokens, no emails, no IPs beyond rate-limit needs |
 
 ## 8. Quality and CI

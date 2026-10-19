@@ -18,6 +18,16 @@ Users want privacy, but the MVP also needs server-side moderation, multi-device 
 - Small CPU cost on every page read and attachment access; to be measured.
 - **Spike required:** confirm that `sqlx` builds against SQLCipher (`libsqlite3-sys` with `bundled-sqlcipher`) on all target platforms. If it does not, fall back to `rusqlite`, and record the change here.
 
+## Spike results (2026-10-19)
+- `sqlx` 0.9 works with SQLCipher by adding `libsqlite3-sys` (within the `>=0.30.1, <0.38` range sqlx accepts) with `bundled-sqlcipher`; Cargo feature unification switches the SQLite that sqlx bundles. `PRAGMA cipher_version` is checked at startup so the server refuses to run on plain SQLite.
+- Crypto backend: CommonCrypto on Apple platforms (no extra dependency); vendored OpenSSL elsewhere (`bundled-sqlcipher-vendored-openssl`), so the Linux and Windows binaries do not depend on a system libcrypto. This is the only OpenSSL in the build; TLS stays on rustls.
+- The raw-key form (`PRAGMA key = "x'…'"`) is used, which skips SQLCipher's passphrase derivation since the master key is already random.
+- **Shutdown hazard found:** if a connection is still being closed on a sqlx worker thread while the process exits, SQLCipher crashes in `sqlite3FreeCodecArg` (reproduced on macOS). The server must call `SqlitePool::close().await` during graceful shutdown before returning from `main`.
+- **Key leak found and fixed:** sqlx logs connection pragmas, including the key, at DEBUG and at WARN when slow. Statement logging is disabled on database connections and an integration test asserts the key never appears in logs at TRACE level.
+- Opening first checks SQLCipher and the key on a single connection that is always closed, before the pool or WAL mode touches the file; only `SQLITE_NOTADB` is reported as a wrong key.
+- Operations: core dumps must be disabled for the server (`LimitCORE=0` in the systemd unit), since a dump would contain the key; key file loading must zeroize its buffers (`zeroize`).
+- Verified locally on macOS (aarch64). Linux and Windows are verified by the CI test matrix; this ADR becomes *Accepted* once it is green on all three.
+
 ## Alternatives considered
 - **E2EE everywhere (MLS):** breaks moderation and search, very complex for large groups.
 - **E2EE for DMs only:** valuable, but a project of its own; revisit after the MVP.

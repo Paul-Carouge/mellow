@@ -28,15 +28,16 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check
-cargo run -p mellow-server -- serve --config ./dev/mellow.toml
-cargo run -p mellow-desktop
-cd android && ./gradlew lint test
 ```
-(The workspace is not scaffolded yet; update this section when commands change.)
+Crates are added to the workspace when their milestone starts (see ROADMAP.md); today only `mellow-protocol` and `mellow-server` (library, no binary yet) exist. Update this section when run commands appear.
+CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux, macOS and Windows.
 
 ## Rules specific to this project
 - **Protocol changes** start in `mellow-protocol` and are made in the same commit on server and clients. API is versioned (`/api/v1`, `/gateway?v=1`); never break a released version.
 - **Permissions** are decided only by the pure function in `mellow-server::domain` (ADR-0007). No ad-hoc permission check in handlers or the gateway.
+- **Unknown permission bits** from clients are rejected at the server boundary (`Permissions::from_bits`); only clients keep unknown bits.
+- **Database key**: never log `SqliteConnectOptions` (its `Debug` prints the key) and keep `disable_statement_logging()` on them; a test guards it.
+- **SQLCipher shutdown**: always `pool.close().await` before the process exits, in code and in tests (ADR-0006 spike results).
 - **SQLite**: all writes go through the single writer task; keep transactions short; no I/O or fan-out inside a transaction. Queries use `sqlx` compile-time checked macros.
 - **Migrations** are forward-only, embedded, and tested on realistic data. Never edit a released migration.
 - **Logs** never contain message content, tokens, passwords, emails or attachment names.

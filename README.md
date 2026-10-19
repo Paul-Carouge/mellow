@@ -15,9 +15,15 @@ A calm, self-hostable alternative to Discord, written in Rust.
 - [docs/adr/](docs/adr/) — architecture decision records.
 - [CLAUDE.md](CLAUDE.md) — instructions for AI-assisted development.
 
-## Prerequisites (planned)
-- Rust stable (see `rust-toolchain.toml` once added).
-- Android: JDK 21, Android SDK, NDK, `cargo-ndk`.
+## Development
+Prerequisites: [rustup](https://rustup.rs) (the pinned toolchain in `rust-toolchain.toml` installs itself), a C compiler, and to build the vendored OpenSSL used by SQLCipher: `perl` and `make` on Linux, Visual Studio Build Tools (`nmake`) and Strawberry Perl on Windows. Android (later): JDK 21, Android SDK, NDK, `cargo-ndk`.
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+cargo deny check
+```
 
 ## License
 AGPL-3.0-or-later.
