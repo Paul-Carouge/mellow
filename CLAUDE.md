@@ -31,7 +31,7 @@ cargo deny check
 cargo xtask tokens          # regenerate ui/tokens.slint after editing design/tokens.json (--check in CI)
 cargo run -p mellow-desktop
 ```
-Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (`init` and `serve` with a health route), `mellow-desktop` (Discord-like shell on fake data) and `xtask` (design token generator) exist. Update this section when run commands appear.
+Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (`init`, `serve`, `admin create-user`: REST API and WebSocket gateway), `mellow-client-core` (REST, gateway, state), `mellow-desktop` (Discord-like shell signed in to an instance; `MELLOW_DEMO_WORKSPACE=1` for fake data) and `xtask` (design token generator) exist. Update this section when run commands appear.
 CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux, macOS and Windows.
 
 ## Rules specific to this project
