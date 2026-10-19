@@ -2,6 +2,7 @@
 
 mod accounts;
 mod canonical_decimal;
+mod gateway;
 mod guilds;
 mod health;
 mod messages;
@@ -10,6 +11,9 @@ mod snowflake;
 
 pub use accounts::{
     ApiErrorBody, ApiErrorCode, CurrentUser, LoginRequest, RegisterRequest, SessionCreated,
+};
+pub use gateway::{
+    ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, PresenceStatus, Ready, ServerFrame,
 };
 pub use guilds::{
     Channel, ChannelKind, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest, Guild,
