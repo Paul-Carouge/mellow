@@ -11,12 +11,14 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 argon2.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 axum-server.workspace = true
 clap.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 hkdf.workspace = true
+hyper-util.workspace = true
 mellow-protocol.workspace = true
 rpassword.workspace = true
 rustls-acme.workspace = true
@@ -32,6 +34,10 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 zeroize.workspace = true
 
 # Apple platforms build SQLCipher on CommonCrypto; elsewhere OpenSSL is vendored so the binary needs no system libcrypto.
+# Owner check of the certificate directory (no libc binding of our own).
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [target.'cfg(target_vendor = "apple")'.dependencies]
 libsqlite3-sys = { workspace = true, features = ["bundled-sqlcipher"] }
 

@@ -33,9 +33,9 @@ pub struct ServerConfig {
     pub listen_address: SocketAddr,
     #[serde(default)]
     pub registration_mode: RegistrationMode,
-    /// Set when a TLS reverse proxy on this host forwards to Mellow. Required to listen on a
-    /// non-loopback address (until built-in TLS lands, tokens would otherwise travel in clear),
-    /// and makes the client address come from the last `X-Forwarded-For` hop.
+    /// Set when a TLS reverse proxy on this host forwards to Mellow. Without `[tls]`, required to
+    /// listen on a non-loopback address (tokens would otherwise travel in clear), and makes the
+    /// client address come from the last `X-Forwarded-For` hop.
     #[serde(default)]
     pub behind_tls_reverse_proxy: bool,
     /// Built-in TLS with ACME certificates (ADR-0013). Last field: TOML writes tables after values.
@@ -87,7 +87,7 @@ pub enum ConfigError {
         source: std::io::Error,
     },
     #[error(
-        "listening on {address} would send session tokens unencrypted; listen on 127.0.0.1, or set behind_tls_reverse_proxy = true once a TLS reverse proxy fronts Mellow"
+        "listening on {address} would send session tokens unencrypted; add a [tls] table (`init --domain`), listen on 127.0.0.1, or set behind_tls_reverse_proxy = true once a TLS reverse proxy fronts Mellow"
     )]
     PlainHttpOnPublicAddress { address: SocketAddr },
     #[error(

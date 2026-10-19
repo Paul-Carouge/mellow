@@ -311,6 +311,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn init_refuses_a_shared_certificate_directory_and_leaves_no_key_behind() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let shared = directory.path().join("shared-certificates");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let options = InitializeOptions {
+            tls: Some(TlsConfig {
+                domains: vec!["chat.example.org".into()],
+                contact_email: None,
+                certificate_directory: shared,
+                use_staging_certificates: false,
+            }),
+            ..options_in(directory.path())
+        };
+        assert!(initialize_instance(&options).await.is_err());
+        assert!(!options.master_key_file.exists());
+        assert!(!options.config_path.exists());
+    }
+
+    #[tokio::test]
     async fn init_with_a_domain_writes_the_tls_table_and_a_private_certificate_directory() {
         use std::os::unix::fs::PermissionsExt as _;
 
