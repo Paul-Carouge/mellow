@@ -29,10 +29,12 @@ cargo xtask tokens --check
 ## Run a development instance
 ```bash
 cargo run -p mellow-server -- init --config dev/mellow.toml --data-directory dev/data --master-key-file dev/keys/master.key
+cargo run -p mellow-server -- admin create-user --config dev/mellow.toml --username admin --email admin@example.org --administrator
 cargo run -p mellow-server -- serve --config dev/mellow.toml
 curl http://127.0.0.1:8080/api/v1/health
 ```
-The server listens on `127.0.0.1:8080` over plain HTTP until built-in TLS lands (M1): expose it only through a TLS reverse proxy. Back up the master key file separately from the data directory; without it the database cannot be decrypted. In production, disable core dumps for the service (`LimitCORE=0` in its systemd unit): a dump would contain the key. The server currently runs on Linux and macOS only: on Windows it refuses to create or read a master key until the key file can be restricted to the service account.
+Registration is closed by default (`registration_mode = "open"` in `mellow.toml` to allow sign-ups). The API so far: `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `GET /api/v1/users/@me`.
+The server listens on `127.0.0.1:8080` over plain HTTP until built-in TLS lands (M1). Put a TLS reverse proxy (Caddy, nginx) on the same host in front of it and set `behind_tls_reverse_proxy = true` whenever one does, including on loopback: rate limits then use the client address from the proxy's `X-Forwarded-For` (trusted only from loopback). Without the flag, a non-loopback listen address is refused, since session tokens would travel unencrypted. Do not publish Mellow's port directly. Back up the master key file separately from the data directory; without it the database cannot be decrypted. In production, disable core dumps for the service (`LimitCORE=0` in its systemd unit): a dump would contain the key. The server currently runs on Linux and macOS only: on Windows it refuses to create or read a master key until the key file can be restricted to the service account.
 
 ## License
 AGPL-3.0-or-later.

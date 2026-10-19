@@ -106,7 +106,7 @@ The server is one crate split into modules with a strict direction of dependency
 | `commands` | `serve`, `init`, `update`, `backup`, `admin` subcommands (parsed by `main.rs`) | — |
 | `config` | Load and validate `mellow.toml` and environment overrides | — |
 
-The domain talks to storage through traits defined in `domain`, so domain tests run against an in-memory SQLite database without the network stack.
+The domain calls concrete `storage` functions (no repository traits: there is one storage backend), and domain tests run against a temporary encrypted SQLite database without the network stack.
 
 ### 4.2 Main libraries
 
@@ -177,7 +177,8 @@ The computation is a pure function in `domain`, unit-tested exhaustively, and is
 - Login returns an opaque, random 256-bit session token. Only its SHA-256 hash is stored. Tokens are sent as `Authorization: Bearer` on REST and in the gateway `Identify` message.
 - Clients store tokens in the OS keychain (desktop: `keyring`; Android: Keystore-backed encrypted storage).
 - Registration can be open, invite-only or closed, set by the instance admin.
-- Rate limiting on authentication endpoints (per IP and per account) and on message sending (per user and per channel).
+- Rate limiting on authentication endpoints and on message sending (per user and per channel). Authentication (M1.2): 20 attempts per minute per client address (IPv6 grouped by /64), 10 logins per 15 minutes per account and address, 100 per 15 minutes per account; attempts are counted before the password check. Concurrent Argon2 work is capped to the number of CPU cores.
+- Accepted trade-offs: open registration reveals whether a username or email is taken (usernames are public anyway; emails are rate-limited); a username and its email count as two accounts for rate limiting.
 
 ### 4.8 Real-time gateway
 
