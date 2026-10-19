@@ -10,6 +10,7 @@ Read before working:
 - [DESIGN.md](DESIGN.md) — visual identity, design tokens, screens, accessibility. The UI is a faithful Discord clone with Mellow's own brand (ADR-0012): match Discord's layout and behaviour, never its blurple, logo or fonts.
 - [docs/adr/](docs/adr/) — why things are the way they are. Do not contradict an accepted ADR silently: propose a new ADR that supersedes it.
 - [ROADMAP.md](ROADMAP.md) — milestones and current scope.
+- [docs/development-notes.md](docs/development-notes.md) — where the PR stack stands, the workflow, and traps already hit. Update it at the end of each iteration.
 
 ## Repository layout
 | Path | Content |

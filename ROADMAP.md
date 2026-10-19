@@ -13,6 +13,7 @@ Stacked pull requests, to merge in this order: #2 workspace + SQLCipher storage 
 ### Next, in order
 1. **M1 release candidate**: end-to-end run on a real VPS (domain, Let's Encrypt staging then production, desktop client over https), then tag.
 2. **Desktop session persistence** in the OS secret store (Keychain, Secret Service, Credential Manager), so the app does not ask for the password on every launch.
+3. **End-to-end ACME tests** against Pebble, locally and in CI once it runs.
 
 ### Known gaps and debts
 - Server: single SQLite writer task (ARCHITECTURE §4.3) not implemented, so a message id can be issued before a concurrent one commits and an `after` cursor could skip it (generate ids inside the writer task); nonces are not deduplicated, so an outbox retry after a lost response creates a duplicate; `messages.author_id` has no `ON DELETE` rule or index, to settle with account deletion; queries are runtime SQL, not compile-time checked (`sqlx` offline data to set up); `sessions.last_seen` never updated and expired sessions never purged; member list capped at 1 000 instead of paginated; rate limits in memory, per process, and the shared table fails closed when saturated; Windows refused until the master key file gets a protected DACL.
