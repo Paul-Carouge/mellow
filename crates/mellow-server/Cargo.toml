@@ -18,10 +18,11 @@ hkdf.workspace = true
 mellow-protocol.workspace = true
 rpassword.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["time"] }
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
@@ -35,8 +36,10 @@ libsqlite3-sys = { workspace = true, features = ["bundled-sqlcipher"] }
 libsqlite3-sys = { workspace = true, features = ["bundled-sqlcipher-vendored-openssl"] }
 
 [dev-dependencies]
-serde_json.workspace = true
+futures-util.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
+tokio-tungstenite.workspace = true
 tower.workspace = true
 
 [lints]

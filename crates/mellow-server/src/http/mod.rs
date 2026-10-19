@@ -2,12 +2,12 @@
 //! rules live here (ARCHITECTURE.md §4.1).
 
 mod account_routes;
-mod api_error;
+pub(crate) mod api_error;
 mod authentication;
-mod client_address;
+pub(crate) mod client_address;
 mod guild_routes;
 mod message_routes;
-mod rate_limit;
+pub(crate) mod rate_limit;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -24,6 +24,7 @@ use crate::domain::accounts::Accounts;
 use crate::domain::guilds::Guilds;
 use crate::domain::messages::Messages;
 use crate::domain::snowflake_generator::SnowflakeGenerator;
+use crate::events::EventHub;
 use crate::http::rate_limit::RateLimiter;
 
 #[derive(Debug, Clone)]
@@ -32,6 +33,8 @@ pub(crate) struct AppState {
     pub(crate) accounts: Arc<Accounts>,
     pub(crate) guilds: Arc<Guilds>,
     pub(crate) messages: Arc<Messages>,
+    pub(crate) events: Arc<EventHub>,
+    pub(crate) gateway_sessions: Arc<crate::gateway::SessionRegistry>,
     pub(crate) rate_limiter: Arc<RateLimiter>,
     pub(crate) is_behind_tls_reverse_proxy: bool,
 }
@@ -39,14 +42,23 @@ pub(crate) struct AppState {
 impl AppState {
     pub(crate) fn new(pool: SqlitePool, config: &ServerConfig) -> Self {
         let ids = Arc::new(SnowflakeGenerator::default());
-        let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone()));
+        let events = Arc::new(EventHub::default());
+        let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone(), events.clone()));
         Self {
             accounts: Arc::new(Accounts::new(
                 pool.clone(),
                 config.registration_mode,
                 ids.clone(),
+                events.clone(),
             )),
-            messages: Arc::new(Messages::new(pool.clone(), ids, guilds.clone())),
+            messages: Arc::new(Messages::new(
+                pool.clone(),
+                ids,
+                guilds.clone(),
+                events.clone(),
+            )),
+            events,
+            gateway_sessions: Arc::default(),
             guilds,
             pool,
             rate_limiter: Arc::default(),
@@ -108,6 +120,11 @@ pub(crate) fn router(state: AppState) -> Router {
             "/api/v1/users/@me/read-states",
             get(message_routes::list_my_read_states),
         )
+        .route(
+            "/api/v1/channels/{channel_id}/typing",
+            post(message_routes::start_typing),
+        )
+        .route("/gateway", get(crate::gateway::upgrade))
         .fallback(|| async { api_error::ApiError::not_found() })
         .method_not_allowed_fallback(|| async { api_error::ApiError::method_not_allowed() })
         .with_state(state)
@@ -147,7 +164,7 @@ async fn health(State(state): State<AppState>) -> (StatusCode, Json<HealthRespon
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use axum::body::Body;
     use axum::extract::connect_info::MockConnectInfo;
     use axum::http::{HeaderMap, Request, header};
@@ -161,12 +178,25 @@ mod tests {
 
     const TEST_PEER: &str = "192.0.2.10:40000";
 
-    fn test_state(pool: SqlitePool, registration_mode: RegistrationMode) -> AppState {
+    pub(crate) fn test_state(pool: SqlitePool, registration_mode: RegistrationMode) -> AppState {
         let ids = Arc::new(SnowflakeGenerator::default());
-        let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone()));
+        let events = Arc::new(EventHub::default());
+        let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone(), events.clone()));
         AppState {
-            accounts: Arc::new(Accounts::new(pool.clone(), registration_mode, ids.clone())),
-            messages: Arc::new(Messages::new(pool.clone(), ids, guilds.clone())),
+            accounts: Arc::new(Accounts::new(
+                pool.clone(),
+                registration_mode,
+                ids.clone(),
+                events.clone(),
+            )),
+            messages: Arc::new(Messages::new(
+                pool.clone(),
+                ids,
+                guilds.clone(),
+                events.clone(),
+            )),
+            events,
+            gateway_sessions: Arc::default(),
             guilds,
             pool,
             rate_limiter: Arc::default(),
@@ -843,5 +873,25 @@ mod tests {
         .await;
         assert_eq!(json::<Vec<Message>>(&body), Vec::new());
         pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn typing_needs_membership_and_is_rate_limited() {
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let outsider = registered_token(&state, "outsider").await;
+        let typing_path = format!("/api/v1/channels/{general}/typing");
+
+        let (status, _) = send(&state, authorized("POST", &typing_path, &owner, None)).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _) = send(&state, authorized("POST", &typing_path, &outsider, None)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        for _ in 1..rate_limit::TYPING_INDICATORS_PER_USER.maximum_events {
+            send(&state, authorized("POST", &typing_path, &owner, None)).await;
+        }
+        let (status, _) = send(&state, authorized("POST", &typing_path, &owner, None)).await;
+        pool.close().await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     }
 }

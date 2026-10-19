@@ -1,0 +1,859 @@
+//! `GET /gateway?v=1`: the real-time WebSocket (ARCHITECTURE.md §4.8).
+
+mod session;
+
+use std::collections::{BTreeSet, HashMap};
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
+
+use axum::extract::ws::{Message as WebSocketMessage, WebSocket, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, State};
+use axum::http::HeaderMap;
+use axum::response::Response;
+use mellow_protocol::{
+    ClientFrame, CurrentUser, GATEWAY_VERSION, Hello, Ready, ServerFrame, Snowflake,
+};
+use serde::Deserialize;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
+use tokio::time::Instant;
+use zeroize::Zeroizing;
+
+use crate::domain::clock::now_unix_milliseconds;
+use crate::domain::guilds::GuildError;
+use crate::domain::session_token::session_token_sha256;
+use crate::events::SessionKey;
+use crate::http::AppState;
+use crate::http::api_error::{ApiError, ApiQuery};
+use crate::http::client_address::client_address_key;
+use crate::http::rate_limit::GATEWAY_CONNECTIONS_PER_ADDRESS;
+use session::{
+    FrameText, OUTGOING_QUEUE_FRAMES, SessionCommand, SessionEnd, SessionTask, frame_text,
+};
+
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// A client is dropped after missing this long without a heartbeat (one and a half intervals).
+const HEARTBEAT_DEADLINE: Duration = Duration::from_secs(45);
+/// Heartbeats faster than this are acknowledged without touching the database again.
+const MINIMUM_INTERVAL_BETWEEN_REVALIDATIONS: Duration = Duration::from_secs(15);
+const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(10);
+/// A write that cannot be flushed in this time means the client stopped reading: drop it, so a
+/// non-reading peer cannot pin a task and its queue forever.
+const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Bytes buffered towards one socket before writes wait on the network.
+const MAXIMUM_WRITE_BUFFER_BYTES: usize = 256 * 1024;
+/// Client frames are tiny (identify, resume, heartbeat); anything bigger is abuse.
+const MAXIMUM_CLIENT_FRAME_BYTES: usize = 4_096;
+const MAXIMUM_SESSIONS_PER_USER: usize = 10;
+/// Upper bound on simultaneous `WebSocket` connections, authenticated or not (file descriptors, tasks).
+const MAXIMUM_GATEWAY_CONNECTIONS: usize = 10_000;
+const SESSION_COMMAND_QUEUE_CAPACITY: usize = 8;
+const SESSION_ID_RANDOM_BYTES: usize = 16;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GatewayQuery {
+    v: u32,
+}
+
+/// What a reconnecting client needs to resume its session.
+#[derive(Debug, Clone)]
+struct ResumableSession {
+    user_id: Snowflake,
+    commands: mpsc::Sender<SessionCommand>,
+}
+
+/// Live sessions by id, so a reconnecting client can resume, and the connection budget.
+#[derive(Debug)]
+pub(crate) struct SessionRegistry {
+    sessions: Mutex<HashMap<String, ResumableSession>>,
+    next_attachment_id: AtomicU64,
+    connection_permits: Arc<Semaphore>,
+}
+
+impl Default for SessionRegistry {
+    fn default() -> Self {
+        Self {
+            sessions: Mutex::default(),
+            next_attachment_id: AtomicU64::default(),
+            connection_permits: Arc::new(Semaphore::new(MAXIMUM_GATEWAY_CONNECTIONS)),
+        }
+    }
+}
+
+impl SessionRegistry {
+    fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, ResumableSession>> {
+        self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn next_attachment_id(&self) -> u64 {
+        self.next_attachment_id.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+pub(crate) async fn upgrade(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    ApiQuery(query): ApiQuery<GatewayQuery>,
+    upgrade: WebSocketUpgrade,
+) -> Result<Response, ApiError> {
+    if query.v != GATEWAY_VERSION {
+        return Err(ApiError::validation(format!(
+            "unsupported gateway version {}; this server speaks v={GATEWAY_VERSION}",
+            query.v
+        )));
+    }
+    let address = client_address_key(peer, &headers, state.is_behind_tls_reverse_proxy);
+    if !state.rate_limiter.record_event(
+        &format!("gateway:{address}"),
+        GATEWAY_CONNECTIONS_PER_ADDRESS,
+        std::time::Instant::now(),
+    ) {
+        return Err(ApiError::rate_limited());
+    }
+    let Ok(permit) = state
+        .gateway_sessions
+        .connection_permits
+        .clone()
+        .try_acquire_owned()
+    else {
+        return Err(ApiError::server_busy());
+    };
+    Ok(upgrade
+        .max_message_size(MAXIMUM_CLIENT_FRAME_BYTES)
+        .max_frame_size(MAXIMUM_CLIENT_FRAME_BYTES)
+        .max_write_buffer_size(MAXIMUM_WRITE_BUFFER_BYTES)
+        .on_upgrade(move |socket| run_connection(socket, state, permit)))
+}
+
+/// Every write goes through here: it fails rather than wait on a client that stopped reading.
+async fn send_text(socket: &mut WebSocket, text: &str) -> bool {
+    matches!(
+        tokio::time::timeout(
+            SOCKET_WRITE_TIMEOUT,
+            socket.send(WebSocketMessage::Text(text.into())),
+        )
+        .await,
+        Ok(Ok(()))
+    )
+}
+
+async fn send_frame(socket: &mut WebSocket, frame: &ServerFrame) -> bool {
+    match frame_text(frame) {
+        Some(text) => send_text(socket, &text).await,
+        None => false,
+    }
+}
+
+async fn close(mut socket: WebSocket) {
+    let _ = tokio::time::timeout(
+        SOCKET_WRITE_TIMEOUT,
+        socket.send(WebSocketMessage::Close(None)),
+    )
+    .await;
+}
+
+/// The next client frame, or `None` on close, error, binary data or malformed JSON.
+async fn next_client_frame(socket: &mut WebSocket) -> Option<ClientFrame> {
+    loop {
+        match socket.recv().await? {
+            Ok(WebSocketMessage::Text(text)) => return serde_json::from_str(&text).ok(),
+            Ok(WebSocketMessage::Ping(_) | WebSocketMessage::Pong(_)) => {}
+            Ok(WebSocketMessage::Binary(_) | WebSocketMessage::Close(_)) | Err(_) => return None,
+        }
+    }
+}
+
+async fn refuse(mut socket: WebSocket) {
+    send_frame(&mut socket, &ServerFrame::InvalidSession).await;
+    close(socket).await;
+}
+
+/// Holds one of the `MAXIMUM_GATEWAY_CONNECTIONS` permits for its whole life.
+async fn run_connection(mut socket: WebSocket, state: AppState, _permit: OwnedSemaphorePermit) {
+    let hello = ServerFrame::Hello {
+        d: Hello {
+            heartbeat_interval_milliseconds: u64::try_from(HEARTBEAT_INTERVAL.as_millis())
+                .unwrap_or(u64::MAX),
+        },
+    };
+    if !send_frame(&mut socket, &hello).await {
+        return;
+    }
+    let first_frame = tokio::time::timeout(IDENTIFY_TIMEOUT, next_client_frame(&mut socket)).await;
+    let (token, user, commands, after_sequence, is_resume) = match first_frame {
+        Ok(Some(ClientFrame::Identify { token })) => {
+            let token = Zeroizing::new(token);
+            let Some((user, commands)) = identify(&mut socket, &state, &token).await else {
+                return refuse(socket).await;
+            };
+            (token, user, commands, 0, false)
+        }
+        Ok(Some(ClientFrame::Resume {
+            token,
+            session_id,
+            last_sequence,
+        })) => {
+            let token = Zeroizing::new(token);
+            let Ok(user) = state
+                .accounts
+                .authenticate(&token, now_unix_milliseconds())
+                .await
+            else {
+                return refuse(socket).await;
+            };
+            let resumable = state.gateway_sessions.sessions().get(&session_id).cloned();
+            match resumable {
+                Some(resumable) if resumable.user_id == user.id => {
+                    (token, user, resumable.commands, last_sequence, true)
+                }
+                _ => return refuse(socket).await,
+            }
+        }
+        _ => return refuse(socket).await,
+    };
+
+    let attachment_id = state.gateway_sessions.next_attachment_id();
+    let (outgoing, outgoing_frames) = mpsc::channel(OUTGOING_QUEUE_FRAMES);
+    let (reply, answer) = oneshot::channel();
+    let attach = SessionCommand::Attach {
+        attachment_id,
+        outgoing,
+        after_sequence,
+        is_resume,
+        reply,
+    };
+    if commands.send(attach).await.is_err() || !matches!(answer.await, Ok(Ok(()))) {
+        return refuse(socket).await;
+    }
+    run_attached(socket, &state, &token, &user, outgoing_frames).await;
+    let _ = commands
+        .send(SessionCommand::Detach { attachment_id })
+        .await;
+}
+
+/// Authenticates, starts a session and sends `Ready`. Returns `None` to refuse the client.
+async fn identify(
+    socket: &mut WebSocket,
+    state: &AppState,
+    token: &str,
+) -> Option<(CurrentUser, mpsc::Sender<SessionCommand>)> {
+    let user = state
+        .accounts
+        .authenticate(token, now_unix_milliseconds())
+        .await
+        .ok()?;
+    let token_sha256 = session_token_sha256(token)?;
+    // Registered (atomically against the per-user cap) before reading the guilds, so a guild
+    // joined meanwhile is subscribed by `subscribe_user_to_guild` and nothing published after
+    // this point is lost: it waits in the session's replay buffer until the socket attaches.
+    let (hub_key, events) = state
+        .events
+        .register_session(user.id, token_sha256, MAXIMUM_SESSIONS_PER_USER)
+        .ok()?;
+    let guild_ids = match state.guilds.list_my_guilds(user.id).await {
+        Ok(guilds) => guilds.iter().map(|guild| guild.id).collect::<Vec<_>>(),
+        Err(error) => {
+            tracing::warn!(%error, "gateway identify: cannot list guilds");
+            state.events.unregister_session(hub_key);
+            return None;
+        }
+    };
+    state.events.activate_session(hub_key, &guild_ids);
+    let Some(session_id) = generate_session_id() else {
+        state.events.unregister_session(hub_key);
+        return None;
+    };
+    let (commands_sender, commands) = mpsc::channel(SESSION_COMMAND_QUEUE_CAPACITY);
+    state.gateway_sessions.sessions().insert(
+        session_id.clone(),
+        ResumableSession {
+            user_id: user.id,
+            commands: commands_sender.clone(),
+        },
+    );
+    tokio::spawn(run_session(
+        state.clone(),
+        session_id.clone(),
+        hub_key,
+        SessionTask { events, commands },
+    ));
+
+    let Some(ready) = build_ready(state, &user, session_id.clone(), &guild_ids).await else {
+        // Dropping the registry's sender (and ours) ends the session task at once.
+        state.gateway_sessions.sessions().remove(&session_id);
+        return None;
+    };
+    if send_frame(socket, &ServerFrame::Ready { d: Box::new(ready) }).await {
+        Some((user, commands_sender))
+    } else {
+        state.gateway_sessions.sessions().remove(&session_id);
+        None
+    }
+}
+
+async fn build_ready(
+    state: &AppState,
+    user: &CurrentUser,
+    session_id: String,
+    guild_ids: &[Snowflake],
+) -> Option<Ready> {
+    let mut guilds = Vec::with_capacity(guild_ids.len());
+    let mut online_user_ids = BTreeSet::new();
+    for guild_id in guild_ids {
+        let guild = state.guilds.get_guild(user.id, *guild_id).await;
+        let members = state.guilds.list_members(user.id, *guild_id).await;
+        match (guild, members) {
+            (Ok(guild), Ok(members)) => {
+                guilds.push(guild);
+                online_user_ids.extend(
+                    members
+                        .iter()
+                        .map(|member| member.user.id)
+                        .filter(|member_id| state.events.is_online(*member_id)),
+                );
+            }
+            // Left meanwhile: its GUILD_DELETE is already queued for this session.
+            (Err(GuildError::NotFound), _) | (_, Err(GuildError::NotFound)) => {}
+            (Err(error), _) | (_, Err(error)) => {
+                tracing::warn!(%error, "gateway identify: cannot build ready");
+                return None;
+            }
+        }
+    }
+    let read_states = match state.messages.list_my_read_states(user.id).await {
+        Ok(read_states) => read_states,
+        Err(error) => {
+            tracing::warn!(%error, "gateway identify: cannot list read states");
+            return None;
+        }
+    };
+    Some(Ready {
+        session_id,
+        user: user.clone(),
+        guilds,
+        read_states,
+        online_user_ids: online_user_ids.into_iter().collect(),
+    })
+}
+
+fn generate_session_id() -> Option<String> {
+    let mut bytes = [0u8; SESSION_ID_RANDOM_BYTES];
+    getrandom::fill(&mut bytes).ok()?;
+    Some(
+        bytes
+            .iter()
+            .flat_map(|byte| [byte >> 4, byte & 0x0F])
+            // A nibble is always below 16, so `from_digit` never drops one.
+            .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
+            .collect(),
+    )
+}
+
+/// Runs the session until it expires or is cut off, then removes it; the hub announces
+/// "offline" if it was the user's last session.
+async fn run_session(state: AppState, session_id: String, hub_key: SessionKey, task: SessionTask) {
+    let end = task.run().await;
+    state.gateway_sessions.sessions().remove(&session_id);
+    state.events.unregister_session(hub_key);
+    if end == SessionEnd::CutOff {
+        tracing::info!("gateway session cut off (too slow or token revoked)");
+    }
+}
+
+/// Pumps frames to the socket and answers heartbeats until the client goes away.
+async fn run_attached(
+    mut socket: WebSocket,
+    state: &AppState,
+    token: &str,
+    user: &CurrentUser,
+    mut outgoing_frames: mpsc::Receiver<FrameText>,
+) {
+    let mut heartbeat_deadline = Instant::now() + HEARTBEAT_DEADLINE;
+    let mut last_revalidated = Instant::now();
+    loop {
+        tokio::select! {
+            frame = next_client_frame(&mut socket) => match frame {
+                Some(ClientFrame::Heartbeat) => {
+                    // Heartbeats revalidate the session (logout, disabled account), at most every
+                    // 15 s so a client spamming heartbeats cannot load the database.
+                    if last_revalidated.elapsed() >= MINIMUM_INTERVAL_BETWEEN_REVALIDATIONS {
+                        let still_valid = state
+                            .accounts
+                            .authenticate(token, now_unix_milliseconds())
+                            .await
+                            .is_ok_and(|current| current.id == user.id);
+                        if !still_valid {
+                            return refuse(socket).await;
+                        }
+                        last_revalidated = Instant::now();
+                    }
+                    heartbeat_deadline = Instant::now() + HEARTBEAT_DEADLINE;
+                    if !send_frame(&mut socket, &ServerFrame::HeartbeatAck).await {
+                        return;
+                    }
+                }
+                // A second identify/resume, malformed JSON or a closed socket ends the connection.
+                Some(ClientFrame::Identify { .. } | ClientFrame::Resume { .. }) | None => break,
+            },
+            frame = outgoing_frames.recv() => match frame {
+                Some(text) => {
+                    if !send_text(&mut socket, &text).await {
+                        return;
+                    }
+                }
+                // The session ended (cut off): its invalid-session frame was already sent.
+                None => break,
+            },
+            () = tokio::time::sleep_until(heartbeat_deadline) => break,
+        }
+    }
+    close(socket).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use futures_util::{SinkExt as _, StreamExt as _};
+    use mellow_protocol::{
+        CreateGuildRequest, CreateInviteRequest, GatewayEvent, PresenceStatus, SendMessageRequest,
+    };
+    use tokio_tungstenite::tungstenite::Message as ClientMessage;
+
+    use super::*;
+    use crate::domain::account_rules::RegistrationMode;
+    use crate::domain::accounts::tests::{migrated_pool, register_request};
+    use crate::http::tests::test_state;
+
+    type ClientSocket = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    const RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
+
+    struct Fixture {
+        _directory: tempfile::TempDir,
+        state: AppState,
+        address: SocketAddr,
+        owner_token: String,
+        member_token: String,
+        guild_id: Snowflake,
+        general: Snowflake,
+    }
+
+    /// Real time: the gateway validates sessions against the clock, so fixtures must too.
+    fn now() -> u64 {
+        now_unix_milliseconds()
+    }
+
+    async fn fixture() -> Fixture {
+        let (directory, pool) = migrated_pool().await;
+        let state = test_state(pool, RegistrationMode::Open);
+        let owner = state
+            .accounts
+            .register(register_request("owner", "owner@example.org"), now())
+            .await
+            .unwrap();
+        let member = state
+            .accounts
+            .register(register_request("member", "member@example.org"), now())
+            .await
+            .unwrap();
+        let guild = state
+            .guilds
+            .create_guild(
+                owner.user.id,
+                CreateGuildRequest {
+                    name: "Club".into(),
+                },
+                now(),
+            )
+            .await
+            .unwrap();
+        let invite = state
+            .guilds
+            .create_invite(
+                owner.user.id,
+                guild.id,
+                CreateInviteRequest::default(),
+                now(),
+            )
+            .await
+            .unwrap();
+        state
+            .guilds
+            .join_with_invite(member.user.id, &invite.code, now())
+            .await
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(crate::commands::serve_until_shutdown(
+            listener,
+            state.clone(),
+            std::future::pending(),
+        ));
+        Fixture {
+            _directory: directory,
+            state,
+            address,
+            owner_token: owner.token,
+            member_token: member.token,
+            guild_id: guild.id,
+            general: guild.channels[1].id,
+        }
+    }
+
+    impl Fixture {
+        /// SQLCipher must not be closing connections when the test process exits (ADR-0006).
+        async fn close(self) {
+            self.state.pool.close().await;
+        }
+    }
+
+    async fn connect(address: SocketAddr) -> ClientSocket {
+        let (socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/gateway?v=1"))
+            .await
+            .unwrap();
+        socket
+    }
+
+    async fn send(socket: &mut ClientSocket, frame: &ClientFrame) {
+        socket
+            .send(ClientMessage::Text(
+                serde_json::to_string(frame).unwrap().into(),
+            ))
+            .await
+            .unwrap();
+    }
+
+    async fn receive(socket: &mut ClientSocket) -> ServerFrame {
+        loop {
+            let message = tokio::time::timeout(RECEIVE_TIMEOUT, socket.next())
+                .await
+                .expect("no frame within the timeout")
+                .expect("socket closed")
+                .unwrap();
+            if let ClientMessage::Text(text) = message {
+                return serde_json::from_str(&text).unwrap();
+            }
+        }
+    }
+
+    /// Skips dispatches until `matches` accepts one; returns its sequence and event.
+    async fn receive_dispatch(
+        socket: &mut ClientSocket,
+        matches: impl Fn(&GatewayEvent) -> bool,
+    ) -> (u64, GatewayEvent) {
+        loop {
+            if let ServerFrame::Dispatch {
+                sequence: s,
+                event: d,
+            } = receive(socket).await
+                && matches(&d)
+            {
+                return (s, d);
+            }
+        }
+    }
+
+    async fn identified(address: SocketAddr, token: &str) -> (ClientSocket, Ready) {
+        let mut socket = connect(address).await;
+        assert!(matches!(
+            receive(&mut socket).await,
+            ServerFrame::Hello { .. }
+        ));
+        send(
+            &mut socket,
+            &ClientFrame::Identify {
+                token: token.into(),
+            },
+        )
+        .await;
+        match receive(&mut socket).await {
+            ServerFrame::Ready { d } => (socket, *d),
+            other => panic!("expected ready, got {other:?}"),
+        }
+    }
+
+    async fn post_message(
+        fixture: &Fixture,
+        token: &str,
+        content: &str,
+    ) -> mellow_protocol::Message {
+        let author = fixture
+            .state
+            .accounts
+            .authenticate(token, now())
+            .await
+            .unwrap();
+        fixture
+            .state
+            .messages
+            .send(
+                author.id,
+                fixture.general,
+                SendMessageRequest {
+                    content: content.into(),
+                    reply_to_id: None,
+                    nonce: Some("private".into()),
+                },
+                now(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn identify_returns_ready_then_live_dispatches_without_the_nonce() {
+        let fixture = fixture().await;
+        let (mut socket, ready) = identified(fixture.address, &fixture.member_token).await;
+        assert_eq!(ready.user.username, "member");
+        assert_eq!(ready.guilds[0].id, fixture.guild_id);
+        assert!(ready.online_user_ids.contains(&ready.user.id));
+
+        let posted = post_message(&fixture, &fixture.owner_token, "hello").await;
+        let (sequence, event) = receive_dispatch(&mut socket, |event| {
+            matches!(event, GatewayEvent::MessageCreate(_))
+        })
+        .await;
+        assert!(sequence >= 1);
+        match event {
+            GatewayEvent::MessageCreate(message) => {
+                assert_eq!(message.id, posted.id);
+                assert_eq!(message.nonce, None, "the nonce stays private to the sender");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn heartbeats_are_acknowledged_until_the_session_is_revoked() {
+        let fixture = fixture().await;
+        let (mut socket, _) = identified(fixture.address, &fixture.member_token).await;
+        send(&mut socket, &ClientFrame::Heartbeat).await;
+        loop {
+            match receive(&mut socket).await {
+                ServerFrame::HeartbeatAck => break,
+                ServerFrame::Dispatch { .. } => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        fixture
+            .state
+            .accounts
+            .logout(&fixture.member_token)
+            .await
+            .unwrap();
+        send(&mut socket, &ClientFrame::Heartbeat).await;
+        loop {
+            match receive(&mut socket).await {
+                ServerFrame::InvalidSession => break,
+                ServerFrame::Dispatch { .. } => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_bad_token_or_version_is_refused() {
+        let fixture = fixture().await;
+        let mut socket = connect(fixture.address).await;
+        receive(&mut socket).await;
+        send(
+            &mut socket,
+            &ClientFrame::Identify {
+                token: "mlw_nope".into(),
+            },
+        )
+        .await;
+        assert_eq!(receive(&mut socket).await, ServerFrame::InvalidSession);
+
+        let wrong_version =
+            tokio_tungstenite::connect_async(format!("ws://{}/gateway?v=2", fixture.address)).await;
+        assert!(
+            wrong_version.is_err(),
+            "the upgrade is refused with a JSON 400"
+        );
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_dropped_client_resumes_and_receives_what_it_missed() {
+        let fixture = fixture().await;
+        let (mut socket, ready) = identified(fixture.address, &fixture.member_token).await;
+        let first = post_message(&fixture, &fixture.owner_token, "before the drop").await;
+        let (last_sequence, _) = receive_dispatch(
+            &mut socket,
+            |event| matches!(event, GatewayEvent::MessageCreate(message) if message.id == first.id),
+        )
+        .await;
+        drop(socket);
+        let missed = post_message(&fixture, &fixture.owner_token, "while away").await;
+
+        let mut resumed = connect(fixture.address).await;
+        receive(&mut resumed).await;
+        send(
+            &mut resumed,
+            &ClientFrame::Resume {
+                token: fixture.member_token.clone(),
+                session_id: ready.session_id.clone(),
+                last_sequence,
+            },
+        )
+        .await;
+        let (_, event) = receive_dispatch(&mut resumed, |_| true).await;
+        assert!(matches!(event, GatewayEvent::MessageCreate(message) if message.id == missed.id));
+        assert_eq!(receive(&mut resumed).await, ServerFrame::Resumed);
+
+        // Another user cannot take over the session.
+        let mut hijack = connect(fixture.address).await;
+        receive(&mut hijack).await;
+        send(
+            &mut hijack,
+            &ClientFrame::Resume {
+                token: fixture.owner_token.clone(),
+                session_id: ready.session_id,
+                last_sequence: 0,
+            },
+        )
+        .await;
+        assert_eq!(receive(&mut hijack).await, ServerFrame::InvalidSession);
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn members_see_each_other_come_online() {
+        let fixture = fixture().await;
+        let (mut owner_socket, _) = identified(fixture.address, &fixture.owner_token).await;
+        let (_member_socket, member_ready) =
+            identified(fixture.address, &fixture.member_token).await;
+        let (_, event) = receive_dispatch(&mut owner_socket, |event| {
+            matches!(event, GatewayEvent::PresenceUpdate { user_id, .. } if *user_id == member_ready.user.id)
+        })
+        .await;
+        assert!(matches!(
+            event,
+            GatewayEvent::PresenceUpdate {
+                status: PresenceStatus::Online,
+                ..
+            }
+        ));
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn joining_and_leaving_a_guild_updates_live_sessions() {
+        let fixture = fixture().await;
+        let newcomer = fixture
+            .state
+            .accounts
+            .register(register_request("newcomer", "newcomer@example.org"), now())
+            .await
+            .unwrap();
+        let (mut newcomer_socket, ready) = identified(fixture.address, &newcomer.token).await;
+        assert_eq!(ready.guilds, Vec::new());
+        let (mut owner_socket, _) = identified(fixture.address, &fixture.owner_token).await;
+
+        let owner = fixture
+            .state
+            .accounts
+            .authenticate(&fixture.owner_token, now())
+            .await
+            .unwrap();
+        let invite = fixture
+            .state
+            .guilds
+            .create_invite(
+                owner.id,
+                fixture.guild_id,
+                CreateInviteRequest::default(),
+                now(),
+            )
+            .await
+            .unwrap();
+        fixture
+            .state
+            .guilds
+            .join_with_invite(newcomer.user.id, &invite.code, now())
+            .await
+            .unwrap();
+        receive_dispatch(&mut newcomer_socket, |event| {
+            matches!(event, GatewayEvent::GuildCreate(guild) if guild.id == fixture.guild_id)
+        })
+        .await;
+        receive_dispatch(&mut owner_socket, |event| {
+            matches!(event, GatewayEvent::GuildMemberAdd { member, .. } if member.user.id == newcomer.user.id)
+        })
+        .await;
+
+        // The newcomer now receives the guild's messages.
+        let posted = post_message(&fixture, &fixture.owner_token, "welcome").await;
+        receive_dispatch(&mut newcomer_socket, |event| {
+            matches!(event, GatewayEvent::MessageCreate(message) if message.id == posted.id)
+        })
+        .await;
+
+        fixture
+            .state
+            .guilds
+            .leave_guild(newcomer.user.id, fixture.guild_id)
+            .await
+            .unwrap();
+        receive_dispatch(
+            &mut newcomer_socket,
+            |event| matches!(event, GatewayEvent::GuildDelete { id } if *id == fixture.guild_id),
+        )
+        .await;
+        receive_dispatch(&mut owner_socket, |event| {
+            matches!(event, GatewayEvent::GuildMemberRemove { user_id, .. } if *user_id == newcomer.user.id)
+        })
+        .await;
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn logout_ends_the_live_session_immediately() {
+        let fixture = fixture().await;
+        let (mut socket, _) = identified(fixture.address, &fixture.member_token).await;
+        fixture
+            .state
+            .accounts
+            .logout(&fixture.member_token)
+            .await
+            .unwrap();
+        loop {
+            match receive(&mut socket).await {
+                ServerFrame::InvalidSession => break,
+                ServerFrame::Dispatch { .. } => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn an_oversized_client_frame_closes_the_connection() {
+        let fixture = fixture().await;
+        let mut socket = connect(fixture.address).await;
+        receive(&mut socket).await;
+        let oversized = format!(
+            r#"{{"op":"identify","d":{{"token":"{}"}}}}"#,
+            "x".repeat(MAXIMUM_CLIENT_FRAME_BYTES)
+        );
+        let _ = socket.send(ClientMessage::Text(oversized.into())).await;
+        assert_eq!(receive(&mut socket).await, ServerFrame::InvalidSession);
+        let next = tokio::time::timeout(RECEIVE_TIMEOUT, socket.next())
+            .await
+            .unwrap();
+        assert!(
+            matches!(next, None | Some(Err(_) | Ok(ClientMessage::Close(_)))),
+            "{next:?}"
+        );
+        fixture.close().await;
+    }
+}

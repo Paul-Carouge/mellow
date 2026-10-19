@@ -16,7 +16,7 @@ use crate::http::api_error::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::http::authentication::AuthenticatedUser;
 use crate::http::rate_limit::{
     MESSAGE_WRITES_PER_USER, MESSAGE_WRITES_PER_USER_PER_HOUR, MESSAGES_PER_CHANNEL,
-    READ_STATE_WRITES_PER_USER,
+    READ_STATE_WRITES_PER_USER, TYPING_INDICATORS_PER_USER,
 };
 
 /// Send, edit and delete share the per-user budgets (burst and hourly).
@@ -133,4 +133,21 @@ pub(crate) async fn list_my_read_states(
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Vec<ReadState>>, ApiError> {
     Ok(Json(state.messages.list_my_read_states(user.id).await?))
+}
+
+/// Rate limited per user: typing indicators are frequent but cheap to throttle.
+pub(crate) async fn start_typing(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(channel_id): ApiPath<Snowflake>,
+) -> Result<StatusCode, ApiError> {
+    if !state.rate_limiter.record_event(
+        &format!("typing:{}", user.id),
+        TYPING_INDICATORS_PER_USER,
+        Instant::now(),
+    ) {
+        return Err(ApiError::rate_limited());
+    }
+    state.messages.start_typing(user.id, channel_id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

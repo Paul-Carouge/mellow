@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use mellow_protocol::{
-    AcknowledgeRequest, ChannelKind, EditMessageRequest, Message, MessageHistoryQuery, Permissions,
-    PublicUser, ReadState, SendMessageRequest, Snowflake,
+    AcknowledgeRequest, ChannelKind, EditMessageRequest, GatewayEvent, Message,
+    MessageHistoryQuery, Permissions, PublicUser, ReadState, SendMessageRequest, Snowflake,
 };
 use sqlx::SqlitePool;
 
@@ -15,6 +15,7 @@ use crate::domain::message_rules::{
     validate_nonce,
 };
 use crate::domain::snowflake_generator::SnowflakeGenerator;
+use crate::events::EventHub;
 use crate::storage::guilds::StoredChannel;
 use crate::storage::messages::{
     self as message_storage, HistoryPage, MessageStorageError, NewMessage, StoredMessage,
@@ -66,11 +67,22 @@ pub(crate) struct Messages {
     pool: SqlitePool,
     ids: Arc<SnowflakeGenerator>,
     guilds: Arc<Guilds>,
+    events: Arc<EventHub>,
 }
 
 impl Messages {
-    pub(crate) fn new(pool: SqlitePool, ids: Arc<SnowflakeGenerator>, guilds: Arc<Guilds>) -> Self {
-        Self { pool, ids, guilds }
+    pub(crate) fn new(
+        pool: SqlitePool,
+        ids: Arc<SnowflakeGenerator>,
+        guilds: Arc<Guilds>,
+        events: Arc<EventHub>,
+    ) -> Self {
+        Self {
+            pool,
+            ids,
+            guilds,
+            events,
+        }
     }
 
     /// The text channel, after checking the member has every permission in `needed`.
@@ -139,6 +151,11 @@ impl Messages {
             },
         )
         .await?;
+        // The nonce goes back to the sender only, never in the guild-wide event.
+        self.events.publish_to_guild(
+            channel.guild_id,
+            &GatewayEvent::MessageCreate(message_from_stored(stored.clone(), None)),
+        );
         Ok(message_from_stored(stored, request.nonce))
     }
 
@@ -203,7 +220,12 @@ impl Messages {
         )
         .await?
         .ok_or(MessageError::MessageNotFound)?;
-        Ok(message_from_stored(updated, None))
+        let updated = message_from_stored(updated, None);
+        self.events.publish_to_guild(
+            channel.guild_id,
+            &GatewayEvent::MessageUpdate(updated.clone()),
+        );
+        Ok(updated)
     }
 
     /// The author, or a member with `MANAGE_MESSAGES`, may delete.
@@ -221,6 +243,14 @@ impl Messages {
             return Err(GuildError::MissingPermissions.into());
         }
         message_storage::delete_message(&self.pool, message.id).await?;
+        self.events.publish_to_guild(
+            channel.guild_id,
+            &GatewayEvent::MessageDelete {
+                guild_id: channel.guild_id,
+                channel_id: channel.id,
+                id: message.id,
+            },
+        );
         Ok(())
     }
 
@@ -238,6 +268,30 @@ impl Messages {
             .message_in_channel(channel.id, request.last_read_message_id)
             .await?;
         message_storage::advance_read_state(&self.pool, user_id, channel.id, message.id).await?;
+        Ok(())
+    }
+
+    /// Shows "… is typing" to the channel's members. Needs `SEND_MESSAGES`.
+    pub(crate) async fn start_typing(
+        &self,
+        user_id: Snowflake,
+        channel_id: Snowflake,
+    ) -> Result<(), MessageError> {
+        let (channel, _) = self
+            .text_channel_and_permissions_requiring(
+                user_id,
+                channel_id,
+                Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES,
+            )
+            .await?;
+        self.events.publish_to_guild(
+            channel.guild_id,
+            &GatewayEvent::TypingStart {
+                guild_id: channel.guild_id,
+                channel_id: channel.id,
+                user_id,
+            },
+        );
         Ok(())
     }
 
@@ -280,7 +334,12 @@ mod tests {
     async fn fixture() -> Fixture {
         let (directory, pool) = migrated_pool().await;
         let ids = Arc::new(SnowflakeGenerator::default());
-        let accounts = Accounts::new(pool.clone(), RegistrationMode::Open, ids.clone());
+        let accounts = Accounts::new(
+            pool.clone(),
+            RegistrationMode::Open,
+            ids.clone(),
+            Arc::default(),
+        );
         let mut users = Vec::new();
         for name in ["owner", "member", "outsider"] {
             let session = accounts
@@ -289,7 +348,7 @@ mod tests {
                 .unwrap();
             users.push(session.user.id);
         }
-        let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone()));
+        let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone(), Arc::default()));
         let guild = guilds
             .create_guild(
                 users[0],
@@ -311,7 +370,7 @@ mod tests {
         let general = guild.channels[1].id;
         Fixture {
             _directory: directory,
-            messages: Messages::new(pool.clone(), ids, guilds.clone()),
+            messages: Messages::new(pool.clone(), ids, guilds.clone(), Arc::default()),
             pool,
             guilds,
             owner: users[0],

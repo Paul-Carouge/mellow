@@ -3,5 +3,7 @@
 pub mod commands;
 pub mod config;
 pub mod domain;
+pub(crate) mod events;
+pub(crate) mod gateway;
 pub(crate) mod http;
 pub mod storage;

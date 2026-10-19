@@ -42,6 +42,18 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn validation(message: String) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: ApiErrorCode::ValidationFailed,
+            message,
+        }
+    }
+
+    pub(crate) fn server_busy() -> Self {
+        Self::from(AccountError::ServerBusy)
+    }
+
     pub(crate) fn not_found() -> Self {
         Self {
             status: StatusCode::NOT_FOUND,

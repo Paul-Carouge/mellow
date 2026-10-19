@@ -4,8 +4,9 @@
 use std::sync::Arc;
 
 use mellow_protocol::{
-    Channel, ChannelKind, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest, Guild,
-    GuildSummary, Invite, Member, Permissions, PublicUser, Snowflake, UpdateChannelRequest,
+    Channel, ChannelKind, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
+    GatewayEvent, Guild, GuildSummary, Invite, Member, Permissions, PresenceStatus, PublicUser,
+    Snowflake, UpdateChannelRequest,
 };
 use sqlx::SqlitePool;
 
@@ -17,6 +18,7 @@ use crate::domain::guild_rules::{
 };
 use crate::domain::permissions::guild_permissions;
 use crate::domain::snowflake_generator::SnowflakeGenerator;
+use crate::events::EventHub;
 use crate::storage::guilds::{
     self as guild_storage, GuildStorageError, Membership, NewGuild, StoredChannel, StoredInvite,
 };
@@ -73,6 +75,17 @@ impl From<getrandom::Error> for GuildError {
     }
 }
 
+fn member_from_stored(member: guild_storage::StoredMember) -> Member {
+    Member {
+        user: PublicUser {
+            id: member.user_id,
+            username: member.username,
+            display_name: member.display_name,
+        },
+        joined_at_unix_milliseconds: member.joined_at_unix_milliseconds,
+    }
+}
+
 fn channel_from_stored(channel: StoredChannel) -> Channel {
     Channel {
         id: channel.id,
@@ -89,11 +102,16 @@ fn channel_from_stored(channel: StoredChannel) -> Channel {
 pub(crate) struct Guilds {
     pool: SqlitePool,
     ids: Arc<SnowflakeGenerator>,
+    events: Arc<EventHub>,
 }
 
 impl Guilds {
-    pub(crate) fn new(pool: SqlitePool, ids: Arc<SnowflakeGenerator>) -> Self {
-        Self { pool, ids }
+    pub(crate) fn new(
+        pool: SqlitePool,
+        ids: Arc<SnowflakeGenerator>,
+        events: Arc<EventHub>,
+    ) -> Self {
+        Self { pool, ids, events }
     }
 
     /// The member's permissions, or `NotFound` for non-members.
@@ -171,7 +189,14 @@ impl Guilds {
         )
         .await
         .map_err(limit_reached("a user owns at most 100 guilds"))?;
-        self.get_guild(owner_id, guild_id).await
+        // Subscribed before the snapshot, so a channel created right after is not missed.
+        self.events.subscribe_user_to_guild(owner_id, guild_id);
+        let guild = self.get_guild(owner_id, guild_id).await?;
+        self.events.publish_to_user(
+            owner_id,
+            &GatewayEvent::GuildCreate(Box::new(guild.clone())),
+        );
+        Ok(guild)
     }
 
     pub(crate) async fn list_my_guilds(
@@ -245,7 +270,10 @@ impl Guilds {
         )
         .await
         .map_err(limit_reached("a guild has at most 500 channels"))?;
-        Ok(channel_from_stored(channel))
+        let channel = channel_from_stored(channel);
+        self.events
+            .publish_to_guild(guild_id, &GatewayEvent::ChannelCreate(channel.clone()));
+        Ok(channel)
     }
 
     /// The guild channel and `user_id`'s permissions in its guild, or `NotFound` for non-members.
@@ -295,7 +323,12 @@ impl Guilds {
         )
         .await?
         .ok_or(GuildError::NotFound)?;
-        Ok(channel_from_stored(updated))
+        let updated = channel_from_stored(updated);
+        self.events.publish_to_guild(
+            updated.guild_id,
+            &GatewayEvent::ChannelUpdate(updated.clone()),
+        );
+        Ok(updated)
     }
 
     /// Needs `MANAGE_CHANNELS`. A deleted category's channels stay, uncategorised.
@@ -311,6 +344,13 @@ impl Guilds {
             return Err(GuildError::MissingPermissions);
         }
         guild_storage::delete_channel(&self.pool, channel.id).await?;
+        self.events.publish_to_guild(
+            channel.guild_id,
+            &GatewayEvent::ChannelDelete {
+                guild_id: channel.guild_id,
+                id: channel.id,
+            },
+        );
         Ok(())
     }
 
@@ -356,11 +396,38 @@ impl Guilds {
         code: &str,
         now_unix_milliseconds: u64,
     ) -> Result<Guild, GuildError> {
-        let guild_id =
+        let (guild_id, is_new_member) =
             guild_storage::join_with_invite(&self.pool, code, user_id, now_unix_milliseconds)
                 .await?
                 .ok_or(GuildError::InvalidInvite)?;
-        self.get_guild(user_id, guild_id).await
+        if is_new_member {
+            // Subscribed before the snapshot, so nothing between the two is missed.
+            self.events.subscribe_user_to_guild(user_id, guild_id);
+        }
+        let guild = self.get_guild(user_id, guild_id).await?;
+        if is_new_member {
+            if let Some(member) = guild_storage::find_member(&self.pool, guild_id, user_id).await? {
+                self.events.publish_to_guild(
+                    guild_id,
+                    &GatewayEvent::GuildMemberAdd {
+                        guild_id,
+                        member: member_from_stored(member),
+                    },
+                );
+            }
+            if self.events.is_online(user_id) {
+                self.events.publish_to_guild(
+                    guild_id,
+                    &GatewayEvent::PresenceUpdate {
+                        user_id,
+                        status: PresenceStatus::Online,
+                    },
+                );
+            }
+            self.events
+                .publish_to_user(user_id, &GatewayEvent::GuildCreate(Box::new(guild.clone())));
+        }
+        Ok(guild)
     }
 
     /// Members only. shortcut: unpaginated; fine for M1 community sizes, paginate with the member list UI.
@@ -374,14 +441,7 @@ impl Guilds {
             guild_storage::list_members(&self.pool, guild_id, MAXIMUM_MEMBERS_LISTED)
                 .await?
                 .into_iter()
-                .map(|member| Member {
-                    user: PublicUser {
-                        id: member.user_id,
-                        username: member.username,
-                        display_name: member.display_name,
-                    },
-                    joined_at_unix_milliseconds: member.joined_at_unix_milliseconds,
-                })
+                .map(member_from_stored)
                 .collect(),
         )
     }
@@ -396,6 +456,13 @@ impl Guilds {
             return Err(GuildError::OwnerCannotLeave);
         }
         guild_storage::delete_member(&self.pool, guild_id, user_id).await?;
+        self.events.unsubscribe_user_from_guild(user_id, guild_id);
+        self.events.publish_to_guild(
+            guild_id,
+            &GatewayEvent::GuildMemberRemove { guild_id, user_id },
+        );
+        self.events
+            .publish_to_user(user_id, &GatewayEvent::GuildDelete { id: guild_id });
         Ok(())
     }
 }
@@ -421,7 +488,12 @@ mod tests {
     async fn fixture() -> Fixture {
         let (directory, pool) = migrated_pool().await;
         let ids = Arc::new(SnowflakeGenerator::default());
-        let accounts = Accounts::new(pool.clone(), RegistrationMode::Open, ids.clone());
+        let accounts = Accounts::new(
+            pool.clone(),
+            RegistrationMode::Open,
+            ids.clone(),
+            Arc::default(),
+        );
         let register = |request: RegisterRequest| accounts.register(request, NOW);
         let owner = register(register_request("owner", "owner@example.org"))
             .await
@@ -441,7 +513,7 @@ mod tests {
         Fixture {
             _directory: directory,
             third,
-            guilds: Guilds::new(pool.clone(), ids),
+            guilds: Guilds::new(pool.clone(), ids, Arc::default()),
             pool,
             owner,
             other,

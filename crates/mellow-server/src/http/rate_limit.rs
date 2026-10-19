@@ -71,6 +71,18 @@ pub(crate) const READ_STATE_WRITES_PER_USER: RateLimit = RateLimit {
     window: Duration::from_secs(10),
 };
 
+/// Typing indicators per user; clients send one every few seconds while typing.
+pub(crate) const TYPING_INDICATORS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_secs(10),
+};
+
+/// Gateway WebSocket openings per client address (each holds a socket for up to 10 s unidentified).
+pub(crate) const GATEWAY_CONNECTIONS_PER_ADDRESS: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_secs(10),
+};
+
 #[derive(Debug, Default)]
 pub(crate) struct RateLimiter {
     state: Mutex<LimiterState>,

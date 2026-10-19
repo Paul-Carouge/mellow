@@ -105,19 +105,23 @@ pub struct Accounts {
     /// Shared with the other use cases so ids are unique across the whole process.
     ids: std::sync::Arc<SnowflakeGenerator>,
     registration_mode: RegistrationMode,
+    /// Logout ends the token's live gateway sessions at once.
+    events: std::sync::Arc<crate::events::EventHub>,
 }
 
 impl Accounts {
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         pool: SqlitePool,
         registration_mode: RegistrationMode,
         ids: std::sync::Arc<SnowflakeGenerator>,
+        events: std::sync::Arc<crate::events::EventHub>,
     ) -> Self {
         Self {
             pool,
             ids,
             registration_mode,
+            events,
         }
     }
 
@@ -250,6 +254,7 @@ impl Accounts {
     pub async fn logout(&self, token: &str) -> Result<(), AccountError> {
         let token_sha256 = session_token_sha256(token).ok_or(AccountError::Unauthorized)?;
         delete_session(&self.pool, &token_sha256).await?;
+        self.events.disconnect_token(&token_sha256);
         Ok(())
     }
 
@@ -345,6 +350,7 @@ pub(crate) mod tests {
             pool.clone(),
             RegistrationMode::Open,
             std::sync::Arc::default(),
+            std::sync::Arc::default(),
         );
 
         let registered = accounts
@@ -375,6 +381,7 @@ pub(crate) mod tests {
             pool.clone(),
             RegistrationMode::Open,
             std::sync::Arc::default(),
+            std::sync::Arc::default(),
         );
         accounts
             .register(register_request("aurore", "aurore@example.org"), NOW)
@@ -403,6 +410,7 @@ pub(crate) mod tests {
             pool.clone(),
             RegistrationMode::Open,
             std::sync::Arc::default(),
+            std::sync::Arc::default(),
         );
         open.register(register_request("aurore", "aurore@example.org"), NOW)
             .await
@@ -420,6 +428,7 @@ pub(crate) mod tests {
         let closed = Accounts::new(
             pool.clone(),
             RegistrationMode::Closed,
+            std::sync::Arc::default(),
             std::sync::Arc::default(),
         )
         .register(register_request("chloe", "chloe@example.org"), NOW)
@@ -443,6 +452,7 @@ pub(crate) mod tests {
         let accounts = Accounts::new(
             pool.clone(),
             RegistrationMode::Open,
+            std::sync::Arc::default(),
             std::sync::Arc::default(),
         );
         let session = accounts
@@ -472,6 +482,7 @@ pub(crate) mod tests {
         let accounts = Accounts::new(
             pool.clone(),
             RegistrationMode::Open,
+            std::sync::Arc::default(),
             std::sync::Arc::default(),
         );
         let session = accounts

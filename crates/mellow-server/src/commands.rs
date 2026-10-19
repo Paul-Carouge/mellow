@@ -198,6 +198,7 @@ pub async fn create_user(
             pool.clone(),
             config.registration_mode,
             std::sync::Arc::default(),
+            std::sync::Arc::default(),
         )
         .create_account(
             crate::domain::accounts::NewAccount {

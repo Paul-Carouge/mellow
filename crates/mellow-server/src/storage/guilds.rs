@@ -461,8 +461,8 @@ pub(crate) async fn insert_invite(
 }
 
 /// Joins the guild through `code`, atomically: a valid invite consumes one use and adds the
-/// member; an existing member consumes nothing. Returns the guild id, or `None` if the code is
-/// unknown, expired or used up.
+/// member; an existing member consumes nothing. Returns the guild id and whether the user is a
+/// new member, or `None` if the code is unknown, expired or used up.
 ///
 /// # Errors
 /// Fails on database errors; nothing is written then.
@@ -471,7 +471,7 @@ pub(crate) async fn join_with_invite(
     code: &str,
     user_id: Snowflake,
     now_unix_milliseconds: u64,
-) -> Result<Option<Snowflake>, GuildStorageError> {
+) -> Result<Option<(Snowflake, bool)>, GuildStorageError> {
     let user_id = to_integer(user_id.raw())?;
     let now = to_integer(now_unix_milliseconds)?;
     let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
@@ -507,5 +507,32 @@ pub(crate) async fn join_with_invite(
         .await?;
     }
     transaction.commit().await?;
-    Ok(Some(to_id(guild_id)?))
+    Ok(Some((to_id(guild_id)?, added > 0)))
+}
+
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn find_member(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+    user_id: Snowflake,
+) -> Result<Option<StoredMember>, GuildStorageError> {
+    let row: Option<(i64, String, String, i64)> = sqlx::query_as(
+        "SELECT users.id, users.username, users.display_name, guild_members.joined_at_unix_milliseconds \
+         FROM guild_members JOIN users ON users.id = guild_members.user_id \
+         WHERE guild_members.guild_id = ? AND guild_members.user_id = ?",
+    )
+    .bind(to_integer(guild_id.raw())?)
+    .bind(to_integer(user_id.raw())?)
+    .fetch_optional(pool)
+    .await?;
+    row.map(|(user_id, username, display_name, joined_at)| {
+        Ok(StoredMember {
+            user_id: to_id(user_id)?,
+            username,
+            display_name,
+            joined_at_unix_milliseconds: to_unsigned(joined_at)?,
+        })
+    })
+    .transpose()
 }
