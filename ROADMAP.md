@@ -5,7 +5,7 @@ Each milestone ends with something usable end to end. Scope changes are made her
 ## M0 — Foundations
 - Workspace scaffold, CI (fmt, clippy, tests, cargo deny), lint configuration.
 - Design tokens file and generators (Slint global, Compose theme, admin CSS).
-- Spikes: sqlx + SQLCipher on all targets (ADR-0006, done on macOS, CI covers Linux and Windows), Slint message list with rich text and selection (ADR-0010), UniFFI async + callbacks on Android (ADR-0011).
+- Spikes: sqlx + SQLCipher on all targets (ADR-0006, done on macOS, CI covers Linux and Windows), Slint message list with rich text and selection (ADR-0010, done: no blocker, see results), UniFFI async + callbacks on Android (ADR-0011).
 
 ## M1 — Text chat, single instance, desktop
 - `mellow-server init / serve`, config, SQLite storage, migrations, built-in TLS (ACME).

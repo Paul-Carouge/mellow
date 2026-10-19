@@ -28,8 +28,9 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check
+cargo run -p mellow-desktop
 ```
-Crates are added to the workspace when their milestone starts (see ROADMAP.md); today only `mellow-protocol` and `mellow-server` (library, no binary yet) exist. Update this section when run commands appear.
+Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (library, no binary yet) and `mellow-desktop` (Slint spike prototype) exist. Update this section when run commands appear.
 CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux, macOS and Windows.
 
 ## Rules specific to this project
