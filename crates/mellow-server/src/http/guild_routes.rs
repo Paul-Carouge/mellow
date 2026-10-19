@@ -119,7 +119,7 @@ pub(crate) async fn join_with_invite(
     AuthenticatedUser(user): AuthenticatedUser,
     ApiPath(code): ApiPath<String>,
 ) -> Result<Json<Guild>, ApiError> {
-    let address = client_address_key(peer, &headers, state.is_behind_tls_reverse_proxy);
+    let address = client_address_key(peer, &headers, &state.trusted_proxy_networks);
     if !state.rate_limiter.record_event(
         &format!("invite:{address}"),
         INVITE_ATTEMPTS_PER_ADDRESS,

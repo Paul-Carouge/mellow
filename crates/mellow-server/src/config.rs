@@ -4,6 +4,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::account_rules::RegistrationMode;
@@ -21,6 +22,19 @@ pub const DEFAULT_CERTIFICATE_DIRECTORY_NAME: &str = "certificates";
 const MAXIMUM_TLS_DOMAINS: usize = 100;
 const MAXIMUM_DOMAIN_LENGTH: usize = 253;
 const MAXIMUM_DOMAIN_LABEL_LENGTH: usize = 63;
+/// A proxy speaks plain http to Mellow, so it must sit on a private network: loopback, RFC 1918,
+/// shared address space (CGNAT, Tailscale), link-local, and their IPv6 counterparts.
+const PRIVATE_PROXY_NETWORKS: [&str; 9] = [
+    "127.0.0.0/8",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "100.64.0.0/10",
+    "169.254.0.0/16",
+    "::1/128",
+    "fc00::/7",
+    "fe80::/10",
+];
 pub const DATABASE_FILE_NAME: &str = "mellow.db";
 pub const BACKUP_DIRECTORY_NAME: &str = "backups";
 
@@ -38,6 +52,10 @@ pub struct ServerConfig {
     /// client address come from the last `X-Forwarded-For` hop.
     #[serde(default)]
     pub behind_tls_reverse_proxy: bool,
+    /// Proxies trusted for `X-Forwarded-For` besides loopback, e.g. `["172.18.0.0/16"]` for a
+    /// proxy in a Docker network. Requires `behind_tls_reverse_proxy`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_proxy_networks: Vec<IpNet>,
     /// Built-in TLS with ACME certificates (ADR-0013). Last field: TOML writes tables after values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
@@ -94,6 +112,20 @@ pub enum ConfigError {
         "[tls] and behind_tls_reverse_proxy cannot both be set: either Mellow terminates TLS or the proxy does"
     )]
     TlsAndReverseProxy,
+    #[error(
+        "trusted_proxy_networks needs behind_tls_reverse_proxy = true: without a proxy, nobody's X-Forwarded-For is trusted"
+    )]
+    TrustedProxyNetworksWithoutReverseProxy,
+    #[error(
+        "trusted_proxy_networks entry {network} is not inside a private network, so clients could pick their own rate-limit key; list only the proxy's address, e.g. 172.18.0.10/32"
+    )]
+    TrustedProxyNetworkNotPrivate { network: IpNet },
+    #[error(
+        "trusted_proxy_networks entry {network} has host bits set and would trust all of {}; write {}/32 (or /128) for one proxy",
+        network.trunc(),
+        network.addr()
+    )]
+    TrustedProxyNetworkWithHostBits { network: IpNet },
     #[error("[tls] needs between 1 and {MAXIMUM_TLS_DOMAINS} domains")]
     InvalidTlsDomainCount,
     #[error(
@@ -110,6 +142,22 @@ pub enum ConfigError {
         "the master key file must not be inside the data directory ({path}), or backups would carry the key"
     )]
     MasterKeyInsideDataDirectory { path: PathBuf },
+}
+
+/// Peers are compared in canonical form, so an IPv4-mapped IPv6 network would never match: it is
+/// refused as not private, like any network outside `PRIVATE_PROXY_NETWORKS`.
+fn validate_trusted_proxy_network(network: IpNet) -> Result<(), ConfigError> {
+    if network != network.trunc() {
+        return Err(ConfigError::TrustedProxyNetworkWithHostBits { network });
+    }
+    let is_private = PRIVATE_PROXY_NETWORKS
+        .iter()
+        .filter_map(|private_network| private_network.parse::<IpNet>().ok())
+        .any(|private_network| private_network.contains(&network));
+    if !is_private {
+        return Err(ConfigError::TrustedProxyNetworkNotPrivate { network });
+    }
+    Ok(())
 }
 
 /// The environment overrides that apply on top of the file, read once by the caller.
@@ -209,6 +257,12 @@ impl ServerConfig {
             return Err(ConfigError::MasterKeyInsideDataDirectory {
                 path: self.master_key_file.clone(),
             });
+        }
+        if !self.trusted_proxy_networks.is_empty() && !self.behind_tls_reverse_proxy {
+            return Err(ConfigError::TrustedProxyNetworksWithoutReverseProxy);
+        }
+        for network in &self.trusted_proxy_networks {
+            validate_trusted_proxy_network(*network)?;
         }
         if let Some(tls) = &self.tls {
             if self.behind_tls_reverse_proxy {
@@ -427,6 +481,7 @@ mod tests {
             listen_address: DEFAULT_LISTEN_ADDRESS.parse().unwrap(),
             registration_mode: RegistrationMode::Closed,
             behind_tls_reverse_proxy: false,
+            trusted_proxy_networks: Vec::new(),
             tls: None,
         };
 
@@ -438,6 +493,70 @@ mod tests {
             config.ensure_master_key_outside_data_directory_on_disk(),
             Err(ConfigError::MasterKeyInsideDataDirectory { .. })
         ));
+    }
+
+    #[test]
+    fn trusted_proxy_networks_are_parsed_and_need_a_reverse_proxy() {
+        let networks = "trusted_proxy_networks = [\"172.18.0.0/16\", \"fd00::/8\"]";
+        assert!(matches!(
+            load_text(
+                &format!("{networks}\n{VALID_CONFIG}"),
+                &EnvironmentOverrides::default()
+            ),
+            Err(ConfigError::TrustedProxyNetworksWithoutReverseProxy)
+        ));
+        let proxied = load_text(
+            &format!("{networks}\nbehind_tls_reverse_proxy = true\n{VALID_CONFIG}"),
+            &EnvironmentOverrides::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            proxied.trusted_proxy_networks,
+            vec![
+                "172.18.0.0/16".parse::<IpNet>().unwrap(),
+                "fd00::/8".parse().unwrap()
+            ]
+        );
+        assert!(matches!(
+            load_text(
+                &format!(
+                    "trusted_proxy_networks = [\"172.18.0.0/33\"]\nbehind_tls_reverse_proxy = true\n{VALID_CONFIG}"
+                ),
+                &EnvironmentOverrides::default()
+            ),
+            Err(ConfigError::InvalidFile { .. })
+        ));
+        let load_network = |network: &str| {
+            load_text(
+                &format!(
+                    "trusted_proxy_networks = [\"{network}\"]\nbehind_tls_reverse_proxy = true\n{VALID_CONFIG}"
+                ),
+                &EnvironmentOverrides::default(),
+            )
+        };
+        for public_network in [
+            "0.0.0.0/0",
+            "::/0",
+            "0.0.0.0/1",
+            "8.8.8.0/24",
+            "172.0.0.0/8",
+            "::ffff:172.18.0.0/112",
+        ] {
+            assert!(
+                matches!(
+                    load_network(public_network),
+                    Err(ConfigError::TrustedProxyNetworkNotPrivate { .. })
+                ),
+                "{public_network}"
+            );
+        }
+        assert!(matches!(
+            load_network("172.18.0.4/16"),
+            Err(ConfigError::TrustedProxyNetworkWithHostBits { .. })
+        ));
+        for private_network in ["172.18.0.4/32", "10.0.0.0/8", "100.100.1.2/32", "fd12::/64"] {
+            assert!(load_network(private_network).is_ok(), "{private_network}");
+        }
     }
 
     #[test]

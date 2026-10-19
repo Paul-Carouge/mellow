@@ -27,6 +27,8 @@ futures-util = { version = "0.3.34", default-features = false, features = ["sink
 getrandom = "0.4.3"
 hkdf = "0.13.0"
 hyper-util = { version = "0.1.21", features = ["tokio"] }
+# Already in the tree through hyper-util; `serde` reads proxy networks from mellow.toml.
+ipnet = { version = "2.12.2", features = ["serde"] }
 mellow-protocol = { path = "crates/mellow-protocol" }
 mellow-client-core = { path = "crates/mellow-client-core" }
 bitflags = "2.13.2"

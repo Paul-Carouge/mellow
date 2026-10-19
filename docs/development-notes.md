@@ -42,6 +42,7 @@ A local hook refuses `git commit` when fmt or clippy fail on the touched crate: 
 - **Message markdown**: escape `\` before `<`, or `\<font>` re-enables HTML styling (fixed, with a regression test).
 - **TLS listener**: hyper ignores its header timeout unless a timer is set. Do not enable HTTP/2 keep-alive pings, since their answers keep idle connections alive. `axum-server`'s `http1_only()` breaks WebSocket upgrades.
 - **ACME**: tests point at an unreachable directory URL (`https://127.0.0.1:9/directory`), so they never touch Let's Encrypt.
+- **Reverse proxy in Docker**: the proxy reaches Mellow from its container address, not loopback, so `X-Forwarded-For` is ignored unless that address is in `trusted_proxy_networks`. Trust the proxy's `/32`, never the whole Docker network (its gateway is the host and the userland proxy's source).
 - **Logs**: never log serde or ACME error text verbatim. Serde quotes the offending value (possibly message content), and the certificate authority's messages can quote the contact email.
 - **Licences**: `webpki-roots` and `webpki-root-certs` need the CDLA-Permissive-2.0 exception in `deny.toml`.
 - **Clippy pedantic**: `too_many_lines` (100) shows up on large `match` reducers and connection loops; extract a helper rather than allowing the lint.

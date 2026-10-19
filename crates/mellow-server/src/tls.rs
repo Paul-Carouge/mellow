@@ -375,7 +375,7 @@ impl ConnectionLimiter {
     /// The groups a connection counts against, with their caps.
     fn address_groups(&self, peer: SocketAddr) -> Vec<(String, usize)> {
         let mut groups = vec![(
-            client_address_key(peer, &HeaderMap::new(), false),
+            client_address_key(peer, &HeaderMap::new(), &[]),
             self.maximum_per_client_address,
         )];
         if let IpAddr::V6(address) = peer.ip()

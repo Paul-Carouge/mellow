@@ -52,7 +52,7 @@ pub(crate) async fn register(
     headers: HeaderMap,
     ApiJson(request): ApiJson<RegisterRequest>,
 ) -> Result<Response, ApiError> {
-    let address = client_address_key(peer, &headers, state.is_behind_tls_reverse_proxy);
+    let address = client_address_key(peer, &headers, &state.trusted_proxy_networks);
     if !state.rate_limiter.record_event(
         &format!("authentication:{address}"),
         AUTHENTICATION_ATTEMPTS_PER_ADDRESS,
@@ -73,7 +73,7 @@ pub(crate) async fn login(
     headers: HeaderMap,
     ApiJson(request): ApiJson<LoginRequest>,
 ) -> Result<Response, ApiError> {
-    let address = client_address_key(peer, &headers, state.is_behind_tls_reverse_proxy);
+    let address = client_address_key(peer, &headers, &state.trusted_proxy_networks);
     let account = account_key(&normalize_login(&request.login).map_err(AccountError::from)?);
     let now = Instant::now();
     // Every attempt is counted before the password check, so concurrent requests cannot all

@@ -19,6 +19,7 @@ futures-util.workspace = true
 getrandom.workspace = true
 hkdf.workspace = true
 hyper-util.workspace = true
+ipnet.workspace = true
 mellow-protocol.workspace = true
 rpassword.workspace = true
 rustls-acme.workspace = true

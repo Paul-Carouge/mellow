@@ -38,6 +38,7 @@ pub async fn initialize_instance(options: &InitializeOptions) -> Result<ServerCo
         listen_address: options.listen_address,
         registration_mode: options.registration_mode,
         behind_tls_reverse_proxy: false,
+        trusted_proxy_networks: Vec::new(),
         tls: options
             .tls
             .clone()

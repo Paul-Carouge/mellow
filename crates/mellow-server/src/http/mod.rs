@@ -16,6 +16,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
+use ipnet::IpNet;
 use mellow_protocol::{HealthResponse, HealthStatus};
 use sqlx::SqlitePool;
 
@@ -36,7 +37,8 @@ pub(crate) struct AppState {
     pub(crate) events: Arc<EventHub>,
     pub(crate) gateway_sessions: Arc<crate::gateway::SessionRegistry>,
     pub(crate) rate_limiter: Arc<RateLimiter>,
-    pub(crate) is_behind_tls_reverse_proxy: bool,
+    /// Peers whose `X-Forwarded-For` names the client; empty without a reverse proxy.
+    pub(crate) trusted_proxy_networks: Arc<[IpNet]>,
 }
 
 impl AppState {
@@ -62,7 +64,11 @@ impl AppState {
             guilds,
             pool,
             rate_limiter: Arc::default(),
-            is_behind_tls_reverse_proxy: config.behind_tls_reverse_proxy,
+            trusted_proxy_networks: client_address::build_trusted_proxy_networks(
+                config.behind_tls_reverse_proxy,
+                &config.trusted_proxy_networks,
+            )
+            .into(),
         }
     }
 }
@@ -200,7 +206,7 @@ pub(crate) mod tests {
             guilds,
             pool,
             rate_limiter: Arc::default(),
-            is_behind_tls_reverse_proxy: false,
+            trusted_proxy_networks: Arc::default(),
         }
     }
 
@@ -437,7 +443,8 @@ pub(crate) mod tests {
     async fn forwarded_for_from_the_loopback_proxy_separates_clients() {
         let (_directory, pool) = migrated_pool().await;
         let mut state = test_state(pool.clone(), RegistrationMode::Closed);
-        state.is_behind_tls_reverse_proxy = true;
+        state.trusted_proxy_networks =
+            client_address::build_trusted_proxy_networks(true, &[]).into();
         let via_proxy = |client: &str| {
             let mut request = wrong_login("nobody");
             request
