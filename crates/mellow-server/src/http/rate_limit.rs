@@ -50,6 +50,27 @@ pub(crate) const GUILD_WRITES_PER_USER: RateLimit = RateLimit {
     window: Duration::from_secs(60),
 };
 
+/// Message writes (send, edit, delete) per user: a burst is fine, a flood is not.
+pub(crate) const MESSAGE_WRITES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_secs(10),
+};
+/// Sustained message writes per user, so one account cannot fill the disk over a day.
+pub(crate) const MESSAGE_WRITES_PER_USER_PER_HOUR: RateLimit = RateLimit {
+    maximum_events: 600,
+    window: Duration::from_hours(1),
+};
+/// Messages per channel, whoever sends them (slows coordinated floods).
+pub(crate) const MESSAGES_PER_CHANNEL: RateLimit = RateLimit {
+    maximum_events: 30,
+    window: Duration::from_secs(10),
+};
+/// Read-state acknowledgements per user; clients send one per channel switch or scroll.
+pub(crate) const READ_STATE_WRITES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 30,
+    window: Duration::from_secs(10),
+};
+
 #[derive(Debug, Default)]
 pub(crate) struct RateLimiter {
     state: Mutex<LimiterState>,

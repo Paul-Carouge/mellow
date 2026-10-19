@@ -248,8 +248,8 @@ impl Guilds {
         Ok(channel_from_stored(channel))
     }
 
-    /// The channel and its guild's permissions for `user_id`, or `NotFound` for non-members.
-    async fn channel_and_member_permissions(
+    /// The guild channel and `user_id`'s permissions in its guild, or `NotFound` for non-members.
+    pub(crate) async fn channel_and_member_permissions(
         &self,
         user_id: Snowflake,
         channel_id: Snowflake,

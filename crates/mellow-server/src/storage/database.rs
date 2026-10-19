@@ -80,6 +80,9 @@ pub async fn open_encrypted_database(
     let pool_options = key_only_options
         .journal_mode(SqliteJournalMode::Wal)
         .foreign_keys(true)
+        // Deleted messages are overwritten on disk instead of lingering in free pages, which the
+        // file, backups and anyone holding the key could otherwise recover.
+        .pragma("secure_delete", "ON")
         .busy_timeout(BUSY_TIMEOUT);
     Ok(SqlitePoolOptions::new().connect_with(pool_options).await?)
 }
@@ -191,12 +194,17 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
+        let secure_delete: i64 = sqlx::query_scalar("PRAGMA secure_delete")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         let foreign_keys: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
             .fetch_one(&pool)
             .await
             .unwrap();
         pool.close().await;
         assert_eq!(journal_mode, "wal");
+        assert_eq!(secure_delete, 1);
         assert_eq!(foreign_keys, 1);
     }
 

@@ -3,13 +3,14 @@
 use axum::Json;
 use axum::extract::FromRequest;
 use axum::extract::FromRequestParts;
-use axum::extract::rejection::{JsonRejection, PathRejection};
+use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use mellow_protocol::{ApiErrorBody, ApiErrorCode};
 
 use crate::domain::accounts::AccountError;
 use crate::domain::guilds::GuildError;
+use crate::domain::messages::MessageError;
 
 #[derive(Debug)]
 pub(crate) struct ApiError {
@@ -31,11 +32,21 @@ impl ApiError {
         Self::from(AccountError::Unauthorized)
     }
 
+    /// Details go to the log only; clients get a generic message.
+    fn internal(context: &str, source: &dyn std::fmt::Display) -> Self {
+        tracing::error!(error = %source, "internal error while handling {context}");
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: ApiErrorCode::Internal,
+            message: "Something went wrong on the server.".into(),
+        }
+    }
+
     pub(crate) fn not_found() -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
             code: ApiErrorCode::NotFound,
-            message: "No such endpoint.".into(),
+            message: "Not found.".into(),
         }
     }
 
@@ -65,15 +76,7 @@ impl From<AccountError> for ApiError {
             AccountError::AccountDisabled => (StatusCode::FORBIDDEN, ApiErrorCode::AccountDisabled),
             AccountError::Unauthorized => (StatusCode::UNAUTHORIZED, ApiErrorCode::Unauthorized),
             AccountError::ServerBusy => (StatusCode::SERVICE_UNAVAILABLE, ApiErrorCode::ServerBusy),
-            AccountError::Internal(source) => {
-                // Details go to the log only; clients get a generic message.
-                tracing::error!(error = %source, "internal error while handling an account request");
-                return Self {
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    code: ApiErrorCode::Internal,
-                    message: "Something went wrong on the server.".into(),
-                };
-            }
+            AccountError::Internal(source) => return Self::internal("an account request", source),
         };
         Self {
             status,
@@ -109,19 +112,42 @@ impl From<GuildError> for ApiError {
             GuildError::InvalidInvite => (StatusCode::NOT_FOUND, ApiErrorCode::InvalidInvite),
             GuildError::OwnerCannotLeave => (StatusCode::CONFLICT, ApiErrorCode::OwnerCannotLeave),
             GuildError::LimitReached(_) => (StatusCode::CONFLICT, ApiErrorCode::LimitReached),
-            GuildError::Internal(source) => {
-                tracing::error!(error = %source, "internal error while handling a guild request");
-                return Self {
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    code: ApiErrorCode::Internal,
-                    message: "Something went wrong on the server.".into(),
-                };
-            }
+            GuildError::Internal(source) => return Self::internal("a guild request", source),
         };
         Self {
             status,
             code,
             message: error.to_string(),
+        }
+    }
+}
+
+impl From<MessageError> for ApiError {
+    fn from(error: MessageError) -> Self {
+        match error {
+            MessageError::Guild(guild_error) => guild_error.into(),
+            MessageError::InvalidInput(violation) => Self {
+                status: StatusCode::BAD_REQUEST,
+                code: ApiErrorCode::ValidationFailed,
+                message: violation.to_string(),
+            },
+            MessageError::MessageNotFound => Self::not_found(),
+            MessageError::Internal(source) => Self::internal("a message request", &source),
+        }
+    }
+}
+
+/// `Query` whose rejections (unknown or malformed parameters) use our error format.
+#[derive(Debug, FromRequestParts)]
+#[from_request(via(axum::extract::Query), rejection(ApiError))]
+pub(crate) struct ApiQuery<T>(pub(crate) T);
+
+impl From<QueryRejection> for ApiError {
+    fn from(rejection: QueryRejection) -> Self {
+        Self {
+            status: rejection.status(),
+            code: ApiErrorCode::ValidationFailed,
+            message: rejection.body_text(),
         }
     }
 }

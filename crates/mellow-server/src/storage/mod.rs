@@ -4,6 +4,7 @@ pub(crate) mod accounts;
 mod database;
 pub(crate) mod guilds;
 mod master_key;
+pub(crate) mod messages;
 mod migrations;
 
 pub use database::{DatabaseKey, StorageError, open_encrypted_database};

@@ -6,6 +6,8 @@ pub mod accounts;
 pub mod clock;
 pub(crate) mod guild_rules;
 pub(crate) mod guilds;
+pub(crate) mod message_rules;
+pub(crate) mod messages;
 pub(crate) mod password;
 pub(crate) mod permissions;
 pub(crate) mod session_token;

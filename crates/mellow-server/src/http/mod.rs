@@ -6,6 +6,7 @@ mod api_error;
 mod authentication;
 mod client_address;
 mod guild_routes;
+mod message_routes;
 mod rate_limit;
 
 use std::net::SocketAddr;
@@ -13,7 +14,7 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use mellow_protocol::{HealthResponse, HealthStatus};
 use sqlx::SqlitePool;
@@ -21,6 +22,7 @@ use sqlx::SqlitePool;
 use crate::config::ServerConfig;
 use crate::domain::accounts::Accounts;
 use crate::domain::guilds::Guilds;
+use crate::domain::messages::Messages;
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::http::rate_limit::RateLimiter;
 
@@ -29,6 +31,7 @@ pub(crate) struct AppState {
     pub(crate) pool: SqlitePool,
     pub(crate) accounts: Arc<Accounts>,
     pub(crate) guilds: Arc<Guilds>,
+    pub(crate) messages: Arc<Messages>,
     pub(crate) rate_limiter: Arc<RateLimiter>,
     pub(crate) is_behind_tls_reverse_proxy: bool,
 }
@@ -36,13 +39,15 @@ pub(crate) struct AppState {
 impl AppState {
     pub(crate) fn new(pool: SqlitePool, config: &ServerConfig) -> Self {
         let ids = Arc::new(SnowflakeGenerator::default());
+        let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone()));
         Self {
             accounts: Arc::new(Accounts::new(
                 pool.clone(),
                 config.registration_mode,
                 ids.clone(),
             )),
-            guilds: Arc::new(Guilds::new(pool.clone(), ids)),
+            messages: Arc::new(Messages::new(pool.clone(), ids, guilds.clone())),
+            guilds,
             pool,
             rate_limiter: Arc::default(),
             is_behind_tls_reverse_proxy: config.behind_tls_reverse_proxy,
@@ -87,6 +92,22 @@ pub(crate) fn router(state: AppState) -> Router {
             "/api/v1/invites/{code}",
             post(guild_routes::join_with_invite),
         )
+        .route(
+            "/api/v1/channels/{channel_id}/messages",
+            get(message_routes::list_messages).post(message_routes::send_message),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/messages/{message_id}",
+            patch(message_routes::edit_message).delete(message_routes::delete_message),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/read-state",
+            put(message_routes::acknowledge_read_state),
+        )
+        .route(
+            "/api/v1/users/@me/read-states",
+            get(message_routes::list_my_read_states),
+        )
         .fallback(|| async { api_error::ApiError::not_found() })
         .method_not_allowed_fallback(|| async { api_error::ApiError::method_not_allowed() })
         .with_state(state)
@@ -130,7 +151,7 @@ mod tests {
     use axum::body::Body;
     use axum::extract::connect_info::MockConnectInfo;
     use axum::http::{HeaderMap, Request, header};
-    use mellow_protocol::{ApiErrorBody, ApiErrorCode, CurrentUser, SessionCreated};
+    use mellow_protocol::{ApiErrorBody, ApiErrorCode, CurrentUser, SessionCreated, Snowflake};
     use serde::de::DeserializeOwned;
     use tower::ServiceExt as _;
 
@@ -142,9 +163,11 @@ mod tests {
 
     fn test_state(pool: SqlitePool, registration_mode: RegistrationMode) -> AppState {
         let ids = Arc::new(SnowflakeGenerator::default());
+        let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone()));
         AppState {
             accounts: Arc::new(Accounts::new(pool.clone(), registration_mode, ids.clone())),
-            guilds: Arc::new(Guilds::new(pool.clone(), ids)),
+            messages: Arc::new(Messages::new(pool.clone(), ids, guilds.clone())),
+            guilds,
             pool,
             rate_limiter: Arc::default(),
             is_behind_tls_reverse_proxy: false,
@@ -624,6 +647,201 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             "invite codes cannot be brute forced"
         );
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn messages_over_http() {
+        use mellow_protocol::{Message, ReadState};
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let messages_path = format!("/api/v1/channels/{general}/messages");
+
+        let (status, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &messages_path,
+                &owner,
+                Some(serde_json::json!({"content": "hello", "nonce": "n1"})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let sent: Message = json(&body);
+        assert_eq!(sent.nonce.as_deref(), Some("n1"));
+        assert_eq!(sent.author.username, "owner");
+
+        let (status, body) = send(
+            &state,
+            authorized("GET", &format!("{messages_path}?limit=10"), &owner, None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json::<Vec<Message>>(&body)[0].content, "hello");
+
+        let (status, body) = send(
+            &state,
+            authorized("GET", &format!("{messages_path}?limit=nope"), &owner, None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json::<ApiErrorBody>(&body).code,
+            ApiErrorCode::ValidationFailed
+        );
+
+        let message_path = format!("{messages_path}/{}", sent.id);
+        let (status, body) = send(
+            &state,
+            authorized(
+                "PATCH",
+                &message_path,
+                &owner,
+                Some(serde_json::json!({"content": "hello, edited"})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(json::<Message>(&body).edited_at_unix_milliseconds.is_some());
+
+        let (status, _) = send(
+            &state,
+            authorized(
+                "PUT",
+                &format!("/api/v1/channels/{general}/read-state"),
+                &owner,
+                Some(serde_json::json!({"last_read_message_id": sent.id.to_string()})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, body) = send(
+            &state,
+            authorized("GET", "/api/v1/users/@me/read-states", &owner, None),
+        )
+        .await;
+        assert_eq!(
+            json::<Vec<ReadState>>(&body)[0].last_read_message_id,
+            sent.id
+        );
+
+        let (status, _) = send(&state, authorized("DELETE", &message_path, &owner, None)).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, body) = send(&state, authorized("DELETE", &message_path, &owner, None)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(json::<ApiErrorBody>(&body).code, ApiErrorCode::NotFound);
+
+        pool.close().await;
+    }
+
+    async fn owner_and_general_channel(state: &AppState) -> (String, Snowflake) {
+        let owner = registered_token(state, "owner").await;
+        let (_, body) = send(
+            state,
+            authorized(
+                "POST",
+                "/api/v1/guilds",
+                &owner,
+                Some(serde_json::json!({"name": "Club"})),
+            ),
+        )
+        .await;
+        let general = json::<mellow_protocol::Guild>(&body).channels[1].id;
+        (owner, general)
+    }
+
+    #[tokio::test]
+    async fn sending_messages_is_rate_limited_per_user() {
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let messages_path = format!("/api/v1/channels/{general}/messages");
+        for _ in 0..rate_limit::MESSAGE_WRITES_PER_USER.maximum_events {
+            send(
+                &state,
+                authorized(
+                    "POST",
+                    &messages_path,
+                    &owner,
+                    Some(serde_json::json!({"content": "spam"})),
+                ),
+            )
+            .await;
+        }
+        let (status, _) = send(
+            &state,
+            authorized(
+                "POST",
+                &messages_path,
+                &owner,
+                Some(serde_json::json!({"content": "one more"})),
+            ),
+        )
+        .await;
+        pool.close().await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn history_cursors_over_http() {
+        use mellow_protocol::Message;
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let messages_path = format!("/api/v1/channels/{general}/messages");
+        let (_, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &messages_path,
+                &owner,
+                Some(serde_json::json!({"content": "first"})),
+            ),
+        )
+        .await;
+        let sent: Message = json(&body);
+        let (_, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &messages_path,
+                &owner,
+                Some(serde_json::json!({"content": "second"})),
+            ),
+        )
+        .await;
+        let second: Message = json(&body);
+
+        let (_, body) = send(
+            &state,
+            authorized(
+                "GET",
+                &format!("{messages_path}?before={}&limit=1", second.id),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(
+            json::<Vec<Message>>(&body)[0].id,
+            sent.id,
+            "query-string cursors parse"
+        );
+        let (_, body) = send(
+            &state,
+            authorized(
+                "GET",
+                &format!("{messages_path}?after=18446744073709551615"),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(json::<Vec<Message>>(&body), Vec::new());
         pool.close().await;
     }
 }
