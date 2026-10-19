@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/mellow-desktop", "crates/mellow-protocol", "crates/mellow-server"]
+members = [
+    "crates/mellow-desktop",
+    "crates/mellow-protocol",
+    "crates/mellow-server",
+    "xtask",
+]
 
 [workspace.package]
 version = "0.0.0"
@@ -11,6 +16,7 @@ repository = "https://github.com/Paul-Carouge/mellow"
 publish = false
 
 [workspace.dependencies]
+anyhow = "1.0.104"
 mellow-protocol = { path = "crates/mellow-protocol" }
 bitflags = "2.13.2"
 # Pulled in only to switch the SQLite bundled by sqlx to SQLCipher (ADR-0006). Must stay within the range sqlx-sqlite accepts (>=0.30.1, <0.38).
