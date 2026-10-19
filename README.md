@@ -7,7 +7,7 @@ A calm, self-hostable alternative to Discord, written in Rust.
 - **Native clients:** desktop (Linux, macOS, Windows) in Rust with Slint, Android in Kotlin with Material 3 Expressive.
 - **Private by default:** TLS everywhere, data encrypted at rest, no telemetry.
 
-> Status: M1 in progress. The server initialises and serves a health check; the desktop shell runs on fake data. See [ROADMAP.md](ROADMAP.md).
+> Status: M1 in progress. The server handles accounts, guilds, channels, messages and a real-time gateway; the desktop client signs in to an instance and chats live. See [ROADMAP.md](ROADMAP.md).
 
 ## Documentation
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how the system is built.
@@ -32,7 +32,9 @@ cargo run -p mellow-server -- init --config dev/mellow.toml --data-directory dev
 cargo run -p mellow-server -- admin create-user --config dev/mellow.toml --username admin --email admin@example.org --administrator
 cargo run -p mellow-server -- serve --config dev/mellow.toml
 curl http://127.0.0.1:8080/api/v1/health
+cargo run -p mellow-desktop
 ```
+In the desktop app, use `http://127.0.0.1:8080` as the instance address (plain HTTP is accepted only on loopback; any other address must use `https://`). `MELLOW_DEMO_WORKSPACE=1 cargo run -p mellow-desktop` opens the shell on fake data instead, without an instance.
 Registration is closed by default (`registration_mode = "open"` in `mellow.toml` to allow sign-ups). The API so far (all JSON, `Authorization: Bearer <token>` except register/login):
 - Accounts: `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `GET /api/v1/users/@me`.
 - Guilds: `POST /api/v1/guilds`, `GET /api/v1/users/@me/guilds`, `GET /api/v1/guilds/{id}`, `GET /api/v1/guilds/{id}/members`, `DELETE /api/v1/guilds/{id}/members/@me`.

@@ -230,11 +230,13 @@ The client core contains everything that is not drawing pixels, so desktop and A
 - **Local cache:** a per-instance SQLite database storing recent messages and metadata, so the app opens instantly and shows content offline. The cache is disposable: it can always be rebuilt from the server.
 - **Outbox:** messages sent while offline or during reconnect are queued with a client-generated nonce, shown as pending, and reconciled with the server event carrying the same nonce.
 - **API surface:** async functions and an event stream, designed to be exported by UniFFI without leaking Rust-specific types (no lifetimes, no generics in the exported API).
+- **Built so far (M1.5):** `InstanceAddress` (https only, plain http on loopback), `RestClient`, `run_gateway` (identify, heartbeat, resume, backoff with jitter; reports `Ready`, events, `Disconnected`, `SignedOut`) and `ClientState`, a pure reducer the UI owns. One instance at a time; local cache and outbox are not built yet.
 
 ### 6.1 Desktop (`mellow-desktop`)
 
 - Slint UI ([ADR-0010](docs/adr/0010-desktop-ui-with-slint.md)). `.slint` files hold only presentation; Rust code adapts client-core snapshots to Slint models.
-- The Slint event loop owns the UI thread; the client core runs on a separate tokio runtime. Communication goes through `slint::invoke_from_event_loop` and channels. Nothing blocking runs on the UI thread.
+- The Slint event loop owns the UI thread and the `ClientState`; network calls run on a separate tokio runtime. Their results and gateway updates come back to the UI thread as futures driven by `slint::spawn_local`, so no lock is shared with the UI. Nothing blocking runs on the UI thread.
+- The session token is kept in memory only and revoked on exit until it can be stored in the OS secret store.
 - Design tokens are generated from `design/tokens.json` into a Slint `global` (see DESIGN.md).
 - Packaging: AppImage/deb/rpm (Linux), signed `.dmg` (macOS), MSI (Windows).
 
