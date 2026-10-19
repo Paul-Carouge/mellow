@@ -4,6 +4,7 @@ mod accounts;
 mod canonical_decimal;
 mod guilds;
 mod health;
+mod messages;
 mod permissions;
 mod snowflake;
 
@@ -15,6 +16,10 @@ pub use guilds::{
     GuildSummary, Invite, Member, PublicUser, UpdateChannelRequest,
 };
 pub use health::{HealthResponse, HealthStatus};
+pub use messages::{
+    AcknowledgeRequest, EditMessageRequest, Message, MessageHistoryQuery, ReadState,
+    SendMessageRequest,
+};
 pub use permissions::Permissions;
 pub use snowflake::{
     MAXIMUM_SEQUENCE, MAXIMUM_TIMESTAMP_MILLISECONDS_SINCE_EPOCH, MELLOW_EPOCH_UNIX_MILLISECONDS,
