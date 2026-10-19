@@ -11,7 +11,7 @@ Each milestone ends with something usable end to end. Scope changes are made her
 ## M1 — Text chat, single instance, desktop
 - `mellow-server init / serve`, config, SQLite storage, migrations (done in M1.1: encrypted database, master key, pre-migration backups, health route, graceful shutdown); built-in TLS (ACME) still to do.
 - Accounts (register, login, sessions, logout per device), registration modes (done in M1.2: open/closed, invite-only comes with invites; `admin create-user`).
-- Guilds, categories, text channels, invites.
+- Guilds, categories, text channels, invites (done in M1.3a, with owner/@everyone permissions; named roles and overwrites in M2).
 - Messages: send, edit, delete, replies, history pagination, read states.
 - Gateway: Identify, Ready, Resume, message and channel events, presence, typing.
 - Desktop client: connect, login, server rail, channel list, message list, composer.
