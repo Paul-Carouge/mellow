@@ -236,7 +236,7 @@ The client core contains everything that is not drawing pixels, so desktop and A
 
 - Slint UI ([ADR-0010](docs/adr/0010-desktop-ui-with-slint.md)). `.slint` files hold only presentation; Rust code adapts client-core snapshots to Slint models.
 - The Slint event loop owns the UI thread and the `ClientState`; network calls run on a separate tokio runtime. Their results and gateway updates come back to the UI thread as futures driven by `slint::spawn_local`, so no lock is shared with the UI. Nothing blocking runs on the UI thread.
-- The session token is kept in memory only and revoked on exit until it can be stored in the OS secret store.
+- The session (instance address and token) is stored in the OS secret store through `keyring` (Keychain on macOS, Credential Manager on Windows with local-machine persistence so it never roams with a domain profile, Secret Service on Linux), read back off the UI thread at launch and validated like any input. It is removed when the server rejects the token or the user signs out from the user panel; signing out revokes the token on the server, and the app waits for that request before exiting. If the secret store refuses the write, the session lives in memory only and is revoked on exit. One stored session at a time until multi-instance support (M2).
 - Design tokens are generated from `design/tokens.json` into a Slint `global` (see DESIGN.md).
 - Packaging: AppImage/deb/rpm (Linux), signed `.dmg` (macOS), MSI (Windows).
 

@@ -6,16 +6,15 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 
 ## Where things stand (2026-10-19)
 - `main` holds only the first PR (#1). Everything else is an open stack of pull requests, each based on the previous branch:
-  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`).
+  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → `feat/desktop-session-persistence`.
 - Merge them in that order. After merging one into `main`, retarget the next PR's base to `main` before merging it.
-- New work branches from the tip of the stack (today `feat/built-in-tls`) and opens a PR stacked on the latest one, until the stack is merged.
+- New work branches from the tip of the stack (today `feat/desktop-session-persistence`) and opens a PR stacked on the latest one, until the stack is merged.
 - CI never ran: GitHub Actions is blocked by the account's billing. Everything is verified on macOS only.
 
 ## Next candidates
 1. M1 release candidate: run a real instance on a VPS (`init --domain … --use-staging-certificates`, then production), connect the desktop over https, then tag.
-2. Desktop session persistence in the OS secret store (Keychain, Secret Service, Credential Manager).
-3. End-to-end ACME tests against Pebble (local test certificate authority).
-4. Known gaps listed in the ROADMAP status, server writer task and nonce deduplication first.
+2. End-to-end ACME tests against Pebble (local test certificate authority).
+3. Known gaps listed in the ROADMAP status, server writer task and nonce deduplication first.
 
 ## Workflow that worked
 - One branch per milestone step (`feat/…`), atomic Conventional Commits, a `docs:` commit for README/ROADMAP/ARCHITECTURE/ADR.
@@ -37,7 +36,8 @@ A local hook refuses `git commit` when fmt or clippy fail on the touched crate: 
 - **SQLCipher**: every pool must be closed (`pool.close().await`) before the process or test ends, or the process crashes at exit (ADR-0006). Integration tests stop the server and await it.
 - **Clock in tests**: the gateway validates sessions against the real clock; fixtures that log in through the gateway must use real time, not the fixed `NOW`.
 - **Integration tests of the client core** run a real server through `initialize_instance` + `serve_instance` on a probed free port (`crates/mellow-client-core/tests/`).
-- **Desktop modes**: without environment variables the app shows the sign-in screen. `MELLOW_DEMO_WORKSPACE=1` (also implied by the scroll benchmark and `MELLOW_SPIKE_SNAPSHOT_DIRECTORY`) runs the fake-data shell. Snapshots are written by the app itself, because screen capture is not permitted.
+- **Desktop modes**: without environment variables the app resumes the session stored in the OS secret store, or shows the sign-in screen; sign out from the gear menu of the user panel to get back to it. On macOS an unsigned build changes identity on every rebuild, so Keychain asks again for access to the stored entry. `MELLOW_DEMO_WORKSPACE=1` (also implied by the scroll benchmark and `MELLOW_SPIKE_SNAPSHOT_DIRECTORY`) runs the fake-data shell. Snapshots are written by the app itself, because screen capture is not permitted.
+- **Desktop sessions**: results of network calls are dropped when `session_generation` changed since they started (sign out, sign in again, server rejection), so a late 401 of the previous session cannot end or forget the new one. Use `run_request` for every call, and check the generation in any new UI-thread loop. Secret store calls are serialized by a mutex in `session_store` and bounded by `SECRET_STORE_TIMEOUT` (10 s); release builds never store or resume a session on a loopback (plain http) instance. Known limit: if the secret store can neither be read at launch nor written after sign-in, an older stored session stays there, valid, until a later launch resumes it.
 - **Desktop threading**: state lives on the UI thread in `Rc<RefCell<LiveShell>>`. Network futures run on the tokio runtime and come back through `slint::spawn_local`. Never hold a `RefCell` borrow across a call that borrows again.
 - **Message markdown**: escape `\` before `<`, or `\<font>` re-enables HTML styling (fixed, with a regression test).
 - **TLS listener**: hyper ignores its header timeout unless a timer is set. Do not enable HTTP/2 keep-alive pings, since their answers keep idle connections alive. `axum-server`'s `http1_only()` breaks WebSocket upgrades.

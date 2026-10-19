@@ -812,7 +812,7 @@ States:
 - Empty server (no channels, user can manage): "No channels yet" + "Create a channel". User cannot manage: "No channels you can see yet. Ask a moderator for access."
 - Error: inline banner "Couldn't load channels for Rust Lyon." with "Try again", while keeping cached channels.
 
-User panel (52 px, `surface.sidebar-footer`): avatar 32 with status dot, display name (`type.user-panel-name`), a second line with the custom status or `@username` (and `@instance` when ≥ 2 instances) in `text.muted`, and a settings button. Clicking the avatar or name opens the status menu (Online, Idle, Do not disturb, Invisible, custom status).
+User panel (52 px, `surface.sidebar-footer`): avatar 32 with status dot, display name (`type.user-panel-name`), a second line with the custom status or `@username` (and `@instance` when ≥ 2 instances) in `text.muted`, and a settings button. Clicking the avatar or name opens the status menu (Online, Idle, Do not disturb, Invisible, custom status). Until the user settings screen (5.9) exists, the settings button opens a context menu anchored above it, right edges aligned, with one danger item, "Sign out" (Discord's "Log Out"); the item takes focus on open, `Esc` or a click outside closes the menu and focus returns to the button.
 
 ### 5.4 Message list
 
@@ -1024,7 +1024,7 @@ All components use tokens only (component tier first), support light and dark th
 | 6.30 | QuickSwitcher | — | Results, no results, loading | 5.10. |
 | 6.31 | MemberRow | With activity, without | Hover, focus, offline (avatar 50 %) | `component.member-row.*`. |
 | 6.32 | ProfilePopover | Self, other, other with moderation | Loading, error | `surface.popover`, `elevation.high`. |
-| 6.33 | ContextMenu | With icons, with shortcut hints, with danger items (last, separated), submenus | Item hover/focus (`accent.fill`), danger focus (`danger.fill`), disabled with reason | `component.context-menu.*`; arrow keys, type-ahead, `Esc`. |
+| 6.33 | ContextMenu | With icons, with shortcut hints, with danger items (last, separated), submenus | Item hover (`accent.fill`), danger hover (`danger.fill`); keyboard focus shows only the focus ring, because the first item takes focus when the menu opens and a menu opened with the mouse must not show a filled danger item; disabled with reason | `component.context-menu.*`; arrow keys, type-ahead, `Esc`. Slint has no shadow tokens, so the menu gets a 1 px `context-menu.border` outline instead of `elevation.high`; the keyboard focus ring is drawn `focus-ring.offset` outside the item so it stays visible on the danger fill (`ContextMenuItem` in `primitives.slint`). |
 | 6.34 | Tooltip | Default, rail (instant, trailing side) | Shown after `motion.delay.tooltip` hover or immediately on focus | `component.tooltip.*`; never the only copy of essential information. |
 | 6.35 | Dialog | Standard, destructive, typed confirmation | Default, submitting, error inline | `surface.chat` body, `surface.sidebar` footer with buttons; focus trapped; `Esc` closes (except while submitting); focus returns to the trigger. Bottom sheet on Android compact. |
 | 6.36 | Toast / Snackbar | Info, success, with action ("Undo") | Auto-dismiss after 5 s (paused on hover/focus), dismissible | Polite live region; never for errors that need action. |
