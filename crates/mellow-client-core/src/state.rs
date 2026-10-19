@@ -221,7 +221,8 @@ impl ClientState {
     }
 
     /// Only cached messages change: an edit of older history must not appear out of context, nor
-    /// mark a never-opened channel as unread.
+    /// mark a never-opened channel as unread. An older edit never replaces a newer one: our own
+    /// REST answer can arrive after the gateway already delivered a later edit.
     fn replace_cached_message(&mut self, message: Message) -> StateChange {
         let channel_id = message.channel_id;
         let Some(cached) = self
@@ -236,6 +237,10 @@ impl ClientState {
         else {
             return StateChange::Nothing;
         };
+        // `None` (never edited) orders before any edit time.
+        if message.edited_at_unix_milliseconds < cached.edited_at_unix_milliseconds {
+            return StateChange::Nothing;
+        }
         *cached = message;
         StateChange::Messages { channel_id }
     }
@@ -428,8 +433,17 @@ mod tests {
 
         let mut edited = message(11, OTHER);
         edited.content = "edited".into();
-        state.apply_event(GatewayEvent::MessageUpdate(edited), NOW);
-        assert_eq!(state.messages(GENERAL)[0].content, "edited");
+        edited.edited_at_unix_milliseconds = Some(NOW);
+        let mut edited_later = edited.clone();
+        edited_later.content = "edited later".into();
+        edited_later.edited_at_unix_milliseconds = Some(NOW + 1);
+        state.apply_event(GatewayEvent::MessageUpdate(edited_later), NOW);
+        assert_eq!(
+            state.apply_event(GatewayEvent::MessageUpdate(edited), NOW),
+            StateChange::Nothing,
+            "a late answer for an older edit is ignored"
+        );
+        assert_eq!(state.messages(GENERAL)[0].content, "edited later");
         let mut not_cached = message(3, OTHER);
         not_cached.channel_id = Snowflake::from_raw(999);
         assert_eq!(
