@@ -11,8 +11,16 @@ use crate::domain::account_rules::RegistrationMode;
 pub const DATA_DIRECTORY_VARIABLE: &str = "MELLOW_DATA_DIRECTORY";
 pub const MASTER_KEY_FILE_VARIABLE: &str = "MELLOW_MASTER_KEY_FILE";
 pub const LISTEN_ADDRESS_VARIABLE: &str = "MELLOW_LISTEN_ADDRESS";
-/// Loopback by default: until built-in TLS lands, the server must sit behind a TLS reverse proxy.
+/// Loopback by default: without `[tls]`, the server must sit behind a TLS reverse proxy.
 pub const DEFAULT_LISTEN_ADDRESS: &str = "127.0.0.1:8080";
+/// TLS-ALPN-01 challenges arrive on 443, so a TLS instance listens there by default (ADR-0013).
+pub const DEFAULT_TLS_LISTEN_ADDRESS: &str = "[::]:443";
+/// Created next to the master key file by `init --domain`.
+pub const DEFAULT_CERTIFICATE_DIRECTORY_NAME: &str = "certificates";
+/// Let's Encrypt's limit for names on one certificate.
+const MAXIMUM_TLS_DOMAINS: usize = 100;
+const MAXIMUM_DOMAIN_LENGTH: usize = 253;
+const MAXIMUM_DOMAIN_LABEL_LENGTH: usize = 63;
 pub const DATABASE_FILE_NAME: &str = "mellow.db";
 pub const BACKUP_DIRECTORY_NAME: &str = "backups";
 
@@ -30,6 +38,25 @@ pub struct ServerConfig {
     /// and makes the client address come from the last `X-Forwarded-For` hop.
     #[serde(default)]
     pub behind_tls_reverse_proxy: bool,
+    /// Built-in TLS with ACME certificates (ADR-0013). Last field: TOML writes tables after values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<TlsConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsConfig {
+    /// Public names of the instance, e.g. `["chat.example.org"]`; DNS must point them here.
+    pub domains: Vec<String>,
+    /// Given to the certificate authority for account problems; optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact_email: Option<String>,
+    /// Holds the ACME account and certificate private keys: outside the data directory, so
+    /// backups do not carry them, and private to the service user.
+    pub certificate_directory: PathBuf,
+    /// Let's Encrypt staging: untrusted certificates, generous rate limits, for trying a setup.
+    #[serde(default)]
+    pub use_staging_certificates: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -63,6 +90,22 @@ pub enum ConfigError {
         "listening on {address} would send session tokens unencrypted; listen on 127.0.0.1, or set behind_tls_reverse_proxy = true once a TLS reverse proxy fronts Mellow"
     )]
     PlainHttpOnPublicAddress { address: SocketAddr },
+    #[error(
+        "[tls] and behind_tls_reverse_proxy cannot both be set: either Mellow terminates TLS or the proxy does"
+    )]
+    TlsAndReverseProxy,
+    #[error("[tls] needs between 1 and {MAXIMUM_TLS_DOMAINS} domains")]
+    InvalidTlsDomainCount,
+    #[error(
+        "{domain:?} is not a domain name Mellow can get a certificate for (lowercase letters, digits, hyphens and dots; no wildcard, no IP address)"
+    )]
+    InvalidTlsDomain { domain: String },
+    #[error("{email:?} is not a valid contact email")]
+    InvalidContactEmail { email: String },
+    #[error(
+        "the certificate directory must not be inside the data directory ({path}), or backups would carry the TLS private keys"
+    )]
+    CertificateDirectoryInsideDataDirectory { path: PathBuf },
     #[error(
         "the master key file must not be inside the data directory ({path}), or backups would carry the key"
     )]
@@ -130,10 +173,15 @@ impl ServerConfig {
     /// Relative paths (they would depend on the service's working directory) and a master key
     /// stored inside the data directory are rejected.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        let certificate_directory = self.tls.as_ref().map(|tls| &tls.certificate_directory);
         for (field, path) in [
-            ("data_directory", &self.data_directory),
-            ("master_key_file", &self.master_key_file),
-        ] {
+            ("data_directory", Some(&self.data_directory)),
+            ("master_key_file", Some(&self.master_key_file)),
+            ("tls.certificate_directory", certificate_directory),
+        ]
+        .into_iter()
+        .filter_map(|(field, path)| Some((field, path?)))
+        {
             if !path.is_absolute() {
                 return Err(ConfigError::RelativePath {
                     field,
@@ -162,7 +210,17 @@ impl ServerConfig {
                 path: self.master_key_file.clone(),
             });
         }
-        if !self.listen_address.ip().is_loopback() && !self.behind_tls_reverse_proxy {
+        if let Some(tls) = &self.tls {
+            if self.behind_tls_reverse_proxy {
+                return Err(ConfigError::TlsAndReverseProxy);
+            }
+            tls.validate()?;
+            if tls.certificate_directory.starts_with(&self.data_directory) {
+                return Err(ConfigError::CertificateDirectoryInsideDataDirectory {
+                    path: tls.certificate_directory.clone(),
+                });
+            }
+        } else if !self.listen_address.ip().is_loopback() && !self.behind_tls_reverse_proxy {
             return Err(ConfigError::PlainHttpOnPublicAddress {
                 address: self.listen_address,
             });
@@ -207,6 +265,65 @@ impl ServerConfig {
     pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
         toml::to_string(self)
     }
+}
+
+impl TlsConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.domains.is_empty() || self.domains.len() > MAXIMUM_TLS_DOMAINS {
+            return Err(ConfigError::InvalidTlsDomainCount);
+        }
+        if let Some(domain) = self
+            .domains
+            .iter()
+            .find(|domain| !is_certifiable_domain(domain))
+        {
+            return Err(ConfigError::InvalidTlsDomain {
+                domain: domain.clone(),
+            });
+        }
+        if let Some(email) = &self.contact_email
+            && !is_plausible_email(email)
+        {
+            return Err(ConfigError::InvalidContactEmail {
+                email: email.clone(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// A public DNS name with at least two labels, as certificate authorities accept them over
+/// TLS-ALPN-01: no wildcard, no IP address, no uppercase (names are compared as written).
+fn is_certifiable_domain(domain: &str) -> bool {
+    let labels: Vec<&str> = domain.split('.').collect();
+    let is_valid_label = |label: &&str| {
+        (1..=MAXIMUM_DOMAIN_LABEL_LENGTH).contains(&label.len())
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    };
+    let is_all_numeric_top_level = labels
+        .last()
+        .is_some_and(|label| label.bytes().all(|byte| byte.is_ascii_digit()));
+    domain.len() <= MAXIMUM_DOMAIN_LENGTH
+        && labels.len() >= 2
+        && labels.iter().all(is_valid_label)
+        && !is_all_numeric_top_level
+}
+
+/// Only rules out obvious mistakes; the certificate authority does the real check.
+fn is_plausible_email(email: &str) -> bool {
+    let Some((local, domain)) = email.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && domain.contains('.')
+        && !email
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+        && !domain.contains('@')
 }
 
 #[cfg(test)]
@@ -310,6 +427,7 @@ mod tests {
             listen_address: DEFAULT_LISTEN_ADDRESS.parse().unwrap(),
             registration_mode: RegistrationMode::Closed,
             behind_tls_reverse_proxy: false,
+            tls: None,
         };
 
         assert!(
@@ -350,6 +468,77 @@ mod tests {
         assert!(matches!(
             load_text(&text, &EnvironmentOverrides::default()),
             Err(ConfigError::MasterKeyInsideDataDirectory { .. })
+        ));
+    }
+
+    const TLS_TABLE: &str = r#"
+        [tls]
+        domains = ["chat.example.org"]
+        contact_email = "admin@example.org"
+        certificate_directory = "/etc/mellow/certificates"
+    "#;
+
+    fn public_tls_config() -> String {
+        format!(
+            "{}{TLS_TABLE}",
+            VALID_CONFIG.replace("127.0.0.1:8080", "[::]:443")
+        )
+    }
+
+    #[test]
+    fn tls_allows_a_public_address_and_round_trips() {
+        let config = load_text(&public_tls_config(), &EnvironmentOverrides::default()).unwrap();
+        let tls = config.tls.clone().unwrap();
+        assert_eq!(tls.domains, ["chat.example.org"]);
+        assert!(!tls.use_staging_certificates);
+        let reparsed: ServerConfig = toml::from_str(&config.to_toml().unwrap()).unwrap();
+        assert_eq!(reparsed, config);
+    }
+
+    #[test]
+    fn invalid_tls_settings_fail_with_a_precise_error() {
+        let load = |text: &str| load_text(text, &EnvironmentOverrides::default());
+        let config = public_tls_config();
+        assert!(matches!(
+            load(&format!(
+                "{VALID_CONFIG}\nbehind_tls_reverse_proxy = true\n{TLS_TABLE}"
+            )),
+            Err(ConfigError::TlsAndReverseProxy)
+        ));
+        assert!(matches!(
+            load(&config.replace(r#"["chat.example.org"]"#, "[]")),
+            Err(ConfigError::InvalidTlsDomainCount)
+        ));
+        for domain in [
+            "*.example.org",
+            "Chat.example.org",
+            "localhost",
+            "192.168.1.10",
+            "-a.example.org",
+            "a..org",
+        ] {
+            assert!(
+                matches!(
+                    load(&config.replace("chat.example.org", domain)),
+                    Err(ConfigError::InvalidTlsDomain { .. })
+                ),
+                "{domain}"
+            );
+        }
+        assert!(matches!(
+            load(&config.replace("admin@example.org", "admin example.org")),
+            Err(ConfigError::InvalidContactEmail { .. })
+        ));
+        assert!(matches!(
+            load(&config.replace("/etc/mellow/certificates", "/var/lib/mellow/acme")),
+            Err(ConfigError::CertificateDirectoryInsideDataDirectory { .. })
+        ));
+        assert!(matches!(
+            load(&config.replace("/etc/mellow/certificates", "certificates")),
+            Err(ConfigError::RelativePath {
+                field: "tls.certificate_directory",
+                ..
+            })
         ));
     }
 }

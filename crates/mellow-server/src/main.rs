@@ -11,7 +11,10 @@ use mellow_server::commands::{
     CreateUserOptions, InitializeOptions, create_user, initialize_instance, serve_instance,
     shutdown_signal,
 };
-use mellow_server::config::{DEFAULT_LISTEN_ADDRESS, EnvironmentOverrides, ServerConfig};
+use mellow_server::config::{
+    DEFAULT_CERTIFICATE_DIRECTORY_NAME, DEFAULT_LISTEN_ADDRESS, DEFAULT_TLS_LISTEN_ADDRESS,
+    EnvironmentOverrides, ServerConfig, TlsConfig,
+};
 use mellow_server::domain::account_rules::RegistrationMode;
 use tracing_subscriber::EnvFilter;
 use zeroize::Zeroizing;
@@ -38,11 +41,25 @@ enum Command {
         /// Must be outside the data directory; back it up separately, it cannot be recovered.
         #[arg(long)]
         master_key_file: PathBuf,
-        #[arg(long, default_value = DEFAULT_LISTEN_ADDRESS)]
-        listen_address: SocketAddr,
+        /// Defaults to 127.0.0.1:8080, or [::]:443 with --domain.
+        #[arg(long)]
+        listen_address: Option<SocketAddr>,
         /// Who may create an account; the administrator can always create accounts.
         #[arg(long, value_enum, default_value_t = RegistrationModeArgument::Closed)]
         registration_mode: RegistrationModeArgument,
+        /// Public name of the instance; enables built-in TLS with Let's Encrypt certificates.
+        /// Repeat for several names. DNS must point here and port 443 must be reachable.
+        #[arg(long = "domain")]
+        domains: Vec<String>,
+        /// Given to Let's Encrypt for account problems.
+        #[arg(long, requires = "domains")]
+        contact_email: Option<String>,
+        /// Holds the TLS private keys; defaults to `certificates` next to the master key file.
+        #[arg(long, requires = "domains")]
+        certificate_directory: Option<PathBuf>,
+        /// Use Let's Encrypt staging (untrusted certificates) to try a setup.
+        #[arg(long, requires = "domains")]
+        use_staging_certificates: bool,
     },
     /// Run the server until Ctrl+C or SIGTERM.
     Serve {
@@ -147,13 +164,40 @@ async fn run(cli: Cli) -> Result<()> {
             master_key_file,
             listen_address,
             registration_mode,
+            domains,
+            contact_email,
+            certificate_directory,
+            use_staging_certificates,
         } => {
+            let tls = (!domains.is_empty()).then(|| TlsConfig {
+                domains,
+                contact_email,
+                certificate_directory: certificate_directory.unwrap_or_else(|| {
+                    master_key_file
+                        .parent()
+                        .unwrap_or(std::path::Path::new(""))
+                        .join(DEFAULT_CERTIFICATE_DIRECTORY_NAME)
+                }),
+                use_staging_certificates,
+            });
+            let default_listen_address = if tls.is_some() {
+                DEFAULT_TLS_LISTEN_ADDRESS
+            } else {
+                DEFAULT_LISTEN_ADDRESS
+            };
+            let listen_address = match listen_address {
+                Some(address) => address,
+                None => default_listen_address
+                    .parse()
+                    .context("invalid built-in default listen address")?,
+            };
             let created = initialize_instance(&InitializeOptions {
                 config_path: config.clone(),
                 data_directory,
                 master_key_file,
                 listen_address,
                 registration_mode: registration_mode.into(),
+                tls,
             })
             .await?;
             eprintln!(

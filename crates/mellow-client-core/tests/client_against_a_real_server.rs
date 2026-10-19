@@ -40,6 +40,7 @@ impl RunningInstance {
             master_key_file: directory.path().join("master.key"),
             listen_address,
             registration_mode: RegistrationMode::Open,
+            tls: None,
         })
         .await
         .unwrap();

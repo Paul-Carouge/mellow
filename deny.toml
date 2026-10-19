@@ -32,8 +32,12 @@ allow = [
     # Slint (ADR-0010) is used under GPL-3.0-only, which may be combined with AGPL-3.0 (GPLv3 §13).
     "GPL-3.0-only",
 ]
-# The Mozilla root certificate list bundled by rustls-platform-verifier (a data licence, permissive).
-exceptions = [{ crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] }]
+# Mozilla's root certificate list, bundled by rustls-platform-verifier (client) and rustls-acme
+# (server, to reach the certificate authority). A permissive data licence.
+exceptions = [
+    { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+]
 
 [licenses.private]
 ignore = true

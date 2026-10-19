@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use tokio::net::TcpListener;
 
-use crate::config::ServerConfig;
+use crate::config::{ServerConfig, TlsConfig};
 use crate::domain::account_rules::RegistrationMode;
 use crate::http::{AppState, make_service};
 use crate::storage::{
@@ -21,6 +21,8 @@ pub struct InitializeOptions {
     pub master_key_file: PathBuf,
     pub listen_address: SocketAddr,
     pub registration_mode: RegistrationMode,
+    /// Built-in TLS (ADR-0013); `None` for plain HTTP behind a reverse proxy or on loopback.
+    pub tls: Option<TlsConfig>,
 }
 
 /// Creates the master key, the data directory with a migrated database, and the config file.
@@ -36,6 +38,17 @@ pub async fn initialize_instance(options: &InitializeOptions) -> Result<ServerCo
         listen_address: options.listen_address,
         registration_mode: options.registration_mode,
         behind_tls_reverse_proxy: false,
+        tls: options
+            .tls
+            .clone()
+            .map(|tls| -> Result<TlsConfig> {
+                Ok(TlsConfig {
+                    certificate_directory: std::path::absolute(&tls.certificate_directory)
+                        .context("cannot resolve the certificate directory path")?,
+                    ..tls
+                })
+            })
+            .transpose()?,
     };
     // Every check that can fail runs before the key is written, so a failed `init` leaves
     // nothing behind and can simply be run again.
@@ -80,6 +93,12 @@ pub async fn initialize_instance(options: &InitializeOptions) -> Result<ServerCo
         })?;
     }
     config.ensure_master_key_outside_data_directory_on_disk()?;
+    if let Some(tls) = &config.tls {
+        crate::tls::prepare_certificate_directory(
+            &tls.certificate_directory,
+            &config.data_directory,
+        )?;
+    }
 
     let database_key = {
         let master_key = MasterKey::generate()?;
@@ -125,6 +144,12 @@ pub async fn serve_instance(
             database_path.display()
         );
     }
+    if let Some(tls) = &config.tls {
+        crate::tls::prepare_certificate_directory(
+            &tls.certificate_directory,
+            &config.data_directory,
+        )?;
+    }
     // The master key is dropped (and wiped) as soon as the database key is derived.
     let database_key = MasterKey::read_file(&config.master_key_file)?.derive_database_key();
     // Bound before migrating: a second `serve` started by mistake fails here instead of
@@ -143,7 +168,11 @@ pub async fn serve_instance(
                 "database migrated"
             );
         }
-        serve_until_shutdown(listener, AppState::new(pool.clone(), config), shutdown).await
+        let state = AppState::new(pool.clone(), config);
+        match &config.tls {
+            Some(tls) => crate::tls::serve_tls_until_shutdown(listener, state, tls, shutdown).await,
+            None => serve_until_shutdown(listener, state, shutdown).await,
+        }
     }
     .await;
 
@@ -277,7 +306,40 @@ mod tests {
             master_key_file: directory.join("keys").join("master.key"),
             listen_address: "127.0.0.1:0".parse().unwrap(),
             registration_mode: RegistrationMode::Open,
+            tls: None,
         }
+    }
+
+    #[tokio::test]
+    async fn init_with_a_domain_writes_the_tls_table_and_a_private_certificate_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let certificate_directory = directory.path().join("keys").join("certificates");
+        let options = InitializeOptions {
+            listen_address: "[::]:443".parse().unwrap(),
+            tls: Some(TlsConfig {
+                domains: vec!["chat.example.org".into()],
+                contact_email: None,
+                certificate_directory: certificate_directory.clone(),
+                use_staging_certificates: true,
+            }),
+            ..options_in(directory.path())
+        };
+        let created = initialize_instance(&options).await.unwrap();
+
+        let mode = std::fs::metadata(&certificate_directory)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+        let loaded = ServerConfig::load(
+            &options.config_path,
+            &crate::config::EnvironmentOverrides::default(),
+        )
+        .unwrap();
+        assert_eq!(loaded, created);
+        assert_eq!(loaded.tls.unwrap().domains, ["chat.example.org"]);
     }
 
     #[tokio::test]
