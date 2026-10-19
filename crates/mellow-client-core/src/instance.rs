@@ -12,13 +12,19 @@ pub struct InstanceAddress {
 
 impl InstanceAddress {
     /// HTTPS only, except plain HTTP on the loopback interface for local development: session
-    /// tokens must never cross a network unencrypted.
+    /// tokens must never cross a network unencrypted. A bare host (`chat.example.org`) means HTTPS.
     ///
     /// # Errors
     /// `InvalidInstanceAddress` for anything else (other schemes, credentials, query strings).
     pub fn parse(text: &str) -> Result<Self, ClientError> {
         let invalid = |reason: &str| ClientError::InvalidInstanceAddress(reason.to_owned());
-        let mut base = Url::parse(text.trim()).map_err(|_| invalid("not a URL"))?;
+        let text = text.trim();
+        let with_scheme = if text.contains("://") {
+            text.to_owned()
+        } else {
+            format!("https://{text}")
+        };
+        let mut base = Url::parse(&with_scheme).map_err(|_| invalid("not a valid address"))?;
         let is_loopback = match base.host() {
             Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
             Some(Host::Ipv4(address)) => address.is_loopback(),
@@ -69,6 +75,12 @@ impl InstanceAddress {
         Ok(url)
     }
 
+    /// The host name shown to people, e.g. `chat.example.org`.
+    #[must_use]
+    pub fn host(&self) -> &str {
+        self.base.host_str().unwrap_or_default()
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.base.as_str()
@@ -96,6 +108,10 @@ mod tests {
         assert!(InstanceAddress::parse("http://localhost:8080/").is_ok());
         assert!(InstanceAddress::parse("http://[::1]:8080").is_ok());
 
+        let bare = InstanceAddress::parse("chat.example.org").unwrap();
+        assert_eq!(bare.as_str(), "https://chat.example.org/");
+        assert_eq!(bare.host(), "chat.example.org");
+
         let under_path = InstanceAddress::parse("https://example.org/mellow").unwrap();
         assert_eq!(
             under_path.api_url("api/v1/health").unwrap().as_str(),
@@ -107,7 +123,7 @@ mod tests {
             "ftp://chat.example.org",
             "https://user:pass@chat.example.org",
             "https://chat.example.org/?x=1",
-            "chat.example.org",
+            "",
         ] {
             assert!(InstanceAddress::parse(invalid).is_err(), "{invalid}");
         }
