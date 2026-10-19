@@ -8,6 +8,7 @@ mod live_rows;
 mod live_shell;
 mod message_markup;
 mod scroll_benchmark;
+mod session_store;
 mod shell_rows;
 mod window_snapshot;
 
@@ -73,7 +74,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
     let shell = live_shell::start(&window, runtime.handle().clone());
-    window.run()?;
-    live_shell::sign_out_before_exit(&shell);
+    // The exit cleanup revokes sessions nobody could use again; it runs even when the event loop fails.
+    let run_result = window.run();
+    live_shell::end_connection_before_exit(&shell);
+    run_result?;
     Ok(())
 }

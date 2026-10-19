@@ -13,6 +13,9 @@ publish.workspace = true
 arboard = { version = "3.7.0", default-features = false }
 # Already in the tree through Slint; used for local message timestamps.
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+keyring = "4.2.0"
+# Already in the tree through keyring; used directly to keep Windows credentials on this machine.
+keyring-core = "1.0.1"
 mellow-client-core.workspace = true
 mellow-protocol.workspace = true
 slint = "1.18.1"

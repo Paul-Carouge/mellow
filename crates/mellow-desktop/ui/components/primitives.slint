@@ -143,3 +143,52 @@ export component IconButton inherits Rectangle {
         border-radius: parent.border-radius;
     }
 }
+
+// One context menu item (DESIGN.md §6.33). Hover fills it as on Discord; keyboard focus adds the
+// focus ring, drawn outside the item so it stays visible on the danger fill.
+export component ContextMenuItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> is-danger: false;
+    callback activated();
+    height: MellowComponent.context-menu-item-height;
+    border-radius: MellowComponent.context-menu-item-radius;
+    background: !touch.has-hover ? transparent
+        : is-danger ? MellowComponent.context-menu-danger-background-focus : MellowComponent.context-menu-item-background-focus;
+    accessible-role: button;
+    accessible-label: label;
+    accessible-action-default => { root.activated(); }
+    forward-focus: focus-scope;
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.activated();
+                return accept;
+            }
+            reject
+        }
+    }
+    touch := TouchArea { clicked => { root.activated(); } }
+    Text {
+        x: MellowComponent.context-menu-item-padding-inline;
+        width: parent.width - 2 * MellowComponent.context-menu-item-padding-inline;
+        text: label;
+        color: is-danger
+            ? (touch.has-hover ? MellowComponent.context-menu-danger-text-focus : MellowComponent.context-menu-danger-text)
+            : (touch.has-hover ? MellowComponent.context-menu-item-text-focus : MellowComponent.context-menu-item-text);
+        font-size: MellowType.menu-item.font-size;
+        font-weight: MellowType.menu-item.font-weight;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+    if focus-scope.has-focus: Rectangle {
+        x: -MellowComponent.focus-ring-offset;
+        y: -MellowComponent.focus-ring-offset;
+        width: parent.width + 2 * MellowComponent.focus-ring-offset;
+        height: parent.height + 2 * MellowComponent.focus-ring-offset;
+        border-width: MellowComponent.focus-ring-width;
+        border-color: MellowComponent.focus-ring-color;
+        border-radius: parent.border-radius + MellowComponent.focus-ring-offset;
+    }
+}

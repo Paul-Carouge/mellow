@@ -1,6 +1,6 @@
 import { ListView } from "std-widgets.slint";
 import { MellowColor, MellowComponent, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
-import { Avatar, IconButton, MentionBadge, PresenceStatus } from "primitives.slint";
+import { Avatar, ContextMenuItem, IconButton, MentionBadge, PresenceStatus } from "primitives.slint";
 
 // Categories and channels flattened into one list, so ListView can virtualize long servers.
 export struct ChannelListRow {
@@ -159,6 +159,7 @@ component UserPanel inherits Rectangle {
     in property <string> display-name;
     in property <string> initial;
     in property <string> status-text;
+    callback sign-out();
     height: MellowComponent.user-panel-height;
     background: MellowComponent.user-panel-background;
     HorizontalLayout {
@@ -196,7 +197,6 @@ component UserPanel inherits Rectangle {
         for button in [
             { icon: @image-url("../../icons/microphone.svg"), label: "Mute" },
             { icon: @image-url("../../icons/headphones.svg"), label: "Deafen" },
-            { icon: @image-url("../../icons/gear-six.svg"), label: "User settings" },
         ]: VerticalLayout {
             alignment: center;
             IconButton {
@@ -205,6 +205,45 @@ component UserPanel inherits Rectangle {
                 size: MellowComponent.user-panel-button-size;
                 icon-color: MellowComponent.user-panel-button-icon;
                 hover-background: MellowComponent.user-panel-button-background-hover;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: @image-url("../../icons/gear-six.svg");
+                label: "User settings";
+                size: MellowComponent.user-panel-button-size;
+                icon-color: MellowComponent.user-panel-button-icon;
+                hover-background: MellowComponent.user-panel-button-background-hover;
+                clicked => { user-menu.show(); }
+            }
+        }
+    }
+
+    // Opens above the gear with right edges aligned (the gear is the panel's last item). Esc and a
+    // click outside close it; focus returns to the gear.
+    user-menu := PopupWindow {
+        width: MellowComponent.context-menu-min-width;
+        height: MellowComponent.context-menu-item-height + 2 * MellowComponent.context-menu-padding;
+        x: root.width - MellowComponent.user-panel-padding-inline - self.width;
+        y: -self.height - MellowSpace.xs;
+        // The item takes focus so Enter, Space and screen readers land on it straight away.
+        init => { sign-out-item.focus(); }
+        Rectangle {
+            background: MellowComponent.context-menu-background;
+            border-radius: MellowComponent.context-menu-radius;
+            border-width: MellowComponent.context-menu-border-width;
+            border-color: MellowComponent.context-menu-border;
+            VerticalLayout {
+                padding: MellowComponent.context-menu-padding;
+                sign-out-item := ContextMenuItem {
+                    label: "Sign out";
+                    is-danger: true;
+                    activated => {
+                        user-menu.close();
+                        root.sign-out();
+                    }
+                }
             }
         }
     }
@@ -218,6 +257,7 @@ export component ChannelSidebar inherits Rectangle {
     in property <string> current-user-initial;
     callback toggle-category(int);
     callback select-channel(string);
+    callback sign-out();
 
     width: MellowComponent.sidebar-width;
     background: MellowComponent.sidebar-background;
@@ -269,6 +309,7 @@ export component ChannelSidebar inherits Rectangle {
             display-name: current-user-name;
             initial: current-user-initial;
             status-text: "Online";
+            sign-out => { root.sign-out(); }
         }
     }
 }

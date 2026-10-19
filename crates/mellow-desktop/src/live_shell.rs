@@ -20,10 +20,14 @@ use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
 use crate::generated_ui::{AppWindow, MessageRow};
+use crate::session_store::{self, StoredSession};
 use crate::{clipboard, live_rows, shell_rows};
 
 const GATEWAY_UPDATE_QUEUE_CAPACITY: usize = 256;
 const LOGOUT_ON_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
+/// A Secret Service waiting on an unlock prompt nobody sees would otherwise keep the sign-in form
+/// busy forever.
+const SECRET_STORE_TIMEOUT: Duration = Duration::from_secs(10);
 const RECONNECTING_NOTICE: &str = "Connection lost. Reconnecting…";
 const SESSION_ENDED_MESSAGE: &str = "Your session ended. Sign in again.";
 /// Shown when the rail's home entry (index -1 in `server_rail.slint`) is selected.
@@ -32,6 +36,8 @@ const HOME_SERVER_NAME: &str = "Direct messages";
 struct Connection {
     rest: RestClient,
     gateway: tokio::task::AbortHandle,
+    /// False when the secret store refused it: the session then lives only as long as the app.
+    is_session_stored: bool,
 }
 
 pub struct LiveShell {
@@ -48,6 +54,12 @@ pub struct LiveShell {
     messages: Rc<VecModel<MessageRow>>,
     /// See `clipboard::copy_text`.
     clipboard: Option<arboard::Clipboard>,
+    /// Bumped whenever a session starts or ends, so late results of an earlier session (a 401
+    /// after signing out, buffered gateway updates) never act on the current one.
+    session_generation: u64,
+    /// Awaited before exit: the runtime drops unfinished tasks, so the revocation might never leave.
+    /// Every sign-out still reaching its instance: signing out twice must not orphan the first.
+    pending_logouts: Vec<tokio::task::JoinHandle<()>>,
 }
 
 pub type SharedShell = Rc<RefCell<LiveShell>>;
@@ -65,24 +77,141 @@ pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
         requested_member_list_guild_ids: HashSet::new(),
         messages: Rc::new(VecModel::default()),
         clipboard: None,
+        session_generation: 0,
+        pending_logouts: Vec::new(),
     }));
     window.set_is_signed_in(false);
     window.set_messages(shell.borrow().messages.clone().into());
     connect_callbacks(window, &shell);
+    restore_stored_session(&shell);
     shell
 }
 
-/// Revokes the session token on the server: it is never stored on disk, so a session left open
-/// would stay valid for nothing until it expires.
-pub fn sign_out_before_exit(shell: &SharedShell) {
-    let (runtime, connection) = {
-        let mut shell = shell.borrow_mut();
-        (shell.runtime.clone(), shell.connection.take())
+/// Resumes the session saved in the secret store, if any; the sign-in form stays busy meanwhile.
+fn restore_stored_session(shell: &SharedShell) {
+    if let Some(window) = shell.borrow().window.upgrade() {
+        window.set_login_is_busy(true);
+    }
+    let request = async {
+        let load = tokio::task::spawn_blocking(session_store::load_session);
+        let stored_session = match tokio::time::timeout(SECRET_STORE_TIMEOUT, load).await {
+            Ok(Ok(Ok(stored_session))) => stored_session,
+            Ok(Ok(Err(error))) => {
+                tracing::warn!(%error, "cannot read the stored session");
+                None
+            }
+            Ok(Err(error)) => {
+                tracing::error!(%error, "reading the stored session failed");
+                None
+            }
+            Err(_elapsed) => {
+                tracing::warn!("the secret store did not answer; starting signed out");
+                None
+            }
+        };
+        let Some(StoredSession { instance, token }) = stored_session else {
+            return Ok(None);
+        };
+        let mut rest = RestClient::new(instance)?;
+        rest.set_token(token);
+        Ok(Some(rest))
     };
-    let Some(Connection { mut rest, gateway }) = connection else {
+    run_request(shell, request, |shell, result| {
+        if let Some(window) = shell.borrow().window.upgrade() {
+            window.set_login_is_busy(false);
+        }
+        match result {
+            Ok(Some(rest)) => connect_gateway(shell, rest, true),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(%error, "cannot resume the stored session"),
+        }
+    });
+}
+
+/// Saves the session for the next launch; false when the secret store refused it.
+async fn store_session(rest: &RestClient) -> bool {
+    let Some(token) = rest.token().map(|token| Zeroizing::new(token.to_owned())) else {
+        return false;
+    };
+    let instance = rest.instance().clone();
+    if instance.is_loopback() && !session_store::SHOULD_STORE_LOOPBACK_SESSIONS {
+        return false;
+    }
+    let save = tokio::task::spawn_blocking(move || session_store::save_session(&instance, &token));
+    match tokio::time::timeout(SECRET_STORE_TIMEOUT, save).await {
+        Ok(Ok(Ok(()))) => true,
+        Ok(Ok(Err(error))) => {
+            tracing::warn!(%error, "cannot store the session; it will end when the app exits");
+            false
+        }
+        Ok(Err(error)) => {
+            tracing::error!(%error, "storing the session failed");
+            false
+        }
+        // A save that completes later stores a token revoked at exit; the next launch then gets a
+        // 401 and forgets it.
+        Err(_elapsed) => {
+            tracing::warn!(
+                "the secret store did not answer; the session will end when the app exits"
+            );
+            false
+        }
+    }
+}
+
+/// Removes the stored session in the background; a failure only means the next launch tries a
+/// token the server rejects, which leads back to the sign-in screen.
+/// The handle tells whether the entry is gone, for a sign-out that must not claim it is.
+fn forget_stored_session(runtime: &Handle) -> tokio::task::JoinHandle<bool> {
+    let forget = runtime.spawn_blocking(session_store::forget_session);
+    runtime.spawn(async move {
+        match forget.await {
+            Ok(Ok(())) => true,
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "cannot remove the stored session");
+                false
+            }
+            Err(error) => {
+                tracing::error!(%error, "removing the stored session failed");
+                false
+            }
+        }
+    })
+}
+
+/// Lets a pending sign-out reach the server. A stored session stays open for the next launch; one
+/// the secret store refused is revoked instead: nobody could use it again, so it would stay valid
+/// for nothing.
+pub fn end_connection_before_exit(shell: &SharedShell) {
+    let (runtime, connection, pending_logouts) = {
+        let mut shell = shell.borrow_mut();
+        (
+            shell.runtime.clone(),
+            shell.connection.take(),
+            std::mem::take(&mut shell.pending_logouts),
+        )
+    };
+    let logouts_deadline = tokio::time::Instant::now() + LOGOUT_ON_EXIT_TIMEOUT;
+    for pending_logout in pending_logouts {
+        if runtime
+            .block_on(tokio::time::timeout_at(logouts_deadline, pending_logout))
+            .is_err()
+        {
+            tracing::warn!("a sign-out did not reach the instance before exiting");
+        }
+    }
+    let Some(Connection {
+        mut rest,
+        gateway,
+        is_session_stored,
+    }) = connection
+    else {
         return;
     };
     gateway.abort();
+    if is_session_stored {
+        return;
+    }
     let logout = runtime.block_on(tokio::time::timeout(LOGOUT_ON_EXIT_TIMEOUT, rest.logout()));
     if !matches!(logout, Ok(Ok(()))) {
         tracing::warn!("could not end the session on the instance before exiting");
@@ -94,6 +223,8 @@ fn connect_callbacks(window: &AppWindow, shell: &SharedShell) {
     window.on_sign_in(move || submit_credentials(&shell_for_callback, false));
     let shell_for_callback = shell.clone();
     window.on_register(move || submit_credentials(&shell_for_callback, true));
+    let shell_for_callback = shell.clone();
+    window.on_sign_out(move || sign_out(&shell_for_callback));
 
     let shell_for_callback = shell.clone();
     window.on_select_server(move |server_index| {
@@ -214,7 +345,8 @@ fn submit_credentials(shell: &SharedShell, is_registering: bool) {
                 result?;
             }
         }
-        Ok(rest)
+        let is_session_stored = store_session(&rest).await;
+        Ok((rest, is_session_stored))
     };
     run_request(shell, request, move |shell, result| {
         let Some(window) = shell.borrow().window.upgrade() else {
@@ -222,7 +354,7 @@ fn submit_credentials(shell: &SharedShell, is_registering: bool) {
         };
         window.set_login_is_busy(false);
         match result {
-            Ok(rest) => connect_gateway(shell, rest),
+            Ok((rest, is_session_stored)) => connect_gateway(shell, rest, is_session_stored),
             Err(error) => show_login_error(&window, &sign_in_error_message(&error, &host)),
         }
     });
@@ -277,10 +409,17 @@ fn run_request<T: Send + 'static>(
     request: impl Future<Output = Result<T, ClientError>> + Send + 'static,
     on_done: impl FnOnce(&SharedShell, Result<T, ClientError>) + 'static,
 ) {
-    let task = shell.borrow().runtime.spawn(request);
+    let (task, generation) = {
+        let shell = shell.borrow();
+        (shell.runtime.spawn(request), shell.session_generation)
+    };
     let shell = shell.clone();
     let scheduled = slint::spawn_local(async move {
-        match task.await {
+        let result = task.await;
+        if shell.borrow().session_generation != generation {
+            return;
+        }
+        match result {
             Ok(result) => on_done(&shell, result),
             Err(error) => tracing::error!(%error, "a network task failed"),
         }
@@ -307,26 +446,38 @@ fn authenticated_rest(shell: &SharedShell) -> Option<RestClient> {
         .map(|connection| connection.rest.clone())
 }
 
-fn connect_gateway(shell: &SharedShell, rest: RestClient) {
+fn connect_gateway(shell: &SharedShell, rest: RestClient, is_session_stored: bool) {
     let Some(token) = rest.token().map(|token| Zeroizing::new(token.to_owned())) else {
         return;
     };
     let (sender, mut updates) = mpsc::channel(GATEWAY_UPDATE_QUEUE_CAPACITY);
-    {
+    let generation = {
         let mut shell_mut = shell.borrow_mut();
+        if let Some(previous) = shell_mut.connection.take() {
+            previous.gateway.abort();
+        }
+        shell_mut.session_generation += 1;
         let gateway = shell_mut
             .runtime
             .spawn(run_gateway(rest.instance().clone(), token, sender))
             .abort_handle();
-        shell_mut.connection = Some(Connection { rest, gateway });
+        shell_mut.connection = Some(Connection {
+            rest,
+            gateway,
+            is_session_stored,
+        });
         if let Some(window) = shell_mut.window.upgrade() {
             window.set_is_signed_in(true);
             window.set_connection_notice("Connecting…".into());
         }
-    }
+        shell_mut.session_generation
+    };
     let shell = shell.clone();
     let scheduled = slint::spawn_local(async move {
         while let Some(update) = updates.recv().await {
+            if shell.borrow().session_generation != generation {
+                break;
+            }
             apply_gateway_update(&shell, update);
         }
     });
@@ -385,7 +536,9 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
         }
         GatewayUpdate::Resumed => set_notice(""),
         GatewayUpdate::Disconnected => set_notice(RECONNECTING_NOTICE),
-        GatewayUpdate::SignedOut => end_session(shell, SESSION_ENDED_MESSAGE),
+        GatewayUpdate::SignedOut => {
+            end_session(shell, SESSION_ENDED_MESSAGE);
+        }
     }
 }
 
@@ -444,11 +597,78 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
     refresh_channel_rows(&shell);
 }
 
-fn end_session(shell: &SharedShell, message: &str) {
+/// Revokes the session on the server in the background and goes back to the sign-in screen.
+fn sign_out(shell: &SharedShell) {
+    let (runtime, connection) = {
+        let mut shell = shell.borrow_mut();
+        (shell.runtime.clone(), shell.connection.take())
+    };
+    let forget = end_session(shell, "");
+    let Some(Connection {
+        mut rest, gateway, ..
+    }) = connection
+    else {
+        return;
+    };
+    gateway.abort();
+    let host = rest.instance().host().to_owned();
+    let (revocation_sender, revocation_receiver) = tokio::sync::oneshot::channel();
+    let logout = runtime.spawn(async move {
+        // A session the server already rejects is as good as revoked.
+        let is_revoked = match rest.logout().await {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(%error, "could not end the session on the instance");
+                error.needs_new_login()
+            }
+        };
+        let is_forgotten = forget.await.unwrap_or(false);
+        // The receiver is gone only when the app is exiting, with nobody left to tell.
+        let _ = revocation_sender.send((is_revoked, is_forgotten));
+    });
+    let generation = {
+        let mut shell = shell.borrow_mut();
+        shell
+            .pending_logouts
+            .retain(|pending_logout| !pending_logout.is_finished());
+        shell.pending_logouts.push(logout);
+        shell.session_generation
+    };
+    let shell = shell.clone();
+    let scheduled = slint::spawn_local(async move {
+        let (is_revoked, is_forgotten) = revocation_receiver.await.unwrap_or((false, false));
+        let shell = shell.borrow();
+        // Revoked, a session left in the store is refused and forgotten at the next launch.
+        if is_revoked || shell.session_generation != generation {
+            return;
+        }
+        let message = if is_forgotten {
+            format!(
+                "Signed out on this device, but {host} couldn't be reached. The session stays valid there until it expires."
+            )
+        } else {
+            format!(
+                "Mellow couldn't remove the saved session from this computer, and {host} couldn't be reached. It will sign in again at next launch."
+            )
+        };
+        if let Some(window) = shell.window.upgrade() {
+            show_login_error(&window, &message);
+        }
+    });
+    if let Err(error) = scheduled {
+        tracing::error!(%error, "cannot schedule the sign-out result on the UI thread");
+    }
+}
+
+/// Back to the sign-in screen, forgetting the stored session: the server no longer accepts it,
+/// or the user signed out.
+fn end_session(shell: &SharedShell, message: &str) -> tokio::task::JoinHandle<bool> {
     let mut shell = shell.borrow_mut();
     if let Some(connection) = shell.connection.take() {
         connection.gateway.abort();
     }
+    shell.session_generation += 1;
+    let forget = forget_stored_session(&shell.runtime);
     shell.state = ClientState::default();
     shell.selected_guild_id = None;
     shell.selected_channel_id = None;
@@ -467,6 +687,7 @@ fn end_session(shell: &SharedShell, message: &str) {
         window.set_login_is_busy(false);
         show_login_error(&window, message);
     }
+    forget
 }
 
 /// Opens `preferred_channel_id` when it belongs to the guild, otherwise its first text channel.

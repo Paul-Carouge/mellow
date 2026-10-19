@@ -63,6 +63,7 @@ export component AppWindow inherits Window {
     callback copy-message-text(int);
     callback sign-in();
     callback register();
+    callback sign-out();
 
     public function scroll-to-latest-message() {
         chat.scroll-to-latest-message();
@@ -125,6 +126,7 @@ export component AppWindow inherits Window {
                 current-user-initial: root.current-user-initial;
                 toggle-category(index) => { root.toggle-category(index); }
                 select-channel(name) => { root.select-channel(name); }
+                sign-out => { root.sign-out(); }
             }
             chat := ChatPane {
                 horizontal-stretch: 1;
