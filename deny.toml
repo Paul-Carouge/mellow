@@ -1,0 +1,45 @@
+# cargo-deny configuration: licenses compatible with AGPL-3.0, no known vulnerabilities, crates.io only.
+
+[graph]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+# The allow-list anticipates future dependencies; unused entries are expected.
+unused-allowed-license = "allow"
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+    "AGPL-3.0-or-later",
+]
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# TLS is rustls only; OpenSSL is allowed solely as SQLCipher's crypto backend (ADR-0006).
+deny = [
+    { crate = "openssl-sys", wrappers = ["libsqlite3-sys"] },
+    { crate = "openssl" },
+    { crate = "native-tls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
