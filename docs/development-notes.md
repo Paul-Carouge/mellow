@@ -6,7 +6,7 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 
 ## Where things stand (2026-10-20)
 - `main` holds only the first PR (#1). Everything else is an open stack of pull requests, each based on the previous branch:
-  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → #13 (`feat/desktop-session-persistence`) → #14 (`fix/trusted-proxy-addresses`) → #15 (`feat/desktop-message-actions`) → `fix/server-message-ordering-and-nonce-deduplication` (no PR yet) → `feat/client-message-outbox`.
+  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → #13 (`feat/desktop-session-persistence`) → #14 (`fix/trusted-proxy-addresses`) → #15 (`feat/desktop-message-actions`) → #16 (`fix/server-message-ordering-and-nonce-deduplication`) → #17 (`feat/client-message-outbox`).
 - Merge them in that order. After merging one into `main`, retarget the next PR's base to `main` before merging it.
 - New work branches from the tip of the stack (today `feat/client-message-outbox`) and opens a PR stacked on the latest one, until the stack is merged.
 - CI never ran: GitHub Actions is blocked by the account's billing. Everything is verified on macOS only.
