@@ -7,6 +7,8 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 ## Where things stand (2026-10-20)
 - `main` holds only the first PR (#1). Everything else is an open stack of pull requests, each based on the previous branch:
   #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → #13 (`feat/desktop-session-persistence`) → #14 (`fix/trusted-proxy-addresses`) → #15 (`feat/desktop-message-actions`) → #16 (`fix/server-message-ordering-and-nonce-deduplication`) → #17 (`feat/client-message-outbox`) → #18 (`fix/session-last-seen-and-expired-purge`) → #19 (`feat/outbox-resend-on-reconnect`).
+- Local try-out instance: `mellow-server init --listen-address 127.0.0.1:18080 --registration-mode open` in the scratchpad, filled by a throwaway example (rate limit: 10 sends per 10 s per user, so seed with several users).
+- In progress: `feat/history-pagination-on-scroll-up`, branched from #19 (scroll-up history pagination). Manual check in the app and `code-reviewer` findings pending before PR #20.
 - Merge them in that order. After merging one into `main`, retarget the next PR's base to `main` before merging it.
 - New work branches from the tip of the stack (today `feat/outbox-resend-on-reconnect`) and opens a PR stacked on the latest one, until the stack is merged.
 - CI never ran: GitHub Actions is blocked by the account's billing. Everything is verified on macOS only.
@@ -14,7 +16,7 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 ## Next candidates
 1. M1 release candidate: run a real instance on a VPS (`init --domain … --use-staging-certificates`, then production), connect the desktop over https, then tag.
 2. End-to-end ACME tests against Pebble (local test certificate authority).
-3. Known gaps listed in the ROADMAP status: an on-disk outbox, then history pagination on scroll-up.
+3. Known gaps listed in the ROADMAP status: the message-list states of DESIGN.md (skeletons, channel-start hero, older-history error with retry), then an on-disk outbox (needs the local cache of ARCHITECTURE §6 first).
 
 ## Workflow that worked
 - One branch per milestone step (`feat/…`), atomic Conventional Commits, a `docs:` commit for README/ROADMAP/ARCHITECTURE/ADR.
@@ -44,6 +46,8 @@ A local hook refuses `git commit` when fmt or clippy fail on the touched crate: 
 - **Snapshots of UI states**: hover and dialogs cannot be captured directly. Temporarily set the window properties (`set_editing_message_index`, `set_deleting_message_index`, …) in `window_snapshot::schedule`, capture with `MELLOW_SPIKE_SNAPSHOT_DIRECTORY`, then revert the file.
 - **Outbox rows**: pending and failed messages are extra rows after the confirmed ones; a row index at or past `displayed_message_ids.len()` maps into `displayed_pending_nonces`. They carry `is_own = false`, so no message action ever targets them.
 - **Outbox resend**: after `Ready` and `Resumed`, failed messages go out one after another (`resend_failed_messages`, each step through `run_request`), so they keep their order among themselves; sending them in parallel could reorder them. Messages still `Sending` are never part of a batch.
+- **Message list scrolling**: `refresh_messages` never scrolls. The Slint list stays pinned at `pinned-distance-from-latest-message` from the bottom (zero by default; set by `keep-distance-from-latest-message` before older rows are prepended); only a user scroll (`scrolled`) re-decides pinning. `scrolled` alone misses flicks that coast to the top, so the older-history check also runs on `content-y` and `content-height` changes. Opening a channel and sending call `scroll_to_latest_message_after_layout` / `invoke_scroll_to_latest_message` explicitly.
+- **History pages**: always request `limit: HISTORY_PAGE_SIZE`, since `insert_history_page` reads a shorter page as the channel's start. An older page is inserted only if the channel's oldest cached message is still its `before` cursor, so the cache never has a gap.
 - **Server text in the UI**: never show `ClientError::Api`'s `message` in a trusted place; build the text from `ApiErrorCode` (see `message_action_error_text`).
 - **Desktop threading**: state lives on the UI thread in `Rc<RefCell<LiveShell>>`. Network futures run on the tokio runtime and come back through `slint::spawn_local`. Never hold a `RefCell` borrow across a call that borrows again.
 - **Message markdown**: escape `\` before `<`, or `\<font>` re-enables HTML styling (fixed, with a regression test).
