@@ -48,6 +48,29 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test --workspace --locked
 
+  acme:
+    name: ACME against Pebble
+    runs-on: ubuntu-latest
+    env:
+      PEBBLE_VERSION: v2.10.1
+      # Pebble publishes no checksum file: pinned from the release asset downloaded on 2026-10-20.
+      PEBBLE_SHA256: 4f2fcb5bca8c85c9cf73ad140fccfc0d2be40bd81ab99879c79b7b8a0b4f70ed
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install Pebble, the ACME test authority
+        run: |
+          curl --fail --silent --show-error --location --output pebble.tar.gz \
+            "https://github.com/letsencrypt/pebble/releases/download/${PEBBLE_VERSION}/pebble-linux-amd64.tar.gz"
+          echo "${PEBBLE_SHA256}  pebble.tar.gz" | sha256sum --check
+          tar xzf pebble.tar.gz
+          # The release archive does not keep the executable bit.
+          chmod +x pebble-linux-amd64/linux/amd64/pebble
+          echo "MELLOW_PEBBLE_BINARY=${PWD}/pebble-linux-amd64/linux/amd64/pebble" >> "$GITHUB_ENV"
+      - run: cargo test -p mellow-server --locked --lib tls::tests -- --ignored
+
   dependencies:
     name: Dependency audit
     runs-on: ubuntu-latest
