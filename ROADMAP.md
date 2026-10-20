@@ -5,14 +5,14 @@ Each milestone ends with something usable end to end. Scope changes are made her
 ## Status (2026-10-20)
 
 ### Done
-Merged into `main` on 2026-10-20: #1 to #27, from the workspace and SQLCipher storage through M1 (server, gateway, client core, desktop on real data, built-in TLS with ACME, outbox, history pagination, message-list states) to the first M2 steps (#24 guild roles, #25 role reordering, #27 channel permission overwrites and `VIEW_CHANNEL` filtering). Every server PR was reviewed by `code-reviewer` and `security-auditor`, with findings fixed. No release is tagged yet.
+Merged into `main` on 2026-10-20: #1 to #27, from the workspace and SQLCipher storage through M1 (server, gateway, client core, desktop on real data, built-in TLS with ACME, outbox, history pagination, message-list states) to the first M2 steps (#24 guild roles, #25 role reordering, #27 channel permission overwrites and `VIEW_CHANNEL` filtering). In progress: kick and ban (branch `feat/kick-and-ban`). Every server PR was reviewed by `code-reviewer` and `security-auditor`, with findings fixed. No release is tagged yet.
 
 ### Blocked
 - **CI does not run**: GitHub Actions refuses jobs because of the account's billing (Settings → Billing & plans). Until fixed, everything is verified on macOS only; SQLCipher on Linux and Windows is unproven, so ADR-0006 stays *Proposed*.
 
 ### Next, in order
 1. **M1 release candidate**: end-to-end run on a real VPS (domain, Let's Encrypt staging then production, desktop client over https), then tag. 2026-10-20 run against the user's instance: everything passed except nonce deduplication, because the deployed image predates #16 (the same check passes against a local build of the tip); redeploy and run again. The ACME path is covered by the Pebble test only (user's decision: the instance stays behind Caddy).
-2. **M2 roles, continued**: kick, ban and audit log, then the desktop server-settings screens (roles, overwrites).
+2. **M2 moderation, continued**: audit log, then the desktop server-settings screens (roles, overwrites, members, bans).
 
 ### Known gaps and debts
 - Server: single SQLite writer task (ARCHITECTURE §4.3) not implemented; only message sends are serialized (per-process lock, so a second process such as `admin` writing messages would not be ordered); nonces are deduplicated forever per channel and author, not for a time window, and a deleted message frees its nonce (an outbox retry after the sender deleted it recreates it); the database pool keeps sqlx's 30 s acquire timeout and history reads have no rate limit, so a read flood also queues sends behind the send lock; `messages.author_id` has no `ON DELETE` rule or index, to settle with account deletion; queries are runtime SQL, not compile-time checked (`sqlx` offline data to set up); member list capped at 1 000 instead of paginated; rate limits in memory, per process, and the shared table fails closed when saturated; Windows refused until the master key file gets a protected DACL.
@@ -23,7 +23,7 @@ Merged into `main` on 2026-10-20: #1 to #27, from the workspace and SQLCipher st
 - M0 leftovers: UniFFI async/callback spike for Android; Compose and admin CSS token generators.
 - Roles: every new role starts lowest (position 1) until reordered; a role holding a permission a manager lacks is out of their reach whatever its position; deleting or taking away a role is not checked against a concurrent permission change of that role, and a reordering in flight still goes through, within the manager's former rank, if their role or `MANAGE_ROLES` is taken away meanwhile (nuisance only, no privilege gained; the order itself is guarded).
 - Overwrites: categories do not pass their overwrites to their channels (each channel has its own, no Discord-style sync); a member's overwrite stays after they leave, as on Discord; the client does not use channel permissions in the UI yet (composer of a read-only channel).
-- M2 follow-ups recorded in ADR-0007: bans checked on invite joins, invites of departed members.
+- Moderation: no audit log yet; kicks and bans keep the member's messages (no "delete recent messages" option); the ban list is capped at 1 000, not paginated; a kick or ban racing a role change of its target is decided on the ranks read before the write.
 
 ## M0 — Foundations
 - Workspace scaffold, CI (fmt, clippy, tests, cargo deny), lint configuration.

@@ -11,7 +11,7 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 - CI never ran: GitHub Actions is blocked by the account's billing. Everything is verified on macOS only.
 
 ## Next candidates
-1. M2 roles, continued: kick/ban/audit log, then desktop server settings (roles and overwrites, through `ux-ui-designer`).
+1. M2 moderation, continued: audit log, then desktop server settings (roles, overwrites, members, bans, through `ux-ui-designer`).
 2. M1 release candidate: run a real instance (`init --domain … --use-staging-certificates`, then production), connect the desktop over https, then tag. The user already runs a test instance they own; ask before changing anything on it.
 3. Desktop message list, from DESIGN.md §5.4: the offline state (needs the local cache first) and the no-access state (needs channel permissions, M2).
 4. Then an on-disk outbox (needs the local cache of ARCHITECTURE §6 first).
