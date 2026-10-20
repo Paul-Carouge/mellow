@@ -68,6 +68,9 @@ pub(crate) struct Messages {
     ids: Arc<SnowflakeGenerator>,
     guilds: Arc<Guilds>,
     events: Arc<EventHub>,
+    /// Held from id generation until the `MESSAGE_CREATE` event is published, so messages commit
+    /// and reach gateways in id order: an `after` cursor can never skip a message committed late.
+    send_order: tokio::sync::Mutex<()>,
 }
 
 impl Messages {
@@ -82,6 +85,7 @@ impl Messages {
             ids,
             guilds,
             events,
+            send_order: tokio::sync::Mutex::default(),
         }
     }
 
@@ -140,6 +144,7 @@ impl Messages {
                 .await?
                 .ok_or(MessageRuleViolation::ReplyTarget)?;
         }
+        let send_order = self.send_order.lock().await;
         let stored = message_storage::insert_message(
             &self.pool,
             &NewMessage {
@@ -156,6 +161,7 @@ impl Messages {
             channel.guild_id,
             &GatewayEvent::MessageCreate(message_from_stored(stored.clone(), None)),
         );
+        drop(send_order);
         Ok(message_from_stored(stored, request.nonce))
     }
 
@@ -324,6 +330,7 @@ mod tests {
         pool: SqlitePool,
         messages: Messages,
         guilds: Arc<Guilds>,
+        events: Arc<EventHub>,
         owner: Snowflake,
         member: Snowflake,
         outsider: Snowflake,
@@ -368,11 +375,13 @@ mod tests {
             .await
             .unwrap();
         let general = guild.channels[1].id;
+        let events = Arc::new(EventHub::default());
         Fixture {
             _directory: directory,
-            messages: Messages::new(pool.clone(), ids, guilds.clone(), Arc::default()),
+            messages: Messages::new(pool.clone(), ids, guilds.clone(), events.clone()),
             pool,
             guilds,
+            events,
             owner: users[0],
             member: users[1],
             outsider: users[2],
@@ -456,6 +465,53 @@ mod tests {
         assert_eq!(ids(&before), [sent[2], sent[3]]);
         assert_eq!(ids(&after), [sent[3]]);
         assert_eq!(newest_two[0].author.username, "member");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_sends_commit_and_reach_gateways_in_id_order() {
+        const CONCURRENT_SENDS: u64 = 32;
+        let fixture = fixture().await;
+        let (session, mut events) = fixture
+            .events
+            .register_session(fixture.owner, [0; 32], 1)
+            .unwrap();
+        fixture
+            .events
+            .activate_session(session, &[fixture.guild.id]);
+        while events.try_recv().is_ok() {}
+
+        let sends = (0..CONCURRENT_SENDS).map(|index| {
+            fixture
+                .messages
+                .send(fixture.member, fixture.general, text("race"), NOW + index)
+        });
+        for sent in futures_util::future::join_all(sends).await {
+            sent.unwrap();
+        }
+        let history = fixture
+            .messages
+            .list_messages(
+                fixture.owner,
+                fixture.general,
+                MessageHistoryQuery {
+                    limit: Some(100),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        let mut published_ids = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            let event: serde_json::Value = serde_json::from_str(&event.payload_json).unwrap();
+            published_ids.push(event["data"]["id"].as_str().unwrap().to_owned());
+        }
+        let stored_ids: Vec<String> = history
+            .iter()
+            .map(|message| message.id.to_string())
+            .collect();
+        assert_eq!(published_ids, stored_ids);
     }
 
     #[tokio::test]
