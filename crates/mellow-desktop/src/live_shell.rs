@@ -557,7 +557,9 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
                 shell.state.apply_ready(*ready);
                 shell.requested_history_channel_ids.clear();
                 shell.requested_member_list_guild_ids.clear();
-                // A request of an ended session never comes back to free its channel.
+                // A request of an ended session never comes back to free its channel. One of the
+                // same session still does, and may free a newer request early: at worst a page is
+                // asked twice, and the adjacency check drops the duplicate.
                 shell.loading_older_history_channel_ids.clear();
                 if let (Some(window), Some(user)) =
                     (shell.window.upgrade(), shell.state.current_user())
@@ -857,10 +859,15 @@ fn ensure_history_loaded(shell: &SharedShell, channel_id: Snowflake) {
     let request = async move { rest.list_messages(channel_id, &query).await };
     run_request(shell, request, move |shell, result| match result {
         Ok(page) => {
-            let change = shell
-                .borrow_mut()
-                .state
-                .insert_history_page(channel_id, page);
+            let change = {
+                let mut shell = shell.borrow_mut();
+                let change = shell.state.insert_history_page(channel_id, page);
+                // Left before its latest page came back: trim now, or the page lifts the cap for good.
+                if shell.selected_channel_id != Some(channel_id) {
+                    shell.state.trim_history(channel_id);
+                }
+                change
+            };
             apply_state_change(shell, change);
         }
         Err(error) => {
@@ -875,10 +882,8 @@ fn ensure_history_loaded(shell: &SharedShell, channel_id: Snowflake) {
 
 /// Fetches the page before the oldest cached message of the open channel, one page at a time.
 fn load_older_messages(shell: &SharedShell) {
-    let Some(rest) = authenticated_rest(shell) else {
-        return;
-    };
-    let (channel_id, oldest_message_id) = {
+    // Called on every scroll frame near the top: the cheap checks run before the client is cloned.
+    let (rest, channel_id, oldest_message_id) = {
         let mut shell = shell.borrow_mut();
         let Some(channel_id) = shell.selected_channel_id else {
             return;
@@ -893,11 +898,21 @@ fn load_older_messages(shell: &SharedShell) {
             return;
         };
         if !shell.state.has_older_history(channel_id)
-            || !shell.loading_older_history_channel_ids.insert(channel_id)
+            || shell
+                .loading_older_history_channel_ids
+                .contains(&channel_id)
         {
             return;
         }
-        (channel_id, oldest_message_id)
+        let Some(rest) = shell
+            .connection
+            .as_ref()
+            .map(|connection| connection.rest.clone())
+        else {
+            return;
+        };
+        shell.loading_older_history_channel_ids.insert(channel_id);
+        (rest, channel_id, oldest_message_id)
     };
     let query = MessageHistoryQuery {
         before: Some(oldest_message_id),
