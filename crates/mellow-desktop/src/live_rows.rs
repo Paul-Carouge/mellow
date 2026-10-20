@@ -8,7 +8,8 @@ use mellow_protocol::{ChannelKind, CurrentUser, Guild, Member, Message, Snowflak
 use slint::SharedString;
 
 use crate::generated_ui::{
-    ChannelListRow, MemberListRow, MessageDelivery, MessageRow, PresenceStatus, ServerItem,
+    ChannelListRow, HistoryStartState, MemberListRow, MessageDelivery, MessageRow, PresenceStatus,
+    ServerItem,
 };
 use crate::message_markup::styled_text_from_message_body;
 use crate::shell_rows::{first_letter, saturating_int, server_initials};
@@ -300,9 +301,33 @@ pub fn member_rows(members: &[Member], state: &ClientState) -> Vec<MemberListRow
     .collect()
 }
 
+/// What the message list shows above its oldest message (DESIGN.md §5.4 "List states").
+pub fn history_start_state(
+    state: &ClientState,
+    channel_id: Option<Snowflake>,
+    has_history_request_failed: bool,
+    is_loading_older_history: bool,
+) -> HistoryStartState {
+    let Some(channel_id) = channel_id else {
+        return HistoryStartState::Unknown;
+    };
+    if has_history_request_failed {
+        HistoryStartState::Failed
+    } else if !state.has_older_history(channel_id) {
+        HistoryStartState::ChannelStart
+    // Nothing cached means never loaded: a loaded empty channel has reached its start, and trims
+    // keep messages.
+    } else if is_loading_older_history || state.messages(channel_id).is_empty() {
+        HistoryStartState::Loading
+    } else {
+        HistoryStartState::Unknown
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{FixedOffset, Utc};
+    use mellow_client_core::state::HISTORY_PAGE_SIZE;
     use mellow_protocol::{Channel, Permissions, PublicUser};
 
     use super::*;
@@ -488,5 +513,56 @@ mod tests {
             let rows = pending_message_rows_at(&[&sending], &confirmed, &me, &now);
             assert!(rows[0].starts_author_group);
         }
+    }
+
+    #[test]
+    fn history_start_state_follows_failures_loading_and_the_channel_start() {
+        let general = Snowflake::from_raw(11);
+        let message = Message {
+            id: Snowflake::from_raw(100),
+            channel_id: general,
+            author: PublicUser {
+                id: Snowflake::from_raw(1),
+                username: "aurore".into(),
+                display_name: "Aurore".into(),
+            },
+            content: "hello".into(),
+            reply_to_id: None,
+            edited_at_unix_milliseconds: None,
+            nonce: None,
+        };
+        let full_page = vec![message.clone(); usize::try_from(HISTORY_PAGE_SIZE).unwrap()];
+        let mut state = ClientState::default();
+        let at = |state: &ClientState, is_failed, is_loading_older| {
+            history_start_state(state, Some(general), is_failed, is_loading_older)
+        };
+
+        assert_eq!(
+            history_start_state(&state, None, true, true),
+            HistoryStartState::Unknown,
+            "no channel open"
+        );
+        assert_eq!(
+            at(&state, false, false),
+            HistoryStartState::Loading,
+            "never loaded"
+        );
+        assert_eq!(at(&state, true, false), HistoryStartState::Failed);
+
+        state.insert_history_page(general, full_page);
+        assert_eq!(at(&state, false, false), HistoryStartState::Unknown);
+        assert_eq!(at(&state, false, true), HistoryStartState::Loading);
+        assert_eq!(at(&state, true, false), HistoryStartState::Failed);
+
+        state.insert_history_page(general, vec![message]);
+        assert_eq!(at(&state, false, false), HistoryStartState::ChannelStart);
+
+        let mut empty_channel = ClientState::default();
+        empty_channel.insert_history_page(general, Vec::new());
+        assert_eq!(
+            at(&empty_channel, false, false),
+            HistoryStartState::ChannelStart,
+            "an empty channel shows its hero"
+        );
     }
 }

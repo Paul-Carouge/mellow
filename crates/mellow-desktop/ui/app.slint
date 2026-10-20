@@ -4,14 +4,14 @@ import "../fonts/Figtree[wght].ttf";
 import "../fonts/Figtree-Italic[wght].ttf";
 import { ServerRail, ServerItem } from "components/server_rail.slint";
 import { ChannelSidebar, ChannelListRow } from "components/channel_sidebar.slint";
-import { ChatPane, MessageDelivery, MessageRow } from "components/chat_pane.slint";
+import { ChatPane, HistoryStartState, MessageDelivery, MessageRow } from "components/chat_pane.slint";
 import { MemberList, MemberListRow } from "components/member_list.slint";
 import { PresenceStatus } from "components/primitives.slint";
 import { LoginScreen } from "components/login_screen.slint";
 import { ConnectionBanner } from "components/connection_banner.slint";
 import { DeleteMessageDialog } from "components/delete_message_dialog.slint";
 
-export { ServerItem, ChannelListRow, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme }
+export { ServerItem, ChannelListRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme }
 
 // Window width breakpoints from DESIGN.md §4.2: each one is the sum of the panes it must fit.
 global LayoutBreakpoint {
@@ -76,6 +76,8 @@ export component AppWindow inherits Window {
     callback retry-message(int);
     callback discard-failed-message(int);
     callback load-older-messages();
+    in property <HistoryStartState> history-start-state;
+    callback retry-loading-history();
     callback sign-in();
     callback register();
     callback sign-out();
@@ -171,6 +173,8 @@ export component AppWindow inherits Window {
                 retry-message(index) => { root.retry-message(index); }
                 discard-failed-message(index) => { root.discard-failed-message(index); }
                 load-older-messages => { root.load-older-messages(); }
+                history-start-state: root.history-start-state;
+                retry-loading-history => { root.retry-loading-history(); }
             }
             // shortcut: below 1032 px the member list is hidden instead of becoming an overlay.
             if root.is-member-list-visible && root.is-wide-enough-for-member-list: MemberList {

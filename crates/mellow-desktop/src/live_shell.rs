@@ -60,6 +60,9 @@ pub struct LiveShell {
     requested_member_list_guild_ids: HashSet<Snowflake>,
     /// Channels with a request for older history in flight, so scrolling asks for one page at a time.
     loading_older_history_channel_ids: HashSet<Snowflake>,
+    /// Channels whose last history request failed: they wait for "Try again" or the next `Ready`
+    /// instead of asking again on every scroll frame.
+    failed_history_channel_ids: HashSet<Snowflake>,
     messages: Rc<VecModel<MessageRow>>,
     /// The message id behind each row of `messages`, in the same order.
     displayed_message_ids: Vec<Snowflake>,
@@ -91,6 +94,7 @@ pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
         requested_history_channel_ids: HashSet::new(),
         requested_member_list_guild_ids: HashSet::new(),
         loading_older_history_channel_ids: HashSet::new(),
+        failed_history_channel_ids: HashSet::new(),
         messages: Rc::new(VecModel::default()),
         displayed_message_ids: Vec::new(),
         displayed_pending_nonces: Vec::new(),
@@ -290,6 +294,8 @@ fn connect_callbacks(window: &AppWindow, shell: &SharedShell) {
 
     let shell_for_callback = shell.clone();
     window.on_load_older_messages(move || load_older_messages(&shell_for_callback));
+    let shell_for_callback = shell.clone();
+    window.on_retry_loading_history(move || retry_loading_history(&shell_for_callback));
 
     let shell_for_callback = shell.clone();
     window.on_send_message(move |text: SharedString| send_message(&shell_for_callback, text));
@@ -561,6 +567,7 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
                 // same session still does, and may free a newer request early: at worst a page is
                 // asked twice, and the adjacency check drops the duplicate.
                 shell.loading_older_history_channel_ids.clear();
+                shell.failed_history_channel_ids.clear();
                 if let (Some(window), Some(user)) =
                     (shell.window.upgrade(), shell.state.current_user())
                 {
@@ -739,6 +746,7 @@ fn end_session(shell: &SharedShell, message: &str) -> tokio::task::JoinHandle<bo
     refresh_server_items(&shell);
     refresh_channel_rows(&shell);
     refresh_member_rows(&shell);
+    refresh_history_start_state(&shell);
     if let Some(window) = shell.window.upgrade() {
         window.set_current_user_name(SharedString::default());
         window.set_current_user_initial(SharedString::default());
@@ -842,12 +850,15 @@ fn refresh_header(shell: &LiveShell) {
 }
 
 fn ensure_history_loaded(shell: &SharedShell, channel_id: Snowflake) {
-    if !shell
-        .borrow_mut()
-        .requested_history_channel_ids
-        .insert(channel_id)
     {
-        return;
+        let mut shell = shell.borrow_mut();
+        if !shell.requested_history_channel_ids.insert(channel_id) {
+            return;
+        }
+        // Reopening a channel whose page failed is a retry too.
+        if shell.failed_history_channel_ids.remove(&channel_id) {
+            refresh_history_start_state(&shell);
+        }
     }
     let Some(rest) = authenticated_rest(shell) else {
         return;
@@ -871,10 +882,12 @@ fn ensure_history_loaded(shell: &SharedShell, channel_id: Snowflake) {
             apply_state_change(shell, change);
         }
         Err(error) => {
-            shell
-                .borrow_mut()
-                .requested_history_channel_ids
-                .remove(&channel_id);
+            {
+                let mut shell = shell.borrow_mut();
+                shell.requested_history_channel_ids.remove(&channel_id);
+                shell.failed_history_channel_ids.insert(channel_id);
+                refresh_history_start_state(&shell);
+            }
             report_request_error(shell, &error, "load message history");
         }
     });
@@ -901,6 +914,7 @@ fn load_older_messages(shell: &SharedShell) {
             || shell
                 .loading_older_history_channel_ids
                 .contains(&channel_id)
+            || shell.failed_history_channel_ids.contains(&channel_id)
         {
             return;
         }
@@ -912,6 +926,7 @@ fn load_older_messages(shell: &SharedShell) {
             return;
         };
         shell.loading_older_history_channel_ids.insert(channel_id);
+        refresh_history_start_state(&shell);
         (rest, channel_id, oldest_message_id)
     };
     let query = MessageHistoryQuery {
@@ -921,10 +936,14 @@ fn load_older_messages(shell: &SharedShell) {
     };
     let request = async move { rest.list_messages(channel_id, &query).await };
     run_request(shell, request, move |shell, result| {
-        shell
-            .borrow_mut()
-            .loading_older_history_channel_ids
-            .remove(&channel_id);
+        {
+            let mut shell = shell.borrow_mut();
+            shell.loading_older_history_channel_ids.remove(&channel_id);
+            if result.is_err() {
+                shell.failed_history_channel_ids.insert(channel_id);
+            }
+            refresh_history_start_state(&shell);
+        }
         match result {
             Ok(page) => {
                 // The page must join the cache where it was cut: a `Ready`, a trim or a deleted
@@ -942,7 +961,11 @@ fn load_older_messages(shell: &SharedShell) {
                 if !is_still_adjacent {
                     return;
                 }
-                if let Some(window) = shell.borrow().window.upgrade() {
+                // An empty page adds no rows, only the hero in row 0, which compensates its own
+                // height; pinning at a distance while row 0 changes makes ListView oscillate.
+                if !page.is_empty()
+                    && let Some(window) = shell.borrow().window.upgrade()
+                {
                     window.invoke_keep_distance_from_latest_message();
                 }
                 let change = shell
@@ -954,6 +977,29 @@ fn load_older_messages(shell: &SharedShell) {
             Err(error) => report_request_error(shell, &error, "load older messages"),
         }
     });
+}
+
+/// "Try again" on a failed history load: the latest page if that one failed, else the older one.
+fn retry_loading_history(shell: &SharedShell) {
+    let (channel_id, is_latest_page_missing) = {
+        let mut shell = shell.borrow_mut();
+        let Some(channel_id) = shell.selected_channel_id else {
+            return;
+        };
+        if !shell.failed_history_channel_ids.remove(&channel_id) {
+            return;
+        }
+        refresh_history_start_state(&shell);
+        (
+            channel_id,
+            !shell.requested_history_channel_ids.contains(&channel_id),
+        )
+    };
+    if is_latest_page_missing {
+        ensure_history_loaded(shell, channel_id);
+    } else {
+        load_older_messages(shell);
+    }
 }
 
 fn ensure_members_loaded(shell: &SharedShell, guild_id: Snowflake) {
@@ -1263,4 +1309,17 @@ fn refresh_messages(shell: &mut LiveShell) {
     let previous_message_ids = std::mem::replace(&mut shell.displayed_message_ids, message_ids);
     shell.messages.set_vec(rows);
     message_actions::remap_open_message_rows(shell, &previous_message_ids);
+    refresh_history_start_state(shell);
+}
+
+fn refresh_history_start_state(shell: &LiveShell) {
+    if let Some(window) = shell.window.upgrade() {
+        let channel_id = shell.selected_channel_id;
+        window.set_history_start_state(live_rows::history_start_state(
+            &shell.state,
+            channel_id,
+            channel_id.is_some_and(|id| shell.failed_history_channel_ids.contains(&id)),
+            channel_id.is_some_and(|id| shell.loading_older_history_channel_ids.contains(&id)),
+        ));
+    }
 }

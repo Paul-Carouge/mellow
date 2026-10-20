@@ -1005,7 +1005,7 @@ All components use tokens only (component tier first), support light and dark th
 | 6.7 | Slider | Continuous, Stepped (chat font size 12–24, zoom 50–200 %) | Focus, dragging, disabled | Arrow keys step; value announced. |
 | 6.8 | Avatar | Sizes 16, 24, 32, 40, 80 · image, initials fallback, group (stacked) | Loading (tint block), with status, animated (play on hover/focus) | Always a circle. |
 | 6.9 | StatusIndicator | Online, idle, dnd, offline | — | Shape + colour; cut-out ring of the surface below. |
-| 6.10 | Skeleton | Text line, avatar, message, row, server icon, table row | Static | `state.hover` fill; hidden from screen readers; container announces "Loading messages". |
+| 6.10 | Skeleton | Text line, avatar, message, row, server icon, table row | Static | `state.hover` fill in light, `state.selected` in dark (`state.hover` is nearly invisible on `surface.chat`); hidden from screen readers; container announces "Loading messages". |
 | 6.11 | ServerIcon | Server, instance, Home, unread conversation, Add (`+`) | Rest (circle), hover/focus (squircle), unread pill, mention badge, selected, offline, dragging | `component.rail.*`; morph with `MaterialShapes` on Android. |
 | 6.12 | RailPill | Unread (8), hover (20), selected (40) | — | `unread.pill`; height animates over `motion.duration.base`. |
 | 6.13 | ChannelRow | Text channel, category header | Read, hover, unread, mentions, selected, muted, locked, focus, dragging | `component.channel-row.*`, `component.category.*`. |

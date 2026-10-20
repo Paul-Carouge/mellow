@@ -1,9 +1,12 @@
 import { ListView } from "std-widgets.slint";
 import { MellowColor, MellowComponent, MellowMotion, MellowRadius, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
-import { Avatar, IconButton } from "primitives.slint";
+import { Avatar, Button, IconButton } from "primitives.slint";
 
 // Where a message the signed-in user sent stands: confirmed by the server, or still in the outbox.
 export enum MessageDelivery { sent, sending, failed }
+// What sits above the oldest loaded message (DESIGN.md §5.4 "List states"): nothing while older
+// history may exist, skeletons while a page loads, an error with "Try again", or the channel-start hero.
+export enum HistoryStartState { unknown, loading, failed, channel-start }
 
 export struct MessageRow {
     author: string,
@@ -409,6 +412,183 @@ component MessageView inherits Rectangle {
     }
 }
 
+// One static placeholder shaped like a group-start message (DESIGN.md §6.10): avatar circle, name
+// bar, text bars. Decorative: the container announces "Loading messages" once.
+component MessageSkeleton inherits Rectangle {
+    // Fractions of the widest name bar, and of the text column for each line.
+    in property <float> name-width-ratio;
+    in property <[float]> line-width-ratios;
+
+    layout := VerticalLayout {
+        padding-top: MellowComponent.message-group-gap + MellowComponent.message-padding-block;
+        padding-bottom: MellowComponent.message-padding-block;
+        padding-left: MellowComponent.message-gutter;
+        padding-right: MellowComponent.message-padding-trailing;
+        // Each bar is centred in a line box as tall as a real line, so loaded messages take the same room.
+        Rectangle {
+            height: MellowType.message.line-height;
+            Rectangle {
+                x: 0;
+                width: MellowComponent.message-skeleton-name-max-width * root.name-width-ratio;
+                height: MellowComponent.message-skeleton-bar-height;
+                border-radius: self.height / 2;
+                background: MellowComponent.message-skeleton-fill;
+            }
+        }
+        for ratio in root.line-width-ratios: Rectangle {
+            height: MellowType.message.line-height;
+            Rectangle {
+                x: 0;
+                width: parent.width * ratio;
+                height: MellowComponent.message-skeleton-bar-height;
+                border-radius: self.height / 2;
+                background: MellowComponent.message-skeleton-fill;
+            }
+        }
+    }
+    Rectangle {
+        x: MellowComponent.message-avatar-inset;
+        y: layout.padding-top;
+        width: MellowComponent.message-avatar-size;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: MellowComponent.message-skeleton-fill;
+    }
+}
+
+// What sits above the oldest loaded message, or fills an empty list (DESIGN.md §5.4 "List states").
+component HistoryStart inherits VerticalLayout {
+    in property <HistoryStartState> state;
+    in property <string> channel-name;
+    in property <string> channel-topic;
+    // An empty list shows 5 skeletons; above loaded messages, 3.
+    in property <bool> is-list-empty;
+    // Held by ChatPane: rows are recreated on every model reset and must not restart the delay.
+    in property <bool> has-skeleton-delay-elapsed;
+    in property <string> error-text;
+    callback retry();
+    // Above loaded rows, the height this takes changed by `delta` because the state changed; reported
+    // once the new content is laid out, so the list can be scrolled before it is drawn.
+    callback height-changed-above-rows(length);
+
+    // Varied on purpose, so the placeholders read as messages rather than a grid.
+    property <[{ name: float, lines: [float] }]> skeleton-shapes: [
+        { name: 0.75, lines: [0.72, 0.46] },
+        { name: 0.5, lines: [0.58] },
+        { name: 0.9, lines: [0.86, 0.78, 0.34] },
+        { name: 0.6, lines: [0.4] },
+        { name: 0.8, lines: [0.66, 0.52] },
+    ];
+
+    // What is drawn, as far as its height goes: nothing, skeletons, the error or the hero.
+    property <int> drawn-content: root.state == HistoryStartState.loading ? (root.has-skeleton-delay-elapsed ? 1 : 0)
+        : root.state == HistoryStartState.failed ? 2 : root.state == HistoryStartState.channel-start ? 3 : 0;
+    // Set when the drawn content changes, consumed by the height change that follows once the new
+    // content is laid out. Other height changes (creation, width) are not the reader's rows moving.
+    property <bool> is-drawn-content-change-pending;
+    property <length> measured-height;
+    init => { root.measured-height = root.height; }
+    changed drawn-content => { root.is-drawn-content-change-pending = true; }
+    changed height => {
+        if root.is-drawn-content-change-pending && !root.is-list-empty {
+            root.height-changed-above-rows(root.height - root.measured-height);
+        }
+        root.is-drawn-content-change-pending = false;
+        root.measured-height = root.height;
+    }
+
+    if root.state == HistoryStartState.loading && root.has-skeleton-delay-elapsed: VerticalLayout {
+        accessible-role: progress-indicator;
+        accessible-label: "Loading messages";
+        for index in root.is-list-empty ? 5 : 3: MessageSkeleton {
+            name-width-ratio: root.skeleton-shapes[index].name;
+            line-width-ratios: root.skeleton-shapes[index].lines;
+        }
+    }
+
+    if root.state == HistoryStartState.failed: HorizontalLayout {
+        padding-top: MellowComponent.message-group-gap;
+        // Above loaded rows, the first message's group gap already spaces it.
+        padding-bottom: root.is-list-empty ? MellowComponent.message-group-gap : 0px;
+        padding-left: MellowComponent.message-gutter;
+        padding-right: MellowComponent.message-padding-trailing;
+        spacing: MellowComponent.message-history-error-gap;
+        alignment: start;
+        VerticalLayout {
+            alignment: center;
+            Image {
+                source: @image-url("../../icons/warning-circle.svg");
+                colorize: MellowComponent.message-history-error-icon;
+                width: MellowComponent.message-history-error-icon-size;
+                height: self.width;
+                accessible-role: none;
+            }
+        }
+        Text {
+            text: root.error-text;
+            color: MellowComponent.message-history-error-text;
+            font-size: MellowType.message.font-size;
+            vertical-alignment: center;
+            // Announced by ChatPane's live region, which outlives this row.
+            accessible-role: none;
+        }
+        Button {
+            label: "Try again";
+            accessible-description: root.error-text;
+            clicked => { root.retry(); }
+        }
+    }
+
+    // Discord's channel-start hero, aligned on the avatar column. No "Edit channel" until channel editing exists.
+    if root.state == HistoryStartState.channel-start: VerticalLayout {
+        padding-top: MellowComponent.message-channel-start-padding-block;
+        padding-bottom: MellowComponent.message-channel-start-padding-block;
+        padding-left: MellowComponent.message-avatar-inset;
+        padding-right: MellowComponent.message-padding-trailing;
+        spacing: MellowComponent.message-channel-start-gap;
+        accessible-role: groupbox;
+        accessible-label: "Start of #" + root.channel-name;
+        HorizontalLayout {
+            alignment: start;
+            Rectangle {
+                width: MellowComponent.message-channel-start-icon-circle-size;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: MellowComponent.message-channel-start-icon-background;
+                Image {
+                    source: @image-url("../../icons/hash.svg");
+                    colorize: MellowComponent.message-channel-start-icon;
+                    width: MellowComponent.message-channel-start-icon-size;
+                    height: self.width;
+                    accessible-role: none;
+                }
+            }
+        }
+        Text {
+            text: "Welcome to #" + root.channel-name;
+            color: MellowComponent.message-channel-start-title-text;
+            font-size: MellowType.display.font-size;
+            font-weight: MellowType.display.font-weight;
+            wrap: word-wrap;
+            accessible-role: text;
+        }
+        Text {
+            text: "This is the start of the #" + root.channel-name + " channel.";
+            color: MellowComponent.message-channel-start-description-text;
+            font-size: MellowType.message.font-size;
+            wrap: word-wrap;
+            accessible-role: text;
+        }
+        if root.channel-topic != "": Text {
+            text: root.channel-topic;
+            color: MellowComponent.message-channel-start-description-text;
+            font-size: MellowType.message.font-size;
+            wrap: word-wrap;
+            accessible-role: text;
+        }
+    }
+}
+
 export component ChatPane inherits Rectangle {
     in property <string> channel-name;
     in property <string> channel-topic;
@@ -441,6 +621,9 @@ export component ChatPane inherits Rectangle {
     callback discard-failed-message(int);
     // The reader scrolled near the top of the loaded messages.
     callback load-older-messages();
+    in property <HistoryStartState> history-start-state;
+    // "Try again" after a failed history load, initial or older.
+    callback retry-loading-history();
 
     // Typing goes straight into the reply, as on Discord.
     changed replying-to-author => {
@@ -479,6 +662,18 @@ export component ChatPane inherits Rectangle {
         is-pinned-to-latest-message = true;
     }
 
+    // Skeletons wait for motion.delay-skeleton, so short loads show nothing. Kept here rather than in
+    // the row that draws them: rebuilding the rows must not restart the delay.
+    property <bool> has-history-skeleton-delay-elapsed;
+    changed history-start-state => { has-history-skeleton-delay-elapsed = false; }
+    property <string> history-error-text: messages.length > 0 ? "Couldn't load older messages."
+        : "Couldn't load messages in #" + channel-name + ".";
+    Timer {
+        interval: MellowMotion.delay-skeleton;
+        running: root.history-start-state == HistoryStartState.loading && !root.has-history-skeleton-delay-elapsed;
+        triggered => { root.has-history-skeleton-delay-elapsed = true; }
+    }
+
     // Scrolls up by `distance`; returns false once the top is reached (used by the scroll benchmark).
     public function scroll-up-by(distance: length) -> bool {
         is-pinned-to-latest-message = false;
@@ -489,6 +684,21 @@ export component ChatPane inherits Rectangle {
     background: MellowColor.surface-chat;
     min-width: MellowSize.chat-min-width;
     public function focus-composer() {
+        composer.focus();
+    }
+    // Row 0's history start changed height by `delta` while row 0 is on screen (only then is it
+    // instantiated, and only then does its height move the rows being read): scroll by as much.
+    // Not keep-distance-from-latest-message: pinning near the top, where ListView estimates the
+    // content height from the visible rows, makes the estimate and the position chase each other.
+    // A list pinned to the latest message re-anchors to the bottom by itself.
+    function keep-rows-in-place-after-history-start-change(delta: length) {
+        if !root.is-pinned-to-latest-message {
+            message-list.content-y = min(0px, message-list.content-y - delta);
+        }
+    }
+    // "Try again" disappears with the failed state, so focus goes back to the composer.
+    function retry-loading-history-and-focus-composer() {
+        root.retry-loading-history();
         composer.focus();
     }
 
@@ -550,80 +760,123 @@ export component ChatPane inherits Rectangle {
             }
         }
 
-        message-list := ListView {
-            // ListView estimates unseen row heights and refines them while rendering, which moves
-            // content-y and content-height by itself; while pinned, snap back to the bottom.
-            changed content-height => {
-                if root.is-pinned-to-latest-message {
-                    self.content-y = root.pinned-content-y;
-                }
-                root.load-older-messages-when-near-top();
-            }
-            changed visible-height => {
-                if root.is-pinned-to-latest-message {
-                    self.content-y = root.pinned-content-y;
-                }
-            }
-            changed content-y => {
-                if root.is-pinned-to-latest-message && self.content-y != root.pinned-content-y {
-                    self.content-y = root.pinned-content-y;
-                }
-                root.load-older-messages-when-near-top();
-            }
-            // Only user scrolling (wheel, drag, scrollbar) decides whether the list stays pinned.
-            scrolled => {
-                root.is-pinned-to-latest-message = self.content-y <= root.latest-message-content-y + 1px;
-                root.pinned-distance-from-latest-message = 0px;
-                root.load-older-messages-when-near-top();
-            }
-            accessible-role: list;
-            accessible-label: "Messages in " + channel-name;
-            for message[index] in messages: MessageView {
-                message: message;
-                is-text-selection-mode: root.is-text-selection-mode;
-                // Outbox rows never show the editor, whatever index Rust sets.
-                is-editing: index == root.editing-message-index && message.delivery == MessageDelivery.sent;
-                editing-draft <=> root.editing-message-draft;
-                link-clicked(url) => { root.link-clicked(url); }
-                copy-text => { root.copy-message-text(index); }
-                reply => { root.reply-to-message(index); }
-                start-edit => {
-                    root.editing-message-draft = message.body-plain;
-                    root.editing-message-index = index;
-                }
-                save-edit(text) => {
-                    root.editing-message-index = -1;
-                    // Saving an empty message asks to delete it; an unchanged one is not re-sent (DESIGN.md §5.5).
-                    if text == "" {
-                        root.deleting-message-index = index;
-                    } else if text != message.body-plain {
-                        root.save-message-edit(index, text);
+        // The list and, while it has no rows, the state that fills it (DESIGN.md §5.4 "List states").
+        Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+            message-list := ListView {
+                width: 100%;
+                height: 100%;
+                // ListView estimates unseen row heights and refines them while rendering, which moves
+                // content-y and content-height by itself; while pinned, snap back to the bottom.
+                changed content-height => {
+                    if root.is-pinned-to-latest-message {
+                        self.content-y = root.pinned-content-y;
                     }
-                    if text != "" {
-                        composer.focus();
+                    root.load-older-messages-when-near-top();
+                }
+                changed visible-height => {
+                    if root.is-pinned-to-latest-message {
+                        self.content-y = root.pinned-content-y;
                     }
                 }
-                cancel-edit => {
-                    root.editing-message-index = -1;
-                    composer.focus();
+                changed content-y => {
+                    if root.is-pinned-to-latest-message && self.content-y != root.pinned-content-y {
+                        self.content-y = root.pinned-content-y;
+                    }
+                    root.load-older-messages-when-near-top();
                 }
-                delete(skip-confirmation) => {
-                    if skip-confirmation {
-                        root.delete-message(index);
-                    } else {
-                        root.deleting-message-index = index;
+                // Only user scrolling (wheel, drag, scrollbar) decides whether the list stays pinned.
+                scrolled => {
+                    root.is-pinned-to-latest-message = self.content-y <= root.latest-message-content-y + 1px;
+                    root.pinned-distance-from-latest-message = 0px;
+                    root.load-older-messages-when-near-top();
+                }
+                accessible-role: list;
+                accessible-label: "Messages in " + channel-name;
+                // Row 0 carries the history start above its message, so it scrolls with the rows and
+                // row indices stay those of the model, which Rust addresses rows by.
+                for message[index] in messages: VerticalLayout {
+                    // Always there on row 0, empty when unknown, so it can report every height change.
+                    if index == 0: HistoryStart {
+                        state: root.history-start-state;
+                        channel-name: root.channel-name;
+                        channel-topic: root.channel-topic;
+                        is-list-empty: false;
+                        has-skeleton-delay-elapsed: root.has-history-skeleton-delay-elapsed;
+                        error-text: root.history-error-text;
+                        retry => { root.retry-loading-history-and-focus-composer(); }
+                        height-changed-above-rows(delta) => { root.keep-rows-in-place-after-history-start-change(delta); }
+                    }
+                    MessageView {
+                        message: message;
+                        is-text-selection-mode: root.is-text-selection-mode;
+                        // Outbox rows never show the editor, whatever index Rust sets.
+                        is-editing: index == root.editing-message-index && message.delivery == MessageDelivery.sent;
+                        editing-draft <=> root.editing-message-draft;
+                        link-clicked(url) => { root.link-clicked(url); }
+                        copy-text => { root.copy-message-text(index); }
+                        reply => { root.reply-to-message(index); }
+                        start-edit => {
+                            root.editing-message-draft = message.body-plain;
+                            root.editing-message-index = index;
+                        }
+                        save-edit(text) => {
+                            root.editing-message-index = -1;
+                            // Saving an empty message asks to delete it; an unchanged one is not re-sent (DESIGN.md §5.5).
+                            if text == "" {
+                                root.deleting-message-index = index;
+                            } else if text != message.body-plain {
+                                root.save-message-edit(index, text);
+                            }
+                            if text != "" {
+                                composer.focus();
+                            }
+                        }
+                        cancel-edit => {
+                            root.editing-message-index = -1;
+                            composer.focus();
+                        }
+                        delete(skip-confirmation) => {
+                            if skip-confirmation {
+                                root.delete-message(index);
+                            } else {
+                                root.deleting-message-index = index;
+                            }
+                        }
+                        // Both links disappear with the failed state, so focus goes back to the composer.
+                        retry => {
+                            root.retry-message(index);
+                            composer.focus();
+                        }
+                        discard => {
+                            root.discard-failed-message(index);
+                            composer.focus();
+                        }
                     }
                 }
-                // Both links disappear with the failed state, so focus goes back to the composer.
-                retry => {
-                    root.retry-message(index);
-                    composer.focus();
-                }
-                discard => {
-                    root.discard-failed-message(index);
-                    composer.focus();
+            }
+            // Bottom-aligned, as Discord fills an empty channel from the composer up.
+            if messages.length == 0 && root.history-start-state != HistoryStartState.unknown: VerticalLayout {
+                alignment: end;
+                HistoryStart {
+                    state: root.history-start-state;
+                    channel-name: root.channel-name;
+                    channel-topic: root.channel-topic;
+                    is-list-empty: true;
+                    has-skeleton-delay-elapsed: root.has-history-skeleton-delay-elapsed;
+                    error-text: root.history-error-text;
+                    retry => { root.retry-loading-history-and-focus-composer(); }
                 }
             }
+        }
+
+        // History load failures are announced here: the row showing them can be scrolled out and recycled.
+        Text {
+            height: 0px;
+            text: root.history-start-state == HistoryStartState.failed ? root.history-error-text : "";
+            accessible-role: text;
+            accessible-live-region: polite;
         }
 
         // Screen readers announce new messages through this live region, not by re-reading the list.
