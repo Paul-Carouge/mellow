@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use chrono::{DateTime, Local, TimeZone};
 use mellow_client_core::state::{ClientState, PendingMessage, PendingMessageStatus};
-use mellow_protocol::{ChannelKind, CurrentUser, Guild, Member, Message, Snowflake};
+use mellow_protocol::{Channel, ChannelKind, CurrentUser, Guild, Member, Message, Snowflake};
 use slint::SharedString;
 
 use crate::generated_ui::{
@@ -61,11 +61,20 @@ pub fn channel_rows(
     collapsed_category_ids: &BTreeSet<Snowflake>,
     selected_channel_id: Option<Snowflake>,
 ) -> Vec<ChannelListRow> {
+    let category_ids = sorted_category_ids(guild);
+    // A channel whose category is hidden from us is listed with the uncategorised ones.
+    let shown_parent_id = |channel: &Channel| {
+        channel
+            .parent_id
+            .filter(|parent_id| category_ids.contains(parent_id))
+    };
     let text_channels_under = |parent_id: Option<Snowflake>, is_collapsed: bool| {
         let mut channels: Vec<_> = guild
             .channels
             .iter()
-            .filter(|channel| channel.kind == ChannelKind::Text && channel.parent_id == parent_id)
+            .filter(|channel| {
+                channel.kind == ChannelKind::Text && shown_parent_id(channel) == parent_id
+            })
             .filter(|channel| {
                 !is_collapsed
                     || state.has_unread(channel.id)
@@ -86,8 +95,9 @@ pub fn channel_rows(
     };
 
     let uncategorized = text_channels_under(None, false);
-    let categorized = sorted_category_ids(guild)
-        .into_iter()
+    let categorized = category_ids
+        .iter()
+        .copied()
         .enumerate()
         .filter_map(|(category_index, category_id)| {
             let category = guild
@@ -403,6 +413,20 @@ mod tests {
             ["rules", "Text channels", "random", "Voice later", "lobby"]
         );
         assert!(rows[1].is_collapsed);
+    }
+
+    #[test]
+    fn channels_of_a_hidden_category_are_listed_uncategorised() {
+        let mut guild = guild();
+        guild
+            .channels
+            .retain(|channel| channel.id != Snowflake::from_raw(10));
+        let rows = channel_rows(&guild, &ClientState::default(), &BTreeSet::new(), None);
+        assert_eq!(
+            names(&rows),
+            ["general", "rules", "random", "Voice later", "lobby"],
+            "sorted with the uncategorised channels, by position"
+        );
     }
 
     #[test]

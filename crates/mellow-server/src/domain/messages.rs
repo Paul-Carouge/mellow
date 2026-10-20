@@ -1,6 +1,7 @@
 //! Message and read-state use cases. Access goes through the channel's guild permissions
 //! (`Guilds::channel_and_member_permissions`, ADR-0007).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use mellow_protocol::{
@@ -135,6 +136,9 @@ impl Messages {
         if let Some(nonce) = &request.nonce {
             validate_nonce(nonce)?;
         }
+        // Decided before the lock and the write: a failure leaves nothing stored, and the scan of
+        // a restricted channel's members does not hold up every other send (ADR-0015).
+        let audience = self.guilds.channel_audience(&channel).await?;
         let send_order = self.send_order.clone();
         let pool = self.pool.clone();
         let ids = self.ids.clone();
@@ -169,12 +173,11 @@ impl Messages {
             )
             .await?;
             // The nonce goes back to the sender only, never in the event.
-            guilds
-                .publish_to_channel_viewers(
-                    &channel,
-                    &GatewayEvent::MessageCreate(message_from_stored(stored.clone(), None)),
-                )
-                .await?;
+            guilds.publish_to_audience(
+                channel.guild_id,
+                &audience,
+                &GatewayEvent::MessageCreate(message_from_stored(stored.clone(), None)),
+            );
             Ok(message_from_stored(stored, request.nonce))
         })
         .await
@@ -234,6 +237,7 @@ impl Messages {
         }
         let content = normalize_line_endings(&request.content);
         validate_message_content(&content)?;
+        let audience = self.guilds.channel_audience(&channel).await?;
         let updated = message_storage::update_message_content(
             &self.pool,
             message.id,
@@ -243,9 +247,11 @@ impl Messages {
         .await?
         .ok_or(MessageError::MessageNotFound)?;
         let updated = message_from_stored(updated, None);
-        self.guilds
-            .publish_to_channel_viewers(&channel, &GatewayEvent::MessageUpdate(updated.clone()))
-            .await?;
+        self.guilds.publish_to_audience(
+            channel.guild_id,
+            &audience,
+            &GatewayEvent::MessageUpdate(updated.clone()),
+        );
         Ok(updated)
     }
 
@@ -263,17 +269,17 @@ impl Messages {
         if message.author_id != user_id && !permissions.contains(Permissions::MANAGE_MESSAGES) {
             return Err(GuildError::MissingPermissions.into());
         }
+        let audience = self.guilds.channel_audience(&channel).await?;
         message_storage::delete_message(&self.pool, message.id).await?;
-        self.guilds
-            .publish_to_channel_viewers(
-                &channel,
-                &GatewayEvent::MessageDelete {
-                    guild_id: channel.guild_id,
-                    channel_id: channel.id,
-                    id: message.id,
-                },
-            )
-            .await?;
+        self.guilds.publish_to_audience(
+            channel.guild_id,
+            &audience,
+            &GatewayEvent::MessageDelete {
+                guild_id: channel.guild_id,
+                channel_id: channel.id,
+                id: message.id,
+            },
+        );
         Ok(())
     }
 
@@ -326,6 +332,16 @@ impl Messages {
         user_id: Snowflake,
     ) -> Result<Vec<ReadState>, MessageError> {
         let visible_channel_ids = self.guilds.visible_channel_ids(user_id).await?;
+        self.list_my_read_states_in(user_id, &visible_channel_ids)
+            .await
+    }
+
+    /// For callers that already know which channels the user can view (`Ready`).
+    pub(crate) async fn list_my_read_states_in(
+        &self,
+        user_id: Snowflake,
+        visible_channel_ids: &HashSet<Snowflake>,
+    ) -> Result<Vec<ReadState>, MessageError> {
         Ok(message_storage::list_read_states(&self.pool, user_id)
             .await?
             .into_iter()

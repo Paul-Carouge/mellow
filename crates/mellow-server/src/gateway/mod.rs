@@ -2,7 +2,7 @@
 
 mod session;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -323,7 +323,15 @@ async fn build_ready(
             }
         }
     }
-    let read_states = match state.messages.list_my_read_states(user.id).await {
+    let visible_channel_ids: HashSet<Snowflake> = guilds
+        .iter()
+        .flat_map(|guild| guild.channels.iter().map(|channel| channel.id))
+        .collect();
+    let read_states = match state
+        .messages
+        .list_my_read_states_in(user.id, &visible_channel_ids)
+        .await
+    {
         Ok(read_states) => read_states,
         Err(error) => {
             tracing::warn!(%error, "gateway identify: cannot list read states");

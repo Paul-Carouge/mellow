@@ -29,6 +29,17 @@ bitflags::bitflags! {
 }
 
 impl Permissions {
+    /// What a channel overwrite may allow or deny; the others act on the whole guild only.
+    pub const CHANNEL_SCOPED: Self = Self::VIEW_CHANNEL
+        .union(Self::SEND_MESSAGES)
+        .union(Self::READ_MESSAGE_HISTORY)
+        .union(Self::ATTACH_FILES)
+        .union(Self::MENTION_EVERYONE)
+        .union(Self::MANAGE_MESSAGES)
+        .union(Self::MANAGE_CHANNELS)
+        .union(Self::MANAGE_ROLES)
+        .union(Self::CREATE_INVITE);
+
     /// Permissions granted to `@everyone` in a newly created guild.
     pub const DEFAULT_EVERYONE: Self = Self::VIEW_CHANNEL
         .union(Self::SEND_MESSAGES)
@@ -343,6 +354,16 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<Permissions>(json).is_err(), "{json}");
         }
+    }
+
+    #[test]
+    fn administrator_and_member_moderation_are_never_channel_scoped() {
+        assert!(!Permissions::CHANNEL_SCOPED.intersects(
+            Permissions::ADMINISTRATOR
+                | Permissions::MANAGE_GUILD
+                | Permissions::KICK_MEMBERS
+                | Permissions::BAN_MEMBERS
+        ));
     }
 
     #[test]

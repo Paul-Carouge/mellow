@@ -62,6 +62,8 @@ pub enum GuildRuleViolation {
     UnknownPermissions,
     #[error("an overwrite cannot allow and deny the same permission")]
     OverwriteAllowsAndDeniesOneBit,
+    #[error("this permission applies to the whole guild and cannot be set for one channel")]
+    OverwriteOutsideChannelScope,
     #[error("role_ids must list every role of the guild except @everyone, once each")]
     RoleOrder,
     #[error("@everyone keeps its name and colour, and cannot be deleted, given or taken away")]

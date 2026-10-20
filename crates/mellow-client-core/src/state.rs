@@ -208,6 +208,19 @@ impl ClientState {
     }
 
     pub fn apply_event(&mut self, event: GatewayEvent, now_unix_milliseconds: u64) -> StateChange {
+        // An event racing the snapshot that hid its channel must not bring it back (ADR-0015).
+        let channel_id = match &event {
+            GatewayEvent::MessageCreate(message) | GatewayEvent::MessageUpdate(message) => {
+                Some(message.channel_id)
+            }
+            GatewayEvent::MessageDelete { channel_id, .. }
+            | GatewayEvent::TypingStart { channel_id, .. } => Some(*channel_id),
+            GatewayEvent::ChannelUpdate(channel) => Some(channel.id),
+            _ => None,
+        };
+        if channel_id.is_some_and(|channel_id| !self.is_known_channel(channel_id)) {
+            return StateChange::Nothing;
+        }
         match event {
             GatewayEvent::MessageCreate(message) => {
                 let channel_id = message.channel_id;
@@ -493,6 +506,15 @@ impl ClientState {
         StateChange::ReadStates
     }
 
+    fn is_known_channel(&self, channel_id: Snowflake) -> bool {
+        self.guilds.iter().any(|guild| {
+            guild
+                .channels
+                .iter()
+                .any(|channel| channel.id == channel_id)
+        })
+    }
+
     /// A fresh snapshot also follows permission changes (ADR-0015): channels it no longer lists
     /// were hidden from us, so their cached messages and unsent text go too.
     fn replace_guild(&mut self, guild: Guild) -> StateChange {
@@ -516,6 +538,8 @@ impl ClientState {
         }
         self.pending_messages
             .retain(|pending| !hidden_channel_ids.contains(&pending.channel_id));
+        self.typing_until
+            .retain(|(channel_id, _), _| !hidden_channel_ids.contains(channel_id));
         StateChange::Guilds
     }
 
@@ -1000,6 +1024,19 @@ mod tests {
         assert_eq!(state.messages(GENERAL).len(), 0);
         assert_eq!(state.pending_messages(GENERAL).count(), 0);
         assert_eq!(state.guild(GUILD).unwrap().channels.len(), 1);
+
+        let late_message = state.apply_event(GatewayEvent::MessageCreate(message(21, OTHER)), NOW);
+        let mut late_update = channel(GENERAL, ChannelKind::Text, Some(CATEGORY), 1);
+        late_update.name = "hidden".into();
+        let late_channel_update = state.apply_event(GatewayEvent::ChannelUpdate(late_update), NOW);
+        assert_eq!(late_message, StateChange::Nothing);
+        assert_eq!(late_channel_update, StateChange::Nothing);
+        assert_eq!(state.messages(GENERAL).len(), 0);
+        assert_eq!(
+            state.guild(GUILD).unwrap().channels.len(),
+            1,
+            "not brought back"
+        );
     }
 
     #[test]
