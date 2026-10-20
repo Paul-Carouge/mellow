@@ -53,7 +53,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PEBBLE_VERSION: v2.10.1
-      # Pebble publishes no checksum file: pinned from the release asset downloaded on 2026-10-20.
+      # Pebble publishes no checksum file; this is the asset digest GitHub reports for the release
+      # (`gh api repos/letsencrypt/pebble/releases/tags/v2.10.1`).
       PEBBLE_SHA256: 4f2fcb5bca8c85c9cf73ad140fccfc0d2be40bd81ab99879c79b7b8a0b4f70ed
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
