@@ -391,6 +391,23 @@ impl ClientState {
         Some((pending.channel_id, pending.send_request()))
     }
 
+    /// After a reconnect: marks every failed message as sending again and returns its channel,
+    /// nonce and request, in send order, for the caller to send one after another.
+    pub fn retry_failed_messages(&mut self) -> Vec<(Snowflake, String, SendMessageRequest)> {
+        self.pending_messages
+            .iter_mut()
+            .filter(|pending| pending.status == PendingMessageStatus::Failed)
+            .map(|pending| {
+                pending.status = PendingMessageStatus::Sending;
+                (
+                    pending.channel_id,
+                    pending.nonce.clone(),
+                    pending.send_request(),
+                )
+            })
+            .collect()
+    }
+
     /// The instance refused to store it (`ClientError::refuses_message_for_good`): it leaves the
     /// outbox, and its text is returned so the user can fix it.
     pub fn remove_refused_message(&mut self, nonce: &str) -> Option<PendingMessage> {
@@ -768,6 +785,35 @@ mod tests {
         state.mark_send_failed("n2");
         state.discard_failed_message("n2");
         assert_eq!(state.pending_messages(GENERAL).count(), 0);
+    }
+
+    #[test]
+    fn a_reconnect_resends_only_failed_messages_in_send_order() {
+        let mut state = ready_state();
+        for nonce in ["n1", "n2", "n3"] {
+            state.queue_message(GENERAL, nonce.into(), None, nonce.into());
+        }
+        state.mark_send_failed("n3");
+        state.mark_send_failed("n1");
+        let resent: Vec<(Snowflake, String, Option<String>)> = state
+            .retry_failed_messages()
+            .into_iter()
+            .map(|(channel_id, nonce, request)| (channel_id, nonce, request.nonce))
+            .collect();
+        assert_eq!(
+            resent,
+            [
+                (GENERAL, "n1".to_owned(), Some("n1".to_owned())),
+                (GENERAL, "n3".to_owned(), Some("n3".to_owned()))
+            ]
+        );
+        assert!(
+            state
+                .pending_messages(GENERAL)
+                .all(|pending| pending.status == PendingMessageStatus::Sending)
+        );
+        // Already sending again: a second reconnect does not send them twice at once.
+        assert_eq!(state.retry_failed_messages(), []);
     }
 
     #[test]

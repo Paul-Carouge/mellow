@@ -16,7 +16,8 @@ use mellow_client_core::{
     ClientError, GatewayUpdate, InstanceAddress, RestClient, generate_message_nonce, run_gateway,
 };
 use mellow_protocol::{
-    ApiErrorCode, LoginRequest, MessageHistoryQuery, RegisterRequest, SendMessageRequest, Snowflake,
+    ApiErrorCode, LoginRequest, Message, MessageHistoryQuery, RegisterRequest, SendMessageRequest,
+    Snowflake,
 };
 use slint::{ComponentHandle as _, Model as _, ModelRc, SharedString, VecModel, Weak};
 use tokio::runtime::Handle;
@@ -569,6 +570,7 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
             };
             // After a re-identify the reader stays where they were, as after a resume.
             select_guild(shell, guild_id, previous_channel_id);
+            resend_failed_messages(shell);
         }
         GatewayUpdate::Event(event) => {
             let change = shell
@@ -577,7 +579,10 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
                 .apply_event(event, now_unix_milliseconds());
             apply_state_change(shell, change);
         }
-        GatewayUpdate::Resumed => set_notice(""),
+        GatewayUpdate::Resumed => {
+            set_notice("");
+            resend_failed_messages(shell);
+        }
         GatewayUpdate::Disconnected => set_notice(RECONNECTING_NOTICE),
         GatewayUpdate::SignedOut => {
             end_session(shell, SESSION_ENDED_MESSAGE);
@@ -967,37 +972,96 @@ fn deliver_pending_message(
     };
     let send_message_call = async move { rest.send_message(channel_id, &request).await };
     run_request(shell, send_message_call, move |shell, result| {
-        let change = match result {
-            Ok(message) => shell
-                .borrow_mut()
-                .state
-                .confirm_sent_message(&nonce, message),
-            Err(error) if error.refuses_message_for_good() => {
-                report_request_error(shell, &error, "send message");
-                let refused = shell.borrow_mut().state.remove_refused_message(&nonce);
-                // A row nothing can fix: the text goes back to the composer, with the reason.
-                if let Some(window) = shell.borrow().window.upgrade() {
-                    if let Some(refused) = refused
-                        && window.get_composer_text().is_empty()
-                    {
+        apply_send_result(shell, channel_id, &nonce, result);
+    });
+}
+
+/// After a reconnect, sends every failed message again, one after another so they keep their
+/// order. The first failure the instance does not refuse stops the batch: the rest stay failed.
+fn resend_failed_messages(shell: &SharedShell) {
+    if authenticated_rest(shell).is_none() {
+        return;
+    }
+    let batch = shell.borrow_mut().state.retry_failed_messages();
+    let channel_ids: BTreeSet<Snowflake> =
+        batch.iter().map(|(channel_id, _, _)| *channel_id).collect();
+    for channel_id in channel_ids {
+        apply_state_change(shell, StateChange::Messages { channel_id });
+    }
+    resend_next_message(shell, batch.into_iter());
+}
+
+/// One request at a time, each through `run_request`, so a sign-out stops the rest of the batch.
+fn resend_next_message(
+    shell: &SharedShell,
+    mut remaining: std::vec::IntoIter<(Snowflake, String, SendMessageRequest)>,
+) {
+    let Some((channel_id, nonce, request)) = remaining.next() else {
+        return;
+    };
+    let Some(rest) = authenticated_rest(shell) else {
+        return;
+    };
+    let send_message_call = async move { rest.send_message(channel_id, &request).await };
+    run_request(shell, send_message_call, move |shell, result| {
+        let should_continue = result
+            .as_ref()
+            .map_or_else(ClientError::refuses_message_for_good, |_| true);
+        apply_send_result(shell, channel_id, &nonce, result);
+        if should_continue {
+            resend_next_message(shell, remaining);
+            return;
+        }
+        for (_, nonce, _) in remaining {
+            let change = shell.borrow_mut().state.mark_send_failed(&nonce);
+            apply_state_change(shell, change);
+        }
+    });
+}
+
+fn apply_send_result(
+    shell: &SharedShell,
+    channel_id: Snowflake,
+    nonce: &str,
+    result: Result<Message, ClientError>,
+) {
+    let change = match result {
+        Ok(message) => shell
+            .borrow_mut()
+            .state
+            .confirm_sent_message(nonce, message),
+        Err(error) if error.refuses_message_for_good() => {
+            report_request_error(shell, &error, "send message");
+            let window = shell.borrow().window.upgrade();
+            if let Some(window) = &window {
+                window.set_message_action_error(message_actions::send_refusal_text(&error).into());
+            }
+            // One composer for every channel: the text goes back only into an empty one showing
+            // its channel. Otherwise the row stays failed so the user can copy or discard it.
+            let composer = window.filter(|window| {
+                shell.borrow().selected_channel_id == Some(channel_id)
+                    && window.get_composer_text().is_empty()
+            });
+            match composer {
+                Some(window) => {
+                    let refused = shell.borrow_mut().state.remove_refused_message(nonce);
+                    if let Some(refused) = refused {
                         window.set_composer_text(refused.content.into());
                     }
-                    window.set_message_action_error(
-                        message_actions::send_refusal_text(&error).into(),
-                    );
+                    StateChange::Messages { channel_id }
                 }
-                StateChange::Messages { channel_id }
+                None => shell.borrow_mut().state.mark_send_failed(nonce),
             }
-            Err(error) => {
-                if let Some(window) = shell.borrow().window.upgrade() {
-                    window.set_latest_announcement(MESSAGE_NOT_SENT_ANNOUNCEMENT.into());
-                }
-                report_request_error(shell, &error, "send message");
-                shell.borrow_mut().state.mark_send_failed(&nonce)
+        }
+        Err(error) => {
+            if let Some(window) = shell.borrow().window.upgrade() {
+                window.set_latest_announcement(MESSAGE_NOT_SENT_ANNOUNCEMENT.into());
             }
-        };
-        apply_state_change(shell, change);
-    });
+            report_request_error(shell, &error, "send message");
+            shell.borrow_mut().state.mark_send_failed(nonce)
+        }
+    };
+    apply_state_change(shell, change);
 }
 
 fn pending_nonce_at_row(shell: &LiveShell, row_index: i32) -> Option<String> {
