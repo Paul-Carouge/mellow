@@ -808,21 +808,20 @@ mod tests {
     const CERTIFICATE_ISSUANCE_LIMIT: Duration = Duration::from_secs(60);
     const RETRY_INTERVAL: Duration = Duration::from_millis(200);
 
-    fn free_loopback_port() -> u16 {
-        std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
+    /// rustls-acme answers TLS-ALPN-01 only, so Pebble never connects to its HTTP-01 port.
+    const UNUSED_HTTP_CHALLENGE_PORT: u16 = 5002;
+
+    struct RunningPebble {
+        /// Killed on drop.
+        process: tokio::process::Child,
+        directory_url: String,
+        management_url: String,
+        /// Certificate and key of Pebble's own HTTPS endpoints.
+        https_identity: rcgen::CertifiedKey,
     }
 
     /// Starts Pebble with a fresh HTTPS certificate; it validates TLS-ALPN-01 on `challenge_port`.
-    /// Returns the process (killed on drop), its directory URL, its management URL and the
-    /// certificate of its own HTTPS endpoints.
-    async fn start_pebble(
-        work_directory: &Path,
-        challenge_port: u16,
-    ) -> (tokio::process::Child, String, String, rcgen::CertifiedKey) {
+    async fn start_pebble(work_directory: &Path, challenge_port: u16) -> RunningPebble {
         let binary = std::env::var_os(PEBBLE_BINARY_VARIABLE).unwrap_or_else(|| {
             panic!("set {PEBBLE_BINARY_VARIABLE} to a Pebble binary to run this test")
         });
@@ -832,28 +831,35 @@ mod tests {
         let key_path = work_directory.join("pebble-https.key");
         std::fs::write(&certificate_path, https_identity.cert.pem()).unwrap();
         std::fs::write(&key_path, https_identity.key_pair.serialize_pem()).unwrap();
-        let directory_port = free_loopback_port();
-        let management_port = free_loopback_port();
+        // Both held until Pebble starts, so the system cannot hand out the same free port twice.
+        let directory_port_probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let management_port_probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let directory_port = directory_port_probe.local_addr().unwrap().port();
+        let management_port = management_port_probe.local_addr().unwrap().port();
         let config = serde_json::json!({ "pebble": {
             "listenAddress": format!("127.0.0.1:{directory_port}"),
             "managementListenAddress": format!("127.0.0.1:{management_port}"),
             "certificate": certificate_path,
             "privateKey": key_path,
-            "httpPort": free_loopback_port(),
+            "httpPort": UNUSED_HTTP_CHALLENGE_PORT,
             "tlsPort": challenge_port,
             "ocspResponderURL": "",
             "externalAccountBindingRequired": false,
         }});
         let config_path = work_directory.join("pebble-config.json");
         std::fs::write(&config_path, config.to_string()).unwrap();
-        let pebble = tokio::process::Command::new(binary)
+        let log_path = work_directory.join("pebble.log");
+        drop((directory_port_probe, management_port_probe));
+        let mut process = tokio::process::Command::new(binary)
             .arg("-config")
             .arg(&config_path)
             // No artificial validation delay, and no random nonce rejections: rustls-acme does
             // not retry a request refused for a bad nonce, Let's Encrypt never sends those.
             .env("PEBBLE_VA_NOSLEEP", "1")
             .env("PEBBLE_WFE_NONCEREJECT", "0")
-            .stdout(std::process::Stdio::null())
+            // Would approve every authorization without connecting to the server under test.
+            .env_remove("PEBBLE_VA_ALWAYS_VALID")
+            .stdout(std::fs::File::create(&log_path).unwrap())
             .kill_on_drop(true)
             .spawn()
             .unwrap();
@@ -862,18 +868,23 @@ mod tests {
             .await
             .is_err()
         {
+            let log = || std::fs::read_to_string(&log_path).unwrap_or_default();
+            if let Some(status) = process.try_wait().unwrap() {
+                panic!("Pebble exited at startup ({status}):\n{}", log());
+            }
             assert!(
                 started.elapsed() < PEBBLE_STARTUP_LIMIT,
-                "Pebble did not start"
+                "Pebble did not start:\n{}",
+                log()
             );
             tokio::time::sleep(RETRY_INTERVAL).await;
         }
-        (
-            pebble,
-            format!("https://127.0.0.1:{directory_port}/dir"),
-            format!("https://127.0.0.1:{management_port}"),
+        RunningPebble {
+            process,
+            directory_url: format!("https://127.0.0.1:{directory_port}/dir"),
+            management_url: format!("https://127.0.0.1:{management_port}"),
             https_identity,
-        )
+        }
     }
 
     fn spawn_server(
@@ -936,8 +947,12 @@ mod tests {
         create_private_directory(&certificate_directory).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let (pebble, directory_url, management_url, pebble_https) =
-            start_pebble(directory.path(), port).await;
+        let RunningPebble {
+            process: pebble,
+            directory_url,
+            management_url,
+            https_identity: pebble_https,
+        } = start_pebble(directory.path(), port).await;
         let pebble_https_root =
             reqwest::Certificate::from_pem(pebble_https.cert.pem().as_bytes()).unwrap();
         let mut acme_roots = rustls_acme::rustls::RootCertStore::empty();
