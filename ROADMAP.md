@@ -5,7 +5,7 @@ Each milestone ends with something usable end to end. Scope changes are made her
 ## Status (2026-10-20)
 
 ### Done
-Merged into `main` on 2026-10-20: #1 to #28, from the workspace and SQLCipher storage through M1 (server, gateway, client core, desktop on real data, built-in TLS with ACME, outbox, history pagination, message-list states) to the first M2 steps (#24 guild roles, #25 role reordering, #27 channel permission overwrites and `VIEW_CHANNEL` filtering, #28 kick and ban). Every server PR was reviewed by `code-reviewer` and `security-auditor`, with findings fixed. No release is tagged yet.
+Merged into `main` on 2026-10-20: #1 to #29, from the workspace and SQLCipher storage through M1 (server, gateway, client core, desktop on real data, built-in TLS with ACME, outbox, history pagination, message-list states) to the first M2 steps (#24 guild roles, #25 role reordering, #27 channel permission overwrites and `VIEW_CHANNEL` filtering, #28 kick and ban, #29 audit log). Every server PR was reviewed by `code-reviewer` and `security-auditor`, with findings fixed. No release is tagged yet.
 
 ### Blocked
 - **CI does not run**: GitHub Actions refuses jobs because of the account's billing (Settings → Billing & plans). Until fixed, everything is verified on macOS only; SQLCipher on Linux and Windows is unproven, so ADR-0006 stays *Proposed*.

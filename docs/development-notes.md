@@ -5,14 +5,14 @@ project state (what is done, blocked, next, known gaps) lives in [ROADMAP.md](..
 decisions live in [docs/adr/](adr/). Update this file when a new trap or habit appears.
 
 ## Where things stand (2026-10-20)
-- The whole stack (#2 to #25) is merged into `main`, fast-forwarded PR by PR (each PR retargeted to `main`, then its head pushed to `main`), so the history is linear and every commit kept its hash. Merged branches are deleted. The user checked #20 and #21 by hand in the app; #22 ("Jump to present") still waits for a manual check.
+- Everything up to #29 (audit log) is merged into `main`; M2 so far: roles (#24), role reordering (#25), channel overwrites and `VIEW_CHANNEL` filtering (#27), kick and ban (#28), audit log (#29). The user's instance runs `main` as of #28 and passed the M1 end-to-end check. The stack #2 to #25 was merged fast-forward PR by PR (each PR retargeted to `main`, then its head pushed to `main`), so the history is linear and every commit kept its hash. Merged branches are deleted. The user checked #20 and #21 by hand in the app; #22 ("Jump to present") still waits for a manual check.
 - Local try-out instance: `mellow-server init --listen-address 127.0.0.1:18080 --registration-mode open` in the scratchpad, seeded through the REST API (rate limit: 10 sends per 10 s per user, so seed with several users).
 - New work branches from `main`, one PR per step. When PRs are stacked again, merge them in order by retargeting each to `main` and fast-forwarding `main` to its head (in zsh, write `"origin/${branch}:refs/heads/main"`: `$branch:r…` is read as the `:r` modifier).
 - CI never ran: GitHub Actions is blocked by the account's billing. Everything is verified on macOS only.
 
 ## Next candidates
-1. M2 moderation, continued: audit log, then desktop server settings (roles, overwrites, members, bans, through `ux-ui-designer`).
-2. M1 release candidate: run a real instance (`init --domain … --use-staging-certificates`, then production), connect the desktop over https, then tag. The user already runs a test instance they own; ask before changing anything on it.
+1. M2 desktop server settings (roles, channel overwrites, members with kick and ban, bans, audit log), through `ux-ui-designer`, with client-core REST methods for each; also use channel permissions in the UI (read-only composer, hidden actions). Then direct messages.
+2. M1 tag: version bump and `v0.1.0` tag (the end-to-end check passed on the user's instance; the ACME path is covered by the Pebble test only, by the user's choice).
 3. Desktop message list, from DESIGN.md §5.4: the offline state (needs the local cache first) and the no-access state (needs channel permissions, M2).
 4. Then an on-disk outbox (needs the local cache of ARCHITECTURE §6 first).
 
