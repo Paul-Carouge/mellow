@@ -380,7 +380,9 @@ fn is_plausible_email(email: &str) -> bool {
         && !domain.contains('@')
 }
 
+// The fixtures use Unix absolute paths, and the server refuses Windows for now (ADR-0006).
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
 

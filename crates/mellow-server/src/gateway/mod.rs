@@ -658,6 +658,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows resets the socket instead of delivering the close frame; the server refuses Windows for now"
+    )]
     async fn heartbeats_are_acknowledged_until_the_session_is_revoked() {
         let fixture = fixture().await;
         let (mut socket, _) = identified(fixture.address, &fixture.member_token).await;
