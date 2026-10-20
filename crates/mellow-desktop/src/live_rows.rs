@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 
 use chrono::{DateTime, Local, TimeZone};
 use mellow_client_core::state::{ClientState, PendingMessage, PendingMessageStatus};
-use mellow_protocol::{Channel, ChannelKind, CurrentUser, Guild, Member, Message, Snowflake};
+use mellow_protocol::{
+    Channel, ChannelKind, CurrentUser, Guild, Member, Message, Permissions, Snowflake,
+};
 use slint::SharedString;
 
 use crate::generated_ui::{
@@ -91,6 +93,7 @@ pub fn channel_rows(
             display_name: channel.name.as_str().into(),
             has_unread: state.has_unread(channel.id),
             mention_count: 0,
+            is_read_only: !can_send_messages(state, channel.id),
         })
     };
 
@@ -114,6 +117,7 @@ pub fn channel_rows(
                 display_name: category.name.to_uppercase().into(),
                 has_unread: false,
                 mention_count: 0,
+                is_read_only: false,
             };
             Some(
                 std::iter::once(header).chain(text_channels_under(Some(category_id), is_collapsed)),
@@ -175,13 +179,31 @@ fn reply_preview(reply_to_id: Option<Snowflake>, messages: &[Message]) -> String
     }
 }
 
-pub fn message_rows(messages: &[Message], current_user_id: Option<Snowflake>) -> Vec<MessageRow> {
-    message_rows_at(messages, current_user_id, &Local::now())
+/// Unknown permissions (before `Ready`) count as allowed: the server refuses anyway.
+pub fn can_send_messages(state: &ClientState, channel_id: Snowflake) -> bool {
+    state
+        .my_channel_permissions(channel_id)
+        .is_none_or(|permissions| permissions.contains(Permissions::SEND_MESSAGES))
+}
+
+/// `can_manage_messages`: the signed-in user may delete other people's messages here.
+pub fn message_rows(
+    messages: &[Message],
+    current_user_id: Option<Snowflake>,
+    can_manage_messages: bool,
+) -> Vec<MessageRow> {
+    message_rows_at(
+        messages,
+        current_user_id,
+        can_manage_messages,
+        &Local::now(),
+    )
 }
 
 fn message_rows_at<Zone: TimeZone>(
     messages: &[Message],
     current_user_id: Option<Snowflake>,
+    can_manage_messages: bool,
     now: &DateTime<Zone>,
 ) -> Vec<MessageRow>
 where
@@ -199,6 +221,7 @@ where
                             > AUTHOR_GROUP_MAXIMUM_GAP_MILLISECONDS
                 });
             previous = Some(message);
+            let is_own = Some(message.author.id) == current_user_id;
             MessageRow {
                 author: message.author.display_name.as_str().into(),
                 author_initial: first_letter(&message.author.display_name).into(),
@@ -210,7 +233,8 @@ where
                 reply_preview: reply_preview(message.reply_to_id, messages).into(),
                 // shortcut: mentions are not parsed yet (M2).
                 mentions_current_user: false,
-                is_own: Some(message.author.id) == current_user_id,
+                is_own,
+                can_delete: is_own || can_manage_messages,
                 is_edited: message.edited_at_unix_milliseconds.is_some(),
                 delivery: MessageDelivery::Sent,
             }
@@ -260,6 +284,7 @@ where
                 mentions_current_user: false,
                 // Not stored yet: it can be neither edited nor deleted on the server.
                 is_own: false,
+                can_delete: false,
                 is_edited: false,
                 delivery: match pending.status {
                     PendingMessageStatus::Sending => MessageDelivery::Sending,
@@ -338,7 +363,7 @@ pub fn history_start_state(
 mod tests {
     use chrono::{FixedOffset, Utc};
     use mellow_client_core::state::HISTORY_PAGE_SIZE;
-    use mellow_protocol::{Channel, Permissions, PublicUser};
+    use mellow_protocol::{Channel, OverwriteKind, PermissionOverwrite, PublicUser, Ready};
 
     use super::*;
 
@@ -473,7 +498,7 @@ mod tests {
                 ..message(at_minute(20, 1), author(2, "Basile"), "hi", Some(first.id))
             },
         ];
-        let rows = message_rows_at(&messages, Some(Snowflake::from_raw(2)), &Utc::now());
+        let rows = message_rows_at(&messages, Some(Snowflake::from_raw(2)), false, &Utc::now());
         let groups: Vec<_> = rows.iter().map(|row| row.starts_author_group).collect();
         assert_eq!(groups, [true, false, true, true]);
         assert_eq!(rows[3].reply_preview, "@Aurore hello");
@@ -482,6 +507,56 @@ mod tests {
         assert_eq!(own, [false, false, false, true]);
         let edited: Vec<_> = rows.iter().map(|row| row.is_edited).collect();
         assert_eq!(edited, [false, false, false, true]);
+        let deletable: Vec<_> = rows.iter().map(|row| row.can_delete).collect();
+        assert_eq!(
+            deletable,
+            [false, false, false, true],
+            "only my own message"
+        );
+        let moderated = message_rows_at(&messages, Some(Snowflake::from_raw(2)), true, &Utc::now());
+        assert!(moderated.iter().all(|row| row.can_delete));
+    }
+
+    #[test]
+    fn a_channel_denying_send_messages_is_read_only() {
+        let mut guild = guild();
+        guild.my_permissions = Permissions::DEFAULT_EVERYONE;
+        let guild_id = guild.id;
+        let rules = guild
+            .channels
+            .iter_mut()
+            .find(|channel| channel.name == "rules")
+            .unwrap();
+        rules.permission_overwrites.push(PermissionOverwrite {
+            id: guild_id,
+            kind: OverwriteKind::Role,
+            allow: Permissions::empty(),
+            deny: Permissions::SEND_MESSAGES,
+        });
+        let mut state = ClientState::default();
+        assert!(
+            can_send_messages(&state, Snowflake::from_raw(13)),
+            "unknown before Ready"
+        );
+        state.apply_ready(Ready {
+            session_id: "session".into(),
+            user: CurrentUser {
+                id: Snowflake::from_raw(2),
+                username: "me".into(),
+                display_name: "Me".into(),
+                email: "me@example.org".into(),
+                is_instance_administrator: false,
+            },
+            guilds: vec![guild.clone()],
+            read_states: Vec::new(),
+            online_user_ids: Vec::new(),
+        });
+        let read_only: Vec<_> = channel_rows(&guild, &state, &BTreeSet::new(), None)
+            .iter()
+            .filter(|row| row.is_read_only)
+            .map(|row| row.name.to_string())
+            .collect();
+        assert_eq!(read_only, ["rules"]);
     }
 
     #[test]

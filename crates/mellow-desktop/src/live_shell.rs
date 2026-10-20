@@ -16,8 +16,8 @@ use mellow_client_core::{
     ClientError, GatewayUpdate, InstanceAddress, RestClient, generate_message_nonce, run_gateway,
 };
 use mellow_protocol::{
-    ApiErrorCode, GatewayEvent, LoginRequest, Message, MessageHistoryQuery, RegisterRequest,
-    SendMessageRequest, Snowflake,
+    ApiErrorCode, GatewayEvent, LoginRequest, Message, MessageHistoryQuery, Permissions,
+    RegisterRequest, SendMessageRequest, Snowflake,
 };
 use slint::{ComponentHandle as _, Model as _, ModelRc, SharedString, VecModel, Weak};
 use tokio::runtime::Handle;
@@ -667,8 +667,9 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
                 });
                 open_channel(shell, first_channel_id);
             }
-            // A rename or new topic of the open guild or channel.
+            // A rename, a new topic or a permission change of the open guild or channel.
             refresh_header(&shell.borrow());
+            refresh_messages(&mut shell.borrow_mut());
         }
         StateChange::Messages { channel_id } if Some(channel_id) == selected_channel_id => {
             refresh_messages(&mut shell.borrow_mut());
@@ -874,6 +875,11 @@ fn refresh_header(shell: &LiveShell) {
     );
     window.set_selected_channel_name(channel.map_or("", |channel| channel.name.as_str()).into());
     window.set_selected_channel_topic(channel.map_or("", |channel| channel.topic.as_str()).into());
+    window.set_can_send_messages(
+        shell
+            .selected_channel_id
+            .is_none_or(|id| live_rows::can_send_messages(&shell.state, id)),
+    );
 }
 
 fn ensure_history_loaded(shell: &SharedShell, channel_id: Snowflake) {
@@ -1331,7 +1337,15 @@ fn refresh_messages(shell: &mut LiveShell) {
         .map(|id| shell.state.pending_messages(id).collect())
         .unwrap_or_default();
     let current_user = shell.state.current_user();
-    let mut rows = live_rows::message_rows(messages, current_user.map(|user| user.id));
+    let can_manage_messages = shell
+        .selected_channel_id
+        .and_then(|id| shell.state.my_channel_permissions(id))
+        .is_some_and(|permissions| permissions.contains(Permissions::MANAGE_MESSAGES));
+    let mut rows = live_rows::message_rows(
+        messages,
+        current_user.map(|user| user.id),
+        can_manage_messages,
+    );
     if let Some(current_user) = current_user {
         rows.extend(live_rows::pending_message_rows(
             &pending_messages,

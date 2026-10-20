@@ -44,6 +44,7 @@ fn message_row(message: &FakeMessage) -> MessageRow {
         reply_preview: message.reply_preview.unwrap_or_default().into(),
         mentions_current_user: message.mentions_current_user,
         is_own: message.author == CURRENT_USER_NAME,
+        can_delete: message.author == CURRENT_USER_NAME,
         is_edited: false,
         delivery: MessageDelivery::Sent,
     }
@@ -202,6 +203,7 @@ fn connect_message_callbacks(window: &AppWindow, state: &Rc<RefCell<ShellState>>
             mentions_current_user: false,
             // shortcut: the demo shows Edit and Delete on its own messages but does not apply them.
             is_own: true,
+            can_delete: true,
             is_edited: false,
             delivery: MessageDelivery::Sent,
         });

@@ -54,6 +54,7 @@ pub fn channel_rows(
                 display_name: category.name.to_uppercase().into(),
                 has_unread: false,
                 mention_count: 0,
+                is_read_only: false,
             };
             let visible_channels = category
                 .channels
@@ -73,6 +74,7 @@ pub fn channel_rows(
                     display_name: channel.name.into(),
                     has_unread: channel.has_unread_messages,
                     mention_count: saturating_int(channel.unread_mention_count),
+                    is_read_only: false,
                 });
             std::iter::once(header).chain(visible_channels)
         })

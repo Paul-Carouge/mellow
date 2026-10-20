@@ -52,6 +52,7 @@ export component AppWindow inherits Window {
     in-out property <string> editing-message-draft;
     in-out property <int> deleting-message-index: -1;
     in property <string> message-action-error;
+    in property <bool> can-send-messages: true;
 
     // Set from `changed width` rather than bound to `width`: a binding would make the layout depend
     // on itself (the panes' presence changes the window's minimum width).
@@ -168,6 +169,7 @@ export component AppWindow inherits Window {
                 editing-message-draft <=> root.editing-message-draft;
                 deleting-message-index <=> root.deleting-message-index;
                 message-action-error: root.message-action-error;
+                can-send-messages: root.can-send-messages;
                 reply-to-message(index) => { root.reply-to-message(index); }
                 cancel-reply => { root.cancel-reply(); }
                 save-message-edit(index, text) => { root.save-message-edit(index, text); }

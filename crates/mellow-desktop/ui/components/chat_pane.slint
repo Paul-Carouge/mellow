@@ -20,8 +20,10 @@ export struct MessageRow {
     starts-author-group: bool,
     reply-preview: string,
     mentions-current-user: bool,
-    // The signed-in user wrote it: only then are Edit and Delete offered.
+    // The signed-in user wrote it: only then is Edit offered.
     is-own: bool,
+    // Delete is offered: the user's own message, or someone else's with Manage Messages.
+    can-delete: bool,
     is-edited: bool,
     // Sending and failed rows are the user's own, after every confirmed row; they offer no message actions.
     delivery: MessageDelivery,
@@ -29,6 +31,9 @@ export struct MessageRow {
 
 component HoverActionBar inherits Rectangle {
     in property <bool> is-own;
+    in property <bool> can-delete;
+    // False where the user cannot send messages: a reply could not be posted.
+    in property <bool> can-reply;
     // True while the pointer is on the bar, which sticks out above its message row.
     out property <bool> is-hovered: hover-area.has-hover;
     callback edit();
@@ -56,7 +61,7 @@ component HoverActionBar inherits Rectangle {
                 hover-background: MellowComponent.action-bar-button-background-hover;
                 clicked => { root.edit(); }
             }
-            IconButton {
+            if root.can-reply: IconButton {
                 icon: @image-url("../../icons/arrow-bend-up-left.svg");
                 label: "Reply";
                 size: MellowComponent.action-bar-button-size;
@@ -74,7 +79,7 @@ component HoverActionBar inherits Rectangle {
                 hover-background: MellowComponent.action-bar-button-background-hover;
                 clicked => { root.copy-text(); }
             }
-            if root.is-own: IconButton {
+            if root.can-delete: IconButton {
                 icon: @image-url("../../icons/trash.svg");
                 label: "Delete";
                 size: MellowComponent.action-bar-button-size;
@@ -227,6 +232,7 @@ component MessageView inherits Rectangle {
     in property <MessageRow> message;
     in property <bool> is-text-selection-mode;
     in property <bool> is-editing;
+    in property <bool> can-reply;
     in-out property <string> editing-draft;
     callback link-clicked(string);
     callback copy-text();
@@ -402,6 +408,8 @@ component MessageView inherits Rectangle {
     action-bar := HoverActionBar {
         visible: root.is-hovered && root.is-confirmed;
         is-own: root.message.is-own;
+        can-delete: root.message.can-delete;
+        can-reply: root.can-reply;
         x: parent.width - self.width - MellowComponent.action-bar-offset-trailing;
         // The token is negative: the bar sits above the row's top edge, as on Discord.
         y: MellowComponent.action-bar-offset-top;
@@ -663,6 +671,10 @@ export component ChatPane inherits Rectangle {
     in-out property <bool> is-member-list-visible;
     // Non-empty while replying: shows the "Replying to" bar above the composer.
     in property <string> replying-to-author;
+    // False where the user lacks Send Messages: a notice replaces the composer and replies are hidden.
+    in property <bool> can-send-messages: true;
+    // Never while the user cannot send, whatever reply state Rust kept.
+    property <bool> is-replying: replying-to-author != "" && can-send-messages;
     // Row shown with the inline editor, or -1.
     in-out property <int> editing-message-index: -1;
     // The editor's text, set from the message when editing starts.
@@ -690,9 +702,9 @@ export component ChatPane inherits Rectangle {
     callback retry-loading-history();
 
     // Typing goes straight into the reply, as on Discord.
-    changed replying-to-author => {
-        if self.replying-to-author != "" {
-            composer.focus();
+    changed is-replying => {
+        if self.is-replying {
+            root.focus-composer();
         }
     }
 
@@ -773,8 +785,12 @@ export component ChatPane inherits Rectangle {
 
     background: MellowColor.surface-chat;
     min-width: MellowSize.chat-min-width;
+    // Every path that focuses the composer comes here: without Send Messages it is hidden and
+    // must not take focus.
     public function focus-composer() {
-        composer.focus();
+        if root.can-send-messages {
+            composer.focus();
+        }
     }
     // Row 0's history start changed height by `delta` while row 0 is on screen (only then is it
     // instantiated, and only then does its height move the rows being read): scroll by as much.
@@ -789,12 +805,12 @@ export component ChatPane inherits Rectangle {
     // The bar disappears once at the latest message, so focus goes to the composer, as on Discord.
     function jump-to-present() {
         root.scroll-to-latest-message();
-        composer.focus();
+        root.focus-composer();
     }
     // "Try again" disappears with the failed state, so focus goes back to the composer.
     function retry-loading-history-and-focus-composer() {
         root.retry-loading-history();
-        composer.focus();
+        root.focus-composer();
     }
 
     VerticalLayout {
@@ -913,6 +929,7 @@ export component ChatPane inherits Rectangle {
                     MessageView {
                         message: message;
                         is-text-selection-mode: root.is-text-selection-mode;
+                        can-reply: root.can-send-messages;
                         // Outbox rows never show the editor, whatever index Rust sets.
                         is-editing: index == root.editing-message-index && message.delivery == MessageDelivery.sent;
                         editing-draft <=> root.editing-message-draft;
@@ -925,19 +942,20 @@ export component ChatPane inherits Rectangle {
                         }
                         save-edit(text) => {
                             root.editing-message-index = -1;
-                            // Saving an empty message asks to delete it; an unchanged one is not re-sent (DESIGN.md §5.5).
-                            if text == "" {
+                            // Saving an empty message asks to delete it, when allowed; an unchanged one is
+                            // not re-sent (DESIGN.md §5.5).
+                            if text == "" && message.can-delete {
                                 root.deleting-message-index = index;
-                            } else if text != message.body-plain {
-                                root.save-message-edit(index, text);
-                            }
-                            if text != "" {
-                                composer.focus();
+                            } else {
+                                if text != "" && text != message.body-plain {
+                                    root.save-message-edit(index, text);
+                                }
+                                root.focus-composer();
                             }
                         }
                         cancel-edit => {
                             root.editing-message-index = -1;
-                            composer.focus();
+                            root.focus-composer();
                         }
                         delete(skip-confirmation) => {
                             if skip-confirmation {
@@ -949,11 +967,11 @@ export component ChatPane inherits Rectangle {
                         // Both links disappear with the failed state, so focus goes back to the composer.
                         retry => {
                             root.retry-message(index);
-                            composer.focus();
+                            root.focus-composer();
                         }
                         discard => {
                             root.discard-failed-message(index);
-                            composer.focus();
+                            root.focus-composer();
                         }
                     }
                 }
@@ -1022,7 +1040,7 @@ export component ChatPane inherits Rectangle {
         VerticalLayout {
             padding-left: MellowComponent.composer-margin-inline;
             padding-right: MellowComponent.composer-margin-inline;
-            if replying-to-author != "": Rectangle {
+            if root.is-replying: Rectangle {
                 min-height: MellowComponent.composer-reply-bar-min-height;
                 border-top-left-radius: MellowComponent.composer-radius;
                 border-top-right-radius: MellowComponent.composer-radius;
@@ -1061,16 +1079,20 @@ export component ChatPane inherits Rectangle {
                             hover-background: MellowComponent.composer-reply-bar-button-background-hover;
                             clicked => {
                                 root.cancel-reply();
-                                composer.focus();
+                                root.focus-composer();
                             }
                         }
                     }
                 }
             }
             Rectangle {
-                min-height: MellowComponent.composer-min-height;
+                min-height: root.can-send-messages ? MellowComponent.composer-min-height
+                    : max(MellowComponent.composer-min-height, locked-notice.preferred-height + 2 * MellowSpace.xs);
+                // The single-line field used to cap this height; the hidden one no longer does, and the
+                // read-only notice would share the list's stretch.
+                vertical-stretch: 0;
                 // Square top corners while the reply bar sits on top, as on Discord.
-                border-top-left-radius: replying-to-author != "" ? 0px : MellowComponent.composer-radius;
+                border-top-left-radius: root.is-replying ? 0px : MellowComponent.composer-radius;
                 border-top-right-radius: self.border-top-left-radius;
                 border-bottom-left-radius: MellowComponent.composer-radius;
                 border-bottom-right-radius: MellowComponent.composer-radius;
@@ -1078,11 +1100,27 @@ export component ChatPane inherits Rectangle {
                 // Discord shows no ring here; WCAG 2.4.7 needs one for keyboard users (ADR-0012).
                 border-width: composer.has-focus ? MellowComponent.focus-ring-width : 0px;
                 border-color: MellowComponent.focus-ring-color;
+                // Discord's wording, in the field's place: read by screen readers but never focused, so
+                // nothing suggests typing there. Placed by hand with a fixed width, since neither a
+                // Rectangle nor a horizontal layout grows with wrapped text: min-height above reads
+                // its wrapped height instead.
+                locked-notice := Text {
+                    visible: !root.can-send-messages;
+                    x: MellowComponent.composer-padding-inline;
+                    width: parent.width - 2 * MellowComponent.composer-padding-inline;
+                    height: parent.height;
+                    text: "You do not have permission to send messages in this channel.";
+                    color: MellowComponent.composer-locked-text;
+                    font-size: MellowType.message.font-size;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                    accessible-role: text;
+                }
                 HorizontalLayout {
                     padding-left: MellowComponent.composer-padding-inline;
                     padding-right: MellowComponent.composer-padding-inline;
                     spacing: MellowComponent.composer-padding-inline;
-                    VerticalLayout {
+                    if root.can-send-messages: VerticalLayout {
                         alignment: center;
                         IconButton {
                             icon: @image-url("../../icons/plus-circle.svg");
@@ -1094,7 +1132,7 @@ export component ChatPane inherits Rectangle {
                     }
                     Rectangle {
                         horizontal-stretch: 1;
-                        if composer.text == "": Text {
+                        if root.can-send-messages && composer.text == "": Text {
                             x: 0;
                             text: "Message #" + channel-name;
                             color: MellowComponent.composer-placeholder;
@@ -1102,12 +1140,14 @@ export component ChatPane inherits Rectangle {
                             vertical-alignment: center;
                             accessible-role: none;
                         }
-                        // Escape and Up are captured before the field can use them.
+                        // Escape and Up are captured before the field can use them. Kept, hidden, while
+                        // the user cannot send, so `composer` stays addressable and its draft survives.
                         FocusScope {
+                            visible: root.can-send-messages;
                             focus-on-click: false;
                             focus-on-tab-navigation: false;
                             capture-key-pressed(event) => {
-                                if event.text == Key.Escape && root.replying-to-author != "" {
+                                if event.text == Key.Escape && root.is-replying {
                                     root.cancel-reply();
                                     return accept;
                                 }
@@ -1127,8 +1167,9 @@ export component ChatPane inherits Rectangle {
                                 font-size: MellowType.message.font-size;
                                 vertical-alignment: center;
                                 single-line: true;
+                                enabled: root.can-send-messages;
                                 accessible-label: "Message #" + channel-name;
-                                accessible-description: root.replying-to-author != ""
+                                accessible-description: root.is-replying
                                     ? "Replying to " + root.replying-to-author + ". Escape cancels the reply." : "";
                                 accepted => {
                                     if self.text != "" {

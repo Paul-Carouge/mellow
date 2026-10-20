@@ -14,6 +14,8 @@ export struct ChannelListRow {
     display-name: string,
     has-unread: bool,
     mention-count: int,
+    // The signed-in user cannot send messages there: a lock replaces `#` (DESIGN.md §5.3).
+    is-read-only: bool,
 }
 
 component CategoryHeader inherits Rectangle {
@@ -83,10 +85,11 @@ component ChannelRow inherits Rectangle {
     in property <bool> is-selected;
     in property <bool> has-unread;
     in property <int> mention-count;
+    in property <bool> is-read-only;
     callback clicked();
     height: MellowComponent.channel-row-height + MellowComponent.channel-row-gap;
     accessible-role: list-item;
-    accessible-label: name + (mention-count == 1 ? ", 1 mention" : mention-count > 1 ? ", " + mention-count + " mentions" : has-unread ? ", unread" : "");
+    accessible-label: name + (is-read-only ? ", read-only" : "") + (mention-count == 1 ? ", 1 mention" : mention-count > 1 ? ", " + mention-count + " mentions" : has-unread ? ", unread" : "");
     accessible-item-selected: is-selected;
     accessible-action-default => { root.clicked(); }
 
@@ -130,7 +133,7 @@ component ChannelRow inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 Image {
-                    source: @image-url("../../icons/hash.svg");
+                    source: is-read-only ? @image-url("../../icons/lock.svg") : @image-url("../../icons/hash.svg");
                     colorize: row.text-color;
                     width: MellowComponent.channel-row-icon-size;
                     height: self.width;
@@ -299,6 +302,7 @@ export component ChannelSidebar inherits Rectangle {
                     name: row.name;
                     has-unread: row.has-unread;
                     mention-count: row.mention-count;
+                    is-read-only: row.is-read-only;
                     is-selected: row.id == selected-channel-id;
                     clicked => { root.select-channel(row.id); }
                 }
