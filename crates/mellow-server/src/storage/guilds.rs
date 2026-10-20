@@ -403,7 +403,7 @@ pub(crate) async fn add_member_role(
     role_id: Snowflake,
     assignable_permissions: Permissions,
 ) -> Result<Option<Vec<Snowflake>>, GuildStorageError> {
-    let (Some(guild), Some(user), Some(role)) = (
+    let (Some(guild_id_integer), Some(user_id_integer), Some(role_id_integer)) = (
         lookup_integer(guild_id),
         lookup_integer(user_id),
         lookup_integer(role_id),
@@ -417,9 +417,9 @@ pub(crate) async fn add_member_role(
          WHERE guild_members.guild_id = ? AND guild_members.user_id = ? \
          AND roles.id = ? AND roles.id != roles.guild_id AND (roles.permissions & ~?) = 0",
     )
-    .bind(guild)
-    .bind(user)
-    .bind(role)
+    .bind(guild_id_integer)
+    .bind(user_id_integer)
+    .bind(role_id_integer)
     .bind(permissions_to_integer(assignable_permissions))
     .execute(pool)
     .await?
@@ -440,7 +440,7 @@ pub(crate) async fn remove_member_role(
     user_id: Snowflake,
     role_id: Snowflake,
 ) -> Result<Option<Vec<Snowflake>>, GuildStorageError> {
-    let (Some(guild), Some(user), Some(role)) = (
+    let (Some(guild_id_integer), Some(user_id_integer), Some(role_id_integer)) = (
         lookup_integer(guild_id),
         lookup_integer(user_id),
         lookup_integer(role_id),
@@ -449,9 +449,9 @@ pub(crate) async fn remove_member_role(
     };
     let removed =
         sqlx::query("DELETE FROM member_roles WHERE guild_id = ? AND user_id = ? AND role_id = ?")
-            .bind(guild)
-            .bind(user)
-            .bind(role)
+            .bind(guild_id_integer)
+            .bind(user_id_integer)
+            .bind(role_id_integer)
             .execute(pool)
             .await?
             .rows_affected();
@@ -639,13 +639,13 @@ pub(crate) async fn list_members(
     guild_id: Snowflake,
     maximum_members: u32,
 ) -> Result<Vec<StoredMember>, GuildStorageError> {
-    let guild = to_integer(guild_id.raw())?;
+    let guild_id_integer = to_integer(guild_id.raw())?;
     let rows: Vec<(i64, String, String, i64)> = sqlx::query_as(
         "SELECT users.id, users.username, users.display_name, guild_members.joined_at_unix_milliseconds \
          FROM guild_members JOIN users ON users.id = guild_members.user_id \
          WHERE guild_members.guild_id = ? ORDER BY users.username LIMIT ?",
     )
-    .bind(guild)
+    .bind(guild_id_integer)
     .bind(to_count(maximum_members))
     .fetch_all(pool)
     .await?;
@@ -658,8 +658,8 @@ pub(crate) async fn list_members(
           WHERE guild_members.guild_id = ? ORDER BY users.username LIMIT ?) \
          ORDER BY roles.position, roles.id",
     )
-    .bind(guild)
-    .bind(guild)
+    .bind(guild_id_integer)
+    .bind(guild_id_integer)
     .bind(to_count(maximum_members))
     .fetch_all(pool)
     .await?;
