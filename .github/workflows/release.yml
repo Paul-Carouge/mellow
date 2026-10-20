@@ -24,20 +24,27 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04, extension: "" }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm, extension: "" }
+          # Ubuntu 22.04 (glibc 2.35): binaries linked on a newer glibc refuse to start on Debian 12.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, extension: "" }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, extension: "" }
           - { target: aarch64-apple-darwin, os: macos-15, extension: "" }
           - { target: x86_64-pc-windows-msvc, os: windows-2025, extension: ".exe" }
     runs-on: ${{ matrix.os }}
+    # No build cache on purpose: a tag run may restore caches written by any run on main, and
+    # whatever they contain would be signed.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: The tag matches the workspace version
+          fetch-depth: 0
+      - name: The tag is a released version of main
         shell: bash
         run: |
-          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          version="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)"
+          # Plain X.Y.Z only: no pre-release may become the "latest" release that updaters install.
+          [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version '${version}' is not X.Y.Z"; exit 1; }
           test "v${version}" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != v${version}"; exit 1; }
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main || { echo "${GITHUB_SHA} is not on main"; exit 1; }
           echo "MELLOW_VERSION=${version}" >> "$GITHUB_ENV"
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
@@ -58,7 +65,8 @@ jobs:
           name: unsigned-${{ matrix.target }}
           path: dist/
           if-no-files-found: error
-          retention-days: 1
+          # Long enough for the approval of the publish job.
+          retention-days: 7
 
   publish:
     name: Sign and publish
@@ -75,11 +83,25 @@ jobs:
           path: dist
           merge-multiple: true
       - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends minisign
-      - name: Sign every asset
+      - name: Exactly the expected assets were built
+        working-directory: dist
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          expected=""
+          for binary in mellow-server mellow-desktop; do
+            for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin; do
+              expected+="${binary}-${version}-${target}"$'\n'
+            done
+            expected+="${binary}-${version}-x86_64-pc-windows-msvc.exe"$'\n'
+          done
+          diff <(printf '%s' "${expected}" | sort) <(find . -maxdepth 1 -type f -printf '%f\n' | sort)
+      - name: Sign every asset and the digests
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         working-directory: dist
         run: |
+          # Signed like the binaries, for installers that check digests only.
+          sha256sum mellow-* > "mellow-${GITHUB_REF_NAME#v}-SHA256SUMS"
           umask 077
           key_file="$(mktemp)"
           trap 'rm -f "${key_file}"' EXIT
@@ -88,7 +110,8 @@ jobs:
             # The trusted comment names the file, so a signature cannot be replayed for another one.
             minisign -S -s "${key_file}" -m "${asset}" -t "${asset}"
           done
-          sha256sum mellow-* | grep -v '\.minisig$' > SHA256SUMS
+      # shortcut: every release becomes "latest", so a patch of an older line published after a
+      # newer version would be offered as an update; tag back-ports only once this is handled.
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
