@@ -38,12 +38,15 @@ impl RoleManager {
     /// `MANAGE_ROLES` is needed for any role. The owner manages every role; anyone else manages
     /// `@everyone` (position 0, every member holds it) and the roles strictly below their highest,
     /// so nobody can edit, give or take away a role at or above their own rank, as on Discord.
+    /// Unlike Discord, they must also hold every permission of the role: new roles start at
+    /// position 1, so a role holding `ADMINISTRATOR` can sit below a moderator, who must not be
+    /// able to give it to themselves.
     #[must_use]
     pub fn can_manage_role(&self, role: &Role, everyone_role_id: Snowflake) -> bool {
         self.permissions.contains(Permissions::MANAGE_ROLES)
             && (self.is_owner
-                || role.id == everyone_role_id
-                || role.position < self.highest_role_position)
+                || ((role.id == everyone_role_id || role.position < self.highest_role_position)
+                    && self.permissions.contains(role.permissions)))
     }
 
     /// Nobody grants or removes a permission they do not hold themselves: administrators and the
@@ -109,6 +112,20 @@ mod tests {
 
         let owner = RoleManager::new(OWNER, OWNER, &[everyone()]);
         assert!(owner.can_manage_role(&above, GUILD));
+    }
+
+    #[test]
+    fn roles_holding_permissions_the_manager_lacks_are_out_of_reach() {
+        let manager = RoleManager::new(
+            MEMBER,
+            OWNER,
+            &[everyone(), role(10, 3, Permissions::MANAGE_ROLES)],
+        );
+        assert!(!manager.can_manage_role(&role(11, 1, Permissions::ADMINISTRATOR), GUILD));
+        assert!(!manager.can_manage_role(&role(12, 2, Permissions::BAN_MEMBERS), GUILD));
+        assert!(manager.can_manage_role(&role(13, 2, Permissions::MANAGE_ROLES), GUILD));
+        let owner = RoleManager::new(OWNER, OWNER, &[everyone()]);
+        assert!(owner.can_manage_role(&role(11, 1, Permissions::ADMINISTRATOR), GUILD));
     }
 
     #[test]

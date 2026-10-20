@@ -533,6 +533,9 @@ impl Guilds {
         let (manager, role) = self
             .manager_and_manageable_role(user_id, guild_id, role_id)
             .await?;
+        if name.is_none() && color.is_none() && permissions.is_none() {
+            return Ok(role);
+        }
         if let Some(permissions) = permissions
             && !manager.can_change_permissions(role.permissions, permissions)
         {
@@ -545,6 +548,7 @@ impl Guilds {
             name.as_deref(),
             color,
             permissions,
+            manager.permissions,
         )
         .await?
         .ok_or(GuildError::NotFound)?;
@@ -588,11 +592,18 @@ impl Guilds {
         if role_id == guild_id {
             return Err(GuildRuleViolation::EveryoneRole.into());
         }
-        self.manager_and_manageable_role(user_id, guild_id, role_id)
+        let (manager, _) = self
+            .manager_and_manageable_role(user_id, guild_id, role_id)
             .await?;
-        let role_ids = guild_storage::add_member_role(&self.pool, guild_id, member_id, role_id)
-            .await?
-            .ok_or(GuildError::NotFound)?;
+        let role_ids = guild_storage::add_member_role(
+            &self.pool,
+            guild_id,
+            member_id,
+            role_id,
+            manager.permissions,
+        )
+        .await?
+        .ok_or(GuildError::NotFound)?;
         self.publish_member_roles(guild_id, member_id, role_ids);
         Ok(())
     }
@@ -1454,6 +1465,57 @@ mod tests {
         assert_eq!(created_below.position, 1);
         assert!(everyone_edit.is_ok(), "{everyone_edit:?}");
         assert_all_refused(vec![grant_unheld, create_with_unheld]);
+    }
+
+    #[tokio::test]
+    async fn managers_cannot_give_take_or_delete_lower_roles_holding_permissions_they_lack() {
+        let fixture = fixture().await;
+        let ModeratedGuild { guild, .. } = moderated_guild(&fixture).await;
+        let (guilds, other) = (&fixture.guilds, fixture.other);
+        // Created after Moderator, so it starts below it (position 1).
+        let administrators = guilds
+            .create_role(
+                fixture.owner,
+                guild.id,
+                role_request("Administrators", Permissions::ADMINISTRATOR),
+                NOW,
+            )
+            .await
+            .unwrap();
+        guilds
+            .add_member_role(fixture.owner, guild.id, fixture.third, administrators.id)
+            .await
+            .unwrap();
+
+        let give_to_self = guilds
+            .add_member_role(other, guild.id, other, administrators.id)
+            .await;
+        let take_away = guilds
+            .remove_member_role(other, guild.id, fixture.third, administrators.id)
+            .await;
+        let delete = guilds.delete_role(other, guild.id, administrators.id).await;
+        let rename = guilds
+            .update_role(
+                other,
+                guild.id,
+                administrators.id,
+                UpdateRoleRequest {
+                    name: Some("Mine now".into()),
+                    ..UpdateRoleRequest::default()
+                },
+            )
+            .await;
+        let still_moderator_only = guilds.get_guild(other, guild.id).await.unwrap();
+        fixture.pool.close().await;
+
+        assert_eq!(administrators.position, 1);
+        assert_all_refused(vec![give_to_self, take_away, delete]);
+        assert_all_refused(vec![rename]);
+        assert!(
+            !still_moderator_only
+                .my_permissions
+                .contains(Permissions::ADMINISTRATOR)
+        );
     }
 
     #[tokio::test]

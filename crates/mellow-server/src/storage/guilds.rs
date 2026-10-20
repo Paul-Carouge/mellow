@@ -316,8 +316,10 @@ pub(crate) async fn insert_role_above_everyone(
     list_roles(pool, guild_id).await
 }
 
-/// Writes only the given fields of a role of `guild_id`. Returns the updated role, or `None` if
-/// the guild has no such role.
+/// Writes only the given fields of a role of `guild_id`. Only the `changeable_permissions` bits
+/// take the new value; the others keep what the row holds now, so a permission granted
+/// meanwhile by someone holding it is not erased. Returns the updated role, or `None` if the
+/// guild has no such role.
 ///
 /// # Errors
 /// Fails on database errors.
@@ -328,6 +330,7 @@ pub(crate) async fn update_role_fields(
     name: Option<&str>,
     color: Option<u32>,
     permissions: Option<Permissions>,
+    changeable_permissions: Permissions,
 ) -> Result<Option<Role>, GuildStorageError> {
     let (Some(guild_id), Some(role_id)) = (lookup_integer(guild_id), lookup_integer(role_id))
     else {
@@ -335,12 +338,15 @@ pub(crate) async fn update_role_fields(
     };
     let row: Option<RoleRow> = sqlx::query_as(
         "UPDATE roles SET name = COALESCE(?, name), color = COALESCE(?, color), \
-         permissions = COALESCE(?, permissions) WHERE id = ? AND guild_id = ? \
+         permissions = COALESCE((permissions & ~?) | (? & ?), permissions) \
+         WHERE id = ? AND guild_id = ? \
          RETURNING id, name, color, position, permissions",
     )
     .bind(name)
     .bind(color.map(i64::from))
+    .bind(permissions_to_integer(changeable_permissions))
     .bind(permissions.map(permissions_to_integer))
+    .bind(permissions_to_integer(changeable_permissions))
     .bind(role_id)
     .bind(guild_id)
     .fetch_optional(pool)
@@ -382,9 +388,11 @@ pub(crate) async fn delete_role(
     Ok(true)
 }
 
-/// Gives a named role of `guild_id` to one of its members (nothing changes if they hold it).
-/// Returns the member's role ids afterwards, or `None` if the role is not a named role of this
-/// guild or the user is not a member.
+/// Gives a named role of `guild_id` to one of its members (nothing changes if they hold it),
+/// provided every permission of the role is in `assignable_permissions`, checked in the same
+/// statement so a permission added to the role meanwhile cannot slip through. Returns the
+/// member's role ids afterwards, or `None` if the role is not a named role of this guild holding
+/// only assignable permissions, or the user is not a member.
 ///
 /// # Errors
 /// Fails on database errors.
@@ -393,6 +401,7 @@ pub(crate) async fn add_member_role(
     guild_id: Snowflake,
     user_id: Snowflake,
     role_id: Snowflake,
+    assignable_permissions: Permissions,
 ) -> Result<Option<Vec<Snowflake>>, GuildStorageError> {
     let (Some(guild), Some(user), Some(role)) = (
         lookup_integer(guild_id),
@@ -406,15 +415,17 @@ pub(crate) async fn add_member_role(
          SELECT guild_members.guild_id, guild_members.user_id, roles.id \
          FROM guild_members JOIN roles ON roles.guild_id = guild_members.guild_id \
          WHERE guild_members.guild_id = ? AND guild_members.user_id = ? \
-         AND roles.id = ? AND roles.id != roles.guild_id",
+         AND roles.id = ? AND roles.id != roles.guild_id AND (roles.permissions & ~?) = 0",
     )
     .bind(guild)
     .bind(user)
     .bind(role)
+    .bind(permissions_to_integer(assignable_permissions))
     .execute(pool)
     .await?
     .rows_affected();
     let role_ids = member_role_ids(pool, guild_id, user_id).await?;
+    // Already held: only reachable when the role passed the same permission check earlier.
     Ok((inserted > 0 || role_ids.contains(&role_id)).then_some(role_ids))
 }
 
@@ -641,9 +652,15 @@ pub(crate) async fn list_members(
     let assignments: Vec<(i64, i64)> = sqlx::query_as(
         "SELECT member_roles.user_id, member_roles.role_id FROM member_roles \
          JOIN roles ON roles.id = member_roles.role_id \
-         WHERE member_roles.guild_id = ? ORDER BY roles.position, roles.id",
+         WHERE member_roles.guild_id = ? AND member_roles.user_id IN \
+         (SELECT guild_members.user_id FROM guild_members \
+          JOIN users ON users.id = guild_members.user_id \
+          WHERE guild_members.guild_id = ? ORDER BY users.username LIMIT ?) \
+         ORDER BY roles.position, roles.id",
     )
     .bind(guild)
+    .bind(guild)
+    .bind(to_count(maximum_members))
     .fetch_all(pool)
     .await?;
     let mut role_ids_by_user: HashMap<i64, Vec<Snowflake>> = HashMap::new();
