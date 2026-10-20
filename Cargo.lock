@@ -3563,6 +3563,8 @@ dependencies = [
  "ipnet",
  "libsqlite3-sys",
  "mellow-protocol",
+ "rcgen",
+ "reqwest",
  "rpassword",
  "rustix 1.1.5",
  "rustls-acme",
@@ -4871,6 +4873,7 @@ checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
 dependencies = [
  "aws-lc-rs",
  "pem",
+ "ring",
  "rustls-pki-types",
  "time",
  "yasna",

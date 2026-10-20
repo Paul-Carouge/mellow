@@ -137,24 +137,38 @@ pub(crate) async fn serve_tls_until_shutdown(
         listener,
         state,
         tls,
-        directory_url,
+        CertificateAuthority {
+            directory_url,
+            client_tls_config: None,
+        },
         PRODUCTION_CONNECTION_POLICY,
         shutdown,
     )
     .await
 }
 
+struct CertificateAuthority<'a> {
+    directory_url: &'a str,
+    /// Trust for the authority's own HTTPS endpoint; `None` trusts the public web roots. Tests
+    /// set it to reach a local authority whose certificate no public root signed.
+    client_tls_config: Option<Arc<rustls_acme::rustls::ClientConfig>>,
+}
+
 async fn serve_tls_with_policy(
     listener: TcpListener,
     state: AppState,
     tls: &TlsConfig,
-    directory_url: &str,
+    certificate_authority: CertificateAuthority<'_>,
     policy: ConnectionPolicy,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     let local_address = listener.local_addr().ok();
     let server = axum_server::from_tcp(listener.into_std()?)?;
-    let mut acme_state = AcmeConfig::new(&tls.domains)
+    let mut acme_config = AcmeConfig::new(&tls.domains);
+    if let Some(client_tls_config) = certificate_authority.client_tls_config {
+        acme_config = acme_config.client_tls_config(client_tls_config);
+    }
+    let mut acme_state = acme_config
         .contact(
             tls.contact_email
                 .iter()
@@ -163,7 +177,7 @@ async fn serve_tls_with_policy(
         .cache(PrivateDirectoryCache {
             directory: tls.certificate_directory.clone(),
         })
-        .directory(directory_url)
+        .directory(certificate_authority.directory_url)
         .state();
     let acceptor = GuardedAcceptor {
         inner: acme_state.axum_acceptor(acme_state.default_rustls_config()),
@@ -646,7 +660,10 @@ mod tests {
                     listener,
                     state,
                     &tls,
-                    UNREACHABLE_DIRECTORY_URL,
+                    CertificateAuthority {
+                        directory_url: UNREACHABLE_DIRECTORY_URL,
+                        client_tls_config: None,
+                    },
                     FAST_POLICY,
                     async {
                         let _ = stopped.await;
@@ -781,5 +798,198 @@ mod tests {
         std::os::unix::fs::symlink(&data_directory, &link).unwrap();
         let error = prepare_certificate_directory(&link, &data_directory).unwrap_err();
         assert!(error.to_string().contains("resolves inside"), "{error}");
+    }
+
+    /// Path of a Pebble binary (<https://github.com/letsencrypt/pebble>), the ACME test authority.
+    const PEBBLE_BINARY_VARIABLE: &str = "MELLOW_PEBBLE_BINARY";
+    /// Pebble validates TLS-ALPN-01 by connecting to this name, which resolves to loopback.
+    const PEBBLE_TEST_DOMAIN: &str = "localhost";
+    const PEBBLE_STARTUP_LIMIT: Duration = Duration::from_secs(10);
+    const CERTIFICATE_ISSUANCE_LIMIT: Duration = Duration::from_secs(60);
+    const RETRY_INTERVAL: Duration = Duration::from_millis(200);
+
+    fn free_loopback_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    /// Starts Pebble with a fresh HTTPS certificate; it validates TLS-ALPN-01 on `challenge_port`.
+    /// Returns the process (killed on drop), its directory URL, its management URL and the
+    /// certificate of its own HTTPS endpoints.
+    async fn start_pebble(
+        work_directory: &Path,
+        challenge_port: u16,
+    ) -> (tokio::process::Child, String, String, rcgen::CertifiedKey) {
+        let binary = std::env::var_os(PEBBLE_BINARY_VARIABLE).unwrap_or_else(|| {
+            panic!("set {PEBBLE_BINARY_VARIABLE} to a Pebble binary to run this test")
+        });
+        let https_identity =
+            rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).unwrap();
+        let certificate_path = work_directory.join("pebble-https.pem");
+        let key_path = work_directory.join("pebble-https.key");
+        std::fs::write(&certificate_path, https_identity.cert.pem()).unwrap();
+        std::fs::write(&key_path, https_identity.key_pair.serialize_pem()).unwrap();
+        let directory_port = free_loopback_port();
+        let management_port = free_loopback_port();
+        let config = serde_json::json!({ "pebble": {
+            "listenAddress": format!("127.0.0.1:{directory_port}"),
+            "managementListenAddress": format!("127.0.0.1:{management_port}"),
+            "certificate": certificate_path,
+            "privateKey": key_path,
+            "httpPort": free_loopback_port(),
+            "tlsPort": challenge_port,
+            "ocspResponderURL": "",
+            "externalAccountBindingRequired": false,
+        }});
+        let config_path = work_directory.join("pebble-config.json");
+        std::fs::write(&config_path, config.to_string()).unwrap();
+        let pebble = tokio::process::Command::new(binary)
+            .arg("-config")
+            .arg(&config_path)
+            // No artificial validation delay, and no random nonce rejections: rustls-acme does
+            // not retry a request refused for a bad nonce, Let's Encrypt never sends those.
+            .env("PEBBLE_VA_NOSLEEP", "1")
+            .env("PEBBLE_WFE_NONCEREJECT", "0")
+            .stdout(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        while TcpStream::connect(("127.0.0.1", management_port))
+            .await
+            .is_err()
+        {
+            assert!(
+                started.elapsed() < PEBBLE_STARTUP_LIMIT,
+                "Pebble did not start"
+            );
+            tokio::time::sleep(RETRY_INTERVAL).await;
+        }
+        (
+            pebble,
+            format!("https://127.0.0.1:{directory_port}/dir"),
+            format!("https://127.0.0.1:{management_port}"),
+            https_identity,
+        )
+    }
+
+    fn spawn_server(
+        listener: TcpListener,
+        pool: sqlx::SqlitePool,
+        tls: TlsConfig,
+        directory_url: String,
+        acme_client_tls_config: Arc<rustls_acme::rustls::ClientConfig>,
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<Result<()>>,
+    ) {
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            serve_tls_with_policy(
+                listener,
+                test_state(pool, RegistrationMode::Open),
+                &tls,
+                CertificateAuthority {
+                    directory_url: &directory_url,
+                    client_tls_config: Some(acme_client_tls_config),
+                },
+                PRODUCTION_CONNECTION_POLICY,
+                async {
+                    let _ = stopped.await;
+                },
+            )
+            .await
+        });
+        (stop, server)
+    }
+
+    /// Health over HTTPS, trusting only `root`, retried until a certificate is served.
+    async fn wait_for_https_health(port: u16, root: &reqwest::Certificate) {
+        let client = reqwest::Client::builder()
+            .tls_certs_only([root.clone()])
+            .build()
+            .unwrap();
+        let url = format!("https://{PEBBLE_TEST_DOMAIN}:{port}/api/v1/health");
+        let started = Instant::now();
+        loop {
+            match client.get(&url).send().await {
+                Ok(response) if response.status().is_success() => return,
+                outcome => {
+                    assert!(
+                        started.elapsed() < CERTIFICATE_ISSUANCE_LIMIT,
+                        "no trusted certificate served in time: {outcome:?}"
+                    );
+                    tokio::time::sleep(RETRY_INTERVAL).await;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "needs Pebble: set MELLOW_PEBBLE_BINARY"]
+    async fn a_certificate_is_obtained_over_tls_alpn_and_served_from_the_cache_after_restart() {
+        let (directory, pool) = migrated_pool().await;
+        let certificate_directory = directory.path().join("certificates");
+        create_private_directory(&certificate_directory).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (pebble, directory_url, management_url, pebble_https) =
+            start_pebble(directory.path(), port).await;
+        let pebble_https_root =
+            reqwest::Certificate::from_pem(pebble_https.cert.pem().as_bytes()).unwrap();
+        let mut acme_roots = rustls_acme::rustls::RootCertStore::empty();
+        acme_roots.add(pebble_https.cert.der().clone()).unwrap();
+        let acme_client_tls_config = Arc::new(
+            rustls_acme::rustls::ClientConfig::builder()
+                .with_root_certificates(acme_roots)
+                .with_no_client_auth(),
+        );
+        let tls = TlsConfig {
+            domains: vec![PEBBLE_TEST_DOMAIN.into()],
+            ..tls_config(&certificate_directory)
+        };
+        let (stop, server) = spawn_server(
+            listener,
+            pool.clone(),
+            tls.clone(),
+            directory_url.clone(),
+            acme_client_tls_config.clone(),
+        );
+        // Pebble signs with a root generated at startup, published on its management endpoint.
+        let issuing_root = reqwest::Client::builder()
+            .tls_certs_only([pebble_https_root])
+            .build()
+            .unwrap()
+            .get(format!("{management_url}/roots/0"))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let issuing_root = reqwest::Certificate::from_pem(&issuing_root).unwrap();
+        wait_for_https_health(port, &issuing_root).await;
+        stop.send(()).unwrap();
+        server.await.unwrap().unwrap();
+
+        // Without the authority, a restart still serves the certificate it cached.
+        drop(pebble);
+        let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+        let (stop, server) = spawn_server(
+            listener,
+            pool.clone(),
+            tls,
+            directory_url,
+            acme_client_tls_config,
+        );
+        wait_for_https_health(port, &issuing_root).await;
+        stop.send(()).unwrap();
+        server.await.unwrap().unwrap();
+        pool.close().await;
     }
 }

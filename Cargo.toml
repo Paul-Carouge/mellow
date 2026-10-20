@@ -31,6 +31,8 @@ hyper-util = { version = "0.1.21", features = ["tokio"] }
 ipnet = { version = "2.12.2", features = ["serde"] }
 mellow-protocol = { path = "crates/mellow-protocol" }
 mellow-client-core = { path = "crates/mellow-client-core" }
+# Already in the tree through rustls-acme; tests sign the local ACME test authority's HTTPS certificate with it.
+rcgen = "0.13.2"
 bitflags = "2.13.2"
 # Pulled in only to switch the SQLite bundled by sqlx to SQLCipher (ADR-0006). Must stay within the range sqlx-sqlite accepts (>=0.30.1, <0.38).
 libsqlite3-sys = { version = "0.37", default-features = false }
