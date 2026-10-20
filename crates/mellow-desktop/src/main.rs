@@ -1,5 +1,8 @@
 //! Mellow desktop client: a Discord-like shell (ADR-0012) on the shared client core (ADR-0011).
 
+// Release builds on Windows open no console window next to the app; debug builds keep it for logs.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod clipboard;
 mod demo_shell;
 mod fake_messages;
