@@ -8,8 +8,11 @@ use mellow_protocol::{
     SendMessageRequest, Snowflake,
 };
 
-/// Messages kept in memory per channel; older ones are fetched again when scrolled to.
+/// Messages kept in memory per channel once the reader leaves it; older ones are fetched again
+/// when scrolled to.
 pub const MAXIMUM_CACHED_MESSAGES_PER_CHANNEL: usize = 500;
+/// Messages asked per history request; a shorter page means the channel's start is reached.
+pub const HISTORY_PAGE_SIZE: u32 = 50;
 /// A typing indicator disappears after this long without a new `TYPING_START`.
 pub const TYPING_INDICATOR_LIFETIME_MILLISECONDS: u64 = 8_000;
 
@@ -62,12 +65,24 @@ impl PendingMessage {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ChannelHistory {
+    /// Sorted by id (chronological).
+    messages: Vec<Message>,
+    /// The channel's first message is cached: there is nothing older to fetch.
+    has_reached_channel_start: bool,
+    /// Pages loaded by scrolling up: new messages no longer push the oldest out until
+    /// `trim_history`, since the reader may be looking at them.
+    is_extended_by_older_pages: bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ClientState {
     current_user: Option<CurrentUser>,
     /// In server-rail order: `Ready` order, then joined guilds appended.
     guilds: Vec<Guild>,
-    /// Sorted by id (chronological), at most `MAXIMUM_CACHED_MESSAGES_PER_CHANNEL`.
-    messages_by_channel: HashMap<Snowflake, Vec<Message>>,
+    /// At most `MAXIMUM_CACHED_MESSAGES_PER_CHANNEL` messages, except in the channel being read
+    /// (`trim_history`).
+    history_by_channel: HashMap<Snowflake, ChannelHistory>,
     members_by_guild: HashMap<Snowflake, Vec<Member>>,
     last_read_by_channel: HashMap<Snowflake, Snowflake>,
     online_user_ids: HashSet<Snowflake>,
@@ -95,9 +110,18 @@ impl ClientState {
 
     #[must_use]
     pub fn messages(&self, channel_id: Snowflake) -> &[Message] {
-        self.messages_by_channel
+        self.history_by_channel
             .get(&channel_id)
-            .map_or(&[], Vec::as_slice)
+            .map_or(&[], |history| history.messages.as_slice())
+    }
+
+    /// False once the channel's first message is cached; true while its history never loaded.
+    #[must_use]
+    pub fn has_older_history(&self, channel_id: Snowflake) -> bool {
+        !self
+            .history_by_channel
+            .get(&channel_id)
+            .is_some_and(|history| history.has_reached_channel_start)
     }
 
     #[must_use]
@@ -183,8 +207,8 @@ impl ClientState {
             }
             GatewayEvent::MessageUpdate(message) => self.replace_cached_message(message),
             GatewayEvent::MessageDelete { channel_id, id, .. } => {
-                if let Some(messages) = self.messages_by_channel.get_mut(&channel_id) {
-                    messages.retain(|message| message.id != id);
+                if let Some(history) = self.history_by_channel.get_mut(&channel_id) {
+                    history.messages.retain(|message| message.id != id);
                 }
                 StateChange::Messages { channel_id }
             }
@@ -202,7 +226,7 @@ impl ClientState {
                         }
                     }
                 }
-                self.messages_by_channel.remove(&id);
+                self.history_by_channel.remove(&id);
                 self.pending_messages
                     .retain(|pending| pending.channel_id != id);
                 StateChange::Guilds
@@ -226,7 +250,7 @@ impl ClientState {
                     self.pending_messages
                         .retain(|pending| !channel_ids.contains(&pending.channel_id));
                     for channel_id in channel_ids {
-                        self.messages_by_channel.remove(&channel_id);
+                        self.history_by_channel.remove(&channel_id);
                     }
                 }
                 self.guilds.retain(|guild| guild.id != id);
@@ -280,13 +304,14 @@ impl ClientState {
     fn replace_cached_message(&mut self, message: Message) -> StateChange {
         let channel_id = message.channel_id;
         let Some(cached) = self
-            .messages_by_channel
+            .history_by_channel
             .get_mut(&channel_id)
-            .and_then(|messages| {
-                let index = messages
+            .and_then(|history| {
+                let index = history
+                    .messages
                     .binary_search_by_key(&message.id, |existing| existing.id)
                     .ok()?;
-                messages.get_mut(index)
+                history.messages.get_mut(index)
             })
         else {
             return StateChange::Nothing;
@@ -299,35 +324,57 @@ impl ClientState {
         StateChange::Messages { channel_id }
     }
 
-    /// Merges messages from history or from our own send (deduplicated by id, kept sorted and
-    /// capped, keeping the newest).
+    /// Merges new messages (gateway events, our own sends), deduplicated by id and kept sorted.
+    /// The oldest go beyond `MAXIMUM_CACHED_MESSAGES_PER_CHANNEL`, unless pages loaded by
+    /// scrolling up made the channel longer: those stay until `trim_history`.
     pub fn insert_messages(
         &mut self,
         channel_id: Snowflake,
         incoming: Vec<Message>,
     ) -> StateChange {
-        let messages = self.messages_by_channel.entry(channel_id).or_default();
-        // One sort for the whole batch, whatever order a server sends: never O(n²) on the UI thread.
-        let mut incoming = incoming;
-        incoming.sort_by_key(|message| message.id);
-        let newest_incoming = incoming.split_off(
-            incoming
-                .len()
-                .saturating_sub(MAXIMUM_CACHED_MESSAGES_PER_CHANNEL),
-        );
-        // On equal ids the incoming copy (listed first) wins, so edits replace cached versions.
-        let mut merged: Vec<Message> = newest_incoming
-            .into_iter()
-            .chain(std::mem::take(messages))
-            .collect();
-        merged.sort_by_key(|message| message.id);
-        merged.dedup_by_key(|message| message.id);
+        let history = self.history_by_channel.entry(channel_id).or_default();
+        let mut merged = merge_messages(std::mem::take(&mut history.messages), incoming);
         let excess = merged
             .len()
             .saturating_sub(MAXIMUM_CACHED_MESSAGES_PER_CHANNEL);
-        merged.drain(..excess);
-        *messages = merged;
+        if excess > 0 && !history.is_extended_by_older_pages {
+            merged.drain(..excess);
+            history.has_reached_channel_start = false;
+        }
+        history.messages = merged;
         StateChange::Messages { channel_id }
+    }
+
+    /// Merges a page of history requested with `limit: HISTORY_PAGE_SIZE`, the latest one or one
+    /// `before` the oldest cached message. Never trims: the reader is scrolling through it.
+    pub fn insert_history_page(
+        &mut self,
+        channel_id: Snowflake,
+        page: Vec<Message>,
+    ) -> StateChange {
+        let is_last_page = page.len() < usize::try_from(HISTORY_PAGE_SIZE).unwrap_or(usize::MAX);
+        let history = self.history_by_channel.entry(channel_id).or_default();
+        history.messages = merge_messages(std::mem::take(&mut history.messages), page);
+        history.has_reached_channel_start |= is_last_page;
+        history.is_extended_by_older_pages = true;
+        StateChange::Messages { channel_id }
+    }
+
+    /// Keeps only the newest `MAXIMUM_CACHED_MESSAGES_PER_CHANNEL` messages of a channel the
+    /// reader left, so pages loaded by scrolling up do not pile up across channels.
+    pub fn trim_history(&mut self, channel_id: Snowflake) {
+        let Some(history) = self.history_by_channel.get_mut(&channel_id) else {
+            return;
+        };
+        let excess = history
+            .messages
+            .len()
+            .saturating_sub(MAXIMUM_CACHED_MESSAGES_PER_CHANNEL);
+        if excess > 0 {
+            history.messages.drain(..excess);
+            history.has_reached_channel_start = false;
+        }
+        history.is_extended_by_older_pages = false;
     }
 
     /// Adds a message to the outbox and returns the request that sends it. `nonce` must be unique
@@ -474,6 +521,17 @@ impl ClientState {
     }
 }
 
+/// Sorted by id and deduplicated; on equal ids the incoming copy wins, so edits replace cached
+/// versions.
+fn merge_messages(cached: Vec<Message>, incoming: Vec<Message>) -> Vec<Message> {
+    let mut merged: Vec<Message> = incoming.into_iter().chain(cached).collect();
+    // One stable sort for the whole batch, whatever order a server sends: never O(n²) on the UI
+    // thread. Stability keeps the incoming copy first among equal ids.
+    merged.sort_by_key(|message| message.id);
+    merged.dedup_by_key(|message| message.id);
+    merged
+}
+
 #[cfg(test)]
 mod tests {
     use mellow_protocol::{ChannelKind, Permissions, PublicUser, ReadState};
@@ -580,6 +638,91 @@ mod tests {
             1_000 + MAXIMUM_CACHED_MESSAGES_PER_CHANNEL as u64 + 10,
             "the newest are kept"
         );
+    }
+
+    #[test]
+    fn history_pages_extend_the_open_channel_until_its_start() {
+        let page_size = u64::from(HISTORY_PAGE_SIZE);
+        let page = |newest: u64| {
+            (newest + 1 - page_size..=newest)
+                .map(|id| message(id, OTHER))
+                .collect::<Vec<_>>()
+        };
+        let mut state = ready_state();
+        assert!(state.has_older_history(GENERAL), "never loaded yet");
+
+        // Full pages, newest first, until the channel holds more than the cap.
+        let mut newest = 100_000;
+        while state.messages(GENERAL).len() <= MAXIMUM_CACHED_MESSAGES_PER_CHANNEL {
+            state.insert_history_page(GENERAL, page(newest));
+            newest -= page_size;
+            assert!(
+                state.has_older_history(GENERAL),
+                "a full page may not be the last"
+            );
+        }
+        let loaded = state.messages(GENERAL).len();
+        state.apply_event(GatewayEvent::MessageCreate(message(200_000, OTHER)), NOW);
+        assert_eq!(
+            state.messages(GENERAL).len(),
+            loaded + 1,
+            "a new message never drops the older pages being read"
+        );
+
+        state.insert_history_page(GENERAL, vec![message(1, OTHER), message(2, OTHER)]);
+        assert!(
+            !state.has_older_history(GENERAL),
+            "a short page is the last"
+        );
+        assert_eq!(state.messages(GENERAL).first().unwrap().id.raw(), 1);
+
+        state.trim_history(GENERAL);
+        assert_eq!(
+            state.messages(GENERAL).len(),
+            MAXIMUM_CACHED_MESSAGES_PER_CHANNEL
+        );
+        assert_eq!(state.messages(GENERAL).last().unwrap().id.raw(), 200_000);
+        assert!(
+            state.has_older_history(GENERAL),
+            "trimmed messages must be fetched again"
+        );
+    }
+
+    #[test]
+    fn an_open_channel_at_exactly_the_cap_keeps_its_older_pages() {
+        let page_size = u64::from(HISTORY_PAGE_SIZE);
+        let mut state = ready_state();
+        let cap = MAXIMUM_CACHED_MESSAGES_PER_CHANNEL as u64;
+        for newest in (page_size..=cap).rev().step_by(HISTORY_PAGE_SIZE as usize) {
+            let page = (newest + 1 - page_size..=newest)
+                .map(|id| message(id, OTHER))
+                .collect();
+            state.insert_history_page(GENERAL, page);
+        }
+        assert_eq!(
+            state.messages(GENERAL).len(),
+            MAXIMUM_CACHED_MESSAGES_PER_CHANNEL
+        );
+        state.apply_event(GatewayEvent::MessageCreate(message(cap + 1, OTHER)), NOW);
+        assert_eq!(
+            state.messages(GENERAL).len(),
+            MAXIMUM_CACHED_MESSAGES_PER_CHANNEL + 1,
+            "the oldest row the reader may be looking at stays"
+        );
+    }
+
+    #[test]
+    fn a_short_latest_page_holds_the_whole_channel() {
+        let mut state = ready_state();
+        state.insert_history_page(GENERAL, vec![message(10, OTHER)]);
+        assert!(!state.has_older_history(GENERAL));
+        state.apply_event(GatewayEvent::MessageCreate(message(20, OTHER)), NOW);
+        assert!(
+            !state.has_older_history(GENERAL),
+            "new messages keep the start"
+        );
+        state.trim_history(GENERAL);
+        assert!(!state.has_older_history(GENERAL), "nothing was trimmed");
     }
 
     #[test]

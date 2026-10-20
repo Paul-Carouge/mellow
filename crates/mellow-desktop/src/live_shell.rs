@@ -11,7 +11,7 @@ use std::future::Future;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mellow_client_core::state::{ClientState, StateChange};
+use mellow_client_core::state::{ClientState, HISTORY_PAGE_SIZE, StateChange};
 use mellow_client_core::{
     ClientError, GatewayUpdate, InstanceAddress, RestClient, generate_message_nonce, run_gateway,
 };
@@ -58,6 +58,8 @@ pub struct LiveShell {
     /// Fetched once per `Ready`; the gateway keeps them current afterwards.
     requested_history_channel_ids: HashSet<Snowflake>,
     requested_member_list_guild_ids: HashSet<Snowflake>,
+    /// Channels with a request for older history in flight, so scrolling asks for one page at a time.
+    loading_older_history_channel_ids: HashSet<Snowflake>,
     messages: Rc<VecModel<MessageRow>>,
     /// The message id behind each row of `messages`, in the same order.
     displayed_message_ids: Vec<Snowflake>,
@@ -88,6 +90,7 @@ pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
         collapsed_category_ids: BTreeSet::new(),
         requested_history_channel_ids: HashSet::new(),
         requested_member_list_guild_ids: HashSet::new(),
+        loading_older_history_channel_ids: HashSet::new(),
         messages: Rc::new(VecModel::default()),
         displayed_message_ids: Vec::new(),
         displayed_pending_nonces: Vec::new(),
@@ -284,6 +287,9 @@ fn connect_callbacks(window: &AppWindow, shell: &SharedShell) {
         }
         refresh_channel_rows(&shell_for_callback.borrow());
     });
+
+    let shell_for_callback = shell.clone();
+    window.on_load_older_messages(move || load_older_messages(&shell_for_callback));
 
     let shell_for_callback = shell.clone();
     window.on_send_message(move |text: SharedString| send_message(&shell_for_callback, text));
@@ -551,6 +557,8 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
                 shell.state.apply_ready(*ready);
                 shell.requested_history_channel_ids.clear();
                 shell.requested_member_list_guild_ids.clear();
+                // A request of an ended session never comes back to free its channel.
+                shell.loading_older_history_channel_ids.clear();
                 if let (Some(window), Some(user)) =
                     (shell.window.upgrade(), shell.state.current_user())
                 {
@@ -776,11 +784,17 @@ fn open_channel(shell: &SharedShell, channel_id: Option<Snowflake>) {
         let mut shell = shell.borrow_mut();
         if shell.selected_channel_id != channel_id {
             message_actions::reset_message_actions(&mut shell);
+            if let Some(previous_channel_id) = shell.selected_channel_id {
+                shell.state.trim_history(previous_channel_id);
+            }
         }
         shell.selected_channel_id = channel_id;
         refresh_header(&shell);
         refresh_channel_rows(&shell);
         refresh_messages(&mut shell);
+        if let Some(window) = shell.window.upgrade() {
+            crate::scroll_to_latest_message_after_layout(&window);
+        }
     }
     if let Some(channel_id) = channel_id {
         ensure_history_loaded(shell, channel_id);
@@ -836,17 +850,17 @@ fn ensure_history_loaded(shell: &SharedShell, channel_id: Snowflake) {
     let Some(rest) = authenticated_rest(shell) else {
         return;
     };
-    // shortcut: only the latest page is loaded; older history (scrolling up) comes later.
-    let request = async move {
-        rest.list_messages(channel_id, &MessageHistoryQuery::default())
-            .await
+    let query = MessageHistoryQuery {
+        limit: Some(HISTORY_PAGE_SIZE),
+        ..MessageHistoryQuery::default()
     };
+    let request = async move { rest.list_messages(channel_id, &query).await };
     run_request(shell, request, move |shell, result| match result {
-        Ok(messages) => {
+        Ok(page) => {
             let change = shell
                 .borrow_mut()
                 .state
-                .insert_messages(channel_id, messages);
+                .insert_history_page(channel_id, page);
             apply_state_change(shell, change);
         }
         Err(error) => {
@@ -855,6 +869,74 @@ fn ensure_history_loaded(shell: &SharedShell, channel_id: Snowflake) {
                 .requested_history_channel_ids
                 .remove(&channel_id);
             report_request_error(shell, &error, "load message history");
+        }
+    });
+}
+
+/// Fetches the page before the oldest cached message of the open channel, one page at a time.
+fn load_older_messages(shell: &SharedShell) {
+    let Some(rest) = authenticated_rest(shell) else {
+        return;
+    };
+    let (channel_id, oldest_message_id) = {
+        let mut shell = shell.borrow_mut();
+        let Some(channel_id) = shell.selected_channel_id else {
+            return;
+        };
+        // An empty channel waits for its latest page, requested when it opened.
+        let Some(oldest_message_id) = shell
+            .state
+            .messages(channel_id)
+            .first()
+            .map(|message| message.id)
+        else {
+            return;
+        };
+        if !shell.state.has_older_history(channel_id)
+            || !shell.loading_older_history_channel_ids.insert(channel_id)
+        {
+            return;
+        }
+        (channel_id, oldest_message_id)
+    };
+    let query = MessageHistoryQuery {
+        before: Some(oldest_message_id),
+        limit: Some(HISTORY_PAGE_SIZE),
+        ..MessageHistoryQuery::default()
+    };
+    let request = async move { rest.list_messages(channel_id, &query).await };
+    run_request(shell, request, move |shell, result| {
+        shell
+            .borrow_mut()
+            .loading_older_history_channel_ids
+            .remove(&channel_id);
+        match result {
+            Ok(page) => {
+                // The page must join the cache where it was cut: a `Ready`, a trim or a deleted
+                // oldest message since the request would leave a gap. The next scroll asks again.
+                let is_still_adjacent = {
+                    let shell = shell.borrow();
+                    shell.selected_channel_id == Some(channel_id)
+                        && shell
+                            .state
+                            .messages(channel_id)
+                            .first()
+                            .map(|message| message.id)
+                            == Some(oldest_message_id)
+                };
+                if !is_still_adjacent {
+                    return;
+                }
+                if let Some(window) = shell.borrow().window.upgrade() {
+                    window.invoke_keep_distance_from_latest_message();
+                }
+                let change = shell
+                    .borrow_mut()
+                    .state
+                    .insert_history_page(channel_id, page);
+                apply_state_change(shell, change);
+            }
+            Err(error) => report_request_error(shell, &error, "load older messages"),
         }
     });
 }
@@ -1166,8 +1248,4 @@ fn refresh_messages(shell: &mut LiveShell) {
     let previous_message_ids = std::mem::replace(&mut shell.displayed_message_ids, message_ids);
     shell.messages.set_vec(rows);
     message_actions::remap_open_message_rows(shell, &previous_message_ids);
-    // shortcut: always jumps to the latest message, even when the reader had scrolled up.
-    if let Some(window) = shell.window.upgrade() {
-        crate::scroll_to_latest_message_after_layout(&window);
-    }
 }

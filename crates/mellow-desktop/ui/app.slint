@@ -75,12 +75,16 @@ export component AppWindow inherits Window {
     callback delete-message(int);
     callback retry-message(int);
     callback discard-failed-message(int);
+    callback load-older-messages();
     callback sign-in();
     callback register();
     callback sign-out();
 
     public function scroll-to-latest-message() {
         chat.scroll-to-latest-message();
+    }
+    public function keep-distance-from-latest-message() {
+        chat.keep-distance-from-latest-message();
     }
     public function scroll-up-by(distance: length) -> bool {
         chat.scroll-up-by(distance)
@@ -166,6 +170,7 @@ export component AppWindow inherits Window {
                 delete-message(index) => { root.delete-message(index); }
                 retry-message(index) => { root.retry-message(index); }
                 discard-failed-message(index) => { root.discard-failed-message(index); }
+                load-older-messages => { root.load-older-messages(); }
             }
             // shortcut: below 1032 px the member list is hidden instead of becoming an overlay.
             if root.is-member-list-visible && root.is-wide-enough-for-member-list: MemberList {

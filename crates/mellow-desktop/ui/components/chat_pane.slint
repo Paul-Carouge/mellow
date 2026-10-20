@@ -439,6 +439,8 @@ export component ChatPane inherits Rectangle {
     // answer may hide a send the server did store).
     callback retry-message(int);
     callback discard-failed-message(int);
+    // The reader scrolled near the top of the loaded messages.
+    callback load-older-messages();
 
     // Typing goes straight into the reply, as on Discord.
     changed replying-to-author => {
@@ -450,11 +452,31 @@ export component ChatPane inherits Rectangle {
     // True while the newest message is in view; new messages and row-height refinements then keep
     // the list anchored to the bottom, as on Discord. Scrolling up releases it.
     property <bool> is-pinned-to-latest-message: true;
+    // How far above the bottom the pinned list stays: zero, except while older messages are
+    // prepended, so the rows being read do not move.
+    property <length> pinned-distance-from-latest-message: 0px;
     property <length> latest-message-content-y: min(0px, message-list.visible-height - message-list.content-height);
+    property <length> pinned-content-y: latest-message-content-y + pinned-distance-from-latest-message;
 
     public function scroll-to-latest-message() {
         is-pinned-to-latest-message = true;
+        pinned-distance-from-latest-message = 0px;
         message-list.content-y = latest-message-content-y;
+    }
+
+    // Checked on every geometry change, not only user scrolls: Slint does not report a flick that
+    // coasts to the top, and a reader already at the top cannot scroll further to retry. Rust
+    // asks for one page at a time, so repeated calls are cheap.
+    function load-older-messages-when-near-top() {
+        if message-list.content-y >= -MellowComponent.message-history-load-distance {
+            root.load-older-messages();
+        }
+    }
+
+    // Called before rows are added above the visible ones; the next user scroll releases it.
+    public function keep-distance-from-latest-message() {
+        pinned-distance-from-latest-message = message-list.content-y - latest-message-content-y;
+        is-pinned-to-latest-message = true;
     }
 
     // Scrolls up by `distance`; returns false once the top is reached (used by the scroll benchmark).
@@ -533,22 +555,26 @@ export component ChatPane inherits Rectangle {
             // content-y and content-height by itself; while pinned, snap back to the bottom.
             changed content-height => {
                 if root.is-pinned-to-latest-message {
-                    self.content-y = root.latest-message-content-y;
+                    self.content-y = root.pinned-content-y;
                 }
+                root.load-older-messages-when-near-top();
             }
             changed visible-height => {
                 if root.is-pinned-to-latest-message {
-                    self.content-y = root.latest-message-content-y;
+                    self.content-y = root.pinned-content-y;
                 }
             }
             changed content-y => {
-                if root.is-pinned-to-latest-message && self.content-y != root.latest-message-content-y {
-                    self.content-y = root.latest-message-content-y;
+                if root.is-pinned-to-latest-message && self.content-y != root.pinned-content-y {
+                    self.content-y = root.pinned-content-y;
                 }
+                root.load-older-messages-when-near-top();
             }
             // Only user scrolling (wheel, drag, scrollbar) decides whether the list stays pinned.
             scrolled => {
                 root.is-pinned-to-latest-message = self.content-y <= root.latest-message-content-y + 1px;
+                root.pinned-distance-from-latest-message = 0px;
+                root.load-older-messages-when-near-top();
             }
             accessible-role: list;
             accessible-label: "Messages in " + channel-name;
