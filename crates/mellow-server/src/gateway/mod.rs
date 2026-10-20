@@ -818,6 +818,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn role_changes_reach_live_sessions() {
+        let fixture = fixture().await;
+        let (mut owner_socket, _) = identified(fixture.address, &fixture.owner_token).await;
+        let owner = fixture
+            .state
+            .accounts
+            .authenticate(&fixture.owner_token, now())
+            .await
+            .unwrap();
+        let guilds = &fixture.state.guilds;
+        let role = guilds
+            .create_role(
+                owner.id,
+                fixture.guild_id,
+                mellow_protocol::CreateRoleRequest {
+                    name: "Moderator".into(),
+                    color: 0,
+                    permissions: mellow_protocol::Permissions::KICK_MEMBERS,
+                },
+                now(),
+            )
+            .await
+            .unwrap();
+        receive_dispatch(&mut owner_socket, |event| {
+            matches!(event, GatewayEvent::GuildRolesUpdate { roles, .. }
+                if roles.iter().any(|listed| listed.id == role.id))
+        })
+        .await;
+        guilds
+            .add_member_role(owner.id, fixture.guild_id, owner.id, role.id)
+            .await
+            .unwrap();
+        receive_dispatch(&mut owner_socket, |event| {
+            matches!(event, GatewayEvent::GuildMemberUpdate { user_id, role_ids, .. }
+                if *user_id == owner.id && *role_ids == [role.id])
+        })
+        .await;
+        guilds
+            .delete_role(owner.id, fixture.guild_id, role.id)
+            .await
+            .unwrap();
+        receive_dispatch(&mut owner_socket, |event| {
+            matches!(event, GatewayEvent::GuildRolesUpdate { roles, .. }
+                if roles.iter().all(|listed| listed.id != role.id))
+        })
+        .await;
+        fixture.close().await;
+    }
+
+    #[tokio::test]
     async fn logout_ends_the_live_session_immediately() {
         let fixture = fixture().await;
         let (mut socket, _) = identified(fixture.address, &fixture.member_token).await;
