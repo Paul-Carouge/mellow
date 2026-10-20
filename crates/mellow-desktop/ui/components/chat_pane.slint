@@ -32,8 +32,8 @@ export struct MessageRow {
 component HoverActionBar inherits Rectangle {
     in property <bool> is-own;
     in property <bool> can-delete;
-    // False where the user cannot send messages: a reply could not be posted.
-    in property <bool> can-reply;
+    // False where the user cannot send messages: the server refuses replies and edits there.
+    in property <bool> can-send-messages;
     // True while the pointer is on the bar, which sticks out above its message row.
     out property <bool> is-hovered: hover-area.has-hover;
     callback edit();
@@ -52,7 +52,7 @@ component HoverActionBar inherits Rectangle {
     // Reply stays on your own messages for the same reason.
     hover-area := TouchArea {
         action-buttons := HorizontalLayout {
-            if root.is-own: IconButton {
+            if root.is-own && root.can-send-messages: IconButton {
                 icon: @image-url("../../icons/pencil-simple.svg");
                 label: "Edit";
                 size: MellowComponent.action-bar-button-size;
@@ -61,7 +61,7 @@ component HoverActionBar inherits Rectangle {
                 hover-background: MellowComponent.action-bar-button-background-hover;
                 clicked => { root.edit(); }
             }
-            if root.can-reply: IconButton {
+            if root.can-send-messages: IconButton {
                 icon: @image-url("../../icons/arrow-bend-up-left.svg");
                 label: "Reply";
                 size: MellowComponent.action-bar-button-size;
@@ -232,7 +232,7 @@ component MessageView inherits Rectangle {
     in property <MessageRow> message;
     in property <bool> is-text-selection-mode;
     in property <bool> is-editing;
-    in property <bool> can-reply;
+    in property <bool> can-send-messages;
     in-out property <string> editing-draft;
     callback link-clicked(string);
     callback copy-text();
@@ -409,7 +409,7 @@ component MessageView inherits Rectangle {
         visible: root.is-hovered && root.is-confirmed;
         is-own: root.message.is-own;
         can-delete: root.message.can-delete;
-        can-reply: root.can-reply;
+        can-send-messages: root.can-send-messages;
         x: parent.width - self.width - MellowComponent.action-bar-offset-trailing;
         // The token is negative: the bar sits above the row's top edge, as on Discord.
         y: MellowComponent.action-bar-offset-top;
@@ -701,6 +701,14 @@ export component ChatPane inherits Rectangle {
     // "Try again" after a failed history load, initial or older.
     callback retry-loading-history();
 
+    // Edits are refused where sending is, and a moderator who lost Manage Messages cannot delete
+    // someone else's message any more.
+    changed can-send-messages => {
+        if !self.can-send-messages {
+            self.editing-message-index = -1;
+        }
+    }
+
     // Typing goes straight into the reply, as on Discord.
     changed is-replying => {
         if self.is-replying {
@@ -929,7 +937,7 @@ export component ChatPane inherits Rectangle {
                     MessageView {
                         message: message;
                         is-text-selection-mode: root.is-text-selection-mode;
-                        can-reply: root.can-send-messages;
+                        can-send-messages: root.can-send-messages;
                         // Outbox rows never show the editor, whatever index Rust sets.
                         is-editing: index == root.editing-message-index && message.delivery == MessageDelivery.sent;
                         editing-draft <=> root.editing-message-draft;
@@ -942,9 +950,9 @@ export component ChatPane inherits Rectangle {
                         }
                         save-edit(text) => {
                             root.editing-message-index = -1;
-                            // Saving an empty message asks to delete it, when allowed; an unchanged one is
-                            // not re-sent (DESIGN.md §5.5).
-                            if text == "" && message.can-delete {
+                            // Saving an empty message asks to delete it; an unchanged one is not re-sent
+                            // (DESIGN.md §5.5).
+                            if text == "" {
                                 root.deleting-message-index = index;
                             } else {
                                 if text != "" && text != message.body-plain {
@@ -1155,7 +1163,7 @@ export component ChatPane inherits Rectangle {
                                     root.jump-to-present();
                                     return accept;
                                 }
-                                if event.text == Key.UpArrow && composer.text == "" {
+                                if event.text == Key.UpArrow && root.can-send-messages && composer.text == "" {
                                     root.edit-last-own-message();
                                     return accept;
                                 }

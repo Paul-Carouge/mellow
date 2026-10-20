@@ -206,7 +206,9 @@ export component AppWindow inherits Window {
 
     // Window-wide so its scrim covers every pane, as Discord's dialogs do. Focus returns to the
     // composer on close: the hover bar's Delete button that opened it is gone by then.
-    if root.is-signed-in && root.deleting-message-index >= 0: DeleteMessageDialog {
+    // Closes by itself if the permission to delete that message is lost while it is open.
+    if root.is-signed-in && root.deleting-message-index >= 0
+            && root.messages[root.deleting-message-index].can-delete: DeleteMessageDialog {
         width: root.width;
         height: root.height;
         message: root.messages[root.deleting-message-index];

@@ -71,6 +71,8 @@ pub struct LiveShell {
     displayed_message_ids: Vec<Snowflake>,
     /// The outbox nonce behind each row after those of `displayed_message_ids`.
     displayed_pending_nonces: Vec<String>,
+    /// What the message rows were built with: rows are rebuilt only when it changes.
+    displayed_can_manage_messages: bool,
     /// The message the composer answers, shown as "Replying to …".
     reply_to_message_id: Option<Snowflake>,
     /// See `clipboard::copy_text`.
@@ -102,6 +104,7 @@ pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
         messages: Rc::new(VecModel::default()),
         displayed_message_ids: Vec::new(),
         displayed_pending_nonces: Vec::new(),
+        displayed_can_manage_messages: false,
         reply_to_message_id: None,
         clipboard: None,
         session_generation: 0,
@@ -669,7 +672,14 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
             }
             // A rename, a new topic or a permission change of the open guild or channel.
             refresh_header(&shell.borrow());
-            refresh_messages(&mut shell.borrow_mut());
+            // Rebuilding rows recreates an open inline editor, so only when Delete changes.
+            let can_manage_messages_changed = {
+                let shell = shell.borrow();
+                can_manage_messages(&shell) != shell.displayed_can_manage_messages
+            };
+            if can_manage_messages_changed {
+                refresh_messages(&mut shell.borrow_mut());
+            }
         }
         StateChange::Messages { channel_id } if Some(channel_id) == selected_channel_id => {
             refresh_messages(&mut shell.borrow_mut());
@@ -1327,6 +1337,14 @@ fn refresh_member_rows(shell: &LiveShell) {
     ))));
 }
 
+/// Whether the signed-in user may delete other people's messages in the open channel.
+fn can_manage_messages(shell: &LiveShell) -> bool {
+    shell
+        .selected_channel_id
+        .and_then(|id| shell.state.my_channel_permissions(id))
+        .is_some_and(|permissions| permissions.contains(Permissions::MANAGE_MESSAGES))
+}
+
 fn refresh_messages(shell: &mut LiveShell) {
     let messages = shell
         .selected_channel_id
@@ -1337,10 +1355,8 @@ fn refresh_messages(shell: &mut LiveShell) {
         .map(|id| shell.state.pending_messages(id).collect())
         .unwrap_or_default();
     let current_user = shell.state.current_user();
-    let can_manage_messages = shell
-        .selected_channel_id
-        .and_then(|id| shell.state.my_channel_permissions(id))
-        .is_some_and(|permissions| permissions.contains(Permissions::MANAGE_MESSAGES));
+    let can_manage_messages = can_manage_messages(shell);
+    shell.displayed_can_manage_messages = can_manage_messages;
     let mut rows = live_rows::message_rows(
         messages,
         current_user.map(|user| user.id),
