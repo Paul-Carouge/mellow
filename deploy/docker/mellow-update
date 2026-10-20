@@ -2,9 +2,9 @@
 # Updates a Docker Compose deployment of Mellow (deploy/docker) to the latest signed release, or to
 # the version given as argument. The image build verifies the release signature (ADR-0016).
 #
-#   mellow-update            # latest release
-#   mellow-update 0.2.0      # a given version
-#   mellow-update --check    # only print the installed and latest versions
+#   sudo mellow-update            # latest release
+#   sudo mellow-update 0.2.0      # a given version
+#   mellow-update --check         # only print the installed and latest versions
 #
 # MELLOW_STACK_DIR: the directory holding compose.yaml (default: /srv/stacks/mellow).
 set -euo pipefail
@@ -12,8 +12,12 @@ set -euo pipefail
 readonly REPOSITORY="Paul-Carouge/mellow"
 readonly STACK_DIR="${MELLOW_STACK_DIR:-/srv/stacks/mellow}"
 readonly COMPOSE_FILE="${STACK_DIR}/compose.yaml"
+readonly PREVIOUS_COMPOSE_FILE="${COMPOSE_FILE}.previous"
 readonly SERVICE="mellow"
-readonly HEALTHY_TIMEOUT_SECONDS=180
+readonly IMAGE_NAME="local/mellow-server"
+# Covers the health check's start period, a pre-migration backup and the migrations of a large
+# database; past it, nothing is rolled back blindly.
+readonly HEALTHY_TIMEOUT_SECONDS=600
 readonly VERSION_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
 
 fail() { echo "mellow-update: $*" >&2; exit 1; }
@@ -21,6 +25,8 @@ fail() { echo "mellow-update: $*" >&2; exit 1; }
 installed_version() {
   sed -n 's/^ *MELLOW_VERSION: *\([0-9.]*\) *$/\1/p' "${COMPOSE_FILE}" | head -n 1
 }
+
+image_line_names() { grep --quiet "^ *image: *${IMAGE_NAME}:${1//./\\.} *$" "${COMPOSE_FILE}"; }
 
 latest_version() {
   curl --fail --silent --show-error --location --proto '=https' \
@@ -35,32 +41,52 @@ is_newer() {
 
 compose() { docker compose --project-directory "${STACK_DIR}" -f "${COMPOSE_FILE}" "$@"; }
 
+container_id() { compose ps --all --quiet "${SERVICE}"; }
+
+# The host directory mounted on /data, read from the container (stopped or not).
+data_directory() {
+  docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' \
+    "$(container_id)"
+}
+
+# The server writes backups/pre-migration-<version>.db before migrating anything (ADR-0018).
+has_migration_started_since_update() {
+  local backups
+  backups="$(data_directory)/backups"
+  [ -d "${backups}" ] && [ -n "$(find "${backups}" -maxdepth 1 -name 'pre-migration-*' \
+    -newer "${PREVIOUS_COMPOSE_FILE}" -print -quit)" ]
+}
+
 # Waits for the container's health check, then checks the version it reports.
 wait_until_serving() {
   local expected_version="$1" deadline=$((SECONDS + HEALTHY_TIMEOUT_SECONDS)) container status
-  container="$(compose ps --quiet "${SERVICE}")"
-  [ -n "${container}" ] || return 1
   while [ "${SECONDS}" -lt "${deadline}" ]; do
+    container="$(container_id)"
     status="$(docker inspect --format '{{.State.Health.Status}}' "${container}" 2>/dev/null || echo missing)"
     case "${status}" in
       healthy)
         # shellcheck disable=SC2016 # expanded inside the container
-        compose exec -T "${SERVICE}" sh -c 'curl --fail --silent "${MELLOW_HEALTH_URL}"' \
-          | grep --quiet "\"version\":\"${expected_version}\""
+        compose exec -T "${SERVICE}" sh -c \
+          'curl --fail --silent --connect-to ::127.0.0.1: "${MELLOW_HEALTH_URL}"' \
+          | grep --quiet --fixed-strings "\"version\":\"${expected_version}\""
         return
         ;;
-      unhealthy | missing) return 1 ;;
+      unhealthy) return 1 ;;
     esac
     sleep 3
   done
   return 1
 }
 
+put_previous_compose_file_back() { mv "${PREVIOUS_COMPOSE_FILE}" "${COMPOSE_FILE}"; }
+
 main() {
   [ -f "${COMPOSE_FILE}" ] || fail "no compose file at ${COMPOSE_FILE} (set MELLOW_STACK_DIR)"
   local current target
   current="$(installed_version)"
   [[ "${current}" =~ ${VERSION_PATTERN} ]] || fail "no MELLOW_VERSION found in ${COMPOSE_FILE}"
+  image_line_names "${current}" \
+    || fail "the image line of ${COMPOSE_FILE} must be 'image: ${IMAGE_NAME}:${current}'"
 
   if [ "${1:-}" = "--check" ]; then
     echo "installed: ${current}"
@@ -76,34 +102,38 @@ main() {
   fi
 
   echo "Updating Mellow ${current} -> ${target}"
-  cp "${COMPOSE_FILE}" "${COMPOSE_FILE}.previous"
+  cp "${COMPOSE_FILE}" "${PREVIOUS_COMPOSE_FILE}"
   sed -i -e "s/^\( *MELLOW_VERSION: *\)${current//./\\.} *$/\1${target}/" \
-    -e "s/^\( *image: *local\/mellow-server:\)${current//./\\.} *$/\1${target}/" "${COMPOSE_FILE}"
-  [ "$(installed_version)" = "${target}" ] || { mv "${COMPOSE_FILE}.previous" "${COMPOSE_FILE}"; fail "could not set the version in ${COMPOSE_FILE}"; }
+    -e "s/^\( *image: *${IMAGE_NAME//\//\\/}:\)${current//./\\.} *$/\1${target}/" "${COMPOSE_FILE}"
+  if [ "$(installed_version)" != "${target}" ] || ! image_line_names "${target}"; then
+    put_previous_compose_file_back
+    fail "could not set the version in ${COMPOSE_FILE}"
+  fi
 
-  if ! compose build; then
-    mv "${COMPOSE_FILE}.previous" "${COMPOSE_FILE}"
+  # --pull also brings the base image's security fixes.
+  if ! compose build --pull; then
+    put_previous_compose_file_back
     fail "the image for ${target} did not build (download or signature check failed); still on ${current}"
   fi
-  local started_at
-  started_at="$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
-  compose up -d
+  compose up -d || true
   if wait_until_serving "${target}"; then
-    echo "Mellow ${target} is running. Previous compose file: ${COMPOSE_FILE}.previous"
+    echo "Mellow ${target} is running. Previous compose file: ${PREVIOUS_COMPOSE_FILE}"
     return
   fi
 
-  echo "Mellow ${target} did not become healthy." >&2
-  if compose logs --since "${started_at}" "${SERVICE}" | grep --quiet '"database migrated"'; then
-    # An older server refuses a database migrated by a newer one: rolling back needs the backup.
-    compose stop "${SERVICE}"
-    fail "the database was migrated, so the previous version cannot start on it. Restore the
-pre-migration backup from the data directory's backups/ (keep the current mellow.db aside), put
-${COMPOSE_FILE}.previous back, then run: docker compose up -d. Logs: docker compose logs ${SERVICE}"
+  echo "Mellow ${target} did not report itself healthy." >&2
+  if has_migration_started_since_update; then
+    # It may still be migrating; an older server refuses a migrated database anyway.
+    fail "the database was being migrated, so nothing was rolled back. Watch it with:
+  docker compose --project-directory ${STACK_DIR} logs -f ${SERVICE}
+If it failed: stop it, set mellow.db, mellow.db-wal and mellow.db-shm aside in the data directory,
+copy backups/pre-migration-<version>.db to mellow.db, put ${PREVIOUS_COMPOSE_FILE} back as
+compose.yaml, then run: docker compose up -d"
   fi
-  mv "${COMPOSE_FILE}.previous" "${COMPOSE_FILE}"
+  put_previous_compose_file_back
   compose up -d
-  fail "rolled back to ${current} (no migration had run). Logs of the failed start: docker compose logs ${SERVICE}"
+  fail "rolled back to ${current} (the database was not migrated). Logs of the failed start:
+  docker compose --project-directory ${STACK_DIR} logs ${SERVICE}"
 }
 
 main "$@"

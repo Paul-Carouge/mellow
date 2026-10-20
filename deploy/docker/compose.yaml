@@ -1,7 +1,7 @@
 name: mellow
 
-# Mellow chat server from signed releases. Update: `mellow-update` (or edit both version strings,
-# then `docker compose build && docker compose up -d`).
+# Mellow chat server from signed releases. Update: `sudo mellow-update` (or edit both version
+# strings, then `docker compose build --pull && docker compose up -d`).
 # Back up the keys directory separately from the data directory: without the master key the
 # database cannot be decrypted.
 services:
@@ -17,6 +17,8 @@ services:
       - ./config:/config:ro
       - ./data:/data
       - ./keys:/keys:ro
+      # Built-in TLS only (ACME certificates and account key): written by serve.
+      - ./certificates:/certificates
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]

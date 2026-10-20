@@ -20,7 +20,7 @@ RUN set -eu; \
     curl --fail --silent --show-error --location --proto '=https' --remote-name "${base}/${asset}"; \
     curl --fail --silent --show-error --location --proto '=https' --remote-name "${base}/${asset}.minisig"; \
     # The trusted comment names the signed file, so a signature of another asset is refused.
-    minisign -V -p /etc/mellow/minisign.pub -m "${asset}" | grep --quiet --line-regexp "Trusted comment: ${asset}"; \
+    minisign -V -p /etc/mellow/minisign.pub -m "${asset}" | grep --quiet --line-regexp --fixed-strings "Trusted comment: ${asset}"; \
     install -m 0755 "${asset}" /usr/local/bin/mellow-server
 
 FROM debian:trixie-slim
@@ -29,11 +29,13 @@ RUN apt-get update \
  && apt-get install --yes --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=download /usr/local/bin/mellow-server /usr/local/bin/mellow-server
-USER 1000:1000
+# A dedicated id rather than 1000, usually the host's first login user.
+USER 10001:10001
 EXPOSE 8080
-# Matches `listen_address` in mellow.toml; change it with the port.
+# Matches `listen_address` in mellow.toml; change it with the port. Always asked of this
+# container itself (--connect-to), whatever host name the URL carries.
 ENV MELLOW_HEALTH_URL=http://127.0.0.1:8080/api/v1/health
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \
-  CMD curl --fail --silent --max-time 4 "${MELLOW_HEALTH_URL}" > /dev/null || exit 1
+  CMD curl --fail --silent --max-time 4 --connect-to ::127.0.0.1: "${MELLOW_HEALTH_URL}" > /dev/null || exit 1
 ENTRYPOINT ["mellow-server"]
 CMD ["serve", "--config", "/config/mellow.toml"]
