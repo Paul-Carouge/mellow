@@ -11,6 +11,7 @@ Permissions are a 64-bit bitfield. A member's effective permissions in a channel
 
 ## Implementation status
 - M1.3a: `domain::permissions::guild_permissions` implements steps 1, 3 and the @everyone part of 2 (owner, administrator, @everyone role). The @everyone role shares its guild's id, as on Discord. Non-members get `NOT_FOUND`, never `MISSING_PERMISSIONS`, so guild existence is not revealed. Named roles, role hierarchy and channel overwrites arrive with M2.
+- M2 (roles): named roles, member roles and the role hierarchy are implemented; the computation moved to `mellow-protocol`, shared with clients (ADR-0014), and `domain::permissions` still decides. New roles start at position 1; reordering roles is not implemented yet.
 - To do with M2: make `Guilds::channel_and_member_permissions` return the channel's effective permissions (overwrites, step 4), which messages already rely on; filter `GET /guilds/{id}` channels and `GET /users/@me/read-states` by `VIEW_CHANNEL` once overwrites exist; check bans when joining with an invite; decide whether invites created by a member who left or was kicked stay valid (they do today, as on Discord).
 
 ## Consequences
