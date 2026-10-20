@@ -6,16 +6,16 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 
 ## Where things stand (2026-10-20)
 - `main` holds only the first PR (#1). Everything else is an open stack of pull requests, each based on the previous branch:
-  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → #13 (`feat/desktop-session-persistence`) → #14 (`fix/trusted-proxy-addresses`) → #15 (`feat/desktop-message-actions`) → #16 (`fix/server-message-ordering-and-nonce-deduplication`) → #17 (`feat/client-message-outbox`) → #18 (`fix/session-last-seen-and-expired-purge`) → #19 (`feat/outbox-resend-on-reconnect`) → #20 (`feat/history-pagination-on-scroll-up`, manual check in the app still pending).
+  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → #13 (`feat/desktop-session-persistence`) → #14 (`fix/trusted-proxy-addresses`) → #15 (`feat/desktop-message-actions`) → #16 (`fix/server-message-ordering-and-nonce-deduplication`) → #17 (`feat/client-message-outbox`) → #18 (`fix/session-last-seen-and-expired-purge`) → #19 (`feat/outbox-resend-on-reconnect`) → #20 (`feat/history-pagination-on-scroll-up`, manual check in the app still pending) → `feat/message-list-states` (message-list states of DESIGN.md §5.4, PR not opened yet, manual check in the app pending).
 - Local try-out instance: `mellow-server init --listen-address 127.0.0.1:18080 --registration-mode open` in the scratchpad, seeded through the REST API (rate limit: 10 sends per 10 s per user, so seed with several users).
 - Merge them in that order. After merging one into `main`, retarget the next PR's base to `main` before merging it.
-- New work branches from the tip of the stack (today `feat/history-pagination-on-scroll-up`) and opens a PR stacked on the latest one, until the stack is merged.
+- New work branches from the tip of the stack (today `feat/message-list-states`) and opens a PR stacked on the latest one, until the stack is merged.
 - CI never ran: GitHub Actions is blocked by the account's billing. Everything is verified on macOS only.
 
 ## Next candidates
 1. M1 release candidate: run a real instance on a VPS (`init --domain … --use-staging-certificates`, then production), connect the desktop over https, then tag.
 2. End-to-end ACME tests against Pebble (local test certificate authority).
-3. Known gaps listed in the ROADMAP status: the message-list states of DESIGN.md (skeletons, channel-start hero, older-history error with retry), then an on-disk outbox (needs the local cache of ARCHITECTURE §6 first).
+3. Known gaps listed in the ROADMAP status: the "Jump to present" bar and the offline / no-access list states of DESIGN.md §5.4, then an on-disk outbox (needs the local cache of ARCHITECTURE §6 first).
 
 ## Workflow that worked
 - One branch per milestone step (`feat/…`), atomic Conventional Commits, a `docs:` commit for README/ROADMAP/ARCHITECTURE/ADR.
@@ -46,6 +46,8 @@ A local hook refuses `git commit` when fmt or clippy fail on the touched crate: 
 - **Outbox rows**: pending and failed messages are extra rows after the confirmed ones; a row index at or past `displayed_message_ids.len()` maps into `displayed_pending_nonces`. They carry `is_own = false`, so no message action ever targets them.
 - **Outbox resend**: after `Ready` and `Resumed`, failed messages go out one after another (`resend_failed_messages`, each step through `run_request`), so they keep their order among themselves; sending them in parallel could reorder them. Messages still `Sending` are never part of a batch.
 - **Message list scrolling**: `refresh_messages` never scrolls. The Slint list stays pinned at `pinned-distance-from-latest-message` from the bottom (zero by default; set by `keep-distance-from-latest-message` before older rows are prepended); only a user scroll (`scrolled`) re-decides pinning. `scrolled` alone misses flicks that coast to the top, so the older-history check also runs on `content-y` and `content-height` changes. Opening a channel and sending call `scroll_to_latest_message_after_layout` / `invoke_scroll_to_latest_message` explicitly.
+- **Row 0 height in the message list**: never pin the list at a distance (`keep-distance-from-latest-message`) while row 0 is on screen and changing height. Slint 1.18's ListView estimates its content height from the visible rows, and the estimate and the pinned position then chase each other every frame ("long callback/instantiation chain detected" warnings). The history-start block above row 0 compensates its own height changes (`keep-rows-in-place-after-history-start-change`), and an empty older page skips the pin.
+- **History failures**: a failed history request puts the channel in `failed_history_channel_ids`, which stops the automatic older-history loads on scroll. Only "Try again" (`retry_loading_history`), reopening the channel or the next `Ready` clears it.
 - **History pages**: always request `limit: HISTORY_PAGE_SIZE`, since `insert_history_page` reads a shorter page as the channel's start. An older page is inserted only if the channel's oldest cached message is still its `before` cursor, so the cache never has a gap.
 - **Server text in the UI**: never show `ClientError::Api`'s `message` in a trusted place; build the text from `ApiErrorCode` (see `message_action_error_text`).
 - **Desktop threading**: state lives on the UI thread in `Rc<RefCell<LiveShell>>`. Network futures run on the tokio runtime and come back through `slint::spawn_local`. Never hold a `RefCell` borrow across a call that borrows again.
