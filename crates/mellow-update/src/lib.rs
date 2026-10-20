@@ -25,6 +25,8 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(15);
 const MAXIMUM_METADATA_BYTES: usize = 1024 * 1024;
 const MAXIMUM_SIGNATURE_BYTES: usize = 16 * 1024;
 const MAXIMUM_EXECUTABLE_BYTES: usize = 256 * 1024 * 1024;
+/// "65535.65535.65535" and some margin.
+const MAXIMUM_VERSION_BYTES: usize = 32;
 
 /// Which Mellow program an update is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +99,16 @@ struct GithubRelease {
     assets: Vec<GithubReleaseAsset>,
 }
 
+impl Release {
+    /// Whether the release carries this platform's executable of `program`, so that it can be
+    /// offered at all.
+    #[must_use]
+    pub fn has_executable_for(&self, program: Program) -> bool {
+        let name = asset_name(program, &self.version, CURRENT_TARGET);
+        self.asset_names.contains(&format!("{name}.minisig")) && self.asset_names.contains(&name)
+    }
+}
+
 /// The version of this build (the workspace version, shared by every Mellow binary).
 ///
 /// # Panics
@@ -136,7 +148,8 @@ impl UpdateClient {
     /// Fails only if the TLS stack cannot initialise.
     pub fn new() -> Result<Self, UpdateError> {
         let http = reqwest::Client::builder()
-            .user_agent(concat!("mellow-update/", env!("CARGO_PKG_VERSION")))
+            // No version: the periodic check should not tell GitHub which release runs where.
+            .user_agent("mellow-update")
             .https_only(true)
             .connect_timeout(CONNECT_TIMEOUT)
             .build()?;
@@ -223,10 +236,14 @@ async fn download_body_with_size_limit(
 fn parse_release(body: &[u8]) -> Result<Release, UpdateError> {
     let release: GithubRelease = serde_json::from_slice(body)
         .map_err(|error| UpdateError::UnexpectedResponse(format!("{:?}", error.classify())))?;
+    // Plain X.Y.Z only, as the release workflow publishes: the version is shown in the UI before
+    // anything is verified, so it must never carry text of the host's choosing.
     let version = release
         .tag_name
         .strip_prefix('v')
+        .filter(|version| version.len() <= MAXIMUM_VERSION_BYTES)
         .and_then(|version| Version::parse(version).ok())
+        .filter(|version| version.pre.is_empty() && version.build.is_empty())
         .ok_or_else(|| UpdateError::UnexpectedResponse("release tag is not vX.Y.Z".into()))?;
     Ok(Release {
         version,
@@ -304,8 +321,9 @@ pub fn check_install_location(executable: &Path) -> Result<(), UpdateError> {
     Ok(())
 }
 
-/// Windows has no owner check here: the desktop app installs per user, and the server refuses
-/// to run on Windows (master key file permissions).
+/// shortcut: no check on Windows (the server refuses to run there; the desktop app runs from
+/// wherever the user put its executable, and an account able to modify that folder can replace it
+/// without the updater anyway). Check the folder's DACL when the MSI lands (M4).
 ///
 /// # Errors
 /// Never.
@@ -486,6 +504,12 @@ mod tests {
         assert_eq!(release.version, Version::new(0, 2, 0));
         assert_eq!(release.asset_names, ["a"]);
         assert!(parse_release(br#"{"tag_name":"latest","assets":[]}"#).is_err());
+        assert!(
+            parse_release(br#"{"tag_name":"v9.0.0-reinstall-from-example-com","assets":[]}"#)
+                .is_err(),
+            "no text of the host's choosing reaches the UI"
+        );
+        assert!(parse_release(br#"{"tag_name":"v1.0.0+build","assets":[]}"#).is_err());
         assert!(parse_release(b"<html>").is_err());
         let older = Release {
             version: Version::new(0, 0, 1),
@@ -505,6 +529,7 @@ mod tests {
             .unwrap()
             .download_verified_executable(&release, Program::Server)
             .await;
+        assert!(!release.has_executable_for(Program::Server));
         assert!(matches!(
             result,
             Err(UpdateError::MissingAsset { asset_name, .. }) if asset_name.ends_with(".minisig")
