@@ -11,16 +11,23 @@ use crate::domain::account_rules::{
     normalize_email, normalize_login, validate_password_length, validate_password_maximum_length,
     validate_username,
 };
+use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::password::{PasswordHashError, hash_password, verify_password};
 use crate::domain::session_token::{generate_session_token, session_token_sha256};
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::storage::accounts::{
-    AccountStorageError, NewSession, NewUser, StoredUser, delete_session, find_user_by_login,
-    find_user_by_session, insert_session, insert_user,
+    AccountStorageError, NewSession, NewUser, StoredUser, delete_expired_sessions, delete_session,
+    find_session_owner, find_user_by_login, insert_session, insert_user, record_session_use,
 };
 
 /// A session lasts 90 days, then the user signs in again.
 const SESSION_LIFETIME: Duration = Duration::from_hours(90 * 24);
+const EXPIRED_SESSION_PURGE_INTERVAL: Duration = Duration::from_hours(1);
+/// Sessions are deleted this long after they expire, so a system clock that jumped forward
+/// (refused sessions until it is fixed) does not also wipe every session for good.
+const EXPIRED_SESSION_PURGE_GRACE: Duration = Duration::from_hours(24);
+/// `sessions.last_seen_at` is precise to this much, for a future list of signed-in devices.
+const SESSION_USE_RECORD_INTERVAL: Duration = Duration::from_hours(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum AccountError {
@@ -238,13 +245,20 @@ impl Accounts {
         now_unix_milliseconds: u64,
     ) -> Result<CurrentUser, AccountError> {
         let token_sha256 = session_token_sha256(token).ok_or(AccountError::Unauthorized)?;
-        let user = find_user_by_session(&self.pool, &token_sha256, now_unix_milliseconds)
+        let owner = find_session_owner(&self.pool, &token_sha256, now_unix_milliseconds)
             .await?
             .ok_or(AccountError::Unauthorized)?;
-        if user.is_disabled {
+        if owner.user.is_disabled {
             return Err(AccountError::AccountDisabled);
         }
-        Ok(current_user(user))
+        // Best effort: a figure precise to the hour must never deny access, e.g. on a full disk.
+        if should_record_session_use(owner.last_seen_at_unix_milliseconds, now_unix_milliseconds)
+            && let Err(error) =
+                record_session_use(&self.pool, &token_sha256, now_unix_milliseconds).await
+        {
+            tracing::warn!(%error, "cannot record session use");
+        }
+        Ok(current_user(owner.user))
     }
 
     /// Ends the session the token belongs to. Idempotent.
@@ -288,6 +302,34 @@ impl Accounts {
             user: current_user(user),
         })
     }
+}
+
+/// Deletes sessions expired for a day now, then every hour, until the future is dropped. Expired sessions
+/// are already refused; this only keeps the table from growing with every forgotten device.
+pub async fn purge_expired_sessions_periodically(pool: SqlitePool) {
+    let mut purge_interval = tokio::time::interval(EXPIRED_SESSION_PURGE_INTERVAL);
+    purge_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        purge_interval.tick().await;
+        let grace_milliseconds =
+            u64::try_from(EXPIRED_SESSION_PURGE_GRACE.as_millis()).unwrap_or(u64::MAX);
+        let expired_before = now_unix_milliseconds().saturating_sub(grace_milliseconds);
+        match delete_expired_sessions(&pool, expired_before).await {
+            Ok(0) => {}
+            Ok(deleted_sessions) => tracing::info!(deleted_sessions, "expired sessions purged"),
+            Err(error) => tracing::warn!(%error, "cannot purge expired sessions"),
+        }
+    }
+}
+
+/// Once per interval: every request writing would queue behind message sends on SQLite's lock.
+fn should_record_session_use(
+    last_seen_at_unix_milliseconds: u64,
+    now_unix_milliseconds: u64,
+) -> bool {
+    let interval_milliseconds =
+        u64::try_from(SESSION_USE_RECORD_INTERVAL.as_millis()).unwrap_or(u64::MAX);
+    now_unix_milliseconds.saturating_sub(last_seen_at_unix_milliseconds) >= interval_milliseconds
 }
 
 fn current_user(user: StoredUser) -> CurrentUser {
@@ -474,6 +516,107 @@ pub(crate) mod tests {
         assert!(matches!(at_expiry, Err(AccountError::Unauthorized)));
         assert!(matches!(after_logout, Err(AccountError::Unauthorized)));
         assert!(matches!(malformed, Err(AccountError::Unauthorized)));
+    }
+
+    #[tokio::test]
+    async fn session_use_is_recorded_at_most_once_per_interval_and_expired_ones_are_purged() {
+        let (_directory, pool) = migrated_pool().await;
+        let accounts = Accounts::new(
+            pool.clone(),
+            RegistrationMode::Open,
+            std::sync::Arc::default(),
+            std::sync::Arc::default(),
+        );
+        let session = accounts
+            .register(register_request("aurore", "aurore@example.org"), NOW)
+            .await
+            .unwrap();
+        let interval = u64::try_from(SESSION_USE_RECORD_INTERVAL.as_millis()).unwrap();
+        let last_seen = || async {
+            let (last_seen,): (i64,) =
+                sqlx::query_as("SELECT last_seen_at_unix_milliseconds FROM sessions")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            u64::try_from(last_seen).unwrap()
+        };
+
+        accounts
+            .authenticate(&session.token, NOW + interval - 1)
+            .await
+            .unwrap();
+        let before_interval = last_seen().await;
+        accounts
+            .authenticate(&session.token, NOW + interval)
+            .await
+            .unwrap();
+        let after_interval = last_seen().await;
+
+        // Use is recorded only forward, and a failed record never refuses the session.
+        accounts.authenticate(&session.token, NOW).await.unwrap();
+        let after_clock_went_back = last_seen().await;
+        let token_sha256 = session_token_sha256(&session.token).unwrap();
+        record_session_use(&pool, &token_sha256, NOW).await.unwrap();
+        let recorded_backwards = last_seen().await;
+        sqlx::query(
+            "CREATE TRIGGER refuse_session_updates BEFORE UPDATE ON sessions \
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let despite_failed_record = accounts
+            .authenticate(&session.token, NOW + 2 * interval)
+            .await;
+
+        let lifetime = u64::try_from(SESSION_LIFETIME.as_millis()).unwrap();
+        let still_valid = delete_expired_sessions(&pool, NOW + lifetime - 1)
+            .await
+            .unwrap();
+        let expired = delete_expired_sessions(&pool, NOW + lifetime)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        assert_eq!(before_interval, NOW);
+        assert_eq!(after_interval, NOW + interval);
+        assert_eq!(after_clock_went_back, NOW + interval);
+        assert_eq!(recorded_backwards, NOW + interval);
+        assert!(despite_failed_record.is_ok());
+        assert_eq!((still_valid, expired), (0, 1));
+    }
+
+    #[tokio::test]
+    async fn the_purge_task_deletes_expired_sessions_as_soon_as_it_starts() {
+        let (_directory, pool) = migrated_pool().await;
+        let accounts = Accounts::new(
+            pool.clone(),
+            RegistrationMode::Open,
+            std::sync::Arc::default(),
+            std::sync::Arc::default(),
+        );
+        // `NOW` is in early 2026: by the real clock this session expired long ago.
+        accounts
+            .register(register_request("aurore", "aurore@example.org"), NOW)
+            .await
+            .unwrap();
+        let purge = tokio::spawn(purge_expired_sessions_periodically(pool.clone()));
+        let mut remaining_sessions = 1;
+        for _ in 0..100 {
+            let (count,): (i64,) = sqlx::query_as("SELECT count(*) FROM sessions")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            remaining_sessions = count;
+            if remaining_sessions == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        purge.abort();
+        let _cancelled = purge.await;
+        pool.close().await;
+        assert_eq!(remaining_sessions, 0);
     }
 
     #[tokio::test]

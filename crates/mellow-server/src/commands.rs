@@ -9,6 +9,7 @@ use tokio::net::TcpListener;
 
 use crate::config::{ServerConfig, TlsConfig};
 use crate::domain::account_rules::RegistrationMode;
+use crate::domain::accounts::purge_expired_sessions_periodically;
 use crate::http::{AppState, make_service};
 use crate::storage::{
     MasterKey, create_private_directory, migrate_with_backup, open_encrypted_database,
@@ -170,10 +171,15 @@ pub async fn serve_instance(
             );
         }
         let state = AppState::new(pool.clone(), config);
-        match &config.tls {
+        let session_purge = tokio::spawn(purge_expired_sessions_periodically(pool.clone()));
+        let served = match &config.tls {
             Some(tls) => crate::tls::serve_tls_until_shutdown(listener, state, tls, shutdown).await,
             None => serve_until_shutdown(listener, state, shutdown).await,
-        }
+        };
+        // Awaited, so the purge holds no connection when the pool closes.
+        session_purge.abort();
+        let _cancelled = session_purge.await;
+        served
     }
     .await;
 

@@ -40,6 +40,13 @@ pub struct NewSession {
     pub expires_at_unix_milliseconds: u64,
 }
 
+/// The user behind an unexpired session, with when that session was last recorded as used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionOwner {
+    pub user: StoredUser,
+    pub last_seen_at_unix_milliseconds: u64,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AccountStorageError {
     #[error("this username is already taken")]
@@ -161,14 +168,15 @@ pub async fn insert_session(
 ///
 /// # Errors
 /// Fails on database errors only.
-pub async fn find_user_by_session(
+pub async fn find_session_owner(
     pool: &SqlitePool,
     token_sha256: &SessionTokenSha256,
     now_unix_milliseconds: u64,
-) -> Result<Option<StoredUser>, AccountStorageError> {
-    let row: Option<StoredUserRow> = sqlx::query_as(concat!(
+) -> Result<Option<SessionOwner>, AccountStorageError> {
+    let row: Option<sqlx::sqlite::SqliteRow> = sqlx::query(concat!(
         "SELECT ",
         select_user_columns!(),
+        ", sessions.last_seen_at_unix_milliseconds",
         " FROM sessions JOIN users ON users.id = sessions.user_id",
         " WHERE sessions.token_sha256 = ? AND sessions.expires_at_unix_milliseconds > ?"
     ))
@@ -176,7 +184,51 @@ pub async fn find_user_by_session(
     .bind(to_sqlite_integer(now_unix_milliseconds)?)
     .fetch_optional(pool)
     .await?;
-    row.map(stored_user_from_row).transpose()
+    row.map(|row| {
+        use sqlx::{FromRow as _, Row as _};
+        let last_seen: i64 = row.try_get("last_seen_at_unix_milliseconds")?;
+        Ok(SessionOwner {
+            user: stored_user_from_row(StoredUserRow::from_row(&row)?)?,
+            last_seen_at_unix_milliseconds: u64::try_from(last_seen)
+                .map_err(|_| AccountStorageError::IntegerOutOfRange)?,
+        })
+    })
+    .transpose()
+}
+
+/// Records that a session was used at `now_unix_milliseconds`; never moves it backwards.
+///
+/// # Errors
+/// Fails on database errors.
+pub async fn record_session_use(
+    pool: &SqlitePool,
+    token_sha256: &SessionTokenSha256,
+    now_unix_milliseconds: u64,
+) -> Result<(), AccountStorageError> {
+    sqlx::query(
+        "UPDATE sessions SET last_seen_at_unix_milliseconds = ?1 \
+         WHERE token_sha256 = ?2 AND last_seen_at_unix_milliseconds < ?1",
+    )
+    .bind(to_sqlite_integer(now_unix_milliseconds)?)
+    .bind(token_sha256.as_slice())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Deletes the sessions expired at `expired_before_unix_milliseconds` and returns how many there were.
+///
+/// # Errors
+/// Fails on database errors.
+pub async fn delete_expired_sessions(
+    pool: &SqlitePool,
+    expired_before_unix_milliseconds: u64,
+) -> Result<u64, AccountStorageError> {
+    let result = sqlx::query("DELETE FROM sessions WHERE expires_at_unix_milliseconds <= ?")
+        .bind(to_sqlite_integer(expired_before_unix_milliseconds)?)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
 }
 
 /// Idempotent: deleting an unknown session is not an error.
