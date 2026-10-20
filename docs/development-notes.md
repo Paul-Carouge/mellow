@@ -6,15 +6,15 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 
 ## Where things stand (2026-10-20)
 - `main` holds only the first PR (#1). Everything else is an open stack of pull requests, each based on the previous branch:
-  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → #13 (`feat/desktop-session-persistence`) → #14 (`fix/trusted-proxy-addresses`) → #15 (`feat/desktop-message-actions`) → #16 (`fix/server-message-ordering-and-nonce-deduplication`) → #17 (`feat/client-message-outbox`).
+  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → #13 (`feat/desktop-session-persistence`) → #14 (`fix/trusted-proxy-addresses`) → #15 (`feat/desktop-message-actions`) → #16 (`fix/server-message-ordering-and-nonce-deduplication`) → #17 (`feat/client-message-outbox`) → `fix/session-last-seen-and-expired-purge`.
 - Merge them in that order. After merging one into `main`, retarget the next PR's base to `main` before merging it.
-- New work branches from the tip of the stack (today `feat/client-message-outbox`) and opens a PR stacked on the latest one, until the stack is merged.
+- New work branches from the tip of the stack (today `fix/session-last-seen-and-expired-purge`) and opens a PR stacked on the latest one, until the stack is merged.
 - CI never ran: GitHub Actions is blocked by the account's billing. Everything is verified on macOS only.
 
 ## Next candidates
 1. M1 release candidate: run a real instance on a VPS (`init --domain … --use-staging-certificates`, then production), connect the desktop over https, then tag.
 2. End-to-end ACME tests against Pebble (local test certificate authority).
-3. Known gaps listed in the ROADMAP status: `sessions.last_seen` and expired session purge, then automatic outbox resend on reconnect and an on-disk outbox.
+3. Known gaps listed in the ROADMAP status: automatic outbox resend on reconnect and an on-disk outbox, then history pagination on scroll-up.
 
 ## Workflow that worked
 - One branch per milestone step (`feat/…`), atomic Conventional Commits, a `docs:` commit for README/ROADMAP/ARCHITECTURE/ADR.
