@@ -2,10 +2,10 @@
 
 Each milestone ends with something usable end to end. Scope changes are made here first.
 
-## Status (2026-10-19)
+## Status (2026-10-20)
 
 ### Done, in review
-Stacked pull requests, to merge in this order: #2 workspace + SQLCipher storage → #3 Slint spike → #4 Discord-like desktop shell + token generator → #5 Figtree font and Phosphor icons → #6 server `init`/`serve` (M1.1) → #7 accounts and sessions (M1.2) → #8 guilds, channels, invites (M1.3a) → #9 messages and read states (M1.3b) → #10 WebSocket gateway (M1.4) → #11 client core and desktop on real data (M1.5) → #12 built-in TLS with ACME (M1.6). Every server PR was reviewed by `code-reviewer` and `security-auditor`, with findings fixed.
+Stacked pull requests, to merge in this order: #2 workspace + SQLCipher storage → #3 Slint spike → #4 Discord-like desktop shell + token generator → #5 Figtree font and Phosphor icons → #6 server `init`/`serve` (M1.1) → #7 accounts and sessions (M1.2) → #8 guilds, channels, invites (M1.3a) → #9 messages and read states (M1.3b) → #10 WebSocket gateway (M1.4) → #11 client core and desktop on real data (M1.5) → #12 built-in TLS with ACME (M1.6) → #13 desktop session persistence → #14 trusted proxy addresses → #15 desktop edit, delete and reply → #16 ordered message sends and nonce deduplication → #17 client message outbox → #18 hourly session use records and expired session purge → #19 automatic outbox resend after reconnect. Every server PR was reviewed by `code-reviewer` and `security-auditor`, with findings fixed.
 
 ### Blocked
 - **CI does not run**: GitHub Actions refuses jobs because of the account's billing (Settings → Billing & plans). Until fixed, everything is verified on macOS only; SQLCipher on Linux and Windows is unproven, so ADR-0006 stays *Proposed*.

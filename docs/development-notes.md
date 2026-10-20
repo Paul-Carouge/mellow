@@ -1,12 +1,12 @@
 # Development notes
 
 Practical notes for the next iterations: how work is organised, and the traps already hit. The
-project state (what is done, blocked, next, known gaps) lives in [ROADMAP.md](../ROADMAP.md#status-2026-10-19);
+project state (what is done, blocked, next, known gaps) lives in [ROADMAP.md](../ROADMAP.md#status-2026-10-20);
 decisions live in [docs/adr/](adr/). Update this file when a new trap or habit appears.
 
 ## Where things stand (2026-10-20)
 - `main` holds only the first PR (#1). Everything else is an open stack of pull requests, each based on the previous branch:
-  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → #13 (`feat/desktop-session-persistence`) → #14 (`fix/trusted-proxy-addresses`) → #15 (`feat/desktop-message-actions`) → #16 (`fix/server-message-ordering-and-nonce-deduplication`) → #17 (`feat/client-message-outbox`) → #18 (`fix/session-last-seen-and-expired-purge`) → `feat/outbox-resend-on-reconnect`.
+  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → #13 (`feat/desktop-session-persistence`) → #14 (`fix/trusted-proxy-addresses`) → #15 (`feat/desktop-message-actions`) → #16 (`fix/server-message-ordering-and-nonce-deduplication`) → #17 (`feat/client-message-outbox`) → #18 (`fix/session-last-seen-and-expired-purge`) → #19 (`feat/outbox-resend-on-reconnect`).
 - Merge them in that order. After merging one into `main`, retarget the next PR's base to `main` before merging it.
 - New work branches from the tip of the stack (today `feat/outbox-resend-on-reconnect`) and opens a PR stacked on the latest one, until the stack is merged.
 - CI never ran: GitHub Actions is blocked by the account's billing. Everything is verified on macOS only.
