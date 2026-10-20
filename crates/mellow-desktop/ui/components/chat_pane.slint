@@ -33,6 +33,8 @@ component HoverActionBar inherits Rectangle {
     callback copy-text();
     // True when Shift was held: delete without the confirmation dialog, as on Discord.
     callback delete(bool);
+    // Without it a Rectangle fills its parent: the bar spanned the row and pushed its buttons off the left edge.
+    width: action-buttons.preferred-width;
     height: MellowComponent.action-bar-height;
     border-radius: MellowComponent.action-bar-radius;
     border-width: 1px;
@@ -41,7 +43,7 @@ component HoverActionBar inherits Rectangle {
     // shortcut: Edit and Delete sit in the bar itself until the More menu (DESIGN.md §5.4) exists;
     // Reply stays on your own messages for the same reason.
     hover-area := TouchArea {
-        HorizontalLayout {
+        action-buttons := HorizontalLayout {
             if root.is-own: IconButton {
                 icon: @image-url("../../icons/pencil-simple.svg");
                 label: "Edit";
