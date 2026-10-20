@@ -5,6 +5,7 @@ members = [
     "crates/mellow-desktop",
     "crates/mellow-protocol",
     "crates/mellow-server",
+    "crates/mellow-update",
     "xtask",
 ]
 
@@ -31,6 +32,7 @@ hyper-util = { version = "0.1.21", features = ["tokio"] }
 ipnet = { version = "2.12.2", features = ["serde"] }
 mellow-protocol = { path = "crates/mellow-protocol" }
 mellow-client-core = { path = "crates/mellow-client-core" }
+mellow-update = { path = "crates/mellow-update" }
 # Already in the tree through rustls-acme; tests sign the local ACME test authority's HTTPS certificate with it.
 rcgen = { version = "0.13.2", default-features = false, features = ["pem", "aws_lc_rs"] }
 bitflags = "2.13.2"

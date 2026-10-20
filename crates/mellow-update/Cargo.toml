@@ -1,0 +1,24 @@
+[package]
+name = "mellow-update"
+description = "Finds, verifies and installs signed Mellow releases (ADR-0003, ADR-0016)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Ed25519 minisign verification only, no dependencies of its own (ADR-0016).
+minisign-verify = "0.3.0"
+reqwest.workspace = true
+# Already in the tree through the workspace's dependencies; compares release versions.
+semver = "1.0.28"
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+
+
+[lints]
+workspace = true
