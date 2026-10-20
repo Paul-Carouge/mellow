@@ -1,11 +1,12 @@
 # Mellow design document
 
-Status: draft v0.2 (2026-10-19). Owner: design. Applies to the Slint desktop client, the Android client (Jetpack Compose, Material 3 Expressive) and the admin web UI embedded in the server.
+Status: draft v0.6 (2026-10-20). Owner: design. Applies to the Slint desktop client, the Android client (Jetpack Compose, Material 3 Expressive) and the admin web UI embedded in the server.
 
 This document is the reference for every visual and interaction decision in Mellow. Developers should be able to build any MVP screen from it without inventing a colour, a size or a sentence. When something is missing, add it here first, then implement it. Every value named here exists in `design/tokens.json`.
 
 ## Changelog
 
+- **2026-10-20, v0.6 — user settings and app updates on desktop:** the user panel's settings button opens the user settings screen (5.3, 5.9) instead of a one-item menu; "Sign out" moves into the settings navigation; About shows the app version and drives the self-update, with a green dot on the settings button while an update waits; Primary and disabled variants of the desktop `Button` (6.1); `component.settings.*`, `component.user-panel.update-badge*` and `component.button.disabled-opacity` tokens; Phosphor `x` (Bold) icon for the close button.
 - **2026-10-20, v0.5 — channel permissions on desktop:** read-only channel rows (5.3), Delete and Reply follow the user's permissions in the hover action bar (5.4), and the read-only composer (5.5); `component.composer.locked-text` token.
 - **2026-10-19, v0.4 — message actions on desktop:** edit, delete and reply presentation (5.4, 5.5); `component.dialog.*`, `component.message.editor-*`, `component.composer.reply-bar-*` and `color.neutral.fill-hover` tokens.
 - **2026-10-19, v0.3 — font and icons chosen by the user:** Figtree (bundled, OFL) replaces Noto Sans as the UI and message font, Noto Sans stays as the fallback for other scripts; the icon set is Phosphor (MIT), Fill weight, recoloured from tokens. Sections 2.4 and 2.9 are authoritative where older text below still says Noto Sans.
@@ -814,7 +815,7 @@ States:
 - Empty server (no channels, user can manage): "No channels yet" + "Create a channel". User cannot manage: "No channels you can see yet. Ask a moderator for access."
 - Error: inline banner "Couldn't load channels for Rust Lyon." with "Try again", while keeping cached channels.
 
-User panel (52 px, `surface.sidebar-footer`): avatar 32 with status dot, display name (`type.user-panel-name`), a second line with the custom status or `@username` (and `@instance` when ≥ 2 instances) in `text.muted`, and a settings button. Clicking the avatar or name opens the status menu (Online, Idle, Do not disturb, Invisible, custom status). Until the user settings screen (5.9) exists, the settings button opens a context menu anchored above it, right edges aligned, with one danger item, "Sign out" (Discord's "Log Out"); the item takes focus on open, `Esc` or a click outside closes the menu and focus returns to the button.
+User panel (52 px, `surface.sidebar-footer`): avatar 32 with status dot, display name (`type.user-panel-name`), a second line with the custom status or `@username` (and `@instance` when ≥ 2 instances) in `text.muted`, and a settings button. Clicking the avatar or name opens the status menu (Online, Idle, Do not disturb, Invisible, custom status). The settings button opens the user settings screen (5.9); closing it returns focus to the button (to the composer when the sidebar is hidden below 792 px). While an app update is available or ready to install, the button carries a 10 px dot in `component.user-panel.update-badge` (`positive.fill`, 3 px cut-out ring in the panel colour, top trailing corner, like presence dots) and its accessible label becomes "User settings, update available"; the dot is a shape on the button, so it does not rely on colour alone.
 
 ### 5.4 Message list
 
@@ -974,6 +975,25 @@ Same full-screen layout as server settings. Sections: My account (per instance),
 - Instances: list with status (Connected, Reconnecting, Signed out), "Sign out", "Connect another instance".
 - About: version, open-source licences (including Twemoji attribution), link to the source code (AGPL-3.0 requires offering it), instance versions.
 
+Desktop, first iteration (`UserSettingsScreen` in `user_settings.slint`, `component.settings.*`): the screen covers the whole window and hides the shell, so `Tab` stays inside it and screen readers do not reach the panes behind. The navigation column (218 px, 60 px top padding, 32 px items with a 2 px gap, `type.channel-name`) sits right-aligned in a `surface.sidebar` area that grows with the window; the content area grows too, and the page is capped at 740 px with 60 px top and 40 px side padding (16 px below 792 px). The close button (36 px circle, 2 px `text.secondary` border, 18 px `x` icon) with "Esc" under it sits 24 px after the page (8 px below 792 px). Navigation: section label "App settings" (rendered "APP SETTINGS" with `type.category`), "About" (selected), a separator, then "Sign out" (danger, last), which signs out at once and closes the screen, as the old menu item did. "Sign out" fills `danger.fill` with `text.on-danger` on hover, like danger menu items, because `text.danger` on `state.hover` is 4.34:1 in the light theme; keyboard focus shows only the ring.
+
+Keyboard and screen readers: focus moves to "About" when the screen opens; `Esc` closes it from anywhere inside. The navigation is a navigation landmark labelled "User settings" holding a tab list ("App settings"); the page is a tab panel labelled "About"; the close button is labelled "Close settings" with the description "Esc". Update status changes are announced through a polite live region that exists from the start.
+
+About page: the page title "About" (`type.heading-lg`), then "Mellow 0.1.0" (`type.heading-md`, just "Mellow" while the version is unknown), then the "Updates" section (label in `type.category`, sentence in `type.body-lg`, one Primary button 16 px under it):
+
+| Update status | Sentence | Button |
+|---|---|---|
+| Unknown (no check yet) | — | "Check for updates" |
+| Up to date | "Mellow is up to date." | "Check for updates" |
+| Checking | "Checking for updates…" | "Check for updates", disabled |
+| Available | "Mellow 0.2.0 is available." | "Update Mellow" |
+| Downloading | "Downloading Mellow 0.2.0…" | "Update Mellow", disabled |
+| Ready to restart | "Mellow 0.2.0 is ready. Restart to finish updating." | "Restart Mellow" |
+| Failed | The error from the app, after a `warning-circle` icon in `text.danger`, for example "Couldn't reach the update server. Check your connection and try again." | "Try again" (checks again) |
+| Unsupported | The reason from the app, for example "Mellow can't replace itself in this folder. Download the new version from github.com/Paul-Carouge/mellow/releases." | None |
+
+The button stays in place while busy, so keyboard focus is not lost; when the status becomes unsupported and the button disappears, focus moves to the screen itself so `Esc` still works. Still to come on this page: licences and the source code link (both required above).
+
 ### 5.10 Quick switcher
 
 `Ctrl+K` (or "Find or start a conversation") opens Discord's quick switcher: a 570 px dialog on `surface.popover`, `elevation.high`, with a large input ("Where would you like to go?", `type.heading-lg`) and results grouped by type (conversations, channels, servers), each with an icon, the server or instance name in `text.muted` and an unread or mention indicator. Prefixes filter as on Discord: `@` people, `#` text channels, `*` servers. Arrows move, `Enter` opens, `Esc` closes. Empty: "No results for 'anx'. Check the spelling or search another server." The result list is a listbox; the count is announced politely ("5 results").
@@ -997,7 +1017,7 @@ All components use tokens only (component tier first), support light and dark th
 
 | # | Component | Variants | States | Notes |
 |---|---|---|---|---|
-| 6.1 | Button | Primary (`accent.fill`), Secondary (`neutral.fill`), Danger (`danger.fill`), Link (text only, `text.link`) · sizes 38 (default), 32 (small), 44 (large and web), 48 on Android | Default, hover, pressed, focus, disabled, loading (label kept, progress inline) | `radius.xs`, `type.button`. One primary button per view. Labels are verbs ("Save changes"). |
+| 6.1 | Button | Primary (`accent.fill`), Secondary (`neutral.fill`), Danger (`danger.fill`), Link (text only, `text.link`) · sizes 38 (default), 32 (small), 44 (large and web), 48 on Android | Default, hover, pressed, focus, disabled, loading (label kept, progress inline) | `radius.xs`, `type.button`. One primary button per view. Labels are verbs ("Save changes"). Desktop: disabled and loading buttons dim their fill and label to `button.disabled-opacity` (the focus ring keeps full contrast) and stay focusable, so focus is not lost while an action runs. |
 | 6.2 | IconButton | Standard, Toggle, Danger | Same as Button, plus selected | `text.secondary` icon, `state.hover` background; always a tooltip and an accessible label; target ≥ `size.hit.*`. |
 | 6.3 | TextField | Single line, Multiline, Password (show/hide), Search (with clear) | Default, hover, focus, filled, error (message below, `text.danger` icon and text), disabled, read-only | `surface.field` with 1 px `border.strong`, `radius.xs`; uppercase label above, never placeholder-only. |
 | 6.4 | Select | Single select | Closed, open, focus, error, disabled | Options use the ContextMenu visuals. |
@@ -1039,7 +1059,7 @@ All components use tokens only (component tier first), support light and dark th
 | 6.40 | Badge | Count (mention), "New" pill | — | `component.badge.*`; "99+" cap; accessible text "3 mentions". |
 | 6.41 | RoleChip | With colour dot | Removable | Colour dot plus name, never colour alone. |
 | 6.42 | PermissionRow | Switch (role), tri-state (channel override) | Sensitive marker, locked | Plain-language description. |
-| 6.43 | SettingsNav | Desktop column, Android list, admin web | Selected, focus, danger item | Discord settings look; 44 px items on web. |
+| 6.43 | SettingsNav | Desktop column, Android list, admin web | Selected, focus, danger item | Discord settings look; 44 px items on web. Desktop: `component.settings.nav-*`, 32 px items; the danger item fills `danger.fill` on hover (see 5.9). |
 | 6.44 | UnsavedChangesBar | — | Visible, attention (leave attempted), saving, error | `elevation.high`. |
 | 6.45 | Tabs | Standard | Selected, focus | Arrow keys move between tabs. |
 | 6.46 | PaneResizeHandle | Vertical | Hover, dragging, focus | Keyboard resize. |
