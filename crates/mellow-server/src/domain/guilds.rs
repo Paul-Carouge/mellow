@@ -825,6 +825,15 @@ impl Guilds {
         if is_new_member {
             // Subscribed before the snapshot, so nothing between the two is missed.
             self.events.subscribe_user_to_guild(user_id, guild_id);
+            // A kick or ban committed between the join and the subscription found nothing to
+            // unsubscribe: check again, so the removed user hears nothing more.
+            if guild_storage::find_membership(&self.pool, guild_id, user_id)
+                .await?
+                .is_none()
+            {
+                self.events.unsubscribe_user_from_guild(user_id, guild_id);
+                return Err(GuildError::NotFound);
+            }
         }
         let guild = self.get_guild(user_id, guild_id).await?;
         if is_new_member {
@@ -1164,7 +1173,7 @@ impl Guilds {
     }
 
     /// The moderator, once `needed` is checked and `target_id` is neither them nor the owner.
-    async fn moderator(
+    async fn require_moderator_over_target(
         &self,
         user_id: Snowflake,
         guild_id: Snowflake,
@@ -1187,9 +1196,9 @@ impl Guilds {
         Ok((membership, manager))
     }
 
-    /// Whether `target_id` is a member; `MissingPermissions` if they are one ranked at or above
-    /// the moderator.
-    async fn is_outranked_member(
+    /// Returns whether `target_id` is a member, after refusing (`MissingPermissions`) a member
+    /// ranked at or above the moderator.
+    async fn require_rank_below_moderator_if_member(
         &self,
         manager: &RoleManager,
         membership: &Membership,
@@ -1217,10 +1226,10 @@ impl Guilds {
         target_id: Snowflake,
     ) -> Result<(), GuildError> {
         let (membership, manager) = self
-            .moderator(user_id, guild_id, target_id, Permissions::KICK_MEMBERS)
+            .require_moderator_over_target(user_id, guild_id, target_id, Permissions::KICK_MEMBERS)
             .await?;
         if !self
-            .is_outranked_member(&manager, &membership, guild_id, target_id)
+            .require_rank_below_moderator_if_member(&manager, &membership, guild_id, target_id)
             .await?
         {
             return Err(GuildError::NotFound);
@@ -1242,10 +1251,10 @@ impl Guilds {
     ) -> Result<(), GuildError> {
         let reason = normalize_ban_reason(&request.reason)?;
         let (membership, manager) = self
-            .moderator(user_id, guild_id, target_id, Permissions::BAN_MEMBERS)
+            .require_moderator_over_target(user_id, guild_id, target_id, Permissions::BAN_MEMBERS)
             .await?;
         if !self
-            .is_outranked_member(&manager, &membership, guild_id, target_id)
+            .require_rank_below_moderator_if_member(&manager, &membership, guild_id, target_id)
             .await?
             && !guild_storage::user_exists(&self.pool, target_id).await?
         {
@@ -2871,6 +2880,7 @@ mod tests {
             .ban_member(owner, guild.id, fixture.third, ban_request("  spam  "), NOW)
             .await
             .unwrap();
+        let banned_snapshot = guilds.get_guild(fixture.third, guild.id).await;
         let invite = guilds
             .create_invite(owner, guild.id, CreateInviteRequest::default(), NOW)
             .await
@@ -2908,6 +2918,10 @@ mod tests {
             .await;
         fixture.pool.close().await;
 
+        assert!(
+            matches!(banned_snapshot, Err(GuildError::NotFound)),
+            "a ban removes the member"
+        );
         assert!(matches!(rejoin_while_banned, Err(GuildError::Banned)));
         assert_eq!(bans.len(), 1);
         assert_eq!(
@@ -2926,6 +2940,47 @@ mod tests {
         ));
         assert!(matches!(unban_again, Err(GuildError::NotFound)));
         assert!(rejoin_after_unban.is_ok(), "{rejoin_after_unban:?}");
+    }
+
+    #[tokio::test]
+    async fn moderators_ban_only_members_ranked_below_them() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        join(&fixture, guild.id, fixture.third).await;
+        let guilds = &fixture.guilds;
+        let banners = guilds
+            .create_role(
+                fixture.owner,
+                guild.id,
+                role_request("Banners", Permissions::BAN_MEMBERS),
+                NOW,
+            )
+            .await
+            .unwrap();
+        for member in [fixture.other, fixture.third] {
+            guilds
+                .add_member_role(fixture.owner, guild.id, member, banners.id)
+                .await
+                .unwrap();
+        }
+        let other = fixture.other;
+        let equal_rank = guilds
+            .ban_member(other, guild.id, fixture.third, ban_request(""), NOW)
+            .await;
+        let owner = guilds
+            .ban_member(other, guild.id, fixture.owner, ban_request(""), NOW)
+            .await;
+        let self_ban = guilds
+            .ban_member(other, guild.id, other, ban_request(""), NOW)
+            .await;
+        fixture.pool.close().await;
+        assert_all_refused(vec![equal_rank, owner]);
+        assert!(matches!(
+            self_ban,
+            Err(GuildError::InvalidInput(
+                GuildRuleViolation::ModerationTarget
+            ))
+        ));
     }
 
     #[tokio::test]

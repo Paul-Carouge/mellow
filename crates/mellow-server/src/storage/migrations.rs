@@ -421,7 +421,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bans_follow_their_guild_and_user() {
+    async fn bans_are_dropped_with_their_guild() {
         const LAST_VERSION_WITHOUT_BANS: i64 = 6;
         let directory = tempfile::tempdir().unwrap();
         let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())

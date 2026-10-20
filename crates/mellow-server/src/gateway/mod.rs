@@ -262,6 +262,24 @@ async fn identify(
         }
     };
     state.events.activate_session(hub_key, &guild_ids);
+    // A removal (leave, kick, ban) committed between the read above and the subscription found
+    // nothing to unsubscribe: read again, so a guild the user is no longer in stays silent.
+    let current_guild_ids: HashSet<Snowflake> = match state.guilds.list_my_guilds(user.id).await {
+        Ok(guilds) => guilds.iter().map(|guild| guild.id).collect(),
+        Err(error) => {
+            tracing::warn!(%error, "gateway identify: cannot list guilds");
+            state.events.unregister_session(hub_key);
+            return None;
+        }
+    };
+    for removed_guild_id in guild_ids
+        .iter()
+        .filter(|guild_id| !current_guild_ids.contains(guild_id))
+    {
+        state
+            .events
+            .unsubscribe_user_from_guild(user.id, *removed_guild_id);
+    }
     let Some(session_id) = generate_session_id() else {
         state.events.unregister_session(hub_key);
         return None;
@@ -899,6 +917,64 @@ mod tests {
         receive_dispatch(&mut owner_socket, |event| {
             matches!(event, GatewayEvent::GuildRolesUpdate { roles, .. }
                 if roles.iter().all(|listed| listed.id != role.id))
+        })
+        .await;
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_banned_member_loses_the_guild_on_live_sessions() {
+        let fixture = fixture().await;
+        let banned = fixture
+            .state
+            .accounts
+            .register(register_request("banned", "banned@example.org"), now())
+            .await
+            .unwrap();
+        let owner = fixture
+            .state
+            .accounts
+            .authenticate(&fixture.owner_token, now())
+            .await
+            .unwrap();
+        let invite = fixture
+            .state
+            .guilds
+            .create_invite(
+                owner.id,
+                fixture.guild_id,
+                CreateInviteRequest::default(),
+                now(),
+            )
+            .await
+            .unwrap();
+        fixture
+            .state
+            .guilds
+            .join_with_invite(banned.user.id, &invite.code, now())
+            .await
+            .unwrap();
+        let (mut banned_socket, _) = identified(fixture.address, &banned.token).await;
+        let (mut owner_socket, _) = identified(fixture.address, &fixture.owner_token).await;
+        fixture
+            .state
+            .guilds
+            .ban_member(
+                owner.id,
+                fixture.guild_id,
+                banned.user.id,
+                mellow_protocol::CreateBanRequest::default(),
+                now(),
+            )
+            .await
+            .unwrap();
+        receive_dispatch(
+            &mut banned_socket,
+            |event| matches!(event, GatewayEvent::GuildDelete { id } if *id == fixture.guild_id),
+        )
+        .await;
+        receive_dispatch(&mut owner_socket, |event| {
+            matches!(event, GatewayEvent::GuildMemberRemove { user_id, .. } if *user_id == banned.user.id)
         })
         .await;
         fixture.close().await;
