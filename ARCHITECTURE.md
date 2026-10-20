@@ -203,14 +203,14 @@ Served by the same binary under `/admin`, reserved to instance administrators. S
 ```
 mellow-server init      # create mellow.toml and the data directory, first admin account
 mellow-server serve     # run the server
-mellow-server update    # download, verify and install the latest release, then restart
+mellow-server update    # download, verify and install the latest release (restart the service after)
 mellow-server backup    # consistent snapshot of the database + attachments
 mellow-server admin ... # CLI administration (create user, reset password, …)
 ```
 
 - **Configuration:** one `mellow.toml` file, every key overridable by `MELLOW_*` environment variables. Validation fails fast at startup with a precise message.
 - **TLS:** with a public domain (`[tls]` in `mellow.toml`), the server terminates TLS itself with rustls and obtains and renews certificates through ACME TLS-ALPN-01 on port 443, so no other port is needed ([ADR-0013](docs/adr/0013-built-in-tls-with-acme-tls-alpn.md)). Certificate and account keys live in a private directory outside the data directory. Running behind an existing reverse proxy is supported instead (`behind_tls_reverse_proxy`), trusting `X-Forwarded-For` from loopback and from the networks listed in `trusted_proxy_networks` (a proxy in a container network).
-- **Updates:** releases are signed with an Ed25519 key (minisign format). `update` refuses any binary whose signature does not verify against the public key built into the current binary, replaces the executable atomically and keeps the previous one for rollback ([ADR-0003](docs/adr/0003-self-update-with-signed-releases.md)).
+- **Updates:** releases are signed with an Ed25519 key (minisign format). `update` refuses any binary whose signature does not verify against the public key built into the current binary, checks the trusted comment names the expected asset, refuses an install location another account could change, replaces the executable atomically on Unix and keeps the previous one for `--rollback`, which restores the executable only ([ADR-0003](docs/adr/0003-self-update-with-signed-releases.md), [ADR-0016](docs/adr/0016-sign-releases-in-a-protected-ci-environment.md), [ADR-0018](docs/adr/0018-roll-back-the-executable-only-and-guard-the-install-location.md)). The shared crate `mellow-update` does this for the server and the desktop app.
 - **Service install:** `init` can write a systemd unit (Linux), a launchd plist (macOS) or register a Windows service.
 - **Data directory:** `mellow.db`, `attachments/`, `backups/`, `mellow.toml`. The master key file lives outside it (default `/etc/mellow/master.key` on Linux). Restoring an instance needs the data directory **and** the key file, which must be backed up separately ([ADR-0006](docs/adr/0006-tls-and-encryption-at-rest.md)).
 

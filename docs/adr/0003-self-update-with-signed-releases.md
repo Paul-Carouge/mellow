@@ -1,6 +1,6 @@
 # 0003. Update the server in place from signed releases
 
-- Status: Accepted, amended by [ADR-0016](0016-sign-releases-in-a-protected-ci-environment.md) (the signing key lives in a protected CI environment)
+- Status: Accepted, amended by [ADR-0016](0016-sign-releases-in-a-protected-ci-environment.md) (the signing key lives in a protected CI environment) and [ADR-0018](0018-roll-back-the-executable-only-and-guard-the-install-location.md) (rollback restores the executable only; install locations are checked)
 - Date: 2026-10-19
 
 ## Context
