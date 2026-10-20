@@ -33,6 +33,8 @@ Each tag `vX.Y.Z` publishes, on the [releases page](https://github.com/Paul-Caro
 minisign -V -p release/minisign.pub -m mellow-server-0.1.0-x86_64-unknown-linux-gnu
 ```
 The macOS and Windows builds are not signed by Apple or Microsoft yet, so the first launch shows a warning (macOS: right-click → Open).
+Updating an instance is one command: `sudo mellow-server update` installs the latest release in place of the running executable after checking its signature (the replaced one is kept as `mellow-server.previous`), then restart the service; `--check` only compares versions and `--rollback` puts the previous executable back. With Docker Compose, use [`deploy/docker`](deploy/docker/README.md) and its `mellow-update` instead.
+
 To publish a release (maintainer): bump `version` in `Cargo.toml`, move the `CHANGELOG.md` entries under the new version, merge, then `git tag vX.Y.Z origin/main && git push origin vX.Y.Z` and approve the `release` environment in the workflow run ([ADR-0016](docs/adr/0016-sign-releases-in-a-protected-ci-environment.md)). Before approving, check that the run's commit is the tip of `main` you meant to release and that `release.yml` did not change unexpectedly: the approved job receives the signing key.
 
 ## Run a development instance

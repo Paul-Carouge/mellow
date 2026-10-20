@@ -66,6 +66,17 @@ enum Command {
         #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
         config: PathBuf,
     },
+    /// Install the latest signed release in place of this executable (ADR-0003); the previous
+    /// one is kept for `--rollback`. Restart the service afterwards.
+    Update {
+        /// Only print the installed and latest versions.
+        #[arg(long, conflicts_with = "rollback")]
+        check: bool,
+        /// Put the executable replaced by the last update back. The database is not touched:
+        /// after a migration, restore its pre-migration backup from `backups/` as well.
+        #[arg(long)]
+        rollback: bool,
+    },
     /// Instance administration.
     Admin {
         #[command(subcommand)]
@@ -156,6 +167,50 @@ fn read_password() -> Result<Zeroizing<String>> {
     ))
 }
 
+async fn update_executable(check: bool, rollback: bool) -> Result<()> {
+    if std::path::Path::new("/.dockerenv").exists() {
+        anyhow::bail!(
+            "this server runs in a container, whose files do not survive a restart: update the \
+             image instead (deploy/docker/mellow-update)"
+        );
+    }
+    let executable = std::env::current_exe().context("cannot locate this executable")?;
+    if rollback {
+        mellow_update::roll_back_executable(&executable)?;
+        eprintln!(
+            "Rolled back {}. Restart the service to run the previous version.",
+            executable.display()
+        );
+        return Ok(());
+    }
+    let client = mellow_update::UpdateClient::new()?;
+    let release = client.latest_release().await?;
+    let current = mellow_update::current_version();
+    if check {
+        eprintln!("installed: {current}\nlatest:    {}", release.version);
+        return Ok(());
+    }
+    if !mellow_update::is_newer_than_current(&release) {
+        eprintln!("Mellow {current} is up to date.");
+        return Ok(());
+    }
+    eprintln!("Downloading Mellow {}…", release.version);
+    let contents = client
+        .download_verified_executable(&release, mellow_update::Program::Server)
+        .await?;
+    mellow_update::install_executable(&contents, &executable)?;
+    eprintln!(
+        "Installed Mellow {} (signature verified) in {}; the previous executable is {}.\n\
+         Restart the service to run it, e.g. `sudo systemctl restart mellow`. The database is \
+         backed up before any migration; `mellow-server update --rollback` puts the previous \
+         executable back.",
+        release.version,
+        executable.display(),
+        mellow_update::previous_executable_path(&executable).display(),
+    );
+    Ok(())
+}
+
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Init {
@@ -218,6 +273,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Serve { config } => {
             serve_instance(&load_config(&config)?, shutdown_signal()).await
         }
+        Command::Update { check, rollback } => update_executable(check, rollback).await,
         Command::Admin {
             command:
                 AdminCommand::CreateUser {
