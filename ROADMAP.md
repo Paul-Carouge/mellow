@@ -8,11 +8,11 @@ Each milestone ends with something usable end to end. Scope changes are made her
 Merged into `main` on 2026-10-20: #1 to #29, from the workspace and SQLCipher storage through M1 (server, gateway, client core, desktop on real data, built-in TLS with ACME, outbox, history pagination, message-list states) to the first M2 steps (#24 guild roles, #25 role reordering, #27 channel permission overwrites and `VIEW_CHANNEL` filtering, #28 kick and ban, #29 audit log). Every server PR was reviewed by `code-reviewer` and `security-auditor`, with findings fixed. No release is tagged yet.
 
 ### Blocked
-- **CI does not run**: GitHub Actions refuses jobs because of the account's billing (Settings → Billing & plans). Until fixed, everything is verified on macOS only; SQLCipher on Linux and Windows is unproven, so ADR-0006 stays *Proposed*.
+- **CI does not run**: GitHub Actions refuses jobs because of the account's billing (Settings → Billing & plans), even with the repository public. Until fixed, everything is verified on macOS only; SQLCipher on Linux and Windows is unproven, so ADR-0006 stays *Proposed*; no release can be built or signed.
 
 ### Next, in order
-1. **M1 release candidate**: end-to-end run on a real VPS (domain, Let's Encrypt staging then production, desktop client over https), then tag. 2026-10-20: the user's instance (behind Caddy) was redeployed from `main` after #28 (migrations 4 to 7 applied, pre-migration backup taken) and the end-to-end client check passed entirely (sign-in, gateway, send, nonce retry, edit, delete, refusals, logout). Left before tagging: version bump and tag. The ACME path is covered by the Pebble test only (user's decision: the instance stays behind Caddy).
-2. **M2, continued**: the desktop server-settings screens (roles, overwrites, members, bans, audit log), then direct messages. Done on branches, not merged: client-core REST methods for every M2 endpoint; channel permissions in the desktop UI.
+1. **M1 release candidate**: end-to-end run on a real VPS (domain, Let's Encrypt staging then production, desktop client over https), then tag. 2026-10-20: the user's instance (behind Caddy) was redeployed from `main` after #28 (migrations 4 to 7 applied, pre-migration backup taken) and the end-to-end client check passed entirely (sign-in, gateway, send, nonce retry, edit, delete, refusals, logout). 2026-10-20: release workflow, signed assets and the updaters are written (ADR-0016 to ADR-0018), version 0.1.0 is set; left: Actions running, then the tag. The ACME path is covered by the Pebble test only (user's decision: the instance stays behind Caddy).
+2. **M2, continued**: the desktop server-settings screens (roles, overwrites, members, bans, audit log), then direct messages.
 
 ### Known gaps and debts
 - Server: single SQLite writer task (ARCHITECTURE §4.3) not implemented; only message sends are serialized (per-process lock, so a second process such as `admin` writing messages would not be ordered); nonces are deduplicated forever per channel and author, not for a time window, and a deleted message frees its nonce (an outbox retry after the sender deleted it recreates it); the database pool keeps sqlx's 30 s acquire timeout and history reads have no rate limit, so a read flood also queues sends behind the send lock; `messages.author_id` has no `ON DELETE` rule or index, to settle with account deletion; queries are runtime SQL, not compile-time checked (`sqlx` offline data to set up); member list capped at 1 000 instead of paginated; rate limits in memory, per process, and the shared table fails closed when saturated; Windows refused until the master key file gets a protected DACL.
@@ -51,7 +51,7 @@ Merged into `main` on 2026-10-20: #1 to #29, from the workspace and SQLCipher st
 - Push notifications: UnifiedPush, FCM through the push relay.
 
 ## M4 — Self-hosting polish and first release
-- `mellow-server update` with signed releases and rollback, `backup`, service install.
+- `mellow-server update` with signed releases and rollback: written early (2026-10-20), with the desktop updater and a Docker Compose kit; `backup` and service install remain.
 - Packaging for desktop (AppImage/deb/rpm, dmg, MSI) and Android release.
 - Load test at target scale (10 000 MAU, 1 000 concurrent), security audit, documentation site.
 - Release v0.1.0.
