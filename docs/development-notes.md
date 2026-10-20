@@ -5,11 +5,9 @@ project state (what is done, blocked, next, known gaps) lives in [ROADMAP.md](..
 decisions live in [docs/adr/](adr/). Update this file when a new trap or habit appears.
 
 ## Where things stand (2026-10-20)
-- `main` holds only the first PR (#1). Everything else is an open stack of pull requests, each based on the previous branch:
-  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → #13 (`feat/desktop-session-persistence`) → #14 (`fix/trusted-proxy-addresses`) → #15 (`feat/desktop-message-actions`) → #16 (`fix/server-message-ordering-and-nonce-deduplication`) → #17 (`feat/client-message-outbox`) → #18 (`fix/session-last-seen-and-expired-purge`) → #19 (`feat/outbox-resend-on-reconnect`) → #20 (`feat/history-pagination-on-scroll-up`) → #21 (`feat/message-list-states`, message-list states of DESIGN.md §5.4) → #22 (`feat/message-list-jump-to-present`, "Jump to present" bar; manual check in the app pending) → #23 (`test/acme-against-pebble`, end-to-end ACME test against Pebble and its CI job) → #24 (`feat/guild-roles`, first M2 step: named roles and member roles, server, protocol and client-core state) → `feat/role-reordering` (`PUT /guilds/{id}/roles/order`; PR not opened yet). The user checked #20 and #21 by hand in the app on 2026-10-20 (scroll to a channel's top, error and Try again).
+- The whole stack (#2 to #25) is merged into `main`, fast-forwarded PR by PR (each PR retargeted to `main`, then its head pushed to `main`), so the history is linear and every commit kept its hash. Merged branches are deleted. The user checked #20 and #21 by hand in the app; #22 ("Jump to present") still waits for a manual check.
 - Local try-out instance: `mellow-server init --listen-address 127.0.0.1:18080 --registration-mode open` in the scratchpad, seeded through the REST API (rate limit: 10 sends per 10 s per user, so seed with several users).
-- Merge them in that order. After merging one into `main`, retarget the next PR's base to `main` before merging it.
-- New work branches from the tip of the stack (today `feat/role-reordering`) and opens a PR stacked on the latest one, until the stack is merged.
+- New work branches from `main`, one PR per step. When PRs are stacked again, merge them in order by retargeting each to `main` and fast-forwarding `main` to its head (in zsh, write `"origin/${branch}:refs/heads/main"`: `$branch:r…` is read as the `:r` modifier).
 - CI never ran: GitHub Actions is blocked by the account's billing. Everything is verified on macOS only.
 
 ## Next candidates
