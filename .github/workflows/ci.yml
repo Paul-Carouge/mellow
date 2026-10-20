@@ -37,6 +37,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Design tokens are generated and pass their contrast pairs
         run: cargo xtask tokens --check
+      - name: The Docker kit carries the release public key
+        run: cmp release/minisign.pub deploy/docker/minisign.pub
 
   test:
     name: Test (${{ matrix.os }})

@@ -1,0 +1,27 @@
+name: mellow
+
+# Mellow chat server from signed releases. Update: `mellow-update` (or edit both version strings,
+# then `docker compose build && docker compose up -d`).
+# Back up the keys directory separately from the data directory: without the master key the
+# database cannot be decrypted.
+services:
+  mellow:
+    build:
+      context: .
+      args:
+        MELLOW_VERSION: 0.1.0
+    image: local/mellow-server:0.1.0
+    restart: unless-stopped
+    # Behind a reverse proxy, join its Docker network instead of publishing a port.
+    volumes:
+      - ./config:/config:ro
+      - ./data:/data
+      - ./keys:/keys:ro
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ulimits:
+      core: 0          # a core dump would contain the master key
+      nofile: 65536
+    stop_grace_period: 30s   # lets the server close the SQLCipher pool cleanly
