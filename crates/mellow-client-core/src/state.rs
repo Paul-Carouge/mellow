@@ -1037,56 +1037,58 @@ mod tests {
     fn channel_permissions_apply_the_overwrites_of_my_roles_and_of_me() {
         const CLUB: Snowflake = Snowflake::from_raw(310);
         const ANNOUNCEMENTS: Snowflake = Snowflake::from_raw(311);
+        const MUTED: Snowflake = Snowflake::from_raw(312);
         let mut state = ready_state();
         assert_eq!(state.my_channel_permissions(ANNOUNCEMENTS), None);
-        let deny_sending = |id, kind| PermissionOverwrite {
-            id,
-            kind,
+        let muted_role_denies_sending = PermissionOverwrite {
+            id: MUTED,
+            kind: OverwriteKind::Role,
             allow: Permissions::empty(),
             deny: Permissions::SEND_MESSAGES,
         };
-        let guild = |overwrites| Guild {
-            id: CLUB,
-            name: "Other's club".into(),
-            owner_id: OTHER,
-            my_permissions: Permissions::DEFAULT_EVERYONE,
-            my_role_ids: Vec::new(),
-            roles: Vec::new(),
-            channels: vec![Channel {
-                id: ANNOUNCEMENTS,
-                guild_id: CLUB,
-                kind: ChannelKind::Text,
-                name: "announcements".into(),
-                topic: String::new(),
-                parent_id: None,
-                position: 0,
-                permission_overwrites: overwrites,
-            }],
+        let mut can_send_with = |my_permissions, overwrites| {
+            state.apply_event(
+                GatewayEvent::GuildCreate(Box::new(Guild {
+                    id: CLUB,
+                    name: "Other's club".into(),
+                    owner_id: OTHER,
+                    my_permissions,
+                    my_role_ids: vec![MUTED],
+                    roles: Vec::new(),
+                    channels: vec![Channel {
+                        id: ANNOUNCEMENTS,
+                        guild_id: CLUB,
+                        kind: ChannelKind::Text,
+                        name: "announcements".into(),
+                        topic: String::new(),
+                        parent_id: None,
+                        position: 0,
+                        permission_overwrites: overwrites,
+                    }],
+                })),
+                NOW,
+            );
+            let permissions = state.my_channel_permissions(ANNOUNCEMENTS).unwrap();
+            assert!(permissions.contains(Permissions::VIEW_CHANNEL));
+            permissions.contains(Permissions::SEND_MESSAGES)
         };
-        state.apply_event(
-            GatewayEvent::GuildCreate(Box::new(guild(vec![deny_sending(
-                CLUB,
-                OverwriteKind::Role,
-            )]))),
-            NOW,
-        );
-        let permissions = state.my_channel_permissions(ANNOUNCEMENTS).unwrap();
-        assert!(!permissions.contains(Permissions::SEND_MESSAGES));
-        assert!(permissions.contains(Permissions::VIEW_CHANNEL));
-
-        state.apply_event(
-            GatewayEvent::GuildCreate(Box::new(guild(vec![PermissionOverwrite {
-                allow: Permissions::SEND_MESSAGES,
-                deny: Permissions::empty(),
-                ..deny_sending(ME, OverwriteKind::Member)
-            }]))),
-            NOW,
-        );
+        assert!(!can_send_with(
+            Permissions::DEFAULT_EVERYONE,
+            vec![muted_role_denies_sending.clone()]
+        ));
+        let member_allows_sending = PermissionOverwrite {
+            id: ME,
+            kind: OverwriteKind::Member,
+            allow: Permissions::SEND_MESSAGES,
+            deny: Permissions::empty(),
+        };
+        assert!(can_send_with(
+            Permissions::DEFAULT_EVERYONE,
+            vec![muted_role_denies_sending.clone(), member_allows_sending]
+        ));
         assert!(
-            state
-                .my_channel_permissions(ANNOUNCEMENTS)
-                .unwrap()
-                .contains(Permissions::SEND_MESSAGES)
+            can_send_with(Permissions::ADMINISTRATOR, vec![muted_role_denies_sending]),
+            "administrators ignore overwrites"
         );
     }
 
