@@ -6,16 +6,17 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 
 ## Where things stand (2026-10-20)
 - `main` holds only the first PR (#1). Everything else is an open stack of pull requests, each based on the previous branch:
-  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → #13 (`feat/desktop-session-persistence`) → #14 (`fix/trusted-proxy-addresses`) → #15 (`feat/desktop-message-actions`) → #16 (`fix/server-message-ordering-and-nonce-deduplication`) → #17 (`feat/client-message-outbox`) → #18 (`fix/session-last-seen-and-expired-purge`) → #19 (`feat/outbox-resend-on-reconnect`) → #20 (`feat/history-pagination-on-scroll-up`, manual check in the app still pending) → #21 (`feat/message-list-states`, message-list states of DESIGN.md §5.4, manual check in the app pending).
+  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → #13 (`feat/desktop-session-persistence`) → #14 (`fix/trusted-proxy-addresses`) → #15 (`feat/desktop-message-actions`) → #16 (`fix/server-message-ordering-and-nonce-deduplication`) → #17 (`feat/client-message-outbox`) → #18 (`fix/session-last-seen-and-expired-purge`) → #19 (`feat/outbox-resend-on-reconnect`) → #20 (`feat/history-pagination-on-scroll-up`) → #21 (`feat/message-list-states`, message-list states of DESIGN.md §5.4). The user checked #20 and #21 by hand in the app on 2026-10-20 (scroll to a channel's top, error and Try again).
 - Local try-out instance: `mellow-server init --listen-address 127.0.0.1:18080 --registration-mode open` in the scratchpad, seeded through the REST API (rate limit: 10 sends per 10 s per user, so seed with several users).
 - Merge them in that order. After merging one into `main`, retarget the next PR's base to `main` before merging it.
 - New work branches from the tip of the stack (today `feat/message-list-states`) and opens a PR stacked on the latest one, until the stack is merged.
 - CI never ran: GitHub Actions is blocked by the account's billing. Everything is verified on macOS only.
 
 ## Next candidates
-1. M1 release candidate: run a real instance on a VPS (`init --domain … --use-staging-certificates`, then production), connect the desktop over https, then tag.
+1. M1 release candidate: run a real instance (`init --domain … --use-staging-certificates`, then production), connect the desktop over https, then tag. The user already runs a test instance they own; ask before changing anything on it.
 2. End-to-end ACME tests against Pebble (local test certificate authority).
-3. Known gaps listed in the ROADMAP status: the "Jump to present" bar and the offline / no-access list states of DESIGN.md §5.4, then an on-disk outbox (needs the local cache of ARCHITECTURE §6 first).
+3. Desktop message list, from DESIGN.md §5.4: the "Jump to present" bar ("You're viewing older messages", `End` / `Esc`, new-message count), then the offline and no-access list states. Branch from `feat/message-list-states` and stack the PR on #21.
+4. Then an on-disk outbox (needs the local cache of ARCHITECTURE §6 first).
 
 ## Workflow that worked
 - One branch per milestone step (`feat/…`), atomic Conventional Commits, a `docs:` commit for README/ROADMAP/ARCHITECTURE/ADR.
