@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mellow_protocol::{
-    Channel, CurrentUser, GatewayEvent, Guild, Member, Message, PresenceStatus, Ready,
-    SendMessageRequest, Snowflake,
+    Channel, CurrentUser, GatewayEvent, Guild, Member, Message, PresenceStatus, Ready, Role,
+    SendMessageRequest, Snowflake, compute_guild_permissions,
 };
 
 /// Messages kept in memory per channel once the reader leaves it; older ones are fetched again
@@ -16,10 +16,19 @@ pub const HISTORY_PAGE_SIZE: u32 = 50;
 /// A typing indicator disappears after this long without a new `TYPING_START`.
 pub const TYPING_INDICATOR_LIFETIME_MILLISECONDS: u64 = 8_000;
 
+/// Only to adapt the interface: the server decides (ADR-0014).
+fn recompute_my_permissions(guild: &mut Guild, current_user_id: Snowflake) {
+    let member_roles = guild
+        .roles
+        .iter()
+        .filter(|role| role.id == guild.id || guild.my_role_ids.contains(&role.id));
+    guild.my_permissions = compute_guild_permissions(current_user_id, guild.owner_id, member_roles);
+}
+
 /// What an update touched, so a UI refreshes only that part.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateChange {
-    /// Guild list, a guild's channels, or the signed-in user.
+    /// Guild list, a guild's channels or roles, the signed-in user's permissions, or the user.
     Guilds,
     Messages {
         channel_id: Snowflake,
@@ -243,20 +252,7 @@ impl ClientState {
                 }
                 StateChange::Guilds
             }
-            GatewayEvent::GuildDelete { id } => {
-                if let Some(guild) = self.guild(id) {
-                    let channel_ids: Vec<Snowflake> =
-                        guild.channels.iter().map(|channel| channel.id).collect();
-                    self.pending_messages
-                        .retain(|pending| !channel_ids.contains(&pending.channel_id));
-                    for channel_id in channel_ids {
-                        self.history_by_channel.remove(&channel_id);
-                    }
-                }
-                self.guilds.retain(|guild| guild.id != id);
-                self.members_by_guild.remove(&id);
-                StateChange::Guilds
-            }
+            GatewayEvent::GuildDelete { id } => self.remove_guild(id),
             GatewayEvent::GuildMemberAdd { guild_id, member } => {
                 if let Some(members) = self.members_by_guild.get_mut(&guild_id)
                     && !members
@@ -273,6 +269,14 @@ impl ClientState {
                     members.retain(|member| member.user.id != user_id);
                 }
                 StateChange::Members { guild_id }
+            }
+            GatewayEvent::GuildMemberUpdate {
+                guild_id,
+                user_id,
+                role_ids,
+            } => self.update_member_roles(guild_id, user_id, role_ids),
+            GatewayEvent::GuildRolesUpdate { guild_id, roles } => {
+                self.replace_roles(guild_id, roles)
             }
             GatewayEvent::TypingStart {
                 channel_id,
@@ -500,6 +504,67 @@ impl ClientState {
         StateChange::ReadStates
     }
 
+    fn remove_guild(&mut self, id: Snowflake) -> StateChange {
+        if let Some(guild) = self.guild(id) {
+            let channel_ids: Vec<Snowflake> =
+                guild.channels.iter().map(|channel| channel.id).collect();
+            self.pending_messages
+                .retain(|pending| !channel_ids.contains(&pending.channel_id));
+            for channel_id in channel_ids {
+                self.history_by_channel.remove(&channel_id);
+            }
+        }
+        self.guilds.retain(|guild| guild.id != id);
+        self.members_by_guild.remove(&id);
+        StateChange::Guilds
+    }
+
+    /// A deleted role leaves its members here too: the server sends no `GUILD_MEMBER_UPDATE`.
+    fn replace_roles(&mut self, guild_id: Snowflake, roles: Vec<Role>) -> StateChange {
+        let current_user_id = self.current_user.as_ref().map(|user| user.id);
+        if let Some(guild) = self.guilds.iter_mut().find(|guild| guild.id == guild_id) {
+            guild.roles = roles;
+            let is_known_role =
+                |role_id: &Snowflake| guild.roles.iter().any(|role| role.id == *role_id);
+            guild.my_role_ids.retain(is_known_role);
+            if let Some(members) = self.members_by_guild.get_mut(&guild_id) {
+                for member in members {
+                    member.role_ids.retain(is_known_role);
+                }
+            }
+            if let Some(current_user_id) = current_user_id {
+                recompute_my_permissions(guild, current_user_id);
+            }
+        }
+        StateChange::Guilds
+    }
+
+    fn update_member_roles(
+        &mut self,
+        guild_id: Snowflake,
+        user_id: Snowflake,
+        role_ids: Vec<Snowflake>,
+    ) -> StateChange {
+        if let Some(member) = self
+            .members_by_guild
+            .get_mut(&guild_id)
+            .and_then(|members| members.iter_mut().find(|member| member.user.id == user_id))
+        {
+            member.role_ids.clone_from(&role_ids);
+        }
+        if self
+            .current_user
+            .as_ref()
+            .is_some_and(|user| user.id == user_id)
+            && let Some(guild) = self.guilds.iter_mut().find(|guild| guild.id == guild_id)
+        {
+            guild.my_role_ids = role_ids;
+            recompute_my_permissions(guild, user_id);
+            return StateChange::Guilds;
+        }
+        StateChange::Members { guild_id }
+    }
+
     fn upsert_channel(&mut self, channel: Channel) {
         if let Some(guild) = self
             .guilds
@@ -598,6 +663,8 @@ mod tests {
                 name: "Club".into(),
                 owner_id: ME,
                 my_permissions: Permissions::all(),
+                my_role_ids: Vec::new(),
+                roles: Vec::new(),
                 channels: vec![
                     channel(CATEGORY, ChannelKind::Category, None, 0),
                     channel(GENERAL, ChannelKind::Text, Some(CATEGORY), 1),
@@ -793,6 +860,7 @@ mod tests {
             GUILD,
             vec![Member {
                 user: user(ME),
+                role_ids: Vec::new(),
                 joined_at_unix_milliseconds: 0,
             }],
         );
@@ -801,6 +869,7 @@ mod tests {
                 guild_id: GUILD,
                 member: Member {
                     user: user(OTHER),
+                    role_ids: Vec::new(),
                     joined_at_unix_milliseconds: 1,
                 },
             },
@@ -818,6 +887,90 @@ mod tests {
 
         state.apply_event(GatewayEvent::GuildDelete { id: GUILD }, NOW);
         assert_eq!(state.guilds(), &[]);
+    }
+
+    #[test]
+    fn role_events_update_roles_member_role_ids_and_my_permissions() {
+        const CLUB: Snowflake = Snowflake::from_raw(300);
+        const MODERATOR: Snowflake = Snowflake::from_raw(301);
+        let role = |id, position, permissions| Role {
+            id,
+            name: "role".into(),
+            color: 0,
+            position,
+            permissions,
+        };
+        let everyone = role(CLUB, 0, Permissions::DEFAULT_EVERYONE);
+        let mut state = ready_state();
+        state.apply_event(
+            GatewayEvent::GuildCreate(Box::new(Guild {
+                id: CLUB,
+                name: "Other's club".into(),
+                owner_id: OTHER,
+                my_permissions: Permissions::DEFAULT_EVERYONE,
+                my_role_ids: Vec::new(),
+                roles: vec![everyone.clone()],
+                channels: Vec::new(),
+            })),
+            NOW,
+        );
+        state.set_members(
+            CLUB,
+            vec![Member {
+                user: user(ME),
+                role_ids: Vec::new(),
+                joined_at_unix_milliseconds: 0,
+            }],
+        );
+        let roles_with_moderator = vec![
+            everyone.clone(),
+            role(MODERATOR, 1, Permissions::MANAGE_ROLES),
+        ];
+        state.apply_event(
+            GatewayEvent::GuildRolesUpdate {
+                guild_id: CLUB,
+                roles: roles_with_moderator,
+            },
+            NOW,
+        );
+        assert_eq!(state.guild(CLUB).unwrap().roles.len(), 2);
+        assert_eq!(
+            state.guild(CLUB).unwrap().my_permissions,
+            Permissions::DEFAULT_EVERYONE,
+            "a role nobody gave me changes nothing"
+        );
+
+        assert_eq!(
+            state.apply_event(
+                GatewayEvent::GuildMemberUpdate {
+                    guild_id: CLUB,
+                    user_id: ME,
+                    role_ids: vec![MODERATOR],
+                },
+                NOW,
+            ),
+            StateChange::Guilds
+        );
+        let club = state.guild(CLUB).unwrap();
+        assert_eq!(club.my_role_ids, vec![MODERATOR]);
+        assert!(club.my_permissions.contains(Permissions::MANAGE_ROLES));
+        assert_eq!(state.members(CLUB)[0].role_ids, vec![MODERATOR]);
+
+        state.apply_event(
+            GatewayEvent::GuildRolesUpdate {
+                guild_id: CLUB,
+                roles: vec![everyone],
+            },
+            NOW,
+        );
+        let club = state.guild(CLUB).unwrap();
+        assert_eq!(
+            club.my_role_ids,
+            Vec::<Snowflake>::new(),
+            "a deleted role leaves its members"
+        );
+        assert_eq!(club.my_permissions, Permissions::DEFAULT_EVERYONE);
+        assert_eq!(state.members(CLUB)[0].role_ids, Vec::<Snowflake>::new());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Guild, channel, invite and member endpoints. All require a signed-in user.
+//! Guild, channel, role, invite and member endpoints. All require a signed-in user.
 
 use std::net::SocketAddr;
 use std::time::Instant;
@@ -7,8 +7,8 @@ use axum::Json;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use mellow_protocol::{
-    Channel, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest, Guild, GuildSummary,
-    Invite, Member, Snowflake, UpdateChannelRequest,
+    Channel, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest, CreateRoleRequest,
+    Guild, GuildSummary, Invite, Member, Role, Snowflake, UpdateChannelRequest, UpdateRoleRequest,
 };
 
 use crate::domain::clock::now_unix_milliseconds;
@@ -149,5 +149,70 @@ pub(crate) async fn leave_guild(
     ApiPath(guild_id): ApiPath<Snowflake>,
 ) -> Result<StatusCode, ApiError> {
     state.guilds.leave_guild(user.id, guild_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn create_role(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(guild_id): ApiPath<Snowflake>,
+    ApiJson(request): ApiJson<CreateRoleRequest>,
+) -> Result<(StatusCode, Json<Role>), ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    let role = state
+        .guilds
+        .create_role(user.id, guild_id, request, now_unix_milliseconds())
+        .await?;
+    Ok((StatusCode::CREATED, Json(role)))
+}
+
+pub(crate) async fn update_role(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((guild_id, role_id)): ApiPath<(Snowflake, Snowflake)>,
+    ApiJson(request): ApiJson<UpdateRoleRequest>,
+) -> Result<Json<Role>, ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    Ok(Json(
+        state
+            .guilds
+            .update_role(user.id, guild_id, role_id, request)
+            .await?,
+    ))
+}
+
+pub(crate) async fn delete_role(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((guild_id, role_id)): ApiPath<(Snowflake, Snowflake)>,
+) -> Result<StatusCode, ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    state.guilds.delete_role(user.id, guild_id, role_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn add_member_role(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((guild_id, member_id, role_id)): ApiPath<(Snowflake, Snowflake, Snowflake)>,
+) -> Result<StatusCode, ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    state
+        .guilds
+        .add_member_role(user.id, guild_id, member_id, role_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn remove_member_role(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((guild_id, member_id, role_id)): ApiPath<(Snowflake, Snowflake, Snowflake)>,
+) -> Result<StatusCode, ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    state
+        .guilds
+        .remove_member_role(user.id, guild_id, member_id, role_id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }

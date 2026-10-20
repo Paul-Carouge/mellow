@@ -1,6 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::canonical_decimal::parse_canonical_decimal_u64;
+use crate::{Role, Snowflake};
 
 bitflags::bitflags! {
     /// Permission bitfield of a role, a channel overwrite or a computed member permission (ADR-0007).
@@ -37,6 +38,42 @@ impl Permissions {
         .union(Self::CHANGE_NICKNAME);
 }
 
+/// A member's permissions in a guild (ADR-0007 steps 1 to 3): the owner and administrators get
+/// everything; everyone else gets the union of `member_roles`, which must include `@everyone`.
+///
+/// The server decides with this function; clients use it only to adapt their interface (ADR-0014).
+#[must_use]
+pub fn compute_guild_permissions<'a>(
+    member_id: Snowflake,
+    owner_id: Snowflake,
+    member_roles: impl IntoIterator<Item = &'a Role>,
+) -> Permissions {
+    if member_id == owner_id {
+        return Permissions::all();
+    }
+    let granted = member_roles
+        .into_iter()
+        .fold(Permissions::empty(), |granted, role| {
+            granted | role.permissions
+        });
+    if granted.contains(Permissions::ADMINISTRATOR) {
+        Permissions::all()
+    } else {
+        granted
+    }
+}
+
+/// The rank a member acts with in the role hierarchy: the highest position among their roles, or
+/// 0 (`@everyone`) without any. The owner outranks everyone and is handled by the caller.
+#[must_use]
+pub fn highest_role_position<'a>(member_roles: impl IntoIterator<Item = &'a Role>) -> u32 {
+    member_roles
+        .into_iter()
+        .map(|role| role.position)
+        .max()
+        .unwrap_or(0)
+}
+
 /// Serialized as a decimal string of the raw bits, like ids, so JavaScript-style clients keep all 64 bits.
 impl Serialize for Permissions {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -61,6 +98,79 @@ impl<'de> Deserialize<'de> for Permissions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const OWNER: Snowflake = Snowflake::from_raw(1);
+    const MEMBER: Snowflake = Snowflake::from_raw(2);
+
+    fn role(id: u64, position: u32, permissions: Permissions) -> Role {
+        Role {
+            id: Snowflake::from_raw(id),
+            name: format!("role {id}"),
+            color: 0,
+            position,
+            permissions,
+        }
+    }
+
+    #[test]
+    fn owner_gets_everything_whatever_the_roles() {
+        assert_eq!(
+            compute_guild_permissions(OWNER, OWNER, &[role(7, 0, Permissions::empty())]),
+            Permissions::all()
+        );
+        assert_eq!(
+            compute_guild_permissions(OWNER, OWNER, &[]),
+            Permissions::all()
+        );
+    }
+
+    #[test]
+    fn members_get_the_union_of_their_roles() {
+        let roles = [
+            role(7, 0, Permissions::DEFAULT_EVERYONE),
+            role(8, 1, Permissions::MANAGE_MESSAGES),
+            role(9, 2, Permissions::KICK_MEMBERS),
+        ];
+        assert_eq!(
+            compute_guild_permissions(MEMBER, OWNER, &roles),
+            Permissions::DEFAULT_EVERYONE
+                | Permissions::MANAGE_MESSAGES
+                | Permissions::KICK_MEMBERS
+        );
+        assert_eq!(
+            compute_guild_permissions(MEMBER, OWNER, &roles[..1]),
+            Permissions::DEFAULT_EVERYONE
+        );
+        assert_eq!(
+            compute_guild_permissions(MEMBER, OWNER, &[]),
+            Permissions::empty()
+        );
+    }
+
+    #[test]
+    fn administrator_from_any_role_grants_everything() {
+        let roles = [
+            role(7, 0, Permissions::empty()),
+            role(8, 1, Permissions::ADMINISTRATOR),
+        ];
+        assert_eq!(
+            compute_guild_permissions(MEMBER, OWNER, &roles),
+            Permissions::all()
+        );
+    }
+
+    #[test]
+    fn highest_role_position_is_the_maximum_or_zero() {
+        assert_eq!(highest_role_position(&[]), 0);
+        assert_eq!(
+            highest_role_position(&[
+                role(7, 0, Permissions::empty()),
+                role(9, 4, Permissions::empty()),
+                role(8, 2, Permissions::empty()),
+            ]),
+            4
+        );
+    }
 
     #[test]
     fn json_uses_decimal_string_and_keeps_unknown_bits() {

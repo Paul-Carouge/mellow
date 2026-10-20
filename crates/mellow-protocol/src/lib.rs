@@ -16,15 +16,16 @@ pub use gateway::{
     ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, PresenceStatus, Ready, ServerFrame,
 };
 pub use guilds::{
-    Channel, ChannelKind, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest, Guild,
-    GuildSummary, Invite, Member, PublicUser, UpdateChannelRequest,
+    Channel, ChannelKind, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
+    CreateRoleRequest, Guild, GuildSummary, Invite, Member, PublicUser, Role, UpdateChannelRequest,
+    UpdateRoleRequest,
 };
 pub use health::{HealthResponse, HealthStatus};
 pub use messages::{
     AcknowledgeRequest, EditMessageRequest, Message, MessageHistoryQuery, ReadState,
     SendMessageRequest,
 };
-pub use permissions::Permissions;
+pub use permissions::{Permissions, compute_guild_permissions, highest_role_position};
 pub use snowflake::{
     MAXIMUM_SEQUENCE, MAXIMUM_TIMESTAMP_MILLISECONDS_SINCE_EPOCH, MELLOW_EPOCH_UNIX_MILLISECONDS,
     Snowflake, SnowflakeError,

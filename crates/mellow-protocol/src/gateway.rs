@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Channel, CurrentUser, Guild, Member, Message, ReadState, Snowflake};
+use crate::{Channel, CurrentUser, Guild, Member, Message, ReadState, Role, Snowflake};
 
 pub const GATEWAY_VERSION: u32 = 1;
 
@@ -129,6 +129,19 @@ pub enum GatewayEvent {
         guild_id: Snowflake,
         user_id: Snowflake,
     },
+    /// A member's roles changed; `role_ids` is the full new list, without `@everyone`.
+    GuildMemberUpdate {
+        guild_id: Snowflake,
+        user_id: Snowflake,
+        role_ids: Vec<Snowflake>,
+    },
+    /// Any role was created, edited or deleted: the guild's full role list, as in `Guild::roles`.
+    /// Creating a role shifts the positions of the others, so they are always sent together. A
+    /// deleted role is dropped from members without a `GUILD_MEMBER_UPDATE`.
+    GuildRolesUpdate {
+        guild_id: Snowflake,
+        roles: Vec<Role>,
+    },
     TypingStart {
         guild_id: Snowflake,
         channel_id: Snowflake,
@@ -173,5 +186,31 @@ mod tests {
             serde_json::to_value(ServerFrame::HeartbeatAck).unwrap()["op"],
             "heartbeat_ack"
         );
+    }
+
+    #[test]
+    fn role_events_carry_string_ids_and_decimal_permissions() {
+        let event = GatewayEvent::GuildRolesUpdate {
+            guild_id: Snowflake::from_raw(7),
+            roles: vec![Role {
+                id: Snowflake::from_raw(7),
+                name: "@everyone".into(),
+                color: 0,
+                position: 0,
+                permissions: crate::Permissions::SEND_MESSAGES,
+            }],
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["t"], "GUILD_ROLES_UPDATE");
+        assert_eq!(json["data"]["roles"][0]["id"], "7");
+        assert_eq!(json["data"]["roles"][0]["permissions"], "4");
+        let member_update = serde_json::to_value(GatewayEvent::GuildMemberUpdate {
+            guild_id: Snowflake::from_raw(7),
+            user_id: Snowflake::from_raw(8),
+            role_ids: vec![Snowflake::from_raw(9)],
+        })
+        .unwrap();
+        assert_eq!(member_update["t"], "GUILD_MEMBER_UPDATE");
+        assert_eq!(member_update["data"]["role_ids"][0], "9");
     }
 }

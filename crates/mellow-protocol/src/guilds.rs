@@ -17,8 +17,44 @@ pub struct Guild {
     pub owner_id: Snowflake,
     /// What the requesting member may do here (ADR-0007), so clients can hide unusable actions.
     pub my_permissions: Permissions,
+    /// The requesting member's roles, without `@everyone` (every member has it).
+    pub my_role_ids: Vec<Snowflake>,
+    /// Sorted by `position`, `@everyone` first (its id is the guild's id, position 0).
+    pub roles: Vec<Role>,
     /// Sorted by `position`; categories and channels interleaved, children reference `parent_id`.
     pub channels: Vec<Channel>,
+}
+
+/// A guild role. Higher `position` ranks higher: a member manages only roles below their highest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Role {
+    pub id: Snowflake,
+    pub name: String,
+    /// `0xRRGGBB`; `0` means no colour, as on Discord.
+    pub color: u32,
+    pub position: u32,
+    pub permissions: Permissions,
+}
+
+/// Body of `POST /api/v1/guilds/{guild_id}/roles`. The role is created just above `@everyone`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateRoleRequest {
+    pub name: String,
+    #[serde(default)]
+    pub color: u32,
+    #[serde(default)]
+    pub permissions: Permissions,
+}
+
+/// Body of `PATCH /api/v1/guilds/{guild_id}/roles/{role_id}`; absent fields are unchanged.
+/// `@everyone` accepts only `permissions`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateRoleRequest {
+    pub name: Option<String>,
+    pub color: Option<u32>,
+    pub permissions: Option<Permissions>,
 }
 
 /// Entry of `GET /api/v1/users/@me/guilds`, the server rail.
@@ -96,6 +132,8 @@ pub struct PublicUser {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
     pub user: PublicUser,
+    /// Without `@everyone`.
+    pub role_ids: Vec<Snowflake>,
     pub joined_at_unix_milliseconds: u64,
 }
 
@@ -124,6 +162,8 @@ mod tests {
             name: "Club".into(),
             owner_id: Snowflake::from_raw(1),
             my_permissions: Permissions::DEFAULT_EVERYONE,
+            my_role_ids: Vec::new(),
+            roles: Vec::new(),
             channels: vec![channel],
         };
         let json = serde_json::to_value(&guild).unwrap();

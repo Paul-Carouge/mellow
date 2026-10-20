@@ -277,11 +277,80 @@ mod tests {
                 .unwrap();
         pool.close().await;
 
-        assert_eq!(outcome.applied_versions, [LAST_VERSION_WITHOUT_NONCES + 1]);
+        assert_eq!(
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_NONCES + 1))
+        );
         assert_eq!(
             messages,
             [(4, "hello".to_owned(), None), (5, "again".to_owned(), None)]
         );
+    }
+
+    #[tokio::test]
+    async fn guilds_created_before_named_roles_keep_their_everyone_role() {
+        const LAST_VERSION_WITHOUT_MEMBER_ROLES: i64 = 4;
+        let directory = tempfile::tempdir().unwrap();
+        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_MEMBER_ROLES, &pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO roles (id, guild_id, name, permissions, position) \
+             VALUES (10, 10, '@everyone', 1610, 0); \
+             INSERT INTO guild_members (guild_id, user_id, joined_at_unix_milliseconds) \
+             VALUES (10, 1, 0), (10, 2, 0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let everyone: (String, i64, i64, i64) =
+            sqlx::query_as("SELECT name, permissions, position, color FROM roles WHERE id = 10")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO roles (id, guild_id, name, permissions, position) \
+             VALUES (11, 10, 'Moderator', 0, 1); \
+             INSERT INTO member_roles (guild_id, user_id, role_id) VALUES (10, 2, 11); \
+             DELETE FROM guild_members WHERE guild_id = 10 AND user_id = 2;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let assignments_after_leaving: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM member_roles")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let assignment_of_non_member =
+            sqlx::query("INSERT INTO member_roles (guild_id, user_id, role_id) VALUES (10, 2, 11)")
+                .execute(&pool)
+                .await;
+        pool.close().await;
+
+        assert_eq!(
+            outcome.applied_versions,
+            [LAST_VERSION_WITHOUT_MEMBER_ROLES + 1]
+        );
+        assert_eq!(everyone, ("@everyone".to_owned(), 1610, 0, 0));
+        assert_eq!(
+            assignments_after_leaving, 0,
+            "leaving drops the member's roles"
+        );
+        assert!(assignment_of_non_member.is_err(), "only members hold roles");
     }
 
     #[tokio::test]

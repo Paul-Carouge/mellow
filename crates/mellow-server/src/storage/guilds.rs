@@ -1,6 +1,8 @@
-//! Guilds, their @everyone role, members, channels and invites (migration 0002).
+//! Guilds, their roles, members, channels and invites (migrations 0002 and 0005).
 
-use mellow_protocol::{ChannelKind, Permissions, Snowflake};
+use std::collections::HashMap;
+
+use mellow_protocol::{ChannelKind, Permissions, Role, Snowflake};
 use sqlx::SqlitePool;
 
 /// Takes the write lock at once, so a read-then-write transaction waits for `busy_timeout`
@@ -183,7 +185,32 @@ pub(crate) async fn insert_guild(
 pub(crate) struct Membership {
     pub(crate) guild_name: String,
     pub(crate) owner_id: Snowflake,
-    pub(crate) everyone_permissions: Permissions,
+    /// The member's roles, `@everyone` included, by position.
+    pub(crate) member_roles: Vec<Role>,
+}
+
+impl Membership {
+    /// Without `@everyone`, as on the wire.
+    pub(crate) fn member_role_ids(&self, guild_id: Snowflake) -> Vec<Snowflake> {
+        self.member_roles
+            .iter()
+            .map(|role| role.id)
+            .filter(|role_id| *role_id != guild_id)
+            .collect()
+    }
+}
+
+type RoleRow = (i64, String, i64, i64, i64);
+
+fn role_from_row(row: RoleRow) -> Result<Role, GuildStorageError> {
+    let (id, name, color, position, permissions) = row;
+    Ok(Role {
+        id: to_id(id)?,
+        name,
+        color: u32::try_from(color).map_err(|_| GuildStorageError::IntegerOutOfRange)?,
+        position: u32::try_from(position).map_err(|_| GuildStorageError::IntegerOutOfRange)?,
+        permissions: permissions_from_integer(permissions),
+    })
 }
 
 /// `None` if the guild does not exist or the user is not a member: callers answer both the same
@@ -200,24 +227,249 @@ pub(crate) async fn find_membership(
     else {
         return Ok(None);
     };
-    let row: Option<(String, i64, i64)> = sqlx::query_as(
-        "SELECT guilds.name, guilds.owner_id, roles.permissions FROM guild_members \
+    let row: Option<(String, i64)> = sqlx::query_as(
+        "SELECT guilds.name, guilds.owner_id FROM guild_members \
          JOIN guilds ON guilds.id = guild_members.guild_id \
-         JOIN roles ON roles.id = guilds.id \
          WHERE guild_members.guild_id = ? AND guild_members.user_id = ?",
     )
     .bind(guild_id)
     .bind(user_id)
     .fetch_optional(pool)
     .await?;
-    row.map(|(guild_name, owner_id, everyone_permissions)| {
-        Ok(Membership {
-            guild_name,
-            owner_id: to_id(owner_id)?,
-            everyone_permissions: permissions_from_integer(everyone_permissions),
-        })
-    })
-    .transpose()
+    let Some((guild_name, owner_id)) = row else {
+        return Ok(None);
+    };
+    let rows: Vec<RoleRow> = sqlx::query_as(
+        "SELECT id, name, color, position, permissions FROM roles WHERE id = ? OR id IN \
+         (SELECT role_id FROM member_roles WHERE guild_id = ? AND user_id = ?) \
+         ORDER BY position, id",
+    )
+    .bind(guild_id)
+    .bind(guild_id)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(Some(Membership {
+        guild_name,
+        owner_id: to_id(owner_id)?,
+        member_roles: rows
+            .into_iter()
+            .map(role_from_row)
+            .collect::<Result<_, _>>()?,
+    }))
+}
+
+/// The guild's roles by position, `@everyone` first.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn list_roles(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+) -> Result<Vec<Role>, GuildStorageError> {
+    let rows: Vec<RoleRow> = sqlx::query_as(
+        "SELECT id, name, color, position, permissions FROM roles WHERE guild_id = ? \
+         ORDER BY position, id",
+    )
+    .bind(to_integer(guild_id.raw())?)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(role_from_row).collect()
+}
+
+/// Inserts `role` at position 1, just above `@everyone`, and moves every other role up by one,
+/// provided the guild has fewer than `maximum_roles` roles (`@everyone` included). Returns the
+/// guild's new role list.
+///
+/// # Errors
+/// `LimitReached` at the quota; database errors. Nothing is written on error.
+pub(crate) async fn insert_role_above_everyone(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+    role: &Role,
+    maximum_roles: u32,
+) -> Result<Vec<Role>, GuildStorageError> {
+    let guild_id_integer = to_integer(guild_id.raw())?;
+    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
+    let role_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM roles WHERE guild_id = ?")
+        .bind(guild_id_integer)
+        .fetch_one(&mut *transaction)
+        .await?;
+    if role_count >= to_count(maximum_roles) {
+        return Err(GuildStorageError::LimitReached);
+    }
+    sqlx::query("UPDATE roles SET position = position + 1 WHERE guild_id = ? AND position >= 1")
+        .bind(guild_id_integer)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "INSERT INTO roles (id, guild_id, name, color, permissions, position) VALUES (?, ?, ?, ?, ?, 1)",
+    )
+    .bind(to_integer(role.id.raw())?)
+    .bind(guild_id_integer)
+    .bind(&role.name)
+    .bind(i64::from(role.color))
+    .bind(permissions_to_integer(role.permissions))
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    list_roles(pool, guild_id).await
+}
+
+/// Writes only the given fields of a role of `guild_id`. Returns the updated role, or `None` if
+/// the guild has no such role.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn update_role_fields(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+    role_id: Snowflake,
+    name: Option<&str>,
+    color: Option<u32>,
+    permissions: Option<Permissions>,
+) -> Result<Option<Role>, GuildStorageError> {
+    let (Some(guild_id), Some(role_id)) = (lookup_integer(guild_id), lookup_integer(role_id))
+    else {
+        return Ok(None);
+    };
+    let row: Option<RoleRow> = sqlx::query_as(
+        "UPDATE roles SET name = COALESCE(?, name), color = COALESCE(?, color), \
+         permissions = COALESCE(?, permissions) WHERE id = ? AND guild_id = ? \
+         RETURNING id, name, color, position, permissions",
+    )
+    .bind(name)
+    .bind(color.map(i64::from))
+    .bind(permissions.map(permissions_to_integer))
+    .bind(role_id)
+    .bind(guild_id)
+    .fetch_optional(pool)
+    .await?;
+    row.map(role_from_row).transpose()
+}
+
+/// Deletes a named role of `guild_id` (never `@everyone`) and closes the gap in positions.
+/// Returns whether a role was deleted.
+///
+/// # Errors
+/// Fails on database errors. Nothing is written on error.
+pub(crate) async fn delete_role(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+    role_id: Snowflake,
+) -> Result<bool, GuildStorageError> {
+    let (Some(guild_id), Some(role_id)) = (lookup_integer(guild_id), lookup_integer(role_id))
+    else {
+        return Ok(false);
+    };
+    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
+    let deleted_position: Option<i64> = sqlx::query_scalar(
+        "DELETE FROM roles WHERE id = ? AND guild_id = ? AND id != guild_id RETURNING position",
+    )
+    .bind(role_id)
+    .bind(guild_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some(deleted_position) = deleted_position else {
+        return Ok(false);
+    };
+    sqlx::query("UPDATE roles SET position = position - 1 WHERE guild_id = ? AND position > ?")
+        .bind(guild_id)
+        .bind(deleted_position)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok(true)
+}
+
+/// Gives a named role of `guild_id` to one of its members (nothing changes if they hold it).
+/// Returns the member's role ids afterwards, or `None` if the role is not a named role of this
+/// guild or the user is not a member.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn add_member_role(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+    user_id: Snowflake,
+    role_id: Snowflake,
+) -> Result<Option<Vec<Snowflake>>, GuildStorageError> {
+    let (Some(guild), Some(user), Some(role)) = (
+        lookup_integer(guild_id),
+        lookup_integer(user_id),
+        lookup_integer(role_id),
+    ) else {
+        return Ok(None);
+    };
+    let inserted = sqlx::query(
+        "INSERT OR IGNORE INTO member_roles (guild_id, user_id, role_id) \
+         SELECT guild_members.guild_id, guild_members.user_id, roles.id \
+         FROM guild_members JOIN roles ON roles.guild_id = guild_members.guild_id \
+         WHERE guild_members.guild_id = ? AND guild_members.user_id = ? \
+         AND roles.id = ? AND roles.id != roles.guild_id",
+    )
+    .bind(guild)
+    .bind(user)
+    .bind(role)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    let role_ids = member_role_ids(pool, guild_id, user_id).await?;
+    Ok((inserted > 0 || role_ids.contains(&role_id)).then_some(role_ids))
+}
+
+/// Takes a role away from a member. Returns the member's role ids afterwards, or `None` if they
+/// did not hold it.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn remove_member_role(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+    user_id: Snowflake,
+    role_id: Snowflake,
+) -> Result<Option<Vec<Snowflake>>, GuildStorageError> {
+    let (Some(guild), Some(user), Some(role)) = (
+        lookup_integer(guild_id),
+        lookup_integer(user_id),
+        lookup_integer(role_id),
+    ) else {
+        return Ok(None);
+    };
+    let removed =
+        sqlx::query("DELETE FROM member_roles WHERE guild_id = ? AND user_id = ? AND role_id = ?")
+            .bind(guild)
+            .bind(user)
+            .bind(role)
+            .execute(pool)
+            .await?
+            .rows_affected();
+    if removed == 0 {
+        return Ok(None);
+    }
+    member_role_ids(pool, guild_id, user_id).await.map(Some)
+}
+
+/// The member's named roles, by position.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn member_role_ids(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+    user_id: Snowflake,
+) -> Result<Vec<Snowflake>, GuildStorageError> {
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT member_roles.role_id FROM member_roles \
+         JOIN roles ON roles.id = member_roles.role_id \
+         WHERE member_roles.guild_id = ? AND member_roles.user_id = ? \
+         ORDER BY roles.position, roles.id",
+    )
+    .bind(to_integer(guild_id.raw())?)
+    .bind(to_integer(user_id.raw())?)
+    .fetch_all(pool)
+    .await?;
+    ids.into_iter().map(to_id).collect()
 }
 
 /// # Errors
@@ -362,6 +614,8 @@ pub(crate) struct StoredMember {
     pub(crate) user_id: Snowflake,
     pub(crate) username: String,
     pub(crate) display_name: String,
+    /// Named roles only, by position.
+    pub(crate) role_ids: Vec<Snowflake>,
     pub(crate) joined_at_unix_milliseconds: u64,
 }
 
@@ -374,18 +628,35 @@ pub(crate) async fn list_members(
     guild_id: Snowflake,
     maximum_members: u32,
 ) -> Result<Vec<StoredMember>, GuildStorageError> {
+    let guild = to_integer(guild_id.raw())?;
     let rows: Vec<(i64, String, String, i64)> = sqlx::query_as(
         "SELECT users.id, users.username, users.display_name, guild_members.joined_at_unix_milliseconds \
          FROM guild_members JOIN users ON users.id = guild_members.user_id \
          WHERE guild_members.guild_id = ? ORDER BY users.username LIMIT ?",
     )
-    .bind(to_integer(guild_id.raw())?)
+    .bind(guild)
     .bind(to_count(maximum_members))
     .fetch_all(pool)
     .await?;
+    let assignments: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT member_roles.user_id, member_roles.role_id FROM member_roles \
+         JOIN roles ON roles.id = member_roles.role_id \
+         WHERE member_roles.guild_id = ? ORDER BY roles.position, roles.id",
+    )
+    .bind(guild)
+    .fetch_all(pool)
+    .await?;
+    let mut role_ids_by_user: HashMap<i64, Vec<Snowflake>> = HashMap::new();
+    for (user_id, role_id) in assignments {
+        role_ids_by_user
+            .entry(user_id)
+            .or_default()
+            .push(to_id(role_id)?);
+    }
     rows.into_iter()
         .map(|(user_id, username, display_name, joined_at)| {
             Ok(StoredMember {
+                role_ids: role_ids_by_user.remove(&user_id).unwrap_or_default(),
                 user_id: to_id(user_id)?,
                 username,
                 display_name,
@@ -526,13 +797,15 @@ pub(crate) async fn find_member(
     .bind(to_integer(user_id.raw())?)
     .fetch_optional(pool)
     .await?;
-    row.map(|(user_id, username, display_name, joined_at)| {
-        Ok(StoredMember {
-            user_id: to_id(user_id)?,
-            username,
-            display_name,
-            joined_at_unix_milliseconds: to_unsigned(joined_at)?,
-        })
-    })
-    .transpose()
+    let Some((user_id, username, display_name, joined_at)) = row else {
+        return Ok(None);
+    };
+    let user_id = to_id(user_id)?;
+    Ok(Some(StoredMember {
+        role_ids: member_role_ids(pool, guild_id, user_id).await?,
+        user_id,
+        username,
+        display_name,
+        joined_at_unix_milliseconds: to_unsigned(joined_at)?,
+    }))
 }

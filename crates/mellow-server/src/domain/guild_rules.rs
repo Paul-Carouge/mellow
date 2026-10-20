@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use mellow_protocol::Permissions;
+
 use crate::domain::account_rules::is_invisible_format_character;
 
 pub const MINIMUM_GUILD_NAME_LENGTH: usize = 2;
@@ -15,6 +17,10 @@ pub const INVITE_CODE_LENGTH: usize = 10;
 pub const MAXIMUM_CHANNELS_PER_GUILD: u32 = 500;
 pub const MAXIMUM_OWNED_GUILDS_PER_USER: u32 = 100;
 pub const MAXIMUM_ACTIVE_INVITES_PER_GUILD: u32 = 1_000;
+/// `@everyone` included.
+pub const MAXIMUM_ROLES_PER_GUILD: u32 = 250;
+pub const MAXIMUM_ROLE_NAME_LENGTH: usize = 100;
+pub const MAXIMUM_ROLE_COLOR: u32 = 0xFF_FFFF;
 /// shortcut: the member list is capped, not paginated; paginate with the member list UI.
 pub const MAXIMUM_MEMBERS_LISTED: u32 = 1_000;
 const INVITE_CODE_ALPHABET: &[u8; 62] =
@@ -45,6 +51,16 @@ pub enum GuildRuleViolation {
     Parent,
     #[error("invites allow 1 to {MAXIMUM_INVITE_USES} uses and last at most 30 days")]
     InviteLimits,
+    #[error(
+        "role names are 1 to {MAXIMUM_ROLE_NAME_LENGTH} characters, without control characters"
+    )]
+    RoleName,
+    #[error("role colours are 0xRRGGBB values, 0 for none")]
+    RoleColor,
+    #[error("unknown permission bits")]
+    UnknownPermissions,
+    #[error("@everyone keeps its name and colour, and cannot be deleted, given or taken away")]
+    EveryoneRole,
 }
 
 fn has_hidden_characters(text: &str) -> bool {
@@ -124,6 +140,33 @@ pub fn validate_invite_limits(
     }
 }
 
+/// # Errors
+/// `RoleName` when empty, too long or containing hidden characters.
+pub fn normalize_role_name(name: &str) -> Result<String, GuildRuleViolation> {
+    trimmed_within(name, 1, MAXIMUM_ROLE_NAME_LENGTH)
+        .map(str::to_owned)
+        .ok_or(GuildRuleViolation::RoleName)
+}
+
+/// # Errors
+/// `RoleColor` above `0xFFFFFF`.
+pub fn validate_role_color(color: u32) -> Result<u32, GuildRuleViolation> {
+    (color <= MAXIMUM_ROLE_COLOR)
+        .then_some(color)
+        .ok_or(GuildRuleViolation::RoleColor)
+}
+
+/// Clients keep unknown bits (`Permissions` deserialization); the server never stores them, or a
+/// client could pre-grant permissions a future version defines.
+///
+/// # Errors
+/// `UnknownPermissions` when a bit is not a permission this server knows.
+pub fn validate_known_permissions(
+    permissions: Permissions,
+) -> Result<Permissions, GuildRuleViolation> {
+    Permissions::from_bits(permissions.bits()).ok_or(GuildRuleViolation::UnknownPermissions)
+}
+
 /// A 10-character code over 62 symbols (about 59 bits): unguessable at our rate limits.
 ///
 /// # Errors
@@ -192,6 +235,21 @@ mod tests {
         assert!(validate_invite_limits(Some(MAXIMUM_INVITE_USES + 1), None).is_err());
         assert!(validate_invite_limits(None, Some(0)).is_err());
         assert!(validate_invite_limits(None, Some(31 * 24 * 3600)).is_err());
+    }
+
+    #[test]
+    fn role_names_colors_and_permissions_are_validated() {
+        assert_eq!(normalize_role_name("  Moderators ").unwrap(), "Moderators");
+        assert!(normalize_role_name(" ").is_err());
+        assert!(normalize_role_name("a\u{202E}b").is_err());
+        assert!(normalize_role_name(&"a".repeat(MAXIMUM_ROLE_NAME_LENGTH + 1)).is_err());
+        assert_eq!(validate_role_color(0xFF_FFFF), Ok(0xFF_FFFF));
+        assert!(validate_role_color(0x100_0000).is_err());
+        assert!(validate_known_permissions(Permissions::all()).is_ok());
+        assert_eq!(
+            validate_known_permissions(Permissions::from_bits_retain(1 << 63)),
+            Err(GuildRuleViolation::UnknownPermissions)
+        );
     }
 
     #[test]

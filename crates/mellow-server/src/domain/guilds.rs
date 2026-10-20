@@ -1,22 +1,23 @@
-//! Guild, channel, invite and membership use cases. Every action checks permissions through
-//! `permissions::guild_permissions` (ADR-0007).
+//! Guild, channel, role, invite and membership use cases. Every action checks permissions through
+//! `domain::permissions` (ADR-0007).
 
 use std::sync::Arc;
 
 use mellow_protocol::{
     Channel, ChannelKind, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
-    GatewayEvent, Guild, GuildSummary, Invite, Member, Permissions, PresenceStatus, PublicUser,
-    Snowflake, UpdateChannelRequest,
+    CreateRoleRequest, GatewayEvent, Guild, GuildSummary, Invite, Member, Permissions,
+    PresenceStatus, PublicUser, Role, Snowflake, UpdateChannelRequest, UpdateRoleRequest,
 };
 use sqlx::SqlitePool;
 
 use crate::domain::guild_rules::{
     GuildRuleViolation, MAXIMUM_ACTIVE_INVITES_PER_GUILD, MAXIMUM_CHANNELS_PER_GUILD,
-    MAXIMUM_MEMBERS_LISTED, MAXIMUM_OWNED_GUILDS_PER_USER, generate_invite_code,
-    normalize_category_name, normalize_guild_name, normalize_text_channel_name, normalize_topic,
-    validate_invite_limits,
+    MAXIMUM_MEMBERS_LISTED, MAXIMUM_OWNED_GUILDS_PER_USER, MAXIMUM_ROLES_PER_GUILD,
+    generate_invite_code, normalize_category_name, normalize_guild_name, normalize_role_name,
+    normalize_text_channel_name, normalize_topic, validate_invite_limits,
+    validate_known_permissions, validate_role_color,
 };
-use crate::domain::permissions::guild_permissions;
+use crate::domain::permissions::{RoleManager, guild_permissions};
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::events::EventHub;
 use crate::storage::guilds::{
@@ -82,6 +83,7 @@ fn member_from_stored(member: guild_storage::StoredMember) -> Member {
             username: member.username,
             display_name: member.display_name,
         },
+        role_ids: member.role_ids,
         joined_at_unix_milliseconds: member.joined_at_unix_milliseconds,
     }
 }
@@ -123,11 +125,7 @@ impl Guilds {
         let membership = guild_storage::find_membership(&self.pool, guild_id, user_id)
             .await?
             .ok_or(GuildError::NotFound)?;
-        let permissions = guild_permissions(
-            user_id,
-            membership.owner_id,
-            membership.everyone_permissions,
-        );
+        let permissions = guild_permissions(user_id, membership.owner_id, &membership.member_roles);
         Ok((membership, permissions))
     }
 
@@ -224,9 +222,11 @@ impl Guilds {
             .collect();
         Ok(Guild {
             id: guild_id,
+            my_role_ids: membership.member_role_ids(guild_id),
             name: membership.guild_name,
             owner_id: membership.owner_id,
             my_permissions,
+            roles: guild_storage::list_roles(&self.pool, guild_id).await?,
             channels,
         })
     }
@@ -428,6 +428,209 @@ impl Guilds {
                 .publish_to_user(user_id, &GatewayEvent::GuildCreate(Box::new(guild.clone())));
         }
         Ok(guild)
+    }
+
+    /// The member acting on roles and the role they target, or `NotFound` for non-members and
+    /// roles of other guilds, `MissingPermissions` outside the hierarchy (`RoleManager`).
+    async fn manager_and_manageable_role(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        role_id: Snowflake,
+    ) -> Result<(RoleManager, Role), GuildError> {
+        let membership = guild_storage::find_membership(&self.pool, guild_id, user_id)
+            .await?
+            .ok_or(GuildError::NotFound)?;
+        let manager = RoleManager::new(user_id, membership.owner_id, &membership.member_roles);
+        if !manager.permissions.contains(Permissions::MANAGE_ROLES) {
+            return Err(GuildError::MissingPermissions);
+        }
+        let role = guild_storage::list_roles(&self.pool, guild_id)
+            .await?
+            .into_iter()
+            .find(|role| role.id == role_id)
+            .ok_or(GuildError::NotFound)?;
+        if manager.can_manage_role(&role, guild_id) {
+            Ok((manager, role))
+        } else {
+            Err(GuildError::MissingPermissions)
+        }
+    }
+
+    fn publish_roles(&self, guild_id: Snowflake, roles: Vec<Role>) {
+        self.events.publish_to_guild(
+            guild_id,
+            &GatewayEvent::GuildRolesUpdate { guild_id, roles },
+        );
+    }
+
+    /// Needs `MANAGE_ROLES`, and only permissions the creator holds. The role starts just above
+    /// `@everyone`, so its creator can manage it whatever their own rank.
+    pub(crate) async fn create_role(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        request: CreateRoleRequest,
+        now_unix_milliseconds: u64,
+    ) -> Result<Role, GuildError> {
+        let name = normalize_role_name(&request.name)?;
+        let color = validate_role_color(request.color)?;
+        let permissions = validate_known_permissions(request.permissions)?;
+        let membership = guild_storage::find_membership(&self.pool, guild_id, user_id)
+            .await?
+            .ok_or(GuildError::NotFound)?;
+        let manager = RoleManager::new(user_id, membership.owner_id, &membership.member_roles);
+        if !manager.permissions.contains(Permissions::MANAGE_ROLES)
+            || !manager.can_change_permissions(Permissions::empty(), permissions)
+        {
+            return Err(GuildError::MissingPermissions);
+        }
+        let role_id = self.ids.next_id(now_unix_milliseconds)?;
+        let roles = guild_storage::insert_role_above_everyone(
+            &self.pool,
+            guild_id,
+            &Role {
+                id: role_id,
+                name,
+                color,
+                position: 1,
+                permissions,
+            },
+            MAXIMUM_ROLES_PER_GUILD,
+        )
+        .await
+        .map_err(limit_reached("a guild has at most 250 roles"))?;
+        let role = roles
+            .iter()
+            .find(|role| role.id == role_id)
+            .cloned()
+            .ok_or(GuildError::NotFound)?;
+        self.publish_roles(guild_id, roles);
+        Ok(role)
+    }
+
+    /// Needs `MANAGE_ROLES` over this role (`RoleManager`). `@everyone` changes only its
+    /// permissions.
+    pub(crate) async fn update_role(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        role_id: Snowflake,
+        request: UpdateRoleRequest,
+    ) -> Result<Role, GuildError> {
+        if role_id == guild_id && (request.name.is_some() || request.color.is_some()) {
+            return Err(GuildRuleViolation::EveryoneRole.into());
+        }
+        let name = request
+            .name
+            .map(|name| normalize_role_name(&name))
+            .transpose()?;
+        let color = request.color.map(validate_role_color).transpose()?;
+        let permissions = request
+            .permissions
+            .map(validate_known_permissions)
+            .transpose()?;
+        let (manager, role) = self
+            .manager_and_manageable_role(user_id, guild_id, role_id)
+            .await?;
+        if let Some(permissions) = permissions
+            && !manager.can_change_permissions(role.permissions, permissions)
+        {
+            return Err(GuildError::MissingPermissions);
+        }
+        let updated = guild_storage::update_role_fields(
+            &self.pool,
+            guild_id,
+            role_id,
+            name.as_deref(),
+            color,
+            permissions,
+        )
+        .await?
+        .ok_or(GuildError::NotFound)?;
+        self.publish_roles(
+            guild_id,
+            guild_storage::list_roles(&self.pool, guild_id).await?,
+        );
+        Ok(updated)
+    }
+
+    /// Needs `MANAGE_ROLES` over this role (`RoleManager`). `@everyone` cannot be deleted.
+    pub(crate) async fn delete_role(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        role_id: Snowflake,
+    ) -> Result<(), GuildError> {
+        if role_id == guild_id {
+            return Err(GuildRuleViolation::EveryoneRole.into());
+        }
+        self.manager_and_manageable_role(user_id, guild_id, role_id)
+            .await?;
+        if !guild_storage::delete_role(&self.pool, guild_id, role_id).await? {
+            return Err(GuildError::NotFound);
+        }
+        self.publish_roles(
+            guild_id,
+            guild_storage::list_roles(&self.pool, guild_id).await?,
+        );
+        Ok(())
+    }
+
+    /// Needs `MANAGE_ROLES` over this role (`RoleManager`), whoever the member is.
+    pub(crate) async fn add_member_role(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        member_id: Snowflake,
+        role_id: Snowflake,
+    ) -> Result<(), GuildError> {
+        if role_id == guild_id {
+            return Err(GuildRuleViolation::EveryoneRole.into());
+        }
+        self.manager_and_manageable_role(user_id, guild_id, role_id)
+            .await?;
+        let role_ids = guild_storage::add_member_role(&self.pool, guild_id, member_id, role_id)
+            .await?
+            .ok_or(GuildError::NotFound)?;
+        self.publish_member_roles(guild_id, member_id, role_ids);
+        Ok(())
+    }
+
+    /// Needs `MANAGE_ROLES` over this role (`RoleManager`), whoever the member is.
+    pub(crate) async fn remove_member_role(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        member_id: Snowflake,
+        role_id: Snowflake,
+    ) -> Result<(), GuildError> {
+        if role_id == guild_id {
+            return Err(GuildRuleViolation::EveryoneRole.into());
+        }
+        self.manager_and_manageable_role(user_id, guild_id, role_id)
+            .await?;
+        let role_ids = guild_storage::remove_member_role(&self.pool, guild_id, member_id, role_id)
+            .await?
+            .ok_or(GuildError::NotFound)?;
+        self.publish_member_roles(guild_id, member_id, role_ids);
+        Ok(())
+    }
+
+    fn publish_member_roles(
+        &self,
+        guild_id: Snowflake,
+        user_id: Snowflake,
+        role_ids: Vec<Snowflake>,
+    ) {
+        self.events.publish_to_guild(
+            guild_id,
+            &GatewayEvent::GuildMemberUpdate {
+                guild_id,
+                user_id,
+                role_ids,
+            },
+        );
     }
 
     /// Members only. shortcut: unpaginated; fine for M1 community sizes, paginate with the member list UI.
@@ -942,6 +1145,490 @@ mod tests {
         let one_too_many = fixture
             .guilds
             .create_channel(fixture.owner, guild.id, text_channel("overflow", None), NOW)
+            .await;
+        fixture.pool.close().await;
+        assert!(matches!(one_too_many, Err(GuildError::LimitReached(_))));
+    }
+
+    fn role_request(name: &str, permissions: Permissions) -> CreateRoleRequest {
+        CreateRoleRequest {
+            name: name.into(),
+            color: 0,
+            permissions,
+        }
+    }
+
+    fn permissions_update(permissions: Permissions) -> UpdateRoleRequest {
+        UpdateRoleRequest {
+            permissions: Some(permissions),
+            ..UpdateRoleRequest::default()
+        }
+    }
+
+    async fn join(fixture: &Fixture, guild_id: Snowflake, user_id: Snowflake) {
+        let invite = fixture
+            .guilds
+            .create_invite(fixture.owner, guild_id, CreateInviteRequest::default(), NOW)
+            .await
+            .unwrap();
+        fixture
+            .guilds
+            .join_with_invite(user_id, &invite.code, NOW)
+            .await
+            .unwrap();
+    }
+
+    fn role_names_by_position(guild: &Guild) -> Vec<(&str, u32)> {
+        guild
+            .roles
+            .iter()
+            .map(|role| (role.name.as_str(), role.position))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn new_roles_start_above_everyone_and_deleting_one_closes_the_gap() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        let create = |name: &'static str| {
+            fixture.guilds.create_role(
+                fixture.owner,
+                guild.id,
+                role_request(name, Permissions::empty()),
+                NOW,
+            )
+        };
+        let first = create("first").await.unwrap();
+        assert_eq!(first.position, 1);
+        create("second").await.unwrap();
+        let snapshot = fixture
+            .guilds
+            .get_guild(fixture.owner, guild.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            role_names_by_position(&snapshot),
+            vec![("@everyone", 0), ("second", 1), ("first", 2)]
+        );
+
+        fixture
+            .guilds
+            .add_member_role(fixture.owner, guild.id, fixture.other, first.id)
+            .await
+            .unwrap();
+        fixture
+            .guilds
+            .delete_role(fixture.owner, guild.id, snapshot.roles[1].id)
+            .await
+            .unwrap();
+        let snapshot = fixture
+            .guilds
+            .get_guild(fixture.other, guild.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            role_names_by_position(&snapshot),
+            vec![("@everyone", 0), ("first", 1)]
+        );
+        assert_eq!(snapshot.my_role_ids, vec![first.id]);
+        fixture
+            .guilds
+            .delete_role(fixture.owner, guild.id, first.id)
+            .await
+            .unwrap();
+        let snapshot = fixture
+            .guilds
+            .get_guild(fixture.other, guild.id)
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+        assert_eq!(
+            snapshot.my_role_ids,
+            Vec::<Snowflake>::new(),
+            "a deleted role leaves its members"
+        );
+    }
+
+    #[tokio::test]
+    async fn roles_grant_their_permissions_to_members_who_hold_them() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        let channel_managers = fixture
+            .guilds
+            .create_role(
+                fixture.owner,
+                guild.id,
+                role_request("Channel managers", Permissions::MANAGE_CHANNELS),
+                NOW,
+            )
+            .await
+            .unwrap();
+        let create_channel = || {
+            fixture
+                .guilds
+                .create_channel(fixture.other, guild.id, text_channel("news", None), NOW)
+        };
+        assert!(matches!(
+            create_channel().await,
+            Err(GuildError::MissingPermissions)
+        ));
+        fixture
+            .guilds
+            .add_member_role(fixture.owner, guild.id, fixture.other, channel_managers.id)
+            .await
+            .unwrap();
+        create_channel().await.unwrap();
+        let members = fixture
+            .guilds
+            .list_members(fixture.owner, guild.id)
+            .await
+            .unwrap();
+        let other = members
+            .iter()
+            .find(|member| member.user.id == fixture.other)
+            .unwrap();
+        assert_eq!(other.role_ids, vec![channel_managers.id]);
+
+        fixture
+            .guilds
+            .remove_member_role(fixture.owner, guild.id, fixture.other, channel_managers.id)
+            .await
+            .unwrap();
+        let after_removal = create_channel().await;
+        let removing_again = fixture
+            .guilds
+            .remove_member_role(fixture.owner, guild.id, fixture.other, channel_managers.id)
+            .await;
+        fixture.pool.close().await;
+        assert!(matches!(after_removal, Err(GuildError::MissingPermissions)));
+        assert!(matches!(removing_again, Err(GuildError::NotFound)));
+    }
+
+    /// Roles of `guild_with_member`'s guild, `other` holding `moderator` (`MANAGE_ROLES` and
+    /// `KICK_MEMBERS`) between `helper` below and `admin` above; `third` is a plain member.
+    struct ModeratedGuild {
+        guild: Guild,
+        helper: Role,
+        moderator: Role,
+        admin: Role,
+    }
+
+    async fn moderated_guild(fixture: &Fixture) -> ModeratedGuild {
+        let guild = guild_with_member(fixture).await;
+        join(fixture, guild.id, fixture.third).await;
+        let create = |name: &'static str, permissions| {
+            fixture.guilds.create_role(
+                fixture.owner,
+                guild.id,
+                role_request(name, permissions),
+                NOW,
+            )
+        };
+        // Each new role starts at position 1, so the last one created ends up lowest.
+        let admin = create("Admin", Permissions::empty()).await.unwrap();
+        let moderator = create(
+            "Moderator",
+            Permissions::MANAGE_ROLES | Permissions::KICK_MEMBERS,
+        )
+        .await
+        .unwrap();
+        let helper = create("Helper", Permissions::empty()).await.unwrap();
+        let snapshot = fixture
+            .guilds
+            .get_guild(fixture.owner, guild.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            role_names_by_position(&snapshot),
+            vec![
+                ("@everyone", 0),
+                ("Helper", 1),
+                ("Moderator", 2),
+                ("Admin", 3)
+            ]
+        );
+        fixture
+            .guilds
+            .add_member_role(fixture.owner, guild.id, fixture.other, moderator.id)
+            .await
+            .unwrap();
+        ModeratedGuild {
+            guild,
+            helper,
+            moderator,
+            admin,
+        }
+    }
+
+    fn assert_all_refused<T: std::fmt::Debug>(results: Vec<Result<T, GuildError>>) {
+        for refused in results {
+            assert!(
+                matches!(refused, Err(GuildError::MissingPermissions)),
+                "{refused:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn managers_act_only_on_roles_below_their_highest() {
+        let fixture = fixture().await;
+        let ModeratedGuild {
+            guild,
+            helper,
+            moderator,
+            admin,
+        } = moderated_guild(&fixture).await;
+        let (guilds, other) = (&fixture.guilds, fixture.other);
+        let kick = || permissions_update(Permissions::KICK_MEMBERS);
+
+        guilds
+            .add_member_role(other, guild.id, fixture.third, helper.id)
+            .await
+            .unwrap();
+        guilds
+            .update_role(other, guild.id, helper.id, kick())
+            .await
+            .unwrap();
+        let higher_role = guilds.update_role(other, guild.id, admin.id, kick()).await;
+        let give_higher_role = guilds
+            .add_member_role(other, guild.id, fixture.third, admin.id)
+            .await;
+        let own_role = guilds
+            .update_role(other, guild.id, moderator.id, kick())
+            .await;
+        let delete_own_role = guilds.delete_role(other, guild.id, moderator.id).await;
+        let without_manage_roles = guilds
+            .add_member_role(fixture.third, guild.id, fixture.third, helper.id)
+            .await;
+        fixture.pool.close().await;
+
+        assert_all_refused(vec![higher_role.map(|_| ()), own_role.map(|_| ())]);
+        assert_all_refused(vec![
+            give_higher_role,
+            delete_own_role,
+            without_manage_roles,
+        ]);
+    }
+
+    #[tokio::test]
+    async fn managers_grant_only_permissions_they_hold() {
+        let fixture = fixture().await;
+        let ModeratedGuild { guild, helper, .. } = moderated_guild(&fixture).await;
+        let (guilds, other) = (&fixture.guilds, fixture.other);
+
+        let grant_unheld = guilds
+            .update_role(
+                other,
+                guild.id,
+                helper.id,
+                permissions_update(Permissions::BAN_MEMBERS),
+            )
+            .await;
+        let create_with_unheld = guilds
+            .create_role(
+                other,
+                guild.id,
+                role_request("Banners", Permissions::BAN_MEMBERS),
+                NOW,
+            )
+            .await;
+        let created_below = guilds
+            .create_role(
+                other,
+                guild.id,
+                role_request("Kickers", Permissions::KICK_MEMBERS),
+                NOW,
+            )
+            .await
+            .unwrap();
+        let everyone_edit = guilds
+            .update_role(
+                other,
+                guild.id,
+                guild.id,
+                permissions_update(Permissions::DEFAULT_EVERYONE | Permissions::KICK_MEMBERS),
+            )
+            .await;
+        fixture.pool.close().await;
+
+        assert_eq!(created_below.position, 1);
+        assert!(everyone_edit.is_ok(), "{everyone_edit:?}");
+        assert_all_refused(vec![grant_unheld, create_with_unheld]);
+    }
+
+    #[tokio::test]
+    async fn everyone_cannot_be_renamed_deleted_given_or_taken_away() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        let (guilds, owner) = (&fixture.guilds, fixture.owner);
+        let rename = guilds
+            .update_role(
+                owner,
+                guild.id,
+                guild.id,
+                UpdateRoleRequest {
+                    name: Some("everyone".into()),
+                    ..UpdateRoleRequest::default()
+                },
+            )
+            .await;
+        let delete = guilds.delete_role(owner, guild.id, guild.id).await;
+        let give = guilds
+            .add_member_role(owner, guild.id, fixture.other, guild.id)
+            .await;
+        let take = guilds
+            .remove_member_role(owner, guild.id, fixture.other, guild.id)
+            .await;
+        fixture.pool.close().await;
+        for refused in [rename.map(|_| ()), delete, give, take] {
+            assert!(
+                matches!(
+                    refused,
+                    Err(GuildError::InvalidInput(GuildRuleViolation::EveryoneRole))
+                ),
+                "{refused:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn role_requests_are_validated_and_other_guilds_roles_are_not_found() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        let elsewhere = fixture
+            .guilds
+            .create_guild(fixture.other, create_request("Elsewhere"), NOW)
+            .await
+            .unwrap();
+        let foreign_role = fixture
+            .guilds
+            .create_role(
+                fixture.other,
+                elsewhere.id,
+                role_request("Theirs", Permissions::empty()),
+                NOW,
+            )
+            .await
+            .unwrap();
+        let unknown_bits = fixture
+            .guilds
+            .create_role(
+                fixture.owner,
+                guild.id,
+                role_request("x", Permissions::from_bits_retain(1 << 63)),
+                NOW,
+            )
+            .await;
+        let bad_color = fixture
+            .guilds
+            .create_role(
+                fixture.owner,
+                guild.id,
+                CreateRoleRequest {
+                    color: 0x100_0000,
+                    ..role_request("x", Permissions::empty())
+                },
+                NOW,
+            )
+            .await;
+        let foreign = fixture
+            .guilds
+            .add_member_role(fixture.owner, guild.id, fixture.other, foreign_role.id)
+            .await;
+        let non_member = fixture
+            .guilds
+            .create_role(
+                fixture.third,
+                guild.id,
+                role_request("x", Permissions::empty()),
+                NOW,
+            )
+            .await;
+        let own = fixture
+            .guilds
+            .create_role(
+                fixture.owner,
+                guild.id,
+                role_request("Mine", Permissions::empty()),
+                NOW,
+            )
+            .await
+            .unwrap();
+        let outsider_target = fixture
+            .guilds
+            .add_member_role(fixture.owner, guild.id, fixture.third, own.id)
+            .await;
+        fixture.pool.close().await;
+        assert!(matches!(
+            unknown_bits,
+            Err(GuildError::InvalidInput(
+                GuildRuleViolation::UnknownPermissions
+            ))
+        ));
+        assert!(matches!(
+            bad_color,
+            Err(GuildError::InvalidInput(GuildRuleViolation::RoleColor))
+        ));
+        for not_found in [foreign, non_member.map(|_| ()), outsider_target] {
+            assert!(
+                matches!(not_found, Err(GuildError::NotFound)),
+                "{not_found:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn leaving_drops_roles_and_a_guild_holds_at_most_the_role_quota() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        let role = fixture
+            .guilds
+            .create_role(
+                fixture.owner,
+                guild.id,
+                role_request("r", Permissions::empty()),
+                NOW,
+            )
+            .await
+            .unwrap();
+        fixture
+            .guilds
+            .add_member_role(fixture.owner, guild.id, fixture.other, role.id)
+            .await
+            .unwrap();
+        fixture
+            .guilds
+            .leave_guild(fixture.other, guild.id)
+            .await
+            .unwrap();
+        join(&fixture, guild.id, fixture.other).await;
+        let rejoined = fixture
+            .guilds
+            .get_guild(fixture.other, guild.id)
+            .await
+            .unwrap();
+        assert_eq!(rejoined.my_role_ids, Vec::<Snowflake>::new());
+
+        for index in 2..MAXIMUM_ROLES_PER_GUILD {
+            fixture
+                .guilds
+                .create_role(
+                    fixture.owner,
+                    guild.id,
+                    role_request(&format!("r{index}"), Permissions::empty()),
+                    NOW,
+                )
+                .await
+                .unwrap();
+        }
+        let one_too_many = fixture
+            .guilds
+            .create_role(
+                fixture.owner,
+                guild.id,
+                role_request("overflow", Permissions::empty()),
+                NOW,
+            )
             .await;
         fixture.pool.close().await;
         assert!(matches!(one_too_many, Err(GuildError::LimitReached(_))));

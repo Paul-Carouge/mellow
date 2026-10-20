@@ -356,6 +356,8 @@ mod tests {
             name: "Board Games Night".into(),
             owner_id: Snowflake::from_raw(9),
             my_permissions: Permissions::empty(),
+            my_role_ids: Vec::new(),
+            roles: Vec::new(),
             channels: vec![
                 channel(20, ChannelKind::Category, "Voice later", None, 2),
                 channel(10, ChannelKind::Category, "Text channels", None, 1),

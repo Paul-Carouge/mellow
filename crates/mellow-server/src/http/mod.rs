@@ -103,6 +103,18 @@ pub(crate) fn router(state: AppState) -> Router {
             delete(guild_routes::leave_guild),
         )
         .route(
+            "/api/v1/guilds/{guild_id}/roles",
+            post(guild_routes::create_role),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/roles/{role_id}",
+            patch(guild_routes::update_role).delete(guild_routes::delete_role),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/members/{user_id}/roles/{role_id}",
+            put(guild_routes::add_member_role).delete(guild_routes::remove_member_role),
+        )
+        .route(
             "/api/v1/channels/{channel_id}",
             patch(guild_routes::update_channel).delete(guild_routes::delete_channel),
         )
@@ -772,6 +784,146 @@ pub(crate) mod tests {
         assert_eq!(json::<ApiErrorBody>(&body).code, ApiErrorCode::NotFound);
 
         pool.close().await;
+    }
+
+    /// Owner token, guest token, the owner's guild with the guest as a member, and the guest's id.
+    async fn guild_with_guest(state: &AppState) -> (String, String, Snowflake, Snowflake) {
+        let (owner, _) = owner_and_general_channel(state).await;
+        let guest = registered_token(state, "guest").await;
+        let (_, body) = send(
+            state,
+            authorized("GET", "/api/v1/users/@me/guilds", &owner, None),
+        )
+        .await;
+        let guild_id = json::<Vec<mellow_protocol::GuildSummary>>(&body)[0].id;
+        let (_, body) = send(
+            state,
+            authorized(
+                "POST",
+                &format!("/api/v1/guilds/{guild_id}/invites"),
+                &owner,
+                Some(serde_json::json!({})),
+            ),
+        )
+        .await;
+        let code = json::<mellow_protocol::Invite>(&body).code;
+        send(
+            state,
+            authorized("POST", &format!("/api/v1/invites/{code}"), &guest, None),
+        )
+        .await;
+        let (_, body) = send(state, authorized("GET", "/api/v1/users/@me", &guest, None)).await;
+        let guest_id = json::<CurrentUser>(&body).id;
+        (owner, guest, guild_id, guest_id)
+    }
+
+    #[tokio::test]
+    async fn roles_over_http() {
+        use mellow_protocol::{Guild, Permissions, Role};
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, guest, guild_id, guest_id) = guild_with_guest(&state).await;
+        let guild_path = format!("/api/v1/guilds/{guild_id}");
+
+        let kick = Permissions::KICK_MEMBERS.bits().to_string();
+        let (status, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &format!("{guild_path}/roles"),
+                &owner,
+                Some(serde_json::json!({"name": "Moderator", "color": 0x2f_a8_6b, "permissions": kick})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let role: Role = json(&body);
+        assert_eq!((role.position, role.color), (1, 0x2f_a8_6b));
+        let role_path = format!("{guild_path}/roles/{}", role.id);
+
+        let (status, _) = send(
+            &state,
+            authorized(
+                "PUT",
+                &format!("{guild_path}/members/{guest_id}/roles/{}", role.id),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, body) = send(&state, authorized("GET", &guild_path, &guest, None)).await;
+        let seen_by_guest: Guild = json(&body);
+        assert_eq!(seen_by_guest.my_role_ids, vec![role.id]);
+        assert!(
+            seen_by_guest
+                .my_permissions
+                .contains(Permissions::KICK_MEMBERS)
+        );
+        assert_eq!(seen_by_guest.roles.len(), 2);
+
+        let (status, body) = send(
+            &state,
+            authorized(
+                "PATCH",
+                &role_path,
+                &owner,
+                Some(serde_json::json!({"name": "Mods"})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json::<Role>(&body).name, "Mods");
+
+        let unknown_bit = (1_u64 << 63).to_string();
+        let roles_path = format!("{guild_path}/roles");
+        let everyone_path = format!("{guild_path}/roles/{guild_id}");
+        for (method, path, body, expected_status) in [
+            (
+                "POST",
+                &roles_path,
+                Some(serde_json::json!({"name": "x", "permissions": unknown_bit})),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "POST",
+                &roles_path,
+                Some(serde_json::json!({"name": "x", "hoist": true})),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            ("DELETE", &everyone_path, None, StatusCode::BAD_REQUEST),
+        ] {
+            let (status, response) = send(&state, authorized(method, path, &owner, body)).await;
+            assert_eq!(status, expected_status, "{method} {path}");
+            assert_eq!(
+                json::<ApiErrorBody>(&response).code,
+                ApiErrorCode::ValidationFailed
+            );
+        }
+        let (status, body) = send(&state, authorized("DELETE", &role_path, &guest, None)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            json::<ApiErrorBody>(&body).code,
+            ApiErrorCode::MissingPermissions
+        );
+
+        let (status, _) = send(
+            &state,
+            authorized(
+                "DELETE",
+                &format!("{guild_path}/members/{guest_id}/roles/{}", role.id),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _) = send(&state, authorized("DELETE", &role_path, &owner, None)).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _) = send(&state, authorized("DELETE", &role_path, &owner, None)).await;
+        pool.close().await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     async fn owner_and_general_channel(state: &AppState) -> (String, Snowflake) {
