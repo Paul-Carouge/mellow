@@ -1,0 +1,358 @@
+import { MellowComponent, MellowType } from "../tokens.slint";
+import { Button } from "primitives.slint";
+
+// Where the app's self-update stands (DESIGN.md §5.9, About); set from Rust.
+export enum UpdateStatus { unknown, checking, up-to-date, available, downloading, ready-to-restart, failed, unsupported }
+
+// One item of the settings navigation (DESIGN.md §6.43). The danger item ("Sign out") fills red on
+// hover like danger menu items; keyboard focus shows only the ring, as in context menus.
+component SettingsNavItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> is-selected;
+    in property <bool> is-danger;
+    callback activated();
+    height: MellowComponent.settings-nav-item-height;
+    border-radius: MellowComponent.settings-nav-item-radius;
+    forward-focus: focus-scope;
+    accessible-role: tab;
+    accessible-label: label;
+    accessible-item-selected: is-selected;
+    accessible-action-default => { root.activated(); }
+
+    property <bool> is-highlighted: touch.has-hover || (focus-scope.has-focus && !is-danger);
+    background: is-danger ? (touch.has-hover ? MellowComponent.settings-nav-danger-background-hover : transparent)
+        : is-selected ? MellowComponent.settings-nav-item-background-selected
+        : is-highlighted ? MellowComponent.settings-nav-item-background-hover : transparent;
+    border-width: focus-scope.has-focus ? MellowComponent.focus-ring-width : 0px;
+    border-color: MellowComponent.focus-ring-color;
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.activated();
+                return accept;
+            }
+            reject
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.activated(); }
+    }
+    Text {
+        x: MellowComponent.settings-nav-item-padding-inline;
+        width: parent.width - 2 * MellowComponent.settings-nav-item-padding-inline;
+        text: label;
+        color: is-danger ? (touch.has-hover ? MellowComponent.settings-nav-danger-text-hover : MellowComponent.settings-nav-danger-text)
+            : is-selected ? MellowComponent.settings-nav-item-text-selected
+            : is-highlighted ? MellowComponent.settings-nav-item-text-hover : MellowComponent.settings-nav-item-text;
+        font-size: MellowType.channel-name.font-size;
+        font-weight: MellowType.channel-name.font-weight;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+}
+
+// Uppercase section label, as Discord's settings headers (DESIGN.md §8: the source string stays in
+// sentence case for screen readers; Slint has no text-transform, so the capitals are written here).
+component SectionLabel inherits Text {
+    in property <string> label;
+    accessible-label: label;
+    color: MellowComponent.settings-section-label-text;
+    font-size: MellowType.category.font-size;
+    font-weight: MellowType.category.font-weight;
+    letter-spacing: MellowType.category.letter-spacing;
+    overflow: elide;
+}
+
+// Discord's round close button with "Esc" under it, at the trailing top of the page.
+component CloseButton inherits VerticalLayout {
+    callback clicked();
+    spacing: MellowComponent.settings-close-label-gap;
+    alignment: start;
+
+    property <bool> is-highlighted: touch.has-hover || focus-scope.has-focus;
+    Rectangle {
+        width: MellowComponent.settings-close-button-size;
+        height: self.width;
+        border-radius: self.width / 2;
+        border-width: MellowComponent.settings-close-border-width;
+        border-color: root.is-highlighted ? MellowComponent.settings-close-border-hover : MellowComponent.settings-close-border;
+        background: root.is-highlighted ? MellowComponent.settings-close-background-hover : transparent;
+        accessible-role: button;
+        accessible-label: "Close settings";
+        accessible-description: "Esc";
+        accessible-action-default => { root.clicked(); }
+        forward-focus: focus-scope;
+
+        focus-scope := FocusScope {
+            key-pressed(event) => {
+                if event.text == " " || event.text == "\n" {
+                    root.clicked();
+                    return accept;
+                }
+                reject
+            }
+        }
+        touch := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.clicked(); }
+        }
+        Image {
+            source: @image-url("../../icons/x.svg");
+            colorize: root.is-highlighted ? MellowComponent.settings-close-icon-hover : MellowComponent.settings-close-icon;
+            width: MellowComponent.settings-close-icon-size;
+            height: self.width;
+            accessible-role: none;
+        }
+        // Outset ring, so it does not merge with the button's own circle.
+        if focus-scope.has-focus: Rectangle {
+            x: -(MellowComponent.focus-ring-offset + MellowComponent.focus-ring-width);
+            y: self.x;
+            width: parent.width - 2 * self.x;
+            height: self.width;
+            border-radius: self.width / 2;
+            border-width: MellowComponent.focus-ring-width;
+            border-color: MellowComponent.focus-ring-color;
+        }
+    }
+    Text {
+        text: "Esc";
+        color: MellowComponent.settings-close-label-text;
+        font-size: MellowType.category.font-size;
+        font-weight: MellowType.category.font-weight;
+        horizontal-alignment: center;
+        // The button's description carries it.
+        accessible-role: none;
+    }
+}
+
+// User settings (DESIGN.md §5.8 layout, §5.9 sections), over the whole window. Only "About" exists
+// so far; it shows the app version and drives the self-update.
+export component UserSettingsScreen inherits Rectangle {
+    in property <string> app-version;
+    in property <UpdateStatus> update-status;
+    in property <string> available-version;
+    in property <string> update-error-text;
+    // Below the sidebar breakpoint the page tightens its side padding.
+    in property <bool> is-narrow;
+    callback close();
+    callback sign-out();
+    callback check-for-updates();
+    callback install-update();
+    callback restart-to-update();
+
+    property <bool> is-update-busy: update-status == UpdateStatus.checking || update-status == UpdateStatus.downloading;
+    property <bool> has-update-action: update-status != UpdateStatus.unsupported;
+    property <bool> is-update-failure: update-status == UpdateStatus.failed || update-status == UpdateStatus.unsupported;
+    property <string> update-sentence: update-status == UpdateStatus.up-to-date ? "Mellow is up to date."
+        : update-status == UpdateStatus.checking ? "Checking for updates…"
+        : update-status == UpdateStatus.available ? "Mellow " + available-version + " is available."
+        : update-status == UpdateStatus.downloading ? "Downloading Mellow " + available-version + "…"
+        : update-status == UpdateStatus.ready-to-restart ? "Mellow " + available-version + " is ready. Restart to finish updating."
+        : is-update-failure ? update-error-text : "";
+    property <string> update-action-label: update-status == UpdateStatus.available || update-status == UpdateStatus.downloading ? "Update Mellow"
+        : update-status == UpdateStatus.ready-to-restart ? "Restart Mellow"
+        : update-status == UpdateStatus.failed ? "Try again" : "Check for updates";
+
+    function run-update-action() {
+        if update-status == UpdateStatus.available {
+            root.install-update();
+        } else if update-status == UpdateStatus.ready-to-restart {
+            root.restart-to-update();
+        } else if !is-update-busy && has-update-action {
+            root.check-for-updates();
+        }
+    }
+
+    // Focus lands on the selected section, so screen readers start in the navigation, as on Discord.
+    init => { about-item.focus(); }
+    // The action button disappears when updating is unsupported: keep focus inside the screen.
+    changed has-update-action => {
+        if !has-update-action && update-button.has-keyboard-focus {
+            key-scope.focus();
+        }
+    }
+
+    background: MellowComponent.settings-content-background;
+
+    // Nothing behind the screen reacts to the pointer.
+    TouchArea { }
+
+    key-scope := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close();
+                return accept;
+            }
+            reject
+        }
+
+        HorizontalLayout {
+            // Grows with the window and keeps the navigation against the content, as on Discord.
+            Rectangle {
+                background: MellowComponent.settings-sidebar-background;
+                min-width: MellowComponent.settings-nav-width;
+                preferred-width: MellowComponent.settings-nav-width;
+                horizontal-stretch: 1;
+                accessible-role: navigation;
+                accessible-label: "User settings";
+
+                VerticalLayout {
+                    x: parent.width - self.width;
+                    width: MellowComponent.settings-nav-width;
+                    height: parent.height;
+                    alignment: start;
+                    padding-top: MellowComponent.settings-nav-padding-top;
+                    padding-left: MellowComponent.settings-nav-padding-leading;
+                    padding-right: MellowComponent.settings-nav-padding-trailing;
+
+                    Rectangle {
+                        accessible-role: tab-list;
+                        accessible-label: "App settings";
+                        VerticalLayout {
+                            spacing: MellowComponent.settings-nav-item-gap;
+                            HorizontalLayout {
+                                padding-left: MellowComponent.settings-nav-section-padding-inline;
+                                padding-right: MellowComponent.settings-nav-section-padding-inline;
+                                padding-top: MellowComponent.settings-nav-section-padding-block;
+                                padding-bottom: MellowComponent.settings-nav-section-padding-block;
+                                // The tab list's label already says it.
+                                SectionLabel {
+                                    text: "APP SETTINGS";
+                                    label: "App settings";
+                                    color: MellowComponent.settings-nav-section-text;
+                                    accessible-role: none;
+                                }
+                            }
+                            about-item := SettingsNavItem {
+                                label: "About";
+                                is-selected: true;
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 1px + 2 * MellowComponent.settings-nav-separator-margin-block;
+                        Rectangle {
+                            x: MellowComponent.settings-nav-separator-margin-inline;
+                            width: parent.width - 2 * MellowComponent.settings-nav-separator-margin-inline;
+                            height: 1px;
+                            background: MellowComponent.settings-nav-separator;
+                        }
+                    }
+
+                    SettingsNavItem {
+                        label: "Sign out";
+                        is-danger: true;
+                        accessible-role: button;
+                        activated => { root.sign-out(); }
+                    }
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                preferred-width: MellowComponent.settings-content-max-width;
+                min-width: 0px;
+
+                HorizontalLayout {
+                    alignment: start;
+                    padding-top: MellowComponent.settings-content-padding-top;
+                    padding-bottom: MellowComponent.settings-content-padding-bottom;
+                    padding-left: root.is-narrow ? MellowComponent.settings-content-padding-inline-narrow : MellowComponent.settings-content-padding-inline;
+                    padding-right: self.padding-left;
+                    spacing: root.is-narrow ? MellowComponent.settings-close-gap-narrow : MellowComponent.settings-close-gap;
+
+                    // Takes the full cap when it fits, and shrinks first on narrow windows.
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        min-width: 0px;
+                        preferred-width: MellowComponent.settings-content-max-width;
+                        max-width: MellowComponent.settings-content-max-width;
+                        accessible-role: tab-panel;
+                        accessible-label: "About";
+
+                        VerticalLayout {
+                            alignment: start;
+                            Text {
+                                text: "About";
+                                color: MellowComponent.settings-page-title-text;
+                                font-size: MellowType.heading-lg.font-size;
+                                font-weight: MellowType.heading-lg.font-weight;
+                                overflow: elide;
+                            }
+                            Rectangle { height: MellowComponent.settings-page-title-gap; }
+                            Text {
+                                text: root.app-version == "" ? "Mellow" : "Mellow " + root.app-version;
+                                color: MellowComponent.settings-app-name-text;
+                                font-size: MellowType.heading-md.font-size;
+                                font-weight: MellowType.heading-md.font-weight;
+                                wrap: word-wrap;
+                            }
+                            Rectangle { height: MellowComponent.settings-section-gap; }
+
+                            SectionLabel {
+                                text: "UPDATES";
+                                label: "Updates";
+                            }
+                            Rectangle { height: MellowComponent.settings-section-label-gap; }
+                            if root.update-sentence != "": HorizontalLayout {
+                                spacing: MellowComponent.settings-error-icon-gap;
+                                if root.update-status == UpdateStatus.failed: VerticalLayout {
+                                    alignment: start;
+                                    Image {
+                                        source: @image-url("../../icons/warning-circle.svg");
+                                        colorize: MellowComponent.settings-error-icon;
+                                        width: MellowComponent.settings-error-icon-size;
+                                        height: self.width;
+                                        accessible-role: none;
+                                    }
+                                }
+                                Text {
+                                    text: root.update-sentence;
+                                    color: MellowComponent.settings-body-text;
+                                    font-size: MellowType.body-lg.font-size;
+                                    wrap: word-wrap;
+                                    horizontal-stretch: 1;
+                                    // Announced through the live region below instead.
+                                    accessible-role: none;
+                                }
+                            }
+                            Rectangle {
+                                height: root.has-update-action && root.update-sentence != "" ? MellowComponent.settings-action-gap : 0px;
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                update-button := Button {
+                                    // Hidden rather than removed, so the focus check above can still read it.
+                                    visible: root.has-update-action;
+                                    height: root.has-update-action ? MellowComponent.button-height : 0px;
+                                    label: root.update-action-label;
+                                    is-primary: true;
+                                    is-enabled: !root.is-update-busy;
+                                    clicked => { root.run-update-action(); }
+                                }
+                            }
+                        }
+                    }
+
+                    CloseButton {
+                        clicked => { root.close(); }
+                    }
+                }
+            }
+        }
+    }
+
+    // Status changes are announced here; the region exists from the start, so its first change counts.
+    Text {
+        width: 0px;
+        height: 0px;
+        text: root.update-sentence;
+        accessible-role: text;
+        accessible-live-region: polite;
+    }
+}

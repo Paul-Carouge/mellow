@@ -1,6 +1,6 @@
 import { ListView } from "std-widgets.slint";
 import { MellowColor, MellowComponent, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
-import { Avatar, ContextMenuItem, IconButton, MentionBadge, PresenceStatus } from "primitives.slint";
+import { Avatar, IconButton, MentionBadge, PresenceStatus } from "primitives.slint";
 
 // Categories and channels flattened into one list, so ListView can virtualize long servers.
 export struct ChannelListRow {
@@ -162,7 +162,11 @@ component UserPanel inherits Rectangle {
     in property <string> display-name;
     in property <string> initial;
     in property <string> status-text;
-    callback sign-out();
+    in property <bool> has-update-available;
+    // Each increment moves focus to the settings button (when the settings screen closes).
+    in property <int> settings-button-focus-request-count;
+    callback open-user-settings();
+    changed settings-button-focus-request-count => { settings-button.focus(); }
     height: MellowComponent.user-panel-height;
     background: MellowComponent.user-panel-background;
     HorizontalLayout {
@@ -212,39 +216,27 @@ component UserPanel inherits Rectangle {
         }
         VerticalLayout {
             alignment: center;
-            IconButton {
+            settings-button := IconButton {
                 icon: @image-url("../../icons/gear-six.svg");
-                label: "User settings";
+                label: root.has-update-available ? "User settings, update available" : "User settings";
                 size: MellowComponent.user-panel-button-size;
                 icon-color: MellowComponent.user-panel-button-icon;
                 hover-background: MellowComponent.user-panel-button-background-hover;
-                clicked => { user-menu.show(); }
-            }
-        }
-    }
+                clicked => { root.open-user-settings(); }
 
-    // Opens above the gear with right edges aligned (the gear is the panel's last item). Esc and a
-    // click outside close it; focus returns to the gear.
-    user-menu := PopupWindow {
-        width: MellowComponent.context-menu-min-width;
-        height: MellowComponent.context-menu-item-height + 2 * MellowComponent.context-menu-padding;
-        x: root.width - MellowComponent.user-panel-padding-inline - self.width;
-        y: -self.height - MellowSpace.xs;
-        // The item takes focus so Enter, Space and screen readers land on it straight away.
-        init => { sign-out-item.focus(); }
-        Rectangle {
-            background: MellowComponent.context-menu-background;
-            border-radius: MellowComponent.context-menu-radius;
-            border-width: MellowComponent.context-menu-border-width;
-            border-color: MellowComponent.context-menu-border;
-            VerticalLayout {
-                padding: MellowComponent.context-menu-padding;
-                sign-out-item := ContextMenuItem {
-                    label: "Sign out";
-                    is-danger: true;
-                    activated => {
-                        user-menu.close();
-                        root.sign-out();
+                // Green dot at the top trailing corner, cut out of the panel like presence dots.
+                if root.has-update-available: Rectangle {
+                    width: MellowComponent.user-panel-update-badge-size + 2 * MellowComponent.user-panel-update-badge-ring-width;
+                    height: self.width;
+                    x: parent.width - self.width + MellowComponent.user-panel-update-badge-ring-width;
+                    y: -MellowComponent.user-panel-update-badge-ring-width;
+                    border-radius: self.width / 2;
+                    background: MellowComponent.user-panel-background;
+                    Rectangle {
+                        width: MellowComponent.user-panel-update-badge-size;
+                        height: self.width;
+                        border-radius: self.width / 2;
+                        background: MellowComponent.user-panel-update-badge;
                     }
                 }
             }
@@ -260,7 +252,9 @@ export component ChannelSidebar inherits Rectangle {
     in property <string> current-user-initial;
     callback toggle-category(int);
     callback select-channel(string);
-    callback sign-out();
+    in property <bool> has-update-available;
+    in property <int> settings-button-focus-request-count;
+    callback open-user-settings();
 
     width: MellowComponent.sidebar-width;
     background: MellowComponent.sidebar-background;
@@ -313,7 +307,9 @@ export component ChannelSidebar inherits Rectangle {
             display-name: current-user-name;
             initial: current-user-initial;
             status-text: "Online";
-            sign-out => { root.sign-out(); }
+            has-update-available: root.has-update-available;
+            settings-button-focus-request-count: root.settings-button-focus-request-count;
+            open-user-settings => { root.open-user-settings(); }
         }
     }
 }

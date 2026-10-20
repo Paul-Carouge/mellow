@@ -3,6 +3,7 @@
 // Release builds on Windows open no console window next to the app; debug builds keep it for logs.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod app_update;
 mod clipboard;
 mod demo_shell;
 mod fake_messages;
@@ -53,6 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(std::io::stderr)
         .init();
     let window = AppWindow::new()?;
+    window.set_app_version(mellow_update::current_version().to_string().into());
 
     // The scroll benchmark and snapshots measure the shell itself, on stable fake data.
     let is_demo = [
@@ -77,6 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
     let shell = live_shell::start(&window, runtime.handle().clone());
+    let _update_checks = app_update::start(&window, runtime.handle().clone());
     // The exit cleanup revokes sessions nobody could use again; it runs even when the event loop fails.
     let run_result = window.run();
     live_shell::end_connection_before_exit(&shell);

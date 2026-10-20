@@ -10,8 +10,9 @@ import { PresenceStatus } from "components/primitives.slint";
 import { LoginScreen } from "components/login_screen.slint";
 import { ConnectionBanner } from "components/connection_banner.slint";
 import { DeleteMessageDialog } from "components/delete_message_dialog.slint";
+import { UpdateStatus, UserSettingsScreen } from "components/user_settings.slint";
 
-export { ServerItem, ChannelListRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme }
+export { ServerItem, ChannelListRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, UpdateStatus }
 
 // Window width breakpoints from DESIGN.md §4.2: each one is the sum of the panes it must fit.
 global LayoutBreakpoint {
@@ -53,6 +54,17 @@ export component AppWindow inherits Window {
     in-out property <int> deleting-message-index: -1;
     in property <string> message-action-error;
     in property <bool> can-send-messages: true;
+    // User settings (DESIGN.md §5.9) and the app's self-update, shown under About.
+    in-out property <bool> is-user-settings-open: false;
+    in property <string> app-version;
+    in property <UpdateStatus> update-status;
+    // Set while the status is available, downloading or ready-to-restart.
+    in property <string> available-version;
+    // Shown when the status is failed or unsupported; user-facing text built in Rust.
+    in property <string> update-error-text;
+
+    property <bool> has-update-available: update-status == UpdateStatus.available || update-status == UpdateStatus.ready-to-restart;
+    property <int> settings-button-focus-request-count;
 
     // Set from `changed width` rather than bound to `width`: a binding would make the layout depend
     // on itself (the panes' presence changes the window's minimum width).
@@ -82,6 +94,19 @@ export component AppWindow inherits Window {
     callback sign-in();
     callback register();
     callback sign-out();
+    callback check-for-updates();
+    callback install-update();
+    callback restart-to-update();
+
+    // Focus goes back to the settings button, or to the composer while the sidebar is hidden.
+    function close-user-settings() {
+        root.is-user-settings-open = false;
+        if root.is-wide-enough-for-sidebar {
+            root.settings-button-focus-request-count += 1;
+        } else {
+            chat.focus-composer();
+        }
+    }
 
     public function scroll-to-latest-message() {
         chat.scroll-to-latest-message();
@@ -120,9 +145,10 @@ export component AppWindow inherits Window {
 
     // Key events bubble up from the focused child to this scope, so shortcuts work anywhere.
     key-handler := FocusScope {
-        // Hidden rather than removed while signed out, so `chat` stays addressable; hidden items
-        // are skipped by Tab and left out of the accessibility tree.
-        visible: root.is-signed-in;
+        // Hidden rather than removed while signed out or in settings, so `chat` stays addressable
+        // and keeps its scroll position; hidden items are skipped by Tab and left out of the
+        // accessibility tree.
+        visible: root.is-signed-in && !root.is-user-settings-open;
         key-pressed(event) => {
             if event.text == Key.F2 {
                 root.is-text-selection-mode = !root.is-text-selection-mode;
@@ -150,7 +176,9 @@ export component AppWindow inherits Window {
                 current-user-initial: root.current-user-initial;
                 toggle-category(index) => { root.toggle-category(index); }
                 select-channel(name) => { root.select-channel(name); }
-                sign-out => { root.sign-out(); }
+                has-update-available: root.has-update-available;
+                settings-button-focus-request-count: root.settings-button-focus-request-count;
+                open-user-settings => { root.is-user-settings-open = true; }
             }
             chat := ChatPane {
                 horizontal-stretch: 1;
@@ -221,5 +249,23 @@ export component AppWindow inherits Window {
             root.deleting-message-index = -1;
             chat.focus-composer();
         }
+    }
+
+    if root.is-signed-in && root.is-user-settings-open: UserSettingsScreen {
+        width: root.width;
+        height: root.height;
+        is-narrow: !root.is-wide-enough-for-sidebar;
+        app-version: root.app-version;
+        update-status: root.update-status;
+        available-version: root.available-version;
+        update-error-text: root.update-error-text;
+        close => { root.close-user-settings(); }
+        sign-out => {
+            root.is-user-settings-open = false;
+            root.sign-out();
+        }
+        check-for-updates => { root.check-for-updates(); }
+        install-update => { root.install-update(); }
+        restart-to-update => { root.restart-to-update(); }
     }
 }

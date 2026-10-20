@@ -115,6 +115,7 @@ export component IconButton inherits Rectangle {
     callback clicked();
     width: size;
     height: size;
+    forward-focus: focus-scope;
     border-radius: MellowRadius.sm;
     background: touch.has-hover || focus-scope.has-focus ? hover-background : transparent;
     accessible-role: button;
@@ -204,40 +205,60 @@ export component ContextMenuItem inherits Rectangle {
     }
 }
 
-// Dialog button (DESIGN.md §6.1): Secondary by default, Danger for the destructive action.
-// shortcut: Secondary and Danger only; the login screen keeps its own Primary button until a third use.
+// Button (DESIGN.md §6.1): Secondary by default, Danger for the destructive action, Primary for a
+// page's main action.
+// shortcut: the login screen keeps its own Primary button (busy label, large size) until a third use.
 export component Button inherits Rectangle {
     in property <string> label;
     in property <bool> is-danger: false;
+    in property <bool> is-primary: false;
+    // Disabled buttons stay focusable, so focus is not lost while an action runs (DESIGN.md §6.1).
+    in property <bool> is-enabled: true;
     out property <bool> has-keyboard-focus: focus-scope.has-focus;
     callback clicked();
     height: MellowComponent.button-height;
     min-width: label-text.preferred-width + 2 * MellowComponent.button-padding-inline;
     border-radius: MellowComponent.button-radius;
-    background: is-danger
-        ? (touch.has-hover ? MellowComponent.button-danger-background-hover : MellowComponent.button-danger-background)
-        : (touch.has-hover ? MellowComponent.button-secondary-background-hover : MellowComponent.button-secondary-background);
+    property <bool> is-hovered: touch.has-hover && is-enabled;
+    // Dims the fill and label, not the focus ring, which must keep its contrast.
+    property <float> content-opacity: is-enabled ? 1 : MellowComponent.button-disabled-opacity;
+    background: (is-danger
+        ? (is-hovered ? MellowComponent.button-danger-background-hover : MellowComponent.button-danger-background)
+        : is-primary
+        ? (touch.pressed && is-enabled ? MellowComponent.button-primary-background-pressed
+            : is-hovered ? MellowComponent.button-primary-background-hover : MellowComponent.button-primary-background)
+        : (is-hovered ? MellowComponent.button-secondary-background-hover : MellowComponent.button-secondary-background))
+        .with-alpha(content-opacity);
     accessible-role: button;
     accessible-label: label;
-    accessible-action-default => { root.clicked(); }
+    accessible-enabled: is-enabled;
+    accessible-action-default => { activate(); }
     forward-focus: focus-scope;
+
+    function activate() {
+        if is-enabled {
+            root.clicked();
+        }
+    }
 
     focus-scope := FocusScope {
         key-pressed(event) => {
             if event.text == " " || event.text == "\n" {
-                root.clicked();
+                root.activate();
                 return accept;
             }
             reject
         }
     }
     touch := TouchArea {
-        mouse-cursor: MouseCursor.pointer;
-        clicked => { root.clicked(); }
+        mouse-cursor: is-enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.activate(); }
     }
     label-text := Text {
         text: label;
-        color: is-danger ? MellowComponent.button-danger-text : MellowComponent.button-secondary-text;
+        color: is-danger ? MellowComponent.button-danger-text
+            : is-primary ? MellowComponent.button-primary-text : MellowComponent.button-secondary-text;
+        opacity: root.content-opacity;
         font-size: MellowType.button.font-size;
         font-weight: MellowType.button.font-weight;
         accessible-role: none;

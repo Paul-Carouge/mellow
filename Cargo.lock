@@ -3528,6 +3528,7 @@ dependencies = [
  "keyring-core",
  "mellow-client-core",
  "mellow-protocol",
+ "mellow-update",
  "slint",
  "slint-build",
  "tokio",
