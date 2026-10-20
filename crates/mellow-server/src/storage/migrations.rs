@@ -460,11 +460,66 @@ mod tests {
                 .unwrap();
         pool.close().await;
 
-        assert_eq!(outcome.applied_versions, [LAST_VERSION_WITHOUT_BANS + 1]);
+        assert_eq!(
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_BANS + 1))
+        );
         assert_eq!(
             bans,
             [(10, "spam".to_owned())],
             "a deleted guild drops its bans"
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_entries_follow_their_guild_and_outlive_their_actor() {
+        const LAST_VERSION_WITHOUT_AUDIT_LOG: i64 = 7;
+        let directory = tempfile::tempdir().unwrap();
+        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_AUDIT_LOG, &pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0), (11, 'Other', 1, 0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO audit_log (id, guild_id, actor_id, action, target_id) \
+             VALUES (100, 10, 2, 'member_kick', 1), (101, 11, 1, 'role_create', 5); \
+             DELETE FROM guilds WHERE id = 11; \
+             DELETE FROM users WHERE id = 2;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let entries: Vec<(i64, Option<i64>)> =
+            sqlx::query_as("SELECT id, actor_id FROM audit_log ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        pool.close().await;
+
+        assert_eq!(
+            outcome.applied_versions,
+            [LAST_VERSION_WITHOUT_AUDIT_LOG + 1]
+        );
+        assert_eq!(
+            entries,
+            [(100, None)],
+            "kept without its deleted actor; gone with its guild"
         );
     }
 

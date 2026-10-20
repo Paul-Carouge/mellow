@@ -16,10 +16,11 @@ pub use gateway::{
     ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, PresenceStatus, Ready, ServerFrame,
 };
 pub use guilds::{
-    Ban, Channel, ChannelKind, CreateBanRequest, CreateChannelRequest, CreateGuildRequest,
-    CreateInviteRequest, CreateRoleRequest, Guild, GuildSummary, Invite, Member, OverwriteKind,
-    PermissionOverwrite, PublicUser, ReorderRolesRequest, Role, SetPermissionOverwriteRequest,
-    UpdateChannelRequest, UpdateRoleRequest,
+    AuditAction, AuditLogEntry, AuditLogQuery, Ban, Channel, ChannelKind, CreateBanRequest,
+    CreateChannelRequest, CreateGuildRequest, CreateInviteRequest, CreateRoleRequest, Guild,
+    GuildSummary, Invite, Member, OverwriteKind, PermissionOverwrite, PublicUser,
+    ReorderRolesRequest, Role, SetPermissionOverwriteRequest, UpdateChannelRequest,
+    UpdateRoleRequest,
 };
 pub use health::{HealthResponse, HealthStatus};
 pub use messages::{

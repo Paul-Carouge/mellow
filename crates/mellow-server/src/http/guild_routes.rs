@@ -7,14 +7,15 @@ use axum::Json;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use mellow_protocol::{
-    Ban, Channel, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
-    CreateRoleRequest, Guild, GuildSummary, Invite, Member, ReorderRolesRequest, Role,
-    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateRoleRequest,
+    AuditLogEntry, AuditLogQuery, Ban, Channel, CreateBanRequest, CreateChannelRequest,
+    CreateGuildRequest, CreateInviteRequest, CreateRoleRequest, Guild, GuildSummary, Invite,
+    Member, ReorderRolesRequest, Role, SetPermissionOverwriteRequest, Snowflake,
+    UpdateChannelRequest, UpdateRoleRequest,
 };
 
 use crate::domain::clock::now_unix_milliseconds;
 use crate::http::AppState;
-use crate::http::api_error::{ApiError, ApiJson, ApiPath};
+use crate::http::api_error::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::http::authentication::AuthenticatedUser;
 use crate::http::client_address::client_address_key;
 use crate::http::rate_limit::{GUILD_WRITES_PER_USER, INVITE_ATTEMPTS_PER_ADDRESS};
@@ -314,4 +315,18 @@ pub(crate) async fn list_bans(
     ApiPath(guild_id): ApiPath<Snowflake>,
 ) -> Result<Json<Vec<Ban>>, ApiError> {
     Ok(Json(state.guilds.list_bans(user.id, guild_id).await?))
+}
+
+pub(crate) async fn list_audit_log(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(guild_id): ApiPath<Snowflake>,
+    ApiQuery(query): ApiQuery<AuditLogQuery>,
+) -> Result<Json<Vec<AuditLogEntry>>, ApiError> {
+    Ok(Json(
+        state
+            .guilds
+            .list_audit_log(user.id, guild_id, query)
+            .await?,
+    ))
 }

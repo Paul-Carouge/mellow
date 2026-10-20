@@ -102,6 +102,10 @@ pub(crate) fn router(state: AppState) -> Router {
             delete(guild_routes::kick_member),
         )
         .route(
+            "/api/v1/guilds/{guild_id}/audit-log",
+            get(guild_routes::list_audit_log),
+        )
+        .route(
             "/api/v1/guilds/{guild_id}/bans",
             get(guild_routes::list_bans),
         )
@@ -1161,6 +1165,62 @@ pub(crate) mod tests {
         let (status, _) = send(&state, authorized("POST", &invite_path, &guest, None)).await;
         pool.close().await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_audit_log_over_http() {
+        use mellow_protocol::{AuditAction, AuditLogEntry};
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, guest, guild_id, guest_id) = guild_with_guest(&state).await;
+        let guild_path = format!("/api/v1/guilds/{guild_id}");
+        send(
+            &state,
+            authorized(
+                "DELETE",
+                &format!("{guild_path}/members/{guest_id}"),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        let (status, body) = send(
+            &state,
+            authorized(
+                "GET",
+                &format!("{guild_path}/audit-log?limit=10"),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let entries: Vec<AuditLogEntry> = json(&body);
+        assert_eq!(entries[0].action, AuditAction::MemberKick);
+        assert_eq!(entries[0].target_id, Some(guest_id));
+        let (status, _) = send(
+            &state,
+            authorized("GET", &format!("{guild_path}/audit-log"), &guest, None),
+        )
+        .await;
+        let (bad_status, _) = send(
+            &state,
+            authorized(
+                "GET",
+                &format!("{guild_path}/audit-log?limit=101"),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        pool.close().await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "the kicked guest is no longer a member"
+        );
+        assert_eq!(bad_status, StatusCode::BAD_REQUEST);
     }
 
     async fn owner_and_general_channel(state: &AppState) -> (String, Snowflake) {

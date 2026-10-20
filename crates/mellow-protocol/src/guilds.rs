@@ -82,6 +82,55 @@ pub struct Ban {
     pub created_at_unix_milliseconds: u64,
 }
 
+/// What a moderator or administrator did, in the guild's audit log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditAction {
+    ChannelCreate,
+    ChannelUpdate,
+    ChannelDelete,
+    /// `target_id` is the role or member, `context_id` the channel.
+    OverwriteSet,
+    /// `target_id` is the role or member, `context_id` the channel.
+    OverwriteDelete,
+    RoleCreate,
+    RoleUpdate,
+    RoleDelete,
+    /// No `target_id`: the whole order changed.
+    RolesReorder,
+    /// `target_id` is the member, `context_id` the role.
+    MemberRoleAdd,
+    /// `target_id` is the member, `context_id` the role.
+    MemberRoleRemove,
+    MemberKick,
+    MemberBanAdd,
+    MemberBanRemove,
+}
+
+/// Entry of `GET /api/v1/guilds/{guild_id}/audit-log`, newest first. Its id encodes when it
+/// happened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditLogEntry {
+    pub id: Snowflake,
+    /// `None` once that account no longer exists.
+    pub actor_id: Option<Snowflake>,
+    pub action: AuditAction,
+    pub target_id: Option<Snowflake>,
+    pub context_id: Option<Snowflake>,
+    /// The ban reason, empty otherwise.
+    pub reason: String,
+}
+
+/// Query of `GET /api/v1/guilds/{guild_id}/audit-log`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditLogQuery {
+    /// Entries strictly older than this id.
+    pub before: Option<Snowflake>,
+    /// 1 to 100; defaults to 50.
+    pub limit: Option<u32>,
+}
+
 /// Entry of `GET /api/v1/users/@me/guilds`, the server rail.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuildSummary {

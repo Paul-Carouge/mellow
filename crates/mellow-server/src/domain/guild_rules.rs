@@ -23,6 +23,8 @@ pub const MAXIMUM_ROLE_NAME_LENGTH: usize = 100;
 pub const MAXIMUM_ROLE_COLOR: u32 = 0xFF_FFFF;
 pub const MAXIMUM_OVERWRITES_PER_CHANNEL: u32 = 100;
 pub const MAXIMUM_BAN_REASON_LENGTH: usize = 512;
+pub const DEFAULT_AUDIT_LOG_PAGE_SIZE: u32 = 50;
+pub const MAXIMUM_AUDIT_LOG_PAGE_SIZE: u32 = 100;
 /// shortcut: the ban list is capped, not paginated; paginate with the bans screen.
 pub const MAXIMUM_BANS_LISTED: u32 = 1_000;
 /// shortcut: the member list is capped, not paginated; paginate with the member list UI.
@@ -67,6 +69,8 @@ pub enum GuildRuleViolation {
         "ban reasons are at most {MAXIMUM_BAN_REASON_LENGTH} characters, without control characters"
     )]
     BanReason,
+    #[error("audit log pages hold 1 to {MAXIMUM_AUDIT_LOG_PAGE_SIZE} entries")]
+    AuditLogLimit,
     #[error("you cannot kick or ban yourself; leave the guild instead")]
     ModerationTarget,
     #[error("an overwrite cannot allow and deny the same permission")]
@@ -154,6 +158,16 @@ pub fn validate_invite_limits(
     } else {
         Err(GuildRuleViolation::InviteLimits)
     }
+}
+
+/// # Errors
+/// `AuditLogLimit` for a limit outside 1..=100.
+pub fn audit_log_page_size(requested: Option<u32>) -> Result<u32, GuildRuleViolation> {
+    let size = requested.unwrap_or(DEFAULT_AUDIT_LOG_PAGE_SIZE);
+    (1..=MAXIMUM_AUDIT_LOG_PAGE_SIZE)
+        .contains(&size)
+        .then_some(size)
+        .ok_or(GuildRuleViolation::AuditLogLimit)
 }
 
 /// # Errors

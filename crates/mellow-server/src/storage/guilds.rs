@@ -7,6 +7,8 @@ use mellow_protocol::{
 };
 use sqlx::SqlitePool;
 
+use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
+
 /// Takes the write lock at once, so a read-then-write transaction waits for `busy_timeout`
 /// instead of failing with `SQLITE_BUSY_SNAPSHOT` when another connection wrote in between.
 const BEGIN_WRITE_TRANSACTION: &str = "BEGIN IMMEDIATE";
@@ -19,6 +21,8 @@ pub(crate) enum GuildStorageError {
     UnknownChannelKind(String),
     #[error("the overwrite kind stored in the database is unknown: {0}")]
     UnknownOverwriteKind(String),
+    #[error("the audit action stored in the database is unknown: {0}")]
+    UnknownAuditAction(String),
     /// A quota checked atomically with the insert was reached.
     #[error("limit reached")]
     LimitReached,
@@ -351,6 +355,7 @@ pub(crate) async fn insert_role_above_everyone(
     guild_id: Snowflake,
     role: &Role,
     maximum_roles: u32,
+    audit: &NewAuditEntry,
 ) -> Result<Vec<Role>, GuildStorageError> {
     let guild_id_integer = to_integer(guild_id.raw())?;
     let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
@@ -375,8 +380,17 @@ pub(crate) async fn insert_role_above_everyone(
     .bind(permissions_to_integer(role.permissions))
     .execute(&mut *transaction)
     .await?;
+    insert_audit_entry(&mut transaction, audit).await?;
     transaction.commit().await?;
     list_roles(pool, guild_id).await
+}
+
+/// The fields of a role to change; `None` keeps the stored value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RoleFieldChanges<'a> {
+    pub(crate) name: Option<&'a str>,
+    pub(crate) color: Option<u32>,
+    pub(crate) permissions: Option<Permissions>,
 }
 
 /// Writes only the given fields of a role of `guild_id`. Only the `changeable_permissions` bits
@@ -390,31 +404,36 @@ pub(crate) async fn update_role_fields(
     pool: &SqlitePool,
     guild_id: Snowflake,
     role_id: Snowflake,
-    name: Option<&str>,
-    color: Option<u32>,
-    permissions: Option<Permissions>,
+    changes: &RoleFieldChanges<'_>,
     changeable_permissions: Permissions,
+    audit: &NewAuditEntry,
 ) -> Result<Option<Role>, GuildStorageError> {
     let (Some(guild_id), Some(role_id)) = (lookup_integer(guild_id), lookup_integer(role_id))
     else {
         return Ok(None);
     };
+    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
     let row: Option<RoleRow> = sqlx::query_as(
         "UPDATE roles SET name = COALESCE(?, name), color = COALESCE(?, color), \
          permissions = COALESCE((permissions & ~?) | (? & ?), permissions) \
          WHERE id = ? AND guild_id = ? \
          RETURNING id, name, color, position, permissions",
     )
-    .bind(name)
-    .bind(color.map(i64::from))
+    .bind(changes.name)
+    .bind(changes.color.map(i64::from))
     .bind(permissions_to_integer(changeable_permissions))
-    .bind(permissions.map(permissions_to_integer))
+    .bind(changes.permissions.map(permissions_to_integer))
     .bind(permissions_to_integer(changeable_permissions))
     .bind(role_id)
     .bind(guild_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *transaction)
     .await?;
-    row.map(role_from_row).transpose()
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    insert_audit_entry(&mut transaction, audit).await?;
+    transaction.commit().await?;
+    role_from_row(row).map(Some)
 }
 
 /// Gives the named roles of `guild_id` the positions 1, 2, … in `new_order`, provided they are
@@ -428,6 +447,7 @@ pub(crate) async fn reorder_roles(
     guild_id: Snowflake,
     expected_order: &[Snowflake],
     new_order: &[Snowflake],
+    audit: &NewAuditEntry,
 ) -> Result<Option<Vec<Role>>, GuildStorageError> {
     let guild_id_integer = to_integer(guild_id.raw())?;
     let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
@@ -452,6 +472,7 @@ pub(crate) async fn reorder_roles(
             .execute(&mut *transaction)
             .await?;
     }
+    insert_audit_entry(&mut transaction, audit).await?;
     transaction.commit().await?;
     list_roles(pool, guild_id).await.map(Some)
 }
@@ -465,6 +486,7 @@ pub(crate) async fn delete_role(
     pool: &SqlitePool,
     guild_id: Snowflake,
     role_id: Snowflake,
+    audit: &NewAuditEntry,
 ) -> Result<bool, GuildStorageError> {
     let (Some(guild_id), Some(role_id)) = (lookup_integer(guild_id), lookup_integer(role_id))
     else {
@@ -494,6 +516,7 @@ pub(crate) async fn delete_role(
     .bind(guild_id)
     .execute(&mut *transaction)
     .await?;
+    insert_audit_entry(&mut transaction, audit).await?;
     transaction.commit().await?;
     Ok(true)
 }
@@ -512,6 +535,7 @@ pub(crate) async fn add_member_role(
     user_id: Snowflake,
     role_id: Snowflake,
     assignable_permissions: Permissions,
+    audit: &NewAuditEntry,
 ) -> Result<Option<Vec<Snowflake>>, GuildStorageError> {
     let (Some(guild_id_integer), Some(user_id_integer), Some(role_id_integer)) = (
         lookup_integer(guild_id),
@@ -520,6 +544,7 @@ pub(crate) async fn add_member_role(
     ) else {
         return Ok(None);
     };
+    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
     let inserted = sqlx::query(
         "INSERT OR IGNORE INTO member_roles (guild_id, user_id, role_id) \
          SELECT guild_members.guild_id, guild_members.user_id, roles.id \
@@ -531,9 +556,14 @@ pub(crate) async fn add_member_role(
     .bind(user_id_integer)
     .bind(role_id_integer)
     .bind(permissions_to_integer(assignable_permissions))
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?
     .rows_affected();
+    // Recorded only when the member did not hold it already.
+    if inserted > 0 {
+        insert_audit_entry(&mut transaction, audit).await?;
+    }
+    transaction.commit().await?;
     let role_ids = member_role_ids(pool, guild_id, user_id).await?;
     // Already held: only reachable when the role passed the same permission check earlier.
     Ok((inserted > 0 || role_ids.contains(&role_id)).then_some(role_ids))
@@ -549,6 +579,7 @@ pub(crate) async fn remove_member_role(
     guild_id: Snowflake,
     user_id: Snowflake,
     role_id: Snowflake,
+    audit: &NewAuditEntry,
 ) -> Result<Option<Vec<Snowflake>>, GuildStorageError> {
     let (Some(guild_id_integer), Some(user_id_integer), Some(role_id_integer)) = (
         lookup_integer(guild_id),
@@ -557,17 +588,20 @@ pub(crate) async fn remove_member_role(
     ) else {
         return Ok(None);
     };
+    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
     let removed =
         sqlx::query("DELETE FROM member_roles WHERE guild_id = ? AND user_id = ? AND role_id = ?")
             .bind(guild_id_integer)
             .bind(user_id_integer)
             .bind(role_id_integer)
-            .execute(pool)
+            .execute(&mut *transaction)
             .await?
             .rows_affected();
     if removed == 0 {
         return Ok(None);
     }
+    insert_audit_entry(&mut transaction, audit).await?;
+    transaction.commit().await?;
     member_role_ids(pool, guild_id, user_id).await.map(Some)
 }
 
@@ -667,9 +701,11 @@ pub(crate) async fn set_overwrite(
     overwrite: &PermissionOverwrite,
     held: Permissions,
     maximum_overwrites: u32,
+    audit: &NewAuditEntry,
 ) -> Result<(), GuildStorageError> {
     let channel_id_integer = to_integer(channel_id.raw())?;
     let target_id_integer = to_integer(overwrite.id.raw())?;
+    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
     let written = sqlx::query(
         "INSERT INTO channel_permission_overwrites (channel_id, target_id, target_kind, allow, deny) \
          SELECT ?1, ?2, ?3, ?4, ?5 \
@@ -685,12 +721,14 @@ pub(crate) async fn set_overwrite(
     .bind(permissions_to_integer(overwrite.deny))
     .bind(to_count(maximum_overwrites))
     .bind(permissions_to_integer(held))
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?
     .rows_affected();
     if written == 0 {
         return Err(GuildStorageError::LimitReached);
     }
+    insert_audit_entry(&mut transaction, audit).await?;
+    transaction.commit().await?;
     Ok(())
 }
 
@@ -704,12 +742,14 @@ pub(crate) async fn delete_overwrite(
     channel_id: Snowflake,
     target_id: Snowflake,
     held: Permissions,
+    audit: &NewAuditEntry,
 ) -> Result<bool, GuildStorageError> {
     let (Some(channel_id), Some(target_id)) =
         (lookup_integer(channel_id), lookup_integer(target_id))
     else {
         return Ok(false);
     };
+    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
     let deleted = sqlx::query(
         "DELETE FROM channel_permission_overwrites \
          WHERE channel_id = ? AND target_id = ? AND ((allow | deny) & ~?) = 0",
@@ -717,10 +757,15 @@ pub(crate) async fn delete_overwrite(
     .bind(channel_id)
     .bind(target_id)
     .bind(permissions_to_integer(held))
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?
     .rows_affected();
-    Ok(deleted > 0)
+    if deleted == 0 {
+        return Ok(false);
+    }
+    insert_audit_entry(&mut transaction, audit).await?;
+    transaction.commit().await?;
+    Ok(true)
 }
 
 /// Every member of the guild with their named role ids: who a restricted channel's events go to
@@ -770,8 +815,10 @@ pub(crate) async fn insert_channel_last(
     pool: &SqlitePool,
     channel: &StoredChannel,
     maximum_channels: u32,
+    audit: &NewAuditEntry,
 ) -> Result<StoredChannel, GuildStorageError> {
     let guild_id = to_integer(channel.guild_id.raw())?;
+    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
     let result: Result<Option<i64>, sqlx::Error> = sqlx::query_scalar(
         "INSERT INTO channels (id, guild_id, kind, name, topic, parent_id, position) \
          SELECT ?, ?, ?, ?, ?, ?, COALESCE(MAX(position) + 1, 0) FROM channels WHERE guild_id = ? \
@@ -791,7 +838,7 @@ pub(crate) async fn insert_channel_last(
     )
     .bind(guild_id)
     .bind(to_count(maximum_channels))
-    .fetch_optional(pool)
+    .fetch_optional(&mut *transaction)
     .await;
     let position = match result {
         Ok(Some(position)) => position,
@@ -801,6 +848,8 @@ pub(crate) async fn insert_channel_last(
         }
         Err(error) => return Err(error.into()),
     };
+    insert_audit_entry(&mut transaction, audit).await?;
+    transaction.commit().await?;
     Ok(StoredChannel {
         position: u32::try_from(position).map_err(|_| GuildStorageError::IntegerOutOfRange)?,
         ..channel.clone()
@@ -817,7 +866,9 @@ pub(crate) async fn update_channel_fields(
     channel_id: Snowflake,
     name: Option<&str>,
     topic: Option<&str>,
+    audit: &NewAuditEntry,
 ) -> Result<Option<StoredChannel>, GuildStorageError> {
+    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
     let row: Option<ChannelRow> = sqlx::query_as(
         "UPDATE channels SET name = COALESCE(?, name), topic = COALESCE(?, topic) \
          WHERE id = ? AND guild_id IS NOT NULL \
@@ -826,9 +877,14 @@ pub(crate) async fn update_channel_fields(
     .bind(name)
     .bind(topic)
     .bind(to_integer(channel_id.raw())?)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *transaction)
     .await?;
-    attach_overwrites_to_channel(pool, row.map(channel_from_row).transpose()?).await
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    insert_audit_entry(&mut transaction, audit).await?;
+    transaction.commit().await?;
+    attach_overwrites_to_channel(pool, Some(channel_from_row(row)?)).await
 }
 
 /// # Errors
@@ -836,11 +892,18 @@ pub(crate) async fn update_channel_fields(
 pub(crate) async fn delete_channel(
     pool: &SqlitePool,
     channel_id: Snowflake,
+    audit: &NewAuditEntry,
 ) -> Result<(), GuildStorageError> {
-    sqlx::query("DELETE FROM channels WHERE id = ?")
+    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
+    let deleted = sqlx::query("DELETE FROM channels WHERE id = ?")
         .bind(to_integer(channel_id.raw())?)
-        .execute(pool)
-        .await?;
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+    if deleted > 0 {
+        insert_audit_entry(&mut transaction, audit).await?;
+    }
+    transaction.commit().await?;
     Ok(())
 }
 
@@ -942,18 +1005,29 @@ pub(crate) async fn list_members(
         .collect()
 }
 
+/// `audit` records a kick; leaving the guild records nothing.
+///
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn delete_member(
     pool: &SqlitePool,
     guild_id: Snowflake,
     user_id: Snowflake,
+    audit: Option<&NewAuditEntry>,
 ) -> Result<(), GuildStorageError> {
-    sqlx::query("DELETE FROM guild_members WHERE guild_id = ? AND user_id = ?")
+    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
+    let removed = sqlx::query("DELETE FROM guild_members WHERE guild_id = ? AND user_id = ?")
         .bind(to_integer(guild_id.raw())?)
         .bind(to_integer(user_id.raw())?)
-        .execute(pool)
-        .await?;
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+    if removed > 0
+        && let Some(audit) = audit
+    {
+        insert_audit_entry(&mut transaction, audit).await?;
+    }
+    transaction.commit().await?;
     Ok(())
 }
 
@@ -1132,6 +1206,7 @@ pub(crate) async fn ban_and_remove_member(
     reason: &str,
     banned_by: Snowflake,
     now_unix_milliseconds: u64,
+    audit: &NewAuditEntry,
 ) -> Result<bool, GuildStorageError> {
     let guild_id_integer = to_integer(guild_id.raw())?;
     let user_id_integer = to_integer(user_id.raw())?;
@@ -1155,6 +1230,7 @@ pub(crate) async fn ban_and_remove_member(
         .execute(&mut *transaction)
         .await?
         .rows_affected();
+    insert_audit_entry(&mut transaction, audit).await?;
     transaction.commit().await?;
     Ok(removed > 0)
 }
@@ -1167,18 +1243,25 @@ pub(crate) async fn delete_ban(
     pool: &SqlitePool,
     guild_id: Snowflake,
     user_id: Snowflake,
+    audit: &NewAuditEntry,
 ) -> Result<bool, GuildStorageError> {
     let (Some(guild_id), Some(user_id)) = (lookup_integer(guild_id), lookup_integer(user_id))
     else {
         return Ok(false);
     };
+    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
     let deleted = sqlx::query("DELETE FROM bans WHERE guild_id = ? AND user_id = ?")
         .bind(guild_id)
         .bind(user_id)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?
         .rows_affected();
-    Ok(deleted > 0)
+    if deleted == 0 {
+        return Ok(false);
+    }
+    insert_audit_entry(&mut transaction, audit).await?;
+    transaction.commit().await?;
+    Ok(true)
 }
 
 /// At most `maximum_bans` bans, newest first.

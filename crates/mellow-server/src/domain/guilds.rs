@@ -5,20 +5,21 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use mellow_protocol::{
-    Ban, Channel, ChannelKind, CreateBanRequest, CreateChannelRequest, CreateGuildRequest,
-    CreateInviteRequest, CreateRoleRequest, GatewayEvent, Guild, GuildSummary, Invite, Member,
-    OverwriteKind, PermissionOverwrite, Permissions, PresenceStatus, PublicUser,
-    ReorderRolesRequest, Role, SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest,
-    UpdateRoleRequest,
+    AuditAction, AuditLogEntry, AuditLogQuery, Ban, Channel, ChannelKind, CreateBanRequest,
+    CreateChannelRequest, CreateGuildRequest, CreateInviteRequest, CreateRoleRequest, GatewayEvent,
+    Guild, GuildSummary, Invite, Member, OverwriteKind, PermissionOverwrite, Permissions,
+    PresenceStatus, PublicUser, ReorderRolesRequest, Role, SetPermissionOverwriteRequest,
+    Snowflake, UpdateChannelRequest, UpdateRoleRequest,
 };
 use sqlx::SqlitePool;
 
+use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::guild_rules::{
     GuildRuleViolation, MAXIMUM_ACTIVE_INVITES_PER_GUILD, MAXIMUM_BANS_LISTED,
     MAXIMUM_CHANNELS_PER_GUILD, MAXIMUM_MEMBERS_LISTED, MAXIMUM_OVERWRITES_PER_CHANNEL,
-    MAXIMUM_OWNED_GUILDS_PER_USER, MAXIMUM_ROLES_PER_GUILD, generate_invite_code,
-    normalize_ban_reason, normalize_category_name, normalize_guild_name, normalize_role_name,
-    normalize_text_channel_name, normalize_topic, validate_invite_limits,
+    MAXIMUM_OWNED_GUILDS_PER_USER, MAXIMUM_ROLES_PER_GUILD, audit_log_page_size,
+    generate_invite_code, normalize_ban_reason, normalize_category_name, normalize_guild_name,
+    normalize_role_name, normalize_text_channel_name, normalize_topic, validate_invite_limits,
     validate_known_permissions, validate_role_color, validate_role_order,
 };
 use crate::domain::permissions::{
@@ -26,9 +27,10 @@ use crate::domain::permissions::{
 };
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::events::EventHub;
+use crate::storage::audit_log::{self as audit_log_storage, NewAuditEntry};
 use crate::storage::guilds::{
-    self as guild_storage, GuildStorageError, JoinOutcome, Membership, NewGuild, StoredChannel,
-    StoredInvite,
+    self as guild_storage, GuildStorageError, JoinOutcome, Membership, NewGuild, RoleFieldChanges,
+    StoredChannel, StoredInvite,
 };
 
 const DEFAULT_CATEGORY_NAME: &str = "Text channels";
@@ -139,6 +141,26 @@ impl Guilds {
         events: Arc<EventHub>,
     ) -> Self {
         Self { pool, ids, events }
+    }
+
+    /// What the audit log records for an action about to be written, in the same transaction.
+    fn audit_entry(
+        &self,
+        guild_id: Snowflake,
+        actor_id: Snowflake,
+        action: AuditAction,
+        target_id: Option<Snowflake>,
+        context_id: Option<Snowflake>,
+    ) -> Result<NewAuditEntry, GuildError> {
+        Ok(NewAuditEntry {
+            id: self.ids.next_id(now_unix_milliseconds())?,
+            guild_id,
+            actor_id,
+            action,
+            target_id,
+            context_id,
+            reason: String::new(),
+        })
     }
 
     /// The member's permissions, or `NotFound` for non-members.
@@ -303,10 +325,18 @@ impl Guilds {
         }
         // A new channel has no overwrites; its audience is known before it is written.
         let audience = self.audience_with_overwrites(guild_id, &[]).await?;
+        let channel_id = self.ids.next_id(now_unix_milliseconds)?;
+        let audit = self.audit_entry(
+            guild_id,
+            user_id,
+            AuditAction::ChannelCreate,
+            Some(channel_id),
+            None,
+        )?;
         let channel = guild_storage::insert_channel_last(
             &self.pool,
             &StoredChannel {
-                id: self.ids.next_id(now_unix_milliseconds)?,
+                id: channel_id,
                 guild_id,
                 kind: request.kind,
                 name,
@@ -316,6 +346,7 @@ impl Guilds {
                 permission_overwrites: Vec::new(),
             },
             MAXIMUM_CHANNELS_PER_GUILD,
+            &audit,
         )
         .await
         .map_err(limit_reached("a guild has at most 500 channels"))?;
@@ -511,11 +542,19 @@ impl Guilds {
             .map(|topic| normalize_topic(&topic))
             .transpose()?;
         let audience = self.channel_audience(&channel).await?;
+        let audit = self.audit_entry(
+            channel.guild_id,
+            user_id,
+            AuditAction::ChannelUpdate,
+            Some(channel.id),
+            None,
+        )?;
         let updated = guild_storage::update_channel_fields(
             &self.pool,
             channel.id,
             name.as_deref(),
             topic.as_deref(),
+            &audit,
         )
         .await?
         .ok_or(GuildError::NotFound)?;
@@ -542,7 +581,14 @@ impl Guilds {
         }
         // Who could view it is decided before it disappears.
         let audience = self.channel_audience(&channel).await?;
-        guild_storage::delete_channel(&self.pool, channel.id).await?;
+        let audit = self.audit_entry(
+            channel.guild_id,
+            user_id,
+            AuditAction::ChannelDelete,
+            Some(channel.id),
+            None,
+        )?;
+        guild_storage::delete_channel(&self.pool, channel.id, &audit).await?;
         self.publish_to_audience(
             channel.guild_id,
             &audience,
@@ -602,12 +648,20 @@ impl Guilds {
             return Ok(channel_from_stored(channel));
         }
         let viewers_before = self.viewers_before_overwrite_change(&channel).await?;
+        let audit = self.audit_entry(
+            channel.guild_id,
+            user_id,
+            AuditAction::OverwriteSet,
+            Some(target_id),
+            Some(channel.id),
+        )?;
         guild_storage::set_overwrite(
             &self.pool,
             channel.id,
             &wanted,
             held,
             MAXIMUM_OVERWRITES_PER_CHANNEL,
+            &audit,
         )
         .await
         .map_err(limit_reached(
@@ -650,8 +704,16 @@ impl Guilds {
             return Err(GuildError::MissingPermissions);
         }
         let viewers_before = self.viewers_before_overwrite_change(&channel).await?;
+        let audit = self.audit_entry(
+            channel.guild_id,
+            user_id,
+            AuditAction::OverwriteDelete,
+            Some(target_id),
+            Some(channel.id),
+        )?;
         // Refused if the overwrite gained a permission the member lacks since it was read.
-        if !guild_storage::delete_overwrite(&self.pool, channel.id, target_id, held).await? {
+        if !guild_storage::delete_overwrite(&self.pool, channel.id, target_id, held, &audit).await?
+        {
             return Err(GuildError::Conflict);
         }
         self.publish_overwrite_change(&channel, &viewers_before)
@@ -917,6 +979,13 @@ impl Guilds {
             return Err(GuildError::MissingPermissions);
         }
         let role_id = self.ids.next_id(now_unix_milliseconds)?;
+        let audit = self.audit_entry(
+            guild_id,
+            user_id,
+            AuditAction::RoleCreate,
+            Some(role_id),
+            None,
+        )?;
         let roles = guild_storage::insert_role_above_everyone(
             &self.pool,
             guild_id,
@@ -928,6 +997,7 @@ impl Guilds {
                 permissions,
             },
             MAXIMUM_ROLES_PER_GUILD,
+            &audit,
         )
         .await
         .map_err(limit_reached("a guild has at most 250 roles"))?;
@@ -972,14 +1042,24 @@ impl Guilds {
         {
             return Err(GuildError::MissingPermissions);
         }
+        let audit = self.audit_entry(
+            guild_id,
+            user_id,
+            AuditAction::RoleUpdate,
+            Some(role_id),
+            None,
+        )?;
         let updated = guild_storage::update_role_fields(
             &self.pool,
             guild_id,
             role_id,
-            name.as_deref(),
-            color,
-            permissions,
+            &RoleFieldChanges {
+                name: name.as_deref(),
+                color,
+                permissions,
+            },
             manager.permissions,
+            &audit,
         )
         .await?
         .ok_or(GuildError::NotFound)?;
@@ -1031,10 +1111,16 @@ impl Guilds {
         if request.role_ids == current_order {
             return Ok(roles);
         }
-        let roles =
-            guild_storage::reorder_roles(&self.pool, guild_id, &current_order, &request.role_ids)
-                .await?
-                .ok_or(GuildError::Conflict)?;
+        let audit = self.audit_entry(guild_id, user_id, AuditAction::RolesReorder, None, None)?;
+        let roles = guild_storage::reorder_roles(
+            &self.pool,
+            guild_id,
+            &current_order,
+            &request.role_ids,
+            &audit,
+        )
+        .await?
+        .ok_or(GuildError::Conflict)?;
         self.publish_roles(guild_id, roles.clone());
         Ok(roles)
     }
@@ -1051,7 +1137,14 @@ impl Guilds {
         }
         self.manager_and_manageable_role(user_id, guild_id, role_id)
             .await?;
-        if !guild_storage::delete_role(&self.pool, guild_id, role_id).await? {
+        let audit = self.audit_entry(
+            guild_id,
+            user_id,
+            AuditAction::RoleDelete,
+            Some(role_id),
+            None,
+        )?;
+        if !guild_storage::delete_role(&self.pool, guild_id, role_id, &audit).await? {
             return Err(GuildError::NotFound);
         }
         self.publish_roles(
@@ -1077,12 +1170,20 @@ impl Guilds {
         let (manager, _) = self
             .manager_and_manageable_role(user_id, guild_id, role_id)
             .await?;
+        let audit = self.audit_entry(
+            guild_id,
+            user_id,
+            AuditAction::MemberRoleAdd,
+            Some(member_id),
+            Some(role_id),
+        )?;
         let role_ids = guild_storage::add_member_role(
             &self.pool,
             guild_id,
             member_id,
             role_id,
             manager.permissions,
+            &audit,
         )
         .await?
         .ok_or(GuildError::NotFound)?;
@@ -1105,9 +1206,17 @@ impl Guilds {
         }
         self.manager_and_manageable_role(user_id, guild_id, role_id)
             .await?;
-        let role_ids = guild_storage::remove_member_role(&self.pool, guild_id, member_id, role_id)
-            .await?
-            .ok_or(GuildError::NotFound)?;
+        let audit = self.audit_entry(
+            guild_id,
+            user_id,
+            AuditAction::MemberRoleRemove,
+            Some(member_id),
+            Some(role_id),
+        )?;
+        let role_ids =
+            guild_storage::remove_member_role(&self.pool, guild_id, member_id, role_id, &audit)
+                .await?
+                .ok_or(GuildError::NotFound)?;
         self.publish_member_roles(guild_id, member_id, role_ids);
         self.resynchronize(guild_id, AffectedMembers::Some(HashSet::from([member_id])))
             .await;
@@ -1155,7 +1264,7 @@ impl Guilds {
         if membership.owner_id == user_id {
             return Err(GuildError::OwnerCannotLeave);
         }
-        guild_storage::delete_member(&self.pool, guild_id, user_id).await?;
+        guild_storage::delete_member(&self.pool, guild_id, user_id, None).await?;
         self.publish_member_removed(guild_id, user_id);
         Ok(())
     }
@@ -1234,7 +1343,14 @@ impl Guilds {
         {
             return Err(GuildError::NotFound);
         }
-        guild_storage::delete_member(&self.pool, guild_id, target_id).await?;
+        let audit = self.audit_entry(
+            guild_id,
+            user_id,
+            AuditAction::MemberKick,
+            Some(target_id),
+            None,
+        )?;
+        guild_storage::delete_member(&self.pool, guild_id, target_id, Some(&audit)).await?;
         self.publish_member_removed(guild_id, target_id);
         Ok(())
     }
@@ -1260,6 +1376,16 @@ impl Guilds {
         {
             return Err(GuildError::NotFound);
         }
+        let audit = NewAuditEntry {
+            reason: reason.clone(),
+            ..self.audit_entry(
+                guild_id,
+                user_id,
+                AuditAction::MemberBanAdd,
+                Some(target_id),
+                None,
+            )?
+        };
         let was_member = guild_storage::ban_and_remove_member(
             &self.pool,
             guild_id,
@@ -1267,6 +1393,7 @@ impl Guilds {
             &reason,
             user_id,
             now_unix_milliseconds,
+            &audit,
         )
         .await?;
         if was_member {
@@ -1284,11 +1411,34 @@ impl Guilds {
     ) -> Result<(), GuildError> {
         self.require_member_permissions(guild_id, user_id, Permissions::BAN_MEMBERS)
             .await?;
-        if guild_storage::delete_ban(&self.pool, guild_id, target_id).await? {
+        let audit = self.audit_entry(
+            guild_id,
+            user_id,
+            AuditAction::MemberBanRemove,
+            Some(target_id),
+            None,
+        )?;
+        if guild_storage::delete_ban(&self.pool, guild_id, target_id, &audit).await? {
             Ok(())
         } else {
             Err(GuildError::NotFound)
         }
+    }
+
+    /// Needs `VIEW_AUDIT_LOG`. Newest first, `before` pages back.
+    pub(crate) async fn list_audit_log(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        query: AuditLogQuery,
+    ) -> Result<Vec<AuditLogEntry>, GuildError> {
+        let limit = audit_log_page_size(query.limit)?;
+        self.require_member_permissions(guild_id, user_id, Permissions::VIEW_AUDIT_LOG)
+            .await?;
+        Ok(
+            audit_log_storage::list_audit_entries(&self.pool, guild_id, query.before, limit)
+                .await?,
+        )
     }
 
     /// Needs `BAN_MEMBERS`. shortcut: capped, not paginated; paginate with the bans screen.
@@ -2290,19 +2440,37 @@ mod tests {
             )
             .await
             .unwrap();
+        let audit = fixture
+            .guilds
+            .audit_entry(
+                guild.id,
+                fixture.owner,
+                AuditAction::RolesReorder,
+                None,
+                None,
+            )
+            .unwrap();
         let outdated = guild_storage::reorder_roles(
             &fixture.pool,
             guild.id,
             &seen,
             &[admin.id, helper.id, moderator.id],
+            &audit,
         )
         .await
         .unwrap();
         let roles = guild_storage::list_roles(&fixture.pool, guild.id)
             .await
             .unwrap();
+        let audit_log = audit_log_storage::list_audit_entries(&fixture.pool, guild.id, None, 100)
+            .await
+            .unwrap();
         fixture.pool.close().await;
         assert_eq!(outdated, None);
+        assert!(
+            audit_log.iter().all(|entry| entry.id != audit.id),
+            "nothing written, nothing recorded"
+        );
         assert_eq!(
             roles.iter().map(|role| role.id).collect::<Vec<_>>(),
             [guild.id, moderator.id, helper.id, admin.id]
@@ -3007,6 +3175,138 @@ mod tests {
             .await;
         fixture.pool.close().await;
         assert!(matches!(joined, Err(GuildError::Banned)));
+    }
+
+    fn actions(entries: &[AuditLogEntry]) -> Vec<AuditAction> {
+        entries.iter().map(|entry| entry.action).collect()
+    }
+
+    #[tokio::test]
+    async fn moderation_and_administration_are_recorded_in_the_audit_log() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        join(&fixture, guild.id, fixture.third).await;
+        let guilds = &fixture.guilds;
+        let owner = fixture.owner;
+        let channel = guilds
+            .create_channel(owner, guild.id, text_channel("news", None), NOW)
+            .await
+            .unwrap();
+        let role = guilds
+            .create_role(
+                owner,
+                guild.id,
+                role_request("Mods", Permissions::empty()),
+                NOW,
+            )
+            .await
+            .unwrap();
+        guilds
+            .add_member_role(owner, guild.id, fixture.other, role.id)
+            .await
+            .unwrap();
+        let without_permission = guilds
+            .list_audit_log(fixture.other, guild.id, AuditLogQuery::default())
+            .await;
+        // Refused or unchanged: nothing recorded.
+        let refused = guilds
+            .create_role(
+                fixture.other,
+                guild.id,
+                role_request("No", Permissions::empty()),
+                NOW,
+            )
+            .await;
+        guilds
+            .add_member_role(owner, guild.id, fixture.other, role.id)
+            .await
+            .unwrap();
+        guilds
+            .set_permission_overwrite(
+                owner,
+                channel.id,
+                role.id,
+                overwrite_request(
+                    OverwriteKind::Role,
+                    Permissions::SEND_MESSAGES,
+                    Permissions::empty(),
+                ),
+            )
+            .await
+            .unwrap();
+        guilds
+            .kick_member(owner, guild.id, fixture.third)
+            .await
+            .unwrap();
+        guilds
+            .ban_member(owner, guild.id, fixture.other, ban_request("spam"), NOW)
+            .await
+            .unwrap();
+        let everything = guilds
+            .list_audit_log(owner, guild.id, AuditLogQuery::default())
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        assert_all_refused(vec![refused.map(|_| ())]);
+        assert_eq!(
+            actions(&everything),
+            [
+                AuditAction::MemberBanAdd,
+                AuditAction::MemberKick,
+                AuditAction::OverwriteSet,
+                AuditAction::MemberRoleAdd,
+                AuditAction::RoleCreate,
+                AuditAction::ChannelCreate,
+            ],
+            "newest first; joins and repeated grants are not moderation"
+        );
+        let ban = &everything[0];
+        assert_eq!(
+            (ban.actor_id, ban.target_id, ban.reason.as_str()),
+            (Some(owner), Some(fixture.other), "spam")
+        );
+        let overwrite = &everything[2];
+        assert_eq!(
+            (overwrite.target_id, overwrite.context_id),
+            (Some(role.id), Some(channel.id))
+        );
+        assert!(matches!(
+            without_permission,
+            Err(GuildError::MissingPermissions)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_audit_log_pages_back_from_the_newest_entry() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        let guilds = &fixture.guilds;
+        for name in ["a", "b", "c"] {
+            guilds
+                .create_channel(fixture.owner, guild.id, text_channel(name, None), NOW)
+                .await
+                .unwrap();
+        }
+        let page = |before, limit| {
+            guilds.list_audit_log(fixture.owner, guild.id, AuditLogQuery { before, limit })
+        };
+        let newest = page(None, Some(1)).await.unwrap();
+        let older = page(Some(newest[0].id), Some(5)).await.unwrap();
+        let beyond_every_id = page(Some(Snowflake::from_raw(u64::MAX)), None)
+            .await
+            .unwrap();
+        let bad_limit = page(None, Some(0)).await;
+        fixture.pool.close().await;
+
+        assert_eq!(newest.len(), 1);
+        assert_eq!(older.len(), 2);
+        assert!(older.iter().all(|entry| entry.id < newest[0].id));
+        assert_eq!(beyond_every_id.len(), 3);
+        assert!(matches!(
+            bad_limit,
+            Err(GuildError::InvalidInput(GuildRuleViolation::AuditLogLimit))
+        ));
     }
 
     #[tokio::test]
