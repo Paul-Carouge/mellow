@@ -3,9 +3,11 @@
 use std::time::Duration;
 
 use mellow_protocol::{
-    AcknowledgeRequest, ApiErrorBody, Channel, CreateChannelRequest, CreateGuildRequest,
-    CreateInviteRequest, CurrentUser, EditMessageRequest, Guild, Invite, LoginRequest, Member,
-    Message, MessageHistoryQuery, RegisterRequest, SendMessageRequest, SessionCreated, Snowflake,
+    AcknowledgeRequest, ApiErrorBody, AuditLogEntry, AuditLogQuery, Ban, Channel, CreateBanRequest,
+    CreateChannelRequest, CreateGuildRequest, CreateInviteRequest, CreateRoleRequest, CurrentUser,
+    EditMessageRequest, Guild, Invite, LoginRequest, Member, Message, MessageHistoryQuery,
+    RegisterRequest, ReorderRolesRequest, Role, SendMessageRequest, SessionCreated,
+    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateRoleRequest,
 };
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::Serialize;
@@ -262,6 +264,273 @@ impl RestClient {
             true,
         )?)
         .await
+    }
+
+    /// # Errors
+    /// Network or API errors; `NotFound` when the user is not a member.
+    pub async fn guild(&self, guild_id: Snowflake) -> Result<Guild, ClientError> {
+        Self::send_and_decode_json(self.request(
+            Method::GET,
+            &format!("api/v1/guilds/{guild_id}"),
+            true,
+        )?)
+        .await
+    }
+
+    /// # Errors
+    /// Network or API errors; the owner cannot leave their own guild.
+    pub async fn leave_guild(&self, guild_id: Snowflake) -> Result<(), ClientError> {
+        Self::send_and_discard_body(self.request(
+            Method::DELETE,
+            &format!("api/v1/guilds/{guild_id}/members/@me"),
+            true,
+        )?)
+        .await
+    }
+
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` without `MANAGE_CHANNELS`.
+    pub async fn update_channel(
+        &self,
+        channel_id: Snowflake,
+        request: &UpdateChannelRequest,
+    ) -> Result<Channel, ClientError> {
+        let builder = self
+            .request(
+                Method::PATCH,
+                &format!("api/v1/channels/{channel_id}"),
+                true,
+            )?
+            .json(request);
+        Self::send_and_decode_json(builder).await
+    }
+
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` without `MANAGE_CHANNELS`.
+    pub async fn delete_channel(&self, channel_id: Snowflake) -> Result<(), ClientError> {
+        Self::send_and_discard_body(self.request(
+            Method::DELETE,
+            &format!("api/v1/channels/{channel_id}"),
+            true,
+        )?)
+        .await
+    }
+
+    /// Replaces the overwrite of `target_id` (a role or a member) on the channel; the answer is
+    /// the channel with its new overwrites.
+    ///
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` without `MANAGE_ROLES` or for bits the caller
+    /// lacks.
+    pub async fn set_permission_overwrite(
+        &self,
+        channel_id: Snowflake,
+        target_id: Snowflake,
+        request: &SetPermissionOverwriteRequest,
+    ) -> Result<Channel, ClientError> {
+        let builder = self
+            .request(
+                Method::PUT,
+                &format!("api/v1/channels/{channel_id}/permissions/{target_id}"),
+                true,
+            )?
+            .json(request);
+        Self::send_and_decode_json(builder).await
+    }
+
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` without `MANAGE_ROLES`.
+    pub async fn delete_permission_overwrite(
+        &self,
+        channel_id: Snowflake,
+        target_id: Snowflake,
+    ) -> Result<Channel, ClientError> {
+        Self::send_and_decode_json(self.request(
+            Method::DELETE,
+            &format!("api/v1/channels/{channel_id}/permissions/{target_id}"),
+            true,
+        )?)
+        .await
+    }
+
+    /// The new role starts lowest, just above `@everyone`.
+    ///
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` without `MANAGE_ROLES` or for bits the caller
+    /// lacks.
+    pub async fn create_role(
+        &self,
+        guild_id: Snowflake,
+        request: &CreateRoleRequest,
+    ) -> Result<Role, ClientError> {
+        self.post_json(&format!("api/v1/guilds/{guild_id}/roles"), request, true)
+            .await
+    }
+
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` for a role at or above the caller's rank.
+    pub async fn update_role(
+        &self,
+        guild_id: Snowflake,
+        role_id: Snowflake,
+        request: &UpdateRoleRequest,
+    ) -> Result<Role, ClientError> {
+        let builder = self
+            .request(
+                Method::PATCH,
+                &format!("api/v1/guilds/{guild_id}/roles/{role_id}"),
+                true,
+            )?
+            .json(request);
+        Self::send_and_decode_json(builder).await
+    }
+
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` for a role at or above the caller's rank.
+    pub async fn delete_role(
+        &self,
+        guild_id: Snowflake,
+        role_id: Snowflake,
+    ) -> Result<(), ClientError> {
+        Self::send_and_discard_body(self.request(
+            Method::DELETE,
+            &format!("api/v1/guilds/{guild_id}/roles/{role_id}"),
+            true,
+        )?)
+        .await
+    }
+
+    /// Takes every role except `@everyone`, from lowest to highest; answers the new role list.
+    ///
+    /// # Errors
+    /// Network or API errors; `ValidationFailed` when the list is not the guild's roles.
+    pub async fn reorder_roles(
+        &self,
+        guild_id: Snowflake,
+        request: &ReorderRolesRequest,
+    ) -> Result<Vec<Role>, ClientError> {
+        let builder = self
+            .request(
+                Method::PUT,
+                &format!("api/v1/guilds/{guild_id}/roles/order"),
+                true,
+            )?
+            .json(request);
+        Self::send_and_decode_json(builder).await
+    }
+
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` for a role out of the caller's reach.
+    pub async fn add_member_role(
+        &self,
+        guild_id: Snowflake,
+        user_id: Snowflake,
+        role_id: Snowflake,
+    ) -> Result<(), ClientError> {
+        Self::send_and_discard_body(self.request(
+            Method::PUT,
+            &format!("api/v1/guilds/{guild_id}/members/{user_id}/roles/{role_id}"),
+            true,
+        )?)
+        .await
+    }
+
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` for a role out of the caller's reach.
+    pub async fn remove_member_role(
+        &self,
+        guild_id: Snowflake,
+        user_id: Snowflake,
+        role_id: Snowflake,
+    ) -> Result<(), ClientError> {
+        Self::send_and_discard_body(self.request(
+            Method::DELETE,
+            &format!("api/v1/guilds/{guild_id}/members/{user_id}/roles/{role_id}"),
+            true,
+        )?)
+        .await
+    }
+
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` without `KICK_MEMBERS` or for a member at or
+    /// above the caller's rank.
+    pub async fn kick_member(
+        &self,
+        guild_id: Snowflake,
+        user_id: Snowflake,
+    ) -> Result<(), ClientError> {
+        Self::send_and_discard_body(self.request(
+            Method::DELETE,
+            &format!("api/v1/guilds/{guild_id}/members/{user_id}"),
+            true,
+        )?)
+        .await
+    }
+
+    /// Bans `user_id`, a member or not, and removes them from the guild.
+    ///
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` without `BAN_MEMBERS` or for a member at or
+    /// above the caller's rank.
+    pub async fn ban_member(
+        &self,
+        guild_id: Snowflake,
+        user_id: Snowflake,
+        request: &CreateBanRequest,
+    ) -> Result<(), ClientError> {
+        let builder = self
+            .request(
+                Method::PUT,
+                &format!("api/v1/guilds/{guild_id}/bans/{user_id}"),
+                true,
+            )?
+            .json(request);
+        Self::send_and_discard_body(builder).await
+    }
+
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` without `BAN_MEMBERS`.
+    pub async fn unban_member(
+        &self,
+        guild_id: Snowflake,
+        user_id: Snowflake,
+    ) -> Result<(), ClientError> {
+        Self::send_and_discard_body(self.request(
+            Method::DELETE,
+            &format!("api/v1/guilds/{guild_id}/bans/{user_id}"),
+            true,
+        )?)
+        .await
+    }
+
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` without `BAN_MEMBERS`.
+    pub async fn list_bans(&self, guild_id: Snowflake) -> Result<Vec<Ban>, ClientError> {
+        Self::send_and_decode_json(self.request(
+            Method::GET,
+            &format!("api/v1/guilds/{guild_id}/bans"),
+            true,
+        )?)
+        .await
+    }
+
+    /// Newest entries first.
+    ///
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` without `VIEW_AUDIT_LOG`.
+    pub async fn list_audit_log(
+        &self,
+        guild_id: Snowflake,
+        query: &AuditLogQuery,
+    ) -> Result<Vec<AuditLogEntry>, ClientError> {
+        let builder = self
+            .request(
+                Method::GET,
+                &format!("api/v1/guilds/{guild_id}/audit-log"),
+                true,
+            )?
+            .query(query);
+        Self::send_and_decode_json(builder).await
     }
 
     /// # Errors

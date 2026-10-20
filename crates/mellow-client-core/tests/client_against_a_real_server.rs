@@ -10,8 +10,11 @@ use mellow_client_core::{
     ClientError, GatewayUpdate, InstanceAddress, RestClient, generate_message_nonce, run_gateway,
 };
 use mellow_protocol::{
-    ApiErrorCode, CreateInviteRequest, EditMessageRequest, GatewayEvent, LoginRequest, Message,
-    MessageHistoryQuery, RegisterRequest, SendMessageRequest, Snowflake,
+    ApiErrorCode, AuditAction, AuditLogQuery, ChannelKind, CreateBanRequest, CreateChannelRequest,
+    CreateInviteRequest, CreateRoleRequest, EditMessageRequest, GatewayEvent, LoginRequest,
+    Message, MessageHistoryQuery, OverwriteKind, Permissions, RegisterRequest, ReorderRolesRequest,
+    SendMessageRequest, SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest,
+    UpdateRoleRequest,
 };
 use mellow_server::commands::{InitializeOptions, initialize_instance, serve_instance};
 use mellow_server::domain::account_rules::RegistrationMode;
@@ -293,4 +296,222 @@ async fn retrying_a_send_whose_answer_was_lost_keeps_one_message() {
     assert_eq!(state.messages(general).len(), 1);
     assert_eq!(state.pending_messages(general).count(), 0);
     instance.stop().await;
+}
+
+fn is_refused_with(
+    result: &Result<impl std::fmt::Debug, ClientError>,
+    expected: ApiErrorCode,
+) -> bool {
+    matches!(result, Err(ClientError::Api { code, .. }) if *code == expected)
+}
+
+/// Every server-settings call of the client core, from the owner, with the member refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn guild_administration_round_trips_through_the_rest_client() {
+    let instance = RunningInstance::start().await;
+    let owner = instance.registered("owner").await;
+    let member = instance.registered("member").await;
+    let guild = owner.create_guild("Moderated").await.unwrap();
+    let invite = owner
+        .create_invite(guild.id, &CreateInviteRequest::default())
+        .await
+        .unwrap();
+    member.join_with_invite(&invite.code).await.unwrap();
+    let general = guild
+        .channels
+        .iter()
+        .find(|channel| channel.parent_id.is_some())
+        .unwrap()
+        .id;
+    roles_and_overwrites_round_trip(&owner, &member, guild.id, general).await;
+    moderation_round_trips(&owner, &member, guild.id, &invite.code).await;
+    let temporary = owner
+        .create_channel(
+            guild.id,
+            &CreateChannelRequest {
+                kind: ChannelKind::Text,
+                name: "temporary".into(),
+                topic: String::new(),
+                parent_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    owner.delete_channel(temporary.id).await.unwrap();
+    instance.stop().await;
+}
+
+async fn roles_and_overwrites_round_trip(
+    owner: &RestClient,
+    member: &RestClient,
+    guild_id: Snowflake,
+    general: Snowflake,
+) {
+    let member_id = member.current_user().await.unwrap().id;
+    let moderator = owner
+        .create_role(
+            guild_id,
+            &CreateRoleRequest {
+                name: "Moderator".into(),
+                color: 0x0000_aaff,
+                permissions: Permissions::KICK_MEMBERS,
+            },
+        )
+        .await
+        .unwrap();
+    let helper_role = owner
+        .create_role(
+            guild_id,
+            &CreateRoleRequest {
+                name: "Helper".into(),
+                color: 0,
+                permissions: Permissions::empty(),
+            },
+        )
+        .await
+        .unwrap();
+    let renamed = owner
+        .update_role(
+            guild_id,
+            moderator.id,
+            &UpdateRoleRequest {
+                name: Some("Mods".into()),
+                ..UpdateRoleRequest::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.name, "Mods");
+    let reordered = owner
+        .reorder_roles(
+            guild_id,
+            &ReorderRolesRequest {
+                role_ids: vec![moderator.id, helper_role.id],
+            },
+        )
+        .await
+        .unwrap();
+    let names: Vec<_> = reordered.iter().map(|role| role.name.as_str()).collect();
+    assert_eq!(names, ["@everyone", "Mods", "Helper"]);
+    owner
+        .add_member_role(guild_id, member_id, helper_role.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        member.guild(guild_id).await.unwrap().my_role_ids,
+        [helper_role.id]
+    );
+    owner
+        .remove_member_role(guild_id, member_id, helper_role.id)
+        .await
+        .unwrap();
+    owner.delete_role(guild_id, helper_role.id).await.unwrap();
+
+    let read_only = owner
+        .set_permission_overwrite(
+            general,
+            guild_id,
+            &SetPermissionOverwriteRequest {
+                kind: OverwriteKind::Role,
+                allow: Permissions::empty(),
+                deny: Permissions::SEND_MESSAGES,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(read_only.permission_overwrites.len(), 1);
+    let cleared = owner
+        .delete_permission_overwrite(general, guild_id)
+        .await
+        .unwrap();
+    assert_eq!(cleared.permission_overwrites, []);
+    let with_topic = owner
+        .update_channel(
+            general,
+            &UpdateChannelRequest {
+                name: None,
+                topic: Some("Rules first".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(with_topic.topic, "Rules first");
+}
+
+/// Kick, ban and unban, then the audit log pages they wrote.
+async fn moderation_round_trips(
+    owner: &RestClient,
+    member: &RestClient,
+    guild_id: Snowflake,
+    invite_code: &str,
+) {
+    let member_id = member.current_user().await.unwrap().id;
+    let owner_id = owner.current_user().await.unwrap().id;
+    assert!(is_refused_with(
+        &member.kick_member(guild_id, owner_id).await,
+        ApiErrorCode::MissingPermissions
+    ));
+    assert!(is_refused_with(
+        &member.list_bans(guild_id).await,
+        ApiErrorCode::MissingPermissions
+    ));
+    assert!(is_refused_with(
+        &owner.leave_guild(guild_id).await,
+        ApiErrorCode::OwnerCannotLeave
+    ));
+    owner.kick_member(guild_id, member_id).await.unwrap();
+    owner
+        .ban_member(
+            guild_id,
+            member_id,
+            &CreateBanRequest {
+                reason: "spam".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let bans = owner.list_bans(guild_id).await.unwrap();
+    assert_eq!(bans.len(), 1);
+    assert_eq!(
+        (bans[0].user.id, bans[0].reason.as_str()),
+        (member_id, "spam")
+    );
+    assert!(is_refused_with(
+        &member.join_with_invite(invite_code).await,
+        ApiErrorCode::Banned
+    ));
+    owner.unban_member(guild_id, member_id).await.unwrap();
+    member.join_with_invite(invite_code).await.unwrap();
+    member.leave_guild(guild_id).await.unwrap();
+
+    let newest = owner
+        .list_audit_log(
+            guild_id,
+            &AuditLogQuery {
+                before: None,
+                limit: Some(3),
+            },
+        )
+        .await
+        .unwrap();
+    let actions: Vec<_> = newest.iter().map(|entry| entry.action).collect();
+    assert_eq!(
+        actions,
+        [
+            AuditAction::MemberBanRemove,
+            AuditAction::MemberBanAdd,
+            AuditAction::MemberKick
+        ]
+    );
+    let older = owner
+        .list_audit_log(
+            guild_id,
+            &AuditLogQuery {
+                before: newest.last().map(|entry| entry.id),
+                limit: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(older[0].action, AuditAction::ChannelUpdate);
 }
