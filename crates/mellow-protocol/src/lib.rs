@@ -17,8 +17,8 @@ pub use gateway::{
 };
 pub use guilds::{
     Channel, ChannelKind, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
-    CreateRoleRequest, Guild, GuildSummary, Invite, Member, PublicUser, Role, UpdateChannelRequest,
-    UpdateRoleRequest,
+    CreateRoleRequest, Guild, GuildSummary, Invite, Member, PublicUser, ReorderRolesRequest, Role,
+    UpdateChannelRequest, UpdateRoleRequest,
 };
 pub use health::{HealthResponse, HealthStatus};
 pub use messages::{

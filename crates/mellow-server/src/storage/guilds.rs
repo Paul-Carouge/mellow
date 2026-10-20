@@ -354,6 +354,45 @@ pub(crate) async fn update_role_fields(
     row.map(role_from_row).transpose()
 }
 
+/// Gives the named roles of `guild_id` the positions 1, 2, … in `new_order`, provided they are
+/// still in `expected_order` (what the permission check saw). Returns the guild's new role
+/// list, or `None` if the order changed meanwhile.
+///
+/// # Errors
+/// Fails on database errors. Nothing is written on error.
+pub(crate) async fn reorder_roles(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+    expected_order: &[Snowflake],
+    new_order: &[Snowflake],
+) -> Result<Option<Vec<Role>>, GuildStorageError> {
+    let guild_id_integer = to_integer(guild_id.raw())?;
+    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
+    let stored_order: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM roles WHERE guild_id = ? AND id != guild_id ORDER BY position, id",
+    )
+    .bind(guild_id_integer)
+    .fetch_all(&mut *transaction)
+    .await?;
+    let stored_order: Vec<Snowflake> = stored_order
+        .into_iter()
+        .map(to_id)
+        .collect::<Result<_, _>>()?;
+    if stored_order != expected_order {
+        return Ok(None);
+    }
+    for (position, role_id) in (1_i64..).zip(new_order) {
+        sqlx::query("UPDATE roles SET position = ? WHERE id = ? AND guild_id = ?")
+            .bind(position)
+            .bind(to_integer(role_id.raw())?)
+            .bind(guild_id_integer)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    transaction.commit().await?;
+    list_roles(pool, guild_id).await.map(Some)
+}
+
 /// Deletes a named role of `guild_id` (never `@everyone`) and closes the gap in positions.
 /// Returns whether a role was deleted.
 ///

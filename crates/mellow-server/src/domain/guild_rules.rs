@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use mellow_protocol::Permissions;
+use mellow_protocol::{Permissions, Snowflake};
 
 use crate::domain::account_rules::is_invisible_format_character;
 
@@ -59,6 +59,8 @@ pub enum GuildRuleViolation {
     RoleColor,
     #[error("unknown permission bits")]
     UnknownPermissions,
+    #[error("role_ids must list every role of the guild except @everyone, once each")]
+    RoleOrder,
     #[error("@everyone keeps its name and colour, and cannot be deleted, given or taken away")]
     EveryoneRole,
 }
@@ -167,6 +169,21 @@ pub fn validate_known_permissions(
     Permissions::from_bits(permissions.bits()).ok_or(GuildRuleViolation::UnknownPermissions)
 }
 
+/// # Errors
+/// `RoleOrder` unless `new_order` holds exactly the ids of `current_order`, each once.
+pub fn validate_role_order(
+    current_order: &[Snowflake],
+    new_order: &[Snowflake],
+) -> Result<(), GuildRuleViolation> {
+    let mut current_sorted = current_order.to_vec();
+    let mut new_sorted = new_order.to_vec();
+    current_sorted.sort_unstable();
+    new_sorted.sort_unstable();
+    (current_sorted == new_sorted && new_sorted.windows(2).all(|pair| pair[0] != pair[1]))
+        .then_some(())
+        .ok_or(GuildRuleViolation::RoleOrder)
+}
+
 /// A 10-character code over 62 symbols (about 59 bits): unguessable at our rate limits.
 ///
 /// # Errors
@@ -250,6 +267,25 @@ mod tests {
             validate_known_permissions(Permissions::from_bits_retain(1 << 63)),
             Err(GuildRuleViolation::UnknownPermissions)
         );
+    }
+
+    #[test]
+    fn a_role_order_is_a_permutation_of_the_current_one() {
+        let [a, b, c] = [1, 2, 3].map(Snowflake::from_raw);
+        assert!(validate_role_order(&[a, b, c], &[c, a, b]).is_ok());
+        assert!(validate_role_order(&[], &[]).is_ok());
+        for invalid in [
+            vec![a, b],
+            vec![a, b, c, c],
+            vec![a, a, b],
+            vec![a, b, Snowflake::from_raw(4)],
+        ] {
+            assert_eq!(
+                validate_role_order(&[a, b, c], &invalid),
+                Err(GuildRuleViolation::RoleOrder),
+                "{invalid:?}"
+            );
+        }
     }
 
     #[test]

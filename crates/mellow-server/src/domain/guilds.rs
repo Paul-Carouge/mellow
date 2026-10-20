@@ -6,7 +6,8 @@ use std::sync::Arc;
 use mellow_protocol::{
     Channel, ChannelKind, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
     CreateRoleRequest, GatewayEvent, Guild, GuildSummary, Invite, Member, Permissions,
-    PresenceStatus, PublicUser, Role, Snowflake, UpdateChannelRequest, UpdateRoleRequest,
+    PresenceStatus, PublicUser, ReorderRolesRequest, Role, Snowflake, UpdateChannelRequest,
+    UpdateRoleRequest,
 };
 use sqlx::SqlitePool;
 
@@ -15,7 +16,7 @@ use crate::domain::guild_rules::{
     MAXIMUM_MEMBERS_LISTED, MAXIMUM_OWNED_GUILDS_PER_USER, MAXIMUM_ROLES_PER_GUILD,
     generate_invite_code, normalize_category_name, normalize_guild_name, normalize_role_name,
     normalize_text_channel_name, normalize_topic, validate_invite_limits,
-    validate_known_permissions, validate_role_color,
+    validate_known_permissions, validate_role_color, validate_role_order,
 };
 use crate::domain::permissions::{RoleManager, guild_permissions};
 use crate::domain::snowflake_generator::SnowflakeGenerator;
@@ -43,6 +44,9 @@ pub enum GuildError {
     OwnerCannotLeave,
     #[error("limit reached: {0}")]
     LimitReached(&'static str),
+    /// What the request was checked against changed before it could be written.
+    #[error("changed meanwhile, refresh and try again")]
+    Conflict,
     #[error("internal error")]
     Internal(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
@@ -557,6 +561,39 @@ impl Guilds {
             guild_storage::list_roles(&self.pool, guild_id).await?,
         );
         Ok(updated)
+    }
+
+    /// Needs `MANAGE_ROLES`; anyone but the owner moves only roles they manage
+    /// (`RoleManager::can_reorder_roles`). Returns the guild's new role list.
+    pub(crate) async fn reorder_roles(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        request: ReorderRolesRequest,
+    ) -> Result<Vec<Role>, GuildError> {
+        let membership = guild_storage::find_membership(&self.pool, guild_id, user_id)
+            .await?
+            .ok_or(GuildError::NotFound)?;
+        let manager = RoleManager::new(user_id, membership.owner_id, &membership.member_roles);
+        if !manager.permissions.contains(Permissions::MANAGE_ROLES) {
+            return Err(GuildError::MissingPermissions);
+        }
+        let named_roles: Vec<Role> = guild_storage::list_roles(&self.pool, guild_id)
+            .await?
+            .into_iter()
+            .filter(|role| role.id != guild_id)
+            .collect();
+        let current_order: Vec<Snowflake> = named_roles.iter().map(|role| role.id).collect();
+        validate_role_order(&current_order, &request.role_ids)?;
+        if !manager.can_reorder_roles(&named_roles, &request.role_ids, guild_id) {
+            return Err(GuildError::MissingPermissions);
+        }
+        let roles =
+            guild_storage::reorder_roles(&self.pool, guild_id, &current_order, &request.role_ids)
+                .await?
+                .ok_or(GuildError::Conflict)?;
+        self.publish_roles(guild_id, roles.clone());
+        Ok(roles)
     }
 
     /// Needs `MANAGE_ROLES` over this role (`RoleManager`). `@everyone` cannot be deleted.
@@ -1515,6 +1552,148 @@ mod tests {
             !still_moderator_only
                 .my_permissions
                 .contains(Permissions::ADMINISTRATOR)
+        );
+    }
+
+    fn order_of(roles: &[&Role]) -> ReorderRolesRequest {
+        ReorderRolesRequest {
+            role_ids: roles.iter().map(|role| role.id).collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn roles_are_reordered_within_the_hierarchy() {
+        let fixture = fixture().await;
+        let ModeratedGuild {
+            guild,
+            helper,
+            moderator,
+            admin,
+        } = moderated_guild(&fixture).await;
+        let (guilds, other) = (&fixture.guilds, fixture.other);
+        let kickers = guilds
+            .create_role(
+                other,
+                guild.id,
+                role_request("Kickers", Permissions::KICK_MEMBERS),
+                NOW,
+            )
+            .await
+            .unwrap();
+        // Now: Kickers 1, Helper 2, Moderator 3, Admin 4.
+        let moved_below = guilds
+            .reorder_roles(
+                other,
+                guild.id,
+                order_of(&[&helper, &kickers, &moderator, &admin]),
+            )
+            .await
+            .unwrap();
+        let own_role_moved = guilds
+            .reorder_roles(
+                other,
+                guild.id,
+                order_of(&[&helper, &moderator, &kickers, &admin]),
+            )
+            .await;
+        let above_moved = guilds
+            .reorder_roles(
+                other,
+                guild.id,
+                order_of(&[&helper, &kickers, &admin, &moderator]),
+            )
+            .await;
+        let incomplete = guilds
+            .reorder_roles(other, guild.id, order_of(&[&helper, &kickers, &moderator]))
+            .await;
+        let with_everyone = guilds
+            .reorder_roles(
+                fixture.owner,
+                guild.id,
+                ReorderRolesRequest {
+                    role_ids: vec![guild.id, helper.id, kickers.id, moderator.id, admin.id],
+                },
+            )
+            .await;
+        let by_owner = guilds
+            .reorder_roles(
+                fixture.owner,
+                guild.id,
+                order_of(&[&moderator, &helper, &kickers, &admin]),
+            )
+            .await
+            .unwrap();
+        let by_plain_member = guilds
+            .reorder_roles(
+                fixture.third,
+                guild.id,
+                order_of(&[&moderator, &helper, &kickers, &admin]),
+            )
+            .await;
+        fixture.pool.close().await;
+
+        let names = |roles: &[Role]| {
+            roles
+                .iter()
+                .map(|role| role.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(&moved_below),
+            ["@everyone", "Helper", "Kickers", "Moderator", "Admin"]
+        );
+        assert_eq!(
+            names(&by_owner),
+            ["@everyone", "Moderator", "Helper", "Kickers", "Admin"]
+        );
+        assert_all_refused(vec![own_role_moved, above_moved, by_plain_member]);
+        for invalid in [incomplete, with_everyone] {
+            assert!(
+                matches!(
+                    invalid,
+                    Err(GuildError::InvalidInput(GuildRuleViolation::RoleOrder))
+                ),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reordering_based_on_an_outdated_order_writes_nothing() {
+        let fixture = fixture().await;
+        let ModeratedGuild {
+            guild,
+            helper,
+            moderator,
+            admin,
+        } = moderated_guild(&fixture).await;
+        let seen = [helper.id, moderator.id, admin.id];
+        // Someone else reordered after the check read `seen`.
+        fixture
+            .guilds
+            .reorder_roles(
+                fixture.owner,
+                guild.id,
+                order_of(&[&moderator, &helper, &admin]),
+            )
+            .await
+            .unwrap();
+        let outdated = guild_storage::reorder_roles(
+            &fixture.pool,
+            guild.id,
+            &seen,
+            &[admin.id, helper.id, moderator.id],
+        )
+        .await
+        .unwrap();
+        let roles = guild_storage::list_roles(&fixture.pool, guild.id)
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+        assert_eq!(outdated, None);
+        assert_eq!(
+            roles.iter().map(|role| role.id).collect::<Vec<_>>(),
+            [guild.id, moderator.id, helper.id, admin.id]
         );
     }
 

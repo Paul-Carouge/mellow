@@ -8,7 +8,8 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use mellow_protocol::{
     Channel, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest, CreateRoleRequest,
-    Guild, GuildSummary, Invite, Member, Role, Snowflake, UpdateChannelRequest, UpdateRoleRequest,
+    Guild, GuildSummary, Invite, Member, ReorderRolesRequest, Role, Snowflake,
+    UpdateChannelRequest, UpdateRoleRequest,
 };
 
 use crate::domain::clock::now_unix_milliseconds;
@@ -215,4 +216,19 @@ pub(crate) async fn remove_member_role(
         .remove_member_role(user.id, guild_id, member_id, role_id)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn reorder_roles(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(guild_id): ApiPath<Snowflake>,
+    ApiJson(request): ApiJson<ReorderRolesRequest>,
+) -> Result<Json<Vec<Role>>, ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    Ok(Json(
+        state
+            .guilds
+            .reorder_roles(user.id, guild_id, request)
+            .await?,
+    ))
 }

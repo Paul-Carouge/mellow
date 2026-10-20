@@ -73,6 +73,9 @@ pub enum ApiErrorCode {
     OwnerCannotLeave,
     /// A quota was reached (channels per guild, owned guilds, active invites).
     LimitReached,
+    /// What the request was based on changed meanwhile (e.g. another reordering of the roles);
+    /// refresh and try again.
+    Conflict,
     Internal,
 }
 

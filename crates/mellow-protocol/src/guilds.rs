@@ -57,6 +57,14 @@ pub struct UpdateRoleRequest {
     pub permissions: Option<Permissions>,
 }
 
+/// Body of `PUT /api/v1/guilds/{guild_id}/roles/order`: every role of the guild except
+/// `@everyone`, once each, from lowest to highest. The answer is the guild's new role list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReorderRolesRequest {
+    pub role_ids: Vec<Snowflake>,
+}
+
 /// Entry of `GET /api/v1/users/@me/guilds`, the server rail.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuildSummary {

@@ -107,6 +107,10 @@ pub(crate) fn router(state: AppState) -> Router {
             post(guild_routes::create_role),
         )
         .route(
+            "/api/v1/guilds/{guild_id}/roles/order",
+            put(guild_routes::reorder_roles),
+        )
+        .route(
             "/api/v1/guilds/{guild_id}/roles/{role_id}",
             patch(guild_routes::update_role).delete(guild_routes::delete_role),
         )
@@ -924,6 +928,68 @@ pub(crate) mod tests {
         let (status, _) = send(&state, authorized("DELETE", &role_path, &owner, None)).await;
         pool.close().await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn roles_are_reordered_over_http() {
+        use mellow_protocol::Role;
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, guest, guild_id, _) = guild_with_guest(&state).await;
+        let roles_path = format!("/api/v1/guilds/{guild_id}/roles");
+        let mut created = Vec::new();
+        for name in ["first", "second"] {
+            let (_, body) = send(
+                &state,
+                authorized(
+                    "POST",
+                    &roles_path,
+                    &owner,
+                    Some(serde_json::json!({"name": name})),
+                ),
+            )
+            .await;
+            created.push(json::<Role>(&body).id);
+        }
+        let order_path = format!("{roles_path}/order");
+        // Created last, "second" is lowest: put "first" back below it.
+        let order = serde_json::json!({"role_ids": [created[0], created[1]]});
+        let (status, body) = send(
+            &state,
+            authorized("PUT", &order_path, &owner, Some(order.clone())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let names: Vec<String> = json::<Vec<Role>>(&body)
+            .into_iter()
+            .map(|role| role.name)
+            .collect();
+        assert_eq!(names, ["@everyone", "first", "second"]);
+
+        let (status, body) =
+            send(&state, authorized("PUT", &order_path, &guest, Some(order))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            json::<ApiErrorBody>(&body).code,
+            ApiErrorCode::MissingPermissions
+        );
+        let (status, body) = send(
+            &state,
+            authorized(
+                "PUT",
+                &order_path,
+                &owner,
+                Some(serde_json::json!({"role_ids": [created[0]]})),
+            ),
+        )
+        .await;
+        pool.close().await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json::<ApiErrorBody>(&body).code,
+            ApiErrorCode::ValidationFailed
+        );
     }
 
     async fn owner_and_general_channel(state: &AppState) -> (String, Snowflake) {

@@ -49,6 +49,25 @@ impl RoleManager {
                     && self.permissions.contains(role.permissions)))
     }
 
+    /// `current` holds the named roles by position (1, 2, …) and `new_order` the same ids in their
+    /// new order. The owner may reorder freely; anyone else may move only roles they manage
+    /// (`can_manage_role`), so their own role and everything above it stay where they are.
+    #[must_use]
+    pub fn can_reorder_roles(
+        &self,
+        current: &[Role],
+        new_order: &[Snowflake],
+        everyone_role_id: Snowflake,
+    ) -> bool {
+        // Every role that moves leaves a changed slot; if all of those are manageable, so are
+        // the roles moving in, and every changed slot lies below the manager's highest role.
+        self.permissions.contains(Permissions::MANAGE_ROLES)
+            && (self.is_owner
+                || current.iter().zip(new_order).all(|(role, new_id)| {
+                    role.id == *new_id || self.can_manage_role(role, everyone_role_id)
+                }))
+    }
+
     /// Nobody grants or removes a permission they do not hold themselves: administrators and the
     /// owner hold them all.
     #[must_use]
@@ -126,6 +145,45 @@ mod tests {
         assert!(manager.can_manage_role(&role(13, 2, Permissions::MANAGE_ROLES), GUILD));
         let owner = RoleManager::new(OWNER, OWNER, &[everyone()]);
         assert!(owner.can_manage_role(&role(11, 1, Permissions::ADMINISTRATOR), GUILD));
+    }
+
+    #[test]
+    fn managers_reorder_only_roles_below_their_highest_that_they_manage() {
+        let low = role(10, 1, Permissions::empty());
+        let banners = role(11, 2, Permissions::BAN_MEMBERS);
+        let other_low = role(12, 3, Permissions::empty());
+        let moderator = role(13, 4, Permissions::MANAGE_ROLES);
+        let admin = role(14, 5, Permissions::ADMINISTRATOR);
+        let current = [&low, &banners, &other_low, &moderator, &admin].map(Role::clone);
+        let order = |roles: [&Role; 5]| roles.map(|role| role.id);
+        let manager = RoleManager::new(MEMBER, OWNER, &[everyone(), moderator.clone()]);
+        let can_reorder = |roles| manager.can_reorder_roles(&current, &order(roles), GUILD);
+
+        assert!(can_reorder([
+            &low, &banners, &other_low, &moderator, &admin
+        ]));
+        assert!(
+            can_reorder([&other_low, &banners, &low, &moderator, &admin]),
+            "two manageable roles swap around a fixed one"
+        );
+        assert!(
+            !can_reorder([&other_low, &low, &banners, &moderator, &admin]),
+            "a role holding a permission the manager lacks cannot move"
+        );
+        assert!(
+            !can_reorder([&low, &banners, &other_low, &admin, &moderator]),
+            "their own role and the ones above stay"
+        );
+        assert!(!can_reorder([
+            &moderator, &banners, &other_low, &low, &admin
+        ]));
+
+        let owner = RoleManager::new(OWNER, OWNER, &[everyone()]);
+        assert!(owner.can_reorder_roles(
+            &current,
+            &order([&admin, &moderator, &other_low, &banners, &low]),
+            GUILD
+        ));
     }
 
     #[test]
