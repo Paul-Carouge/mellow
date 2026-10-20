@@ -23,7 +23,7 @@ Merged into `main` on 2026-10-20: #1 to #27, from the workspace and SQLCipher st
 - M0 leftovers: UniFFI async/callback spike for Android; Compose and admin CSS token generators.
 - Roles: every new role starts lowest (position 1) until reordered; a role holding a permission a manager lacks is out of their reach whatever its position; deleting or taking away a role is not checked against a concurrent permission change of that role, and a reordering in flight still goes through, within the manager's former rank, if their role or `MANAGE_ROLES` is taken away meanwhile (nuisance only, no privilege gained; the order itself is guarded).
 - Overwrites: categories do not pass their overwrites to their channels (each channel has its own, no Discord-style sync); a member's overwrite stays after they leave, as on Discord; the client does not use channel permissions in the UI yet (composer of a read-only channel).
-- Moderation: no audit log yet; kicks and bans keep the member's messages (no "delete recent messages" option); the ban list is capped at 1 000, not paginated; a kick or ban racing a role change of its target is decided on the ranks read before the write.
+- Moderation: no audit log yet; kicks and bans keep the member's messages (no "delete recent messages" option); the ban list is capped at 1 000, not paginated; a kick or ban racing a role change of its target is decided on the ranks read before the write. A ban answers 404 for an unknown user id, so a guild owner can tell whether an id belongs to an account (ids are not guessable at the rate limit); bans per guild have no quota yet.
 
 ## M0 — Foundations
 - Workspace scaffold, CI (fmt, clippy, tests, cargo deny), lint configuration.
