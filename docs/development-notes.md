@@ -11,7 +11,7 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 - CI never ran: GitHub Actions is blocked by the account's billing. Everything is verified on macOS only.
 
 ## Next candidates
-1. M2 roles, continued: channel overwrites with `VIEW_CHANNEL` filtering, kick/ban/audit log, then desktop server settings (through `ux-ui-designer`).
+1. M2 roles, continued: kick/ban/audit log, then desktop server settings (roles and overwrites, through `ux-ui-designer`).
 2. M1 release candidate: run a real instance (`init --domain … --use-staging-certificates`, then production), connect the desktop over https, then tag. The user already runs a test instance they own; ask before changing anything on it.
 3. Desktop message list, from DESIGN.md §5.4: the offline state (needs the local cache first) and the no-access state (needs channel permissions, M2).
 4. Then an on-disk outbox (needs the local cache of ARCHITECTURE §6 first).
@@ -57,6 +57,7 @@ A local hook refuses `git commit` when fmt or clippy fail on the touched crate: 
 - **Reverse proxy in Docker**: the proxy reaches Mellow from its container address, not loopback, so `X-Forwarded-For` is ignored unless that address is in `trusted_proxy_networks`. Trust the proxy's `/32`, never the whole Docker network (its gateway is the host and the userland proxy's source).
 - **Role checks**: every role action goes through `RoleManager::can_manage_role` (rank and permission subset); `add_member_role` repeats the subset check in its SQL and `update_role_fields` writes only the bits the actor holds, so a permission granted meanwhile is neither handed out nor erased. Never add a role action that skips them.
 - **Live instance check**: `crates/mellow-client-core/examples/live_instance_check.rs` (untracked, never commit it) drives a real instance; the user's instance has closed registration, so its account `claude_rc_check` was made with `admin create-user` through `docker exec` (password in the session scratchpad only).
+- **Channel visibility**: every event about one channel goes through `Guilds::publish_to_channel_viewers`, never `EventHub::publish_to_guild` directly, and every permission change that can hide or reveal channels calls `Guilds::resynchronize` (ADR-0015). A hidden channel answers `NOT_FOUND`, like a missing one.
 - **Logs**: never log serde or ACME error text verbatim. Serde quotes the offending value (possibly message content), and the certificate authority's messages can quote the contact email.
 - **Licences**: `webpki-roots` and `webpki-root-certs` need the CDLA-Permissive-2.0 exception in `deny.toml`.
 - **Clippy pedantic**: `too_many_lines` (100) shows up on large `match` reducers and connection loops; extract a helper rather than allowing the lint.
