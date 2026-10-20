@@ -1,6 +1,6 @@
 //! `mellow-server`: one binary to initialise, administer and run a Mellow instance.
 
-use std::io::{BufRead as _, IsTerminal as _};
+use std::io::{BufRead as _, IsTerminal as _, Write as _};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -167,8 +167,26 @@ fn read_password() -> Result<Zeroizing<String>> {
     ))
 }
 
+/// The usual cause of a refused replacement is a root-owned install run without sudo.
+fn with_sudo_hint(error: mellow_update::UpdateError) -> anyhow::Error {
+    let is_permission_denied = matches!(
+        &error,
+        mellow_update::UpdateError::ReplaceExecutable(source)
+            if source.kind() == std::io::ErrorKind::PermissionDenied
+    );
+    let error = anyhow::Error::new(error);
+    if is_permission_denied {
+        error.context("permission denied: run it with sudo, as the owner of the executable")
+    } else {
+        error
+    }
+}
+
 async fn update_executable(check: bool, rollback: bool) -> Result<()> {
-    if std::path::Path::new("/.dockerenv").exists() {
+    let is_in_container = ["/.dockerenv", "/run/.containerenv"]
+        .iter()
+        .any(|marker| std::path::Path::new(marker).exists());
+    if is_in_container {
         anyhow::bail!(
             "this server runs in a container, whose files do not survive a restart: update the \
              image instead (deploy/docker/mellow-update)"
@@ -176,7 +194,7 @@ async fn update_executable(check: bool, rollback: bool) -> Result<()> {
     }
     let executable = std::env::current_exe().context("cannot locate this executable")?;
     if rollback {
-        mellow_update::roll_back_executable(&executable)?;
+        mellow_update::roll_back_executable(&executable).map_err(with_sudo_hint)?;
         eprintln!(
             "Rolled back {}. Restart the service to run the previous version.",
             executable.display()
@@ -184,10 +202,16 @@ async fn update_executable(check: bool, rollback: bool) -> Result<()> {
         return Ok(());
     }
     let client = mellow_update::UpdateClient::new()?;
-    let release = client.latest_release().await?;
+    let release = client.fetch_latest_release().await?;
     let current = mellow_update::current_version();
     if check {
-        eprintln!("installed: {current}\nlatest:    {}", release.version);
+        // The answer itself, on standard output for scripts.
+        writeln!(
+            std::io::stdout(),
+            "installed: {current}\nlatest:    {}",
+            release.version
+        )
+        .context("cannot write to standard output")?;
         return Ok(());
     }
     if !mellow_update::is_newer_than_current(&release) {
@@ -198,7 +222,7 @@ async fn update_executable(check: bool, rollback: bool) -> Result<()> {
     let contents = client
         .download_verified_executable(&release, mellow_update::Program::Server)
         .await?;
-    mellow_update::install_executable(&contents, &executable)?;
+    mellow_update::install_executable(&contents, &executable).map_err(with_sudo_hint)?;
     eprintln!(
         "Installed Mellow {} (signature verified) in {}; the previous executable is {}.\n\
          Restart the service to run it, e.g. `sudo systemctl restart mellow`. The database is \

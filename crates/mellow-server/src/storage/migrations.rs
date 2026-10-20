@@ -64,6 +64,11 @@ pub async fn migrate_with_backup(
         .filter(|version| !applied_version_numbers.contains(version))
         .collect();
 
+    if !pending_versions.is_empty() {
+        // Warn level, so it shows even with quiet logs: an older server refuses the database
+        // from here on, and whoever updates must know before a failure (ADR-0018).
+        tracing::warn!(pending_versions = ?pending_versions, "database migration starting");
+    }
     let backup_path = match pending_versions.first() {
         Some(&first_pending_version) if database_has_user_tables(pool).await? => {
             Some(write_backup(pool, backup_directory, first_pending_version).await?)
