@@ -33,6 +33,10 @@ ipnet = { version = "2.12.2", features = ["serde"] }
 mellow-protocol = { path = "crates/mellow-protocol" }
 mellow-client-core = { path = "crates/mellow-client-core" }
 mellow-update = { path = "crates/mellow-update" }
+# Ed25519 minisign verification only, no dependencies of its own (ADR-0016).
+minisign-verify = "0.3.0"
+# Already in the tree through the workspace's dependencies; compares release versions.
+semver = "1.0.28"
 # Already in the tree through rustls-acme; tests sign the local ACME test authority's HTTPS certificate with it.
 rcgen = { version = "0.13.2", default-features = false, features = ["pem", "aws_lc_rs"] }
 bitflags = "2.13.2"

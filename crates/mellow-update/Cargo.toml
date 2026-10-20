@@ -9,16 +9,19 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-# Ed25519 minisign verification only, no dependencies of its own (ADR-0016).
-minisign-verify = "0.3.0"
+minisign-verify.workspace = true
 reqwest.workspace = true
-# Already in the tree through the workspace's dependencies; compares release versions.
-semver = "1.0.28"
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
 
 [lints]
 workspace = true
