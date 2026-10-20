@@ -119,7 +119,10 @@ impl Messages {
             .ok_or(MessageError::MessageNotFound)
     }
 
-    /// Needs `VIEW_CHANNEL` and `SEND_MESSAGES`. The nonce is echoed back, not stored.
+    /// Needs `VIEW_CHANNEL` and `SEND_MESSAGES`. The nonce is echoed back to the sender only. A
+    /// send repeating a nonce the author already used in this channel (an outbox retry after a
+    /// lost response) returns the message created the first time, unchanged and without a new
+    /// event, whatever its content.
     pub(crate) async fn send(
         &self,
         user_id: Snowflake,
@@ -139,12 +142,20 @@ impl Messages {
         if let Some(nonce) = &request.nonce {
             validate_nonce(nonce)?;
         }
+        // Also makes the nonce lookup and the insert atomic for concurrent retries.
+        let send_order = self.send_order.lock().await;
+        if let Some(nonce) = &request.nonce
+            && let Some(already_sent) =
+                message_storage::find_message_by_nonce(&self.pool, channel.id, user_id, nonce)
+                    .await?
+        {
+            return Ok(message_from_stored(already_sent, request.nonce));
+        }
         if let Some(reply_to_id) = request.reply_to_id {
             message_storage::find_message_in_channel(&self.pool, channel.id, reply_to_id)
                 .await?
                 .ok_or(MessageRuleViolation::ReplyTarget)?;
         }
-        let send_order = self.send_order.lock().await;
         let stored = message_storage::insert_message(
             &self.pool,
             &NewMessage {
@@ -153,6 +164,7 @@ impl Messages {
                 author_id: user_id,
                 content,
                 reply_to_id: request.reply_to_id,
+                nonce: request.nonce.clone(),
             },
         )
         .await?;
@@ -574,6 +586,73 @@ mod tests {
                 MessageRuleViolation::ReplyTarget
             ))
         ));
+    }
+
+    #[tokio::test]
+    async fn a_repeated_nonce_returns_the_first_message_without_a_new_event() {
+        let fixture = fixture().await;
+        let (session, mut events) = fixture
+            .events
+            .register_session(fixture.owner, [0; 32], 1)
+            .unwrap();
+        fixture
+            .events
+            .activate_session(session, &[fixture.guild.id]);
+        while events.try_recv().is_ok() {}
+        let with_nonce = |content: &str| SendMessageRequest {
+            content: content.into(),
+            reply_to_id: None,
+            nonce: Some("outbox-1".into()),
+        };
+
+        let first = fixture
+            .messages
+            .send(fixture.member, fixture.general, with_nonce("hello"), NOW)
+            .await
+            .unwrap();
+        let retry = fixture
+            .messages
+            .send(
+                fixture.member,
+                fixture.general,
+                with_nonce("changed"),
+                NOW + 1,
+            )
+            .await
+            .unwrap();
+        let other_author = fixture
+            .messages
+            .send(fixture.owner, fixture.general, with_nonce("hello"), NOW + 2)
+            .await
+            .unwrap();
+        let mut published_events = 0;
+        while events.try_recv().is_ok() {
+            published_events += 1;
+        }
+        let history = fixture
+            .messages
+            .list_messages(
+                fixture.owner,
+                fixture.general,
+                MessageHistoryQuery::default(),
+            )
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        assert_eq!(retry, first);
+        assert_eq!(retry.content, "hello");
+        assert_eq!(retry.nonce.as_deref(), Some("outbox-1"));
+        assert_ne!(
+            other_author.id, first.id,
+            "nonces are scoped to their author"
+        );
+        assert_eq!(published_events, 2, "a retry publishes nothing");
+        assert_eq!(history.len(), 2);
+        assert!(
+            history.iter().all(|message| message.nonce.is_none()),
+            "history never carries nonces"
+        );
     }
 
     #[tokio::test]

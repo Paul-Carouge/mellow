@@ -82,6 +82,8 @@ pub(crate) struct NewMessage {
     pub(crate) author_id: Snowflake,
     pub(crate) content: String,
     pub(crate) reply_to_id: Option<Snowflake>,
+    /// Kept so a retry with the same nonce finds this message; never returned in history.
+    pub(crate) nonce: Option<String>,
 }
 
 /// Inserts the message and returns it with its author's public fields.
@@ -93,7 +95,8 @@ pub(crate) async fn insert_message(
     message: &NewMessage,
 ) -> Result<StoredMessage, MessageStorageError> {
     let row: MessageRow = sqlx::query_as(
-        "INSERT INTO messages (id, channel_id, author_id, content, reply_to_id) VALUES (?, ?, ?, ?, ?) \
+        "INSERT INTO messages (id, channel_id, author_id, content, reply_to_id, nonce) \
+         VALUES (?, ?, ?, ?, ?, ?) \
          RETURNING id, channel_id, author_id, \
          (SELECT username FROM users WHERE users.id = author_id), \
          (SELECT display_name FROM users WHERE users.id = author_id), \
@@ -103,7 +106,13 @@ pub(crate) async fn insert_message(
     .bind(to_integer(message.channel_id.raw())?)
     .bind(to_integer(message.author_id.raw())?)
     .bind(&message.content)
-    .bind(message.reply_to_id.map(|id| to_integer(id.raw())).transpose()?)
+    .bind(
+        message
+            .reply_to_id
+            .map(|id| to_integer(id.raw()))
+            .transpose()?,
+    )
+    .bind(&message.nonce)
     .fetch_one(pool)
     .await?;
     message_from_row(row)
@@ -129,6 +138,28 @@ pub(crate) async fn find_message_in_channel(
     ))
     .bind(channel_id)
     .bind(message_id)
+    .fetch_optional(pool)
+    .await?;
+    row.map(message_from_row).transpose()
+}
+
+/// The message `author_id` already sent to `channel_id` with this nonce, if any.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn find_message_by_nonce(
+    pool: &SqlitePool,
+    channel_id: Snowflake,
+    author_id: Snowflake,
+    nonce: &str,
+) -> Result<Option<StoredMessage>, MessageStorageError> {
+    let row: Option<MessageRow> = sqlx::query_as(concat!(
+        select_message_columns!(),
+        "WHERE messages.channel_id = ? AND messages.author_id = ? AND messages.nonce = ?"
+    ))
+    .bind(to_integer(channel_id.raw())?)
+    .bind(to_integer(author_id.raw())?)
+    .bind(nonce)
     .fetch_optional(pool)
     .await?;
     row.map(message_from_row).transpose()

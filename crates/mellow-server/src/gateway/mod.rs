@@ -598,7 +598,8 @@ mod tests {
                 SendMessageRequest {
                     content: content.into(),
                     reply_to_id: None,
-                    nonce: Some("private".into()),
+                    // Unique per message: a repeated nonce returns the first message.
+                    nonce: Some(format!("private-{}", content.replace(' ', "-"))),
                 },
                 now(),
             )
