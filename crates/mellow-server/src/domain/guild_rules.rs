@@ -22,6 +22,9 @@ pub const MAXIMUM_ROLES_PER_GUILD: u32 = 250;
 pub const MAXIMUM_ROLE_NAME_LENGTH: usize = 100;
 pub const MAXIMUM_ROLE_COLOR: u32 = 0xFF_FFFF;
 pub const MAXIMUM_OVERWRITES_PER_CHANNEL: u32 = 100;
+pub const MAXIMUM_BAN_REASON_LENGTH: usize = 512;
+/// shortcut: the ban list is capped, not paginated; paginate with the bans screen.
+pub const MAXIMUM_BANS_LISTED: u32 = 1_000;
 /// shortcut: the member list is capped, not paginated; paginate with the member list UI.
 pub const MAXIMUM_MEMBERS_LISTED: u32 = 1_000;
 const INVITE_CODE_ALPHABET: &[u8; 62] =
@@ -60,6 +63,12 @@ pub enum GuildRuleViolation {
     RoleColor,
     #[error("unknown permission bits")]
     UnknownPermissions,
+    #[error(
+        "ban reasons are at most {MAXIMUM_BAN_REASON_LENGTH} characters, without control characters"
+    )]
+    BanReason,
+    #[error("you cannot kick or ban yourself; leave the guild instead")]
+    ModerationTarget,
     #[error("an overwrite cannot allow and deny the same permission")]
     OverwriteAllowsAndDeniesOneBit,
     #[error("this permission applies to the whole guild and cannot be set for one channel")]
@@ -145,6 +154,14 @@ pub fn validate_invite_limits(
     } else {
         Err(GuildRuleViolation::InviteLimits)
     }
+}
+
+/// # Errors
+/// `BanReason` when too long or containing hidden characters.
+pub fn normalize_ban_reason(reason: &str) -> Result<String, GuildRuleViolation> {
+    trimmed_within(reason, 0, MAXIMUM_BAN_REASON_LENGTH)
+        .map(str::to_owned)
+        .ok_or(GuildRuleViolation::BanReason)
 }
 
 /// # Errors

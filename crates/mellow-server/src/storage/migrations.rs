@@ -407,8 +407,8 @@ mod tests {
         pool.close().await;
 
         assert_eq!(
-            outcome.applied_versions,
-            [LAST_VERSION_WITHOUT_OVERWRITES + 1]
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_OVERWRITES + 1))
         );
         assert!(
             both_allowed_and_denied.is_err(),
@@ -417,6 +417,54 @@ mod tests {
         assert_eq!(
             overwrites_left, 0,
             "deleting a channel drops its overwrites"
+        );
+    }
+
+    #[tokio::test]
+    async fn bans_follow_their_guild_and_user() {
+        const LAST_VERSION_WITHOUT_BANS: i64 = 6;
+        let directory = tempfile::tempdir().unwrap();
+        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_BANS, &pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0), (11, 'Other', 1, 0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO bans (guild_id, user_id, reason, banned_by, created_at_unix_milliseconds) \
+             VALUES (10, 2, 'spam', 1, 0), (11, 2, '', 1, 0); \
+             DELETE FROM guilds WHERE id = 11;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let bans: Vec<(i64, String)> =
+            sqlx::query_as("SELECT guild_id, reason FROM bans ORDER BY guild_id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        pool.close().await;
+
+        assert_eq!(outcome.applied_versions, [LAST_VERSION_WITHOUT_BANS + 1]);
+        assert_eq!(
+            bans,
+            [(10, "spam".to_owned())],
+            "a deleted guild drops its bans"
         );
     }
 

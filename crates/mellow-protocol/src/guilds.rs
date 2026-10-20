@@ -65,6 +65,23 @@ pub struct ReorderRolesRequest {
     pub role_ids: Vec<Snowflake>,
 }
 
+/// Body of `PUT /api/v1/guilds/{guild_id}/bans/{user_id}`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateBanRequest {
+    /// Shown to moderators only.
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// Entry of `GET /api/v1/guilds/{guild_id}/bans`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ban {
+    pub user: PublicUser,
+    pub reason: String,
+    pub created_at_unix_milliseconds: u64,
+}
+
 /// Entry of `GET /api/v1/users/@me/guilds`, the server rail.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuildSummary {

@@ -5,18 +5,20 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use mellow_protocol::{
-    Channel, ChannelKind, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
-    CreateRoleRequest, GatewayEvent, Guild, GuildSummary, Invite, Member, OverwriteKind,
-    PermissionOverwrite, Permissions, PresenceStatus, PublicUser, ReorderRolesRequest, Role,
-    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateRoleRequest,
+    Ban, Channel, ChannelKind, CreateBanRequest, CreateChannelRequest, CreateGuildRequest,
+    CreateInviteRequest, CreateRoleRequest, GatewayEvent, Guild, GuildSummary, Invite, Member,
+    OverwriteKind, PermissionOverwrite, Permissions, PresenceStatus, PublicUser,
+    ReorderRolesRequest, Role, SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest,
+    UpdateRoleRequest,
 };
 use sqlx::SqlitePool;
 
 use crate::domain::guild_rules::{
-    GuildRuleViolation, MAXIMUM_ACTIVE_INVITES_PER_GUILD, MAXIMUM_CHANNELS_PER_GUILD,
-    MAXIMUM_MEMBERS_LISTED, MAXIMUM_OVERWRITES_PER_CHANNEL, MAXIMUM_OWNED_GUILDS_PER_USER,
-    MAXIMUM_ROLES_PER_GUILD, generate_invite_code, normalize_category_name, normalize_guild_name,
-    normalize_role_name, normalize_text_channel_name, normalize_topic, validate_invite_limits,
+    GuildRuleViolation, MAXIMUM_ACTIVE_INVITES_PER_GUILD, MAXIMUM_BANS_LISTED,
+    MAXIMUM_CHANNELS_PER_GUILD, MAXIMUM_MEMBERS_LISTED, MAXIMUM_OVERWRITES_PER_CHANNEL,
+    MAXIMUM_OWNED_GUILDS_PER_USER, MAXIMUM_ROLES_PER_GUILD, generate_invite_code,
+    normalize_ban_reason, normalize_category_name, normalize_guild_name, normalize_role_name,
+    normalize_text_channel_name, normalize_topic, validate_invite_limits,
     validate_known_permissions, validate_role_color, validate_role_order,
 };
 use crate::domain::permissions::{
@@ -25,7 +27,8 @@ use crate::domain::permissions::{
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::events::EventHub;
 use crate::storage::guilds::{
-    self as guild_storage, GuildStorageError, Membership, NewGuild, StoredChannel, StoredInvite,
+    self as guild_storage, GuildStorageError, JoinOutcome, Membership, NewGuild, StoredChannel,
+    StoredInvite,
 };
 
 const DEFAULT_CATEGORY_NAME: &str = "Text channels";
@@ -45,6 +48,8 @@ pub enum GuildError {
     InvalidInvite,
     #[error("the owner cannot leave their own guild")]
     OwnerCannotLeave,
+    #[error("you are banned from this guild")]
+    Banned,
     #[error("limit reached: {0}")]
     LimitReached(&'static str),
     /// What the request was checked against changed before it could be written.
@@ -807,9 +812,16 @@ impl Guilds {
         now_unix_milliseconds: u64,
     ) -> Result<Guild, GuildError> {
         let (guild_id, is_new_member) =
-            guild_storage::join_with_invite(&self.pool, code, user_id, now_unix_milliseconds)
+            match guild_storage::join_with_invite(&self.pool, code, user_id, now_unix_milliseconds)
                 .await?
-                .ok_or(GuildError::InvalidInvite)?;
+            {
+                JoinOutcome::Joined {
+                    guild_id,
+                    is_new_member,
+                } => (guild_id, is_new_member),
+                JoinOutcome::InvalidInvite => return Err(GuildError::InvalidInvite),
+                JoinOutcome::Banned => return Err(GuildError::Banned),
+            };
         if is_new_member {
             // Subscribed before the snapshot, so nothing between the two is missed.
             self.events.subscribe_user_to_guild(user_id, guild_id);
@@ -1135,6 +1147,13 @@ impl Guilds {
             return Err(GuildError::OwnerCannotLeave);
         }
         guild_storage::delete_member(&self.pool, guild_id, user_id).await?;
+        self.publish_member_removed(guild_id, user_id);
+        Ok(())
+    }
+
+    /// The member's sessions stop receiving the guild, which disappears for them, and the other
+    /// members see them go.
+    fn publish_member_removed(&self, guild_id: Snowflake, user_id: Snowflake) {
         self.events.unsubscribe_user_from_guild(user_id, guild_id);
         self.events.publish_to_guild(
             guild_id,
@@ -1142,7 +1161,150 @@ impl Guilds {
         );
         self.events
             .publish_to_user(user_id, &GatewayEvent::GuildDelete { id: guild_id });
+    }
+
+    /// The moderator, once `needed` is checked and `target_id` is neither them nor the owner.
+    async fn moderator(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        target_id: Snowflake,
+        needed: Permissions,
+    ) -> Result<(Membership, RoleManager), GuildError> {
+        let membership = guild_storage::find_membership(&self.pool, guild_id, user_id)
+            .await?
+            .ok_or(GuildError::NotFound)?;
+        let manager = RoleManager::new(user_id, membership.owner_id, &membership.member_roles);
+        if !manager.permissions.contains(needed) {
+            return Err(GuildError::MissingPermissions);
+        }
+        if target_id == user_id {
+            return Err(GuildRuleViolation::ModerationTarget.into());
+        }
+        if target_id == membership.owner_id {
+            return Err(GuildError::MissingPermissions);
+        }
+        Ok((membership, manager))
+    }
+
+    /// Whether `target_id` is a member; `MissingPermissions` if they are one ranked at or above
+    /// the moderator.
+    async fn is_outranked_member(
+        &self,
+        manager: &RoleManager,
+        membership: &Membership,
+        guild_id: Snowflake,
+        target_id: Snowflake,
+    ) -> Result<bool, GuildError> {
+        let Some(target) = guild_storage::find_membership(&self.pool, guild_id, target_id).await?
+        else {
+            return Ok(false);
+        };
+        let target_is_owner = target_id == membership.owner_id;
+        if manager.outranks(target_is_owner, &target.member_roles) {
+            Ok(true)
+        } else {
+            Err(GuildError::MissingPermissions)
+        }
+    }
+
+    /// Needs `KICK_MEMBERS`, over a member ranked strictly below the moderator; never the owner
+    /// or oneself. The member may join again with an invite.
+    pub(crate) async fn kick_member(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        target_id: Snowflake,
+    ) -> Result<(), GuildError> {
+        let (membership, manager) = self
+            .moderator(user_id, guild_id, target_id, Permissions::KICK_MEMBERS)
+            .await?;
+        if !self
+            .is_outranked_member(&manager, &membership, guild_id, target_id)
+            .await?
+        {
+            return Err(GuildError::NotFound);
+        }
+        guild_storage::delete_member(&self.pool, guild_id, target_id).await?;
+        self.publish_member_removed(guild_id, target_id);
         Ok(())
+    }
+
+    /// Needs `BAN_MEMBERS`. A member must rank strictly below the moderator; any other existing
+    /// user may be banned ahead of time. Never the owner or oneself.
+    pub(crate) async fn ban_member(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        target_id: Snowflake,
+        request: CreateBanRequest,
+        now_unix_milliseconds: u64,
+    ) -> Result<(), GuildError> {
+        let reason = normalize_ban_reason(&request.reason)?;
+        let (membership, manager) = self
+            .moderator(user_id, guild_id, target_id, Permissions::BAN_MEMBERS)
+            .await?;
+        if !self
+            .is_outranked_member(&manager, &membership, guild_id, target_id)
+            .await?
+            && !guild_storage::user_exists(&self.pool, target_id).await?
+        {
+            return Err(GuildError::NotFound);
+        }
+        let was_member = guild_storage::ban_and_remove_member(
+            &self.pool,
+            guild_id,
+            target_id,
+            &reason,
+            user_id,
+            now_unix_milliseconds,
+        )
+        .await?;
+        if was_member {
+            self.publish_member_removed(guild_id, target_id);
+        }
+        Ok(())
+    }
+
+    /// Needs `BAN_MEMBERS`.
+    pub(crate) async fn unban_member(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        target_id: Snowflake,
+    ) -> Result<(), GuildError> {
+        self.require_member_permissions(guild_id, user_id, Permissions::BAN_MEMBERS)
+            .await?;
+        if guild_storage::delete_ban(&self.pool, guild_id, target_id).await? {
+            Ok(())
+        } else {
+            Err(GuildError::NotFound)
+        }
+    }
+
+    /// Needs `BAN_MEMBERS`. shortcut: capped, not paginated; paginate with the bans screen.
+    pub(crate) async fn list_bans(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+    ) -> Result<Vec<Ban>, GuildError> {
+        self.require_member_permissions(guild_id, user_id, Permissions::BAN_MEMBERS)
+            .await?;
+        Ok(
+            guild_storage::list_bans(&self.pool, guild_id, MAXIMUM_BANS_LISTED)
+                .await?
+                .into_iter()
+                .map(|ban| Ban {
+                    user: PublicUser {
+                        id: ban.user_id,
+                        username: ban.username,
+                        display_name: ban.display_name,
+                    },
+                    reason: ban.reason,
+                    created_at_unix_milliseconds: ban.created_at_unix_milliseconds,
+                })
+                .collect(),
+        )
     }
 }
 
@@ -1154,6 +1316,7 @@ mod tests {
     use crate::domain::account_rules::RegistrationMode;
     use crate::domain::accounts::Accounts;
     use crate::domain::accounts::tests::{NOW, migrated_pool, register_request};
+    use crate::domain::guild_rules::MAXIMUM_BAN_REASON_LENGTH;
 
     struct Fixture {
         _directory: tempfile::TempDir,
@@ -2650,6 +2813,145 @@ mod tests {
             in_hidden_category,
             Err(GuildError::InvalidInput(GuildRuleViolation::Parent))
         ));
+    }
+
+    #[tokio::test]
+    async fn moderators_kick_only_members_ranked_below_them() {
+        let fixture = fixture().await;
+        let ModeratedGuild { guild, admin, .. } = moderated_guild(&fixture).await;
+        let guilds = &fixture.guilds;
+        let other = fixture.other;
+        let kick_owner = guilds.kick_member(other, guild.id, fixture.owner).await;
+        let kick_self = guilds.kick_member(other, guild.id, other).await;
+        let kick_outsider = guilds
+            .kick_member(other, guild.id, Snowflake::from_raw(424_242))
+            .await;
+        let without_kick = guilds.kick_member(fixture.third, guild.id, other).await;
+        guilds
+            .kick_member(other, guild.id, fixture.third)
+            .await
+            .unwrap();
+        let kicked_snapshot = guilds.get_guild(fixture.third, guild.id).await;
+        // A kicked member may come back with an invite.
+        join(&fixture, guild.id, fixture.third).await;
+        guilds
+            .add_member_role(fixture.owner, guild.id, fixture.third, admin.id)
+            .await
+            .unwrap();
+        let kick_higher = guilds.kick_member(other, guild.id, fixture.third).await;
+        fixture.pool.close().await;
+
+        assert!(matches!(kicked_snapshot, Err(GuildError::NotFound)));
+        assert_all_refused(vec![kick_owner, without_kick, kick_higher]);
+        assert!(matches!(
+            kick_self,
+            Err(GuildError::InvalidInput(
+                GuildRuleViolation::ModerationTarget
+            ))
+        ));
+        assert!(matches!(kick_outsider, Err(GuildError::NotFound)));
+    }
+
+    fn ban_request(reason: &str) -> CreateBanRequest {
+        CreateBanRequest {
+            reason: reason.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn banned_users_cannot_join_until_unbanned() {
+        let fixture = fixture().await;
+        let ModeratedGuild { guild, .. } = moderated_guild(&fixture).await;
+        let guilds = &fixture.guilds;
+        let owner = fixture.owner;
+        let without_ban_members = guilds
+            .ban_member(fixture.other, guild.id, fixture.third, ban_request(""), NOW)
+            .await;
+        guilds
+            .ban_member(owner, guild.id, fixture.third, ban_request("  spam  "), NOW)
+            .await
+            .unwrap();
+        let invite = guilds
+            .create_invite(owner, guild.id, CreateInviteRequest::default(), NOW)
+            .await
+            .unwrap();
+        let rejoin_while_banned = guilds
+            .join_with_invite(fixture.third, &invite.code, NOW)
+            .await;
+        let bans = guilds.list_bans(owner, guild.id).await.unwrap();
+        let bans_without_permission = guilds.list_bans(fixture.other, guild.id).await;
+        let unknown_user = guilds
+            .ban_member(
+                owner,
+                guild.id,
+                Snowflake::from_raw(424_242),
+                ban_request(""),
+                NOW,
+            )
+            .await;
+        let too_long = guilds
+            .ban_member(
+                owner,
+                guild.id,
+                fixture.other,
+                ban_request(&"x".repeat(MAXIMUM_BAN_REASON_LENGTH + 1)),
+                NOW,
+            )
+            .await;
+        guilds
+            .unban_member(owner, guild.id, fixture.third)
+            .await
+            .unwrap();
+        let unban_again = guilds.unban_member(owner, guild.id, fixture.third).await;
+        let rejoin_after_unban = guilds
+            .join_with_invite(fixture.third, &invite.code, NOW)
+            .await;
+        fixture.pool.close().await;
+
+        assert!(matches!(rejoin_while_banned, Err(GuildError::Banned)));
+        assert_eq!(bans.len(), 1);
+        assert_eq!(
+            (bans[0].user.id, bans[0].reason.as_str()),
+            (fixture.third, "spam")
+        );
+        assert_all_refused(vec![without_ban_members]);
+        assert!(matches!(
+            bans_without_permission,
+            Err(GuildError::MissingPermissions)
+        ));
+        assert!(matches!(unknown_user, Err(GuildError::NotFound)));
+        assert!(matches!(
+            too_long,
+            Err(GuildError::InvalidInput(GuildRuleViolation::BanReason))
+        ));
+        assert!(matches!(unban_again, Err(GuildError::NotFound)));
+        assert!(rejoin_after_unban.is_ok(), "{rejoin_after_unban:?}");
+    }
+
+    #[tokio::test]
+    async fn users_can_be_banned_before_they_join() {
+        let fixture = fixture().await;
+        let guild = fixture
+            .guilds
+            .create_guild(fixture.owner, create_request("Club"), NOW)
+            .await
+            .unwrap();
+        fixture
+            .guilds
+            .ban_member(fixture.owner, guild.id, fixture.other, ban_request(""), NOW)
+            .await
+            .unwrap();
+        let invite = fixture
+            .guilds
+            .create_invite(fixture.owner, guild.id, CreateInviteRequest::default(), NOW)
+            .await
+            .unwrap();
+        let joined = fixture
+            .guilds
+            .join_with_invite(fixture.other, &invite.code, NOW)
+            .await;
+        fixture.pool.close().await;
+        assert!(matches!(joined, Err(GuildError::Banned)));
     }
 
     #[tokio::test]

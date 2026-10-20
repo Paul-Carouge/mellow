@@ -1007,9 +1007,22 @@ pub(crate) async fn insert_invite(
     Ok(())
 }
 
+/// What happened to an invite use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JoinOutcome {
+    /// Unknown, expired or used-up code.
+    InvalidInvite,
+    /// The user is banned from the invite's guild; nothing was consumed.
+    Banned,
+    Joined {
+        guild_id: Snowflake,
+        is_new_member: bool,
+    },
+}
+
 /// Joins the guild through `code`, atomically: a valid invite consumes one use and adds the
-/// member; an existing member consumes nothing. Returns the guild id and whether the user is a
-/// new member, or `None` if the code is unknown, expired or used up.
+/// member; an existing member consumes nothing; a banned user is refused in the same
+/// transaction, so a ban committed meanwhile cannot be slipped past.
 ///
 /// # Errors
 /// Fails on database errors; nothing is written then.
@@ -1018,7 +1031,7 @@ pub(crate) async fn join_with_invite(
     code: &str,
     user_id: Snowflake,
     now_unix_milliseconds: u64,
-) -> Result<Option<(Snowflake, bool)>, GuildStorageError> {
+) -> Result<JoinOutcome, GuildStorageError> {
     let user_id = to_integer(user_id.raw())?;
     let now = to_integer(now_unix_milliseconds)?;
     let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
@@ -1032,8 +1045,17 @@ pub(crate) async fn join_with_invite(
     .fetch_optional(&mut *transaction)
     .await?;
     let Some(guild_id) = valid_invite_guild else {
-        return Ok(None);
+        return Ok(JoinOutcome::InvalidInvite);
     };
+    let is_banned: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM bans WHERE guild_id = ? AND user_id = ?)")
+            .bind(guild_id)
+            .bind(user_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+    if is_banned {
+        return Ok(JoinOutcome::Banned);
+    }
     let added = sqlx::query(
         "INSERT OR IGNORE INTO guild_members (guild_id, user_id, joined_at_unix_milliseconds) \
          VALUES (?, ?, ?)",
@@ -1054,7 +1076,10 @@ pub(crate) async fn join_with_invite(
         .await?;
     }
     transaction.commit().await?;
-    Ok(Some((to_id(guild_id)?, added > 0)))
+    Ok(JoinOutcome::Joined {
+        guild_id: to_id(guild_id)?,
+        is_new_member: added > 0,
+    })
 }
 
 /// # Errors
@@ -1084,4 +1109,122 @@ pub(crate) async fn find_member(
         display_name,
         joined_at_unix_milliseconds: to_unsigned(joined_at)?,
     }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoredBan {
+    pub(crate) user_id: Snowflake,
+    pub(crate) username: String,
+    pub(crate) display_name: String,
+    pub(crate) reason: String,
+    pub(crate) created_at_unix_milliseconds: u64,
+}
+
+/// Bans `user_id` from the guild (a repeated ban replaces the reason) and removes their
+/// membership, in one transaction. Returns whether they were a member.
+///
+/// # Errors
+/// Fails on database errors, including a user that does not exist. Nothing is written then.
+pub(crate) async fn ban_and_remove_member(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+    user_id: Snowflake,
+    reason: &str,
+    banned_by: Snowflake,
+    now_unix_milliseconds: u64,
+) -> Result<bool, GuildStorageError> {
+    let guild_id_integer = to_integer(guild_id.raw())?;
+    let user_id_integer = to_integer(user_id.raw())?;
+    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
+    sqlx::query(
+        "INSERT INTO bans (guild_id, user_id, reason, banned_by, created_at_unix_milliseconds) \
+         VALUES (?, ?, ?, ?, ?) \
+         ON CONFLICT (guild_id, user_id) DO UPDATE SET reason = excluded.reason, \
+         banned_by = excluded.banned_by",
+    )
+    .bind(guild_id_integer)
+    .bind(user_id_integer)
+    .bind(reason)
+    .bind(to_integer(banned_by.raw())?)
+    .bind(to_integer(now_unix_milliseconds)?)
+    .execute(&mut *transaction)
+    .await?;
+    let removed = sqlx::query("DELETE FROM guild_members WHERE guild_id = ? AND user_id = ?")
+        .bind(guild_id_integer)
+        .bind(user_id_integer)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+    transaction.commit().await?;
+    Ok(removed > 0)
+}
+
+/// Returns whether a ban was lifted.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn delete_ban(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+    user_id: Snowflake,
+) -> Result<bool, GuildStorageError> {
+    let (Some(guild_id), Some(user_id)) = (lookup_integer(guild_id), lookup_integer(user_id))
+    else {
+        return Ok(false);
+    };
+    let deleted = sqlx::query("DELETE FROM bans WHERE guild_id = ? AND user_id = ?")
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(deleted > 0)
+}
+
+/// At most `maximum_bans` bans, newest first.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn list_bans(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+    maximum_bans: u32,
+) -> Result<Vec<StoredBan>, GuildStorageError> {
+    let rows: Vec<(i64, String, String, String, i64)> = sqlx::query_as(
+        "SELECT users.id, users.username, users.display_name, bans.reason, \
+         bans.created_at_unix_milliseconds FROM bans JOIN users ON users.id = bans.user_id \
+         WHERE bans.guild_id = ? ORDER BY bans.created_at_unix_milliseconds DESC, users.id LIMIT ?",
+    )
+    .bind(to_integer(guild_id.raw())?)
+    .bind(to_count(maximum_bans))
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|(user_id, username, display_name, reason, created_at)| {
+            Ok(StoredBan {
+                user_id: to_id(user_id)?,
+                username,
+                display_name,
+                reason,
+                created_at_unix_milliseconds: to_unsigned(created_at)?,
+            })
+        })
+        .collect()
+}
+
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn user_exists(
+    pool: &SqlitePool,
+    user_id: Snowflake,
+) -> Result<bool, GuildStorageError> {
+    let Some(user_id) = lookup_integer(user_id) else {
+        return Ok(false);
+    };
+    Ok(
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE id = ?)")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await?,
+    )
 }

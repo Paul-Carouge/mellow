@@ -7,9 +7,9 @@ use axum::Json;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use mellow_protocol::{
-    Channel, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest, CreateRoleRequest,
-    Guild, GuildSummary, Invite, Member, ReorderRolesRequest, Role, SetPermissionOverwriteRequest,
-    Snowflake, UpdateChannelRequest, UpdateRoleRequest,
+    Ban, Channel, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
+    CreateRoleRequest, Guild, GuildSummary, Invite, Member, ReorderRolesRequest, Role,
+    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateRoleRequest,
 };
 
 use crate::domain::clock::now_unix_milliseconds;
@@ -260,4 +260,58 @@ pub(crate) async fn delete_permission_overwrite(
             .delete_permission_overwrite(user.id, channel_id, target_id)
             .await?,
     ))
+}
+
+pub(crate) async fn kick_member(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((guild_id, member_id)): ApiPath<(Snowflake, Snowflake)>,
+) -> Result<StatusCode, ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    state
+        .guilds
+        .kick_member(user.id, guild_id, member_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn ban_member(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((guild_id, target_id)): ApiPath<(Snowflake, Snowflake)>,
+    ApiJson(request): ApiJson<CreateBanRequest>,
+) -> Result<StatusCode, ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    state
+        .guilds
+        .ban_member(
+            user.id,
+            guild_id,
+            target_id,
+            request,
+            now_unix_milliseconds(),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn unban_member(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((guild_id, target_id)): ApiPath<(Snowflake, Snowflake)>,
+) -> Result<StatusCode, ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    state
+        .guilds
+        .unban_member(user.id, guild_id, target_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn list_bans(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(guild_id): ApiPath<Snowflake>,
+) -> Result<Json<Vec<Ban>>, ApiError> {
+    Ok(Json(state.guilds.list_bans(user.id, guild_id).await?))
 }

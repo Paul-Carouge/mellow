@@ -89,6 +89,16 @@ impl RoleManager {
                     && self.permissions.contains(role.permissions)))
     }
 
+    /// Whether the moderator may kick or ban a member holding `target_roles`: the owner over
+    /// anyone else; others only over members whose highest role is strictly below theirs, never
+    /// the owner.
+    #[must_use]
+    pub fn outranks(&self, target_is_owner: bool, target_roles: &[Role]) -> bool {
+        self.is_owner
+            || (!target_is_owner
+                && highest_role_position(target_roles) < self.highest_role_position)
+    }
+
     /// Who may set a channel overwrite for `role`: the owner for any role, anyone else for
     /// `@everyone` and roles strictly below their highest. The permission bits are checked
     /// against the channel separately.
@@ -290,6 +300,29 @@ mod tests {
             )
             .contains(Permissions::VIEW_CHANNEL),
             "the owner sees every channel"
+        );
+    }
+
+    #[test]
+    fn moderators_act_only_on_members_ranked_strictly_below_them() {
+        let moderator = RoleManager::new(
+            MEMBER,
+            OWNER,
+            &[everyone(), role(10, 2, Permissions::KICK_MEMBERS)],
+        );
+        assert!(moderator.outranks(false, &[everyone()]));
+        assert!(moderator.outranks(false, &[everyone(), role(11, 1, Permissions::empty())]));
+        assert!(!moderator.outranks(false, &[everyone(), role(12, 2, Permissions::empty())]));
+        assert!(!moderator.outranks(true, &[everyone()]), "never the owner");
+        let owner = RoleManager::new(OWNER, OWNER, &[everyone()]);
+        assert!(owner.outranks(
+            false,
+            &[everyone(), role(13, 9, Permissions::ADMINISTRATOR)]
+        ));
+        let plain = RoleManager::new(MEMBER, OWNER, &[everyone()]);
+        assert!(
+            !plain.outranks(false, &[everyone()]),
+            "equal ranks do not outrank"
         );
     }
 

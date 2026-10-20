@@ -71,6 +71,8 @@ pub enum ApiErrorCode {
     InvalidInvite,
     /// The guild owner cannot leave their own guild (transfer or delete it first).
     OwnerCannotLeave,
+    /// The user is banned from this guild.
+    Banned,
     /// A quota was reached (channels per guild, owned guilds, active invites).
     LimitReached,
     /// What the request was based on changed meanwhile (e.g. another reordering of the roles);
@@ -132,6 +134,7 @@ mod tests {
             (ApiErrorCode::MissingPermissions, "MISSING_PERMISSIONS"),
             (ApiErrorCode::InvalidInvite, "INVALID_INVITE"),
             (ApiErrorCode::OwnerCannotLeave, "OWNER_CANNOT_LEAVE"),
+            (ApiErrorCode::Banned, "BANNED"),
             (ApiErrorCode::LimitReached, "LIMIT_REACHED"),
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), wire);

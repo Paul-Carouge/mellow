@@ -123,6 +123,7 @@ impl From<GuildError> for ApiError {
             }
             GuildError::InvalidInvite => (StatusCode::NOT_FOUND, ApiErrorCode::InvalidInvite),
             GuildError::OwnerCannotLeave => (StatusCode::CONFLICT, ApiErrorCode::OwnerCannotLeave),
+            GuildError::Banned => (StatusCode::FORBIDDEN, ApiErrorCode::Banned),
             GuildError::LimitReached(_) => (StatusCode::CONFLICT, ApiErrorCode::LimitReached),
             GuildError::Conflict => (StatusCode::CONFLICT, ApiErrorCode::Conflict),
             GuildError::Internal(source) => return Self::internal("a guild request", source),

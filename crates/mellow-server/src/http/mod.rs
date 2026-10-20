@@ -98,6 +98,18 @@ pub(crate) fn router(state: AppState) -> Router {
             delete(guild_routes::leave_guild),
         )
         .route(
+            "/api/v1/guilds/{guild_id}/members/{user_id}",
+            delete(guild_routes::kick_member),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/bans",
+            get(guild_routes::list_bans),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/bans/{user_id}",
+            put(guild_routes::ban_member).delete(guild_routes::unban_member),
+        )
+        .route(
             "/api/v1/guilds/{guild_id}/roles",
             post(guild_routes::create_role),
         )
@@ -1086,6 +1098,67 @@ pub(crate) mod tests {
         let (status, _) = send(&state, authorized("DELETE", &overwrite_path, &owner, None)).await;
         assert_eq!(status, StatusCode::OK);
         let (status, _) = send(&state, authorized("GET", &messages_path, &guest, None)).await;
+        pool.close().await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn kicks_and_bans_over_http() {
+        use mellow_protocol::{Ban, Invite};
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, guest, guild_id, guest_id) = guild_with_guest(&state).await;
+        let guild_path = format!("/api/v1/guilds/{guild_id}");
+        let (status, _) = send(
+            &state,
+            authorized(
+                "DELETE",
+                &format!("{guild_path}/members/{guest_id}"),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let ban_path = format!("{guild_path}/bans/{guest_id}");
+        let (status, _) = send(
+            &state,
+            authorized(
+                "PUT",
+                &ban_path,
+                &owner,
+                Some(serde_json::json!({"reason": "spam"})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, body) = send(
+            &state,
+            authorized("GET", &format!("{guild_path}/bans"), &owner, None),
+        )
+        .await;
+        assert_eq!(json::<Vec<Ban>>(&body)[0].reason, "spam");
+
+        let (_, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &format!("{guild_path}/invites"),
+                &owner,
+                Some(serde_json::json!({})),
+            ),
+        )
+        .await;
+        let invite_path = format!("/api/v1/invites/{}", json::<Invite>(&body).code);
+        let (status, body) = send(&state, authorized("POST", &invite_path, &guest, None)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json::<ApiErrorBody>(&body).code, ApiErrorCode::Banned);
+
+        let (status, _) = send(&state, authorized("DELETE", &ban_path, &owner, None)).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _) = send(&state, authorized("POST", &invite_path, &guest, None)).await;
         pool.close().await;
         assert_eq!(status, StatusCode::OK);
     }
