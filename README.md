@@ -28,11 +28,12 @@ cargo xtask tokens --check
 The certificate test against [Pebble](https://github.com/letsencrypt/pebble), the ACME test authority, is ignored by default: `MELLOW_PEBBLE_BINARY=/path/to/pebble cargo test -p mellow-server --lib tls::tests -- --ignored`.
 
 ## Releases
-Each tag `vX.Y.Z` publishes, on the [releases page](https://github.com/Paul-Carouge/mellow/releases), `mellow-server` and `mellow-desktop` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`. Every file has a minisign signature whose trusted comment is its own file name; check one by hand with the public key in [`release/minisign.pub`](release/minisign.pub):
+Each tag `vX.Y.Z` publishes, on the [releases page](https://github.com/Paul-Carouge/mellow/releases), `mellow-server` and `mellow-desktop` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`. Each binary, and the `mellow-X.Y.Z-SHA256SUMS` digest list, has a `.minisig` signature whose trusted comment is the signed file's own name. Linux builds need glibc 2.35 or newer (Debian 12, Ubuntu 22.04); the desktop app also needs fontconfig, xkbcommon and D-Bus at run time. Check a file by hand with the public key in [`release/minisign.pub`](release/minisign.pub), then make sure the printed `Trusted comment:` is exactly that file's name (otherwise the signature belongs to another file):
 ```bash
 minisign -V -p release/minisign.pub -m mellow-server-0.1.0-x86_64-unknown-linux-gnu
 ```
-To publish a release (maintainer): bump `version` in `Cargo.toml`, move the `CHANGELOG.md` entries under the new version, merge, then `git tag vX.Y.Z && git push origin vX.Y.Z` and approve the `release` environment in the workflow run ([ADR-0016](docs/adr/0016-sign-releases-in-a-protected-ci-environment.md)).
+The macOS and Windows builds are not signed by Apple or Microsoft yet, so the first launch shows a warning (macOS: right-click → Open).
+To publish a release (maintainer): bump `version` in `Cargo.toml`, move the `CHANGELOG.md` entries under the new version, merge, then `git tag vX.Y.Z origin/main && git push origin vX.Y.Z` and approve the `release` environment in the workflow run ([ADR-0016](docs/adr/0016-sign-releases-in-a-protected-ci-environment.md)). Before approving, check that the run's commit is the tip of `main` you meant to release and that `release.yml` did not change unexpectedly: the approved job receives the signing key.
 
 ## Run a development instance
 ```bash
