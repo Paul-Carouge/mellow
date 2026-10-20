@@ -574,19 +574,31 @@ impl Guilds {
         let membership = guild_storage::find_membership(&self.pool, guild_id, user_id)
             .await?
             .ok_or(GuildError::NotFound)?;
-        let manager = RoleManager::new(user_id, membership.owner_id, &membership.member_roles);
+        let roles = guild_storage::list_roles(&self.pool, guild_id).await?;
+        // The manager's rank comes from the same read as the order the storage guard checks, so
+        // a reordering committed between the two reads cannot leave them a stale, higher rank.
+        let member_role_ids = membership.member_role_ids(guild_id);
+        let member_roles: Vec<Role> = roles
+            .iter()
+            .filter(|role| role.id == guild_id || member_role_ids.contains(&role.id))
+            .cloned()
+            .collect();
+        let manager = RoleManager::new(user_id, membership.owner_id, &member_roles);
         if !manager.permissions.contains(Permissions::MANAGE_ROLES) {
             return Err(GuildError::MissingPermissions);
         }
-        let named_roles: Vec<Role> = guild_storage::list_roles(&self.pool, guild_id)
-            .await?
-            .into_iter()
+        let named_roles: Vec<Role> = roles
+            .iter()
             .filter(|role| role.id != guild_id)
+            .cloned()
             .collect();
         let current_order: Vec<Snowflake> = named_roles.iter().map(|role| role.id).collect();
         validate_role_order(&current_order, &request.role_ids)?;
         if !manager.can_reorder_roles(&named_roles, &request.role_ids, guild_id) {
             return Err(GuildError::MissingPermissions);
+        }
+        if request.role_ids == current_order {
+            return Ok(roles);
         }
         let roles =
             guild_storage::reorder_roles(&self.pool, guild_id, &current_order, &request.role_ids)
@@ -1630,6 +1642,14 @@ mod tests {
                 order_of(&[&moderator, &helper, &kickers, &admin]),
             )
             .await;
+        guilds.leave_guild(fixture.third, guild.id).await.unwrap();
+        let by_non_member = guilds
+            .reorder_roles(
+                fixture.third,
+                guild.id,
+                order_of(&[&moderator, &helper, &kickers, &admin]),
+            )
+            .await;
         fixture.pool.close().await;
 
         let names = |roles: &[Role]| {
@@ -1647,6 +1667,7 @@ mod tests {
             ["@everyone", "Moderator", "Helper", "Kickers", "Admin"]
         );
         assert_all_refused(vec![own_role_moved, above_moved, by_plain_member]);
+        assert!(matches!(by_non_member, Err(GuildError::NotFound)));
         for invalid in [incomplete, with_everyone] {
             assert!(
                 matches!(

@@ -49,13 +49,13 @@ impl RoleManager {
                     && self.permissions.contains(role.permissions)))
     }
 
-    /// `current` holds the named roles by position (1, 2, …) and `new_order` the same ids in their
+    /// `named_roles_by_position` holds the roles without `@everyone`, at positions 1, 2, …, and `new_order` the same ids in their
     /// new order. The owner may reorder freely; anyone else may move only roles they manage
     /// (`can_manage_role`), so their own role and everything above it stay where they are.
     #[must_use]
     pub fn can_reorder_roles(
         &self,
-        current: &[Role],
+        named_roles_by_position: &[Role],
         new_order: &[Snowflake],
         everyone_role_id: Snowflake,
     ) -> bool {
@@ -63,9 +63,12 @@ impl RoleManager {
         // the roles moving in, and every changed slot lies below the manager's highest role.
         self.permissions.contains(Permissions::MANAGE_ROLES)
             && (self.is_owner
-                || current.iter().zip(new_order).all(|(role, new_id)| {
-                    role.id == *new_id || self.can_manage_role(role, everyone_role_id)
-                }))
+                || named_roles_by_position
+                    .iter()
+                    .zip(new_order)
+                    .all(|(role, new_id)| {
+                        role.id == *new_id || self.can_manage_role(role, everyone_role_id)
+                    }))
     }
 
     /// Nobody grants or removes a permission they do not hold themselves: administrators and the

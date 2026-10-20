@@ -855,6 +855,35 @@ mod tests {
                 if *user_id == owner.id && *role_ids == [role.id])
         })
         .await;
+        let second = guilds
+            .create_role(
+                owner.id,
+                fixture.guild_id,
+                mellow_protocol::CreateRoleRequest {
+                    name: "Helper".into(),
+                    color: 0,
+                    permissions: mellow_protocol::Permissions::empty(),
+                },
+                now(),
+            )
+            .await
+            .unwrap();
+        // Helper was created last, so it sits below Moderator: put it on top.
+        guilds
+            .reorder_roles(
+                owner.id,
+                fixture.guild_id,
+                mellow_protocol::ReorderRolesRequest {
+                    role_ids: vec![role.id, second.id],
+                },
+            )
+            .await
+            .unwrap();
+        receive_dispatch(&mut owner_socket, |event| {
+            matches!(event, GatewayEvent::GuildRolesUpdate { roles, .. }
+                if roles.last().is_some_and(|top| top.id == second.id))
+        })
+        .await;
         guilds
             .delete_role(owner.id, fixture.guild_id, role.id)
             .await
