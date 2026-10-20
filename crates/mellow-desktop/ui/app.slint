@@ -140,6 +140,9 @@ export component AppWindow inherits Window {
     changed is-signed-in => {
         if root.is-signed-in {
             chat.focus-composer();
+        } else {
+            // A session ended by the server must not reopen settings over the next sign-in.
+            root.is-user-settings-open = false;
         }
     }
 
