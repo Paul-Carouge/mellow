@@ -714,7 +714,7 @@ export component ChatPane inherits Rectangle {
     }
 
     // Not is-pinned-to-latest-message: pinning also holds the rows being read while older history
-    // is prepended, far from the latest message. Only a user scroll or a jump changes this.
+    // is prepended, far from the latest message.
     property <bool> is-viewing-older-messages;
     property <int> new-message-count-while-viewing-older;
     // Rust calls this for each message arriving in the open channel; the bar counts them.
@@ -754,9 +754,21 @@ export component ChatPane inherits Rectangle {
     // Scrolls up by `distance`; returns false once the top is reached (used by the scroll benchmark).
     public function scroll-up-by(distance: length) -> bool {
         is-pinned-to-latest-message = false;
-        is-viewing-older-messages = true;
         message-list.content-y = min(0px, message-list.content-y + distance);
+        is-viewing-older-messages = message-list.content-y > latest-message-content-y + 1px;
         message-list.content-y < 0px
+    }
+
+    // `scrolled` reads the position a wheel or flick animation starts from, so a scroll that coasts
+    // to the bottom is released there; this pins it again once it arrives. Only at distance zero,
+    // so the row 0 trap (pinning near the top) cannot occur.
+    function pin-when-latest-message-reached() {
+        if !is-pinned-to-latest-message && message-list.content-y <= latest-message-content-y + 1px {
+            is-pinned-to-latest-message = true;
+            pinned-distance-from-latest-message = 0px;
+            is-viewing-older-messages = false;
+            new-message-count-while-viewing-older = 0;
+        }
     }
 
     background: MellowColor.surface-chat;
@@ -853,17 +865,20 @@ export component ChatPane inherits Rectangle {
                 // ListView estimates unseen row heights and refines them while rendering, which moves
                 // content-y and content-height by itself; while pinned, snap back to the bottom.
                 changed content-height => {
+                    root.pin-when-latest-message-reached();
                     if root.is-pinned-to-latest-message {
                         self.content-y = root.pinned-content-y;
                     }
                     root.load-older-messages-when-near-top();
                 }
                 changed visible-height => {
+                    root.pin-when-latest-message-reached();
                     if root.is-pinned-to-latest-message {
                         self.content-y = root.pinned-content-y;
                     }
                 }
                 changed content-y => {
+                    root.pin-when-latest-message-reached();
                     if root.is-pinned-to-latest-message && self.content-y != root.pinned-content-y {
                         self.content-y = root.pinned-content-y;
                     }

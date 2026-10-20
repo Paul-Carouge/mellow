@@ -594,8 +594,10 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
             resend_failed_messages(shell);
         }
         GatewayUpdate::Event(event) => {
-            let created_in_channel_id = match &event {
-                GatewayEvent::MessageCreate(message) => Some(message.channel_id),
+            let created_message = match &event {
+                GatewayEvent::MessageCreate(message) => {
+                    Some((message.channel_id, message.author.id))
+                }
                 _ => None,
             };
             let change = shell
@@ -604,9 +606,16 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
                 .apply_event(event, now_unix_milliseconds());
             apply_state_change(shell, change);
             let shell = shell.borrow();
-            if created_in_channel_id.is_some_and(|id| shell.selected_channel_id == Some(id))
-                && let Some(window) = shell.window.upgrade()
-            {
+            // Your own messages are not "new", as on Discord, including those resent after a reconnect.
+            let is_new_message_from_someone_else =
+                created_message.is_some_and(|(channel_id, author_id)| {
+                    shell.selected_channel_id == Some(channel_id)
+                        && shell
+                            .state
+                            .current_user()
+                            .is_none_or(|user| user.id != author_id)
+                });
+            if is_new_message_from_someone_else && let Some(window) = shell.window.upgrade() {
                 window.invoke_note_new_message();
             }
         }
