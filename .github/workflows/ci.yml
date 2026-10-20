@@ -39,6 +39,10 @@ jobs:
         run: cargo xtask tokens --check
       - name: The Docker kit carries the release public key
         run: cmp release/minisign.pub deploy/docker/minisign.pub
+      - name: The install script carries the release public key
+        run: grep -qF "$(tail -n 1 release/minisign.pub)" install.sh
+      - name: Shell scripts pass shellcheck
+        run: shellcheck -s sh install.sh && shellcheck deploy/docker/mellow-update
 
   test:
     name: Test (${{ matrix.os }})

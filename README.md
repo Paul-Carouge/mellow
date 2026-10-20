@@ -27,6 +27,13 @@ cargo xtask tokens --check
 ```
 The certificate test against [Pebble](https://github.com/letsencrypt/pebble), the ACME test authority, is ignored by default: `MELLOW_PEBBLE_BINARY=/path/to/pebble cargo test -p mellow-server --lib tls::tests -- --ignored`.
 
+## Install the desktop app
+Linux (x86_64, aarch64; glibc 2.35 or newer) and macOS (Apple Silicon), for the current user, without root:
+```bash
+curl -fsSL https://raw.githubusercontent.com/Paul-Carouge/mellow/main/install.sh | sh
+```
+It downloads the latest release, checks its minisign signature (or, without `minisign` installed, the digest from the signed `SHA256SUMS`), and installs `~/.local/bin/mellow-desktop` with a menu entry on Linux, or `~/Applications/Mellow.app` on macOS. Later versions install from the app: User settings → About. `sh -s -- --uninstall` removes it. On Linux, a Secret Service provider (GNOME Keyring, KWallet) keeps you signed in between launches.
+
 ## Releases
 Each tag `vX.Y.Z` publishes, on the [releases page](https://github.com/Paul-Carouge/mellow/releases), `mellow-server` and `mellow-desktop` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`. Each binary, and the `mellow-X.Y.Z-SHA256SUMS` digest list, has a `.minisig` signature whose trusted comment is the signed file's own name. Linux builds need glibc 2.35 or newer (Debian 12, Ubuntu 22.04); the desktop app also needs fontconfig, xkbcommon and D-Bus at run time. Check a file by hand with the public key in [`release/minisign.pub`](release/minisign.pub), then make sure the printed `Trusted comment:` is exactly that file's name (otherwise the signature belongs to another file):
 ```bash
