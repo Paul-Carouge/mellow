@@ -1,0 +1,5 @@
+# Same bytes on every OS: release scripts read Cargo.toml line by line, and embedded files
+# (migrations, fixtures, signatures) must not change on a Windows checkout.
+* text=auto eol=lf
+# Kept exactly as published upstream.
+crates/mellow-desktop/icons/LICENSE -text
