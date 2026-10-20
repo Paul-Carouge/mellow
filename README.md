@@ -25,6 +25,7 @@ cargo fmt --all --check
 cargo deny check
 cargo xtask tokens --check
 ```
+The certificate test against [Pebble](https://github.com/letsencrypt/pebble), the ACME test authority, is ignored by default: `MELLOW_PEBBLE_BINARY=/path/to/pebble cargo test -p mellow-server --lib tls::tests -- --ignored`.
 
 ## Run a development instance
 ```bash

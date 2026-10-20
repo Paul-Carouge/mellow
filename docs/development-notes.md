@@ -14,9 +14,8 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 
 ## Next candidates
 1. M1 release candidate: run a real instance (`init --domain … --use-staging-certificates`, then production), connect the desktop over https, then tag. The user already runs a test instance they own; ask before changing anything on it.
-2. End-to-end ACME tests against Pebble (local test certificate authority).
-3. Desktop message list, from DESIGN.md §5.4: the offline and no-access list states. Branch from `feat/message-list-jump-to-present` and stack the PR on #22.
-4. Then an on-disk outbox (needs the local cache of ARCHITECTURE §6 first).
+2. Desktop message list, from DESIGN.md §5.4: the offline state (needs the local cache first) and the no-access state (needs channel permissions, M2).
+3. Then an on-disk outbox (needs the local cache of ARCHITECTURE §6 first).
 
 ## Workflow that worked
 - One branch per milestone step (`feat/…`), atomic Conventional Commits, a `docs:` commit for README/ROADMAP/ARCHITECTURE/ADR.
@@ -55,7 +54,7 @@ A local hook refuses `git commit` when fmt or clippy fail on the touched crate: 
 - **Desktop threading**: state lives on the UI thread in `Rc<RefCell<LiveShell>>`. Network futures run on the tokio runtime and come back through `slint::spawn_local`. Never hold a `RefCell` borrow across a call that borrows again.
 - **Message markdown**: escape `\` before `<`, or `\<font>` re-enables HTML styling (fixed, with a regression test).
 - **TLS listener**: hyper ignores its header timeout unless a timer is set. Do not enable HTTP/2 keep-alive pings, since their answers keep idle connections alive. `axum-server`'s `http1_only()` breaks WebSocket upgrades.
-- **ACME**: tests point at an unreachable directory URL (`https://127.0.0.1:9/directory`), so they never touch Let's Encrypt.
+- **ACME**: tests point at an unreachable directory URL (`https://127.0.0.1:9/directory`), so they never touch Let's Encrypt. The end-to-end test against Pebble is `#[ignore]`d: download a release binary from github.com/letsencrypt/pebble, `chmod +x` it (the archive drops the executable bit), then `MELLOW_PEBBLE_BINARY=/path/to/pebble cargo test -p mellow-server --lib tls::tests -- --ignored`. It sets `PEBBLE_WFE_NONCEREJECT=0` because rustls-acme does not retry a bad-nonce refusal.
 - **Reverse proxy in Docker**: the proxy reaches Mellow from its container address, not loopback, so `X-Forwarded-For` is ignored unless that address is in `trusted_proxy_networks`. Trust the proxy's `/32`, never the whole Docker network (its gateway is the host and the userland proxy's source).
 - **Logs**: never log serde or ACME error text verbatim. Serde quotes the offending value (possibly message content), and the certificate authority's messages can quote the contact email.
 - **Licences**: `webpki-roots` and `webpki-root-certs` need the CDLA-Permissive-2.0 exception in `deny.toml`.
