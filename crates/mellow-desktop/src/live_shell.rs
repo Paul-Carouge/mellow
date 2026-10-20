@@ -16,8 +16,8 @@ use mellow_client_core::{
     ClientError, GatewayUpdate, InstanceAddress, RestClient, generate_message_nonce, run_gateway,
 };
 use mellow_protocol::{
-    ApiErrorCode, LoginRequest, Message, MessageHistoryQuery, RegisterRequest, SendMessageRequest,
-    Snowflake,
+    ApiErrorCode, GatewayEvent, LoginRequest, Message, MessageHistoryQuery, RegisterRequest,
+    SendMessageRequest, Snowflake,
 };
 use slint::{ComponentHandle as _, Model as _, ModelRc, SharedString, VecModel, Weak};
 use tokio::runtime::Handle;
@@ -594,11 +594,21 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
             resend_failed_messages(shell);
         }
         GatewayUpdate::Event(event) => {
+            let created_in_channel_id = match &event {
+                GatewayEvent::MessageCreate(message) => Some(message.channel_id),
+                _ => None,
+            };
             let change = shell
                 .borrow_mut()
                 .state
                 .apply_event(event, now_unix_milliseconds());
             apply_state_change(shell, change);
+            let shell = shell.borrow();
+            if created_in_channel_id.is_some_and(|id| shell.selected_channel_id == Some(id))
+                && let Some(window) = shell.window.upgrade()
+            {
+                window.invoke_note_new_message();
+            }
         }
         GatewayUpdate::Resumed => {
             set_notice("");
