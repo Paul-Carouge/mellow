@@ -70,7 +70,7 @@ pub(crate) struct Messages {
     events: Arc<EventHub>,
     /// Held from id generation until the `MESSAGE_CREATE` event is published, so messages commit
     /// and reach gateways in id order: an `after` cursor can never skip a message committed late.
-    send_order: tokio::sync::Mutex<()>,
+    send_order: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Messages {
@@ -85,7 +85,7 @@ impl Messages {
             ids,
             guilds,
             events,
-            send_order: tokio::sync::Mutex::default(),
+            send_order: Arc::default(),
         }
     }
 
@@ -121,8 +121,8 @@ impl Messages {
 
     /// Needs `VIEW_CHANNEL` and `SEND_MESSAGES`. The nonce is echoed back to the sender only. A
     /// send repeating a nonce the author already used in this channel (an outbox retry after a
-    /// lost response) returns the message created the first time, unchanged and without a new
-    /// event, whatever its content.
+    /// lost response) returns that message as stored now, edits included, without a new event and
+    /// whatever the new content. Once that message is deleted, the nonce is free again.
     pub(crate) async fn send(
         &self,
         user_id: Snowflake,
@@ -142,39 +142,48 @@ impl Messages {
         if let Some(nonce) = &request.nonce {
             validate_nonce(nonce)?;
         }
-        // Also makes the nonce lookup and the insert atomic for concurrent retries.
-        let send_order = self.send_order.lock().await;
-        if let Some(nonce) = &request.nonce
-            && let Some(already_sent) =
-                message_storage::find_message_by_nonce(&self.pool, channel.id, user_id, nonce)
+        let send_order = self.send_order.clone();
+        let pool = self.pool.clone();
+        let ids = self.ids.clone();
+        let events = self.events.clone();
+        // A detached task: a client hanging up mid-insert must not release the lock before the
+        // insert commits and its event is published. The lock also makes the nonce lookup and
+        // the insert atomic for concurrent retries.
+        tokio::spawn(async move {
+            let _send_order = send_order.lock_owned().await;
+            if let Some(nonce) = &request.nonce
+                && let Some(already_sent) =
+                    message_storage::find_message_by_nonce(&pool, channel.id, user_id, nonce)
+                        .await?
+            {
+                return Ok(message_from_stored(already_sent, request.nonce));
+            }
+            if let Some(reply_to_id) = request.reply_to_id {
+                message_storage::find_message_in_channel(&pool, channel.id, reply_to_id)
                     .await?
-        {
-            return Ok(message_from_stored(already_sent, request.nonce));
-        }
-        if let Some(reply_to_id) = request.reply_to_id {
-            message_storage::find_message_in_channel(&self.pool, channel.id, reply_to_id)
-                .await?
-                .ok_or(MessageRuleViolation::ReplyTarget)?;
-        }
-        let stored = message_storage::insert_message(
-            &self.pool,
-            &NewMessage {
-                id: self.ids.next_id(now_unix_milliseconds)?,
-                channel_id: channel.id,
-                author_id: user_id,
-                content,
-                reply_to_id: request.reply_to_id,
-                nonce: request.nonce.clone(),
-            },
-        )
-        .await?;
-        // The nonce goes back to the sender only, never in the guild-wide event.
-        self.events.publish_to_guild(
-            channel.guild_id,
-            &GatewayEvent::MessageCreate(message_from_stored(stored.clone(), None)),
-        );
-        drop(send_order);
-        Ok(message_from_stored(stored, request.nonce))
+                    .ok_or(MessageRuleViolation::ReplyTarget)?;
+            }
+            let stored = message_storage::insert_message(
+                &pool,
+                &NewMessage {
+                    id: ids.next_id(now_unix_milliseconds)?,
+                    channel_id: channel.id,
+                    author_id: user_id,
+                    content,
+                    reply_to_id: request.reply_to_id,
+                    nonce: request.nonce.clone(),
+                },
+            )
+            .await?;
+            // The nonce goes back to the sender only, never in the guild-wide event.
+            events.publish_to_guild(
+                channel.guild_id,
+                &GatewayEvent::MessageCreate(message_from_stored(stored.clone(), None)),
+            );
+            Ok(message_from_stored(stored, request.nonce))
+        })
+        .await
+        .map_err(|error| MessageError::Internal(Box::new(error)))?
     }
 
     /// Needs `VIEW_CHANNEL` and `READ_MESSAGE_HISTORY`. Chronological order, oldest first.
@@ -653,6 +662,65 @@ mod tests {
             history.iter().all(|message| message.nonce.is_none()),
             "history never carries nonces"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_retries_with_one_nonce_create_one_message() {
+        let fixture = fixture().await;
+        let retry = || {
+            fixture.messages.send(
+                fixture.member,
+                fixture.general,
+                SendMessageRequest {
+                    content: "once".into(),
+                    reply_to_id: None,
+                    nonce: Some("outbox-2".into()),
+                },
+                NOW,
+            )
+        };
+        let (first, second) = futures_util::future::join(retry(), retry()).await;
+        let history = fixture
+            .messages
+            .list_messages(
+                fixture.owner,
+                fixture.general,
+                MessageHistoryQuery::default(),
+            )
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        assert_eq!(first.unwrap().id, second.unwrap().id);
+        assert_eq!(history.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_nonce_is_free_again_once_its_message_is_deleted() {
+        let fixture = fixture().await;
+        let with_nonce = || SendMessageRequest {
+            content: "hello".into(),
+            reply_to_id: None,
+            nonce: Some("outbox-3".into()),
+        };
+        let first = fixture
+            .messages
+            .send(fixture.member, fixture.general, with_nonce(), NOW)
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .delete(fixture.member, fixture.general, first.id)
+            .await
+            .unwrap();
+        let after_deletion = fixture
+            .messages
+            .send(fixture.member, fixture.general, with_nonce(), NOW + 1)
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        assert_ne!(after_deletion.id, first.id);
     }
 
     #[tokio::test]
