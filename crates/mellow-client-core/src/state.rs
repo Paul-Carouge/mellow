@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mellow_protocol::{
-    Channel, CurrentUser, GatewayEvent, Guild, Member, Message, PresenceStatus, Ready, Role,
-    SendMessageRequest, Snowflake, compute_guild_permissions,
+    Channel, CurrentUser, GatewayEvent, Guild, Member, Message, Permissions, PresenceStatus, Ready,
+    Role, SendMessageRequest, Snowflake, compute_channel_permissions, compute_guild_permissions,
 };
 
 /// Messages kept in memory per channel once the reader leaves it; older ones are fetched again
@@ -115,6 +115,26 @@ impl ClientState {
     #[must_use]
     pub fn guild(&self, guild_id: Snowflake) -> Option<&Guild> {
         self.guilds.iter().find(|guild| guild.id == guild_id)
+    }
+
+    /// What the signed-in user may do in a channel, only to adapt the interface (ADR-0014);
+    /// `None` for an unknown channel or before `Ready`.
+    #[must_use]
+    pub fn my_channel_permissions(&self, channel_id: Snowflake) -> Option<Permissions> {
+        let current_user_id = self.current_user.as_ref()?.id;
+        self.guilds.iter().find_map(|guild| {
+            let channel = guild
+                .channels
+                .iter()
+                .find(|channel| channel.id == channel_id)?;
+            Some(compute_channel_permissions(
+                guild.my_permissions,
+                guild.id,
+                current_user_id,
+                &guild.my_role_ids,
+                &channel.permission_overwrites,
+            ))
+        })
     }
 
     #[must_use]
@@ -638,7 +658,7 @@ fn merge_messages(cached: Vec<Message>, incoming: Vec<Message>) -> Vec<Message> 
 
 #[cfg(test)]
 mod tests {
-    use mellow_protocol::{ChannelKind, Permissions, PublicUser, ReadState};
+    use mellow_protocol::{ChannelKind, OverwriteKind, PermissionOverwrite, PublicUser, ReadState};
 
     use super::*;
 
@@ -1011,6 +1031,63 @@ mod tests {
         );
         assert_eq!(club.my_permissions, Permissions::DEFAULT_EVERYONE);
         assert_eq!(state.members(CLUB)[0].role_ids, Vec::<Snowflake>::new());
+    }
+
+    #[test]
+    fn channel_permissions_apply_the_overwrites_of_my_roles_and_of_me() {
+        const CLUB: Snowflake = Snowflake::from_raw(310);
+        const ANNOUNCEMENTS: Snowflake = Snowflake::from_raw(311);
+        let mut state = ready_state();
+        assert_eq!(state.my_channel_permissions(ANNOUNCEMENTS), None);
+        let deny_sending = |id, kind| PermissionOverwrite {
+            id,
+            kind,
+            allow: Permissions::empty(),
+            deny: Permissions::SEND_MESSAGES,
+        };
+        let guild = |overwrites| Guild {
+            id: CLUB,
+            name: "Other's club".into(),
+            owner_id: OTHER,
+            my_permissions: Permissions::DEFAULT_EVERYONE,
+            my_role_ids: Vec::new(),
+            roles: Vec::new(),
+            channels: vec![Channel {
+                id: ANNOUNCEMENTS,
+                guild_id: CLUB,
+                kind: ChannelKind::Text,
+                name: "announcements".into(),
+                topic: String::new(),
+                parent_id: None,
+                position: 0,
+                permission_overwrites: overwrites,
+            }],
+        };
+        state.apply_event(
+            GatewayEvent::GuildCreate(Box::new(guild(vec![deny_sending(
+                CLUB,
+                OverwriteKind::Role,
+            )]))),
+            NOW,
+        );
+        let permissions = state.my_channel_permissions(ANNOUNCEMENTS).unwrap();
+        assert!(!permissions.contains(Permissions::SEND_MESSAGES));
+        assert!(permissions.contains(Permissions::VIEW_CHANNEL));
+
+        state.apply_event(
+            GatewayEvent::GuildCreate(Box::new(guild(vec![PermissionOverwrite {
+                allow: Permissions::SEND_MESSAGES,
+                deny: Permissions::empty(),
+                ..deny_sending(ME, OverwriteKind::Member)
+            }]))),
+            NOW,
+        );
+        assert!(
+            state
+                .my_channel_permissions(ANNOUNCEMENTS)
+                .unwrap()
+                .contains(Permissions::SEND_MESSAGES)
+        );
     }
 
     #[test]
