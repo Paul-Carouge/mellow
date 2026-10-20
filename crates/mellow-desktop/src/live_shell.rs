@@ -63,6 +63,9 @@ pub struct LiveShell {
     /// Channels whose last history request failed: they wait for "Try again" or the next `Ready`
     /// instead of asking again on every scroll frame.
     failed_history_channel_ids: HashSet<Snowflake>,
+    /// Bumped by every `Ready`, which resets the history bookkeeping: answers to history requests
+    /// sent before it are dropped, so a late failure cannot mark a channel failed again.
+    history_generation: u64,
     messages: Rc<VecModel<MessageRow>>,
     /// The message id behind each row of `messages`, in the same order.
     displayed_message_ids: Vec<Snowflake>,
@@ -95,6 +98,7 @@ pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
         requested_member_list_guild_ids: HashSet::new(),
         loading_older_history_channel_ids: HashSet::new(),
         failed_history_channel_ids: HashSet::new(),
+        history_generation: 0,
         messages: Rc::new(VecModel::default()),
         displayed_message_ids: Vec::new(),
         displayed_pending_nonces: Vec::new(),
@@ -563,11 +567,11 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
                 shell.state.apply_ready(*ready);
                 shell.requested_history_channel_ids.clear();
                 shell.requested_member_list_guild_ids.clear();
-                // A request of an ended session never comes back to free its channel. One of the
-                // same session still does, and may free a newer request early: at worst a page is
-                // asked twice, and the adjacency check drops the duplicate.
+                // Requests sent before this `Ready` are ignored when they come back
+                // (`history_generation`), so nothing else would free their channel.
                 shell.loading_older_history_channel_ids.clear();
                 shell.failed_history_channel_ids.clear();
+                shell.history_generation += 1;
                 if let (Some(window), Some(user)) =
                     (shell.window.upgrade(), shell.state.current_user())
                 {
@@ -797,6 +801,10 @@ fn open_channel(shell: &SharedShell, channel_id: Option<Snowflake>) {
             if let Some(previous_channel_id) = shell.selected_channel_id {
                 shell.state.trim_history(previous_channel_id);
             }
+            // Reopening a channel whose history failed is a retry too.
+            if let Some(channel_id) = channel_id {
+                shell.failed_history_channel_ids.remove(&channel_id);
+            }
         }
         shell.selected_channel_id = channel_id;
         refresh_header(&shell);
@@ -850,16 +858,13 @@ fn refresh_header(shell: &LiveShell) {
 }
 
 fn ensure_history_loaded(shell: &SharedShell, channel_id: Snowflake) {
-    {
+    let history_generation = {
         let mut shell = shell.borrow_mut();
         if !shell.requested_history_channel_ids.insert(channel_id) {
             return;
         }
-        // Reopening a channel whose page failed is a retry too.
-        if shell.failed_history_channel_ids.remove(&channel_id) {
-            refresh_history_start_state(&shell);
-        }
-    }
+        shell.history_generation
+    };
     let Some(rest) = authenticated_rest(shell) else {
         return;
     };
@@ -869,6 +874,7 @@ fn ensure_history_loaded(shell: &SharedShell, channel_id: Snowflake) {
     };
     let request = async move { rest.list_messages(channel_id, &query).await };
     run_request(shell, request, move |shell, result| match result {
+        _ if shell.borrow().history_generation != history_generation => {}
         Ok(page) => {
             let change = {
                 let mut shell = shell.borrow_mut();
@@ -896,7 +902,7 @@ fn ensure_history_loaded(shell: &SharedShell, channel_id: Snowflake) {
 /// Fetches the page before the oldest cached message of the open channel, one page at a time.
 fn load_older_messages(shell: &SharedShell) {
     // Called on every scroll frame near the top: the cheap checks run before the client is cloned.
-    let (rest, channel_id, oldest_message_id) = {
+    let (rest, channel_id, oldest_message_id, history_generation) = {
         let mut shell = shell.borrow_mut();
         let Some(channel_id) = shell.selected_channel_id else {
             return;
@@ -927,7 +933,12 @@ fn load_older_messages(shell: &SharedShell) {
         };
         shell.loading_older_history_channel_ids.insert(channel_id);
         refresh_history_start_state(&shell);
-        (rest, channel_id, oldest_message_id)
+        (
+            rest,
+            channel_id,
+            oldest_message_id,
+            shell.history_generation,
+        )
     };
     let query = MessageHistoryQuery {
         before: Some(oldest_message_id),
@@ -938,6 +949,9 @@ fn load_older_messages(shell: &SharedShell) {
     run_request(shell, request, move |shell, result| {
         {
             let mut shell = shell.borrow_mut();
+            if shell.history_generation != history_generation {
+                return;
+            }
             shell.loading_older_history_channel_ids.remove(&channel_id);
             if result.is_err() {
                 shell.failed_history_channel_ids.insert(channel_id);
@@ -961,11 +975,16 @@ fn load_older_messages(shell: &SharedShell) {
                 if !is_still_adjacent {
                     return;
                 }
-                // An empty page adds no rows, only the hero in row 0, which compensates its own
-                // height; pinning at a distance while row 0 changes makes ListView oscillate.
-                if !page.is_empty()
-                    && let Some(window) = shell.borrow().window.upgrade()
-                {
+                // An empty page only turns row 0 into the hero. Rebuilding the rows would recreate
+                // row 0 already showing it, so it could not compensate its height, and pinning at a
+                // distance while row 0 changes height makes ListView oscillate.
+                if page.is_empty() {
+                    let mut shell = shell.borrow_mut();
+                    shell.state.insert_history_page(channel_id, page);
+                    refresh_history_start_state(&shell);
+                    return;
+                }
+                if let Some(window) = shell.borrow().window.upgrade() {
                     window.invoke_keep_distance_from_latest_message();
                 }
                 let change = shell

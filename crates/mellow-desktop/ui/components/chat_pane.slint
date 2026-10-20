@@ -483,18 +483,21 @@ component HistoryStart inherits VerticalLayout {
     // What is drawn, as far as its height goes: nothing, skeletons, the error or the hero.
     property <int> drawn-content: root.state == HistoryStartState.loading ? (root.has-skeleton-delay-elapsed ? 1 : 0)
         : root.state == HistoryStartState.failed ? 2 : root.state == HistoryStartState.channel-start ? 3 : 0;
-    // Set when the drawn content changes, consumed by the height change that follows once the new
-    // content is laid out. Other height changes (creation, width) are not the reader's rows moving.
-    property <bool> is-drawn-content-change-pending;
+    // Only a height change that comes with new drawn content moves the reader's rows; others
+    // (creation, width) do not. Compared rather than flagged from `changed drawn-content`, since
+    // Slint does not order the two change handlers.
     property <length> measured-height;
-    init => { root.measured-height = root.height; }
-    changed drawn-content => { root.is-drawn-content-change-pending = true; }
+    property <int> measured-drawn-content;
+    init => {
+        root.measured-height = root.height;
+        root.measured-drawn-content = root.drawn-content;
+    }
     changed height => {
-        if root.is-drawn-content-change-pending && !root.is-list-empty {
+        if root.drawn-content != root.measured-drawn-content && !root.is-list-empty {
             root.height-changed-above-rows(root.height - root.measured-height);
         }
-        root.is-drawn-content-change-pending = false;
         root.measured-height = root.height;
+        root.measured-drawn-content = root.drawn-content;
     }
 
     if root.state == HistoryStartState.loading && root.has-skeleton-delay-elapsed: VerticalLayout {
