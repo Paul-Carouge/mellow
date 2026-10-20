@@ -119,18 +119,6 @@ pub(super) fn take_reply(shell: &SharedShell) -> Option<Snowflake> {
     reply_to_message_id
 }
 
-/// After a failed send, unless another reply was chosen meanwhile or the message is gone.
-pub(super) fn restore_reply(shell: &SharedShell, reply_to_message_id: Snowflake) {
-    let row_index = {
-        let shell = shell.borrow();
-        if shell.reply_to_message_id.is_some() {
-            return;
-        }
-        row_index_of(&shell, Some(reply_to_message_id))
-    };
-    reply_to_message(shell, row_index);
-}
-
 pub(super) fn cancel_reply(shell: &SharedShell) {
     let mut shell = shell.borrow_mut();
     shell.reply_to_message_id = None;
@@ -256,6 +244,40 @@ fn report_message_action_error(
     }
 }
 
+/// The outbox nonce behind a UI row: outbox rows follow the `displayed_message_ids` rows.
+pub(super) fn pending_nonce_at_row<'nonces>(
+    displayed_message_ids: &[Snowflake],
+    displayed_pending_nonces: &'nonces [String],
+    row_index: i32,
+) -> Option<&'nonces str> {
+    usize::try_from(row_index)
+        .ok()
+        .and_then(|index| index.checked_sub(displayed_message_ids.len()))
+        .and_then(|index| displayed_pending_nonces.get(index))
+        .map(String::as_str)
+}
+
+/// Why the instance refused a sent message (`ClientError::refuses_message_for_good`), in the
+/// client's words like `message_action_error_text`.
+pub(super) fn send_refusal_text(error: &ClientError) -> String {
+    let reason = match error {
+        ClientError::Api {
+            code: ApiErrorCode::ValidationFailed,
+            ..
+        } => "the text is not valid (too long?).",
+        ClientError::Api {
+            code: ApiErrorCode::NotFound,
+            ..
+        } => "the channel or the message it replies to no longer exists.",
+        ClientError::Api {
+            code: ApiErrorCode::MissingPermissions,
+            ..
+        } => "you are not allowed to send messages here.",
+        _ => "the instance refused it.",
+    };
+    format!("Message not sent: {reason}")
+}
+
 /// Written by the client from the error code: the instance's own text could say anything, at any
 /// length, in a place the user trusts.
 fn message_action_error_text(error: &ClientError, summary: &str) -> String {
@@ -311,6 +333,15 @@ mod tests {
     }
 
     #[test]
+    fn outbox_rows_follow_the_confirmed_rows() {
+        let shown = [Snowflake::from_raw(10), Snowflake::from_raw(20)];
+        let nonces = ["a".to_owned(), "b".to_owned()];
+        let at = |row_index| pending_nonce_at_row(&shown, &nonces, row_index);
+        assert_eq!([at(-1), at(0), at(1)], [None, None, None]);
+        assert_eq!([at(2), at(3), at(4)], [Some("a"), Some("b"), None]);
+    }
+
+    #[test]
     fn error_text_never_repeats_the_instance_message() {
         let error = ClientError::Api {
             status: 403,
@@ -328,5 +359,9 @@ mod tests {
             message: "evil".into(),
         };
         assert!(!message_action_error_text(&unknown, "Message not deleted").contains("evil"));
+        assert_eq!(
+            send_refusal_text(&error),
+            "Message not sent: you are not allowed to send messages here."
+        );
     }
 }

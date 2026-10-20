@@ -12,7 +12,9 @@ use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mellow_client_core::state::{ClientState, StateChange};
-use mellow_client_core::{ClientError, GatewayUpdate, InstanceAddress, RestClient, run_gateway};
+use mellow_client_core::{
+    ClientError, GatewayUpdate, InstanceAddress, RestClient, generate_message_nonce, run_gateway,
+};
 use mellow_protocol::{
     ApiErrorCode, LoginRequest, MessageHistoryQuery, RegisterRequest, SendMessageRequest, Snowflake,
 };
@@ -30,6 +32,8 @@ const LOGOUT_ON_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
 /// A Secret Service waiting on an unlock prompt nobody sees would otherwise keep the sign-in form
 /// busy forever.
 const SECRET_STORE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Never the server's error text (development notes: "Server text in the UI").
+const MESSAGE_NOT_SENT_ANNOUNCEMENT: &str = "Message not sent.";
 const RECONNECTING_NOTICE: &str = "Connection lost. Reconnecting…";
 const SESSION_ENDED_MESSAGE: &str = "Your session ended. Sign in again.";
 /// Shown when the rail's home entry (index -1 in `server_rail.slint`) is selected.
@@ -56,6 +60,8 @@ pub struct LiveShell {
     messages: Rc<VecModel<MessageRow>>,
     /// The message id behind each row of `messages`, in the same order.
     displayed_message_ids: Vec<Snowflake>,
+    /// The outbox nonce behind each row after those of `displayed_message_ids`.
+    displayed_pending_nonces: Vec<String>,
     /// The message the composer answers, shown as "Replying to …".
     reply_to_message_id: Option<Snowflake>,
     /// See `clipboard::copy_text`.
@@ -83,6 +89,7 @@ pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
         requested_member_list_guild_ids: HashSet::new(),
         messages: Rc::new(VecModel::default()),
         displayed_message_ids: Vec::new(),
+        displayed_pending_nonces: Vec::new(),
         reply_to_message_id: None,
         clipboard: None,
         session_generation: 0,
@@ -281,6 +288,13 @@ fn connect_callbacks(window: &AppWindow, shell: &SharedShell) {
     window.on_send_message(move |text: SharedString| send_message(&shell_for_callback, text));
 
     let shell_for_callback = shell.clone();
+    window.on_retry_message(move |row_index| retry_message(&shell_for_callback, row_index));
+    let shell_for_callback = shell.clone();
+    window.on_discard_failed_message(move |row_index| {
+        discard_failed_message(&shell_for_callback, row_index);
+    });
+
+    let shell_for_callback = shell.clone();
     window.on_copy_message_text(move |message_index| {
         let mut shell = shell_for_callback.borrow_mut();
         let Some(message) = usize::try_from(message_index)
@@ -426,7 +440,9 @@ fn sign_in_error_message(error: &ClientError, host: &str) -> String {
         ClientError::UnexpectedResponse(_) => format!(
             "{host} is online but doesn't look like a Mellow instance. Check the address with the person who invited you."
         ),
-        ClientError::InvalidInstanceAddress(_) | ClientError::NotSignedIn => error.to_string(),
+        ClientError::InvalidInstanceAddress(_)
+        | ClientError::NotSignedIn
+        | ClientError::RandomGeneratorFailed(_) => error.to_string(),
     }
 }
 
@@ -701,6 +717,7 @@ fn end_session(shell: &SharedShell, message: &str) -> tokio::task::JoinHandle<bo
     shell.selected_channel_id = None;
     shell.messages.set_vec(Vec::new());
     shell.displayed_message_ids.clear();
+    shell.displayed_pending_nonces.clear();
     message_actions::reset_message_actions(&mut shell);
     // Nothing of the previous account may stay on screen for the next one.
     refresh_header(&shell);
@@ -902,54 +919,120 @@ fn acknowledge_selected_channel(shell: &SharedShell) {
 
 fn send_message(shell: &SharedShell, text: SharedString) {
     let content = text.trim().to_owned();
-    let (Some(channel_id), Some(rest)) = (
-        shell.borrow().selected_channel_id,
-        authenticated_rest(shell),
-    ) else {
+    let Some(channel_id) = shell.borrow().selected_channel_id else {
         return;
     };
-    if content.is_empty() {
+    if content.is_empty() || authenticated_rest(shell).is_none() {
         return;
     }
-    let reply_to_id = message_actions::take_reply(shell);
-    let send_message_call = async move {
-        let send_message_request = SendMessageRequest {
-            content,
-            reply_to_id,
-            nonce: None,
-        };
-        rest.send_message(channel_id, &send_message_request).await
+    if let Some(window) = shell.borrow().window.upgrade() {
+        window.set_message_action_error(SharedString::default());
+    }
+    let nonce = match generate_message_nonce() {
+        Ok(nonce) => nonce,
+        Err(error) => {
+            tracing::error!(%error, "cannot generate a message nonce");
+            // Nothing was queued: the text goes back so it is not lost.
+            if let Some(window) = shell.borrow().window.upgrade() {
+                window.set_composer_text(text);
+                window.set_latest_announcement(MESSAGE_NOT_SENT_ANNOUNCEMENT.into());
+            }
+            return;
+        }
     };
-    run_request(
-        shell,
-        send_message_call,
-        move |shell, result| match result {
-            Ok(message) => {
-                let change = shell
-                    .borrow_mut()
-                    .state
-                    .insert_messages(channel_id, vec![message]);
-                apply_state_change(shell, change);
+    let reply_to_id = message_actions::take_reply(shell);
+    let request =
+        shell
+            .borrow_mut()
+            .state
+            .queue_message(channel_id, content, reply_to_id, nonce.clone());
+    apply_state_change(shell, StateChange::Messages { channel_id });
+    if let Some(window) = shell.borrow().window.upgrade() {
+        window.invoke_scroll_to_latest_message();
+    }
+    deliver_pending_message(shell, channel_id, nonce, request);
+}
+
+/// Sends a queued message; the server returns the stored one when this nonce already reached it.
+fn deliver_pending_message(
+    shell: &SharedShell,
+    channel_id: Snowflake,
+    nonce: String,
+    request: SendMessageRequest,
+) {
+    let Some(rest) = authenticated_rest(shell) else {
+        let change = shell.borrow_mut().state.mark_send_failed(&nonce);
+        apply_state_change(shell, change);
+        return;
+    };
+    let send_message_call = async move { rest.send_message(channel_id, &request).await };
+    run_request(shell, send_message_call, move |shell, result| {
+        let change = match result {
+            Ok(message) => shell
+                .borrow_mut()
+                .state
+                .confirm_sent_message(&nonce, message),
+            Err(error) if error.refuses_message_for_good() => {
+                report_request_error(shell, &error, "send message");
+                let refused = shell.borrow_mut().state.remove_refused_message(&nonce);
+                // A row nothing can fix: the text goes back to the composer, with the reason.
                 if let Some(window) = shell.borrow().window.upgrade() {
-                    window.invoke_scroll_to_latest_message();
+                    if let Some(refused) = refused
+                        && window.get_composer_text().is_empty()
+                    {
+                        window.set_composer_text(refused.content.into());
+                    }
+                    window.set_message_action_error(
+                        message_actions::send_refusal_text(&error).into(),
+                    );
                 }
+                StateChange::Messages { channel_id }
             }
             Err(error) => {
-                // shortcut: the text goes back to the composer instead of a "failed, retry" message row.
-                let window = shell.borrow().window.upgrade();
-                if let Some(window) = window
-                    && window.get_composer_text().is_empty()
-                {
-                    window.set_composer_text(text);
-                    window.set_latest_announcement(format!("Message not sent: {error}").into());
-                    if let Some(reply_to_id) = reply_to_id {
-                        message_actions::restore_reply(shell, reply_to_id);
-                    }
+                if let Some(window) = shell.borrow().window.upgrade() {
+                    window.set_latest_announcement(MESSAGE_NOT_SENT_ANNOUNCEMENT.into());
                 }
                 report_request_error(shell, &error, "send message");
+                shell.borrow_mut().state.mark_send_failed(&nonce)
             }
-        },
-    );
+        };
+        apply_state_change(shell, change);
+    });
+}
+
+fn pending_nonce_at_row(shell: &LiveShell, row_index: i32) -> Option<String> {
+    message_actions::pending_nonce_at_row(
+        &shell.displayed_message_ids,
+        &shell.displayed_pending_nonces,
+        row_index,
+    )
+    .map(str::to_owned)
+}
+
+fn retry_message(shell: &SharedShell, row_index: i32) {
+    let retried = {
+        let mut shell = shell.borrow_mut();
+        pending_nonce_at_row(&shell, row_index).and_then(|nonce| {
+            let (channel_id, request) = shell.state.retry_pending_message(&nonce)?;
+            Some((channel_id, nonce, request))
+        })
+    };
+    let Some((channel_id, nonce, request)) = retried else {
+        return;
+    };
+    apply_state_change(shell, StateChange::Messages { channel_id });
+    deliver_pending_message(shell, channel_id, nonce, request);
+}
+
+fn discard_failed_message(shell: &SharedShell, row_index: i32) {
+    let change = {
+        let mut shell = shell.borrow_mut();
+        match pending_nonce_at_row(&shell, row_index) {
+            Some(nonce) => shell.state.discard_failed_message(&nonce),
+            None => StateChange::Nothing,
+        }
+    };
+    apply_state_change(shell, change);
 }
 
 fn refresh_server_items(shell: &LiveShell) {
@@ -998,9 +1081,24 @@ fn refresh_messages(shell: &mut LiveShell) {
         .selected_channel_id
         .map(|id| shell.state.messages(id))
         .unwrap_or_default();
-    let current_user_id = shell.state.current_user().map(|user| user.id);
-    let rows = live_rows::message_rows(messages, current_user_id);
+    let pending_messages: Vec<_> = shell
+        .selected_channel_id
+        .map(|id| shell.state.pending_messages(id).collect())
+        .unwrap_or_default();
+    let current_user = shell.state.current_user();
+    let mut rows = live_rows::message_rows(messages, current_user.map(|user| user.id));
+    if let Some(current_user) = current_user {
+        rows.extend(live_rows::pending_message_rows(
+            &pending_messages,
+            messages,
+            current_user,
+        ));
+    }
     let message_ids = messages.iter().map(|message| message.id).collect();
+    shell.displayed_pending_nonces = pending_messages
+        .iter()
+        .map(|pending| pending.nonce.clone())
+        .collect();
     let previous_message_ids = std::mem::replace(&mut shell.displayed_message_ids, message_ids);
     shell.messages.set_vec(rows);
     message_actions::remap_open_message_rows(shell, &previous_message_ids);

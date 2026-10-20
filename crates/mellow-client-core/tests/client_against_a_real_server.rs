@@ -6,7 +6,9 @@
 use std::time::Duration;
 
 use mellow_client_core::state::ClientState;
-use mellow_client_core::{ClientError, GatewayUpdate, InstanceAddress, RestClient, run_gateway};
+use mellow_client_core::{
+    ClientError, GatewayUpdate, InstanceAddress, RestClient, generate_message_nonce, run_gateway,
+};
 use mellow_protocol::{
     ApiErrorCode, CreateInviteRequest, EditMessageRequest, GatewayEvent, LoginRequest, Message,
     MessageHistoryQuery, RegisterRequest, SendMessageRequest, Snowflake,
@@ -257,5 +259,38 @@ async fn rest_and_gateway_keep_the_state_in_sync_until_logout() {
         .await
         .unwrap()
         .unwrap();
+    instance.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retrying_a_send_whose_answer_was_lost_keeps_one_message() {
+    let instance = RunningInstance::start().await;
+    let owner = instance.registered("owner").await;
+    let guild = owner.create_guild("Club").await.unwrap();
+    let general = guild
+        .channels
+        .iter()
+        .find(|channel| channel.name == "general")
+        .unwrap()
+        .id;
+    let mut state = ClientState::default();
+
+    let nonce = generate_message_nonce().unwrap();
+    let request = state.queue_message(general, "hello".into(), None, nonce.clone());
+    let first = owner.send_message(general, &request).await.unwrap();
+    // The answer never reached the app: the user retries.
+    state.mark_send_failed(&nonce);
+    let (_, retried) = state.retry_pending_message(&nonce).unwrap();
+    let second = owner.send_message(general, &retried).await.unwrap();
+    assert_eq!(second.id, first.id);
+    state.confirm_sent_message(&nonce, second);
+
+    let history = owner
+        .list_messages(general, &MessageHistoryQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(state.messages(general).len(), 1);
+    assert_eq!(state.pending_messages(general).count(), 0);
     instance.stop().await;
 }

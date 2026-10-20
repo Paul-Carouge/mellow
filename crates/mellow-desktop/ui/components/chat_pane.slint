@@ -1,6 +1,9 @@
 import { ListView } from "std-widgets.slint";
-import { MellowColor, MellowComponent, MellowRadius, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
+import { MellowColor, MellowComponent, MellowMotion, MellowRadius, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
 import { Avatar, IconButton } from "primitives.slint";
+
+// Where a message the signed-in user sent stands: confirmed by the server, or still in the outbox.
+export enum MessageDelivery { sent, sending, failed }
 
 export struct MessageRow {
     author: string,
@@ -17,6 +20,8 @@ export struct MessageRow {
     // The signed-in user wrote it: only then are Edit and Delete offered.
     is-own: bool,
     is-edited: bool,
+    // Sending and failed rows are the user's own, after every confirmed row; they offer no message actions.
+    delivery: MessageDelivery,
 }
 
 component HoverActionBar inherits Rectangle {
@@ -226,6 +231,17 @@ component MessageView inherits Rectangle {
     callback cancel-edit();
     // True when Shift was held: delete without confirmation.
     callback delete(bool);
+    callback retry();
+    callback discard();
+
+    // Not set on rows the server has not stored: they cannot be edited, replied to or deleted there yet.
+    property <bool> is-confirmed: message.delivery == MessageDelivery.sent;
+    // Restarts when the rows are rebuilt (set_vec recreates them), which only delays the label again.
+    property <bool> has-pending-label-delay-elapsed;
+    property <MessageDelivery> delivery: message.delivery;
+    changed delivery => { has-pending-label-delay-elapsed = false; }
+    property <color> body-color: message.delivery == MessageDelivery.sending
+        ? MellowComponent.message-pending-text : MellowComponent.message-body-text;
 
     // The content lives inside `touch`, so hovering text or links keeps the row hovered; the action
     // bar keeps it hovered too while the pointer is on its part above the row.
@@ -236,6 +252,14 @@ component MessageView inherits Rectangle {
     accessible-role: list-item;
     accessible-label: message.author + ", " + message.timestamp + ": " + message.body-plain
         + (message.is-edited ? " (edited)" : "");
+    accessible-description: message.delivery == MessageDelivery.sending ? "Sending"
+        : message.delivery == MessageDelivery.failed ? "Not sent. Retry or delete it." : "";
+
+    Timer {
+        interval: MellowMotion.delay-pending-label;
+        running: root.delivery == MessageDelivery.sending && !root.has-pending-label-delay-elapsed;
+        triggered => { root.has-pending-label-delay-elapsed = true; }
+    }
 
     if message.mentions-current-user: Rectangle {
         x: 0;
@@ -282,7 +306,7 @@ component MessageView inherits Rectangle {
             // height-for-width and wrapped messages overlap the next row.
             if !is-editing && !is-text-selection-mode: StyledText {
                 text: message.body;
-                default-color: MellowComponent.message-body-text;
+                default-color: root.body-color;
                 default-font-size: MellowType.message.font-size;
                 link-color: MellowColor.text-link;
                 link-clicked(url) => { root.link-clicked(url); }
@@ -301,9 +325,48 @@ component MessageView inherits Rectangle {
                 text: message.body-plain;
                 read-only: true;
                 wrap: word-wrap;
-                color: MellowComponent.message-body-text;
+                color: root.body-color;
                 font-size: MellowType.message.font-size;
                 selection-background-color: MellowComponent.message-selection-background;
+            }
+            if message.delivery == MessageDelivery.sending && root.has-pending-label-delay-elapsed: Text {
+                text: "Sending…";
+                color: MellowComponent.message-pending-text;
+                font-size: MellowType.message-subtext.font-size;
+                // The row's accessible description already says "Sending".
+                accessible-role: none;
+            }
+            if message.delivery == MessageDelivery.failed: HorizontalLayout {
+                alignment: start;
+                spacing: MellowSpace.xs;
+                VerticalLayout {
+                    alignment: center;
+                    Image {
+                        source: @image-url("../../icons/warning-circle.svg");
+                        colorize: MellowComponent.message-failed-status-text;
+                        width: MellowComponent.message-status-icon-size;
+                        height: self.width;
+                        accessible-role: none;
+                    }
+                }
+                Text {
+                    text: "Not sent.";
+                    color: MellowComponent.message-failed-status-text;
+                    font-size: MellowType.message-subtext.font-size;
+                    vertical-alignment: center;
+                    // The row's accessible description already says "Not sent".
+                    accessible-role: none;
+                }
+                HintLink {
+                    label: "Retry";
+                    accessible-name: "Retry sending this message";
+                    activated => { root.retry(); }
+                }
+                HintLink {
+                    label: "Delete";
+                    accessible-name: "Delete this unsent message";
+                    activated => { root.discard(); }
+                }
             }
             if is-editing: MessageEditor {
                 draft <=> root.editing-draft;
@@ -332,7 +395,7 @@ component MessageView inherits Rectangle {
     // Always instantiated: creating it on hover would destroy it under the pointer mid-click.
     // shortcut: shown on hover only; showing it on keyboard focus (DESIGN.md §5.4) needs focusable rows.
     action-bar := HoverActionBar {
-        visible: root.is-hovered;
+        visible: root.is-hovered && root.is-confirmed;
         is-own: root.message.is-own;
         x: parent.width - self.width - MellowComponent.action-bar-offset-trailing;
         // The token is negative: the bar sits above the row's top edge, as on Discord.
@@ -370,6 +433,10 @@ export component ChatPane inherits Rectangle {
     callback save-message-edit(int, string);
     callback edit-last-own-message();
     callback delete-message(int);
+    // Outbox rows: send a failed message again, or drop it locally (only from this app: a lost
+    // answer may hide a send the server did store).
+    callback retry-message(int);
+    callback discard-failed-message(int);
 
     // Typing goes straight into the reply, as on Discord.
     changed replying-to-author => {
@@ -486,7 +553,8 @@ export component ChatPane inherits Rectangle {
             for message[index] in messages: MessageView {
                 message: message;
                 is-text-selection-mode: root.is-text-selection-mode;
-                is-editing: index == root.editing-message-index;
+                // Outbox rows never show the editor, whatever index Rust sets.
+                is-editing: index == root.editing-message-index && message.delivery == MessageDelivery.sent;
                 editing-draft <=> root.editing-message-draft;
                 link-clicked(url) => { root.link-clicked(url); }
                 copy-text => { root.copy-message-text(index); }
@@ -517,6 +585,15 @@ export component ChatPane inherits Rectangle {
                     } else {
                         root.deleting-message-index = index;
                     }
+                }
+                // Both links disappear with the failed state, so focus goes back to the composer.
+                retry => {
+                    root.retry-message(index);
+                    composer.focus();
+                }
+                discard => {
+                    root.discard-failed-message(index);
+                    composer.focus();
                 }
             }
         }

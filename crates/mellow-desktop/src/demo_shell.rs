@@ -11,7 +11,7 @@ use crate::fake_messages::{FakeMessage, fake_conversation};
 use crate::fake_workspace::{
     FakeCategory, FakeServer, fake_categories, fake_role_groups, fake_servers,
 };
-use crate::generated_ui::{AppWindow, MessageRow};
+use crate::generated_ui::{AppWindow, MessageDelivery, MessageRow};
 use crate::message_markup::styled_text_from_message_body;
 use crate::{scroll_benchmark, shell_rows};
 
@@ -45,6 +45,7 @@ fn message_row(message: &FakeMessage) -> MessageRow {
         mentions_current_user: message.mentions_current_user,
         is_own: message.author == CURRENT_USER_NAME,
         is_edited: false,
+        delivery: MessageDelivery::Sent,
     }
 }
 
@@ -202,6 +203,7 @@ fn connect_message_callbacks(window: &AppWindow, state: &Rc<RefCell<ShellState>>
             // shortcut: the demo shows Edit and Delete on its own messages but does not apply them.
             is_own: true,
             is_edited: false,
+            delivery: MessageDelivery::Sent,
         });
         window.set_latest_announcement(format!("{CURRENT_USER_NAME}: {text}").into());
         window.invoke_scroll_to_latest_message();

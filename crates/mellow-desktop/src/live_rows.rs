@@ -3,11 +3,13 @@
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, Local, TimeZone};
-use mellow_client_core::state::ClientState;
-use mellow_protocol::{ChannelKind, Guild, Member, Message, Snowflake};
+use mellow_client_core::state::{ClientState, PendingMessage, PendingMessageStatus};
+use mellow_protocol::{ChannelKind, CurrentUser, Guild, Member, Message, Snowflake};
 use slint::SharedString;
 
-use crate::generated_ui::{ChannelListRow, MemberListRow, MessageRow, PresenceStatus, ServerItem};
+use crate::generated_ui::{
+    ChannelListRow, MemberListRow, MessageDelivery, MessageRow, PresenceStatus, ServerItem,
+};
 use crate::message_markup::styled_text_from_message_body;
 use crate::shell_rows::{first_letter, saturating_int, server_initials};
 
@@ -199,6 +201,59 @@ where
                 mentions_current_user: false,
                 is_own: Some(message.author.id) == current_user_id,
                 is_edited: message.edited_at_unix_milliseconds.is_some(),
+                delivery: MessageDelivery::Sent,
+            }
+        })
+        .collect()
+}
+
+/// Rows of our unconfirmed messages, shown after `confirmed` (the channel's messages) and
+/// timestamped now, since the server has not given them an id yet.
+pub fn pending_message_rows(
+    pending_messages: &[&PendingMessage],
+    confirmed: &[Message],
+    current_user: &CurrentUser,
+) -> Vec<MessageRow> {
+    pending_message_rows_at(pending_messages, confirmed, current_user, &Local::now())
+}
+
+fn pending_message_rows_at<Zone: TimeZone>(
+    pending_messages: &[&PendingMessage],
+    confirmed: &[Message],
+    current_user: &CurrentUser,
+    now: &DateTime<Zone>,
+) -> Vec<MessageRow>
+where
+    Zone::Offset: std::fmt::Display,
+{
+    let now_unix_milliseconds = u64::try_from(now.timestamp_millis()).unwrap_or_default();
+    let mut continues_own_group = confirmed.last().is_some_and(|last| {
+        last.author.id == current_user.id
+            && now_unix_milliseconds.saturating_sub(last.id.unix_milliseconds())
+                <= AUTHOR_GROUP_MAXIMUM_GAP_MILLISECONDS
+    });
+    pending_messages
+        .iter()
+        .map(|pending| {
+            let starts_author_group = pending.reply_to_id.is_some() || !continues_own_group;
+            continues_own_group = true;
+            MessageRow {
+                author: current_user.display_name.as_str().into(),
+                author_initial: first_letter(&current_user.display_name).into(),
+                timestamp: timestamp_label(now_unix_milliseconds, now).into(),
+                short_time: short_time(now_unix_milliseconds, &now.timezone()).into(),
+                body: styled_text_from_message_body(&pending.content),
+                body_plain: pending.content.as_str().into(),
+                starts_author_group,
+                reply_preview: reply_preview(pending.reply_to_id, confirmed).into(),
+                mentions_current_user: false,
+                // Not stored yet: it can be neither edited nor deleted on the server.
+                is_own: false,
+                is_edited: false,
+                delivery: match pending.status {
+                    PendingMessageStatus::Sending => MessageDelivery::Sending,
+                    PendingMessageStatus::Failed => MessageDelivery::Failed,
+                },
             }
         })
         .collect()
@@ -375,5 +430,63 @@ mod tests {
         assert_eq!(own, [false, false, false, true]);
         let edited: Vec<_> = rows.iter().map(|row| row.is_edited).collect();
         assert_eq!(edited, [false, false, false, true]);
+    }
+
+    #[test]
+    fn pending_messages_follow_our_group_and_show_their_delivery() {
+        let me = CurrentUser {
+            id: Snowflake::from_raw(1),
+            username: "me".into(),
+            display_name: "Me".into(),
+            email: "me@example.org".into(),
+            is_instance_administrator: false,
+        };
+        let now = Utc.with_ymd_and_hms(2026, 10, 19, 10, 0, 0).unwrap();
+        let minutes_ago = |minutes: i64| {
+            let sent_at = (now - chrono::Duration::minutes(minutes)).timestamp_millis();
+            let since_epoch =
+                u64::try_from(sent_at).unwrap() - mellow_protocol::MELLOW_EPOCH_UNIX_MILLISECONDS;
+            Snowflake::from_parts(since_epoch, 0).unwrap()
+        };
+        let confirmed = |id, author_id| Message {
+            id,
+            channel_id: Snowflake::from_raw(11),
+            author: PublicUser {
+                id: Snowflake::from_raw(author_id),
+                username: "someone".into(),
+                display_name: "Someone".into(),
+            },
+            content: "earlier".into(),
+            reply_to_id: None,
+            edited_at_unix_milliseconds: None,
+            nonce: None,
+        };
+        let pending = |nonce: &str, reply_to_id, status| PendingMessage {
+            nonce: nonce.into(),
+            channel_id: Snowflake::from_raw(11),
+            content: "unsent".into(),
+            reply_to_id,
+            status,
+        };
+        let sending = pending("a", None, PendingMessageStatus::Sending);
+        let failed_reply = pending("b", Some(minutes_ago(1)), PendingMessageStatus::Failed);
+        let ours_a_minute_ago = vec![confirmed(minutes_ago(1), 1)];
+        let rows =
+            pending_message_rows_at(&[&sending, &failed_reply], &ours_a_minute_ago, &me, &now);
+        let groups: Vec<_> = rows.iter().map(|row| row.starts_author_group).collect();
+        assert_eq!(groups, [false, true]);
+        assert_eq!(rows[1].reply_preview, "@Someone earlier");
+        assert_eq!(
+            rows.iter().map(|row| row.delivery).collect::<Vec<_>>(),
+            [MessageDelivery::Sending, MessageDelivery::Failed]
+        );
+        assert!(rows.iter().all(|row| !row.is_own && row.author == "Me"));
+
+        let theirs = vec![confirmed(minutes_ago(1), 2)];
+        let ours_long_ago = vec![confirmed(minutes_ago(30), 1)];
+        for confirmed in [theirs, ours_long_ago, Vec::new()] {
+            let rows = pending_message_rows_at(&[&sending], &confirmed, &me, &now);
+            assert!(rows[0].starts_author_group);
+        }
     }
 }

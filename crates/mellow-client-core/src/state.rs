@@ -4,7 +4,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mellow_protocol::{
-    Channel, CurrentUser, GatewayEvent, Guild, Member, Message, PresenceStatus, Ready, Snowflake,
+    Channel, CurrentUser, GatewayEvent, Guild, Member, Message, PresenceStatus, Ready,
+    SendMessageRequest, Snowflake,
 };
 
 /// Messages kept in memory per channel; older ones are fetched again when scrolled to.
@@ -31,6 +32,35 @@ pub enum StateChange {
     Nothing,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingMessageStatus {
+    Sending,
+    /// Kept with its text until the user retries or discards it.
+    Failed,
+}
+
+/// A message we sent that the server has not confirmed yet (the outbox, ARCHITECTURE.md §6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingMessage {
+    /// Sent with every attempt, so a retry of a send that did reach the server returns the
+    /// stored message instead of a duplicate.
+    pub nonce: String,
+    pub channel_id: Snowflake,
+    pub content: String,
+    pub reply_to_id: Option<Snowflake>,
+    pub status: PendingMessageStatus,
+}
+
+impl PendingMessage {
+    fn send_request(&self) -> SendMessageRequest {
+        SendMessageRequest {
+            content: self.content.clone(),
+            reply_to_id: self.reply_to_id,
+            nonce: Some(self.nonce.clone()),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ClientState {
     current_user: Option<CurrentUser>,
@@ -43,6 +73,8 @@ pub struct ClientState {
     online_user_ids: HashSet<Snowflake>,
     /// (channel, user) → when the indicator expires.
     typing_until: BTreeMap<(Snowflake, Snowflake), u64>,
+    /// In send order. Not cleared by `Ready`: a reconnect must not lose unsent text.
+    pending_messages: Vec<PendingMessage>,
 }
 
 impl ClientState {
@@ -91,6 +123,13 @@ impl ClientState {
         }
     }
 
+    /// Our unconfirmed messages in `channel_id`, in send order (shown after the confirmed ones).
+    pub fn pending_messages(&self, channel_id: Snowflake) -> impl Iterator<Item = &PendingMessage> {
+        self.pending_messages
+            .iter()
+            .filter(move |pending| pending.channel_id == channel_id)
+    }
+
     /// Users typing in `channel_id` at `now_unix_milliseconds`, excluding the signed-in user.
     #[must_use]
     pub fn typing_user_ids(
@@ -110,6 +149,7 @@ impl ClientState {
 
     /// Replaces everything with a fresh `Ready` (identify after a lost session).
     pub fn apply_ready(&mut self, ready: Ready) -> StateChange {
+        let mut pending_messages = std::mem::take(&mut self.pending_messages);
         *self = Self {
             current_user: Some(ready.user),
             guilds: ready.guilds,
@@ -121,6 +161,16 @@ impl ClientState {
             online_user_ids: ready.online_user_ids.into_iter().collect(),
             ..Self::default()
         };
+        // Channels deleted while we were away never send `CHANNEL_DELETE`.
+        pending_messages.retain(|pending| {
+            self.guilds.iter().any(|guild| {
+                guild
+                    .channels
+                    .iter()
+                    .any(|channel| channel.id == pending.channel_id)
+            })
+        });
+        self.pending_messages = pending_messages;
         StateChange::Guilds
     }
 
@@ -153,6 +203,8 @@ impl ClientState {
                     }
                 }
                 self.messages_by_channel.remove(&id);
+                self.pending_messages
+                    .retain(|pending| pending.channel_id != id);
                 StateChange::Guilds
             }
             GatewayEvent::GuildCreate(guild) => {
@@ -171,6 +223,8 @@ impl ClientState {
                 if let Some(guild) = self.guild(id) {
                     let channel_ids: Vec<Snowflake> =
                         guild.channels.iter().map(|channel| channel.id).collect();
+                    self.pending_messages
+                        .retain(|pending| !channel_ids.contains(&pending.channel_id));
                     for channel_id in channel_ids {
                         self.messages_by_channel.remove(&channel_id);
                     }
@@ -274,6 +328,95 @@ impl ClientState {
         merged.drain(..excess);
         *messages = merged;
         StateChange::Messages { channel_id }
+    }
+
+    /// Adds a message to the outbox and returns the request that sends it. `nonce` must be unique
+    /// for this user and channel, forever: the server deduplicates on it (`generate_message_nonce`).
+    pub fn queue_message(
+        &mut self,
+        channel_id: Snowflake,
+        content: String,
+        reply_to_id: Option<Snowflake>,
+        nonce: String,
+    ) -> SendMessageRequest {
+        let pending = PendingMessage {
+            nonce,
+            channel_id,
+            content,
+            reply_to_id,
+            status: PendingMessageStatus::Sending,
+        };
+        let request = pending.send_request();
+        self.pending_messages.push(pending);
+        request
+    }
+
+    /// The server stored the message sent with `nonce`: it replaces its pending copy. `nonce` is
+    /// the one we sent, not the server's echo, which an instance could forge.
+    /// The message lands in the channel it was sent to, whatever channel the answer names.
+    pub fn confirm_sent_message(&mut self, nonce: &str, message: Message) -> StateChange {
+        let Some(index) = self
+            .pending_messages
+            .iter()
+            .position(|pending| pending.nonce == nonce)
+        else {
+            return StateChange::Nothing;
+        };
+        let channel_id = self.pending_messages.remove(index).channel_id;
+        self.insert_messages(channel_id, vec![message])
+    }
+
+    pub fn mark_send_failed(&mut self, nonce: &str) -> StateChange {
+        match self.pending_message_mut(nonce) {
+            Some(pending) => {
+                pending.status = PendingMessageStatus::Failed;
+                StateChange::Messages {
+                    channel_id: pending.channel_id,
+                }
+            }
+            None => StateChange::Nothing,
+        }
+    }
+
+    /// Only a failed message is sent again, so a double click never sends twice at once. Returns
+    /// the channel it was first sent to with the request: a retry never follows the selection.
+    pub fn retry_pending_message(
+        &mut self,
+        nonce: &str,
+    ) -> Option<(Snowflake, SendMessageRequest)> {
+        let pending = self
+            .pending_message_mut(nonce)
+            .filter(|pending| pending.status == PendingMessageStatus::Failed)?;
+        pending.status = PendingMessageStatus::Sending;
+        Some((pending.channel_id, pending.send_request()))
+    }
+
+    /// The instance refused to store it (`ClientError::refuses_message_for_good`): it leaves the
+    /// outbox, and its text is returned so the user can fix it.
+    pub fn remove_refused_message(&mut self, nonce: &str) -> Option<PendingMessage> {
+        let index = self
+            .pending_messages
+            .iter()
+            .position(|pending| pending.nonce == nonce)?;
+        Some(self.pending_messages.remove(index))
+    }
+
+    /// Only a failed message is discarded: one still sending may already be stored. A failed one
+    /// may be too, when only the answer was lost: discarding then hides it here, not on the server.
+    pub fn discard_failed_message(&mut self, nonce: &str) -> StateChange {
+        let Some(index) = self.pending_messages.iter().position(|pending| {
+            pending.nonce == nonce && pending.status == PendingMessageStatus::Failed
+        }) else {
+            return StateChange::Nothing;
+        };
+        let channel_id = self.pending_messages.remove(index).channel_id;
+        StateChange::Messages { channel_id }
+    }
+
+    fn pending_message_mut(&mut self, nonce: &str) -> Option<&mut PendingMessage> {
+        self.pending_messages
+            .iter_mut()
+            .find(|pending| pending.nonce == nonce)
     }
 
     pub fn set_members(&mut self, guild_id: Snowflake, members: Vec<Member>) -> StateChange {
@@ -570,5 +713,101 @@ mod tests {
             Vec::<Snowflake>::new(),
             "sending clears typing"
         );
+    }
+
+    #[test]
+    fn outbox_keeps_unsent_text_until_confirmed_retried_or_discarded() {
+        let mut state = ready_state();
+        let request = state.queue_message(GENERAL, "hi".into(), None, "n1".into());
+        assert_eq!(request.nonce.as_deref(), Some("n1"));
+        state.queue_message(GENERAL, "again".into(), None, "n2".into());
+        // A sending message can neither be retried (double send) nor discarded (maybe stored).
+        assert_eq!(state.retry_pending_message("n1"), None);
+        assert_eq!(state.discard_failed_message("n1"), StateChange::Nothing);
+
+        state.mark_send_failed("n1");
+        // A reconnect keeps the outbox.
+        state.apply_ready(Ready {
+            session_id: "s2".into(),
+            user: state.current_user().unwrap().clone(),
+            guilds: state.guilds().to_vec(),
+            read_states: Vec::new(),
+            online_user_ids: Vec::new(),
+        });
+        let statuses: Vec<(&str, PendingMessageStatus)> = state
+            .pending_messages(GENERAL)
+            .map(|pending| (pending.nonce.as_str(), pending.status))
+            .collect();
+        assert_eq!(
+            statuses,
+            [
+                ("n1", PendingMessageStatus::Failed),
+                ("n2", PendingMessageStatus::Sending)
+            ]
+        );
+
+        let (channel_id, retried) = state.retry_pending_message("n1").unwrap();
+        assert_eq!(channel_id, GENERAL);
+        assert_eq!(
+            (retried.content.as_str(), retried.nonce.as_deref()),
+            ("hi", Some("n1"))
+        );
+        assert_eq!(state.retry_pending_message("n1"), None);
+
+        // The answer lands in the channel we sent to, even if it names another one.
+        let mut answer = message(50, ME);
+        answer.channel_id = Snowflake::from_raw(999);
+        state.confirm_sent_message("n1", answer);
+        assert_eq!(state.messages(GENERAL).last().unwrap().id.raw(), 50);
+        assert_eq!(state.pending_messages(GENERAL).count(), 1);
+        assert_eq!(
+            state.confirm_sent_message("unknown", message(51, ME)),
+            StateChange::Nothing
+        );
+
+        state.mark_send_failed("n2");
+        state.discard_failed_message("n2");
+        assert_eq!(state.pending_messages(GENERAL).count(), 0);
+    }
+
+    #[test]
+    fn outbox_forgets_messages_of_deleted_channels_and_guilds() {
+        let mut state = ready_state();
+        state.queue_message(GENERAL, "a".into(), None, "n1".into());
+        state.apply_event(
+            GatewayEvent::ChannelDelete {
+                guild_id: GUILD,
+                id: GENERAL,
+            },
+            NOW,
+        );
+        assert_eq!(state.pending_messages(GENERAL).count(), 0);
+
+        let mut state = ready_state();
+        state.queue_message(GENERAL, "a".into(), None, "n1".into());
+        state.apply_event(GatewayEvent::GuildDelete { id: GUILD }, NOW);
+        assert_eq!(state.pending_messages(GENERAL).count(), 0);
+
+        // Left or deleted while disconnected: the next `Ready` no longer lists the channel.
+        let mut state = ready_state();
+        state.queue_message(GENERAL, "a".into(), None, "n1".into());
+        state.apply_ready(Ready {
+            session_id: "s2".into(),
+            user: state.current_user().unwrap().clone(),
+            guilds: Vec::new(),
+            read_states: Vec::new(),
+            online_user_ids: Vec::new(),
+        });
+        assert_eq!(state.pending_messages(GENERAL).count(), 0);
+    }
+
+    #[test]
+    fn a_refused_message_leaves_the_outbox_with_its_text() {
+        let mut state = ready_state();
+        state.queue_message(GENERAL, "too long".into(), None, "n1".into());
+        let refused = state.remove_refused_message("n1").unwrap();
+        assert_eq!(refused.content, "too long");
+        assert_eq!(state.pending_messages(GENERAL).count(), 0);
+        assert_eq!(state.remove_refused_message("n1"), None);
     }
 }
