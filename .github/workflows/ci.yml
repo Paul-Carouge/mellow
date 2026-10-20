@@ -58,7 +58,8 @@ jobs:
         run: |
           # shellcheck disable=SC2086 # the package list is split into words on purpose
           sudo apt-get update && sudo apt-get install --yes --no-install-recommends ${LINUX_DESKTOP_PACKAGES}
-      - run: cargo test --workspace --locked
+      # Every crate's tests run even when one fails, so one platform gap hides nothing else.
+      - run: cargo test --workspace --locked --no-fail-fast
 
   acme:
     name: ACME against Pebble

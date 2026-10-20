@@ -1,5 +1,7 @@
 //! The client core against a real in-process `mellow-server`.
 
+// The server refuses Windows until its master key file can be protected there (ADR-0006).
+#![cfg(not(windows))]
 // Test helpers outside `#[test]` functions: failing loudly is the point.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
