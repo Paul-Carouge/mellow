@@ -89,6 +89,38 @@ pub struct Channel {
     /// The category this channel sits in; always `None` for categories.
     pub parent_id: Option<Snowflake>,
     pub position: u32,
+    /// Applied on top of guild permissions in this channel only (ADR-0007 step 4).
+    pub permission_overwrites: Vec<PermissionOverwrite>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverwriteKind {
+    /// `id` is a role of the guild; the guild's id targets `@everyone`.
+    Role,
+    /// `id` is a member's user id.
+    Member,
+}
+
+/// Permissions `allow`ed and `deny`ed to one role or member in one channel; never both for a bit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionOverwrite {
+    pub id: Snowflake,
+    pub kind: OverwriteKind,
+    pub allow: Permissions,
+    pub deny: Permissions,
+}
+
+/// Body of `PUT /api/v1/channels/{channel_id}/permissions/{target_id}`: creates or replaces the
+/// overwrite of that role or member.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetPermissionOverwriteRequest {
+    pub kind: OverwriteKind,
+    #[serde(default)]
+    pub allow: Permissions,
+    #[serde(default)]
+    pub deny: Permissions,
 }
 
 /// Body of `POST /api/v1/guilds/{guild_id}/channels`.
@@ -159,6 +191,7 @@ mod tests {
             topic: String::new(),
             parent_id: None,
             position: 1,
+            permission_overwrites: Vec::new(),
         };
         let json = serde_json::to_value(&channel).unwrap();
         assert_eq!(json["id"], "42");

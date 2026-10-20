@@ -17,15 +17,18 @@ pub use gateway::{
 };
 pub use guilds::{
     Channel, ChannelKind, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
-    CreateRoleRequest, Guild, GuildSummary, Invite, Member, PublicUser, ReorderRolesRequest, Role,
-    UpdateChannelRequest, UpdateRoleRequest,
+    CreateRoleRequest, Guild, GuildSummary, Invite, Member, OverwriteKind, PermissionOverwrite,
+    PublicUser, ReorderRolesRequest, Role, SetPermissionOverwriteRequest, UpdateChannelRequest,
+    UpdateRoleRequest,
 };
 pub use health::{HealthResponse, HealthStatus};
 pub use messages::{
     AcknowledgeRequest, EditMessageRequest, Message, MessageHistoryQuery, ReadState,
     SendMessageRequest,
 };
-pub use permissions::{Permissions, compute_guild_permissions, highest_role_position};
+pub use permissions::{
+    Permissions, compute_channel_permissions, compute_guild_permissions, highest_role_position,
+};
 pub use snowflake::{
     MAXIMUM_SEQUENCE, MAXIMUM_TIMESTAMP_MILLISECONDS_SINCE_EPOCH, MELLOW_EPOCH_UNIX_MILLISECONDS,
     Snowflake, SnowflakeError,

@@ -282,6 +282,41 @@ impl EventHub {
         self.state().publish_to_guilds([guild_id], event);
     }
 
+    /// Delivers `event`, serialized once, to the sessions of `guild_id` whose user is in
+    /// `user_ids`: the members who can view a restricted channel (ADR-0015).
+    pub(crate) fn publish_to_guild_members(
+        &self,
+        guild_id: Snowflake,
+        user_ids: &HashSet<Snowflake>,
+        event: &GatewayEvent,
+    ) {
+        let Some(event) = published(event) else {
+            return;
+        };
+        let mut state = self.state();
+        let keys: Vec<SessionKey> = state
+            .keys_of_guild(guild_id)
+            .into_iter()
+            .filter(|key| {
+                state
+                    .sessions
+                    .get(key)
+                    .is_some_and(|entry| user_ids.contains(&entry.user_id))
+            })
+            .collect();
+        state.send_to(keys, &event);
+    }
+
+    /// Users with at least one live session subscribed to `guild_id`.
+    pub(crate) fn online_user_ids_of_guild(&self, guild_id: Snowflake) -> HashSet<Snowflake> {
+        let state = self.state();
+        state
+            .keys_of_guild(guild_id)
+            .into_iter()
+            .filter_map(|key| state.sessions.get(&key).map(|entry| entry.user_id))
+            .collect()
+    }
+
     pub(crate) fn publish_to_user(&self, user_id: Snowflake, event: &GatewayEvent) {
         let Some(event) = published(event) else {
             return;
@@ -342,6 +377,31 @@ mod tests {
         hub.unsubscribe_user_from_guild(BOB, GUILD);
         hub.publish_to_guild(GUILD, &typing());
         assert_eq!(drain(&mut bob_events), Vec::<String>::new());
+    }
+
+    #[test]
+    fn restricted_events_reach_only_the_listed_members_of_the_guild() {
+        let hub = EventHub::default();
+        let (alice_key, mut alice_events) = hub.register_session(ALICE, TOKEN_A, NO_CAP).unwrap();
+        hub.activate_session(alice_key, &[GUILD]);
+        let (bob_key, mut bob_events) = hub.register_session(BOB, TOKEN_B, NO_CAP).unwrap();
+        hub.activate_session(bob_key, &[GUILD]);
+        drain(&mut alice_events);
+        drain(&mut bob_events);
+        assert_eq!(
+            hub.online_user_ids_of_guild(GUILD),
+            HashSet::from([ALICE, BOB])
+        );
+
+        hub.publish_to_guild_members(GUILD, &HashSet::from([ALICE]), &typing());
+        assert_eq!(drain(&mut alice_events).len(), 1);
+        assert_eq!(drain(&mut bob_events), Vec::<String>::new());
+        hub.publish_to_guild_members(Snowflake::from_raw(99), &HashSet::from([ALICE]), &typing());
+        assert_eq!(
+            drain(&mut alice_events),
+            Vec::<String>::new(),
+            "only sessions subscribed to that guild"
+        );
     }
 
     #[test]

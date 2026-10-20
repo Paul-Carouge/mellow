@@ -2,7 +2,8 @@
 //! with clients through `mellow-protocol` (ADR-0014).
 
 use mellow_protocol::{
-    Permissions, Role, Snowflake, compute_guild_permissions, highest_role_position,
+    PermissionOverwrite, Permissions, Role, Snowflake, compute_channel_permissions,
+    compute_guild_permissions, highest_role_position,
 };
 
 /// A member's permissions in a guild: the owner and administrators get everything; everyone else
@@ -15,6 +16,45 @@ pub fn guild_permissions(
     member_roles: &[Role],
 ) -> Permissions {
     compute_guild_permissions(member_id, owner_id, member_roles)
+}
+
+/// A member's permissions in one channel: their guild permissions, then the channel's
+/// overwrites (ADR-0007 step 4). `member_roles` includes `@everyone`, whose id is `guild_id`.
+#[must_use]
+pub fn channel_permissions(
+    member_id: Snowflake,
+    owner_id: Snowflake,
+    guild_id: Snowflake,
+    member_roles: &[Role],
+    overwrites: &[PermissionOverwrite],
+) -> Permissions {
+    let member_role_ids: Vec<Snowflake> = member_roles
+        .iter()
+        .map(|role| role.id)
+        .filter(|role_id| *role_id != guild_id)
+        .collect();
+    compute_channel_permissions(
+        guild_permissions(member_id, owner_id, member_roles),
+        guild_id,
+        member_id,
+        &member_role_ids,
+        overwrites,
+    )
+}
+
+/// Whether every member of the guild can view a channel, without looking at members: everyone's
+/// permissions are a superset of `@everyone`'s, and overwrites can only take `VIEW_CHANNEL` away
+/// through a deny (ADR-0015 fast path).
+#[must_use]
+pub fn is_visible_to_every_member(
+    everyone_permissions: Permissions,
+    overwrites: &[PermissionOverwrite],
+) -> bool {
+    everyone_permissions.contains(Permissions::ADMINISTRATOR)
+        || (everyone_permissions.contains(Permissions::VIEW_CHANNEL)
+            && !overwrites
+                .iter()
+                .any(|overwrite| overwrite.deny.contains(Permissions::VIEW_CHANNEL)))
 }
 
 /// Someone acting on roles: what the role hierarchy lets them touch.
@@ -47,6 +87,14 @@ impl RoleManager {
             && (self.is_owner
                 || ((role.id == everyone_role_id || role.position < self.highest_role_position)
                     && self.permissions.contains(role.permissions)))
+    }
+
+    /// Who may set a channel overwrite for `role`: the owner for any role, anyone else for
+    /// `@everyone` and roles strictly below their highest. The permission bits are checked
+    /// against the channel separately.
+    #[must_use]
+    pub fn can_target_role_in_overwrites(&self, role: &Role, everyone_role_id: Snowflake) -> bool {
+        self.is_owner || role.id == everyone_role_id || role.position < self.highest_role_position
     }
 
     /// `named_roles_by_position` holds the roles without `@everyone`, at positions 1, 2, …, and `new_order` the same ids in their
@@ -187,6 +235,62 @@ mod tests {
             &order([&admin, &moderator, &other_low, &banners, &low]),
             GUILD
         ));
+    }
+
+    #[test]
+    fn channels_are_visible_to_every_member_only_without_a_view_deny() {
+        use mellow_protocol::OverwriteKind;
+        let deny_view = |id: u64| PermissionOverwrite {
+            id: Snowflake::from_raw(id),
+            kind: OverwriteKind::Member,
+            allow: Permissions::empty(),
+            deny: Permissions::VIEW_CHANNEL,
+        };
+        let allow_send = PermissionOverwrite {
+            deny: Permissions::empty(),
+            allow: Permissions::SEND_MESSAGES,
+            ..deny_view(5)
+        };
+        assert!(is_visible_to_every_member(
+            Permissions::DEFAULT_EVERYONE,
+            &[]
+        ));
+        assert!(is_visible_to_every_member(
+            Permissions::DEFAULT_EVERYONE,
+            &[allow_send]
+        ));
+        assert!(!is_visible_to_every_member(
+            Permissions::DEFAULT_EVERYONE,
+            &[deny_view(5)]
+        ));
+        assert!(!is_visible_to_every_member(Permissions::SEND_MESSAGES, &[]));
+        assert!(is_visible_to_every_member(
+            Permissions::ADMINISTRATOR,
+            &[deny_view(5)]
+        ));
+
+        let member_roles = [everyone()];
+        assert!(
+            !channel_permissions(
+                MEMBER,
+                OWNER,
+                GUILD,
+                &member_roles,
+                &[deny_view(MEMBER.raw())]
+            )
+            .contains(Permissions::VIEW_CHANNEL)
+        );
+        assert!(
+            channel_permissions(
+                OWNER,
+                OWNER,
+                GUILD,
+                &member_roles,
+                &[deny_view(OWNER.raw())]
+            )
+            .contains(Permissions::VIEW_CHANNEL),
+            "the owner sees every channel"
+        );
     }
 
     #[test]

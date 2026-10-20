@@ -1,24 +1,27 @@
 //! Guild, channel, role, invite and membership use cases. Every action checks permissions through
 //! `domain::permissions` (ADR-0007).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use mellow_protocol::{
     Channel, ChannelKind, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
-    CreateRoleRequest, GatewayEvent, Guild, GuildSummary, Invite, Member, Permissions,
-    PresenceStatus, PublicUser, ReorderRolesRequest, Role, Snowflake, UpdateChannelRequest,
-    UpdateRoleRequest,
+    CreateRoleRequest, GatewayEvent, Guild, GuildSummary, Invite, Member, OverwriteKind,
+    PermissionOverwrite, Permissions, PresenceStatus, PublicUser, ReorderRolesRequest, Role,
+    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateRoleRequest,
 };
 use sqlx::SqlitePool;
 
 use crate::domain::guild_rules::{
     GuildRuleViolation, MAXIMUM_ACTIVE_INVITES_PER_GUILD, MAXIMUM_CHANNELS_PER_GUILD,
-    MAXIMUM_MEMBERS_LISTED, MAXIMUM_OWNED_GUILDS_PER_USER, MAXIMUM_ROLES_PER_GUILD,
-    generate_invite_code, normalize_category_name, normalize_guild_name, normalize_role_name,
-    normalize_text_channel_name, normalize_topic, validate_invite_limits,
+    MAXIMUM_MEMBERS_LISTED, MAXIMUM_OVERWRITES_PER_CHANNEL, MAXIMUM_OWNED_GUILDS_PER_USER,
+    MAXIMUM_ROLES_PER_GUILD, generate_invite_code, normalize_category_name, normalize_guild_name,
+    normalize_role_name, normalize_text_channel_name, normalize_topic, validate_invite_limits,
     validate_known_permissions, validate_role_color, validate_role_order,
 };
-use crate::domain::permissions::{RoleManager, guild_permissions};
+use crate::domain::permissions::{
+    RoleManager, channel_permissions, guild_permissions, is_visible_to_every_member,
+};
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::events::EventHub;
 use crate::storage::guilds::{
@@ -101,7 +104,20 @@ fn channel_from_stored(channel: StoredChannel) -> Channel {
         topic: channel.topic,
         parent_id: channel.parent_id,
         position: channel.position,
+        permission_overwrites: channel.permission_overwrites,
     }
+}
+
+/// Who receives events about a channel (ADR-0015).
+enum ChannelAudience {
+    EveryMember,
+    Members(HashSet<Snowflake>),
+}
+
+/// Which online members need a fresh guild snapshot after a permission change (ADR-0015).
+enum AffectedMembers {
+    Everyone,
+    One(Snowflake),
 }
 
 #[derive(Debug)]
@@ -166,6 +182,7 @@ impl Guilds {
                 topic: String::new(),
                 parent_id: None,
                 position: 0,
+                permission_overwrites: Vec::new(),
             },
             StoredChannel {
                 id: self.ids.next_id(now_unix_milliseconds)?,
@@ -175,6 +192,7 @@ impl Guilds {
                 topic: String::new(),
                 parent_id: Some(category_id),
                 position: 1,
+                permission_overwrites: Vec::new(),
             },
         ];
         guild_storage::insert_guild(
@@ -219,9 +237,20 @@ impl Guilds {
     ) -> Result<Guild, GuildError> {
         let (membership, my_permissions) =
             self.membership_and_permissions(guild_id, user_id).await?;
+        // Channels the member cannot view are left out entirely (ADR-0015).
         let channels = guild_storage::list_guild_channels(&self.pool, guild_id)
             .await?
             .into_iter()
+            .filter(|channel| {
+                channel_permissions(
+                    user_id,
+                    membership.owner_id,
+                    guild_id,
+                    &membership.member_roles,
+                    &channel.permission_overwrites,
+                )
+                .contains(Permissions::VIEW_CHANNEL)
+            })
             .map(channel_from_stored)
             .collect();
         Ok(Guild {
@@ -251,7 +280,15 @@ impl Guilds {
         };
         let topic = normalize_topic(&request.topic)?;
         if let Some(parent_id) = request.parent_id {
-            let parent = guild_storage::find_guild_channel(&self.pool, parent_id).await?;
+            // A category the creator cannot view is answered like a missing one.
+            let parent = match self
+                .channel_and_member_permissions(user_id, parent_id)
+                .await
+            {
+                Ok((parent, _)) => Some(parent),
+                Err(GuildError::NotFound) => None,
+                Err(error) => return Err(error),
+            };
             let is_category_of_same_guild = parent.is_some_and(|parent| {
                 parent.guild_id == guild_id && parent.kind == ChannelKind::Category
             });
@@ -269,18 +306,22 @@ impl Guilds {
                 topic,
                 parent_id: request.parent_id,
                 position: 0,
+                permission_overwrites: Vec::new(),
             },
             MAXIMUM_CHANNELS_PER_GUILD,
         )
         .await
         .map_err(limit_reached("a guild has at most 500 channels"))?;
-        let channel = channel_from_stored(channel);
-        self.events
-            .publish_to_guild(guild_id, &GatewayEvent::ChannelCreate(channel.clone()));
-        Ok(channel)
+        self.publish_to_channel_viewers(
+            &channel,
+            &GatewayEvent::ChannelCreate(channel_from_stored(channel.clone())),
+        )
+        .await?;
+        Ok(channel_from_stored(channel))
     }
 
-    /// The guild channel and `user_id`'s permissions in its guild, or `NotFound` for non-members.
+    /// The guild channel and `user_id`'s permissions in it (overwrites applied), or `NotFound`
+    /// for non-members and for members who cannot view it, so hidden channels stay hidden.
     pub(crate) async fn channel_and_member_permissions(
         &self,
         user_id: Snowflake,
@@ -289,10 +330,122 @@ impl Guilds {
         let channel = guild_storage::find_guild_channel(&self.pool, channel_id)
             .await?
             .ok_or(GuildError::NotFound)?;
-        let (_, permissions) = self
-            .membership_and_permissions(channel.guild_id, user_id)
-            .await?;
+        let membership = guild_storage::find_membership(&self.pool, channel.guild_id, user_id)
+            .await?
+            .ok_or(GuildError::NotFound)?;
+        let permissions = channel_permissions(
+            user_id,
+            membership.owner_id,
+            channel.guild_id,
+            &membership.member_roles,
+            &channel.permission_overwrites,
+        );
+        if !permissions.contains(Permissions::VIEW_CHANNEL) {
+            return Err(GuildError::NotFound);
+        }
         Ok((channel, permissions))
+    }
+
+    /// The members who can view `channel`, or `EveryMember` without looking at members when no
+    /// one can be hidden from it (ADR-0015).
+    async fn channel_audience(
+        &self,
+        channel: &StoredChannel,
+    ) -> Result<ChannelAudience, GuildError> {
+        let guild_id = channel.guild_id;
+        let roles = guild_storage::list_roles(&self.pool, guild_id).await?;
+        let everyone_permissions = roles
+            .iter()
+            .find(|role| role.id == guild_id)
+            .map_or(Permissions::empty(), |everyone| everyone.permissions);
+        if is_visible_to_every_member(everyone_permissions, &channel.permission_overwrites) {
+            return Ok(ChannelAudience::EveryMember);
+        }
+        // shortcut: one query per event of a restricted channel; cache per guild if a load test shows the need.
+        let owner_id = guild_storage::find_guild_owner_id(&self.pool, guild_id)
+            .await?
+            .ok_or(GuildError::NotFound)?;
+        let viewers = guild_storage::all_member_role_ids(&self.pool, guild_id)
+            .await?
+            .into_iter()
+            .filter(|(member_id, role_ids)| {
+                let member_roles: Vec<Role> = roles
+                    .iter()
+                    .filter(|role| role.id == guild_id || role_ids.contains(&role.id))
+                    .cloned()
+                    .collect();
+                channel_permissions(
+                    *member_id,
+                    owner_id,
+                    guild_id,
+                    &member_roles,
+                    &channel.permission_overwrites,
+                )
+                .contains(Permissions::VIEW_CHANNEL)
+            })
+            .map(|(member_id, _)| member_id)
+            .collect();
+        Ok(ChannelAudience::Members(viewers))
+    }
+
+    /// Publishes an event about `channel` to the members who can view it only.
+    pub(crate) async fn publish_to_channel_viewers(
+        &self,
+        channel: &StoredChannel,
+        event: &GatewayEvent,
+    ) -> Result<(), GuildError> {
+        match self.channel_audience(channel).await? {
+            ChannelAudience::EveryMember => self.events.publish_to_guild(channel.guild_id, event),
+            ChannelAudience::Members(viewers) => {
+                self.events
+                    .publish_to_guild_members(channel.guild_id, &viewers, event);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends each affected online member a fresh snapshot, since a permission change may have
+    /// hidden or revealed channels for them (ADR-0015).
+    async fn resynchronize(
+        &self,
+        guild_id: Snowflake,
+        affected: AffectedMembers,
+    ) -> Result<(), GuildError> {
+        let online = self.events.online_user_ids_of_guild(guild_id);
+        let recipients: Vec<Snowflake> = match affected {
+            AffectedMembers::Everyone => online.into_iter().collect(),
+            AffectedMembers::One(user_id) => online
+                .into_iter()
+                .filter(|online_id| *online_id == user_id)
+                .collect(),
+        };
+        for user_id in recipients {
+            match self.get_guild(user_id, guild_id).await {
+                Ok(guild) => self
+                    .events
+                    .publish_to_user(user_id, &GatewayEvent::GuildCreate(Box::new(guild))),
+                // Left meanwhile: their GUILD_DELETE is already on its way.
+                Err(GuildError::NotFound) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    /// The ids of every channel `user_id` can view, across their guilds.
+    pub(crate) async fn visible_channel_ids(
+        &self,
+        user_id: Snowflake,
+    ) -> Result<HashSet<Snowflake>, GuildError> {
+        let mut visible = HashSet::new();
+        for (guild_id, _) in guild_storage::list_user_guilds(&self.pool, user_id).await? {
+            match self.get_guild(user_id, guild_id).await {
+                Ok(guild) => visible.extend(guild.channels.iter().map(|channel| channel.id)),
+                Err(GuildError::NotFound) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(visible)
     }
 
     /// Needs `MANAGE_CHANNELS`.
@@ -327,12 +480,12 @@ impl Guilds {
         )
         .await?
         .ok_or(GuildError::NotFound)?;
-        let updated = channel_from_stored(updated);
-        self.events.publish_to_guild(
-            updated.guild_id,
-            &GatewayEvent::ChannelUpdate(updated.clone()),
-        );
-        Ok(updated)
+        self.publish_to_channel_viewers(
+            &updated,
+            &GatewayEvent::ChannelUpdate(channel_from_stored(updated.clone())),
+        )
+        .await?;
+        Ok(channel_from_stored(updated))
     }
 
     /// Needs `MANAGE_CHANNELS`. A deleted category's channels stay, uncategorised.
@@ -347,15 +500,155 @@ impl Guilds {
         if !permissions.contains(Permissions::MANAGE_CHANNELS) {
             return Err(GuildError::MissingPermissions);
         }
+        // Who could view it is decided before it disappears.
+        let audience = self.channel_audience(&channel).await?;
         guild_storage::delete_channel(&self.pool, channel.id).await?;
-        self.events.publish_to_guild(
-            channel.guild_id,
-            &GatewayEvent::ChannelDelete {
-                guild_id: channel.guild_id,
-                id: channel.id,
-            },
-        );
+        let event = GatewayEvent::ChannelDelete {
+            guild_id: channel.guild_id,
+            id: channel.id,
+        };
+        match audience {
+            ChannelAudience::EveryMember => self.events.publish_to_guild(channel.guild_id, &event),
+            ChannelAudience::Members(viewers) => {
+                self.events
+                    .publish_to_guild_members(channel.guild_id, &viewers, &event);
+            }
+        }
         Ok(())
+    }
+
+    /// Needs `MANAGE_ROLES` in the channel, and only permissions the member holds there may be
+    /// granted or taken away. A role target must be `@everyone` or below the member's highest
+    /// role (the owner sets any); a member target must belong to the guild.
+    pub(crate) async fn set_permission_overwrite(
+        &self,
+        user_id: Snowflake,
+        channel_id: Snowflake,
+        target_id: Snowflake,
+        request: SetPermissionOverwriteRequest,
+    ) -> Result<Channel, GuildError> {
+        let allow = validate_known_permissions(request.allow)?;
+        let deny = validate_known_permissions(request.deny)?;
+        if allow.intersects(deny) {
+            return Err(GuildRuleViolation::OverwriteAllowsAndDeniesOneBit.into());
+        }
+        let wanted = PermissionOverwrite {
+            id: target_id,
+            kind: request.kind,
+            allow,
+            deny,
+        };
+        let channel = self
+            .channel_with_editable_overwrite(user_id, channel_id, &wanted)
+            .await?;
+        guild_storage::set_overwrite(
+            &self.pool,
+            channel.id,
+            &wanted,
+            MAXIMUM_OVERWRITES_PER_CHANNEL,
+        )
+        .await
+        .map_err(limit_reached(
+            "a channel has at most 100 permission overwrites",
+        ))?;
+        self.channel_after_overwrite_change(channel).await
+    }
+
+    /// Same rules as `set_permission_overwrite`, for taking every permission of the overwrite away.
+    pub(crate) async fn delete_permission_overwrite(
+        &self,
+        user_id: Snowflake,
+        channel_id: Snowflake,
+        target_id: Snowflake,
+    ) -> Result<Channel, GuildError> {
+        let (existing, _) = self
+            .channel_and_member_permissions(user_id, channel_id)
+            .await?;
+        let kind = existing
+            .permission_overwrites
+            .iter()
+            .find(|overwrite| overwrite.id == target_id)
+            .map(|overwrite| overwrite.kind)
+            .ok_or(GuildError::NotFound)?;
+        let removed = PermissionOverwrite {
+            id: target_id,
+            kind,
+            allow: Permissions::empty(),
+            deny: Permissions::empty(),
+        };
+        let channel = self
+            .channel_with_editable_overwrite(user_id, channel_id, &removed)
+            .await?;
+        if !guild_storage::delete_overwrite(&self.pool, channel.id, target_id).await? {
+            return Err(GuildError::NotFound);
+        }
+        self.channel_after_overwrite_change(channel).await
+    }
+
+    /// The channel, once `user_id` is allowed to turn its overwrite for `wanted.id` into `wanted`.
+    async fn channel_with_editable_overwrite(
+        &self,
+        user_id: Snowflake,
+        channel_id: Snowflake,
+        wanted: &PermissionOverwrite,
+    ) -> Result<StoredChannel, GuildError> {
+        let (channel, permissions) = self
+            .channel_and_member_permissions(user_id, channel_id)
+            .await?;
+        if !permissions.contains(Permissions::MANAGE_ROLES) {
+            return Err(GuildError::MissingPermissions);
+        }
+        let guild_id = channel.guild_id;
+        match wanted.kind {
+            OverwriteKind::Role => {
+                let membership = guild_storage::find_membership(&self.pool, guild_id, user_id)
+                    .await?
+                    .ok_or(GuildError::NotFound)?;
+                let manager =
+                    RoleManager::new(user_id, membership.owner_id, &membership.member_roles);
+                let role = guild_storage::list_roles(&self.pool, guild_id)
+                    .await?
+                    .into_iter()
+                    .find(|role| role.id == wanted.id)
+                    .ok_or(GuildError::NotFound)?;
+                if !manager.can_target_role_in_overwrites(&role, guild_id) {
+                    return Err(GuildError::MissingPermissions);
+                }
+            }
+            OverwriteKind::Member => {
+                guild_storage::find_member(&self.pool, guild_id, wanted.id)
+                    .await?
+                    .ok_or(GuildError::NotFound)?;
+            }
+        }
+        let current = channel
+            .permission_overwrites
+            .iter()
+            .find(|overwrite| overwrite.id == wanted.id);
+        let (current_allow, current_deny) = current
+            .map_or((Permissions::empty(), Permissions::empty()), |current| {
+                (current.allow, current.deny)
+            });
+        let changed = current_allow.symmetric_difference(wanted.allow)
+            | current_deny.symmetric_difference(wanted.deny);
+        if !permissions.contains(changed) {
+            return Err(GuildError::MissingPermissions);
+        }
+        Ok(channel)
+    }
+
+    /// The channel as stored now; who can view it may have changed, so online members get fresh
+    /// snapshots instead of a `CHANNEL_UPDATE` (ADR-0015).
+    async fn channel_after_overwrite_change(
+        &self,
+        channel: StoredChannel,
+    ) -> Result<Channel, GuildError> {
+        let updated = guild_storage::find_guild_channel(&self.pool, channel.id)
+            .await?
+            .ok_or(GuildError::NotFound)?;
+        self.resynchronize(channel.guild_id, AffectedMembers::Everyone)
+            .await?;
+        Ok(channel_from_stored(updated))
     }
 
     /// Needs `CREATE_INVITE`.
@@ -560,6 +853,10 @@ impl Guilds {
             guild_id,
             guild_storage::list_roles(&self.pool, guild_id).await?,
         );
+        if updated.permissions != role.permissions {
+            self.resynchronize(guild_id, AffectedMembers::Everyone)
+                .await?;
+        }
         Ok(updated)
     }
 
@@ -627,6 +924,8 @@ impl Guilds {
             guild_id,
             guild_storage::list_roles(&self.pool, guild_id).await?,
         );
+        self.resynchronize(guild_id, AffectedMembers::Everyone)
+            .await?;
         Ok(())
     }
 
@@ -654,6 +953,8 @@ impl Guilds {
         .await?
         .ok_or(GuildError::NotFound)?;
         self.publish_member_roles(guild_id, member_id, role_ids);
+        self.resynchronize(guild_id, AffectedMembers::One(member_id))
+            .await?;
         Ok(())
     }
 
@@ -674,6 +975,8 @@ impl Guilds {
             .await?
             .ok_or(GuildError::NotFound)?;
         self.publish_member_roles(guild_id, member_id, role_ids);
+        self.resynchronize(guild_id, AffectedMembers::One(member_id))
+            .await?;
         Ok(())
     }
 
@@ -1716,6 +2019,175 @@ mod tests {
             roles.iter().map(|role| role.id).collect::<Vec<_>>(),
             [guild.id, moderator.id, helper.id, admin.id]
         );
+    }
+
+    fn overwrite_request(
+        kind: OverwriteKind,
+        allow: Permissions,
+        deny: Permissions,
+    ) -> SetPermissionOverwriteRequest {
+        SetPermissionOverwriteRequest { kind, allow, deny }
+    }
+
+    #[tokio::test]
+    async fn overwrites_are_set_only_within_the_hierarchy_and_held_permissions() {
+        let fixture = fixture().await;
+        let ModeratedGuild {
+            guild,
+            helper,
+            admin,
+            ..
+        } = moderated_guild(&fixture).await;
+        let (guilds, other) = (&fixture.guilds, fixture.other);
+        let general = guild.channels[1].id;
+        let role = |allow, deny| overwrite_request(OverwriteKind::Role, allow, deny);
+        let kick = Permissions::KICK_MEMBERS;
+
+        let updated = guilds
+            .set_permission_overwrite(other, general, helper.id, role(kick, Permissions::empty()))
+            .await
+            .unwrap();
+        guilds
+            .set_permission_overwrite(
+                other,
+                general,
+                fixture.third,
+                overwrite_request(
+                    OverwriteKind::Member,
+                    Permissions::empty(),
+                    Permissions::SEND_MESSAGES,
+                ),
+            )
+            .await
+            .unwrap();
+        let unheld = guilds
+            .set_permission_overwrite(
+                other,
+                general,
+                helper.id,
+                role(Permissions::BAN_MEMBERS, Permissions::empty()),
+            )
+            .await;
+        let above = guilds
+            .set_permission_overwrite(other, general, admin.id, role(kick, Permissions::empty()))
+            .await;
+        let without_manage_roles = guilds
+            .set_permission_overwrite(
+                fixture.third,
+                general,
+                helper.id,
+                role(Permissions::empty(), Permissions::empty()),
+            )
+            .await;
+        let both = guilds
+            .set_permission_overwrite(other, general, helper.id, role(kick, kick))
+            .await;
+        let not_a_member = guilds
+            .set_permission_overwrite(
+                other,
+                general,
+                Snowflake::from_raw(424_242),
+                overwrite_request(OverwriteKind::Member, Permissions::empty(), kick),
+            )
+            .await;
+        let unknown_overwrite = guilds
+            .delete_permission_overwrite(other, general, admin.id)
+            .await;
+        guilds
+            .delete_role(fixture.owner, guild.id, helper.id)
+            .await
+            .unwrap();
+        let after_role_deletion = guilds.get_guild(fixture.owner, guild.id).await.unwrap();
+        let member_muted = guilds
+            .channel_and_member_permissions(fixture.third, general)
+            .await
+            .unwrap()
+            .1;
+        fixture.pool.close().await;
+
+        assert_eq!(updated.permission_overwrites.len(), 1);
+        assert!(!member_muted.contains(Permissions::SEND_MESSAGES));
+        assert_all_refused(vec![unheld, above, without_manage_roles]);
+        assert!(
+            matches!(
+                both,
+                Err(GuildError::InvalidInput(
+                    GuildRuleViolation::OverwriteAllowsAndDeniesOneBit
+                ))
+            ),
+            "{both:?}"
+        );
+        assert!(matches!(not_a_member, Err(GuildError::NotFound)));
+        assert!(matches!(unknown_overwrite, Err(GuildError::NotFound)));
+        let general_after = after_role_deletion
+            .channels
+            .iter()
+            .find(|channel| channel.id == general)
+            .unwrap();
+        assert!(
+            general_after
+                .permission_overwrites
+                .iter()
+                .all(|overwrite| overwrite.id != helper.id),
+            "deleting a role drops its overwrites"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_role_allow_reveals_a_channel_hidden_from_everyone() {
+        let fixture = fixture().await;
+        let ModeratedGuild { guild, helper, .. } = moderated_guild(&fixture).await;
+        let guilds = &fixture.guilds;
+        let general = guild.channels[1].id;
+        let view = Permissions::VIEW_CHANNEL;
+        guilds
+            .set_permission_overwrite(
+                fixture.owner,
+                general,
+                guild.id,
+                overwrite_request(OverwriteKind::Role, Permissions::empty(), view),
+            )
+            .await
+            .unwrap();
+        guilds
+            .set_permission_overwrite(
+                fixture.owner,
+                general,
+                helper.id,
+                overwrite_request(OverwriteKind::Role, view, Permissions::empty()),
+            )
+            .await
+            .unwrap();
+        let hidden = guilds
+            .channel_and_member_permissions(fixture.third, general)
+            .await;
+        guilds
+            .add_member_role(fixture.owner, guild.id, fixture.third, helper.id)
+            .await
+            .unwrap();
+        let revealed = guilds
+            .channel_and_member_permissions(fixture.third, general)
+            .await;
+        let snapshot = guilds.get_guild(fixture.third, guild.id).await.unwrap();
+        let category_hidden = guilds
+            .create_channel(
+                fixture.owner,
+                guild.id,
+                text_channel("child", Some(guild.channels[0].id)),
+                NOW,
+            )
+            .await;
+        fixture.pool.close().await;
+
+        assert!(matches!(hidden, Err(GuildError::NotFound)));
+        assert!(revealed.is_ok());
+        assert!(
+            snapshot
+                .channels
+                .iter()
+                .any(|channel| channel.id == general)
+        );
+        assert!(category_hidden.is_ok(), "the owner sees every category");
     }
 
     #[tokio::test]

@@ -342,8 +342,8 @@ mod tests {
         pool.close().await;
 
         assert_eq!(
-            outcome.applied_versions,
-            [LAST_VERSION_WITHOUT_MEMBER_ROLES + 1]
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_MEMBER_ROLES + 1))
         );
         assert_eq!(everyone, ("@everyone".to_owned(), 1610, 0, 0));
         assert_eq!(
@@ -351,6 +351,73 @@ mod tests {
             "leaving drops the member's roles"
         );
         assert!(assignment_of_non_member.is_err(), "only members hold roles");
+    }
+
+    #[tokio::test]
+    async fn channels_created_before_overwrites_keep_their_messages_and_accept_overwrites() {
+        const LAST_VERSION_WITHOUT_OVERWRITES: i64 = 5;
+        let directory = tempfile::tempdir().unwrap();
+        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_OVERWRITES, &pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO roles (id, guild_id, name, permissions, position) \
+             VALUES (10, 10, '@everyone', 1610, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) VALUES (30, 20, 1, 'hello');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO channel_permission_overwrites (channel_id, target_id, target_kind, allow, deny) \
+             VALUES (20, 10, 'role', 0, 2)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let both_allowed_and_denied = sqlx::query(
+            "INSERT INTO channel_permission_overwrites (channel_id, target_id, target_kind, allow, deny) \
+             VALUES (20, 1, 'member', 2, 2)",
+        )
+        .execute(&pool)
+        .await;
+        sqlx::query("DELETE FROM channels WHERE id = 20")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let overwrites_left: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM channel_permission_overwrites")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        pool.close().await;
+
+        assert_eq!(
+            outcome.applied_versions,
+            [LAST_VERSION_WITHOUT_OVERWRITES + 1]
+        );
+        assert!(
+            both_allowed_and_denied.is_err(),
+            "allow and deny never share a bit"
+        );
+        assert_eq!(
+            overwrites_left, 0,
+            "deleting a channel drops its overwrites"
+        );
     }
 
     #[tokio::test]

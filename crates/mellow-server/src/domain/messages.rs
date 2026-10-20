@@ -15,7 +15,6 @@ use crate::domain::message_rules::{
     validate_nonce,
 };
 use crate::domain::snowflake_generator::SnowflakeGenerator;
-use crate::events::EventHub;
 use crate::storage::guilds::StoredChannel;
 use crate::storage::messages::{
     self as message_storage, HistoryPage, MessageStorageError, NewMessage, StoredMessage,
@@ -66,25 +65,19 @@ fn message_from_stored(message: StoredMessage, nonce: Option<String>) -> Message
 pub(crate) struct Messages {
     pool: SqlitePool,
     ids: Arc<SnowflakeGenerator>,
+    /// Also publishes message events, to the members who can view the channel (ADR-0015).
     guilds: Arc<Guilds>,
-    events: Arc<EventHub>,
     /// Held from id generation until the `MESSAGE_CREATE` event is published, so messages commit
     /// and reach gateways in id order: an `after` cursor can never skip a message committed late.
     send_order: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Messages {
-    pub(crate) fn new(
-        pool: SqlitePool,
-        ids: Arc<SnowflakeGenerator>,
-        guilds: Arc<Guilds>,
-        events: Arc<EventHub>,
-    ) -> Self {
+    pub(crate) fn new(pool: SqlitePool, ids: Arc<SnowflakeGenerator>, guilds: Arc<Guilds>) -> Self {
         Self {
             pool,
             ids,
             guilds,
-            events,
             send_order: Arc::default(),
         }
     }
@@ -145,7 +138,7 @@ impl Messages {
         let send_order = self.send_order.clone();
         let pool = self.pool.clone();
         let ids = self.ids.clone();
-        let events = self.events.clone();
+        let guilds = self.guilds.clone();
         // A detached task: a client hanging up mid-insert must not release the lock before the
         // insert commits and its event is published. The lock also makes the nonce lookup and
         // the insert atomic for concurrent retries.
@@ -175,11 +168,13 @@ impl Messages {
                 },
             )
             .await?;
-            // The nonce goes back to the sender only, never in the guild-wide event.
-            events.publish_to_guild(
-                channel.guild_id,
-                &GatewayEvent::MessageCreate(message_from_stored(stored.clone(), None)),
-            );
+            // The nonce goes back to the sender only, never in the event.
+            guilds
+                .publish_to_channel_viewers(
+                    &channel,
+                    &GatewayEvent::MessageCreate(message_from_stored(stored.clone(), None)),
+                )
+                .await?;
             Ok(message_from_stored(stored, request.nonce))
         })
         .await
@@ -248,10 +243,9 @@ impl Messages {
         .await?
         .ok_or(MessageError::MessageNotFound)?;
         let updated = message_from_stored(updated, None);
-        self.events.publish_to_guild(
-            channel.guild_id,
-            &GatewayEvent::MessageUpdate(updated.clone()),
-        );
+        self.guilds
+            .publish_to_channel_viewers(&channel, &GatewayEvent::MessageUpdate(updated.clone()))
+            .await?;
         Ok(updated)
     }
 
@@ -270,14 +264,16 @@ impl Messages {
             return Err(GuildError::MissingPermissions.into());
         }
         message_storage::delete_message(&self.pool, message.id).await?;
-        self.events.publish_to_guild(
-            channel.guild_id,
-            &GatewayEvent::MessageDelete {
-                guild_id: channel.guild_id,
-                channel_id: channel.id,
-                id: message.id,
-            },
-        );
+        self.guilds
+            .publish_to_channel_viewers(
+                &channel,
+                &GatewayEvent::MessageDelete {
+                    guild_id: channel.guild_id,
+                    channel_id: channel.id,
+                    id: message.id,
+                },
+            )
+            .await?;
         Ok(())
     }
 
@@ -311,24 +307,29 @@ impl Messages {
                 Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES,
             )
             .await?;
-        self.events.publish_to_guild(
-            channel.guild_id,
-            &GatewayEvent::TypingStart {
-                guild_id: channel.guild_id,
-                channel_id: channel.id,
-                user_id,
-            },
-        );
+        self.guilds
+            .publish_to_channel_viewers(
+                &channel,
+                &GatewayEvent::TypingStart {
+                    guild_id: channel.guild_id,
+                    channel_id: channel.id,
+                    user_id,
+                },
+            )
+            .await?;
         Ok(())
     }
 
+    /// Only for channels the user can view now (ADR-0015).
     pub(crate) async fn list_my_read_states(
         &self,
         user_id: Snowflake,
     ) -> Result<Vec<ReadState>, MessageError> {
+        let visible_channel_ids = self.guilds.visible_channel_ids(user_id).await?;
         Ok(message_storage::list_read_states(&self.pool, user_id)
             .await?
             .into_iter()
+            .filter(|(channel_id, _)| visible_channel_ids.contains(channel_id))
             .map(|(channel_id, last_read_message_id)| ReadState {
                 channel_id,
                 last_read_message_id,
@@ -345,6 +346,7 @@ mod tests {
     use crate::domain::account_rules::RegistrationMode;
     use crate::domain::accounts::Accounts;
     use crate::domain::accounts::tests::{NOW, migrated_pool, register_request};
+    use crate::events::EventHub;
 
     struct Fixture {
         _directory: tempfile::TempDir,
@@ -376,7 +378,8 @@ mod tests {
                 .unwrap();
             users.push(session.user.id);
         }
-        let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone(), Arc::default()));
+        let events = Arc::new(EventHub::default());
+        let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone(), events.clone()));
         let guild = guilds
             .create_guild(
                 users[0],
@@ -396,10 +399,9 @@ mod tests {
             .await
             .unwrap();
         let general = guild.channels[1].id;
-        let events = Arc::new(EventHub::default());
         Fixture {
             _directory: directory,
-            messages: Messages::new(pool.clone(), ids, guilds.clone(), events.clone()),
+            messages: Messages::new(pool.clone(), ids, guilds.clone()),
             pool,
             guilds,
             events,
@@ -486,6 +488,139 @@ mod tests {
         assert_eq!(ids(&before), [sent[2], sent[3]]);
         assert_eq!(ids(&after), [sent[3]]);
         assert_eq!(newest_two[0].author.username, "member");
+    }
+
+    fn event_types(
+        events: &mut tokio::sync::mpsc::Receiver<crate::events::SharedEvent>,
+    ) -> Vec<String> {
+        let mut types = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            let event: serde_json::Value = serde_json::from_str(&event.payload_json).unwrap();
+            types.push(event["t"].as_str().unwrap().to_owned());
+        }
+        types
+    }
+
+    async fn create_text_channel(fixture: &Fixture, name: &str) -> mellow_protocol::Channel {
+        fixture
+            .guilds
+            .create_channel(
+                fixture.owner,
+                fixture.guild.id,
+                mellow_protocol::CreateChannelRequest {
+                    kind: mellow_protocol::ChannelKind::Text,
+                    name: name.into(),
+                    topic: String::new(),
+                    parent_id: None,
+                },
+                NOW,
+            )
+            .await
+            .unwrap()
+    }
+
+    /// Live gateway sessions of the owner and the member, with nothing queued yet.
+    fn live_sessions(
+        fixture: &Fixture,
+    ) -> [tokio::sync::mpsc::Receiver<crate::events::SharedEvent>; 2] {
+        [(fixture.owner, [1; 32]), (fixture.member, [2; 32])].map(|(user_id, token)| {
+            let (key, mut events) = fixture.events.register_session(user_id, token, 1).unwrap();
+            fixture.events.activate_session(key, &[fixture.guild.id]);
+            event_types(&mut events);
+            events
+        })
+    }
+
+    #[tokio::test]
+    async fn a_hidden_channel_is_not_found_and_its_events_reach_only_its_viewers() {
+        use mellow_protocol::{OverwriteKind, SetPermissionOverwriteRequest};
+
+        let fixture = fixture().await;
+        let staff = create_text_channel(&fixture, "staff").await;
+        let [mut owner_events, mut member_events] = live_sessions(&fixture);
+        fixture
+            .guilds
+            .set_permission_overwrite(
+                fixture.owner,
+                staff.id,
+                fixture.guild.id,
+                SetPermissionOverwriteRequest {
+                    kind: OverwriteKind::Role,
+                    allow: Permissions::empty(),
+                    deny: Permissions::VIEW_CHANNEL,
+                },
+            )
+            .await
+            .unwrap();
+        let member_after_hiding = event_types(&mut member_events);
+        event_types(&mut owner_events);
+
+        fixture
+            .messages
+            .send(fixture.owner, staff.id, text("staff only"), NOW)
+            .await
+            .unwrap();
+        let member_sends = fixture
+            .messages
+            .send(fixture.member, staff.id, text("let me in"), NOW)
+            .await;
+        let member_reads = fixture
+            .messages
+            .list_messages(fixture.member, staff.id, MessageHistoryQuery::default())
+            .await;
+        let member_typing = fixture
+            .messages
+            .start_typing(fixture.member, staff.id)
+            .await;
+        let member_snapshot = fixture
+            .guilds
+            .get_guild(fixture.member, fixture.guild.id)
+            .await
+            .unwrap();
+        let owner_snapshot = fixture
+            .guilds
+            .get_guild(fixture.owner, fixture.guild.id)
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .send(fixture.owner, fixture.general, text("public"), NOW)
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        assert_eq!(member_after_hiding, ["GUILD_CREATE"], "a fresh snapshot");
+        assert_eq!(
+            event_types(&mut owner_events),
+            ["MESSAGE_CREATE", "MESSAGE_CREATE"]
+        );
+        assert_eq!(
+            event_types(&mut member_events),
+            ["MESSAGE_CREATE"],
+            "only the public message"
+        );
+        for refused in [
+            member_sends.map(|_| ()),
+            member_reads.map(|_| ()),
+            member_typing,
+        ] {
+            assert!(
+                matches!(refused, Err(MessageError::Guild(GuildError::NotFound))),
+                "{refused:?}"
+            );
+        }
+        assert!(
+            member_snapshot
+                .channels
+                .iter()
+                .all(|channel| channel.id != staff.id)
+        );
+        assert!(
+            owner_snapshot
+                .channels
+                .iter()
+                .any(|channel| channel.id == staff.id)
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

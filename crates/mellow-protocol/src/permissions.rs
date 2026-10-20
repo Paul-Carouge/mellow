@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::canonical_decimal::parse_canonical_decimal_u64;
-use crate::{Role, Snowflake};
+use crate::{OverwriteKind, PermissionOverwrite, Role, Snowflake};
 
 bitflags::bitflags! {
     /// Permission bitfield of a role, a channel overwrite or a computed member permission (ADR-0007).
@@ -61,6 +61,56 @@ pub fn compute_guild_permissions<'a>(
     } else {
         granted
     }
+}
+
+/// A member's permissions in one channel (ADR-0007 step 4): `guild_permissions` from
+/// `compute_guild_permissions`, then the channel's overwrites for `@everyone` (the role whose id
+/// is `guild_id`), for the member's roles (all denies, then all allows) and for the member. Any
+/// holder of `ADMINISTRATOR` (the owner included) ignores overwrites.
+///
+/// The server decides with this function; clients use it only to adapt their interface (ADR-0014).
+#[must_use]
+pub fn compute_channel_permissions(
+    guild_permissions: Permissions,
+    guild_id: Snowflake,
+    member_id: Snowflake,
+    member_role_ids: &[Snowflake],
+    overwrites: &[PermissionOverwrite],
+) -> Permissions {
+    if guild_permissions.contains(Permissions::ADMINISTRATOR) {
+        return Permissions::all();
+    }
+    let apply = |permissions: Permissions, overwrite: &PermissionOverwrite| {
+        permissions
+            .difference(overwrite.deny)
+            .union(overwrite.allow)
+    };
+    let mut permissions = guild_permissions;
+    if let Some(everyone) = overwrites
+        .iter()
+        .find(|overwrite| overwrite.kind == OverwriteKind::Role && overwrite.id == guild_id)
+    {
+        permissions = apply(permissions, everyone);
+    }
+    let (role_deny, role_allow) = overwrites
+        .iter()
+        .filter(|overwrite| {
+            overwrite.kind == OverwriteKind::Role
+                && overwrite.id != guild_id
+                && member_role_ids.contains(&overwrite.id)
+        })
+        .fold(
+            (Permissions::empty(), Permissions::empty()),
+            |(deny, allow), overwrite| (deny | overwrite.deny, allow | overwrite.allow),
+        );
+    permissions = permissions.difference(role_deny).union(role_allow);
+    if let Some(member) = overwrites
+        .iter()
+        .find(|overwrite| overwrite.kind == OverwriteKind::Member && overwrite.id == member_id)
+    {
+        permissions = apply(permissions, member);
+    }
+    permissions
 }
 
 /// The rank a member acts with in the role hierarchy: the highest position among their roles, or
@@ -156,6 +206,104 @@ mod tests {
         assert_eq!(
             compute_guild_permissions(MEMBER, OWNER, &roles),
             Permissions::all()
+        );
+    }
+
+    const GUILD: Snowflake = Snowflake::from_raw(100);
+
+    fn overwrite(
+        id: Snowflake,
+        kind: OverwriteKind,
+        allow: Permissions,
+        deny: Permissions,
+    ) -> PermissionOverwrite {
+        PermissionOverwrite {
+            id,
+            kind,
+            allow,
+            deny,
+        }
+    }
+
+    #[test]
+    fn channel_overwrites_apply_everyone_then_roles_then_the_member() {
+        let view = Permissions::VIEW_CHANNEL;
+        let send = Permissions::SEND_MESSAGES;
+        let base = Permissions::DEFAULT_EVERYONE;
+        let role_a = Snowflake::from_raw(8);
+        let role_b = Snowflake::from_raw(9);
+        let hidden = [overwrite(
+            GUILD,
+            OverwriteKind::Role,
+            Permissions::empty(),
+            view,
+        )];
+        assert!(!compute_channel_permissions(base, GUILD, MEMBER, &[], &hidden).contains(view));
+
+        // A role allow beats the @everyone deny; a role deny and allow on one bit: allow wins.
+        let staff_only = [
+            hidden[0].clone(),
+            overwrite(role_a, OverwriteKind::Role, view, Permissions::empty()),
+            overwrite(
+                role_b,
+                OverwriteKind::Role,
+                Permissions::empty(),
+                view | send,
+            ),
+        ];
+        let staff =
+            compute_channel_permissions(base, GUILD, MEMBER, &[role_a, role_b], &staff_only);
+        assert!(staff.contains(view));
+        assert!(!staff.contains(send));
+        assert!(
+            !compute_channel_permissions(base, GUILD, MEMBER, &[role_b], &staff_only)
+                .contains(view)
+        );
+
+        // The member's own overwrite comes last.
+        let muted = [
+            overwrite(role_a, OverwriteKind::Role, send, Permissions::empty()),
+            overwrite(MEMBER, OverwriteKind::Member, Permissions::empty(), send),
+        ];
+        assert!(
+            !compute_channel_permissions(base, GUILD, MEMBER, &[role_a], &muted).contains(send)
+        );
+        assert!(compute_channel_permissions(base, GUILD, OWNER, &[role_a], &muted).contains(send));
+
+        // A member overwrite never applies through a role of the same id, nor the reverse.
+        let member_kind_on_role_id = [overwrite(
+            role_a,
+            OverwriteKind::Member,
+            Permissions::empty(),
+            view,
+        )];
+        assert!(
+            compute_channel_permissions(base, GUILD, MEMBER, &[role_a], &member_kind_on_role_id)
+                .contains(view)
+        );
+    }
+
+    #[test]
+    fn administrators_ignore_channel_overwrites() {
+        let deny_all = [overwrite(
+            GUILD,
+            OverwriteKind::Role,
+            Permissions::empty(),
+            Permissions::all(),
+        )];
+        assert_eq!(
+            compute_channel_permissions(Permissions::all(), GUILD, OWNER, &[], &deny_all),
+            Permissions::all()
+        );
+        assert_eq!(
+            compute_channel_permissions(
+                Permissions::DEFAULT_EVERYONE,
+                GUILD,
+                MEMBER,
+                &[],
+                &deny_all
+            ),
+            Permissions::empty()
         );
     }
 

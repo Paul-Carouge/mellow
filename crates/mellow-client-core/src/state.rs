@@ -240,18 +240,7 @@ impl ClientState {
                     .retain(|pending| pending.channel_id != id);
                 StateChange::Guilds
             }
-            GatewayEvent::GuildCreate(guild) => {
-                let guild = *guild;
-                match self
-                    .guilds
-                    .iter_mut()
-                    .find(|existing| existing.id == guild.id)
-                {
-                    Some(existing) => *existing = guild,
-                    None => self.guilds.push(guild),
-                }
-                StateChange::Guilds
-            }
+            GatewayEvent::GuildCreate(guild) => self.replace_guild(*guild),
             GatewayEvent::GuildDelete { id } => self.remove_guild(id),
             GatewayEvent::GuildMemberAdd { guild_id, member } => {
                 if let Some(members) = self.members_by_guild.get_mut(&guild_id)
@@ -504,6 +493,32 @@ impl ClientState {
         StateChange::ReadStates
     }
 
+    /// A fresh snapshot also follows permission changes (ADR-0015): channels it no longer lists
+    /// were hidden from us, so their cached messages and unsent text go too.
+    fn replace_guild(&mut self, guild: Guild) -> StateChange {
+        let Some(existing) = self
+            .guilds
+            .iter_mut()
+            .find(|existing| existing.id == guild.id)
+        else {
+            self.guilds.push(guild);
+            return StateChange::Guilds;
+        };
+        let hidden_channel_ids: Vec<Snowflake> = existing
+            .channels
+            .iter()
+            .map(|channel| channel.id)
+            .filter(|id| !guild.channels.iter().any(|channel| channel.id == *id))
+            .collect();
+        *existing = guild;
+        for channel_id in &hidden_channel_ids {
+            self.history_by_channel.remove(channel_id);
+        }
+        self.pending_messages
+            .retain(|pending| !hidden_channel_ids.contains(&pending.channel_id));
+        StateChange::Guilds
+    }
+
     fn remove_guild(&mut self, id: Snowflake) -> StateChange {
         if let Some(guild) = self.guild(id) {
             let channel_ids: Vec<Snowflake> =
@@ -624,6 +639,7 @@ mod tests {
             topic: String::new(),
             parent_id,
             position,
+            permission_overwrites: Vec::new(),
         }
     }
 
@@ -971,6 +987,19 @@ mod tests {
         );
         assert_eq!(club.my_permissions, Permissions::DEFAULT_EVERYONE);
         assert_eq!(state.members(CLUB)[0].role_ids, Vec::<Snowflake>::new());
+    }
+
+    #[test]
+    fn a_snapshot_without_a_channel_forgets_its_messages_and_unsent_text() {
+        let mut state = ready_state();
+        state.insert_messages(GENERAL, vec![message(20, OTHER)]);
+        state.queue_message(GENERAL, "draft".into(), None, "nonce-1".into());
+        let mut snapshot = state.guild(GUILD).unwrap().clone();
+        snapshot.channels.retain(|channel| channel.id != GENERAL);
+        state.apply_event(GatewayEvent::GuildCreate(Box::new(snapshot)), NOW);
+        assert_eq!(state.messages(GENERAL).len(), 0);
+        assert_eq!(state.pending_messages(GENERAL).count(), 0);
+        assert_eq!(state.guild(GUILD).unwrap().channels.len(), 1);
     }
 
     #[test]

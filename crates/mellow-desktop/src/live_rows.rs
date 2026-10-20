@@ -347,6 +347,7 @@ mod tests {
             topic: String::new(),
             parent_id: parent.map(Snowflake::from_raw),
             position,
+            permission_overwrites: Vec::new(),
         }
     }
 

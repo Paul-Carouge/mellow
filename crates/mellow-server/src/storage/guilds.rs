@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use mellow_protocol::{ChannelKind, Permissions, Role, Snowflake};
+use mellow_protocol::{
+    ChannelKind, OverwriteKind, PermissionOverwrite, Permissions, Role, Snowflake,
+};
 use sqlx::SqlitePool;
 
 /// Takes the write lock at once, so a read-then-write transaction waits for `busy_timeout`
@@ -15,6 +17,8 @@ pub(crate) enum GuildStorageError {
     IntegerOutOfRange,
     #[error("the channel kind stored in the database is unknown: {0}")]
     UnknownChannelKind(String),
+    #[error("the overwrite kind stored in the database is unknown: {0}")]
+    UnknownOverwriteKind(String),
     /// A quota checked atomically with the insert was reached.
     #[error("limit reached")]
     LimitReached,
@@ -81,6 +85,7 @@ pub(crate) struct StoredChannel {
     pub(crate) topic: String,
     pub(crate) parent_id: Option<Snowflake>,
     pub(crate) position: u32,
+    pub(crate) permission_overwrites: Vec<PermissionOverwrite>,
 }
 
 type ChannelRow = (i64, i64, String, String, String, Option<i64>, i64);
@@ -95,7 +100,60 @@ fn channel_from_row(row: ChannelRow) -> Result<StoredChannel, GuildStorageError>
         topic,
         parent_id: parent_id.map(to_id).transpose()?,
         position: u32::try_from(position).map_err(|_| GuildStorageError::IntegerOutOfRange)?,
+        permission_overwrites: Vec::new(),
     })
+}
+
+fn overwrite_kind_to_text(kind: OverwriteKind) -> &'static str {
+    match kind {
+        OverwriteKind::Role => "role",
+        OverwriteKind::Member => "member",
+    }
+}
+
+fn overwrite_kind_from_text(text: &str) -> Result<OverwriteKind, GuildStorageError> {
+    match text {
+        "role" => Ok(OverwriteKind::Role),
+        "member" => Ok(OverwriteKind::Member),
+        other => Err(GuildStorageError::UnknownOverwriteKind(other.to_owned())),
+    }
+}
+
+type OverwriteRow = (i64, i64, String, i64, i64);
+
+/// Fills `permission_overwrites` of `channels` with one query, ordered by target for stable output.
+async fn attach_overwrites(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+    channels: &mut [StoredChannel],
+) -> Result<(), GuildStorageError> {
+    let rows: Vec<OverwriteRow> = sqlx::query_as(
+        "SELECT channel_permission_overwrites.channel_id, target_id, target_kind, allow, deny \
+         FROM channel_permission_overwrites \
+         JOIN channels ON channels.id = channel_permission_overwrites.channel_id \
+         WHERE channels.guild_id = ? ORDER BY target_id",
+    )
+    .bind(to_integer(guild_id.raw())?)
+    .fetch_all(pool)
+    .await?;
+    let mut overwrites_by_channel: HashMap<i64, Vec<PermissionOverwrite>> = HashMap::new();
+    for (channel_id, target_id, target_kind, allow, deny) in rows {
+        overwrites_by_channel
+            .entry(channel_id)
+            .or_default()
+            .push(PermissionOverwrite {
+                id: to_id(target_id)?,
+                kind: overwrite_kind_from_text(&target_kind)?,
+                allow: permissions_from_integer(allow),
+                deny: permissions_from_integer(deny),
+            });
+    }
+    for channel in channels {
+        if let Some(overwrites) = overwrites_by_channel.remove(&to_integer(channel.id.raw())?) {
+            channel.permission_overwrites = overwrites;
+        }
+    }
+    Ok(())
 }
 
 /// Everything needed to create a guild in one transaction.
@@ -423,6 +481,14 @@ pub(crate) async fn delete_role(
         .bind(deleted_position)
         .execute(&mut *transaction)
         .await?;
+    sqlx::query(
+        "DELETE FROM channel_permission_overwrites WHERE target_id = ? AND channel_id IN \
+         (SELECT id FROM channels WHERE guild_id = ?)",
+    )
+    .bind(role_id)
+    .bind(guild_id)
+    .execute(&mut *transaction)
+    .await?;
     transaction.commit().await?;
     Ok(true)
 }
@@ -535,7 +601,12 @@ pub(crate) async fn list_guild_channels(
     .bind(to_integer(guild_id.raw())?)
     .fetch_all(pool)
     .await?;
-    rows.into_iter().map(channel_from_row).collect()
+    let mut channels = rows
+        .into_iter()
+        .map(channel_from_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    attach_overwrites(pool, guild_id, &mut channels).await?;
+    Ok(channels)
 }
 
 /// # Errors
@@ -554,7 +625,137 @@ pub(crate) async fn find_guild_channel(
     .bind(channel_id)
     .fetch_optional(pool)
     .await?;
-    row.map(channel_from_row).transpose()
+    with_overwrites(pool, row.map(channel_from_row).transpose()?).await
+}
+
+async fn with_overwrites(
+    pool: &SqlitePool,
+    channel: Option<StoredChannel>,
+) -> Result<Option<StoredChannel>, GuildStorageError> {
+    let Some(mut channel) = channel else {
+        return Ok(None);
+    };
+    let rows: Vec<(i64, String, i64, i64)> = sqlx::query_as(
+        "SELECT target_id, target_kind, allow, deny FROM channel_permission_overwrites \
+         WHERE channel_id = ? ORDER BY target_id",
+    )
+    .bind(to_integer(channel.id.raw())?)
+    .fetch_all(pool)
+    .await?;
+    channel.permission_overwrites = rows
+        .into_iter()
+        .map(|(target_id, target_kind, allow, deny)| {
+            Ok(PermissionOverwrite {
+                id: to_id(target_id)?,
+                kind: overwrite_kind_from_text(&target_kind)?,
+                allow: permissions_from_integer(allow),
+                deny: permissions_from_integer(deny),
+            })
+        })
+        .collect::<Result<_, GuildStorageError>>()?;
+    Ok(Some(channel))
+}
+
+/// Creates or replaces the overwrite of `overwrite.id` in a channel, provided the channel has
+/// fewer than `maximum_overwrites` overwrites or already holds one for that target (checked in
+/// the same statement).
+///
+/// # Errors
+/// `LimitReached` at the quota; database errors.
+pub(crate) async fn set_overwrite(
+    pool: &SqlitePool,
+    channel_id: Snowflake,
+    overwrite: &PermissionOverwrite,
+    maximum_overwrites: u32,
+) -> Result<(), GuildStorageError> {
+    let channel_id_integer = to_integer(channel_id.raw())?;
+    let target_id_integer = to_integer(overwrite.id.raw())?;
+    let written = sqlx::query(
+        "INSERT INTO channel_permission_overwrites (channel_id, target_id, target_kind, allow, deny) \
+         SELECT ?, ?, ?, ?, ? \
+         WHERE (SELECT COUNT(*) FROM channel_permission_overwrites \
+                WHERE channel_id = ? AND target_id != ?) < ? \
+         ON CONFLICT (channel_id, target_id) DO UPDATE SET \
+         target_kind = excluded.target_kind, allow = excluded.allow, deny = excluded.deny",
+    )
+    .bind(channel_id_integer)
+    .bind(target_id_integer)
+    .bind(overwrite_kind_to_text(overwrite.kind))
+    .bind(permissions_to_integer(overwrite.allow))
+    .bind(permissions_to_integer(overwrite.deny))
+    .bind(channel_id_integer)
+    .bind(target_id_integer)
+    .bind(to_count(maximum_overwrites))
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if written == 0 {
+        return Err(GuildStorageError::LimitReached);
+    }
+    Ok(())
+}
+
+/// Returns whether an overwrite was deleted.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn delete_overwrite(
+    pool: &SqlitePool,
+    channel_id: Snowflake,
+    target_id: Snowflake,
+) -> Result<bool, GuildStorageError> {
+    let (Some(channel_id), Some(target_id)) =
+        (lookup_integer(channel_id), lookup_integer(target_id))
+    else {
+        return Ok(false);
+    };
+    let deleted = sqlx::query(
+        "DELETE FROM channel_permission_overwrites WHERE channel_id = ? AND target_id = ?",
+    )
+    .bind(channel_id)
+    .bind(target_id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(deleted > 0)
+}
+
+/// Every member of the guild with their named role ids: who a restricted channel's events go to
+/// is computed from it (ADR-0015).
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn all_member_role_ids(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+) -> Result<Vec<(Snowflake, Vec<Snowflake>)>, GuildStorageError> {
+    let guild_id_integer = to_integer(guild_id.raw())?;
+    let member_ids: Vec<i64> =
+        sqlx::query_scalar("SELECT user_id FROM guild_members WHERE guild_id = ?")
+            .bind(guild_id_integer)
+            .fetch_all(pool)
+            .await?;
+    let assignments: Vec<(i64, i64)> =
+        sqlx::query_as("SELECT user_id, role_id FROM member_roles WHERE guild_id = ?")
+            .bind(guild_id_integer)
+            .fetch_all(pool)
+            .await?;
+    let mut role_ids_by_user: HashMap<i64, Vec<Snowflake>> = HashMap::new();
+    for (user_id, role_id) in assignments {
+        role_ids_by_user
+            .entry(user_id)
+            .or_default()
+            .push(to_id(role_id)?);
+    }
+    member_ids
+        .into_iter()
+        .map(|user_id| {
+            Ok((
+                to_id(user_id)?,
+                role_ids_by_user.remove(&user_id).unwrap_or_default(),
+            ))
+        })
+        .collect()
 }
 
 /// Inserts the channel at the end of its guild (position = last + 1) and returns it, provided
@@ -624,7 +825,7 @@ pub(crate) async fn update_channel_fields(
     .bind(to_integer(channel_id.raw())?)
     .fetch_optional(pool)
     .await?;
-    row.map(channel_from_row).transpose()
+    with_overwrites(pool, row.map(channel_from_row).transpose()?).await
 }
 
 /// # Errors
@@ -638,6 +839,22 @@ pub(crate) async fn delete_channel(
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn find_guild_owner_id(
+    pool: &SqlitePool,
+    guild_id: Snowflake,
+) -> Result<Option<Snowflake>, GuildStorageError> {
+    let Some(guild_id) = lookup_integer(guild_id) else {
+        return Ok(None);
+    };
+    let owner_id: Option<i64> = sqlx::query_scalar("SELECT owner_id FROM guilds WHERE id = ?")
+        .bind(guild_id)
+        .fetch_optional(pool)
+        .await?;
+    owner_id.map(to_id).transpose()
 }
 
 /// # Errors

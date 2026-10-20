@@ -21,6 +21,7 @@ pub const MAXIMUM_ACTIVE_INVITES_PER_GUILD: u32 = 1_000;
 pub const MAXIMUM_ROLES_PER_GUILD: u32 = 250;
 pub const MAXIMUM_ROLE_NAME_LENGTH: usize = 100;
 pub const MAXIMUM_ROLE_COLOR: u32 = 0xFF_FFFF;
+pub const MAXIMUM_OVERWRITES_PER_CHANNEL: u32 = 100;
 /// shortcut: the member list is capped, not paginated; paginate with the member list UI.
 pub const MAXIMUM_MEMBERS_LISTED: u32 = 1_000;
 const INVITE_CODE_ALPHABET: &[u8; 62] =
@@ -59,6 +60,8 @@ pub enum GuildRuleViolation {
     RoleColor,
     #[error("unknown permission bits")]
     UnknownPermissions,
+    #[error("an overwrite cannot allow and deny the same permission")]
+    OverwriteAllowsAndDeniesOneBit,
     #[error("role_ids must list every role of the guild except @everyone, once each")]
     RoleOrder,
     #[error("@everyone keeps its name and colour, and cannot be deleted, given or taken away")]

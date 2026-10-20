@@ -53,12 +53,7 @@ impl AppState {
                 ids.clone(),
                 events.clone(),
             )),
-            messages: Arc::new(Messages::new(
-                pool.clone(),
-                ids,
-                guilds.clone(),
-                events.clone(),
-            )),
+            messages: Arc::new(Messages::new(pool.clone(), ids, guilds.clone())),
             events,
             gateway_sessions: Arc::default(),
             guilds,
@@ -121,6 +116,11 @@ pub(crate) fn router(state: AppState) -> Router {
         .route(
             "/api/v1/channels/{channel_id}",
             patch(guild_routes::update_channel).delete(guild_routes::delete_channel),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/permissions/{target_id}",
+            put(guild_routes::set_permission_overwrite)
+                .delete(guild_routes::delete_permission_overwrite),
         )
         .route(
             "/api/v1/invites/{code}",
@@ -211,12 +211,7 @@ pub(crate) mod tests {
                 ids.clone(),
                 events.clone(),
             )),
-            messages: Arc::new(Messages::new(
-                pool.clone(),
-                ids,
-                guilds.clone(),
-                events.clone(),
-            )),
+            messages: Arc::new(Messages::new(pool.clone(), ids, guilds.clone())),
             events,
             gateway_sessions: Arc::default(),
             guilds,
@@ -990,6 +985,109 @@ pub(crate) mod tests {
             json::<ApiErrorBody>(&body).code,
             ApiErrorCode::ValidationFailed
         );
+    }
+
+    #[tokio::test]
+    async fn overwrites_hide_a_channel_over_http() {
+        use mellow_protocol::{Channel, Guild, Message, ReadState};
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, guest, guild_id, _) = guild_with_guest(&state).await;
+        let (_, body) = send(
+            &state,
+            authorized("GET", &format!("/api/v1/guilds/{guild_id}"), &owner, None),
+        )
+        .await;
+        let general = json::<Guild>(&body).channels[1].id;
+        let messages_path = format!("/api/v1/channels/{general}/messages");
+        let (_, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &messages_path,
+                &owner,
+                Some(serde_json::json!({"content": "hello"})),
+            ),
+        )
+        .await;
+        let message_id = json::<Message>(&body).id;
+        send(
+            &state,
+            authorized(
+                "PUT",
+                &format!("/api/v1/channels/{general}/read-state"),
+                &guest,
+                Some(serde_json::json!({"last_read_message_id": message_id})),
+            ),
+        )
+        .await;
+
+        let (_, body) = send(
+            &state,
+            authorized("GET", "/api/v1/users/@me/read-states", &guest, None),
+        )
+        .await;
+        assert_eq!(json::<Vec<ReadState>>(&body).len(), 1, "read before hiding");
+
+        let overwrite_path = format!("/api/v1/channels/{general}/permissions/{guild_id}");
+        let view = mellow_protocol::Permissions::VIEW_CHANNEL
+            .bits()
+            .to_string();
+        let (status, body) = send(
+            &state,
+            authorized(
+                "PUT",
+                &overwrite_path,
+                &owner,
+                Some(serde_json::json!({"kind": "role", "deny": view})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json::<Channel>(&body).permission_overwrites.len(), 1);
+
+        let (status, _) = send(&state, authorized("GET", &messages_path, &guest, None)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (_, body) = send(
+            &state,
+            authorized("GET", &format!("/api/v1/guilds/{guild_id}"), &guest, None),
+        )
+        .await;
+        assert!(
+            json::<Guild>(&body)
+                .channels
+                .iter()
+                .all(|channel| channel.id != general)
+        );
+        let (_, body) = send(
+            &state,
+            authorized("GET", "/api/v1/users/@me/read-states", &guest, None),
+        )
+        .await;
+        assert_eq!(json::<Vec<ReadState>>(&body), Vec::new());
+
+        let (status, body) = send(
+            &state,
+            authorized(
+                "PUT",
+                &overwrite_path,
+                &owner,
+                Some(serde_json::json!({"kind": "role", "allow": view, "deny": view})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json::<ApiErrorBody>(&body).code,
+            ApiErrorCode::ValidationFailed
+        );
+
+        let (status, _) = send(&state, authorized("DELETE", &overwrite_path, &owner, None)).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = send(&state, authorized("GET", &messages_path, &guest, None)).await;
+        pool.close().await;
+        assert_eq!(status, StatusCode::OK);
     }
 
     async fn owner_and_general_channel(state: &AppState) -> (String, Snowflake) {

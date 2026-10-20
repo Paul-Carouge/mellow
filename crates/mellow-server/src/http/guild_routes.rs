@@ -8,8 +8,8 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use mellow_protocol::{
     Channel, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest, CreateRoleRequest,
-    Guild, GuildSummary, Invite, Member, ReorderRolesRequest, Role, Snowflake,
-    UpdateChannelRequest, UpdateRoleRequest,
+    Guild, GuildSummary, Invite, Member, ReorderRolesRequest, Role, SetPermissionOverwriteRequest,
+    Snowflake, UpdateChannelRequest, UpdateRoleRequest,
 };
 
 use crate::domain::clock::now_unix_milliseconds;
@@ -229,6 +229,35 @@ pub(crate) async fn reorder_roles(
         state
             .guilds
             .reorder_roles(user.id, guild_id, request)
+            .await?,
+    ))
+}
+
+pub(crate) async fn set_permission_overwrite(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, target_id)): ApiPath<(Snowflake, Snowflake)>,
+    ApiJson(request): ApiJson<SetPermissionOverwriteRequest>,
+) -> Result<Json<Channel>, ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    Ok(Json(
+        state
+            .guilds
+            .set_permission_overwrite(user.id, channel_id, target_id, request)
+            .await?,
+    ))
+}
+
+pub(crate) async fn delete_permission_overwrite(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, target_id)): ApiPath<(Snowflake, Snowflake)>,
+) -> Result<Json<Channel>, ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    Ok(Json(
+        state
+            .guilds
+            .delete_permission_overwrite(user.id, channel_id, target_id)
             .await?,
     ))
 }
