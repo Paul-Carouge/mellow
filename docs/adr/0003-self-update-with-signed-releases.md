@@ -1,6 +1,6 @@
 # 0003. Update the server in place from signed releases
 
-- Status: Accepted
+- Status: Accepted, amended by [ADR-0016](0016-sign-releases-in-a-protected-ci-environment.md) (the signing key lives in a protected CI environment)
 - Date: 2026-10-19
 
 ## Context

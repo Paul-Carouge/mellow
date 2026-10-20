@@ -1,0 +1,97 @@
+name: Release
+
+# Builds, signs and publishes a release for a pushed tag `vX.Y.Z` (ADR-0016).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Linux desktop build: Slint (fontconfig, xkbcommon), the secret store (D-Bus), the clipboard (xcb).
+  LINUX_DESKTOP_PACKAGES: pkg-config libfontconfig1-dev libxkbcommon-dev libdbus-1-dev libxcb1-dev
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04, extension: "" }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm, extension: "" }
+          - { target: aarch64-apple-darwin, os: macos-15, extension: "" }
+          - { target: x86_64-pc-windows-msvc, os: windows-2025, extension: ".exe" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The tag matches the workspace version
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          test "v${version}" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != v${version}"; exit 1; }
+          echo "MELLOW_VERSION=${version}" >> "$GITHUB_ENV"
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          # shellcheck disable=SC2086 # the package list is split into words on purpose
+          sudo apt-get update && sudo apt-get install --yes --no-install-recommends ${LINUX_DESKTOP_PACKAGES}
+      - run: cargo build --release --locked -p mellow-server -p mellow-desktop
+      - name: Name the assets
+        shell: bash
+        run: |
+          mkdir dist
+          for binary in mellow-server mellow-desktop; do
+            cp "target/release/${binary}${{ matrix.extension }}" \
+              "dist/${binary}-${MELLOW_VERSION}-${{ matrix.target }}${{ matrix.extension }}"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Sign and publish
+    needs: build
+    runs-on: ubuntu-24.04
+    # Waits for the maintainer's approval; the signing key exists only in this environment.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: unsigned-*
+          path: dist
+          merge-multiple: true
+      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends minisign
+      - name: Sign every asset
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        working-directory: dist
+        run: |
+          umask 077
+          key_file="$(mktemp)"
+          trap 'rm -f "${key_file}"' EXIT
+          printf '%s\n' "${MINISIGN_SECRET_KEY}" > "${key_file}"
+          for asset in mellow-*; do
+            # The trusted comment names the file, so a signature cannot be replayed for another one.
+            minisign -S -s "${key_file}" -m "${asset}" -t "${asset}"
+          done
+          sha256sum mellow-* | grep -v '\.minisig$' > SHA256SUMS
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" --verify-tag --title "Mellow ${GITHUB_REF_NAME}" --generate-notes
