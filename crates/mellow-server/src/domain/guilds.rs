@@ -5,11 +5,11 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use mellow_protocol::{
-    AuditAction, AuditLogEntry, AuditLogQuery, Ban, Channel, ChannelKind, CreateBanRequest,
-    CreateChannelRequest, CreateGuildRequest, CreateInviteRequest, CreateRoleRequest, GatewayEvent,
-    Guild, GuildSummary, Invite, Member, OverwriteKind, PermissionOverwrite, Permissions,
-    PresenceStatus, PublicUser, ReorderRolesRequest, Role, SetPermissionOverwriteRequest,
-    Snowflake, UpdateChannelRequest, UpdateRoleRequest,
+    AuditAction, AuditChange, AuditChangeKey, AuditLogEntry, AuditLogQuery, Ban, Channel,
+    ChannelKind, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
+    CreateRoleRequest, GatewayEvent, Guild, GuildSummary, Invite, Member, OverwriteKind,
+    PermissionOverwrite, Permissions, PresenceStatus, PublicUser, ReorderRolesRequest, Role,
+    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateRoleRequest,
 };
 use sqlx::SqlitePool;
 
@@ -27,7 +27,7 @@ use crate::domain::permissions::{
 };
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::events::EventHub;
-use crate::storage::audit_log::{self as audit_log_storage, NewAuditEntry};
+use crate::storage::audit_log::{self as audit_log_storage, ChannelEntryFilter, NewAuditEntry};
 use crate::storage::guilds::{
     self as guild_storage, GuildStorageError, JoinOutcome, Membership, NewGuild, RoleFieldChanges,
     StoredChannel, StoredInvite,
@@ -115,6 +115,27 @@ fn channel_from_stored(channel: StoredChannel) -> Channel {
     }
 }
 
+/// `Some` when `new` is given and differs from `old`.
+fn text_change(key: AuditChangeKey, old: &str, new: Option<&str>) -> Option<AuditChange> {
+    new.filter(|new| *new != old).map(|new| AuditChange {
+        key,
+        old_value: old.to_owned(),
+        new_value: new.to_owned(),
+    })
+}
+
+fn permissions_change(
+    key: AuditChangeKey,
+    old: Permissions,
+    new: Permissions,
+) -> Option<AuditChange> {
+    (old != new).then(|| AuditChange {
+        key,
+        old_value: old.bits().to_string(),
+        new_value: new.bits().to_string(),
+    })
+}
+
 /// Who receives events about a channel (ADR-0015).
 pub(crate) enum ChannelAudience {
     EveryMember,
@@ -144,7 +165,7 @@ impl Guilds {
     }
 
     /// What the audit log records for an action about to be written, in the same transaction.
-    fn audit_entry(
+    pub(crate) fn audit_entry(
         &self,
         guild_id: Snowflake,
         actor_id: Snowflake,
@@ -152,6 +173,16 @@ impl Guilds {
         target_id: Option<Snowflake>,
         context_id: Option<Snowflake>,
     ) -> Result<NewAuditEntry, GuildError> {
+        // Decided here, so no caller can forget the channel that hides an entry (ADR-0015).
+        let channel_id = match action {
+            AuditAction::ChannelCreate
+            | AuditAction::ChannelUpdate
+            | AuditAction::ChannelDelete => target_id,
+            AuditAction::OverwriteSet
+            | AuditAction::OverwriteDelete
+            | AuditAction::MessageDelete => context_id,
+            _ => None,
+        };
         Ok(NewAuditEntry {
             id: self.ids.next_id(now_unix_milliseconds())?,
             guild_id,
@@ -159,7 +190,9 @@ impl Guilds {
             action,
             target_id,
             context_id,
+            channel_id,
             reason: String::new(),
+            changes: Vec::new(),
         })
     }
 
@@ -541,14 +574,28 @@ impl Guilds {
             .topic
             .map(|topic| normalize_topic(&topic))
             .transpose()?;
+        let changes: Vec<AuditChange> = [
+            text_change(AuditChangeKey::Name, &channel.name, name.as_deref()),
+            text_change(AuditChangeKey::Topic, &channel.topic, topic.as_deref()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        // Nothing to write, record or send.
+        if changes.is_empty() {
+            return Ok(channel_from_stored(channel));
+        }
         let audience = self.channel_audience(&channel).await?;
-        let audit = self.audit_entry(
-            channel.guild_id,
-            user_id,
-            AuditAction::ChannelUpdate,
-            Some(channel.id),
-            None,
-        )?;
+        let audit = NewAuditEntry {
+            changes,
+            ..self.audit_entry(
+                channel.guild_id,
+                user_id,
+                AuditAction::ChannelUpdate,
+                Some(channel.id),
+                None,
+            )?
+        };
         let updated = guild_storage::update_channel_fields(
             &self.pool,
             channel.id,
@@ -648,13 +695,22 @@ impl Guilds {
             return Ok(channel_from_stored(channel));
         }
         let viewers_before = self.viewers_before_overwrite_change(&channel).await?;
-        let audit = self.audit_entry(
-            channel.guild_id,
-            user_id,
-            AuditAction::OverwriteSet,
-            Some(target_id),
-            Some(channel.id),
-        )?;
+        let audit = NewAuditEntry {
+            changes: [
+                permissions_change(AuditChangeKey::Allow, current_allow, allow),
+                permissions_change(AuditChangeKey::Deny, current_deny, deny),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            ..self.audit_entry(
+                channel.guild_id,
+                user_id,
+                AuditAction::OverwriteSet,
+                Some(target_id),
+                Some(channel.id),
+            )?
+        };
         guild_storage::set_overwrite(
             &self.pool,
             channel.id,
@@ -704,13 +760,22 @@ impl Guilds {
             return Err(GuildError::MissingPermissions);
         }
         let viewers_before = self.viewers_before_overwrite_change(&channel).await?;
-        let audit = self.audit_entry(
-            channel.guild_id,
-            user_id,
-            AuditAction::OverwriteDelete,
-            Some(target_id),
-            Some(channel.id),
-        )?;
+        let audit = NewAuditEntry {
+            changes: [
+                permissions_change(AuditChangeKey::Allow, current.allow, Permissions::empty()),
+                permissions_change(AuditChangeKey::Deny, current.deny, Permissions::empty()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            ..self.audit_entry(
+                channel.guild_id,
+                user_id,
+                AuditAction::OverwriteDelete,
+                Some(target_id),
+                Some(channel.id),
+            )?
+        };
         // Refused if the overwrite gained a permission the member lacks since it was read.
         if !guild_storage::delete_overwrite(&self.pool, channel.id, target_id, held, &audit).await?
         {
@@ -1034,21 +1099,46 @@ impl Guilds {
         let (manager, role) = self
             .manager_and_manageable_role(user_id, guild_id, role_id)
             .await?;
-        if name.is_none() && color.is_none() && permissions.is_none() {
-            return Ok(role);
-        }
         if let Some(permissions) = permissions
             && !manager.can_change_permissions(role.permissions, permissions)
         {
             return Err(GuildError::MissingPermissions);
         }
-        let audit = self.audit_entry(
-            guild_id,
-            user_id,
-            AuditAction::RoleUpdate,
-            Some(role_id),
-            None,
-        )?;
+        // What storage will write: only the bits the manager holds take the new value.
+        let effective_permissions = permissions.map(|wanted| {
+            role.permissions.difference(manager.permissions)
+                | wanted.intersection(manager.permissions)
+        });
+        let changes: Vec<AuditChange> = [
+            text_change(AuditChangeKey::Name, &role.name, name.as_deref()),
+            color.and_then(|color| {
+                text_change(
+                    AuditChangeKey::Color,
+                    &role.color.to_string(),
+                    Some(&color.to_string()),
+                )
+            }),
+            effective_permissions.and_then(|permissions| {
+                permissions_change(AuditChangeKey::Permissions, role.permissions, permissions)
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        // Nothing to write, record or send.
+        if changes.is_empty() {
+            return Ok(role);
+        }
+        let audit = NewAuditEntry {
+            changes,
+            ..self.audit_entry(
+                guild_id,
+                user_id,
+                AuditAction::RoleUpdate,
+                Some(role_id),
+                None,
+            )?
+        };
         let updated = guild_storage::update_role_fields(
             &self.pool,
             guild_id,
@@ -1435,10 +1525,21 @@ impl Guilds {
         let limit = audit_log_page_size(query.limit)?;
         self.require_member_permissions(guild_id, user_id, Permissions::VIEW_AUDIT_LOG)
             .await?;
-        Ok(
-            audit_log_storage::list_audit_entries(&self.pool, guild_id, query.before, limit)
-                .await?,
+        let guild = self.get_guild(user_id, guild_id).await?;
+        // Entries about a channel the reader cannot view stay hidden, as the channel does.
+        let filter = if guild.my_permissions.contains(Permissions::ADMINISTRATOR) {
+            ChannelEntryFilter::All
+        } else {
+            ChannelEntryFilter::Only(guild.channels.iter().map(|channel| channel.id).collect())
+        };
+        Ok(audit_log_storage::list_audit_entries(
+            &self.pool,
+            guild_id,
+            query.before,
+            limit,
+            &filter,
         )
+        .await?)
     }
 
     /// Needs `BAN_MEMBERS`. shortcut: capped, not paginated; paginate with the bans screen.
@@ -2462,9 +2563,15 @@ mod tests {
         let roles = guild_storage::list_roles(&fixture.pool, guild.id)
             .await
             .unwrap();
-        let audit_log = audit_log_storage::list_audit_entries(&fixture.pool, guild.id, None, 100)
-            .await
-            .unwrap();
+        let audit_log = audit_log_storage::list_audit_entries(
+            &fixture.pool,
+            guild.id,
+            None,
+            100,
+            &ChannelEntryFilter::All,
+        )
+        .await
+        .unwrap();
         fixture.pool.close().await;
         assert_eq!(outdated, None);
         assert!(
@@ -3307,6 +3414,276 @@ mod tests {
             bad_limit,
             Err(GuildError::InvalidInput(GuildRuleViolation::AuditLogLimit))
         ));
+    }
+
+    async fn audit_actions(fixture: &Fixture, guild_id: Snowflake) -> Vec<AuditAction> {
+        actions(
+            &fixture
+                .guilds
+                .list_audit_log(fixture.owner, guild_id, AuditLogQuery::default())
+                .await
+                .unwrap(),
+        )
+    }
+
+    /// `guild_with_member`'s guild where `first` (with a `SEND_MESSAGES` overwrite on `general`)
+    /// is given to `other`, `second` exists, and `third` is banned.
+    struct AuditedGuild {
+        guild: Guild,
+        general: Snowflake,
+        first: Role,
+        second: Role,
+    }
+
+    async fn audited_guild(fixture: &Fixture) -> AuditedGuild {
+        let guild = guild_with_member(fixture).await;
+        let owner = fixture.owner;
+        let general = guild.channels[1].id;
+        let send = Permissions::SEND_MESSAGES;
+        let guilds = &fixture.guilds;
+        let first = guilds
+            .create_role(
+                owner,
+                guild.id,
+                role_request("First", Permissions::empty()),
+                NOW,
+            )
+            .await
+            .unwrap();
+        let second = guilds
+            .create_role(
+                owner,
+                guild.id,
+                role_request("Second", Permissions::empty()),
+                NOW,
+            )
+            .await
+            .unwrap();
+        guilds
+            .set_permission_overwrite(
+                owner,
+                general,
+                first.id,
+                overwrite_request(OverwriteKind::Role, send, Permissions::empty()),
+            )
+            .await
+            .unwrap();
+        guilds
+            .add_member_role(owner, guild.id, fixture.other, first.id)
+            .await
+            .unwrap();
+        guilds
+            .ban_member(owner, guild.id, fixture.third, ban_request(""), NOW)
+            .await
+            .unwrap();
+        AuditedGuild {
+            guild,
+            general,
+            first,
+            second,
+        }
+    }
+
+    #[tokio::test]
+    async fn unchanged_or_refused_actions_record_nothing() {
+        let fixture = fixture().await;
+        let AuditedGuild {
+            guild,
+            general,
+            first,
+            second,
+        } = audited_guild(&fixture).await;
+        let guilds = &fixture.guilds;
+        let owner = fixture.owner;
+        let before = audit_actions(&fixture, guild.id).await.len();
+
+        // Nothing changes: nothing is recorded.
+        let rename_to_same = UpdateChannelRequest {
+            name: Some("general".into()),
+            topic: Some(String::new()),
+        };
+        guilds
+            .update_channel(owner, general, rename_to_same)
+            .await
+            .unwrap();
+        guilds
+            .update_role(
+                owner,
+                guild.id,
+                first.id,
+                UpdateRoleRequest {
+                    name: Some("First".into()),
+                    color: Some(0),
+                    permissions: Some(Permissions::empty()),
+                },
+            )
+            .await
+            .unwrap();
+        let not_held = guilds
+            .remove_member_role(owner, guild.id, fixture.other, second.id)
+            .await;
+        let not_banned = guilds.unban_member(owner, guild.id, fixture.other).await;
+        assert_eq!(audit_actions(&fixture, guild.id).await.len(), before);
+        assert!(matches!(not_held, Err(GuildError::NotFound)));
+        assert!(matches!(not_banned, Err(GuildError::NotFound)));
+        fixture.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn every_other_audited_action_is_recorded_with_its_changes() {
+        let fixture = fixture().await;
+        let AuditedGuild {
+            guild,
+            general,
+            first,
+            second,
+        } = audited_guild(&fixture).await;
+        let guilds = &fixture.guilds;
+        let owner = fixture.owner;
+        let send = Permissions::SEND_MESSAGES;
+        guilds
+            .update_channel(
+                owner,
+                general,
+                UpdateChannelRequest {
+                    name: Some("lobby".into()),
+                    topic: None,
+                },
+            )
+            .await
+            .unwrap();
+        guilds
+            .update_role(owner, guild.id, first.id, permissions_update(send))
+            .await
+            .unwrap();
+        guilds
+            .reorder_roles(owner, guild.id, order_of(&[&first, &second]))
+            .await
+            .unwrap();
+        guilds
+            .remove_member_role(owner, guild.id, fixture.other, first.id)
+            .await
+            .unwrap();
+        guilds
+            .delete_permission_overwrite(owner, general, first.id)
+            .await
+            .unwrap();
+        guilds
+            .delete_role(owner, guild.id, second.id)
+            .await
+            .unwrap();
+        guilds
+            .unban_member(owner, guild.id, fixture.third)
+            .await
+            .unwrap();
+        guilds.leave_guild(fixture.other, guild.id).await.unwrap();
+        guilds.delete_channel(owner, general).await.unwrap();
+        let entries = guilds
+            .list_audit_log(owner, guild.id, AuditLogQuery::default())
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        assert_eq!(
+            actions(&entries[..9]),
+            [
+                AuditAction::ChannelDelete,
+                AuditAction::MemberBanRemove,
+                AuditAction::RoleDelete,
+                AuditAction::OverwriteDelete,
+                AuditAction::MemberRoleRemove,
+                AuditAction::RolesReorder,
+                AuditAction::RoleUpdate,
+                AuditAction::ChannelUpdate,
+                AuditAction::MemberBanAdd,
+            ],
+            "leaving records nothing"
+        );
+        let change = |entry: &AuditLogEntry| {
+            entry
+                .changes
+                .iter()
+                .map(|change| {
+                    (
+                        change.key,
+                        change.old_value.clone(),
+                        change.new_value.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            change(&entries[7]),
+            [(AuditChangeKey::Name, "general".into(), "lobby".into())]
+        );
+        assert_eq!(
+            change(&entries[6]),
+            [(
+                AuditChangeKey::Permissions,
+                "0".into(),
+                send.bits().to_string()
+            )]
+        );
+        assert_eq!(
+            change(&entries[3]),
+            [(AuditChangeKey::Allow, send.bits().to_string(), "0".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn readers_see_no_entries_about_channels_they_cannot_view() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        let guilds = &fixture.guilds;
+        let owner = fixture.owner;
+        let auditors = guilds
+            .create_role(
+                owner,
+                guild.id,
+                role_request("Auditors", Permissions::VIEW_AUDIT_LOG),
+                NOW,
+            )
+            .await
+            .unwrap();
+        guilds
+            .add_member_role(owner, guild.id, fixture.other, auditors.id)
+            .await
+            .unwrap();
+        let staff = guilds
+            .create_channel(owner, guild.id, text_channel("staff", None), NOW)
+            .await
+            .unwrap();
+        guilds
+            .set_permission_overwrite(owner, staff.id, guild.id, hide_from_everyone())
+            .await
+            .unwrap();
+        let gone = guilds
+            .create_channel(owner, guild.id, text_channel("gone", None), NOW)
+            .await
+            .unwrap();
+        guilds.delete_channel(owner, gone.id).await.unwrap();
+        let seen_by_auditor = guilds
+            .list_audit_log(fixture.other, guild.id, AuditLogQuery::default())
+            .await
+            .unwrap();
+        let seen_by_owner = guilds
+            .list_audit_log(owner, guild.id, AuditLogQuery::default())
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        let about = |entries: &[AuditLogEntry], channel_id: Snowflake| {
+            entries.iter().any(|entry| {
+                entry.target_id == Some(channel_id) || entry.context_id == Some(channel_id)
+            })
+        };
+        assert!(!about(&seen_by_auditor, staff.id), "hidden channel");
+        assert!(!about(&seen_by_auditor, gone.id), "deleted channel");
+        assert_eq!(
+            actions(&seen_by_auditor),
+            [AuditAction::MemberRoleAdd, AuditAction::RoleCreate]
+        );
+        assert!(about(&seen_by_owner, staff.id) && about(&seen_by_owner, gone.id));
     }
 
     #[tokio::test]

@@ -23,6 +23,8 @@ pub(crate) enum GuildStorageError {
     UnknownOverwriteKind(String),
     #[error("the audit action stored in the database is unknown: {0}")]
     UnknownAuditAction(String),
+    #[error("the audit changes stored in the database cannot be read")]
+    UnreadableAuditChanges,
     /// A quota checked atomically with the insert was reached.
     #[error("limit reached")]
     LimitReached,
@@ -33,7 +35,7 @@ pub(crate) enum GuildStorageError {
     Database(#[from] sqlx::Error),
 }
 
-fn to_integer(value: u64) -> Result<i64, GuildStorageError> {
+pub(crate) fn to_integer(value: u64) -> Result<i64, GuildStorageError> {
     i64::try_from(value).map_err(|_| GuildStorageError::IntegerOutOfRange)
 }
 
@@ -42,7 +44,7 @@ fn lookup_integer(id: Snowflake) -> Option<i64> {
     i64::try_from(id.raw()).ok()
 }
 
-fn to_id(value: i64) -> Result<Snowflake, GuildStorageError> {
+pub(crate) fn to_id(value: i64) -> Result<Snowflake, GuildStorageError> {
     u64::try_from(value)
         .map(Snowflake::from_raw)
         .map_err(|_| GuildStorageError::IntegerOutOfRange)

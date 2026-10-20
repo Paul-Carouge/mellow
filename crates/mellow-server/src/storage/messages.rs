@@ -3,12 +3,17 @@
 use mellow_protocol::Snowflake;
 use sqlx::SqlitePool;
 
+use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
+use crate::storage::guilds::GuildStorageError;
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum MessageStorageError {
     #[error("value does not fit SQLite's signed 64-bit integer")]
     IntegerOutOfRange,
     #[error("database error")]
     Database(#[from] sqlx::Error),
+    #[error("cannot record the audit entry")]
+    AuditEntry(#[from] GuildStorageError),
 }
 
 fn to_integer(value: u64) -> Result<i64, MessageStorageError> {
@@ -252,16 +257,28 @@ pub(crate) async fn update_message_content(
     row.map(message_from_row).transpose()
 }
 
+/// `audit` records a moderator deleting someone else's message, in the same transaction; an
+/// author deleting their own message records nothing.
+///
 /// # Errors
-/// Fails on database errors.
+/// Fails on database errors. Nothing is written then.
 pub(crate) async fn delete_message(
     pool: &SqlitePool,
     message_id: Snowflake,
+    audit: Option<&NewAuditEntry>,
 ) -> Result<(), MessageStorageError> {
-    sqlx::query("DELETE FROM messages WHERE id = ?")
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let deleted = sqlx::query("DELETE FROM messages WHERE id = ?")
         .bind(to_integer(message_id.raw())?)
-        .execute(pool)
-        .await?;
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+    if deleted > 0
+        && let Some(audit) = audit
+    {
+        insert_audit_entry(&mut transaction, audit).await?;
+    }
+    transaction.commit().await?;
     Ok(())
 }
 

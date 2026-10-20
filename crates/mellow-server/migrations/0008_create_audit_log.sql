@@ -8,7 +8,12 @@ CREATE TABLE audit_log (
     action TEXT NOT NULL,
     target_id INTEGER,
     context_id INTEGER,
-    reason TEXT NOT NULL DEFAULT ''
+    -- The channel the entry is about, if any (no foreign key: entries outlive their channel).
+    -- Readers see such an entry only if they can view that channel (ADR-0015).
+    channel_id INTEGER,
+    reason TEXT NOT NULL DEFAULT '',
+    -- JSON list of changed fields with their old and new values, for updates.
+    changes TEXT NOT NULL DEFAULT '[]'
 ) STRICT;
 
 CREATE INDEX audit_log_by_guild_id ON audit_log (guild_id, id);

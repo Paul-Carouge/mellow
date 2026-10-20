@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use mellow_protocol::{
-    AcknowledgeRequest, ChannelKind, EditMessageRequest, GatewayEvent, Message,
+    AcknowledgeRequest, AuditAction, ChannelKind, EditMessageRequest, GatewayEvent, Message,
     MessageHistoryQuery, Permissions, PublicUser, ReadState, SendMessageRequest, Snowflake,
 };
 use sqlx::SqlitePool;
@@ -255,7 +255,7 @@ impl Messages {
         Ok(updated)
     }
 
-    /// The author, or a member with `MANAGE_MESSAGES`, may delete.
+    /// The author, or a member with `MANAGE_MESSAGES`, may delete; the latter is audited.
     pub(crate) async fn delete(
         &self,
         user_id: Snowflake,
@@ -270,7 +270,18 @@ impl Messages {
             return Err(GuildError::MissingPermissions.into());
         }
         let audience = self.guilds.channel_audience(&channel).await?;
-        message_storage::delete_message(&self.pool, message.id).await?;
+        let audit = (message.author_id != user_id)
+            .then(|| {
+                self.guilds.audit_entry(
+                    channel.guild_id,
+                    user_id,
+                    AuditAction::MessageDelete,
+                    Some(message.author_id),
+                    Some(channel.id),
+                )
+            })
+            .transpose()?;
+        message_storage::delete_message(&self.pool, message.id, audit.as_ref()).await?;
         self.guilds.publish_to_audience(
             channel.guild_id,
             &audience,
@@ -636,6 +647,60 @@ mod tests {
                 .channels
                 .iter()
                 .any(|channel| channel.id == staff.id)
+        );
+    }
+
+    #[tokio::test]
+    async fn only_moderators_deleting_others_messages_are_audited() {
+        use mellow_protocol::{AuditAction, AuditLogQuery};
+
+        let fixture = fixture().await;
+        let own = fixture
+            .messages
+            .send(fixture.member, fixture.general, text("mine"), NOW)
+            .await
+            .unwrap();
+        let moderated = fixture
+            .messages
+            .send(fixture.member, fixture.general, text("rule breaking"), NOW)
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .delete(fixture.member, fixture.general, own.id)
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .delete(fixture.owner, fixture.general, moderated.id)
+            .await
+            .unwrap();
+        let entries = fixture
+            .guilds
+            .list_audit_log(fixture.owner, fixture.guild.id, AuditLogQuery::default())
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+        let deletes: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.action == AuditAction::MessageDelete)
+            .collect();
+        assert_eq!(
+            deletes.len(),
+            1,
+            "an author deleting their own message is not moderation"
+        );
+        assert_eq!(
+            (
+                deletes[0].actor_id,
+                deletes[0].target_id,
+                deletes[0].context_id
+            ),
+            (
+                Some(fixture.owner),
+                Some(fixture.member),
+                Some(fixture.general)
+            )
         );
     }
 

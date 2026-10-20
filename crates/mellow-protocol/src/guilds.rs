@@ -105,6 +105,38 @@ pub enum AuditAction {
     MemberKick,
     MemberBanAdd,
     MemberBanRemove,
+    /// A moderator deleted someone else's message: `target_id` is its author, `context_id` the
+    /// channel. Authors deleting their own messages are not recorded.
+    MessageDelete,
+    /// An action added by a newer server; never written, only read by older clients.
+    #[serde(other)]
+    Unknown,
+}
+
+/// A field an audited update changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditChangeKey {
+    Name,
+    Topic,
+    Color,
+    Permissions,
+    /// Of a channel overwrite.
+    Allow,
+    /// Of a channel overwrite.
+    Deny,
+    /// A field added by a newer server.
+    #[serde(other)]
+    Unknown,
+}
+
+/// One changed field, with its values as text: permissions and colours in decimal, as on the
+/// wire elsewhere.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditChange {
+    pub key: AuditChangeKey,
+    pub old_value: String,
+    pub new_value: String,
 }
 
 /// Entry of `GET /api/v1/guilds/{guild_id}/audit-log`, newest first. Its id encodes when it
@@ -119,6 +151,8 @@ pub struct AuditLogEntry {
     pub context_id: Option<Snowflake>,
     /// The ban reason, empty otherwise.
     pub reason: String,
+    /// What an update changed (channel, role or overwrite updates), empty otherwise.
+    pub changes: Vec<AuditChange>,
 }
 
 /// Query of `GET /api/v1/guilds/{guild_id}/audit-log`.
@@ -246,6 +280,18 @@ pub struct Member {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_audit_actions_and_change_keys_still_parse() {
+        let entry: AuditLogEntry = serde_json::from_str(
+            r#"{"id":"1","actor_id":null,"action":"guild_rename","target_id":null,
+               "context_id":null,"reason":"",
+               "changes":[{"key":"icon","old_value":"a","new_value":"b"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(entry.action, AuditAction::Unknown);
+        assert_eq!(entry.changes[0].key, AuditChangeKey::Unknown);
+    }
 
     #[test]
     fn wire_format_uses_string_ids_and_snake_case_kinds() {
