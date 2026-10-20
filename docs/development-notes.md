@@ -4,17 +4,17 @@ Practical notes for the next iterations: how work is organised, and the traps al
 project state (what is done, blocked, next, known gaps) lives in [ROADMAP.md](../ROADMAP.md#status-2026-10-19);
 decisions live in [docs/adr/](adr/). Update this file when a new trap or habit appears.
 
-## Where things stand (2026-10-19)
+## Where things stand (2026-10-20)
 - `main` holds only the first PR (#1). Everything else is an open stack of pull requests, each based on the previous branch:
-  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → #13 (`feat/desktop-session-persistence`) → #14 (`fix/trusted-proxy-addresses`) → `feat/desktop-message-actions`.
+  #2 → #3 → #4 → #5 → #6 → #7 → #8 → #9 → #10 → #11 (`feat/client-core`) → #12 (`feat/built-in-tls`) → #13 (`feat/desktop-session-persistence`) → #14 (`fix/trusted-proxy-addresses`) → #15 (`feat/desktop-message-actions`) → `fix/server-message-ordering-and-nonce-deduplication`.
 - Merge them in that order. After merging one into `main`, retarget the next PR's base to `main` before merging it.
-- New work branches from the tip of the stack (today `feat/desktop-message-actions`) and opens a PR stacked on the latest one, until the stack is merged.
+- New work branches from the tip of the stack (today `fix/server-message-ordering-and-nonce-deduplication`) and opens a PR stacked on the latest one, until the stack is merged.
 - CI never ran: GitHub Actions is blocked by the account's billing. Everything is verified on macOS only.
 
 ## Next candidates
 1. M1 release candidate: run a real instance on a VPS (`init --domain … --use-staging-certificates`, then production), connect the desktop over https, then tag.
 2. End-to-end ACME tests against Pebble (local test certificate authority).
-3. Known gaps listed in the ROADMAP status, server writer task and nonce deduplication first.
+3. Known gaps listed in the ROADMAP status: client outbox (the server side, nonce deduplication, is ready), then `sessions.last_seen` and expired session purge.
 
 ## Workflow that worked
 - One branch per milestone step (`feat/…`), atomic Conventional Commits, a `docs:` commit for README/ROADMAP/ARCHITECTURE/ADR.
@@ -34,6 +34,7 @@ A local hook refuses `git commit` when fmt or clippy fail on the touched crate: 
 
 ## Traps already hit
 - **SQLCipher**: every pool must be closed (`pool.close().await`) before the process or test ends, or the process crashes at exit (ADR-0006). Integration tests stop the server and await it.
+- **Nonces in tests**: a repeated nonce returns the first message, so fixtures sending several messages need a distinct nonce each (see `post_message` in the gateway tests).
 - **Clock in tests**: the gateway validates sessions against the real clock; fixtures that log in through the gateway must use real time, not the fixed `NOW`.
 - **Integration tests of the client core** run a real server through `initialize_instance` + `serve_instance` on a probed free port (`crates/mellow-client-core/tests/`).
 - **Desktop modes**: without environment variables the app resumes the session stored in the OS secret store, or shows the sign-in screen; sign out from the gear menu of the user panel to get back to it. On macOS an unsigned build changes identity on every rebuild, so Keychain asks again for access to the stored entry. `MELLOW_DEMO_WORKSPACE=1` (also implied by the scroll benchmark and `MELLOW_SPIKE_SNAPSHOT_DIRECTORY`) runs the fake-data shell. Snapshots are written by the app itself, because screen capture is not permitted.

@@ -128,7 +128,7 @@ Exact versions are pinned in the workspace `Cargo.toml` and `Cargo.lock` is comm
 ### 4.3 Storage
 
 - **SQLite in WAL mode**, one file `mellow.db` in the data directory ([ADR-0002](docs/adr/0002-single-binary-server-with-embedded-sqlite.md)).
-- One writer connection behind a dedicated task (SQLite allows a single writer); a pool of reader connections. Writes are short transactions; message fan-out happens after commit.
+- One writer connection behind a dedicated task (SQLite allows a single writer); a pool of reader connections. Writes are short transactions; message fan-out happens after commit. Today only message sends are serialized, by a per-process lock held from id generation to `MESSAGE_CREATE` publication, so messages commit and reach gateways in id order and an `after` cursor never skips one.
 - Migrations are embedded in the binary and run at startup. Before applying a migration, the server writes a consistent snapshot with `VACUUM INTO backups/pre-migration-<version>.db`.
 - Attachments are stored encrypted on disk under `attachments/<id prefix>/<id>`. Metadata (owner, name, mime type, size, plaintext SHA-256 for deduplication) lives in SQLite. Size limits are configurable.
 - Full-text search uses SQLite FTS5 (post-MVP, but the schema keeps it possible).
@@ -191,7 +191,7 @@ The computation is a pure function in `domain`, unit-tested exhaustively, and is
 - Fan-out is in-process (`events::EventHub`): each event is serialized once and queued to the sessions of its guild or user. A session that falls behind is cut off and told to identify again instead of blocking others. No per-recipient permission filter yet: in M1 the `@everyone` role always holds `VIEW_CHANNEL`; filtering by effective channel permissions must land with roles and overwrites (M2, ADR-0007).
 - Presence (online, idle, do not disturb, offline) and typing indicators live in memory only.
 - Implementation (M1.4): a session outlives its WebSocket for 60 s with a replay buffer (1 024 dispatches, 2 MB, sharing the hub's serialized events), so `resume` replays what was missed; resuming with another user's token is refused. Logout cuts off the token's sessions at once; heartbeats (30 s, 45 s deadline) also revalidate the token, at most every 15 s. Limits: 4 KB client frames, identify within 10 s, 10 sessions per user (checked atomically), 10 gateway connections per 10 s per address, 10 000 connections in total, 10 s write timeout and 256 KB write buffer per socket. Presence is online/offline from live sessions; "offline" is published under the same lock that removes the last session.
-- A message's `nonce` comes back only in the sender's REST response; the `MESSAGE_CREATE` event, including to the sender's own sessions, never carries it.
+- A message's `nonce` comes back only in the sender's REST response; the `MESSAGE_CREATE` event, including to the sender's own sessions, never carries it. Nonces are stored, unique per channel and author: a send repeating one returns the message created the first time, without a new event.
 
 ### 4.9 Admin web UI
 
@@ -228,7 +228,7 @@ The client core contains everything that is not drawing pixels, so desktop and A
 - **Connections:** one `InstanceConnection` per configured instance (REST client on `reqwest` with rustls, gateway on `tokio-tungstenite`), with reconnection, resume and exponential backoff with jitter.
 - **State:** an in-memory store of guilds, channels, members, messages, presence and read states, updated by gateway events and REST responses. UIs read immutable snapshots and subscribe to change notifications.
 - **Local cache:** a per-instance SQLite database storing recent messages and metadata, so the app opens instantly and shows content offline. The cache is disposable: it can always be rebuilt from the server.
-- **Outbox:** messages sent while offline or during reconnect are queued with a client-generated nonce, shown as pending, and reconciled with the server event carrying the same nonce.
+- **Outbox:** messages sent while offline or during reconnect are queued with a client-generated nonce, shown as pending, and reconciled with the REST response echoing the nonce; a retry after a lost response reuses the nonce, so the server returns the message it already created instead of a duplicate.
 - **API surface:** async functions and an event stream, designed to be exported by UniFFI without leaking Rust-specific types (no lifetimes, no generics in the exported API).
 - **Built so far (M1.5):** `InstanceAddress` (https only, plain http on loopback), `RestClient`, `run_gateway` (identify, heartbeat, resume, backoff with jitter; reports `Ready`, events, `Disconnected`, `SignedOut`) and `ClientState`, a pure reducer the UI owns. One instance at a time; local cache and outbox are not built yet.
 
