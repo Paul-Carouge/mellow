@@ -3,7 +3,7 @@ import { MellowColor, MellowSize, MellowTheme, MellowType } from "tokens.slint";
 import "../fonts/Figtree[wght].ttf";
 import "../fonts/Figtree-Italic[wght].ttf";
 import { ServerRail, ServerItem } from "components/server_rail.slint";
-import { MelliState } from "components/melli.slint";
+import { MelliAnimation, MelliState } from "components/melli.slint";
 import { ChannelSidebar, ChannelListRow, DirectMessageRow } from "components/channel_sidebar.slint";
 import { ChatPane, HistoryStartState, MessageDelivery, MessageRow } from "components/chat_pane.slint";
 import { MemberList, MemberListRow } from "components/member_list.slint";
@@ -15,7 +15,7 @@ import { UpdateStatus, UserSettingsScreen } from "components/user_settings.slint
 import { RoleListRow, RolePermissionRow, ServerSettingsScreen } from "components/server_settings.slint";
 import { AddServerDialog, CreateChannelDialog, InvitePeopleDialog, LeaveServerDialog } from "components/server_dialogs.slint";
 
-export { MelliState, ServerItem,ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, UpdateStatus, RoleListRow, RolePermissionRow }
+export { MelliAnimation, MelliState, ServerItem, ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, UpdateStatus, RoleListRow, RolePermissionRow }
 
 // The window-wide dialog open over the shell, if any (DESIGN.md §6.35).
 export enum ShellDialog { none, add-server, invite-people, create-channel, leave-server }
