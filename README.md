@@ -4,10 +4,10 @@ A calm, self-hostable alternative to Discord, written in Rust.
 
 - **Self-hosting in minutes:** one server binary, one data directory, no Docker, no external database, one-command updates.
 - **Feels like Discord:** same layout and habits (servers, channels, DMs, roles, attachments), with Mellow's own brand.
-- **Native clients:** desktop (Linux, macOS, Windows) in Rust with Slint, Android in Kotlin with Material 3 Expressive.
+- **Clients:** a web client served by the instance itself (Svelte), desktop (Linux, macOS, Windows) in Rust with Slint, Android in Kotlin with Material 3 Expressive.
 - **Private by default:** TLS everywhere, data encrypted at rest, no telemetry.
 
-> Status: M1 in progress. The server handles accounts, guilds, channels, messages and a real-time gateway; the desktop client signs in to an instance and chats live. See [ROADMAP.md](ROADMAP.md).
+> Status: M2 in progress. Servers, channels, invites, roles and permissions, moderation and direct messages work end to end in the desktop app; the web client is being built. See [ROADMAP.md](ROADMAP.md).
 
 ## Documentation
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how the system is built.
@@ -25,6 +25,8 @@ cargo fmt --all --check
 cargo deny check
 cargo xtask tokens --check
 ```
+Web client ([`web/`](web/), Svelte 5 + Tailwind 4, Node 24 and npm): `cd web && npm ci`, then `npm run check`, `npm run test`, `npm run build`. `npm run dev` serves it on `http://127.0.0.1:5173` and proxies the API and the gateway to a local instance on `127.0.0.1:18080` (`MELLOW_DEV_INSTANCE` to change it). `cargo build -p mellow-server --features web-client` embeds the built client (`web/dist`) in the server, which then serves it at `/`; release builds always do.
+
 The certificate test against [Pebble](https://github.com/letsencrypt/pebble), the ACME test authority, is ignored by default: `MELLOW_PEBBLE_BINARY=/path/to/pebble cargo test -p mellow-server --lib tls::tests -- --ignored`.
 
 ## Install the desktop app
@@ -54,13 +56,14 @@ cargo run -p mellow-desktop
 ```
 In the desktop app, use `http://127.0.0.1:8080` as the instance address (plain HTTP is accepted only on loopback; any other address must use `https://`). `MELLOW_DEMO_WORKSPACE=1 cargo run -p mellow-desktop` opens the shell on fake data instead, without an instance.
 Registration is closed by default (`registration_mode = "open"` in `mellow.toml` to allow sign-ups). The API so far (all JSON, `Authorization: Bearer <token>` except register/login):
-- Accounts: `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `GET|PATCH /api/v1/users/@me` (display name; username with the current password), `POST /api/v1/users/@me/password` (signs out the other sessions).
+- Accounts: `POST /api/v1/auth/register`, `POST /api/v1/auth/login` (with `X-Mellow-Session-Transport: cookie`, the session goes into an `HttpOnly` cookie usable only from the instance's own origin: the web client), `POST /api/v1/auth/logout`, `GET|PATCH /api/v1/users/@me` (display name; username with the current password), `POST /api/v1/users/@me/password` (signs out the other sessions).
 - Guilds: `POST /api/v1/guilds`, `GET /api/v1/users/@me/guilds`, `GET /api/v1/guilds/{id}`, `GET /api/v1/guilds/{id}/members`, `DELETE /api/v1/guilds/{id}/members/@me`.
 - Channels: `POST /api/v1/guilds/{id}/channels`, `PATCH|DELETE /api/v1/channels/{id}`.
 - Invites: `POST /api/v1/guilds/{id}/invites`, `POST /api/v1/invites/{code}`.
 - Messages: `GET|POST /api/v1/channels/{id}/messages` (history with `before`/`after`/`limit`, chronological), `PATCH|DELETE /api/v1/channels/{id}/messages/{message_id}`.
 - Read states: `PUT /api/v1/channels/{id}/read-state`, `GET /api/v1/users/@me/read-states`.
 - Typing: `POST /api/v1/channels/{id}/typing`.
+- Direct messages: `POST /api/v1/users/@me/channels` (`recipient_id`, someone who shares a server), then the messages routes above.
 - Real time: WebSocket `GET /gateway?v=1` — `hello`, then `identify` (or `resume`) with the session token, `ready`, numbered `dispatch` events (messages, channels, members, guilds, typing, presence, user renames), `heartbeat` every 30 s.
 ### Production: built-in TLS
 On a server with a public domain, let Mellow get its own Let's Encrypt certificate (no reverse proxy, no certbot):
