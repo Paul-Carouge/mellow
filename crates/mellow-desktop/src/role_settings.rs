@@ -485,6 +485,8 @@ mod tests {
                 id: Snowflake::from_raw(id),
                 username: format!("user{id}"),
                 display_name: format!("User {id}"),
+                avatar: None,
+                banner: None,
             },
             role_ids: role_ids.to_vec(),
             joined_at_unix_milliseconds: 0,

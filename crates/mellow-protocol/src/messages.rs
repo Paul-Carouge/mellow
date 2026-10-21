@@ -100,6 +100,8 @@ mod tests {
                 id: Snowflake::from_raw(1),
                 username: "aurore".into(),
                 display_name: "Aurore".into(),
+                avatar: None,
+                banner: None,
             },
             content: "hello".into(),
             reply_to_id: None,

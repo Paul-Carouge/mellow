@@ -10,6 +10,7 @@ use sqlx::SqlitePool;
 use super::{MessageError, Messages};
 use crate::domain::guild_rules::GuildRuleViolation;
 use crate::domain::guilds::{GuildError, Guilds};
+use crate::domain::profile_images::fill_profile_images;
 use crate::storage::direct_messages::{self as storage, StoredDirectMessageChannel};
 
 fn channel_from_stored(stored: StoredDirectMessageChannel) -> DirectMessageChannel {
@@ -22,6 +23,8 @@ fn channel_from_stored(stored: StoredDirectMessageChannel) -> DirectMessageChann
                 id: recipient.id,
                 username: recipient.username,
                 display_name: recipient.display_name,
+                avatar: None,
+                banner: None,
             })
             .collect(),
         last_message_id: stored.last_message_id,
@@ -75,13 +78,22 @@ impl Messages {
         &self,
         user_id: Snowflake,
     ) -> Result<Vec<DirectMessageChannel>, MessageError> {
-        Ok(storage::list_user_conversations(&self.pool, user_id)
-            .await
-            .map_err(GuildError::from)?
-            .into_iter()
-            .filter(|conversation| conversation.last_message_id.is_some())
-            .map(channel_from_stored)
-            .collect())
+        let mut channels: Vec<DirectMessageChannel> =
+            storage::list_user_conversations(&self.pool, user_id)
+                .await
+                .map_err(GuildError::from)?
+                .into_iter()
+                .filter(|conversation| conversation.last_message_id.is_some())
+                .map(channel_from_stored)
+                .collect();
+        fill_profile_images(
+            &self.pool,
+            channels
+                .iter_mut()
+                .flat_map(|channel| channel.recipients.iter_mut()),
+        )
+        .await?;
+        Ok(channels)
     }
 }
 
@@ -90,10 +102,15 @@ async fn conversation_seen_by(
     user_id: Snowflake,
     channel_id: Snowflake,
 ) -> Result<Option<DirectMessageChannel>, MessageError> {
-    Ok(storage::find_user_conversation(pool, user_id, channel_id)
+    let Some(mut channel) = storage::find_user_conversation(pool, user_id, channel_id)
         .await
         .map_err(GuildError::from)?
-        .map(channel_from_stored))
+        .map(channel_from_stored)
+    else {
+        return Ok(None);
+    };
+    fill_profile_images(pool, channel.recipients.iter_mut()).await?;
+    Ok(Some(channel))
 }
 
 /// Whether `user_id` shares a guild with every other participant: writing needs it.

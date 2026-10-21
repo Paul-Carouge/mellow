@@ -232,7 +232,11 @@ mod tests {
         let shared = Arc::new(PublishedEvent {
             payload_json: serde_json::to_string(&event).unwrap().into(),
         });
-        let expected = frame_text(&ServerFrame::Dispatch { sequence: 3, event }).unwrap();
+        let expected = frame_text(&ServerFrame::Dispatch {
+            sequence: 3,
+            event: Box::new(event),
+        })
+        .unwrap();
         assert_eq!(dispatch_frame(3, &shared), expected);
     }
 

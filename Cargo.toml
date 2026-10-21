@@ -29,12 +29,16 @@ clap = { version = "4.6.7", features = ["derive"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink"] }
 getrandom = "0.4.3"
 hkdf = "0.13.0"
+# Decodes uploaded pictures in pure Rust, four formats only (ADR-0021).
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 # Already in the tree through hyper-util; `serde` reads proxy networks from mellow.toml.
 ipnet = { version = "2.12.2", features = ["serde"] }
 mellow-protocol = { path = "crates/mellow-protocol" }
 mellow-client-core = { path = "crates/mellow-client-core" }
 mellow-update = { path = "crates/mellow-update" }
+# Lossless PNG recompression, without its binary, thread pool or zopfli (ADR-0021).
+oxipng = { version = "10.2.1", default-features = false }
 # Ed25519 minisign verification only, no dependencies of its own (ADR-0016).
 minisign-verify = "0.3.0"
 # Already in the tree through the workspace's dependencies; compares release versions.
@@ -62,6 +66,8 @@ toml = "1.1.8"
 url = "2.5.8"
 tower = { version = "0.5.3", features = ["util"] }
 tokio-tungstenite = "0.30.0"
+# Lossless (animated) WebP encoding through libwebp built from source, no system library (ADR-0021).
+webp-animation = { version = "0.10.0", default-features = false, features = ["static"] }
 
 [workspace.lints.rust]
 # deny, not forbid: Slint-generated code needs a local `allow(unsafe_code)`.

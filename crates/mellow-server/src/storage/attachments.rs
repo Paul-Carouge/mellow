@@ -64,6 +64,26 @@ pub(crate) async fn insert_attachment(
     Ok(())
 }
 
+/// Points the row at its compressed file (ADR-0021); `false` when the attachment is gone.
+pub(crate) async fn update_attachment_file(
+    pool: &SqlitePool,
+    attachment_id: Snowflake,
+    file_name: &str,
+    content_type: &str,
+    size_bytes: u64,
+) -> Result<bool, MessageStorageError> {
+    let updated = sqlx::query(
+        "UPDATE attachments SET file_name = ?, content_type = ?, size_bytes = ? WHERE id = ?",
+    )
+    .bind(file_name)
+    .bind(content_type)
+    .bind(to_integer(size_bytes)?)
+    .bind(to_integer(attachment_id.raw())?)
+    .execute(pool)
+    .await?;
+    Ok(updated.rows_affected() > 0)
+}
+
 pub(crate) async fn find_attachment(
     pool: &SqlitePool,
     attachment_id: Snowflake,

@@ -598,6 +598,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn existing_users_have_no_profile_images_and_theirs_go_with_them() {
+        const LAST_VERSION_WITHOUT_PROFILE_IMAGES: i64 = 10;
+        let directory = tempfile::tempdir().unwrap();
+        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_PROFILE_IMAGES, &pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let before: Vec<(Option<i64>, i64, Option<i64>, i64)> = sqlx::query_as(
+            "SELECT avatar_id, avatar_is_animated, banner_id, banner_is_animated FROM users",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO profile_images (id, user_id, still_id, size_bytes, \
+             created_at_unix_milliseconds) VALUES (50, 1, 51, 9, 0), (52, 2, NULL, 9, 0); \
+             UPDATE users SET avatar_id = 50, avatar_is_animated = 1 WHERE id = 1; \
+             DELETE FROM users WHERE id = 1;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let images: Vec<(i64,)> = sqlx::query_as("SELECT id FROM profile_images")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        assert_eq!(
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_PROFILE_IMAGES + 1))
+        );
+        assert_eq!(before, [(None, 0, None, 0), (None, 0, None, 0)]);
+        assert_eq!(images, [(52,)], "a deleted account takes its pictures");
+    }
+
+    #[tokio::test]
     async fn attachments_go_with_their_message_and_keep_their_channel_messages() {
         const LAST_VERSION_WITHOUT_ATTACHMENTS: i64 = 9;
         let directory = tempfile::tempdir().unwrap();
@@ -646,8 +698,8 @@ mod tests {
         pool.close().await;
 
         assert_eq!(
-            outcome.applied_versions,
-            [LAST_VERSION_WITHOUT_ATTACHMENTS + 1]
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_ATTACHMENTS + 1))
         );
         assert_eq!(
             attachments,

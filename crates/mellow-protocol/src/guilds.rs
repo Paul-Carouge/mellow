@@ -267,6 +267,21 @@ pub struct PublicUser {
     pub id: Snowflake,
     pub username: String,
     pub display_name: String,
+    /// Absent when the user has none, and from older servers' payloads (ADR-0021).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<ProfileImage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banner: Option<ProfileImage>,
+}
+
+/// An avatar or a profile banner, served at `GET /api/v1/profile-images/{id}` (and
+/// `/profile-images/{id}/still`, its first frame, when animated). Each version has its own id,
+/// so clients cache it forever (ADR-0021).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileImage {
+    pub id: Snowflake,
+    #[serde(default)]
+    pub is_animated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

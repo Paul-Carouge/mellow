@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use mellow_protocol::{Attachment, Permissions, Snowflake};
 use sqlx::SqlitePool;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+
+use crate::domain::image_processing::optimize_attachment;
 
 use crate::domain::message_rules::{UNKNOWN_CONTENT_TYPE, clean_file_name, sniff_content_type};
 use crate::domain::messages::{MessageError, Messages};
@@ -18,6 +20,42 @@ const PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_mins(10);
 /// Uploads and downloads holding a whole file in memory at once (up to the size limit each):
 /// beyond, the instance answers "busy" rather than running out of memory.
 const CONCURRENT_FILE_TRANSFERS: usize = 6;
+
+/// Uploads waiting for compression; past this, new ones keep their original file.
+const OPTIMIZATION_QUEUE_CAPACITY: usize = 64;
+/// Past this, the original file is kept (decoding included).
+const OPTIMIZATION_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+/// The types `optimize_attachment` can make smaller.
+const OPTIMIZABLE_CONTENT_TYPES: [&str; 3] = ["image/png", "image/jpeg", "image/gif"];
+
+/// Compresses uploaded pictures one at a time, after they were answered, until the server stops
+/// (ADR-0021): one worker bounds the CPU it takes.
+pub(crate) async fn optimize_attachments_in_background(attachments: Arc<Attachments>) {
+    let queue = attachments
+        .optimization_receiver
+        .lock()
+        .ok()
+        .and_then(|mut receiver| receiver.take());
+    let Some(mut queue) = queue else {
+        return;
+    };
+    while let Some(attachment_id) = queue.recv().await {
+        if let Err(error) = attachments.optimize(attachment_id).await {
+            tracing::warn!(%error, "cannot compress an attachment");
+        }
+    }
+}
+
+/// `animation.gif` becomes `animation.webp`; a name without that extension gains it.
+fn with_webp_extension(file_name: &str) -> String {
+    let stem = match file_name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() && extension.eq_ignore_ascii_case("gif") => {
+            stem
+        }
+        _ => file_name,
+    };
+    format!("{stem}.webp")
+}
 
 /// Runs `Attachments::purge` every few minutes until the server stops.
 pub(crate) async fn purge_attachments_periodically(attachments: Arc<Attachments>) {
@@ -72,6 +110,9 @@ pub(crate) struct Attachments {
     files: AttachmentFiles,
     transfers: Arc<Semaphore>,
     maximum_stored_bytes_per_user: u64,
+    optimization_sender: mpsc::Sender<Snowflake>,
+    /// Taken once by `optimize_attachments_in_background`.
+    optimization_receiver: std::sync::Mutex<Option<mpsc::Receiver<Snowflake>>>,
 }
 
 impl Attachments {
@@ -82,6 +123,8 @@ impl Attachments {
         files: AttachmentFiles,
         maximum_stored_bytes_per_user: u64,
     ) -> Self {
+        let (optimization_sender, optimization_receiver) =
+            mpsc::channel(OPTIMIZATION_QUEUE_CAPACITY);
         Self {
             pool,
             ids,
@@ -89,10 +132,12 @@ impl Attachments {
             files,
             transfers: Arc::new(Semaphore::new(CONCURRENT_FILE_TRANSFERS)),
             maximum_stored_bytes_per_user,
+            optimization_sender,
+            optimization_receiver: std::sync::Mutex::new(Some(optimization_receiver)),
         }
     }
 
-    fn transfer_permit(&self) -> Result<OwnedSemaphorePermit, MessageError> {
+    pub(crate) fn transfer_permit(&self) -> Result<OwnedSemaphorePermit, MessageError> {
         self.transfers
             .clone()
             .try_acquire_owned()
@@ -161,12 +206,66 @@ impl Attachments {
             let _ = self.files.delete(id).await;
             return Err(error.into());
         }
+        if OPTIMIZABLE_CONTENT_TYPES.contains(&content_type.as_str()) {
+            // A full queue keeps the original: answering the upload never waits on compression.
+            let _ = self.optimization_sender.try_send(id);
+        }
         Ok(Attachment {
             id,
             file_name: slot.file_name,
             content_type,
             size_bytes,
         })
+    }
+
+    /// Replaces the file with its compressed form when smaller. Anything undecodable, too slow or
+    /// not smaller keeps the original.
+    async fn optimize(&self, attachment_id: Snowflake) -> Result<(), MessageError> {
+        let Some(attachment) = storage::find_attachment(&self.pool, attachment_id).await? else {
+            return Ok(());
+        };
+        // Waits for a slot rather than failing: nobody is waiting on this one.
+        let _permit = self
+            .transfers
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|error| MessageError::Internal(Box::new(error)))?;
+        let original = self.files.read(attachment.id).await?;
+        let content_type = attachment.content_type.clone();
+        let processing = tokio::task::spawn_blocking(move || {
+            let optimized = optimize_attachment(&original, &content_type);
+            (original, optimized)
+        });
+        let Ok(joined) = tokio::time::timeout(OPTIMIZATION_TIME_BUDGET, processing).await else {
+            return Ok(());
+        };
+        let (original, optimized) =
+            joined.map_err(|error| MessageError::Internal(Box::new(error)))?;
+        let Ok(Some(optimized)) = optimized else {
+            return Ok(());
+        };
+        let file_name = if optimized.content_type == attachment.content_type {
+            attachment.file_name
+        } else {
+            with_webp_extension(&attachment.file_name)
+        };
+        let size_bytes = u64::try_from(optimized.bytes.len()).unwrap_or(u64::MAX);
+        self.files.write(attachment.id, optimized.bytes).await?;
+        let updated = storage::update_attachment_file(
+            &self.pool,
+            attachment.id,
+            &file_name,
+            optimized.content_type,
+            size_bytes,
+        )
+        .await;
+        if let Err(error) = updated {
+            // The row still describes the original: put it back so downloads keep matching.
+            self.files.write(attachment.id, original).await?;
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     /// Needs `VIEW_CHANNEL` and `READ_MESSAGE_HISTORY` in the message's channel. An upload not
@@ -212,9 +311,11 @@ impl Attachments {
             self.files.delete(id).await?;
             deleted += 1;
         }
+        // Avatars and banners share the file store (ADR-0021).
         let known_ids: HashSet<Snowflake> = storage::all_attachment_ids(&self.pool)
             .await?
             .into_iter()
+            .chain(crate::storage::profile_images::all_profile_image_file_ids(&self.pool).await?)
             .collect();
         for id in self.files.stored_ids().await? {
             if id.unix_milliseconds() < cutoff && !known_ids.contains(&id) {
@@ -224,5 +325,19 @@ impl Attachments {
         }
         deleted += self.files.remove_partial_files_before(cutoff).await?;
         Ok(deleted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_webp_extension;
+
+    #[test]
+    fn a_converted_gif_is_named_webp() {
+        assert_eq!(with_webp_extension("party.gif"), "party.webp");
+        assert_eq!(with_webp_extension("PARTY.GIF"), "PARTY.webp");
+        assert_eq!(with_webp_extension("archive.tar.gif"), "archive.tar.webp");
+        assert_eq!(with_webp_extension("no-extension"), "no-extension.webp");
+        assert_eq!(with_webp_extension(".gif"), ".gif.webp");
     }
 }

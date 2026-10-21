@@ -189,6 +189,11 @@ pub async fn serve_instance(
         let attachment_purge = tokio::spawn(
             crate::domain::attachments::purge_attachments_periodically(state.attachments.clone()),
         );
+        let attachment_optimizer = tokio::spawn(
+            crate::domain::attachments::optimize_attachments_in_background(
+                state.attachments.clone(),
+            ),
+        );
         let served = match &config.tls {
             Some(tls) => crate::tls::serve_tls_until_shutdown(listener, state, tls, shutdown).await,
             None => serve_until_shutdown(listener, state, shutdown).await,
@@ -198,6 +203,8 @@ pub async fn serve_instance(
         let _cancelled = session_purge.await;
         attachment_purge.abort();
         let _cancelled = attachment_purge.await;
+        attachment_optimizer.abort();
+        let _cancelled = attachment_optimizer.await;
         served
     }
     .await;

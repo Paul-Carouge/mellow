@@ -616,7 +616,7 @@ mod tests {
             } = receive(socket).await
                 && matches(&d)
             {
-                return (s, d);
+                return (s, *d);
             }
         }
     }

@@ -815,6 +815,8 @@ mod tests {
             id,
             username: format!("user{}", id.raw()),
             display_name: format!("User {}", id.raw()),
+            avatar: None,
+            banner: None,
         }
     }
 
@@ -841,6 +843,8 @@ mod tests {
                 display_name: "Me".into(),
                 email: "me@example.org".into(),
                 is_instance_administrator: false,
+                avatar: None,
+                banner: None,
             },
             guilds: vec![Guild {
                 id: GUILD,
@@ -1088,6 +1092,8 @@ mod tests {
             id: ME,
             username: "zoe".into(),
             display_name: "Zoé".into(),
+            avatar: None,
+            banner: None,
         };
 
         let change = state.apply_event(GatewayEvent::UserUpdate(renamed.clone()), NOW);
