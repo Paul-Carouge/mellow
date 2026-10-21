@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 import type { PendingMessage } from "../lib/client.svelte";
 import type { Guild, Message } from "../lib/protocol";
 import {
+  attachmentCountLabel,
   avatarInitial,
+  humanFileSize,
   messageTimestampLabel,
+  middleTruncate,
   serverInitials,
   splitMessageText,
   typingLabel,
@@ -75,6 +78,55 @@ describe("typingLabel", () => {
   });
 });
 
+describe("humanFileSize", () => {
+  it("counts bytes, then binary kilobytes and megabytes with one decimal at most", () => {
+    expect(humanFileSize(0, "en-US")).toBe("0 bytes");
+    expect(humanFileSize(1, "en-US")).toBe("1 byte");
+    expect(humanFileSize(1023, "en-US")).toBe("1023 bytes");
+    expect(humanFileSize(1024, "en-US")).toBe("1 KB");
+    expect(humanFileSize(2_516_582, "en-US")).toBe("2.4 MB");
+    expect(humanFileSize(25 * 1024 * 1024, "en-US")).toBe("25 MB");
+    expect(humanFileSize(3 * 1024 ** 3, "en-US")).toBe("3 GB");
+  });
+
+  it("moves to the next unit instead of showing 1024 of the previous one", () => {
+    expect(humanFileSize(1024 * 1024 - 1, "en-US")).toBe("1 MB");
+  });
+
+  it("uses the reader's decimal separator", () => {
+    expect(humanFileSize(2_516_582, "fr-FR")).toBe("2,4 MB");
+  });
+});
+
+describe("middleTruncate", () => {
+  it("leaves names that fit unchanged", () => {
+    expect(middleTruncate("report.pdf", 20)).toBe("report.pdf");
+    expect(middleTruncate("exactly-twenty-chars", 20)).toBe("exactly-twenty-chars");
+  });
+
+  it("cuts the middle and keeps the extension readable", () => {
+    const shortened = middleTruncate("holiday-photos-from-summer.jpg", 20);
+    expect(shortened).toBe("holiday-photo…er.jpg");
+    expect(Array.from(shortened)).toHaveLength(20);
+  });
+
+  it("does not split characters outside the basic plane", () => {
+    expect(middleTruncate("😀😀😀😀😀😀😀😀😀😀😀😀.png", 10)).toBe("😀😀😀…😀😀.png");
+  });
+
+  it("treats a long ending as part of the name", () => {
+    expect(middleTruncate("archive.backup-of-everything", 12)).toBe("archive.…ing");
+  });
+});
+
+describe("attachmentCountLabel", () => {
+  it("names the count, singular and plural, and nothing for none", () => {
+    expect(attachmentCountLabel(0)).toBe("");
+    expect(attachmentCountLabel(1)).toBe("1 attachment");
+    expect(attachmentCountLabel(2)).toBe("2 attachments");
+  });
+});
+
 describe("splitMessageText", () => {
   it("makes http and https links, leaving sentence punctuation outside", () => {
     expect(splitMessageText("See https://example.org/a?b=1. Thanks")).toEqual([
@@ -119,6 +171,7 @@ describe("buildMessageRows", () => {
       channelId: "1",
       content: "hi",
       replyToId: null,
+      attachments: [],
       status: "sending",
     };
     const rows = buildMessageRows([message(snowflakeAt(start), "1")], [pending], "1", start + 1_000);

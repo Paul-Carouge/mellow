@@ -15,9 +15,10 @@ const HASHED_ASSETS_PREFIX: &str = "assets/";
 const CACHE_HASHED_ASSET: &str = "public, max-age=31536000, immutable";
 const CACHE_REVALIDATE: &str = "no-cache";
 /// Scripts and styles from this origin only; connections to this origin only (REST and the
-/// gateway). Inline styles are allowed for Svelte transitions; inline scripts never are.
+/// gateway). Inline styles are allowed for Svelte transitions; inline scripts never are. `blob:`
+/// images are the composer's previews of files about to be uploaded.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; \
-     style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; \
+     style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; \
      connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; \
      frame-ancestors 'none'";
 

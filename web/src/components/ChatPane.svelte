@@ -1,12 +1,21 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { onDestroy, tick } from "svelte";
 
+  import { ApiError } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
-  import { type Message, Permission, type PublicUser, type Snowflake, hasPermission } from "../lib/protocol";
+  import {
+    type Message,
+    PREVIEWABLE_IMAGE_TYPES,
+    Permission,
+    type PublicUser,
+    type Snowflake,
+    hasPermission,
+  } from "../lib/protocol";
+  import AttachmentTray, { type AttachmentTrayItem } from "./AttachmentTray.svelte";
   import { autosize } from "./autosize";
   import Button from "./Button.svelte";
   import DeleteMessageDialog from "./DeleteMessageDialog.svelte";
-  import { displayName, typingLabel } from "./format";
+  import { displayName, humanFileSize, typingLabel } from "./format";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import MessageList from "./MessageList.svelte";
@@ -28,6 +37,10 @@
   /** The composer grows with its text up to half of the pane (DESIGN.md §4.2). */
   const COMPOSER_MAXIMUM_SHARE_OF_PANE = 0.5;
   const TYPING_REFRESH_INTERVAL_MILLISECONDS = 1_000;
+  /** The instance links at most this many files to one message (ADR-0020). */
+  const MAXIMUM_ATTACHMENTS_PER_MESSAGE = 10;
+  const TOO_MANY_ATTACHMENTS_SENTENCE = `You can attach up to ${MAXIMUM_ATTACHMENTS_PER_MESSAGE} files to one message.`;
+  const UPLOADS_RUNNING_SENTENCE = "Your files are still uploading. Send again once they're done.";
 
   const guild = $derived(client.selectedGuild);
   const channel = $derived(client.selectedChannel);
@@ -52,6 +65,9 @@
   const canManageMessages = $derived(
     channelPermissions !== null && hasPermission(channelPermissions, Permission.MANAGE_MESSAGES),
   );
+  const canAttachFiles = $derived(
+    canSendMessages && (channelPermissions === null || hasPermission(channelPermissions, Permission.ATTACH_FILES)),
+  );
   const composerLabel = $derived(channel ? `Message #${channel.name}` : `Message @${conversationName}`);
 
   let pane: HTMLElement;
@@ -63,6 +79,21 @@
   let editingMessageId = $state<Snowflake | null>(null);
   let deletingMessage = $state<Message | null>(null);
   let actionError = $state("");
+  let fileInput = $state<HTMLInputElement | null>(null);
+  // Each channel keeps its own tray, like its draft: its files were uploaded to that channel.
+  const trayItemsByChannel = new Map<Snowflake, AttachmentTrayItem[]>();
+  let trayItems = $state<AttachmentTrayItem[]>([]);
+  let nextTrayItemKey = 0;
+  let uploadAnnouncement = $state("");
+  let isDropOverlayShown = $state(false);
+  // dragenter and dragleave fire for every child crossed: the overlay hides when this is back to 0.
+  let fileDragDepth = 0;
+
+  const isUploading = $derived(trayItems.some((item) => item.status === "uploading"));
+  const uploadedAttachments = $derived(
+    trayItems.flatMap((item) => (item.status === "uploaded" && item.attachment ? [item.attachment] : [])),
+  );
+  const canSend = $derived((draft.trim() !== "" || uploadedAttachments.length > 0) && !isUploading);
 
   // Each channel keeps its own unsent text (DESIGN.md §5.5); replies and edits do not carry over.
   let shownChannelId: Snowflake | null = null;
@@ -72,9 +103,11 @@
     }
     if (shownChannelId) {
       draftsByChannel.set(shownChannelId, draft);
+      trayItemsByChannel.set(shownChannelId, trayItems);
     }
     shownChannelId = channelId;
     draft = (channelId && draftsByChannel.get(channelId)) || "";
+    trayItems = (channelId && trayItemsByChannel.get(channelId)) || [];
     replyingTo = null;
     editingMessageId = null;
     actionError = "";
@@ -123,14 +156,164 @@
   }
 
   function send() {
-    const text = draft.trim();
-    if (!text) {
+    if (isUploading) {
+      actionError = UPLOADS_RUNNING_SENTENCE;
       return;
     }
-    void client.sendMessage(text, replyingTo?.id ?? null);
+    if (!canSend) {
+      return;
+    }
+    void client.sendMessage(draft.trim(), replyingTo?.id ?? null, $state.snapshot(uploadedAttachments));
     draft = "";
     replyingTo = null;
+    removeAllTrayItems();
+    if (actionError === UPLOADS_RUNNING_SENTENCE || actionError === TOO_MANY_ATTACHMENTS_SENTENCE) {
+      actionError = "";
+    }
     messageList?.jumpToPresent();
+  }
+
+  /** Each file uploads at once to the open channel and waits in the tray for Send (DESIGN.md §5.5). */
+  function attachFiles(files: readonly File[]) {
+    if (!canAttachFiles || files.length === 0) {
+      return;
+    }
+    const room = Math.max(MAXIMUM_ATTACHMENTS_PER_MESSAGE - trayItems.length, 0);
+    if (files.length > room) {
+      actionError = TOO_MANY_ATTACHMENTS_SENTENCE;
+    }
+    for (const file of files.slice(0, room)) {
+      const key = nextTrayItemKey++;
+      trayItems.push({
+        key,
+        file,
+        previewUrl: PREVIEWABLE_IMAGE_TYPES.includes(file.type) ? URL.createObjectURL(file) : null,
+        status: "uploading",
+        attachment: null,
+        error: "",
+      });
+      // The reactive copy: updates to it reach the tray, even after a channel switch put it aside.
+      const item = trayItems.find((candidate) => candidate.key === key);
+      if (item) {
+        void upload(item);
+      }
+    }
+  }
+
+  async function upload(item: AttachmentTrayItem) {
+    try {
+      item.attachment = await client.uploadAttachment(item.file);
+      item.status = "uploaded";
+      announceUpload(item, `${item.file.name} uploaded.`);
+    } catch (error) {
+      item.status = "failed";
+      item.error = uploadErrorSentence(item.file, error);
+      announceUpload(item, item.error);
+    }
+  }
+
+  /** Only for files still in the open channel's tray: removed ones and other channels' stay quiet. */
+  function announceUpload(item: AttachmentTrayItem, sentence: string) {
+    if (trayItems.includes(item)) {
+      uploadAnnouncement = sentence;
+    }
+  }
+
+  function uploadErrorSentence(file: File, error: unknown): string {
+    // The instance does not tell its limit, so the sentence names the size and the instance (DESIGN.md §8).
+    if (error instanceof ApiError && error.code === "FILE_TOO_LARGE") {
+      return `${file.name} is ${humanFileSize(file.size)}, more than ${window.location.host} accepts.`;
+    }
+    return describeError(error, `Couldn't upload ${file.name}`);
+  }
+
+  function removeTrayItem(key: number) {
+    const item = trayItems.find((candidate) => candidate.key === key);
+    if (item?.previewUrl) {
+      URL.revokeObjectURL(item.previewUrl);
+    }
+    trayItems = trayItems.filter((candidate) => candidate.key !== key);
+    // The Remove button is gone with its item.
+    focusComposer();
+  }
+
+  function revokePreviews(items: readonly AttachmentTrayItem[]) {
+    for (const item of items) {
+      if (item.previewUrl) {
+        URL.revokeObjectURL(item.previewUrl);
+      }
+    }
+  }
+
+  function removeAllTrayItems() {
+    revokePreviews(trayItems);
+    trayItems = [];
+  }
+
+  onDestroy(() => {
+    revokePreviews(trayItems);
+    for (const items of trayItemsByChannel.values()) {
+      revokePreviews(items);
+    }
+  });
+
+  function handleComposerPaste(event: ClipboardEvent) {
+    const files = Array.from(event.clipboardData?.files ?? []);
+    if (files.length === 0 || !canAttachFiles) {
+      return;
+    }
+    event.preventDefault();
+    attachFiles(files);
+  }
+
+  function isDraggingFiles(event: DragEvent): boolean {
+    return event.dataTransfer?.types.includes("Files") ?? false;
+  }
+
+  function handleDragEnter(event: DragEvent) {
+    if (!isDraggingFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    fileDragDepth += 1;
+    isDropOverlayShown = canAttachFiles && channelId !== null;
+  }
+
+  function handleDragOver(event: DragEvent) {
+    if (!isDraggingFiles(event) || !event.dataTransfer) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = canAttachFiles && channelId !== null ? "copy" : "none";
+  }
+
+  function handleDragLeave(event: DragEvent) {
+    if (!isDraggingFiles(event)) {
+      return;
+    }
+    fileDragDepth = Math.max(fileDragDepth - 1, 0);
+    if (fileDragDepth === 0) {
+      isDropOverlayShown = false;
+    }
+  }
+
+  function handleDrop(event: DragEvent) {
+    if (!isDraggingFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    fileDragDepth = 0;
+    isDropOverlayShown = false;
+    attachFiles(Array.from(event.dataTransfer?.files ?? []));
+  }
+
+  // A file dropped anywhere else would make the browser leave Mellow to show it, losing drafts.
+  function refuseFileDropOutsideChat(event: DragEvent) {
+    if (!isDraggingFiles(event) || event.defaultPrevented || !event.dataTransfer) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "none";
   }
 
   function editLastOwnMessage() {
@@ -204,10 +387,16 @@
   }
 </script>
 
+<svelte:window ondragover={refuseFileDropOutsideChat} ondrop={refuseFileDropOutsideChat} />
+
 <section
   bind:this={pane}
   aria-label={channel ? `#${channel.name}` : conversation ? conversationName : "Chat"}
-  class="flex h-full min-w-0 flex-1 flex-col bg-surface-chat"
+  class="relative flex h-full min-w-0 flex-1 flex-col bg-surface-chat"
+  ondragenter={handleDragEnter}
+  ondragover={handleDragOver}
+  ondragleave={handleDragLeave}
+  ondrop={handleDrop}
 >
   <header
     class="relative z-10 flex h-(--mw-component-chat-header-height) shrink-0 items-center gap-xs bg-(--mw-component-chat-header-background) px-(--mw-component-chat-header-padding-inline) shadow-(--mw-component-chat-header-shadow)"
@@ -318,45 +507,81 @@
       {/if}
       <div
         class={[
-          "flex min-h-(--mw-component-composer-min-height) items-center gap-xs rounded-b-(--mw-component-composer-radius) bg-(--mw-component-composer-background) px-(--mw-component-composer-padding-inline) focus-within:focus-ring-inset",
+          "rounded-b-(--mw-component-composer-radius) bg-(--mw-component-composer-background)",
           !(replyingTo && canSendMessages) && "rounded-t-(--mw-component-composer-radius)",
         ]}
       >
-        {#if canSendMessages}
-          <textarea
-            bind:this={composer}
-            bind:value={draft}
-            rows="1"
-            aria-label={composerLabel}
-            aria-describedby={replyingTo ? "composer-reply-hint" : undefined}
-            placeholder={composerLabel}
-            class="min-w-0 flex-1 resize-none bg-transparent py-sm type-message text-(--mw-component-composer-text) outline-none placeholder:text-(--mw-component-composer-placeholder)"
-            onkeydown={handleComposerKeydown}
-            oninput={() => client.noteTyping()}
-            {@attach autosize(() => draft, maximumComposerHeight)}
-          ></textarea>
-          {#if replyingTo}
-            <span id="composer-reply-hint" class="sr-only">
-              Replying to {displayName(replyingTo.author)}. Escape cancels the reply.
-            </span>
-          {/if}
-          <!-- Phones have no Enter-to-send habit: the send button shows under a coarse pointer (DESIGN.md §4.3). -->
-          <span class="hidden pointer-coarse:contents">
-            <IconButton
-              icon="paper-plane-right"
-              label="Send message"
-              class="text-(--mw-component-composer-icon) hover:text-(--mw-component-composer-icon-hover)"
-              iconClass="size-(--mw-component-composer-icon-size)"
-              onclick={send}
-            />
-          </span>
-        {:else}
-          <p class="py-sm type-message text-(--mw-component-composer-locked-text)">
-            You do not have permission to send messages in this channel.
-          </p>
+        {#if canSendMessages && trayItems.length > 0}
+          <AttachmentTray items={trayItems} onremove={removeTrayItem} />
         {/if}
+        <div
+          class={[
+            "flex min-h-(--mw-component-composer-min-height) items-center gap-xs rounded-b-(--mw-component-composer-radius) px-(--mw-component-composer-padding-inline) focus-within:focus-ring-inset",
+            !(replyingTo && canSendMessages) && trayItems.length === 0 && "rounded-t-(--mw-component-composer-radius)",
+          ]}
+        >
+          {#if canSendMessages}
+            {#if canAttachFiles}
+              <IconButton
+                icon="plus-circle"
+                label="Attach files"
+                class="-ms-2xs size-(--mw-component-composer-attach-button-size) text-(--mw-component-composer-icon) hover:text-(--mw-component-composer-icon-hover)"
+                iconClass="size-(--mw-component-composer-icon-size)"
+                onclick={() => fileInput?.click()}
+              />
+              <!-- Opened by the attach button only; the button is the control people reach. -->
+              <input
+                bind:this={fileInput}
+                type="file"
+                multiple
+                hidden
+                tabindex="-1"
+                aria-hidden="true"
+                onchange={(event) => {
+                  attachFiles(Array.from(event.currentTarget.files ?? []));
+                  // Choosing the same file again must fire change again.
+                  event.currentTarget.value = "";
+                }}
+              />
+            {/if}
+            <textarea
+              bind:this={composer}
+              bind:value={draft}
+              rows="1"
+              aria-label={composerLabel}
+              aria-describedby={replyingTo ? "composer-reply-hint" : undefined}
+              placeholder={composerLabel}
+              class="min-w-0 flex-1 resize-none bg-transparent py-sm type-message text-(--mw-component-composer-text) outline-none placeholder:text-(--mw-component-composer-placeholder)"
+              onkeydown={handleComposerKeydown}
+              onpaste={handleComposerPaste}
+              oninput={() => client.noteTyping()}
+              {@attach autosize(() => draft, maximumComposerHeight)}
+            ></textarea>
+            {#if replyingTo}
+              <span id="composer-reply-hint" class="sr-only">
+                Replying to {displayName(replyingTo.author)}. Escape cancels the reply.
+              </span>
+            {/if}
+            <!-- Phones have no Enter-to-send habit: the send button shows under a coarse pointer (DESIGN.md §4.3). -->
+            <span class="hidden pointer-coarse:contents">
+              <IconButton
+                icon="paper-plane-right"
+                label="Send message"
+                aria-disabled={!canSend}
+                class="text-(--mw-component-composer-icon) hover:text-(--mw-component-composer-icon-hover) aria-disabled:opacity-(--mw-component-button-disabled-opacity)"
+                iconClass="size-(--mw-component-composer-icon-size)"
+                onclick={send}
+              />
+            </span>
+          {:else}
+            <p class="py-sm type-message text-(--mw-component-composer-locked-text)">
+              You do not have permission to send messages in this channel.
+            </p>
+          {/if}
+        </div>
       </div>
     </div>
+    <p class="sr-only" aria-live="polite">{uploadAnnouncement}</p>
     <p
       aria-hidden="true"
       class="h-(--mw-component-composer-typing-height) shrink-0 truncate px-(--mw-component-composer-margin-inline) type-typing text-(--mw-component-composer-typing-text)"
@@ -365,6 +590,25 @@
     </p>
   {:else}
     {@render emptyState()}
+  {/if}
+
+  {#if isDropOverlayShown}
+    <!-- Pointer feedback only: it never takes focus, and the attach button does the same job. -->
+    <div
+      aria-hidden="true"
+      class="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-(--mw-component-drop-overlay-scrim) p-md"
+    >
+      <div
+        class="relative flex w-full max-w-(--mw-component-drop-overlay-max-width) flex-col items-center gap-(--mw-component-drop-overlay-gap) rounded-(--mw-component-drop-overlay-radius) bg-(--mw-component-drop-overlay-background) p-(--mw-component-drop-overlay-padding) text-center text-(--mw-component-drop-overlay-text)"
+      >
+        <span
+          class="absolute inset-(--mw-component-drop-overlay-border-inset) rounded-(--mw-component-drop-overlay-radius) border-(length:--mw-component-drop-overlay-border-width) border-dashed border-current"
+        ></span>
+        <Icon name="file-arrow-up" class="size-(--mw-component-drop-overlay-icon-size)" />
+        <p class="type-heading-xl break-words">Drop to attach to {channel ? `#${channel.name}` : `@${conversationName}`}</p>
+        <p class="type-body">You can add a message before sending.</p>
+      </div>
+    </div>
   {/if}
 </section>
 

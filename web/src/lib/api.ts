@@ -3,6 +3,7 @@
 
 import type {
   ApiErrorCode,
+  Attachment,
   Channel,
   CurrentUser,
   DirectMessageChannel,
@@ -22,7 +23,7 @@ const SESSION_TRANSPORT_HEADER = "X-Mellow-Session-Transport";
 export class ApiError extends Error {
   constructor(
     readonly status: number,
-    readonly code: ApiErrorCode | "NETWORK",
+    readonly code: ApiErrorCode | "NETWORK" | "FILE_TOO_LARGE",
   ) {
     super(`request failed: ${code}`);
     this.name = "ApiError";
@@ -154,12 +155,45 @@ export class RestClient {
     content: string,
     nonce: string,
     replyToId: Snowflake | null = null,
+    attachmentIds: readonly Snowflake[] = [],
   ): Promise<Message> {
     return this.request("POST", `channels/${channelId}/messages`, {
       content,
       reply_to_id: replyToId,
       nonce,
+      ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
     });
+  }
+
+  /** One file, sent as the raw body; its id goes into a message within the hour (ADR-0020). */
+  async uploadAttachment(channelId: Snowflake, file: File): Promise<Attachment> {
+    let response: Response;
+    try {
+      // The name travels in a header, never in the URL: proxy logs must not hold file names.
+      response = await fetch(`/api/v1/channels/${channelId}/attachments`, {
+        method: "POST",
+        headers: {
+          [SESSION_TRANSPORT_HEADER]: "cookie",
+          "Content-Type": "application/octet-stream",
+          "X-Mellow-File-Name": encodeURIComponent(file.name),
+        },
+        body: file,
+        credentials: "same-origin",
+      });
+    } catch {
+      throw new ApiError(0, "NETWORK");
+    }
+    if (response.status === 413) {
+      throw new ApiError(413, "FILE_TOO_LARGE");
+    }
+    if (!response.ok) {
+      const code = await response
+        .json()
+        .then((error: { code?: ApiErrorCode }) => error.code ?? "INTERNAL")
+        .catch(() => "INTERNAL" as const);
+      throw new ApiError(response.status, code);
+    }
+    return (await response.json()) as Attachment;
   }
 
   editMessage(channelId: Snowflake, messageId: Snowflake, content: string): Promise<Message> {

@@ -87,6 +87,62 @@ export function typingLabel(names: readonly string[]): string {
   return `${first}, ${second} and ${others} ${others === 1 ? "other" : "others"} are typing…`;
 }
 
+/** Binary steps with Discord's labels: the instance's "25 MB" limit is 25 × 1024 × 1024 bytes. */
+const BYTES_PER_UNIT_STEP = 1024;
+const FILE_SIZE_UNITS = ["KB", "MB", "GB"] as const;
+const FILE_SIZE_MAXIMUM_FRACTION_DIGITS = 1;
+
+/** "512 bytes", "1 KB", "2.4 MB", in the reader's locale. */
+export function humanFileSize(bytes: number, locale?: string): string {
+  if (bytes < BYTES_PER_UNIT_STEP) {
+    return bytes === 1 ? "1 byte" : `${bytes} bytes`;
+  }
+  let value = bytes;
+  let unit: (typeof FILE_SIZE_UNITS)[number] = FILE_SIZE_UNITS[0];
+  for (const candidate of FILE_SIZE_UNITS) {
+    value /= BYTES_PER_UNIT_STEP;
+    unit = candidate;
+    // Rounding 1023.96 KB up must read "1 MB", not "1,024 KB".
+    if (Math.round(value * 10) / 10 < BYTES_PER_UNIT_STEP) {
+      break;
+    }
+  }
+  const number = value.toLocaleString(locale, { maximumFractionDigits: FILE_SIZE_MAXIMUM_FRACTION_DIGITS });
+  return `${number} ${unit}`;
+}
+
+const TRUNCATION_ELLIPSIS = "…";
+/** Longer endings are not extensions people recognise; they are cut like the rest of the name. */
+const MAXIMUM_KEPT_EXTENSION_LENGTH = 8;
+
+/**
+ * Shortens a file name in the middle, keeping its end and extension readable
+ * ("holiday-photos-from…ummer.jpg"); names that fit are returned unchanged.
+ */
+export function middleTruncate(fileName: string, maximumCharacters: number): string {
+  const characters = Array.from(fileName);
+  if (characters.length <= maximumCharacters) {
+    return fileName;
+  }
+  const extensionStart = fileName.lastIndexOf(".");
+  const extensionLength =
+    extensionStart > 0 ? Array.from(fileName.slice(extensionStart)).length : 0;
+  const keptExtensionLength = extensionLength <= MAXIMUM_KEPT_EXTENSION_LENGTH ? extensionLength : 0;
+  const available = Math.max(maximumCharacters - TRUNCATION_ELLIPSIS.length, 2);
+  // The end keeps the extension plus a few characters before it, so "…(2).jpg" stays distinguishable.
+  const endLength = Math.min(Math.max(Math.floor(available / 3), keptExtensionLength + 2), available - 1);
+  const startLength = available - endLength;
+  return characters.slice(0, startLength).join("") + TRUNCATION_ELLIPSIS + characters.slice(-endLength).join("");
+}
+
+/** "1 attachment", "2 attachments" (DESIGN.md §7.3); empty for none. */
+export function attachmentCountLabel(count: number): string {
+  if (count === 0) {
+    return "";
+  }
+  return count === 1 ? "1 attachment" : `${count} attachments`;
+}
+
 export type MessageTextSegment = { kind: "text"; text: string } | { kind: "link"; text: string; url: string };
 
 const LINK_CANDIDATE = /https?:\/\/[^\s<>"]+/giu;

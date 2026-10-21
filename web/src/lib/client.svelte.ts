@@ -7,6 +7,7 @@ import { ApiError, HISTORY_PAGE_SIZE, RestClient, generateMessageNonce } from ".
 import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
 import {
+  type Attachment,
   type Channel,
   type CurrentUser,
   type DirectMessageChannel,
@@ -42,6 +43,8 @@ export interface PendingMessage {
   channelId: Snowflake;
   content: string;
   replyToId: Snowflake | null;
+  /** Uploaded already; they stay sendable for an hour (ADR-0020). */
+  attachments: Attachment[];
   status: "sending" | "failed";
 }
 
@@ -64,6 +67,7 @@ export function describeError(error: unknown, summary: string): string {
     BANNED: "you are banned from this server.",
     OWNER_CANNOT_LEAVE: "the owner cannot leave their own server.",
     LIMIT_REACHED: "a limit of this instance is reached.",
+    FILE_TOO_LARGE: "the file is larger than this instance accepts.",
   };
   return `${summary}: ${reasons[error.code] ?? "something went wrong. Try again."}`;
 }
@@ -754,10 +758,23 @@ export class MellowClient {
     return this.pendingMessages.filter((pending) => pending.channelId === channelId);
   }
 
-  async sendMessage(content: string, replyToId: Snowflake | null = null): Promise<void> {
+  /** Uploads one file to the open channel, for the next message sent there. */
+  uploadAttachment(file: File): Promise<Attachment> {
+    const channelId = this.selectedChannelId;
+    if (!channelId) {
+      return Promise.reject(new ApiError(404, "NOT_FOUND"));
+    }
+    return this.rest.uploadAttachment(channelId, file);
+  }
+
+  async sendMessage(
+    content: string,
+    replyToId: Snowflake | null = null,
+    attachments: readonly Attachment[] = [],
+  ): Promise<void> {
     const channelId = this.selectedChannelId;
     const text = content.trim();
-    if (!channelId || !text) {
+    if (!channelId || (!text && attachments.length === 0)) {
       return;
     }
     const pending: PendingMessage = {
@@ -765,6 +782,7 @@ export class MellowClient {
       channelId,
       content: text,
       replyToId,
+      attachments: [...attachments],
       status: "sending",
     };
     this.pendingMessages = [...this.pendingMessages, pending];
@@ -790,7 +808,13 @@ export class MellowClient {
   private async deliver(pending: PendingMessage): Promise<"sent" | "refused" | "failed"> {
     try {
       // The same nonce on every attempt: a retry of a send that did arrive returns that message.
-      const message = await this.rest.sendMessage(pending.channelId, pending.content, pending.nonce, pending.replyToId);
+      const message = await this.rest.sendMessage(
+        pending.channelId,
+        pending.content,
+        pending.nonce,
+        pending.replyToId,
+        pending.attachments.map((attachment) => attachment.id),
+      );
       this.pendingMessages = this.pendingMessages.filter((candidate) => candidate.nonce !== pending.nonce);
       this.noteConversationActivity(message.channel_id, message.id);
       this.insertMessages(message.channel_id, [{ ...message, nonce: null }]);
