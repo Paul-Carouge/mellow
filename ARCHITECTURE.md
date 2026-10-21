@@ -130,6 +130,7 @@ Exact versions are pinned in the workspace `Cargo.toml` and `Cargo.lock` is comm
 - **SQLite in WAL mode**, one file `mellow.db` in the data directory ([ADR-0002](docs/adr/0002-single-binary-server-with-embedded-sqlite.md)).
 - One writer connection behind a dedicated task (SQLite allows a single writer); a pool of reader connections. Writes are short transactions; message fan-out happens after commit. Today only message sends are serialized, by a per-process lock held from id generation to `MESSAGE_CREATE` publication, so messages commit and reach gateways in id order and an `after` cursor never skips one.
 - Migrations are embedded in the binary and run at startup. Before applying a migration, the server writes a consistent snapshot with `VACUUM INTO backups/pre-migration-<version>.db`.
+- Avatars and banners share that store: each version has its own id (and a still first frame when animated), served immutable at `/api/v1/profile-images/{id}` ([ADR-0021](docs/adr/0021-compress-images-losslessly-after-upload.md)). Pictures are compressed losslessly: avatars and banners while uploading, attachments in the background after it.
 - Attachments are stored encrypted on disk under `attachments/<id prefix>/<id>`. Metadata (owner, name, mime type, size, plaintext SHA-256 for deduplication) lives in SQLite. Size limits are configurable.
 - Full-text search uses SQLite FTS5 (post-MVP, but the schema keeps it possible).
 
@@ -140,7 +141,8 @@ All entities use 64-bit, time-ordered identifiers (Snowflake-style: 42 bits of m
 ### 4.5 Data model (MVP)
 
 ```
-users            (id, username, display_name, email, password_hash, avatar_id, created_at, disabled_at)
+users            (id, username, display_name, email, password_hash, avatar_id, avatar_is_animated, banner_id, banner_is_animated, created_at, disabled_at)
+profile_images   (id, user_id, still_id, size_bytes, created_at)
 sessions         (id, user_id, token_hash, device_name, created_at, last_seen_at, expires_at)
 guilds           (id, name, icon_id, owner_id, created_at)
 guild_members    (guild_id, user_id, nickname, joined_at)
