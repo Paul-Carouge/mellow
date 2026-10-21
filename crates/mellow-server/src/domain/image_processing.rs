@@ -125,6 +125,38 @@ fn collect_frames(
     Ok(collected)
 }
 
+/// Reads only the frame headers of a GIF and refuses it when a frame lies outside the canvas or
+/// the frames' own areas add up past the limits: each frame is decompressed at its own size,
+/// whatever the canvas, so counting canvas pixels alone would not bound the work.
+fn check_gif_frames(bytes: &[u8]) -> Result<(), ImageProcessingError> {
+    let mut options = gif::DecodeOptions::new();
+    options.skip_frame_decoding(true);
+    let mut decoder = options
+        .read_info(Cursor::new(bytes))
+        .map_err(|_| ImageProcessingError::Unsupported)?;
+    let (canvas_width, canvas_height) = (u32::from(decoder.width()), u32::from(decoder.height()));
+    check_dimensions(canvas_width, canvas_height)?;
+    let mut frame_count = 0usize;
+    let mut total_pixels = 0u64;
+    loop {
+        let frame = match decoder.next_frame_info() {
+            Ok(Some(frame)) => frame,
+            Ok(None) => return Ok(()),
+            // Truncated: the frames before the cut are what will be decoded.
+            Err(_) if frame_count > 0 => return Ok(()),
+            Err(_) => return Err(ImageProcessingError::Unsupported),
+        };
+        let is_inside_canvas = u32::from(frame.left) + u32::from(frame.width) <= canvas_width
+            && u32::from(frame.top) + u32::from(frame.height) <= canvas_height;
+        frame_count += 1;
+        total_pixels += u64::from(frame.width) * u64::from(frame.height);
+        if !is_inside_canvas || frame_count > MAXIMUM_FRAMES || total_pixels > MAXIMUM_TOTAL_PIXELS
+        {
+            return Err(ImageProcessingError::TooLarge);
+        }
+    }
+}
+
 /// The frames of a picture with their duration in milliseconds; one frame for still pictures,
 /// turned the way its EXIF orientation says. Each frame goes through `shrink` as soon as it is
 /// decoded, so only small frames are kept. Animated PNG (APNG) is read as its first frame.
@@ -135,6 +167,7 @@ fn decode_frames(
     let format = image::guess_format(bytes).map_err(|_| ImageProcessingError::Unsupported)?;
     match format {
         ImageFormat::Gif => {
+            check_gif_frames(bytes)?;
             let mut decoder = GifDecoder::new(Cursor::new(bytes))
                 .map_err(|_| ImageProcessingError::Unsupported)?;
             decoder
@@ -166,7 +199,13 @@ fn decode_frames(
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     reader.limits(limits());
     let mut decoder = reader.into_decoder().map_err(as_processing_error)?;
-    let orientation = decoder.orientation().map_err(as_processing_error)?;
+    // Only where reading EXIF is bounded: the WebP decoder sizes its EXIF buffer from the declared
+    // chunk length, without any limit.
+    let orientation = if matches!(format, ImageFormat::Jpeg | ImageFormat::Png) {
+        decoder.orientation().map_err(as_processing_error)?
+    } else {
+        image::metadata::Orientation::NoTransforms
+    };
     let mut image = DynamicImage::from_decoder(decoder).map_err(as_processing_error)?;
     image.apply_orientation(orientation);
     Ok(vec![(shrink(image.into_rgba8()), 0)])
@@ -315,65 +354,93 @@ fn is_dropped_metadata(marker: u8, payload: &[u8]) -> bool {
 
 /// Removes metadata without touching the compressed image, and anything after its end (phones
 /// append further pictures there). The EXIF orientation is written back alone, so the photo still
-/// shows the right way up.
+/// shows the right way up. Metadata always comes before the first scan: a file damaged after it
+/// (often truncated) keeps its remaining bytes, already free of metadata; one damaged before it is
+/// refused, since its metadata could not be removed.
 pub(crate) fn strip_jpeg_metadata(bytes: &[u8]) -> Result<Vec<u8>, ImageProcessingError> {
     if !bytes.starts_with(&JPEG_START_OF_IMAGE) {
         return Err(ImageProcessingError::Unsupported);
     }
-    let mut output = Vec::with_capacity(bytes.len());
-    output.extend_from_slice(&JPEG_START_OF_IMAGE);
-    let mut orientation = None;
-    let mut is_orientation_written = false;
-    let mut position = 2;
-    loop {
-        if bytes.get(position) != Some(&0xFF) {
-            return Err(ImageProcessingError::Unsupported);
+    let mut stripping = JpegStripping {
+        output: Vec::with_capacity(bytes.len()),
+        position: 2,
+        has_passed_first_scan: false,
+    };
+    stripping.output.extend_from_slice(&JPEG_START_OF_IMAGE);
+    match stripping.copy_without_metadata(bytes) {
+        Ok(()) => Ok(stripping.output),
+        Err(_) if stripping.has_passed_first_scan => {
+            let rest = bytes.get(stripping.position..).unwrap_or_default();
+            stripping.output.extend_from_slice(rest);
+            Ok(stripping.output)
         }
-        let marker = *bytes
-            .get(position + 1)
-            .ok_or(ImageProcessingError::Unsupported)?;
-        if marker == 0xFF {
-            // Fill byte before a marker.
-            position += 1;
-            continue;
-        }
-        if marker == MARKER_END_OF_IMAGE {
-            output.extend_from_slice(&[0xFF, MARKER_END_OF_IMAGE]);
-            return Ok(output);
-        }
-        if is_standalone_marker(marker) {
-            output.extend_from_slice(&[0xFF, marker]);
-            position += 2;
-            continue;
-        }
-        let length_bytes = bytes
-            .get(position + 2..position + 4)
-            .ok_or(ImageProcessingError::Unsupported)?;
-        let length = usize::from(u16::from_be_bytes([length_bytes[0], length_bytes[1]]));
-        if length < 2 {
-            return Err(ImageProcessingError::Unsupported);
-        }
-        let segment = bytes
-            .get(position..position + 2 + length)
-            .ok_or(ImageProcessingError::Unsupported)?;
-        let payload = &segment[4..];
-        if marker == MARKER_APP1 {
-            orientation = orientation.or_else(|| exif_orientation(payload));
-        }
-        if marker == MARKER_START_OF_SCAN && !is_orientation_written {
-            if let Some(orientation) = orientation.filter(|value| *value != 1) {
-                output.extend_from_slice(&orientation_segment(orientation));
+        Err(error) => Err(error),
+    }
+}
+
+struct JpegStripping {
+    output: Vec<u8>,
+    position: usize,
+    has_passed_first_scan: bool,
+}
+
+impl JpegStripping {
+    fn copy_without_metadata(&mut self, bytes: &[u8]) -> Result<(), ImageProcessingError> {
+        let mut orientation = None;
+        loop {
+            let position = self.position;
+            if bytes.get(position) != Some(&0xFF) {
+                return Err(ImageProcessingError::Unsupported);
             }
-            is_orientation_written = true;
-        }
-        if !is_dropped_metadata(marker, payload) {
-            output.extend_from_slice(segment);
-        }
-        position += 2 + length;
-        if marker == MARKER_START_OF_SCAN {
-            let scan_end = end_of_entropy_coded_data(bytes, position)?;
-            output.extend_from_slice(&bytes[position..scan_end]);
-            position = scan_end;
+            let marker = *bytes
+                .get(position + 1)
+                .ok_or(ImageProcessingError::Unsupported)?;
+            if marker == 0xFF {
+                // Fill byte before a marker.
+                self.position += 1;
+                continue;
+            }
+            if marker == MARKER_END_OF_IMAGE {
+                self.output.extend_from_slice(&[0xFF, MARKER_END_OF_IMAGE]);
+                self.position += 2;
+                return Ok(());
+            }
+            if is_standalone_marker(marker) {
+                self.output.extend_from_slice(&[0xFF, marker]);
+                self.position += 2;
+                continue;
+            }
+            let length_bytes = bytes
+                .get(position + 2..position + 4)
+                .ok_or(ImageProcessingError::Unsupported)?;
+            let length = usize::from(u16::from_be_bytes([length_bytes[0], length_bytes[1]]));
+            if length < 2 {
+                return Err(ImageProcessingError::Unsupported);
+            }
+            let segment = bytes
+                .get(position..position + 2 + length)
+                .ok_or(ImageProcessingError::Unsupported)?;
+            let payload = &segment[4..];
+            if marker == MARKER_APP1 {
+                orientation = orientation.or_else(|| exif_orientation(payload));
+            }
+            if marker == MARKER_START_OF_SCAN && !self.has_passed_first_scan {
+                if let Some(orientation) = orientation.filter(|value| *value != 1) {
+                    self.output
+                        .extend_from_slice(&orientation_segment(orientation));
+                }
+                self.has_passed_first_scan = true;
+            }
+            if !is_dropped_metadata(marker, payload) {
+                self.output.extend_from_slice(segment);
+            }
+            self.position += 2 + length;
+            if marker == MARKER_START_OF_SCAN {
+                let scan_end = end_of_entropy_coded_data(bytes, self.position)?;
+                self.output
+                    .extend_from_slice(&bytes[self.position..scan_end]);
+                self.position = scan_end;
+            }
         }
     }
 }
@@ -746,6 +813,62 @@ pub(crate) mod tests {
             strip_jpeg_metadata(b"\xFF\xD8\xFF\xE1\x00\x00\xFF\xDA"),
             Err(ImageProcessingError::Unsupported),
             "a segment length under 2"
+        );
+    }
+
+    #[test]
+    fn a_still_webp_declaring_a_huge_exif_chunk_is_not_read_for_its_orientation() {
+        // A real 1×1 lossless WebP, rewrapped as VP8X with an EXIF chunk announcing ~4 GiB that
+        // is not there: reading it would allocate the announced size.
+        let simple =
+            encode_webp(&[(RgbaImage::from_pixel(1, 1, Rgba([1, 2, 3, 255])), 0)]).unwrap();
+        let lossless_chunk = &simple[12..];
+        let mut extended_header = b"VP8X".to_vec();
+        extended_header.extend_from_slice(&10u32.to_le_bytes());
+        extended_header.extend_from_slice(&[0x08, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let mut body = b"WEBP".to_vec();
+        body.extend_from_slice(&extended_header);
+        body.extend_from_slice(lossless_chunk);
+        body.extend_from_slice(b"EXIF");
+        body.extend_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+        let mut forged = b"RIFF".to_vec();
+        forged.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes());
+        forged.extend_from_slice(&body);
+
+        let avatar = process_profile_image(&forged, ProfileImageKind::Avatar).unwrap();
+        assert!(!avatar.picture.is_animated);
+    }
+
+    #[test]
+    fn gif_frames_outside_the_canvas_are_refused_before_decoding() {
+        let mut gif = animated_gif(64, 64, 2);
+        // Canvas shrunk to 1×1: the 64×64 frames now lie outside it.
+        gif[6..10].copy_from_slice(&[1, 0, 1, 0]);
+        assert_eq!(
+            process_profile_image(&gif, ProfileImageKind::Avatar),
+            Err(ImageProcessingError::TooLarge)
+        );
+        assert_eq!(
+            optimize_attachment(&gif, "image/gif"),
+            Err(ImageProcessingError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn a_photo_cut_after_its_metadata_still_loses_it() {
+        let mut exif = EXIF_HEADER.to_vec();
+        exif.extend_from_slice(b"MM\0\x2a\0\0\0\x08\0\0GPS 48.85N 2.35E");
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, MARKER_APP1];
+        jpeg.extend_from_slice(&u16::try_from(exif.len() + 2).unwrap().to_be_bytes());
+        jpeg.extend_from_slice(&exif);
+        // A scan whose data stops short: no end-of-image marker.
+        jpeg.extend_from_slice(&[0xFF, MARKER_START_OF_SCAN, 0x00, 0x02, 0x12, 0x34, 0x56]);
+
+        let stripped = strip_jpeg_metadata(&jpeg).unwrap();
+        assert!(!stripped.windows(3).any(|window| window == b"GPS"));
+        assert!(
+            stripped.ends_with(&[0x12, 0x34, 0x56]),
+            "the image data is kept"
         );
     }
 

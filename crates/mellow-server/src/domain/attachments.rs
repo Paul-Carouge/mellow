@@ -50,13 +50,15 @@ pub(crate) async fn optimize_attachments_in_background(attachments: Arc<Attachme
 }
 
 /// A photo without its EXIF, XMP and other metadata (GPS positions), before anyone can download
-/// it: a byte scan, no decoding. A JPEG it cannot parse is kept as it is.
+/// it: a byte scan, no decoding. A JPEG whose metadata cannot be found is refused rather than
+/// published with it.
 async fn without_jpeg_metadata(bytes: Vec<u8>) -> Result<Vec<u8>, MessageError> {
-    tokio::task::spawn_blocking(move || {
-        crate::domain::image_processing::strip_jpeg_metadata(&bytes).unwrap_or(bytes)
+    let stripped = tokio::task::spawn_blocking(move || {
+        crate::domain::image_processing::strip_jpeg_metadata(&bytes)
     })
     .await
-    .map_err(|error| MessageError::Internal(Box::new(error)))
+    .map_err(|error| MessageError::Internal(Box::new(error)))?;
+    Ok(stripped?)
 }
 
 /// `animation.gif` becomes `animation.webp`; a name without that extension gains it.

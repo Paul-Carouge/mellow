@@ -30,6 +30,7 @@ futures-util = { version = "0.3.34", default-features = false, features = ["sink
 getrandom = "0.4.3"
 hkdf = "0.13.0"
 # Decodes uploaded pictures in pure Rust, four formats only (ADR-0021).
+gif = { version = "0.14.2", default-features = false, features = ["std"] }
 image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 # Already in the tree through hyper-util; `serde` reads proxy networks from mellow.toml.

@@ -23,6 +23,7 @@ clap.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 hkdf.workspace = true
+gif.workspace = true
 image.workspace = true
 hyper-util.workspace = true
 mellow-update.workspace = true
