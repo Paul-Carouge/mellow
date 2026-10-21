@@ -1,11 +1,12 @@
 # Mellow design document
 
-Status: draft v0.8 (2026-10-21). Owner: design. Applies to the Slint desktop client, the web client, the Android client (Jetpack Compose, Material 3 Expressive) and the admin web UI embedded in the server.
+Status: draft v0.12 (2026-10-21). Owner: design. Applies to the Slint desktop client, the web client, the Android client (Jetpack Compose, Material 3 Expressive) and the admin web UI embedded in the server.
 
 This document is the reference for every visual and interaction decision in Mellow. Developers should be able to build any MVP screen from it without inventing a colour, a size or a sentence. When something is missing, add it here first, then implement it. Every value named here exists in `design/tokens.json`.
 
 ## Changelog
 
+- **2026-10-21, v0.12 — avatars and banners on the web (ADR-0021):** avatars show the user's picture wherever they appear, with the initial on the accent fill while it loads, when there is none or when it fails (6.8); animated pictures show their still first frame and play while the row holding them is hovered or focused, always in the profile card, never under reduced motion. The profile popout shows the banner picture in a 120 px strip (5.7). User settings gain "Profile" (5.9): avatar and banner editors beside a live preview of the profile card. `component.profile-popover.banner-image-height` token.
 - **2026-10-21, v0.11 — file attachments (ADR-0020):** the web client attaches files (5.5): attach button, drag and drop with an apricot "Drop to attach to #general" overlay, paste; each file uploads at once into a tray inside the composer box (thumbnail or file icon, middle-truncated name, "Uploading…" then the size, or the error in `text.danger` with a red outline), up to 10 per message, Send waits for running uploads. Messages show images inline and other files as download cards (5.4); the desktop client lists "name · size" rows until it handles files. `component.attachment.*`, `component.drop-overlay.*` and `component.composer.attach-button-size` / `tray-*` tokens; `text.link` and `text.accent` on `surface.sidebar` contrast pairs; Phosphor `file`, `file-arrow-up` and `download-simple` (Fill).
 - **2026-10-21, v0.10 — My account on desktop and web:** user settings open on "My account" (5.9): Discord's account card with display name, username and email, Edit buttons opening forms in place (one at a time), and a password section with "Change password"; Esc closes the open form before the screen; the web client gets the full-screen user settings (gear in the user panel, "Sign out" moved into the settings navigation, a list page then a section page on phones) and an About page with the source code link; `component.settings.account-*`, `error-text` and `notice-text` tokens, a `text.normal` on `surface.sidebar` contrast pair; Phosphor `check` and `gear-six` on the web.
 - **2026-10-21, v0.9 — web client (ADR-0019):** the browser client is a port of the desktop shell (4.5): the same panes, tokens, copy and dialogs, laid out by the 4.2 breakpoints, with the rail and sidebar in a drawer and the member list as an overlay in narrow windows; 44 px targets under a coarse pointer and a send button on phones; native `<dialog>` for dialogs and drawers, the popover API for the server menu and the profile popover; `component.profile-popover.*`, `component.user-panel.button-icon-size` and `component.composer.reply-bar-icon-size` tokens; Phosphor `list`, `at` (Bold) and `paper-plane-right` (Fill) icons.
@@ -993,6 +994,7 @@ Layout: Discord's composer, a `surface.input` field with `radius.md`, min 44 px,
 - Large servers: offline members are not listed above 1,000 members ("Offline members are hidden in large servers.").
 - Loading: row skeletons. Error: "Couldn't load members." with "Try again".
 - Desktop, first version: click, `Enter` or `Space` on a member row opens a reduced popout to the leading side of the member list, top-aligned with the row (`component.profile-popover.*`): banner strip, avatar 80, display name, and "Message" (primary, full width, focused on open; accessible label "Message Ana") for anyone but yourself. "Message" opens or creates the conversation and moves focus to its composer. `Esc` or a click outside closes it, and the row shows `state.selected` while it is open.
+- Avatars and banners (ADR-0021, web first): the popout's strip is the banner picture at `component.profile-popover.banner-image-height` (120 px, Discord's 5:2 banner across the 300 px card, cropped to fill), or the plain `banner-height` strip without one. Banner and avatar play animated here, as on Discord, except under reduced motion. The popout follows `USER_UPDATE`, so a picture changed meanwhile shows at once. The card itself (`ProfileCard` on the web) is reused as the settings preview (5.9).
 - Profile popover (click, `Enter`, or context menu → "Profile"): 300 px, `surface.popover`, banner strip in the user's accent or a default grey, avatar 80, display name (`type.heading-md`), `@username@instance`, about text, roles as chips, member since, actions "Message" (primary), "Mention", and for moderators a "Moderation" menu (Kick, Ban, Manage roles).
 
 ### 5.8 Server settings
@@ -1087,6 +1089,30 @@ Editing one field (the row turns into its form):
 - Desktop: the page scrolls (an open password form is taller than short windows); the tab panel is labelled "My account". Contract: `account-display-name`, `account-username` (without `@`), `account-email`, `is-account-busy`, `account-error`, `account-notice`, `account-saved-count` (Rust increments it after each success) and the callbacks `save-display-name`, `save-username(username, current password)`, `change-password(current, new)`.
 - Web: a full-screen native modal `<dialog>` labelled "User settings" over the shell, opened from the user panel's gear (`gear-six`) button; focus starts on the selected section and returns to the gear on close. Navigation items are buttons with `aria-current="page"`, 32 px (44 px under a coarse pointer); the close button is a 44 px target holding the 36 px circle. Below 792 px the navigation is its own page ("User settings" title, close button), and choosing a section opens it with a "Back to user settings" button; focus goes to the section, then back to its item. About on the web: "Mellow web client", then "Source code": "Mellow is free software under the AGPL-3.0 licence. You can read, change and share its code." and the link "Source code on GitHub" (new tab).
 
+**Profile, first iteration (2026-10-21, web; ADR-0021)**: under "User settings", after My account. No crop step: the instance resizes the picture and the avatar is cropped to its circle when shown (a crop dialog stays in the plan above).
+
+```
+Profile                                                  (x)
+Pictures can be PNG, JPEG, GIF or WebP, up to 8 MB.      Esc
+Animated GIFs stay animated.
+
+AVATAR                               PREVIEW
+[Change avatar] [Remove avatar]      ┌──────────────────────┐
+✓ Avatar saved.                      │ banner picture 120   │
+                                     │ (avatar 80)          │
+PROFILE BANNER                       │ Paul Carouge         │
+A plain strip shows until you add    │ @paul                │
+a picture.                           └──────────────────────┘
+[Change banner]
+```
+
+- Two columns that start at the card's width (`component.profile-popover.width`) with `component.settings.section-gap` between them, so the preview wraps under the editors on narrow pages. The preview is the profile card with the popover's 1 px border, the name as plain text (the page keeps its headings), always animated except under reduced motion.
+- Each editor: label (`type.category`), the empty sentence when there is no picture ("Your initial shows until you add a picture.", "A plain strip shows until you add a picture."), then "Change avatar" (Primary, opens the file picker, accepting `image/png`, `image/jpeg`, `image/gif`, `image/webp`, described by the formats sentence under the title) and "Remove avatar" (Secondary, only when there is one). Same for the banner.
+- Checked before sending: over 8 MB, "Couldn't change the avatar: the picture is larger than 8 MB. Choose a smaller one."; another type, "…: choose a PNG, JPEG, GIF or WebP picture."
+- Busy (one change at a time, as the instance rate-limits them): every button disables but stays focusable, and the pressed one reads "Uploading avatar…" or "Removing avatar…"; the instance compresses before answering (a second or two for a large GIF), so this is a labelled wait, not a percentage: the browser cannot measure the processing.
+- Error: under its editor after `warning-circle`, `role="alert"`: an unreadable picture or one over the limits, "Couldn't change the avatar: the picture couldn't be read, or it's over 8192 pixels a side or 600 frames. Choose another one."; otherwise the shared reasons (busy instance, too many changes, network).
+- Success: the preview, the user panel and every message and member row update from the answer (and other people's clients from `USER_UPDATE`); "Avatar saved." / "Avatar removed." / "Banner saved." / "Banner removed." after a `check` icon, announced politely. After a removal focus moves to "Change …", since "Remove …" is gone.
+
 ### 5.10 Quick switcher
 
 `Ctrl+K` (or "Find or start a conversation") opens Discord's quick switcher: a 570 px dialog on `surface.popover`, `elevation.high`, with a large input ("Where would you like to go?", `type.heading-lg`) and results grouped by type (conversations, channels, servers), each with an icon, the server or instance name in `text.muted` and an unread or mention indicator. Prefixes filter as on Discord: `@` people, `#` text channels, `*` servers. Arrows move, `Enter` opens, `Esc` closes. Empty: "No results for 'anx'. Check the spelling or search another server." The result list is a listbox; the count is announced politely ("5 results").
@@ -1117,7 +1143,7 @@ All components use tokens only (component tier first), support light and dark th
 | 6.5 | Checkbox, Switch, Radio group | — | Off, on, mixed (checkbox), focus, disabled | Switch on: `positive.fill` track with a check glyph, as on Discord; off: `neutral.fill` with a cross glyph, so state never relies on colour. |
 | 6.6 | SegmentedControl | 2–4 options; tri-state permission (Allow / Inherit / Deny) | Selected, focus, disabled | Icon + text in each segment. |
 | 6.7 | Slider | Continuous, Stepped (chat font size 12–24, zoom 50–200 %) | Focus, dragging, disabled | Arrow keys step; value announced. |
-| 6.8 | Avatar | Sizes 16, 24, 32, 40, 80 · image, initials fallback, group (stacked) | Loading (tint block), with status, animated (play on hover/focus) | Always a circle. |
+| 6.8 | Avatar | Sizes 16, 24, 32, 40, 80 · image, initials fallback, group (stacked) | Loading (tint block), with status, animated (play on hover/focus) | Always a circle. Web: the initial shows until the picture has loaded and again if it fails; an animated picture loads its still URL (`/profile-images/{id}/still`) and switches to the animated one while the enclosing row (message, member or conversation row; otherwise the avatar) is hovered or holds focus, and always in the profile card; never under `prefers-reduced-motion: reduce`. Decorative (`alt=""`): the name is always next to it. |
 | 6.9 | StatusIndicator | Online, idle, dnd, offline | — | Shape + colour; cut-out ring of the surface below. |
 | 6.10 | Skeleton | Text line, avatar, message, row, server icon, table row | Static | `state.hover` fill in light, `state.selected` in dark (`state.hover` is nearly invisible on `surface.chat`); hidden from screen readers; container announces "Loading messages". |
 | 6.11 | ServerIcon | Server, instance, Home, unread conversation, Add (`+`) | Rest (circle), hover/focus (squircle), unread pill, mention badge, selected, offline, dragging | `component.rail.*`; morph with `MaterialShapes` on Android. |

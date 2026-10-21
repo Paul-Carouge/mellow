@@ -151,6 +151,19 @@ describe("MellowClient", () => {
     expect(client.guilds[0]?.channels.map((candidate) => candidate.id)).toEqual([GENERAL]);
   });
 
+  it("applies a new avatar and a removed banner from USER_UPDATE to authors and to the signed-in user", () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.user = { ...ready().user, banner: { id: "70", is_animated: false } };
+    client.applyReady(ready({ user: client.user }));
+    client.applyEvent({ t: "MESSAGE_CREATE", data: message("150") }, 0);
+    const avatar = { id: "71", is_animated: true };
+    client.applyEvent({ t: "USER_UPDATE", data: { id: OTHER, username: "other", display_name: "Other", avatar } }, 0);
+    client.applyEvent({ t: "USER_UPDATE", data: { id: ME, username: "me", display_name: "Me" } }, 0);
+    expect(client.messages(GENERAL)[0]?.author.avatar).toEqual(avatar);
+    expect(client.user?.banner).toBeNull();
+    expect(client.user?.email).toBe("me@example.org");
+  });
+
   it("keeps the newer edit when an older one comes back late", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(ready());

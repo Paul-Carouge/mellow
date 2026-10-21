@@ -7,18 +7,42 @@ export type Snowflake = string;
 /** Permission bitfield as a decimal string (u64). */
 export type PermissionBits = string;
 
+/** An avatar or banner (ADR-0021). Its id changes with the picture, so its URLs are cached forever. */
+export interface ProfileImage {
+  id: Snowflake;
+  is_animated: boolean;
+}
+
 export interface CurrentUser {
   id: Snowflake;
   username: string;
   display_name: string;
   email: string;
   is_instance_administrator: boolean;
+  /** Absent when the user has none (and from older servers). */
+  avatar?: ProfileImage | null;
+  banner?: ProfileImage | null;
 }
 
 export interface PublicUser {
   id: Snowflake;
   username: string;
   display_name: string;
+  /** Absent when the user has none (and from older servers). */
+  avatar?: ProfileImage | null;
+  banner?: ProfileImage | null;
+}
+
+/** What `PUT /users/@me/avatar` and `/banner` accept (ADR-0021). */
+export const MAXIMUM_PROFILE_IMAGE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * The animated picture only when asked for and there is one; otherwise the still one, which for a
+ * still picture is the picture itself, so it is served from one URL and cached once.
+ */
+export function profileImageUrl(image: ProfileImage, isAnimationWanted: boolean): string {
+  const base = `/api/v1/profile-images/${image.id}`;
+  return image.is_animated && !isAnimationWanted ? `${base}/still` : base;
 }
 
 export interface SessionCreated {
@@ -80,6 +104,17 @@ export interface Attachment {
 
 /** Shown inline: the instance serves only these as images (ADR-0020). */
 export const PREVIEWABLE_IMAGE_TYPES: readonly string[] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/**
+ * Why a chosen file cannot become an avatar or banner, checked before sending it; null lets the
+ * instance decide. An empty type (unknown to the browser) is left to the instance too.
+ */
+export function profileImageFileProblem(file: Pick<Blob, "size" | "type">): "not-a-picture" | "too-large" | null {
+  if (file.type !== "" && !PREVIEWABLE_IMAGE_TYPES.includes(file.type)) {
+    return "not-a-picture";
+  }
+  return file.size > MAXIMUM_PROFILE_IMAGE_BYTES ? "too-large" : null;
+}
 
 /** The name is not in the URL (the instance sends it in `Content-Disposition`). */
 export function attachmentUrl(attachment: Attachment): string {
