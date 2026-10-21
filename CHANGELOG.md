@@ -4,6 +4,9 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-21
+File transfers hardened after the 0.4.0 audit.
+
 ### Security
 - File transfers are bounded end to end: a download keeps its memory slot until its last byte is sent, uploads and downloads have separate slots, an account uploads one file at a time within a deadline, and avatar reads have their own slots. A slow or abusive client can no longer exhaust the server's memory or block everyone's transfers.
 - The storage quota is checked when the upload ends, so parallel uploads cannot exceed it; slow background compression no longer takes the slot avatars and banners need.
