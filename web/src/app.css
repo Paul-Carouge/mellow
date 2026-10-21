@@ -1,5 +1,7 @@
 @import "tailwindcss";
 @import "./lib/tokens.css";
+/* The development gallery is not part of the app. */
+@source not "./dev";
 
 @font-face {
   font-family: "Figtree";

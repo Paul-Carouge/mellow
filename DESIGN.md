@@ -488,9 +488,10 @@ Wherever Melli shows a state, the state is also said in words: Home keeps its ac
 #### Motion rules
 
 - Timings are tokens (`component.melli.*`): one loop duration per state, plus `state-change-duration` (360 ms, `motion.easing.standard`) for poses, colours and marks easing between states. Keyframe shapes and amplitudes are part of the drawing, like the paths, and stay in the component.
-- Every loop starts and ends at rest, so a state change only jumps by a few units; poses (eyes, face, colours, marks) ease over `state-change-duration`. Pausing the puffs (`animation-play-state`) keeps their angle.
+- Every loop starts and ends at rest; a state change restarts the loop from rest, a jump of up to 22 units when leaving the notification hop; poses (eyes, face, colours, marks) ease over `state-change-duration`. Pausing the puffs (`animation-play-state`) keeps their angle.
+- In the rail, idle is paused on its rest pose (the logo) and plays while the Home button is hovered or focused (`shouldIdleOnlyOnHover`): an always-visible infinite SVG loop would repaint every frame all day. Event states loop until they end.
 - Under `prefers-reduced-motion: reduce` (or the gallery's "Still poses"), Melli stops every animation and transition and shows the still pose of its state. A still pose must show the state on its own: add a static offset or tilt when the motion was the only sign.
-- Marks stay within 120 units of the tile centre (128, 128), so the Home button's circle (radius 128) never clips them.
+- Marks stay within 126 units of the tile centre (128, 128), so the Home button's circle (radius 128) never clips them.
 - The favicon is the still idle Melli. `cargo xtask tokens` writes `web/public/favicon.svg` from the mascot tokens; favicons never animate.
 
 #### Adding a state

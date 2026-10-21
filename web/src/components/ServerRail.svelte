@@ -93,7 +93,9 @@
 
 {#snippet homeMark()}
   <!-- The button paints Melli's tile, so it morphs and turns apricot like the other icons. -->
-  <Melli state={homeMelliState(client.status, hasUnreadConversation)} sizeToken="--mw-component-rail-item-size" hasTile={false} />
+  <Melli state={homeMelliState(client.status, hasUnreadConversation)} sizeToken="--mw-component-rail-item-size" hasTile={false}
+    shouldIdleOnlyOnHover
+  />
 {/snippet}
 
 {#snippet addIcon()}
