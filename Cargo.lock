@@ -7883,6 +7883,7 @@ name = "xtask"
 version = "0.4.1"
 dependencies = [
  "anyhow",
+ "resvg",
  "serde_json",
 ]
 

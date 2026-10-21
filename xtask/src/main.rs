@@ -1,6 +1,7 @@
-//! `cargo xtask tokens [--check]`: generates platform token files from `design/tokens.json`
+//! `cargo xtask tokens [--check]`: generates platform token files and app icons from `design/tokens.json`
 //! and enforces the declared WCAG contrast pairs (DESIGN.md §3.5).
 
+mod app_icons;
 mod css_tokens;
 mod design_tokens;
 mod favicon;
@@ -54,22 +55,41 @@ fn generate_tokens(is_check_only: bool) -> Result<()> {
 
     check_contrast_pairs(&tokens)?;
 
-    let outputs = [
+    let favicon_svg = favicon::generate_favicon(&tokens)?;
+    let mut outputs = vec![
         (
-            SLINT_TOKENS_OUTPUT_PATH,
-            slint_tokens::generate_slint_tokens(&tokens)?,
+            SLINT_TOKENS_OUTPUT_PATH.to_owned(),
+            slint_tokens::generate_slint_tokens(&tokens)?.into_bytes(),
         ),
         (
-            CSS_TOKENS_OUTPUT_PATH,
-            css_tokens::generate_css_tokens(&tokens)?,
+            CSS_TOKENS_OUTPUT_PATH.to_owned(),
+            css_tokens::generate_css_tokens(&tokens)?.into_bytes(),
         ),
-        (FAVICON_OUTPUT_PATH, favicon::generate_favicon(&tokens)?),
+        (
+            FAVICON_OUTPUT_PATH.to_owned(),
+            favicon_svg.clone().into_bytes(),
+        ),
     ];
+    let icons = app_icons::generate_app_icons(&favicon_svg)?;
+    let icon_file_names: Vec<String> = icons.iter().map(|(name, _)| name.clone()).collect();
+    outputs.extend(
+        icons
+            .into_iter()
+            .map(|(name, generated)| (format!("{}/{name}", app_icons::ICONS_DIRECTORY), generated)),
+    );
+    if !is_check_only {
+        std::fs::create_dir_all(root.join(app_icons::ICONS_DIRECTORY))?;
+    }
     for (relative_path, generated) in outputs {
-        let output_path = root.join(relative_path);
+        let output_path = root.join(&relative_path);
         if is_check_only {
-            let current = std::fs::read_to_string(&output_path).unwrap_or_default();
-            if current != generated {
+            let current = std::fs::read(&output_path).unwrap_or_default();
+            if let Some(icon_file_name) = icon_file_names
+                .iter()
+                .find(|name| relative_path.ends_with(name.as_str()))
+            {
+                app_icons::check_icon_is_up_to_date(icon_file_name, &current, &generated)?;
+            } else if current != generated {
                 bail!(
                     "{} is out of date; run `cargo xtask tokens`",
                     output_path.display()
