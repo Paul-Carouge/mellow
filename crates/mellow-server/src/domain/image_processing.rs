@@ -30,6 +30,8 @@ const LOSSLESS_METHOD: usize = 1;
 const PNG_OPTIMIZATION_PRESET: u8 = 2;
 /// oxipng stops trying better compressions past this and keeps its best so far.
 const PNG_OPTIMIZATION_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+/// Memory allowed to read a picture's header and its metadata, before any pixel.
+const HEADER_READ_MAXIMUM_BYTES: u64 = 16 * 1024 * 1024;
 /// Bytes per pixel of the widest PNG layout (RGBA, 16 bits a channel).
 const PNG_LARGEST_BYTES_PER_PIXEL: u64 = 8;
 
@@ -88,9 +90,15 @@ fn header_dimensions(
     bytes: &[u8],
     format: ImageFormat,
 ) -> Result<(u32, u32), ImageProcessingError> {
-    ImageReader::with_format(Cursor::new(bytes), format)
-        .into_dimensions()
-        .map_err(|_| ImageProcessingError::Unsupported)
+    let mut header_limits = limits();
+    // Headers can hold compressed metadata (PNG iCCP) inflated while reading them.
+    header_limits.max_alloc = Some(HEADER_READ_MAXIMUM_BYTES);
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    reader.limits(header_limits);
+    reader.into_dimensions().map_err(|error| match error {
+        image::ImageError::Limits(_) => ImageProcessingError::TooLarge,
+        _ => ImageProcessingError::Unsupported,
+    })
 }
 
 /// The frames of an animation, each through `shrink` as soon as it is decoded, within the frame
@@ -354,9 +362,9 @@ fn is_dropped_metadata(marker: u8, payload: &[u8]) -> bool {
 
 /// Removes metadata without touching the compressed image, and anything after its end (phones
 /// append further pictures there). The EXIF orientation is written back alone, so the photo still
-/// shows the right way up. Metadata always comes before the first scan: a file damaged after it
-/// (often truncated) keeps its remaining bytes, already free of metadata; one damaged before it is
-/// refused, since its metadata could not be removed.
+/// shows the right way up. A scan cut short (a truncated file) keeps its data, which holds no
+/// marker; any other damage after the first scan ends the file there, and damage before it is
+/// refused, since the metadata could not be removed.
 pub(crate) fn strip_jpeg_metadata(bytes: &[u8]) -> Result<Vec<u8>, ImageProcessingError> {
     if !bytes.starts_with(&JPEG_START_OF_IMAGE) {
         return Err(ImageProcessingError::Unsupported);
@@ -369,11 +377,7 @@ pub(crate) fn strip_jpeg_metadata(bytes: &[u8]) -> Result<Vec<u8>, ImageProcessi
     stripping.output.extend_from_slice(&JPEG_START_OF_IMAGE);
     match stripping.copy_without_metadata(bytes) {
         Ok(()) => Ok(stripping.output),
-        Err(_) if stripping.has_passed_first_scan => {
-            let rest = bytes.get(stripping.position..).unwrap_or_default();
-            stripping.output.extend_from_slice(rest);
-            Ok(stripping.output)
-        }
+        Err(_) if stripping.has_passed_first_scan => Ok(stripping.output),
         Err(error) => Err(error),
     }
 }
@@ -436,7 +440,11 @@ impl JpegStripping {
             }
             self.position += 2 + length;
             if marker == MARKER_START_OF_SCAN {
-                let scan_end = end_of_entropy_coded_data(bytes, self.position)?;
+                let Ok(scan_end) = end_of_entropy_coded_data(bytes, self.position) else {
+                    // Cut inside the compressed data: it holds no marker, so no metadata.
+                    self.output.extend_from_slice(&bytes[self.position..]);
+                    return Ok(());
+                };
                 self.output
                     .extend_from_slice(&bytes[self.position..scan_end]);
                 self.position = scan_end;

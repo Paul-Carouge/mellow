@@ -11,7 +11,7 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 - My account in user settings, on desktop and on the web: change the display name, the username (with the current password) and the password (other devices are signed out). The web client gets user settings with About and Sign out.
 
 ### Security
-- Photos sent as attachments lose their metadata (EXIF, GPS position, camera serial, embedded extra pictures) before anyone can download them; the orientation is kept.
+- Photos sent as attachments lose their metadata (EXIF, GPS position, camera serial, embedded extra pictures) before anyone can download them; the orientation is kept. A JPEG whose header is too damaged to remove them is refused.
 - Picture processing checks dimensions before decoding, holds at most two pictures at once and bounds memory, so a forged picture cannot exhaust the server.
 
 ## [0.3.0] - 2026-10-21
