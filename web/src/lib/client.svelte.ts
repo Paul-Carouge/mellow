@@ -860,6 +860,29 @@ export class MellowClient {
     this.rest.startTyping(channelId).catch((error: unknown) => this.reportError(error, "typing"));
   }
 
+  // --- Account -------------------------------------------------------------------------------
+
+  async updateDisplayName(displayName: string): Promise<void> {
+    this.applyCurrentUser(await this.rest.updateCurrentUser({ display_name: displayName.trim() }));
+  }
+
+  async updateUsername(username: string, currentPassword: string): Promise<void> {
+    this.applyCurrentUser(
+      await this.rest.updateCurrentUser({ username: username.trim(), current_password: currentPassword }),
+    );
+  }
+
+  /** Signs out the other devices; this session stays. */
+  changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    return this.rest.changePassword(currentPassword, newPassword);
+  }
+
+  /** The gateway sends the same `USER_UPDATE`; applying the answer shows the change at once. */
+  private applyCurrentUser(user: CurrentUser): void {
+    this.user = user;
+    this.renameUser(user.id, user.username, user.display_name);
+  }
+
   // --- Servers and conversations -------------------------------------------------------------
 
   async createServer(name: string): Promise<void> {

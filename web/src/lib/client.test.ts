@@ -191,4 +191,19 @@ describe("MellowClient", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(olderRequests).toBe(2);
   });
+
+  it("shows a new display name at once, in the user panel and on own messages", async () => {
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        updateCurrentUser: (changes: { display_name?: string }) =>
+          Promise.resolve({ ...ready().user, display_name: changes.display_name ?? "Me" }),
+      }),
+    );
+    client.applyReady(ready());
+    client.applyEvent({ t: "MESSAGE_CREATE", data: { ...message("150"), author: { id: ME, username: "me", display_name: "Me" } } }, 0);
+    await client.updateDisplayName("  Paul  ");
+    expect(client.user?.display_name).toBe("Paul");
+    expect(client.messages(GENERAL)[0]?.author.display_name).toBe("Paul");
+  });
 });

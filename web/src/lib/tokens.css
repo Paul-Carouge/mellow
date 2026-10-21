@@ -389,6 +389,13 @@
   --mw-component-roles-swatch-ring-offset: 0.125rem;
   --mw-component-roles-swatch-ring-width: 0.125rem;
   --mw-component-roles-swatch-size: 2rem;
+  --mw-component-settings-account-button-gap: 0.5rem;
+  --mw-component-settings-account-card-background: #2B2D31;
+  --mw-component-settings-account-card-padding: 1rem;
+  --mw-component-settings-account-card-radius: 0.5rem;
+  --mw-component-settings-account-row-gap: 1.5rem;
+  --mw-component-settings-account-value-gap: 0.25rem;
+  --mw-component-settings-account-value-text: #DBDEE1;
   --mw-component-settings-action-gap: 1rem;
   --mw-component-settings-app-name-text: #F2F3F5;
   --mw-component-settings-body-text: #DBDEE1;
@@ -413,6 +420,7 @@
   --mw-component-settings-error-icon: #FA777C;
   --mw-component-settings-error-icon-gap: 0.5rem;
   --mw-component-settings-error-icon-size: 1.25rem;
+  --mw-component-settings-error-text: #FA777C;
   --mw-component-settings-nav-danger-background-hover: #DA373C;
   --mw-component-settings-nav-danger-text: #FA777C;
   --mw-component-settings-nav-danger-text-hover: #FFFFFF;
@@ -435,6 +443,7 @@
   --mw-component-settings-nav-separator-margin-block: 0.5rem;
   --mw-component-settings-nav-separator-margin-inline: 0.625rem;
   --mw-component-settings-nav-width: 13.625rem;
+  --mw-component-settings-notice-text: #2DC770;
   --mw-component-settings-page-title-gap: 1.25rem;
   --mw-component-settings-page-title-text: #F2F3F5;
   --mw-component-settings-section-gap: 2rem;
@@ -918,6 +927,8 @@
     --mw-component-roles-swatch-check: #060607;
     --mw-component-roles-swatch-check-plate: #FFFFFF;
     --mw-component-roles-swatch-ring: #060607;
+    --mw-component-settings-account-card-background: #F2F3F5;
+    --mw-component-settings-account-value-text: #313338;
     --mw-component-settings-app-name-text: #060607;
     --mw-component-settings-body-text: #313338;
     --mw-component-settings-close-background-hover: #DEE0E4;
@@ -928,6 +939,7 @@
     --mw-component-settings-close-label-text: #5C5E66;
     --mw-component-settings-content-background: #FFFFFF;
     --mw-component-settings-error-icon: #C4262B;
+    --mw-component-settings-error-text: #C4262B;
     --mw-component-settings-nav-danger-text: #C4262B;
     --mw-component-settings-nav-item-background-hover: #DEE0E4;
     --mw-component-settings-nav-item-background-selected: #D4D7DC;
@@ -936,6 +948,7 @@
     --mw-component-settings-nav-item-text-selected: #060607;
     --mw-component-settings-nav-section-text: #5C5E66;
     --mw-component-settings-nav-separator: #E3E5E8;
+    --mw-component-settings-notice-text: #1A7F45;
     --mw-component-settings-page-title-text: #060607;
     --mw-component-settings-section-label-text: #5C5E66;
     --mw-component-settings-sidebar-background: #F2F3F5;
@@ -1168,6 +1181,8 @@
   --mw-component-roles-swatch-check: #060607;
   --mw-component-roles-swatch-check-plate: #FFFFFF;
   --mw-component-roles-swatch-ring: #060607;
+  --mw-component-settings-account-card-background: #F2F3F5;
+  --mw-component-settings-account-value-text: #313338;
   --mw-component-settings-app-name-text: #060607;
   --mw-component-settings-body-text: #313338;
   --mw-component-settings-close-background-hover: #DEE0E4;
@@ -1178,6 +1193,7 @@
   --mw-component-settings-close-label-text: #5C5E66;
   --mw-component-settings-content-background: #FFFFFF;
   --mw-component-settings-error-icon: #C4262B;
+  --mw-component-settings-error-text: #C4262B;
   --mw-component-settings-nav-danger-text: #C4262B;
   --mw-component-settings-nav-item-background-hover: #DEE0E4;
   --mw-component-settings-nav-item-background-selected: #D4D7DC;
@@ -1186,6 +1202,7 @@
   --mw-component-settings-nav-item-text-selected: #060607;
   --mw-component-settings-nav-section-text: #5C5E66;
   --mw-component-settings-nav-separator: #E3E5E8;
+  --mw-component-settings-notice-text: #1A7F45;
   --mw-component-settings-page-title-text: #060607;
   --mw-component-settings-section-label-text: #5C5E66;
   --mw-component-settings-sidebar-background: #F2F3F5;

@@ -3,6 +3,7 @@
 //! State lives on the UI thread; network calls run on a Tokio runtime and their results come
 //! back through Slint's event loop (`slint::spawn_local`), so no lock is ever shared with the UI.
 
+mod account_settings;
 mod message_actions;
 mod server_actions;
 mod server_settings;
@@ -359,6 +360,7 @@ fn connect_callbacks(window: &AppWindow, shell: &SharedShell) {
 
     connect_server_settings_callbacks(window, shell);
     connect_server_action_callbacks(window, shell);
+    connect_account_callbacks(window, shell);
     let shell_for_callback = shell.clone();
     window.on_open_direct_message(move |user_id| {
         if let Ok(user_id) = user_id.parse() {
@@ -413,6 +415,21 @@ fn connect_server_settings_callbacks(window: &AppWindow, shell: &SharedShell) {
     let shell_for_callback = shell.clone();
     window.on_move_role_down(move |row_index| {
         server_settings::move_role(&shell_for_callback, row_index, MoveDirection::Down);
+    });
+}
+
+fn connect_account_callbacks(window: &AppWindow, shell: &SharedShell) {
+    let shell_for_callback = shell.clone();
+    window.on_save_display_name(move |name| {
+        account_settings::save_display_name(&shell_for_callback, &name);
+    });
+    let shell_for_callback = shell.clone();
+    window.on_save_username(move |username, password| {
+        account_settings::save_username(&shell_for_callback, &username, &password);
+    });
+    let shell_for_callback = shell.clone();
+    window.on_change_password(move |current, new| {
+        account_settings::change_password(&shell_for_callback, &current, &new);
     });
 }
 
@@ -840,6 +857,7 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
 }
 
 fn refresh_user_panel(shell: &LiveShell) {
+    account_settings::refresh(shell);
     if let (Some(window), Some(user)) = (shell.window.upgrade(), shell.state.current_user()) {
         window.set_current_user_name(user.display_name.as_str().into());
         window.set_current_user_initial(shell_rows::first_letter(&user.display_name).into());
@@ -939,6 +957,8 @@ fn end_session(shell: &SharedShell, message: &str) -> tokio::task::JoinHandle<bo
         window.set_current_user_initial(SharedString::default());
         window.set_composer_text(SharedString::default());
         window.set_is_signed_in(false);
+        // Nothing of the previous account may stay, and its request never answers.
+        account_settings::clear(&window);
         window.set_connection_notice(SharedString::default());
         window.set_login_is_busy(false);
         show_login_error(&window, message);

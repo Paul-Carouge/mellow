@@ -12,7 +12,7 @@ Merged into `main`: #1 to #37. M1 (server, gateway, client core, desktop on real
 
 ### Next, in order
 1. **Release `v0.2.0`**: everything merged since `v0.1.1` (roles settings, account API); the user approves the `release` environment, then updates from the app (User settings → About) and with `mellow-update`. The ACME path stays covered by the Pebble test only (user's decision: the instance stays behind Caddy).
-2. **M2, continued** (what still separates Mellow from a daily Discord replacement, in order): desktop My Account, Profile and Appearance sections; server-settings screens (channel overwrites, members with kick and ban, bans, audit log); direct messages (1:1 and groups); attachments and avatars; multi-instance in the client; invites screen; mentions and unread counts from the server; admin web UI.
+2. **M2, continued** (what still separates Mellow from a daily Discord replacement, in order): My account is done on desktop and web; next attachments and avatars (ADR-0020), then Profile and Appearance sections; server-settings screens (channel overwrites, members with kick and ban, bans, audit log); direct messages (1:1 and groups); attachments and avatars; multi-instance in the client; invites screen; mentions and unread counts from the server; admin web UI.
 3. **Web client** (ADR-0019, accepted): served by the server binary at `/` (PR `feat/web-client`): sign-in with an HttpOnly cookie, servers, channels, messages, members, direct messages, phone layout. Next: settings, Markdown, unread divider, error states with Try again. Voice and video stay after that, with their own ADR.
 
 ### Known gaps and debts

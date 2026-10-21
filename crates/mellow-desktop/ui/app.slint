@@ -67,6 +67,17 @@ export component AppWindow inherits Window {
     in property <string> available-version;
     // Shown when the status is failed or unsupported; user-facing text built in Rust.
     in property <string> update-error-text;
+    // User settings, My account (DESIGN.md §5.9). The username comes without its `@`.
+    in property <string> account-display-name;
+    in property <string> account-username;
+    in property <string> account-email;
+    in property <bool> is-account-busy;
+    // Empty hides it; shown under the form being edited. User-facing text built in Rust.
+    in property <string> account-error;
+    // Empty hides it; success text, announced politely.
+    in property <string> account-notice;
+    // Incremented after every successful save: the open form closes and forgets its fields.
+    in property <int> account-saved-count;
     // Server settings (DESIGN.md §5.8), Roles section. Rust owns the selection and the role draft.
     in property <bool> can-open-server-settings;
     in-out property <bool> is-server-settings-open: false;
@@ -139,6 +150,11 @@ export component AppWindow inherits Window {
     callback check-for-updates();
     callback install-update();
     callback restart-to-update();
+    callback save-display-name(string);
+    // New username, current password.
+    callback save-username(string, string);
+    // Current password, new password.
+    callback change-password(string, string);
     // Rust sets is-server-settings-open and fills the role models.
     callback open-server-settings();
     // Called only without unsaved role changes; Slint closes the screen itself.
@@ -433,6 +449,16 @@ export component AppWindow inherits Window {
         check-for-updates => { root.check-for-updates(); }
         install-update => { root.install-update(); }
         restart-to-update => { root.restart-to-update(); }
+        account-display-name: root.account-display-name;
+        account-username: root.account-username;
+        account-email: root.account-email;
+        is-account-busy: root.is-account-busy;
+        account-error: root.account-error;
+        account-notice: root.account-notice;
+        account-saved-count: root.account-saved-count;
+        save-display-name(display-name) => { root.save-display-name(display-name); }
+        save-username(username, current-password) => { root.save-username(username, current-password); }
+        change-password(current-password, new-password) => { root.change-password(current-password, new-password); }
     }
 
     if root.is-signed-in && root.is-server-settings-open: ServerSettingsScreen {

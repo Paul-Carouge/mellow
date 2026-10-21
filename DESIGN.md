@@ -6,6 +6,7 @@ This document is the reference for every visual and interaction decision in Mell
 
 ## Changelog
 
+- **2026-10-21, v0.10 — My account on desktop and web:** user settings open on "My account" (5.9): Discord's account card with display name, username and email, Edit buttons opening forms in place (one at a time), and a password section with "Change password"; Esc closes the open form before the screen; the web client gets the full-screen user settings (gear in the user panel, "Sign out" moved into the settings navigation, a list page then a section page on phones) and an About page with the source code link; `component.settings.account-*`, `error-text` and `notice-text` tokens, a `text.normal` on `surface.sidebar` contrast pair; Phosphor `check` and `gear-six` on the web.
 - **2026-10-21, v0.9 — web client (ADR-0019):** the browser client is a port of the desktop shell (4.5): the same panes, tokens, copy and dialogs, laid out by the 4.2 breakpoints, with the rail and sidebar in a drawer and the member list as an overlay in narrow windows; 44 px targets under a coarse pointer and a send button on phones; native `<dialog>` for dialogs and drawers, the popover API for the server menu and the profile popover; `component.profile-popover.*`, `component.user-panel.button-icon-size` and `component.composer.reply-bar-icon-size` tokens; Phosphor `list`, `at` (Bold) and `paper-plane-right` (Fill) icons.
 - **2026-10-21, v0.8 — one-to-one direct messages on desktop:** Home lists conversations in the sidebar (5.6), the rail's Home item carries the unread pill, clicking a member opens a reduced profile popout with "Message" (5.7), and conversations use `@name` in the chat header, hero, composer and errors (5.4, 5.5); `component.conversation-row.*` and `component.profile-popover.*` tokens, Phosphor `at` icon (Bold).
 - **2026-10-21, v0.7 — server membership dialogs on desktop:** the rail's `+` opens "Create a server" / "Join a server" (one dialog, two pages switched by a link, as on Discord); the server menu gets "Invite people" (accent text), "Create channel" and "Leave server" (danger, separated), each shown only when allowed (5.3); invite, create-channel and leave-server dialogs (8); a shared `ModalDialog` frame for 6.35 (title, optional sentence, inline error with icon, Cancel plus one action, focus trapped, Esc and scrim close except while busy); `TextField` leading icon (`#`) and copy-only variant (6.3); `color.text.accent`, `component.context-menu.accent-text` and `separator-height`, `component.dialog.subtitle-*`, `error-*`, `mode-link-*`, `copied-label-duration` and `motion.delay.copied-label` tokens; Phosphor `user-plus` and `sign-out` (Fill) icons.
@@ -722,7 +723,8 @@ Phone (< 792)                     Drawer open
 - Dialogs and drawers are native modal `<dialog>` elements: the page behind is inert, Esc and the scrim close them (dialogs not while busy), focus returns to the control that opened them. The server menu and the profile popover use the popover API (light dismiss, Esc), with focus returning to the header or the member.
 - The message list has one Tab stop: `Up`/`Down`/`Home`/`End` move between messages, and the focused message shows its hover bar, so every action is reachable by keyboard and by tap. New messages from others are announced through a polite live region; action errors through an alert.
 - Message text is plain text with line breaks; only `http:` and `https:` URLs become links, opened in a new tab with `rel="noopener noreferrer"`. Markdown rendering (5.4) is not in the web client yet.
-- Not in the web client yet: user and server settings, mention badges, the unread divider and "New" bar, day dividers, Markdown, the quick switcher, the connection dock's "Back online" and session-expired states. The user panel's settings button is replaced by "Sign out".
+- User settings (5.9) open from the user panel's gear button ("User settings"), as on desktop; "Sign out" is the last item of their navigation.
+- Not in the web client yet: server settings, mention badges, the unread divider and "New" bar, day dividers, Markdown, the quick switcher, the connection dock's "Back online" and session-expired states.
 
 ### 4.4 Admin web UI (server-rendered HTML + htmx)
 
@@ -1015,9 +1017,9 @@ Same full-screen layout as server settings. Sections: My account (per instance),
 - Instances: list with status (Connected, Reconnecting, Signed out), "Sign out", "Connect another instance".
 - About: version, open-source licences (including Twemoji attribution), link to the source code (AGPL-3.0 requires offering it), instance versions.
 
-Desktop, first iteration (`UserSettingsScreen` in `user_settings.slint`, `component.settings.*`): the screen covers the whole window and hides the shell, so `Tab` stays inside it and screen readers do not reach the panes behind. The navigation column (218 px, 60 px top padding, 32 px items with a 2 px gap, `type.channel-name`) sits right-aligned in a `surface.sidebar` area that grows with the window; the content area grows too, and the page is capped at 740 px with 60 px top and 40 px side padding (16 px below 792 px). The close button (36 px circle, 2 px `text.secondary` border, 18 px `x` icon) with "Esc" under it sits 24 px after the page (8 px below 792 px). Navigation: section label "App settings" (rendered "APP SETTINGS" with `type.category`), "About" (selected), a separator, then "Sign out" (danger, last), which signs out at once and closes the screen, as the old menu item did. "Sign out" fills `danger.fill` with `text.on-danger` on hover, like danger menu items, because `text.danger` on `state.hover` is 4.34:1 in the light theme; keyboard focus shows only the ring.
+Desktop, first iteration (`UserSettingsScreen` in `user_settings.slint`, `component.settings.*`): the screen covers the whole window and hides the shell, so `Tab` stays inside it and screen readers do not reach the panes behind. The navigation column (218 px, 60 px top padding, 32 px items with a 2 px gap, `type.channel-name`) sits right-aligned in a `surface.sidebar` area that grows with the window; the content area grows too, and the page is capped at 740 px with 60 px top and 40 px side padding (16 px below 792 px). The close button (36 px circle, 2 px `text.secondary` border, 18 px `x` icon) with "Esc" under it sits 24 px after the page (8 px below 792 px). Navigation: section label "App settings" (rendered "APP SETTINGS" with `type.category`), "About" (selected until My account arrived, below), a separator, then "Sign out" (danger, last), which signs out at once and closes the screen, as the old menu item did. "Sign out" fills `danger.fill` with `text.on-danger` on hover, like danger menu items, because `text.danger` on `state.hover` is 4.34:1 in the light theme; keyboard focus shows only the ring.
 
-Keyboard and screen readers: focus moves to "About" when the screen opens; `Esc` closes it from anywhere inside. The navigation is a navigation landmark labelled "User settings" holding a tab list ("App settings"); the page is a tab panel labelled "About"; the close button is labelled "Close settings" with the description "Esc". Update status changes are announced through a polite live region that exists from the start.
+Keyboard and screen readers: focus moves to the selected section ("My account") when the screen opens; `Esc` closes it from anywhere inside (after closing an open My account form). The navigation is a navigation landmark labelled "User settings" holding one tab list per group ("User settings", "App settings"); the page is a tab panel labelled with the section name; the close button is labelled "Close settings" with the description "Esc". Update status changes are announced through a polite live region that exists from the start.
 
 About page: the page title "About" (`type.heading-lg`), then "Mellow 0.1.0" (`type.heading-md`, just "Mellow" while the version is unknown), then the "Updates" section (label in `type.category`, sentence in `type.body-lg`, one Primary button 16 px under it):
 
@@ -1033,6 +1035,44 @@ About page: the page title "About" (`type.heading-lg`), then "Mellow 0.1.0" (`ty
 | Unsupported | The reason from the app, for example "Mellow can't replace itself in this folder. Download the new version from github.com/Paul-Carouge/mellow/releases." | None |
 
 The button stays in place while busy, so keyboard focus is not lost; when the status becomes unsupported and the button disappears, focus moves to the screen itself so `Esc` still works. Still to come on this page: licences and the source code link (both required above).
+
+**My account, first iteration (2026-10-21, desktop and web)**: the default section, under the navigation label "User settings" (rendered "USER SETTINGS"); About moves under "App settings", with a separator between the groups and before "Sign out". The navigation is otherwise unchanged.
+
+```
+My account                                         (x)
+┌──────────────────────────────────────────────┐   Esc
+│ DISPLAY NAME                          [Edit] │
+│ Paul Carouge                                 │
+│ ✓ Display name saved.                        │
+│ USERNAME                              [Edit] │
+│ @paul                                        │
+│ EMAIL                                        │
+│ paul@example.org                             │
+└──────────────────────────────────────────────┘
+PASSWORD
+[Change password]
+
+Editing one field (the row turns into its form):
+┌──────────────────────────────────────────────┐
+│ USERNAME                                     │
+│ [paul                                      ] │
+│ 2 to 32 characters: lowercase letters, …     │
+│ CURRENT PASSWORD                             │
+│ [••••••••                               (o)] │
+│ (!) Couldn't change the username: …          │
+│                          [Cancel] [Save]     │
+└──────────────────────────────────────────────┘
+```
+
+- The card is `component.settings.account-card-*`: `surface.sidebar` on the `surface.chat` page, `radius.md`, 16 px padding, 24 px between rows. Each row is an uppercase label (`type.category`, `text.muted`) over its value (`type.body-lg`, `text.normal`), with a Secondary "Edit" button at the trailing end, as on Discord. The username shows as `@paul`. The email is read-only (no Edit button): changing it needs a verification flow that does not exist yet.
+- "Edit" turns the row into its form in place, prefilled: Display name (one field, helper "Up to 32 characters. This is the name people see in chat.", Save); Username (the username, helper "2 to 32 characters: lowercase letters, digits, dots and underscores.", then "Current password", as Discord asks for it; Save). "Change password" (Primary) turns into a card with "Current password", "New password" (helper "At least 10 characters.") and "Confirm new password" (helper "Doesn't match the new password." while it differs), then Cancel and "Change password". Password fields have the show/hide toggle; on the web they use `autocomplete="current-password"` / `"new-password"`.
+- One form is open at a time: opening another discards the first. Save stays disabled until the form can succeed by the client's checks (display name not empty and changed; username changed and a password typed; new password of at least 10 characters, confirmation equal); the helpers say why. `Enter` in a field saves when Save is enabled.
+- Busy: fields turn read-only (dimmed on desktop), Cancel and every Edit button are disabled, and Save reads "Saving…" ("Changing password…"); disabled buttons stay focusable.
+- Error: under the form that raised it, after a `warning-circle` icon, in `component.settings.error-text` (`text.danger`), announced assertively (desktop live region, web `role="alert"`). An error left from an earlier attempt never shows under another form.
+- Success: the form closes and forgets its fields (passwords are never kept), focus returns to the row's Edit button (or "Change password"), and the result sentence appears under that row after a `check` icon in `component.settings.notice-text` (`text.positive`), announced politely: "Display name saved.", "Username saved.", "Password changed. Your other devices are signed out." (desktop shows the text Rust provides).
+- `Esc` closes the open form (not while busy) and returns focus to its Edit button; with no form open it closes the settings. Switching sections discards an open form.
+- Desktop: the page scrolls (an open password form is taller than short windows); the tab panel is labelled "My account". Contract: `account-display-name`, `account-username` (without `@`), `account-email`, `is-account-busy`, `account-error`, `account-notice`, `account-saved-count` (Rust increments it after each success) and the callbacks `save-display-name`, `save-username(username, current password)`, `change-password(current, new)`.
+- Web: a full-screen native modal `<dialog>` labelled "User settings" over the shell, opened from the user panel's gear (`gear-six`) button; focus starts on the selected section and returns to the gear on close. Navigation items are buttons with `aria-current="page"`, 32 px (44 px under a coarse pointer); the close button is a 44 px target holding the 36 px circle. Below 792 px the navigation is its own page ("User settings" title, close button), and choosing a section opens it with a "Back to user settings" button; focus goes to the section, then back to its item. About on the web: "Mellow web client", then "Source code": "Mellow is free software under the AGPL-3.0 licence. You can read, change and share its code." and the link "Source code on GitHub" (new tab).
 
 ### 5.10 Quick switcher
 
@@ -1099,7 +1139,7 @@ All components use tokens only (component tier first), support light and dark th
 | 6.40 | Badge | Count (mention), "New" pill | — | `component.badge.*`; "99+" cap; accessible text "3 mentions". |
 | 6.41 | RoleChip | With colour dot | Removable | Colour dot plus name, never colour alone. |
 | 6.42 | PermissionRow | Switch (role), tri-state (channel override) | Sensitive marker, locked | Plain-language description. |
-| 6.43 | SettingsNav | Desktop column, Android list, admin web | Selected, focus, danger item | Discord settings look; 44 px items on web. Desktop: `component.settings.nav-*`, 32 px items; the danger item fills `danger.fill` on hover (see 5.9). |
+| 6.43 | SettingsNav | Desktop column, Android list, admin web, web client (column; list page on phones) | Selected, focus, danger item | Discord settings look; 44 px items on the admin web. Desktop and web client: `component.settings.nav-*`, 32 px items (44 px under a coarse pointer on the web); groups with an uppercase label, separated by a divider; the danger item fills `danger.fill` on hover (see 5.9). |
 | 6.44 | UnsavedChangesBar | — | Visible, attention (leave attempted), saving, error | `elevation.high`. |
 | 6.45 | Tabs | Standard | Selected, focus | Arrow keys move between tabs. |
 | 6.46 | PaneResizeHandle | Vertical | Hover, dragging, focus | Keyboard resize. |

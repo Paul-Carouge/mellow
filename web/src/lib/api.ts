@@ -88,6 +88,23 @@ export class RestClient {
     return this.request("GET", "users/@me");
   }
 
+  /** Absent fields stay unchanged; a new username needs the current password. */
+  updateCurrentUser(changes: {
+    display_name?: string;
+    username?: string;
+    current_password?: string;
+  }): Promise<CurrentUser> {
+    return this.request("PATCH", "users/@me", changes);
+  }
+
+  /** Signs out the user's other sessions; this one stays. */
+  changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    return this.request("POST", "users/@me/password", {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+  }
+
   createGuild(name: string): Promise<Guild> {
     return this.request("POST", "guilds", { name });
   }
