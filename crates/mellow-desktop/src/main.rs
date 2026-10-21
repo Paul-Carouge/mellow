@@ -9,6 +9,7 @@ mod clipboard;
 mod demo_shell;
 mod fake_messages;
 mod fake_workspace;
+mod idle_benchmark;
 mod live_rows;
 mod live_shell;
 mod melli_animation;
@@ -63,11 +64,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     window.set_app_version(mellow_update::current_version().to_string().into());
     app_icons::install_in_background();
+    melli_animation::pause_while_window_is_hidden(&window);
 
     // The scroll benchmark and snapshots measure the shell itself, on stable fake data.
     let is_demo = [
         DEMO_WORKSPACE_VARIABLE,
         scroll_benchmark::ENABLE_SCROLL_BENCHMARK_VARIABLE,
+        idle_benchmark::ENABLE_IDLE_BENCHMARK_VARIABLE,
         window_snapshot::SNAPSHOT_DIRECTORY_VARIABLE,
     ]
     .iter()

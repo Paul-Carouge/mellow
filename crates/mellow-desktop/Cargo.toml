@@ -19,7 +19,9 @@ keyring-core = "1.0.1"
 mellow-client-core.workspace = true
 mellow-protocol.workspace = true
 mellow-update.workspace = true
-slint = "1.18.1"
+# `unstable-winit-030`: the window events that tell when the window is occluded (melli_animation.rs).
+# The winit backend is the default one already, so this adds no crate.
+slint = { version = "1.18.1", features = ["unstable-winit-030"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

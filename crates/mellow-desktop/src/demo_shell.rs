@@ -13,7 +13,7 @@ use crate::fake_workspace::{
 };
 use crate::generated_ui::{AppWindow, MessageDelivery, MessageRow};
 use crate::message_markup::styled_text_from_message_body;
-use crate::{scroll_benchmark, shell_rows};
+use crate::{idle_benchmark, scroll_benchmark, shell_rows};
 
 /// The busiest channel gets the 10 000-message history used by the scroll benchmark.
 const BUSIEST_CHANNEL_NAME: &str = "general";
@@ -128,6 +128,9 @@ pub fn start(window: &AppWindow) -> Result<(), slint::PlatformError> {
 
     if std::env::var_os(scroll_benchmark::ENABLE_SCROLL_BENCHMARK_VARIABLE).is_some() {
         scroll_benchmark::start(window)?;
+    }
+    if std::env::var_os(idle_benchmark::ENABLE_IDLE_BENCHMARK_VARIABLE).is_some() {
+        idle_benchmark::start(window)?;
     }
     Ok(())
 }
