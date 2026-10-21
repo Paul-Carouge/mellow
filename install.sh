@@ -72,14 +72,23 @@ verify() {
   [ "${actual}" = "${expected}" ] || fail "the digest of ${asset} does not match"
 }
 
+# Quotes a path for the Exec key (Desktop Entry spec, "The Exec key"): the argument goes in double
+# quotes with ", `, $ and \ escaped, then the file's string escaping doubles every backslash, and
+# % becomes %%. A home directory with spaces then still starts the app.
+desktop_exec_argument() {
+  escaped="$(printf '%s' "$1" | sed -e 's/[\\"`$]/\\&/g' -e 's/\\/\\\\/g' -e 's/%/%%/g')"
+  printf '"%s"' "${escaped}"
+}
+
 write_menu_entry() {
   mkdir -p "$(dirname "${MENU_ENTRY}")"
+  exec_argument="$(desktop_exec_argument "${EXECUTABLE}")"
   cat > "${MENU_ENTRY}" << EOF
 [Desktop Entry]
 Type=Application
 Name=Mellow
 Comment=Self-hosted chat
-Exec=${EXECUTABLE}
+Exec=${exec_argument}
 Icon=mellow
 Terminal=false
 Categories=Network;Chat;InstantMessaging;
