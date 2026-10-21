@@ -21,9 +21,10 @@
     onopendialog: (dialog: ServerDialog) => void;
     /** After a channel or conversation was chosen (the narrow layout closes its drawer). */
     onnavigate: () => void;
+    onopenusersettings: () => void;
   }
 
-  let { client, collapsedCategoryIds, onopendialog, onnavigate }: Props = $props();
+  let { client, collapsedCategoryIds, onopendialog, onnavigate, onopenusersettings }: Props = $props();
 
   const guild = $derived(client.selectedGuild);
   const user = $derived(client.user);
@@ -263,19 +264,15 @@
         <p class="truncate type-user-panel-name text-(--mw-component-user-panel-name-text)">{displayName(user)}</p>
         <p class="truncate type-body-sm text-(--mw-component-user-panel-status-text)">@{user.username}</p>
       </div>
+      <!-- Sign out lives in the settings navigation, as on desktop (DESIGN.md §5.9). -->
       <IconButton
-        icon="sign-out"
-        label="Sign out"
+        icon="gear-six"
+        label="User settings"
         class="size-(--mw-component-user-panel-button-size) text-(--mw-component-user-panel-button-icon) hover:bg-(--mw-component-user-panel-button-background-hover)"
         iconClass="size-(--mw-component-user-panel-button-icon-size)"
-        onclick={() => void client.signOut()}
+        onclick={onopenusersettings}
       />
     </div>
-    {#if client.signOutError}
-      <p role="alert" class="bg-(--mw-component-user-panel-background) px-sm pb-xs type-body-sm text-text-danger">
-        {client.signOutError}
-      </p>
-    {/if}
   {/if}
 </div>
 

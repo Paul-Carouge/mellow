@@ -15,6 +15,7 @@
   import MemberList from "./MemberList.svelte";
   import ServerRail from "./ServerRail.svelte";
   import { minimumWidthQueryForPanes } from "./tokens";
+  import UserSettings from "./UserSettings.svelte";
 
   // The signed-in shell (DESIGN.md §4.2): rail, channel sidebar, chat and member list. Each
   // breakpoint is the sum of the panes it must fit: below the full width the member list opens
@@ -37,6 +38,7 @@
   let isMemberOverlayOpen = $state(false);
   let isNavigationDrawerOpen = $state(false);
   let openDialog = $state<"add-server" | ServerDialog | null>(null);
+  let isUserSettingsOpen = $state(false);
 
   const guild = $derived(client.selectedGuild);
   const isMemberListOpen = $derived(hasRoomForMemberList.current ? isMemberListShownInline : isMemberOverlayOpen);
@@ -87,6 +89,7 @@
     {collapsedCategoryIds}
     onopendialog={(dialog) => (openDialog = dialog)}
     onnavigate={() => void closeDrawerAfterNavigation()}
+    onopenusersettings={() => (isUserSettingsOpen = true)}
   />
 {/snippet}
 
@@ -135,4 +138,8 @@
   <CreateChannelDialog {client} onclose={() => (openDialog = null)} fallbackFocus={focusComposer} />
 {:else if openDialog === "leave-server" && guild}
   <LeaveServerDialog {client} serverName={guild.name} onclose={() => (openDialog = null)} fallbackFocus={focusComposer} />
+{/if}
+
+{#if isUserSettingsOpen}
+  <UserSettings {client} isWide={hasRoomForSidebar.current} onclose={() => (isUserSettingsOpen = false)} />
 {/if}

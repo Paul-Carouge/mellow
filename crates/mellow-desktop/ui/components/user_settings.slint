@@ -1,5 +1,6 @@
+import { ScrollView } from "std-widgets.slint";
 import { MellowComponent, MellowType } from "../tokens.slint";
-import { Button } from "primitives.slint";
+import { Button, TextField } from "primitives.slint";
 
 // Where the app's self-update stands (DESIGN.md §5.9, About); set from Rust.
 export enum UpdateStatus { unknown, checking, up-to-date, available, downloading, ready-to-restart, failed, unsupported }
@@ -128,13 +129,191 @@ export component CloseButton inherits VerticalLayout {
     }
 }
 
-// User settings (DESIGN.md §5.8 layout, §5.9 sections), over the whole window. Only "About" exists
-// so far; it shows the app version and drives the self-update.
+// Which page the settings show.
+enum SettingsSection { account, about }
+
+// Which My Account form is open; only one at a time, so an error always belongs to the open one.
+enum AccountEditor { none, display-name, username, password }
+
+// A 1 px divider between navigation groups, as on Discord.
+component NavSeparator inherits Rectangle {
+    height: 1px + 2 * MellowComponent.settings-nav-separator-margin-block;
+    Rectangle {
+        x: MellowComponent.settings-nav-separator-margin-inline;
+        width: parent.width - 2 * MellowComponent.settings-nav-separator-margin-inline;
+        height: 1px;
+        background: MellowComponent.settings-nav-separator;
+    }
+}
+
+// A navigation group: its uppercase label, then its items. The tab list's label already says it.
+component NavGroup inherits Rectangle {
+    in property <string> label;
+    in property <string> display-label;
+    accessible-role: tab-list;
+    accessible-label: label;
+    VerticalLayout {
+        spacing: MellowComponent.settings-nav-item-gap;
+        HorizontalLayout {
+            padding-left: MellowComponent.settings-nav-section-padding-inline;
+            padding-right: MellowComponent.settings-nav-section-padding-inline;
+            padding-top: MellowComponent.settings-nav-section-padding-block;
+            padding-bottom: MellowComponent.settings-nav-section-padding-block;
+            SectionLabel {
+                text: root.display-label;
+                label: root.label;
+                color: MellowComponent.settings-nav-section-text;
+                accessible-role: none;
+            }
+        }
+        @children
+    }
+}
+
+// A sentence after an icon, so success and failure never rely on colour alone. Screen readers hear
+// it through the screen's live regions, so the visible copy is not read twice.
+component StatusLine inherits HorizontalLayout {
+    in property <string> text;
+    in property <bool> is-error;
+    spacing: MellowComponent.settings-error-icon-gap;
+    VerticalLayout {
+        alignment: start;
+        Image {
+            source: root.is-error ? @image-url("../../icons/warning-circle.svg") : @image-url("../../icons/check.svg");
+            colorize: root.is-error ? MellowComponent.settings-error-icon : MellowComponent.settings-notice-text;
+            width: MellowComponent.settings-error-icon-size;
+            height: self.width;
+            accessible-role: none;
+        }
+    }
+    Text {
+        text: root.text;
+        color: root.is-error ? MellowComponent.settings-error-text : MellowComponent.settings-notice-text;
+        font-size: MellowType.body.font-size;
+        wrap: word-wrap;
+        horizontal-stretch: 1;
+        accessible-role: none;
+    }
+}
+
+// Uppercase label and value of one account field.
+component AccountFieldValue inherits VerticalLayout {
+    in property <string> label;
+    in property <string> display-label;
+    in property <string> value;
+    spacing: MellowComponent.settings-account-value-gap;
+    SectionLabel {
+        text: root.display-label;
+        label: root.label;
+    }
+    Text {
+        text: root.value;
+        color: MellowComponent.settings-account-value-text;
+        font-size: MellowType.body-lg.font-size;
+        wrap: word-wrap;
+    }
+}
+
+// An editable account field with its Edit button at the trailing end, as on Discord.
+component AccountFieldRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> display-label;
+    in property <string> value;
+    // "Edit display name": "Edit" alone does not say which field for screen readers.
+    in property <string> edit-label;
+    in property <bool> is-edit-enabled;
+    // True when this row comes back after its form closed: focus returns to its Edit button.
+    in property <bool> should-take-focus;
+    callback edit();
+    spacing: MellowComponent.settings-account-button-gap;
+
+    init => {
+        if should-take-focus {
+            edit-button.focus();
+        }
+    }
+
+    AccountFieldValue {
+        horizontal-stretch: 1;
+        label: root.label;
+        display-label: root.display-label;
+        value: root.value;
+    }
+    VerticalLayout {
+        alignment: center;
+        edit-button := Button {
+            label: "Edit";
+            accessible-label: root.edit-label;
+            is-enabled: root.is-edit-enabled;
+            clicked => { root.edit(); }
+        }
+    }
+}
+
+// The form an Edit button opens in place: its fields, the error it raised, then Cancel and Save.
+component AccountEditForm inherits VerticalLayout {
+    in property <string> save-label;
+    in property <string> busy-label;
+    in property <bool> is-save-enabled;
+    in property <bool> is-busy;
+    // Empty hides it.
+    in property <string> error-message;
+    callback save();
+    callback cancel();
+    spacing: MellowComponent.text-field-field-gap;
+
+    @children
+    if root.error-message != "": StatusLine {
+        text: root.error-message;
+        is-error: true;
+    }
+    HorizontalLayout {
+        alignment: end;
+        spacing: MellowComponent.settings-account-button-gap;
+        Button {
+            label: "Cancel";
+            is-enabled: !root.is-busy;
+            clicked => { root.cancel(); }
+        }
+        // The label says what is happening while busy (DESIGN.md §6.1, loading state).
+        Button {
+            label: root.is-busy ? root.busy-label : root.save-label;
+            is-primary: true;
+            is-enabled: root.is-save-enabled && !root.is-busy;
+            clicked => { root.save(); }
+        }
+    }
+}
+
+// Discord's account card background and padding around rows or a form.
+component AccountCard inherits Rectangle {
+    background: MellowComponent.settings-account-card-background;
+    border-radius: MellowComponent.settings-account-card-radius;
+    VerticalLayout {
+        padding: MellowComponent.settings-account-card-padding;
+        spacing: MellowComponent.settings-account-row-gap;
+        @children
+    }
+}
+
+// User settings (DESIGN.md §5.8 layout, §5.9 sections), over the whole window: My account (the
+// default) and About.
 export component UserSettingsScreen inherits Rectangle {
     in property <string> app-version;
     in property <UpdateStatus> update-status;
     in property <string> available-version;
     in property <string> update-error-text;
+    // My account. The username comes without its `@`.
+    in property <string> account-display-name;
+    in property <string> account-username;
+    in property <string> account-email;
+    in property <bool> is-account-busy;
+    // Empty hides it; shown under the form whose save raised it.
+    in property <string> account-error;
+    // Empty hides it; shown where the saved form was.
+    in property <string> account-notice;
+    // Incremented by Rust after every successful save: the open form closes and forgets its fields.
+    in property <int> account-saved-count;
     // Below the sidebar breakpoint the page tightens its side padding.
     in property <bool> is-narrow;
     callback close();
@@ -142,6 +321,37 @@ export component UserSettingsScreen inherits Rectangle {
     callback check-for-updates();
     callback install-update();
     callback restart-to-update();
+    callback save-display-name(string);
+    // New username, current password.
+    callback save-username(string, string);
+    // Current password, new password.
+    callback change-password(string, string);
+
+    property <SettingsSection> section: SettingsSection.account;
+    property <AccountEditor> editor: AccountEditor.none;
+    // The form that last started a save, and the one that last succeeded: they place the error and
+    // the notice, and an error left from an earlier form never shows under a new one.
+    property <AccountEditor> error-editor: AccountEditor.none;
+    property <AccountEditor> notice-editor: AccountEditor.none;
+    // The row (or the "Change password" button) that takes focus back when its form closes.
+    property <AccountEditor> focus-return: AccountEditor.none;
+    property <string> display-name-draft;
+    property <string> username-draft;
+    property <string> current-password-draft;
+    property <string> new-password-draft;
+    property <string> confirm-password-draft;
+    property <string> visible-account-error: editor != AccountEditor.none && error-editor == editor ? account-error : "";
+
+    // Mirrors the server's rules (mellow-server domain/account_rules.rs); the server still decides.
+    property <bool> can-save-display-name: display-name-draft != "" && display-name-draft != account-display-name;
+    property <bool> can-save-username: username-draft != "" && username-draft != account-username && current-password-draft != "";
+    // As the server's account rules. shortcut: Slint counts grapheme clusters, the server counts
+    // chars, so only exotic passwords (combining marks, emoji sequences) are held back here.
+    property <int> minimum-password-length: 10;
+    property <bool> is-new-password-long-enough: new-password-draft.character-count >= minimum-password-length;
+    property <bool> does-confirmation-match: confirm-password-draft == new-password-draft;
+    property <bool> can-change-password: current-password-draft != "" && is-new-password-long-enough
+        && confirm-password-draft != "" && does-confirmation-match;
 
     property <bool> is-update-busy: update-status == UpdateStatus.checking || update-status == UpdateStatus.downloading;
     property <bool> has-update-action: update-status != UpdateStatus.unsupported;
@@ -166,13 +376,74 @@ export component UserSettingsScreen inherits Rectangle {
         }
     }
 
-    // Focus lands on the selected section, so screen readers start in the navigation, as on Discord.
-    init => { about-item.focus(); }
-    // The action button disappears when updating is unsupported: keep focus inside the screen.
-    changed has-update-action => {
-        if !has-update-action && update-button.has-keyboard-focus {
-            key-scope.focus();
+    function clear-drafts() {
+        display-name-draft = "";
+        username-draft = "";
+        current-password-draft = "";
+        new-password-draft = "";
+        confirm-password-draft = "";
+    }
+
+    function open-editor(form: AccountEditor) {
+        clear-drafts();
+        // Prefilled, as Discord does: the change is usually small.
+        if form == AccountEditor.display-name {
+            display-name-draft = account-display-name;
+        } else if form == AccountEditor.username {
+            username-draft = account-username;
         }
+        focus-return = AccountEditor.none;
+        error-editor = AccountEditor.none;
+        notice-editor = AccountEditor.none;
+        editor = form;
+    }
+
+    // Typed passwords are not kept once their form closes.
+    function close-editor() {
+        clear-drafts();
+        focus-return = editor;
+        editor = AccountEditor.none;
+    }
+
+    function select-section(next: SettingsSection) {
+        if next == section {
+            return;
+        }
+        clear-drafts();
+        editor = AccountEditor.none;
+        focus-return = AccountEditor.none;
+        section = next;
+    }
+
+    function save-open-form() {
+        if is-account-busy {
+            return;
+        }
+        if editor == AccountEditor.display-name && can-save-display-name {
+            root.save-display-name(display-name-draft);
+        } else if editor == AccountEditor.username && can-save-username {
+            root.save-username(username-draft, current-password-draft);
+        } else if editor == AccountEditor.password && can-change-password {
+            root.change-password(current-password-draft, new-password-draft);
+        }
+    }
+
+    // Focus lands on the selected section, so screen readers start in the navigation, as on Discord.
+    init => { account-item.focus(); }
+    changed is-account-busy => {
+        if is-account-busy {
+            error-editor = editor;
+        }
+    }
+    // Also without a busy phase, for an error Rust raises before sending anything.
+    changed account-error => {
+        if account-error != "" {
+            error-editor = editor;
+        }
+    }
+    changed account-saved-count => {
+        notice-editor = editor;
+        close-editor();
     }
 
     background: MellowComponent.settings-content-background;
@@ -184,7 +455,14 @@ export component UserSettingsScreen inherits Rectangle {
         focus-on-click: false;
         key-pressed(event) => {
             if event.text == Key.Escape {
-                root.close();
+                // Esc first closes the open form, as it would close Discord's dialog for it.
+                if editor != AccountEditor.none {
+                    if !is-account-busy {
+                        close-editor();
+                    }
+                } else {
+                    root.close();
+                }
                 return accept;
             }
             reject
@@ -209,41 +487,26 @@ export component UserSettingsScreen inherits Rectangle {
                     padding-left: MellowComponent.settings-nav-padding-leading;
                     padding-right: MellowComponent.settings-nav-padding-trailing;
 
-                    Rectangle {
-                        accessible-role: tab-list;
-                        accessible-label: "App settings";
-                        VerticalLayout {
-                            spacing: MellowComponent.settings-nav-item-gap;
-                            HorizontalLayout {
-                                padding-left: MellowComponent.settings-nav-section-padding-inline;
-                                padding-right: MellowComponent.settings-nav-section-padding-inline;
-                                padding-top: MellowComponent.settings-nav-section-padding-block;
-                                padding-bottom: MellowComponent.settings-nav-section-padding-block;
-                                // The tab list's label already says it.
-                                SectionLabel {
-                                    text: "APP SETTINGS";
-                                    label: "App settings";
-                                    color: MellowComponent.settings-nav-section-text;
-                                    accessible-role: none;
-                                }
-                            }
-                            about-item := SettingsNavItem {
-                                label: "About";
-                                is-selected: true;
-                            }
+                    NavGroup {
+                        label: "User settings";
+                        display-label: "USER SETTINGS";
+                        account-item := SettingsNavItem {
+                            label: "My account";
+                            is-selected: root.section == SettingsSection.account;
+                            activated => { root.select-section(SettingsSection.account); }
                         }
                     }
-
-                    Rectangle {
-                        height: 1px + 2 * MellowComponent.settings-nav-separator-margin-block;
-                        Rectangle {
-                            x: MellowComponent.settings-nav-separator-margin-inline;
-                            width: parent.width - 2 * MellowComponent.settings-nav-separator-margin-inline;
-                            height: 1px;
-                            background: MellowComponent.settings-nav-separator;
+                    NavSeparator { }
+                    NavGroup {
+                        label: "App settings";
+                        display-label: "APP SETTINGS";
+                        SettingsNavItem {
+                            label: "About";
+                            is-selected: root.section == SettingsSection.about;
+                            activated => { root.select-section(SettingsSection.about); }
                         }
                     }
-
+                    NavSeparator { }
                     SettingsNavItem {
                         label: "Sign out";
                         is-danger: true;
@@ -258,101 +521,302 @@ export component UserSettingsScreen inherits Rectangle {
                 preferred-width: MellowComponent.settings-content-max-width;
                 min-width: 0px;
 
-                HorizontalLayout {
-                    alignment: start;
-                    padding-top: MellowComponent.settings-content-padding-top;
-                    padding-bottom: MellowComponent.settings-content-padding-bottom;
-                    padding-left: root.is-narrow ? MellowComponent.settings-content-padding-inline-narrow : MellowComponent.settings-content-padding-inline;
-                    padding-right: self.padding-left;
-                    spacing: root.is-narrow ? MellowComponent.settings-close-gap-narrow : MellowComponent.settings-close-gap;
+                // Open forms make My account taller than short windows.
+                page-scroll := ScrollView {
+                    content-width: self.visible-width;
+                    content-height: page-row.preferred-height;
 
-                    // Takes the full cap when it fits, and shrinks first on narrow windows.
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        min-width: 0px;
-                        preferred-width: MellowComponent.settings-content-max-width;
-                        max-width: MellowComponent.settings-content-max-width;
-                        accessible-role: tab-panel;
-                        accessible-label: "About";
+                    page-row := HorizontalLayout {
+                        width: page-scroll.visible-width;
+                        alignment: start;
+                        padding-top: MellowComponent.settings-content-padding-top;
+                        padding-bottom: MellowComponent.settings-content-padding-bottom;
+                        padding-left: root.is-narrow ? MellowComponent.settings-content-padding-inline-narrow : MellowComponent.settings-content-padding-inline;
+                        padding-right: self.padding-left;
+                        spacing: root.is-narrow ? MellowComponent.settings-close-gap-narrow : MellowComponent.settings-close-gap;
 
+                        // Takes the full cap when it fits, and shrinks first on narrow windows.
                         VerticalLayout {
+                            horizontal-stretch: 1;
+                            min-width: 0px;
+                            preferred-width: MellowComponent.settings-content-max-width;
+                            max-width: MellowComponent.settings-content-max-width;
                             alignment: start;
-                            Text {
-                                text: "About";
-                                color: MellowComponent.settings-page-title-text;
-                                font-size: MellowType.heading-lg.font-size;
-                                font-weight: MellowType.heading-lg.font-weight;
-                                overflow: elide;
-                            }
-                            Rectangle { height: MellowComponent.settings-page-title-gap; }
-                            Text {
-                                text: root.app-version == "" ? "Mellow" : "Mellow " + root.app-version;
-                                color: MellowComponent.settings-app-name-text;
-                                font-size: MellowType.heading-md.font-size;
-                                font-weight: MellowType.heading-md.font-weight;
-                                wrap: word-wrap;
-                            }
-                            Rectangle { height: MellowComponent.settings-section-gap; }
 
-                            SectionLabel {
-                                text: "UPDATES";
-                                label: "Updates";
-                            }
-                            Rectangle { height: MellowComponent.settings-section-label-gap; }
-                            if root.update-sentence != "": HorizontalLayout {
-                                spacing: MellowComponent.settings-error-icon-gap;
-                                if root.update-status == UpdateStatus.failed: VerticalLayout {
+                            if root.section == SettingsSection.account: Rectangle {
+                                accessible-role: tab-panel;
+                                accessible-label: "My account";
+                                VerticalLayout {
                                     alignment: start;
-                                    Image {
-                                        source: @image-url("../../icons/warning-circle.svg");
-                                        colorize: MellowComponent.settings-error-icon;
-                                        width: MellowComponent.settings-error-icon-size;
-                                        height: self.width;
-                                        accessible-role: none;
+                                    Text {
+                                        text: "My account";
+                                        color: MellowComponent.settings-page-title-text;
+                                        font-size: MellowType.heading-lg.font-size;
+                                        font-weight: MellowType.heading-lg.font-weight;
+                                        overflow: elide;
+                                    }
+                                    Rectangle { height: MellowComponent.settings-page-title-gap; }
+
+                                    AccountCard {
+                                        if root.editor != AccountEditor.display-name: VerticalLayout {
+                                            spacing: MellowComponent.settings-section-label-gap;
+                                            AccountFieldRow {
+                                                label: "Display name";
+                                                display-label: "DISPLAY NAME";
+                                                value: root.account-display-name;
+                                                edit-label: "Edit display name";
+                                                is-edit-enabled: !root.is-account-busy;
+                                                should-take-focus: root.focus-return == AccountEditor.display-name;
+                                                edit => { root.open-editor(AccountEditor.display-name); }
+                                            }
+                                            if root.notice-editor == AccountEditor.display-name && root.account-notice != "": StatusLine {
+                                                text: root.account-notice;
+                                            }
+                                        }
+                                        if root.editor == AccountEditor.display-name: AccountEditForm {
+                                            save-label: "Save";
+                                            busy-label: "Saving…";
+                                            is-save-enabled: root.can-save-display-name;
+                                            is-busy: root.is-account-busy;
+                                            error-message: root.visible-account-error;
+                                            save => { root.save-open-form(); }
+                                            cancel => { root.close-editor(); }
+                                            TextField {
+                                                label: "Display name";
+                                                display-label: "DISPLAY NAME";
+                                                helper: "Up to 32 characters. This is the name people see in chat.";
+                                                text <=> root.display-name-draft;
+                                                wants-focus: true;
+                                                is-read-only: root.is-account-busy;
+                                                accepted => { root.save-open-form(); }
+                                            }
+                                        }
+
+                                        if root.editor != AccountEditor.username: VerticalLayout {
+                                            spacing: MellowComponent.settings-section-label-gap;
+                                            AccountFieldRow {
+                                                label: "Username";
+                                                display-label: "USERNAME";
+                                                value: "@" + root.account-username;
+                                                edit-label: "Edit username";
+                                                is-edit-enabled: !root.is-account-busy;
+                                                should-take-focus: root.focus-return == AccountEditor.username;
+                                                edit => { root.open-editor(AccountEditor.username); }
+                                            }
+                                            if root.notice-editor == AccountEditor.username && root.account-notice != "": StatusLine {
+                                                text: root.account-notice;
+                                            }
+                                        }
+                                        if root.editor == AccountEditor.username: AccountEditForm {
+                                            save-label: "Save";
+                                            busy-label: "Saving…";
+                                            is-save-enabled: root.can-save-username;
+                                            is-busy: root.is-account-busy;
+                                            error-message: root.visible-account-error;
+                                            save => { root.save-open-form(); }
+                                            cancel => { root.close-editor(); }
+                                            TextField {
+                                                label: "Username";
+                                                display-label: "USERNAME";
+                                                // Mirrors the server's rule (mellow-server domain/account_rules.rs).
+                                                helper: "2 to 32 characters: lowercase letters, digits, dots and underscores.";
+                                                text <=> root.username-draft;
+                                                wants-focus: true;
+                                                is-read-only: root.is-account-busy;
+                                                accepted => { root.save-open-form(); }
+                                            }
+                                            TextField {
+                                                label: "Current password";
+                                                display-label: "CURRENT PASSWORD";
+                                                is-password: true;
+                                                text <=> root.current-password-draft;
+                                                is-read-only: root.is-account-busy;
+                                                accepted => { root.save-open-form(); }
+                                            }
+                                        }
+
+                                        AccountFieldValue {
+                                            label: "Email";
+                                            display-label: "EMAIL";
+                                            value: root.account-email;
+                                        }
+                                    }
+
+                                    Rectangle { height: MellowComponent.settings-section-gap; }
+                                    SectionLabel {
+                                        text: "PASSWORD";
+                                        label: "Password";
+                                    }
+                                    Rectangle { height: MellowComponent.settings-section-label-gap; }
+
+                                    if root.editor != AccountEditor.password: VerticalLayout {
+                                        spacing: MellowComponent.settings-action-gap;
+                                        HorizontalLayout {
+                                            alignment: start;
+                                            Button {
+                                                label: "Change password";
+                                                is-primary: true;
+                                                is-enabled: !root.is-account-busy;
+                                                init => {
+                                                    if root.focus-return == AccountEditor.password {
+                                                        self.focus();
+                                                    }
+                                                }
+                                                clicked => { root.open-editor(AccountEditor.password); }
+                                            }
+                                        }
+                                        if root.notice-editor == AccountEditor.password && root.account-notice != "": StatusLine {
+                                            text: root.account-notice;
+                                        }
+                                    }
+                                    if root.editor == AccountEditor.password: AccountCard {
+                                        AccountEditForm {
+                                            save-label: "Change password";
+                                            busy-label: "Changing password…";
+                                            is-save-enabled: root.can-change-password;
+                                            is-busy: root.is-account-busy;
+                                            error-message: root.visible-account-error;
+                                            save => { root.save-open-form(); }
+                                            cancel => { root.close-editor(); }
+                                            TextField {
+                                                label: "Current password";
+                                                display-label: "CURRENT PASSWORD";
+                                                is-password: true;
+                                                text <=> root.current-password-draft;
+                                                wants-focus: true;
+                                                is-read-only: root.is-account-busy;
+                                                accepted => { root.save-open-form(); }
+                                            }
+                                            TextField {
+                                                label: "New password";
+                                                display-label: "NEW PASSWORD";
+                                                is-password: true;
+                                                // Same server rule as registration.
+                                                helper: "At least " + minimum-password-length + " characters.";
+                                                text <=> root.new-password-draft;
+                                                is-read-only: root.is-account-busy;
+                                                accepted => { root.save-open-form(); }
+                                            }
+                                            TextField {
+                                                label: "Confirm new password";
+                                                display-label: "CONFIRM NEW PASSWORD";
+                                                is-password: true;
+                                                // Says why Save stays disabled while the two differ.
+                                                helper: root.confirm-password-draft != "" && !root.does-confirmation-match
+                                                    ? "Doesn't match the new password." : "";
+                                                text <=> root.confirm-password-draft;
+                                                is-read-only: root.is-account-busy;
+                                                accepted => { root.save-open-form(); }
+                                            }
+                                        }
                                     }
                                 }
-                                Text {
-                                    text: root.update-sentence;
-                                    color: MellowComponent.settings-body-text;
-                                    font-size: MellowType.body-lg.font-size;
-                                    wrap: word-wrap;
-                                    horizontal-stretch: 1;
-                                    // Announced through the live region below instead.
-                                    accessible-role: none;
+                            }
+
+                            if root.section == SettingsSection.about: Rectangle {
+                                accessible-role: tab-panel;
+                                accessible-label: "About";
+                                // The action button disappears when updating is unsupported: keep focus inside the screen.
+                                property <bool> has-update-action: root.has-update-action;
+                                changed has-update-action => {
+                                    if !self.has-update-action && update-button.has-keyboard-focus {
+                                        key-scope.focus();
+                                    }
                                 }
-                            }
-                            Rectangle {
-                                height: root.has-update-action && root.update-sentence != "" ? MellowComponent.settings-action-gap : 0px;
-                            }
-                            HorizontalLayout {
-                                alignment: start;
-                                update-button := Button {
-                                    // Hidden rather than removed, so the focus check above can still read it.
-                                    visible: root.has-update-action;
-                                    height: root.has-update-action ? MellowComponent.button-height : 0px;
-                                    label: root.update-action-label;
-                                    is-primary: true;
-                                    is-enabled: !root.is-update-busy;
-                                    clicked => { root.run-update-action(); }
+                                VerticalLayout {
+                                    alignment: start;
+                                    Text {
+                                        text: "About";
+                                        color: MellowComponent.settings-page-title-text;
+                                        font-size: MellowType.heading-lg.font-size;
+                                        font-weight: MellowType.heading-lg.font-weight;
+                                        overflow: elide;
+                                    }
+                                    Rectangle { height: MellowComponent.settings-page-title-gap; }
+                                    Text {
+                                        text: root.app-version == "" ? "Mellow" : "Mellow " + root.app-version;
+                                        color: MellowComponent.settings-app-name-text;
+                                        font-size: MellowType.heading-md.font-size;
+                                        font-weight: MellowType.heading-md.font-weight;
+                                        wrap: word-wrap;
+                                    }
+                                    Rectangle { height: MellowComponent.settings-section-gap; }
+
+                                    SectionLabel {
+                                        text: "UPDATES";
+                                        label: "Updates";
+                                    }
+                                    Rectangle { height: MellowComponent.settings-section-label-gap; }
+                                    if root.update-sentence != "": HorizontalLayout {
+                                        spacing: MellowComponent.settings-error-icon-gap;
+                                        if root.update-status == UpdateStatus.failed: VerticalLayout {
+                                            alignment: start;
+                                            Image {
+                                                source: @image-url("../../icons/warning-circle.svg");
+                                                colorize: MellowComponent.settings-error-icon;
+                                                width: MellowComponent.settings-error-icon-size;
+                                                height: self.width;
+                                                accessible-role: none;
+                                            }
+                                        }
+                                        Text {
+                                            text: root.update-sentence;
+                                            color: MellowComponent.settings-body-text;
+                                            font-size: MellowType.body-lg.font-size;
+                                            wrap: word-wrap;
+                                            horizontal-stretch: 1;
+                                            // Announced through the live region below instead.
+                                            accessible-role: none;
+                                        }
+                                    }
+                                    Rectangle {
+                                        height: root.has-update-action && root.update-sentence != "" ? MellowComponent.settings-action-gap : 0px;
+                                    }
+                                    HorizontalLayout {
+                                        alignment: start;
+                                        update-button := Button {
+                                            // Hidden rather than removed, so the focus check above can still read it.
+                                            visible: root.has-update-action;
+                                            height: root.has-update-action ? MellowComponent.button-height : 0px;
+                                            label: root.update-action-label;
+                                            is-primary: true;
+                                            is-enabled: !root.is-update-busy;
+                                            clicked => { root.run-update-action(); }
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    CloseButton {
-                        clicked => { root.close(); }
+                        CloseButton {
+                            clicked => { root.close(); }
+                        }
                     }
                 }
             }
         }
     }
 
-    // Status changes are announced here; the region exists from the start, so its first change counts.
+    // Changes are announced here; the regions exist from the start, so their first change counts.
     Text {
         width: 0px;
         height: 0px;
         text: root.update-sentence;
         accessible-role: text;
         accessible-live-region: polite;
+    }
+    Text {
+        width: 0px;
+        height: 0px;
+        text: root.account-notice;
+        accessible-role: text;
+        accessible-live-region: polite;
+    }
+    Text {
+        width: 0px;
+        height: 0px;
+        text: root.visible-account-error;
+        accessible-role: text;
+        accessible-live-region: assertive;
     }
 }
