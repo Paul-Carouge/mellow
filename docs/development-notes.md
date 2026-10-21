@@ -14,7 +14,7 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 
 ## Next candidates
 1. Release `v0.1.1` (any user-visible change) to check the update paths end to end: the app from User settings → About on macOS and CachyOS, the server with `mellow-update`.
-2. M2 desktop server settings (roles, channel overwrites, members with kick and ban, bans, audit log), through `ux-ui-designer`, on the client-core REST methods of #31, in the User settings layout of ADR-0017's About page. Then direct messages.
+2. M2 desktop server settings: Roles is on `feat/desktop-server-settings-roles` (server menu, settings screen, role editor). Next sections, each through `ux-ui-designer` on the client-core REST methods of #31: channel overwrites, members with kick and ban, bans, audit log. Then direct messages.
 3. Desktop message list, from DESIGN.md §5.4: the offline state (needs the local cache first) and the no-access state.
 4. Then an on-disk outbox (needs the local cache of ARCHITECTURE §6 first).
 
@@ -70,4 +70,5 @@ A local hook refuses `git commit` when fmt or clippy fail on the touched crate: 
 - **Logs**: never log serde or ACME error text verbatim. Serde quotes the offending value (possibly message content), and the certificate authority's messages can quote the contact email.
 - **Licences**: `webpki-roots` and `webpki-root-certs` need the CDLA-Permissive-2.0 exception in `deny.toml`.
 - **Clippy pedantic**: `too_many_lines` (100) shows up on large `match` reducers and connection loops; extract a helper rather than allowing the lint.
+- **Server settings drafts**: the role draft lives in Rust (`live_shell/server_settings.rs`, `RoleEditor::draft`), `None` while nothing is edited; `refresh` drops it once it equals the stored role, so REST answers are applied at once as a synthetic `GuildRolesUpdate` and the bar disappears. Slint refuses to leave or switch roles while `has-unsaved-role-changes`; Rust still checks `is_busy` and the role locks (`role_settings::RoleManager` mirrors the server's `can_manage_role`, for the interface only).
 - **Editing files**: rustfmt reformats after each edit. Re-read a file before an exact-match edit if a formatter ran since.

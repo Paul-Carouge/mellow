@@ -957,6 +957,8 @@ Discord's full-screen settings layout: navigation on `surface.sidebar` (right-al
 - Channel overrides (in channel settings): each permission is a three-state control "Allow / Inherit / Deny" with icons (check, slash, cross) and text labels, never colours alone.
 - Empty (only @everyone): "Roles let you group people and give them permissions." with "Create a role".
 
+**Desktop, first slice (2026-10-21)**: the server header turns into a menu button (chevron) only for members who can open settings; Roles is the only section. `@everyone` hides the colour picker and "Delete role", and its name field is read-only ("@everyone can't be renamed."). A locked role shows a lock and "You can only edit roles below your highest role." above the tabs. With only `@everyone`, the empty-state text and "Create a role" sit above the list, and `@everyone` stays editable below. Colours come from presets only, as radio buttons marked by a check and a ring.
+
 **Invites**: table of active invites (code in mono, created by, uses / maximum, expires). "Create invite" dialog: "Expire after" (30 minutes, 1 hour, 1 day, 7 days, Never), "Maximum uses" (No limit, 1, 5, 10, 25, 100), result with the full link and "Copy" (confirmation "Copied"). Revoking asks for confirmation (section 8). Empty: "No active invites." with "Create invite".
 
 **Bans**: searchable list (avatar, name, reason, banned by, date). Action "Revoke ban". Empty: "No one is banned from Rust Lyon."
