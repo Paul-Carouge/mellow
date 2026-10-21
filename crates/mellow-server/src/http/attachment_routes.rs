@@ -1,39 +1,40 @@
-//! Attachment uploads and downloads (ADR-0020).
+//! Attachment uploads and downloads (ADR-0020). File names never travel in URLs, so proxy access
+//! logs and browser history never hold them (CLAUDE.md: logs never contain attachment names).
 
 use std::time::Instant;
 
 use axum::Json;
-use axum::body::Bytes;
+use axum::body::Body;
 use axum::extract::State;
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use mellow_protocol::{Attachment, Snowflake};
-use serde::Deserialize;
 
 use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::message_rules::PREVIEWABLE_IMAGE_TYPES;
 use crate::http::AppState;
-use crate::http::api_error::{ApiError, ApiPath, ApiQuery};
+use crate::http::api_error::{ApiError, ApiPath};
 use crate::http::authentication::AuthenticatedUser;
-use crate::http::rate_limit::{ATTACHMENT_UPLOADS_PER_USER, ATTACHMENT_UPLOADS_PER_USER_PER_HOUR};
+use crate::http::rate_limit::{
+    ATTACHMENT_DOWNLOADS_PER_USER, ATTACHMENT_UPLOADS_PER_USER,
+    ATTACHMENT_UPLOADS_PER_USER_PER_HOUR,
+};
 
+/// The upload's file name, percent-encoded UTF-8 (RFC 3986), as `encodeURIComponent` writes it.
+pub(crate) const FILE_NAME_HEADER: HeaderName = HeaderName::from_static("x-mellow-file-name");
 /// Nothing in a served file may run or load anything, even if a browser renders it.
 const ATTACHMENT_CONTENT_SECURITY_POLICY: &str = "default-src 'none'; sandbox";
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct UploadQuery {
-    file_name: String,
-}
-
-/// `POST /api/v1/channels/{channel_id}/attachments?file_name=…`, the raw file as the body. The
-/// size limit is enforced on the body before it is read whole (`DefaultBodyLimit` on the route).
+/// `POST /api/v1/channels/{channel_id}/attachments`, the raw file as the body and its name in
+/// `X-Mellow-File-Name`. Rate limits, permissions, the name, the quota and a transfer slot are
+/// checked before the body is read; `DefaultBodyLimit` on the route answers 413 on a declared
+/// length over the limit, and reading stops at the limit otherwise.
 pub(crate) async fn upload(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     ApiPath(channel_id): ApiPath<Snowflake>,
-    ApiQuery(query): ApiQuery<UploadQuery>,
-    body: Bytes,
+    headers: HeaderMap,
+    body: Body,
 ) -> Result<(StatusCode, Json<Attachment>), ApiError> {
     let now = Instant::now();
     let within_burst = state.rate_limiter.record_event(
@@ -49,29 +50,42 @@ pub(crate) async fn upload(
     if !(within_burst && within_hour) {
         return Err(ApiError::rate_limited());
     }
-    if body.is_empty() {
+    let file_name = headers
+        .get(FILE_NAME_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(percent_decode)
+        .ok_or_else(|| ApiError::validation("send the file name in X-Mellow-File-Name".into()))?;
+    let slot = state
+        .attachments
+        .start_upload(user.id, channel_id, &file_name)
+        .await?;
+    let limit = usize::try_from(state.maximum_attachment_bytes).unwrap_or(usize::MAX);
+    let bytes = axum::body::to_bytes(body, limit)
+        .await
+        .map_err(|_| ApiError::payload_too_large())?;
+    if bytes.is_empty() {
         return Err(ApiError::validation("an attachment cannot be empty".into()));
     }
     let attachment = state
         .attachments
-        .upload(
-            user.id,
-            channel_id,
-            &query.file_name,
-            body.to_vec(),
-            now_unix_milliseconds(),
-        )
+        .finish_upload(slot, Vec::from(bytes), now_unix_milliseconds())
         .await?;
     Ok((StatusCode::CREATED, Json(attachment)))
 }
 
-/// `GET /api/v1/attachments/{id}/{file_name}`: the name in the path is only for the browser's
-/// "save as"; the stored one is what `Content-Disposition` says.
+/// `GET /api/v1/attachments/{id}`: the stored name only travels in `Content-Disposition`.
 pub(crate) async fn download(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-    ApiPath((attachment_id, _file_name)): ApiPath<(Snowflake, String)>,
+    ApiPath(attachment_id): ApiPath<Snowflake>,
 ) -> Result<Response, ApiError> {
+    if !state.rate_limiter.record_event(
+        &format!("attachment-download:{}", user.id),
+        ATTACHMENT_DOWNLOADS_PER_USER,
+        Instant::now(),
+    ) {
+        return Err(ApiError::rate_limited());
+    }
     let download = state.attachments.download(user.id, attachment_id).await?;
     let is_previewable = PREVIEWABLE_IMAGE_TYPES.contains(&download.content_type.as_str());
     let disposition = format!(
@@ -100,9 +114,11 @@ pub(crate) async fn download(
                 header::CONTENT_SECURITY_POLICY,
                 HeaderValue::from_static(ATTACHMENT_CONTENT_SECURITY_POLICY),
             ),
+            // Revalidated on every view: a shared computer keeps no conversation's files usable
+            // after its user signed out.
             (
                 header::CACHE_CONTROL,
-                HeaderValue::from_static("private, max-age=86400"),
+                HeaderValue::from_static("private, no-cache"),
             ),
         ],
         download.bytes,
@@ -126,6 +142,22 @@ fn percent_encode_file_name(name: &str) -> String {
     encoded
 }
 
+/// `None` for a malformed escape or bytes that are not UTF-8.
+fn percent_decode(encoded: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let mut rest = encoded.bytes();
+    while let Some(byte) = rest.next() {
+        if byte == b'%' {
+            let high = char::from(rest.next()?).to_digit(16)?;
+            let low = char::from(rest.next()?).to_digit(16)?;
+            bytes.push(u8::try_from(high * 16 + low).ok()?);
+        } else {
+            bytes.push(byte);
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,5 +169,16 @@ mod tests {
             percent_encode_file_name("a\"b;c=d é.txt"),
             "a%22b%3Bc%3Dd%20%C3%A9.txt"
         );
+    }
+
+    #[test]
+    fn header_file_names_decode_as_encode_uri_component_writes_them() {
+        assert_eq!(
+            percent_decode("vacances%20d%27%C3%A9t%C3%A9.png").as_deref(),
+            Some("vacances d'été.png")
+        );
+        assert_eq!(percent_decode("%ZZ"), None);
+        assert_eq!(percent_decode("%C3"), None, "not UTF-8");
+        assert_eq!(percent_decode("cut%4"), None);
     }
 }

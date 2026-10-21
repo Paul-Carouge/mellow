@@ -41,6 +41,8 @@ pub async fn initialize_instance(options: &InitializeOptions) -> Result<ServerCo
         behind_tls_reverse_proxy: false,
         trusted_proxy_networks: Vec::new(),
         maximum_attachment_bytes: crate::config::DEFAULT_MAXIMUM_ATTACHMENT_BYTES,
+        maximum_attachment_storage_bytes_per_user:
+            crate::config::DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER,
         tls: options
             .tls
             .clone()

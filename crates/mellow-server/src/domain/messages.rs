@@ -37,6 +37,12 @@ pub enum MessageError {
     /// Unknown message, or one of another channel.
     #[error("message not found")]
     MessageNotFound,
+    /// Every file transfer slot is taken; the client tries again shortly.
+    #[error("too many file transfers at once")]
+    Busy,
+    /// The user's uploads already take their whole storage quota.
+    #[error("attachment storage quota reached")]
+    QuotaReached,
     #[error("internal error")]
     Internal(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
@@ -265,7 +271,15 @@ impl Messages {
             .text_channel_and_permissions_requiring(
                 user_id,
                 channel_id,
-                Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES,
+                // Files need the right to attach them when they are sent too, not only when they
+                // were uploaded: taking it away stops publishing what is already uploaded.
+                if request.attachment_ids.is_empty() {
+                    Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES
+                } else {
+                    Permissions::VIEW_CHANNEL
+                        | Permissions::SEND_MESSAGES
+                        | Permissions::ATTACH_FILES
+                },
             )
             .await?;
         let content = normalize_line_endings(&request.content);

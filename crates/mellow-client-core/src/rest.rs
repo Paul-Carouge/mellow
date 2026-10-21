@@ -323,7 +323,8 @@ impl RestClient {
                 &format!("api/v1/channels/{channel_id}/attachments"),
                 true,
             )?
-            .query(&[("file_name", file_name)])
+            // In a header, never in the URL: proxy logs must not hold file names.
+            .header("x-mellow-file-name", percent_encode(file_name))
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(bytes);
         Self::send_and_decode_json(builder).await
@@ -697,6 +698,21 @@ impl RestClient {
         )?)
         .await
     }
+}
+
+/// Percent-encodes everything but unreserved ASCII (RFC 3986), as `encodeURIComponent` does.
+fn percent_encode(text: &str) -> String {
+    use std::fmt::Write as _;
+    let mut encoded = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            // Writing to a String cannot fail.
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
 
 #[cfg(test)]

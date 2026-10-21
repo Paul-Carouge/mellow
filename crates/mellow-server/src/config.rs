@@ -45,6 +45,13 @@ fn default_maximum_attachment_bytes() -> u64 {
     DEFAULT_MAXIMUM_ATTACHMENT_BYTES
 }
 
+/// 2 GiB per account, so open registration cannot fill a small server's disk in one evening.
+pub const DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER: u64 = 2 * 1024 * 1024 * 1024;
+
+fn default_maximum_attachment_storage_bytes_per_user() -> u64 {
+    DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
@@ -66,6 +73,9 @@ pub struct ServerConfig {
     /// Largest file accepted as an attachment (ADR-0020).
     #[serde(default = "default_maximum_attachment_bytes")]
     pub maximum_attachment_bytes: u64,
+    /// What all of one account's uploads may take on disk (ADR-0020).
+    #[serde(default = "default_maximum_attachment_storage_bytes_per_user")]
+    pub maximum_attachment_storage_bytes_per_user: u64,
     /// Built-in TLS with ACME certificates (ADR-0013). Last field: TOML writes tables after values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
@@ -500,6 +510,8 @@ mod tests {
             behind_tls_reverse_proxy: false,
             trusted_proxy_networks: Vec::new(),
             maximum_attachment_bytes: DEFAULT_MAXIMUM_ATTACHMENT_BYTES,
+            maximum_attachment_storage_bytes_per_user:
+                DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER,
             tls: None,
         };
 

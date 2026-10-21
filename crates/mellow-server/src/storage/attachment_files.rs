@@ -71,23 +71,26 @@ impl AttachmentFiles {
         tokio::task::spawn_blocking(move || {
             let mut nonce_bytes = [0u8; NONCE_LEN];
             getrandom::fill(&mut nonce_bytes).map_err(|_| AttachmentFileError::Crypto)?;
+            // Sealed in place and written in three parts: no second copy of the file in memory.
             let mut sealed = plaintext;
-            key.seal_in_place_append_tag(
-                Nonce::assume_unique_for_key(nonce_bytes),
-                Aad::from(id.raw().to_le_bytes()),
-                &mut sealed,
-            )
-            .map_err(|_| AttachmentFileError::Crypto)?;
+            let tag = key
+                .seal_in_place_separate_tag(
+                    Nonce::assume_unique_for_key(nonce_bytes),
+                    Aad::from(id.raw().to_le_bytes()),
+                    &mut sealed,
+                )
+                .map_err(|_| AttachmentFileError::Crypto)?;
             if let Some(parent) = path.parent() {
                 crate::storage::create_private_directory(parent)?;
             }
             let temporary = with_suffix(&path, SUFFIX_OF_TEMPORARY_FILES);
-            let mut contents = Vec::with_capacity(NONCE_LEN + sealed.len());
-            contents.extend_from_slice(&nonce_bytes);
-            contents.extend_from_slice(&sealed);
-            write_private_file(&temporary, &contents)?;
-            std::fs::rename(&temporary, &path)?;
-            Ok(())
+            let written = write_private_file(&temporary, &[&nonce_bytes, &sealed, tag.as_ref()])
+                .and_then(|()| std::fs::rename(&temporary, &path));
+            if written.is_err() {
+                // A full disk or a crash must not leave half a file behind.
+                let _ = std::fs::remove_file(&temporary);
+            }
+            Ok(written?)
         })
         .await?
     }
@@ -97,20 +100,24 @@ impl AttachmentFiles {
         let path = self.path_of(id);
         let key = self.key.clone();
         tokio::task::spawn_blocking(move || {
-            let contents = std::fs::read(&path)?;
+            // Opened in the buffer read from disk: no second copy of the file in memory.
+            let mut contents = std::fs::read(&path)?;
             if contents.len() < NONCE_LEN {
                 return Err(AttachmentFileError::Crypto);
             }
-            let (nonce_bytes, sealed) = contents.split_at(NONCE_LEN);
-            let nonce = Nonce::try_assume_unique_for_key(nonce_bytes)
+            let nonce = Nonce::try_assume_unique_for_key(&contents[..NONCE_LEN])
                 .map_err(|_| AttachmentFileError::Crypto)?;
-            let mut buffer = sealed.to_vec();
             let plaintext_length = key
-                .open_in_place(nonce, Aad::from(id.raw().to_le_bytes()), &mut buffer)
+                .open_within(
+                    nonce,
+                    Aad::from(id.raw().to_le_bytes()),
+                    &mut contents,
+                    NONCE_LEN..,
+                )
                 .map_err(|_| AttachmentFileError::Crypto)?
                 .len();
-            buffer.truncate(plaintext_length);
-            Ok(buffer)
+            contents.truncate(plaintext_length);
+            Ok(contents)
         })
         .await?
     }
@@ -122,6 +129,43 @@ impl AttachmentFiles {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// Temporary files left by a crash mid-write, created before the cutoff (from their id).
+    pub(crate) async fn remove_partial_files_before(
+        &self,
+        cutoff_unix_milliseconds: u64,
+    ) -> Result<usize, AttachmentFileError> {
+        let directory = self.directory.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut removed = 0;
+            let Ok(shards) = std::fs::read_dir(&directory) else {
+                return Ok(removed);
+            };
+            for shard in shards {
+                let shard = shard?;
+                if !shard.file_type()?.is_dir() {
+                    continue;
+                }
+                for file in std::fs::read_dir(shard.path())? {
+                    let file = file?;
+                    let name = file.file_name();
+                    let is_stale = name
+                        .to_str()
+                        .and_then(|name| name.strip_suffix(SUFFIX_OF_TEMPORARY_FILES))
+                        .and_then(|id| id.parse::<u64>().ok())
+                        .is_some_and(|id| {
+                            Snowflake::from_raw(id).unix_milliseconds() < cutoff_unix_milliseconds
+                        });
+                    if is_stale {
+                        std::fs::remove_file(file.path())?;
+                        removed += 1;
+                    }
+                }
+            }
+            Ok(removed)
+        })
+        .await?
     }
 
     /// Ids of every stored file, for the sweep of files whose row is gone.
@@ -157,14 +201,16 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Readable by the service account only, like the database.
-fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+fn write_private_file(path: &Path, parts: &[&[u8]]) -> std::io::Result<()> {
     use std::io::Write as _;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     let mut file = options.open(path)?;
-    file.write_all(contents)?;
+    for part in parts {
+        file.write_all(part)?;
+    }
     file.sync_all()
 }
 
