@@ -104,10 +104,13 @@ fn collect_frames(
     let mut collected = Vec::new();
     let mut total_pixels = 0u64;
     for frame in frames {
-        let frame = frame.map_err(|error| match error {
-            image::ImageError::Limits(_) => ImageProcessingError::TooLarge,
-            _ => ImageProcessingError::Unsupported,
-        })?;
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(image::ImageError::Limits(_)) => return Err(ImageProcessingError::TooLarge),
+            // A truncated file keeps the frames read so far, as browsers show it.
+            Err(_) if !collected.is_empty() => break,
+            Err(_) => return Err(ImageProcessingError::Unsupported),
+        };
         total_pixels += u64::from(width) * u64::from(height);
         if collected.len() >= MAXIMUM_FRAMES || total_pixels > MAXIMUM_TOTAL_PIXELS {
             return Err(ImageProcessingError::TooLarge);
@@ -599,6 +602,15 @@ pub(crate) mod tests {
             strip_jpeg_metadata(b"\xFF\xD8\xFF\xE1\xFF\xFF").is_err(),
             "truncated"
         );
+    }
+
+    #[test]
+    fn a_truncated_gif_keeps_the_frames_before_the_cut() {
+        let gif = animated_gif(32, 32, 3);
+        // Cut inside the last frame's data: its trailer and end are gone.
+        let truncated = &gif[..gif.len() - 40];
+        let avatar = process_profile_image(truncated, ProfileImageKind::Avatar).unwrap();
+        assert!(avatar.picture.is_animated, "two whole frames remain");
     }
 
     #[test]
