@@ -5,6 +5,7 @@
   import AccountSettings from "./AccountSettings.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import ProfileSettings from "./ProfileSettings.svelte";
 
   // User settings (DESIGN.md §5.8 layout, §5.9 sections), over the whole window as on desktop: a
   // native modal <dialog> keeps the shell behind it inert. Esc closes the open form first, then the
@@ -19,8 +20,8 @@
 
   let { client, isWide, onclose }: Props = $props();
 
-  type Section = "account" | "about";
-  const SECTION_TITLES: Record<Section, string> = { account: "My account", about: "About" };
+  type Section = "account" | "profile" | "about";
+  const SECTION_TITLES: Record<Section, string> = { account: "My account", profile: "Profile", about: "About" };
   const SOURCE_CODE_URL = "https://github.com/Paul-Carouge/mellow";
 
   const id = $props.id();
@@ -88,13 +89,15 @@
   </button>
 {/snippet}
 
-{#snippet navGroup(label: string, target: Section)}
+{#snippet navGroup(label: string, targets: Section[])}
   <h2
     class="px-(--mw-component-settings-nav-section-padding-inline) py-(--mw-component-settings-nav-section-padding-block) type-category text-(--mw-component-settings-nav-section-text)"
   >
     {label}
   </h2>
-  {@render navItem(target)}
+  {#each targets as target (target)}
+    {@render navItem(target)}
+  {/each}
 {/snippet}
 
 {#snippet separator()}
@@ -166,9 +169,9 @@
               : "px-(--mw-component-settings-content-padding-inline-narrow) py-xs",
           ]}
         >
-          {@render navGroup("User settings", "account")}
+          {@render navGroup("User settings", ["account", "profile"])}
           {@render separator()}
-          {@render navGroup("App settings", "about")}
+          {@render navGroup("App settings", ["about"])}
           {@render separator()}
           <button
             type="button"
@@ -217,6 +220,8 @@
           >
             {#if section === "account"}
               <AccountSettings bind:this={accountSettings} {client} />
+            {:else if section === "profile"}
+              <ProfileSettings {client} />
             {:else}
               <h2 class="type-heading-lg text-(--mw-component-settings-page-title-text)">About</h2>
               <p class="mt-(--mw-component-settings-page-title-gap) type-heading-md text-(--mw-component-settings-app-name-text)">

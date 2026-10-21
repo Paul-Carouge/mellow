@@ -3,7 +3,7 @@
 
 import { SvelteMap, SvelteSet } from "svelte/reactivity";
 
-import { ApiError, HISTORY_PAGE_SIZE, RestClient, generateMessageNonce } from "./api";
+import { ApiError, HISTORY_PAGE_SIZE, type ProfileImageKind, RestClient, generateMessageNonce } from "./api";
 import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
 import {
@@ -16,6 +16,7 @@ import {
   type Member,
   type Message,
   type PermissionBits,
+  type PublicUser,
   type Ready,
   type Snowflake,
   DIRECT_MESSAGE_PERMISSIONS,
@@ -61,6 +62,7 @@ export function describeError(error: unknown, summary: string): string {
     REGISTRATION_CLOSED: "this instance does not accept new accounts.",
     VALIDATION_FAILED: "the instance refused what was entered.",
     RATE_LIMITED: "too many attempts. Wait a moment and try again.",
+    SERVER_BUSY: "the instance is busy. Try again in a moment.",
     MISSING_PERMISSIONS: "you don't have the permission to do that here.",
     NOT_FOUND: "it no longer exists, or you can't see it.",
     INVALID_INVITE: "this invite is unknown, expired or used up.",
@@ -452,7 +454,7 @@ export class MellowClient {
         }
         return;
       case "USER_UPDATE":
-        this.renameUser(event.data.id, event.data.username, event.data.display_name);
+        this.applyUserUpdate(event.data);
         return;
       case "DIRECT_MESSAGE_CHANNEL_CREATE":
         this.upsertConversation(event.data);
@@ -548,27 +550,34 @@ export class MellowClient {
     );
   }
 
-  private renameUser(userId: Snowflake, username: string, displayName: string): void {
-    const rename = <T extends { id: Snowflake; username: string; display_name: string }>(user: T): T =>
-      user.id === userId ? { ...user, username, display_name: displayName } : user;
+  /** Names and pictures wherever the user appears; an absent avatar or banner was removed. */
+  private applyUserUpdate(updated: PublicUser): void {
+    const changes = {
+      username: updated.username,
+      display_name: updated.display_name,
+      avatar: updated.avatar ?? null,
+      banner: updated.banner ?? null,
+    };
+    const userId = updated.id;
+    const updateIfThisUser = <T extends PublicUser>(user: T): T => (user.id === userId ? { ...user, ...changes } : user);
     if (this.user?.id === userId) {
-      this.user = rename(this.user);
+      this.user = updateIfThisUser(this.user);
     }
     for (const [guildId, members] of this.membersByGuild) {
       this.membersByGuild.set(
         guildId,
-        members.map((member) => ({ ...member, user: rename(member.user) })),
+        members.map((member) => ({ ...member, user: updateIfThisUser(member.user) })),
       );
     }
     for (const [channelId, messages] of this.messagesByChannel) {
       this.messagesByChannel.set(
         channelId,
-        messages.map((message) => ({ ...message, author: rename(message.author) })),
+        messages.map((message) => ({ ...message, author: updateIfThisUser(message.author) })),
       );
     }
     this.conversations = this.conversations.map((channel) => ({
       ...channel,
-      recipients: channel.recipients.map(rename),
+      recipients: channel.recipients.map(updateIfThisUser),
     }));
   }
 
@@ -901,10 +910,19 @@ export class MellowClient {
     return this.rest.changePassword(currentPassword, newPassword);
   }
 
+  /** Resized and compressed by the instance first: a large animated GIF takes a second or two. */
+  async setProfileImage(kind: ProfileImageKind, file: File): Promise<void> {
+    this.applyCurrentUser(await this.rest.setProfileImage(kind, file));
+  }
+
+  async removeProfileImage(kind: ProfileImageKind): Promise<void> {
+    this.applyCurrentUser(await this.rest.removeProfileImage(kind));
+  }
+
   /** The gateway sends the same `USER_UPDATE`; applying the answer shows the change at once. */
   private applyCurrentUser(user: CurrentUser): void {
     this.user = user;
-    this.renameUser(user.id, user.username, user.display_name);
+    this.applyUserUpdate(user);
   }
 
   // --- Servers and conversations -------------------------------------------------------------

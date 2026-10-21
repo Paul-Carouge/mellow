@@ -6,6 +6,7 @@
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
   import { displayName } from "./format";
+  import ProfileCard from "./ProfileCard.svelte";
   import { lengthTokenInPixels } from "./tokens";
 
   // Member list and profile popover (DESIGN.md §5.7): Online then Offline, offline avatars dimmed
@@ -32,7 +33,9 @@
   });
 
   let popover = $state<HTMLElement | null>(null);
-  let profile = $state<PublicUser | null>(null);
+  let profileUserId = $state<string | null>(null);
+  // From the list, so a USER_UPDATE (a new avatar, say) shows in an open popout too.
+  const profile = $derived(members?.find((member) => member.user.id === profileUserId)?.user ?? null);
   let opener: HTMLElement | null = null;
   let position = $state({ top: 0, right: 0 });
   let isOpening = $state(false);
@@ -43,7 +46,7 @@
       return;
     }
     opener = row;
-    profile = user;
+    profileUserId = user.id;
     errorMessage = "";
     popover.showPopover();
     await tick();
@@ -136,19 +139,7 @@
 >
   {#if profile}
     {@const isSelf = profile.id === client.user?.id}
-    <div aria-hidden="true" class="h-(--mw-component-profile-popover-banner-height) bg-(--mw-component-profile-popover-banner)"></div>
-    <div class="flex flex-col gap-(--mw-component-profile-popover-text-gap) px-(--mw-component-profile-popover-padding) pb-(--mw-component-profile-popover-padding)">
-      <span
-        class="-mt-[calc(var(--mw-component-profile-popover-avatar-size)/2)] w-fit rounded-full border-(length:--mw-component-profile-popover-avatar-ring-width) border-(--mw-component-profile-popover-background)"
-      >
-        <Avatar user={profile} sizeToken="--mw-component-profile-popover-avatar-size" />
-      </span>
-      <div>
-        <h2 class="type-heading-md break-words text-(--mw-component-profile-popover-name-text)">{displayName(profile)}</h2>
-        <p class="type-body break-words text-(--mw-component-profile-popover-username-text)">
-          @{profile.username}
-        </p>
-      </div>
+    <ProfileCard user={profile}>
       {#if !isSelf}
         <Button variant="primary" isFullWidth isDisabled={isOpening} onclick={() => profile && message(profile)}>
           {isOpening ? "Opening…" : "Message"}
@@ -159,6 +150,6 @@
           <p class="type-body text-(--mw-component-profile-popover-error-text)">{errorMessage}</p>
         {/if}
       </div>
-    </div>
+    </ProfileCard>
   {/if}
 </div>

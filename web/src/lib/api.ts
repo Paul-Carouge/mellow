@@ -16,6 +16,8 @@ import type {
 } from "./protocol";
 
 export const HISTORY_PAGE_SIZE = 50;
+/** The path segment of `/users/@me/{kind}` (ADR-0021). */
+export type ProfileImageKind = "avatar" | "banner";
 const DEVICE_NAME = "Web browser";
 const SESSION_TRANSPORT_HEADER = "X-Mellow-Session-Transport";
 
@@ -166,16 +168,36 @@ export class RestClient {
   }
 
   /** One file, sent as the raw body; its id goes into a message within the hour (ADR-0020). */
-  async uploadAttachment(channelId: Snowflake, file: File): Promise<Attachment> {
+  uploadAttachment(channelId: Snowflake, file: File): Promise<Attachment> {
+    // The name travels in a header, never in the URL: proxy logs must not hold file names.
+    return this.sendFile("POST", `channels/${channelId}/attachments`, file, {
+      "X-Mellow-File-Name": encodeURIComponent(file.name),
+    });
+  }
+
+  /** The picture as the raw body; the instance resizes and compresses it before answering (ADR-0021). */
+  setProfileImage(kind: ProfileImageKind, file: File): Promise<CurrentUser> {
+    return this.sendFile("PUT", `users/@me/${kind}`, file);
+  }
+
+  removeProfileImage(kind: ProfileImageKind): Promise<CurrentUser> {
+    return this.request("DELETE", `users/@me/${kind}`);
+  }
+
+  private async sendFile<T>(
+    method: string,
+    path: string,
+    file: File,
+    extraHeaders: Record<string, string> = {},
+  ): Promise<T> {
     let response: Response;
     try {
-      // The name travels in a header, never in the URL: proxy logs must not hold file names.
-      response = await fetch(`/api/v1/channels/${channelId}/attachments`, {
-        method: "POST",
+      response = await fetch(`/api/v1/${path}`, {
+        method,
         headers: {
           [SESSION_TRANSPORT_HEADER]: "cookie",
           "Content-Type": "application/octet-stream",
-          "X-Mellow-File-Name": encodeURIComponent(file.name),
+          ...extraHeaders,
         },
         body: file,
         credentials: "same-origin",
@@ -193,7 +215,7 @@ export class RestClient {
         .catch(() => "INTERNAL" as const);
       throw new ApiError(response.status, code);
     }
-    return (await response.json()) as Attachment;
+    return (await response.json()) as T;
   }
 
   editMessage(channelId: Snowflake, messageId: Snowflake, content: string): Promise<Message> {
