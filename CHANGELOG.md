@@ -4,12 +4,16 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-21
+The web client, direct messages, and joining servers from the apps.
+
 ### Added
 - Web client (Svelte): the instance serves it at `/`, so people can join from a browser or a phone without installing anything. Sign-in keeps the session in an HttpOnly cookie; servers, channels, messages, members and direct messages work as in the desktop app.
 - Direct messages: one-to-one conversations with someone you share a server with. In the desktop app, click a member then Message; conversations are listed under Home, most recent first, with unread markers. Writing stops once you no longer share a server.
-
-### Added
 - Desktop app: create a server or join one with an invite code from the rail's `+`; the server menu gains Invite people (an invite code to copy), Create channel and Leave server.
+
+### Security
+- The web session is a `__Host-` cookie (HttpOnly, Secure, SameSite=Strict) accepted only from the instance's own origin; the gateway refuses other origins; API answers are not cacheable; built-in TLS sends HSTS. Behind a reverse proxy, keep the `Host` header (README).
 
 ## [0.2.0] - 2026-10-21
 Second milestone step: server settings and account API.
