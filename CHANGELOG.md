@@ -4,7 +4,11 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-21
+Profiles and files: avatars, banners, attachments, and Melli.
+
 ### Added
+- Melli, Mellow's mascot, lives in the web client's Home button: a little cloud that floats, worries when the connection drops and hops for unread messages; it stays still with reduced motion. It is also the web favicon.
 - Avatars and profile banners for everyone, animated ones included (GIF or WebP): Profile in the web client's user settings, shown on messages, members, conversations and the member popout. Animated pictures play on hover or focus, never with reduced motion. They are fitted to their display size and stored as lossless WebP (ADR-0021).
 - Pictures sent as attachments take less disk space without losing a pixel: PNG is recompressed, animated GIF becomes animated WebP, in the background after the upload is answered.
 - Attachments: share files and pictures in channels and conversations from the web client (attach button, drag and drop, paste); pictures show inline, other files as download cards; the desktop app lists them. Files are encrypted on disk, 25 MB each and 2 GiB per account by default (`maximum_attachment_bytes`, `maximum_attachment_storage_bytes_per_user`).
