@@ -3,6 +3,7 @@ import { MellowColor, MellowSize, MellowTheme, MellowType } from "tokens.slint";
 import "../fonts/Figtree[wght].ttf";
 import "../fonts/Figtree-Italic[wght].ttf";
 import { ServerRail, ServerItem } from "components/server_rail.slint";
+import { MelliState } from "components/melli.slint";
 import { ChannelSidebar, ChannelListRow, DirectMessageRow } from "components/channel_sidebar.slint";
 import { ChatPane, HistoryStartState, MessageDelivery, MessageRow } from "components/chat_pane.slint";
 import { MemberList, MemberListRow } from "components/member_list.slint";
@@ -14,7 +15,7 @@ import { UpdateStatus, UserSettingsScreen } from "components/user_settings.slint
 import { RoleListRow, RolePermissionRow, ServerSettingsScreen } from "components/server_settings.slint";
 import { AddServerDialog, CreateChannelDialog, InvitePeopleDialog, LeaveServerDialog } from "components/server_dialogs.slint";
 
-export { ServerItem, ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, UpdateStatus, RoleListRow, RolePermissionRow }
+export { MelliState, ServerItem,ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, UpdateStatus, RoleListRow, RolePermissionRow }
 
 // The window-wide dialog open over the shell, if any (DESIGN.md §6.35).
 export enum ShellDialog { none, add-server, invite-people, create-channel, leave-server }
@@ -110,6 +111,8 @@ export component AppWindow inherits Window {
     in property <bool> is-home;
     in property <[DirectMessageRow]> direct-message-rows;
     in property <bool> has-unread-direct-messages;
+    // What Melli shows in the Home button (DESIGN.md §2.10); Rust maps connection and unread.
+    in property <MelliState> home-melli-state;
     // The open channel is a conversation: `@` naming, no member list.
     in property <bool> is-direct-message-open;
     // User id, from the member list's profile popout. Selecting a conversation calls select-channel.
@@ -289,6 +292,7 @@ export component AppWindow inherits Window {
                 servers: root.servers;
                 selected-server-index: root.selected-server-index;
                 has-unread-direct-messages: root.has-unread-direct-messages;
+                home-melli-state: root.home-melli-state;
                 select-server(index) => { root.select-server(index); }
                 add-server => { root.open-dialog = ShellDialog.add-server; }
             }

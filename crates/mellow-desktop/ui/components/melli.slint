@@ -1,0 +1,358 @@
+import { MellowColor, MellowComponent } from "../tokens.slint";
+
+// What Melli is showing (DESIGN.md §2.10). Rust picks the state (`home_melli_state`).
+export enum MelliState { idle, connecting, connection-lost, notification, incoming-call, in-call, update-available, sleeping }
+
+// A circle of the drawing, in viewBox units.
+component Circle inherits Rectangle {
+    in property <float> center-x;
+    in property <float> center-y;
+    in property <float> radius;
+    in property <length> unit;
+    x: (center-x - radius) * unit;
+    y: (center-y - radius) * unit;
+    width: 2 * radius * unit;
+    height: self.width;
+    border-radius: radius * unit;
+}
+
+// A path over the whole drawing, in the same 256-unit viewBox as the web's SVG.
+component Shape inherits Path {
+    width: 100%;
+    height: 100%;
+    viewbox-width: 256;
+    viewbox-height: 256;
+}
+
+// A group of parts over the whole drawing: moves, scales or fades them together.
+component Group inherits Rectangle {
+    width: 100%;
+    height: 100%;
+}
+
+// Melli, the Mellow mascot and logo: a port of `web/src/components/Melli.svelte`, part for part.
+// The drawing lives in a 256-unit viewBox; keyframe amplitudes below are in those units and
+// belong to the drawing, like the paths. Every loop is a pure function of `animation-tick()`, so
+// nothing runs on a timer; a state change restarts the state's loop from rest, and poses, colours
+// and marks ease over `melli-state-change-duration`. Decorative: the host names what it stands for.
+export component Melli inherits Rectangle {
+    in property <MelliState> state: MelliState.idle;
+    // Marks are drawn on the host's surface: a host on apricot passes `MellowColor.mascot-ink`.
+    in property <color> mark-color: MellowColor.mascot-mark;
+
+    accessible-role: none;
+
+    // One viewBox unit in logical pixels.
+    property <length> unit: self.width / 256;
+    // The cloud's outline is its circles grown by this much, drawn behind (DESIGN.md §2.10).
+    property <float> outline-width: 6;
+    property <float> stroke-width: 8;
+
+    // Clocks, in milliseconds.
+    property <float> now: animation-tick() / 1ms;
+    property <float> state-started-at;
+    // The puffs stop turning while the connection is lost and resume from the same angle.
+    property <bool> is-puff-spin-paused;
+    property <float> puff-spin-paused-at;
+    property <float> puff-spin-paused-total;
+    property <float> since-state-change: now - state-started-at;
+    property <float> puff-spin-clock: (is-puff-spin-paused ? puff-spin-paused-at : now) - puff-spin-paused-total;
+
+    init => {
+        state-started-at = now;
+        is-puff-spin-paused = state == MelliState.connection-lost;
+        puff-spin-paused-at = now;
+    }
+    changed state => {
+        if is-puff-spin-paused {
+            puff-spin-paused-total += now - puff-spin-paused-at;
+        }
+        is-puff-spin-paused = state == MelliState.connection-lost;
+        puff-spin-paused-at = now;
+        state-started-at = now;
+    }
+
+    // Where `elapsed` is within a loop of `period`, from 0 to 1, shifted by `offset` loops.
+    pure function cycle(elapsed: float, period: duration, offset: float) -> float {
+        let position = elapsed / (period / 1ms) + offset;
+        position - floor(position)
+    }
+    // Progress from 0 to 1 while `t` goes from `start` to `end`: linear, ease-in-out, in, out.
+    pure function ramp(t: float, start: float, end: float) -> float {
+        clamp((t - start) / (end - start), 0, 1)
+    }
+    pure function ease(t: float, start: float, end: float) -> float {
+        let p = ramp(t, start, end);
+        p * p * (3 - 2 * p)
+    }
+    pure function ease-in(t: float, start: float, end: float) -> float {
+        let p = ramp(t, start, end);
+        p * p
+    }
+    pure function ease-out(t: float, start: float, end: float) -> float {
+        let p = ramp(t, start, end);
+        1 - (1 - p) * (1 - p)
+    }
+    // Up at mid-loop and back: the shape of float, sag, bob, breathe and rise.
+    pure function swell(t: float) -> float {
+        ease(t, 0, 0.5) - ease(t, 0.5, 1)
+    }
+
+    // State loops (CSS keyframes in Melli.svelte), from rest to rest.
+    property <float> float-phase: cycle(since-state-change, MellowComponent.melli-float-duration, 0);
+    property <float> hop-phase: cycle(since-state-change, MellowComponent.melli-hop-duration, 0);
+    property <float> ring-phase: cycle(since-state-change, MellowComponent.melli-ring-duration, 0);
+    property <float> talk-phase: cycle(since-state-change, MellowComponent.melli-talk-duration, 0);
+    property <float> excited-phase: cycle(since-state-change, MellowComponent.melli-excited-duration, 0);
+    property <float> sleep-phase: cycle(since-state-change, MellowComponent.melli-sleep-duration, 0);
+    property <float> blink-phase: cycle(now, MellowComponent.melli-blink-duration, 0);
+
+    // The cloud's loop: float, sag, hop, ring, bob, bounce or breathe, pivoting on its base.
+    property <float> motion-offset-y: state == MelliState.idle || state == MelliState.connecting ? -8 * swell(float-phase)
+        : state == MelliState.connection-lost ? 4 * swell(float-phase)
+        : state == MelliState.notification ? -22 * ease(hop-phase, 0.12, 0.28) + 22 * ease(hop-phase, 0.28, 0.44)
+        : state == MelliState.in-call ? -4 * swell(talk-phase)
+        : state == MelliState.update-available ? -12 * ease(excited-phase, 0, 0.1) + 12 * ease(excited-phase, 0.1, 0.2) - 8 * ease(excited-phase, 0.2, 0.3) + 8 * ease(excited-phase, 0.3, 0.4)
+        : 0;
+    property <float> motion-scale-x: state == MelliState.connection-lost ? 1 + 0.02 * swell(float-phase)
+        : state == MelliState.notification ? 1 + 0.08 * ease(hop-phase, 0, 0.12) - 0.14 * ease(hop-phase, 0.12, 0.28) + 0.12 * ease(hop-phase, 0.28, 0.44) - 0.06 * ease(hop-phase, 0.44, 0.6)
+        : state == MelliState.update-available ? 1 - 0.04 * ease(excited-phase, 0, 0.1) + 0.08 * ease(excited-phase, 0.1, 0.2) - 0.04 * ease(excited-phase, 0.2, 0.3)
+        : state == MelliState.sleeping ? 1 + 0.04 * swell(sleep-phase)
+        : 1;
+    property <float> motion-scale-y: state == MelliState.connection-lost ? 1 - 0.02 * swell(float-phase)
+        : state == MelliState.notification ? 1 - 0.1 * ease(hop-phase, 0, 0.12) + 0.18 * ease(hop-phase, 0.12, 0.28) - 0.16 * ease(hop-phase, 0.28, 0.44) + 0.08 * ease(hop-phase, 0.44, 0.6)
+        : state == MelliState.update-available ? 1 + 0.05 * ease(excited-phase, 0, 0.1) - 0.09 * ease(excited-phase, 0.1, 0.2) + 0.04 * ease(excited-phase, 0.2, 0.3)
+        : state == MelliState.sleeping ? 1 - 0.04 * swell(sleep-phase)
+        : 1;
+    property <angle> motion-rotation: state != MelliState.incoming-call ? 0deg
+        : (-9 * ease(ring-phase, 0, 0.04) + 18 * ease(ring-phase, 0.04, 0.09) - 18 * ease(ring-phase, 0.09, 0.14) + 18 * ease(ring-phase, 0.14, 0.19) - 14 * ease(ring-phase, 0.19, 0.24) + 8 * ease(ring-phase, 0.24, 0.29) - 3 * ease(ring-phase, 0.29, 0.34)) * 1deg;
+
+    // The ground shadow follows the float, the hop and the breath; it rests otherwise.
+    property <float> shadow-scale-x: state == MelliState.idle || state == MelliState.connecting ? 1 - 0.18 * swell(float-phase)
+        : state == MelliState.notification ? 1 + 0.08 * ease(hop-phase, 0, 0.12) - 0.38 * ease(hop-phase, 0.12, 0.28) + 0.3 * ease(hop-phase, 0.28, 0.6)
+        : state == MelliState.sleeping ? 1 + 0.06 * swell(sleep-phase)
+        : 1;
+    property <float> shadow-opacity: state == MelliState.idle || state == MelliState.connecting ? 1 - 0.3 * swell(float-phase)
+        : state == MelliState.notification ? 1 - 0.5 * ease(hop-phase, 0, 0.28) + 0.5 * ease(hop-phase, 0.28, 0.6)
+        : 1;
+
+    // Poses: which parts show in each state. They ease between states.
+    property <length> face-offset-x: state == MelliState.connecting ? 3 * unit : 0;
+    property <length> face-offset-y: state == MelliState.connecting ? -5 * unit : 0;
+    property <float> eyes-scale-y: state == MelliState.connection-lost ? 0.45 : state == MelliState.incoming-call ? 1.15 : 1;
+    property <float> eyes-opacity: state == MelliState.notification || state == MelliState.sleeping ? 0 : 1;
+    property <float> eyes-happy-opacity: state == MelliState.notification ? 1 : 0;
+    property <float> eyes-closed-opacity: state == MelliState.sleeping ? 1 : 0;
+    property <float> glint-opacity: state == MelliState.update-available ? 1 : 0;
+    property <float> blush-opacity: state == MelliState.notification || state == MelliState.update-available ? 1 : 0;
+    property <float> mouth-opacity: state == MelliState.in-call ? 1 : 0;
+    property <color> body-color: state == MelliState.connection-lost ? MellowColor.mascot-body-overcast : MellowColor.mascot-body;
+    property <float> dots-opacity: state == MelliState.connecting ? 1 : 0;
+    property <float> drops-opacity: state == MelliState.connection-lost ? 1 : 0;
+    property <float> sparkle-opacity: state == MelliState.notification ? 1 : 0;
+    property <float> rings-opacity: state == MelliState.incoming-call ? 1 : 0;
+    property <float> waves-opacity: state == MelliState.in-call ? 1 : 0;
+    property <float> arrow-opacity: state == MelliState.update-available ? 1 : 0;
+    property <float> zzz-opacity: state == MelliState.sleeping ? 1 : 0;
+    property <color> shown-mark-color: mark-color;
+    // Slint globals cannot hold an easing: this is `motion.easing.standard`.
+    animate face-offset-x, face-offset-y, eyes-scale-y, eyes-opacity, eyes-happy-opacity, eyes-closed-opacity, glint-opacity, blush-opacity, mouth-opacity, body-color, dots-opacity, drops-opacity, sparkle-opacity, rings-opacity, waves-opacity, arrow-opacity, zzz-opacity, shown-mark-color {
+        duration: MellowComponent.melli-state-change-duration;
+        easing: cubic-bezier(0.2, 0, 0, 1);
+    }
+
+    shadow := Shape {
+        commands: "M74 222A54 7 0 1 0 182 222A54 7 0 1 0 74 222Z";
+        fill: MellowColor.mascot-shadow;
+        opacity: root.shadow-opacity;
+        transform-scale-x: root.shadow-scale-x;
+        transform-origin: { x: 128 * root.unit, y: 222 * root.unit };
+    }
+
+    // Behind the cloud, so each drop falls out of it.
+    drops := Group {
+        opacity: root.drops-opacity;
+        for drop-commands[index] in [
+            "M104 194C108 200 111 204 111 207A7 7 0 0 1 97 207C97 204 100 200 104 194Z",
+            "M128 194C132 200 135 204 135 207A7 7 0 0 1 121 207C121 204 124 200 128 194Z",
+            "M152 194C156 200 159 204 159 207A7 7 0 0 1 145 207C145 204 148 200 152 194Z",
+        ]: Shape {
+            property <float> phase: root.cycle(root.since-state-change, MellowComponent.melli-rain-duration, index / 3);
+            commands: drop-commands;
+            fill: root.shown-mark-color;
+            y: (-24 + 40 * root.ease-in(self.phase, 0, 1)) * root.unit;
+            opacity: root.ease-in(self.phase, 0, 0.25) - root.ease-in(self.phase, 0.75, 1);
+        }
+    }
+
+    motion := Group {
+        y: root.motion-offset-y * root.unit;
+        transform-scale-x: root.motion-scale-x;
+        transform-scale-y: root.motion-scale-y;
+        transform-rotation: root.motion-rotation;
+        transform-origin: { x: 128 * root.unit, y: 200 * root.unit };
+
+        puff := Group {
+            transform-rotation: 360deg * root.cycle(root.puff-spin-clock, MellowComponent.melli-puff-spin-duration, 0);
+            transform-origin: { x: 128 * root.unit, y: 124 * root.unit };
+            property <[{ x: float, y: float, radius: float }]> circles: [
+                { x: 128, y: 124, radius: 62 },
+                { x: 128, y: 78, radius: 30 },
+                { x: 167.8, y: 101, radius: 30 },
+                { x: 167.8, y: 147, radius: 30 },
+                { x: 128, y: 170, radius: 30 },
+                { x: 88.2, y: 147, radius: 30 },
+                { x: 88.2, y: 101, radius: 30 },
+            ];
+            // Grown circles behind the body: only the cloud's outer edge shows.
+            cloud-outline := Group {
+                for circle in puff.circles: Circle {
+                    unit: root.unit;
+                    center-x: circle.x;
+                    center-y: circle.y;
+                    radius: circle.radius + root.outline-width;
+                    background: MellowColor.mascot-outline;
+                }
+            }
+            cloud-body := Group {
+                for circle in puff.circles: Circle {
+                    unit: root.unit;
+                    center-x: circle.x;
+                    center-y: circle.y;
+                    radius: circle.radius;
+                    background: root.body-color;
+                }
+            }
+        }
+
+        face := Group {
+            x: root.face-offset-x;
+            y: root.face-offset-y;
+
+            blush := Shape {
+                commands: "M90 144A10 6 0 1 0 110 144A10 6 0 1 0 90 144ZM146 144A10 6 0 1 0 166 144A10 6 0 1 0 146 144Z";
+                fill: MellowColor.mascot-blush;
+                opacity: root.blush-opacity;
+            }
+            // `eyes` holds the pose (droop, wide), `eyes-blink` the blink, so both combine.
+            eyes := Group {
+                opacity: root.eyes-opacity;
+                transform-scale-y: root.eyes-scale-y;
+                transform-origin: { x: 128 * root.unit, y: 136 * root.unit };
+                eyes-blink := Group {
+                    transform-scale-y: 1 - 0.9 * root.ease(root.blink-phase, 0.92, 0.95) + 0.9 * root.ease(root.blink-phase, 0.95, 1);
+                    transform-origin: { x: 128 * root.unit, y: 124 * root.unit };
+                    for eye-x in [110, 134]: Rectangle {
+                        x: eye-x * root.unit;
+                        y: 112 * root.unit;
+                        width: 12 * root.unit;
+                        height: 24 * root.unit;
+                        border-radius: 6 * root.unit;
+                        background: MellowColor.mascot-ink;
+                    }
+                    for glint-x in [118, 142]: Circle {
+                        unit: root.unit;
+                        center-x: glint-x;
+                        center-y: 118;
+                        radius: 3;
+                        background: MellowColor.mascot-body;
+                        opacity: root.glint-opacity;
+                    }
+                }
+            }
+            eyes-happy := Shape {
+                commands: "M109 129Q116 114 123 129M133 129Q140 114 147 129";
+                stroke: MellowColor.mascot-ink;
+                stroke-width: root.stroke-width * root.unit;
+                stroke-line-cap: round;
+                stroke-line-join: round;
+                opacity: root.eyes-happy-opacity;
+            }
+            eyes-closed := Shape {
+                commands: "M109 124Q116 132 123 124M133 124Q140 132 147 124";
+                stroke: MellowColor.mascot-ink;
+                stroke-width: root.stroke-width * root.unit;
+                stroke-line-cap: round;
+                stroke-line-join: round;
+                opacity: root.eyes-closed-opacity;
+            }
+            mouth := Shape {
+                property <float> phase: root.cycle(root.since-state-change, MellowComponent.melli-talk-duration / 2, 0);
+                commands: "M122 150A6 5 0 1 0 134 150A6 5 0 1 0 122 150Z";
+                fill: MellowColor.mascot-ink;
+                opacity: root.mouth-opacity;
+                transform-scale-y: 0.4 + 0.7 * root.ease(self.phase, 0, 0.25) - 0.5 * root.ease(self.phase, 0.25, 0.5) + 0.4 * root.ease(self.phase, 0.5, 0.75) - 0.6 * root.ease(self.phase, 0.75, 1);
+                transform-origin: { x: 128 * root.unit, y: 150 * root.unit };
+            }
+        }
+    }
+
+    // Marks: drawn on the host's surface, hidden at rest.
+    dots := Group {
+        opacity: root.dots-opacity;
+        for dot-x[index] in [156, 180, 204]: Circle {
+            property <float> phase: root.cycle(root.since-state-change, MellowComponent.melli-wait-duration, -index / 6);
+            unit: root.unit;
+            center-x: dot-x;
+            center-y: 44 - 6 * root.ease(self.phase, 0, 0.3) + 6 * root.ease(self.phase, 0.3, 0.6);
+            radius: 8;
+            background: root.shown-mark-color;
+            opacity: 0.3 + 0.7 * root.ease(self.phase, 0, 0.3) - 0.7 * root.ease(self.phase, 0.3, 0.6);
+        }
+    }
+    sparkle := Group {
+        opacity: root.sparkle-opacity;
+        for star[index] in [
+            { center-x: 194, center-y: 58, commands: "M194 36Q197 55 216 58Q197 61 194 80Q191 61 172 58Q191 55 194 36Z" },
+            { center-x: 58, center-y: 44, commands: "M58 34Q59.5 42.5 68 44Q59.5 45.5 58 54Q56.5 45.5 48 44Q56.5 42.5 58 34Z" },
+        ]: Shape {
+            property <float> phase: root.cycle(root.since-state-change, MellowComponent.melli-hop-duration, index / 2);
+            commands: star.commands;
+            fill: root.shown-mark-color;
+            transform-scale: 0.8 + 0.4 * root.ease(self.phase, 0, 0.28) - 0.4 * root.ease(self.phase, 0.28, 0.6);
+            transform-rotation: (20 * root.ease(self.phase, 0, 0.28) - 20 * root.ease(self.phase, 0.28, 0.6)) * 1deg;
+            transform-origin: { x: star.center-x * root.unit, y: star.center-y * root.unit };
+        }
+    }
+    rings := Shape {
+        commands: "M46 100Q34 124 46 148M30 88Q14 124 30 160M210 100Q222 124 210 148M226 88Q242 124 226 160";
+        stroke: root.shown-mark-color;
+        stroke-width: root.stroke-width * root.unit;
+        stroke-line-cap: round;
+        opacity: root.rings-opacity * (1 - 0.7 * root.ramp(root.ring-phase, 0.34, 0.45));
+    }
+    waves := Group {
+        opacity: root.waves-opacity;
+        for wave-commands[index] in ["M210 106Q221 124 210 142", "M226 94Q241 124 226 154"]: Shape {
+            property <float> phase: root.cycle(root.since-state-change, MellowComponent.melli-talk-duration, -index / 6);
+            commands: wave-commands;
+            stroke: root.shown-mark-color;
+            stroke-width: root.stroke-width * root.unit;
+            stroke-line-cap: round;
+            opacity: 0.25 + 0.75 * root.ease(self.phase, 0, 0.4) - 0.75 * root.ease(self.phase, 0.4, 1);
+        }
+    }
+    arrow := Shape {
+        commands: "M200 84V44M186 58L200 44L214 58";
+        stroke: root.shown-mark-color;
+        stroke-width: root.stroke-width * root.unit;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+        opacity: root.arrow-opacity;
+        y: -8 * root.swell(root.excited-phase) * root.unit;
+    }
+    zzz := Group {
+        opacity: root.zzz-opacity;
+        for z-commands[index] in ["M164 58H180L164 74H180", "M188 34H200L188 46H200"]: Shape {
+            property <float> phase: root.cycle(root.since-state-change, MellowComponent.melli-sleep-duration, index / 2);
+            commands: z-commands;
+            stroke: root.shown-mark-color;
+            stroke-width: root.stroke-width * root.unit;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+            x: (-4 + 10 * root.ease-out(self.phase, 0, 1)) * root.unit;
+            y: (8 - 20 * root.ease-out(self.phase, 0, 1)) * root.unit;
+            opacity: root.ease-out(self.phase, 0, 0.3) - root.ease-out(self.phase, 0.6, 1);
+        }
+    }
+}
