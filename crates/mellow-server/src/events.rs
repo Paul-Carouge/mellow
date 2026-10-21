@@ -387,7 +387,7 @@ mod tests {
 
     fn typing() -> GatewayEvent {
         GatewayEvent::TypingStart {
-            guild_id: GUILD,
+            guild_id: Some(GUILD),
             channel_id: Snowflake::from_raw(11),
             user_id: ALICE,
         }

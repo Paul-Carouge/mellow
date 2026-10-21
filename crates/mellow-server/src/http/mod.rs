@@ -92,6 +92,10 @@ pub(crate) fn router(state: AppState) -> Router {
             "/api/v1/users/@me/guilds",
             get(guild_routes::list_my_guilds),
         )
+        .route(
+            "/api/v1/users/@me/channels",
+            post(message_routes::open_direct_message),
+        )
         .route("/api/v1/guilds", post(guild_routes::create_guild))
         .route("/api/v1/guilds/{guild_id}", get(guild_routes::get_guild))
         .route(

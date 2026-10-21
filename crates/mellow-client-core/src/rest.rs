@@ -5,10 +5,10 @@ use std::time::Duration;
 use mellow_protocol::{
     AcknowledgeRequest, ApiErrorBody, AuditLogEntry, AuditLogQuery, Ban, ChangePasswordRequest,
     Channel, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
-    CreateRoleRequest, CurrentUser, EditMessageRequest, Guild, Invite, LoginRequest, Member,
-    Message, MessageHistoryQuery, RegisterRequest, ReorderRolesRequest, Role, SendMessageRequest,
-    SessionCreated, SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest,
-    UpdateCurrentUserRequest, UpdateRoleRequest,
+    CreateRoleRequest, CurrentUser, DirectMessageChannel, EditMessageRequest, Guild, Invite,
+    LoginRequest, Member, Message, MessageHistoryQuery, OpenDirectMessageRequest, RegisterRequest,
+    ReorderRolesRequest, Role, SendMessageRequest, SessionCreated, SetPermissionOverwriteRequest,
+    Snowflake, UpdateChannelRequest, UpdateCurrentUserRequest, UpdateRoleRequest,
 };
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::Serialize;
@@ -303,6 +303,22 @@ impl RestClient {
             &format!("api/v1/guilds/{guild_id}"),
             true,
         )?)
+        .await
+    }
+
+    /// The one-to-one conversation with that user, opened if needed.
+    ///
+    /// # Errors
+    /// Network or API errors; `NotFound` unless the user shares a guild with us.
+    pub async fn open_direct_message(
+        &self,
+        recipient_id: Snowflake,
+    ) -> Result<DirectMessageChannel, ClientError> {
+        self.post_json(
+            "api/v1/users/@me/channels",
+            &OpenDirectMessageRequest { recipient_id },
+            true,
+        )
         .await
     }
 

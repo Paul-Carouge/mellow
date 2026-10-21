@@ -11,7 +11,7 @@ use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
 
 /// Takes the write lock at once, so a read-then-write transaction waits for `busy_timeout`
 /// instead of failing with `SQLITE_BUSY_SNAPSHOT` when another connection wrote in between.
-const BEGIN_WRITE_TRANSACTION: &str = "BEGIN IMMEDIATE";
+pub(crate) const BEGIN_WRITE_TRANSACTION: &str = "BEGIN IMMEDIATE";
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GuildStorageError {

@@ -352,9 +352,17 @@ async fn build_ready(
             }
         }
     }
+    let direct_message_channels = match state.messages.list_direct_message_channels(user.id).await {
+        Ok(channels) => channels,
+        Err(error) => {
+            tracing::warn!(%error, "gateway identify: cannot list conversations");
+            return None;
+        }
+    };
     let visible_channel_ids: HashSet<Snowflake> = guilds
         .iter()
         .flat_map(|guild| guild.channels.iter().map(|channel| channel.id))
+        .chain(direct_message_channels.iter().map(|channel| channel.id))
         .collect();
     let read_states = match state
         .messages
@@ -373,6 +381,7 @@ async fn build_ready(
         guilds,
         read_states,
         online_user_ids: online_user_ids.into_iter().collect(),
+        direct_message_channels,
     })
 }
 

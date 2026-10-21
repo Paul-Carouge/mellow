@@ -4,9 +4,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mellow_protocol::{
-    Channel, CurrentUser, GatewayEvent, Guild, Member, Message, Permissions, PresenceStatus,
-    PublicUser, Ready, Role, SendMessageRequest, Snowflake, compute_channel_permissions,
-    compute_guild_permissions,
+    Channel, CurrentUser, DirectMessageChannel, GatewayEvent, Guild, Member, Message, Permissions,
+    PresenceStatus, PublicUser, Ready, Role, SendMessageRequest, Snowflake,
+    compute_channel_permissions, compute_guild_permissions,
 };
 
 /// Messages kept in memory per channel once the reader leaves it; older ones are fetched again
@@ -16,6 +16,18 @@ pub const MAXIMUM_CACHED_MESSAGES_PER_CHANNEL: usize = 500;
 pub const HISTORY_PAGE_SIZE: u32 = 50;
 /// A typing indicator disappears after this long without a new `TYPING_START`.
 pub const TYPING_INDICATOR_LIFETIME_MILLISECONDS: u64 = 8_000;
+
+/// What a participant may do in a direct-message conversation, as the server's
+/// `direct_message_permissions` decides; only to adapt the interface (ADR-0014).
+const DIRECT_MESSAGE_PERMISSIONS: Permissions = Permissions::VIEW_CHANNEL
+    .union(Permissions::SEND_MESSAGES)
+    .union(Permissions::READ_MESSAGE_HISTORY);
+
+/// Most recent activity first, as in Discord's conversation list.
+fn sort_by_last_activity(channels: &mut [DirectMessageChannel]) {
+    channels
+        .sort_by_key(|channel| std::cmp::Reverse(channel.last_message_id.unwrap_or(channel.id)));
+}
 
 /// Only to adapt the interface: the server decides (ADR-0014).
 fn recompute_my_permissions(guild: &mut Guild, current_user_id: Snowflake) {
@@ -31,6 +43,8 @@ fn recompute_my_permissions(guild: &mut Guild, current_user_id: Snowflake) {
 pub enum StateChange {
     /// Guild list, a guild's channels or roles, the signed-in user's permissions, or the user.
     Guilds,
+    /// The conversation list: a new conversation or a new last message reorders it.
+    DirectMessages,
     Messages {
         channel_id: Snowflake,
     },
@@ -95,6 +109,8 @@ pub struct ClientState {
     current_user: Option<CurrentUser>,
     /// In server-rail order: `Ready` order, then joined guilds appended.
     guilds: Vec<Guild>,
+    /// Most recent activity first.
+    direct_message_channels: Vec<DirectMessageChannel>,
     /// At most `MAXIMUM_CACHED_MESSAGES_PER_CHANNEL` messages, except in the channel being read
     /// (`trim_history`).
     history_by_channel: HashMap<Snowflake, ChannelHistory>,
@@ -123,11 +139,27 @@ impl ClientState {
         self.guilds.iter().find(|guild| guild.id == guild_id)
     }
 
+    /// Most recent activity first.
+    #[must_use]
+    pub fn direct_message_channels(&self) -> &[DirectMessageChannel] {
+        &self.direct_message_channels
+    }
+
+    #[must_use]
+    pub fn direct_message_channel(&self, channel_id: Snowflake) -> Option<&DirectMessageChannel> {
+        self.direct_message_channels
+            .iter()
+            .find(|channel| channel.id == channel_id)
+    }
+
     /// What the signed-in user may do in a channel, only to adapt the interface (ADR-0014);
     /// `None` for an unknown channel or before `Ready`.
     #[must_use]
     pub fn my_channel_permissions(&self, channel_id: Snowflake) -> Option<Permissions> {
         let current_user_id = self.current_user.as_ref()?.id;
+        if self.direct_message_channel(channel_id).is_some() {
+            return Some(DIRECT_MESSAGE_PERMISSIONS);
+        }
         self.guilds.iter().find_map(|guild| {
             let channel = guild
                 .channels
@@ -209,9 +241,12 @@ impl ClientState {
     /// Replaces everything with a fresh `Ready` (identify after a lost session).
     pub fn apply_ready(&mut self, ready: Ready) -> StateChange {
         let mut pending_messages = std::mem::take(&mut self.pending_messages);
+        let mut direct_message_channels = ready.direct_message_channels;
+        sort_by_last_activity(&mut direct_message_channels);
         *self = Self {
             current_user: Some(ready.user),
             guilds: ready.guilds,
+            direct_message_channels,
             last_read_by_channel: ready
                 .read_states
                 .into_iter()
@@ -221,14 +256,7 @@ impl ClientState {
             ..Self::default()
         };
         // Channels deleted while we were away never send `CHANNEL_DELETE`.
-        pending_messages.retain(|pending| {
-            self.guilds.iter().any(|guild| {
-                guild
-                    .channels
-                    .iter()
-                    .any(|channel| channel.id == pending.channel_id)
-            })
-        });
+        pending_messages.retain(|pending| self.is_known_channel(pending.channel_id));
         self.pending_messages = pending_messages;
         StateChange::Guilds
     }
@@ -251,6 +279,7 @@ impl ClientState {
             GatewayEvent::MessageCreate(message) => {
                 let channel_id = message.channel_id;
                 self.typing_until.remove(&(channel_id, message.author.id));
+                self.note_direct_message_activity(channel_id, message.id);
                 self.insert_messages(channel_id, vec![message])
             }
             GatewayEvent::MessageUpdate(message) => self.replace_cached_message(message),
@@ -280,6 +309,9 @@ impl ClientState {
                 StateChange::Guilds
             }
             GatewayEvent::GuildCreate(guild) => self.replace_guild(*guild),
+            GatewayEvent::DirectMessageChannelCreate(channel) => {
+                self.upsert_direct_message_channel(channel)
+            }
             GatewayEvent::GuildDelete { id } => self.remove_guild(id),
             GatewayEvent::GuildMemberAdd { guild_id, member } => {
                 if let Some(members) = self.members_by_guild.get_mut(&guild_id)
@@ -350,6 +382,13 @@ impl ClientState {
             for message in &mut history.messages {
                 if message.author.id == user.id {
                     message.author.clone_from(user);
+                }
+            }
+        }
+        for channel in &mut self.direct_message_channels {
+            for recipient in &mut channel.recipients {
+                if recipient.id == user.id {
+                    recipient.clone_from(user);
                 }
             }
         }
@@ -559,12 +598,42 @@ impl ClientState {
     }
 
     fn is_known_channel(&self, channel_id: Snowflake) -> bool {
-        self.guilds.iter().any(|guild| {
-            guild
-                .channels
-                .iter()
-                .any(|channel| channel.id == channel_id)
-        })
+        self.direct_message_channel(channel_id).is_some()
+            || self.guilds.iter().any(|guild| {
+                guild
+                    .channels
+                    .iter()
+                    .any(|channel| channel.id == channel_id)
+            })
+    }
+
+    /// Also applies the REST answer of opening a conversation. A conversation already known keeps
+    /// its newer last message.
+    pub fn upsert_direct_message_channel(&mut self, channel: DirectMessageChannel) -> StateChange {
+        match self
+            .direct_message_channels
+            .iter_mut()
+            .find(|existing| existing.id == channel.id)
+        {
+            Some(existing) => {
+                existing.recipients = channel.recipients;
+                existing.last_message_id = existing.last_message_id.max(channel.last_message_id);
+            }
+            None => self.direct_message_channels.push(channel),
+        }
+        sort_by_last_activity(&mut self.direct_message_channels);
+        StateChange::DirectMessages
+    }
+
+    fn note_direct_message_activity(&mut self, channel_id: Snowflake, message_id: Snowflake) {
+        if let Some(channel) = self
+            .direct_message_channels
+            .iter_mut()
+            .find(|channel| channel.id == channel_id)
+        {
+            channel.last_message_id = channel.last_message_id.max(Some(message_id));
+            sort_by_last_activity(&mut self.direct_message_channels);
+        }
     }
 
     /// A fresh snapshot also follows permission changes (ADR-0015): channels it no longer lists
@@ -767,6 +836,7 @@ mod tests {
                 last_read_message_id: Snowflake::from_raw(10),
             }],
             online_user_ids: vec![ME],
+            direct_message_channels: Vec::new(),
         });
         state
     }
@@ -915,7 +985,7 @@ mod tests {
         assert!(!state.has_unread(Snowflake::from_raw(999)));
         state.apply_event(
             GatewayEvent::MessageDelete {
-                guild_id: GUILD,
+                guild_id: Some(GUILD),
                 channel_id: GENERAL,
                 id: Snowflake::from_raw(11),
             },
@@ -1209,7 +1279,7 @@ mod tests {
         for user_id in [OTHER, ME] {
             state.apply_event(
                 GatewayEvent::TypingStart {
-                    guild_id: GUILD,
+                    guild_id: Some(GUILD),
                     channel_id: GENERAL,
                     user_id,
                 },
@@ -1227,7 +1297,7 @@ mod tests {
         );
         state.apply_event(
             GatewayEvent::TypingStart {
-                guild_id: GUILD,
+                guild_id: Some(GUILD),
                 channel_id: GENERAL,
                 user_id: OTHER,
             },
@@ -1259,6 +1329,7 @@ mod tests {
             guilds: state.guilds().to_vec(),
             read_states: Vec::new(),
             online_user_ids: Vec::new(),
+            direct_message_channels: Vec::new(),
         });
         let statuses: Vec<(&str, PendingMessageStatus)> = state
             .pending_messages(GENERAL)
@@ -1352,6 +1423,7 @@ mod tests {
             guilds: Vec::new(),
             read_states: Vec::new(),
             online_user_ids: Vec::new(),
+            direct_message_channels: Vec::new(),
         });
         assert_eq!(state.pending_messages(GENERAL).count(), 0);
     }
@@ -1364,5 +1436,62 @@ mod tests {
         assert_eq!(refused.content, "too long");
         assert_eq!(state.pending_messages(GENERAL).count(), 0);
         assert_eq!(state.remove_refused_message("n1"), None);
+    }
+
+    fn conversation(
+        id: u64,
+        with: Snowflake,
+        last_message_id: Option<u64>,
+    ) -> DirectMessageChannel {
+        DirectMessageChannel {
+            id: Snowflake::from_raw(id),
+            recipients: vec![user(with)],
+            last_message_id: last_message_id.map(Snowflake::from_raw),
+        }
+    }
+
+    #[test]
+    fn conversations_are_ordered_by_last_activity_and_follow_renames() {
+        let mut state = ready_state();
+        state.upsert_direct_message_channel(conversation(300, OTHER, Some(310)));
+        let change = state.apply_event(
+            GatewayEvent::DirectMessageChannelCreate(conversation(
+                400,
+                Snowflake::from_raw(3),
+                None,
+            )),
+            NOW,
+        );
+        assert_eq!(change, StateChange::DirectMessages);
+        let order = |state: &ClientState| {
+            state
+                .direct_message_channels()
+                .iter()
+                .map(|channel| channel.id.raw())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            order(&state),
+            [400, 300],
+            "a new conversation counts as activity"
+        );
+
+        let mut reply = message(500, OTHER);
+        reply.channel_id = Snowflake::from_raw(300);
+        state.apply_event(GatewayEvent::MessageCreate(reply), NOW);
+        assert_eq!(order(&state), [300, 400]);
+        assert_eq!(state.messages(Snowflake::from_raw(300)).len(), 1);
+        assert_eq!(
+            state.my_channel_permissions(Snowflake::from_raw(300)),
+            Some(DIRECT_MESSAGE_PERMISSIONS)
+        );
+
+        let mut renamed = user(OTHER);
+        renamed.display_name = "Renamed".into();
+        state.apply_event(GatewayEvent::UserUpdate(renamed), NOW);
+        assert_eq!(
+            state.direct_message_channels()[0].recipients[0].display_name,
+            "Renamed"
+        );
     }
 }

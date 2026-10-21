@@ -98,6 +98,12 @@ pub(crate) const READ_STATE_WRITES_PER_USER: RateLimit = RateLimit {
     window: Duration::from_secs(10),
 };
 
+/// Conversations opened per user: each one checks shared guilds and may create a channel.
+pub(crate) const DIRECT_MESSAGE_OPENS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_secs(60),
+};
+
 /// Typing indicators per user; clients send one every few seconds while typing.
 pub(crate) const TYPING_INDICATORS_PER_USER: RateLimit = RateLimit {
     maximum_events: 10,

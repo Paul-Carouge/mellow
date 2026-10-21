@@ -65,6 +65,8 @@ pub enum GuildRuleViolation {
     RoleColor,
     #[error("unknown permission bits")]
     UnknownPermissions,
+    #[error("a conversation needs another user")]
+    DirectMessageRecipient,
     #[error(
         "ban reasons are at most {MAXIMUM_BAN_REASON_LENGTH} characters, without control characters"
     )]

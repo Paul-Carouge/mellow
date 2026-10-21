@@ -500,15 +500,11 @@ impl Guilds {
         }
     }
 
-    /// For events that follow no write (typing).
-    pub(crate) async fn publish_to_channel_viewers(
-        &self,
-        channel: &StoredChannel,
-        event: &GatewayEvent,
-    ) -> Result<(), GuildError> {
-        let audience = self.channel_audience(channel).await?;
-        self.publish_to_audience(channel.guild_id, &audience, event);
-        Ok(())
+    /// Direct-message events, which have no guild to fan out through.
+    pub(crate) fn publish_to_users(&self, user_ids: &[Snowflake], event: &GatewayEvent) {
+        for user_id in user_ids {
+            self.events.publish_to_user(*user_id, event);
+        }
     }
 
     /// Sends each affected online member a fresh snapshot, since a permission change may have

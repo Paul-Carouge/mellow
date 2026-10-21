@@ -198,8 +198,9 @@ pub(super) fn delete_message(shell: &SharedShell, row_index: i32) {
     let Some((guild_id, channel_id, message_id)) = ({
         let shell = shell.borrow();
         let guild_id = shell.selected_guild_id;
+        // `None` in a direct-message conversation.
         displayed_message(&shell, row_index)
-            .and_then(|(channel_id, message)| Some((guild_id?, channel_id, message.id)))
+            .map(|(channel_id, message)| (guild_id, channel_id, message.id))
     }) else {
         return;
     };

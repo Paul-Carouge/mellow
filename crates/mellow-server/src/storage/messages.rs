@@ -317,9 +317,12 @@ pub(crate) async fn list_read_states(
     let rows: Vec<(i64, i64)> = sqlx::query_as(
         "SELECT read_states.channel_id, read_states.last_read_message_id FROM read_states \
          JOIN channels ON channels.id = read_states.channel_id \
-         JOIN guild_members ON guild_members.guild_id = channels.guild_id \
-             AND guild_members.user_id = read_states.user_id \
-         WHERE read_states.user_id = ?",
+         WHERE read_states.user_id = ? AND (\
+             EXISTS (SELECT 1 FROM guild_members WHERE guild_members.guild_id = channels.guild_id \
+                 AND guild_members.user_id = read_states.user_id) \
+             OR EXISTS (SELECT 1 FROM direct_message_participants \
+                 WHERE direct_message_participants.channel_id = channels.id \
+                 AND direct_message_participants.user_id = read_states.user_id))",
     )
     .bind(to_integer(user_id.raw())?)
     .fetch_all(pool)

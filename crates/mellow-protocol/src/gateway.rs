@@ -5,7 +5,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Channel, CurrentUser, Guild, Member, Message, PublicUser, ReadState, Role, Snowflake};
+use crate::{
+    Channel, CurrentUser, DirectMessageChannel, Guild, Member, Message, PublicUser, ReadState,
+    Role, Snowflake,
+};
 
 pub const GATEWAY_VERSION: u32 = 1;
 
@@ -89,6 +92,9 @@ pub struct Ready {
     pub read_states: Vec<ReadState>,
     /// Members of the user's guilds who are online now.
     pub online_user_ids: Vec<Snowflake>,
+    /// Added after `v0.2.0`: absent from older servers.
+    #[serde(default)]
+    pub direct_message_channels: Vec<DirectMessageChannel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,7 +111,9 @@ pub enum GatewayEvent {
     MessageCreate(Message),
     MessageUpdate(Message),
     MessageDelete {
-        guild_id: Snowflake,
+        /// `None` in a direct-message conversation, and then left out of the frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guild_id: Option<Snowflake>,
         channel_id: Snowflake,
         id: Snowflake,
     },
@@ -143,7 +151,9 @@ pub enum GatewayEvent {
         roles: Vec<Role>,
     },
     TypingStart {
-        guild_id: Snowflake,
+        /// `None` in a direct-message conversation, and then left out of the frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guild_id: Option<Snowflake>,
         channel_id: Snowflake,
         user_id: Snowflake,
     },
@@ -151,6 +161,9 @@ pub enum GatewayEvent {
         user_id: Snowflake,
         status: PresenceStatus,
     },
+    /// A conversation was opened with the user, by them or by someone else (before its first
+    /// message reaches them).
+    DirectMessageChannelCreate(DirectMessageChannel),
     /// A user changed their username or display name. Sent to that user and to every member of a
     /// guild they share.
     UserUpdate(PublicUser),
@@ -175,7 +188,7 @@ mod tests {
         let dispatch = ServerFrame::Dispatch {
             sequence: 7,
             event: GatewayEvent::TypingStart {
-                guild_id: Snowflake::from_raw(1),
+                guild_id: Some(Snowflake::from_raw(1)),
                 channel_id: Snowflake::from_raw(2),
                 user_id: Snowflake::from_raw(3),
             },
@@ -185,6 +198,7 @@ mod tests {
         assert_eq!(json["s"], 7);
         assert_eq!(json["d"]["t"], "TYPING_START");
         assert_eq!(json["d"]["data"]["channel_id"], "2");
+        assert_eq!(json["d"]["data"]["guild_id"], "1");
         assert_eq!(
             serde_json::to_value(ServerFrame::HeartbeatAck).unwrap()["op"],
             "heartbeat_ack"
@@ -215,5 +229,26 @@ mod tests {
         .unwrap();
         assert_eq!(member_update["t"], "GUILD_MEMBER_UPDATE");
         assert_eq!(member_update["data"]["role_ids"][0], "9");
+    }
+
+    #[test]
+    fn direct_message_events_leave_the_guild_out() {
+        let event = GatewayEvent::MessageDelete {
+            guild_id: None,
+            channel_id: Snowflake::from_raw(2),
+            id: Snowflake::from_raw(3),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert!(json["data"].get("guild_id").is_none());
+        assert_eq!(serde_json::from_value::<GatewayEvent>(json).unwrap(), event);
+    }
+
+    #[test]
+    fn ready_from_an_older_server_has_no_conversations() {
+        let ready: Ready = serde_json::from_str(
+            r#"{"session_id":"s","user":{"id":"1","username":"a","display_name":"A","email":"a@example.org","is_instance_administrator":false},"guilds":[],"read_states":[],"online_user_ids":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(ready.direct_message_channels, Vec::new());
     }
 }

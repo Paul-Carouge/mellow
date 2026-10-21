@@ -550,6 +550,7 @@ mod tests {
             guilds: vec![guild.clone()],
             read_states: Vec::new(),
             online_user_ids: Vec::new(),
+            direct_message_channels: Vec::new(),
         });
         let read_only: Vec<_> = channel_rows(&guild, &state, &BTreeSet::new(), None)
             .iter()

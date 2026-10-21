@@ -609,3 +609,94 @@ async fn account_settings_round_trip_through_the_rest_client() {
         .unwrap();
     instance.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn direct_messages_reach_only_the_recipient_and_survive_a_reconnect() {
+    let instance = RunningInstance::start().await;
+    let owner = instance.registered("owner").await;
+    let member = instance.registered("member").await;
+    let stranger = instance.registered("stranger").await;
+    let guild = owner.create_guild("Club").await.unwrap();
+    let invite = owner
+        .create_invite(guild.id, &CreateInviteRequest::default())
+        .await
+        .unwrap();
+    member.join_with_invite(&invite.code).await.unwrap();
+    let member_id = member.current_user().await.unwrap().id;
+    assert!(matches!(
+        stranger.open_direct_message(member_id).await,
+        Err(ClientError::Api {
+            code: ApiErrorCode::NotFound,
+            ..
+        })
+    ));
+
+    let (sender, mut updates) = mpsc::channel(64);
+    let gateway = tokio::spawn(run_gateway(
+        instance.address.clone(),
+        Zeroizing::new(member.token().unwrap().to_owned()),
+        sender,
+    ));
+    let mut state = ClientState::default();
+    let GatewayUpdate::Ready(ready) = next_update(&mut updates).await else {
+        panic!("expected Ready");
+    };
+    state.apply_ready(*ready);
+    assert_eq!(state.direct_message_channels(), []);
+
+    let conversation = owner.open_direct_message(member_id).await.unwrap();
+    let sent = owner
+        .send_message(
+            conversation.id,
+            &SendMessageRequest {
+                content: "psst".into(),
+                reply_to_id: None,
+                nonce: None,
+            },
+        )
+        .await
+        .unwrap();
+    loop {
+        if let GatewayUpdate::Event(event @ GatewayEvent::DirectMessageChannelCreate(_)) =
+            next_update(&mut updates).await
+        {
+            state.apply_event(event, 0);
+            break;
+        }
+    }
+    let event = next_message_event(&mut updates).await;
+    state.apply_event(event, 0);
+    assert_eq!(state.messages(conversation.id), std::slice::from_ref(&sent));
+    assert_eq!(
+        state.direct_message_channels()[0].recipients[0].username,
+        "owner"
+    );
+    assert!(matches!(
+        stranger
+            .list_messages(conversation.id, &MessageHistoryQuery::default())
+            .await,
+        Err(ClientError::Api {
+            code: ApiErrorCode::NotFound,
+            ..
+        })
+    ));
+    gateway.abort();
+
+    let (sender, mut updates) = mpsc::channel(64);
+    let gateway = tokio::spawn(run_gateway(
+        instance.address.clone(),
+        Zeroizing::new(member.token().unwrap().to_owned()),
+        sender,
+    ));
+    let GatewayUpdate::Ready(ready) = next_update(&mut updates).await else {
+        panic!("expected Ready");
+    };
+    gateway.abort();
+    instance.stop().await;
+
+    assert_eq!(ready.direct_message_channels.len(), 1);
+    assert_eq!(
+        ready.direct_message_channels[0].last_message_id,
+        Some(sent.id)
+    );
+}

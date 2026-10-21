@@ -42,6 +42,17 @@ pub fn channel_permissions(
     )
 }
 
+/// What someone may do in a direct-message conversation: participants view, read and send;
+/// anyone else gets nothing. No one manages messages there, so each author deletes only their own.
+#[must_use]
+pub fn direct_message_permissions(is_participant: bool) -> Permissions {
+    if is_participant {
+        Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES | Permissions::READ_MESSAGE_HISTORY
+    } else {
+        Permissions::empty()
+    }
+}
+
 /// Whether every member of the guild can view a channel, without looking at members: everyone's
 /// permissions are a superset of `@everyone`'s, and overwrites can only take `VIEW_CHANNEL` away
 /// through a deny (ADR-0015 fast path).

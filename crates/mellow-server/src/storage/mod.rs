@@ -3,6 +3,7 @@
 pub(crate) mod accounts;
 pub(crate) mod audit_log;
 mod database;
+pub(crate) mod direct_messages;
 pub(crate) mod guilds;
 mod master_key;
 pub(crate) mod messages;
