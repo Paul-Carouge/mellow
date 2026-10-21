@@ -3,6 +3,7 @@
 // Release builds on Windows open no console window next to the app; debug builds keep it for logs.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod app_icons;
 mod app_update;
 mod clipboard;
 mod demo_shell;
@@ -55,7 +56,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(std::io::stderr)
         .init();
     let window = AppWindow::new()?;
+    // Before the window shows: Linux docks then match it to its menu entry and icon.
+    if let Err(error) = slint::set_xdg_app_id(app_icons::LINUX_APP_ID) {
+        tracing::warn!(%error, "cannot set the window's app id");
+    }
     window.set_app_version(mellow_update::current_version().to_string().into());
+    app_icons::install_in_background();
 
     // The scroll benchmark and snapshots measure the shell itself, on stable fake data.
     let is_demo = [
