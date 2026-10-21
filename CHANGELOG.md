@@ -4,6 +4,12 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-21
+First update, to check the update paths end to end.
+
+### Added
+- One-line installer for the desktop app on Linux and macOS (`install.sh`): it checks the release signature when `minisign` is installed, the SHA-256 digest otherwise.
+
 ## [0.1.0] - 2026-10-20
 First release (milestone M1, plus the first M2 steps).
 
