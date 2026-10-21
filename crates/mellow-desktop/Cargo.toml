@@ -22,6 +22,8 @@ mellow-update.workspace = true
 # `unstable-winit-030`: the window events that tell when the window is occluded (melli_animation.rs).
 # The winit backend is the default one already, so this adds no crate.
 slint = { version = "1.18.1", features = ["unstable-winit-030"] }
+# Already in the workspace (mellow-update); writes the app icon files atomically.
+tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
