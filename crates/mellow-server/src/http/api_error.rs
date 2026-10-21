@@ -33,7 +33,7 @@ impl ApiError {
     }
 
     /// Details go to the log only; clients get a generic message.
-    fn internal(context: &str, source: &dyn std::fmt::Display) -> Self {
+    pub(crate) fn internal(context: &str, source: &dyn std::fmt::Display) -> Self {
         tracing::error!(error = %source, "internal error while handling {context}");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
