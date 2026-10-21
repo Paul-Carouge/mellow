@@ -13,7 +13,7 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 - New work branches from `main`, one PR per step. When PRs are stacked, merge them in order by rebasing the top branch on `main` and fast-forwarding `main` to its head (in zsh, write `"origin/${branch}:refs/heads/main"`: `$branch:r…` is read as the `:r` modifier).
 
 ## Next candidates
-1. Check the update paths end to end with `v0.1.1`, with the user: the app from User settings → About on macOS and CachyOS, the server with `mellow-update`.
+1. Release `v0.2.0` (prepared on `chore/release-v0.2.0`), then check the update paths end to end with it, with the user: the app from User settings → About on macOS and CachyOS, the server with `mellow-update`. A web client is proposed in ADR-0019 (after desktop parity).
 2. User settings first (user's choice, 2026-10-21): merge #37, then the desktop My Account (display name, username with password, password change, sign out), Profile and Appearance sections through `ux-ui-designer`, in `user_settings.slint`. Then the next server-settings sections, each its own branch and PR through `ux-ui-designer`, on the client-core REST methods of #31 and in the screen of #36 (`server_settings.slint`, `live_shell/server_settings.rs`): channel overwrites (tri-state rows, DESIGN.md §5.8), members with kick and ban, bans, audit log. Then direct messages.
 3. Desktop message list, from DESIGN.md §5.4: the offline state (needs the local cache first) and the no-access state.
 4. Then an on-disk outbox (needs the local cache of ARCHITECTURE §6 first).
@@ -22,7 +22,7 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 - One branch per milestone step (`feat/…`), atomic Conventional Commits, a `docs:` commit for README/ROADMAP/ARCHITECTURE/ADR.
 - Before every PR, run `code-reviewer` and `security-auditor` in parallel on `git diff <base>...HEAD`, fix the findings in `fix(...)` commits, and have the auditor re-check any High fix.
 - UI work (Slint screens, tokens) goes to `ux-ui-designer`, with an exact interface contract (property and callback names) so the Rust side can be written in parallel.
-- The user approves every push, PR, merge and release.
+- Push, PR and merge (CI green) need no confirmation since 2026-10-21; only releases and destructive git actions wait for the user.
 
 ## Checks
 ```bash
