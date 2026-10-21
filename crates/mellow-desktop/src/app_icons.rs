@@ -18,6 +18,12 @@ const LINUX_ICON: &[u8] = include_bytes!("../../../release/icons/mellow-256.png"
 const LINUX_ICON_PATH_IN_DATA_HOME: &str = "icons/hicolor/256x256/apps/mellow.png";
 #[cfg(target_os = "linux")]
 const LINUX_MENU_ENTRY_PATH_IN_DATA_HOME: &str = "applications/mellow.desktop";
+/// `Info.plist` and the menu entry are a few hundred bytes; anything far larger is not ours.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const MAXIMUM_EDITED_FILE_LENGTH: u64 = 64 * 1024;
+/// Readable by the Dock, Finder and the desktop environment, writable by the user only.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const WRITTEN_FILE_MODE: u32 = 0o644;
 
 /// Off the UI thread: a few file reads and, when something changed, writes.
 pub fn install_in_background() {
@@ -58,8 +64,10 @@ fn install() -> std::io::Result<()> {
     };
     let mut has_changed = write_if_different(&contents.join("Resources/Mellow.icns"), MACOS_ICON)?;
     let info_path = contents.join("Info.plist");
-    if let Some(updated) = info_plist_with_icon(&std::fs::read_to_string(&info_path)?) {
-        std::fs::write(&info_path, updated)?;
+    let info_plist =
+        read_small_regular_file(&info_path)?.and_then(|bytes| String::from_utf8(bytes).ok());
+    if let Some(updated) = info_plist.as_deref().and_then(info_plist_with_icon) {
+        replace_atomically(&info_path, updated.as_bytes())?;
         has_changed = true;
     }
     if has_changed {
@@ -84,31 +92,105 @@ fn install() -> std::io::Result<()> {
         return Ok(());
     };
     let menu_entry_path = data_home.join(LINUX_MENU_ENTRY_PATH_IN_DATA_HOME);
-    let menu_entry = match std::fs::read_to_string(&menu_entry_path) {
-        Ok(menu_entry) => menu_entry,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
+    let Some(menu_entry) =
+        read_small_regular_file(&menu_entry_path)?.and_then(|bytes| String::from_utf8(bytes).ok())
+    else {
+        return Ok(());
     };
     if write_if_different(&data_home.join(LINUX_ICON_PATH_IN_DATA_HOME), LINUX_ICON)? {
         tracing::info!("installed the app icon");
     }
     if let Some(updated) = desktop_entry_with_icon(&menu_entry) {
-        std::fs::write(&menu_entry_path, updated)?;
+        replace_atomically(&menu_entry_path, updated.as_bytes())?;
     }
     Ok(())
 }
 
-/// Whether it wrote: an icon already in place is left alone.
+/// What is at a path. Links, directories, FIFOs and devices are `Other`: never read nor replaced,
+/// so a file planted there cannot make the app block, follow it elsewhere or read without limit.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+enum ExistingEntry {
+    Missing,
+    RegularFile { length: u64 },
+    Other,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn existing_entry(path: &std::path::Path) -> std::io::Result<ExistingEntry> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(ExistingEntry::RegularFile {
+            length: metadata.len(),
+        }),
+        Ok(_) => Ok(ExistingEntry::Other),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ExistingEntry::Missing),
+        Err(error) => Err(error),
+    }
+}
+
+/// A regular file's bytes, when it is at most `maximum_length` long; `None` otherwise.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn read_regular_file(
+    path: &std::path::Path,
+    maximum_length: u64,
+) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read as _;
+
+    match existing_entry(path)? {
+        ExistingEntry::RegularFile { length } if length <= maximum_length => {
+            let mut bytes = Vec::new();
+            std::fs::File::open(path)?
+                .take(maximum_length)
+                .read_to_end(&mut bytes)?;
+            Ok(Some(bytes))
+        }
+        _ => Ok(None),
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn read_small_regular_file(path: &std::path::Path) -> std::io::Result<Option<Vec<u8>>> {
+    read_regular_file(path, MAXIMUM_EDITED_FILE_LENGTH)
+}
+
+/// Whether it wrote: an icon already in place is left alone, and so is anything that is not a
+/// regular file.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn write_if_different(path: &std::path::Path, contents: &[u8]) -> std::io::Result<bool> {
-    if std::fs::read(path).is_ok_and(|current| current == contents) {
-        return Ok(false);
+    let expected_length = u64::try_from(contents.len()).unwrap_or(u64::MAX);
+    match existing_entry(path)? {
+        ExistingEntry::Other => {
+            tracing::warn!(path = %path.display(), "not a regular file; the app icon is left as it is");
+            return Ok(false);
+        }
+        ExistingEntry::RegularFile { length } if length == expected_length => {
+            if read_regular_file(path, length)?.is_some_and(|current| current == contents) {
+                return Ok(false);
+            }
+        }
+        ExistingEntry::RegularFile { .. } | ExistingEntry::Missing => {}
     }
-    if let Some(directory) = path.parent() {
-        std::fs::create_dir_all(directory)?;
-    }
-    std::fs::write(path, contents)?;
+    replace_atomically(path, contents)?;
     Ok(true)
+}
+
+/// Writes a temporary file next to `path`, then renames it over `path`: readers never see half a
+/// file, and a link at `path` is replaced, not followed.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn replace_atomically(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let directory = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path without a directory")
+    })?;
+    std::fs::create_dir_all(directory)?;
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    file.write_all(contents)?;
+    file.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(WRITTEN_FILE_MODE))?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 /// Installs made before Mellow had an icon lack `CFBundleIconFile`; `None` when nothing changes.
@@ -144,6 +226,47 @@ fn desktop_entry_with_icon(desktop_entry: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn icons_are_written_once_and_never_through_a_link_or_into_a_fifo() {
+        let directory = tempfile::tempdir().unwrap();
+        let icon_path = directory.path().join("icons/mellow.png");
+        assert!(write_if_different(&icon_path, b"icon").unwrap());
+        assert!(!write_if_different(&icon_path, b"icon").unwrap());
+        assert!(write_if_different(&icon_path, b"newer").unwrap());
+        assert_eq!(std::fs::read(&icon_path).unwrap(), b"newer");
+
+        let target = directory.path().join("elsewhere");
+        std::fs::write(&target, b"keep").unwrap();
+        let link = directory.path().join("link.png");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(!write_if_different(&link, b"icon").unwrap());
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+        assert_eq!(read_small_regular_file(&link).unwrap(), None);
+
+        // A FIFO would block a plain read forever.
+        let fifo = directory.path().join("fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(!write_if_different(&fifo, b"icon").unwrap());
+        assert_eq!(read_small_regular_file(&fifo).unwrap(), None);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn files_too_large_to_be_ours_are_not_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Info.plist");
+        let too_large = usize::try_from(MAXIMUM_EDITED_FILE_LENGTH).unwrap() + 1;
+        std::fs::write(&path, vec![b'x'; too_large]).unwrap();
+        assert_eq!(read_small_regular_file(&path).unwrap(), None);
+    }
 
     #[test]
     fn an_info_plist_without_an_icon_gets_one_inside_its_dictionary() {

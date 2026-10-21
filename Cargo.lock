@@ -3579,6 +3579,7 @@ dependencies = [
  "mellow-update",
  "slint",
  "slint-build",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
