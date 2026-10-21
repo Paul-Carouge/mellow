@@ -6,6 +6,7 @@ This document is the reference for every visual and interaction decision in Mell
 
 ## Changelog
 
+- **2026-10-21, v0.11 — file attachments (ADR-0020):** the web client attaches files (5.5): attach button, drag and drop with an apricot "Drop to attach to #general" overlay, paste; each file uploads at once into a tray inside the composer box (thumbnail or file icon, middle-truncated name, "Uploading…" then the size, or the error in `text.danger` with a red outline), up to 10 per message, Send waits for running uploads. Messages show images inline and other files as download cards (5.4); the desktop client lists "name · size" rows until it handles files. `component.attachment.*`, `component.drop-overlay.*` and `component.composer.attach-button-size` / `tray-*` tokens; `text.link` and `text.accent` on `surface.sidebar` contrast pairs; Phosphor `file`, `file-arrow-up` and `download-simple` (Fill).
 - **2026-10-21, v0.10 — My account on desktop and web:** user settings open on "My account" (5.9): Discord's account card with display name, username and email, Edit buttons opening forms in place (one at a time), and a password section with "Change password"; Esc closes the open form before the screen; the web client gets the full-screen user settings (gear in the user panel, "Sign out" moved into the settings navigation, a list page then a section page on phones) and an About page with the source code link; `component.settings.account-*`, `error-text` and `notice-text` tokens, a `text.normal` on `surface.sidebar` contrast pair; Phosphor `check` and `gear-six` on the web.
 - **2026-10-21, v0.9 — web client (ADR-0019):** the browser client is a port of the desktop shell (4.5): the same panes, tokens, copy and dialogs, laid out by the 4.2 breakpoints, with the rail and sidebar in a drawer and the member list as an overlay in narrow windows; 44 px targets under a coarse pointer and a send button on phones; native `<dialog>` for dialogs and drawers, the popover API for the server menu and the profile popover; `component.profile-popover.*`, `component.user-panel.button-icon-size` and `component.composer.reply-bar-icon-size` tokens; Phosphor `list`, `at` (Bold) and `paper-plane-right` (Fill) icons.
 - **2026-10-21, v0.8 — one-to-one direct messages on desktop:** Home lists conversations in the sidebar (5.6), the rail's Home item carries the unread pill, clicking a member opens a reduced profile popout with "Message" (5.7), and conversations use `@name` in the chat header, hero, composer and errors (5.4, 5.5); `component.conversation-row.*` and `component.profile-popover.*` tokens, Phosphor `at` icon (Bold).
@@ -724,6 +725,7 @@ Phone (< 792)                     Drawer open
 - The message list has one Tab stop: `Up`/`Down`/`Home`/`End` move between messages, and the focused message shows its hover bar, so every action is reachable by keyboard and by tap. New messages from others are announced through a polite live region; action errors through an alert.
 - Message text is plain text with line breaks; only `http:` and `https:` URLs become links, opened in a new tab with `rel="noopener noreferrer"`. Markdown rendering (5.4) is not in the web client yet.
 - User settings (5.9) open from the user panel's gear button ("User settings"), as on desktop; "Sign out" is the last item of their navigation.
+- Attachments (5.4, 5.5): images open in a new tab instead of the viewer; an image that fails to load becomes its download card instead of "Couldn't load this image."; no upload progress percentage (the tray says "Uploading…"), no "Add a description" or "Mark as spoiler" yet.
 - Not in the web client yet: server settings, mention badges, the unread divider and "New" bar, day dividers, Markdown, the quick switcher, the connection dock's "Back online" and session-expired states.
 
 ### 4.4 Admin web UI (server-rendered HTML + htmx)
@@ -929,6 +931,9 @@ Desktop, until the More menu exists: your own messages show Edit, Reply, Copy te
 - Animated images: first frame shown; play on hover or focus (or always, per accessibility setting).
 - Other files: a `surface.sidebar` card with `radius.md`, file-type icon, file name (middle-truncated, full name in tooltip and accessible name), size, and a "Download" icon button labelled "Download file name.pdf".
 - Loading failed: "Couldn't load this image." with "Try again"; the card keeps its size. Removed by the server: "This file is no longer available."
+- Previewable images are the four types the instance serves inline (PNG, JPEG, GIF, WebP, checked by their bytes, ADR-0020); everything else, SVG included, is a file card.
+- Web client (`component.attachment.*`): attachments sit under the text, `attachment.gap` apart, in a list named "2 attachments" (7.3). Images are links that open the file in a new tab, with the file name as alt text; until loaded they hold a 400 × 300 `image-placeholder` block (the protocol has no pixel size yet), then shrink to the image, and the list stays pinned to the latest message. File cards (max 432 px wide, `surface.sidebar`, 1 px `border.divider`, `radius.md`): apricot file glyph (`file-icon`, decorative), the name middle-truncated as the download link (`text.link`, full name in its tooltip and accessible name "Download report.pdf"), the size ("2.4 MB", binary units with Discord's labels) in `text.muted`, and a download icon duplicating the link for the pointer only. A message still sending shows its files as cards without links, its name in `message.pending-text`.
+- Desktop, until it handles files: one compact row per attachment under the text, a 16 px file glyph and "name · size" in `attachment.row-text`; the row's accessible name ends with "2 attachments".
 
 #### List states
 
@@ -956,6 +961,14 @@ Layout: Discord's composer, a `surface.input` field with `radius.md`, min 44 px,
 - Reply mode: a bar attached above the field (`surface.sidebar`): "Replying to Ana", a "@ On/Off" toggle for pinging the author (on by default, accessible label "Mention Ana"), and a close button (`Esc`). Desktop (`component.composer.reply-bar-*`): the field's top corners square off under the bar, the composer takes focus when a reply starts, and the close button is a filled x-circle labelled "Cancel reply"; the "@ On/Off" toggle comes with mention notifications.
 - Action errors: when an edit or delete fails, one line in `text.danger` sits above the composer (or the reply bar) and is announced assertively.
 - Attachments: attach button, drag and drop anywhere on the chat pane (overlay "Drop to attach to #general"), or paste. An attachment tray above the field shows thumbnails with "Add a description" (alt text), "Mark as spoiler" and "Remove". Upload progress is shown per file. Upload errors: "photo.heic is 48 MB. chat.example.org accepts files up to 25 MB."
+- Attachments in the web client (first version, ADR-0020: upload first, then send):
+  - The attach button ("Attach files", `plus-circle`, `composer.attach-button-size`) sits at the leading end of the field, only where the user has "Attach files" (and can send). It opens the browser's file picker (several files at once).
+  - Dragging files over the chat pane shows the drop overlay: the window scrim, then an apricot card (`drop-overlay.*`, `accent.fill`, `text.on-accent`) with a dashed inner outline marking the drop zone, the `file-arrow-up` glyph, "Drop to attach to #general" (or "@Ana") and "You can add a message before sending." It is the screen's one loud moment, as Discord's blurple drop card is. It never takes focus and has no controls, so it cannot trap the keyboard; the attach button does the same job. Without "Attach files", the pointer shows that dropping is refused and no overlay appears. A file dropped elsewhere in the window is refused rather than opened by the browser, which would leave Mellow.
+  - Pasting files into the field attaches them; pasted text stays text.
+  - Each file uploads at once into the tray, inside the composer box above the field, separated by `composer.tray-divider` and scrolling sideways when full. Items (`composer.tray-item-*`, 160 px, `surface.sidebar`): a 4:3 preview (the image, contained, or the apricot file glyph), the name middle-truncated, then "Uploading…" (preview at half opacity) or the size once uploaded. A failed upload keeps its item with a 1 px `text.danger` outline, a warning icon and the reason; it is not sent. Each item has a Remove button (trash, the hover-bar button) labelled "Remove photo.png"; removing returns focus to the field. Upload results are announced politely ("photo.png uploaded.", or the error).
+  - At most 10 files per message; extra files are not added and "You can attach up to 10 files to one message." appears in the action error line.
+  - Send works with text, files, or both. While a file is still uploading, Enter does not send and the error line says "Your files are still uploading. Send again once they're done."; the phone send button is dimmed. Sending clears the tray; failed items are dropped with it.
+  - Each channel keeps its own tray, like its draft.
 - Length: a counter appears at 90 % of the instance limit ("3,620 / 4,000"); beyond the limit it turns `text.danger`, sending is blocked and the field's accessible description says "Message is 120 characters too long."
 - Typing indicator: in the 24 px band, `type.typing`, `text.secondary`, with three dots: "Ana is typing…", "Ana and Léo are typing…", "Ana, Léo and 2 others are typing…", "Several people are typing…" (beyond 5). It is not announced by screen readers.
 - Read-only channel (no "Send messages"): the field is replaced, as on Discord, by "You do not have permission to send messages in this channel." in `component.composer.locked-text` (`text.muted`, 4.80 dark / 5.51 light on `surface.input`) on the same `surface.input` field, same size and position, without the attach button. It is plain text for screen readers, never focused; nothing that would focus the composer (a reply starting, "Jump to present", "Try again", closing a dialog) moves focus there. The reply bar never shows, and `Up` to edit is unavailable since it lives in the composer. At narrow widths the sentence wraps and the field grows to fit it.
@@ -1118,12 +1131,13 @@ All components use tokens only (component tier first), support light and dark th
 | 6.19 | MessageActionBar | Own message, other's message | Button hover, focus | `component.action-bar.*`; mirrors the context menu. |
 | 6.20 | ReplyReference | Normal, original deleted, original not loaded | Hover, focus | Jumps to the original. |
 | 6.21 | MentionChip | User, role, channel, `@everyone` | Hover, focus | `component.mention.chip-*`. |
-| 6.22 | AttachmentImage | Static, animated, spoiler ("Spoiler" overlay) | Loading, loaded, error, removed | Alt text as accessible name. |
-| 6.23 | AttachmentFile | — | Default, downloading (progress), downloaded, error | Middle-truncated file name. |
+| 6.22 | AttachmentImage | Static, animated, spoiler ("Spoiler" overlay) | Loading, loaded, error, removed | Alt text as accessible name. Web: `MessageAttachments.svelte`, `component.attachment.image-*`. |
+| 6.23 | AttachmentFile | Card (web), compact row (desktop, until it handles files) | Default, pending (no link), downloading (progress), downloaded, error | Middle-truncated file name. Web: `component.attachment.file-*`; desktop rows: `attachment.row-*`. |
 | 6.24 | Divider | Day, unread ("New" pill) | — | `component.unread-divider.*`. |
 | 6.25 | JumpBar | New messages (top), Older messages / Jump to present (bottom) | Hover, focus | `component.jump-bar.*`. |
 | 6.26 | Composer | Channel, conversation, edit inline, read-only | Empty, typing, with attachments, uploading, too long, offline, disabled | Includes reply bar and attachment tray. |
-| 6.27 | AttachmentTray item | Image, file | Uploading, uploaded, error, spoiler on | "Add a description" for alt text. |
+| 6.27 | AttachmentTray item | Image, file | Uploading, uploaded, error, spoiler on | "Add a description" for alt text. Web: `AttachmentTray.svelte`, `component.composer.tray-*`; Remove uses the hover-bar button. |
+| 6.27a | DropOverlay | Channel, conversation | Shown while files are dragged over the chat pane | `component.drop-overlay.*`; hidden from assistive technologies, never focused. |
 | 6.28 | TypingIndicator | 1, 2, 3–5, many | Static under reduced motion | Not announced to screen readers. |
 | 6.29 | Autocomplete popover | Users, channels, emoji | Results, no results ("No one called anx in Rust Lyon"), loading | Listbox semantics. |
 | 6.30 | QuickSwitcher | — | Results, no results, loading | 5.10. |
@@ -1268,7 +1282,10 @@ Examples:
 | Situation | Copy |
 |---|---|
 | Message failed | "Not sent. Retry · Delete" |
-| Upload too large | "photo.heic is 48 MB. chat.example.org accepts files up to 25 MB." |
+| Upload too large | "photo.heic is 48 MB. chat.example.org accepts files up to 25 MB." Until the instance tells its limit, the web client says "photo.heic is 48 MB, more than chat.example.org accepts." |
+| Too many files | "You can attach up to 10 files to one message." |
+| Sending while uploading | "Your files are still uploading. Send again once they're done." |
+| Drop overlay | "Drop to attach to #general" · "You can add a message before sending." |
 | Connection lost | "Reconnecting to chat.example.org… Messages you send will wait until you're back." |
 | Permission missing | "You can't send messages in #announcements." |
 | Instance unreachable | "We couldn't reach chat.example.org. Check the address, or try again if your connection is down." |

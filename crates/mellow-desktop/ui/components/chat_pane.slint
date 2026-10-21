@@ -27,6 +27,8 @@ export struct MessageRow {
     is-edited: bool,
     // Sending and failed rows are the user's own, after every confirmed row; they offer no message actions.
     delivery: MessageDelivery,
+    // One "name · size" line per attached file, formatted in Rust; shown under the text.
+    attachment-summaries: [string],
 }
 
 component HoverActionBar inherits Rectangle {
@@ -262,7 +264,9 @@ component MessageView inherits Rectangle {
         : is-hovered || is-editing ? MellowComponent.message-background-hover : transparent;
     accessible-role: list-item;
     accessible-label: message.author + ", " + message.timestamp + ": " + message.body-plain
-        + (message.is-edited ? " (edited)" : "");
+        + (message.is-edited ? " (edited)" : "")
+        + (message.attachment-summaries.length == 1 ? ". 1 attachment"
+            : message.attachment-summaries.length > 1 ? ". " + message.attachment-summaries.length + " attachments" : "");
     accessible-description: message.delivery == MessageDelivery.sending ? "Sending"
         : message.delivery == MessageDelivery.failed ? "Not sent. Retry or delete it." : "";
 
@@ -331,6 +335,32 @@ component MessageView inherits Rectangle {
                 font-weight: MellowType.message-timestamp.font-weight;
                 // The row's accessible label already says "(edited)".
                 accessible-role: none;
+            }
+            // shortcut: names only, no previews or downloads until the desktop client handles files
+            // (DESIGN.md §5.4 "Attachments").
+            if !is-editing: VerticalLayout {
+                spacing: MellowComponent.attachment-row-gap;
+                for summary in message.attachment-summaries: HorizontalLayout {
+                    alignment: start;
+                    spacing: MellowComponent.attachment-row-gap;
+                    VerticalLayout {
+                        alignment: center;
+                        Image {
+                            source: @image-url("../../icons/file.svg");
+                            colorize: MellowComponent.attachment-file-icon;
+                            width: MellowComponent.attachment-row-icon-size;
+                            height: self.width;
+                            accessible-role: none;
+                        }
+                    }
+                    Text {
+                        text: summary;
+                        color: MellowComponent.attachment-row-text;
+                        font-size: MellowType.body.font-size;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
             }
             if !is-editing && is-text-selection-mode: TextInput {
                 text: message.body-plain;

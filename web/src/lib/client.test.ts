@@ -102,6 +102,7 @@ describe("MellowClient", () => {
       channelId: GENERAL,
       content,
       replyToId: null,
+      attachments: [],
       status: "failed" as const,
     }));
     await client["resendFailedMessages"]();
@@ -117,7 +118,7 @@ describe("MellowClient", () => {
 
   it("never discards a message while it is being sent", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
-    client.pendingMessages = [{ nonce: "n", channelId: GENERAL, content: "x", replyToId: null, status: "sending" }];
+    client.pendingMessages = [{ nonce: "n", channelId: GENERAL, content: "x", replyToId: null, attachments: [], status: "sending" }];
     client.discardMessage("n");
     expect(client.pendingMessages).toHaveLength(1);
   });

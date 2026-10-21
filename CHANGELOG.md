@@ -5,6 +5,7 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 ## [Unreleased]
 
 ### Added
+- Attachments: share files and pictures in channels and conversations from the web client (attach button, drag and drop, paste); pictures show inline, other files as download cards; the desktop app lists them. Files are encrypted on disk, 25 MB each and 2 GiB per account by default (`maximum_attachment_bytes`, `maximum_attachment_storage_bytes_per_user`).
 - My account in user settings, on desktop and on the web: change the display name, the username (with the current password) and the password (other devices are signed out). The web client gets user settings with About and Sign out.
 
 ## [0.3.0] - 2026-10-21

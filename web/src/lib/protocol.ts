@@ -70,6 +70,22 @@ export interface Member {
   joined_at_unix_milliseconds: number;
 }
 
+export interface Attachment {
+  id: Snowflake;
+  file_name: string;
+  /** One of the four previewable image types, or `application/octet-stream`. */
+  content_type: string;
+  size_bytes: number;
+}
+
+/** Shown inline: the instance serves only these as images (ADR-0020). */
+export const PREVIEWABLE_IMAGE_TYPES: readonly string[] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/** The name is not in the URL (the instance sends it in `Content-Disposition`). */
+export function attachmentUrl(attachment: Attachment): string {
+  return `/api/v1/attachments/${attachment.id}`;
+}
+
 export interface Message {
   id: Snowflake;
   channel_id: Snowflake;
@@ -78,6 +94,8 @@ export interface Message {
   reply_to_id: Snowflake | null;
   edited_at_unix_milliseconds: number | null;
   nonce?: string | null;
+  /** Absent from older servers' payloads. */
+  attachments?: Attachment[];
 }
 
 export interface ReadState {

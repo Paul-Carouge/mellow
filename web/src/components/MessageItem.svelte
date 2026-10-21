@@ -13,6 +13,7 @@
   } from "./format";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import MessageAttachments from "./MessageAttachments.svelte";
   import type { MessageListRow } from "./message-rows";
   import { durationTokenInMilliseconds } from "./tokens";
 
@@ -64,6 +65,7 @@
   const message = $derived(row.kind === "sent" ? row.message : null);
   const author = $derived(message ? message.author : currentUser);
   const content = $derived(row.kind === "sent" ? row.message.content : row.pending.content);
+  const attachments = $derived(row.kind === "sent" ? (row.message.attachments ?? []) : row.pending.attachments);
   const sentAt = $derived(row.kind === "sent" ? row.sentAt : null);
   const isOwn = $derived(author.id === currentUser.id);
   const isSending = $derived(row.kind === "pending" && row.pending.status === "sending");
@@ -201,6 +203,9 @@
     </div>
   {:else}
     {@render body()}
+    {#if attachments.length > 0}
+      <MessageAttachments {attachments} isPending={row.kind === "pending"} />
+    {/if}
   {/if}
 
   {#if isSending && isSendingLabelShown}

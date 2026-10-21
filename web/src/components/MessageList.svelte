@@ -4,7 +4,7 @@
   import type { MellowClient } from "../lib/client.svelte";
   import Button from "./Button.svelte";
   import type { Message, PublicUser, Snowflake } from "../lib/protocol";
-  import { displayName } from "./format";
+  import { attachmentCountLabel, displayName } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
   import MessageItem from "./MessageItem.svelte";
   import { buildMessageRows } from "./message-rows";
@@ -79,6 +79,7 @@
   const hasHistoryFailed = $derived(client.failedHistoryChannelIds.has(channelId));
 
   let viewport: HTMLElement;
+  let list: HTMLElement;
   // Not reactive: written by scrolling, read around DOM updates.
   let isPinnedToLatest = true;
   let isViewingOlderMessages = $state(false);
@@ -88,13 +89,17 @@
 
   onMount(() => {
     const timer = setTimeout(() => (isSkeletonDelayElapsed = true), durationTokenInMilliseconds("motion-delay-skeleton"));
-    // Window resizes and a growing composer change the viewport: stay on the latest message.
+    // Window resizes, a growing composer and images that finish loading change the sizes: stay
+    // on the latest message.
+    // shortcut: rows above the reader still move when their images load; reserve each image's box
+    // once the protocol carries pixel sizes (ADR-0020).
     const observer = new ResizeObserver(() => {
       if (isPinnedToLatest) {
         viewport.scrollTop = viewport.scrollHeight;
       }
     });
     observer.observe(viewport);
+    observer.observe(list);
     return () => {
       clearTimeout(timer);
       observer.disconnect();
@@ -157,7 +162,7 @@
       return;
     }
     if (lastAnnouncedKey !== null && latest.key !== lastAnnouncedKey && latest.message.author.id !== currentUser.id) {
-      announcement = `${displayName(latest.message.author)}: ${latest.message.content}`;
+      announcement = `${displayName(latest.message.author)}: ${messageSummary(latest.message)}`;
     }
     lastAnnouncedKey = latest.key;
   }
@@ -168,13 +173,18 @@
     viewport.scrollTop = viewport.scrollHeight;
   }
 
+  /** The text, then "2 attachments" when files came with it (DESIGN.md §7.3). */
+  function messageSummary(message: Message): string {
+    return [message.content, attachmentCountLabel(message.attachments?.length ?? 0)].filter(Boolean).join(" ");
+  }
+
   function replyPreviewOf(message: Message): string {
     if (message.reply_to_id === null) {
       return "";
     }
     const original = messages.find((candidate) => candidate.id === message.reply_to_id);
     return original
-      ? `@${displayName(original.author)} ${original.content}`
+      ? `@${displayName(original.author)} ${messageSummary(original)}`
       : "Original message was deleted or is not loaded";
   }
 
@@ -271,7 +281,7 @@
     {/if}
 
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <ol aria-label="Messages in {channelLabel}" class="pb-(--mw-space-lg)" onkeydown={moveFocus}>
+    <ol bind:this={list} aria-label="Messages in {channelLabel}" class="pb-(--mw-space-lg)" onkeydown={moveFocus}>
       {#each rows as row (row.key)}
         <MessageItem
           {row}

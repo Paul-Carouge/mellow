@@ -7,7 +7,7 @@ use mellow_client_core::state::{ClientState, PendingMessage, PendingMessageStatu
 use mellow_protocol::{
     Channel, ChannelKind, CurrentUser, Guild, Member, Message, Permissions, Snowflake,
 };
-use slint::SharedString;
+use slint::{ModelRc, SharedString, VecModel};
 
 use crate::generated_ui::{
     ChannelListRow, DirectMessageRow, HistoryStartState, MemberListRow, MessageDelivery,
@@ -19,6 +19,40 @@ use crate::shell_rows::{first_letter, saturating_int, server_initials};
 /// Discord starts a new author group after this long, even for the same author.
 const AUTHOR_GROUP_MAXIMUM_GAP_MILLISECONDS: u64 = 7 * 60 * 1_000;
 const REPLY_PREVIEW_MAXIMUM_CHARACTERS: usize = 80;
+
+/// "name · size", one per attachment, as the message row lists them (downloads come later).
+fn attachment_summaries(attachments: &[mellow_protocol::Attachment]) -> ModelRc<SharedString> {
+    let summaries: Vec<SharedString> = attachments
+        .iter()
+        .map(|attachment| {
+            format!(
+                "{} · {}",
+                attachment.file_name,
+                human_file_size(attachment.size_bytes)
+            )
+            .into()
+        })
+        .collect();
+    ModelRc::new(VecModel::from(summaries))
+}
+
+/// Decimal units with one decimal, as browsers and Discord show sizes ("2.4 MB").
+fn human_file_size(size_bytes: u64) -> String {
+    const UNIT: f64 = 1000.0;
+    #[allow(clippy::cast_precision_loss)] // A display rounding: the precision lost is invisible.
+    let mut size = size_bytes as f64;
+    for unit in ["B", "KB", "MB", "GB"] {
+        if size < UNIT || unit == "GB" {
+            return if unit == "B" {
+                format!("{size_bytes} B")
+            } else {
+                format!("{size:.1} {unit}")
+            };
+        }
+        size /= UNIT;
+    }
+    format!("{size_bytes} B")
+}
 
 pub fn server_items(state: &ClientState) -> Vec<ServerItem> {
     state
@@ -272,6 +306,7 @@ where
                 short_time: short_time(sent_at, &now.timezone()).into(),
                 body: styled_text_from_message_body(&message.content),
                 body_plain: message.content.as_str().into(),
+                attachment_summaries: attachment_summaries(&message.attachments),
                 starts_author_group,
                 reply_preview: reply_preview(message.reply_to_id, messages).into(),
                 // shortcut: mentions are not parsed yet (M2).
@@ -322,6 +357,8 @@ where
                 short_time: short_time(now_unix_milliseconds, &now.timezone()).into(),
                 body: styled_text_from_message_body(&pending.content),
                 body_plain: pending.content.as_str().into(),
+                // The desktop does not upload files yet.
+                attachment_summaries: ModelRc::default(),
                 starts_author_group,
                 reply_preview: reply_preview(pending.reply_to_id, confirmed).into(),
                 mentions_current_user: false,
@@ -815,5 +852,13 @@ mod tests {
                 ("Me".to_owned(), "2".to_owned(), false)
             ]
         );
+    }
+
+    #[test]
+    fn file_sizes_read_as_browsers_show_them() {
+        assert_eq!(human_file_size(512), "512 B");
+        assert_eq!(human_file_size(2_400_000), "2.4 MB");
+        assert_eq!(human_file_size(1_000), "1.0 KB");
+        assert_eq!(human_file_size(25_000_000_000), "25.0 GB");
     }
 }
