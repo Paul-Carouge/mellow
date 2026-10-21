@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Development tasks for the Mellow workspace (design token generation)."
+description = "Development tasks for the Mellow workspace (design tokens and app icons)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,9 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 serde_json.workspace = true
+# Rasterises the favicon into the app icons. Already in the tree through Slint (same version), so
+# nothing new is built or audited; without default features: no text, fonts or raster images.
+resvg = { version = "0.48.1", default-features = false }
 
 [lints]
 workspace = true
