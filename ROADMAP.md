@@ -13,7 +13,7 @@ Merged into `main`: #1 to #37. M1 (server, gateway, client core, desktop on real
 ### Next, in order
 1. **Release `v0.2.0`**: everything merged since `v0.1.1` (roles settings, account API); the user approves the `release` environment, then updates from the app (User settings → About) and with `mellow-update`. The ACME path stays covered by the Pebble test only (user's decision: the instance stays behind Caddy).
 2. **M2, continued** (what still separates Mellow from a daily Discord replacement, in order): desktop My Account, Profile and Appearance sections; server-settings screens (channel overwrites, members with kick and ban, bans, audit log); direct messages (1:1 and groups); attachments and avatars; multi-instance in the client; invites screen; mentions and unread counts from the server; admin web UI.
-3. **Web client** (ADR-0019, proposed): starts once the desktop client reaches parity on text chat and settings. Voice and video stay after that, with their own ADR.
+3. **Web client** (ADR-0019, accepted): served by the server binary at `/` (PR `feat/web-client`): sign-in with an HttpOnly cookie, servers, channels, messages, members, direct messages, phone layout. Next: settings, Markdown, unread divider, error states with Try again. Voice and video stay after that, with their own ADR.
 
 ### Known gaps and debts
 - Server: single SQLite writer task (ARCHITECTURE §4.3) not implemented; only message sends are serialized (per-process lock, so a second process such as `admin` writing messages would not be ordered); nonces are deduplicated forever per channel and author, not for a time window, and a deleted message frees its nonce (an outbox retry after the sender deleted it recreates it); the database pool keeps sqlx's 30 s acquire timeout and history reads have no rate limit, so a read flood also queues sends behind the send lock; `messages.author_id` has no `ON DELETE` rule or index, to settle with account deletion; queries are runtime SQL, not compile-time checked (`sqlx` offline data to set up); member list capped at 1 000 instead of paginated; rate limits in memory, per process, and the shared table fails closed when saturated; Windows refused until the master key file gets a protected DACL.
@@ -48,7 +48,7 @@ Merged into `main`: #1 to #37. M1 (server, gateway, client core, desktop on real
 - Multi-instance support in the client.
 - Admin web UI (settings, users, storage, backups).
 
-## M2.5 — Web client (ADR-0019, proposed)
+## M2.5 — Web client (ADR-0019, accepted)
 - Svelte SPA embedded in the server binary, served at `/`; tokens from `design/tokens.json`; TypeScript types generated from `mellow-protocol`.
 - Browser session handling (cookie flow), Content-Security-Policy, HSTS.
 - Same screens as the desktop: sign-in, servers, channels, messages, settings.
