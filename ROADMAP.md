@@ -5,14 +5,15 @@ Each milestone ends with something usable end to end. Scope changes are made her
 ## Status (2026-10-21)
 
 ### Done
-Merged into `main`: #1 to #36. M1 (server, gateway, client core, desktop on real data, built-in TLS with ACME, outbox, history pagination, message-list states) is released as `v0.1.0` (2026-10-20), then `v0.1.1` (2026-10-21, the first update, to check the updaters), with signed builds for Linux (x86_64, aarch64), macOS (Apple Silicon) and Windows, and runs on the user's instance. M2 so far: guild roles (#24), role reordering (#25), channel permission overwrites and `VIEW_CHANNEL` filtering (#27), kick and ban (#28), audit log (#29), client-core calls for every M2 endpoint (#31), channel permissions in the desktop UI (#32), desktop server settings with the Roles section (#36). User settings: account API for renaming and changing the password, with the `USER_UPDATE` event (#37, in review). Pulled forward from M4: `mellow-server update`, a Docker Compose kit with `mellow-update`, in-app desktop updates and a one-line desktop installer (ADR-0016 to ADR-0018). Every server PR was reviewed by `code-reviewer` and `security-auditor`, with findings fixed.
+Merged into `main`: #1 to #37. M1 (server, gateway, client core, desktop on real data, built-in TLS with ACME, outbox, history pagination, message-list states) is released as `v0.1.0` (2026-10-20), then `v0.1.1` (2026-10-21, the first update, to check the updaters), with signed builds for Linux (x86_64, aarch64), macOS (Apple Silicon) and Windows, and runs on the user's instance. M2 so far: guild roles (#24), role reordering (#25), channel permission overwrites and `VIEW_CHANNEL` filtering (#27), kick and ban (#28), audit log (#29), client-core calls for every M2 endpoint (#31), channel permissions in the desktop UI (#32), desktop server settings with the Roles section (#36). User settings: account API for renaming and changing the password, with the `USER_UPDATE` event (#37). Pulled forward from M4: `mellow-server update`, a Docker Compose kit with `mellow-update`, in-app desktop updates and a one-line desktop installer (ADR-0016 to ADR-0018). Every server PR was reviewed by `code-reviewer` and `security-auditor`, with findings fixed.
 
 ### Blocked
 - Nothing blocked. CI runs on Linux, macOS and Windows (SQLCipher's storage tests pass on all three).
 
 ### Next, in order
-1. **First update**: `v0.1.1` is released; check the updaters end to end with it (desktop from User settings → About on macOS and Linux, server with `mellow-update`), by hand with the user. The ACME path stays covered by the Pebble test only (user's decision: the instance stays behind Caddy).
-2. **M2, continued**: user settings (account API in PR #37: rename, password change; then the desktop My Account, Profile and Appearance sections), the desktop server-settings screens (Roles merged in #36; then channel overwrites, members with kick and ban, bans, audit log), then direct messages. Voice and video stay after M2, with their own ADR.
+1. **Release `v0.2.0`**: everything merged since `v0.1.1` (roles settings, account API); the user approves the `release` environment, then updates from the app (User settings → About) and with `mellow-update`. The ACME path stays covered by the Pebble test only (user's decision: the instance stays behind Caddy).
+2. **M2, continued** (what still separates Mellow from a daily Discord replacement, in order): desktop My Account, Profile and Appearance sections; server-settings screens (channel overwrites, members with kick and ban, bans, audit log); direct messages (1:1 and groups); attachments and avatars; multi-instance in the client; invites screen; mentions and unread counts from the server; admin web UI.
+3. **Web client** (ADR-0019, proposed): starts once the desktop client reaches parity on text chat and settings. Voice and video stay after that, with their own ADR.
 
 ### Known gaps and debts
 - Server: single SQLite writer task (ARCHITECTURE §4.3) not implemented; only message sends are serialized (per-process lock, so a second process such as `admin` writing messages would not be ordered); nonces are deduplicated forever per channel and author, not for a time window, and a deleted message frees its nonce (an outbox retry after the sender deleted it recreates it); the database pool keeps sqlx's 30 s acquire timeout and history reads have no rate limit, so a read flood also queues sends behind the send lock; `messages.author_id` has no `ON DELETE` rule or index, to settle with account deletion; queries are runtime SQL, not compile-time checked (`sqlx` offline data to set up); member list capped at 1 000 instead of paginated; rate limits in memory, per process, and the shared table fails closed when saturated; Windows refused until the master key file gets a protected DACL.
@@ -45,6 +46,11 @@ Merged into `main`: #1 to #36. M1 (server, gateway, client core, desktop on real
 - Attachments and avatars (encrypted storage, size limits).
 - Multi-instance support in the client.
 - Admin web UI (settings, users, storage, backups).
+
+## M2.5 — Web client (ADR-0019, proposed)
+- Svelte SPA embedded in the server binary, served at `/`; tokens from `design/tokens.json`; TypeScript types generated from `mellow-protocol`.
+- Browser session handling (cookie flow), Content-Security-Policy, HSTS.
+- Same screens as the desktop: sign-in, servers, channels, messages, settings.
 
 ## M3 — Android
 - `mellow-ffi`, Android app with adaptive layouts.

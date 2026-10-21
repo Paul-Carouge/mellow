@@ -16,7 +16,7 @@ Mellow is a self-hostable, open-source (AGPL-3.0) alternative to Discord, writte
 - Federation between instances. A client can connect to several instances, but instances do not talk to each other.
 - End-to-end encryption. The server can read messages, which keeps moderation, search and multi-device sync simple ([ADR-0006](docs/adr/0006-tls-and-encryption-at-rest.md)).
 - Multi-node clustering or horizontal scaling.
-- iOS and web clients.
+- iOS clients. A web client is proposed in [ADR-0019](docs/adr/0019-web-client-served-by-the-server-binary.md).
 
 ## 2. System overview
 
