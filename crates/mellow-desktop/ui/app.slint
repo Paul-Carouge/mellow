@@ -146,6 +146,11 @@ export component AppWindow inherits Window {
     function leave-server-settings() {
         root.is-server-settings-open = false;
         root.close-server-settings();
+        root.restore-focus-after-server-settings();
+    }
+
+    // Also called from Rust when it closes settings itself (the guild is gone).
+    public function restore-focus-after-server-settings() {
         if root.is-wide-enough-for-sidebar {
             root.server-header-focus-request-count += 1;
         } else {

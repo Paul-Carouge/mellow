@@ -1,19 +1,22 @@
 //! Server settings → Roles (DESIGN.md §5.8) on the open guild.
 //!
 //! The UI names roles by row index; rows are rebuilt whenever the guild's roles or members
-//! change, so an index is resolved through `displayed_role_ids` at once. The draft lives here,
+//! change, so an index is resolved through `displayed_role_ids` at once. The edit lives here,
 //! not in Slint, and stays until it is saved, reset, or matches the stored role again.
 
 use mellow_client_core::ClientError;
 use mellow_protocol::{ApiErrorCode, GatewayEvent, Guild, Role, Snowflake};
-use slint::{ModelRc, SharedString, VecModel};
+use std::rc::Rc;
+
+use slint::{Model as _, ModelRc, SharedString, VecModel};
 
 use super::{
     LiveShell, SharedShell, apply_state_change, authenticated_rest, now_unix_milliseconds,
     report_request_error, run_request,
 };
+use crate::generated_ui::{RoleListRow, RolePermissionRow};
 use crate::role_settings::{
-    self, MoveDirection, RoleDraft, RoleDraftError, RoleManager, role_color_at_preset,
+    self, MoveDirection, RoleDraft, RoleDraftError, RoleEdit, RoleManager, role_color_at_preset,
 };
 use crate::shell_rows;
 
@@ -25,8 +28,11 @@ pub(super) struct RoleEditor {
     displayed_role_ids: Vec<Snowflake>,
     selected_role_id: Option<Snowflake>,
     /// `None` while the selected role has no unsaved change.
-    draft: Option<RoleDraft>,
-    is_busy: bool,
+    edit: Option<RoleEdit>,
+    /// Kept across refreshes and updated row by row: a new model would recreate every row and
+    /// drop keyboard focus (development notes: "Slint repeaters").
+    role_rows: Rc<VecModel<RoleListRow>>,
+    permission_rows: Rc<VecModel<RolePermissionRow>>,
 }
 
 /// Whether the signed-in member may open server settings on `guild` (Roles is its only section).
@@ -41,14 +47,19 @@ pub(super) fn open(shell: &SharedShell) {
     let Some(guild_id) = shell.selected_guild_id else {
         return;
     };
+    let role_rows = Rc::new(VecModel::default());
+    let permission_rows = Rc::new(VecModel::default());
     shell.role_editor = Some(RoleEditor {
         guild_id,
         displayed_role_ids: Vec::new(),
         selected_role_id: None,
-        draft: None,
-        is_busy: false,
+        edit: None,
+        role_rows: role_rows.clone(),
+        permission_rows: permission_rows.clone(),
     });
     if let Some(window) = shell.window.upgrade() {
+        window.set_server_settings_roles(role_rows.into());
+        window.set_role_permission_rows(permission_rows.into());
         window.set_role_color_presets(ModelRc::new(VecModel::from(
             role_settings::role_color_presets(),
         )));
@@ -61,7 +72,12 @@ pub(super) fn open(shell: &SharedShell) {
 pub(super) fn close(shell: &mut LiveShell) {
     shell.role_editor = None;
     if let Some(window) = shell.window.upgrade() {
+        let was_open = window.get_is_server_settings_open();
         window.set_is_server_settings_open(false);
+        // Slint's own close moves the focus itself; this covers a guild that disappeared.
+        if was_open && window.get_is_signed_in() {
+            window.invoke_restore_focus_after_server_settings();
+        }
     }
 }
 
@@ -90,25 +106,32 @@ pub(super) fn refresh(shell: &mut LiveShell) {
         .and_then(|id| guild.roles.iter().find(|role| role.id == id))
         .or_else(|| default_selected_role(guild, &manager));
     let selected_role_id = selected_role.map(|role| role.id);
-    let draft = editor
-        .draft
-        .clone()
+    // Rebased on the stored role, so changes made meanwhile by someone else show and are kept.
+    let edit = editor
+        .edit
+        .as_ref()
         .filter(|_| selected_role_id == editor.selected_role_id)
-        .filter(|draft| selected_role.is_some_and(|role| *draft != RoleDraft::from(role)));
-    let is_busy = editor.is_busy;
+        .zip(selected_role)
+        .and_then(|(edit, role)| edit.rebased_on(role));
+    let is_editable = selected_role.is_some_and(|role| manager.can_manage_role(role, guild.id));
+    // A role that became locked (moved above the member's rank) cannot be saved any more.
+    let edit = edit.filter(|_| is_editable);
+    let is_busy = shell.is_role_request_in_flight;
 
     let Some(window) = shell.window.upgrade() else {
         return;
     };
-    window.set_server_settings_roles(ModelRc::new(VecModel::from(rows)));
+    update_rows_in_place(&editor.role_rows, rows);
     window.set_can_create_roles(manager.can_create_roles());
     window.set_selected_role_index(
         selected_role_id
             .and_then(|id| displayed_role_ids.iter().position(|shown| *shown == id))
             .map_or(NO_ROW, shell_rows::saturating_int),
     );
-    let is_editable = selected_role.is_some_and(|role| manager.can_manage_role(role, guild.id));
-    let shown = draft.clone().or_else(|| selected_role.map(RoleDraft::from));
+    let shown = edit
+        .as_ref()
+        .map(|edit| edit.draft.clone())
+        .or_else(|| selected_role.map(RoleDraft::from));
     if let Some(shown) = &shown {
         // Rewriting the field while it is typed in would move the cursor.
         if window.get_role_draft_name().as_str() != shown.name {
@@ -117,7 +140,8 @@ pub(super) fn refresh(shell: &mut LiveShell) {
         window.set_role_draft_color(role_settings::rgb_color(shown.color));
         window.set_role_draft_has_color(shown.color != role_settings::NO_ROLE_COLOR);
     }
-    window.set_role_permission_rows(ModelRc::new(VecModel::from(
+    update_rows_in_place(
+        &editor.permission_rows,
         role_settings::permission_rows(
             shown
                 .as_ref()
@@ -126,15 +150,28 @@ pub(super) fn refresh(shell: &mut LiveShell) {
             &manager,
             is_editable,
         ),
-    )));
+    );
     window.set_is_role_draft_editable(is_editable);
-    window.set_has_unsaved_role_changes(draft.is_some());
+    window.set_has_unsaved_role_changes(edit.is_some());
     window.set_is_role_action_busy(is_busy);
 
     if let Some(editor) = shell.role_editor.as_mut() {
         editor.displayed_role_ids = displayed_role_ids;
         editor.selected_role_id = selected_role_id;
-        editor.draft = draft;
+        editor.edit = edit;
+    }
+}
+
+/// Rewrites only the rows that changed; the model is reset only when the row count changes.
+fn update_rows_in_place<Row: Clone + PartialEq + 'static>(model: &VecModel<Row>, rows: Vec<Row>) {
+    if model.row_count() != rows.len() {
+        model.set_vec(rows);
+        return;
+    }
+    for (index, row) in rows.into_iter().enumerate() {
+        if model.row_data(index).as_ref() != Some(&row) {
+            model.set_row_data(index, row);
+        }
     }
 }
 
@@ -147,8 +184,8 @@ fn default_selected_role<'a>(guild: &'a Guild, manager: &RoleManager) -> Option<
         .copied()
 }
 
-/// The selected role and its manager, with the draft (or the stored values) to edit.
-fn editable_selection(shell: &LiveShell) -> Option<(Snowflake, Role, RoleManager, RoleDraft)> {
+/// The selected role and its manager, with the pending edit (or a fresh one) on top of it.
+fn editable_selection(shell: &LiveShell) -> Option<(Snowflake, Role, RoleManager, RoleEdit)> {
     let editor = shell.role_editor.as_ref()?;
     let guild = shell.state.guild(editor.guild_id)?;
     let manager = RoleManager::of_member(guild, shell.state.current_user()?.id);
@@ -156,20 +193,21 @@ fn editable_selection(shell: &LiveShell) -> Option<(Snowflake, Role, RoleManager
         .roles
         .iter()
         .find(|role| Some(role.id) == editor.selected_role_id)?;
-    if editor.is_busy || !manager.can_manage_role(role, guild.id) {
+    if shell.is_role_request_in_flight || !manager.can_manage_role(role, guild.id) {
         return None;
     }
-    let draft = editor
-        .draft
-        .clone()
-        .unwrap_or_else(|| RoleDraft::from(role));
-    Some((guild.id, role.clone(), manager, draft))
+    let edit = editor
+        .edit
+        .as_ref()
+        .and_then(|edit| edit.rebased_on(role))
+        .unwrap_or_else(|| RoleEdit::start(role));
+    Some((guild.id, role.clone(), manager, edit))
 }
 
-fn set_draft(shell: &SharedShell, draft: RoleDraft) {
+fn set_edit(shell: &SharedShell, edit: RoleEdit) {
     let mut shell = shell.borrow_mut();
     if let Some(editor) = shell.role_editor.as_mut() {
-        editor.draft = Some(draft);
+        editor.edit = Some(edit);
     }
     if let Some(window) = shell.window.upgrade() {
         window.set_role_action_error(SharedString::default());
@@ -179,18 +217,19 @@ fn set_draft(shell: &SharedShell, draft: RoleDraft) {
 
 pub(super) fn select_role(shell: &SharedShell, row_index: i32) {
     let mut shell = shell.borrow_mut();
+    let is_busy = shell.is_role_request_in_flight;
     let Some(editor) = shell.role_editor.as_mut() else {
         return;
     };
     let Some(role_id) = role_id_at_row(&editor.displayed_role_ids, row_index) else {
         return;
     };
-    if editor.is_busy || editor.selected_role_id == Some(role_id) {
+    if is_busy || editor.selected_role_id == Some(role_id) {
         return;
     }
-    // Slint refuses to switch while there are unsaved changes; this only drops a stale draft.
+    // Slint refuses to switch while there are unsaved changes; this only drops a stale edit.
     editor.selected_role_id = Some(role_id);
-    editor.draft = None;
+    editor.edit = None;
     if let Some(window) = shell.window.upgrade() {
         window.set_role_action_error(SharedString::default());
     }
@@ -205,42 +244,42 @@ pub(super) fn edit_draft_name(shell: &SharedShell) {
         };
         window.get_role_draft_name().to_string()
     };
-    let Some((_, role, _, mut draft)) = editable_selection(&shell.borrow()) else {
+    let Some((_, role, _, mut edit)) = editable_selection(&shell.borrow()) else {
         return;
     };
     if is_everyone_role(&shell.borrow(), role.id) {
         return;
     }
-    draft.name = name;
-    set_draft(shell, draft);
+    edit.draft.name = name;
+    set_edit(shell, edit);
 }
 
 pub(super) fn choose_color(shell: &SharedShell, preset_index: i32) {
-    let Some((_, role, _, mut draft)) = editable_selection(&shell.borrow()) else {
+    let Some((_, role, _, mut edit)) = editable_selection(&shell.borrow()) else {
         return;
     };
     if is_everyone_role(&shell.borrow(), role.id) {
         return;
     }
-    draft.color = role_color_at_preset(preset_index);
-    set_draft(shell, draft);
+    edit.draft.color = role_color_at_preset(preset_index);
+    set_edit(shell, edit);
 }
 
 pub(super) fn toggle_permission(shell: &SharedShell, row_index: i32) {
-    let Some((_, _, manager, mut draft)) = editable_selection(&shell.borrow()) else {
+    let Some((_, _, manager, mut edit)) = editable_selection(&shell.borrow()) else {
         return;
     };
     let Some(permission) = role_settings::toggleable_permission_at_row(row_index, &manager) else {
         return;
     };
-    draft.permissions.toggle(permission);
-    set_draft(shell, draft);
+    edit.draft.permissions.toggle(permission);
+    set_edit(shell, edit);
 }
 
 pub(super) fn reset_changes(shell: &SharedShell) {
     let mut shell = shell.borrow_mut();
     if let Some(editor) = shell.role_editor.as_mut() {
-        editor.draft = None;
+        editor.edit = None;
     }
     if let Some(window) = shell.window.upgrade() {
         window.set_role_action_error(SharedString::default());
@@ -249,18 +288,18 @@ pub(super) fn reset_changes(shell: &SharedShell) {
 }
 
 pub(super) fn save_changes(shell: &SharedShell) {
-    let Some((guild_id, role, _, draft)) = editable_selection(&shell.borrow()) else {
+    let Some((guild_id, role, _, edit)) = editable_selection(&shell.borrow()) else {
         return;
     };
     let is_everyone = role.id == guild_id;
-    let request = match role_settings::update_role_request(&role, &draft, is_everyone) {
+    let request = match role_settings::update_role_request(&role, &edit.draft, is_everyone) {
         Ok(request) => request,
         Err(RoleDraftError::EmptyName) => {
             show_error(shell, "Role not saved: give it a name.");
             return;
         }
     };
-    let Some(rest) = begin_request(shell) else {
+    let Some((rest, roles_before)) = begin_request(shell, guild_id) else {
         return;
     };
     let role_id = role.id;
@@ -269,8 +308,11 @@ pub(super) fn save_changes(shell: &SharedShell) {
         finish_request(shell);
         match result {
             Ok(updated) => {
-                // The draft now matches the stored role, so `refresh` drops it.
-                apply_roles(shell, guild_id, |roles| {
+                // Rebasing the saved edit on the updated role would toggle its bits back.
+                if let Some(editor) = shell.borrow_mut().role_editor.as_mut() {
+                    editor.edit = None;
+                }
+                apply_roles(shell, guild_id, &roles_before, |roles| {
                     if let Some(stored) = roles.iter_mut().find(|role| role.id == updated.id) {
                         *stored = updated;
                     }
@@ -287,12 +329,12 @@ pub(super) fn create_role(shell: &SharedShell) {
         let Some(editor) = shell.role_editor.as_ref() else {
             return;
         };
-        if editor.is_busy || editor.draft.is_some() {
+        if shell.is_role_request_in_flight || editor.edit.is_some() {
             return;
         }
         editor.guild_id
     };
-    let Some(rest) = begin_request(shell) else {
+    let Some((rest, roles_before)) = begin_request(shell, guild_id) else {
         return;
     };
     let request = async move {
@@ -306,9 +348,9 @@ pub(super) fn create_role(shell: &SharedShell) {
                 let created_id = created.id;
                 if let Some(editor) = shell.borrow_mut().role_editor.as_mut() {
                     editor.selected_role_id = Some(created_id);
-                    editor.draft = None;
+                    editor.edit = None;
                 }
-                apply_roles(shell, guild_id, |roles| {
+                apply_roles(shell, guild_id, &roles_before, |roles| {
                     if !roles.iter().any(|role| role.id == created_id) {
                         roles.push(created);
                     }
@@ -328,19 +370,19 @@ pub(super) fn delete_role(shell: &SharedShell, row_index: i32) {
         let Some(role_id) = role_id_at_row(&editor.displayed_role_ids, row_index) else {
             return;
         };
-        if editor.is_busy || role_id == editor.guild_id {
+        if shell.is_role_request_in_flight || role_id == editor.guild_id {
             return;
         }
         (editor.guild_id, role_id)
     };
-    let Some(rest) = begin_request(shell) else {
+    let Some((rest, roles_before)) = begin_request(shell, guild_id) else {
         return;
     };
     let request = async move { rest.delete_role(guild_id, role_id).await };
     run_request(shell, request, move |shell, result| {
         finish_request(shell);
         match result {
-            Ok(()) => apply_roles(shell, guild_id, |roles| {
+            Ok(()) => apply_roles(shell, guild_id, &roles_before, |roles| {
                 roles.retain(|role| role.id != role_id);
             }),
             Err(error) => report_error(shell, &error, "delete role", "Role not deleted"),
@@ -354,7 +396,7 @@ pub(super) fn move_role(shell: &SharedShell, row_index: i32, direction: MoveDire
         let Some(editor) = shell.role_editor.as_ref() else {
             return;
         };
-        if editor.is_busy {
+        if shell.is_role_request_in_flight {
             return;
         }
         let Some(guild) = shell.state.guild(editor.guild_id) else {
@@ -367,7 +409,7 @@ pub(super) fn move_role(shell: &SharedShell, row_index: i32, direction: MoveDire
         };
         (guild.id, role_ids)
     };
-    let Some(rest) = begin_request(shell) else {
+    let Some((rest, roles_before)) = begin_request(shell, guild_id) else {
         return;
     };
     let request = async move {
@@ -377,7 +419,7 @@ pub(super) fn move_role(shell: &SharedShell, row_index: i32, direction: MoveDire
     run_request(shell, request, move |shell, result| {
         finish_request(shell);
         match result {
-            Ok(roles) => apply_roles(shell, guild_id, |current| *current = roles),
+            Ok(roles) => apply_roles(shell, guild_id, &roles_before, |current| *current = roles),
             Err(error) => report_error(shell, &error, "reorder roles", "Roles not reordered"),
         }
     });
@@ -396,37 +438,51 @@ fn is_everyone_role(shell: &LiveShell, role_id: Snowflake) -> bool {
         .is_some_and(|editor| editor.guild_id == role_id)
 }
 
-/// Marks the editor busy and clears the previous error; `None` when signed out.
-fn begin_request(shell: &SharedShell) -> Option<mellow_client_core::RestClient> {
+/// Marks a role request in flight and clears the previous error; answers the guild's roles as
+/// they are now, for `apply_roles`. `None` when signed out.
+fn begin_request(
+    shell: &SharedShell,
+    guild_id: Snowflake,
+) -> Option<(mellow_client_core::RestClient, Vec<Role>)> {
     let rest = authenticated_rest(shell)?;
     let mut shell = shell.borrow_mut();
-    if let Some(editor) = shell.role_editor.as_mut() {
-        editor.is_busy = true;
-    }
+    let roles_before = shell
+        .state
+        .guild(guild_id)
+        .map(|guild| guild.roles.clone())
+        .unwrap_or_default();
+    // On the shell, not the editor: closing and reopening settings must not start a second one.
+    shell.is_role_request_in_flight = true;
     if let Some(window) = shell.window.upgrade() {
         window.set_role_action_error(SharedString::default());
         window.set_is_role_action_busy(true);
     }
-    Some(rest)
+    Some((rest, roles_before))
 }
 
 fn finish_request(shell: &SharedShell) {
     let mut shell = shell.borrow_mut();
-    if let Some(editor) = shell.role_editor.as_mut() {
-        editor.is_busy = false;
-    }
+    shell.is_role_request_in_flight = false;
     if let Some(window) = shell.window.upgrade() {
         window.set_is_role_action_busy(false);
     }
 }
 
 /// The gateway sends the same `GUILD_ROLES_UPDATE`; applying it now shows the change at once.
-fn apply_roles(shell: &SharedShell, guild_id: Snowflake, change: impl FnOnce(&mut Vec<Role>)) {
+/// Skipped when the roles changed since the request started: the gateway was then faster, and
+/// the answer would overwrite a newer state with no later event to correct it.
+fn apply_roles(
+    shell: &SharedShell,
+    guild_id: Snowflake,
+    roles_before: &[Role],
+    change: impl FnOnce(&mut Vec<Role>),
+) {
     let Some(mut roles) = shell
         .borrow()
         .state
         .guild(guild_id)
         .map(|guild| guild.roles.clone())
+        .filter(|current| current == roles_before)
     else {
         return;
     };
@@ -467,7 +523,7 @@ fn role_action_error_text(error: &ClientError, summary: &str) -> String {
         ClientError::Api {
             code: ApiErrorCode::ValidationFailed,
             ..
-        } => "the name is not valid (empty or longer than 100 characters).",
+        } => "the instance refused it (a name empty or longer than 100 characters?).",
         ClientError::Api {
             code: ApiErrorCode::Conflict,
             ..

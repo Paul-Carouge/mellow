@@ -306,6 +306,54 @@ impl From<&Role> for RoleDraft {
     }
 }
 
+/// What the user changed, on top of the role as it was when they changed it.
+///
+/// Kept apart from the stored role so that a change arriving meanwhile (another manager
+/// revoking a permission) is never undone by saving an older copy of the role.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleEdit {
+    base: RoleDraft,
+    pub draft: RoleDraft,
+}
+
+impl RoleEdit {
+    pub fn start(role: &Role) -> Self {
+        let base = RoleDraft::from(role);
+        Self {
+            draft: base.clone(),
+            base,
+        }
+    }
+
+    /// The same changes on top of `stored`; `None` once they no longer differ from it.
+    pub fn rebased_on(&self, stored: &Role) -> Option<Self> {
+        let stored = RoleDraft::from(stored);
+        let draft = RoleDraft {
+            name: if self.draft.name == self.base.name {
+                stored.name.clone()
+            } else {
+                self.draft.name.clone()
+            },
+            color: if self.draft.color == self.base.color {
+                stored.color
+            } else {
+                self.draft.color
+            },
+            // Only the toggled bits; unknown bits of a newer server stay as stored.
+            permissions: stored.permissions ^ (self.draft.permissions ^ self.base.permissions),
+        };
+        // The server trims names, so trailing spaces alone are not a change.
+        let draft_as_saved = RoleDraft {
+            name: draft.name.trim().to_owned(),
+            ..draft.clone()
+        };
+        (draft_as_saved != stored).then_some(Self {
+            base: stored,
+            draft,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoleDraftError {
     EmptyName,
@@ -578,6 +626,55 @@ mod tests {
                 ..UpdateRoleRequest::default()
             })
         );
+    }
+
+    #[test]
+    fn an_edit_keeps_changes_made_meanwhile_by_someone_else() {
+        let before = role(
+            HELPERS,
+            "Helpers",
+            1,
+            Permissions::KICK_MEMBERS | Permissions::BAN_MEMBERS,
+        );
+        let mut edit = RoleEdit::start(&before);
+        edit.draft.name = "Guides".to_owned();
+        edit.draft.permissions.toggle(Permissions::MANAGE_MESSAGES);
+        // Another manager revokes Ban members before the save.
+        let stored = role(HELPERS, "Helpers", 1, Permissions::KICK_MEMBERS);
+        let rebased = edit
+            .rebased_on(&stored)
+            .expect("the rename is still pending");
+        assert_eq!(rebased.draft.name, "Guides");
+        assert_eq!(
+            rebased.draft.permissions,
+            Permissions::KICK_MEMBERS | Permissions::MANAGE_MESSAGES
+        );
+        let request = update_role_request(&stored, &rebased.draft, false);
+        assert_eq!(
+            request.map(|request| request.permissions),
+            Ok(Some(
+                Permissions::KICK_MEMBERS | Permissions::MANAGE_MESSAGES
+            ))
+        );
+
+        let mut rename_only = RoleEdit::start(&before);
+        rename_only.draft.name = "Guides".to_owned();
+        let rebased = rename_only
+            .rebased_on(&stored)
+            .expect("the rename is pending");
+        assert_eq!(
+            update_role_request(&stored, &rebased.draft, false),
+            Ok(UpdateRoleRequest {
+                name: Some("Guides".to_owned()),
+                ..UpdateRoleRequest::default()
+            })
+        );
+        // Once the stored role carries the same change, nothing is left to save.
+        let renamed = role(HELPERS, "Guides", 1, Permissions::KICK_MEMBERS);
+        assert_eq!(rebased.rebased_on(&renamed), None);
+        let mut trailing_space = RoleEdit::start(&renamed);
+        trailing_space.draft.name = "Guides ".to_owned();
+        assert_eq!(trailing_space.rebased_on(&renamed), None);
     }
 
     #[test]
