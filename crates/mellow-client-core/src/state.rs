@@ -242,6 +242,21 @@ impl ClientState {
     pub fn apply_ready(&mut self, ready: Ready) -> StateChange {
         let mut pending_messages = std::mem::take(&mut self.pending_messages);
         let mut direct_message_channels = ready.direct_message_channels;
+        // `Ready` lists only conversations with a message: one opened here whose first message
+        // is still unsent must stay, or its text would be lost.
+        let previous_direct_message_channels = std::mem::take(&mut self.direct_message_channels);
+        for previous in previous_direct_message_channels {
+            let has_pending_message = pending_messages
+                .iter()
+                .any(|pending| pending.channel_id == previous.id);
+            if has_pending_message
+                && !direct_message_channels
+                    .iter()
+                    .any(|channel| channel.id == previous.id)
+            {
+                direct_message_channels.push(previous);
+            }
+        }
         sort_by_last_activity(&mut direct_message_channels);
         *self = Self {
             current_user: Some(ready.user),
@@ -1493,5 +1508,30 @@ mod tests {
             state.direct_message_channels()[0].recipients[0].display_name,
             "Renamed"
         );
+    }
+
+    #[test]
+    fn an_empty_conversation_with_an_unsent_message_survives_ready() {
+        let mut state = ready_state();
+        let empty = conversation(300, OTHER, None);
+        let abandoned = conversation(400, Snowflake::from_raw(3), None);
+        state.upsert_direct_message_channel(empty.clone());
+        state.upsert_direct_message_channel(abandoned);
+        state.queue_message(empty.id, "first".into(), None, "n".into());
+        let user = state.current_user().cloned().unwrap();
+        let guilds = state.guilds().to_vec();
+        state.apply_ready(Ready {
+            session_id: "s2".into(),
+            user,
+            guilds,
+            read_states: Vec::new(),
+            online_user_ids: Vec::new(),
+            direct_message_channels: Vec::new(),
+        });
+        assert_eq!(
+            state.direct_message_channels(),
+            std::slice::from_ref(&empty)
+        );
+        assert_eq!(state.pending_messages(empty.id).count(), 1);
     }
 }

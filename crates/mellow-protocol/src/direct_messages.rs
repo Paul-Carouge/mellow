@@ -1,4 +1,4 @@
-//! Direct messages (ARCHITECTURE.md §4.3): a conversation is a channel outside any guild, whose
+//! Direct messages (ARCHITECTURE.md §4.5): a conversation is a channel outside any guild, whose
 //! messages go through the same `/channels/{id}/messages` routes as guild channels.
 
 use serde::{Deserialize, Serialize};

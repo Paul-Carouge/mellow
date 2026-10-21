@@ -15,8 +15,9 @@ use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::http::authentication::AuthenticatedUser;
 use crate::http::rate_limit::{
-    DIRECT_MESSAGE_OPENS_PER_USER, MESSAGE_WRITES_PER_USER, MESSAGE_WRITES_PER_USER_PER_HOUR,
-    MESSAGES_PER_CHANNEL, READ_STATE_WRITES_PER_USER, TYPING_INDICATORS_PER_USER,
+    DIRECT_MESSAGE_OPENS_PER_USER, DIRECT_MESSAGE_OPENS_PER_USER_PER_DAY, MESSAGE_WRITES_PER_USER,
+    MESSAGE_WRITES_PER_USER_PER_HOUR, MESSAGES_PER_CHANNEL, READ_STATE_WRITES_PER_USER,
+    TYPING_INDICATORS_PER_USER,
 };
 
 /// Send, edit and delete share the per-user budgets (burst and hourly).
@@ -45,11 +46,18 @@ pub(crate) async fn open_direct_message(
     AuthenticatedUser(user): AuthenticatedUser,
     ApiJson(request): ApiJson<OpenDirectMessageRequest>,
 ) -> Result<Json<DirectMessageChannel>, ApiError> {
-    if !state.rate_limiter.record_event(
+    let now = Instant::now();
+    let within_burst = state.rate_limiter.record_event(
         &format!("direct-message-open:{}", user.id),
         DIRECT_MESSAGE_OPENS_PER_USER,
-        Instant::now(),
-    ) {
+        now,
+    );
+    let within_day = state.rate_limiter.record_event(
+        &format!("direct-message-open-day:{}", user.id),
+        DIRECT_MESSAGE_OPENS_PER_USER_PER_DAY,
+        now,
+    );
+    if !(within_burst && within_day) {
         return Err(ApiError::rate_limited());
     }
     Ok(Json(

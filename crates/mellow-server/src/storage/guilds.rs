@@ -40,7 +40,7 @@ pub(crate) fn to_integer(value: u64) -> Result<i64, GuildStorageError> {
 }
 
 /// For lookups: an id SQLite cannot hold cannot exist, so it is simply not found.
-fn lookup_integer(id: Snowflake) -> Option<i64> {
+pub(crate) fn lookup_integer(id: Snowflake) -> Option<i64> {
     i64::try_from(id.raw()).ok()
 }
 

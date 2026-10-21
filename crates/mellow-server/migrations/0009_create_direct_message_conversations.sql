@@ -1,4 +1,4 @@
--- Direct-message conversations (ARCHITECTURE.md §4.3): a channel without a guild, of kind
+-- Direct-message conversations (ARCHITECTURE.md §4.5): a channel without a guild, of kind
 -- 'direct_message', whose participants are listed here. Its messages and read states use the
 -- existing tables.
 CREATE TABLE direct_message_participants (

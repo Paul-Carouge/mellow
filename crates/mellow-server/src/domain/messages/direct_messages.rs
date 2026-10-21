@@ -1,4 +1,4 @@
-//! Direct-message conversations (ARCHITECTURE.md §4.3): opening one, listing them, and telling a
+//! Direct-message conversations (ARCHITECTURE.md §4.5): opening one, listing them, and telling a
 //! participant about a conversation before its first message reaches them.
 
 use mellow_protocol::{
@@ -31,7 +31,8 @@ fn channel_from_stored(stored: StoredDirectMessageChannel) -> DirectMessageChann
 impl Messages {
     /// The one-to-one conversation with the recipient, opened if needed. Only with someone who
     /// shares a guild with the caller, so accounts cannot be found or spammed by id; anyone else
-    /// is `NotFound`, like an unknown user. Only the caller hears of a new conversation now; the
+    /// is `NotFound`, like an unknown user. Writing there keeps needing a shared guild
+    /// (`direct_message_permissions`). Only the caller hears of a new conversation now; the
     /// recipient does with its first message.
     pub(crate) async fn open_direct_message(
         &self,
@@ -95,22 +96,51 @@ async fn conversation_seen_by(
         .map(channel_from_stored))
 }
 
-/// Before the first message of a conversation, each other participant receives the conversation
-/// itself, as they see it, so their client can show the message.
-pub(super) async fn announce_conversation_to_recipients(
+/// Whether `user_id` shares a guild with every other participant: writing needs it.
+pub(super) async fn shares_a_guild_with_each(
     pool: &SqlitePool,
-    guilds: &Guilds,
-    author_id: Snowflake,
-    channel_id: Snowflake,
+    user_id: Snowflake,
     participant_ids: &[Snowflake],
-) -> Result<(), MessageError> {
-    for participant_id in participant_ids.iter().filter(|id| **id != author_id) {
-        if let Some(channel) = conversation_seen_by(pool, *participant_id, channel_id).await? {
-            guilds.publish_to_users(
-                &[*participant_id],
-                &GatewayEvent::DirectMessageChannelCreate(channel),
-            );
+) -> Result<bool, MessageError> {
+    for other_id in participant_ids.iter().filter(|id| **id != user_id) {
+        if !storage::share_a_guild(pool, user_id, *other_id)
+            .await
+            .map_err(GuildError::from)?
+        {
+            return Ok(false);
         }
     }
-    Ok(())
+    Ok(true)
+}
+
+/// The conversation as each participant sees it, for `announce_conversation`.
+pub(super) async fn conversation_views(
+    pool: &SqlitePool,
+    channel_id: Snowflake,
+    participant_ids: &[Snowflake],
+) -> Result<Vec<(Snowflake, DirectMessageChannel)>, MessageError> {
+    let mut views = Vec::with_capacity(participant_ids.len());
+    for participant_id in participant_ids {
+        if let Some(view) = conversation_seen_by(pool, *participant_id, channel_id).await? {
+            views.push((*participant_id, view));
+        }
+    }
+    Ok(views)
+}
+
+/// Right before the first message, every participant receives the conversation as they see it:
+/// the recipient to show the message, the author's other sessions too, since `Ready` lists only
+/// conversations with a message.
+pub(super) fn announce_conversation(
+    guilds: &Guilds,
+    views: Vec<(Snowflake, DirectMessageChannel)>,
+    first_message_id: Snowflake,
+) {
+    for (participant_id, mut view) in views {
+        view.last_message_id = Some(first_message_id);
+        guilds.publish_to_users(
+            &[participant_id],
+            &GatewayEvent::DirectMessageChannelCreate(view),
+        );
+    }
 }

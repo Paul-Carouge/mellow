@@ -3,14 +3,11 @@
 use mellow_protocol::Snowflake;
 use sqlx::SqlitePool;
 
-use crate::storage::guilds::{BEGIN_WRITE_TRANSACTION, GuildStorageError, to_id, to_integer};
+use crate::storage::guilds::{
+    BEGIN_WRITE_TRANSACTION, GuildStorageError, lookup_integer, to_id, to_integer,
+};
 
 const DIRECT_MESSAGE_CHANNEL_KIND: &str = "direct_message";
-
-/// For lookups: an id SQLite cannot hold cannot exist.
-fn lookup_integer(id: Snowflake) -> Option<i64> {
-    i64::try_from(id.raw()).ok()
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoredRecipient {
@@ -162,6 +159,10 @@ pub(crate) async fn find_or_create_one_to_one(
     let lower = to_integer(lower.raw())?;
     let higher = to_integer(higher.raw())?;
     let channel_id = to_integer(new_channel_id.raw())?;
+    // The common case, reopening, takes no write lock.
+    if let Some(existing) = find_pair(pool, lower, higher).await? {
+        return Ok((existing, false));
+    }
     let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
     sqlx::query(
         "INSERT INTO channels (id, guild_id, kind, name, topic, parent_id, position) \
@@ -184,15 +185,10 @@ pub(crate) async fn find_or_create_one_to_one(
     if inserted == 0 {
         // Already there: drop the channel inserted above with the transaction.
         transaction.rollback().await?;
-        let (existing,): (i64,) = sqlx::query_as(
-            "SELECT channel_id FROM direct_message_pairs \
-             WHERE lower_user_id = ? AND higher_user_id = ?",
-        )
-        .bind(lower)
-        .bind(higher)
-        .fetch_one(pool)
-        .await?;
-        return Ok((to_id(existing)?, false));
+        let existing = find_pair(pool, lower, higher)
+            .await?
+            .ok_or(GuildStorageError::Database(sqlx::Error::RowNotFound))?;
+        return Ok((existing, false));
     }
     for participant in [lower, higher] {
         sqlx::query("INSERT INTO direct_message_participants (channel_id, user_id) VALUES (?, ?)")
@@ -203,4 +199,19 @@ pub(crate) async fn find_or_create_one_to_one(
     }
     transaction.commit().await?;
     Ok((new_channel_id, true))
+}
+
+async fn find_pair(
+    pool: &SqlitePool,
+    lower: i64,
+    higher: i64,
+) -> Result<Option<Snowflake>, GuildStorageError> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT channel_id FROM direct_message_pairs WHERE lower_user_id = ? AND higher_user_id = ?",
+    )
+    .bind(lower)
+    .bind(higher)
+    .fetch_optional(pool)
+    .await?;
+    row.map(|(channel_id,)| to_id(channel_id)).transpose()
 }

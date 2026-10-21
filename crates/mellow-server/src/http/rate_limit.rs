@@ -103,6 +103,11 @@ pub(crate) const DIRECT_MESSAGE_OPENS_PER_USER: RateLimit = RateLimit {
     maximum_events: 10,
     window: Duration::from_secs(60),
 };
+/// The daily ceiling behind it: every new conversation is a stored channel, kept for good.
+pub(crate) const DIRECT_MESSAGE_OPENS_PER_USER_PER_DAY: RateLimit = RateLimit {
+    maximum_events: 200,
+    window: Duration::from_hours(24),
+};
 
 /// Typing indicators per user; clients send one every few seconds while typing.
 pub(crate) const TYPING_INDICATORS_PER_USER: RateLimit = RateLimit {
