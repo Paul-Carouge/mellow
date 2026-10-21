@@ -5,6 +5,8 @@
   import type { Snowflake } from "../lib/protocol";
   import { serverInitials } from "./format";
   import Icon from "./Icon.svelte";
+  import Melli from "./Melli.svelte";
+  import { homeMelliState } from "./melli";
 
   // Discord's server rail (DESIGN.md §5.2): Home, a separator, the servers, then "Add a server".
   // Icons morph from circle to squircle on hover, focus and selection; the pill at the leading
@@ -36,7 +38,7 @@
   const hasUnreadConversation = $derived(client.conversations.some((conversation) => client.hasUnread(conversation.id)));
 </script>
 
-{#snippet railItem(label: string, isSelected: boolean, hasUnread: boolean, onclick: (event: MouseEvent) => void, content: Snippet, isAction: boolean)}
+{#snippet railItem(label: string, isSelected: boolean, hasUnread: boolean, onclick: (event: MouseEvent) => void, content: Snippet, kind: "home" | "server" | "action")}
   <li class="group relative flex h-(--mw-component-rail-item-size) w-full justify-center">
     <span
       aria-hidden="true"
@@ -59,7 +61,11 @@
         isSelected
           ? "rounded-(--mw-component-rail-icon-radius-active)"
           : "rounded-(--mw-component-rail-icon-radius-rest) hover:rounded-(--mw-component-rail-icon-radius-active) focus-visible:rounded-(--mw-component-rail-icon-radius-active)",
-        isAction
+        kind === "home"
+          ? isSelected
+            ? "bg-(--mw-component-rail-icon-background-active)"
+            : "bg-(--mw-component-rail-home-background-rest) hover:bg-(--mw-component-rail-icon-background-active) focus-visible:bg-(--mw-component-rail-icon-background-active)"
+          : kind === "action"
           ? "bg-(--mw-component-rail-icon-background-rest) text-(--mw-component-rail-add-icon) hover:bg-(--mw-component-rail-add-background-hover) hover:text-(--mw-component-rail-add-icon-hover) focus-visible:bg-(--mw-component-rail-add-background-hover) focus-visible:text-(--mw-component-rail-add-icon-hover)"
           : isSelected
             ? "bg-(--mw-component-rail-icon-background-active) text-(--mw-component-rail-icon-text-active)"
@@ -86,8 +92,8 @@
 {/snippet}
 
 {#snippet homeMark()}
-  <!-- Stands in for the Mellow logo, still to be designed (DESIGN.md §9). -->
-  <span aria-hidden="true" class="type-heading-lg">M</span>
+  <!-- The button paints Melli's tile, so it morphs and turns apricot like the other icons. -->
+  <Melli state={homeMelliState(client.status, hasUnreadConversation)} sizeToken="--mw-component-rail-item-size" hasTile={false} />
 {/snippet}
 
 {#snippet addIcon()}
@@ -99,16 +105,16 @@
   class="h-full w-(--mw-component-rail-width) shrink-0 overflow-x-hidden overflow-y-auto bg-(--mw-component-rail-background) [scrollbar-width:none]"
 >
   <ul class="flex flex-col items-center gap-(--mw-component-rail-item-gap) pt-(--mw-component-rail-padding-top) pb-(--mw-component-rail-item-gap)">
-    {@render railItem("Direct messages", isHomeSelected, hasUnreadConversation, () => select(null), homeMark, false)}
+    {@render railItem("Direct messages", isHomeSelected, hasUnreadConversation, () => select(null), homeMark, "home")}
     <li aria-hidden="true" class="h-(--mw-size-rail-separator-height) w-(--mw-size-rail-separator-width) rounded-full bg-(--mw-component-rail-separator-color)"></li>
     {#each client.guilds as guild (guild.id)}
       {@const hasUnread = guild.channels.some((channel) => client.hasUnread(channel.id))}
       {#snippet initials()}
         <span aria-hidden="true" class="type-body font-medium">{serverInitials(guild.name)}</span>
       {/snippet}
-      {@render railItem(guild.name, client.selectedGuildId === guild.id, hasUnread, () => select(guild.id), initials, false)}
+      {@render railItem(guild.name, client.selectedGuildId === guild.id, hasUnread, () => select(guild.id), initials, "server")}
     {/each}
-    {@render railItem("Add a server", false, false, onaddserver, addIcon, true)}
+    {@render railItem("Add a server", false, false, onaddserver, addIcon, "action")}
   </ul>
 </nav>
 
