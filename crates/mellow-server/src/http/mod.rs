@@ -13,8 +13,10 @@ pub(crate) mod web_client;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::State;
-use axum::http::StatusCode;
+use axum::extract::{Request, State};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::middleware::{self, Next};
+use axum::response::Response;
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use ipnet::IpNet;
@@ -183,7 +185,34 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/gateway", get(crate::gateway::upgrade))
         .fallback(web_client::serve)
         .method_not_allowed_fallback(|| async { api_error::ApiError::method_not_allowed() })
+        .layer(middleware::from_fn(mark_api_responses_private))
         .with_state(state)
+}
+
+/// A shared cache must never keep a user's answer: unlike `Authorization`, a session cookie does
+/// not stop caches from storing a response (RFC 9111 §3.5).
+async fn mark_api_responses_private(request: Request, next: Next) -> Response {
+    let is_api = request.uri().path().starts_with("/api/");
+    let mut response = next.run(request).await;
+    if is_api {
+        let headers = response.headers_mut();
+        headers
+            .entry(header::CACHE_CONTROL)
+            .or_insert(HeaderValue::from_static("no-store"));
+        headers.append(header::VARY, HeaderValue::from_static("Cookie"));
+    }
+    response
+}
+
+/// With built-in TLS, browsers must never come back over plain HTTP: a network attacker would
+/// answer there in the instance's name (ADR-0019). Behind a reverse proxy, the proxy sends it.
+async fn require_https_from_now_on(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        header::STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static("max-age=31536000"),
+    );
+    response
 }
 
 /// What `axum::serve` needs: the router plus the peer address of each connection (for rate limits).
@@ -191,6 +220,15 @@ pub(crate) fn make_service(
     state: AppState,
 ) -> axum::extract::connect_info::IntoMakeServiceWithConnectInfo<Router, SocketAddr> {
     router(state).into_make_service_with_connect_info::<SocketAddr>()
+}
+
+/// `make_service` for the built-in TLS listener: every answer carries HSTS.
+pub(crate) fn make_tls_service(
+    state: AppState,
+) -> axum::extract::connect_info::IntoMakeServiceWithConnectInfo<Router, SocketAddr> {
+    router(state)
+        .layer(middleware::from_fn(require_https_from_now_on))
+        .into_make_service_with_connect_info::<SocketAddr>()
 }
 
 /// Healthy only if the database answers, so a monitor sees a broken disk or key, not just a live process.
@@ -223,7 +261,7 @@ async fn health(State(state): State<AppState>) -> (StatusCode, Json<HealthRespon
 pub(crate) mod tests {
     use axum::body::Body;
     use axum::extract::connect_info::MockConnectInfo;
-    use axum::http::{HeaderMap, HeaderValue, Request, header};
+    use axum::http::HeaderMap;
     use mellow_protocol::{ApiErrorBody, ApiErrorCode, CurrentUser, SessionCreated, Snowflake};
     use serde::de::DeserializeOwned;
     use tower::ServiceExt as _;
@@ -420,6 +458,36 @@ pub(crate) mod tests {
                 .contains("Max-Age=0")
         );
         assert_eq!(after_logout, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn api_answers_are_private_and_the_tls_listener_adds_hsts() {
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Closed);
+        let ((_, _), plain) = send_from(
+            &state,
+            TEST_PEER,
+            Request::get("/api/v1/health").body(Body::empty()).unwrap(),
+        )
+        .await;
+        let tls_response = router(state.clone())
+            .layer(middleware::from_fn(require_https_from_now_on))
+            .layer(MockConnectInfo(TEST_PEER.parse::<SocketAddr>().unwrap()))
+            .oneshot(Request::get("/api/v1/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        pool.close().await;
+
+        assert_eq!(plain.get(header::CACHE_CONTROL).unwrap(), "no-store");
+        assert_eq!(plain.get(header::VARY).unwrap(), "Cookie");
+        assert!(plain.get(header::STRICT_TRANSPORT_SECURITY).is_none());
+        assert_eq!(
+            tls_response
+                .headers()
+                .get(header::STRICT_TRANSPORT_SECURITY)
+                .unwrap(),
+            "max-age=31536000"
+        );
     }
 
     #[tokio::test]

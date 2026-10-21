@@ -27,7 +27,7 @@ use tokio::time::{Instant, Sleep};
 
 use crate::config::TlsConfig;
 use crate::http::client_address::client_address_key;
-use crate::http::{AppState, make_service};
+use crate::http::{AppState, make_tls_service};
 use crate::storage::create_private_directory;
 
 const LETS_ENCRYPT_PRODUCTION_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
@@ -225,7 +225,7 @@ async fn serve_tls_with_policy(
     }
     let result = server
         .handle(handle)
-        .serve(make_service(state))
+        .serve(make_tls_service(state))
         .await
         .context("HTTPS server stopped with an error");
     renewal.abort();
