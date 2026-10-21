@@ -10,8 +10,8 @@ use mellow_protocol::{
 use slint::{ModelRc, SharedString, VecModel};
 
 use crate::generated_ui::{
-    ChannelListRow, DirectMessageRow, HistoryStartState, MemberListRow, MessageDelivery,
-    MessageRow, PresenceStatus, ServerItem,
+    ChannelListRow, DirectMessageRow, HistoryStartState, MelliState, MemberListRow,
+    MessageDelivery, MessageRow, PresenceStatus, ServerItem,
 };
 use crate::message_markup::styled_text_from_message_body;
 use crate::shell_rows::{first_letter, saturating_int, server_initials};
@@ -102,6 +102,25 @@ pub fn has_unread_direct_messages(state: &ClientState) -> bool {
         .direct_message_channels()
         .iter()
         .any(|channel| state.has_unread(channel.id))
+}
+
+/// What the gateway connection is doing, as the connection notice and Melli show it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionStatus {
+    Connecting,
+    Connected,
+    Reconnecting,
+}
+
+/// The Home button's Melli (DESIGN.md §2.10): connection trouble first, then unread direct
+/// messages. Same mapping as the web's `homeMelliState`.
+pub fn home_melli_state(status: ConnectionStatus, has_unread_direct_messages: bool) -> MelliState {
+    match status {
+        ConnectionStatus::Reconnecting => MelliState::ConnectionLost,
+        ConnectionStatus::Connecting => MelliState::Connecting,
+        ConnectionStatus::Connected if has_unread_direct_messages => MelliState::Notification,
+        ConnectionStatus::Connected => MelliState::Idle,
+    }
 }
 
 /// The other participants' display names, as Discord names a conversation until it is renamed.
@@ -878,5 +897,27 @@ mod tests {
         assert_eq!(human_file_size(2_400_000), "2.4 MB");
         assert_eq!(human_file_size(1_000), "1.0 KB");
         assert_eq!(human_file_size(25_000_000_000), "25.0 GB");
+    }
+
+    #[test]
+    fn home_melli_shows_connection_trouble_before_unread_direct_messages() {
+        for has_unread in [false, true] {
+            assert_eq!(
+                home_melli_state(ConnectionStatus::Reconnecting, has_unread),
+                MelliState::ConnectionLost
+            );
+            assert_eq!(
+                home_melli_state(ConnectionStatus::Connecting, has_unread),
+                MelliState::Connecting
+            );
+        }
+        assert_eq!(
+            home_melli_state(ConnectionStatus::Connected, true),
+            MelliState::Notification
+        );
+        assert_eq!(
+            home_melli_state(ConnectionStatus::Connected, false),
+            MelliState::Idle
+        );
     }
 }

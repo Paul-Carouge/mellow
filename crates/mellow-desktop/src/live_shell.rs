@@ -28,6 +28,7 @@ use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
 use crate::generated_ui::{AppWindow, MessageRow};
+use crate::live_rows::ConnectionStatus;
 use crate::role_settings::MoveDirection;
 use crate::session_store::{self, StoredSession};
 use crate::{clipboard, live_rows, shell_rows};
@@ -39,6 +40,7 @@ const LOGOUT_ON_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
 const SECRET_STORE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Never the server's error text (development notes: "Server text in the UI").
 const MESSAGE_NOT_SENT_ANNOUNCEMENT: &str = "Message not sent.";
+const CONNECTING_NOTICE: &str = "Connecting…";
 const RECONNECTING_NOTICE: &str = "Connection lost. Reconnecting…";
 const SESSION_ENDED_MESSAGE: &str = "Your session ended. Sign in again.";
 /// Shown when the rail's home entry (index -1 in `server_rail.slint`) is selected.
@@ -93,6 +95,7 @@ pub struct LiveShell {
     is_role_request_in_flight: bool,
     /// Bumped whenever a server dialog closes, so a late answer never lands in a later dialog.
     dialog_request_generation: u64,
+    connection_status: ConnectionStatus,
 }
 
 pub type SharedShell = Rc<RefCell<LiveShell>>;
@@ -122,6 +125,7 @@ pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
         role_editor: None,
         is_role_request_in_flight: false,
         dialog_request_generation: 0,
+        connection_status: ConnectionStatus::Connected,
     }));
     window.set_is_signed_in(false);
     window.set_messages(shell.borrow().messages.clone().into());
@@ -661,8 +665,8 @@ fn connect_gateway(shell: &SharedShell, rest: RestClient, is_session_stored: boo
         });
         if let Some(window) = shell_mut.window.upgrade() {
             window.set_is_signed_in(true);
-            window.set_connection_notice("Connecting…".into());
         }
+        show_connection_status(&mut shell_mut, ConnectionStatus::Connecting);
         shell_mut.session_generation
     };
     let shell = shell.clone();
@@ -687,12 +691,34 @@ fn now_unix_milliseconds() -> u64 {
         })
 }
 
+/// The connection notice says what the connection is doing, and Melli in the Home button shows it.
+fn show_connection_status(shell: &mut LiveShell, status: ConnectionStatus) {
+    shell.connection_status = status;
+    if let Some(window) = shell.window.upgrade() {
+        window.set_connection_notice(
+            match status {
+                ConnectionStatus::Connecting => CONNECTING_NOTICE,
+                ConnectionStatus::Connected => "",
+                ConnectionStatus::Reconnecting => RECONNECTING_NOTICE,
+            }
+            .into(),
+        );
+    }
+    refresh_home_melli_state(shell);
+}
+
+fn refresh_home_melli_state(shell: &LiveShell) {
+    if let Some(window) = shell.window.upgrade() {
+        window.set_home_melli_state(live_rows::home_melli_state(
+            shell.connection_status,
+            live_rows::has_unread_direct_messages(&shell.state),
+        ));
+    }
+}
+
 fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
-    let set_notice = |notice: &str| {
-        if let Some(window) = shell.borrow().window.upgrade() {
-            window.set_connection_notice(notice.into());
-        }
-    };
+    let set_status =
+        |status: ConnectionStatus| show_connection_status(&mut shell.borrow_mut(), status);
     match update {
         GatewayUpdate::Ready(ready) => {
             let (previous_guild_id, previous_channel_id, was_home) = {
@@ -711,7 +737,7 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
                 refresh_user_panel(&shell);
                 (shell.selected_guild_id, shell.selected_channel_id, was_home)
             };
-            set_notice("");
+            set_status(ConnectionStatus::Connected);
             let guild_id = {
                 let shell = shell.borrow();
                 previous_guild_id
@@ -757,10 +783,10 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
             }
         }
         GatewayUpdate::Resumed => {
-            set_notice("");
+            set_status(ConnectionStatus::Connected);
             resend_failed_messages(shell);
         }
-        GatewayUpdate::Disconnected => set_notice(RECONNECTING_NOTICE),
+        GatewayUpdate::Disconnected => set_status(ConnectionStatus::Reconnecting),
         GatewayUpdate::SignedOut => {
             end_session(shell, SESSION_ENDED_MESSAGE);
         }
@@ -959,10 +985,10 @@ fn end_session(shell: &SharedShell, message: &str) -> tokio::task::JoinHandle<bo
         window.set_is_signed_in(false);
         // Nothing of the previous account may stay, and its request never answers.
         account_settings::clear(&window);
-        window.set_connection_notice(SharedString::default());
         window.set_login_is_busy(false);
         show_login_error(&window, message);
     }
+    show_connection_status(&mut shell, ConnectionStatus::Connected);
     // After signing out, so the focus is not sent back to the hidden shell.
     server_settings::close(&mut shell);
     forget
@@ -1534,6 +1560,7 @@ fn refresh_channel_rows(shell: &LiveShell) {
         live_rows::direct_message_rows(&shell.state, shell.selected_channel_id),
     )));
     window.set_has_unread_direct_messages(live_rows::has_unread_direct_messages(&shell.state));
+    refresh_home_melli_state(shell);
 }
 
 fn refresh_member_rows(shell: &LiveShell) {

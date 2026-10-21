@@ -1,5 +1,6 @@
 import { MellowColor, MellowComponent, MellowSize, MellowType } from "../tokens.slint";
 import { MentionBadge } from "primitives.slint";
+import { Melli, MelliState } from "melli.slint";
 
 export struct ServerItem {
     name: string,
@@ -16,7 +17,9 @@ component RailItem inherits Rectangle {
     in property <bool> is-selected;
     in property <bool> has-unread;
     in property <int> mention-count;
+    // Home shows Melli instead of initials: on the rail at rest, on apricot when active.
     in property <bool> is-home: false;
+    in property <MelliState> melli-state;
     // When set, drawn instead of `initials` (e.g. the "add a server" action).
     in property <image> icon;
     in property <bool> has-icon: false;
@@ -47,7 +50,8 @@ component RailItem inherits Rectangle {
         width: MellowComponent.rail-item-size;
         height: MellowComponent.rail-item-size;
         border-radius: is-active ? MellowComponent.rail-icon-radius-active : MellowComponent.rail-icon-radius-rest;
-        background: is-active ? MellowComponent.rail-icon-background-active : MellowComponent.rail-icon-background-rest;
+        background: is-active ? MellowComponent.rail-icon-background-active
+            : is-home ? transparent : MellowComponent.rail-icon-background-rest;
         animate border-radius, background { duration: MellowComponent.rail-morph-duration; easing: ease-out; }
         if has-icon: Image {
             source: root.icon;
@@ -56,10 +60,16 @@ component RailItem inherits Rectangle {
             height: self.width;
             accessible-role: none;
         }
-        if !has-icon: Text {
+        if is-home: Melli {
+            width: parent.width;
+            height: parent.height;
+            state: root.melli-state;
+            mark-color: is-active ? MellowColor.mascot-ink : MellowColor.mascot-mark;
+        }
+        if !has-icon && !is-home: Text {
             text: initials;
             color: is-active ? MellowComponent.rail-icon-text-active : MellowComponent.rail-icon-text-rest;
-            font-size: is-home ? MellowType.heading-lg.font-size : MellowType.body.font-size;
+            font-size: MellowType.body.font-size;
             font-weight: MellowType.message-author.font-weight;
         }
     }
@@ -100,6 +110,7 @@ export component ServerRail inherits Rectangle {
     in property <[ServerItem]> servers;
     in-out property <int> selected-server-index;
     in property <bool> has-unread-direct-messages;
+    in property <MelliState> home-melli-state;
     callback select-server(int);
     callback add-server();
 
@@ -114,11 +125,11 @@ export component ServerRail inherits Rectangle {
             spacing: MellowComponent.rail-item-gap;
             alignment: start;
 
-            // Home / direct messages. The glyph stands in for Mellow's logo, still to be designed.
+            // Home / direct messages, with Melli (DESIGN.md §2.10). The name and the pill say unread.
             RailItem {
                 label: "Direct messages";
-                initials: "M";
                 is-home: true;
+                melli-state: root.home-melli-state;
                 has-unread: root.has-unread-direct-messages;
                 // -1 is the home index; main.rs maps any negative index to HOME_SERVER_NAME.
                 is-selected: selected-server-index == -1;
