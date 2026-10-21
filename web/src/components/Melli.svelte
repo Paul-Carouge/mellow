@@ -4,18 +4,30 @@
 
   // Melli, the Mellow mascot and logo (DESIGN.md §2.10). One named part per element: a state only
   // shows, hides or restyles parts, so adding one is a few CSS rules. `motion` parts loop; poses
-  // and colours ease between states. Decorative: the host names what Melli stands for.
+  // and colours ease between states. Decorative: the host names what Melli stands for. Melli has
+  // no tile: it sits on the host's surface, and a host on apricot sets `--melli-mark` to ink.
   interface Props {
     state?: MelliState;
     /** A `--mw-*` length token, for example "--mw-component-rail-item-size". */
     sizeToken: string;
-    /** Off when the host paints the tile itself (the Home button morphs its own). */
-    hasTile?: boolean;
     /** The still pose of the state even when motion is allowed (the gallery); reduced motion always gets it. */
     isStill?: boolean;
   }
 
-  let { state = "idle", sizeToken, hasTile = true, isStill = false }: Props = $props();
+  let { state = "idle", sizeToken, isStill = false }: Props = $props();
+
+  // The cloud: a core and six puffs. The outline is the same circles grown by OUTLINE_WIDTH and
+  // drawn behind, so only the cloud's outer edge shows.
+  const PUFF_CIRCLES = [
+    { cx: 128, cy: 124, r: 62 },
+    { cx: 128, cy: 78, r: 30 },
+    { cx: 167.8, cy: 101, r: 30 },
+    { cx: 167.8, cy: 147, r: 30 },
+    { cx: 128, cy: 170, r: 30 },
+    { cx: 88.2, cy: 147, r: 30 },
+    { cx: 88.2, cy: 101, r: 30 },
+  ];
+  const OUTLINE_WIDTH = 6;
 </script>
 
 <svg
@@ -27,9 +39,6 @@
   style:width="var({sizeToken})"
   style:height="var({sizeToken})"
 >
-  {#if hasTile}
-    <rect class="tile" width="256" height="256" rx="56" />
-  {/if}
   <ellipse class="shadow" cx="128" cy="222" rx="54" ry="7" />
   <!-- Behind the cloud, so each drop falls out of it. -->
   <g class="mark drops">
@@ -39,13 +48,16 @@
   </g>
   <g class="motion">
     <g class="puff">
-      <circle cx="128" cy="124" r="62" />
-      <circle cx="128" cy="78" r="30" />
-      <circle cx="167.8" cy="101" r="30" />
-      <circle cx="167.8" cy="147" r="30" />
-      <circle cx="128" cy="170" r="30" />
-      <circle cx="88.2" cy="147" r="30" />
-      <circle cx="88.2" cy="101" r="30" />
+      <g class="cloud-outline">
+        {#each PUFF_CIRCLES as circle, index (index)}
+          <circle cx={circle.cx} cy={circle.cy} r={circle.r + OUTLINE_WIDTH} />
+        {/each}
+      </g>
+      <g class="cloud-body">
+        {#each PUFF_CIRCLES as circle, index (index)}
+          <circle cx={circle.cx} cy={circle.cy} r={circle.r} />
+        {/each}
+      </g>
     </g>
     <g class="face">
       <g class="blush">
@@ -103,6 +115,7 @@
   /* Keyframe amplitudes are in viewBox units: they are part of the drawing, like the paths.
      Colours and timings are tokens (DESIGN.md §2.10). */
   .melli {
+    --mark: var(--melli-mark, var(--mw-color-mascot-mark));
     --change: var(--mw-component-melli-state-change-duration) var(--mw-component-melli-state-change-easing);
     display: block;
     flex-shrink: 0;
@@ -119,9 +132,6 @@
   }
 
   /* Parts */
-  .tile {
-    fill: var(--mw-color-mascot-tile);
-  }
   .shadow {
     fill: var(--mw-color-mascot-shadow);
     animation: shadow-float var(--mw-component-melli-float-duration) ease-in-out infinite;
@@ -132,11 +142,16 @@
     transform-origin: 128px 200px;
     animation: float var(--mw-component-melli-float-duration) ease-in-out infinite;
   }
-  .puff {
+  .cloud-outline {
+    fill: var(--mw-color-mascot-outline);
+  }
+  .cloud-body {
     fill: var(--mw-color-mascot-body);
+    transition: fill var(--change);
+  }
+  .puff {
     transform-box: view-box;
     transform-origin: 128px 124px;
-    transition: fill var(--change);
     animation: spin var(--mw-component-melli-puff-spin-duration) linear infinite;
   }
   .face {
@@ -167,11 +182,17 @@
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  .mouth,
+  .mouth {
+    fill: var(--mw-color-mascot-ink);
+  }
+  /* Marks sit on the host's surface, not on the cloud. */
   .dots,
   .sparkle,
   .drops {
-    fill: var(--mw-color-mascot-ink);
+    fill: var(--mark);
+  }
+  .stroke.mark {
+    stroke: var(--mark);
   }
   .blush,
   .eyes-happy,
@@ -201,8 +222,10 @@
 
   /* connection-lost: grey, heavy-lidded, stalled, raining. */
   [data-state="connection-lost"] .puff {
-    fill: var(--mw-color-mascot-body-overcast);
     animation-play-state: paused;
+  }
+  [data-state="connection-lost"] .cloud-body {
+    fill: var(--mw-color-mascot-body-overcast);
   }
   [data-state="connection-lost"] .eyes {
     transform: scaleY(0.45);

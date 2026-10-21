@@ -27,8 +27,9 @@ export global MellowColor {
     out property <color> mascot-body: #FFFAF3;
     out property <color> mascot-body-overcast: #E2DBD7;
     out property <color> mascot-ink: #3F332D;
-    out property <color> mascot-shadow: #A4633826;
-    out property <color> mascot-tile: #F4E2D2;
+    out property <color> mascot-mark: MellowTheme.is-dark ? #F4E2D2 : #3F332D;
+    out property <color> mascot-outline: #3F332D;
+    out property <color> mascot-shadow: MellowTheme.is-dark ? #00000059 : #A4633826;
     out property <color> mention-background: MellowTheme.is-dark ? #403C3C : #FDF4EE;
     out property <color> mention-bar: MellowTheme.is-dark ? #F2A46E : #A84F1A;
     out property <color> mention-chip-background: MellowTheme.is-dark ? #6B5548 : #FBE6D6;
@@ -409,7 +410,6 @@ export global MellowComponent {
     out property <color> rail-add-icon: MellowTheme.is-dark ? #23A55A : #1A7F45;
     out property <color> rail-add-icon-hover: #FFFFFF;
     out property <color> rail-background: MellowTheme.is-dark ? #1E1F22 : #E3E5E8;
-    out property <color> rail-home-background-rest: #F4E2D2;
     out property <color> rail-icon-background-active: MellowTheme.is-dark ? #F2A46E : #E8894B;
     out property <color> rail-icon-background-rest: MellowTheme.is-dark ? #313338 : #FFFFFF;
     out property <length> rail-icon-radius-active: 16px;

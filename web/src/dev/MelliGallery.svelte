@@ -32,7 +32,7 @@
   <header class="mx-auto flex max-w-6xl flex-wrap items-end justify-between gap-md">
     <div>
       <h1 class="type-heading-xl text-text-heading">Melli</h1>
-      <p class="type-body text-text-muted">Every state at preview size and at Home button size, at rest and selected. The tab shows the favicon.</p>
+      <p class="type-body text-text-muted">Every state at preview size and at Home button size, on the rail at rest and on apricot when selected. The tab shows the favicon.</p>
     </div>
     <div class="flex flex-wrap items-center gap-lg type-body">
       <fieldset class="flex items-center gap-sm">
@@ -55,12 +55,12 @@
     {#each states as state (state)}
       <li class="flex flex-col gap-md rounded-lg bg-surface-sidebar p-md">
         <Melli {state} {isStill} sizeToken="--gallery-melli-preview-size" />
-        <div class="flex items-center gap-md">
-          <span class="grid size-(--mw-component-rail-item-size) place-items-center overflow-hidden rounded-(--mw-component-rail-icon-radius-rest) bg-(--mw-component-rail-home-background-rest)">
-            <Melli {state} {isStill} sizeToken="--mw-component-rail-item-size" hasTile={false} />
+        <div class="flex items-center gap-md rounded-(--mw-component-rail-icon-radius-active) bg-(--mw-component-rail-background) p-sm">
+          <span class="grid size-(--mw-component-rail-item-size) place-items-center">
+            <Melli {state} {isStill} sizeToken="--mw-component-rail-item-size" />
           </span>
-          <span class="grid size-(--mw-component-rail-item-size) place-items-center overflow-hidden rounded-(--mw-component-rail-icon-radius-active) bg-(--mw-component-rail-icon-background-active)">
-            <Melli {state} {isStill} sizeToken="--mw-component-rail-item-size" hasTile={false} />
+          <span class="grid size-(--mw-component-rail-item-size) place-items-center overflow-hidden rounded-(--mw-component-rail-icon-radius-active) bg-(--mw-component-rail-icon-background-active) [--melli-mark:var(--mw-color-mascot-ink)]">
+            <Melli {state} {isStill} sizeToken="--mw-component-rail-item-size" />
           </span>
         </div>
         <div>
