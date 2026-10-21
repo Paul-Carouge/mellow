@@ -57,7 +57,12 @@ fn environment_variable(name: &str) -> BuildResult<std::ffi::OsString> {
 
 fn collect_files(directory: &Path, files: &mut Vec<PathBuf>) -> BuildResult<()> {
     for entry in std::fs::read_dir(directory)? {
-        let path = entry?.path();
+        let entry = entry?;
+        // A dotfile (`.DS_Store`) or a link out of the build must never be published.
+        if entry.file_name().to_string_lossy().starts_with('.') || entry.file_type()?.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
         if path.is_dir() {
             collect_files(&path, files)?;
         } else {

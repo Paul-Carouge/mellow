@@ -80,7 +80,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Type-check, test and build
         working-directory: web
-        run: npm ci && npm run check && npm run test && npm run build
+        run: npm ci --ignore-scripts && npm audit signatures && npm run check && npm run test && npm run build
       - name: Dependency audit
         working-directory: web
         run: npm audit --audit-level=high

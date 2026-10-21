@@ -1052,7 +1052,7 @@ mod tests {
             let headers = request.headers_mut();
             headers.insert(
                 "cookie",
-                format!("mellow_session={}", fixture.member_token)
+                format!("__Host-mellow_session={}", fixture.member_token)
                     .parse()
                     .unwrap(),
             );
