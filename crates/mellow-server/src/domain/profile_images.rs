@@ -4,6 +4,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::OwnedSemaphorePermit;
+
 use mellow_protocol::{CurrentUser, GatewayEvent, ProfileImage, PublicUser, Snowflake};
 use sqlx::SqlitePool;
 
@@ -20,6 +22,10 @@ use crate::storage::profile_images::{self as storage, NewProfileImage, ProfileIm
 
 /// Past this, the client is told to try again later (decoding included).
 const PROCESSING_TIME_BUDGET: Duration = Duration::from_secs(20);
+/// Pictures read and held in memory at once until sent: a member list loads dozens together,
+/// so a short wait for a slot beats an error on an image that never retries.
+const CONCURRENT_READS: usize = 16;
+const READ_SLOT_WAIT: Duration = Duration::from_secs(5);
 /// A processed picture larger than this is refused: every viewer downloads it.
 const MAXIMUM_STORED_BYTES: usize = 8 * 1024 * 1024;
 
@@ -80,6 +86,7 @@ pub(crate) struct ProfileImages {
     files: AttachmentFiles,
     attachments: Arc<Attachments>,
     events: Arc<EventHub>,
+    reads: Arc<tokio::sync::Semaphore>,
 }
 
 impl ProfileImages {
@@ -96,6 +103,7 @@ impl ProfileImages {
             files,
             attachments,
             events,
+            reads: Arc::new(tokio::sync::Semaphore::new(CONCURRENT_READS)),
         }
     }
 
@@ -230,12 +238,13 @@ impl ProfileImages {
         }
     }
 
-    /// The bytes of a version, or of its still frame; any signed-in user may read them.
+    /// The bytes of a version, or of its still frame, with the read slot the response keeps until
+    /// sent; any signed-in user may read them.
     pub(crate) async fn read(
         &self,
         id: Snowflake,
         is_still_wanted: bool,
-    ) -> Result<Vec<u8>, MessageError> {
+    ) -> Result<(Vec<u8>, OwnedSemaphorePermit), MessageError> {
         let image = storage::find_profile_image(&self.pool, id)
             .await?
             .ok_or(MessageError::MessageNotFound)?;
@@ -244,7 +253,10 @@ impl ProfileImages {
         } else {
             image.id
         };
-        // No transfer slot: a member list loads dozens at once, each a few hundred KB at most.
-        Ok(self.files.read(file_id).await?)
+        let permit = tokio::time::timeout(READ_SLOT_WAIT, self.reads.clone().acquire_owned())
+            .await
+            .map_err(|_| MessageError::Busy)?
+            .map_err(|error| MessageError::Internal(Box::new(error)))?;
+        Ok((self.files.read(file_id).await?, permit))
     }
 }

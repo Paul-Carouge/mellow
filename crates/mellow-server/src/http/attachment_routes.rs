@@ -60,8 +60,11 @@ pub(crate) async fn upload(
         .start_upload(user.id, channel_id, &file_name)
         .await?;
     let limit = usize::try_from(state.maximum_attachment_bytes).unwrap_or(usize::MAX);
-    let bytes = axum::body::to_bytes(body, limit)
+    // The slot is held while the body arrives: a client trickling bytes gets a deadline.
+    let deadline = upload_deadline(state.maximum_attachment_bytes);
+    let bytes = tokio::time::timeout(deadline, axum::body::to_bytes(body, limit))
         .await
+        .map_err(|_| ApiError::server_busy())?
         .map_err(|_| ApiError::payload_too_large())?;
     if bytes.is_empty() {
         return Err(ApiError::validation("an attachment cannot be empty".into()));
@@ -121,9 +124,36 @@ pub(crate) async fn download(
                 HeaderValue::from_static("private, no-cache"),
             ),
         ],
-        download.bytes,
+        body_keeping_permit(download.bytes, download.permit),
     )
         .into_response())
+}
+
+/// The file as a response body that holds its transfer slot until the body is dropped, after its
+/// last byte is sent: a slow reader keeps a slot, not an unbounded number of buffers.
+pub(crate) fn body_keeping_permit(
+    bytes: Vec<u8>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> axum::body::Body {
+    use futures_util::StreamExt as _;
+    let chunks = futures_util::stream::iter([Ok::<_, std::convert::Infallible>(
+        axum::body::Bytes::from(bytes),
+    )])
+    .map(move |chunk| {
+        let _held_until_the_body_is_dropped = &permit;
+        chunk
+    });
+    axum::body::Body::from_stream(chunks)
+}
+
+/// Slowest upload speed accepted for the largest file, and the least time any upload gets.
+const MINIMUM_UPLOAD_BYTES_PER_SECOND: u64 = 64 * 1024;
+const MINIMUM_UPLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Time allowed to receive an upload body of at most `maximum_bytes`.
+fn upload_deadline(maximum_bytes: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(maximum_bytes / MINIMUM_UPLOAD_BYTES_PER_SECOND)
+        .max(MINIMUM_UPLOAD_DEADLINE)
 }
 
 /// RFC 5987 `filename*`: everything but unreserved ASCII is percent-encoded, so no quote, comma
@@ -161,6 +191,12 @@ fn percent_decode(encoded: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_uploads_get_time_at_a_slow_speed_and_small_ones_a_floor() {
+        assert_eq!(upload_deadline(25 * 1024 * 1024).as_secs(), 400);
+        assert_eq!(upload_deadline(1024), MINIMUM_UPLOAD_DEADLINE);
+    }
 
     #[test]
     fn file_names_cannot_break_out_of_the_disposition_header() {

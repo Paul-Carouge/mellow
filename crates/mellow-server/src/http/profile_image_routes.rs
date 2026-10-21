@@ -98,7 +98,7 @@ async fn serve(
     ) {
         return Err(ApiError::rate_limited());
     }
-    let bytes = state.profile_images.read(id, is_still_wanted).await?;
+    let (bytes, permit) = state.profile_images.read(id, is_still_wanted).await?;
     Ok((
         StatusCode::OK,
         [
@@ -120,7 +120,7 @@ async fn serve(
                 HeaderValue::from_static(CACHE_IMMUTABLE),
             ),
         ],
-        bytes,
+        crate::http::attachment_routes::body_keeping_permit(bytes, permit),
     )
         .into_response())
 }
