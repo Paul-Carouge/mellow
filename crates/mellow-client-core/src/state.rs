@@ -40,7 +40,9 @@ pub enum StateChange {
     Presence,
     /// A user's username or display name changed: members, message authors and, for the signed-in
     /// user, `current_user`.
-    Users,
+    UserRenamed {
+        user_id: Snowflake,
+    },
     Typing {
         channel_id: Snowflake,
     },
@@ -351,7 +353,7 @@ impl ClientState {
                 }
             }
         }
-        StateChange::Users
+        StateChange::UserRenamed { user_id: user.id }
     }
 
     /// Only cached messages change: an edit of older history must not appear out of context, nor
@@ -997,7 +999,7 @@ mod tests {
 
         let change = state.apply_event(GatewayEvent::UserUpdate(renamed.clone()), NOW);
 
-        assert_eq!(change, StateChange::Users);
+        assert_eq!(change, StateChange::UserRenamed { user_id: ME });
         let me = state.current_user().unwrap();
         assert_eq!(
             (me.username.as_str(), me.display_name.as_str()),
