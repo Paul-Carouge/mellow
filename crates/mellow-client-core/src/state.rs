@@ -4,8 +4,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mellow_protocol::{
-    Channel, CurrentUser, GatewayEvent, Guild, Member, Message, Permissions, PresenceStatus, Ready,
-    Role, SendMessageRequest, Snowflake, compute_channel_permissions, compute_guild_permissions,
+    Channel, CurrentUser, GatewayEvent, Guild, Member, Message, Permissions, PresenceStatus,
+    PublicUser, Ready, Role, SendMessageRequest, Snowflake, compute_channel_permissions,
+    compute_guild_permissions,
 };
 
 /// Messages kept in memory per channel once the reader leaves it; older ones are fetched again
@@ -37,6 +38,9 @@ pub enum StateChange {
         guild_id: Snowflake,
     },
     Presence,
+    /// A user's username or display name changed: members, message authors and, for the signed-in
+    /// user, `current_user`.
+    Users,
     Typing {
         channel_id: Snowflake,
     },
@@ -321,7 +325,33 @@ impl ClientState {
                 };
                 StateChange::Presence
             }
+            GatewayEvent::UserUpdate(user) => self.rename_user(&user),
         }
+    }
+
+    fn rename_user(&mut self, user: &PublicUser) -> StateChange {
+        if let Some(current_user) = self
+            .current_user
+            .as_mut()
+            .filter(|current_user| current_user.id == user.id)
+        {
+            current_user.username.clone_from(&user.username);
+            current_user.display_name.clone_from(&user.display_name);
+        }
+        for members in self.members_by_guild.values_mut() {
+            if let Some(member) = members.iter_mut().find(|member| member.user.id == user.id) {
+                member.user.clone_from(user);
+                members.sort_by(|left, right| left.user.username.cmp(&right.user.username));
+            }
+        }
+        for history in self.history_by_channel.values_mut() {
+            for message in &mut history.messages {
+                if message.author.id == user.id {
+                    message.author.clone_from(user);
+                }
+            }
+        }
+        StateChange::Users
     }
 
     /// Only cached messages change: an edit of older history must not appear out of context, nor
@@ -947,6 +977,42 @@ mod tests {
 
         state.apply_event(GatewayEvent::GuildDelete { id: GUILD }, NOW);
         assert_eq!(state.guilds(), &[]);
+    }
+
+    #[test]
+    fn a_rename_updates_me_members_in_username_order_and_cached_authors() {
+        let mut state = ready_state();
+        let member = |id| Member {
+            user: user(id),
+            role_ids: Vec::new(),
+            joined_at_unix_milliseconds: 0,
+        };
+        state.set_members(GUILD, vec![member(ME), member(OTHER)]);
+        state.insert_messages(GENERAL, vec![message(11, ME), message(12, OTHER)]);
+        let renamed = PublicUser {
+            id: ME,
+            username: "zoe".into(),
+            display_name: "Zoé".into(),
+        };
+
+        let change = state.apply_event(GatewayEvent::UserUpdate(renamed.clone()), NOW);
+
+        assert_eq!(change, StateChange::Users);
+        let me = state.current_user().unwrap();
+        assert_eq!(
+            (me.username.as_str(), me.display_name.as_str()),
+            ("zoe", "Zoé")
+        );
+        assert_eq!(me.email, "me@example.org");
+        let member_ids: Vec<_> = state.members(GUILD).iter().map(|m| m.user.id).collect();
+        assert_eq!(member_ids, [OTHER, ME]);
+        assert_eq!(state.members(GUILD)[1].user, renamed);
+        let authors: Vec<_> = state
+            .messages(GENERAL)
+            .iter()
+            .map(|message| message.author.display_name.as_str())
+            .collect();
+        assert_eq!(authors, ["Zoé", "User 2"]);
     }
 
     #[test]

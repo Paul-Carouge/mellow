@@ -107,20 +107,68 @@ pub async fn insert_user(pool: &SqlitePool, user: &NewUser) -> Result<(), Accoun
     .bind(to_sqlite_integer(user.created_at_unix_milliseconds)?)
     .execute(pool)
     .await;
-    match result {
-        Ok(_) => Ok(()),
-        Err(sqlx::Error::Database(database_error))
+    result.map(|_| ()).map_err(unique_violation_as_taken)
+}
+
+fn unique_violation_as_taken(error: sqlx::Error) -> AccountStorageError {
+    match error {
+        sqlx::Error::Database(database_error)
             if database_error.code().as_deref() == Some(SQLITE_UNIQUE_CONSTRAINT_ERROR_CODE) =>
         {
             // SQLite names the violated column: "UNIQUE constraint failed: users.email".
             if database_error.message().contains("users.email") {
-                Err(AccountStorageError::EmailTaken)
+                AccountStorageError::EmailTaken
             } else {
-                Err(AccountStorageError::UsernameTaken)
+                AccountStorageError::UsernameTaken
             }
         }
-        Err(error) => Err(error.into()),
+        error => error.into(),
     }
+}
+
+/// # Errors
+/// `UsernameTaken` when another account has this username (case-insensitive); database errors.
+pub async fn update_user_names(
+    pool: &SqlitePool,
+    user_id: Snowflake,
+    username: &str,
+    display_name: &str,
+) -> Result<(), AccountStorageError> {
+    sqlx::query("UPDATE users SET username = ?, display_name = ? WHERE id = ?")
+        .bind(username)
+        .bind(display_name)
+        .bind(to_sqlite_integer(user_id.raw())?)
+        .execute(pool)
+        .await
+        .map_err(unique_violation_as_taken)?;
+    Ok(())
+}
+
+/// Stores the new password hash and deletes every other session of the user, in one transaction,
+/// so no session opened with the old password outlives the change.
+///
+/// # Errors
+/// Fails on database errors.
+pub async fn replace_password_and_delete_other_sessions(
+    pool: &SqlitePool,
+    user_id: Snowflake,
+    password_hash: &str,
+    kept_session_token_sha256: &SessionTokenSha256,
+) -> Result<(), AccountStorageError> {
+    let user_id = to_sqlite_integer(user_id.raw())?;
+    let mut transaction = pool.begin().await?;
+    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+        .bind(password_hash)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("DELETE FROM sessions WHERE user_id = ? AND token_sha256 != ?")
+        .bind(user_id)
+        .bind(kept_session_token_sha256.as_slice())
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok(())
 }
 
 /// Looks up by username or email, both case-insensitive (`COLLATE NOCASE`).

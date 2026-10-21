@@ -3,11 +3,12 @@
 use std::time::Duration;
 
 use mellow_protocol::{
-    AcknowledgeRequest, ApiErrorBody, AuditLogEntry, AuditLogQuery, Ban, Channel, CreateBanRequest,
-    CreateChannelRequest, CreateGuildRequest, CreateInviteRequest, CreateRoleRequest, CurrentUser,
-    EditMessageRequest, Guild, Invite, LoginRequest, Member, Message, MessageHistoryQuery,
-    RegisterRequest, ReorderRolesRequest, Role, SendMessageRequest, SessionCreated,
-    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateRoleRequest,
+    AcknowledgeRequest, ApiErrorBody, AuditLogEntry, AuditLogQuery, Ban, ChangePasswordRequest,
+    Channel, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
+    CreateRoleRequest, CurrentUser, EditMessageRequest, Guild, Invite, LoginRequest, Member,
+    Message, MessageHistoryQuery, RegisterRequest, ReorderRolesRequest, Role, SendMessageRequest,
+    SessionCreated, SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest,
+    UpdateCurrentUserRequest, UpdateRoleRequest,
 };
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::Serialize;
@@ -199,6 +200,34 @@ impl RestClient {
     /// Network or API errors.
     pub async fn current_user(&self) -> Result<CurrentUser, ClientError> {
         Self::send_and_decode_json(self.request(Method::GET, "api/v1/users/@me", true)?).await
+    }
+
+    /// Renames the signed-in user; absent fields stay unchanged.
+    ///
+    /// # Errors
+    /// Network or API errors; `UsernameTaken` when another account has the username.
+    pub async fn update_current_user(
+        &self,
+        request: &UpdateCurrentUserRequest,
+    ) -> Result<CurrentUser, ClientError> {
+        let builder = self
+            .request(Method::PATCH, "api/v1/users/@me", true)?
+            .json(request);
+        Self::send_and_decode_json(builder).await
+    }
+
+    /// Signs out every other session of the user; this one stays signed in.
+    ///
+    /// # Errors
+    /// Network or API errors; `InvalidCredentials` for a wrong current password.
+    pub async fn change_password(
+        &self,
+        request: &ChangePasswordRequest,
+    ) -> Result<(), ClientError> {
+        let builder = self
+            .request(Method::POST, "api/v1/users/@me/password", true)?
+            .json(request);
+        Self::send_and_discard_body(builder).await
     }
 
     /// # Errors

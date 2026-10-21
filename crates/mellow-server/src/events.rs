@@ -237,6 +237,29 @@ impl EventHub {
         }
     }
 
+    /// Ends every live session of `user_id` except those opened with `kept_token_sha256` (a
+    /// password change keeps the device that made it).
+    pub(crate) fn disconnect_user_except_token(
+        &self,
+        user_id: Snowflake,
+        kept_token_sha256: &SessionTokenSha256,
+    ) {
+        let mut state = self.state();
+        let keys: Vec<SessionKey> = state
+            .keys_of_user(user_id)
+            .into_iter()
+            .filter(|key| {
+                state
+                    .sessions
+                    .get(key)
+                    .is_some_and(|entry| entry.token_sha256 != *kept_token_sha256)
+            })
+            .collect();
+        for key in keys {
+            state.cut_off(key);
+        }
+    }
+
     pub(crate) fn is_online(&self, user_id: Snowflake) -> bool {
         self.state().user_sessions.contains_key(&user_id)
     }
@@ -315,6 +338,30 @@ impl EventHub {
             .into_iter()
             .filter_map(|key| state.sessions.get(&key).map(|entry| entry.user_id))
             .collect()
+    }
+
+    /// Delivers `event` once to every session of `user_id` and of `guild_ids`, even where they
+    /// overlap.
+    pub(crate) fn publish_to_user_and_guilds(
+        &self,
+        user_id: Snowflake,
+        guild_ids: &[Snowflake],
+        event: &GatewayEvent,
+    ) {
+        let Some(event) = published(event) else {
+            return;
+        };
+        let mut state = self.state();
+        let keys: HashSet<SessionKey> = state
+            .keys_of_user(user_id)
+            .into_iter()
+            .chain(
+                guild_ids
+                    .iter()
+                    .flat_map(|guild_id| state.keys_of_guild(*guild_id)),
+            )
+            .collect();
+        state.send_to(keys, &event);
     }
 
     pub(crate) fn publish_to_user(&self, user_id: Snowflake, event: &GatewayEvent) {
@@ -481,6 +528,42 @@ mod tests {
         ));
         assert!(matches!(
             with_b.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn a_user_update_reaches_each_session_once_and_a_password_change_keeps_its_own_token() {
+        const OTHER_GUILD: Snowflake = Snowflake::from_raw(20);
+        const TOKEN_C: SessionTokenSha256 = [3; 32];
+        let hub = EventHub::default();
+        let (alice_key, mut alice_events) = hub.register_session(ALICE, TOKEN_A, NO_CAP).unwrap();
+        hub.activate_session(alice_key, &[GUILD, OTHER_GUILD]);
+        let (bob_key, mut bob_events) = hub.register_session(BOB, TOKEN_B, NO_CAP).unwrap();
+        hub.activate_session(bob_key, &[GUILD, OTHER_GUILD]);
+        let (other_alice_key, mut other_alice_events) =
+            hub.register_session(ALICE, TOKEN_C, NO_CAP).unwrap();
+        hub.activate_session(other_alice_key, &[]);
+        drain(&mut alice_events);
+        drain(&mut bob_events);
+        drain(&mut other_alice_events);
+
+        hub.publish_to_user_and_guilds(ALICE, &[GUILD, OTHER_GUILD], &typing());
+        assert_eq!(drain(&mut alice_events).len(), 1);
+        assert_eq!(drain(&mut bob_events).len(), 1);
+        assert_eq!(drain(&mut other_alice_events).len(), 1);
+
+        hub.disconnect_user_except_token(ALICE, &TOKEN_A);
+        assert!(matches!(
+            alice_events.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            other_alice_events.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+        assert!(matches!(
+            bob_events.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
         ));
     }

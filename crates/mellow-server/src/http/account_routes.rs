@@ -7,7 +7,10 @@ use axum::Json;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use mellow_protocol::{CurrentUser, LoginRequest, RegisterRequest, SessionCreated};
+use mellow_protocol::{
+    ChangePasswordRequest, CurrentUser, LoginRequest, RegisterRequest, SessionCreated,
+    UpdateCurrentUserRequest,
+};
 use sha2::{Digest as _, Sha256};
 
 use crate::domain::account_rules::normalize_login;
@@ -19,7 +22,8 @@ use crate::http::authentication::{AuthenticatedUser, bearer_token};
 use crate::http::client_address::client_address_key;
 use crate::http::rate_limit::{
     AUTHENTICATION_ATTEMPTS_PER_ADDRESS, LOGIN_ATTEMPTS_PER_ACCOUNT,
-    LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS,
+    LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS, PASSWORD_CHANGE_ATTEMPTS_PER_USER,
+    PROFILE_WRITES_PER_USER,
 };
 
 /// Enough of SHA-256 to make rate-limit keys unique per login while keeping them small.
@@ -113,4 +117,42 @@ pub(crate) async fn logout(
 
 pub(crate) async fn current_user(AuthenticatedUser(user): AuthenticatedUser) -> Json<CurrentUser> {
     Json(user)
+}
+
+pub(crate) async fn update_current_user(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiJson(request): ApiJson<UpdateCurrentUserRequest>,
+) -> Result<Json<CurrentUser>, ApiError> {
+    if !state.rate_limiter.record_event(
+        &format!("profile:{}", user.id),
+        PROFILE_WRITES_PER_USER,
+        Instant::now(),
+    ) {
+        return Err(ApiError::rate_limited());
+    }
+    Ok(Json(
+        state.accounts.update_current_user(user, request).await?,
+    ))
+}
+
+pub(crate) async fn change_password(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<ChangePasswordRequest>,
+) -> Result<StatusCode, ApiError> {
+    // Counted before the password check, as for logins.
+    if !state.rate_limiter.record_event(
+        &format!("password-change:{}", user.id),
+        PASSWORD_CHANGE_ATTEMPTS_PER_USER,
+        Instant::now(),
+    ) {
+        return Err(ApiError::rate_limited());
+    }
+    state
+        .accounts
+        .change_password(bearer_token(&headers)?, request, now_unix_milliseconds())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }

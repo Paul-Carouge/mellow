@@ -43,6 +43,26 @@ pub struct CurrentUser {
     pub is_instance_administrator: bool,
 }
 
+/// Body of `PATCH /api/v1/users/@me`; absent fields stay unchanged. Answered with the updated
+/// `CurrentUser`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateCurrentUserRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+}
+
+/// Body of `POST /api/v1/users/@me/password`. Every other session of the user is signed out; the
+/// one making the request stays valid.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
 /// Body of every error response. `code` is stable and machine-readable; `message` is for humans.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiErrorBody {
@@ -108,6 +128,16 @@ impl std::fmt::Debug for LoginRequest {
     }
 }
 
+impl std::fmt::Debug for ChangePasswordRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ChangePasswordRequest")
+            .field("current_password", &REDACTED)
+            .field("new_password", &REDACTED)
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for SessionCreated {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -158,7 +188,11 @@ mod tests {
                 is_instance_administrator: false,
             },
         };
-        let printed = format!("{login:?} {session:?}");
+        let password_change = ChangePasswordRequest {
+            current_password: "hunter2-secret".into(),
+            new_password: "new-hunter2-secret".into(),
+        };
+        let printed = format!("{login:?} {session:?} {password_change:?}");
         assert!(
             !printed.contains("hunter2-secret") && !printed.contains("secret-token"),
             "{printed}"

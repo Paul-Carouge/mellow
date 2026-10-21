@@ -12,11 +12,11 @@ use mellow_client_core::{
     ClientError, GatewayUpdate, InstanceAddress, RestClient, generate_message_nonce, run_gateway,
 };
 use mellow_protocol::{
-    ApiErrorCode, AuditAction, AuditLogQuery, ChannelKind, CreateBanRequest, CreateChannelRequest,
-    CreateInviteRequest, CreateRoleRequest, EditMessageRequest, GatewayEvent, LoginRequest,
-    Message, MessageHistoryQuery, OverwriteKind, Permissions, RegisterRequest, ReorderRolesRequest,
-    SendMessageRequest, SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest,
-    UpdateRoleRequest,
+    ApiErrorCode, AuditAction, AuditLogQuery, ChangePasswordRequest, ChannelKind, CreateBanRequest,
+    CreateChannelRequest, CreateInviteRequest, CreateRoleRequest, EditMessageRequest, GatewayEvent,
+    LoginRequest, Message, MessageHistoryQuery, OverwriteKind, Permissions, RegisterRequest,
+    ReorderRolesRequest, SendMessageRequest, SetPermissionOverwriteRequest, Snowflake,
+    UpdateChannelRequest, UpdateCurrentUserRequest, UpdateRoleRequest,
 };
 use mellow_server::commands::{InitializeOptions, initialize_instance, serve_instance};
 use mellow_server::domain::account_rules::RegistrationMode;
@@ -516,4 +516,94 @@ async fn moderation_round_trips(
         .await
         .unwrap();
     assert_eq!(older[0].action, AuditAction::ChannelUpdate);
+}
+
+/// A rename reaches the other members through the gateway; a password change signs out the
+/// other devices only.
+#[tokio::test(flavor = "multi_thread")]
+async fn account_settings_round_trip_through_the_rest_client() {
+    let instance = RunningInstance::start().await;
+    let owner = instance.registered("owner").await;
+    let member = instance.registered("member").await;
+    let guild = owner.create_guild("Friends").await.unwrap();
+    let invite = owner
+        .create_invite(guild.id, &CreateInviteRequest::default())
+        .await
+        .unwrap();
+    member.join_with_invite(&invite.code).await.unwrap();
+    let (sender, mut updates) = mpsc::channel(64);
+    let gateway = tokio::spawn(run_gateway(
+        instance.address.clone(),
+        Zeroizing::new(member.token().unwrap().to_owned()),
+        sender,
+    ));
+    let GatewayUpdate::Ready(_) = next_update(&mut updates).await else {
+        panic!("the first update is Ready");
+    };
+
+    let taken = owner
+        .update_current_user(&UpdateCurrentUserRequest {
+            username: Some("member".into()),
+            display_name: None,
+        })
+        .await;
+    assert!(is_refused_with(&taken, ApiErrorCode::UsernameTaken));
+    let renamed = owner
+        .update_current_user(&UpdateCurrentUserRequest {
+            username: Some("the.owner".into()),
+            display_name: Some("The Owner".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(owner.current_user().await.unwrap(), renamed);
+    let user_update = loop {
+        if let GatewayUpdate::Event(GatewayEvent::UserUpdate(user)) =
+            next_update(&mut updates).await
+        {
+            break user;
+        }
+    };
+    assert_eq!(
+        (user_update.id, user_update.display_name.as_str()),
+        (renamed.id, "The Owner")
+    );
+    gateway.abort();
+
+    let mut other_device = RestClient::new(instance.address.clone()).unwrap();
+    let login = |password: &str| LoginRequest {
+        login: "the.owner".into(),
+        password: password.into(),
+        device_name: "other".into(),
+    };
+    other_device.login(&login(PASSWORD)).await.unwrap();
+    let wrong_current = owner
+        .change_password(&ChangePasswordRequest {
+            current_password: "not the password".into(),
+            new_password: "a brand new password".into(),
+        })
+        .await;
+    assert!(is_refused_with(
+        &wrong_current,
+        ApiErrorCode::InvalidCredentials
+    ));
+    owner
+        .change_password(&ChangePasswordRequest {
+            current_password: PASSWORD.into(),
+            new_password: "a brand new password".into(),
+        })
+        .await
+        .unwrap();
+    assert!(owner.current_user().await.is_ok());
+    assert!(
+        other_device
+            .current_user()
+            .await
+            .is_err_and(|error| error.needs_new_login())
+    );
+    let mut new_device = RestClient::new(instance.address.clone()).unwrap();
+    new_device
+        .login(&login("a brand new password"))
+        .await
+        .unwrap();
+    instance.stop().await;
 }

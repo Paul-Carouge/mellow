@@ -68,13 +68,26 @@ impl AppState {
     }
 }
 
-pub(crate) fn router(state: AppState) -> Router {
+/// `/api/v1/auth/*` and the signed-in user's own account.
+fn account_router() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/health", get(health))
         .route("/api/v1/auth/register", post(account_routes::register))
         .route("/api/v1/auth/login", post(account_routes::login))
         .route("/api/v1/auth/logout", post(account_routes::logout))
-        .route("/api/v1/users/@me", get(account_routes::current_user))
+        .route(
+            "/api/v1/users/@me",
+            get(account_routes::current_user).patch(account_routes::update_current_user),
+        )
+        .route(
+            "/api/v1/users/@me/password",
+            post(account_routes::change_password),
+        )
+}
+
+pub(crate) fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/api/v1/health", get(health))
+        .merge(account_router())
         .route(
             "/api/v1/users/@me/guilds",
             get(guild_routes::list_my_guilds),
