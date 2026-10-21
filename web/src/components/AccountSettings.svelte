@@ -1,6 +1,9 @@
 <script lang="ts">
+  /** Usernames are ASCII, so the browser's UTF-16 count matches the server's (account rules). */
+  const MAXIMUM_USERNAME_LENGTH = 32;
   import { tick } from "svelte";
 
+  import { ApiError } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import AccountEditForm from "./AccountEditForm.svelte";
   import Button from "./Button.svelte";
@@ -111,7 +114,11 @@
       notice = { form, text: successText };
       await close();
     } catch (error) {
-      errorMessage = describeError(error, failureSummary);
+      // No login was typed here: only the current password can be wrong.
+      errorMessage =
+        error instanceof ApiError && error.code === "INVALID_CREDENTIALS"
+          ? `${failureSummary}: the current password is wrong.`
+          : describeError(error, failureSummary);
     } finally {
       isBusy = false;
     }
@@ -193,7 +200,6 @@
         label="Display name"
         helper="Up to 32 characters. This is the name people see in chat."
         autocomplete="nickname"
-        maxlength={32}
         readonly={isBusy}
         bind:value={displayNameDraft}
         bind:element={firstField}
@@ -221,7 +227,7 @@
         autocomplete="username"
         autocapitalize="none"
         spellcheck={false}
-        maxlength={32}
+        maxlength={MAXIMUM_USERNAME_LENGTH}
         readonly={isBusy}
         bind:value={usernameDraft}
         bind:element={firstField}

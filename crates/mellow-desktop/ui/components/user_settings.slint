@@ -345,7 +345,10 @@ export component UserSettingsScreen inherits Rectangle {
     // Mirrors the server's rules (mellow-server domain/account_rules.rs); the server still decides.
     property <bool> can-save-display-name: display-name-draft != "" && display-name-draft != account-display-name;
     property <bool> can-save-username: username-draft != "" && username-draft != account-username && current-password-draft != "";
-    property <bool> is-new-password-long-enough: new-password-draft.character-count >= 10;
+    // As the server's account rules. shortcut: Slint counts grapheme clusters, the server counts
+    // chars, so only exotic passwords (combining marks, emoji sequences) are held back here.
+    property <int> minimum-password-length: 10;
+    property <bool> is-new-password-long-enough: new-password-draft.character-count >= minimum-password-length;
     property <bool> does-confirmation-match: confirm-password-draft == new-password-draft;
     property <bool> can-change-password: current-password-draft != "" && is-new-password-long-enough
         && confirm-password-draft != "" && does-confirmation-match;
@@ -689,7 +692,7 @@ export component UserSettingsScreen inherits Rectangle {
                                                 display-label: "NEW PASSWORD";
                                                 is-password: true;
                                                 // Same server rule as registration.
-                                                helper: "At least 10 characters.";
+                                                helper: "At least " + minimum-password-length + " characters.";
                                                 text <=> root.new-password-draft;
                                                 is-read-only: root.is-account-busy;
                                                 accepted => { root.save-open-form(); }

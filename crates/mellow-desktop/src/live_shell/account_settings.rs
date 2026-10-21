@@ -7,7 +7,7 @@ use mellow_protocol::{
     UpdateCurrentUserRequest,
 };
 use slint::SharedString;
-use zeroize::Zeroizing;
+use zeroize::Zeroize as _;
 
 use super::{
     LiveShell, SharedShell, apply_state_change, authenticated_rest, now_unix_milliseconds,
@@ -65,7 +65,15 @@ fn update_current_user(
     let Some(rest) = begin_request(shell) else {
         return;
     };
-    let request = async move { rest.update_current_user(&request).await };
+    let mut request = request;
+    // The password is wiped once sent, as on sign-in.
+    let request = async move {
+        let result = rest.update_current_user(&request).await;
+        if let Some(password) = request.current_password.as_mut() {
+            password.zeroize();
+        }
+        result
+    };
     run_request(shell, request, move |shell, result| {
         finish_request(shell);
         match result {
@@ -82,14 +90,16 @@ pub(super) fn change_password(shell: &SharedShell, current_password: &str, new_p
     let Some(rest) = begin_request(shell) else {
         return;
     };
-    let current_password = Zeroizing::new(current_password.to_owned());
-    let new_password = Zeroizing::new(new_password.to_owned());
+    let mut request = ChangePasswordRequest {
+        current_password: current_password.to_owned(),
+        new_password: new_password.to_owned(),
+    };
+    // Both passwords are wiped once sent, as on sign-in.
     let request = async move {
-        rest.change_password(&ChangePasswordRequest {
-            current_password: current_password.to_string(),
-            new_password: new_password.to_string(),
-        })
-        .await
+        let result = rest.change_password(&request).await;
+        request.current_password.zeroize();
+        request.new_password.zeroize();
+        result
     };
     run_request(shell, request, |shell, result| {
         finish_request(shell);
