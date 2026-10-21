@@ -87,6 +87,8 @@ pub struct LiveShell {
     pending_logouts: Vec<tokio::task::JoinHandle<()>>,
     /// Open while server settings show the Roles section of the selected guild.
     role_editor: Option<server_settings::RoleEditor>,
+    /// One role request at a time, across reopenings of server settings.
+    is_role_request_in_flight: bool,
 }
 
 pub type SharedShell = Rc<RefCell<LiveShell>>;
@@ -114,6 +116,7 @@ pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
         session_generation: 0,
         pending_logouts: Vec::new(),
         role_editor: None,
+        is_role_request_in_flight: false,
     }));
     window.set_is_signed_in(false);
     window.set_messages(shell.borrow().messages.clone().into());
@@ -641,6 +644,8 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
             };
             // After a re-identify the reader stays where they were, as after a resume.
             select_guild(shell, guild_id, previous_channel_id);
+            // The edited guild may be gone, or its roles changed while disconnected.
+            server_settings::refresh(&mut shell.borrow_mut());
             resend_failed_messages(shell);
         }
         GatewayUpdate::Event(event) => {
@@ -827,7 +832,8 @@ fn end_session(shell: &SharedShell, message: &str) -> tokio::task::JoinHandle<bo
     shell.displayed_message_ids.clear();
     shell.displayed_pending_nonces.clear();
     message_actions::reset_message_actions(&mut shell);
-    server_settings::close(&mut shell);
+    // The answer of a request in flight is dropped with the session, so nothing else clears it.
+    shell.is_role_request_in_flight = false;
     // Nothing of the previous account may stay on screen for the next one.
     refresh_header(&shell);
     refresh_server_items(&shell);
@@ -843,6 +849,8 @@ fn end_session(shell: &SharedShell, message: &str) -> tokio::task::JoinHandle<bo
         window.set_login_is_busy(false);
         show_login_error(&window, message);
     }
+    // After signing out, so the focus is not sent back to the hidden shell.
+    server_settings::close(&mut shell);
     forget
 }
 

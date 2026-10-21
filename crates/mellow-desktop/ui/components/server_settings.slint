@@ -621,6 +621,9 @@ export component ServerSettingsScreen inherits Rectangle {
     property <int> shake-swings-left;
     property <length> shake-offset;
     property <bool> is-delete-dialog-open;
+    // The role the dialog was opened for: if the selection moves to another role meanwhile (the
+    // role was deleted elsewhere), the dialog closes rather than offering to delete that one.
+    property <string> deleting-role-id;
     property <int> delete-button-focus-request-count;
     // The moved role's row takes focus again once Rust has rebuilt the list.
     property <string> role-id-to-focus;
@@ -832,13 +835,19 @@ export component ServerSettingsScreen inherits Rectangle {
                                                 }
                                             }
                                             clicked => { root.try-select-role(index); }
+                                            // Only a move Rust will make rebuilds the rows; a refused
+                                            // one would leave the id set to steal focus later.
                                             move-up => {
-                                                root.role-id-to-focus = role.id;
-                                                root.move-role-up(index);
+                                                if role.can-move-up && !root.is-role-action-busy {
+                                                    root.role-id-to-focus = role.id;
+                                                    root.move-role-up(index);
+                                                }
                                             }
                                             move-down => {
-                                                root.role-id-to-focus = role.id;
-                                                root.move-role-down(index);
+                                                if role.can-move-down && !root.is-role-action-busy {
+                                                    root.role-id-to-focus = role.id;
+                                                    root.move-role-down(index);
+                                                }
                                             }
                                         }
                                     }
@@ -926,7 +935,7 @@ export component ServerSettingsScreen inherits Rectangle {
                                                     display-label: "ROLE NAME";
                                                     helper: root.selected-role.is-everyone ? "@everyone can't be renamed." : "";
                                                     text <=> root.role-draft-name;
-                                                    is-read-only: !root.is-role-draft-editable || root.selected-role.is-everyone;
+                                                    is-read-only: !root.is-role-draft-editable || root.selected-role.is-everyone || root.is-role-action-busy;
                                                     edited => { root.role-draft-name-edited(); }
                                                 }
                                                 // @everyone has no colour on Discord either.
@@ -949,7 +958,7 @@ export component ServerSettingsScreen inherits Rectangle {
                                                             y: 0;
                                                             swatch-color: MellowComponent.roles-neutral-color;
                                                             is-selected: !root.role-draft-has-color;
-                                                            is-enabled: root.is-role-draft-editable;
+                                                            is-enabled: root.is-role-draft-editable && !root.is-role-action-busy;
                                                             label: "No colour";
                                                             chosen => { root.choose-role-color(-1); }
                                                         }
@@ -958,7 +967,7 @@ export component ServerSettingsScreen inherits Rectangle {
                                                             y: floor((index + 1) / swatch-grid.per-row) * swatch-grid.step;
                                                             swatch-color: preset;
                                                             is-selected: root.role-draft-has-color && preset == root.role-draft-color;
-                                                            is-enabled: root.is-role-draft-editable;
+                                                            is-enabled: root.is-role-draft-editable && !root.is-role-action-busy;
                                                             label: "Colour " + (index + 1);
                                                             chosen => { root.choose-role-color(index); }
                                                         }
@@ -971,7 +980,10 @@ export component ServerSettingsScreen inherits Rectangle {
                                                         changed focus-request-count => { self.focus(); }
                                                         label: "Delete role";
                                                         is-danger: true;
-                                                        clicked => { root.is-delete-dialog-open = true; }
+                                                        clicked => {
+                                                            root.deleting-role-id = root.selected-role.id;
+                                                            root.is-delete-dialog-open = true;
+                                                        }
                                                     }
                                                 }
                                             }
@@ -980,7 +992,7 @@ export component ServerSettingsScreen inherits Rectangle {
                                                 for permission[index] in root.permission-rows: PermissionRow {
                                                     permission: permission;
                                                     is-first: index == 0;
-                                                    is-enabled: root.is-role-draft-editable && !permission.is-locked;
+                                                    is-enabled: root.is-role-draft-editable && !permission.is-locked && !root.is-role-action-busy;
                                                     toggled => { root.toggle-role-permission(index); }
                                                 }
                                             }
@@ -1026,7 +1038,7 @@ export component ServerSettingsScreen inherits Rectangle {
         }
     }
 
-    if root.is-delete-dialog-open && root.has-selected-role: DeleteRoleDialog {
+    if root.is-delete-dialog-open && root.has-selected-role && root.selected-role.id == root.deleting-role-id: DeleteRoleDialog {
         width: root.width;
         height: root.height;
         role-name: root.selected-role.name;
