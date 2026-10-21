@@ -23,7 +23,7 @@ use crate::http::client_address::client_address_key;
 use crate::http::rate_limit::{
     AUTHENTICATION_ATTEMPTS_PER_ADDRESS, LOGIN_ATTEMPTS_PER_ACCOUNT,
     LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS, PASSWORD_CHECKS_PER_SESSION, PASSWORD_CHECKS_PER_USER,
-    PROFILE_WRITES_PER_SESSION,
+    PROFILE_WRITES_PER_SESSION, PROFILE_WRITES_PER_USER,
 };
 
 /// Enough of SHA-256 to make rate-limit keys unique per login or session while keeping them small.
@@ -142,11 +142,16 @@ pub(crate) async fn update_current_user(
     ApiJson(request): ApiJson<UpdateCurrentUserRequest>,
 ) -> Result<Json<CurrentUser>, ApiError> {
     let token = bearer_token(&headers)?;
-    // Per session, so a stolen session cannot keep the owner's devices from renaming.
+    // The user's budget counts only what the session's allowed, as for password checks.
+    let now = Instant::now();
     let within_profile_limit = state.rate_limiter.record_event(
         &format!("profile:{}", fixed_size_key(token)),
         PROFILE_WRITES_PER_SESSION,
-        Instant::now(),
+        now,
+    ) && state.rate_limiter.record_event(
+        &format!("profile:{}", user.id),
+        PROFILE_WRITES_PER_USER,
+        now,
     );
     if !within_profile_limit
         || (request.current_password.is_some() && !is_password_check_allowed(&state, &user, token))
