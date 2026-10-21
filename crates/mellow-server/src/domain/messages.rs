@@ -20,6 +20,7 @@ use crate::domain::message_rules::{
     normalize_line_endings, validate_message_content, validate_nonce,
 };
 use crate::domain::permissions::direct_message_permissions;
+use crate::domain::profile_images::fill_profile_images;
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::storage::attachments::{self as attachment_storage, StoredAttachment};
 use crate::storage::direct_messages as direct_message_storage;
@@ -83,6 +84,8 @@ fn message_from_stored(
             id: message.author_id,
             username: message.author_username,
             display_name: message.author_display_name,
+            avatar: None,
+            banner: None,
         },
         content: message.content,
         reply_to_id: message.reply_to_id,
@@ -330,11 +333,9 @@ impl Messages {
                         .await?
             {
                 let attachments = attachments_of(&pool, already_sent.id).await?;
-                return Ok(message_from_stored(
-                    already_sent,
-                    request.nonce,
-                    attachments,
-                ));
+                let mut message = message_from_stored(already_sent, request.nonce, attachments);
+                fill_profile_images(&pool, [&mut message.author]).await?;
+                return Ok(message);
             }
             if let Some(reply_to_id) = request.reply_to_id {
                 message_storage::find_message_in_channel(&pool, channel_id, reply_to_id)
@@ -360,17 +361,16 @@ impl Messages {
             if is_first_direct_message {
                 direct_messages::announce_conversation(&guilds, conversation_views, stored.id);
             }
+            let mut message = message_from_stored(stored, None, attachments);
+            fill_profile_images(&pool, [&mut message.author]).await?;
             // The nonce goes back to the sender only, never in the event.
             publish(
                 &guilds,
                 &audience,
-                &GatewayEvent::MessageCreate(message_from_stored(
-                    stored.clone(),
-                    None,
-                    attachments.clone(),
-                )),
+                &GatewayEvent::MessageCreate(message.clone()),
             );
-            Ok(message_from_stored(stored, request.nonce, attachments))
+            message.nonce = request.nonce;
+            Ok(message)
         })
         .await
         .map_err(|error| MessageError::Internal(Box::new(error)))?
@@ -402,13 +402,19 @@ impl Messages {
         let message_ids: Vec<Snowflake> = messages.iter().map(|message| message.id).collect();
         let mut attachments: HashMap<Snowflake, Vec<StoredAttachment>> =
             attachment_storage::attachments_of_messages(&self.pool, &message_ids).await?;
-        Ok(messages
+        let mut messages: Vec<Message> = messages
             .into_iter()
             .map(|message| {
                 let message_attachments = attachments.remove(&message.id).unwrap_or_default();
                 message_from_stored(message, None, message_attachments)
             })
-            .collect())
+            .collect();
+        fill_profile_images(
+            &self.pool,
+            messages.iter_mut().map(|message| &mut message.author),
+        )
+        .await?;
+        Ok(messages)
     }
 
     /// Only the author may edit, as on Discord, and only while still allowed to send: a muted
@@ -444,7 +450,8 @@ impl Messages {
         .await?
         .ok_or(MessageError::MessageNotFound)?;
         let attachments = attachments_of(&self.pool, updated.id).await?;
-        let updated = message_from_stored(updated, None, attachments);
+        let mut updated = message_from_stored(updated, None, attachments);
+        fill_profile_images(&self.pool, [&mut updated.author]).await?;
         publish(
             &self.guilds,
             &audience,

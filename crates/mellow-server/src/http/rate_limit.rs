@@ -114,6 +114,11 @@ pub(crate) const ATTACHMENT_UPLOADS_PER_USER: RateLimit = RateLimit {
     maximum_events: 10,
     window: Duration::from_mins(1),
 };
+/// Avatar and banner changes per user: each one decodes and encodes a picture (ADR-0021).
+pub(crate) const PROFILE_IMAGE_WRITES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_mins(10),
+};
 /// Attachment downloads per user: each one decrypts a whole file in memory (ADR-0020).
 pub(crate) const ATTACHMENT_DOWNLOADS_PER_USER: RateLimit = RateLimit {
     maximum_events: 120,

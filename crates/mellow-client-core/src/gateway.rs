@@ -29,6 +29,10 @@ const MAXIMUM_GATEWAY_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 
 /// What the gateway reports to the app, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "events are nearly every update and apps match on them; `Ready`, rare, is boxed"
+)]
 pub enum GatewayUpdate {
     /// A new session: replace all state with this (events may have been missed before it).
     Ready(Box<Ready>),
@@ -233,7 +237,7 @@ async fn run_connection(
                 if let Some(point) = resume_point.as_mut() {
                     point.last_sequence = sequence;
                 }
-                GatewayUpdate::Event(event)
+                GatewayUpdate::Event(*event)
             }
             Some(ServerFrame::InvalidSession) => {
                 *resume_point = None;
@@ -362,6 +366,8 @@ mod tests {
                     display_name: "Aurore".into(),
                     email: "aurore@example.org".into(),
                     is_instance_administrator: false,
+                    avatar: None,
+                    banner: None,
                 },
                 guilds: Vec::new(),
                 read_states: Vec::new(),
@@ -397,7 +403,7 @@ mod tests {
             &mut first,
             &ServerFrame::Dispatch {
                 sequence: 5,
-                event: typing.clone(),
+                event: Box::new(typing.clone()),
             },
         )
         .await;

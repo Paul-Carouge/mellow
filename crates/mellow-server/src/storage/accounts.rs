@@ -1,6 +1,6 @@
 //! Users and sessions tables (migration 0001).
 
-use mellow_protocol::Snowflake;
+use mellow_protocol::{ProfileImage, Snowflake};
 use sqlx::SqlitePool;
 
 use crate::domain::session_token::SessionTokenSha256;
@@ -17,6 +17,8 @@ pub struct StoredUser {
     pub password_hash: String,
     pub is_instance_administrator: bool,
     pub is_disabled: bool,
+    pub avatar: Option<ProfileImage>,
+    pub banner: Option<ProfileImage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,14 +61,27 @@ pub enum AccountStorageError {
     Database(#[from] sqlx::Error),
 }
 
-type StoredUserRow = (i64, String, String, String, String, bool, Option<i64>);
+type StoredUserRow = (
+    i64,
+    String,
+    String,
+    String,
+    String,
+    bool,
+    Option<i64>,
+    Option<i64>,
+    bool,
+    Option<i64>,
+    bool,
+);
 
 /// A macro, not a `const`, so queries can be built with `concat!` and stay `&'static str`
 /// (sqlx 0.9 refuses runtime-built SQL as an injection guard).
 macro_rules! select_user_columns {
     () => {
         "users.id, users.username, users.display_name, users.email, users.password_hash, \
-         users.is_instance_administrator, users.disabled_at_unix_milliseconds"
+         users.is_instance_administrator, users.disabled_at_unix_milliseconds, users.avatar_id, \
+         users.avatar_is_animated, users.banner_id, users.banner_is_animated"
     };
 }
 
@@ -76,8 +91,30 @@ fn to_sqlite_integer(value: u64) -> Result<i64, AccountStorageError> {
 }
 
 fn stored_user_from_row(row: StoredUserRow) -> Result<StoredUser, AccountStorageError> {
-    let (id, username, display_name, email, password_hash, is_instance_administrator, disabled_at) =
-        row;
+    let (
+        id,
+        username,
+        display_name,
+        email,
+        password_hash,
+        is_instance_administrator,
+        disabled_at,
+        avatar_id,
+        avatar_is_animated,
+        banner_id,
+        banner_is_animated,
+    ) = row;
+    let profile_image = |id: Option<i64>, is_animated: bool| {
+        id.map(|id| {
+            Ok::<_, AccountStorageError>(ProfileImage {
+                id: Snowflake::from_raw(
+                    u64::try_from(id).map_err(|_| AccountStorageError::IntegerOutOfRange)?,
+                ),
+                is_animated,
+            })
+        })
+        .transpose()
+    };
     Ok(StoredUser {
         id: Snowflake::from_raw(
             u64::try_from(id).map_err(|_| AccountStorageError::IntegerOutOfRange)?,
@@ -88,6 +125,8 @@ fn stored_user_from_row(row: StoredUserRow) -> Result<StoredUser, AccountStorage
         password_hash,
         is_instance_administrator,
         is_disabled: disabled_at.is_some(),
+        avatar: profile_image(avatar_id, avatar_is_animated)?,
+        banner: profile_image(banner_id, banner_is_animated)?,
     })
 }
 

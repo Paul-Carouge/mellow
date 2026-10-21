@@ -41,6 +41,10 @@ pub struct CurrentUser {
     pub display_name: String,
     pub email: String,
     pub is_instance_administrator: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<crate::ProfileImage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banner: Option<crate::ProfileImage>,
 }
 
 /// Body of `PATCH /api/v1/users/@me`; absent fields stay unchanged. Answered with the updated
@@ -203,6 +207,8 @@ mod tests {
                 display_name: "Aurore".into(),
                 email: "aurore@example.org".into(),
                 is_instance_administrator: false,
+                avatar: None,
+                banner: None,
             },
         };
         let password_change = ChangePasswordRequest {

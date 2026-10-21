@@ -23,10 +23,12 @@ clap.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 hkdf.workspace = true
+image.workspace = true
 hyper-util.workspace = true
 mellow-update.workspace = true
 ipnet.workspace = true
 mellow-protocol.workspace = true
+oxipng.workspace = true
 rpassword.workspace = true
 rustls-acme.workspace = true
 serde.workspace = true
@@ -37,6 +39,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 toml.workspace = true
 tracing.workspace = true
+webp-animation.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 zeroize.workspace = true
 

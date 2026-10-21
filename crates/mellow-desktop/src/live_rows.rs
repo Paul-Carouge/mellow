@@ -562,6 +562,8 @@ mod tests {
             id: Snowflake::from_raw(id),
             username: name.to_lowercase(),
             display_name: name.into(),
+            avatar: None,
+            banner: None,
         };
         let at_minute =
             |minute: u64, sequence: u16| Snowflake::from_parts(minute * 60_000, sequence).unwrap();
@@ -633,6 +635,8 @@ mod tests {
                 display_name: "Me".into(),
                 email: "me@example.org".into(),
                 is_instance_administrator: false,
+                avatar: None,
+                banner: None,
             },
             guilds: vec![guild.clone()],
             read_states: Vec::new(),
@@ -655,6 +659,8 @@ mod tests {
             display_name: "Me".into(),
             email: "me@example.org".into(),
             is_instance_administrator: false,
+            avatar: None,
+            banner: None,
         };
         let now = Utc.with_ymd_and_hms(2026, 10, 19, 10, 0, 0).unwrap();
         let minutes_ago = |minutes: i64| {
@@ -670,6 +676,8 @@ mod tests {
                 id: Snowflake::from_raw(author_id),
                 username: "someone".into(),
                 display_name: "Someone".into(),
+                avatar: None,
+                banner: None,
             },
             content: "earlier".into(),
             reply_to_id: None,
@@ -716,6 +724,8 @@ mod tests {
                 id: Snowflake::from_raw(1),
                 username: "aurore".into(),
                 display_name: "Aurore".into(),
+                avatar: None,
+                banner: None,
             },
             content: "hello".into(),
             reply_to_id: None,
@@ -764,6 +774,8 @@ mod tests {
             id: Snowflake::from_raw(7),
             username: "aurore".into(),
             display_name: "Aurore".into(),
+            avatar: None,
+            banner: None,
         };
         let mut state = ClientState::default();
         state.apply_ready(Ready {
@@ -774,6 +786,8 @@ mod tests {
                 display_name: "Me".into(),
                 email: "me@example.org".into(),
                 is_instance_administrator: false,
+                avatar: None,
+                banner: None,
             },
             guilds: Vec::new(),
             read_states: Vec::new(),
@@ -814,6 +828,8 @@ mod tests {
                 id: Snowflake::from_raw(id),
                 username: name.to_lowercase(),
                 display_name: name.into(),
+                avatar: None,
+                banner: None,
             },
             role_ids: Vec::new(),
             joined_at_unix_milliseconds: 0,
@@ -827,6 +843,8 @@ mod tests {
                 display_name: "Me".into(),
                 email: "me@example.org".into(),
                 is_instance_administrator: false,
+                avatar: None,
+                banner: None,
             },
             guilds: Vec::new(),
             read_states: Vec::new(),

@@ -8,6 +8,7 @@ pub(crate) mod authentication;
 pub(crate) mod client_address;
 mod guild_routes;
 mod message_routes;
+mod profile_image_routes;
 pub(crate) mod rate_limit;
 pub(crate) mod web_client;
 
@@ -40,6 +41,7 @@ pub(crate) struct AppState {
     pub(crate) guilds: Arc<Guilds>,
     pub(crate) messages: Arc<Messages>,
     pub(crate) attachments: Arc<crate::domain::attachments::Attachments>,
+    pub(crate) profile_images: Arc<crate::domain::profile_images::ProfileImages>,
     pub(crate) maximum_attachment_bytes: u64,
     pub(crate) events: Arc<EventHub>,
     pub(crate) gateway_sessions: Arc<crate::gateway::SessionRegistry>,
@@ -58,14 +60,22 @@ impl AppState {
         let events = Arc::new(EventHub::default());
         let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone(), events.clone()));
         let messages = Arc::new(Messages::new(pool.clone(), ids.clone(), guilds.clone()));
+        let attachments = Arc::new(crate::domain::attachments::Attachments::new(
+            pool.clone(),
+            ids.clone(),
+            messages.clone(),
+            attachment_files.clone(),
+            config.maximum_attachment_storage_bytes_per_user,
+        ));
         Self {
-            attachments: Arc::new(crate::domain::attachments::Attachments::new(
+            profile_images: Arc::new(crate::domain::profile_images::ProfileImages::new(
                 pool.clone(),
                 ids.clone(),
-                messages.clone(),
                 attachment_files,
-                config.maximum_attachment_storage_bytes_per_user,
+                attachments.clone(),
+                events.clone(),
             )),
+            attachments,
             maximum_attachment_bytes: config.maximum_attachment_bytes,
             accounts: Arc::new(Accounts::new(
                 pool.clone(),
@@ -101,6 +111,30 @@ fn account_router() -> Router<AppState> {
         .route(
             "/api/v1/users/@me/password",
             post(account_routes::change_password),
+        )
+        .route(
+            "/api/v1/users/@me/avatar",
+            put(profile_image_routes::put_avatar)
+                .delete(profile_image_routes::delete_avatar)
+                .layer(DefaultBodyLimit::max(
+                    profile_image_routes::MAXIMUM_PROFILE_IMAGE_BYTES,
+                )),
+        )
+        .route(
+            "/api/v1/users/@me/banner",
+            put(profile_image_routes::put_banner)
+                .delete(profile_image_routes::delete_banner)
+                .layer(DefaultBodyLimit::max(
+                    profile_image_routes::MAXIMUM_PROFILE_IMAGE_BYTES,
+                )),
+        )
+        .route(
+            "/api/v1/profile-images/{id}",
+            get(profile_image_routes::get_profile_image),
+        )
+        .route(
+            "/api/v1/profile-images/{id}/still",
+            get(profile_image_routes::get_profile_image_still),
         )
 }
 
@@ -324,6 +358,14 @@ pub(crate) mod tests {
         let events = Arc::new(EventHub::default());
         let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone(), events.clone()));
         let messages = Arc::new(Messages::new(pool.clone(), ids.clone(), guilds.clone()));
+        let files = test_attachment_files();
+        let attachments = Arc::new(crate::domain::attachments::Attachments::new(
+            pool.clone(),
+            ids.clone(),
+            messages.clone(),
+            files.clone(),
+            crate::config::DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER,
+        ));
         AppState {
             accounts: Arc::new(Accounts::new(
                 pool.clone(),
@@ -331,13 +373,14 @@ pub(crate) mod tests {
                 ids.clone(),
                 events.clone(),
             )),
-            attachments: Arc::new(crate::domain::attachments::Attachments::new(
+            profile_images: Arc::new(crate::domain::profile_images::ProfileImages::new(
                 pool.clone(),
                 ids.clone(),
-                messages.clone(),
-                test_attachment_files(),
-                crate::config::DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER,
+                files.clone(),
+                attachments.clone(),
+                events.clone(),
             )),
+            attachments,
             maximum_attachment_bytes: crate::config::DEFAULT_MAXIMUM_ATTACHMENT_BYTES,
             messages,
             events,
@@ -1640,6 +1683,224 @@ pub(crate) mod tests {
             "the kicked guest is no longer a member"
         );
         assert_eq!(bad_status, StatusCode::BAD_REQUEST);
+    }
+
+    fn picture_request(method: &str, path: &str, token: &str, bytes: Vec<u8>) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .body(Body::from(bytes))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // One scenario: upload, serve, show everywhere, replace, remove.
+    async fn animated_avatars_and_banners_are_stored_served_and_shown_with_their_owner() {
+        use crate::domain::image_processing::tests::{animated_gif, png};
+        use mellow_protocol::{Member, Message};
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let stranger = registered_token(&state, "stranger").await;
+
+        let (status, body) = send(
+            &state,
+            picture_request(
+                "PUT",
+                "/api/v1/users/@me/avatar",
+                &owner,
+                animated_gif(64, 64, 3),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let avatar = json::<CurrentUser>(&body).avatar.unwrap();
+        let (_, body) = send(
+            &state,
+            picture_request("PUT", "/api/v1/users/@me/banner", &owner, png(300, 100)),
+        )
+        .await;
+        let banner = json::<CurrentUser>(&body).banner.unwrap();
+        let (refused, _) = send(
+            &state,
+            picture_request(
+                "PUT",
+                "/api/v1/users/@me/avatar",
+                &owner,
+                b"<svg/>".to_vec(),
+            ),
+        )
+        .await;
+        let (_, body) = send(&state, authorized("GET", "/api/v1/users/@me", &owner, None)).await;
+        let me: CurrentUser = json(&body);
+
+        let image_path = format!("/api/v1/profile-images/{}", avatar.id);
+        let ((animated_status, animated), animated_headers) = send_from(
+            &state,
+            TEST_PEER,
+            authorized("GET", &image_path, &stranger, None),
+        )
+        .await;
+        let (_, still) = send(
+            &state,
+            authorized("GET", &format!("{image_path}/still"), &stranger, None),
+        )
+        .await;
+
+        let (_, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &format!("/api/v1/channels/{general}/messages"),
+                &owner,
+                Some(serde_json::json!({"content": "new look"})),
+            ),
+        )
+        .await;
+        let sent: Message = json(&body);
+        let (_, body) = send(
+            &state,
+            authorized(
+                "GET",
+                &format!("/api/v1/channels/{general}/messages"),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        let history: Vec<Message> = json(&body);
+        let guild_id = me_guild_id(&state, &owner).await;
+        let (_, body) = send(
+            &state,
+            authorized(
+                "GET",
+                &format!("/api/v1/guilds/{guild_id}/members"),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        let members: Vec<Member> = json(&body);
+
+        let (_, body) = send(
+            &state,
+            authorized("DELETE", "/api/v1/users/@me/avatar", &owner, None),
+        )
+        .await;
+        let without_avatar: CurrentUser = json(&body);
+        let (removed, _) = send(&state, authorized("GET", &image_path, &owner, None)).await;
+        pool.close().await;
+
+        assert!(avatar.is_animated);
+        assert!(!banner.is_animated);
+        assert_eq!(refused, StatusCode::BAD_REQUEST, "not a picture");
+        assert_eq!((me.avatar, me.banner), (Some(avatar), Some(banner)));
+        assert_eq!(animated_status, StatusCode::OK);
+        assert_eq!(&animated[..4], b"RIFF");
+        assert_eq!(&animated[8..12], b"WEBP");
+        assert_ne!(animated, still, "the still is its first frame only");
+        assert_eq!(
+            animated_headers.get(header::CONTENT_TYPE).unwrap(),
+            "image/webp"
+        );
+        assert!(
+            animated_headers
+                .get(header::CACHE_CONTROL)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("immutable")
+        );
+        assert_eq!(sent.author.avatar, Some(avatar));
+        assert_eq!(history[0].author.banner, Some(banner));
+        assert!(
+            members
+                .iter()
+                .any(|member| member.user.avatar == Some(avatar))
+        );
+        assert_eq!(without_avatar.avatar, None);
+        assert_eq!(without_avatar.banner, Some(banner));
+        assert_eq!(removed, StatusCode::NOT_FOUND, "a replaced version is gone");
+    }
+
+    #[tokio::test]
+    async fn an_animated_gif_attachment_becomes_a_smaller_webp_in_the_background() {
+        use crate::domain::image_processing::tests::animated_gif;
+        use mellow_protocol::Attachment;
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let optimizer = tokio::spawn(
+            crate::domain::attachments::optimize_attachments_in_background(
+                state.attachments.clone(),
+            ),
+        );
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let gif = animated_gif(120, 80, 4);
+        let mut upload = picture_request(
+            "POST",
+            &format!("/api/v1/channels/{general}/attachments"),
+            &owner,
+            gif.clone(),
+        );
+        upload
+            .headers_mut()
+            .insert("x-mellow-file-name", HeaderValue::from_static("party.gif"));
+        let (_, body) = send(&state, upload).await;
+        let uploaded: Attachment = json(&body);
+        send(
+            &state,
+            authorized(
+                "POST",
+                &format!("/api/v1/channels/{general}/messages"),
+                &owner,
+                Some(
+                    serde_json::json!({"content": "", "attachment_ids": [uploaded.id.to_string()]}),
+                ),
+            ),
+        )
+        .await;
+
+        let download_path = format!("/api/v1/attachments/{}", uploaded.id);
+        let mut downloaded = (Vec::new(), String::new());
+        for _ in 0..200 {
+            let ((_, bytes), headers) = send_from(
+                &state,
+                TEST_PEER,
+                authorized("GET", &download_path, &owner, None),
+            )
+            .await;
+            let content_type = headers
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            downloaded = (bytes.to_vec(), content_type);
+            if downloaded.1 == "image/webp" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        optimizer.abort();
+        let _cancelled = optimizer.await;
+        pool.close().await;
+
+        assert_eq!(uploaded.content_type, "image/gif", "answered as received");
+        assert_eq!(downloaded.1, "image/webp");
+        assert!(downloaded.0.len() < gif.len());
+    }
+
+    async fn me_guild_id(state: &AppState, token: &str) -> Snowflake {
+        let (_, body) = send(
+            state,
+            authorized("GET", "/api/v1/users/@me/guilds", token, None),
+        )
+        .await;
+        json::<Vec<mellow_protocol::GuildSummary>>(&body)[0].id
     }
 
     async fn owner_and_general_channel(state: &AppState) -> (String, Snowflake) {

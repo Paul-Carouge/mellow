@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use mellow_protocol::{
-    ChangePasswordRequest, CurrentUser, GatewayEvent, LoginRequest, PublicUser, RegisterRequest,
+    ChangePasswordRequest, CurrentUser, GatewayEvent, LoginRequest, RegisterRequest,
     SessionCreated, UpdateCurrentUserRequest,
 };
 use sqlx::SqlitePool;
@@ -217,6 +217,8 @@ impl Accounts {
             password_hash: new_user.password_hash,
             is_instance_administrator: new_user.is_instance_administrator,
             is_disabled: false,
+            avatar: None,
+            banner: None,
         })
     }
 
@@ -346,11 +348,7 @@ impl Accounts {
         self.events.publish_to_user_and_guilds(
             updated.id,
             &guild_ids,
-            &GatewayEvent::UserUpdate(PublicUser {
-                id: updated.id,
-                username: updated.username.clone(),
-                display_name: updated.display_name.clone(),
-            }),
+            &GatewayEvent::UserUpdate(crate::domain::profile_images::public_user(&updated)),
         );
         Ok(updated)
     }
@@ -484,12 +482,14 @@ fn current_user(user: StoredUser) -> CurrentUser {
         display_name: user.display_name,
         email: user.email,
         is_instance_administrator: user.is_instance_administrator,
+        avatar: user.avatar,
+        banner: user.banner,
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use mellow_protocol::{MELLOW_EPOCH_UNIX_MILLISECONDS, Snowflake};
+    use mellow_protocol::{MELLOW_EPOCH_UNIX_MILLISECONDS, PublicUser, Snowflake};
 
     use super::*;
     use crate::storage::{DatabaseKey, migrate_with_backup, open_encrypted_database};
@@ -890,6 +890,8 @@ pub(crate) mod tests {
                 id: renamed.id,
                 username: "aurore".into(),
                 display_name: "Aurore B".into(),
+                avatar: None,
+                banner: None,
             })
         );
         assert_eq!(
@@ -898,6 +900,8 @@ pub(crate) mod tests {
                 id: renamed.id,
                 username: renamed.username.clone(),
                 display_name: renamed.display_name.clone(),
+                avatar: None,
+                banner: None,
             })
         );
     }

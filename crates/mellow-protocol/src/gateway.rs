@@ -74,7 +74,7 @@ pub enum ServerFrame {
         #[serde(rename = "s")]
         sequence: u64,
         #[serde(rename = "d")]
-        event: GatewayEvent,
+        event: Box<GatewayEvent>,
     },
 }
 
@@ -187,11 +187,11 @@ mod tests {
 
         let dispatch = ServerFrame::Dispatch {
             sequence: 7,
-            event: GatewayEvent::TypingStart {
+            event: Box::new(GatewayEvent::TypingStart {
                 guild_id: Some(Snowflake::from_raw(1)),
                 channel_id: Snowflake::from_raw(2),
                 user_id: Snowflake::from_raw(3),
-            },
+            }),
         };
         let json = serde_json::to_value(&dispatch).unwrap();
         assert_eq!(json["op"], "dispatch");

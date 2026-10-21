@@ -25,6 +25,7 @@ use crate::domain::guild_rules::{
 use crate::domain::permissions::{
     RoleManager, channel_permissions, guild_permissions, is_visible_to_every_member,
 };
+use crate::domain::profile_images::fill_profile_images;
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::events::EventHub;
 use crate::storage::audit_log::{self as audit_log_storage, ChannelEntryFilter, NewAuditEntry};
@@ -96,6 +97,8 @@ fn member_from_stored(member: guild_storage::StoredMember) -> Member {
             id: member.user_id,
             username: member.username,
             display_name: member.display_name,
+            avatar: None,
+            banner: None,
         },
         role_ids: member.role_ids,
         joined_at_unix_milliseconds: member.joined_at_unix_milliseconds,
@@ -961,13 +964,12 @@ impl Guilds {
         let guild = self.get_guild(user_id, guild_id).await?;
         if is_new_member {
             if let Some(member) = guild_storage::find_member(&self.pool, guild_id, user_id).await? {
-                self.events.publish_to_guild(
-                    guild_id,
-                    &GatewayEvent::GuildMemberAdd {
-                        guild_id,
-                        member: member_from_stored(member),
-                    },
-                );
+                let mut member = member_from_stored(member);
+                fill_profile_images(&self.pool, [&mut member.user])
+                    .await
+                    .map_err(|error| GuildError::Internal(Box::new(error)))?;
+                self.events
+                    .publish_to_guild(guild_id, &GatewayEvent::GuildMemberAdd { guild_id, member });
             }
             if self.events.is_online(user_id) {
                 self.events.publish_to_guild(
@@ -1332,13 +1334,19 @@ impl Guilds {
         guild_id: Snowflake,
     ) -> Result<Vec<Member>, GuildError> {
         self.membership_and_permissions(guild_id, user_id).await?;
-        Ok(
+        let mut members: Vec<Member> =
             guild_storage::list_members(&self.pool, guild_id, MAXIMUM_MEMBERS_LISTED)
                 .await?
                 .into_iter()
                 .map(member_from_stored)
-                .collect(),
+                .collect();
+        fill_profile_images(
+            &self.pool,
+            members.iter_mut().map(|member| &mut member.user),
         )
+        .await
+        .map_err(|error| GuildError::Internal(Box::new(error)))?;
+        Ok(members)
     }
 
     pub(crate) async fn leave_guild(
@@ -1555,6 +1563,8 @@ impl Guilds {
                         id: ban.user_id,
                         username: ban.username,
                         display_name: ban.display_name,
+                        avatar: None,
+                        banner: None,
                     },
                     reason: ban.reason,
                     created_at_unix_milliseconds: ban.created_at_unix_milliseconds,
