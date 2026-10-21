@@ -625,14 +625,7 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
                 shell.loading_older_history_channel_ids.clear();
                 shell.failed_history_channel_ids.clear();
                 shell.history_generation += 1;
-                if let (Some(window), Some(user)) =
-                    (shell.window.upgrade(), shell.state.current_user())
-                {
-                    window.set_current_user_name(user.display_name.as_str().into());
-                    window.set_current_user_initial(
-                        shell_rows::first_letter(&user.display_name).into(),
-                    );
-                }
+                refresh_user_panel(&shell);
                 (shell.selected_guild_id, shell.selected_channel_id)
             };
             set_notice("");
@@ -746,11 +739,23 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
             server_settings::refresh(&mut shell.borrow_mut());
         }
         StateChange::Presence => refresh_member_rows(&shell.borrow()),
+        StateChange::Users => {
+            refresh_user_panel(&shell.borrow());
+            refresh_member_rows(&shell.borrow());
+            refresh_messages(&mut shell.borrow_mut());
+        }
         StateChange::Messages { .. } | StateChange::Members { .. } | StateChange::ReadStates => {}
     }
     let shell = shell.borrow();
     refresh_server_items(&shell);
     refresh_channel_rows(&shell);
+}
+
+fn refresh_user_panel(shell: &LiveShell) {
+    if let (Some(window), Some(user)) = (shell.window.upgrade(), shell.state.current_user()) {
+        window.set_current_user_name(user.display_name.as_str().into());
+        window.set_current_user_initial(shell_rows::first_letter(&user.display_name).into());
+    }
 }
 
 /// Revokes the session on the server in the background and goes back to the sign-in screen.

@@ -38,6 +38,18 @@ pub(crate) const LOGIN_ATTEMPTS_PER_ACCOUNT: RateLimit = RateLimit {
     window: Duration::from_mins(15),
 };
 
+/// Password changes per user: each one costs two Argon2 runs, and a stolen session must not be
+/// able to guess the current password quickly.
+pub(crate) const PASSWORD_CHANGE_ATTEMPTS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_mins(15),
+};
+/// Username and display name changes per user: each one is fanned out to every shared guild.
+pub(crate) const PROFILE_WRITES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_secs(60),
+};
+
 /// Invite redemptions per client address: invite codes must not be guessable by brute force.
 pub(crate) const INVITE_ATTEMPTS_PER_ADDRESS: RateLimit = RateLimit {
     maximum_events: 30,

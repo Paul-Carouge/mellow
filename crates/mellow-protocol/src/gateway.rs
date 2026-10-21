@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Channel, CurrentUser, Guild, Member, Message, ReadState, Role, Snowflake};
+use crate::{Channel, CurrentUser, Guild, Member, Message, PublicUser, ReadState, Role, Snowflake};
 
 pub const GATEWAY_VERSION: u32 = 1;
 
@@ -151,6 +151,9 @@ pub enum GatewayEvent {
         user_id: Snowflake,
         status: PresenceStatus,
     },
+    /// A user changed their username or display name. Sent to that user and to every member of a
+    /// guild they share.
+    UserUpdate(PublicUser),
 }
 
 #[cfg(test)]

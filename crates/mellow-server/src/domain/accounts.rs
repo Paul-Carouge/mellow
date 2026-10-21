@@ -1,8 +1,12 @@
-//! Account use cases: register, create by the administrator, log in, authenticate, log out.
+//! Account use cases: register, create by the administrator, log in, authenticate, log out,
+//! rename, change the password.
 
 use std::time::Duration;
 
-use mellow_protocol::{CurrentUser, LoginRequest, RegisterRequest, SessionCreated};
+use mellow_protocol::{
+    ChangePasswordRequest, CurrentUser, GatewayEvent, LoginRequest, PublicUser, RegisterRequest,
+    SessionCreated, UpdateCurrentUserRequest,
+};
 use sqlx::SqlitePool;
 use zeroize::Zeroizing;
 
@@ -18,7 +22,9 @@ use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::storage::accounts::{
     AccountStorageError, NewSession, NewUser, StoredUser, delete_expired_sessions, delete_session,
     find_session_owner, find_user_by_login, insert_session, insert_user, record_session_use,
+    replace_password_and_delete_other_sessions, update_user_names,
 };
+use crate::storage::guilds::{GuildStorageError, list_user_guilds};
 
 /// A session lasts 90 days, then the user signs in again.
 const SESSION_LIFETIME: Duration = Duration::from_hours(90 * 24);
@@ -67,6 +73,12 @@ impl From<PasswordHashError> for AccountError {
             PasswordHashError::Busy => Self::ServerBusy,
             other => Self::Internal(Box::new(other)),
         }
+    }
+}
+
+impl From<GuildStorageError> for AccountError {
+    fn from(error: GuildStorageError) -> Self {
+        Self::Internal(Box::new(error))
     }
 }
 
@@ -269,6 +281,86 @@ impl Accounts {
         let token_sha256 = session_token_sha256(token).ok_or(AccountError::Unauthorized)?;
         delete_session(&self.pool, &token_sha256).await?;
         self.events.disconnect_token(&token_sha256);
+        Ok(())
+    }
+
+    /// Changes the signed-in user's username and display name, and tells everyone who can see them.
+    ///
+    /// # Errors
+    /// Invalid input, or a username taken by another account.
+    pub async fn update_current_user(
+        &self,
+        user: CurrentUser,
+        request: UpdateCurrentUserRequest,
+    ) -> Result<CurrentUser, AccountError> {
+        let username = request.username.unwrap_or_else(|| user.username.clone());
+        validate_username(&username)?;
+        let display_name = match request.display_name {
+            Some(display_name) => normalize_display_name(&display_name)?,
+            None => user.display_name.clone(),
+        };
+        if username == user.username && display_name == user.display_name {
+            return Ok(user);
+        }
+        update_user_names(&self.pool, user.id, &username, &display_name).await?;
+        let updated = CurrentUser {
+            username,
+            display_name,
+            ..user
+        };
+        let guild_ids: Vec<_> = list_user_guilds(&self.pool, updated.id)
+            .await?
+            .into_iter()
+            .map(|(guild_id, _)| guild_id)
+            .collect();
+        self.events.publish_to_user_and_guilds(
+            updated.id,
+            &guild_ids,
+            &GatewayEvent::UserUpdate(PublicUser {
+                id: updated.id,
+                username: updated.username.clone(),
+                display_name: updated.display_name.clone(),
+            }),
+        );
+        Ok(updated)
+    }
+
+    /// Replaces the password once the current one is proven, and signs out every other session of
+    /// the user; the session behind `token` stays valid.
+    ///
+    /// # Errors
+    /// `Unauthorized` for an invalid token, `InvalidCredentials` for a wrong current password,
+    /// invalid input for a new password of the wrong length.
+    pub async fn change_password(
+        &self,
+        token: &str,
+        request: ChangePasswordRequest,
+        now_unix_milliseconds: u64,
+    ) -> Result<(), AccountError> {
+        let current_password = Zeroizing::new(request.current_password);
+        let new_password = Zeroizing::new(request.new_password);
+        validate_password_maximum_length(&current_password)?;
+        validate_password_length(&new_password)?;
+        let token_sha256 = session_token_sha256(token).ok_or(AccountError::Unauthorized)?;
+        let owner = find_session_owner(&self.pool, &token_sha256, now_unix_milliseconds)
+            .await?
+            .ok_or(AccountError::Unauthorized)?;
+        if owner.user.is_disabled {
+            return Err(AccountError::AccountDisabled);
+        }
+        if !verify_password(current_password, Some(owner.user.password_hash)).await? {
+            return Err(AccountError::InvalidCredentials);
+        }
+        let password_hash = hash_password(new_password).await?;
+        replace_password_and_delete_other_sessions(
+            &self.pool,
+            owner.user.id,
+            &password_hash,
+            &token_sha256,
+        )
+        .await?;
+        self.events
+            .disconnect_user_except_token(owner.user.id, &token_sha256);
         Ok(())
     }
 
@@ -646,5 +738,160 @@ pub(crate) mod tests {
             Err(AccountError::AccountDisabled)
         ));
         assert!(matches!(new_login, Err(AccountError::AccountDisabled)));
+    }
+
+    #[tokio::test]
+    async fn renaming_validates_refuses_taken_usernames_and_tells_the_user_sessions() {
+        let (_directory, pool) = migrated_pool().await;
+        let events = std::sync::Arc::new(crate::events::EventHub::default());
+        let accounts = Accounts::new(
+            pool.clone(),
+            RegistrationMode::Open,
+            std::sync::Arc::default(),
+            events.clone(),
+        );
+        let aurore = accounts
+            .register(register_request("aurore", "aurore@example.org"), NOW)
+            .await
+            .unwrap();
+        accounts
+            .register(register_request("basile", "basile@example.org"), NOW)
+            .await
+            .unwrap();
+        let (session_key, mut session_events) = events
+            .register_session(aurore.user.id, [9; 32], 10)
+            .unwrap();
+        events.activate_session(session_key, &[]);
+        while session_events.try_recv().is_ok() {}
+
+        let unchanged = accounts
+            .update_current_user(aurore.user.clone(), UpdateCurrentUserRequest::default())
+            .await
+            .unwrap();
+        let nothing_published = session_events.try_recv().is_err();
+        let taken = accounts
+            .update_current_user(
+                aurore.user.clone(),
+                UpdateCurrentUserRequest {
+                    username: Some("basile".into()),
+                    display_name: None,
+                },
+            )
+            .await;
+        let invalid = accounts
+            .update_current_user(
+                aurore.user.clone(),
+                UpdateCurrentUserRequest {
+                    username: None,
+                    display_name: Some("   ".into()),
+                },
+            )
+            .await;
+        let renamed = accounts
+            .update_current_user(
+                aurore.user.clone(),
+                UpdateCurrentUserRequest {
+                    username: Some("aurore.b".into()),
+                    display_name: Some("  Aurore B  ".into()),
+                },
+            )
+            .await
+            .unwrap();
+        let published = session_events.try_recv().unwrap().payload_json.to_string();
+        let stored = accounts.authenticate(&aurore.token, NOW).await.unwrap();
+        pool.close().await;
+
+        assert_eq!(unchanged, aurore.user);
+        assert!(nothing_published);
+        assert!(matches!(taken, Err(AccountError::UsernameTaken)));
+        assert!(matches!(
+            invalid,
+            Err(AccountError::InvalidInput(
+                AccountRuleViolation::InvalidDisplayName
+            ))
+        ));
+        assert_eq!(
+            (renamed.username.as_str(), renamed.display_name.as_str()),
+            ("aurore.b", "Aurore B")
+        );
+        assert_eq!(stored, renamed);
+        let event: GatewayEvent = serde_json::from_str(&published).unwrap();
+        assert_eq!(
+            event,
+            GatewayEvent::UserUpdate(PublicUser {
+                id: renamed.id,
+                username: renamed.username.clone(),
+                display_name: renamed.display_name.clone(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn changing_the_password_needs_the_current_one_and_signs_out_the_other_sessions() {
+        let (_directory, pool) = migrated_pool().await;
+        let accounts = Accounts::new(
+            pool.clone(),
+            RegistrationMode::Open,
+            std::sync::Arc::default(),
+            std::sync::Arc::default(),
+        );
+        let this_device = accounts
+            .register(register_request("aurore", "aurore@example.org"), NOW)
+            .await
+            .unwrap();
+        let other_device = accounts
+            .login(login_request("aurore", PASSWORD), NOW)
+            .await
+            .unwrap();
+        let change = |current: &str, new: &str| ChangePasswordRequest {
+            current_password: current.into(),
+            new_password: new.into(),
+        };
+
+        let wrong_current = accounts
+            .change_password(
+                &this_device.token,
+                change("not the password", "a brand new password"),
+                NOW,
+            )
+            .await;
+        let too_short = accounts
+            .change_password(&this_device.token, change(PASSWORD, "short"), NOW)
+            .await;
+        let other_still_valid = accounts.authenticate(&other_device.token, NOW).await;
+        accounts
+            .change_password(
+                &this_device.token,
+                change(PASSWORD, "a brand new password"),
+                NOW,
+            )
+            .await
+            .unwrap();
+        let this_after = accounts.authenticate(&this_device.token, NOW).await;
+        let other_after = accounts.authenticate(&other_device.token, NOW).await;
+        let old_password = accounts.login(login_request("aurore", PASSWORD), NOW).await;
+        let new_password = accounts
+            .login(login_request("aurore", "a brand new password"), NOW)
+            .await;
+        pool.close().await;
+
+        assert!(matches!(
+            wrong_current,
+            Err(AccountError::InvalidCredentials)
+        ));
+        assert!(matches!(
+            too_short,
+            Err(AccountError::InvalidInput(
+                AccountRuleViolation::InvalidPasswordLength
+            ))
+        ));
+        assert!(other_still_valid.is_ok());
+        assert!(this_after.is_ok());
+        assert!(matches!(other_after, Err(AccountError::Unauthorized)));
+        assert!(matches!(
+            old_password,
+            Err(AccountError::InvalidCredentials)
+        ));
+        assert!(new_password.is_ok());
     }
 }

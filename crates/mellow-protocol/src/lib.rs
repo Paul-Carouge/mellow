@@ -10,7 +10,8 @@ mod permissions;
 mod snowflake;
 
 pub use accounts::{
-    ApiErrorBody, ApiErrorCode, CurrentUser, LoginRequest, RegisterRequest, SessionCreated,
+    ApiErrorBody, ApiErrorCode, ChangePasswordRequest, CurrentUser, LoginRequest, RegisterRequest,
+    SessionCreated, UpdateCurrentUserRequest,
 };
 pub use gateway::{
     ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, PresenceStatus, Ready, ServerFrame,
