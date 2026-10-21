@@ -4,6 +4,7 @@
 //! back through Slint's event loop (`slint::spawn_local`), so no lock is ever shared with the UI.
 
 mod message_actions;
+mod server_settings;
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
@@ -25,6 +26,7 @@ use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
 use crate::generated_ui::{AppWindow, MessageRow};
+use crate::role_settings::MoveDirection;
 use crate::session_store::{self, StoredSession};
 use crate::{clipboard, live_rows, shell_rows};
 
@@ -83,6 +85,8 @@ pub struct LiveShell {
     /// Awaited before exit: the runtime drops unfinished tasks, so the revocation might never leave.
     /// Every sign-out still reaching its instance: signing out twice must not orphan the first.
     pending_logouts: Vec<tokio::task::JoinHandle<()>>,
+    /// Open while server settings show the Roles section of the selected guild.
+    role_editor: Option<server_settings::RoleEditor>,
 }
 
 pub type SharedShell = Rc<RefCell<LiveShell>>;
@@ -109,6 +113,7 @@ pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
         clipboard: None,
         session_generation: 0,
         pending_logouts: Vec::new(),
+        role_editor: None,
     }));
     window.set_is_signed_in(false);
     window.set_messages(shell.borrow().messages.clone().into());
@@ -345,6 +350,7 @@ fn connect_callbacks(window: &AppWindow, shell: &SharedShell) {
         message_actions::delete_message(&shell_for_callback, row_index);
     });
 
+    connect_server_settings_callbacks(window, shell);
     window.on_link_clicked(|_url| {
         // shortcut: links are not opened yet; opening needs the confirmation dialog of DESIGN.md §5.4.
     });
@@ -353,6 +359,47 @@ fn connect_callbacks(window: &AppWindow, shell: &SharedShell) {
 enum Credentials {
     Login(LoginRequest),
     Register(RegisterRequest),
+}
+
+fn connect_server_settings_callbacks(window: &AppWindow, shell: &SharedShell) {
+    let shell_for_callback = shell.clone();
+    window.on_open_server_settings(move || server_settings::open(&shell_for_callback));
+    let shell_for_callback = shell.clone();
+    window.on_close_server_settings(move || {
+        server_settings::close(&mut shell_for_callback.borrow_mut());
+    });
+    let shell_for_callback = shell.clone();
+    window.on_select_role(move |row_index| {
+        server_settings::select_role(&shell_for_callback, row_index);
+    });
+    let shell_for_callback = shell.clone();
+    window.on_role_draft_name_edited(move || server_settings::edit_draft_name(&shell_for_callback));
+    let shell_for_callback = shell.clone();
+    window.on_choose_role_color(move |preset_index| {
+        server_settings::choose_color(&shell_for_callback, preset_index);
+    });
+    let shell_for_callback = shell.clone();
+    window.on_toggle_role_permission(move |row_index| {
+        server_settings::toggle_permission(&shell_for_callback, row_index);
+    });
+    let shell_for_callback = shell.clone();
+    window.on_save_role_changes(move || server_settings::save_changes(&shell_for_callback));
+    let shell_for_callback = shell.clone();
+    window.on_reset_role_changes(move || server_settings::reset_changes(&shell_for_callback));
+    let shell_for_callback = shell.clone();
+    window.on_create_role(move || server_settings::create_role(&shell_for_callback));
+    let shell_for_callback = shell.clone();
+    window.on_delete_role(move |row_index| {
+        server_settings::delete_role(&shell_for_callback, row_index);
+    });
+    let shell_for_callback = shell.clone();
+    window.on_move_role_up(move |row_index| {
+        server_settings::move_role(&shell_for_callback, row_index, MoveDirection::Up);
+    });
+    let shell_for_callback = shell.clone();
+    window.on_move_role_down(move |row_index| {
+        server_settings::move_role(&shell_for_callback, row_index, MoveDirection::Down);
+    });
 }
 
 fn device_name() -> String {
@@ -647,6 +694,8 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
             if guild_is_gone {
                 let first_guild_id = shell.borrow().state.guilds().first().map(|guild| guild.id);
                 select_guild(shell, first_guild_id, None);
+                // Closes server settings of the guild that is gone.
+                server_settings::refresh(&mut shell.borrow_mut());
                 return;
             }
             let channel_is_gone = {
@@ -680,6 +729,7 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
             if can_manage_messages_changed {
                 refresh_messages(&mut shell.borrow_mut());
             }
+            server_settings::refresh(&mut shell.borrow_mut());
         }
         StateChange::Messages { channel_id } if Some(channel_id) == selected_channel_id => {
             refresh_messages(&mut shell.borrow_mut());
@@ -687,6 +737,8 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
         }
         StateChange::Members { guild_id } if Some(guild_id) == selected_guild_id => {
             refresh_member_rows(&shell.borrow());
+            // Member counts per role.
+            server_settings::refresh(&mut shell.borrow_mut());
         }
         StateChange::Presence => refresh_member_rows(&shell.borrow()),
         StateChange::Messages { .. } | StateChange::Members { .. } | StateChange::ReadStates => {}
@@ -775,6 +827,7 @@ fn end_session(shell: &SharedShell, message: &str) -> tokio::task::JoinHandle<bo
     shell.displayed_message_ids.clear();
     shell.displayed_pending_nonces.clear();
     message_actions::reset_message_actions(&mut shell);
+    server_settings::close(&mut shell);
     // Nothing of the previous account may stay on screen for the next one.
     refresh_header(&shell);
     refresh_server_items(&shell);
@@ -871,6 +924,8 @@ fn refresh_header(shell: &LiveShell) {
                 .position(|candidate| candidate.id == guild.id)
         })
         .map_or(-1, shell_rows::saturating_int);
+    window
+        .set_can_open_server_settings(guild.is_some_and(server_settings::can_open_server_settings));
     window.set_server_name(
         guild
             .map_or(HOME_SERVER_NAME, |guild| guild.name.as_str())

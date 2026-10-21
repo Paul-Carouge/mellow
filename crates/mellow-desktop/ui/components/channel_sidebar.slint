@@ -1,6 +1,6 @@
 import { ListView } from "std-widgets.slint";
 import { MellowColor, MellowComponent, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
-import { Avatar, IconButton, MentionBadge, PresenceStatus } from "primitives.slint";
+import { Avatar, ContextMenuItem, IconButton, MentionBadge, PresenceStatus } from "primitives.slint";
 
 // Categories and channels flattened into one list, so ListView can virtualize long servers.
 export struct ChannelListRow {
@@ -255,16 +255,95 @@ export component ChannelSidebar inherits Rectangle {
     in property <bool> has-update-available;
     in property <int> settings-button-focus-request-count;
     callback open-user-settings();
+    // Server menu (DESIGN.md §5.3). Only "Server settings" exists so far, so without it the header
+    // stays plain text.
+    in property <bool> can-open-server-settings;
+    // Each increment moves focus to the server header (when server settings close).
+    in property <int> server-header-focus-request-count;
+    callback open-server-settings();
+    changed server-header-focus-request-count => { header-focus.focus(); }
+
+    function open-server-menu() {
+        if root.can-open-server-settings {
+            server-menu.show();
+        }
+    }
 
     width: MellowComponent.sidebar-width;
     background: MellowComponent.sidebar-background;
 
-    VerticalLayout {
+    // Esc and clicks outside close it; Slint then gives focus back to the header.
+    server-menu := PopupWindow {
+        x: MellowComponent.sidebar-header-menu-margin;
+        y: MellowComponent.sidebar-header-height + MellowComponent.sidebar-header-menu-margin;
+        width: root.width - 2 * MellowComponent.sidebar-header-menu-margin;
+        close-policy: close-on-click-outside;
+
         Rectangle {
+            background: MellowComponent.context-menu-background;
+            border-radius: MellowComponent.context-menu-radius;
+            border-width: MellowComponent.context-menu-border-width;
+            border-color: MellowComponent.context-menu-border;
+            accessible-role: list;
+            accessible-label: "Server menu";
+            VerticalLayout {
+                padding: MellowComponent.context-menu-padding;
+                settings-item := ContextMenuItem {
+                    label: "Server settings";
+                    icon: @image-url("../../icons/gear-six.svg");
+                    init => { self.focus(); }
+                    activated => {
+                        server-menu.close();
+                        root.open-server-settings();
+                    }
+                }
+            }
+        }
+    }
+
+    VerticalLayout {
+        header := Rectangle {
             height: MellowComponent.sidebar-header-height;
+            background: root.can-open-server-settings && (header-touch.has-hover || server-menu.is-open)
+                ? MellowComponent.sidebar-header-background-hover : transparent;
+
+            // A button opening the server menu only when the menu has something in it; plain text
+            // otherwise. Hidden items leave the accessibility tree and the Tab order.
+            Rectangle {
+                visible: !root.can-open-server-settings;
+                accessible-role: text;
+                accessible-label: root.server-name;
+            }
+            Rectangle {
+                visible: root.can-open-server-settings;
+                accessible-role: button;
+                accessible-label: root.server-name;
+                accessible-expandable: true;
+                accessible-expanded: server-menu.is-open;
+                accessible-action-default => { root.open-server-menu(); }
+                forward-focus: header-focus;
+
+                header-focus := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == " " || event.text == "\n" {
+                            root.open-server-menu();
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+                header-touch := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => {
+                        header-focus.focus();
+                        root.open-server-menu();
+                    }
+                }
+            }
             HorizontalLayout {
                 padding-left: MellowComponent.sidebar-header-padding-inline;
                 padding-right: MellowComponent.sidebar-header-padding-inline;
+                spacing: MellowSpace.xs;
                 Text {
                     text: server-name;
                     color: MellowComponent.sidebar-header-text;
@@ -272,8 +351,24 @@ export component ChannelSidebar inherits Rectangle {
                     font-weight: MellowType.heading-md.font-weight;
                     vertical-alignment: center;
                     overflow: elide;
-                    accessible-role: text;
+                    horizontal-stretch: 1;
+                    accessible-role: none;
                 }
+                // Chevron, or a cross while the menu is open, as on Discord.
+                if root.can-open-server-settings: VerticalLayout {
+                    alignment: center;
+                    Image {
+                        source: server-menu.is-open ? @image-url("../../icons/x.svg") : @image-url("../../icons/caret-down.svg");
+                        colorize: MellowComponent.sidebar-header-text;
+                        width: MellowComponent.sidebar-header-chevron-size;
+                        height: self.width;
+                        accessible-role: none;
+                    }
+                }
+            }
+            if header-focus.has-focus: Rectangle {
+                border-width: MellowComponent.focus-ring-width;
+                border-color: MellowComponent.focus-ring-color;
             }
             Rectangle {
                 y: parent.height - 1px;

@@ -6,7 +6,7 @@ export enum UpdateStatus { unknown, checking, up-to-date, available, downloading
 
 // One item of the settings navigation (DESIGN.md §6.43). The danger item ("Sign out") fills red on
 // hover like danger menu items; keyboard focus shows only the ring, as in context menus.
-component SettingsNavItem inherits Rectangle {
+export component SettingsNavItem inherits Rectangle {
     in property <string> label;
     in property <bool> is-selected;
     in property <bool> is-danger;
@@ -56,7 +56,7 @@ component SettingsNavItem inherits Rectangle {
 
 // Uppercase section label, as Discord's settings headers (DESIGN.md §8: the source string stays in
 // sentence case for screen readers; Slint has no text-transform, so the capitals are written here).
-component SectionLabel inherits Text {
+export component SectionLabel inherits Text {
     in property <string> label;
     accessible-label: label;
     color: MellowComponent.settings-section-label-text;
@@ -67,7 +67,7 @@ component SectionLabel inherits Text {
 }
 
 // Discord's round close button with "Esc" under it, at the trailing top of the page.
-component CloseButton inherits VerticalLayout {
+export component CloseButton inherits VerticalLayout {
     callback clicked();
     spacing: MellowComponent.settings-close-label-gap;
     alignment: start;

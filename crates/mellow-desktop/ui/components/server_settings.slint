@@ -1,0 +1,1054 @@
+import { ListView, ScrollView } from "std-widgets.slint";
+import { MellowComponent, MellowType } from "../tokens.slint";
+import { Button, IconButton, TextField } from "primitives.slint";
+import { CloseButton, SectionLabel, SettingsNavItem } from "user_settings.slint";
+
+// One role of the server, highest first and @everyone last (DESIGN.md §5.8).
+export struct RoleListRow {
+    id: string,
+    name: string,
+    color: color,
+    has-color: bool,
+    member-count: int,
+    is-everyone: bool,
+    // Above the signed-in user's highest role: shown, never editable.
+    is-locked: bool,
+    can-move-up: bool,
+    can-move-down: bool,
+}
+
+// One permission switch of the selected role, in display order.
+export struct RolePermissionRow {
+    group: string,
+    // The first permission of its group: the group header goes above it.
+    starts-group: bool,
+    label: string,
+    description: string,
+    is-sensitive: bool,
+    is-granted: bool,
+    // The signed-in user cannot grant or remove it (they do not hold it).
+    is-locked: bool,
+}
+
+component RoleRow inherits Rectangle {
+    in property <RoleListRow> role;
+    in property <bool> is-selected;
+    callback clicked();
+    callback move-up();
+    callback move-down();
+    height: MellowComponent.roles-row-height + MellowComponent.roles-row-gap;
+    forward-focus: focus-scope;
+    accessible-role: list-item;
+    accessible-label: role.name + ", " + (role.member-count == 1 ? "1 member" : role.member-count + " members");
+    accessible-description: role.is-locked ? "You can only edit roles below your highest role."
+        : role.is-everyone ? "" : "Ctrl+Shift+Up or Ctrl+Shift+Down to move it.";
+    accessible-item-selected: is-selected;
+    accessible-action-default => { root.clicked(); }
+
+    property <bool> is-highlighted: touch.has-hover || focus-scope.has-focus;
+    // Shown on hover and keyboard focus only, like Discord's drag handle; the shortcut works without them.
+    property <bool> shows-move-buttons: !role.is-everyone && (is-highlighted || up-button.has-keyboard-focus || down-button.has-keyboard-focus);
+    property <color> text-color: is-selected ? MellowComponent.roles-row-text-selected
+        : is-highlighted ? MellowComponent.roles-row-text-hover : MellowComponent.roles-row-text;
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            if event.modifiers.control && event.modifiers.shift && event.text == Key.UpArrow {
+                if root.role.can-move-up {
+                    root.move-up();
+                }
+                return accept;
+            }
+            if event.modifiers.control && event.modifiers.shift && event.text == Key.DownArrow {
+                if root.role.can-move-down {
+                    root.move-down();
+                }
+                return accept;
+            }
+            reject
+        }
+    }
+
+    Rectangle {
+        y: 0;
+        height: MellowComponent.roles-row-height;
+        border-radius: MellowComponent.roles-row-radius;
+        background: root.is-selected ? MellowComponent.roles-row-background-selected
+            : root.is-highlighted ? MellowComponent.roles-row-background-hover : transparent;
+        border-width: focus-scope.has-focus ? MellowComponent.focus-ring-width : 0px;
+        border-color: MellowComponent.focus-ring-color;
+
+        // The buttons sit inside the touch area, so hovering them keeps the row hovered.
+        touch := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.clicked(); }
+
+            HorizontalLayout {
+                padding-left: MellowComponent.roles-row-padding-inline;
+                padding-right: MellowComponent.roles-row-padding-inline;
+                spacing: MellowComponent.roles-row-icon-gap;
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: MellowComponent.roles-row-dot-size;
+                        height: self.width;
+                        border-radius: self.width / 2;
+                        background: root.role.has-color ? root.role.color : MellowComponent.roles-neutral-color;
+                    }
+                }
+                Text {
+                    text: root.role.name;
+                    color: root.text-color;
+                    font-size: MellowType.channel-name.font-size;
+                    font-weight: MellowType.channel-name.font-weight;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    accessible-role: none;
+                }
+                if root.role.is-locked: VerticalLayout {
+                    alignment: center;
+                    Image {
+                        source: @image-url("../../icons/lock.svg");
+                        colorize: MellowComponent.roles-row-lock-icon;
+                        width: MellowComponent.roles-row-lock-icon-size;
+                        height: self.width;
+                        accessible-role: none;
+                    }
+                }
+                // The count and the move buttons share one slot; hidden items still take layout space.
+                Rectangle {
+                    width: root.shows-move-buttons ? 2 * MellowComponent.roles-move-button-size : count.preferred-width;
+                    count := Text {
+                        x: parent.width - self.width;
+                        visible: !root.shows-move-buttons;
+                        text: root.role.member-count;
+                        color: root.is-selected ? MellowComponent.roles-row-count-text-selected : MellowComponent.roles-row-count-text;
+                        font-size: MellowType.body.font-size;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                    up-button := IconButton {
+                        x: 0;
+                        visible: root.shows-move-buttons;
+                        icon: @image-url("../../icons/caret-up.svg");
+                        label: "Move up";
+                        size: MellowComponent.roles-move-button-size;
+                        icon-color: MellowComponent.roles-move-icon;
+                        hover-icon-color: MellowComponent.roles-move-icon-hover;
+                        hover-background: MellowComponent.roles-move-button-background-hover;
+                        is-enabled: root.role.can-move-up;
+                        clicked => { root.move-up(); }
+                    }
+                    down-button := IconButton {
+                        x: MellowComponent.roles-move-button-size;
+                        visible: root.shows-move-buttons;
+                        icon: @image-url("../../icons/caret-down.svg");
+                        label: "Move down";
+                        size: MellowComponent.roles-move-button-size;
+                        icon-color: MellowComponent.roles-move-icon;
+                        hover-icon-color: MellowComponent.roles-move-icon-hover;
+                        hover-background: MellowComponent.roles-move-button-background-hover;
+                        is-enabled: root.role.can-move-down;
+                        clicked => { root.move-down(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Text tab with the accent underline when selected (DESIGN.md §6.45).
+component EditorTab inherits Rectangle {
+    in property <string> label;
+    in property <bool> is-selected;
+    callback activated();
+    // Left or Right: the screen selects and focuses the neighbouring tab.
+    callback arrow-pressed();
+    width: label-text.preferred-width;
+    height: MellowComponent.tabs-height;
+    forward-focus: focus-scope;
+    accessible-role: tab;
+    accessible-label: label;
+    accessible-item-selected: is-selected;
+    accessible-action-default => { root.activated(); }
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.activated();
+                return accept;
+            }
+            if event.text == Key.LeftArrow || event.text == Key.RightArrow {
+                root.arrow-pressed();
+                return accept;
+            }
+            reject
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.activated(); }
+    }
+    label-text := Text {
+        text: root.label;
+        color: root.is-selected ? MellowComponent.tabs-text-selected
+            : touch.has-hover || focus-scope.has-focus ? MellowComponent.tabs-text-hover : MellowComponent.tabs-text;
+        font-size: MellowType.channel-name.font-size;
+        font-weight: MellowType.channel-name.font-weight;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+    if root.is-selected: Rectangle {
+        y: parent.height - self.height;
+        height: MellowComponent.tabs-indicator-height;
+        background: MellowComponent.tabs-indicator;
+    }
+    if focus-scope.has-focus: Rectangle {
+        border-width: MellowComponent.focus-ring-width;
+        border-color: MellowComponent.focus-ring-color;
+        border-radius: MellowComponent.roles-row-radius;
+    }
+}
+
+// Discord's switch (DESIGN.md §6.5): a check on the knob when on, a cross when off.
+component Switch inherits Rectangle {
+    in property <bool> is-on;
+    in property <bool> is-enabled: true;
+    in property <string> label;
+    in property <string> description;
+    callback toggled();
+    width: MellowComponent.switch-width;
+    height: MellowComponent.switch-height;
+    forward-focus: focus-scope;
+    accessible-role: switch;
+    accessible-label: label;
+    accessible-description: description;
+    accessible-checkable: true;
+    accessible-checked: is-on;
+    accessible-enabled: is-enabled;
+    accessible-action-default => { root.toggle(); }
+
+    public function toggle() {
+        if is-enabled {
+            root.toggled();
+        }
+    }
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.toggle();
+                return accept;
+            }
+            reject
+        }
+    }
+    TouchArea {
+        mouse-cursor: root.is-enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.toggle(); }
+    }
+    // Dims the switch, not the focus ring, which must keep its contrast.
+    Rectangle {
+        opacity: root.is-enabled ? 1 : MellowComponent.switch-disabled-opacity;
+        border-radius: self.height / 2;
+        background: root.is-on ? MellowComponent.switch-track-on : MellowComponent.switch-track-off;
+        Rectangle {
+            x: root.is-on ? parent.width - self.width - MellowComponent.switch-knob-inset : MellowComponent.switch-knob-inset;
+            width: MellowComponent.switch-knob-size;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: MellowComponent.switch-knob;
+            animate x { duration: MellowComponent.rail-morph-duration; easing: ease-out; }
+            Image {
+                source: root.is-on ? @image-url("../../icons/check.svg") : @image-url("../../icons/x.svg");
+                colorize: root.is-on ? MellowComponent.switch-glyph-on : MellowComponent.switch-glyph-off;
+                width: MellowComponent.switch-glyph-size;
+                height: self.width;
+                accessible-role: none;
+            }
+        }
+    }
+    if focus-scope.has-focus: Rectangle {
+        x: -(MellowComponent.focus-ring-offset + MellowComponent.focus-ring-width);
+        y: self.x;
+        width: parent.width - 2 * self.x;
+        height: parent.height - 2 * self.y;
+        border-width: MellowComponent.focus-ring-width;
+        border-color: MellowComponent.focus-ring-color;
+        border-radius: self.height / 2;
+    }
+}
+
+// Permission switch row (DESIGN.md §6.42), with its group header when it starts a group.
+component PermissionRow inherits VerticalLayout {
+    in property <RolePermissionRow> permission;
+    in property <bool> is-first;
+    in property <bool> is-enabled;
+    callback toggled();
+
+    if root.permission.starts-group: VerticalLayout {
+        padding-top: root.is-first ? 0px : MellowComponent.roles-permission-group-gap;
+        SectionLabel {
+            text: root.permission.group.to-uppercase();
+            label: root.permission.group;
+        }
+    }
+    Rectangle {
+        // The texts are a larger target for the same switch, as a label is on Discord.
+        TouchArea {
+            mouse-cursor: root.is-enabled ? MouseCursor.pointer : MouseCursor.default;
+            clicked => { switch.toggle(); }
+        }
+        HorizontalLayout {
+            padding-top: MellowComponent.roles-permission-padding-block;
+            padding-bottom: MellowComponent.roles-permission-padding-block;
+            spacing: MellowComponent.roles-permission-gap;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: MellowComponent.text-field-helper-gap;
+                HorizontalLayout {
+                    spacing: MellowComponent.roles-sensitive-gap;
+                    alignment: start;
+                    Text {
+                        text: root.permission.label;
+                        color: MellowComponent.roles-permission-label-text;
+                        font-size: MellowType.channel-name.font-size;
+                        font-weight: MellowType.channel-name.font-weight;
+                        overflow: elide;
+                        accessible-role: none;
+                    }
+                    // Icon and word, never colour alone (DESIGN.md §5.8).
+                    if root.permission.is-sensitive: HorizontalLayout {
+                        padding-left: MellowComponent.roles-row-icon-gap;
+                        spacing: MellowComponent.roles-sensitive-gap;
+                        VerticalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../../icons/warning-circle.svg");
+                                colorize: MellowComponent.roles-sensitive-text;
+                                width: MellowComponent.roles-sensitive-icon-size;
+                                height: self.width;
+                                accessible-role: none;
+                            }
+                        }
+                        Text {
+                            text: "Sensitive";
+                            color: MellowComponent.roles-sensitive-text;
+                            font-size: MellowType.body.font-size;
+                            font-weight: MellowType.menu-item.font-weight;
+                            vertical-alignment: center;
+                            accessible-role: none;
+                        }
+                    }
+                }
+                Text {
+                    text: root.permission.description;
+                    color: MellowComponent.roles-permission-description-text;
+                    font-size: MellowType.body.font-size;
+                    wrap: word-wrap;
+                    accessible-role: none;
+                }
+            }
+            VerticalLayout {
+                alignment: start;
+                switch := Switch {
+                    is-on: root.permission.is-granted;
+                    is-enabled: root.is-enabled;
+                    label: root.permission.label + (root.permission.is-sensitive ? ", sensitive" : "");
+                    description: root.permission.description;
+                    toggled => { root.toggled(); }
+                }
+            }
+        }
+        Rectangle {
+            y: parent.height - self.height;
+            height: 1px;
+            background: MellowComponent.roles-permission-divider;
+        }
+    }
+}
+
+// One role colour: a check on a plate and a ring mark the chosen one, never the colour alone.
+component ColorSwatch inherits Rectangle {
+    in property <color> swatch-color;
+    in property <bool> is-selected;
+    in property <bool> is-enabled;
+    in property <string> label;
+    callback chosen();
+    width: MellowComponent.roles-swatch-size;
+    height: self.width;
+    forward-focus: focus-scope;
+    accessible-role: radio-button;
+    accessible-label: label;
+    accessible-checkable: true;
+    accessible-checked: is-selected;
+    accessible-enabled: is-enabled;
+    accessible-action-default => { root.choose(); }
+
+    function choose() {
+        if is-enabled {
+            root.chosen();
+        }
+    }
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.choose();
+                return accept;
+            }
+            reject
+        }
+    }
+    TouchArea {
+        mouse-cursor: root.is-enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.choose(); }
+    }
+    Rectangle {
+        opacity: root.is-enabled ? 1 : MellowComponent.switch-disabled-opacity;
+        border-radius: MellowComponent.roles-swatch-radius;
+        background: root.swatch-color;
+        if root.is-selected: Rectangle {
+            width: MellowComponent.roles-swatch-check-plate-size;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: MellowComponent.roles-swatch-check-plate;
+            Image {
+                source: @image-url("../../icons/check.svg");
+                colorize: MellowComponent.roles-swatch-check;
+                width: MellowComponent.roles-swatch-check-size;
+                height: self.width;
+                accessible-role: none;
+            }
+        }
+    }
+    // Keyboard focus takes the ring's place in the focus colour; the check still marks the choice.
+    if root.is-selected || focus-scope.has-focus: Rectangle {
+        x: -(MellowComponent.roles-swatch-ring-offset + MellowComponent.roles-swatch-ring-width);
+        y: self.x;
+        width: parent.width - 2 * self.x;
+        height: parent.height - 2 * self.y;
+        border-width: focus-scope.has-focus ? MellowComponent.focus-ring-width : MellowComponent.roles-swatch-ring-width;
+        border-color: focus-scope.has-focus ? MellowComponent.focus-ring-color : MellowComponent.roles-swatch-ring;
+        border-radius: MellowComponent.roles-swatch-radius - self.x;
+    }
+}
+
+// "Careful — you have unsaved changes." (DESIGN.md §5.8, §6.44).
+component UnsavedChangesBar inherits Rectangle {
+    // A leave was attempted with unsaved changes.
+    in property <bool> is-attention;
+    in property <bool> is-busy;
+    callback reset();
+    callback save();
+    height: bar-layout.preferred-height;
+    background: MellowComponent.unsaved-bar-background;
+    border-radius: MellowComponent.unsaved-bar-radius;
+    border-width: is-attention ? MellowComponent.unsaved-bar-border-attention-width : MellowComponent.unsaved-bar-border-width;
+    border-color: is-attention ? MellowComponent.unsaved-bar-border-attention : MellowComponent.unsaved-bar-border;
+    accessible-role: groupbox;
+    accessible-label: message.text;
+
+    bar-layout := HorizontalLayout {
+        padding-top: MellowComponent.unsaved-bar-padding-block;
+        padding-bottom: MellowComponent.unsaved-bar-padding-block;
+        padding-left: MellowComponent.unsaved-bar-padding-leading;
+        padding-right: MellowComponent.unsaved-bar-padding-trailing;
+        spacing: MellowComponent.unsaved-bar-button-gap;
+        message := Text {
+            text: root.is-attention ? "Save or reset your changes before leaving." : "Careful — you have unsaved changes.";
+            color: MellowComponent.unsaved-bar-text;
+            font-size: MellowType.body-lg.font-size;
+            font-weight: MellowType.menu-item.font-weight;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+            // The screen's live region announces it.
+            accessible-role: none;
+        }
+        VerticalLayout {
+            alignment: center;
+            Button {
+                label: "Reset";
+                height: MellowComponent.button-height-small;
+                is-enabled: !root.is-busy;
+                clicked => { root.reset(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Button {
+                label: "Save changes";
+                is-primary: true;
+                height: MellowComponent.button-height-small;
+                is-enabled: !root.is-busy;
+                clicked => { root.save(); }
+            }
+        }
+    }
+}
+
+// "Delete role" confirmation, with the look and focus rules of DeleteMessageDialog (DESIGN.md §6.35).
+component DeleteRoleDialog inherits Rectangle {
+    in property <string> role-name;
+    callback cancel();
+    callback confirm();
+    background: MellowComponent.dialog-scrim;
+
+    // Destructive dialogs never focus the destructive button first (DESIGN.md §8).
+    init => { cancel-button.focus(); }
+
+    TouchArea {
+        clicked => { root.cancel(); }
+    }
+
+    FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            if event.text == Key.Tab || event.text == Key.Backtab {
+                if cancel-button.has-keyboard-focus {
+                    delete-button.focus();
+                } else {
+                    cancel-button.focus();
+                }
+                return accept;
+            }
+            reject
+        }
+
+        Rectangle {
+            width: min(MellowComponent.dialog-width, root.width - 2 * MellowComponent.dialog-margin);
+            height: card-layout.preferred-height;
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            background: MellowComponent.dialog-background;
+            border-radius: MellowComponent.dialog-radius;
+            clip: true;
+            accessible-role: groupbox;
+            accessible-label: title.text;
+            accessible-description: body.text;
+
+            TouchArea { }
+
+            card-layout := VerticalLayout {
+                VerticalLayout {
+                    padding: MellowComponent.dialog-padding;
+                    spacing: MellowComponent.dialog-section-gap;
+                    title := Text {
+                        text: "Delete role";
+                        color: MellowComponent.dialog-title-text;
+                        font-size: MellowType.heading-lg.font-size;
+                        font-weight: MellowType.heading-lg.font-weight;
+                        wrap: word-wrap;
+                        accessible-role: none;
+                    }
+                    body := Text {
+                        text: "Delete the role " + root.role-name + "? Members who have it lose its permissions. This cannot be undone.";
+                        color: MellowComponent.dialog-body-text;
+                        font-size: MellowType.body.font-size;
+                        wrap: word-wrap;
+                        accessible-role: none;
+                    }
+                }
+                Rectangle {
+                    background: MellowComponent.dialog-footer-background;
+                    HorizontalLayout {
+                        padding: MellowComponent.dialog-padding;
+                        spacing: MellowComponent.dialog-button-gap;
+                        alignment: end;
+                        cancel-button := Button {
+                            label: "Cancel";
+                            clicked => { root.cancel(); }
+                        }
+                        delete-button := Button {
+                            label: "Delete role";
+                            is-danger: true;
+                            clicked => { root.confirm(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Server settings (DESIGN.md §5.8), over the whole window like UserSettingsScreen. Only "Roles"
+// exists so far. Rust owns the selection and the draft; this screen only refuses to leave a draft
+// with unsaved changes (it shakes the bar instead of calling the callback).
+export component ServerSettingsScreen inherits Rectangle {
+    in property <string> server-name;
+    // Below the sidebar breakpoint the page tightens its side padding.
+    in property <bool> is-narrow;
+    in property <[RoleListRow]> roles;
+    in property <int> selected-role-index;
+    in-out property <string> role-draft-name;
+    in property <color> role-draft-color;
+    in property <bool> role-draft-has-color;
+    in property <[color]> role-color-presets;
+    in property <[RolePermissionRow]> permission-rows;
+    in property <bool> is-role-draft-editable;
+    in property <bool> has-unsaved-role-changes;
+    in property <bool> is-role-action-busy;
+    in property <string> role-action-error;
+    in property <bool> can-create-roles;
+    callback close();
+    callback select-role(int);
+    callback role-draft-name-edited();
+    callback choose-role-color(int);
+    callback toggle-role-permission(int);
+    callback save-role-changes();
+    callback reset-role-changes();
+    callback create-role();
+    callback delete-role(int);
+    callback move-role-up(int);
+    callback move-role-down(int);
+
+    property <bool> has-selected-role: selected-role-index >= 0 && selected-role-index < roles.length;
+    property <RoleListRow> selected-role: roles[selected-role-index];
+    property <bool> is-only-everyone: roles.length == 1 && roles[0].is-everyone;
+    property <bool> is-permissions-tab-selected;
+    property <bool> is-leave-refused;
+    property <int> shake-swings-left;
+    property <length> shake-offset;
+    property <bool> is-delete-dialog-open;
+    property <int> delete-button-focus-request-count;
+    // The moved role's row takes focus again once Rust has rebuilt the list.
+    property <string> role-id-to-focus;
+
+    function refuse-leave() {
+        root.is-leave-refused = true;
+        root.shake-offset = MellowComponent.unsaved-bar-shake-distance;
+        root.shake-swings-left = MellowComponent.unsaved-bar-shake-swing-count;
+    }
+    function try-close() {
+        if root.has-unsaved-role-changes {
+            root.refuse-leave();
+        } else {
+            root.close();
+        }
+    }
+    function try-select-role(index: int) {
+        if index == root.selected-role-index {
+            return;
+        }
+        if root.has-unsaved-role-changes {
+            root.refuse-leave();
+        } else {
+            root.select-role(index);
+        }
+    }
+    function try-create-role() {
+        if root.has-unsaved-role-changes {
+            root.refuse-leave();
+        } else {
+            root.create-role();
+        }
+    }
+    changed has-unsaved-role-changes => {
+        if !root.has-unsaved-role-changes {
+            root.is-leave-refused = false;
+        }
+    }
+
+    // Focus lands on the selected section, so screen readers start in the navigation, as on Discord.
+    init => { roles-item.focus(); }
+
+    background: MellowComponent.settings-content-background;
+
+    // Nothing behind the screen reacts to the pointer.
+    TouchArea { }
+
+    key-scope := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.try-close();
+                return accept;
+            }
+            reject
+        }
+
+        HorizontalLayout {
+            // Grows with the window and keeps the navigation against the content, as on Discord.
+            Rectangle {
+                background: MellowComponent.settings-sidebar-background;
+                min-width: MellowComponent.settings-nav-width;
+                preferred-width: MellowComponent.settings-nav-width;
+                horizontal-stretch: 1;
+                accessible-role: navigation;
+                accessible-label: "Server settings";
+
+                VerticalLayout {
+                    x: parent.width - self.width;
+                    width: MellowComponent.settings-nav-width;
+                    height: parent.height;
+                    alignment: start;
+                    padding-top: MellowComponent.settings-nav-padding-top;
+                    padding-left: MellowComponent.settings-nav-padding-leading;
+                    padding-right: MellowComponent.settings-nav-padding-trailing;
+
+                    Rectangle {
+                        accessible-role: tab-list;
+                        accessible-label: root.server-name;
+                        VerticalLayout {
+                            spacing: MellowComponent.settings-nav-item-gap;
+                            HorizontalLayout {
+                                padding-left: MellowComponent.settings-nav-section-padding-inline;
+                                padding-right: MellowComponent.settings-nav-section-padding-inline;
+                                padding-top: MellowComponent.settings-nav-section-padding-block;
+                                padding-bottom: MellowComponent.settings-nav-section-padding-block;
+                                // The tab list's label already says it.
+                                SectionLabel {
+                                    text: root.server-name.to-uppercase();
+                                    label: root.server-name;
+                                    color: MellowComponent.settings-nav-section-text;
+                                    accessible-role: none;
+                                }
+                            }
+                            roles-item := SettingsNavItem {
+                                label: "Roles";
+                                is-selected: true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                preferred-width: MellowComponent.settings-content-max-width;
+                min-width: 0px;
+
+                HorizontalLayout {
+                    alignment: start;
+                    padding-top: MellowComponent.settings-content-padding-top;
+                    padding-bottom: MellowComponent.settings-content-padding-bottom;
+                    padding-left: root.is-narrow ? MellowComponent.settings-content-padding-inline-narrow : MellowComponent.settings-content-padding-inline;
+                    padding-right: self.padding-left;
+                    spacing: root.is-narrow ? MellowComponent.settings-close-gap-narrow : MellowComponent.settings-close-gap;
+
+                    page := Rectangle {
+                        horizontal-stretch: 1;
+                        min-width: 0px;
+                        preferred-width: MellowComponent.settings-content-max-width;
+                        max-width: MellowComponent.settings-content-max-width;
+                        accessible-role: tab-panel;
+                        accessible-label: "Roles";
+
+                        VerticalLayout {
+                            Text {
+                                text: "Roles";
+                                color: MellowComponent.settings-page-title-text;
+                                font-size: MellowType.heading-lg.font-size;
+                                font-weight: MellowType.heading-lg.font-weight;
+                                overflow: elide;
+                            }
+                            Rectangle { height: MellowComponent.settings-page-title-gap; }
+
+                            if root.role-action-error != "": VerticalLayout {
+                                padding-bottom: MellowComponent.roles-editor-gap;
+                                HorizontalLayout {
+                                    spacing: MellowComponent.settings-error-icon-gap;
+                                    VerticalLayout {
+                                        alignment: start;
+                                        Image {
+                                            source: @image-url("../../icons/warning-circle.svg");
+                                            colorize: MellowComponent.settings-error-icon;
+                                            width: MellowComponent.settings-error-icon-size;
+                                            height: self.width;
+                                            accessible-role: none;
+                                        }
+                                    }
+                                    Text {
+                                        text: root.role-action-error;
+                                        color: MellowComponent.roles-error-text;
+                                        font-size: MellowType.body-lg.font-size;
+                                        wrap: word-wrap;
+                                        horizontal-stretch: 1;
+                                        // Announced through the live region below.
+                                        accessible-role: none;
+                                    }
+                                }
+                            }
+
+                            if root.is-only-everyone: VerticalLayout {
+                                padding-bottom: MellowComponent.roles-editor-gap;
+                                spacing: MellowComponent.settings-action-gap;
+                                Text {
+                                    text: "Roles let you group people and give them permissions.";
+                                    color: MellowComponent.settings-body-text;
+                                    font-size: MellowType.body-lg.font-size;
+                                    wrap: word-wrap;
+                                }
+                                if root.can-create-roles: HorizontalLayout {
+                                    alignment: start;
+                                    Button {
+                                        label: "Create a role";
+                                        is-primary: true;
+                                        clicked => { root.try-create-role(); }
+                                    }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                vertical-stretch: 1;
+                                spacing: MellowComponent.roles-list-gap;
+
+                                VerticalLayout {
+                                    width: MellowComponent.roles-list-width;
+                                    spacing: MellowComponent.roles-row-icon-gap;
+                                    if root.can-create-roles && !root.is-only-everyone: Button {
+                                        label: "Create role";
+                                        clicked => { root.try-create-role(); }
+                                    }
+                                    ListView {
+                                        vertical-stretch: 1;
+                                        accessible-role: list;
+                                        accessible-label: "Roles";
+                                        for role[index] in root.roles: RoleRow {
+                                            role: role;
+                                            is-selected: index == root.selected-role-index;
+                                            init => {
+                                                if role.id == root.role-id-to-focus {
+                                                    self.focus();
+                                                    root.role-id-to-focus = "";
+                                                }
+                                            }
+                                            // Rust may update rows in place instead of rebuilding them.
+                                            changed role => {
+                                                if role.id == root.role-id-to-focus {
+                                                    self.focus();
+                                                    root.role-id-to-focus = "";
+                                                }
+                                            }
+                                            clicked => { root.try-select-role(index); }
+                                            move-up => {
+                                                root.role-id-to-focus = role.id;
+                                                root.move-role-up(index);
+                                            }
+                                            move-down => {
+                                                root.role-id-to-focus = role.id;
+                                                root.move-role-down(index);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if root.has-selected-role: VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    min-width: 0px;
+                                    SectionLabel {
+                                        text: ("Edit role — " + root.selected-role.name).to-uppercase();
+                                        label: "Edit role — " + root.selected-role.name;
+                                    }
+                                    if root.selected-role.is-locked: HorizontalLayout {
+                                        padding-top: MellowComponent.settings-section-label-gap;
+                                        spacing: MellowComponent.roles-row-icon-gap;
+                                        VerticalLayout {
+                                            alignment: start;
+                                            Image {
+                                                source: @image-url("../../icons/lock.svg");
+                                                colorize: MellowComponent.roles-row-lock-icon;
+                                                width: MellowComponent.roles-row-lock-icon-size;
+                                                height: self.width;
+                                                accessible-role: none;
+                                            }
+                                        }
+                                        Text {
+                                            text: "You can only edit roles below your highest role.";
+                                            color: MellowComponent.roles-note-text;
+                                            font-size: MellowType.body.font-size;
+                                            wrap: word-wrap;
+                                            horizontal-stretch: 1;
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        height: MellowComponent.tabs-height;
+                                        Rectangle {
+                                            y: parent.height - self.height;
+                                            height: 1px;
+                                            background: MellowComponent.tabs-divider;
+                                        }
+                                        HorizontalLayout {
+                                            alignment: start;
+                                            spacing: MellowComponent.tabs-gap;
+                                            accessible-role: tab-list;
+                                            accessible-label: "Edit role";
+                                            display-tab := EditorTab {
+                                                label: "Display";
+                                                is-selected: !root.is-permissions-tab-selected;
+                                                activated => { root.is-permissions-tab-selected = false; }
+                                                arrow-pressed => {
+                                                    root.is-permissions-tab-selected = true;
+                                                    permissions-tab.focus();
+                                                }
+                                            }
+                                            permissions-tab := EditorTab {
+                                                label: "Permissions";
+                                                is-selected: root.is-permissions-tab-selected;
+                                                activated => { root.is-permissions-tab-selected = true; }
+                                                arrow-pressed => {
+                                                    root.is-permissions-tab-selected = false;
+                                                    display-tab.focus();
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    editor-scroll := ScrollView {
+                                        vertical-stretch: 1;
+                                        content-width: self.visible-width;
+                                        content-height: editor-content.preferred-height;
+                                        accessible-role: tab-panel;
+                                        accessible-label: root.is-permissions-tab-selected ? "Permissions" : "Display";
+
+                                        editor-content := VerticalLayout {
+                                            width: editor-scroll.visible-width;
+                                            alignment: start;
+                                            padding-top: MellowComponent.roles-editor-gap;
+                                            padding-bottom: MellowComponent.roles-editor-gap;
+
+                                            if !root.is-permissions-tab-selected: VerticalLayout {
+                                                spacing: MellowComponent.roles-editor-gap;
+                                                TextField {
+                                                    label: "Role name";
+                                                    display-label: "ROLE NAME";
+                                                    helper: root.selected-role.is-everyone ? "@everyone can't be renamed." : "";
+                                                    text <=> root.role-draft-name;
+                                                    is-read-only: !root.is-role-draft-editable || root.selected-role.is-everyone;
+                                                    edited => { root.role-draft-name-edited(); }
+                                                }
+                                                // @everyone has no colour on Discord either.
+                                                if !root.selected-role.is-everyone: VerticalLayout {
+                                                    spacing: MellowComponent.settings-section-label-gap;
+                                                    SectionLabel {
+                                                        text: "ROLE COLOUR";
+                                                        label: "Role colour";
+                                                    }
+                                                    // Wraps by hand: Slint layouts do not wrap.
+                                                    swatch-grid := Rectangle {
+                                                        property <length> step: MellowComponent.roles-swatch-size + MellowComponent.roles-swatch-gap;
+                                                        property <int> per-row: max(1, floor((self.width + MellowComponent.roles-swatch-gap) / self.step));
+                                                        height: ceil((root.role-color-presets.length + 1) / self.per-row) * self.step - MellowComponent.roles-swatch-gap;
+                                                        accessible-role: radio-group;
+                                                        accessible-label: "Role colour";
+
+                                                        ColorSwatch {
+                                                            x: 0;
+                                                            y: 0;
+                                                            swatch-color: MellowComponent.roles-neutral-color;
+                                                            is-selected: !root.role-draft-has-color;
+                                                            is-enabled: root.is-role-draft-editable;
+                                                            label: "No colour";
+                                                            chosen => { root.choose-role-color(-1); }
+                                                        }
+                                                        for preset[index] in root.role-color-presets: ColorSwatch {
+                                                            x: mod(index + 1, swatch-grid.per-row) * swatch-grid.step;
+                                                            y: floor((index + 1) / swatch-grid.per-row) * swatch-grid.step;
+                                                            swatch-color: preset;
+                                                            is-selected: root.role-draft-has-color && preset == root.role-draft-color;
+                                                            is-enabled: root.is-role-draft-editable;
+                                                            label: "Colour " + (index + 1);
+                                                            chosen => { root.choose-role-color(index); }
+                                                        }
+                                                    }
+                                                }
+                                                if !root.selected-role.is-everyone && !root.selected-role.is-locked && root.is-role-draft-editable: HorizontalLayout {
+                                                    alignment: start;
+                                                    Button {
+                                                        property <int> focus-request-count: root.delete-button-focus-request-count;
+                                                        changed focus-request-count => { self.focus(); }
+                                                        label: "Delete role";
+                                                        is-danger: true;
+                                                        clicked => { root.is-delete-dialog-open = true; }
+                                                    }
+                                                }
+                                            }
+
+                                            if root.is-permissions-tab-selected: VerticalLayout {
+                                                for permission[index] in root.permission-rows: PermissionRow {
+                                                    permission: permission;
+                                                    is-first: index == 0;
+                                                    is-enabled: root.is-role-draft-editable && !permission.is-locked;
+                                                    toggled => { root.toggle-role-permission(index); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Slides up into the content's bottom padding, so it never covers the editor.
+                        UnsavedChangesBar {
+                            visible: root.has-unsaved-role-changes;
+                            x: root.shake-offset;
+                            y: root.has-unsaved-role-changes
+                                ? parent.height + MellowComponent.settings-content-padding-bottom - self.height - MellowComponent.unsaved-bar-margin-bottom
+                                : parent.height + MellowComponent.settings-content-padding-bottom;
+                            width: parent.width;
+                            is-attention: root.is-leave-refused;
+                            is-busy: root.is-role-action-busy;
+                            reset => { root.reset-role-changes(); }
+                            save => { root.save-role-changes(); }
+                            animate y { duration: MellowComponent.unsaved-bar-slide-duration; easing: ease-out; }
+                            animate x { duration: MellowComponent.unsaved-bar-shake-step-duration; }
+                        }
+                    }
+
+                    CloseButton {
+                        clicked => { root.try-close(); }
+                    }
+                }
+            }
+        }
+    }
+
+    // Six swings, each smaller than the last, then back in place.
+    Timer {
+        interval: MellowComponent.unsaved-bar-shake-step-duration;
+        running: root.shake-swings-left > 0;
+        triggered => {
+            root.shake-swings-left -= 1;
+            root.shake-offset = root.shake-swings-left == 0 ? 0px
+                : (mod(root.shake-swings-left, 2) == 0 ? 1 : -1) * MellowComponent.unsaved-bar-shake-distance * root.shake-swings-left / MellowComponent.unsaved-bar-shake-swing-count;
+        }
+    }
+
+    if root.is-delete-dialog-open && root.has-selected-role: DeleteRoleDialog {
+        width: root.width;
+        height: root.height;
+        role-name: root.selected-role.name;
+        cancel => {
+            root.is-delete-dialog-open = false;
+            root.delete-button-focus-request-count += 1;
+        }
+        confirm => {
+            root.delete-role(root.selected-role-index);
+            root.is-delete-dialog-open = false;
+            key-scope.focus();
+        }
+    }
+
+    // Unsaved-changes and error messages are announced here; the region exists from the start.
+    Text {
+        width: 0px;
+        height: 0px;
+        text: root.role-action-error != "" ? root.role-action-error
+            : !root.has-unsaved-role-changes ? ""
+            : root.is-leave-refused ? "Save or reset your changes before leaving." : "Careful — you have unsaved changes.";
+        accessible-role: text;
+        accessible-live-region: polite;
+    }
+}
