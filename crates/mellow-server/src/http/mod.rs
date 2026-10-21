@@ -1284,6 +1284,73 @@ pub(crate) mod tests {
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     }
 
+    /// A stolen session that uses up its password-check budget must not keep the owner's other
+    /// devices from changing the password (and so revoking it).
+    #[tokio::test]
+    async fn password_checks_are_rate_limited_per_session_and_profile_writes_per_user() {
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let stolen = registered_token(&state, "aurore").await;
+        let (_, body) = send(
+            &state,
+            post_json(
+                "/api/v1/auth/login",
+                &serde_json::json!({"login": "aurore", "password": PASSWORD, "device_name": "own"}),
+            ),
+        )
+        .await;
+        let own = json::<SessionCreated>(&body).token;
+        let change = |token: &str, current: &str| {
+            authorized(
+                "POST",
+                "/api/v1/users/@me/password",
+                token,
+                Some(serde_json::json!({
+                    "current_password": current,
+                    "new_password": "a brand new password",
+                })),
+            )
+        };
+        let rename = |token: &str, display_name: String| {
+            authorized(
+                "PATCH",
+                "/api/v1/users/@me",
+                token,
+                Some(serde_json::json!({ "display_name": display_name })),
+            )
+        };
+
+        let mut guesses = Vec::new();
+        for _ in 0..rate_limit::PASSWORD_CHECKS_PER_SESSION.maximum_events {
+            guesses.push(send(&state, change(&stolen, "a wrong guess")).await.0);
+        }
+        let (stolen_with_right_password, _) = send(&state, change(&stolen, PASSWORD)).await;
+        let (own_change, _) = send(&state, change(&own, PASSWORD)).await;
+        let (stolen_after_change, _) =
+            send(&state, with_bearer("/api/v1/users/@me", "GET", &stolen)).await;
+        let mut renames = Vec::new();
+        for attempt in 0..=rate_limit::PROFILE_WRITES_PER_USER.maximum_events {
+            renames.push(
+                send(&state, rename(&own, format!("Aurore {attempt}")))
+                    .await
+                    .0,
+            );
+        }
+        pool.close().await;
+
+        assert!(
+            guesses
+                .iter()
+                .all(|status| *status == StatusCode::UNAUTHORIZED)
+        );
+        assert_eq!(stolen_with_right_password, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(own_change, StatusCode::NO_CONTENT);
+        assert_eq!(stolen_after_change, StatusCode::UNAUTHORIZED);
+        let (last, allowed) = renames.split_last().unwrap();
+        assert!(allowed.iter().all(|status| *status == StatusCode::OK));
+        assert_eq!(*last, StatusCode::TOO_MANY_REQUESTS);
+    }
+
     #[tokio::test]
     async fn history_cursors_over_http() {
         use mellow_protocol::Message;

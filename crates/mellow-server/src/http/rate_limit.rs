@@ -38,10 +38,17 @@ pub(crate) const LOGIN_ATTEMPTS_PER_ACCOUNT: RateLimit = RateLimit {
     window: Duration::from_mins(15),
 };
 
-/// Password changes per user: each one costs two Argon2 runs, and a stolen session must not be
-/// able to guess the current password quickly.
-pub(crate) const PASSWORD_CHANGE_ATTEMPTS_PER_USER: RateLimit = RateLimit {
+/// Current-password checks (password change, username change) per session: a stolen session must
+/// not be able to guess the password quickly. Per session, not per user, so a thief cannot use up
+/// the budget of the owner's own devices and keep them from changing the password.
+pub(crate) const PASSWORD_CHECKS_PER_SESSION: RateLimit = RateLimit {
     maximum_events: 10,
+    window: Duration::from_mins(15),
+};
+/// Current-password checks per user, across all sessions: high enough that one session cannot
+/// fill it alone.
+pub(crate) const PASSWORD_CHECKS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 50,
     window: Duration::from_mins(15),
 };
 /// Username and display name changes per user: each one is fanned out to every shared guild.

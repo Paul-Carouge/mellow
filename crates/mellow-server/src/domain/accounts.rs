@@ -285,29 +285,59 @@ impl Accounts {
     }
 
     /// Changes the signed-in user's username and display name, and tells everyone who can see them.
+    /// A new username needs the current password, as the username is how others find the account.
     ///
     /// # Errors
-    /// Invalid input, or a username taken by another account.
+    /// `Unauthorized` for an invalid token, `InvalidCredentials` for a username change without the
+    /// right current password, invalid input, or a username taken by another account.
     pub async fn update_current_user(
         &self,
-        user: CurrentUser,
+        token: &str,
         request: UpdateCurrentUserRequest,
+        now_unix_milliseconds: u64,
     ) -> Result<CurrentUser, AccountError> {
-        let username = request.username.unwrap_or_else(|| user.username.clone());
-        validate_username(&username)?;
-        let display_name = match request.display_name {
-            Some(display_name) => normalize_display_name(&display_name)?,
-            None => user.display_name.clone(),
-        };
-        if username == user.username && display_name == user.display_name {
-            return Ok(user);
+        if let Some(username) = &request.username {
+            validate_username(username)?;
         }
-        update_user_names(&self.pool, user.id, &username, &display_name).await?;
-        let updated = CurrentUser {
+        let display_name = request
+            .display_name
+            .as_deref()
+            .map(normalize_display_name)
+            .transpose()?;
+        let user = self
+            .verified_session_owner(token, now_unix_milliseconds)
+            .await?;
+        let username = request
+            .username
+            .filter(|username| *username != user.username);
+        let display_name = display_name.filter(|display_name| *display_name != user.display_name);
+        if username.is_none() && display_name.is_none() {
+            return Ok(current_user(user));
+        }
+        if username.is_some() {
+            let current_password = Zeroizing::new(
+                request
+                    .current_password
+                    .ok_or(AccountError::InvalidCredentials)?,
+            );
+            validate_password_maximum_length(&current_password)?;
+            if !verify_password(current_password, Some(user.password_hash.clone())).await? {
+                return Err(AccountError::InvalidCredentials);
+            }
+        }
+        let (username, display_name) = update_user_names(
+            &self.pool,
+            user.id,
+            username.as_deref(),
+            display_name.as_deref(),
+        )
+        .await?
+        .ok_or(AccountError::Unauthorized)?;
+        let updated = current_user(StoredUser {
             username,
             display_name,
             ..user
-        };
+        });
         let guild_ids: Vec<_> = list_user_guilds(&self.pool, updated.id)
             .await?
             .into_iter()
@@ -329,8 +359,8 @@ impl Accounts {
     /// the user; the session behind `token` stays valid.
     ///
     /// # Errors
-    /// `Unauthorized` for an invalid token, `InvalidCredentials` for a wrong current password,
-    /// invalid input for a new password of the wrong length.
+    /// `Unauthorized` for an invalid token, `InvalidCredentials` for a wrong current password (or
+    /// one changed meanwhile), invalid input for a new password of the wrong length.
     pub async fn change_password(
         &self,
         token: &str,
@@ -342,26 +372,44 @@ impl Accounts {
         validate_password_maximum_length(&current_password)?;
         validate_password_length(&new_password)?;
         let token_sha256 = session_token_sha256(token).ok_or(AccountError::Unauthorized)?;
+        let user = self
+            .verified_session_owner(token, now_unix_milliseconds)
+            .await?;
+        if !verify_password(current_password, Some(user.password_hash.clone())).await? {
+            return Err(AccountError::InvalidCredentials);
+        }
+        let new_password_hash = hash_password(new_password).await?;
+        if !replace_password_and_delete_other_sessions(
+            &self.pool,
+            user.id,
+            &user.password_hash,
+            &new_password_hash,
+            &token_sha256,
+            now_unix_milliseconds,
+        )
+        .await?
+        {
+            return Err(AccountError::InvalidCredentials);
+        }
+        self.events
+            .disconnect_user_except_token(user.id, &token_sha256);
+        Ok(())
+    }
+
+    /// The enabled user behind an unexpired session, with their password hash.
+    async fn verified_session_owner(
+        &self,
+        token: &str,
+        now_unix_milliseconds: u64,
+    ) -> Result<StoredUser, AccountError> {
+        let token_sha256 = session_token_sha256(token).ok_or(AccountError::Unauthorized)?;
         let owner = find_session_owner(&self.pool, &token_sha256, now_unix_milliseconds)
             .await?
             .ok_or(AccountError::Unauthorized)?;
         if owner.user.is_disabled {
             return Err(AccountError::AccountDisabled);
         }
-        if !verify_password(current_password, Some(owner.user.password_hash)).await? {
-            return Err(AccountError::InvalidCredentials);
-        }
-        let password_hash = hash_password(new_password).await?;
-        replace_password_and_delete_other_sessions(
-            &self.pool,
-            owner.user.id,
-            &password_hash,
-            &token_sha256,
-        )
-        .await?;
-        self.events
-            .disconnect_user_except_token(owner.user.id, &token_sha256);
-        Ok(())
+        Ok(owner.user)
     }
 
     async fn open_session(
@@ -376,7 +424,7 @@ impl Accounts {
         })?;
         let session_lifetime_milliseconds =
             u64::try_from(SESSION_LIFETIME.as_millis()).unwrap_or(u64::MAX);
-        insert_session(
+        let is_inserted = insert_session(
             &self.pool,
             &NewSession {
                 id: self.ids.next_id(now_unix_milliseconds)?,
@@ -387,8 +435,13 @@ impl Accounts {
                 expires_at_unix_milliseconds: now_unix_milliseconds
                     .saturating_add(session_lifetime_milliseconds),
             },
+            &user.password_hash,
         )
         .await?;
+        // The password changed or the account was disabled since it was verified.
+        if !is_inserted {
+            return Err(AccountError::InvalidCredentials);
+        }
         Ok(SessionCreated {
             token: token.to_string(),
             user: current_user(user),
@@ -436,7 +489,7 @@ fn current_user(user: StoredUser) -> CurrentUser {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use mellow_protocol::MELLOW_EPOCH_UNIX_MILLISECONDS;
+    use mellow_protocol::{MELLOW_EPOCH_UNIX_MILLISECONDS, Snowflake};
 
     use super::*;
     use crate::storage::{DatabaseKey, migrate_with_backup, open_encrypted_database};
@@ -740,6 +793,18 @@ pub(crate) mod tests {
         assert!(matches!(new_login, Err(AccountError::AccountDisabled)));
     }
 
+    fn rename(
+        username: Option<&str>,
+        display_name: Option<&str>,
+        current_password: Option<&str>,
+    ) -> UpdateCurrentUserRequest {
+        UpdateCurrentUserRequest {
+            username: username.map(Into::into),
+            display_name: display_name.map(Into::into),
+            current_password: current_password.map(Into::into),
+        }
+    }
+
     #[tokio::test]
     async fn renaming_validates_refuses_taken_usernames_and_tells_the_user_sessions() {
         let (_directory, pool) = migrated_pool().await;
@@ -763,67 +828,147 @@ pub(crate) mod tests {
             .unwrap();
         events.activate_session(session_key, &[]);
         while session_events.try_recv().is_ok() {}
+        let token = aurore.token.as_str();
 
         let unchanged = accounts
-            .update_current_user(aurore.user.clone(), UpdateCurrentUserRequest::default())
+            .update_current_user(token, rename(Some("aurore"), Some(" aurore "), None), NOW)
             .await
             .unwrap();
         let nothing_published = session_events.try_recv().is_err();
-        let taken = accounts
-            .update_current_user(
-                aurore.user.clone(),
-                UpdateCurrentUserRequest {
-                    username: Some("basile".into()),
-                    display_name: None,
-                },
-            )
+        let username_taken = accounts
+            .update_current_user(token, rename(Some("basile"), None, Some(PASSWORD)), NOW)
             .await;
         let invalid = accounts
-            .update_current_user(
-                aurore.user.clone(),
-                UpdateCurrentUserRequest {
-                    username: None,
-                    display_name: Some("   ".into()),
-                },
-            )
+            .update_current_user(token, rename(None, Some("   "), None), NOW)
             .await;
-        let renamed = accounts
-            .update_current_user(
-                aurore.user.clone(),
-                UpdateCurrentUserRequest {
-                    username: Some("aurore.b".into()),
-                    display_name: Some("  Aurore B  ".into()),
-                },
-            )
+        let without_password = accounts
+            .update_current_user(token, rename(Some("aurore.b"), None, None), NOW)
+            .await;
+        let wrong_password = accounts
+            .update_current_user(token, rename(Some("aurore.b"), None, Some("nope")), NOW)
+            .await;
+        let display_name_only = accounts
+            .update_current_user(token, rename(None, Some("  Aurore B  "), None), NOW)
             .await
             .unwrap();
-        let published = session_events.try_recv().unwrap().payload_json.to_string();
-        let stored = accounts.authenticate(&aurore.token, NOW).await.unwrap();
+        let first_event = session_events.try_recv().unwrap().payload_json.to_string();
+        let renamed = accounts
+            .update_current_user(token, rename(Some("aurore.b"), None, Some(PASSWORD)), NOW)
+            .await
+            .unwrap();
+        let second_event = session_events.try_recv().unwrap().payload_json.to_string();
+        let stored = accounts.authenticate(token, NOW).await.unwrap();
         pool.close().await;
 
         assert_eq!(unchanged, aurore.user);
         assert!(nothing_published);
-        assert!(matches!(taken, Err(AccountError::UsernameTaken)));
+        assert!(matches!(username_taken, Err(AccountError::UsernameTaken)));
         assert!(matches!(
             invalid,
             Err(AccountError::InvalidInput(
                 AccountRuleViolation::InvalidDisplayName
             ))
         ));
+        assert!(matches!(
+            without_password,
+            Err(AccountError::InvalidCredentials)
+        ));
+        assert!(matches!(
+            wrong_password,
+            Err(AccountError::InvalidCredentials)
+        ));
+        assert_eq!(display_name_only.username, "aurore");
         assert_eq!(
             (renamed.username.as_str(), renamed.display_name.as_str()),
             ("aurore.b", "Aurore B")
         );
         assert_eq!(stored, renamed);
-        let event: GatewayEvent = serde_json::from_str(&published).unwrap();
+        let event = |json: &str| serde_json::from_str::<GatewayEvent>(json).unwrap();
         assert_eq!(
-            event,
+            event(&first_event),
+            GatewayEvent::UserUpdate(PublicUser {
+                id: renamed.id,
+                username: "aurore".into(),
+                display_name: "Aurore B".into(),
+            })
+        );
+        assert_eq!(
+            event(&second_event),
             GatewayEvent::UserUpdate(PublicUser {
                 id: renamed.id,
                 username: renamed.username.clone(),
                 display_name: renamed.display_name.clone(),
             })
         );
+    }
+
+    /// A login or a password change verified against the old hash must not land after another
+    /// password change committed meanwhile.
+    #[tokio::test]
+    async fn writes_verified_against_a_replaced_password_are_refused() {
+        let (_directory, pool) = migrated_pool().await;
+        let accounts = Accounts::new(
+            pool.clone(),
+            RegistrationMode::Open,
+            std::sync::Arc::default(),
+            std::sync::Arc::default(),
+        );
+        let session = accounts
+            .register(register_request("aurore", "aurore@example.org"), NOW)
+            .await
+            .unwrap();
+        let old_hash = find_user_by_login(&pool, "aurore")
+            .await
+            .unwrap()
+            .unwrap()
+            .password_hash;
+        let token_sha256 = session_token_sha256(&session.token).unwrap();
+        let replaced = replace_password_and_delete_other_sessions(
+            &pool,
+            session.user.id,
+            &old_hash,
+            "new-hash",
+            &token_sha256,
+            NOW,
+        )
+        .await
+        .unwrap();
+
+        let late_change = replace_password_and_delete_other_sessions(
+            &pool,
+            session.user.id,
+            &old_hash,
+            "attacker-hash",
+            &token_sha256,
+            NOW,
+        )
+        .await
+        .unwrap();
+        let late_login = insert_session(
+            &pool,
+            &NewSession {
+                id: Snowflake::from_raw(999),
+                user_id: session.user.id,
+                token_sha256: [7; 32],
+                device_name: "late".into(),
+                created_at_unix_milliseconds: NOW,
+                expires_at_unix_milliseconds: NOW + 1,
+            },
+            &old_hash,
+        )
+        .await
+        .unwrap();
+        let stored_hash = find_user_by_login(&pool, "aurore")
+            .await
+            .unwrap()
+            .unwrap()
+            .password_hash;
+        pool.close().await;
+
+        assert!(replaced);
+        assert!(!late_change);
+        assert!(!late_login);
+        assert_eq!(stored_hash, "new-hash");
     }
 
     #[tokio::test]

@@ -545,6 +545,7 @@ async fn account_settings_round_trip_through_the_rest_client() {
         .update_current_user(&UpdateCurrentUserRequest {
             username: Some("member".into()),
             display_name: None,
+            current_password: Some(PASSWORD.into()),
         })
         .await;
     assert!(is_refused_with(&taken, ApiErrorCode::UsernameTaken));
@@ -552,6 +553,7 @@ async fn account_settings_round_trip_through_the_rest_client() {
         .update_current_user(&UpdateCurrentUserRequest {
             username: Some("the.owner".into()),
             display_name: Some("The Owner".into()),
+            current_password: Some(PASSWORD.into()),
         })
         .await
         .unwrap();

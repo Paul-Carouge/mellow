@@ -22,19 +22,20 @@ use crate::http::authentication::{AuthenticatedUser, bearer_token};
 use crate::http::client_address::client_address_key;
 use crate::http::rate_limit::{
     AUTHENTICATION_ATTEMPTS_PER_ADDRESS, LOGIN_ATTEMPTS_PER_ACCOUNT,
-    LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS, PASSWORD_CHANGE_ATTEMPTS_PER_USER,
+    LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS, PASSWORD_CHECKS_PER_SESSION, PASSWORD_CHECKS_PER_USER,
     PROFILE_WRITES_PER_USER,
 };
 
-/// Enough of SHA-256 to make rate-limit keys unique per login while keeping them small.
-const ACCOUNT_KEY_HASH_BYTES: usize = 16;
+/// Enough of SHA-256 to make rate-limit keys unique per login or session while keeping them small.
+const RATE_LIMIT_KEY_HASH_BYTES: usize = 16;
 
-/// Fixed-size key for a login, so attacker-chosen logins cannot grow the limiter's memory.
+/// Fixed-size key for a login or a session token, so attacker-chosen values cannot grow the
+/// limiter's memory.
 /// shortcut: a username and its email give two keys for one account; acceptable at these limits.
-fn account_key(normalized_login: &str) -> String {
-    Sha256::digest(normalized_login.as_bytes())
+fn fixed_size_key(text: &str) -> String {
+    Sha256::digest(text.as_bytes())
         .iter()
-        .take(ACCOUNT_KEY_HASH_BYTES)
+        .take(RATE_LIMIT_KEY_HASH_BYTES)
         .flat_map(|byte| [byte >> 4, byte & 0x0F])
         // A nibble is always below 16, so `from_digit` never drops one.
         .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
@@ -78,7 +79,7 @@ pub(crate) async fn login(
     ApiJson(request): ApiJson<LoginRequest>,
 ) -> Result<Response, ApiError> {
     let address = client_address_key(peer, &headers, &state.trusted_proxy_networks);
-    let account = account_key(&normalize_login(&request.login).map_err(AccountError::from)?);
+    let account = fixed_size_key(&normalize_login(&request.login).map_err(AccountError::from)?);
     let now = Instant::now();
     // Every attempt is counted before the password check, so concurrent requests cannot all
     // pass under the limit while Argon2 runs. All three limits are always recorded.
@@ -119,20 +120,45 @@ pub(crate) async fn current_user(AuthenticatedUser(user): AuthenticatedUser) -> 
     Json(user)
 }
 
+/// Counts a current-password check, before Argon2 runs, against the session's and the user's
+/// budgets; both are always recorded.
+fn is_password_check_allowed(state: &AppState, user: &CurrentUser, token: &str) -> bool {
+    let now = Instant::now();
+    let within_session_limit = state.rate_limiter.record_event(
+        &format!("password-check:{}", fixed_size_key(token)),
+        PASSWORD_CHECKS_PER_SESSION,
+        now,
+    );
+    let within_user_limit = state.rate_limiter.record_event(
+        &format!("password-check:{}", user.id),
+        PASSWORD_CHECKS_PER_USER,
+        now,
+    );
+    within_session_limit && within_user_limit
+}
+
 pub(crate) async fn update_current_user(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
+    headers: HeaderMap,
     ApiJson(request): ApiJson<UpdateCurrentUserRequest>,
 ) -> Result<Json<CurrentUser>, ApiError> {
-    if !state.rate_limiter.record_event(
+    let token = bearer_token(&headers)?;
+    let within_profile_limit = state.rate_limiter.record_event(
         &format!("profile:{}", user.id),
         PROFILE_WRITES_PER_USER,
         Instant::now(),
-    ) {
+    );
+    if !within_profile_limit
+        || (request.current_password.is_some() && !is_password_check_allowed(&state, &user, token))
+    {
         return Err(ApiError::rate_limited());
     }
     Ok(Json(
-        state.accounts.update_current_user(user, request).await?,
+        state
+            .accounts
+            .update_current_user(token, request, now_unix_milliseconds())
+            .await?,
     ))
 }
 
@@ -142,17 +168,13 @@ pub(crate) async fn change_password(
     headers: HeaderMap,
     ApiJson(request): ApiJson<ChangePasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
-    // Counted before the password check, as for logins.
-    if !state.rate_limiter.record_event(
-        &format!("password-change:{}", user.id),
-        PASSWORD_CHANGE_ATTEMPTS_PER_USER,
-        Instant::now(),
-    ) {
+    let token = bearer_token(&headers)?;
+    if !is_password_check_allowed(&state, &user, token) {
         return Err(ApiError::rate_limited());
     }
     state
         .accounts
-        .change_password(bearer_token(&headers)?, request, now_unix_milliseconds())
+        .change_password(token, request, now_unix_milliseconds())
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

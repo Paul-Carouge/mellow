@@ -126,49 +126,70 @@ fn unique_violation_as_taken(error: sqlx::Error) -> AccountStorageError {
     }
 }
 
+/// Applies the given names (`None` keeps the stored one) in one statement, so concurrent changes of
+/// different fields both land, and returns the stored `(username, display_name)`; `None` for an
+/// unknown user.
+///
 /// # Errors
 /// `UsernameTaken` when another account has this username (case-insensitive); database errors.
 pub async fn update_user_names(
     pool: &SqlitePool,
     user_id: Snowflake,
-    username: &str,
-    display_name: &str,
-) -> Result<(), AccountStorageError> {
-    sqlx::query("UPDATE users SET username = ?, display_name = ? WHERE id = ?")
-        .bind(username)
-        .bind(display_name)
-        .bind(to_sqlite_integer(user_id.raw())?)
-        .execute(pool)
-        .await
-        .map_err(unique_violation_as_taken)?;
-    Ok(())
+    username: Option<&str>,
+    display_name: Option<&str>,
+) -> Result<Option<(String, String)>, AccountStorageError> {
+    sqlx::query_as(
+        "UPDATE users SET username = COALESCE(?, username), \
+         display_name = COALESCE(?, display_name) WHERE id = ? RETURNING username, display_name",
+    )
+    .bind(username)
+    .bind(display_name)
+    .bind(to_sqlite_integer(user_id.raw())?)
+    .fetch_optional(pool)
+    .await
+    .map_err(unique_violation_as_taken)
 }
 
-/// Stores the new password hash and deletes every other session of the user, in one transaction,
-/// so no session opened with the old password outlives the change.
+/// Replaces `verified_password_hash` with `new_password_hash` and deletes every other session of
+/// the user, in one transaction, so no session opened with the old password outlives the change.
+/// Changes nothing and returns `false` when the stored hash is no longer the verified one (another
+/// change won the race), the account was disabled, or the kept session expired or was revoked.
 ///
 /// # Errors
 /// Fails on database errors.
 pub async fn replace_password_and_delete_other_sessions(
     pool: &SqlitePool,
     user_id: Snowflake,
-    password_hash: &str,
+    verified_password_hash: &str,
+    new_password_hash: &str,
     kept_session_token_sha256: &SessionTokenSha256,
-) -> Result<(), AccountStorageError> {
+    now_unix_milliseconds: u64,
+) -> Result<bool, AccountStorageError> {
     let user_id = to_sqlite_integer(user_id.raw())?;
     let mut transaction = pool.begin().await?;
-    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
-        .bind(password_hash)
-        .bind(user_id)
-        .execute(&mut *transaction)
-        .await?;
+    let updated = sqlx::query(
+        "UPDATE users SET password_hash = ? \
+         WHERE id = ? AND password_hash = ? AND disabled_at_unix_milliseconds IS NULL \
+         AND EXISTS (SELECT 1 FROM sessions WHERE sessions.user_id = users.id \
+         AND sessions.token_sha256 = ? AND sessions.expires_at_unix_milliseconds > ?)",
+    )
+    .bind(new_password_hash)
+    .bind(user_id)
+    .bind(verified_password_hash)
+    .bind(kept_session_token_sha256.as_slice())
+    .bind(to_sqlite_integer(now_unix_milliseconds)?)
+    .execute(&mut *transaction)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Ok(false);
+    }
     sqlx::query("DELETE FROM sessions WHERE user_id = ? AND token_sha256 != ?")
         .bind(user_id)
         .bind(kept_session_token_sha256.as_slice())
         .execute(&mut *transaction)
         .await?;
     transaction.commit().await?;
-    Ok(())
+    Ok(true)
 }
 
 /// Looks up by username or email, both case-insensitive (`COLLATE NOCASE`).
@@ -190,26 +211,33 @@ pub async fn find_user_by_login(
     row.map(stored_user_from_row).transpose()
 }
 
+/// Inserts the session only while the user is enabled and still has `verified_password_hash`, so a
+/// login verified just before a password change cannot outlive it. Returns whether it was inserted.
+///
 /// # Errors
 /// Fails on database errors.
 pub async fn insert_session(
     pool: &SqlitePool,
     session: &NewSession,
-) -> Result<(), AccountStorageError> {
-    sqlx::query(
+    verified_password_hash: &str,
+) -> Result<bool, AccountStorageError> {
+    let result = sqlx::query(
         "INSERT INTO sessions (id, user_id, token_sha256, device_name, created_at_unix_milliseconds, \
-         last_seen_at_unix_milliseconds, expires_at_unix_milliseconds) VALUES (?, ?, ?, ?, ?, ?, ?)",
+         last_seen_at_unix_milliseconds, expires_at_unix_milliseconds) \
+         SELECT ?, id, ?, ?, ?, ?, ? FROM users \
+         WHERE id = ? AND password_hash = ? AND disabled_at_unix_milliseconds IS NULL",
     )
     .bind(to_sqlite_integer(session.id.raw())?)
-    .bind(to_sqlite_integer(session.user_id.raw())?)
     .bind(session.token_sha256.as_slice())
     .bind(&session.device_name)
     .bind(to_sqlite_integer(session.created_at_unix_milliseconds)?)
     .bind(to_sqlite_integer(session.created_at_unix_milliseconds)?)
     .bind(to_sqlite_integer(session.expires_at_unix_milliseconds)?)
+    .bind(to_sqlite_integer(session.user_id.raw())?)
+    .bind(verified_password_hash)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() == 1)
 }
 
 /// The user owning an unexpired session, whether or not the account is disabled (the caller decides).
