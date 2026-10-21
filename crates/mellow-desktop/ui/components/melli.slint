@@ -3,6 +3,16 @@ import { MellowColor, MellowComponent } from "../tokens.slint";
 // What Melli is showing (DESIGN.md §2.10). Rust picks the state (`home_melli_state`).
 export enum MelliState { idle, connecting, connection-lost, notification, incoming-call, in-call, update-available, sleeping }
 
+// Shared by every Melli (and callable from Rust, for `melli_animation.rs`'s tests).
+export global MelliAnimation {
+    // Where `elapsed` is within a loop of `period`, from 0 to 1, shifted by `offset` loops.
+    // `mod` keeps whole milliseconds, so the division never sees a large number.
+    public pure function cycle(elapsed: duration, period: duration, offset: float) -> float {
+        let position = mod(elapsed, period) / period + offset;
+        position - floor(position)
+    }
+}
+
 // A circle of the drawing, in viewBox units.
 component Circle inherits Rectangle {
     in property <float> center-x;
@@ -48,15 +58,16 @@ export component Melli inherits Rectangle {
     property <float> outline-width: 6;
     property <float> stroke-width: 8;
 
-    // Clocks, in milliseconds.
-    property <float> now: animation-tick() / 1ms;
-    property <float> state-started-at;
+    // Clocks stay `duration`s (whole milliseconds): `MelliAnimation.cycle` takes them modulo the
+    // loop before any float division, so the motion stays smooth however long the app runs.
+    property <duration> now: animation-tick();
+    property <duration> state-started-at;
     // The puffs stop turning while the connection is lost and resume from the same angle.
     property <bool> is-puff-spin-paused;
-    property <float> puff-spin-paused-at;
-    property <float> puff-spin-paused-total;
-    property <float> since-state-change: now - state-started-at;
-    property <float> puff-spin-clock: (is-puff-spin-paused ? puff-spin-paused-at : now) - puff-spin-paused-total;
+    property <duration> puff-spin-paused-at;
+    property <duration> puff-spin-paused-total;
+    property <duration> since-state-change: now - state-started-at;
+    property <duration> puff-spin-clock: (is-puff-spin-paused ? puff-spin-paused-at : now) - puff-spin-paused-total;
 
     init => {
         state-started-at = now;
@@ -72,10 +83,8 @@ export component Melli inherits Rectangle {
         state-started-at = now;
     }
 
-    // Where `elapsed` is within a loop of `period`, from 0 to 1, shifted by `offset` loops.
-    pure function cycle(elapsed: float, period: duration, offset: float) -> float {
-        let position = elapsed / (period / 1ms) + offset;
-        position - floor(position)
+    pure function cycle(elapsed: duration, period: duration, offset: float) -> float {
+        MelliAnimation.cycle(elapsed, period, offset)
     }
     // Progress from 0 to 1 while `t` goes from `start` to `end`: linear, ease-in-out, in, out.
     pure function ramp(t: float, start: float, end: float) -> float {
