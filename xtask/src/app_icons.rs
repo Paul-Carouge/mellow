@@ -1,7 +1,7 @@
 //! App icons (DESIGN.md §2.10): the favicon's still idle Melli rasterised to PNGs, and a macOS
 //! `.icns` built from them, so every icon comes from the tokens like the favicon does.
 
-use anyhow::{Context as _, Result, anyhow, bail, ensure};
+use anyhow::{Context as _, Result, anyhow};
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg;
 
@@ -87,56 +87,92 @@ fn length_field(length: usize) -> Result<[u8; 4]> {
         .to_be_bytes())
 }
 
-fn icns_chunks(icns: &[u8]) -> Result<Vec<([u8; 4], &[u8])>> {
-    ensure!(icns.starts_with(b"icns"), "not an .icns file");
+/// The chunks of a well-formed `.icns`: its length field is the file's length and the chunks
+/// fill it exactly. `None` for anything else.
+fn icns_chunks(icns: &[u8]) -> Option<Vec<([u8; 4], &[u8])>> {
+    let total_length = u32::from_be_bytes(icns.get(4..ICNS_HEADER_LENGTH)?.try_into().ok()?);
+    if !icns.starts_with(b"icns") || usize::try_from(total_length).ok()? != icns.len() {
+        return None;
+    }
     let mut chunks = Vec::new();
-    let mut rest = icns
-        .get(ICNS_HEADER_LENGTH..)
-        .ok_or_else(|| anyhow!("truncated .icns header"))?;
+    let mut rest = &icns[ICNS_HEADER_LENGTH..];
     while !rest.is_empty() {
-        let header = rest
-            .get(..ICNS_HEADER_LENGTH)
-            .ok_or_else(|| anyhow!("truncated .icns chunk header"))?;
-        let kind: [u8; 4] = header[..4].try_into()?;
-        let length = usize::try_from(u32::from_be_bytes(header[4..].try_into()?))?;
-        let chunk = rest
-            .get(ICNS_HEADER_LENGTH..length)
-            .ok_or_else(|| anyhow!("truncated .icns chunk"))?;
-        chunks.push((kind, chunk));
+        let kind: [u8; 4] = rest.get(..4)?.try_into().ok()?;
+        let length = u32::from_be_bytes(rest.get(4..ICNS_HEADER_LENGTH)?.try_into().ok()?);
+        let length = usize::try_from(length).ok()?;
+        chunks.push((kind, rest.get(ICNS_HEADER_LENGTH..length)?));
         rest = &rest[length..];
     }
-    Ok(chunks)
+    Some(chunks)
 }
 
-/// Whether a committed icon matches a fresh render, within the rasteriser's rounding.
+/// Whether a PNG holds only what the encoder writes (`IHDR`, `IDAT`, `IEND`) and nothing after
+/// its end: pixels within tolerance must not let other bytes hide in a committed icon.
+fn has_only_image_chunks(png: &[u8]) -> bool {
+    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    const LENGTH_AND_TYPE: usize = 8;
+    const CHECKSUM: usize = 4;
+    let Some(mut rest) = png.strip_prefix(SIGNATURE) else {
+        return false;
+    };
+    while let Some(header) = rest.get(..LENGTH_AND_TYPE) {
+        let Ok(Ok(length)) = header[..4]
+            .try_into()
+            .map(u32::from_be_bytes)
+            .map(usize::try_from)
+        else {
+            return false;
+        };
+        let kind = &header[4..];
+        if !matches!(kind, b"IHDR" | b"IDAT" | b"IEND") {
+            return false;
+        }
+        let Some(after_chunk) = rest.get(LENGTH_AND_TYPE + length + CHECKSUM..) else {
+            return false;
+        };
+        if kind == b"IEND" {
+            return after_chunk.is_empty();
+        }
+        rest = after_chunk;
+    }
+    false
+}
+
+/// Whether a committed icon matches a fresh render: the same chunks, and pixels within the
+/// rasteriser's rounding. A missing or malformed icon is out of date.
 pub fn is_icon_up_to_date(file_name: &str, committed: &[u8], generated: &[u8]) -> Result<bool> {
     if committed == generated {
         return Ok(true);
     }
-    if committed.is_empty() {
+    if file_name != ICNS_FILE_NAME {
+        return are_pngs_alike(committed, generated);
+    }
+    let generated_chunks =
+        icns_chunks(generated).ok_or_else(|| anyhow!("the generated .icns is malformed"))?;
+    let Some(committed_chunks) = icns_chunks(committed) else {
+        return Ok(false);
+    };
+    if committed_chunks.len() != generated_chunks.len() {
         return Ok(false);
     }
-    if file_name == ICNS_FILE_NAME {
-        let (committed_chunks, generated_chunks) =
-            (icns_chunks(committed)?, icns_chunks(generated)?);
-        if committed_chunks.len() != generated_chunks.len() {
+    for ((committed_kind, committed_png), (generated_kind, generated_png)) in
+        committed_chunks.iter().zip(&generated_chunks)
+    {
+        if committed_kind != generated_kind || !are_pngs_alike(committed_png, generated_png)? {
             return Ok(false);
         }
-        for ((committed_kind, committed_png), (generated_kind, generated_png)) in
-            committed_chunks.iter().zip(&generated_chunks)
-        {
-            if committed_kind != generated_kind || !are_pngs_alike(committed_png, generated_png)? {
-                return Ok(false);
-            }
-        }
-        return Ok(true);
     }
-    are_pngs_alike(committed, generated)
+    Ok(true)
 }
 
 fn are_pngs_alike(committed: &[u8], generated: &[u8]) -> Result<bool> {
-    let committed = Pixmap::decode_png(committed).context("a committed icon is not a PNG")?;
-    let generated = Pixmap::decode_png(generated)?;
+    if !has_only_image_chunks(committed) {
+        return Ok(false);
+    }
+    let Ok(committed) = Pixmap::decode_png(committed) else {
+        return Ok(false);
+    };
+    let generated = Pixmap::decode_png(generated).context("the generated icon is not a PNG")?;
     if committed.width() != generated.width() || committed.height() != generated.height() {
         return Ok(false);
     }
@@ -145,13 +181,6 @@ fn are_pngs_alike(committed: &[u8], generated: &[u8]) -> Result<bool> {
         .iter()
         .zip(generated.data())
         .all(|(a, b)| a.abs_diff(*b) <= MAXIMUM_CHANNEL_DIFFERENCE_ON_CHECK))
-}
-
-pub fn check_icon_is_up_to_date(file_name: &str, committed: &[u8], generated: &[u8]) -> Result<()> {
-    if !is_icon_up_to_date(file_name, committed, generated)? {
-        bail!("{ICONS_DIRECTORY}/{file_name} is out of date; run `cargo xtask tokens`");
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -210,5 +239,32 @@ mod tests {
         let (icns_name, icns) = generated_icons.last().unwrap();
         assert!(!is_icon_up_to_date(icns_name, icns, &other.last().unwrap().1).unwrap());
         assert!(!is_icon_up_to_date(name, &[], png).unwrap());
+        assert!(!is_icon_up_to_date(name, b"not a picture", png).unwrap());
+    }
+
+    #[test]
+    fn bytes_hidden_in_an_icon_with_the_right_pixels_fail_the_check() {
+        let generated_icons = generate_app_icons(SQUARE).unwrap();
+        let (name, png) = &generated_icons[0];
+        let mut appended = png.clone();
+        appended.extend_from_slice(b"hidden");
+        assert!(!is_icon_up_to_date(name, &appended, png).unwrap());
+
+        // A text chunk right after IHDR (8-byte signature, 25-byte IHDR chunk).
+        let mut with_text = png[..33].to_vec();
+        with_text.extend_from_slice(&[0, 0, 0, 1]);
+        with_text.extend_from_slice(b"tEXtx");
+        with_text.extend_from_slice(&[0; 4]);
+        with_text.extend_from_slice(&png[33..]);
+        assert!(!is_icon_up_to_date(name, &with_text, png).unwrap());
+
+        let (icns_name, icns) = generated_icons.last().unwrap();
+        let mut longer_icns = icns.clone();
+        longer_icns.extend_from_slice(b"hidden");
+        assert!(!is_icon_up_to_date(icns_name, &longer_icns, icns).unwrap());
+        let mut swollen_icns = longer_icns.clone();
+        let swollen_length = u32::try_from(swollen_icns.len()).unwrap();
+        swollen_icns[4..8].copy_from_slice(&swollen_length.to_be_bytes());
+        assert!(!is_icon_up_to_date(icns_name, &swollen_icns, icns).unwrap());
     }
 }
