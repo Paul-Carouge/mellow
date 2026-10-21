@@ -14,18 +14,21 @@ pub(crate) enum MessageStorageError {
     Database(#[from] sqlx::Error),
     #[error("cannot record the audit entry")]
     AuditEntry(#[from] GuildStorageError),
+    /// An attachment id that is not an unsent upload of this author to this channel.
+    #[error("attachment unavailable")]
+    AttachmentUnavailable,
 }
 
-fn to_integer(value: u64) -> Result<i64, MessageStorageError> {
+pub(crate) fn to_integer(value: u64) -> Result<i64, MessageStorageError> {
     i64::try_from(value).map_err(|_| MessageStorageError::IntegerOutOfRange)
 }
 
 /// For lookups: an id SQLite cannot hold cannot exist.
-fn lookup_integer(id: Snowflake) -> Option<i64> {
+pub(crate) fn lookup_integer(id: Snowflake) -> Option<i64> {
     i64::try_from(id.raw()).ok()
 }
 
-fn to_id(value: i64) -> Result<Snowflake, MessageStorageError> {
+pub(crate) fn to_id(value: i64) -> Result<Snowflake, MessageStorageError> {
     u64::try_from(value)
         .map(Snowflake::from_raw)
         .map_err(|_| MessageStorageError::IntegerOutOfRange)
@@ -89,6 +92,8 @@ pub(crate) struct NewMessage {
     pub(crate) reply_to_id: Option<Snowflake>,
     /// Kept so a retry with the same nonce finds this message; never returned in history.
     pub(crate) nonce: Option<String>,
+    /// Unsent uploads of the author to this channel, linked in the same transaction.
+    pub(crate) attachment_ids: Vec<Snowflake>,
 }
 
 /// Inserts the message and returns it with its author's public fields.
@@ -99,6 +104,7 @@ pub(crate) async fn insert_message(
     pool: &SqlitePool,
     message: &NewMessage,
 ) -> Result<StoredMessage, MessageStorageError> {
+    let mut transaction = pool.begin().await?;
     let row: MessageRow = sqlx::query_as(
         "INSERT INTO messages (id, channel_id, author_id, content, reply_to_id, nonce) \
          VALUES (?, ?, ?, ?, ?, ?) \
@@ -118,8 +124,26 @@ pub(crate) async fn insert_message(
             .transpose()?,
     )
     .bind(&message.nonce)
-    .fetch_one(pool)
+    .fetch_one(&mut *transaction)
     .await?;
+    for attachment_id in &message.attachment_ids {
+        let linked = sqlx::query(
+            "UPDATE attachments SET message_id = ? \
+             WHERE id = ? AND uploader_id = ? AND channel_id = ? AND message_id IS NULL",
+        )
+        .bind(to_integer(message.id.raw())?)
+        .bind(lookup_integer(*attachment_id).ok_or(MessageStorageError::AttachmentUnavailable)?)
+        .bind(to_integer(message.author_id.raw())?)
+        .bind(to_integer(message.channel_id.raw())?)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if linked != 1 {
+            // Dropping the transaction rolls the message back too.
+            return Err(MessageStorageError::AttachmentUnavailable);
+        }
+    }
+    transaction.commit().await?;
     message_from_row(row)
 }
 

@@ -109,6 +109,17 @@ pub(crate) const DIRECT_MESSAGE_OPENS_PER_USER_PER_DAY: RateLimit = RateLimit {
     window: Duration::from_hours(24),
 };
 
+/// Attachment uploads per user (ADR-0020): each one is up to the instance's file limit on disk.
+pub(crate) const ATTACHMENT_UPLOADS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_mins(1),
+};
+/// Sustained uploads per user, so one account cannot fill the disk over a day.
+pub(crate) const ATTACHMENT_UPLOADS_PER_USER_PER_HOUR: RateLimit = RateLimit {
+    maximum_events: 100,
+    window: Duration::from_hours(1),
+};
+
 /// Typing indicators per user; clients send one every few seconds while typing.
 pub(crate) const TYPING_INDICATORS_PER_USER: RateLimit = RateLimit {
     maximum_events: 10,

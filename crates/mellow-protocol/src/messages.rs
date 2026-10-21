@@ -12,6 +12,23 @@ pub struct SendMessageRequest {
     /// Client-generated, echoed back so an offline outbox can match its pending copy
     /// (ARCHITECTURE.md §6). Not stored.
     pub nonce: Option<String>,
+    /// Files uploaded to this channel beforehand by the sender (ADR-0020), at most 10. Left out of
+    /// the body when empty, so older servers still accept text-only messages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_ids: Vec<Snowflake>,
+}
+
+/// A file shared in a message (ADR-0020), downloaded at
+/// `GET /api/v1/attachments/{id}/{file_name}`. Also the answer to an upload,
+/// `POST /api/v1/channels/{channel_id}/attachments?file_name=…`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub id: Snowflake,
+    pub file_name: String,
+    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp` when the bytes are one, which
+    /// clients may preview; `application/octet-stream` for anything else.
+    pub content_type: String,
+    pub size_bytes: u64,
 }
 
 /// Body of `PATCH /api/v1/channels/{channel_id}/messages/{message_id}`.
@@ -46,6 +63,9 @@ pub struct Message {
     pub edited_at_unix_milliseconds: Option<u64>,
     /// Echo of the sender's nonce, only in the response to the sender.
     pub nonce: Option<String>,
+    /// Absent from older servers' payloads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
 }
 
 /// Body of `PUT /api/v1/channels/{channel_id}/read-state`.
@@ -85,6 +105,7 @@ mod tests {
             reply_to_id: None,
             edited_at_unix_milliseconds: None,
             nonce: Some("abc".into()),
+            attachments: Vec::new(),
         };
         let json = serde_json::to_value(&message).unwrap();
         assert_eq!(json["id"], "9");

@@ -21,7 +21,8 @@ pub const TYPING_INDICATOR_LIFETIME_MILLISECONDS: u64 = 8_000;
 /// `direct_message_permissions` decides; only to adapt the interface (ADR-0014).
 const DIRECT_MESSAGE_PERMISSIONS: Permissions = Permissions::VIEW_CHANNEL
     .union(Permissions::SEND_MESSAGES)
-    .union(Permissions::READ_MESSAGE_HISTORY);
+    .union(Permissions::READ_MESSAGE_HISTORY)
+    .union(Permissions::ATTACH_FILES);
 
 /// Most recent activity first, as in Discord's conversation list.
 fn sort_by_last_activity(channels: &mut [DirectMessageChannel]) {
@@ -89,6 +90,7 @@ impl PendingMessage {
             content: self.content.clone(),
             reply_to_id: self.reply_to_id,
             nonce: Some(self.nonce.clone()),
+            attachment_ids: Vec::new(),
         }
     }
 }
@@ -825,6 +827,7 @@ mod tests {
             reply_to_id: None,
             edited_at_unix_milliseconds: None,
             nonce: None,
+            attachments: Vec::new(),
         }
     }
 

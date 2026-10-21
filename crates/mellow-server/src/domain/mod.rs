@@ -3,6 +3,7 @@
 
 pub mod account_rules;
 pub mod accounts;
+pub(crate) mod attachments;
 pub mod clock;
 pub(crate) mod guild_rules;
 pub(crate) mod guilds;

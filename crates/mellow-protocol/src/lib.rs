@@ -27,7 +27,7 @@ pub use guilds::{
 };
 pub use health::{HealthResponse, HealthStatus};
 pub use messages::{
-    AcknowledgeRequest, EditMessageRequest, Message, MessageHistoryQuery, ReadState,
+    AcknowledgeRequest, Attachment, EditMessageRequest, Message, MessageHistoryQuery, ReadState,
     SendMessageRequest,
 };
 pub use permissions::{

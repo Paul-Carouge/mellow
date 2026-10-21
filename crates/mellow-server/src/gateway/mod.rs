@@ -662,6 +662,7 @@ mod tests {
                     reply_to_id: None,
                     // Unique per message: a repeated nonce returns the first message.
                     nonce: Some(format!("private-{}", content.replace(' ', "-"))),
+                    attachment_ids: Vec::new(),
                 },
                 now(),
             )

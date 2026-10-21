@@ -4,22 +4,24 @@
 
 mod direct_messages;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use mellow_protocol::{
-    AcknowledgeRequest, AuditAction, ChannelKind, EditMessageRequest, GatewayEvent, Message,
-    MessageHistoryQuery, Permissions, PublicUser, ReadState, SendMessageRequest, Snowflake,
+    AcknowledgeRequest, Attachment, AuditAction, ChannelKind, EditMessageRequest, GatewayEvent,
+    Message, MessageHistoryQuery, Permissions, PublicUser, ReadState, SendMessageRequest,
+    Snowflake,
 };
 use sqlx::SqlitePool;
 
 use crate::domain::guilds::{ChannelAudience, GuildError, Guilds};
 use crate::domain::message_rules::{
-    MessageRuleViolation, history_page_size, normalize_line_endings, validate_message_content,
-    validate_nonce,
+    MAXIMUM_ATTACHMENTS_PER_MESSAGE, MessageRuleViolation, history_page_size,
+    normalize_line_endings, validate_message_content, validate_nonce,
 };
 use crate::domain::permissions::direct_message_permissions;
 use crate::domain::snowflake_generator::SnowflakeGenerator;
+use crate::storage::attachments::{self as attachment_storage, StoredAttachment};
 use crate::storage::direct_messages as direct_message_storage;
 use crate::storage::guilds::StoredChannel;
 use crate::storage::messages::{
@@ -41,7 +43,19 @@ pub enum MessageError {
 
 impl From<MessageStorageError> for MessageError {
     fn from(error: MessageStorageError) -> Self {
-        Self::Internal(Box::new(error))
+        match error {
+            MessageStorageError::AttachmentUnavailable => MessageRuleViolation::Attachments.into(),
+            other => Self::Internal(Box::new(other)),
+        }
+    }
+}
+
+fn attachment_from_stored(attachment: StoredAttachment) -> Attachment {
+    Attachment {
+        id: attachment.id,
+        file_name: attachment.file_name,
+        content_type: attachment.content_type,
+        size_bytes: attachment.size_bytes,
     }
 }
 
@@ -51,7 +65,11 @@ impl From<mellow_protocol::SnowflakeError> for MessageError {
     }
 }
 
-fn message_from_stored(message: StoredMessage, nonce: Option<String>) -> Message {
+fn message_from_stored(
+    message: StoredMessage,
+    nonce: Option<String>,
+    attachments: Vec<StoredAttachment>,
+) -> Message {
     Message {
         id: message.id,
         channel_id: message.channel_id,
@@ -64,7 +82,24 @@ fn message_from_stored(message: StoredMessage, nonce: Option<String>) -> Message
         reply_to_id: message.reply_to_id,
         edited_at_unix_milliseconds: message.edited_at_unix_milliseconds,
         nonce,
+        attachments: attachments
+            .into_iter()
+            .map(attachment_from_stored)
+            .collect(),
     }
+}
+
+/// The attachments of one message, for the paths that build a single one.
+async fn attachments_of(
+    pool: &SqlitePool,
+    message_id: Snowflake,
+) -> Result<Vec<StoredAttachment>, MessageError> {
+    Ok(
+        attachment_storage::attachments_of_messages(pool, &[message_id])
+            .await?
+            .remove(&message_id)
+            .unwrap_or_default(),
+    )
 }
 
 /// Where a message action happens.
@@ -180,6 +215,19 @@ impl Messages {
         Ok((channel, permissions))
     }
 
+    /// For attachments: the user may act in this text channel or conversation with `needed`.
+    /// A channel they cannot view is `NotFound`.
+    pub(crate) async fn require_channel_permissions(
+        &self,
+        user_id: Snowflake,
+        channel_id: Snowflake,
+        needed: Permissions,
+    ) -> Result<(), MessageError> {
+        self.text_channel_and_permissions_requiring(user_id, channel_id, needed)
+            .await
+            .map(|_| ())
+    }
+
     async fn audience(&self, channel: &MessageChannel) -> Result<MessageAudience, MessageError> {
         Ok(match channel {
             MessageChannel::Guild(channel) => MessageAudience::Guild {
@@ -221,7 +269,22 @@ impl Messages {
             )
             .await?;
         let content = normalize_line_endings(&request.content);
-        validate_message_content(&content)?;
+        let distinct_attachments: HashSet<Snowflake> =
+            request.attachment_ids.iter().copied().collect();
+        if request.attachment_ids.len() > MAXIMUM_ATTACHMENTS_PER_MESSAGE
+            || distinct_attachments.len() != request.attachment_ids.len()
+        {
+            return Err(MessageRuleViolation::Attachments.into());
+        }
+        // A message of files alone may have no text, as on Discord.
+        if request.attachment_ids.is_empty() || !content.trim().is_empty() {
+            validate_message_content(&content)?;
+        }
+        let content = if content.trim().is_empty() {
+            String::new()
+        } else {
+            content
+        };
         if let Some(nonce) = &request.nonce {
             validate_nonce(nonce)?;
         }
@@ -252,7 +315,12 @@ impl Messages {
                     message_storage::find_message_by_nonce(&pool, channel_id, user_id, nonce)
                         .await?
             {
-                return Ok(message_from_stored(already_sent, request.nonce));
+                let attachments = attachments_of(&pool, already_sent.id).await?;
+                return Ok(message_from_stored(
+                    already_sent,
+                    request.nonce,
+                    attachments,
+                ));
             }
             if let Some(reply_to_id) = request.reply_to_id {
                 message_storage::find_message_in_channel(&pool, channel_id, reply_to_id)
@@ -270,9 +338,11 @@ impl Messages {
                     content,
                     reply_to_id: request.reply_to_id,
                     nonce: request.nonce.clone(),
+                    attachment_ids: request.attachment_ids.clone(),
                 },
             )
             .await?;
+            let attachments = attachments_of(&pool, stored.id).await?;
             if is_first_direct_message {
                 direct_messages::announce_conversation(&guilds, conversation_views, stored.id);
             }
@@ -280,9 +350,13 @@ impl Messages {
             publish(
                 &guilds,
                 &audience,
-                &GatewayEvent::MessageCreate(message_from_stored(stored.clone(), None)),
+                &GatewayEvent::MessageCreate(message_from_stored(
+                    stored.clone(),
+                    None,
+                    attachments.clone(),
+                )),
             );
-            Ok(message_from_stored(stored, request.nonce))
+            Ok(message_from_stored(stored, request.nonce, attachments))
         })
         .await
         .map_err(|error| MessageError::Internal(Box::new(error)))?
@@ -309,13 +383,18 @@ impl Messages {
             (Some(_), Some(_)) => return Err(MessageRuleViolation::HistoryQuery.into()),
         };
         let limit = history_page_size(query.limit)?;
-        Ok(
-            message_storage::list_messages(&self.pool, channel.id(), page, limit)
-                .await?
-                .into_iter()
-                .map(|message| message_from_stored(message, None))
-                .collect(),
-        )
+        let messages =
+            message_storage::list_messages(&self.pool, channel.id(), page, limit).await?;
+        let message_ids: Vec<Snowflake> = messages.iter().map(|message| message.id).collect();
+        let mut attachments: HashMap<Snowflake, Vec<StoredAttachment>> =
+            attachment_storage::attachments_of_messages(&self.pool, &message_ids).await?;
+        Ok(messages
+            .into_iter()
+            .map(|message| {
+                let message_attachments = attachments.remove(&message.id).unwrap_or_default();
+                message_from_stored(message, None, message_attachments)
+            })
+            .collect())
     }
 
     /// Only the author may edit, as on Discord, and only while still allowed to send: a muted
@@ -350,7 +429,8 @@ impl Messages {
         )
         .await?
         .ok_or(MessageError::MessageNotFound)?;
-        let updated = message_from_stored(updated, None);
+        let attachments = attachments_of(&self.pool, updated.id).await?;
+        let updated = message_from_stored(updated, None, attachments);
         publish(
             &self.guilds,
             &audience,
@@ -566,6 +646,7 @@ mod tests {
             content: content.into(),
             reply_to_id: None,
             nonce: None,
+            attachment_ids: Vec::new(),
         }
     }
 
@@ -904,6 +985,7 @@ mod tests {
                     content: "answer".into(),
                     reply_to_id: Some(original.id),
                     nonce: Some("outbox-1".into()),
+                    attachment_ids: Vec::new(),
                 },
                 NOW,
             )
@@ -918,6 +1000,7 @@ mod tests {
                     content: "x".into(),
                     reply_to_id: Some(original.id),
                     nonce: None,
+                    attachment_ids: Vec::new(),
                 },
                 NOW,
             )
@@ -949,6 +1032,7 @@ mod tests {
             content: content.into(),
             reply_to_id: None,
             nonce: Some("outbox-1".into()),
+            attachment_ids: Vec::new(),
         };
 
         let first = fixture
@@ -1012,6 +1096,7 @@ mod tests {
                     content: "once".into(),
                     reply_to_id: None,
                     nonce: Some("outbox-2".into()),
+                    attachment_ids: Vec::new(),
                 },
                 NOW,
             )
@@ -1039,6 +1124,7 @@ mod tests {
             content: "hello".into(),
             reply_to_id: None,
             nonce: Some("outbox-3".into()),
+            attachment_ids: Vec::new(),
         };
         let first = fixture
             .messages

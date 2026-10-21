@@ -37,6 +37,13 @@ const PRIVATE_PROXY_NETWORKS: [&str; 9] = [
 ];
 pub const DATABASE_FILE_NAME: &str = "mellow.db";
 pub const BACKUP_DIRECTORY_NAME: &str = "backups";
+const ATTACHMENT_DIRECTORY_NAME: &str = "attachments";
+/// 25 MB, as Discord's default upload limit.
+pub const DEFAULT_MAXIMUM_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+
+fn default_maximum_attachment_bytes() -> u64 {
+    DEFAULT_MAXIMUM_ATTACHMENT_BYTES
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,6 +63,9 @@ pub struct ServerConfig {
     /// proxy in a Docker network. Requires `behind_tls_reverse_proxy`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trusted_proxy_networks: Vec<IpNet>,
+    /// Largest file accepted as an attachment (ADR-0020).
+    #[serde(default = "default_maximum_attachment_bytes")]
+    pub maximum_attachment_bytes: u64,
     /// Built-in TLS with ACME certificates (ADR-0013). Last field: TOML writes tables after values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
@@ -314,6 +324,11 @@ impl ServerConfig {
         self.data_directory.join(BACKUP_DIRECTORY_NAME)
     }
 
+    #[must_use]
+    pub fn attachment_directory(&self) -> PathBuf {
+        self.data_directory.join(ATTACHMENT_DIRECTORY_NAME)
+    }
+
     /// # Errors
     /// Fails on non-UTF-8 paths, which `validate` rejects beforehand.
     pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
@@ -484,6 +499,7 @@ mod tests {
             registration_mode: RegistrationMode::Closed,
             behind_tls_reverse_proxy: false,
             trusted_proxy_networks: Vec::new(),
+            maximum_attachment_bytes: DEFAULT_MAXIMUM_ATTACHMENT_BYTES,
             tls: None,
         };
 

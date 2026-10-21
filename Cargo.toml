@@ -19,6 +19,8 @@ publish = false
 
 [workspace.dependencies]
 anyhow = "1.0.104"
+# Already in the tree through rustls (same features); AES-256-GCM for attachment files (ADR-0020).
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 async-trait = "0.1.92"
 axum-server = "0.8.0"
 argon2 = "0.6.0"
