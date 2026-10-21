@@ -9,11 +9,7 @@ yanked = "deny"
 # Vulnerabilities always fail. "Unmaintained" fails only for our direct dependencies: deep
 # transitive ones (e.g. under winit/AccessKit) have no upgrade path we control.
 unmaintained = "workspace"
-ignore = [
-    # webpki-roots 0.26.11 (through rustls-acme) only re-exports webpki-roots 1.0.10, which has the
-    # fix; no 0.26 release is newer. Drop once rustls-acme depends on webpki-roots 1.
-    { id = "RUSTSEC-2026-0381", reason = "0.26.11 is a shim over the fixed 1.0.10" },
-]
+ignore = []
 
 [licenses]
 version = 2
