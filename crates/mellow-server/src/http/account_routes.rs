@@ -23,7 +23,7 @@ use crate::http::client_address::client_address_key;
 use crate::http::rate_limit::{
     AUTHENTICATION_ATTEMPTS_PER_ADDRESS, LOGIN_ATTEMPTS_PER_ACCOUNT,
     LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS, PASSWORD_CHECKS_PER_SESSION, PASSWORD_CHECKS_PER_USER,
-    PROFILE_WRITES_PER_USER,
+    PROFILE_WRITES_PER_SESSION,
 };
 
 /// Enough of SHA-256 to make rate-limit keys unique per login or session while keeping them small.
@@ -120,21 +120,19 @@ pub(crate) async fn current_user(AuthenticatedUser(user): AuthenticatedUser) -> 
     Json(user)
 }
 
-/// Counts a current-password check, before Argon2 runs, against the session's and the user's
-/// budgets; both are always recorded.
+/// Counts a current-password check, before Argon2 runs. The user's budget is counted only for checks
+/// the session's budget allows, so one session adds at most its own budget to it and cannot fill it.
 fn is_password_check_allowed(state: &AppState, user: &CurrentUser, token: &str) -> bool {
     let now = Instant::now();
-    let within_session_limit = state.rate_limiter.record_event(
+    state.rate_limiter.record_event(
         &format!("password-check:{}", fixed_size_key(token)),
         PASSWORD_CHECKS_PER_SESSION,
         now,
-    );
-    let within_user_limit = state.rate_limiter.record_event(
+    ) && state.rate_limiter.record_event(
         &format!("password-check:{}", user.id),
         PASSWORD_CHECKS_PER_USER,
         now,
-    );
-    within_session_limit && within_user_limit
+    )
 }
 
 pub(crate) async fn update_current_user(
@@ -144,9 +142,10 @@ pub(crate) async fn update_current_user(
     ApiJson(request): ApiJson<UpdateCurrentUserRequest>,
 ) -> Result<Json<CurrentUser>, ApiError> {
     let token = bearer_token(&headers)?;
+    // Per session, so a stolen session cannot keep the owner's devices from renaming.
     let within_profile_limit = state.rate_limiter.record_event(
-        &format!("profile:{}", user.id),
-        PROFILE_WRITES_PER_USER,
+        &format!("profile:{}", fixed_size_key(token)),
+        PROFILE_WRITES_PER_SESSION,
         Instant::now(),
     );
     if !within_profile_limit

@@ -1287,7 +1287,7 @@ pub(crate) mod tests {
     /// A stolen session that uses up its password-check budget must not keep the owner's other
     /// devices from changing the password (and so revoking it).
     #[tokio::test]
-    async fn password_checks_are_rate_limited_per_session_and_profile_writes_per_user() {
+    async fn password_checks_and_profile_writes_are_rate_limited_per_session() {
         let (_directory, pool) = migrated_pool().await;
         let state = test_state(pool.clone(), RegistrationMode::Open);
         let stolen = registered_token(&state, "aurore").await;
@@ -1320,29 +1320,46 @@ pub(crate) mod tests {
             )
         };
 
+        // More than the user's budget too: refused checks must not count against it.
         let mut guesses = Vec::new();
-        for _ in 0..rate_limit::PASSWORD_CHECKS_PER_SESSION.maximum_events {
+        for _ in 0..=rate_limit::PASSWORD_CHECKS_PER_USER.maximum_events {
             guesses.push(send(&state, change(&stolen, "a wrong guess")).await.0);
         }
+        let mut stolen_renames = Vec::new();
+        for attempt in 0..=rate_limit::PROFILE_WRITES_PER_SESSION.maximum_events {
+            stolen_renames.push(
+                send(&state, rename(&stolen, format!("Thief {attempt}")))
+                    .await
+                    .0,
+            );
+        }
         let (stolen_with_right_password, _) = send(&state, change(&stolen, PASSWORD)).await;
-        let (own_change, _) = send(&state, change(&own, PASSWORD)).await;
-        let (stolen_after_change, _) =
-            send(&state, with_bearer("/api/v1/users/@me", "GET", &stolen)).await;
         let mut renames = Vec::new();
-        for attempt in 0..=rate_limit::PROFILE_WRITES_PER_USER.maximum_events {
+        for attempt in 0..=rate_limit::PROFILE_WRITES_PER_SESSION.maximum_events {
             renames.push(
                 send(&state, rename(&own, format!("Aurore {attempt}")))
                     .await
                     .0,
             );
         }
+        let (own_change, _) = send(&state, change(&own, PASSWORD)).await;
+        let (stolen_after_change, _) =
+            send(&state, with_bearer("/api/v1/users/@me", "GET", &stolen)).await;
         pool.close().await;
 
+        let session_budget = rate_limit::PASSWORD_CHECKS_PER_SESSION.maximum_events as usize;
+        let (checked, refused) = guesses.split_at(session_budget);
         assert!(
-            guesses
+            checked
                 .iter()
                 .all(|status| *status == StatusCode::UNAUTHORIZED)
         );
+        assert!(
+            refused
+                .iter()
+                .all(|status| *status == StatusCode::TOO_MANY_REQUESTS)
+        );
+        assert_eq!(stolen_renames.last(), Some(&StatusCode::TOO_MANY_REQUESTS));
         assert_eq!(stolen_with_right_password, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(own_change, StatusCode::NO_CONTENT);
         assert_eq!(stolen_after_change, StatusCode::UNAUTHORIZED);
