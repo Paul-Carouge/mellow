@@ -52,10 +52,16 @@ pub(crate) const PASSWORD_CHECKS_PER_USER: RateLimit = RateLimit {
     window: Duration::from_mins(15),
 };
 /// Username and display name changes per session: each one is fanned out to every shared guild.
-/// Per session, so a stolen session cannot use up the owner's budget; minting more sessions takes
-/// the password.
+/// Per session, so a stolen session cannot use up the owner's budget.
 pub(crate) const PROFILE_WRITES_PER_SESSION: RateLimit = RateLimit {
     maximum_events: 10,
+    window: Duration::from_secs(60),
+};
+/// Username and display name changes per user, across all sessions, so an account cannot multiply
+/// the fan-out by opening sessions. Only changes a session's own budget allowed count here, so one
+/// session cannot fill it alone.
+pub(crate) const PROFILE_WRITES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 30,
     window: Duration::from_secs(60),
 };
 

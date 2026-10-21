@@ -1284,6 +1284,18 @@ pub(crate) mod tests {
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     }
 
+    async fn logged_in_token(state: &AppState, username: &str, device_name: &str) -> String {
+        let (_, body) = send(
+            state,
+            post_json(
+                "/api/v1/auth/login",
+                &serde_json::json!({"login": username, "password": PASSWORD, "device_name": device_name}),
+            ),
+        )
+        .await;
+        json::<SessionCreated>(&body).token
+    }
+
     /// A stolen session that uses up its password-check budget must not keep the owner's other
     /// devices from changing the password (and so revoking it).
     #[tokio::test]
@@ -1291,15 +1303,11 @@ pub(crate) mod tests {
         let (_directory, pool) = migrated_pool().await;
         let state = test_state(pool.clone(), RegistrationMode::Open);
         let stolen = registered_token(&state, "aurore").await;
-        let (_, body) = send(
-            &state,
-            post_json(
-                "/api/v1/auth/login",
-                &serde_json::json!({"login": "aurore", "password": PASSWORD, "device_name": "own"}),
-            ),
-        )
-        .await;
-        let own = json::<SessionCreated>(&body).token;
+        let own = logged_in_token(&state, "aurore", "own").await;
+        let more_sessions = [
+            logged_in_token(&state, "aurore", "third").await,
+            logged_in_token(&state, "aurore", "fourth").await,
+        ];
         let change = |token: &str, current: &str| {
             authorized(
                 "POST",
@@ -1342,6 +1350,19 @@ pub(crate) mod tests {
                     .0,
             );
         }
+        // Sessions together hit the user's ceiling: 10 + 10 allowed above, 10 more here.
+        let mut third_renames = Vec::new();
+        for attempt in 0..rate_limit::PROFILE_WRITES_PER_SESSION.maximum_events {
+            third_renames.push(
+                send(
+                    &state,
+                    rename(&more_sessions[0], format!("Third {attempt}")),
+                )
+                .await
+                .0,
+            );
+        }
+        let (fourth_rename, _) = send(&state, rename(&more_sessions[1], "Fourth".into())).await;
         let (own_change, _) = send(&state, change(&own, PASSWORD)).await;
         let (stolen_after_change, _) =
             send(&state, with_bearer("/api/v1/users/@me", "GET", &stolen)).await;
@@ -1363,6 +1384,8 @@ pub(crate) mod tests {
         assert_eq!(stolen_with_right_password, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(own_change, StatusCode::NO_CONTENT);
         assert_eq!(stolen_after_change, StatusCode::UNAUTHORIZED);
+        assert!(third_renames.iter().all(|status| *status == StatusCode::OK));
+        assert_eq!(fourth_rename, StatusCode::TOO_MANY_REQUESTS);
         let (last, allowed) = renames.split_last().unwrap();
         assert!(allowed.iter().all(|status| *status == StatusCode::OK));
         assert_eq!(*last, StatusCode::TOO_MANY_REQUESTS);
