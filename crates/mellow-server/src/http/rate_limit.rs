@@ -119,6 +119,11 @@ pub(crate) const PROFILE_IMAGE_WRITES_PER_USER: RateLimit = RateLimit {
     maximum_events: 10,
     window: Duration::from_mins(10),
 };
+/// Avatar and banner downloads per user: small, cached for good, many at once on a member list.
+pub(crate) const PROFILE_IMAGE_DOWNLOADS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 1_200,
+    window: Duration::from_mins(1),
+};
 /// Attachment downloads per user: each one decrypts a whole file in memory (ADR-0020).
 pub(crate) const ATTACHMENT_DOWNLOADS_PER_USER: RateLimit = RateLimit {
     maximum_events: 120,

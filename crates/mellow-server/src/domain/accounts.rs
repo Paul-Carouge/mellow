@@ -475,7 +475,7 @@ fn should_record_session_use(
     now_unix_milliseconds.saturating_sub(last_seen_at_unix_milliseconds) >= interval_milliseconds
 }
 
-fn current_user(user: StoredUser) -> CurrentUser {
+pub(crate) fn current_user(user: StoredUser) -> CurrentUser {
     CurrentUser {
         id: user.id,
         username: user.username,

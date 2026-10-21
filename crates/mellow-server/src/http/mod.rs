@@ -1717,7 +1717,7 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
-        let avatar = json::<CurrentUser>(&body).avatar.unwrap();
+        let first_avatar = json::<CurrentUser>(&body).avatar.unwrap();
         let (_, body) = send(
             &state,
             picture_request("PUT", "/api/v1/users/@me/banner", &owner, png(300, 100)),
@@ -1736,6 +1736,22 @@ pub(crate) mod tests {
         .await;
         let (_, body) = send(&state, authorized("GET", "/api/v1/users/@me", &owner, None)).await;
         let me: CurrentUser = json(&body);
+        // A request that started before the banner was set must not take it away.
+        let request_started_before_banner = CurrentUser {
+            banner: None,
+            ..me.clone()
+        };
+        let after_stale_request = state
+            .profile_images
+            .replace(
+                request_started_before_banner,
+                crate::storage::profile_images::ProfileImageSlot::Avatar,
+                Some(animated_gif(64, 64, 3)),
+                crate::domain::clock::now_unix_milliseconds(),
+            )
+            .await
+            .unwrap();
+        let avatar = after_stale_request.avatar.unwrap();
 
         let image_path = format!("/api/v1/profile-images/{}", avatar.id);
         let ((animated_status, animated), animated_headers) = send_from(
@@ -1797,7 +1813,10 @@ pub(crate) mod tests {
         assert!(avatar.is_animated);
         assert!(!banner.is_animated);
         assert_eq!(refused, StatusCode::BAD_REQUEST, "not a picture");
-        assert_eq!((me.avatar, me.banner), (Some(avatar), Some(banner)));
+        assert_eq!(me.banner, Some(banner));
+        assert_eq!(me.avatar, Some(first_avatar));
+        assert_ne!(avatar.id, first_avatar.id, "each version its own id");
+        assert_eq!(after_stale_request.banner, Some(banner));
         assert_eq!(animated_status, StatusCode::OK);
         assert_eq!(&animated[..4], b"RIFF");
         assert_eq!(&animated[8..12], b"WEBP");
@@ -1833,11 +1852,6 @@ pub(crate) mod tests {
 
         let (_directory, pool) = migrated_pool().await;
         let state = test_state(pool.clone(), RegistrationMode::Open);
-        let optimizer = tokio::spawn(
-            crate::domain::attachments::optimize_attachments_in_background(
-                state.attachments.clone(),
-            ),
-        );
         let (owner, general) = owner_and_general_channel(&state).await;
         let gif = animated_gif(120, 80, 4);
         let mut upload = picture_request(
@@ -1851,7 +1865,7 @@ pub(crate) mod tests {
             .insert("x-mellow-file-name", HeaderValue::from_static("party.gif"));
         let (_, body) = send(&state, upload).await;
         let uploaded: Attachment = json(&body);
-        send(
+        let (_, body) = send(
             &state,
             authorized(
                 "POST",
@@ -1863,35 +1877,41 @@ pub(crate) mod tests {
             ),
         )
         .await;
-
-        let download_path = format!("/api/v1/attachments/{}", uploaded.id);
-        let mut downloaded = (Vec::new(), String::new());
-        for _ in 0..200 {
-            let ((_, bytes), headers) = send_from(
-                &state,
-                TEST_PEER,
-                authorized("GET", &download_path, &owner, None),
-            )
-            .await;
-            let content_type = headers
-                .get(header::CONTENT_TYPE)
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_owned();
-            downloaded = (bytes.to_vec(), content_type);
-            if downloaded.1 == "image/webp" {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        optimizer.abort();
-        let _cancelled = optimizer.await;
+        let sent: mellow_protocol::Message = json(&body);
+        // What the background worker runs for this upload.
+        state.attachments.optimize(uploaded.id).await.unwrap();
+        let ((_, bytes), headers) = send_from(
+            &state,
+            TEST_PEER,
+            authorized(
+                "GET",
+                &format!("/api/v1/attachments/{}", uploaded.id),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        let (_, body) = send(
+            &state,
+            authorized(
+                "GET",
+                &format!("/api/v1/channels/{general}/messages"),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        let history: Vec<mellow_protocol::Message> = json(&body);
         pool.close().await;
 
         assert_eq!(uploaded.content_type, "image/gif", "answered as received");
-        assert_eq!(downloaded.1, "image/webp");
-        assert!(downloaded.0.len() < gif.len());
+        assert_eq!(sent.attachments[0].file_name, "party.gif");
+        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "image/webp");
+        assert!(bytes.len() < gif.len());
+        let stored = &history[0].attachments[0];
+        assert_eq!(stored.file_name, "party.webp");
+        assert_eq!(stored.content_type, "image/webp");
+        assert_eq!(stored.size_bytes, bytes.len() as u64);
     }
 
     async fn me_guild_id(state: &AppState, token: &str) -> Snowflake {

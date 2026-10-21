@@ -117,8 +117,8 @@ fn apply_current_user(shell: &SharedShell, user: CurrentUser) {
             id: user.id,
             username: user.username,
             display_name: user.display_name,
-            avatar: None,
-            banner: None,
+            avatar: user.avatar,
+            banner: user.banner,
         }),
         now_unix_milliseconds(),
     );

@@ -20,13 +20,16 @@ const PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_mins(10);
 /// Uploads and downloads holding a whole file in memory at once (up to the size limit each):
 /// beyond, the instance answers "busy" rather than running out of memory.
 const CONCURRENT_FILE_TRANSFERS: usize = 6;
+/// Pictures decoded at once (avatars, banners, background compression): each can take a few
+/// hundred MB and a core for seconds.
+const CONCURRENT_IMAGE_PROCESSING: usize = 2;
 
 /// Uploads waiting for compression; past this, new ones keep their original file.
 const OPTIMIZATION_QUEUE_CAPACITY: usize = 64;
 /// Past this, the original file is kept (decoding included).
 const OPTIMIZATION_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
 /// The types `optimize_attachment` can make smaller.
-const OPTIMIZABLE_CONTENT_TYPES: [&str; 3] = ["image/png", "image/jpeg", "image/gif"];
+const OPTIMIZABLE_CONTENT_TYPES: [&str; 2] = ["image/png", "image/gif"];
 
 /// Compresses uploaded pictures one at a time, after they were answered, until the server stops
 /// (ADR-0021): one worker bounds the CPU it takes.
@@ -44,6 +47,16 @@ pub(crate) async fn optimize_attachments_in_background(attachments: Arc<Attachme
             tracing::warn!(%error, "cannot compress an attachment");
         }
     }
+}
+
+/// A photo without its EXIF, XMP and other metadata (GPS positions), before anyone can download
+/// it: a byte scan, no decoding. A JPEG it cannot parse is kept as it is.
+async fn without_jpeg_metadata(bytes: Vec<u8>) -> Result<Vec<u8>, MessageError> {
+    tokio::task::spawn_blocking(move || {
+        crate::domain::image_processing::strip_jpeg_metadata(&bytes).unwrap_or(bytes)
+    })
+    .await
+    .map_err(|error| MessageError::Internal(Box::new(error)))
 }
 
 /// `animation.gif` becomes `animation.webp`; a name without that extension gains it.
@@ -109,6 +122,7 @@ pub(crate) struct Attachments {
     messages: Arc<Messages>,
     files: AttachmentFiles,
     transfers: Arc<Semaphore>,
+    image_processing: Arc<Semaphore>,
     maximum_stored_bytes_per_user: u64,
     optimization_sender: mpsc::Sender<Snowflake>,
     /// Taken once by `optimize_attachments_in_background`.
@@ -131,6 +145,7 @@ impl Attachments {
             messages,
             files,
             transfers: Arc::new(Semaphore::new(CONCURRENT_FILE_TRANSFERS)),
+            image_processing: Arc::new(Semaphore::new(CONCURRENT_IMAGE_PROCESSING)),
             maximum_stored_bytes_per_user,
             optimization_sender,
             optimization_receiver: std::sync::Mutex::new(Some(optimization_receiver)),
@@ -139,6 +154,14 @@ impl Attachments {
 
     pub(crate) fn transfer_permit(&self) -> Result<OwnedSemaphorePermit, MessageError> {
         self.transfers
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| MessageError::Busy)
+    }
+
+    /// A slot to decode a picture now, or `Busy`; the work holds it until it really ends.
+    pub(crate) fn image_processing_permit(&self) -> Result<OwnedSemaphorePermit, MessageError> {
+        self.image_processing
             .clone()
             .try_acquire_owned()
             .map_err(|_| MessageError::Busy)
@@ -181,11 +204,16 @@ impl Attachments {
         bytes: Vec<u8>,
         now_unix_milliseconds: u64,
     ) -> Result<Attachment, MessageError> {
+        let content_type = sniff_content_type(&bytes).to_owned();
+        let bytes = if content_type == "image/jpeg" {
+            without_jpeg_metadata(bytes).await?
+        } else {
+            bytes
+        };
         let size_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if slot.stored_bytes.saturating_add(size_bytes) > self.maximum_stored_bytes_per_user {
             return Err(MessageError::QuotaReached);
         }
-        let content_type = sniff_content_type(&bytes).to_owned();
         let id = self.ids.next_id(now_unix_milliseconds)?;
         self.files.write(id, bytes).await?;
         let inserted = storage::insert_attachment(
@@ -220,13 +248,13 @@ impl Attachments {
 
     /// Replaces the file with its compressed form when smaller. Anything undecodable, too slow or
     /// not smaller keeps the original.
-    async fn optimize(&self, attachment_id: Snowflake) -> Result<(), MessageError> {
+    pub(crate) async fn optimize(&self, attachment_id: Snowflake) -> Result<(), MessageError> {
         let Some(attachment) = storage::find_attachment(&self.pool, attachment_id).await? else {
             return Ok(());
         };
         // Waits for a slot rather than failing: nobody is waiting on this one.
-        let _permit = self
-            .transfers
+        let permit = self
+            .image_processing
             .clone()
             .acquire_owned()
             .await
@@ -234,6 +262,8 @@ impl Attachments {
         let original = self.files.read(attachment.id).await?;
         let content_type = attachment.content_type.clone();
         let processing = tokio::task::spawn_blocking(move || {
+            // Held until the work really ends: a timed-out job still bounds the next ones.
+            let _permit = permit;
             let optimized = optimize_attachment(&original, &content_type);
             (original, optimized)
         });
@@ -251,6 +281,9 @@ impl Attachments {
             with_webp_extension(&attachment.file_name)
         };
         let size_bytes = u64::try_from(optimized.bytes.len()).unwrap_or(u64::MAX);
+        // shortcut: the file is replaced under the same id before its row changes, so a crash in
+        // between leaves a WebP described as GIF (served as a download, not inline); a separate
+        // file id per version would close it, worth doing if crashes there are ever seen.
         self.files.write(attachment.id, optimized.bytes).await?;
         let updated = storage::update_attachment_file(
             &self.pool,
@@ -260,12 +293,19 @@ impl Attachments {
             size_bytes,
         )
         .await;
-        if let Err(error) = updated {
-            // The row still describes the original: put it back so downloads keep matching.
-            self.files.write(attachment.id, original).await?;
-            return Err(error.into());
+        match updated {
+            Ok(true) => Ok(()),
+            // Deleted meanwhile: the file has no row any more.
+            Ok(false) => {
+                let _ = self.files.delete(attachment.id).await;
+                Ok(())
+            }
+            Err(error) => {
+                // The row still describes the original: put it back so downloads keep matching.
+                self.files.write(attachment.id, original).await?;
+                Err(error.into())
+            }
         }
-        Ok(())
     }
 
     /// Needs `VIEW_CHANNEL` and `READ_MESSAGE_HISTORY` in the message's channel. An upload not

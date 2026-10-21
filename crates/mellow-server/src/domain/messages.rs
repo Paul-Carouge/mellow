@@ -20,7 +20,7 @@ use crate::domain::message_rules::{
     normalize_line_endings, validate_message_content, validate_nonce,
 };
 use crate::domain::permissions::direct_message_permissions;
-use crate::domain::profile_images::fill_profile_images;
+use crate::domain::profile_images::{fill_profile_images, profile_images_of_user};
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::storage::attachments::{self as attachment_storage, StoredAttachment};
 use crate::storage::direct_messages as direct_message_storage;
@@ -344,6 +344,7 @@ impl Messages {
             }
             let is_first_direct_message =
                 !conversation_views.is_empty() && is_empty_channel(&pool, channel_id).await?;
+            let author_images = profile_images_of_user(&pool, user_id).await?;
             let stored = message_storage::insert_message(
                 &pool,
                 &NewMessage {
@@ -362,7 +363,8 @@ impl Messages {
                 direct_messages::announce_conversation(&guilds, conversation_views, stored.id);
             }
             let mut message = message_from_stored(stored, None, attachments);
-            fill_profile_images(&pool, [&mut message.author]).await?;
+            message.author.avatar = author_images.avatar;
+            message.author.banner = author_images.banner;
             // The nonce goes back to the sender only, never in the event.
             publish(
                 &guilds,
@@ -441,6 +443,7 @@ impl Messages {
         let content = normalize_line_endings(&request.content);
         validate_message_content(&content)?;
         let audience = self.audience(&channel).await?;
+        let author_images = profile_images_of_user(&self.pool, user_id).await?;
         let updated = message_storage::update_message_content(
             &self.pool,
             message.id,
@@ -451,7 +454,8 @@ impl Messages {
         .ok_or(MessageError::MessageNotFound)?;
         let attachments = attachments_of(&self.pool, updated.id).await?;
         let mut updated = message_from_stored(updated, None, attachments);
-        fill_profile_images(&self.pool, [&mut updated.author]).await?;
+        updated.author.avatar = author_images.avatar;
+        updated.author.banner = author_images.banner;
         publish(
             &self.guilds,
             &audience,

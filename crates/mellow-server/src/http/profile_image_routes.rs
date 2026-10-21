@@ -13,7 +13,7 @@ use crate::domain::clock::now_unix_milliseconds;
 use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiPath};
 use crate::http::authentication::AuthenticatedUser;
-use crate::http::rate_limit::{ATTACHMENT_DOWNLOADS_PER_USER, PROFILE_IMAGE_WRITES_PER_USER};
+use crate::http::rate_limit::{PROFILE_IMAGE_DOWNLOADS_PER_USER, PROFILE_IMAGE_WRITES_PER_USER};
 use crate::storage::profile_images::ProfileImageSlot;
 
 /// Pictures larger than this are refused before processing (ADR-0021).
@@ -92,8 +92,8 @@ async fn serve(
     is_still_wanted: bool,
 ) -> Result<Response, ApiError> {
     if !state.rate_limiter.record_event(
-        &format!("attachment-download:{user_id}"),
-        ATTACHMENT_DOWNLOADS_PER_USER,
+        &format!("profile-image-download:{user_id}"),
+        PROFILE_IMAGE_DOWNLOADS_PER_USER,
         Instant::now(),
     ) {
         return Err(ApiError::rate_limited());
