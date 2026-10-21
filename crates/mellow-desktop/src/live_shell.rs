@@ -739,10 +739,21 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
             server_settings::refresh(&mut shell.borrow_mut());
         }
         StateChange::Presence => refresh_member_rows(&shell.borrow()),
-        StateChange::Users => {
+        StateChange::UserRenamed { user_id } => {
             refresh_user_panel(&shell.borrow());
             refresh_member_rows(&shell.borrow());
-            refresh_messages(&mut shell.borrow_mut());
+            // Rebuilding rows recreates an open inline editor, so only when a shown author changed.
+            let shows_renamed_author = selected_channel_id.is_some_and(|channel_id| {
+                shell
+                    .borrow()
+                    .state
+                    .messages(channel_id)
+                    .iter()
+                    .any(|message| message.author.id == user_id)
+            });
+            if shows_renamed_author {
+                refresh_messages(&mut shell.borrow_mut());
+            }
         }
         StateChange::Messages { .. } | StateChange::Members { .. } | StateChange::ReadStates => {}
     }
