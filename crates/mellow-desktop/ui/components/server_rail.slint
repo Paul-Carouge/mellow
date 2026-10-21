@@ -100,6 +100,7 @@ export component ServerRail inherits Rectangle {
     in property <[ServerItem]> servers;
     in-out property <int> selected-server-index;
     callback select-server(int);
+    callback add-server();
 
     width: MellowComponent.rail-width;
     background: MellowComponent.rail-background;
@@ -138,13 +139,13 @@ export component ServerRail inherits Rectangle {
                 is-selected: index == selected-server-index;
                 clicked => { root.select-server(index); }
             }
-            // shortcut: the "add a server" flow does not exist yet; the button is inert.
             RailItem {
                 label: "Add a server";
                 icon: @image-url("../../icons/plus.svg");
                 has-icon: true;
                 // An action, not a server to switch to.
                 accessible-role: button;
+                clicked => { root.add-server(); }
             }
         }
     }

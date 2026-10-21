@@ -4,6 +4,7 @@
 //! back through Slint's event loop (`slint::spawn_local`), so no lock is ever shared with the UI.
 
 mod message_actions;
+mod server_actions;
 mod server_settings;
 
 use std::cell::RefCell;
@@ -354,6 +355,7 @@ fn connect_callbacks(window: &AppWindow, shell: &SharedShell) {
     });
 
     connect_server_settings_callbacks(window, shell);
+    connect_server_action_callbacks(window, shell);
     window.on_link_clicked(|_url| {
         // shortcut: links are not opened yet; opening needs the confirmation dialog of DESIGN.md §5.4.
     });
@@ -403,6 +405,25 @@ fn connect_server_settings_callbacks(window: &AppWindow, shell: &SharedShell) {
     window.on_move_role_down(move |row_index| {
         server_settings::move_role(&shell_for_callback, row_index, MoveDirection::Down);
     });
+}
+
+fn connect_server_action_callbacks(window: &AppWindow, shell: &SharedShell) {
+    let shell_for_callback = shell.clone();
+    window.on_create_server(move |name| server_actions::create_server(&shell_for_callback, &name));
+    let shell_for_callback = shell.clone();
+    window.on_join_server(move |text| server_actions::join_server(&shell_for_callback, &text));
+    let shell_for_callback = shell.clone();
+    window.on_create_invite(move || server_actions::create_invite(&shell_for_callback));
+    let shell_for_callback = shell.clone();
+    window.on_copy_invite_code(move || server_actions::copy_invite_code(&shell_for_callback));
+    let shell_for_callback = shell.clone();
+    window.on_create_channel(move |name| {
+        server_actions::create_channel(&shell_for_callback, &name);
+    });
+    let shell_for_callback = shell.clone();
+    window.on_leave_server(move || server_actions::leave_server(&shell_for_callback));
+    let shell_for_callback = shell.clone();
+    window.on_dialog_closed(move || server_actions::reset_dialog(&shell_for_callback.borrow()));
 }
 
 fn device_name() -> String {
@@ -582,6 +603,8 @@ fn connect_gateway(shell: &SharedShell, rest: RestClient, is_session_stored: boo
         if let Some(window) = shell_mut.window.upgrade() {
             window.set_is_signed_in(true);
             window.set_connection_notice("Connecting…".into());
+            // A dialog request of the previous session never answers (`session_generation`).
+            window.set_is_dialog_busy(false);
         }
         shell_mut.session_generation
     };
@@ -950,6 +973,12 @@ fn refresh_header(shell: &LiveShell) {
         .map_or(-1, shell_rows::saturating_int);
     window
         .set_can_open_server_settings(guild.is_some_and(server_settings::can_open_server_settings));
+    window.set_can_invite_people(guild.is_some_and(server_actions::can_invite_people));
+    window.set_can_create_channels(guild.is_some_and(server_actions::can_create_channels));
+    let current_user_id = shell.state.current_user().map(|user| user.id);
+    window.set_can_leave_server(
+        guild.is_some_and(|guild| server_actions::can_leave_server(guild, current_user_id)),
+    );
     window.set_server_name(
         guild
             .map_or(HOME_SERVER_NAME, |guild| guild.name.as_str())

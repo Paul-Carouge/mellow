@@ -1,0 +1,191 @@
+import { MellowComponent, MellowType } from "../tokens.slint";
+import { Button } from "primitives.slint";
+
+// Window-wide modal dialog (DESIGN.md §6.35): a card on a scrim, title and optional sentence, the
+// dialog's own controls (`@children`), an inline error, and a footer with Cancel and the action.
+// Esc, Cancel and the scrim close it, except while busy. Focus is trapped in the card.
+export component ModalDialog inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <bool> is-heading-centered;
+    // Empty hides it; shown with an icon so it never relies on the danger colour alone.
+    in property <string> error-message;
+    in property <bool> is-busy;
+    in property <string> cancel-label: "Cancel";
+    // Empty leaves Cancel alone in the footer.
+    in property <string> submit-label;
+    in property <bool> is-submit-danger;
+    in property <bool> is-submit-enabled: true;
+    // Without controls of its own, the dialog's Tab order is just the footer.
+    in property <bool> has-own-controls: true;
+    // Which of the dialog's own controls has focus, so Tab can wrap around inside the card.
+    in property <bool> is-first-own-control-focused;
+    callback close();
+    callback submit();
+    callback focus-first-own-control();
+
+    public function focus-cancel-button() {
+        cancel-button.focus();
+    }
+
+    property <bool> has-submit-button: submit-label != "";
+    // The action button sits in a conditional element: these two relay its focus in and out.
+    property <bool> is-submit-button-focused;
+    property <int> submit-button-focus-request-count;
+
+    function request-close() {
+        if !root.is-busy {
+            root.close();
+        }
+    }
+    function is-last-control-focused() -> bool {
+        root.has-submit-button ? root.is-submit-button-focused : cancel-button.has-keyboard-focus
+    }
+    function is-first-control-focused() -> bool {
+        root.has-own-controls ? root.is-first-own-control-focused : cancel-button.has-keyboard-focus
+    }
+    function focus-first-control() {
+        if root.has-own-controls {
+            root.focus-first-own-control();
+        } else {
+            cancel-button.focus();
+        }
+    }
+    function focus-last-control() {
+        if root.has-submit-button {
+            root.submit-button-focus-request-count += 1;
+        } else {
+            cancel-button.focus();
+        }
+    }
+
+    background: MellowComponent.dialog-scrim;
+
+    // Clicking the scrim closes the dialog, as on Discord, and nothing behind it reacts.
+    TouchArea {
+        clicked => { root.request-close(); }
+    }
+
+    FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.request-close();
+                return accept;
+            }
+            if event.text == Key.Tab && !event.modifiers.shift && root.is-last-control-focused() {
+                root.focus-first-control();
+                return accept;
+            }
+            if (event.text == Key.Backtab || (event.text == Key.Tab && event.modifiers.shift))
+                    && root.is-first-control-focused() {
+                root.focus-last-control();
+                return accept;
+            }
+            reject
+        }
+
+        card := Rectangle {
+            width: min(MellowComponent.dialog-width, root.width - 2 * MellowComponent.dialog-margin);
+            height: min(card-layout.preferred-height, root.height - 2 * MellowComponent.dialog-margin);
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            background: MellowComponent.dialog-background;
+            border-radius: MellowComponent.dialog-radius;
+            clip: true;
+            accessible-role: groupbox;
+            accessible-label: root.title;
+            accessible-description: root.subtitle;
+
+            // Swallows clicks inside the card so they do not reach the scrim.
+            TouchArea { }
+
+            card-layout := VerticalLayout {
+                VerticalLayout {
+                    padding: MellowComponent.dialog-padding;
+                    spacing: MellowComponent.dialog-section-gap;
+                    VerticalLayout {
+                        spacing: MellowComponent.dialog-subtitle-gap;
+                        Text {
+                            text: root.title;
+                            color: MellowComponent.dialog-title-text;
+                            font-size: MellowType.heading-lg.font-size;
+                            font-weight: MellowType.heading-lg.font-weight;
+                            horizontal-alignment: root.is-heading-centered ? center : left;
+                            wrap: word-wrap;
+                            accessible-role: none;
+                        }
+                        if root.subtitle != "": Text {
+                            text: root.subtitle;
+                            color: MellowComponent.dialog-subtitle-text;
+                            font-size: MellowType.body.font-size;
+                            horizontal-alignment: root.is-heading-centered ? center : left;
+                            wrap: word-wrap;
+                            accessible-role: none;
+                        }
+                    }
+
+                    @children
+
+                    if root.error-message != "": HorizontalLayout {
+                        spacing: MellowComponent.dialog-error-gap;
+                        VerticalLayout {
+                            alignment: start;
+                            Image {
+                                source: @image-url("../../icons/warning-circle.svg");
+                                colorize: MellowComponent.dialog-error-text;
+                                width: MellowComponent.dialog-error-icon-size;
+                                height: self.width;
+                                accessible-role: none;
+                            }
+                        }
+                        Text {
+                            text: root.error-message;
+                            color: MellowComponent.dialog-error-text;
+                            font-size: MellowType.body.font-size;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                            // Announced through the live region below instead.
+                            accessible-role: none;
+                        }
+                    }
+                }
+                Rectangle {
+                    background: MellowComponent.dialog-footer-background;
+                    HorizontalLayout {
+                        padding: MellowComponent.dialog-padding;
+                        spacing: MellowComponent.dialog-button-gap;
+                        alignment: end;
+                        cancel-button := Button {
+                            label: root.cancel-label;
+                            is-enabled: !root.is-busy;
+                            clicked => { root.request-close(); }
+                        }
+                        if root.has-submit-button: Button {
+                            property <int> focus-request-count: root.submit-button-focus-request-count;
+                            changed focus-request-count => { self.focus(); }
+                            changed has-keyboard-focus => { root.is-submit-button-focused = self.has-keyboard-focus; }
+                            label: root.submit-label;
+                            is-primary: !root.is-submit-danger;
+                            is-danger: root.is-submit-danger;
+                            is-enabled: root.is-submit-enabled && !root.is-busy;
+                            clicked => { root.submit(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Errors are announced once, as soon as they appear; the visible copy above is not read twice.
+    Text {
+        x: 0;
+        y: 0;
+        width: 0px;
+        height: 0px;
+        text: root.error-message;
+        accessible-role: text;
+        accessible-live-region: assertive;
+    }
+}

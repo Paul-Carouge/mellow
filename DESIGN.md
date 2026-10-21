@@ -6,6 +6,7 @@ This document is the reference for every visual and interaction decision in Mell
 
 ## Changelog
 
+- **2026-10-21, v0.7 — server membership dialogs on desktop:** the rail's `+` opens "Create a server" / "Join a server" (one dialog, two pages switched by a link, as on Discord); the server menu gets "Invite people" (accent text), "Create channel" and "Leave server" (danger, separated), each shown only when allowed (5.3); invite, create-channel and leave-server dialogs (8); a shared `ModalDialog` frame for 6.35 (title, optional sentence, inline error with icon, Cancel plus one action, focus trapped, Esc and scrim close except while busy); `TextField` leading icon (`#`) and copy-only variant (6.3); `color.text.accent`, `component.context-menu.accent-text` and `separator-height`, `component.dialog.subtitle-*`, `error-*`, `mode-link-*`, `copied-label-duration` and `motion.delay.copied-label` tokens; Phosphor `user-plus` and `sign-out` (Fill) icons.
 - **2026-10-20, v0.6 — user settings and app updates on desktop:** the user panel's settings button opens the user settings screen (5.3, 5.9) instead of a one-item menu; "Sign out" moves into the settings navigation; About shows the app version and drives the self-update, with a green dot on the settings button while an update waits; Primary and disabled variants of the desktop `Button` (6.1); `component.settings.*`, `component.user-panel.update-badge*` and `component.button.disabled-opacity` tokens; Phosphor `x` (Bold) icon for the close button.
 - **2026-10-20, v0.5 — channel permissions on desktop:** read-only channel rows (5.3), Delete and Reply follow the user's permissions in the hover action bar (5.4), and the read-only composer (5.5); `component.composer.locked-text` token.
 - **2026-10-19, v0.4 — message actions on desktop:** edit, delete and reply presentation (5.4, 5.5); `component.dialog.*`, `component.message.editor-*`, `component.composer.reply-bar-*` and `color.neutral.fill-hover` tokens.
@@ -234,6 +235,7 @@ Ratios were computed with the WCAG 2.x relative-luminance formula by the script 
 | `text.danger` on `surface.sidebar` | 5.25 | 5.17 | 4.5 |
 | `text.danger` on `surface.floating` | 7.14 | 5.74 | 4.5 |
 | `text.danger` on `surface.popover` | 5.90 | 5.74 | 4.5 |
+| `text.accent` on `surface.floating` ("Invite people") | 9.20 | 5.53 | 4.5 |
 | `text.positive` on `surface.chat` | 5.73 | 5.04 | 4.5 |
 | `text.positive` on `surface.sidebar` | 6.25 | 4.54 | 4.5 |
 | `text.on-accent` on `accent.fill` | 8.44 | 6.64 | 4.5 |
@@ -1202,6 +1204,11 @@ Examples:
 | Ban confirmation | Title "Ban Ana from Rust Lyon?" · Body "Ana will be removed and won't be able to rejoin, even with an invite." · Field "Reason (optional, visible to moderators)" · Select "Delete their recent messages" (Don't delete, Last hour, Last 24 hours, Last 7 days) · Buttons "Cancel" / "Ban Ana" |
 | Delete channel | Title "Delete #old-announcements?" · Body "All 1,204 messages in this channel will be deleted for everyone. This can't be undone." · Field "Type old-announcements to confirm" · Buttons "Cancel" / "Delete channel" (enabled when the name matches) |
 | Delete own message | Title "Delete this message?" · Body "It will be removed for everyone." · Buttons "Cancel" / "Delete message" · Hint "Tip: hold Shift while deleting to skip this next time." |
+| Add a server | Title "Create a server" · Body "Give your server a name. You can add channels and invite people next." · Field "Server name" · Link "Have an invite already? Join a server" · Buttons "Cancel" / "Create" ("Creating…" while busy) |
+| Join a server | Title "Join a server" · Body "Enter an invite to join a server someone already runs." · Field "Invite code", helper "Paste the invite code someone gave you." · Link "Don't have an invite? Create a server" · Buttons "Cancel" / "Join" ("Joining…") |
+| Invite people | Title "Invite friends to Rust Lyon" · Field "Send this invite code to a friend" (read-only, "Creating an invite…" while empty) with "Copy" ("Copied" for 2 s) · Hint "This invite never expires." · Button "Close" |
+| Create channel | Title "Create channel" · Field "Channel name" with a `#` prefix, placeholder "new-channel", helper "Names are lowercase, with dashes instead of spaces." · Buttons "Cancel" / "Create channel" |
+| Leave server | Title "Leave 'Rust Lyon'" · Body "Are you sure you want to leave Rust Lyon? You won't be able to rejoin unless you are re-invited." · Buttons "Cancel" / "Leave server" (Danger; Cancel has focus) |
 | Revoke invite | Title "Revoke this invite?" · Body "The link will stop working. People who already joined stay in the server." · Buttons "Cancel" / "Revoke invite" |
 | Leaving a masked link | Title "Leaving Mellow" · Body "This link goes to example.com/page. Only open links you trust." · Buttons "Cancel" / "Open link" |
 | Session expired | "Your session on chat.example.org has ended. Sign in again to keep chatting." · "Sign in" |
