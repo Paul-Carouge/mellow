@@ -1,0 +1,33 @@
+@import "tailwindcss";
+@import "./lib/tokens.css";
+
+@font-face {
+  font-family: "Figtree";
+  src: url("../../crates/mellow-desktop/fonts/Figtree[wght].ttf") format("truetype");
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Figtree";
+  src: url("../../crates/mellow-desktop/fonts/Figtree-Italic[wght].ttf") format("truetype");
+  font-weight: 300 900;
+  font-style: italic;
+  font-display: swap;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--mw-color-surface-chat);
+  color: var(--mw-color-text-normal);
+  font-family: var(--mw-type-message-font-family);
+  font-size: var(--mw-type-message-font-size);
+  line-height: var(--mw-type-message-line-height);
+}

@@ -1,6 +1,7 @@
 //! `cargo xtask tokens [--check]`: generates platform token files from `design/tokens.json`
 //! and enforces the declared WCAG contrast pairs (DESIGN.md §3.5).
 
+mod css_tokens;
 mod design_tokens;
 mod slint_tokens;
 
@@ -14,6 +15,7 @@ use crate::design_tokens::{DesignTokens, Rgba, Theme, contrast_ratio};
 const USAGE: &str = "usage: cargo xtask tokens [--check]";
 const TOKENS_SOURCE_PATH: &str = "design/tokens.json";
 const SLINT_TOKENS_OUTPUT_PATH: &str = "crates/mellow-desktop/ui/tokens.slint";
+const CSS_TOKENS_OUTPUT_PATH: &str = "web/src/lib/tokens.css";
 
 fn main() -> ExitCode {
     match run(&std::env::args().skip(1).collect::<Vec<_>>()) {
@@ -50,21 +52,34 @@ fn generate_tokens(is_check_only: bool) -> Result<()> {
 
     check_contrast_pairs(&tokens)?;
 
-    let generated_slint = slint_tokens::generate_slint_tokens(&tokens)?;
-    let output_path = root.join(SLINT_TOKENS_OUTPUT_PATH);
-    if is_check_only {
-        let current = std::fs::read_to_string(&output_path).unwrap_or_default();
-        if current != generated_slint {
-            bail!(
-                "{} is out of date; run `cargo xtask tokens`",
-                output_path.display()
-            );
+    let outputs = [
+        (
+            SLINT_TOKENS_OUTPUT_PATH,
+            slint_tokens::generate_slint_tokens(&tokens)?,
+        ),
+        (
+            CSS_TOKENS_OUTPUT_PATH,
+            css_tokens::generate_css_tokens(&tokens)?,
+        ),
+    ];
+    for (relative_path, generated) in outputs {
+        let output_path = root.join(relative_path);
+        if is_check_only {
+            let current = std::fs::read_to_string(&output_path).unwrap_or_default();
+            if current != generated {
+                bail!(
+                    "{} is out of date; run `cargo xtask tokens`",
+                    output_path.display()
+                );
+            }
+        } else {
+            std::fs::write(&output_path, generated)
+                .with_context(|| format!("cannot write {}", output_path.display()))?;
+            eprintln!("wrote {}", output_path.display());
         }
+    }
+    if is_check_only {
         eprintln!("design tokens are up to date");
-    } else {
-        std::fs::write(&output_path, generated_slint)
-            .with_context(|| format!("cannot write {}", output_path.display()))?;
-        eprintln!("wrote {}", output_path.display());
     }
     Ok(())
 }
