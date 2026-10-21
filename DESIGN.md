@@ -1,11 +1,12 @@
 # Mellow design document
 
-Status: draft v0.6 (2026-10-20). Owner: design. Applies to the Slint desktop client, the Android client (Jetpack Compose, Material 3 Expressive) and the admin web UI embedded in the server.
+Status: draft v0.8 (2026-10-21). Owner: design. Applies to the Slint desktop client, the web client, the Android client (Jetpack Compose, Material 3 Expressive) and the admin web UI embedded in the server.
 
 This document is the reference for every visual and interaction decision in Mellow. Developers should be able to build any MVP screen from it without inventing a colour, a size or a sentence. When something is missing, add it here first, then implement it. Every value named here exists in `design/tokens.json`.
 
 ## Changelog
 
+- **2026-10-21, v0.9 — web client (ADR-0019):** the browser client is a port of the desktop shell (4.5): the same panes, tokens, copy and dialogs, laid out by the 4.2 breakpoints, with the rail and sidebar in a drawer and the member list as an overlay in narrow windows; 44 px targets under a coarse pointer and a send button on phones; native `<dialog>` for dialogs and drawers, the popover API for the server menu and the profile popover; `component.profile-popover.*`, `component.user-panel.button-icon-size` and `component.composer.reply-bar-icon-size` tokens; Phosphor `list`, `at` (Bold) and `paper-plane-right` (Fill) icons.
 - **2026-10-21, v0.8 — one-to-one direct messages on desktop:** Home lists conversations in the sidebar (5.6), the rail's Home item carries the unread pill, clicking a member opens a reduced profile popout with "Message" (5.7), and conversations use `@name` in the chat header, hero, composer and errors (5.4, 5.5); `component.conversation-row.*` and `component.profile-popover.*` tokens, Phosphor `at` icon (Bold).
 - **2026-10-21, v0.7 — server membership dialogs on desktop:** the rail's `+` opens "Create a server" / "Join a server" (one dialog, two pages switched by a link, as on Discord); the server menu gets "Invite people" (accent text), "Create channel" and "Leave server" (danger, separated), each shown only when allowed (5.3); invite, create-channel and leave-server dialogs (8); a shared `ModalDialog` frame for 6.35 (title, optional sentence, inline error with icon, Cancel plus one action, focus trapped, Esc and scrim close except while busy); `TextField` leading icon (`#`) and copy-only variant (6.3); `color.text.accent`, `component.context-menu.accent-text` and `separator-height`, `component.dialog.subtitle-*`, `error-*`, `mode-link-*`, `copied-label-duration` and `motion.delay.copied-label` tokens; Phosphor `user-plus` and `sign-out` (Fill) icons.
 - **2026-10-20, v0.6 — user settings and app updates on desktop:** the user panel's settings button opens the user settings screen (5.3, 5.9) instead of a one-item menu; "Sign out" moves into the settings navigation; About shows the app version and drives the self-update, with a green dot on the settings button while an update waits; Primary and disabled variants of the desktop `Button` (6.1); `component.settings.*`, `component.user-panel.update-badge*` and `component.button.disabled-opacity` tokens; Phosphor `x` (Bold) icon for the close button.
@@ -690,6 +691,38 @@ Channel panel open             Chat (centre)                 Members open
 - `MessagingStyle` with the sender's avatar, conversation title `#general · Rust Lyon` or the conversation name, inline reply and "Mark as read" actions.
 - Lock screen: content hidden by default ("New message from Ana") until the user allows previews in settings, a privacy choice for a self-hosted product.
 - The first time a user signs in, Mellow explains notifications before showing the Android 13+ permission prompt. If permission is denied, You → Notifications shows "Notifications are off for Mellow. You won't hear about mentions or messages." with "Open Android settings".
+
+### 4.5 Web client (Svelte)
+
+The web client ([ADR-0019](docs/adr/0019-web-client-served-by-the-server-binary.md), `web/`) is the desktop shell in a browser, for people who join from a link or a phone until the Android app ships. It reuses everything above: the dimension table, the tokens (as `--mw-*` custom properties and Tailwind classes generated from `design/tokens.json`), the Phosphor icons of the desktop client and the copy of section 8. It has no instance address field: it talks to the instance that served it and names it ("Sign in to chat.example.org.").
+
+| Window width | Layout |
+|---|---|
+| ≥ 1032 | As on desktop: rail, channel sidebar, chat, member list (toggled from the chat header) |
+| 792–1031 | Rail, channel sidebar and chat; the member list opens over the chat from the trailing edge, with a scrim |
+| < 792 (phones included) | Chat only; a "Open servers and channels" button (`list` icon) at the leading end of the chat header opens rail and sidebar as a drawer from the leading edge, leaving `size.mobile.panel-peek` of chat visible; choosing a channel closes it and focuses the composer |
+
+```
+Phone (< 792)                     Drawer open
+┌─────────────────────────────┐   ┌──────┬──────────────┬────┐
+│ ☰  # general           [M]  │   │ (M)  │ Rust Lyon  ⌄ │░░░░│
+│                             │   │ ──── │ ⌄ GENERAL    │░░░░│
+│ (#) Welcome to #general     │   │▌(RL) │ ▌# general   │░░░░│
+│ (A) Ana  Today at 14:02     │   │  +   │              │░░░░│
+│     Has anyone tried…       │   │      │ (P) Paul  ⇥  │░░░░│
+│ ┌─────────────────────────┐ │   └──────┴──────────────┴────┘
+│ │ Message #general      ➤ │ │     drawer = rail + sidebar, scrim
+│ └─────────────────────────┘ │
+│ Ana is typing…              │
+└─────────────────────────────┘
+```
+
+- Breakpoints are computed from the pane width tokens, as on desktop, so they follow the tokens.
+- Under a coarse pointer (`@media (pointer: coarse)`), rows, header and hover-bar buttons, menu items and inline links grow to `size.hit.web-min` (44 px), and the composer shows a send button (`paper-plane-right`), as on Android; with a mouse the composer keeps Discord's Enter-to-send without a button.
+- Dialogs and drawers are native modal `<dialog>` elements: the page behind is inert, Esc and the scrim close them (dialogs not while busy), focus returns to the control that opened them. The server menu and the profile popover use the popover API (light dismiss, Esc), with focus returning to the header or the member.
+- The message list has one Tab stop: `Up`/`Down`/`Home`/`End` move between messages, and the focused message shows its hover bar, so every action is reachable by keyboard and by tap. New messages from others are announced through a polite live region; action errors through an alert.
+- Message text is plain text with line breaks; only `http:` and `https:` URLs become links, opened in a new tab with `rel="noopener noreferrer"`. Markdown rendering (5.4) is not in the web client yet.
+- Not in the web client yet: user and server settings, mention badges, the unread divider and "New" bar, day dividers, Markdown, the quick switcher, the connection dock's "Back online" and session-expired states. The user panel's settings button is replaced by "Sign out".
 
 ### 4.4 Admin web UI (server-rendered HTML + htmx)
 

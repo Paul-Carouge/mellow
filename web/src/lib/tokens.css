@@ -154,6 +154,7 @@
   --mw-component-composer-reply-bar-button-background-hover: #35373C;
   --mw-component-composer-reply-bar-button-size: 2rem;
   --mw-component-composer-reply-bar-icon: #B5BAC1;
+  --mw-component-composer-reply-bar-icon-size: 1.25rem;
   --mw-component-composer-reply-bar-min-height: 2.25rem;
   --mw-component-composer-reply-bar-padding-inline: 1rem;
   --mw-component-composer-reply-bar-text: #B5BAC1;
@@ -184,6 +185,11 @@
   --mw-component-context-menu-separator-margin-block: 0.25rem;
   --mw-component-context-menu-separator-margin-inline: 0.5rem;
   --mw-component-context-menu-shadow: 0 0.5rem 1rem 0 #0000003D;
+  --mw-component-conversation-row-avatar-gap: 0.75rem;
+  --mw-component-conversation-row-avatar-size: 2rem;
+  --mw-component-conversation-row-empty-padding: 1rem;
+  --mw-component-conversation-row-empty-text: #A3A9B1;
+  --mw-component-conversation-row-height: 2.625rem;
   --mw-component-dialog-background: #313338;
   --mw-component-dialog-body-text: #DBDEE1;
   --mw-component-dialog-button-gap: 0.5rem;
@@ -305,12 +311,16 @@
   --mw-component-profile-popover-background: #232428;
   --mw-component-profile-popover-banner: #4E5058;
   --mw-component-profile-popover-banner-height: 3.75rem;
+  --mw-component-profile-popover-border: #3F4147;
+  --mw-component-profile-popover-border-width: 0.0625rem;
   --mw-component-profile-popover-error-text: #FA777C;
-  --mw-component-profile-popover-gap: 0.5rem;
+  --mw-component-profile-popover-gap: 1rem;
   --mw-component-profile-popover-name-text: #F2F3F5;
+  --mw-component-profile-popover-offset: 0.5rem;
   --mw-component-profile-popover-padding: 1rem;
   --mw-component-profile-popover-radius: 0.5rem;
   --mw-component-profile-popover-shadow: 0 0.5rem 1rem 0 #0000003D;
+  --mw-component-profile-popover-text-gap: 0.5rem;
   --mw-component-profile-popover-username-text: #A3A9B1;
   --mw-component-profile-popover-width: 18.75rem;
   --mw-component-rail-add-background-hover: #23A55A;
@@ -519,6 +529,7 @@
   --mw-component-user-panel-background: #232428;
   --mw-component-user-panel-button-background-hover: #35373C;
   --mw-component-user-panel-button-icon: #B5BAC1;
+  --mw-component-user-panel-button-icon-size: 1.25rem;
   --mw-component-user-panel-button-size: 2rem;
   --mw-component-user-panel-height: 3.25rem;
   --mw-component-user-panel-name-text: #F2F3F5;
@@ -821,6 +832,7 @@
     --mw-component-context-menu-item-text: #313338;
     --mw-component-context-menu-separator: #E3E5E8;
     --mw-component-context-menu-shadow: 0 0.5rem 1rem 0 #00000029;
+    --mw-component-conversation-row-empty-text: #5C5E66;
     --mw-component-dialog-background: #FFFFFF;
     --mw-component-dialog-body-text: #313338;
     --mw-component-dialog-error-text: #C4262B;
@@ -872,6 +884,7 @@
     --mw-component-message-timestamp-text: #5C5E66;
     --mw-component-profile-popover-background: #FFFFFF;
     --mw-component-profile-popover-banner: #6D6F78;
+    --mw-component-profile-popover-border: #E3E5E8;
     --mw-component-profile-popover-error-text: #C4262B;
     --mw-component-profile-popover-name-text: #060607;
     --mw-component-profile-popover-shadow: 0 0.5rem 1rem 0 #00000029;
@@ -1069,6 +1082,7 @@
   --mw-component-context-menu-item-text: #313338;
   --mw-component-context-menu-separator: #E3E5E8;
   --mw-component-context-menu-shadow: 0 0.5rem 1rem 0 #00000029;
+  --mw-component-conversation-row-empty-text: #5C5E66;
   --mw-component-dialog-background: #FFFFFF;
   --mw-component-dialog-body-text: #313338;
   --mw-component-dialog-error-text: #C4262B;
@@ -1120,6 +1134,7 @@
   --mw-component-message-timestamp-text: #5C5E66;
   --mw-component-profile-popover-background: #FFFFFF;
   --mw-component-profile-popover-banner: #6D6F78;
+  --mw-component-profile-popover-border: #E3E5E8;
   --mw-component-profile-popover-error-text: #C4262B;
   --mw-component-profile-popover-name-text: #060607;
   --mw-component-profile-popover-shadow: 0 0.5rem 1rem 0 #00000029;
