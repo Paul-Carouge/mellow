@@ -6,6 +6,8 @@
 #
 # Linux: ~/.local/bin/mellow-desktop and a menu entry. macOS: ~/Applications/Mellow.app.
 # The app then updates itself from User settings → About (ADR-0017). Nothing needs root.
+# The app icon is embedded in the signed binary, which installs it when it starts (DESIGN.md
+# §2.10): nothing unsigned is downloaded, and in-app updates refresh it too.
 set -eu
 
 readonly REPOSITORY="Paul-Carouge/mellow"
@@ -31,6 +33,7 @@ install_paths() {
       APP_DIRECTORY="${HOME}/.local/bin"
       EXECUTABLE="${APP_DIRECTORY}/mellow-desktop"
       MENU_ENTRY="${XDG_DATA_HOME:-${HOME}/.local/share}/applications/mellow.desktop"
+      MENU_ICON="${XDG_DATA_HOME:-${HOME}/.local/share}/icons/hicolor/256x256/apps/mellow.png"
       ;;
     Darwin)
       APP_BUNDLE="${HOME}/Applications/Mellow.app"
@@ -77,6 +80,7 @@ Type=Application
 Name=Mellow
 Comment=Self-hosted chat
 Exec=${EXECUTABLE}
+Icon=mellow
 Terminal=false
 Categories=Network;Chat;InstantMessaging;
 EOF
@@ -92,6 +96,7 @@ write_app_bundle_info() {
   <key>CFBundleDisplayName</key><string>Mellow</string>
   <key>CFBundleIdentifier</key><string>app.mellow.desktop</string>
   <key>CFBundleExecutable</key><string>mellow-desktop</string>
+  <key>CFBundleIconFile</key><string>Mellow</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>
   <key>CFBundleVersion</key><string>${version}</string>
@@ -104,7 +109,7 @@ EOF
 
 uninstall() {
   case "$(uname -s)" in
-    Linux) rm -f "${EXECUTABLE}" "${EXECUTABLE}.previous" "${EXECUTABLE}.rolled-back" "${MENU_ENTRY}" ;;
+    Linux) rm -f "${EXECUTABLE}" "${EXECUTABLE}.previous" "${EXECUTABLE}.rolled-back" "${MENU_ENTRY}" "${MENU_ICON}" ;;
     Darwin) rm -rf "${APP_BUNDLE}" ;;
   esac
   say "Mellow is uninstalled. Your sign-in stays in the system keychain until you remove it."
@@ -137,7 +142,7 @@ main() {
   case "$(uname -s)" in
     Linux)
       write_menu_entry
-      say "installed ${EXECUTABLE} and a menu entry"
+      say "installed ${EXECUTABLE} and a menu entry; its icon appears once Mellow has started"
       case ":${PATH}:" in
         *":${APP_DIRECTORY}:"*) ;;
         *) say "add ${APP_DIRECTORY} to your PATH to start it as mellow-desktop from a terminal" ;;
@@ -145,7 +150,7 @@ main() {
       ;;
     Darwin)
       write_app_bundle_info
-      say "installed ${APP_BUNDLE}"
+      say "installed ${APP_BUNDLE}; its icon appears once Mellow has started"
       ;;
   esac
   say "Mellow ${version} is ready; later versions install from User settings → About"
