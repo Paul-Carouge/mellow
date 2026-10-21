@@ -253,6 +253,17 @@ async fn identify(
         .events
         .register_session(user.id, token_sha256, MAXIMUM_SESSIONS_PER_USER)
         .ok()?;
+    // A logout or password change committed between the check above and the registration found no
+    // hub session to cut: check the token again now that this one is registered.
+    if state
+        .accounts
+        .authenticate(token, now_unix_milliseconds())
+        .await
+        .is_err()
+    {
+        state.events.unregister_session(hub_key);
+        return None;
+    }
     let guild_ids = match state.guilds.list_my_guilds(user.id).await {
         Ok(guilds) => guilds.iter().map(|guild| guild.id).collect::<Vec<_>>(),
         Err(error) => {

@@ -45,13 +45,16 @@ pub struct CurrentUser {
 
 /// Body of `PATCH /api/v1/users/@me`; absent fields stay unchanged. Answered with the updated
 /// `CurrentUser`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateCurrentUserRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Required to change the username.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_password: Option<String>,
 }
 
 /// Body of `POST /api/v1/users/@me/password`. Every other session of the user is signed out; the
@@ -128,6 +131,20 @@ impl std::fmt::Debug for LoginRequest {
     }
 }
 
+impl std::fmt::Debug for UpdateCurrentUserRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UpdateCurrentUserRequest")
+            .field("username", &self.username)
+            .field("display_name", &self.display_name)
+            .field(
+                "current_password",
+                &self.current_password.as_ref().map(|_| REDACTED),
+            )
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for ChangePasswordRequest {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -192,7 +209,12 @@ mod tests {
             current_password: "hunter2-secret".into(),
             new_password: "new-hunter2-secret".into(),
         };
-        let printed = format!("{login:?} {session:?} {password_change:?}");
+        let rename = UpdateCurrentUserRequest {
+            username: Some("aurore.b".into()),
+            display_name: None,
+            current_password: Some("hunter2-secret".into()),
+        };
+        let printed = format!("{login:?} {session:?} {password_change:?} {rename:?}");
         assert!(
             !printed.contains("hunter2-secret") && !printed.contains("secret-token"),
             "{printed}"
