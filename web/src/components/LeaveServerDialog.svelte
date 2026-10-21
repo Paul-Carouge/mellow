@@ -13,6 +13,8 @@
   let { client, serverName, onclose, fallbackFocus }: Props = $props();
 
   let isBusy = $state(false);
+  // Plain: read by the dialog when it closes, after this component stopped updating.
+  let hasSucceeded = false;
   let errorMessage = $state("");
 
   async function leave() {
@@ -20,6 +22,7 @@
     errorMessage = "";
     try {
       await client.leaveServer();
+      hasSucceeded = true;
       onclose();
     } catch (error) {
       errorMessage = describeError(error, "Couldn't leave the server");
@@ -30,6 +33,7 @@
 </script>
 
 <ModalDialog
+  shouldReturnFocusToOpener={() => !hasSucceeded}
   title="Leave '{serverName}'"
   subtitle="Are you sure you want to leave {serverName}? You won't be able to rejoin unless you are re-invited."
   {errorMessage}

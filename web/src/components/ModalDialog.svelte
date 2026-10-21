@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, type Snippet } from "svelte";
+  import { onMount, tick, type Snippet } from "svelte";
 
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
@@ -22,6 +22,10 @@
     onsubmit?: () => void;
     /** Where focus goes when the element that opened the dialog is gone. */
     fallbackFocus?: () => void;
+    /** False once the dialog did its job (a server created, a channel opened): focus then goes to
+     * `fallbackFocus`, since the opener (the rail's +, a menu item) would only reopen it. A function,
+     * read when the dialog closes: a prop changed right before closing is not seen by then. */
+    shouldReturnFocusToOpener?: () => boolean;
     children?: Snippet;
   }
 
@@ -38,6 +42,7 @@
     onclose,
     onsubmit,
     fallbackFocus,
+    shouldReturnFocusToOpener = () => true,
     children,
   }: Props = $props();
 
@@ -60,10 +65,13 @@
     dialog.querySelector<HTMLElement>("[data-initial-focus]")?.focus();
     return () => {
       dialog.close();
-      if (opener?.isConnected) {
+      if (shouldReturnFocusToOpener() && opener?.isConnected) {
         opener.focus();
-      } else {
-        fallbackFocus?.();
+      } else if (fallbackFocus) {
+        // After the view the dialog changed (a new server, a new channel) has rendered, and after
+        // the native dialog put focus back on its opener.
+        const focusFallback = fallbackFocus;
+        void tick().then(() => requestAnimationFrame(focusFallback));
       }
     };
   });

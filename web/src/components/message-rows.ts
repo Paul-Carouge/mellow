@@ -1,7 +1,7 @@
 // How the shell lays out channels and messages: Discord's rules, as the desktop client applies them.
 
 import type { PendingMessage } from "../lib/client.svelte";
-import { type Channel, type Guild, type Message, type Snowflake, compareSnowflakes } from "../lib/protocol";
+import { type Message, type Snowflake, compareSnowflakes } from "../lib/protocol";
 import { unixMillisecondsOfSnowflake } from "./format";
 
 /** Discord starts a new author group after this long, even for the same author. */
@@ -50,22 +50,4 @@ export function buildMessageRows(
   return rows;
 }
 
-export interface ChannelSection {
-  /** `null` for the channels outside any category, listed first. */
-  category: Channel | null;
-  channels: Channel[];
-}
-
-/** Uncategorised text channels, then each category with its text channels, by position. */
-export function channelSections(guild: Guild): ChannelSection[] {
-  const byPosition = (left: Channel, right: Channel) =>
-    left.position - right.position || compareSnowflakes(left.id, right.id);
-  const textIn = (parentId: Snowflake | null) =>
-    guild.channels.filter((channel) => channel.kind === "text" && channel.parent_id === parentId).sort(byPosition);
-  const categories = guild.channels.filter((channel) => channel.kind === "category").sort(byPosition);
-  const uncategorised = textIn(null);
-  return [
-    ...(uncategorised.length > 0 ? [{ category: null, channels: uncategorised }] : []),
-    ...categories.map((category) => ({ category, channels: textIn(category.id) })),
-  ];
-}
+export { type ChannelSection, channelSections } from "../lib/channels";

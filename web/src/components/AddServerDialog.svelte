@@ -18,6 +18,8 @@
   let serverName = $state("");
   let inviteCode = $state("");
   let isBusy = $state(false);
+  // Plain: read by the dialog when it closes, after this component stopped updating.
+  let hasSucceeded = false;
   // An error belongs to the page it was raised on: switching pages hides it.
   let error = $state<{ isJoin: boolean; text: string } | null>(null);
   let nameField = $state<HTMLInputElement | null>(null);
@@ -35,6 +37,7 @@
       } else {
         await client.createServer(serverName.trim());
       }
+      hasSucceeded = true;
       onclose();
     } catch (failure) {
       error = { isJoin, text: describeError(failure, isJoin ? "Couldn't join the server" : "Couldn't create the server") };
@@ -54,6 +57,7 @@
 </script>
 
 <ModalDialog
+  shouldReturnFocusToOpener={() => !hasSucceeded}
   title={isJoining ? "Join a server" : "Create a server"}
   subtitle={isJoining
     ? "Enter an invite to join a server someone already runs."

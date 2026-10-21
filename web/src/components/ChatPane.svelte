@@ -42,8 +42,16 @@
           .join(", ")
       : "",
   );
-  const canSendMessages = $derived(guild ? hasPermission(guild.my_permissions, Permission.SEND_MESSAGES) : true);
-  const canManageMessages = $derived(guild ? hasPermission(guild.my_permissions, Permission.MANAGE_MESSAGES) : false);
+  // Channel overwrites included (read-only channels); only to adapt the interface (ADR-0014).
+  const channelPermissions = $derived(
+    client.selectedChannelId ? client.myChannelPermissions(client.selectedChannelId) : null,
+  );
+  const canSendMessages = $derived(
+    channelPermissions === null || hasPermission(channelPermissions, Permission.SEND_MESSAGES),
+  );
+  const canManageMessages = $derived(
+    channelPermissions !== null && hasPermission(channelPermissions, Permission.MANAGE_MESSAGES),
+  );
   const composerLabel = $derived(channel ? `Message #${channel.name}` : `Message @${conversationName}`);
 
   let pane: HTMLElement;
@@ -81,8 +89,12 @@
   });
 
   let now = $state(Date.now());
+  // Ticks only while someone is typing here, so an expired indicator does not keep a timer alive.
+  const isAnyoneTyping = $derived(
+    client.selectedChannelId !== null && client.typingUserIds(client.selectedChannelId, now).length > 0,
+  );
   $effect(() => {
-    if (client.typingUntil.size === 0) {
+    if (!isAnyoneTyping) {
       return;
     }
     now = Date.now();

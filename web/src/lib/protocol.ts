@@ -181,6 +181,50 @@ export function hasPermission(bits: PermissionBits, permission: bigint): boolean
   return (value & Permission.ADMINISTRATOR) !== 0n || (value & permission) !== 0n;
 }
 
+/** Every bit a participant holds in a direct-message conversation (`direct_message_permissions`). */
+export const DIRECT_MESSAGE_PERMISSIONS: PermissionBits = String(
+  Permission.VIEW_CHANNEL | Permission.SEND_MESSAGES | Permission.READ_MESSAGE_HISTORY,
+);
+
+/**
+ * `compute_channel_permissions` of mellow-protocol (ADR-0007 step 4): the guild permissions, then
+ * the channel's overwrites for `@everyone` (the role whose id is the guild id), for the member's
+ * roles (all denies, then all allows) and for the member. Administrators ignore overwrites. Only
+ * to adapt the interface: the instance decides (ADR-0014).
+ */
+export function computeChannelPermissions(
+  guildPermissions: PermissionBits,
+  guildId: Snowflake,
+  memberId: Snowflake,
+  memberRoleIds: readonly Snowflake[],
+  overwrites: readonly PermissionOverwrite[],
+): PermissionBits {
+  let permissions = BigInt(guildPermissions);
+  if ((permissions & Permission.ADMINISTRATOR) !== 0n) {
+    return guildPermissions;
+  }
+  const apply = (current: bigint, overwrite: PermissionOverwrite) =>
+    (current & ~BigInt(overwrite.deny)) | BigInt(overwrite.allow);
+  const everyone = overwrites.find((overwrite) => overwrite.kind === "role" && overwrite.id === guildId);
+  if (everyone) {
+    permissions = apply(permissions, everyone);
+  }
+  let roleDeny = 0n;
+  let roleAllow = 0n;
+  for (const overwrite of overwrites) {
+    if (overwrite.kind === "role" && overwrite.id !== guildId && memberRoleIds.includes(overwrite.id)) {
+      roleDeny |= BigInt(overwrite.deny);
+      roleAllow |= BigInt(overwrite.allow);
+    }
+  }
+  permissions = (permissions & ~roleDeny) | roleAllow;
+  const member = overwrites.find((overwrite) => overwrite.kind === "member" && overwrite.id === memberId);
+  if (member) {
+    permissions = apply(permissions, member);
+  }
+  return String(permissions);
+}
+
 /** Snowflakes compare by value, not as strings ("9" > "10" as text). */
 export function compareSnowflakes(left: Snowflake, right: Snowflake): number {
   const difference = BigInt(left) - BigInt(right);
