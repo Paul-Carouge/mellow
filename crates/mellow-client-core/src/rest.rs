@@ -3,12 +3,13 @@
 use std::time::Duration;
 
 use mellow_protocol::{
-    AcknowledgeRequest, ApiErrorBody, AuditLogEntry, AuditLogQuery, Ban, ChangePasswordRequest,
-    Channel, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
-    CreateRoleRequest, CurrentUser, DirectMessageChannel, EditMessageRequest, Guild, Invite,
-    LoginRequest, Member, Message, MessageHistoryQuery, OpenDirectMessageRequest, RegisterRequest,
-    ReorderRolesRequest, Role, SendMessageRequest, SessionCreated, SetPermissionOverwriteRequest,
-    Snowflake, UpdateChannelRequest, UpdateCurrentUserRequest, UpdateRoleRequest,
+    AcknowledgeRequest, ApiErrorBody, Attachment, AuditLogEntry, AuditLogQuery, Ban,
+    ChangePasswordRequest, Channel, CreateBanRequest, CreateChannelRequest, CreateGuildRequest,
+    CreateInviteRequest, CreateRoleRequest, CurrentUser, DirectMessageChannel, EditMessageRequest,
+    Guild, Invite, LoginRequest, Member, Message, MessageHistoryQuery, OpenDirectMessageRequest,
+    RegisterRequest, ReorderRolesRequest, Role, SendMessageRequest, SessionCreated,
+    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateCurrentUserRequest,
+    UpdateRoleRequest,
 };
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::Serialize;
@@ -304,6 +305,28 @@ impl RestClient {
             true,
         )?)
         .await
+    }
+
+    /// Uploads one file to a channel; send its id in a message within the hour (ADR-0020).
+    ///
+    /// # Errors
+    /// Network or API errors; the instance refuses files over its size limit.
+    pub async fn upload_attachment(
+        &self,
+        channel_id: Snowflake,
+        file_name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<Attachment, ClientError> {
+        let builder = self
+            .request(
+                Method::POST,
+                &format!("api/v1/channels/{channel_id}/attachments"),
+                true,
+            )?
+            .query(&[("file_name", file_name)])
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(bytes);
+        Self::send_and_decode_json(builder).await
     }
 
     /// The one-to-one conversation with that user, opened if needed.

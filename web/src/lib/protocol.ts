@@ -170,6 +170,7 @@ export const Permission = {
   VIEW_CHANNEL: 1n << 1n,
   SEND_MESSAGES: 1n << 2n,
   READ_MESSAGE_HISTORY: 1n << 3n,
+  ATTACH_FILES: 1n << 4n,
   MANAGE_MESSAGES: 1n << 6n,
   MANAGE_CHANNELS: 1n << 7n,
   MANAGE_ROLES: 1n << 8n,
@@ -183,7 +184,7 @@ export function hasPermission(bits: PermissionBits, permission: bigint): boolean
 
 /** Every bit a participant holds in a direct-message conversation (`direct_message_permissions`). */
 export const DIRECT_MESSAGE_PERMISSIONS: PermissionBits = String(
-  Permission.VIEW_CHANNEL | Permission.SEND_MESSAGES | Permission.READ_MESSAGE_HISTORY,
+  Permission.VIEW_CHANNEL | Permission.SEND_MESSAGES | Permission.READ_MESSAGE_HISTORY | Permission.ATTACH_FILES,
 );
 
 /**

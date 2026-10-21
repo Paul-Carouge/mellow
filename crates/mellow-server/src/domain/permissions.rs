@@ -55,6 +55,7 @@ pub fn direct_message_permissions(is_participant: bool, shares_a_guild: bool) ->
             Permissions::VIEW_CHANNEL
                 | Permissions::SEND_MESSAGES
                 | Permissions::READ_MESSAGE_HISTORY
+                | Permissions::ATTACH_FILES
         }
     }
 }

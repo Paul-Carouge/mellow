@@ -536,6 +536,7 @@ mod tests {
             reply_to_id,
             edited_at_unix_milliseconds: None,
             nonce: None,
+            attachments: Vec::new(),
         };
         let first = message(at_minute(0, 0), author(1, "Aurore"), "hello", None);
         let messages = vec![
@@ -637,6 +638,7 @@ mod tests {
             reply_to_id: None,
             edited_at_unix_milliseconds: None,
             nonce: None,
+            attachments: Vec::new(),
         };
         let pending = |nonce: &str, reply_to_id, status| PendingMessage {
             nonce: nonce.into(),
@@ -682,6 +684,7 @@ mod tests {
             reply_to_id: None,
             edited_at_unix_milliseconds: None,
             nonce: None,
+            attachments: Vec::new(),
         };
         let full_page = vec![message.clone(); usize::try_from(HISTORY_PAGE_SIZE).unwrap()];
         let mut state = ClientState::default();
@@ -754,6 +757,7 @@ mod tests {
                 reply_to_id: None,
                 edited_at_unix_milliseconds: None,
                 nonce: None,
+                attachments: Vec::new(),
             }],
         );
 

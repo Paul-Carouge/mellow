@@ -40,6 +40,7 @@ pub async fn initialize_instance(options: &InitializeOptions) -> Result<ServerCo
         registration_mode: options.registration_mode,
         behind_tls_reverse_proxy: false,
         trusted_proxy_networks: Vec::new(),
+        maximum_attachment_bytes: crate::config::DEFAULT_MAXIMUM_ATTACHMENT_BYTES,
         tls: options
             .tls
             .clone()
@@ -152,8 +153,19 @@ pub async fn serve_instance(
             &config.data_directory,
         )?;
     }
-    // The master key is dropped (and wiped) as soon as the database key is derived.
-    let database_key = MasterKey::read_file(&config.master_key_file)?.derive_database_key();
+    // The master key is dropped (and wiped) as soon as the database and attachment keys are
+    // derived.
+    let (database_key, attachment_key) = {
+        let master_key = MasterKey::read_file(&config.master_key_file)?;
+        (
+            master_key.derive_database_key(),
+            master_key.derive_attachment_key(),
+        )
+    };
+    let attachment_files = crate::storage::attachment_files::AttachmentFiles::new(
+        config.attachment_directory(),
+        &attachment_key,
+    )?;
     // Bound before migrating: a second `serve` started by mistake fails here instead of
     // migrating the database under the running instance.
     let listener = TcpListener::bind(config.listen_address)
@@ -170,8 +182,11 @@ pub async fn serve_instance(
                 "database migrated"
             );
         }
-        let state = AppState::new(pool.clone(), config);
+        let state = AppState::new(pool.clone(), config, attachment_files);
         let session_purge = tokio::spawn(purge_expired_sessions_periodically(pool.clone()));
+        let attachment_purge = tokio::spawn(
+            crate::domain::attachments::purge_attachments_periodically(state.attachments.clone()),
+        );
         let served = match &config.tls {
             Some(tls) => crate::tls::serve_tls_until_shutdown(listener, state, tls, shutdown).await,
             None => serve_until_shutdown(listener, state, shutdown).await,
@@ -179,6 +194,8 @@ pub async fn serve_instance(
         // Awaited, so the purge holds no connection when the pool closes.
         session_purge.abort();
         let _cancelled = session_purge.await;
+        attachment_purge.abort();
+        let _cancelled = attachment_purge.await;
         served
     }
     .await;
@@ -460,7 +477,15 @@ mod tests {
         let (stop_sender, stop_receiver) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(serve_until_shutdown(
             listener,
-            AppState::new(pool.clone(), &config),
+            AppState::new(
+                pool.clone(),
+                &config,
+                crate::storage::attachment_files::AttachmentFiles::new(
+                    config.attachment_directory(),
+                    &key.derive_attachment_key(),
+                )
+                .unwrap(),
+            ),
             async {
                 let _ = stop_receiver.await;
             },

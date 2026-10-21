@@ -17,6 +17,7 @@ const MASTER_KEY_HEX_LENGTH: usize = MASTER_KEY_LENGTH_BYTES * 2;
 const MAXIMUM_MASTER_KEY_FILE_LENGTH_BYTES: u64 = MASTER_KEY_HEX_LENGTH as u64 + 2;
 /// Versioned so a future key schedule can coexist with this one.
 const DATABASE_KEY_DERIVATION_INFO: &[u8] = b"mellow/sqlcipher-database-key/v1";
+const ATTACHMENT_KEY_DERIVATION_INFO: &[u8] = b"mellow/attachments-aes-256-gcm/v1";
 /// Owner read/write only.
 #[cfg(unix)]
 const MASTER_KEY_FILE_MODE: u32 = 0o600;
@@ -132,6 +133,22 @@ impl MasterKey {
             .expand(DATABASE_KEY_DERIVATION_INFO, database_key.as_mut())
             .expect("32 bytes is within HKDF-SHA256's output limit");
         DatabaseKey::from_bytes(*database_key)
+    }
+
+    /// The key sealing attachment files (ADR-0020), independent of the database key.
+    ///
+    /// # Panics
+    /// Never: HKDF-SHA256 can output up to 8160 bytes and 32 are requested.
+    #[must_use]
+    pub fn derive_attachment_key(&self) -> Zeroizing<[u8; MASTER_KEY_LENGTH_BYTES]> {
+        let mut attachment_key = Zeroizing::new([0u8; MASTER_KEY_LENGTH_BYTES]);
+        let derivation = Hkdf::<Sha256>::new(None, &self.0);
+        // Invariant: HKDF-SHA256 can produce up to 255 × 32 bytes, and we ask for 32.
+        #[allow(clippy::expect_used)]
+        derivation
+            .expand(ATTACHMENT_KEY_DERIVATION_INFO, attachment_key.as_mut())
+            .expect("32 bytes is within HKDF-SHA256's output limit");
+        attachment_key
     }
 }
 

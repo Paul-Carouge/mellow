@@ -3,6 +3,7 @@
 
 mod account_routes;
 pub(crate) mod api_error;
+mod attachment_routes;
 pub(crate) mod authentication;
 pub(crate) mod client_address;
 mod guild_routes;
@@ -13,6 +14,7 @@ pub(crate) mod web_client;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
@@ -37,6 +39,8 @@ pub(crate) struct AppState {
     pub(crate) accounts: Arc<Accounts>,
     pub(crate) guilds: Arc<Guilds>,
     pub(crate) messages: Arc<Messages>,
+    pub(crate) attachments: Arc<crate::domain::attachments::Attachments>,
+    pub(crate) maximum_attachment_bytes: u64,
     pub(crate) events: Arc<EventHub>,
     pub(crate) gateway_sessions: Arc<crate::gateway::SessionRegistry>,
     pub(crate) rate_limiter: Arc<RateLimiter>,
@@ -45,18 +49,30 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
-    pub(crate) fn new(pool: SqlitePool, config: &ServerConfig) -> Self {
+    pub(crate) fn new(
+        pool: SqlitePool,
+        config: &ServerConfig,
+        attachment_files: crate::storage::attachment_files::AttachmentFiles,
+    ) -> Self {
         let ids = Arc::new(SnowflakeGenerator::default());
         let events = Arc::new(EventHub::default());
         let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone(), events.clone()));
+        let messages = Arc::new(Messages::new(pool.clone(), ids.clone(), guilds.clone()));
         Self {
+            attachments: Arc::new(crate::domain::attachments::Attachments::new(
+                pool.clone(),
+                ids.clone(),
+                messages.clone(),
+                attachment_files,
+            )),
+            maximum_attachment_bytes: config.maximum_attachment_bytes,
             accounts: Arc::new(Accounts::new(
                 pool.clone(),
                 config.registration_mode,
                 ids.clone(),
                 events.clone(),
             )),
-            messages: Arc::new(Messages::new(pool.clone(), ids, guilds.clone())),
+            messages,
             events,
             gateway_sessions: Arc::default(),
             guilds,
@@ -84,6 +100,41 @@ fn account_router() -> Router<AppState> {
         .route(
             "/api/v1/users/@me/password",
             post(account_routes::change_password),
+        )
+}
+
+/// Messages, read states, typing and attachments of a channel or conversation.
+fn message_router(maximum_attachment_bytes: u64) -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/v1/channels/{channel_id}/messages",
+            get(message_routes::list_messages).post(message_routes::send_message),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/messages/{message_id}",
+            patch(message_routes::edit_message).delete(message_routes::delete_message),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/read-state",
+            put(message_routes::acknowledge_read_state),
+        )
+        .route(
+            "/api/v1/users/@me/read-states",
+            get(message_routes::list_my_read_states),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/typing",
+            post(message_routes::start_typing),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/attachments",
+            post(attachment_routes::upload).layer(DefaultBodyLimit::max(attachment_body_limit(
+                maximum_attachment_bytes,
+            ))),
+        )
+        .route(
+            "/api/v1/attachments/{attachment_id}/{file_name}",
+            get(attachment_routes::download),
         )
 }
 
@@ -162,31 +213,16 @@ pub(crate) fn router(state: AppState) -> Router {
             "/api/v1/invites/{code}",
             post(guild_routes::join_with_invite),
         )
-        .route(
-            "/api/v1/channels/{channel_id}/messages",
-            get(message_routes::list_messages).post(message_routes::send_message),
-        )
-        .route(
-            "/api/v1/channels/{channel_id}/messages/{message_id}",
-            patch(message_routes::edit_message).delete(message_routes::delete_message),
-        )
-        .route(
-            "/api/v1/channels/{channel_id}/read-state",
-            put(message_routes::acknowledge_read_state),
-        )
-        .route(
-            "/api/v1/users/@me/read-states",
-            get(message_routes::list_my_read_states),
-        )
-        .route(
-            "/api/v1/channels/{channel_id}/typing",
-            post(message_routes::start_typing),
-        )
+        .merge(message_router(state.maximum_attachment_bytes))
         .route("/gateway", get(crate::gateway::upgrade))
         .fallback(web_client::serve)
         .method_not_allowed_fallback(|| async { api_error::ApiError::method_not_allowed() })
         .layer(middleware::from_fn(mark_api_responses_private))
         .with_state(state)
+}
+
+fn attachment_body_limit(maximum_attachment_bytes: u64) -> usize {
+    usize::try_from(maximum_attachment_bytes).unwrap_or(usize::MAX)
 }
 
 /// A shared cache must never keep a user's answer: unlike `Authorization`, a session cookie does
@@ -272,10 +308,21 @@ pub(crate) mod tests {
 
     const TEST_PEER: &str = "192.0.2.10:40000";
 
+    /// A fresh directory per state, kept for the test process's life.
+    pub(crate) fn test_attachment_files() -> crate::storage::attachment_files::AttachmentFiles {
+        let directory = tempfile::tempdir().unwrap().keep();
+        crate::storage::attachment_files::AttachmentFiles::new(
+            directory,
+            &zeroize::Zeroizing::new([3u8; 32]),
+        )
+        .unwrap()
+    }
+
     pub(crate) fn test_state(pool: SqlitePool, registration_mode: RegistrationMode) -> AppState {
         let ids = Arc::new(SnowflakeGenerator::default());
         let events = Arc::new(EventHub::default());
         let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone(), events.clone()));
+        let messages = Arc::new(Messages::new(pool.clone(), ids.clone(), guilds.clone()));
         AppState {
             accounts: Arc::new(Accounts::new(
                 pool.clone(),
@@ -283,7 +330,14 @@ pub(crate) mod tests {
                 ids.clone(),
                 events.clone(),
             )),
-            messages: Arc::new(Messages::new(pool.clone(), ids, guilds.clone())),
+            attachments: Arc::new(crate::domain::attachments::Attachments::new(
+                pool.clone(),
+                ids.clone(),
+                messages.clone(),
+                test_attachment_files(),
+            )),
+            maximum_attachment_bytes: crate::config::DEFAULT_MAXIMUM_ATTACHMENT_BYTES,
+            messages,
             events,
             gateway_sessions: Arc::default(),
             guilds,
@@ -849,6 +903,207 @@ pub(crate) mod tests {
             "invite codes cannot be brute forced"
         );
         pool.close().await;
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\nnot really an image";
+    const HTML: &[u8] = b"<html><script>alert(1)</script></html>";
+
+    fn upload_request(path: &str, token: &str, bytes: &'static [u8]) -> Request<Body> {
+        Request::post(path)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .body(Body::from(bytes))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // One scenario: upload, send, list, download, refusals.
+    async fn attachments_upload_send_and_download_safely() {
+        use mellow_protocol::{Attachment, Message};
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let stranger = registered_token(&state, "stranger").await;
+        let upload_path =
+            |name: &str| format!("/api/v1/channels/{general}/attachments?file_name={name}");
+
+        let (status, body) =
+            send(&state, upload_request(&upload_path("cat.png"), &owner, PNG)).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let image: Attachment = json(&body);
+        assert_eq!(image.content_type, "image/png");
+        let (_, body) = send(
+            &state,
+            upload_request(&upload_path("page.html"), &owner, HTML),
+        )
+        .await;
+        let page: Attachment = json(&body);
+        assert_eq!(page.content_type, "application/octet-stream");
+        let (stranger_upload, _) = send(
+            &state,
+            upload_request(&upload_path("x.png"), &stranger, PNG),
+        )
+        .await;
+        let (_, body) = send(
+            &state,
+            upload_request(&upload_path("theirs.png"), &stranger, PNG),
+        )
+        .await;
+        let _ = body;
+
+        // Not sent yet: nobody can download it.
+        let (unsent_download, _) = send(
+            &state,
+            authorized(
+                "GET",
+                &format!("/api/v1/attachments/{}/cat.png", image.id),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+
+        let messages_path = format!("/api/v1/channels/{general}/messages");
+        let (status, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &messages_path,
+                &owner,
+                Some(serde_json::json!({
+                    "content": "",
+                    "attachment_ids": [image.id.to_string(), page.id.to_string()],
+                })),
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+        let sent: Message = json(&body);
+        let (reused, _) = send(
+            &state,
+            authorized(
+                "POST",
+                &messages_path,
+                &owner,
+                Some(serde_json::json!({"content": "again", "attachment_ids": [image.id.to_string()]})),
+            ),
+        )
+        .await;
+        let (_, body) = send(&state, authorized("GET", &messages_path, &owner, None)).await;
+        let history: Vec<Message> = json(&body);
+
+        let ((image_status, image_bytes), image_headers) = send_from(
+            &state,
+            TEST_PEER,
+            authorized(
+                "GET",
+                &format!("/api/v1/attachments/{}/cat.png", image.id),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        let ((_, _), page_headers) = send_from(
+            &state,
+            TEST_PEER,
+            authorized(
+                "GET",
+                &format!("/api/v1/attachments/{}/page.html", page.id),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        let (stranger_download, _) = send(
+            &state,
+            authorized(
+                "GET",
+                &format!("/api/v1/attachments/{}/cat.png", image.id),
+                &stranger,
+                None,
+            ),
+        )
+        .await;
+        pool.close().await;
+
+        assert_eq!(
+            stranger_upload,
+            StatusCode::NOT_FOUND,
+            "not a member of the guild"
+        );
+        assert_eq!(unsent_download, StatusCode::NOT_FOUND);
+        assert_eq!(sent.attachments.len(), 2);
+        assert_eq!(sent.content, "");
+        assert_eq!(
+            reused,
+            StatusCode::BAD_REQUEST,
+            "an attachment goes with one message"
+        );
+        assert_eq!(history[0].attachments, sent.attachments);
+        assert_eq!(image_status, StatusCode::OK);
+        assert_eq!(&image_bytes[..], PNG);
+        assert_eq!(
+            image_headers.get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+        assert!(
+            image_headers
+                .get(header::CONTENT_DISPOSITION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("inline")
+        );
+        assert_eq!(
+            page_headers.get(header::CONTENT_TYPE).unwrap(),
+            "application/octet-stream"
+        );
+        assert!(
+            page_headers
+                .get(header::CONTENT_DISPOSITION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("attachment")
+        );
+        assert_eq!(
+            page_headers.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(),
+            "nosniff"
+        );
+        assert!(
+            page_headers
+                .get(header::CONTENT_SECURITY_POLICY)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("sandbox")
+        );
+        assert_eq!(stranger_download, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn attachments_over_the_limit_are_refused_before_being_read() {
+        let (_directory, pool) = migrated_pool().await;
+        let mut state = test_state(pool.clone(), RegistrationMode::Open);
+        state.maximum_attachment_bytes = 8;
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let (status, _) = send(
+            &state,
+            upload_request(
+                &format!("/api/v1/channels/{general}/attachments?file_name=big.bin"),
+                &owner,
+                b"0123456789",
+            ),
+        )
+        .await;
+        pool.close().await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]

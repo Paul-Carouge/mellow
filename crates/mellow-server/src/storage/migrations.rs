@@ -585,8 +585,8 @@ mod tests {
         pool.close().await;
 
         assert_eq!(
-            outcome.applied_versions,
-            [LAST_VERSION_WITHOUT_CONVERSATIONS + 1]
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_CONVERSATIONS + 1))
         );
         assert_eq!(guild_messages, [(30,)]);
         assert_eq!(
@@ -595,6 +595,66 @@ mod tests {
             "a deleted user leaves the conversation"
         );
         assert!(pairs.is_empty(), "the pair goes with either user");
+    }
+
+    #[tokio::test]
+    async fn attachments_go_with_their_message_and_keep_their_channel_messages() {
+        const LAST_VERSION_WITHOUT_ATTACHMENTS: i64 = 9;
+        let directory = tempfile::tempdir().unwrap();
+        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_ATTACHMENTS, &pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) \
+             VALUES (30, 20, 1, 'hello'), (31, 20, 1, 'files');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
+             content_type, size_bytes, created_at_unix_milliseconds) \
+             VALUES (40, 20, 1, 31, 'a.png', 'image/png', 3, 0), \
+             (41, 20, 1, NULL, 'b.txt', 'application/octet-stream', 3, 0); \
+             DELETE FROM messages WHERE id = 31;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let attachments: Vec<(i64,)> = sqlx::query_as("SELECT id FROM attachments ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let messages: Vec<(i64,)> = sqlx::query_as("SELECT id FROM messages")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        assert_eq!(
+            outcome.applied_versions,
+            [LAST_VERSION_WITHOUT_ATTACHMENTS + 1]
+        );
+        assert_eq!(
+            attachments,
+            [(41,)],
+            "a deleted message takes its attachments"
+        );
+        assert_eq!(messages, [(30,)]);
     }
 
     #[tokio::test]

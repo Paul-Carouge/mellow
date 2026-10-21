@@ -131,6 +131,7 @@ async fn replies_edits_and_deletes_reach_the_gateway(
                 content: "hi owner".into(),
                 reply_to_id: Some(sent.id),
                 nonce: None,
+                attachment_ids: Vec::new(),
             },
         )
         .await
@@ -225,6 +226,7 @@ async fn rest_and_gateway_keep_the_state_in_sync_until_logout() {
                 content: "hello **member**".into(),
                 reply_to_id: None,
                 nonce: None,
+                attachment_ids: Vec::new(),
             },
         )
         .await
@@ -652,6 +654,7 @@ async fn direct_messages_reach_only_the_recipient_and_survive_a_reconnect() {
                 content: "psst".into(),
                 reply_to_id: None,
                 nonce: None,
+                attachment_ids: Vec::new(),
             },
         )
         .await

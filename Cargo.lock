@@ -3554,6 +3554,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "async-trait",
+ "aws-lc-rs",
  "axum",
  "axum-server",
  "clap",
