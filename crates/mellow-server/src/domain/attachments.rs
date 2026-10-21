@@ -18,8 +18,10 @@ use crate::storage::attachments::{self as storage, NewAttachment};
 
 const PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_mins(10);
 /// Uploads and downloads holding a whole file in memory at once (up to the size limit each):
-/// beyond, the instance answers "busy" rather than running out of memory.
-const CONCURRENT_FILE_TRANSFERS: usize = 6;
+/// beyond, the instance answers "busy" rather than running out of memory. Separate, so slow
+/// uploads can never stop downloads; a download keeps its slot until its last byte is sent.
+const CONCURRENT_UPLOADS: usize = 4;
+const CONCURRENT_DOWNLOADS: usize = 8;
 /// Pictures decoded at once (avatars, banners, background compression): each can take a few
 /// hundred MB and a core for seconds.
 const CONCURRENT_IMAGE_PROCESSING: usize = 2;
@@ -104,6 +106,8 @@ pub(crate) struct AttachmentDownload {
     pub(crate) file_name: String,
     pub(crate) content_type: String,
     pub(crate) bytes: Vec<u8>,
+    /// Kept by the response body until it is sent.
+    pub(crate) permit: OwnedSemaphorePermit,
 }
 
 /// An upload allowed before its body is read: the checks come first, so a refused or
@@ -113,8 +117,24 @@ pub(crate) struct UploadSlot {
     user_id: Snowflake,
     channel_id: Snowflake,
     file_name: String,
-    stored_bytes: u64,
     _permit: OwnedSemaphorePermit,
+    _one_upload_per_user: UploaderGuard,
+}
+
+/// Marks a user as uploading until the upload ends, so one account takes at most one upload
+/// slot: slow bodies from it cannot fill the others.
+#[derive(Debug)]
+struct UploaderGuard {
+    uploading_users: Arc<std::sync::Mutex<HashSet<Snowflake>>>,
+    user_id: Snowflake,
+}
+
+impl Drop for UploaderGuard {
+    fn drop(&mut self) {
+        if let Ok(mut users) = self.uploading_users.lock() {
+            users.remove(&self.user_id);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -123,7 +143,9 @@ pub(crate) struct Attachments {
     ids: Arc<SnowflakeGenerator>,
     messages: Arc<Messages>,
     files: AttachmentFiles,
-    transfers: Arc<Semaphore>,
+    uploads: Arc<Semaphore>,
+    downloads: Arc<Semaphore>,
+    uploading_users: Arc<std::sync::Mutex<HashSet<Snowflake>>>,
     image_processing: Arc<Semaphore>,
     maximum_stored_bytes_per_user: u64,
     optimization_sender: mpsc::Sender<Snowflake>,
@@ -146,7 +168,9 @@ impl Attachments {
             ids,
             messages,
             files,
-            transfers: Arc::new(Semaphore::new(CONCURRENT_FILE_TRANSFERS)),
+            uploads: Arc::new(Semaphore::new(CONCURRENT_UPLOADS)),
+            downloads: Arc::new(Semaphore::new(CONCURRENT_DOWNLOADS)),
+            uploading_users: Arc::default(),
             image_processing: Arc::new(Semaphore::new(CONCURRENT_IMAGE_PROCESSING)),
             maximum_stored_bytes_per_user,
             optimization_sender,
@@ -154,11 +178,9 @@ impl Attachments {
         }
     }
 
-    pub(crate) fn transfer_permit(&self) -> Result<OwnedSemaphorePermit, MessageError> {
-        self.transfers
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| MessageError::Busy)
+    #[cfg(test)]
+    pub(crate) fn free_download_slots(&self) -> usize {
+        self.downloads.available_permits()
     }
 
     /// A slot to decode a picture now, or `Busy`; the work holds it until it really ends.
@@ -189,12 +211,27 @@ impl Attachments {
         if stored_bytes >= self.maximum_stored_bytes_per_user {
             return Err(MessageError::QuotaReached);
         }
+        let is_first_upload_of_user = self
+            .uploading_users
+            .lock()
+            .is_ok_and(|mut users| users.insert(user_id));
+        if !is_first_upload_of_user {
+            return Err(MessageError::Busy);
+        }
+        let one_upload_per_user = UploaderGuard {
+            uploading_users: self.uploading_users.clone(),
+            user_id,
+        };
         Ok(UploadSlot {
             user_id,
             channel_id,
             file_name,
-            stored_bytes,
-            _permit: self.transfer_permit()?,
+            _permit: self
+                .uploads
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| MessageError::Busy)?,
+            _one_upload_per_user: one_upload_per_user,
         })
     }
 
@@ -213,7 +250,10 @@ impl Attachments {
             bytes
         };
         let size_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        if slot.stored_bytes.saturating_add(size_bytes) > self.maximum_stored_bytes_per_user {
+        // Read now, not when the upload started: a user's uploads are one at a time, so this
+        // total cannot change before the row is inserted.
+        let stored_bytes = storage::stored_bytes_of_uploader(&self.pool, slot.user_id).await?;
+        if stored_bytes.saturating_add(size_bytes) > self.maximum_stored_bytes_per_user {
             return Err(MessageError::QuotaReached);
         }
         let id = self.ids.next_id(now_unix_milliseconds)?;
@@ -263,13 +303,17 @@ impl Attachments {
             .map_err(|error| MessageError::Internal(Box::new(error)))?;
         let original = self.files.read(attachment.id).await?;
         let content_type = attachment.content_type.clone();
-        let processing = tokio::task::spawn_blocking(move || {
+        let mut processing = tokio::task::spawn_blocking(move || {
             // Held until the work really ends: a timed-out job still bounds the next ones.
             let _permit = permit;
             let optimized = optimize_attachment(&original, &content_type);
             (original, optimized)
         });
-        let Ok(joined) = tokio::time::timeout(OPTIMIZATION_TIME_BUDGET, processing).await else {
+        let Ok(joined) = tokio::time::timeout(OPTIMIZATION_TIME_BUDGET, &mut processing).await
+        else {
+            // Too slow: the original stays. Waiting for the work to end keeps this worker to one
+            // job at a time, leaving the other slot to avatars and banners.
+            let _ = processing.await;
             return Ok(());
         };
         let (original, optimized) =
@@ -328,7 +372,11 @@ impl Attachments {
                 Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY,
             )
             .await?;
-        let _permit = self.transfer_permit()?;
+        let permit = self
+            .downloads
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| MessageError::Busy)?;
         let bytes = self.files.read(attachment.id).await?;
         // Checked again on the bytes served, whatever the row says.
         let content_type = if sniff_content_type(&bytes) == attachment.content_type {
@@ -340,6 +388,7 @@ impl Attachments {
             file_name: attachment.file_name,
             content_type,
             bytes,
+            permit,
         })
     }
 

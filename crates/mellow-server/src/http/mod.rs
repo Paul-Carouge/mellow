@@ -1914,6 +1914,75 @@ pub(crate) mod tests {
         assert_eq!(stored.size_bytes, bytes.len() as u64);
     }
 
+    #[tokio::test]
+    async fn a_download_keeps_its_slot_until_its_body_is_dropped_and_uploads_go_one_per_user() {
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let (_, body) = send(
+            &state,
+            upload_request(
+                &format!("/api/v1/channels/{general}/attachments?file_name=a.png"),
+                &owner,
+                PNG,
+            ),
+        )
+        .await;
+        let uploaded: mellow_protocol::Attachment = json(&body);
+        send(
+            &state,
+            authorized(
+                "POST",
+                &format!("/api/v1/channels/{general}/messages"),
+                &owner,
+                Some(
+                    serde_json::json!({"content": "", "attachment_ids": [uploaded.id.to_string()]}),
+                ),
+            ),
+        )
+        .await;
+        let all_slots = state.attachments.free_download_slots();
+        let response = router(state.clone())
+            .layer(MockConnectInfo(TEST_PEER.parse::<SocketAddr>().unwrap()))
+            .oneshot(authorized(
+                "GET",
+                &format!("/api/v1/attachments/{}", uploaded.id),
+                &owner,
+                None,
+            ))
+            .await
+            .unwrap();
+        let slots_while_unsent = state.attachments.free_download_slots();
+        drop(response);
+        let slots_after = state.attachments.free_download_slots();
+
+        let (_, body) = send(&state, authorized("GET", "/api/v1/users/@me", &owner, None)).await;
+        let owner_id = json::<CurrentUser>(&body).id;
+        let first = state
+            .attachments
+            .start_upload(owner_id, general, "first.txt")
+            .await
+            .unwrap();
+        let second = state
+            .attachments
+            .start_upload(owner_id, general, "second.txt")
+            .await;
+        drop(first);
+        let after_first_ended = state
+            .attachments
+            .start_upload(owner_id, general, "third.txt")
+            .await;
+        pool.close().await;
+
+        assert_eq!(slots_while_unsent, all_slots - 1);
+        assert_eq!(slots_after, all_slots);
+        assert!(matches!(
+            second,
+            Err(crate::domain::messages::MessageError::Busy)
+        ));
+        assert!(after_first_ended.is_ok());
+    }
+
     async fn me_guild_id(state: &AppState, token: &str) -> Snowflake {
         let (_, body) = send(
             state,
