@@ -172,6 +172,9 @@ describe("token parsing", () => {
     expect(parseRemLength(" -1rem")).toBe(-1);
     expect(parseDurationInMilliseconds("2000ms")).toBe(2000);
     expect(parseDurationInMilliseconds("0ms")).toBe(0);
+    // As Chrome serialises computed custom properties.
+    expect(parseDurationInMilliseconds(".3s")).toBe(300);
+    expect(parseRemLength(".5rem")).toBe(0.5);
     expect(() => parseRemLength("12px")).toThrow();
   });
 });

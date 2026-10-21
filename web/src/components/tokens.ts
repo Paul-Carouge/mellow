@@ -2,7 +2,8 @@
 // timers and scroll distances cannot take `var()`.
 
 export function parseRemLength(value: string): number {
-  const match = /^\s*(-?\d+(?:\.\d+)?)rem\s*$/u.exec(value);
+  // Browsers may serialise registered values without a leading zero (".5rem").
+  const match = /^\s*(-?(?:\d+(?:\.\d+)?|\.\d+))rem\s*$/u.exec(value);
   if (!match?.[1]) {
     throw new Error(`expected a rem length, got "${value}"`);
   }
@@ -10,7 +11,8 @@ export function parseRemLength(value: string): number {
 }
 
 export function parseDurationInMilliseconds(value: string): number {
-  const match = /^\s*(\d+(?:\.\d+)?)(ms|s)\s*$/u.exec(value);
+  // Chrome serialises "300ms" as ".3s" in computed custom properties.
+  const match = /^\s*(\d+(?:\.\d+)?|\.\d+)(ms|s)\s*$/u.exec(value);
   if (!match?.[1]) {
     throw new Error(`expected a duration, got "${value}"`);
   }
