@@ -18,8 +18,10 @@ use crate::storage::attachment_files::AttachmentFiles;
 use crate::storage::messages::MessageStorageError;
 use crate::storage::profile_images::{self as storage, NewProfileImage, ProfileImageSlot};
 
-/// Past this, the picture is refused rather than holding a worker (decoding included).
+/// Past this, the client is told to try again later (decoding included).
 const PROCESSING_TIME_BUDGET: Duration = Duration::from_secs(20);
+/// A processed picture larger than this is refused: every viewer downloads it.
+const MAXIMUM_STORED_BYTES: usize = 8 * 1024 * 1024;
 
 impl From<ImageProcessingError> for MessageError {
     fn from(error: ImageProcessingError) -> Self {
@@ -46,6 +48,18 @@ pub(crate) async fn fill_profile_images<'a>(
         user.banner = found.banner;
     }
     Ok(())
+}
+
+/// One user's avatar and banner, read before a change is stored so that nothing can fail
+/// between storing it and announcing it.
+pub(crate) async fn profile_images_of_user(
+    pool: &SqlitePool,
+    user_id: Snowflake,
+) -> Result<storage::UserProfileImages, MessageStorageError> {
+    Ok(storage::profile_images_of_users(pool, &[user_id])
+        .await?
+        .remove(&user_id)
+        .unwrap_or_default())
 }
 
 /// The public part of the signed-in user, for `USER_UPDATE`.
@@ -94,6 +108,14 @@ impl ProfileImages {
         bytes: Option<Vec<u8>>,
         now_unix_milliseconds: u64,
     ) -> Result<CurrentUser, MessageError> {
+        // Read before the change: once it is stored, nothing may fail before it is announced.
+        let guild_ids: Vec<Snowflake> =
+            crate::storage::guilds::list_user_guilds(&self.pool, user.id)
+                .await
+                .map_err(crate::domain::guilds::GuildError::from)?
+                .into_iter()
+                .map(|(guild_id, _)| guild_id)
+                .collect();
         let new_image = match bytes {
             Some(bytes) => Some(self.store(slot, bytes, now_unix_milliseconds).await?),
             None => None,
@@ -118,29 +140,41 @@ impl ProfileImages {
         if let Some(replaced) = replaced {
             self.delete_files(replaced.id, replaced.still_id).await;
         }
-        let new_profile_image = new_image.map(|image| ProfileImage {
-            id: image.id,
-            is_animated: image.still_id.is_some(),
-        });
-        let mut updated = user;
-        match slot {
-            ProfileImageSlot::Avatar => updated.avatar = new_profile_image,
-            ProfileImageSlot::Banner => updated.banner = new_profile_image,
-        }
-        // Their guilds' members show the new picture at once, as for a rename.
-        let guild_ids: Vec<Snowflake> =
-            crate::storage::guilds::list_user_guilds(&self.pool, updated.id)
-                .await
-                .map_err(crate::domain::guilds::GuildError::from)?
-                .into_iter()
-                .map(|(guild_id, _)| guild_id)
-                .collect();
+        let updated = self.user_after_change(user, slot, new_image).await;
         self.events.publish_to_user_and_guilds(
             updated.id,
             &guild_ids,
             &GatewayEvent::UserUpdate(public_user(&updated)),
         );
         Ok(updated)
+    }
+
+    /// The user as stored now, so a rename or the other picture changed meanwhile is kept; the
+    /// request's copy with this change if it cannot be read.
+    async fn user_after_change(
+        &self,
+        user: CurrentUser,
+        slot: ProfileImageSlot,
+        new_image: Option<NewProfileImage>,
+    ) -> CurrentUser {
+        match crate::storage::accounts::find_user_by_id(&self.pool, user.id).await {
+            Ok(Some(stored)) => crate::domain::accounts::current_user(stored),
+            stored => {
+                if let Err(error) = stored {
+                    tracing::warn!(%error, "cannot read back a user after a picture change");
+                }
+                let new_profile_image = new_image.map(|image| ProfileImage {
+                    id: image.id,
+                    is_animated: image.still_id.is_some(),
+                });
+                let mut updated = user;
+                match slot {
+                    ProfileImageSlot::Avatar => updated.avatar = new_profile_image,
+                    ProfileImageSlot::Banner => updated.banner = new_profile_image,
+                }
+                updated
+            }
+        }
     }
 
     /// Processes the picture and writes its files.
@@ -150,30 +184,27 @@ impl ProfileImages {
         bytes: Vec<u8>,
         now_unix_milliseconds: u64,
     ) -> Result<NewProfileImage, MessageError> {
-        let _permit = self.attachments.transfer_permit()?;
+        let permit = self.attachments.image_processing_permit()?;
         let kind = match slot {
             ProfileImageSlot::Avatar => ProfileImageKind::Avatar,
             ProfileImageSlot::Banner => ProfileImageKind::Banner,
         };
         let processing = tokio::task::spawn_blocking(move || {
-            let processed = process_profile_image(&bytes, kind)?;
-            let still = if processed.is_animated {
-                Some(crate::domain::image_processing::first_frame_webp(
-                    &processed.bytes,
-                )?)
-            } else {
-                None
-            };
-            Ok::<_, ImageProcessingError>((processed, still))
+            // Held until the work really ends, even after the caller stopped waiting.
+            let _permit = permit;
+            process_profile_image(&bytes, kind)
         });
-        let (processed, still) = tokio::time::timeout(PROCESSING_TIME_BUDGET, processing)
+        let processed = tokio::time::timeout(PROCESSING_TIME_BUDGET, processing)
             .await
-            .map_err(|_| MessageError::from(ImageProcessingError::TooLarge))?
+            .map_err(|_| MessageError::Busy)?
             .map_err(|error| MessageError::Internal(Box::new(error)))??;
+        if processed.picture.bytes.len() > MAXIMUM_STORED_BYTES {
+            return Err(ImageProcessingError::TooLarge.into());
+        }
         let id = self.ids.next_id(now_unix_milliseconds)?;
-        let size_bytes = u64::try_from(processed.bytes.len()).unwrap_or(u64::MAX);
-        self.files.write(id, processed.bytes).await?;
-        let still_id = match still {
+        let size_bytes = u64::try_from(processed.picture.bytes.len()).unwrap_or(u64::MAX);
+        self.files.write(id, processed.picture.bytes).await?;
+        let still_id = match processed.still {
             Some(still) => {
                 let still_id = self.ids.next_id(now_unix_milliseconds)?;
                 if let Err(error) = self.files.write(still_id, still).await {
@@ -213,7 +244,7 @@ impl ProfileImages {
         } else {
             image.id
         };
-        let _permit = self.attachments.transfer_permit()?;
+        // No transfer slot: a member list loads dozens at once, each a few hundred KB at most.
         Ok(self.files.read(file_id).await?)
     }
 }

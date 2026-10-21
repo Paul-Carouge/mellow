@@ -5,6 +5,7 @@
 use std::io::Cursor;
 
 use image::codecs::gif::GifDecoder;
+use image::codecs::webp::WebPDecoder;
 use image::imageops::FilterType;
 use image::{
     AnimationDecoder as _, DynamicImage, ImageDecoder as _, ImageFormat, ImageReader, Limits,
@@ -12,9 +13,10 @@ use image::{
 };
 use webp_animation::{EncoderOptions, EncodingConfig, EncodingType};
 
-/// Larger pictures are kept as uploaded and never processed (decompression bombs).
+/// Larger pictures are kept as uploaded and never processed (decompression bombs). Checked from
+/// the header, before any pixel is allocated; the total bounds the memory of one job.
 const MAXIMUM_SIDE_PIXELS: u32 = 8_192;
-const MAXIMUM_TOTAL_PIXELS: u64 = 64_000_000;
+const MAXIMUM_TOTAL_PIXELS: u64 = 24_000_000;
 const MAXIMUM_FRAMES: usize = 600;
 /// Largest display sizes: nothing is ever shown bigger (ADR-0021).
 const AVATAR_SIDE_PIXELS: u32 = 512;
@@ -26,6 +28,10 @@ const LOSSLESS_EFFORT: f32 = 25.0;
 const LOSSLESS_METHOD: usize = 1;
 /// oxipng's preset: 2 is its fast default, most of the gain of the slow ones.
 const PNG_OPTIMIZATION_PRESET: u8 = 2;
+/// oxipng stops trying better compressions past this and keeps its best so far.
+const PNG_OPTIMIZATION_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+/// Bytes per pixel of the widest PNG layout (RGBA, 16 bits a channel).
+const PNG_LARGEST_BYTES_PER_PIXEL: u64 = 8;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum ImageProcessingError {
@@ -51,6 +57,13 @@ pub(crate) struct ProcessedImage {
     pub(crate) is_animated: bool,
 }
 
+/// An avatar or banner to store: the picture, and its first frame alone when it is animated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProcessedProfileImage {
+    pub(crate) picture: ProcessedImage,
+    pub(crate) still: Option<Vec<u8>>,
+}
+
 fn limits() -> Limits {
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAXIMUM_SIDE_PIXELS);
@@ -60,46 +73,100 @@ fn limits() -> Limits {
     limits
 }
 
-/// The frames of a picture with their duration in milliseconds; one frame for still pictures.
-fn decode_frames(bytes: &[u8]) -> Result<Vec<(RgbaImage, u32)>, ImageProcessingError> {
-    let format = image::guess_format(bytes).map_err(|_| ImageProcessingError::Unsupported)?;
-    if format == ImageFormat::Gif {
-        let mut decoder =
-            GifDecoder::new(Cursor::new(bytes)).map_err(|_| ImageProcessingError::Unsupported)?;
-        decoder
-            .set_limits(limits())
-            .map_err(|_| ImageProcessingError::TooLarge)?;
-        let (width, height) = decoder.dimensions();
-        let mut frames = Vec::new();
-        let mut total_pixels = 0u64;
-        for frame in decoder.into_frames() {
-            let frame = frame.map_err(|_| ImageProcessingError::Unsupported)?;
-            total_pixels += u64::from(width) * u64::from(height);
-            if frames.len() >= MAXIMUM_FRAMES || total_pixels > MAXIMUM_TOTAL_PIXELS {
-                return Err(ImageProcessingError::TooLarge);
-            }
-            let (numerator, denominator) = frame.delay().numer_denom_ms();
-            let delay = numerator.checked_div(denominator).unwrap_or(0).max(20);
-            frames.push((frame.into_buffer(), delay));
-        }
-        if frames.is_empty() {
-            return Err(ImageProcessingError::Unsupported);
-        }
-        return Ok(frames);
+/// Refuses a picture whose header announces more than the limits, before decoding it.
+fn check_dimensions(width: u32, height: u32) -> Result<(), ImageProcessingError> {
+    if width > MAXIMUM_SIDE_PIXELS
+        || height > MAXIMUM_SIDE_PIXELS
+        || u64::from(width) * u64::from(height) > MAXIMUM_TOTAL_PIXELS
+    {
+        return Err(ImageProcessingError::TooLarge);
     }
-    if !matches!(
-        format,
-        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP
-    ) {
+    Ok(())
+}
+
+fn header_dimensions(
+    bytes: &[u8],
+    format: ImageFormat,
+) -> Result<(u32, u32), ImageProcessingError> {
+    ImageReader::with_format(Cursor::new(bytes), format)
+        .into_dimensions()
+        .map_err(|_| ImageProcessingError::Unsupported)
+}
+
+/// The frames of an animation, each through `shrink` as soon as it is decoded, within the frame
+/// and total pixel limits.
+fn collect_frames(
+    frames: image::Frames<'_>,
+    (width, height): (u32, u32),
+    shrink: impl Fn(RgbaImage) -> RgbaImage,
+) -> Result<Vec<(RgbaImage, u32)>, ImageProcessingError> {
+    check_dimensions(width, height)?;
+    let mut collected = Vec::new();
+    let mut total_pixels = 0u64;
+    for frame in frames {
+        let frame = frame.map_err(|error| match error {
+            image::ImageError::Limits(_) => ImageProcessingError::TooLarge,
+            _ => ImageProcessingError::Unsupported,
+        })?;
+        total_pixels += u64::from(width) * u64::from(height);
+        if collected.len() >= MAXIMUM_FRAMES || total_pixels > MAXIMUM_TOTAL_PIXELS {
+            return Err(ImageProcessingError::TooLarge);
+        }
+        let (numerator, denominator) = frame.delay().numer_denom_ms();
+        let delay = numerator.checked_div(denominator).unwrap_or(0).max(20);
+        collected.push((shrink(frame.into_buffer()), delay));
+    }
+    if collected.is_empty() {
         return Err(ImageProcessingError::Unsupported);
     }
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    reader.limits(limits());
-    let image = reader.decode().map_err(|error| match error {
+    Ok(collected)
+}
+
+/// The frames of a picture with their duration in milliseconds; one frame for still pictures,
+/// turned the way its EXIF orientation says. Each frame goes through `shrink` as soon as it is
+/// decoded, so only small frames are kept. Animated PNG (APNG) is read as its first frame.
+fn decode_frames(
+    bytes: &[u8],
+    shrink: impl Fn(RgbaImage) -> RgbaImage,
+) -> Result<Vec<(RgbaImage, u32)>, ImageProcessingError> {
+    let format = image::guess_format(bytes).map_err(|_| ImageProcessingError::Unsupported)?;
+    match format {
+        ImageFormat::Gif => {
+            let mut decoder = GifDecoder::new(Cursor::new(bytes))
+                .map_err(|_| ImageProcessingError::Unsupported)?;
+            decoder
+                .set_limits(limits())
+                .map_err(|_| ImageProcessingError::TooLarge)?;
+            let dimensions = decoder.dimensions();
+            return collect_frames(decoder.into_frames(), dimensions, shrink);
+        }
+        ImageFormat::WebP => {
+            let mut decoder = WebPDecoder::new(Cursor::new(bytes))
+                .map_err(|_| ImageProcessingError::Unsupported)?;
+            if decoder.has_animation() {
+                decoder
+                    .set_limits(limits())
+                    .map_err(|_| ImageProcessingError::TooLarge)?;
+                let dimensions = decoder.dimensions();
+                return collect_frames(decoder.into_frames(), dimensions, shrink);
+            }
+        }
+        ImageFormat::Png | ImageFormat::Jpeg => {}
+        _ => return Err(ImageProcessingError::Unsupported),
+    }
+    let (width, height) = header_dimensions(bytes, format)?;
+    check_dimensions(width, height)?;
+    let as_processing_error = |error: image::ImageError| match error {
         image::ImageError::Limits(_) => ImageProcessingError::TooLarge,
         _ => ImageProcessingError::Unsupported,
-    })?;
-    Ok(vec![(image.to_rgba8(), 0)])
+    };
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    reader.limits(limits());
+    let mut decoder = reader.into_decoder().map_err(as_processing_error)?;
+    let orientation = decoder.orientation().map_err(as_processing_error)?;
+    let mut image = DynamicImage::from_decoder(decoder).map_err(as_processing_error)?;
+    image.apply_orientation(orientation);
+    Ok(vec![(shrink(image.into_rgba8()), 0)])
 }
 
 /// Down to the display size, never up; Lanczos keeps edges sharp.
@@ -114,7 +181,7 @@ fn fit(image: RgbaImage, kind: ProfileImageKind) -> RgbaImage {
     }
     DynamicImage::ImageRgba8(image)
         .resize(maximum_width, maximum_height, FilterType::Lanczos3)
-        .to_rgba8()
+        .into_rgba8()
 }
 
 fn lossless_options() -> EncoderOptions {
@@ -150,47 +217,44 @@ fn encode_webp(frames: &[(RgbaImage, u32)]) -> Result<Vec<u8>, ImageProcessingEr
 }
 
 /// An avatar or a banner: fitted to its display size and stored as lossless WebP, animated
-/// when the source is.
+/// when the source is, with its first frame as a still.
 pub(crate) fn process_profile_image(
     bytes: &[u8],
     kind: ProfileImageKind,
-) -> Result<ProcessedImage, ImageProcessingError> {
-    let frames: Vec<(RgbaImage, u32)> = decode_frames(bytes)?
-        .into_iter()
-        .map(|(frame, delay)| (fit(frame, kind), delay))
-        .collect();
+) -> Result<ProcessedProfileImage, ImageProcessingError> {
+    let frames = decode_frames(bytes, |frame| fit(frame, kind))?;
     let is_animated = frames.len() > 1;
-    Ok(ProcessedImage {
-        bytes: encode_webp(&frames)?,
-        content_type: "image/webp",
-        is_animated,
+    let still = if is_animated {
+        Some(encode_webp(&frames[..1])?)
+    } else {
+        None
+    };
+    Ok(ProcessedProfileImage {
+        picture: ProcessedImage {
+            bytes: encode_webp(&frames)?,
+            content_type: "image/webp",
+            is_animated,
+        },
+        still,
     })
 }
 
-/// The first frame of an animated WebP made by `process_profile_image`, as a still lossless WebP.
-pub(crate) fn first_frame_webp(animated: &[u8]) -> Result<Vec<u8>, ImageProcessingError> {
-    let decoder =
-        webp_animation::Decoder::new(animated).map_err(|_| ImageProcessingError::Encoding)?;
-    let frame = decoder
-        .into_iter()
-        .next()
-        .ok_or(ImageProcessingError::Encoding)?;
-    let (width, height) = frame.dimensions();
-    let still = RgbaImage::from_raw(width, height, frame.data().to_vec())
-        .ok_or(ImageProcessingError::Encoding)?;
-    encode_webp(&[(still, 0)])
-}
-
-/// An attachment's smaller form, same pixels: PNG recompressed, JPEG without its metadata
-/// (orientation kept), animated GIF as animated WebP. `None` when nothing smaller came out.
+/// An attachment's smaller form, same pixels: PNG recompressed, animated GIF as animated WebP.
+/// `None` when nothing smaller came out. JPEG goes through `strip_jpeg_metadata` at upload.
 pub(crate) fn optimize_attachment(
     bytes: &[u8],
     content_type: &str,
 ) -> Result<Option<ProcessedImage>, ImageProcessingError> {
     let optimized = match content_type {
         "image/png" => {
+            let (width, height) = header_dimensions(bytes, ImageFormat::Png)?;
+            check_dimensions(width, height)?;
             let mut options = oxipng::Options::from_preset(PNG_OPTIMIZATION_PRESET);
             options.strip = oxipng::StripChunks::Safe;
+            // oxipng inflates to the size the header announces: bounded again on its side.
+            options.max_decompressed_size =
+                usize::try_from(MAXIMUM_TOTAL_PIXELS * PNG_LARGEST_BYTES_PER_PIXEL).ok();
+            options.timeout = Some(PNG_OPTIMIZATION_TIME_BUDGET);
             let bytes = oxipng::optimize_from_memory(bytes, &options)
                 .map_err(|_| ImageProcessingError::Encoding)?;
             ProcessedImage {
@@ -199,13 +263,8 @@ pub(crate) fn optimize_attachment(
                 is_animated: false,
             }
         }
-        "image/jpeg" => ProcessedImage {
-            bytes: strip_jpeg_metadata(bytes)?,
-            content_type: "image/jpeg",
-            is_animated: false,
-        },
         "image/gif" => {
-            let frames = decode_frames(bytes)?;
+            let frames = decode_frames(bytes, |frame| frame)?;
             if frames.len() < 2 {
                 return Ok(None);
             }
@@ -221,24 +280,47 @@ pub(crate) fn optimize_attachment(
 }
 
 const JPEG_START_OF_IMAGE: [u8; 2] = [0xFF, 0xD8];
+const MARKER_APP0: u8 = 0xE0;
 const MARKER_APP1: u8 = 0xE1;
-const MARKER_APP13: u8 = 0xED;
+const MARKER_APP2: u8 = 0xE2;
+const MARKER_APP14: u8 = 0xEE;
+const MARKER_APP15: u8 = 0xEF;
 const MARKER_COMMENT: u8 = 0xFE;
 const MARKER_START_OF_SCAN: u8 = 0xDA;
+const MARKER_END_OF_IMAGE: u8 = 0xD9;
+const MARKER_TEMPORARY: u8 = 0x01;
+const ICC_PROFILE_HEADER: &[u8] = b"ICC_PROFILE\0";
 const EXIF_HEADER: &[u8] = b"Exif\0\0";
 const ORIENTATION_TAG: u16 = 0x0112;
 
-/// Drops EXIF and XMP (APP1), IPTC (APP13) and comments without touching the compressed image:
-/// they hold GPS positions, camera serials and editing history. The EXIF orientation is written
-/// back alone, so the photo still shows the right way up. ICC profiles (APP2) and Adobe colour
-/// markers (APP14) stay: colours depend on them.
-fn strip_jpeg_metadata(bytes: &[u8]) -> Result<Vec<u8>, ImageProcessingError> {
+/// Markers with no length that may appear anywhere: restart markers and TEM.
+fn is_standalone_marker(marker: u8) -> bool {
+    marker == MARKER_TEMPORARY || (0xD0..=0xD7).contains(&marker)
+}
+
+/// Metadata segments to drop: every `APPn` but JFIF (APP0), ICC profiles (APP2) and Adobe colour
+/// markers (APP14), which colours depend on; and comments. EXIF, XMP, IPTC, MPF and vendor
+/// segments hold GPS positions, camera serials and other pictures (depth maps, thumbnails).
+fn is_dropped_metadata(marker: u8, payload: &[u8]) -> bool {
+    match marker {
+        MARKER_APP0 | MARKER_APP14 => false,
+        MARKER_APP2 => !payload.starts_with(ICC_PROFILE_HEADER),
+        MARKER_APP1..=MARKER_APP15 | MARKER_COMMENT => true,
+        _ => false,
+    }
+}
+
+/// Removes metadata without touching the compressed image, and anything after its end (phones
+/// append further pictures there). The EXIF orientation is written back alone, so the photo still
+/// shows the right way up.
+pub(crate) fn strip_jpeg_metadata(bytes: &[u8]) -> Result<Vec<u8>, ImageProcessingError> {
     if !bytes.starts_with(&JPEG_START_OF_IMAGE) {
         return Err(ImageProcessingError::Unsupported);
     }
     let mut output = Vec::with_capacity(bytes.len());
     output.extend_from_slice(&JPEG_START_OF_IMAGE);
     let mut orientation = None;
+    let mut is_orientation_written = false;
     let mut position = 2;
     loop {
         if bytes.get(position) != Some(&0xFF) {
@@ -247,29 +329,67 @@ fn strip_jpeg_metadata(bytes: &[u8]) -> Result<Vec<u8>, ImageProcessingError> {
         let marker = *bytes
             .get(position + 1)
             .ok_or(ImageProcessingError::Unsupported)?;
-        if marker == MARKER_START_OF_SCAN {
-            if let Some(orientation) = orientation.filter(|value| *value != 1) {
-                output.extend_from_slice(&orientation_segment(orientation));
-            }
-            // The scan and everything after it are copied as they are.
-            output.extend_from_slice(&bytes[position..]);
+        if marker == 0xFF {
+            // Fill byte before a marker.
+            position += 1;
+            continue;
+        }
+        if marker == MARKER_END_OF_IMAGE {
+            output.extend_from_slice(&[0xFF, MARKER_END_OF_IMAGE]);
             return Ok(output);
+        }
+        if is_standalone_marker(marker) {
+            output.extend_from_slice(&[0xFF, marker]);
+            position += 2;
+            continue;
         }
         let length_bytes = bytes
             .get(position + 2..position + 4)
             .ok_or(ImageProcessingError::Unsupported)?;
         let length = usize::from(u16::from_be_bytes([length_bytes[0], length_bytes[1]]));
+        if length < 2 {
+            return Err(ImageProcessingError::Unsupported);
+        }
         let segment = bytes
             .get(position..position + 2 + length)
             .ok_or(ImageProcessingError::Unsupported)?;
-        let is_metadata = matches!(marker, MARKER_APP1 | MARKER_APP13 | MARKER_COMMENT);
+        let payload = &segment[4..];
         if marker == MARKER_APP1 {
-            orientation = orientation.or_else(|| exif_orientation(&segment[4..]));
+            orientation = orientation.or_else(|| exif_orientation(payload));
         }
-        if !is_metadata {
+        if marker == MARKER_START_OF_SCAN && !is_orientation_written {
+            if let Some(orientation) = orientation.filter(|value| *value != 1) {
+                output.extend_from_slice(&orientation_segment(orientation));
+            }
+            is_orientation_written = true;
+        }
+        if !is_dropped_metadata(marker, payload) {
             output.extend_from_slice(segment);
         }
         position += 2 + length;
+        if marker == MARKER_START_OF_SCAN {
+            let scan_end = end_of_entropy_coded_data(bytes, position)?;
+            output.extend_from_slice(&bytes[position..scan_end]);
+            position = scan_end;
+        }
+    }
+}
+
+/// Where the compressed data after a scan header stops: the first `0xFF` that starts a real
+/// marker (`0xFF 0x00` is an escaped byte; restart markers belong to the data).
+fn end_of_entropy_coded_data(bytes: &[u8], start: usize) -> Result<usize, ImageProcessingError> {
+    let mut position = start;
+    loop {
+        let offset = bytes
+            .get(position..)
+            .and_then(|rest| rest.iter().position(|byte| *byte == 0xFF))
+            .ok_or(ImageProcessingError::Unsupported)?;
+        position += offset;
+        match bytes.get(position + 1) {
+            Some(0x00 | 0xD0..=0xD7) => position += 2,
+            Some(_) => return Ok(position),
+            None => return Err(ImageProcessingError::Unsupported),
+        }
     }
 }
 
@@ -385,15 +505,15 @@ pub(crate) mod tests {
     fn an_animated_gif_avatar_stays_animated_fits_512_and_shrinks() {
         let gif = animated_gif(600, 600, 6);
         let avatar = process_profile_image(&gif, ProfileImageKind::Avatar).unwrap();
-        assert!(avatar.is_animated);
-        assert_eq!(avatar.content_type, "image/webp");
+        assert!(avatar.picture.is_animated);
+        assert_eq!(avatar.picture.content_type, "image/webp");
         assert!(
-            avatar.bytes.len() < gif.len(),
+            avatar.picture.bytes.len() < gif.len(),
             "{} < {}",
-            avatar.bytes.len(),
+            avatar.picture.bytes.len(),
             gif.len()
         );
-        let decoder = webp_animation::Decoder::new(&avatar.bytes).unwrap();
+        let decoder = webp_animation::Decoder::new(&avatar.picture.bytes).unwrap();
         assert_eq!(decoder.dimensions(), (512, 512));
         assert_eq!(decoder.into_iter().count(), 6);
     }
@@ -402,16 +522,18 @@ pub(crate) mod tests {
     fn a_small_still_avatar_is_kept_pixel_for_pixel() {
         let source = png(64, 40);
         let avatar = process_profile_image(&source, ProfileImageKind::Avatar).unwrap();
-        assert!(!avatar.is_animated);
+        assert!(!avatar.picture.is_animated);
         let original = image::load_from_memory(&source).unwrap().to_rgba8();
-        let encoded = image::load_from_memory(&avatar.bytes).unwrap().to_rgba8();
+        let encoded = image::load_from_memory(&avatar.picture.bytes)
+            .unwrap()
+            .to_rgba8();
         assert_eq!(original, encoded, "lossless");
     }
 
     #[test]
     fn banners_keep_their_ratio_and_attachments_keep_their_pixels() {
         let banner = process_profile_image(&png(3_840, 1_080), ProfileImageKind::Banner).unwrap();
-        let decoded = image::load_from_memory(&banner.bytes).unwrap();
+        let decoded = image::load_from_memory(&banner.picture.bytes).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (1_920, 540));
 
         let source = png(300, 300);
@@ -492,6 +614,129 @@ pub(crate) mod tests {
         );
     }
 
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = u32::MAX;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    fn png_chunk(kind: [u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut chunk = u32::try_from(payload.len()).unwrap().to_be_bytes().to_vec();
+        let mut checked = kind.to_vec();
+        checked.extend_from_slice(payload);
+        chunk.extend_from_slice(&checked);
+        chunk.extend_from_slice(&crc32(&checked).to_be_bytes());
+        chunk
+    }
+
+    #[test]
+    fn a_png_announcing_huge_dimensions_is_refused_before_any_allocation() {
+        // 200 000 × 200 000 RGBA in about 70 bytes: inflating it would need 160 GB.
+        let mut header = Vec::new();
+        header.extend_from_slice(&200_000u32.to_be_bytes());
+        header.extend_from_slice(&200_000u32.to_be_bytes());
+        header.extend_from_slice(&[8, 6, 0, 0, 0]);
+        let mut bomb = b"\x89PNG\r\n\x1a\n".to_vec();
+        bomb.extend_from_slice(&png_chunk(*b"IHDR", &header));
+        bomb.extend_from_slice(&png_chunk(
+            *b"IDAT",
+            &[0x78, 0x9C, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01],
+        ));
+        bomb.extend_from_slice(&png_chunk(*b"IEND", &[]));
+
+        assert_eq!(
+            optimize_attachment(&bomb, "image/png"),
+            Err(ImageProcessingError::TooLarge)
+        );
+        assert_eq!(
+            process_profile_image(&bomb, ProfileImageKind::Avatar),
+            Err(ImageProcessingError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn a_rotated_phone_photo_makes_an_upright_avatar() {
+        let image = RgbaImage::from_fn(40, 20, |x, _| {
+            Rgba([u8::try_from(x * 6).unwrap(), 0, 0, 255])
+        });
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .write_image(
+                &DynamicImage::ImageRgba8(image).into_rgb8(),
+                40,
+                20,
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+        // Orientation 6: the camera was turned a quarter; viewers rotate it upright.
+        let mut rotated = jpeg[..2].to_vec();
+        rotated.extend_from_slice(&orientation_segment(6));
+        rotated.extend_from_slice(&jpeg[2..]);
+
+        let avatar = process_profile_image(&rotated, ProfileImageKind::Avatar).unwrap();
+        let decoded = image::load_from_memory(&avatar.picture.bytes).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (20, 40));
+    }
+
+    #[test]
+    fn an_animated_webp_avatar_stays_animated() {
+        let animated_webp =
+            process_profile_image(&animated_gif(64, 64, 3), ProfileImageKind::Avatar)
+                .unwrap()
+                .picture
+                .bytes;
+        let avatar = process_profile_image(&animated_webp, ProfileImageKind::Avatar).unwrap();
+        assert!(avatar.picture.is_animated);
+        assert!(avatar.still.is_some());
+    }
+
+    #[test]
+    fn jpeg_stripping_drops_trailers_and_other_pictures_and_never_panics() {
+        let scan = [
+            0xFF,
+            MARKER_START_OF_SCAN,
+            0x00,
+            0x02,
+            0x12,
+            0xFF,
+            0x00,
+            0xFF,
+            0xD0,
+            0x34,
+        ];
+        let mut jpeg = vec![0xFF, 0xD8];
+        let icc = [
+            &[0xFF, MARKER_APP2, 0x00, 0x11][..],
+            ICC_PROFILE_HEADER,
+            b"abc",
+        ]
+        .concat();
+        let mpf = [&[0xFF, MARKER_APP2, 0x00, 0x08][..], b"MPF\0xy"].concat();
+        jpeg.extend_from_slice(&icc);
+        jpeg.extend_from_slice(&mpf);
+        jpeg.extend_from_slice(&scan);
+        jpeg.extend_from_slice(&[0xFF, MARKER_END_OF_IMAGE]);
+        jpeg.extend_from_slice(b"\xFF\xD8 second picture with GPS");
+
+        let stripped = strip_jpeg_metadata(&jpeg).unwrap();
+        let expected = [&[0xFF, 0xD8][..], &icc, &scan, &[0xFF, MARKER_END_OF_IMAGE]].concat();
+        assert_eq!(stripped, expected);
+        assert_eq!(
+            strip_jpeg_metadata(b"\xFF\xD8\xFF\xE1\x00\x00\xFF\xDA"),
+            Err(ImageProcessingError::Unsupported),
+            "a segment length under 2"
+        );
+    }
+
     /// `cargo test --release -p mellow-server image_processing_timing -- --ignored --nocapture`
     #[test]
     #[ignore = "measurement, not a check"]
@@ -503,7 +748,7 @@ pub(crate) mod tests {
         println!(
             "animated avatar: {} KB GIF -> {} KB WebP in {:?}",
             gif.len() / 1024,
-            avatar.bytes.len() / 1024,
+            avatar.picture.bytes.len() / 1024,
             started.elapsed()
         );
         let source = png(1_600, 1_200);

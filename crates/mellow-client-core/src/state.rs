@@ -393,6 +393,8 @@ impl ClientState {
         {
             current_user.username.clone_from(&user.username);
             current_user.display_name.clone_from(&user.display_name);
+            current_user.avatar = user.avatar;
+            current_user.banner = user.banner;
         }
         for members in self.members_by_guild.values_mut() {
             if let Some(member) = members.iter_mut().find(|member| member.user.id == user.id) {

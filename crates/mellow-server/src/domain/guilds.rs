@@ -965,9 +965,10 @@ impl Guilds {
         if is_new_member {
             if let Some(member) = guild_storage::find_member(&self.pool, guild_id, user_id).await? {
                 let mut member = member_from_stored(member);
-                fill_profile_images(&self.pool, [&mut member.user])
-                    .await
-                    .map_err(|error| GuildError::Internal(Box::new(error)))?;
+                // The join is stored: announce it even without the pictures.
+                if let Err(error) = fill_profile_images(&self.pool, [&mut member.user]).await {
+                    tracing::warn!(%error, "cannot read a new member's pictures");
+                }
                 self.events
                     .publish_to_guild(guild_id, &GatewayEvent::GuildMemberAdd { guild_id, member });
             }
@@ -1554,7 +1555,7 @@ impl Guilds {
     ) -> Result<Vec<Ban>, GuildError> {
         self.require_member_permissions(guild_id, user_id, Permissions::BAN_MEMBERS)
             .await?;
-        Ok(
+        let mut bans: Vec<Ban> =
             guild_storage::list_bans(&self.pool, guild_id, MAXIMUM_BANS_LISTED)
                 .await?
                 .into_iter()
@@ -1569,8 +1570,11 @@ impl Guilds {
                     reason: ban.reason,
                     created_at_unix_milliseconds: ban.created_at_unix_milliseconds,
                 })
-                .collect(),
-        )
+                .collect();
+        fill_profile_images(&self.pool, bans.iter_mut().map(|ban| &mut ban.user))
+            .await
+            .map_err(|error| GuildError::Internal(Box::new(error)))?;
+        Ok(bans)
     }
 }
 

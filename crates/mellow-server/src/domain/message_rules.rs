@@ -33,7 +33,9 @@ pub enum MessageRuleViolation {
         "file names are 1 to {MAXIMUM_FILE_NAME_BYTES} bytes, without path separators or control characters"
     )]
     FileName,
-    #[error("pictures are PNG, JPEG, GIF or WebP, at most 8192 pixels a side and 600 frames")]
+    #[error(
+        "pictures are PNG, JPEG, GIF or WebP, at most 8192 pixels a side, 24 megapixels in all frames together and 600 frames"
+    )]
     Picture,
 }
 

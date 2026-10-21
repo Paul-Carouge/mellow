@@ -234,6 +234,23 @@ pub async fn replace_password_and_delete_other_sessions(
 /// Looks up by username or email, both case-insensitive (`COLLATE NOCASE`).
 ///
 /// # Errors
+/// Fails on database errors only; an unknown id is `Ok(None)`.
+pub async fn find_user_by_id(
+    pool: &SqlitePool,
+    user_id: Snowflake,
+) -> Result<Option<StoredUser>, AccountStorageError> {
+    let row: Option<StoredUserRow> = sqlx::query_as(concat!(
+        "SELECT ",
+        select_user_columns!(),
+        " FROM users WHERE users.id = ?"
+    ))
+    .bind(to_sqlite_integer(user_id.raw())?)
+    .fetch_optional(pool)
+    .await?;
+    row.map(stored_user_from_row).transpose()
+}
+
+/// # Errors
 /// Fails on database errors only; an unknown login is `Ok(None)`.
 pub async fn find_user_by_login(
     pool: &SqlitePool,
