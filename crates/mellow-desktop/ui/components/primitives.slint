@@ -1,4 +1,4 @@
-import { MellowColor, MellowComponent, MellowRadius, MellowType } from "../tokens.slint";
+import { MellowColor, MellowComponent, MellowRadius, MellowSpace, MellowType } from "../tokens.slint";
 
 export enum PresenceStatus { online, idle, do-not-disturb, offline }
 
@@ -173,6 +173,8 @@ export component IconButton inherits Rectangle {
 export component ContextMenuItem inherits Rectangle {
     in property <string> label;
     in property <bool> is-danger: false;
+    // Accent-coloured label at rest, as Discord's "Invite people"; hover fills it like any item.
+    in property <bool> is-accent: false;
     // Optional trailing icon, as in Discord's server menu; decorative.
     in property <image> icon;
     callback activated();
@@ -198,7 +200,8 @@ export component ContextMenuItem inherits Rectangle {
     property <bool> has-icon: icon.width > 0;
     property <color> content-color: is-danger
         ? (touch.has-hover ? MellowComponent.context-menu-danger-text-focus : MellowComponent.context-menu-danger-text)
-        : (touch.has-hover ? MellowComponent.context-menu-item-text-focus : MellowComponent.context-menu-item-text);
+        : touch.has-hover ? MellowComponent.context-menu-item-text-focus
+        : is-accent ? MellowComponent.context-menu-accent-text : MellowComponent.context-menu-item-text;
     Text {
         x: MellowComponent.context-menu-item-padding-inline;
         width: parent.width - 2 * MellowComponent.context-menu-item-padding-inline
@@ -315,11 +318,19 @@ export component TextField inherits Rectangle {
     in-out property <string> text;
     // Shown dimmed and not editable, e.g. a role the person cannot rename; the reason is shown nearby.
     in property <bool> is-read-only;
+    // Not editable but at full contrast and selectable: a value to copy, such as an invite code.
+    in property <bool> is-value-to-copy;
+    // Optional decorative glyph before the text, such as `#` before a channel name.
+    in property <image> leading-icon;
+    out property <bool> has-keyboard-focus: input.has-focus;
     callback accepted();
     // After each change typed by the person (not after `text` is set from outside).
     callback edited();
 
     property <bool> is-password-revealed;
+    property <bool> has-leading-icon: leading-icon.width > 0;
+
+    forward-focus: input;
 
     // Fields are created per mode, so this also runs when the card switches to the other mode.
     init => {
@@ -359,6 +370,17 @@ export component TextField inherits Rectangle {
             HorizontalLayout {
                 padding-left: MellowComponent.text-field-padding-inline;
                 padding-right: root.is-password ? 0px : MellowComponent.text-field-padding-inline;
+                spacing: root.has-leading-icon ? MellowSpace.xs : 0px;
+                if root.has-leading-icon: VerticalLayout {
+                    alignment: center;
+                    Image {
+                        source: root.leading-icon;
+                        colorize: MellowComponent.text-field-icon;
+                        width: MellowComponent.text-field-icon-size;
+                        height: self.width;
+                        accessible-role: none;
+                    }
+                }
                 Rectangle {
                     horizontal-stretch: 1;
                     if input.text == "": Text {
@@ -372,7 +394,7 @@ export component TextField inherits Rectangle {
                     input := TextInput {
                         text <=> root.text;
                         single-line: true;
-                        read-only: root.is-read-only;
+                        read-only: root.is-read-only || root.is-value-to-copy;
                         edited => { root.edited(); }
                         input-type: root.is-password && !root.is-password-revealed ? InputType.password : InputType.text;
                         color: MellowComponent.text-field-text;

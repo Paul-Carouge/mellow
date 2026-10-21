@@ -12,8 +12,12 @@ import { ConnectionBanner } from "components/connection_banner.slint";
 import { DeleteMessageDialog } from "components/delete_message_dialog.slint";
 import { UpdateStatus, UserSettingsScreen } from "components/user_settings.slint";
 import { RoleListRow, RolePermissionRow, ServerSettingsScreen } from "components/server_settings.slint";
+import { AddServerDialog, CreateChannelDialog, InvitePeopleDialog, LeaveServerDialog } from "components/server_dialogs.slint";
 
 export { ServerItem, ChannelListRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, UpdateStatus, RoleListRow, RolePermissionRow }
+
+// The window-wide dialog open over the shell, if any (DESIGN.md §6.35).
+export enum ShellDialog { none, add-server, invite-people, create-channel, leave-server }
 
 // Window width breakpoints from DESIGN.md §4.2: each one is the sum of the panes it must fit.
 global LayoutBreakpoint {
@@ -80,6 +84,17 @@ export component AppWindow inherits Window {
     // Empty hides it; user-facing text built in Rust.
     in property <string> role-action-error;
     in property <bool> can-create-roles;
+    // Server dialogs: add (create or join) a server, invite people, create a channel, leave a server.
+    // Slint opens them; Rust sets none on success, then calls restore-focus-after-dialog.
+    in-out property <ShellDialog> open-dialog: ShellDialog.none;
+    in property <bool> is-dialog-busy;
+    // Empty hides it; user-facing text built in Rust.
+    in property <string> dialog-error;
+    // Empty while it is being created.
+    in property <string> invite-code;
+    in property <bool> can-invite-people;
+    in property <bool> can-create-channels;
+    in property <bool> can-leave-server;
 
     property <bool> has-update-available: update-status == UpdateStatus.available || update-status == UpdateStatus.ready-to-restart;
     property <int> settings-button-focus-request-count;
@@ -131,6 +146,14 @@ export component AppWindow inherits Window {
     callback delete-role(int);
     callback move-role-up(int);
     callback move-role-down(int);
+    callback create-server(string);
+    callback join-server(string);
+    callback create-invite();
+    callback copy-invite-code();
+    callback create-channel(string);
+    callback leave-server();
+    // Whenever the person closes a dialog (Esc, Cancel, Close, scrim), after open-dialog is none.
+    callback dialog-closed();
 
     // Focus goes back to the settings button, or to the composer while the sidebar is hidden.
     function close-user-settings() {
@@ -155,6 +178,23 @@ export component AppWindow inherits Window {
             root.server-header-focus-request-count += 1;
         } else {
             chat.focus-composer();
+        }
+    }
+
+    function close-dialog() {
+        root.open-dialog = ShellDialog.none;
+        root.dialog-closed();
+        root.restore-focus-after-dialog();
+    }
+
+    // Focus goes back to the composer, as after the delete dialog: the menu item or rail button
+    // that opened the dialog is gone or would reopen it. Also called from Rust after a success.
+    // A read-only channel has no composer to focus, so the server header takes it then.
+    public function restore-focus-after-dialog() {
+        if root.can-send-messages || !root.is-wide-enough-for-sidebar {
+            chat.focus-composer();
+        } else {
+            root.server-header-focus-request-count += 1;
         }
     }
 
@@ -194,6 +234,7 @@ export component AppWindow inherits Window {
             // A session ended by the server must not reopen settings over the next sign-in.
             root.is-user-settings-open = false;
             root.is-server-settings-open = false;
+            root.open-dialog = ShellDialog.none;
         }
     }
 
@@ -221,6 +262,7 @@ export component AppWindow inherits Window {
                 servers: root.servers;
                 selected-server-index: root.selected-server-index;
                 select-server(index) => { root.select-server(index); }
+                add-server => { root.open-dialog = ShellDialog.add-server; }
             }
             if root.is-wide-enough-for-sidebar: ChannelSidebar {
                 server-name: root.server-name;
@@ -236,6 +278,15 @@ export component AppWindow inherits Window {
                 can-open-server-settings: root.can-open-server-settings;
                 server-header-focus-request-count: root.server-header-focus-request-count;
                 open-server-settings => { root.open-server-settings(); }
+                can-invite-people: root.can-invite-people;
+                can-create-channels: root.can-create-channels;
+                can-leave-server: root.can-leave-server;
+                invite-people => {
+                    root.open-dialog = ShellDialog.invite-people;
+                    root.create-invite();
+                }
+                create-channel => { root.open-dialog = ShellDialog.create-channel; }
+                leave-server => { root.open-dialog = ShellDialog.leave-server; }
             }
             chat := ChatPane {
                 horizontal-stretch: 1;
@@ -306,6 +357,45 @@ export component AppWindow inherits Window {
             root.deleting-message-index = -1;
             chat.focus-composer();
         }
+    }
+
+    if root.is-signed-in && root.open-dialog == ShellDialog.add-server: AddServerDialog {
+        width: root.width;
+        height: root.height;
+        is-busy: root.is-dialog-busy;
+        error-message: root.dialog-error;
+        create-server(name) => { root.create-server(name); }
+        join-server(code) => { root.join-server(code); }
+        close => { root.close-dialog(); }
+    }
+
+    if root.is-signed-in && root.open-dialog == ShellDialog.invite-people: InvitePeopleDialog {
+        width: root.width;
+        height: root.height;
+        server-name: root.server-name;
+        invite-code: root.invite-code;
+        error-message: root.dialog-error;
+        copy-invite-code => { root.copy-invite-code(); }
+        close => { root.close-dialog(); }
+    }
+
+    if root.is-signed-in && root.open-dialog == ShellDialog.create-channel: CreateChannelDialog {
+        width: root.width;
+        height: root.height;
+        is-busy: root.is-dialog-busy;
+        error-message: root.dialog-error;
+        create-channel(name) => { root.create-channel(name); }
+        close => { root.close-dialog(); }
+    }
+
+    if root.is-signed-in && root.open-dialog == ShellDialog.leave-server: LeaveServerDialog {
+        width: root.width;
+        height: root.height;
+        server-name: root.server-name;
+        is-busy: root.is-dialog-busy;
+        error-message: root.dialog-error;
+        leave-server => { root.leave-server(); }
+        close => { root.close-dialog(); }
     }
 
     if root.is-signed-in && root.is-user-settings-open: UserSettingsScreen {

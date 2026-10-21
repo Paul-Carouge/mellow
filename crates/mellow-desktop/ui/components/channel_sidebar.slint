@@ -255,16 +255,25 @@ export component ChannelSidebar inherits Rectangle {
     in property <bool> has-update-available;
     in property <int> settings-button-focus-request-count;
     callback open-user-settings();
-    // Server menu (DESIGN.md §5.3). Only "Server settings" exists so far, so without it the header
+    // Server menu (DESIGN.md §5.3): each item shows only when allowed; without any, the header
     // stays plain text.
+    in property <bool> can-invite-people;
     in property <bool> can-open-server-settings;
+    in property <bool> can-create-channels;
+    in property <bool> can-leave-server;
     // Each increment moves focus to the server header (when server settings close).
     in property <int> server-header-focus-request-count;
+    callback invite-people();
     callback open-server-settings();
+    callback create-channel();
+    callback leave-server();
     changed server-header-focus-request-count => { header-focus.focus(); }
 
+    property <bool> has-items-above-leave: can-invite-people || can-open-server-settings || can-create-channels;
+    property <bool> has-server-menu: has-items-above-leave || can-leave-server;
+
     function open-server-menu() {
-        if root.can-open-server-settings {
+        if root.has-server-menu {
             server-menu.show();
         }
     }
@@ -286,15 +295,67 @@ export component ChannelSidebar inherits Rectangle {
             border-color: MellowComponent.context-menu-border;
             accessible-role: list;
             accessible-label: "Server menu";
+            // The first item shown takes focus when the menu opens (DESIGN.md §6.33).
             VerticalLayout {
                 padding: MellowComponent.context-menu-padding;
-                settings-item := ContextMenuItem {
-                    label: "Server settings";
-                    icon: @image-url("../../icons/gear-six.svg");
+                if root.can-invite-people: ContextMenuItem {
+                    label: "Invite people";
+                    is-accent: true;
+                    icon: @image-url("../../icons/user-plus.svg");
                     init => { self.focus(); }
                     activated => {
                         server-menu.close();
+                        root.invite-people();
+                    }
+                }
+                if root.can-open-server-settings: ContextMenuItem {
+                    label: "Server settings";
+                    icon: @image-url("../../icons/gear-six.svg");
+                    init => {
+                        if !root.can-invite-people {
+                            self.focus();
+                        }
+                    }
+                    activated => {
+                        server-menu.close();
                         root.open-server-settings();
+                    }
+                }
+                if root.can-create-channels: ContextMenuItem {
+                    label: "Create channel";
+                    icon: @image-url("../../icons/plus-circle.svg");
+                    init => {
+                        if !root.can-invite-people && !root.can-open-server-settings {
+                            self.focus();
+                        }
+                    }
+                    activated => {
+                        server-menu.close();
+                        root.create-channel();
+                    }
+                }
+                // Danger items come last, separated (DESIGN.md §6.33).
+                if root.can-leave-server && root.has-items-above-leave: Rectangle {
+                    height: MellowComponent.context-menu-separator-height + 2 * MellowComponent.context-menu-separator-margin-block;
+                    Rectangle {
+                        x: MellowComponent.context-menu-separator-margin-inline;
+                        width: parent.width - 2 * MellowComponent.context-menu-separator-margin-inline;
+                        height: MellowComponent.context-menu-separator-height;
+                        background: MellowComponent.context-menu-separator;
+                    }
+                }
+                if root.can-leave-server: ContextMenuItem {
+                    label: "Leave server";
+                    is-danger: true;
+                    icon: @image-url("../../icons/sign-out.svg");
+                    init => {
+                        if !root.has-items-above-leave {
+                            self.focus();
+                        }
+                    }
+                    activated => {
+                        server-menu.close();
+                        root.leave-server();
                     }
                 }
             }
@@ -304,18 +365,18 @@ export component ChannelSidebar inherits Rectangle {
     VerticalLayout {
         header := Rectangle {
             height: MellowComponent.sidebar-header-height;
-            background: root.can-open-server-settings && (header-touch.has-hover || server-menu.is-open)
+            background: root.has-server-menu && (header-touch.has-hover || server-menu.is-open)
                 ? MellowComponent.sidebar-header-background-hover : transparent;
 
             // A button opening the server menu only when the menu has something in it; plain text
             // otherwise. Hidden items leave the accessibility tree and the Tab order.
             Rectangle {
-                visible: !root.can-open-server-settings;
+                visible: !root.has-server-menu;
                 accessible-role: text;
                 accessible-label: root.server-name;
             }
             Rectangle {
-                visible: root.can-open-server-settings;
+                visible: root.has-server-menu;
                 accessible-role: button;
                 accessible-label: root.server-name;
                 accessible-expandable: true;
@@ -355,7 +416,7 @@ export component ChannelSidebar inherits Rectangle {
                     accessible-role: none;
                 }
                 // Chevron, or a cross while the menu is open, as on Discord.
-                if root.can-open-server-settings: VerticalLayout {
+                if root.has-server-menu: VerticalLayout {
                     alignment: center;
                     Image {
                         source: server-menu.is-open ? @image-url("../../icons/x.svg") : @image-url("../../icons/caret-down.svg");

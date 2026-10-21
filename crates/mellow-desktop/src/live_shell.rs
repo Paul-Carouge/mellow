@@ -4,6 +4,7 @@
 //! back through Slint's event loop (`slint::spawn_local`), so no lock is ever shared with the UI.
 
 mod message_actions;
+mod server_actions;
 mod server_settings;
 
 use std::cell::RefCell;
@@ -89,6 +90,8 @@ pub struct LiveShell {
     role_editor: Option<server_settings::RoleEditor>,
     /// One role request at a time, across reopenings of server settings.
     is_role_request_in_flight: bool,
+    /// Bumped whenever a server dialog closes, so a late answer never lands in a later dialog.
+    dialog_request_generation: u64,
 }
 
 pub type SharedShell = Rc<RefCell<LiveShell>>;
@@ -117,6 +120,7 @@ pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
         pending_logouts: Vec::new(),
         role_editor: None,
         is_role_request_in_flight: false,
+        dialog_request_generation: 0,
     }));
     window.set_is_signed_in(false);
     window.set_messages(shell.borrow().messages.clone().into());
@@ -354,6 +358,7 @@ fn connect_callbacks(window: &AppWindow, shell: &SharedShell) {
     });
 
     connect_server_settings_callbacks(window, shell);
+    connect_server_action_callbacks(window, shell);
     window.on_link_clicked(|_url| {
         // shortcut: links are not opened yet; opening needs the confirmation dialog of DESIGN.md §5.4.
     });
@@ -402,6 +407,27 @@ fn connect_server_settings_callbacks(window: &AppWindow, shell: &SharedShell) {
     let shell_for_callback = shell.clone();
     window.on_move_role_down(move |row_index| {
         server_settings::move_role(&shell_for_callback, row_index, MoveDirection::Down);
+    });
+}
+
+fn connect_server_action_callbacks(window: &AppWindow, shell: &SharedShell) {
+    let shell_for_callback = shell.clone();
+    window.on_create_server(move |name| server_actions::create_server(&shell_for_callback, &name));
+    let shell_for_callback = shell.clone();
+    window.on_join_server(move |text| server_actions::join_server(&shell_for_callback, &text));
+    let shell_for_callback = shell.clone();
+    window.on_create_invite(move || server_actions::create_invite(&shell_for_callback));
+    let shell_for_callback = shell.clone();
+    window.on_copy_invite_code(move || server_actions::copy_invite_code(&shell_for_callback));
+    let shell_for_callback = shell.clone();
+    window.on_create_channel(move |name| {
+        server_actions::create_channel(&shell_for_callback, &name);
+    });
+    let shell_for_callback = shell.clone();
+    window.on_leave_server(move || server_actions::leave_server(&shell_for_callback));
+    let shell_for_callback = shell.clone();
+    window.on_dialog_closed(move || {
+        server_actions::reset_dialog(&mut shell_for_callback.borrow_mut());
     });
 }
 
@@ -692,6 +718,8 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
             if guild_is_gone {
                 let first_guild_id = shell.borrow().state.guilds().first().map(|guild| guild.id);
                 select_guild(shell, first_guild_id, None);
+                // After the switch, so focus goes to what the next server shows.
+                server_actions::close_dialog_of_gone_guild(shell);
                 // Closes server settings of the guild that is gone.
                 server_settings::refresh(&mut shell.borrow_mut());
                 return;
@@ -850,6 +878,7 @@ fn end_session(shell: &SharedShell, message: &str) -> tokio::task::JoinHandle<bo
     message_actions::reset_message_actions(&mut shell);
     // The answer of a request in flight is dropped with the session, so nothing else clears it.
     shell.is_role_request_in_flight = false;
+    server_actions::reset_dialog(&mut shell);
     // Nothing of the previous account may stay on screen for the next one.
     refresh_header(&shell);
     refresh_server_items(&shell);
@@ -950,6 +979,12 @@ fn refresh_header(shell: &LiveShell) {
         .map_or(-1, shell_rows::saturating_int);
     window
         .set_can_open_server_settings(guild.is_some_and(server_settings::can_open_server_settings));
+    window.set_can_invite_people(guild.is_some_and(server_actions::can_invite_people));
+    window.set_can_create_channels(guild.is_some_and(server_actions::can_create_channels));
+    let current_user_id = shell.state.current_user().map(|user| user.id);
+    window.set_can_leave_server(
+        guild.is_some_and(|guild| server_actions::can_leave_server(guild, current_user_id)),
+    );
     window.set_server_name(
         guild
             .map_or(HOME_SERVER_NAME, |guild| guild.name.as_str())

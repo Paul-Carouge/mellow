@@ -1,0 +1,302 @@
+import { MellowComponent, MellowSpace, MellowType } from "../tokens.slint";
+import { Button, TextField } from "primitives.slint";
+import { ModalDialog } from "modal_dialog.slint";
+
+// Each dialog is created when it opens, so its fields start empty every time.
+
+// Discord's "Create a server" and "Join a server" pages in one dialog (DESIGN.md §5.2, `+`).
+export component AddServerDialog inherits Rectangle {
+    in property <bool> is-busy;
+    in property <string> error-message;
+    callback create-server(string);
+    callback join-server(string);
+    callback close();
+
+    property <bool> is-joining;
+    // An error belongs to the page it was raised on: switching pages hides it.
+    property <bool> was-last-submit-a-join;
+    property <string> server-name;
+    property <string> invite-code;
+    property <bool> can-submit: !is-busy && (is-joining ? invite-code != "" : server-name != "");
+
+    function submit() {
+        if !root.can-submit {
+            return;
+        }
+        root.was-last-submit-a-join = root.is-joining;
+        if root.is-joining {
+            root.join-server(root.invite-code);
+        } else {
+            root.create-server(root.server-name);
+        }
+    }
+    function switch-page() {
+        if !root.is-busy {
+            root.is-joining = !root.is-joining;
+        }
+    }
+
+    frame := ModalDialog {
+        width: root.width;
+        height: root.height;
+        title: root.is-joining ? "Join a server" : "Create a server";
+        subtitle: root.is-joining
+            ? "Enter an invite to join a server someone already runs."
+            : "Give your server a name. You can add channels and invite people next.";
+        is-heading-centered: true;
+        error-message: root.was-last-submit-a-join == root.is-joining ? root.error-message : "";
+        is-busy: root.is-busy;
+        submit-label: root.is-joining
+            ? (root.is-busy ? "Joining…" : "Join")
+            : (root.is-busy ? "Creating…" : "Create");
+        is-submit-enabled: root.can-submit;
+        is-first-own-control-focused: name-field.has-keyboard-focus || code-field.has-keyboard-focus;
+        close => { root.close(); }
+        submit => { root.submit(); }
+        focus-first-own-control => {
+            if root.is-joining {
+                code-field.focus();
+            } else {
+                name-field.focus();
+            }
+        }
+
+        // Both fields exist all the time so the frame can focus them; only the current page's shows.
+        // Hidden fields leave the Tab order and the accessibility tree.
+        // No spacing, so the hidden one leaves no gap.
+        VerticalLayout {
+            name-field := TextField {
+                visible: !root.is-joining;
+                height: root.is-joining ? 0px : self.preferred-height;
+                label: "Server name";
+                display-label: "SERVER NAME";
+                wants-focus: true;
+                is-read-only: root.is-busy;
+                text <=> root.server-name;
+                accepted => { root.submit(); }
+            }
+            code-field := TextField {
+                visible: root.is-joining;
+                height: root.is-joining ? self.preferred-height : 0px;
+                label: "Invite code";
+                display-label: "INVITE CODE";
+                helper: "Paste the invite code someone gave you.";
+                is-read-only: root.is-busy;
+                text <=> root.invite-code;
+                accepted => { root.submit(); }
+            }
+        }
+
+        // Same pattern as the sign-in mode switch: a hint, then a link-styled button.
+        HorizontalLayout {
+            alignment: center;
+            spacing: MellowSpace.space-2xs;
+            Text {
+                text: root.is-joining ? "Don't have an invite?" : "Have an invite already?";
+                color: MellowComponent.dialog-hint-text;
+                font-size: MellowType.body.font-size;
+                vertical-alignment: center;
+                accessible-role: text;
+            }
+            switch-link := Rectangle {
+                // Text-sized link, but a full-height row so the target reaches 44 px.
+                width: switch-text.preferred-width;
+                height: MellowComponent.button-height-large;
+                opacity: root.is-busy ? MellowComponent.button-disabled-opacity : 1;
+                accessible-role: button;
+                accessible-label: switch-text.text;
+                accessible-enabled: !root.is-busy;
+                accessible-action-default => { root.switch-page(); }
+
+                switch-focus := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == " " || event.text == "\n" {
+                            root.switch-page();
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+                switch-touch := TouchArea {
+                    mouse-cursor: root.is-busy ? MouseCursor.default : MouseCursor.pointer;
+                    clicked => { root.switch-page(); }
+                }
+                switch-text := Text {
+                    text: root.is-joining ? "Create a server" : "Join a server";
+                    color: MellowComponent.dialog-mode-link-text;
+                    font-size: MellowType.body.font-size;
+                    font-weight: MellowType.button.font-weight;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                // Underline on hover, as links do on Discord.
+                if switch-touch.has-hover && !root.is-busy: Rectangle {
+                    y: (parent.height + switch-text.preferred-height) / 2;
+                    height: MellowComponent.dialog-mode-link-underline-width;
+                    background: MellowComponent.dialog-mode-link-text;
+                }
+                if switch-focus.has-focus: Rectangle {
+                    border-width: MellowComponent.focus-ring-width;
+                    border-color: MellowComponent.focus-ring-color;
+                    border-radius: MellowComponent.button-radius;
+                }
+            }
+        }
+    }
+
+    // The field of the page just switched to takes focus, as when the dialog opens.
+    changed is-joining => { frame.focus-first-own-control(); }
+}
+
+// Discord's invite dialog, with a code instead of a link (DESIGN.md §5.3, "Invite people").
+export component InvitePeopleDialog inherits Rectangle {
+    in property <string> server-name;
+    // Empty while the invite is being created.
+    in property <string> invite-code;
+    in property <string> error-message;
+    callback copy-invite-code();
+    callback close();
+
+    property <bool> is-copied;
+    property <bool> is-loading: invite-code == "" && error-message == "";
+
+    function copy() {
+        if root.invite-code != "" {
+            root.copy-invite-code();
+            root.is-copied = true;
+        }
+    }
+
+    ModalDialog {
+        width: root.width;
+        height: root.height;
+        title: "Invite friends to " + root.server-name;
+        error-message: root.error-message;
+        cancel-label: "Close";
+        is-first-own-control-focused: code-field.has-keyboard-focus;
+        close => { root.close(); }
+        focus-first-own-control => { code-field.focus(); }
+
+        VerticalLayout {
+            spacing: MellowComponent.text-field-helper-gap;
+            HorizontalLayout {
+                spacing: MellowComponent.dialog-button-gap;
+                code-field := TextField {
+                    horizontal-stretch: 1;
+                    label: "Send this invite code to a friend";
+                    display-label: "SEND THIS INVITE CODE TO A FRIEND";
+                    placeholder: root.is-loading ? "Creating an invite…" : "";
+                    wants-focus: true;
+                    is-value-to-copy: true;
+                    text: root.invite-code;
+                    accepted => { root.copy(); }
+                }
+                // Aligned with the field, under its label.
+                VerticalLayout {
+                    alignment: end;
+                    padding-bottom: (MellowComponent.text-field-height - MellowComponent.button-height) / 2;
+                    Button {
+                        label: root.is-copied ? "Copied" : "Copy";
+                        is-primary: true;
+                        is-enabled: root.invite-code != "";
+                        clicked => { root.copy(); }
+                    }
+                }
+            }
+            Text {
+                text: "This invite never expires.";
+                color: MellowComponent.dialog-hint-text;
+                font-size: MellowType.body-sm.font-size;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    Timer {
+        interval: MellowComponent.dialog-copied-label-duration;
+        running: root.is-copied;
+        triggered => { root.is-copied = false; }
+    }
+
+    // "Copied" is announced politely; the button's new label alone may not be read out.
+    Text {
+        x: 0;
+        y: 0;
+        width: 0px;
+        height: 0px;
+        text: root.is-copied ? "Invite code copied" : "";
+        accessible-role: text;
+        accessible-live-region: polite;
+    }
+}
+
+// Discord's "Create channel" dialog, text channels only for now (DESIGN.md §5.3).
+export component CreateChannelDialog inherits Rectangle {
+    in property <bool> is-busy;
+    in property <string> error-message;
+    callback create-channel(string);
+    callback close();
+
+    property <string> channel-name;
+    property <bool> can-submit: !is-busy && channel-name != "";
+
+    function submit() {
+        if root.can-submit {
+            root.create-channel(root.channel-name);
+        }
+    }
+
+    ModalDialog {
+        width: root.width;
+        height: root.height;
+        title: "Create channel";
+        error-message: root.error-message;
+        is-busy: root.is-busy;
+        submit-label: root.is-busy ? "Creating…" : "Create channel";
+        is-submit-enabled: root.can-submit;
+        is-first-own-control-focused: name-field.has-keyboard-focus;
+        close => { root.close(); }
+        submit => { root.submit(); }
+        focus-first-own-control => { name-field.focus(); }
+
+        name-field := TextField {
+            label: "Channel name";
+            display-label: "CHANNEL NAME";
+            placeholder: "new-channel";
+            // The server normalises the name; saying so up front avoids a surprise in the list.
+            helper: "Names are lowercase, with dashes instead of spaces.";
+            leading-icon: @image-url("../../icons/hash.svg");
+            wants-focus: true;
+            is-read-only: root.is-busy;
+            text <=> root.channel-name;
+            accepted => { root.submit(); }
+        }
+    }
+}
+
+// "Leave server" confirmation, the destructive pattern of DESIGN.md §8.
+export component LeaveServerDialog inherits Rectangle {
+    in property <string> server-name;
+    in property <bool> is-busy;
+    in property <string> error-message;
+    callback leave-server();
+    callback close();
+
+    // Destructive dialogs never focus the destructive button first (DESIGN.md §8).
+    init => { frame.focus-cancel-button(); }
+
+    frame := ModalDialog {
+        width: root.width;
+        height: root.height;
+        title: "Leave '" + root.server-name + "'";
+        subtitle: "Are you sure you want to leave " + root.server-name
+            + "? You won't be able to rejoin unless you are re-invited.";
+        error-message: root.error-message;
+        is-busy: root.is-busy;
+        submit-label: root.is-busy ? "Leaving…" : "Leave server";
+        is-submit-danger: true;
+        has-own-controls: false;
+        close => { root.close(); }
+        submit => { root.leave-server(); }
+    }
+}
