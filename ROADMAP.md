@@ -2,17 +2,17 @@
 
 Each milestone ends with something usable end to end. Scope changes are made here first.
 
-## Status (2026-10-20)
+## Status (2026-10-21)
 
 ### Done
-Merged into `main` on 2026-10-20: #1 to #29, from the workspace and SQLCipher storage through M1 (server, gateway, client core, desktop on real data, built-in TLS with ACME, outbox, history pagination, message-list states) to the first M2 steps (#24 guild roles, #25 role reordering, #27 channel permission overwrites and `VIEW_CHANNEL` filtering, #28 kick and ban, #29 audit log). Every server PR was reviewed by `code-reviewer` and `security-auditor`, with findings fixed. No release is tagged yet.
+Merged into `main`: #1 to #34. M1 (server, gateway, client core, desktop on real data, built-in TLS with ACME, outbox, history pagination, message-list states) is released as `v0.1.0` (2026-10-20), with signed builds for Linux (x86_64, aarch64), macOS (Apple Silicon) and Windows, and runs on the user's instance. M2 so far: guild roles (#24), role reordering (#25), channel permission overwrites and `VIEW_CHANNEL` filtering (#27), kick and ban (#28), audit log (#29), client-core calls for every M2 endpoint (#31), channel permissions in the desktop UI (#32). Pulled forward from M4: `mellow-server update`, a Docker Compose kit with `mellow-update`, in-app desktop updates and a one-line desktop installer (ADR-0016 to ADR-0018). Every server PR was reviewed by `code-reviewer` and `security-auditor`, with findings fixed.
 
 ### Blocked
-- Nothing blocked. CI runs on Linux, macOS and Windows since 2026-10-20 (SQLCipher's storage tests pass on all three).
+- Nothing blocked. CI runs on Linux, macOS and Windows (SQLCipher's storage tests pass on all three).
 
 ### Next, in order
-1. **M1 release candidate**: end-to-end run on a real VPS (domain, Let's Encrypt staging then production, desktop client over https), then tag. 2026-10-20: the user's instance (behind Caddy) was redeployed from `main` after #28 (migrations 4 to 7 applied, pre-migration backup taken) and the end-to-end client check passed entirely (sign-in, gateway, send, nonce retry, edit, delete, refusals, logout). 2026-10-20: `v0.1.0` is tagged and released (signed assets for Linux, macOS and Windows) and runs on the user's instance; the updaters (ADR-0016 to ADR-0018) are checked end to end with the next release. The ACME path is covered by the Pebble test only (user's decision: the instance stays behind Caddy).
-2. **M2, continued**: the desktop server-settings screens (roles, overwrites, members, bans, audit log), then direct messages. Merged: client-core REST methods for every M2 endpoint (#31) and channel permissions in the desktop UI (#32).
+1. **First update**: release `v0.1.1` and check the updaters end to end (desktop from User settings → About on macOS and Linux, server with `mellow-update`). The ACME path stays covered by the Pebble test only (user's decision: the instance stays behind Caddy).
+2. **M2, continued**: the desktop server-settings screens (roles, overwrites, members, bans, audit log), then direct messages.
 
 ### Known gaps and debts
 - Server: single SQLite writer task (ARCHITECTURE §4.3) not implemented; only message sends are serialized (per-process lock, so a second process such as `admin` writing messages would not be ordered); nonces are deduplicated forever per channel and author, not for a time window, and a deleted message frees its nonce (an outbox retry after the sender deleted it recreates it); the database pool keeps sqlx's 30 s acquire timeout and history reads have no rate limit, so a read flood also queues sends behind the send lock; `messages.author_id` has no `ON DELETE` rule or index, to settle with account deletion; queries are runtime SQL, not compile-time checked (`sqlx` offline data to set up); member list capped at 1 000 instead of paginated; rate limits in memory, per process, and the shared table fails closed when saturated; Windows refused until the master key file gets a protected DACL.
@@ -52,9 +52,9 @@ Merged into `main` on 2026-10-20: #1 to #29, from the workspace and SQLCipher st
 
 ## M4 — Self-hosting polish and first release
 - `mellow-server update` with signed releases and rollback: written early (2026-10-20), with the desktop updater and a Docker Compose kit; `backup` and service install remain.
-- Packaging for desktop (AppImage/deb/rpm, dmg, MSI) and Android release.
+- Packaging for desktop (AppImage/deb/rpm, dmg, MSI) and Android release; until then `install.sh` installs the desktop app per user on Linux and macOS.
 - Load test at target scale (10 000 MAU, 1 000 concurrent), security audit, documentation site.
-- Release v0.1.0.
+- Announced public release (`v0.1.0` exists since 2026-10-20 for testing), after the trade-dress review.
 
 ## Later (not committed)
 - Voice and video (SFU in the server binary).

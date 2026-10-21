@@ -21,7 +21,7 @@ ADR-0003 makes `mellow-server update` verify an Ed25519 minisign signature again
 - Mitigations: the environment is limited to `v*` tags and needs approval, actions are pinned by commit hash, the signing job runs no build step and no action besides GitHub's own `download-artifact`. Its trusted base still includes GitHub's runner image and the Ubuntu archive it installs minisign from.
 - A signature proves "built by this CI from this tag", not "safe": it is only as good as the dependency chain (`--locked`, `cargo deny`).
 - A signature never expires, so a compromised release host can hold back a security update (freeze attack); updaters only refuse older versions.
-- Releases depend on GitHub Actions being available to the account (it is blocked by billing as of this date).
+- Releases depend on GitHub Actions being available to the account.
 - The trusted-comment check and the version comparison must be implemented by every updater; a signature alone does not prove which file it covers.
 
 ## Alternatives considered
