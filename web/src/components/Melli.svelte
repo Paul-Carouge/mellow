@@ -13,28 +13,13 @@
     hasTile?: boolean;
     /** The still pose of the state even when motion is allowed (the gallery); reduced motion always gets it. */
     isStill?: boolean;
-    /**
-     * Idle pauses until the enclosing `.group` is hovered or holds focus: a host always on screen
-     * (the rail) would otherwise repaint every frame all day. Other states keep looping.
-     */
-    shouldIdleOnlyOnHover?: boolean;
   }
 
-  let {
-    state = "idle",
-    sizeToken,
-    hasTile = true,
-    isStill = false,
-    shouldIdleOnlyOnHover = false,
-  }: Props = $props();
+  let { state = "idle", sizeToken, hasTile = true, isStill = false }: Props = $props();
 </script>
 
 <svg
-  class={[
-    "melli",
-    (isStill || prefersReducedMotion.current) && "is-still",
-    shouldIdleOnlyOnHover && "is-idle-on-hover",
-  ]}
+  class={["melli", (isStill || prefersReducedMotion.current) && "is-still"]}
   data-state={state}
   viewBox="0 0 256 256"
   aria-hidden="true"
@@ -328,15 +313,6 @@
   }
   [data-state="sleeping"] .z-small {
     animation-delay: calc(var(--mw-component-melli-sleep-duration) / -2);
-  }
-
-  /* Paused, not removed: the loop resumes where it stopped, without a jump. */
-  .is-idle-on-hover[data-state="idle"] * {
-    animation-play-state: paused;
-  }
-  :global(.group:hover) .is-idle-on-hover[data-state="idle"] *,
-  :global(.group:focus-within) .is-idle-on-hover[data-state="idle"] * {
-    animation-play-state: running;
   }
 
   /* Still: no motion, the pose alone shows the state (reduced motion, DESIGN.md §2.8). */
