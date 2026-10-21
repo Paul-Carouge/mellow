@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { prefersReducedMotion } from "./Avatar.svelte";
+  import { prefersReducedMotion } from "../lib/motion.svelte";
   import type { MelliState } from "./melli";
 
   // Melli, the Mellow mascot and logo (DESIGN.md §2.10). One named part per element: a state only

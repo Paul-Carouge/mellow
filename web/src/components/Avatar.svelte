@@ -1,11 +1,5 @@
-<script lang="ts" module>
-  import { MediaQuery } from "svelte/reactivity";
-
-  // Animated pictures never play under reduced motion (DESIGN.md §2.8).
-  export const prefersReducedMotion = new MediaQuery("prefers-reduced-motion: reduce");
-</script>
-
 <script lang="ts">
+  import { prefersReducedMotion } from "../lib/motion.svelte";
   import { type PublicUser, profileImageUrl } from "../lib/protocol";
   import { avatarInitial } from "./format";
 
