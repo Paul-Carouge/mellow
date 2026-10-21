@@ -31,11 +31,28 @@ pub(super) fn can_leave_server(guild: &Guild, current_user_id: Option<Snowflake>
     current_user_id.is_some_and(|user_id| user_id != guild.owner_id)
 }
 
-/// Clears what a previous dialog left behind; called when the user closes one.
-pub(super) fn reset_dialog(shell: &LiveShell) {
+/// Clears what a dialog left behind and drops the answer of any request still in flight, so it
+/// cannot land in a later dialog; called when a dialog closes and when the session ends.
+pub(super) fn reset_dialog(shell: &mut LiveShell) {
+    shell.dialog_request_generation += 1;
     if let Some(window) = shell.window.upgrade() {
         window.set_dialog_error(SharedString::default());
         window.set_invite_code(SharedString::default());
+        window.set_is_dialog_busy(false);
+    }
+}
+
+/// Closes a dialog about the selected server once that server is gone (kicked, deleted, left
+/// from another device), before the next selected server could take its place.
+pub(super) fn close_dialog_of_gone_guild(shell: &SharedShell) {
+    let is_server_dialog_open = shell.borrow().window.upgrade().is_some_and(|window| {
+        !matches!(
+            window.get_open_dialog(),
+            ShellDialog::None | ShellDialog::AddServer
+        )
+    });
+    if is_server_dialog_open {
+        close_dialog(shell);
     }
 }
 
@@ -45,12 +62,14 @@ pub(super) fn create_server(shell: &SharedShell, name: &str) {
         show_error(shell, "Server not created: give it a name.");
         return;
     }
-    let Some(rest) = begin_request(shell) else {
+    let Some((rest, generation)) = begin_request(shell) else {
         return;
     };
     let request = async move { rest.create_guild(&name).await };
-    run_request(shell, request, |shell, result| {
-        finish_request(shell);
+    run_request(shell, request, move |shell, result| {
+        if !finish_request(shell, generation) {
+            return;
+        }
         match result {
             Ok(guild) => show_new_guild(shell, guild),
             Err(error) => report_error(shell, &error, "create server", "Server not created"),
@@ -66,12 +85,14 @@ pub(super) fn join_server(shell: &SharedShell, typed_text: &str) {
         );
         return;
     };
-    let Some(rest) = begin_request(shell) else {
+    let Some((rest, generation)) = begin_request(shell) else {
         return;
     };
     let request = async move { rest.join_with_invite(&code).await };
-    run_request(shell, request, |shell, result| {
-        finish_request(shell);
+    run_request(shell, request, move |shell, result| {
+        if !finish_request(shell, generation) {
+            return;
+        }
         match result {
             Ok(guild) => show_new_guild(shell, guild),
             Err(error) => report_error(shell, &error, "join server", "Couldn't join"),
@@ -101,7 +122,7 @@ pub(super) fn create_invite(shell: &SharedShell) {
     let Some(guild_id) = shell.borrow().selected_guild_id else {
         return;
     };
-    let Some(rest) = begin_request(shell) else {
+    let Some((rest, generation)) = begin_request(shell) else {
         return;
     };
     // Never expires and has no use limit: the dialog says so.
@@ -115,8 +136,10 @@ pub(super) fn create_invite(shell: &SharedShell) {
         )
         .await
     };
-    run_request(shell, request, |shell, result| {
-        finish_request(shell);
+    run_request(shell, request, move |shell, result| {
+        if !finish_request(shell, generation) {
+            return;
+        }
         match result {
             Ok(invite) => {
                 if let Some(window) = shell.borrow().window.upgrade() {
@@ -152,7 +175,7 @@ pub(super) fn create_channel(shell: &SharedShell, name: &str) {
         show_error(shell, "Channel not created: give it a name.");
         return;
     }
-    let Some(rest) = begin_request(shell) else {
+    let Some((rest, generation)) = begin_request(shell) else {
         return;
     };
     let request = async move {
@@ -167,8 +190,10 @@ pub(super) fn create_channel(shell: &SharedShell, name: &str) {
         )
         .await
     };
-    run_request(shell, request, |shell, result| {
-        finish_request(shell);
+    run_request(shell, request, move |shell, result| {
+        if !finish_request(shell, generation) {
+            return;
+        }
         match result {
             Ok(channel) => {
                 let channel_id = channel.id;
@@ -178,7 +203,9 @@ pub(super) fn create_channel(shell: &SharedShell, name: &str) {
                 );
                 apply_state_change(shell, change);
                 close_dialog(shell);
-                open_channel(shell, Some(channel_id));
+                if shell.borrow().selected_guild_id == Some(guild_id) {
+                    open_channel(shell, Some(channel_id));
+                }
             }
             Err(error) => report_error(shell, &error, "create channel", "Channel not created"),
         }
@@ -189,16 +216,17 @@ pub(super) fn leave_server(shell: &SharedShell) {
     let Some(guild_id) = shell.borrow().selected_guild_id else {
         return;
     };
-    let Some(rest) = begin_request(shell) else {
+    let Some((rest, generation)) = begin_request(shell) else {
         return;
     };
     let request = async move { rest.leave_guild(guild_id).await };
     run_request(shell, request, move |shell, result| {
-        finish_request(shell);
+        if !finish_request(shell, generation) {
+            return;
+        }
         match result {
             Ok(()) => {
-                close_dialog(shell);
-                // Selects another server when the one left was open.
+                // Selects another server and closes this dialog (`close_dialog_of_gone_guild`).
                 let change = shell.borrow_mut().state.apply_event(
                     GatewayEvent::GuildDelete { id: guild_id },
                     now_unix_milliseconds(),
@@ -210,23 +238,31 @@ pub(super) fn leave_server(shell: &SharedShell) {
     });
 }
 
-/// Marks the dialog busy and clears its previous error; `None` while signed out or while another
-/// dialog request is in flight, so a double Enter sends one request.
-fn begin_request(shell: &SharedShell) -> Option<mellow_client_core::RestClient> {
+/// Marks the dialog busy and clears its previous error; answers the generation its answer must
+/// still match. `None` while signed out or while another dialog request is in flight, so a
+/// double Enter sends one request.
+fn begin_request(shell: &SharedShell) -> Option<(mellow_client_core::RestClient, u64)> {
     let rest = authenticated_rest(shell)?;
-    let window = shell.borrow().window.upgrade()?;
+    let shell = shell.borrow();
+    let window = shell.window.upgrade()?;
     if window.get_is_dialog_busy() {
         return None;
     }
     window.set_dialog_error(SharedString::default());
     window.set_is_dialog_busy(true);
-    Some(rest)
+    Some((rest, shell.dialog_request_generation))
 }
 
-fn finish_request(shell: &SharedShell) {
-    if let Some(window) = shell.borrow().window.upgrade() {
+/// False when the dialog that sent the request was closed meanwhile: the answer is then dropped.
+fn finish_request(shell: &SharedShell, generation: u64) -> bool {
+    let shell = shell.borrow();
+    if shell.dialog_request_generation != generation {
+        return false;
+    }
+    if let Some(window) = shell.window.upgrade() {
         window.set_is_dialog_busy(false);
     }
+    true
 }
 
 fn close_dialog(shell: &SharedShell) {
@@ -234,7 +270,7 @@ fn close_dialog(shell: &SharedShell) {
         window.set_open_dialog(ShellDialog::None);
         window.invoke_restore_focus_after_dialog();
     }
-    reset_dialog(&shell.borrow());
+    reset_dialog(&mut shell.borrow_mut());
 }
 
 fn show_error(shell: &SharedShell, text: &str) {

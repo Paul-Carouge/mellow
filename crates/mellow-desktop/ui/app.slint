@@ -189,8 +189,13 @@ export component AppWindow inherits Window {
 
     // Focus goes back to the composer, as after the delete dialog: the menu item or rail button
     // that opened the dialog is gone or would reopen it. Also called from Rust after a success.
+    // A read-only channel has no composer to focus, so the server header takes it then.
     public function restore-focus-after-dialog() {
-        chat.focus-composer();
+        if root.can-send-messages || !root.is-wide-enough-for-sidebar {
+            chat.focus-composer();
+        } else {
+            root.server-header-focus-request-count += 1;
+        }
     }
 
     public function scroll-to-latest-message() {

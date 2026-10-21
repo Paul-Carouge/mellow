@@ -90,6 +90,8 @@ pub struct LiveShell {
     role_editor: Option<server_settings::RoleEditor>,
     /// One role request at a time, across reopenings of server settings.
     is_role_request_in_flight: bool,
+    /// Bumped whenever a server dialog closes, so a late answer never lands in a later dialog.
+    dialog_request_generation: u64,
 }
 
 pub type SharedShell = Rc<RefCell<LiveShell>>;
@@ -118,6 +120,7 @@ pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
         pending_logouts: Vec::new(),
         role_editor: None,
         is_role_request_in_flight: false,
+        dialog_request_generation: 0,
     }));
     window.set_is_signed_in(false);
     window.set_messages(shell.borrow().messages.clone().into());
@@ -423,7 +426,9 @@ fn connect_server_action_callbacks(window: &AppWindow, shell: &SharedShell) {
     let shell_for_callback = shell.clone();
     window.on_leave_server(move || server_actions::leave_server(&shell_for_callback));
     let shell_for_callback = shell.clone();
-    window.on_dialog_closed(move || server_actions::reset_dialog(&shell_for_callback.borrow()));
+    window.on_dialog_closed(move || {
+        server_actions::reset_dialog(&mut shell_for_callback.borrow_mut());
+    });
 }
 
 fn device_name() -> String {
@@ -603,8 +608,6 @@ fn connect_gateway(shell: &SharedShell, rest: RestClient, is_session_stored: boo
         if let Some(window) = shell_mut.window.upgrade() {
             window.set_is_signed_in(true);
             window.set_connection_notice("Connecting…".into());
-            // A dialog request of the previous session never answers (`session_generation`).
-            window.set_is_dialog_busy(false);
         }
         shell_mut.session_generation
     };
@@ -715,6 +718,8 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
             if guild_is_gone {
                 let first_guild_id = shell.borrow().state.guilds().first().map(|guild| guild.id);
                 select_guild(shell, first_guild_id, None);
+                // After the switch, so focus goes to what the next server shows.
+                server_actions::close_dialog_of_gone_guild(shell);
                 // Closes server settings of the guild that is gone.
                 server_settings::refresh(&mut shell.borrow_mut());
                 return;
@@ -873,6 +878,7 @@ fn end_session(shell: &SharedShell, message: &str) -> tokio::task::JoinHandle<bo
     message_actions::reset_message_actions(&mut shell);
     // The answer of a request in flight is dropped with the session, so nothing else clears it.
     shell.is_role_request_in_flight = false;
+    server_actions::reset_dialog(&mut shell);
     // Nothing of the previous account may stay on screen for the next one.
     refresh_header(&shell);
     refresh_server_items(&shell);
