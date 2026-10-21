@@ -3,11 +3,12 @@
 
 mod account_routes;
 pub(crate) mod api_error;
-mod authentication;
+pub(crate) mod authentication;
 pub(crate) mod client_address;
 mod guild_routes;
 mod message_routes;
 pub(crate) mod rate_limit;
+pub(crate) mod web_client;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -180,7 +181,7 @@ pub(crate) fn router(state: AppState) -> Router {
             post(message_routes::start_typing),
         )
         .route("/gateway", get(crate::gateway::upgrade))
-        .fallback(|| async { api_error::ApiError::not_found() })
+        .fallback(web_client::serve)
         .method_not_allowed_fallback(|| async { api_error::ApiError::method_not_allowed() })
         .with_state(state)
 }
@@ -222,7 +223,7 @@ async fn health(State(state): State<AppState>) -> (StatusCode, Json<HealthRespon
 pub(crate) mod tests {
     use axum::body::Body;
     use axum::extract::connect_info::MockConnectInfo;
-    use axum::http::{HeaderMap, Request, header};
+    use axum::http::{HeaderMap, HeaderValue, Request, header};
     use mellow_protocol::{ApiErrorBody, ApiErrorCode, CurrentUser, SessionCreated, Snowflake};
     use serde::de::DeserializeOwned;
     use tower::ServiceExt as _;
@@ -368,6 +369,57 @@ pub(crate) mod tests {
         pool.close().await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(json::<ApiErrorBody>(&body).code, ApiErrorCode::Unauthorized);
+    }
+
+    #[tokio::test]
+    async fn the_web_client_signs_in_with_a_cookie_usable_only_from_this_origin() {
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let mut register = post_json("/api/v1/auth/register", &registration("ada"));
+        register.headers_mut().insert(
+            "x-mellow-session-transport",
+            HeaderValue::from_static("cookie"),
+        );
+        let ((status, body), headers) = send_from(&state, TEST_PEER, register).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let session: SessionCreated = json(&body);
+        assert_eq!(session.token, "", "the token stays out of page scripts");
+        let set_cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+        assert!(set_cookie.contains("HttpOnly") && set_cookie.contains("SameSite=Strict"));
+        let cookie = set_cookie.split(';').next().unwrap().to_owned();
+
+        let request_from = |origin: &str| {
+            Request::get("/api/v1/users/@me")
+                .header(header::COOKIE, &cookie)
+                .header(header::HOST, "chat.example.org")
+                .header(header::ORIGIN, origin)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let (same_origin, _) = send(&state, request_from("https://chat.example.org")).await;
+        let (other_origin, _) = send(&state, request_from("https://evil.example")).await;
+        let logout = Request::post("/api/v1/auth/logout")
+            .header(header::COOKIE, &cookie)
+            .header(header::HOST, "chat.example.org")
+            .header(header::ORIGIN, "https://chat.example.org")
+            .body(Body::empty())
+            .unwrap();
+        let ((logged_out, _), logout_headers) = send_from(&state, TEST_PEER, logout).await;
+        let (after_logout, _) = send(&state, request_from("https://chat.example.org")).await;
+        pool.close().await;
+
+        assert_eq!(same_origin, StatusCode::OK);
+        assert_eq!(other_origin, StatusCode::UNAUTHORIZED);
+        assert_eq!(logged_out, StatusCode::NO_CONTENT);
+        assert!(
+            logout_headers
+                .get(header::SET_COOKIE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("Max-Age=0")
+        );
+        assert_eq!(after_logout, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

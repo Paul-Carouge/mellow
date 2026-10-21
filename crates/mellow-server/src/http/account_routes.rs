@@ -18,7 +18,10 @@ use crate::domain::accounts::AccountError;
 use crate::domain::clock::now_unix_milliseconds;
 use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiJson};
-use crate::http::authentication::{AuthenticatedUser, bearer_token};
+use crate::http::authentication::{
+    AuthenticatedUser, expired_session_cookie_header, session_cookie_header, session_token,
+    wants_cookie_session,
+};
 use crate::http::client_address::client_address_key;
 use crate::http::rate_limit::{
     AUTHENTICATION_ATTEMPTS_PER_ADDRESS, LOGIN_ATTEMPTS_PER_ACCOUNT,
@@ -42,13 +45,28 @@ fn fixed_size_key(text: &str) -> String {
         .collect()
 }
 
-/// A response carrying a session token must not be stored by any cache (RFC 6749 §5.1).
-fn session_response(status: StatusCode, session: SessionCreated) -> Response {
+/// A response carrying a session token must not be stored by any cache (RFC 6749 §5.1). The web
+/// client gets the token in an `HttpOnly` cookie instead, out of reach of page scripts.
+fn session_response(
+    status: StatusCode,
+    mut session: SessionCreated,
+    request_headers: &HeaderMap,
+) -> Result<Response, ApiError> {
+    let cookie = if wants_cookie_session(request_headers) {
+        let cookie = session_cookie_header(&session.token)
+            .ok_or_else(|| ApiError::internal("the session cookie", &"invalid header value"))?;
+        session.token = String::new();
+        Some(cookie)
+    } else {
+        None
+    };
     let mut response = (status, Json(session)).into_response();
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if let Some(cookie) = cookie {
+        headers.insert(header::SET_COOKIE, cookie);
+    }
+    Ok(response)
 }
 
 pub(crate) async fn register(
@@ -69,7 +87,7 @@ pub(crate) async fn register(
         .accounts
         .register(request, now_unix_milliseconds())
         .await?;
-    Ok(session_response(StatusCode::CREATED, session))
+    session_response(StatusCode::CREATED, session, &headers)
 }
 
 pub(crate) async fn login(
@@ -105,15 +123,19 @@ pub(crate) async fn login(
         .accounts
         .login(request, now_unix_milliseconds())
         .await?;
-    Ok(session_response(StatusCode::OK, session))
+    session_response(StatusCode::OK, session, &headers)
 }
 
 pub(crate) async fn logout(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<StatusCode, ApiError> {
-    state.accounts.logout(bearer_token(&headers)?).await?;
-    Ok(StatusCode::NO_CONTENT)
+) -> Result<Response, ApiError> {
+    state.accounts.logout(session_token(&headers)?).await?;
+    Ok((
+        StatusCode::NO_CONTENT,
+        [(header::SET_COOKIE, expired_session_cookie_header())],
+    )
+        .into_response())
 }
 
 pub(crate) async fn current_user(AuthenticatedUser(user): AuthenticatedUser) -> Json<CurrentUser> {
@@ -141,7 +163,7 @@ pub(crate) async fn update_current_user(
     headers: HeaderMap,
     ApiJson(request): ApiJson<UpdateCurrentUserRequest>,
 ) -> Result<Json<CurrentUser>, ApiError> {
-    let token = bearer_token(&headers)?;
+    let token = session_token(&headers)?;
     // The user's budget counts only what the session's allowed, as for password checks.
     let now = Instant::now();
     let within_profile_limit = state.rate_limiter.record_event(
@@ -172,7 +194,7 @@ pub(crate) async fn change_password(
     headers: HeaderMap,
     ApiJson(request): ApiJson<ChangePasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let token = bearer_token(&headers)?;
+    let token = session_token(&headers)?;
     if !is_password_check_allowed(&state, &user, token) {
         return Err(ApiError::rate_limited());
     }

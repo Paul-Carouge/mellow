@@ -26,6 +26,7 @@ use crate::domain::session_token::session_token_sha256;
 use crate::events::SessionKey;
 use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiQuery};
+use crate::http::authentication::{is_from_this_origin, session_cookie};
 use crate::http::client_address::client_address_key;
 use crate::http::rate_limit::GATEWAY_CONNECTIONS_PER_ADDRESS;
 use session::{
@@ -105,6 +106,12 @@ pub(crate) async fn upgrade(
             query.v
         )));
     }
+    // A page of another site must not open a gateway with this instance's session cookie (CSWSH).
+    if !is_from_this_origin(&headers) {
+        return Err(ApiError::unauthorized());
+    }
+    // The web client identifies with an empty token: its session is this cookie (ADR-0019).
+    let cookie_token = session_cookie(&headers).map(|token| Zeroizing::new(token.to_owned()));
     let address = client_address_key(peer, &headers, &state.trusted_proxy_networks);
     if !state.rate_limiter.record_event(
         &format!("gateway:{address}"),
@@ -125,7 +132,7 @@ pub(crate) async fn upgrade(
         .max_message_size(MAXIMUM_CLIENT_FRAME_BYTES)
         .max_frame_size(MAXIMUM_CLIENT_FRAME_BYTES)
         .max_write_buffer_size(MAXIMUM_WRITE_BUFFER_BYTES)
-        .on_upgrade(move |socket| run_connection(socket, state, permit)))
+        .on_upgrade(move |socket| run_connection(socket, state, permit, cookie_token)))
 }
 
 /// Every write goes through here: it fails rather than wait on a client that stopped reading.
@@ -172,7 +179,16 @@ async fn refuse(mut socket: WebSocket) {
 }
 
 /// Holds one of the `MAXIMUM_GATEWAY_CONNECTIONS` permits for its whole life.
-async fn run_connection(mut socket: WebSocket, state: AppState, _permit: OwnedSemaphorePermit) {
+async fn run_connection(
+    mut socket: WebSocket,
+    state: AppState,
+    _permit: OwnedSemaphorePermit,
+    cookie_token: Option<Zeroizing<String>>,
+) {
+    let session_token = |token: String| match cookie_token.as_ref() {
+        Some(cookie_token) if token.is_empty() => cookie_token.clone(),
+        _ => Zeroizing::new(token),
+    };
     let hello = ServerFrame::Hello {
         d: Hello {
             heartbeat_interval_milliseconds: u64::try_from(HEARTBEAT_INTERVAL.as_millis())
@@ -185,7 +201,7 @@ async fn run_connection(mut socket: WebSocket, state: AppState, _permit: OwnedSe
     let first_frame = tokio::time::timeout(IDENTIFY_TIMEOUT, next_client_frame(&mut socket)).await;
     let (token, user, commands, after_sequence, is_resume) = match first_frame {
         Ok(Some(ClientFrame::Identify { token })) => {
-            let token = Zeroizing::new(token);
+            let token = session_token(token);
             let Some((user, commands)) = identify(&mut socket, &state, &token).await else {
                 return refuse(socket).await;
             };
@@ -196,7 +212,7 @@ async fn run_connection(mut socket: WebSocket, state: AppState, _permit: OwnedSe
             session_id,
             last_sequence,
         })) => {
-            let token = Zeroizing::new(token);
+            let token = session_token(token);
             let Ok(user) = state
                 .accounts
                 .authenticate(&token, now_unix_milliseconds())
@@ -1022,6 +1038,49 @@ mod tests {
             }
         }
         fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn the_web_client_identifies_with_its_cookie_and_other_sites_are_refused() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+
+        let fixture = fixture().await;
+        let request_from = |origin: &str| {
+            let mut request = format!("ws://{}/gateway?v=1", fixture.address)
+                .into_client_request()
+                .unwrap();
+            let headers = request.headers_mut();
+            headers.insert(
+                "cookie",
+                format!("mellow_session={}", fixture.member_token)
+                    .parse()
+                    .unwrap(),
+            );
+            headers.insert("origin", origin.parse().unwrap());
+            request
+        };
+        let cross_site =
+            tokio_tungstenite::connect_async(request_from("https://evil.example")).await;
+        let (mut socket, _) =
+            tokio_tungstenite::connect_async(request_from(&format!("http://{}", fixture.address)))
+                .await
+                .unwrap();
+        assert!(matches!(
+            receive(&mut socket).await,
+            ServerFrame::Hello { .. }
+        ));
+        send(
+            &mut socket,
+            &ClientFrame::Identify {
+                token: String::new(),
+            },
+        )
+        .await;
+        let ready = receive(&mut socket).await;
+        fixture.close().await;
+
+        assert!(cross_site.is_err(), "the upgrade is refused");
+        assert!(matches!(ready, ServerFrame::Ready { .. }));
     }
 
     #[tokio::test]
