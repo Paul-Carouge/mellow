@@ -4,6 +4,9 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-22
+Melli on the desktop, and an app icon.
+
 ### Added
 - Melli comes to the desktop app: the animated cloud lives in the Home button, worries when the connection drops and hops for unread direct messages, as on the web.
 - Mellow has an app icon: Melli in the window, the macOS Dock and Finder, and the Linux app menu. The signed app installs it when it starts, so existing installs get it after their next update.
