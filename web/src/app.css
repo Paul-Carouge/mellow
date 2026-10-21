@@ -31,3 +31,171 @@ body {
   font-size: var(--mw-type-message-font-size);
   line-height: var(--mw-type-message-line-height);
 }
+
+/* One utility per type token (DESIGN.md §2.4): `type-body`, `type-category`, … */
+@utility type-display {
+  font-family: var(--mw-type-display-font-family);
+  font-size: var(--mw-type-display-font-size);
+  font-weight: var(--mw-type-display-font-weight);
+  line-height: var(--mw-type-display-line-height);
+  letter-spacing: var(--mw-type-display-letter-spacing);
+}
+@utility type-heading-xl {
+  font-family: var(--mw-type-heading-xl-font-family);
+  font-size: var(--mw-type-heading-xl-font-size);
+  font-weight: var(--mw-type-heading-xl-font-weight);
+  line-height: var(--mw-type-heading-xl-line-height);
+  letter-spacing: var(--mw-type-heading-xl-letter-spacing);
+}
+@utility type-heading-lg {
+  font-family: var(--mw-type-heading-lg-font-family);
+  font-size: var(--mw-type-heading-lg-font-size);
+  font-weight: var(--mw-type-heading-lg-font-weight);
+  line-height: var(--mw-type-heading-lg-line-height);
+  letter-spacing: var(--mw-type-heading-lg-letter-spacing);
+}
+@utility type-heading-md {
+  font-family: var(--mw-type-heading-md-font-family);
+  font-size: var(--mw-type-heading-md-font-size);
+  font-weight: var(--mw-type-heading-md-font-weight);
+  line-height: var(--mw-type-heading-md-line-height);
+  letter-spacing: var(--mw-type-heading-md-letter-spacing);
+}
+@utility type-body-lg {
+  font-family: var(--mw-type-body-lg-font-family);
+  font-size: var(--mw-type-body-lg-font-size);
+  font-weight: var(--mw-type-body-lg-font-weight);
+  line-height: var(--mw-type-body-lg-line-height);
+  letter-spacing: var(--mw-type-body-lg-letter-spacing);
+}
+@utility type-body {
+  font-family: var(--mw-type-body-font-family);
+  font-size: var(--mw-type-body-font-size);
+  font-weight: var(--mw-type-body-font-weight);
+  line-height: var(--mw-type-body-line-height);
+  letter-spacing: var(--mw-type-body-letter-spacing);
+}
+@utility type-body-sm {
+  font-family: var(--mw-type-body-sm-font-family);
+  font-size: var(--mw-type-body-sm-font-size);
+  font-weight: var(--mw-type-body-sm-font-weight);
+  line-height: var(--mw-type-body-sm-line-height);
+  letter-spacing: var(--mw-type-body-sm-letter-spacing);
+}
+@utility type-message {
+  font-family: var(--mw-type-message-font-family);
+  font-size: var(--mw-type-message-font-size);
+  font-weight: var(--mw-type-message-font-weight);
+  line-height: var(--mw-type-message-line-height);
+  letter-spacing: var(--mw-type-message-letter-spacing);
+}
+@utility type-message-author {
+  font-family: var(--mw-type-message-author-font-family);
+  font-size: var(--mw-type-message-author-font-size);
+  font-weight: var(--mw-type-message-author-font-weight);
+  line-height: var(--mw-type-message-author-line-height);
+  letter-spacing: var(--mw-type-message-author-letter-spacing);
+}
+@utility type-message-timestamp {
+  font-family: var(--mw-type-message-timestamp-font-family);
+  font-size: var(--mw-type-message-timestamp-font-size);
+  font-weight: var(--mw-type-message-timestamp-font-weight);
+  line-height: var(--mw-type-message-timestamp-line-height);
+  letter-spacing: var(--mw-type-message-timestamp-letter-spacing);
+}
+@utility type-message-subtext {
+  font-family: var(--mw-type-message-subtext-font-family);
+  font-size: var(--mw-type-message-subtext-font-size);
+  font-weight: var(--mw-type-message-subtext-font-weight);
+  line-height: var(--mw-type-message-subtext-line-height);
+  letter-spacing: var(--mw-type-message-subtext-letter-spacing);
+}
+@utility type-category {
+  font-family: var(--mw-type-category-font-family);
+  font-size: var(--mw-type-category-font-size);
+  font-weight: var(--mw-type-category-font-weight);
+  line-height: var(--mw-type-category-line-height);
+  letter-spacing: var(--mw-type-category-letter-spacing);
+  text-transform: uppercase;
+}
+@utility type-channel-name {
+  font-family: var(--mw-type-channel-name-font-family);
+  font-size: var(--mw-type-channel-name-font-size);
+  font-weight: var(--mw-type-channel-name-font-weight);
+  line-height: var(--mw-type-channel-name-line-height);
+  letter-spacing: var(--mw-type-channel-name-letter-spacing);
+}
+@utility type-member-name {
+  font-family: var(--mw-type-member-name-font-family);
+  font-size: var(--mw-type-member-name-font-size);
+  font-weight: var(--mw-type-member-name-font-weight);
+  line-height: var(--mw-type-member-name-line-height);
+  letter-spacing: var(--mw-type-member-name-letter-spacing);
+}
+@utility type-user-panel-name {
+  font-family: var(--mw-type-user-panel-name-font-family);
+  font-size: var(--mw-type-user-panel-name-font-size);
+  font-weight: var(--mw-type-user-panel-name-font-weight);
+  line-height: var(--mw-type-user-panel-name-line-height);
+  letter-spacing: var(--mw-type-user-panel-name-letter-spacing);
+}
+@utility type-button {
+  font-family: var(--mw-type-button-font-family);
+  font-size: var(--mw-type-button-font-size);
+  font-weight: var(--mw-type-button-font-weight);
+  line-height: var(--mw-type-button-line-height);
+  letter-spacing: var(--mw-type-button-letter-spacing);
+}
+@utility type-menu-item {
+  font-family: var(--mw-type-menu-item-font-family);
+  font-size: var(--mw-type-menu-item-font-size);
+  font-weight: var(--mw-type-menu-item-font-weight);
+  line-height: var(--mw-type-menu-item-line-height);
+  letter-spacing: var(--mw-type-menu-item-letter-spacing);
+}
+@utility type-tooltip {
+  font-family: var(--mw-type-tooltip-font-family);
+  font-size: var(--mw-type-tooltip-font-size);
+  font-weight: var(--mw-type-tooltip-font-weight);
+  line-height: var(--mw-type-tooltip-line-height);
+  letter-spacing: var(--mw-type-tooltip-letter-spacing);
+}
+@utility type-badge {
+  font-family: var(--mw-type-badge-font-family);
+  font-size: var(--mw-type-badge-font-size);
+  font-weight: var(--mw-type-badge-font-weight);
+  line-height: var(--mw-type-badge-line-height);
+  letter-spacing: var(--mw-type-badge-letter-spacing);
+}
+@utility type-typing {
+  font-family: var(--mw-type-typing-font-family);
+  font-size: var(--mw-type-typing-font-size);
+  font-weight: var(--mw-type-typing-font-weight);
+  line-height: var(--mw-type-typing-line-height);
+  letter-spacing: var(--mw-type-typing-letter-spacing);
+}
+
+/* Keyboard focus ring (DESIGN.md §7.2): 2 px, sky blue, 2 px gap, on keyboard focus only. */
+@utility focus-ring {
+  outline: var(--mw-size-focus-ring-width) solid var(--mw-color-focus);
+  outline-offset: var(--mw-size-focus-ring-offset);
+}
+
+/* Drawn inside the element, for rows that a scrolling list would clip. */
+@utility focus-ring-inset {
+  outline: var(--mw-size-focus-ring-width) solid var(--mw-color-focus);
+  outline-offset: calc(-1 * var(--mw-size-focus-ring-width));
+}
+
+@layer base {
+  :focus-visible {
+    outline: var(--mw-size-focus-ring-width) solid var(--mw-color-focus);
+    outline-offset: var(--mw-size-focus-ring-offset);
+  }
+
+  button:not(:disabled),
+  [role="button"],
+  [role="menuitem"] {
+    cursor: pointer;
+  }
+}
