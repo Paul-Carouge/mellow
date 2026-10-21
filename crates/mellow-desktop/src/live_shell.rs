@@ -359,6 +359,12 @@ fn connect_callbacks(window: &AppWindow, shell: &SharedShell) {
 
     connect_server_settings_callbacks(window, shell);
     connect_server_action_callbacks(window, shell);
+    let shell_for_callback = shell.clone();
+    window.on_open_direct_message(move |user_id| {
+        if let Ok(user_id) = user_id.parse() {
+            open_direct_message(&shell_for_callback, user_id);
+        }
+    });
     window.on_link_clicked(|_url| {
         // shortcut: links are not opened yet; opening needs the confirmation dialog of DESIGN.md §5.4.
     });
@@ -428,6 +434,34 @@ fn connect_server_action_callbacks(window: &AppWindow, shell: &SharedShell) {
     let shell_for_callback = shell.clone();
     window.on_dialog_closed(move || {
         server_actions::reset_dialog(&mut shell_for_callback.borrow_mut());
+    });
+}
+
+/// Opens the conversation with a member (member list → Message), then shows it at home.
+fn open_direct_message(shell: &SharedShell, user_id: Snowflake) {
+    let Some(rest) = authenticated_rest(shell) else {
+        return;
+    };
+    let request = async move { rest.open_direct_message(user_id).await };
+    run_request(shell, request, |shell, result| match result {
+        Ok(conversation) => {
+            let conversation_id = conversation.id;
+            let change = shell
+                .borrow_mut()
+                .state
+                .upsert_direct_message_channel(conversation);
+            apply_state_change(shell, change);
+            select_guild(shell, None, Some(conversation_id));
+        }
+        Err(error) => {
+            report_request_error(shell, &error, "open conversation");
+            if !error.needs_new_login()
+                && let Some(window) = shell.borrow().window.upgrade()
+            {
+                window
+                    .set_message_action_error("Couldn't open the conversation. Try again.".into());
+            }
+        }
     });
 }
 
@@ -657,9 +691,18 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
             set_notice("");
             let guild_id = {
                 let shell = shell.borrow();
+                let was_home_in_a_conversation = previous_guild_id.is_none()
+                    && previous_channel_id
+                        .is_some_and(|id| shell.state.direct_message_channel(id).is_some());
                 previous_guild_id
                     .filter(|id| shell.state.guild(*id).is_some())
-                    .or_else(|| shell.state.guilds().first().map(|guild| guild.id))
+                    .or_else(|| {
+                        if was_home_in_a_conversation {
+                            None
+                        } else {
+                            shell.state.guilds().first().map(|guild| guild.id)
+                        }
+                    })
             };
             // After a re-identify the reader stays where they were, as after a resume.
             select_guild(shell, guild_id, previous_channel_id);
@@ -783,11 +826,8 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
                 refresh_messages(&mut shell.borrow_mut());
             }
         }
-        // shortcut: the conversation list is not shown yet; it comes with the home screen.
-        StateChange::DirectMessages
-        | StateChange::Messages { .. }
-        | StateChange::Members { .. }
-        | StateChange::ReadStates => {}
+        StateChange::DirectMessages => refresh_header(&shell.borrow()),
+        StateChange::Messages { .. } | StateChange::Members { .. } | StateChange::ReadStates => {}
     }
     let shell = shell.borrow();
     refresh_server_items(&shell);
@@ -921,7 +961,19 @@ fn select_guild(
                     .any(|channel| channel.id == *channel_id)
             })
         });
-        let channel_id = preferred.or_else(|| guild.and_then(live_rows::first_text_channel_id));
+        let channel_id = match guild {
+            Some(guild) => preferred.or_else(|| live_rows::first_text_channel_id(guild)),
+            // Home opens the given conversation, or the most recent one.
+            None => preferred_channel_id
+                .filter(|id| shell.state.direct_message_channel(*id).is_some())
+                .or_else(|| {
+                    shell
+                        .state
+                        .direct_message_channels()
+                        .first()
+                        .map(|channel| channel.id)
+                }),
+        };
         refresh_server_items(&shell);
         refresh_member_rows(&shell);
         channel_id
@@ -929,7 +981,6 @@ fn select_guild(
     if let Some(guild_id) = guild_id {
         ensure_members_loaded(shell, guild_id);
     }
-    // shortcut: home (direct messages) shows an empty channel list until DMs land in the client.
     open_channel(shell, channel_id);
 }
 
@@ -972,6 +1023,11 @@ fn refresh_header(shell: &LiveShell) {
             .iter()
             .find(|channel| Some(channel.id) == shell.selected_channel_id)
     });
+    let conversation = shell
+        .selected_channel_id
+        .filter(|_| guild.is_none())
+        .and_then(|id| shell.state.direct_message_channel(id));
+    window.set_is_direct_message_open(conversation.is_some());
     let server_index = guild
         .and_then(|guild| {
             shell
@@ -997,11 +1053,20 @@ fn refresh_header(shell: &LiveShell) {
     window.set_selected_server_index(server_index);
     window.set_selected_channel_id(
         channel
-            .map(|channel| channel.id.to_string())
+            .map(|channel| channel.id)
+            .or(conversation.map(|conversation| conversation.id))
+            .map(|id| id.to_string())
             .unwrap_or_default()
             .into(),
     );
-    window.set_selected_channel_name(channel.map_or("", |channel| channel.name.as_str()).into());
+    window.set_selected_channel_name(
+        match (channel, conversation) {
+            (Some(channel), _) => channel.name.clone(),
+            (None, Some(conversation)) => live_rows::direct_message_name(conversation),
+            (None, None) => String::new(),
+        }
+        .into(),
+    );
     window.set_selected_channel_topic(channel.map_or("", |channel| channel.topic.as_str()).into());
     window.set_can_send_messages(
         shell
@@ -1439,6 +1504,11 @@ fn refresh_channel_rows(shell: &LiveShell) {
         })
         .unwrap_or_default();
     window.set_channel_rows(ModelRc::new(VecModel::from(rows)));
+    window.set_is_home(shell.selected_guild_id.is_none());
+    window.set_direct_message_rows(ModelRc::new(VecModel::from(
+        live_rows::direct_message_rows(&shell.state, shell.selected_channel_id),
+    )));
+    window.set_has_unread_direct_messages(live_rows::has_unread_direct_messages(&shell.state));
 }
 
 fn refresh_member_rows(shell: &LiveShell) {

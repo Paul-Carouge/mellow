@@ -10,8 +10,8 @@ use mellow_protocol::{
 use slint::SharedString;
 
 use crate::generated_ui::{
-    ChannelListRow, HistoryStartState, MemberListRow, MessageDelivery, MessageRow, PresenceStatus,
-    ServerItem,
+    ChannelListRow, DirectMessageRow, HistoryStartState, MemberListRow, MessageDelivery,
+    MessageRow, PresenceStatus, ServerItem,
 };
 use crate::message_markup::styled_text_from_message_body;
 use crate::shell_rows::{first_letter, saturating_int, server_initials};
@@ -35,6 +35,49 @@ pub fn server_items(state: &ClientState) -> Vec<ServerItem> {
             mention_count: 0,
         })
         .collect()
+}
+
+/// The home column: conversations, most recent activity first, as on Discord.
+pub fn direct_message_rows(
+    state: &ClientState,
+    selected_channel_id: Option<Snowflake>,
+) -> Vec<DirectMessageRow> {
+    state
+        .direct_message_channels()
+        .iter()
+        .map(|channel| {
+            let name = direct_message_name(channel);
+            let first_recipient_id = channel.recipients.first().map(|user| user.id);
+            DirectMessageRow {
+                id: channel.id.to_string().into(),
+                initial: first_letter(&name).into(),
+                status: if first_recipient_id.is_some_and(|id| state.is_online(id)) {
+                    PresenceStatus::Online
+                } else {
+                    PresenceStatus::Offline
+                },
+                has_unread: Some(channel.id) != selected_channel_id && state.has_unread(channel.id),
+                name: name.into(),
+            }
+        })
+        .collect()
+}
+
+pub fn has_unread_direct_messages(state: &ClientState) -> bool {
+    state
+        .direct_message_channels()
+        .iter()
+        .any(|channel| state.has_unread(channel.id))
+}
+
+/// The other participants' display names, as Discord names a conversation until it is renamed.
+pub fn direct_message_name(channel: &mellow_protocol::DirectMessageChannel) -> String {
+    channel
+        .recipients
+        .iter()
+        .map(|user| user.display_name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Categories in position order; uncategorized channels come first, as on Discord.
@@ -318,6 +361,8 @@ pub fn member_rows(members: &[Member], state: &ClientState) -> Vec<MemberListRow
             initial: SharedString::default(),
             activity: SharedString::default(),
             status: PresenceStatus::Offline,
+            user_id: SharedString::default(),
+            can_message: false,
         };
         let rows: Vec<_> = group
             .into_iter()
@@ -329,6 +374,10 @@ pub fn member_rows(members: &[Member], state: &ClientState) -> Vec<MemberListRow
                 initial: first_letter(&member.user.display_name).into(),
                 activity: SharedString::default(),
                 status,
+                user_id: member.user.id.to_string().into(),
+                can_message: state
+                    .current_user()
+                    .is_some_and(|user| user.id != member.user.id),
             })
             .collect();
         std::iter::once(header).chain(rows)
@@ -667,5 +716,53 @@ mod tests {
             HistoryStartState::ChannelStart,
             "an empty channel shows its hero"
         );
+    }
+
+    #[test]
+    fn conversations_are_named_after_their_recipients_and_unread_only_when_not_open() {
+        let recipient = mellow_protocol::PublicUser {
+            id: Snowflake::from_raw(7),
+            username: "aurore".into(),
+            display_name: "Aurore".into(),
+        };
+        let mut state = ClientState::default();
+        state.apply_ready(Ready {
+            session_id: "session".into(),
+            user: CurrentUser {
+                id: Snowflake::from_raw(2),
+                username: "me".into(),
+                display_name: "Me".into(),
+                email: "me@example.org".into(),
+                is_instance_administrator: false,
+            },
+            guilds: Vec::new(),
+            read_states: Vec::new(),
+            online_user_ids: vec![recipient.id],
+            direct_message_channels: vec![mellow_protocol::DirectMessageChannel {
+                id: Snowflake::from_raw(30),
+                recipients: vec![recipient.clone()],
+                last_message_id: Some(Snowflake::from_raw(40)),
+            }],
+        });
+        state.insert_messages(
+            Snowflake::from_raw(30),
+            vec![Message {
+                id: Snowflake::from_raw(40),
+                channel_id: Snowflake::from_raw(30),
+                author: recipient,
+                content: "hi".into(),
+                reply_to_id: None,
+                edited_at_unix_milliseconds: None,
+                nonce: None,
+            }],
+        );
+
+        let closed = direct_message_rows(&state, None);
+        let open = direct_message_rows(&state, Some(Snowflake::from_raw(30)));
+        assert_eq!(closed[0].name, "Aurore");
+        assert_eq!(closed[0].status, PresenceStatus::Online);
+        assert!(closed[0].has_unread);
+        assert!(!open[0].has_unread);
+        assert!(has_unread_direct_messages(&state));
     }
 }
