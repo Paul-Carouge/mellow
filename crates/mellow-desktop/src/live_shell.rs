@@ -125,7 +125,7 @@ pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
         role_editor: None,
         is_role_request_in_flight: false,
         dialog_request_generation: 0,
-        connection_status: ConnectionStatus::Connected,
+        connection_status: ConnectionStatus::SignedOut,
     }));
     window.set_is_signed_in(false);
     window.set_messages(shell.borrow().messages.clone().into());
@@ -698,7 +698,7 @@ fn show_connection_status(shell: &mut LiveShell, status: ConnectionStatus) {
         window.set_connection_notice(
             match status {
                 ConnectionStatus::Connecting => CONNECTING_NOTICE,
-                ConnectionStatus::Connected => "",
+                ConnectionStatus::Connected | ConnectionStatus::SignedOut => "",
                 ConnectionStatus::Reconnecting => RECONNECTING_NOTICE,
             }
             .into(),
@@ -988,7 +988,7 @@ fn end_session(shell: &SharedShell, message: &str) -> tokio::task::JoinHandle<bo
         window.set_login_is_busy(false);
         show_login_error(&window, message);
     }
-    show_connection_status(&mut shell, ConnectionStatus::Connected);
+    show_connection_status(&mut shell, ConnectionStatus::SignedOut);
     // After signing out, so the focus is not sent back to the hidden shell.
     server_settings::close(&mut shell);
     forget

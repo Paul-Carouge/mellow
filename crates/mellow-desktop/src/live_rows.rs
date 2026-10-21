@@ -107,6 +107,8 @@ pub fn has_unread_direct_messages(state: &ClientState) -> bool {
 /// What the gateway connection is doing, as the connection notice and Melli show it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectionStatus {
+    /// No session: the sign-in screen shows, nothing to report.
+    SignedOut,
     Connecting,
     Connected,
     Reconnecting,
@@ -119,7 +121,7 @@ pub fn home_melli_state(status: ConnectionStatus, has_unread_direct_messages: bo
         ConnectionStatus::Reconnecting => MelliState::ConnectionLost,
         ConnectionStatus::Connecting => MelliState::Connecting,
         ConnectionStatus::Connected if has_unread_direct_messages => MelliState::Notification,
-        ConnectionStatus::Connected => MelliState::Idle,
+        ConnectionStatus::Connected | ConnectionStatus::SignedOut => MelliState::Idle,
     }
 }
 
@@ -917,6 +919,10 @@ mod tests {
         );
         assert_eq!(
             home_melli_state(ConnectionStatus::Connected, false),
+            MelliState::Idle
+        );
+        assert_eq!(
+            home_melli_state(ConnectionStatus::SignedOut, false),
             MelliState::Idle
         );
     }
