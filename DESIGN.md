@@ -1,11 +1,12 @@
 # Mellow design document
 
-Status: draft v0.12 (2026-10-21). Owner: design. Applies to the Slint desktop client, the web client, the Android client (Jetpack Compose, Material 3 Expressive) and the admin web UI embedded in the server.
+Status: draft v0.13 (2026-10-21). Owner: design. Applies to the Slint desktop client, the web client, the Android client (Jetpack Compose, Material 3 Expressive) and the admin web UI embedded in the server.
 
 This document is the reference for every visual and interaction decision in Mellow. Developers should be able to build any MVP screen from it without inventing a colour, a size or a sentence. When something is missing, add it here first, then implement it. Every value named here exists in `design/tokens.json`.
 
 ## Changelog
 
+- **2026-10-21, v0.13 — Melli, the Mellow logo and mascot:** the owner's round cloud becomes the logo and the mascot "Melli" (2.10): named SVG parts, eight states (idle, connecting, connection lost, notification, incoming call, in call, update available, sleeping), each with a still pose for reduced motion. The web Home button shows Melli on its peach tile (apricot on hover, focus and selection) and maps connection and unread direct messages to states (5.2); the favicon is the still idle Melli, generated from the tokens by `cargo xtask tokens`. `ref.melli.*`, `color.mascot.*`, `component.melli.*` and `component.rail.home-background-rest` tokens; contrast pairs for `color.mascot.ink`. A development-only gallery shows every state (`npm run dev`, then `/dev/melli.html`).
 - **2026-10-21, v0.12 — avatars and banners on the web (ADR-0021):** avatars show the user's picture wherever they appear, with the initial on the accent fill while it loads, when there is none or when it fails (6.8); animated pictures show their still first frame and play while the row holding them is hovered or focused, always in the profile card, never under reduced motion. The profile popout shows the banner picture in a 120 px strip (5.7). User settings gain "Profile" (5.9): avatar and banner editors beside a live preview of the profile card. `component.profile-popover.banner-image-height` token.
 - **2026-10-21, v0.11 — file attachments (ADR-0020):** the web client attaches files (5.5): attach button, drag and drop with an apricot "Drop to attach to #general" overlay, paste; each file uploads at once into a tray inside the composer box (thumbnail or file icon, middle-truncated name, "Uploading…" then the size, or the error in `text.danger` with a red outline), up to 10 per message, Send waits for running uploads. Messages show images inline and other files as download cards (5.4); the desktop client lists "name · size" rows until it handles files. `component.attachment.*`, `component.drop-overlay.*` and `component.composer.attach-button-size` / `tray-*` tokens; `text.link` and `text.accent` on `surface.sidebar` contrast pairs; Phosphor `file`, `file-arrow-up` and `download-simple` (Fill).
 - **2026-10-21, v0.10 — My account on desktop and web:** user settings open on "My account" (5.9): Discord's account card with display name, username and email, Edit buttons opening forms in place (one at a time), and a password section with "Change password"; Esc closes the open form before the screen; the web client gets the full-screen user settings (gear in the user panel, "Sign out" moved into the settings navigation, a list page then a section page on phones) and an About page with the source code link; `component.settings.account-*`, `error-text` and `notice-text` tokens, a `text.normal` on `surface.sidebar` contrast pair; Phosphor `check` and `gear-six` on the web.
@@ -59,7 +60,7 @@ Someone who uses Discord every day must be able to use Mellow without learning a
 The interface is Discord's; the identity is Mellow's. The rule is mechanical: **every place Discord uses blurple, Mellow uses apricot (`color.accent.fill`), and white text on blurple becomes dark ink on apricot (`color.text.on-accent`)**. The Home button shows the Mellow logo, the font is Figtree, the icons are Phosphor, the emoji are open-licence artwork.
 
 - Test: no token, asset or screenshot uses Discord's blurple (`#5865F2`) or any accent with a hue between 215° and 255° in OKLCH; no Discord logo, wordmark, mascot or gg sans/Whitney font file is in the repository.
-- Test: default avatars and empty states use Mellow's own artwork, never a mascot.
+- Test: default avatars and empty states use Mellow's own artwork (Melli, 2.10), never Discord's mascot.
 
 ### 1.3 Accessible even where Discord is not
 
@@ -434,7 +435,76 @@ Reduced motion:
 
 One icon set everywhere: **Phosphor Icons** (MIT), **Fill** weight, which matches the solid, compact feel of Discord's icons without copying their artwork. Sizes: 20 px in rows and the hover bar, 24 px in headers, the composer, the user panel and on Android. Icons are exported as SVG for Slint and the admin web UI, and converted to `ImageVector` for Compose. Emoji are never used as icons.
 
-The **Home button** shows the Mellow mark (28 px glyph inside the 48 px rail icon), in `text.normal` at rest and `text.on-accent` on the apricot fill when hovered or selected. The mark must not resemble Discord's logo or mascot (section 9).
+The **Home button** shows Melli, the Mellow logo (2.10): the cloud fills about 28 px of the 48 px rail icon, on its peach tile at rest and on the apricot fill when hovered, focused or selected.
+
+### 2.10 Melli, the logo and mascot
+
+Melli (Melli / Mellow) is a round cloud with two pill eyes on a peach tile, drawn by the owner. It is the logo (Home button, favicon, app icons) and the only character in the interface. It floats, blinks and slowly turns its puffs; everything else it does is built from the same soft, round, bouncy motion. Melli is Mellow's own artwork and shares nothing with Discord's logo or mascot.
+
+#### Parts
+
+The drawing lives in a 256 × 256 viewBox (`web/src/components/Melli.svelte`). One part is one element or group with a stable class, so a state only shows, hides or restyles parts:
+
+| Part | What it is | Notes |
+|---|---|---|
+| `tile` | Rounded square, radius 56 | Optional: the Home button paints its own tile so it can morph and turn apricot |
+| `shadow` | Ellipse under the cloud | Translucent, so it works on the tile and on apricot |
+| `motion` | Group holding the cloud and the face | The state's loop (float, hop, rock, bob, bounce, breathe) pivots on the cloud's base (128, 200) |
+| `puff` | Seven circles: a core of radius 62 and six puffs of radius 30 | Turns once per `puff-spin-duration` around (128, 124); pauses when the connection is lost |
+| `face` | Eyes, cheeks, mouth | Moves as one (looks up while connecting) |
+| `eyes` > `eyes-blink` | The two pill eyes, plus `glint`s | `eyes` holds the pose (droop, wide), `eyes-blink` the blink, so both combine |
+| `eyes-happy`, `eyes-closed` | Arcs replacing the pill eyes | Happy "^ ^"; sleeping "‿ ‿" |
+| `blush`, `mouth` | Cheeks, a small talking mouth | Hidden at rest |
+| Marks | `dots`, `drops`, `sparkle`, `rings`, `waves`, `arrow`, `zzz` | Drawn in ink, like comic marks; hidden at rest. `drops` sit behind the cloud so they fall out of it |
+
+#### Palette
+
+| Token | Value | Role |
+|---|---|---|
+| `color.mascot.tile` | `#F4E2D2` | Tile, Home button at rest |
+| `color.mascot.shadow` | `#A46338` at 15 % | Ground shadow: exactly the logo's `#E8CFBB` over the tile |
+| `color.mascot.body` | `#FFFAF3` | The cloud and the eye glints |
+| `color.mascot.body-overcast` | `#E2DBD7` | The cloud while the connection is lost |
+| `color.mascot.ink` | `#3F332D` | Eyes, mouth and every mark |
+| `color.mascot.blush` | `#F5B3A1` | Cheeks (decorative) |
+
+Melli is brand artwork: the same in both themes (light values equal dark ones). Ink reaches at least 3:1 on the tile, the cloud, the overcast cloud and both apricot fills (contrast pairs in `design/tokens.json`), which is why every mark is ink: a mark stays readable whether Home is at rest or selected. Blush is the only colour that carries no meaning.
+
+#### States
+
+| State | When | Motion | Still pose (reduced motion) |
+|---|---|---|---|
+| `idle` | Nothing to report; the logo and favicon | Float 8 units and back, shadow shrinks; blink; puffs turn | The logo |
+| `connecting` | The client is connecting | Float; looks up at three dots that rise and brighten in turn | Looking up, three dots |
+| `connection-lost` | The connection dropped and the client reconnects | Cloud turns overcast, eyes half-closed, puffs stop, slow sag; three drops fall out of the cloud | Overcast, heavy eyes, three drops under the cloud |
+| `notification` | Unread direct messages (later: mentions) | Squash, hop 22 units with a stretch, land; happy eyes, blush, two sparkles twinkling at the top of the hop | Happy eyes, blush, sparkles, lifted 6 units |
+| `incoming-call` | Someone is calling (not wired yet) | Rocks ±9° in a burst, then rests, like a ringing phone; wide eyes; ring arcs on both sides flash with each burst | Wide eyes, ring arcs, tilted 10° |
+| `in-call` | In a call (not wired yet) | Calm 4-unit bob; mouth talks; two sound waves pulse on the right | Open mouth, sound waves |
+| `update-available` | A new version is ready (not wired yet) | Double bounce; glints in the eyes, blush; an arrow rising above the head | Glints, blush, arrow |
+| `sleeping` | Away or idle presence (not wired yet) | Eyes closed, slow breath (squash 4 %), two Zs drifting up in turn | Closed eyes, two Zs |
+
+Wherever Melli shows a state, the state is also said in words: Home keeps its accessible name ("Direct messages, unread") and its unread pill, and the connection notice above the chat says what the connection is doing. Melli itself is `aria-hidden`.
+
+#### Motion rules
+
+- Timings are tokens (`component.melli.*`): one loop duration per state, plus `state-change-duration` (360 ms, `motion.easing.standard`) for poses, colours and marks easing between states. Keyframe shapes and amplitudes are part of the drawing, like the paths, and stay in the component.
+- Every loop starts and ends at rest; a state change restarts the loop from rest, a jump of up to 22 units when leaving the notification hop; poses (eyes, face, colours, marks) ease over `state-change-duration`. Pausing the puffs (`animation-play-state`) keeps their angle.
+- Melli is always animated, idle included, in the rail too (the owner's choice, 2026-10-21): an always-visible infinite SVG loop repaints every frame, a cost accepted for a living mascot; reduced motion still stops it.
+- Under `prefers-reduced-motion: reduce` (or the gallery's "Still poses"), Melli stops every animation and transition and shows the still pose of its state. A still pose must show the state on its own: add a static offset or tilt when the motion was the only sign.
+- Marks stay within 126 units of the tile centre (128, 128), so the Home button's circle (radius 128) never clips them.
+- The favicon is the still idle Melli. `cargo xtask tokens` writes `web/public/favicon.svg` from the mascot tokens; favicons never animate.
+
+#### Adding a state
+
+1. Add its name to `MelliState` in `web/src/components/melli.ts` and its line to the gallery (`web/src/dev/MelliGallery.svelte`).
+2. If it needs a new part, draw it in ink inside the 120-unit circle, hidden by default (`.mark` or `opacity: 0`).
+3. Add `[data-state="…"]` rules: which parts show, the pose, and a loop with a `component.melli.*-duration` token. Loops start and end at rest.
+4. Give it a still pose under `.is-still` if the pose alone does not show the state.
+5. Add the row to the table above, check it in the gallery at 192 px and 48 px on the tile and on apricot, in both themes, animated and still.
+
+#### Desktop (Slint), later
+
+The desktop client keeps its "M" placeholder for now. To port Melli: one `Melli` component in `ui/` built from Slint `Path` elements with the same viewBox commands, coloured from `MellowColor.mascot-*`; the loops as Slint `animate` blocks or a timer-driven phase read from `MellowComponent.melli-*-duration` (generated already); states as an enum property toggling part opacity and transforms. `MellowMotion` already zeroes durations under reduced motion, but Melli's loops must stop explicitly and show the still poses above. Its app icons (`.icns`, `.ico`, PNG sizes) are exported from the favicon.
 
 ---
 
@@ -813,7 +883,8 @@ Contents, top to bottom: Home (Mellow mark; mention badge aggregating conversati
 | Unread messages | Pill 8 high |
 | Mentions | Red badge with the count (`danger.fill`, `text.on-danger`, 3 px ring of `surface.rail`) at the bottom trailing corner; "99+" beyond 99; also unread pill |
 | Selected | Squircle, pill 40 high; icons without artwork stay on `accent.fill` |
-| Home selected | Squircle on `accent.fill`, Mellow mark in `text.on-accent`, pill 40 |
+| Home selected | Squircle on `accent.fill` behind Melli, pill 40 |
+| Home states | At rest Home is Melli on `color.mascot.tile` (`component.rail.home-background-rest`). Melli shows `connection-lost` while reconnecting, `connecting` while connecting, `notification` while a direct message is unread, otherwise `idle` (2.10). The pill and the accessible name ("Direct messages, unread") still carry unread on their own; the connection notice says what the connection is doing |
 | Muted server | No unread pill; mention badges still show, because direct mentions are never muted |
 | Instance offline | Its icons are shown at 60 % opacity with a tooltip "chat.example.org is unreachable. Showing saved messages." and the instance icon gets an offline status dot |
 | Loading (first sync) | Static circle skeletons for the expected number of servers |
@@ -1186,6 +1257,7 @@ All components use tokens only (component tier first), support light and dark th
 | 6.47 | ChatPanels (Android) | Channel panel, chat, members | Settling, dragging | `anchoredDraggable`, `size.mobile.panel-peek`. |
 | 6.48 | AdminTable (web) | With search, pagination, row actions | Loading rows, empty, error | `<table>` with `<caption>` and `scope` headers. |
 | 6.49 | AdminStatCard (web) | Health, number, storage bar | Normal, degraded, down | Status in words plus icon. |
+| 6.50 | Melli | With tile, without tile (the host paints it) | The eight states of 2.10, each animated or still | Decorative (`aria-hidden`): the host names what it stands for. Web: `Melli.svelte`, size from a length token. |
 
 Before adding a component, check this list. A new component is added here first, with variants and states.
 
@@ -1346,7 +1418,7 @@ Destructive confirmation pattern:
 
 Brand and legal:
 
-1. **Mellow logo** for the Home button, app icon and admin header: to be designed. It must not resemble Discord's logo or mascot (no game-controller or face silhouette) and must read at 28 px on both `surface.chat` and `accent.fill`.
+1. **Mellow logo**: chosen (Melli, 2.10). Still to do: the desktop port (Slint), the app icons per platform (macOS, Windows, Linux, Android adaptive icon) exported from the still idle pose, and the admin header.
 2. **Trade-dress review** before any public release: check accent hue, logo, fonts, default avatars and marketing screenshots against ADR-0012's brand rules.
 3. **Emoji set**: Twemoji (familiar to Discord users, CC-BY 4.0 with attribution) is preferred over Noto Color Emoji. Confirm that a maintained COLR font build of Twemoji renders in Slint on all three desktop platforms and on Android, and measure its size; otherwise fall back to Noto Color Emoji or the system emoji font.
 

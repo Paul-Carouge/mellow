@@ -2,7 +2,8 @@
   import type { Snippet } from "svelte";
 
   import { type PublicUser, profileImageUrl } from "../lib/protocol";
-  import Avatar, { prefersReducedMotion } from "./Avatar.svelte";
+  import { prefersReducedMotion } from "../lib/motion.svelte";
+  import Avatar from "./Avatar.svelte";
   import { displayName } from "./format";
 
   // The profile popout's card (DESIGN.md §5.7), also the live preview in Profile settings (§5.9):
