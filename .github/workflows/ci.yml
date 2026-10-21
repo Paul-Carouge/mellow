@@ -65,6 +65,28 @@ jobs:
       # Every crate's tests run even when one fails, so one platform gap hides nothing else.
       - run: cargo test --workspace --locked --no-fail-fast
 
+  web:
+    name: Web client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.node-version
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Type-check, test and build
+        working-directory: web
+        run: npm ci && npm run check && npm run test && npm run build
+      - name: Dependency audit
+        working-directory: web
+        run: npm audit --audit-level=high
+      - name: The server embeds the built client
+        run: cargo build --locked -p mellow-server --features web-client
+
   acme:
     name: ACME against Pebble
     runs-on: ubuntu-latest

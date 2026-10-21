@@ -18,9 +18,6 @@ import {
   compareSnowflakes,
 } from "./protocol";
 
-/** shortcut: the token lives in sessionStorage (one tab, gone with it); move to an HttpOnly
- * cookie set by the instance (ADR-0019) before the web client is served by release builds. */
-const SESSION_STORAGE_KEY = "mellow.session-token";
 const MAXIMUM_CACHED_MESSAGES_PER_CHANNEL = 500;
 const TYPING_INDICATOR_LIFETIME_MILLISECONDS = 8_000;
 const TYPING_SEND_INTERVAL_MILLISECONDS = 5_000;
@@ -78,7 +75,7 @@ export class MellowClient {
   selectedChannelId = $state<Snowflake | null>(null);
   isLoadingOlder = $state(false);
 
-  private rest = new RestClient();
+  private readonly rest = new RestClient();
   private gateway: GatewayConnection | null = null;
   private lastTypingSentAt = 0;
   private requestedHistory = new Set<Snowflake>();
@@ -127,24 +124,25 @@ export class MellowClient {
 
   // --- Session -------------------------------------------------------------------------------
 
-  /** Resumes the session of this tab, if any. */
-  resumeStoredSession(): void {
-    const token = sessionStorage.getItem(SESSION_STORAGE_KEY);
-    if (token) {
-      this.connect(token);
+  /** Resumes the session cookie's session, if the instance still accepts it. */
+  async resumeStoredSession(): Promise<void> {
+    try {
+      this.user = await this.rest.currentUser();
+    } catch {
+      // No session, or an expired one: the sign-in screen stays.
+      return;
     }
+    this.connect();
   }
 
   async signIn(login: string, password: string): Promise<void> {
-    const session = await this.rest.login(login, password);
-    this.user = session.user;
-    this.connect(session.token);
+    this.user = (await this.rest.login(login, password)).user;
+    this.connect();
   }
 
   async register(username: string, email: string, password: string): Promise<void> {
-    const session = await this.rest.register(username, email, password);
-    this.user = session.user;
-    this.connect(session.token);
+    this.user = (await this.rest.register(username, email, password)).user;
+    this.connect();
   }
 
   async signOut(): Promise<void> {
@@ -157,13 +155,11 @@ export class MellowClient {
     this.endSession();
   }
 
-  private connect(token: string): void {
-    sessionStorage.setItem(SESSION_STORAGE_KEY, token);
-    this.rest = new RestClient(token);
+  private connect(): void {
     this.gateway?.close();
     this.status = "connecting";
     this.gateway = new GatewayConnection(
-      token,
+      "",
       (update) => this.applyGatewayUpdate(update),
       () => this.isTokenRefused(),
     );
@@ -180,10 +176,8 @@ export class MellowClient {
   }
 
   private endSession(): void {
-    sessionStorage.removeItem(SESSION_STORAGE_KEY);
     this.gateway?.close();
     this.gateway = null;
-    this.rest = new RestClient();
     this.status = "signed-out";
     this.user = null;
     this.guilds = [];
