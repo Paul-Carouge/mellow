@@ -1,136 +1,9 @@
 import { ScrollView } from "std-widgets.slint";
 import { MellowComponent, MellowSpace, MellowType } from "../tokens.slint";
+import { TextField } from "primitives.slint";
 
 // Which field should take keyboard focus: the first one the person still has to fill.
 enum LoginField { none, instance-address, login, email, username, password }
-
-// Outlined form field with an uppercase label above it (DESIGN.md §6.3).
-component AuthTextField inherits Rectangle {
-    // Sentence case: what screen readers announce.
-    in property <string> label;
-    // Uppercased copy of `label`: Slint has no text-transform (DESIGN.md §2.4).
-    in property <string> display-label;
-    in property <string> placeholder;
-    in property <string> helper;
-    in property <bool> is-password;
-    in property <bool> wants-focus;
-    // Bumped by the screen to move focus again, e.g. to the emptied password after an error.
-    in property <int> focus-request;
-    in-out property <string> text;
-    callback accepted();
-
-    property <bool> is-password-revealed;
-
-    // Fields are created per mode, so this also runs when the card switches to the other mode.
-    init => {
-        if wants-focus {
-            input.focus();
-        }
-    }
-    changed focus-request => {
-        if wants-focus {
-            input.focus();
-        }
-    }
-
-    VerticalLayout {
-        spacing: MellowComponent.text-field-label-gap;
-        Text {
-            text: root.display-label;
-            color: MellowComponent.text-field-label-text;
-            font-size: MellowType.category.font-size;
-            font-weight: MellowType.category.font-weight;
-            letter-spacing: MellowType.category.letter-spacing;
-            accessible-role: none;
-        }
-        Rectangle {
-            height: MellowComponent.text-field-height;
-            border-radius: MellowComponent.text-field-radius;
-            background: MellowComponent.text-field-background;
-            border-width: input.has-focus ? MellowComponent.focus-ring-width : MellowComponent.text-field-border-width;
-            border-color: input.has-focus ? MellowComponent.focus-ring-color : MellowComponent.text-field-border;
-
-            // The whole outlined box is the target, not only the line of text inside it.
-            TouchArea {
-                mouse-cursor: MouseCursor.text;
-                clicked => { input.focus(); }
-            }
-            HorizontalLayout {
-                padding-left: MellowComponent.text-field-padding-inline;
-                padding-right: root.is-password ? 0px : MellowComponent.text-field-padding-inline;
-                Rectangle {
-                    horizontal-stretch: 1;
-                    if input.text == "": Text {
-                        x: 0;
-                        text: root.placeholder;
-                        color: MellowComponent.text-field-placeholder;
-                        font-size: MellowType.body-lg.font-size;
-                        vertical-alignment: center;
-                        accessible-role: none;
-                    }
-                    input := TextInput {
-                        text <=> root.text;
-                        single-line: true;
-                        input-type: root.is-password && !root.is-password-revealed ? InputType.password : InputType.text;
-                        color: MellowComponent.text-field-text;
-                        font-size: MellowType.body-lg.font-size;
-                        vertical-alignment: center;
-                        accessible-label: root.label;
-                        accessible-description: root.helper;
-                        accessible-placeholder-text: root.placeholder;
-                        accepted => { root.accepted(); }
-                    }
-                }
-                if root.is-password: reveal := Rectangle {
-                    // Square, full field height, so the toggle meets the 44 px target.
-                    width: MellowComponent.text-field-height;
-                    accessible-role: button;
-                    accessible-label: "Show password";
-                    accessible-checkable: true;
-                    accessible-checked: root.is-password-revealed;
-                    accessible-action-default => { root.is-password-revealed = !root.is-password-revealed; }
-
-                    reveal-focus := FocusScope {
-                        key-pressed(event) => {
-                            if event.text == " " || event.text == "\n" {
-                                root.is-password-revealed = !root.is-password-revealed;
-                                return accept;
-                            }
-                            reject
-                        }
-                    }
-                    reveal-touch := TouchArea {
-                        clicked => { root.is-password-revealed = !root.is-password-revealed; }
-                    }
-                    Image {
-                        // The icon shows the state the click leads to, as most password fields do.
-                        source: root.is-password-revealed ? @image-url("../../icons/eye-slash.svg") : @image-url("../../icons/eye.svg");
-                        colorize: reveal-touch.has-hover || reveal-focus.has-focus ? MellowComponent.text-field-icon-hover : MellowComponent.text-field-icon;
-                        width: MellowComponent.text-field-icon-size;
-                        height: self.width;
-                        accessible-role: none;
-                    }
-                    if reveal-focus.has-focus: Rectangle {
-                        border-width: MellowComponent.focus-ring-width;
-                        border-color: MellowComponent.focus-ring-color;
-                        border-radius: MellowComponent.text-field-radius;
-                    }
-                }
-            }
-        }
-        if root.helper != "": VerticalLayout {
-            padding-top: MellowComponent.text-field-helper-gap - MellowComponent.text-field-label-gap;
-            Text {
-                text: root.helper;
-                color: MellowComponent.text-field-helper-text;
-                font-size: MellowType.body-sm.font-size;
-                wrap: word-wrap;
-                // Already announced as the field's description.
-                accessible-role: none;
-            }
-        }
-    }
-}
 
 // Discord-style authentication card (DESIGN.md §5.1): sign in or register on a Mellow instance.
 export component LoginScreen inherits Rectangle {
@@ -214,7 +87,7 @@ export component LoginScreen inherits Rectangle {
 
                 VerticalLayout {
                     spacing: MellowComponent.text-field-field-gap;
-                    AuthTextField {
+                    TextField {
                         label: "Instance address";
                         display-label: "INSTANCE ADDRESS";
                         placeholder: "chat.example.org";
@@ -223,7 +96,7 @@ export component LoginScreen inherits Rectangle {
                         focus-request: root.focus-request-count;
                         accepted => { root.submit(); }
                     }
-                    if !root.is-registering: AuthTextField {
+                    if !root.is-registering: TextField {
                         label: "Username or email";
                         display-label: "USERNAME OR EMAIL";
                         text <=> root.login;
@@ -231,7 +104,7 @@ export component LoginScreen inherits Rectangle {
                         focus-request: root.focus-request-count;
                         accepted => { root.submit(); }
                     }
-                    if root.is-registering: AuthTextField {
+                    if root.is-registering: TextField {
                         label: "Email";
                         display-label: "EMAIL";
                         text <=> root.email;
@@ -239,7 +112,7 @@ export component LoginScreen inherits Rectangle {
                         focus-request: root.focus-request-count;
                         accepted => { root.submit(); }
                     }
-                    if root.is-registering: AuthTextField {
+                    if root.is-registering: TextField {
                         label: "Username";
                         display-label: "USERNAME";
                         // Mirrors the server's rule (mellow-server domain/account_rules.rs).
@@ -249,7 +122,7 @@ export component LoginScreen inherits Rectangle {
                         focus-request: root.focus-request-count;
                         accepted => { root.submit(); }
                     }
-                    AuthTextField {
+                    TextField {
                         label: "Password";
                         display-label: "PASSWORD";
                         is-password: true;

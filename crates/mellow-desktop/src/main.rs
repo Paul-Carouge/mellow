@@ -11,6 +11,7 @@ mod fake_workspace;
 mod live_rows;
 mod live_shell;
 mod message_markup;
+mod role_settings;
 mod scroll_benchmark;
 mod session_store;
 mod shell_rows;

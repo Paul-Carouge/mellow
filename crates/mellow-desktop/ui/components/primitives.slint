@@ -112,26 +112,37 @@ export component IconButton inherits Rectangle {
     // Whether Shift was held for the latest activation (click or key), read in `clicked` handlers:
     // Shift+click on Delete skips the confirmation, as on Discord.
     out property <bool> is-shift-held-on-activation;
+    // Disabled buttons stay focusable and dim their icon, like Button.
+    in property <bool> is-enabled: true;
+    out property <bool> has-keyboard-focus: focus-scope.has-focus;
     callback clicked();
     width: size;
     height: size;
     forward-focus: focus-scope;
     border-radius: MellowRadius.sm;
-    background: touch.has-hover || focus-scope.has-focus ? hover-background : transparent;
+    property <bool> is-highlighted: (touch.has-hover && is-enabled) || focus-scope.has-focus;
+    background: is-highlighted ? hover-background : transparent;
     accessible-role: button;
     accessible-label: label;
+    accessible-enabled: is-enabled;
     // Screen readers activate without a pointer event: a Shift left over from an earlier click
     // must not skip a confirmation.
     accessible-action-default => {
         root.is-shift-held-on-activation = false;
-        root.clicked();
+        root.activate();
+    }
+
+    function activate() {
+        if is-enabled {
+            root.clicked();
+        }
     }
 
     focus-scope := FocusScope {
         key-pressed(event) => {
             if event.text == " " || event.text == "\n" {
                 root.is-shift-held-on-activation = event.modifiers.shift;
-                root.clicked();
+                root.activate();
                 return accept;
             }
             reject
@@ -139,11 +150,12 @@ export component IconButton inherits Rectangle {
     }
     touch := TouchArea {
         pointer-event(event) => { root.is-shift-held-on-activation = event.modifiers.shift; }
-        clicked => { root.clicked(); }
+        clicked => { root.activate(); }
     }
     Image {
         source: icon;
-        colorize: touch.has-hover || focus-scope.has-focus ? hover-icon-color : icon-color;
+        colorize: is-highlighted ? hover-icon-color : icon-color;
+        opacity: is-enabled ? 1 : MellowComponent.button-disabled-opacity;
         // Phosphor icons are drawn on a 256 grid; at 62.5 % of the button they match Discord's 20-in-32.
         width: size * 0.625;
         height: self.width;
@@ -161,6 +173,8 @@ export component IconButton inherits Rectangle {
 export component ContextMenuItem inherits Rectangle {
     in property <string> label;
     in property <bool> is-danger: false;
+    // Optional trailing icon, as in Discord's server menu; decorative.
+    in property <image> icon;
     callback activated();
     height: MellowComponent.context-menu-item-height;
     border-radius: MellowComponent.context-menu-item-radius;
@@ -181,17 +195,28 @@ export component ContextMenuItem inherits Rectangle {
         }
     }
     touch := TouchArea { clicked => { root.activated(); } }
+    property <bool> has-icon: icon.width > 0;
+    property <color> content-color: is-danger
+        ? (touch.has-hover ? MellowComponent.context-menu-danger-text-focus : MellowComponent.context-menu-danger-text)
+        : (touch.has-hover ? MellowComponent.context-menu-item-text-focus : MellowComponent.context-menu-item-text);
     Text {
         x: MellowComponent.context-menu-item-padding-inline;
-        width: parent.width - 2 * MellowComponent.context-menu-item-padding-inline;
+        width: parent.width - 2 * MellowComponent.context-menu-item-padding-inline
+            - (root.has-icon ? MellowComponent.context-menu-item-icon-size + MellowComponent.context-menu-item-padding-inline : 0px);
         text: label;
-        color: is-danger
-            ? (touch.has-hover ? MellowComponent.context-menu-danger-text-focus : MellowComponent.context-menu-danger-text)
-            : (touch.has-hover ? MellowComponent.context-menu-item-text-focus : MellowComponent.context-menu-item-text);
+        color: root.content-color;
         font-size: MellowType.menu-item.font-size;
         font-weight: MellowType.menu-item.font-weight;
         vertical-alignment: center;
         overflow: elide;
+        accessible-role: none;
+    }
+    if root.has-icon: Image {
+        x: parent.width - MellowComponent.context-menu-item-padding-inline - self.width;
+        source: root.icon;
+        colorize: root.content-color;
+        width: MellowComponent.context-menu-item-icon-size;
+        height: self.width;
         accessible-role: none;
     }
     if focus-scope.has-focus: Rectangle {
@@ -272,5 +297,140 @@ export component Button inherits Rectangle {
         border-width: MellowComponent.focus-ring-width;
         border-color: MellowComponent.focus-ring-color;
         border-radius: MellowComponent.button-radius - self.x;
+    }
+}
+
+// Outlined form field with an uppercase label above it (DESIGN.md §6.3).
+export component TextField inherits Rectangle {
+    // Sentence case: what screen readers announce.
+    in property <string> label;
+    // Uppercased copy of `label`: Slint has no text-transform (DESIGN.md §2.4).
+    in property <string> display-label;
+    in property <string> placeholder;
+    in property <string> helper;
+    in property <bool> is-password;
+    in property <bool> wants-focus;
+    // Bumped by the screen to move focus again, e.g. to the emptied password after an error.
+    in property <int> focus-request;
+    in-out property <string> text;
+    // Shown dimmed and not editable, e.g. a role the person cannot rename; the reason is shown nearby.
+    in property <bool> is-read-only;
+    callback accepted();
+    // After each change typed by the person (not after `text` is set from outside).
+    callback edited();
+
+    property <bool> is-password-revealed;
+
+    // Fields are created per mode, so this also runs when the card switches to the other mode.
+    init => {
+        if wants-focus {
+            input.focus();
+        }
+    }
+    changed focus-request => {
+        if wants-focus {
+            input.focus();
+        }
+    }
+
+    VerticalLayout {
+        spacing: MellowComponent.text-field-label-gap;
+        Text {
+            text: root.display-label;
+            color: MellowComponent.text-field-label-text;
+            font-size: MellowType.category.font-size;
+            font-weight: MellowType.category.font-weight;
+            letter-spacing: MellowType.category.letter-spacing;
+            accessible-role: none;
+        }
+        Rectangle {
+            opacity: root.is-read-only ? MellowComponent.button-disabled-opacity : 1;
+            height: MellowComponent.text-field-height;
+            border-radius: MellowComponent.text-field-radius;
+            background: MellowComponent.text-field-background;
+            border-width: input.has-focus ? MellowComponent.focus-ring-width : MellowComponent.text-field-border-width;
+            border-color: input.has-focus ? MellowComponent.focus-ring-color : MellowComponent.text-field-border;
+
+            // The whole outlined box is the target, not only the line of text inside it.
+            TouchArea {
+                mouse-cursor: MouseCursor.text;
+                clicked => { input.focus(); }
+            }
+            HorizontalLayout {
+                padding-left: MellowComponent.text-field-padding-inline;
+                padding-right: root.is-password ? 0px : MellowComponent.text-field-padding-inline;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    if input.text == "": Text {
+                        x: 0;
+                        text: root.placeholder;
+                        color: MellowComponent.text-field-placeholder;
+                        font-size: MellowType.body-lg.font-size;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                    input := TextInput {
+                        text <=> root.text;
+                        single-line: true;
+                        read-only: root.is-read-only;
+                        edited => { root.edited(); }
+                        input-type: root.is-password && !root.is-password-revealed ? InputType.password : InputType.text;
+                        color: MellowComponent.text-field-text;
+                        font-size: MellowType.body-lg.font-size;
+                        vertical-alignment: center;
+                        accessible-label: root.label;
+                        accessible-description: root.helper;
+                        accessible-placeholder-text: root.placeholder;
+                        accepted => { root.accepted(); }
+                    }
+                }
+                if root.is-password: reveal := Rectangle {
+                    // Square, full field height, so the toggle meets the 44 px target.
+                    width: MellowComponent.text-field-height;
+                    accessible-role: button;
+                    accessible-label: "Show password";
+                    accessible-checkable: true;
+                    accessible-checked: root.is-password-revealed;
+                    accessible-action-default => { root.is-password-revealed = !root.is-password-revealed; }
+
+                    reveal-focus := FocusScope {
+                        key-pressed(event) => {
+                            if event.text == " " || event.text == "\n" {
+                                root.is-password-revealed = !root.is-password-revealed;
+                                return accept;
+                            }
+                            reject
+                        }
+                    }
+                    reveal-touch := TouchArea {
+                        clicked => { root.is-password-revealed = !root.is-password-revealed; }
+                    }
+                    Image {
+                        // The icon shows the state the click leads to, as most password fields do.
+                        source: root.is-password-revealed ? @image-url("../../icons/eye-slash.svg") : @image-url("../../icons/eye.svg");
+                        colorize: reveal-touch.has-hover || reveal-focus.has-focus ? MellowComponent.text-field-icon-hover : MellowComponent.text-field-icon;
+                        width: MellowComponent.text-field-icon-size;
+                        height: self.width;
+                        accessible-role: none;
+                    }
+                    if reveal-focus.has-focus: Rectangle {
+                        border-width: MellowComponent.focus-ring-width;
+                        border-color: MellowComponent.focus-ring-color;
+                        border-radius: MellowComponent.text-field-radius;
+                    }
+                }
+            }
+        }
+        if root.helper != "": VerticalLayout {
+            padding-top: MellowComponent.text-field-helper-gap - MellowComponent.text-field-label-gap;
+            Text {
+                text: root.helper;
+                color: MellowComponent.text-field-helper-text;
+                font-size: MellowType.body-sm.font-size;
+                wrap: word-wrap;
+                // Already announced as the field's description.
+                accessible-role: none;
+            }
+        }
     }
 }
