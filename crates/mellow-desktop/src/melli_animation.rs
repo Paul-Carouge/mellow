@@ -1,4 +1,37 @@
-//! Melli's shared animation clock (`MelliAnimation` in `melli.slint`).
+//! Melli is always animated while the window can be seen (the owner's choice, DESIGN.md §2.10).
+//! Its loops read `animation-tick()`, which makes Slint redraw every frame; this stops them while
+//! the window is occluded or minimized, so a hidden window costs nothing.
+
+use slint::ComponentHandle as _;
+use slint::winit_030::winit::event::WindowEvent;
+use slint::winit_030::{EventResult, WinitWindowAccessor as _};
+
+use crate::generated_ui::{AppWindow, MelliAnimation};
+
+pub fn pause_while_window_is_hidden(window: &AppWindow) {
+    let weak_window = window.as_weak();
+    let mut is_occluded = false;
+    // Windows sends no `Occluded` when minimizing, only a zero size.
+    let mut is_zero_sized = false;
+    window
+        .window()
+        .on_winit_window_event(move |_window, event| {
+            match event {
+                WindowEvent::Occluded(occluded) => is_occluded = *occluded,
+                WindowEvent::Resized(size) => is_zero_sized = size.width == 0 || size.height == 0,
+                _ => return EventResult::Propagate,
+            }
+            let should_run = !is_occluded && !is_zero_sized;
+            if let Some(window) = weak_window.upgrade() {
+                let animation = window.global::<MelliAnimation>();
+                if animation.get_is_running() != should_run {
+                    animation.set_is_running(should_run);
+                    tracing::debug!(is_running = should_run, "Melli animation");
+                }
+            }
+            EventResult::Propagate
+        });
+}
 
 #[cfg(test)]
 mod tests {
@@ -7,9 +40,7 @@ mod tests {
     use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
     use slint::platform::{Platform, WindowAdapter};
 
-    use slint::ComponentHandle as _;
-
-    use crate::generated_ui::{AppWindow, MelliAnimation};
+    use super::*;
 
     struct HeadlessPlatform {
         window: Rc<MinimalSoftwareWindow>,
