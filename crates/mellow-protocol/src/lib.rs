@@ -2,6 +2,7 @@
 
 mod accounts;
 mod canonical_decimal;
+mod direct_messages;
 mod gateway;
 mod guilds;
 mod health;
@@ -13,6 +14,7 @@ pub use accounts::{
     ApiErrorBody, ApiErrorCode, ChangePasswordRequest, CurrentUser, LoginRequest, RegisterRequest,
     SessionCreated, UpdateCurrentUserRequest,
 };
+pub use direct_messages::{DirectMessageChannel, OpenDirectMessageRequest};
 pub use gateway::{
     ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, PresenceStatus, Ready, ServerFrame,
 };

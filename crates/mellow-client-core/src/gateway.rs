@@ -366,6 +366,7 @@ mod tests {
                 guilds: Vec::new(),
                 read_states: Vec::new(),
                 online_user_ids: Vec::new(),
+                direct_message_channels: Vec::new(),
             }),
         }
     }
@@ -388,7 +389,7 @@ mod tests {
         ));
         send(&mut first, &ready("session-1")).await;
         let typing = GatewayEvent::TypingStart {
-            guild_id: Snowflake::from_raw(5),
+            guild_id: Some(Snowflake::from_raw(5)),
             channel_id: Snowflake::from_raw(6),
             user_id: Snowflake::from_raw(7),
         };

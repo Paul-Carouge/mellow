@@ -1,5 +1,8 @@
 //! Message and read-state use cases. Access goes through the channel's guild permissions
-//! (`Guilds::channel_and_member_permissions`, ADR-0007).
+//! (`Guilds::channel_and_member_permissions`, ADR-0007), or for a direct-message conversation
+//! through its participants (`permissions::direct_message_permissions`).
+
+mod direct_messages;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -10,12 +13,14 @@ use mellow_protocol::{
 };
 use sqlx::SqlitePool;
 
-use crate::domain::guilds::{GuildError, Guilds};
+use crate::domain::guilds::{ChannelAudience, GuildError, Guilds};
 use crate::domain::message_rules::{
     MessageRuleViolation, history_page_size, normalize_line_endings, validate_message_content,
     validate_nonce,
 };
+use crate::domain::permissions::direct_message_permissions;
 use crate::domain::snowflake_generator::SnowflakeGenerator;
+use crate::storage::direct_messages as direct_message_storage;
 use crate::storage::guilds::StoredChannel;
 use crate::storage::messages::{
     self as message_storage, HistoryPage, MessageStorageError, NewMessage, StoredMessage,
@@ -62,6 +67,57 @@ fn message_from_stored(message: StoredMessage, nonce: Option<String>) -> Message
     }
 }
 
+/// Where a message action happens.
+enum MessageChannel {
+    Guild(StoredChannel),
+    Direct {
+        id: Snowflake,
+        participant_ids: Vec<Snowflake>,
+    },
+}
+
+impl MessageChannel {
+    fn id(&self) -> Snowflake {
+        match self {
+            Self::Guild(channel) => channel.id,
+            Self::Direct { id, .. } => *id,
+        }
+    }
+
+    fn guild_id(&self) -> Option<Snowflake> {
+        match self {
+            Self::Guild(channel) => Some(channel.guild_id),
+            Self::Direct { .. } => None,
+        }
+    }
+}
+
+/// Who receives a channel's events, decided before the write (ADR-0015).
+enum MessageAudience {
+    Guild {
+        guild_id: Snowflake,
+        viewers: ChannelAudience,
+    },
+    Participants(Vec<Snowflake>),
+}
+
+async fn is_empty_channel(pool: &SqlitePool, channel_id: Snowflake) -> Result<bool, MessageError> {
+    Ok(
+        message_storage::list_messages(pool, channel_id, HistoryPage::Newest, 1)
+            .await?
+            .is_empty(),
+    )
+}
+
+fn publish(guilds: &Guilds, audience: &MessageAudience, event: &GatewayEvent) {
+    match audience {
+        MessageAudience::Guild { guild_id, viewers } => {
+            guilds.publish_to_audience(*guild_id, viewers, event);
+        }
+        MessageAudience::Participants(user_ids) => guilds.publish_to_users(user_ids, event),
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Messages {
     pool: SqlitePool,
@@ -83,24 +139,57 @@ impl Messages {
         }
     }
 
-    /// The text channel, after checking the member has every permission in `needed`.
+    /// The text channel or conversation, after checking the user has every permission in
+    /// `needed`. A conversation the user is not part of is `NotFound`, like a hidden channel.
     async fn text_channel_and_permissions_requiring(
         &self,
         user_id: Snowflake,
         channel_id: Snowflake,
         needed: Permissions,
-    ) -> Result<(StoredChannel, Permissions), MessageError> {
-        let (channel, permissions) = self
-            .guilds
-            .channel_and_member_permissions(user_id, channel_id)
-            .await?;
+    ) -> Result<(MessageChannel, Permissions), MessageError> {
+        let participant_ids = direct_message_storage::list_participant_ids(&self.pool, channel_id)
+            .await
+            .map_err(GuildError::from)?;
+        let (channel, permissions) = if participant_ids.is_empty() {
+            let (channel, permissions) = self
+                .guilds
+                .channel_and_member_permissions(user_id, channel_id)
+                .await?;
+            if channel.kind != ChannelKind::Text {
+                return Err(MessageRuleViolation::NotATextChannel.into());
+            }
+            (MessageChannel::Guild(channel), permissions)
+        } else {
+            let is_participant = participant_ids.contains(&user_id);
+            let shares_a_guild = is_participant
+                && direct_messages::shares_a_guild_with_each(&self.pool, user_id, &participant_ids)
+                    .await?;
+            let permissions = direct_message_permissions(is_participant, shares_a_guild);
+            if !permissions.contains(Permissions::VIEW_CHANNEL) {
+                return Err(GuildError::NotFound.into());
+            }
+            let channel = MessageChannel::Direct {
+                id: channel_id,
+                participant_ids,
+            };
+            (channel, permissions)
+        };
         if !permissions.contains(needed) {
             return Err(GuildError::MissingPermissions.into());
         }
-        if channel.kind != ChannelKind::Text {
-            return Err(MessageRuleViolation::NotATextChannel.into());
-        }
         Ok((channel, permissions))
+    }
+
+    async fn audience(&self, channel: &MessageChannel) -> Result<MessageAudience, MessageError> {
+        Ok(match channel {
+            MessageChannel::Guild(channel) => MessageAudience::Guild {
+                guild_id: channel.guild_id,
+                viewers: self.guilds.channel_audience(channel).await?,
+            },
+            MessageChannel::Direct {
+                participant_ids, ..
+            } => MessageAudience::Participants(participant_ids.clone()),
+        })
     }
 
     async fn message_in_channel(
@@ -138,7 +227,17 @@ impl Messages {
         }
         // Decided before the lock and the write: a failure leaves nothing stored, and the scan of
         // a restricted channel's members does not hold up every other send (ADR-0015).
-        let audience = self.guilds.channel_audience(&channel).await?;
+        let audience = self.audience(&channel).await?;
+        let channel_id = channel.id();
+        // Read before the write too, so nothing can fail between the insert and the events.
+        let conversation_views = match &channel {
+            MessageChannel::Direct {
+                participant_ids, ..
+            } => {
+                direct_messages::conversation_views(&self.pool, channel_id, participant_ids).await?
+            }
+            MessageChannel::Guild(_) => Vec::new(),
+        };
         let send_order = self.send_order.clone();
         let pool = self.pool.clone();
         let ids = self.ids.clone();
@@ -150,21 +249,23 @@ impl Messages {
             let _send_order = send_order.lock_owned().await;
             if let Some(nonce) = &request.nonce
                 && let Some(already_sent) =
-                    message_storage::find_message_by_nonce(&pool, channel.id, user_id, nonce)
+                    message_storage::find_message_by_nonce(&pool, channel_id, user_id, nonce)
                         .await?
             {
                 return Ok(message_from_stored(already_sent, request.nonce));
             }
             if let Some(reply_to_id) = request.reply_to_id {
-                message_storage::find_message_in_channel(&pool, channel.id, reply_to_id)
+                message_storage::find_message_in_channel(&pool, channel_id, reply_to_id)
                     .await?
                     .ok_or(MessageRuleViolation::ReplyTarget)?;
             }
+            let is_first_direct_message =
+                !conversation_views.is_empty() && is_empty_channel(&pool, channel_id).await?;
             let stored = message_storage::insert_message(
                 &pool,
                 &NewMessage {
                     id: ids.next_id(now_unix_milliseconds)?,
-                    channel_id: channel.id,
+                    channel_id,
                     author_id: user_id,
                     content,
                     reply_to_id: request.reply_to_id,
@@ -172,9 +273,12 @@ impl Messages {
                 },
             )
             .await?;
+            if is_first_direct_message {
+                direct_messages::announce_conversation(&guilds, conversation_views, stored.id);
+            }
             // The nonce goes back to the sender only, never in the event.
-            guilds.publish_to_audience(
-                channel.guild_id,
+            publish(
+                &guilds,
                 &audience,
                 &GatewayEvent::MessageCreate(message_from_stored(stored.clone(), None)),
             );
@@ -206,7 +310,7 @@ impl Messages {
         };
         let limit = history_page_size(query.limit)?;
         Ok(
-            message_storage::list_messages(&self.pool, channel.id, page, limit)
+            message_storage::list_messages(&self.pool, channel.id(), page, limit)
                 .await?
                 .into_iter()
                 .map(|message| message_from_stored(message, None))
@@ -231,13 +335,13 @@ impl Messages {
                 Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES,
             )
             .await?;
-        let message = self.message_in_channel(channel.id, message_id).await?;
+        let message = self.message_in_channel(channel.id(), message_id).await?;
         if message.author_id != user_id {
             return Err(GuildError::MissingPermissions.into());
         }
         let content = normalize_line_endings(&request.content);
         validate_message_content(&content)?;
-        let audience = self.guilds.channel_audience(&channel).await?;
+        let audience = self.audience(&channel).await?;
         let updated = message_storage::update_message_content(
             &self.pool,
             message.id,
@@ -247,8 +351,8 @@ impl Messages {
         .await?
         .ok_or(MessageError::MessageNotFound)?;
         let updated = message_from_stored(updated, None);
-        self.guilds.publish_to_audience(
-            channel.guild_id,
+        publish(
+            &self.guilds,
             &audience,
             &GatewayEvent::MessageUpdate(updated.clone()),
         );
@@ -265,29 +369,33 @@ impl Messages {
         let (channel, permissions) = self
             .text_channel_and_permissions_requiring(user_id, channel_id, Permissions::VIEW_CHANNEL)
             .await?;
-        let message = self.message_in_channel(channel.id, message_id).await?;
+        let message = self.message_in_channel(channel.id(), message_id).await?;
         if message.author_id != user_id && !permissions.contains(Permissions::MANAGE_MESSAGES) {
             return Err(GuildError::MissingPermissions.into());
         }
-        let audience = self.guilds.channel_audience(&channel).await?;
-        let audit = (message.author_id != user_id)
-            .then(|| {
+        let audience = self.audience(&channel).await?;
+        // Conversations have no moderators, so only guild channels can get here for someone
+        // else's message.
+        let audit = channel
+            .guild_id()
+            .filter(|_| message.author_id != user_id)
+            .map(|guild_id| {
                 self.guilds.audit_entry(
-                    channel.guild_id,
+                    guild_id,
                     user_id,
                     AuditAction::MessageDelete,
                     Some(message.author_id),
-                    Some(channel.id),
+                    Some(channel.id()),
                 )
             })
             .transpose()?;
         message_storage::delete_message(&self.pool, message.id, audit.as_ref()).await?;
-        self.guilds.publish_to_audience(
-            channel.guild_id,
+        publish(
+            &self.guilds,
             &audience,
             &GatewayEvent::MessageDelete {
-                guild_id: channel.guild_id,
-                channel_id: channel.id,
+                guild_id: channel.guild_id(),
+                channel_id: channel.id(),
                 id: message.id,
             },
         );
@@ -305,9 +413,9 @@ impl Messages {
             .text_channel_and_permissions_requiring(user_id, channel_id, Permissions::VIEW_CHANNEL)
             .await?;
         let message = self
-            .message_in_channel(channel.id, request.last_read_message_id)
+            .message_in_channel(channel.id(), request.last_read_message_id)
             .await?;
-        message_storage::advance_read_state(&self.pool, user_id, channel.id, message.id).await?;
+        message_storage::advance_read_state(&self.pool, user_id, channel.id(), message.id).await?;
         Ok(())
     }
 
@@ -324,16 +432,22 @@ impl Messages {
                 Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES,
             )
             .await?;
-        self.guilds
-            .publish_to_channel_viewers(
-                &channel,
-                &GatewayEvent::TypingStart {
-                    guild_id: channel.guild_id,
-                    channel_id: channel.id,
-                    user_id,
-                },
-            )
-            .await?;
+        // A conversation is announced to the recipient with its first message, not before.
+        if matches!(channel, MessageChannel::Direct { .. })
+            && is_empty_channel(&self.pool, channel.id()).await?
+        {
+            return Ok(());
+        }
+        let audience = self.audience(&channel).await?;
+        publish(
+            &self.guilds,
+            &audience,
+            &GatewayEvent::TypingStart {
+                guild_id: channel.guild_id(),
+                channel_id: channel.id(),
+                user_id,
+            },
+        );
         Ok(())
     }
 
@@ -342,7 +456,14 @@ impl Messages {
         &self,
         user_id: Snowflake,
     ) -> Result<Vec<ReadState>, MessageError> {
-        let visible_channel_ids = self.guilds.visible_channel_ids(user_id).await?;
+        let mut visible_channel_ids = self.guilds.visible_channel_ids(user_id).await?;
+        visible_channel_ids.extend(
+            direct_message_storage::list_user_conversations(&self.pool, user_id)
+                .await
+                .map_err(GuildError::from)?
+                .iter()
+                .map(|conversation| conversation.id),
+        );
         self.list_my_read_states_in(user_id, &visible_channel_ids)
             .await
     }
@@ -1142,5 +1263,324 @@ mod tests {
             }]
         );
         assert_eq!(after_leaving, Vec::new());
+    }
+
+    fn open_with(recipient_id: Snowflake) -> mellow_protocol::OpenDirectMessageRequest {
+        mellow_protocol::OpenDirectMessageRequest { recipient_id }
+    }
+
+    #[tokio::test]
+    async fn conversations_open_once_per_pair_and_only_with_someone_from_a_shared_guild() {
+        let fixture = fixture().await;
+        let opened = fixture
+            .messages
+            .open_direct_message(fixture.member, open_with(fixture.owner), NOW)
+            .await
+            .unwrap();
+        let reopened_by_the_other = fixture
+            .messages
+            .open_direct_message(fixture.owner, open_with(fixture.member), NOW + 1)
+            .await
+            .unwrap();
+        let with_a_stranger = fixture
+            .messages
+            .open_direct_message(fixture.member, open_with(fixture.outsider), NOW)
+            .await;
+        let with_oneself = fixture
+            .messages
+            .open_direct_message(fixture.member, open_with(fixture.member), NOW)
+            .await;
+        fixture.pool.close().await;
+
+        assert_eq!(opened.id, reopened_by_the_other.id);
+        assert_eq!(opened.recipients[0].id, fixture.owner);
+        assert_eq!(reopened_by_the_other.recipients[0].id, fixture.member);
+        assert!(matches!(
+            with_a_stranger,
+            Err(MessageError::Guild(GuildError::NotFound))
+        ));
+        assert!(matches!(
+            with_oneself,
+            Err(MessageError::Guild(GuildError::InvalidInput(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn only_participants_read_and_write_a_conversation() {
+        let fixture = fixture().await;
+        let conversation = fixture
+            .messages
+            .open_direct_message(fixture.member, open_with(fixture.owner), NOW)
+            .await
+            .unwrap();
+        let sent = fixture
+            .messages
+            .send(fixture.member, conversation.id, text("hello"), NOW)
+            .await
+            .unwrap();
+        let read_by_recipient = fixture
+            .messages
+            .list_messages(
+                fixture.owner,
+                conversation.id,
+                MessageHistoryQuery::default(),
+            )
+            .await
+            .unwrap();
+        let read_by_outsider = fixture
+            .messages
+            .list_messages(
+                fixture.outsider,
+                conversation.id,
+                MessageHistoryQuery::default(),
+            )
+            .await;
+        let sent_by_outsider = fixture
+            .messages
+            .send(fixture.outsider, conversation.id, text("hi"), NOW)
+            .await;
+        let deleted_by_recipient = fixture
+            .messages
+            .delete(fixture.owner, conversation.id, sent.id)
+            .await;
+        fixture.pool.close().await;
+
+        assert_eq!(read_by_recipient.len(), 1);
+        assert!(matches!(
+            read_by_outsider,
+            Err(MessageError::Guild(GuildError::NotFound))
+        ));
+        assert!(matches!(
+            sent_by_outsider,
+            Err(MessageError::Guild(GuildError::NotFound))
+        ));
+        assert!(
+            matches!(
+                deleted_by_recipient,
+                Err(MessageError::Guild(GuildError::MissingPermissions))
+            ),
+            "no one moderates a conversation"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_recipient_hears_of_a_conversation_with_its_first_message_only() {
+        let fixture = fixture().await;
+        let conversation = fixture
+            .messages
+            .open_direct_message(fixture.member, open_with(fixture.owner), NOW)
+            .await
+            .unwrap();
+        let listed_while_empty = fixture
+            .messages
+            .list_direct_message_channels(fixture.owner)
+            .await
+            .unwrap();
+        let (key, mut owner_events) = fixture
+            .events
+            .register_session(fixture.owner, [0; 32], 1)
+            .unwrap();
+        fixture.events.activate_session(key, &[fixture.guild.id]);
+        while owner_events.try_recv().is_ok() {}
+        for index in 0..2 {
+            fixture
+                .messages
+                .send(fixture.member, conversation.id, text("hello"), NOW + index)
+                .await
+                .unwrap();
+        }
+        let listed_after_messages = fixture
+            .messages
+            .list_direct_message_channels(fixture.owner)
+            .await
+            .unwrap();
+        let read_states = fixture
+            .messages
+            .list_my_read_states(fixture.owner)
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        assert_eq!(listed_while_empty, Vec::new());
+        assert_eq!(
+            event_types(&mut owner_events),
+            [
+                "DIRECT_MESSAGE_CHANNEL_CREATE",
+                "MESSAGE_CREATE",
+                "MESSAGE_CREATE"
+            ]
+        );
+        assert_eq!(listed_after_messages.len(), 1);
+        assert_eq!(listed_after_messages[0].recipients[0].id, fixture.member);
+        assert!(listed_after_messages[0].last_message_id.is_some());
+        assert!(read_states.is_empty(), "nothing acknowledged yet");
+    }
+
+    #[tokio::test]
+    async fn a_participant_who_shares_no_guild_any_more_can_read_but_not_write() {
+        let fixture = fixture().await;
+        let conversation = fixture
+            .messages
+            .open_direct_message(fixture.member, open_with(fixture.owner), NOW)
+            .await
+            .unwrap();
+        let own = fixture
+            .messages
+            .send(fixture.member, conversation.id, text("hello"), NOW)
+            .await
+            .unwrap();
+        fixture
+            .guilds
+            .leave_guild(fixture.member, fixture.guild.id)
+            .await
+            .unwrap();
+        let send = fixture
+            .messages
+            .send(
+                fixture.member,
+                conversation.id,
+                text("still there?"),
+                NOW + 1,
+            )
+            .await;
+        let edit = fixture
+            .messages
+            .edit(
+                fixture.member,
+                conversation.id,
+                own.id,
+                EditMessageRequest {
+                    content: "edited".into(),
+                },
+                NOW + 1,
+            )
+            .await;
+        let typing = fixture
+            .messages
+            .start_typing(fixture.member, conversation.id)
+            .await;
+        let read = fixture
+            .messages
+            .list_messages(
+                fixture.member,
+                conversation.id,
+                MessageHistoryQuery::default(),
+            )
+            .await;
+        let delete_own = fixture
+            .messages
+            .delete(fixture.member, conversation.id, own.id)
+            .await;
+        fixture.pool.close().await;
+
+        for refused in [send.map(|_| ()), edit.map(|_| ()), typing] {
+            assert!(matches!(
+                refused,
+                Err(MessageError::Guild(GuildError::MissingPermissions))
+            ));
+        }
+        assert_eq!(read.unwrap().len(), 1);
+        assert!(delete_own.is_ok());
+    }
+
+    #[tokio::test]
+    async fn outsiders_and_guild_routes_never_reach_a_conversation() {
+        let fixture = fixture().await;
+        let conversation = fixture
+            .messages
+            .open_direct_message(fixture.member, open_with(fixture.owner), NOW)
+            .await
+            .unwrap();
+        let sent = fixture
+            .messages
+            .send(fixture.member, conversation.id, text("hello"), NOW)
+            .await
+            .unwrap();
+        let outsider = fixture.outsider;
+        let attempts = [
+            fixture
+                .messages
+                .edit(
+                    outsider,
+                    conversation.id,
+                    sent.id,
+                    EditMessageRequest {
+                        content: "x".into(),
+                    },
+                    NOW,
+                )
+                .await
+                .map(|_| ()),
+            fixture
+                .messages
+                .start_typing(outsider, conversation.id)
+                .await,
+            fixture
+                .messages
+                .acknowledge_read_state(
+                    outsider,
+                    conversation.id,
+                    AcknowledgeRequest {
+                        last_read_message_id: sent.id,
+                    },
+                )
+                .await,
+            fixture
+                .messages
+                .delete(outsider, conversation.id, sent.id)
+                .await,
+        ];
+        let renamed_as_a_guild_channel = fixture
+            .guilds
+            .update_channel(
+                fixture.owner,
+                conversation.id,
+                mellow_protocol::UpdateChannelRequest::default(),
+            )
+            .await;
+        let deleted_as_a_guild_channel = fixture
+            .guilds
+            .delete_channel(fixture.owner, conversation.id)
+            .await;
+        fixture.pool.close().await;
+
+        for attempt in attempts {
+            assert!(matches!(
+                attempt,
+                Err(MessageError::Guild(GuildError::NotFound))
+            ));
+        }
+        assert!(matches!(
+            renamed_as_a_guild_channel,
+            Err(GuildError::NotFound)
+        ));
+        assert!(matches!(
+            deleted_as_a_guild_channel,
+            Err(GuildError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn typing_in_an_empty_conversation_reaches_no_one() {
+        let fixture = fixture().await;
+        let conversation = fixture
+            .messages
+            .open_direct_message(fixture.member, open_with(fixture.owner), NOW)
+            .await
+            .unwrap();
+        let (key, mut owner_events) = fixture
+            .events
+            .register_session(fixture.owner, [0; 32], 1)
+            .unwrap();
+        fixture.events.activate_session(key, &[fixture.guild.id]);
+        while owner_events.try_recv().is_ok() {}
+        fixture
+            .messages
+            .start_typing(fixture.member, conversation.id)
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        assert_eq!(event_types(&mut owner_events), Vec::<String>::new());
     }
 }

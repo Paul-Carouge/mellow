@@ -11,7 +11,7 @@ use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
 
 /// Takes the write lock at once, so a read-then-write transaction waits for `busy_timeout`
 /// instead of failing with `SQLITE_BUSY_SNAPSHOT` when another connection wrote in between.
-const BEGIN_WRITE_TRANSACTION: &str = "BEGIN IMMEDIATE";
+pub(crate) const BEGIN_WRITE_TRANSACTION: &str = "BEGIN IMMEDIATE";
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GuildStorageError {
@@ -40,7 +40,7 @@ pub(crate) fn to_integer(value: u64) -> Result<i64, GuildStorageError> {
 }
 
 /// For lookups: an id SQLite cannot hold cannot exist, so it is simply not found.
-fn lookup_integer(id: Snowflake) -> Option<i64> {
+pub(crate) fn lookup_integer(id: Snowflake) -> Option<i64> {
     i64::try_from(id.raw()).ok()
 }
 

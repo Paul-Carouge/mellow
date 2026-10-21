@@ -783,7 +783,11 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
                 refresh_messages(&mut shell.borrow_mut());
             }
         }
-        StateChange::Messages { .. } | StateChange::Members { .. } | StateChange::ReadStates => {}
+        // shortcut: the conversation list is not shown yet; it comes with the home screen.
+        StateChange::DirectMessages
+        | StateChange::Messages { .. }
+        | StateChange::Members { .. }
+        | StateChange::ReadStates => {}
     }
     let shell = shell.borrow();
     refresh_server_items(&shell);

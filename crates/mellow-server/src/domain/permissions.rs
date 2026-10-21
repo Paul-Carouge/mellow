@@ -42,6 +42,23 @@ pub fn channel_permissions(
     )
 }
 
+/// What someone may do in a direct-message conversation: participants view and read it, and write
+/// only while they share a guild with everyone else in it, so a member kicked or banned from the
+/// only shared guild can no longer message the others; anyone else gets nothing. No one manages
+/// messages there, so each author deletes only their own.
+#[must_use]
+pub fn direct_message_permissions(is_participant: bool, shares_a_guild: bool) -> Permissions {
+    match (is_participant, shares_a_guild) {
+        (false, _) => Permissions::empty(),
+        (true, false) => Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY,
+        (true, true) => {
+            Permissions::VIEW_CHANNEL
+                | Permissions::SEND_MESSAGES
+                | Permissions::READ_MESSAGE_HISTORY
+        }
+    }
+}
+
 /// Whether every member of the guild can view a channel, without looking at members: everyone's
 /// permissions are a superset of `@everyone`'s, and overwrites can only take `VIEW_CHANNEL` away
 /// through a deny (ADR-0015 fast path).

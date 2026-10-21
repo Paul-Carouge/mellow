@@ -518,14 +518,83 @@ mod tests {
         pool.close().await;
 
         assert_eq!(
-            outcome.applied_versions,
-            [LAST_VERSION_WITHOUT_AUDIT_LOG + 1]
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_AUDIT_LOG + 1))
         );
         assert_eq!(
             entries,
             [(100, None)],
             "kept without its deleted actor; gone with its guild"
         );
+    }
+
+    #[tokio::test]
+    async fn guild_channels_and_their_messages_survive_and_conversations_follow_their_users() {
+        const LAST_VERSION_WITHOUT_CONVERSATIONS: i64 = 8;
+        let directory = tempfile::tempdir().unwrap();
+        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_CONVERSATIONS, &pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) \
+             VALUES (30, 20, 1, 'hello');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (21, NULL, 'direct_message', '', 0); \
+             INSERT INTO direct_message_participants (channel_id, user_id) VALUES (21, 1), (21, 2); \
+             INSERT INTO direct_message_pairs (lower_user_id, higher_user_id, channel_id) \
+             VALUES (1, 2, 21); \
+             DELETE FROM users WHERE id = 2;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let guild_messages: Vec<(i64,)> =
+            sqlx::query_as("SELECT id FROM messages WHERE channel_id = 20")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let participants: Vec<(i64,)> =
+            sqlx::query_as("SELECT user_id FROM direct_message_participants")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let pairs: Vec<(i64,)> = sqlx::query_as("SELECT channel_id FROM direct_message_pairs")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        assert_eq!(
+            outcome.applied_versions,
+            [LAST_VERSION_WITHOUT_CONVERSATIONS + 1]
+        );
+        assert_eq!(guild_messages, [(30,)]);
+        assert_eq!(
+            participants,
+            [(1,)],
+            "a deleted user leaves the conversation"
+        );
+        assert!(pairs.is_empty(), "the pair goes with either user");
     }
 
     #[tokio::test]
