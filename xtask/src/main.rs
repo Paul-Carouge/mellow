@@ -3,6 +3,7 @@
 
 mod css_tokens;
 mod design_tokens;
+mod favicon;
 mod slint_tokens;
 
 use std::path::{Path, PathBuf};
@@ -16,6 +17,7 @@ const USAGE: &str = "usage: cargo xtask tokens [--check]";
 const TOKENS_SOURCE_PATH: &str = "design/tokens.json";
 const SLINT_TOKENS_OUTPUT_PATH: &str = "crates/mellow-desktop/ui/tokens.slint";
 const CSS_TOKENS_OUTPUT_PATH: &str = "web/src/lib/tokens.css";
+const FAVICON_OUTPUT_PATH: &str = "web/public/favicon.svg";
 
 fn main() -> ExitCode {
     match run(&std::env::args().skip(1).collect::<Vec<_>>()) {
@@ -61,6 +63,7 @@ fn generate_tokens(is_check_only: bool) -> Result<()> {
             CSS_TOKENS_OUTPUT_PATH,
             css_tokens::generate_css_tokens(&tokens)?,
         ),
+        (FAVICON_OUTPUT_PATH, favicon::generate_favicon(&tokens)?),
     ];
     for (relative_path, generated) in outputs {
         let output_path = root.join(relative_path);
