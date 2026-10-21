@@ -765,4 +765,51 @@ mod tests {
         assert!(!open[0].has_unread);
         assert!(has_unread_direct_messages(&state));
     }
+
+    #[test]
+    fn only_other_members_can_be_messaged() {
+        let member = |id: u64, name: &str| Member {
+            user: mellow_protocol::PublicUser {
+                id: Snowflake::from_raw(id),
+                username: name.to_lowercase(),
+                display_name: name.into(),
+            },
+            role_ids: Vec::new(),
+            joined_at_unix_milliseconds: 0,
+        };
+        let mut state = ClientState::default();
+        state.apply_ready(Ready {
+            session_id: "session".into(),
+            user: CurrentUser {
+                id: Snowflake::from_raw(2),
+                username: "me".into(),
+                display_name: "Me".into(),
+                email: "me@example.org".into(),
+                is_instance_administrator: false,
+            },
+            guilds: Vec::new(),
+            read_states: Vec::new(),
+            online_user_ids: Vec::new(),
+            direct_message_channels: Vec::new(),
+        });
+        let rows = member_rows(&[member(2, "Me"), member(7, "Aurore")], &state);
+        let can_message: Vec<_> = rows
+            .iter()
+            .filter(|row| !row.is_group_header)
+            .map(|row| {
+                (
+                    row.label.to_string(),
+                    row.user_id.to_string(),
+                    row.can_message,
+                )
+            })
+            .collect();
+        assert_eq!(
+            can_message,
+            [
+                ("Aurore".to_owned(), "7".to_owned(), true),
+                ("Me".to_owned(), "2".to_owned(), false)
+            ]
+        );
+    }
 }

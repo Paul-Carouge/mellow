@@ -206,6 +206,9 @@ export component AppWindow inherits Window {
         }
     }
 
+    public function focus-composer() {
+        chat.focus-composer();
+    }
     public function scroll-to-latest-message() {
         chat.scroll-to-latest-message();
     }
@@ -333,10 +336,9 @@ export component AppWindow inherits Window {
             if root.is-member-list-visible && root.is-wide-enough-for-member-list && !root.is-direct-message-open: MemberList {
                 rows: root.member-rows;
                 // Typing goes to the conversation, as on Discord; the popout and its row are gone.
-                open-direct-message(user-id) => {
-                    root.open-direct-message(user-id);
-                    chat.focus-composer();
-                }
+                // Rust focuses the composer once the conversation is open: until then it still
+                // sends to the channel being read.
+                open-direct-message(user-id) => { root.open-direct-message(user-id); }
             }
         }
         }

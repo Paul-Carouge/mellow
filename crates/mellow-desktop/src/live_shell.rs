@@ -452,6 +452,9 @@ fn open_direct_message(shell: &SharedShell, user_id: Snowflake) {
                 .upsert_direct_message_channel(conversation);
             apply_state_change(shell, change);
             select_guild(shell, None, Some(conversation_id));
+            if let Some(window) = shell.borrow().window.upgrade() {
+                window.invoke_focus_composer();
+            }
         }
         Err(error) => {
             report_request_error(shell, &error, "open conversation");
@@ -675,8 +678,11 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
     };
     match update {
         GatewayUpdate::Ready(ready) => {
-            let (previous_guild_id, previous_channel_id) = {
+            let (previous_guild_id, previous_channel_id, was_home) = {
                 let mut shell = shell.borrow_mut();
+                // Home after an earlier `Ready`, not the empty selection before the first one.
+                let was_home =
+                    shell.state.current_user().is_some() && shell.selected_guild_id.is_none();
                 shell.state.apply_ready(*ready);
                 shell.requested_history_channel_ids.clear();
                 shell.requested_member_list_guild_ids.clear();
@@ -686,18 +692,15 @@ fn apply_gateway_update(shell: &SharedShell, update: GatewayUpdate) {
                 shell.failed_history_channel_ids.clear();
                 shell.history_generation += 1;
                 refresh_user_panel(&shell);
-                (shell.selected_guild_id, shell.selected_channel_id)
+                (shell.selected_guild_id, shell.selected_channel_id, was_home)
             };
             set_notice("");
             let guild_id = {
                 let shell = shell.borrow();
-                let was_home_in_a_conversation = previous_guild_id.is_none()
-                    && previous_channel_id
-                        .is_some_and(|id| shell.state.direct_message_channel(id).is_some());
                 previous_guild_id
                     .filter(|id| shell.state.guild(*id).is_some())
                     .or_else(|| {
-                        if was_home_in_a_conversation {
+                        if was_home {
                             None
                         } else {
                             shell.state.guilds().first().map(|guild| guild.id)
@@ -812,6 +815,8 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
         StateChange::Presence => refresh_member_rows(&shell.borrow()),
         StateChange::UserRenamed { user_id } => {
             refresh_user_panel(&shell.borrow());
+            // A conversation is named after its recipients.
+            refresh_header(&shell.borrow());
             refresh_member_rows(&shell.borrow());
             // Rebuilding rows recreates an open inline editor, so only when a shown author changed.
             let shows_renamed_author = selected_channel_id.is_some_and(|channel_id| {
