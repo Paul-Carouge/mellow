@@ -50,6 +50,14 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn payload_too_large() -> Self {
+        Self {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            code: ApiErrorCode::LimitReached,
+            message: "This file is larger than this instance accepts.".into(),
+        }
+    }
+
     pub(crate) fn server_busy() -> Self {
         Self::from(AccountError::ServerBusy)
     }
@@ -146,6 +154,12 @@ impl From<MessageError> for ApiError {
                 message: violation.to_string(),
             },
             MessageError::MessageNotFound => Self::not_found(),
+            MessageError::Busy => Self::server_busy(),
+            MessageError::QuotaReached => Self {
+                status: StatusCode::CONFLICT,
+                code: ApiErrorCode::LimitReached,
+                message: "Your files take all the storage this instance gives each account.".into(),
+            },
             MessageError::Internal(source) => Self::internal("a message request", &source),
         }
     }

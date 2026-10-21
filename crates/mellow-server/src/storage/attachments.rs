@@ -128,11 +128,26 @@ pub(crate) async fn delete_unlinked_before(
     rows.into_iter().map(|(id,)| to_id(id)).collect()
 }
 
-/// Whether a row still refers to this file; files without one are swept (their message, channel
-/// or guild was deleted, which removed the row through `ON DELETE CASCADE`).
-pub(crate) async fn attachment_exists(
+/// Every attachment id, for the sweep of files whose row is gone (one query per sweep).
+pub(crate) async fn all_attachment_ids(
     pool: &SqlitePool,
-    attachment_id: Snowflake,
-) -> Result<bool, MessageStorageError> {
-    Ok(find_attachment(pool, attachment_id).await?.is_some())
+) -> Result<Vec<Snowflake>, MessageStorageError> {
+    let rows: Vec<(i64,)> = sqlx::query_as("SELECT id FROM attachments")
+        .fetch_all(pool)
+        .await?;
+    rows.into_iter().map(|(id,)| to_id(id)).collect()
+}
+
+/// What a user's uploads take on disk, sent or not, for the per-user quota.
+pub(crate) async fn stored_bytes_of_uploader(
+    pool: &SqlitePool,
+    uploader_id: Snowflake,
+) -> Result<u64, MessageStorageError> {
+    let (total,): (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(size_bytes), 0) FROM attachments WHERE uploader_id = ?",
+    )
+    .bind(to_integer(uploader_id.raw())?)
+    .fetch_one(pool)
+    .await?;
+    u64::try_from(total).map_err(|_| MessageStorageError::IntegerOutOfRange)
 }

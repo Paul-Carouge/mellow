@@ -64,6 +64,7 @@ impl AppState {
                 ids.clone(),
                 messages.clone(),
                 attachment_files,
+                config.maximum_attachment_storage_bytes_per_user,
             )),
             maximum_attachment_bytes: config.maximum_attachment_bytes,
             accounts: Arc::new(Accounts::new(
@@ -133,7 +134,7 @@ fn message_router(maximum_attachment_bytes: u64) -> Router<AppState> {
             ))),
         )
         .route(
-            "/api/v1/attachments/{attachment_id}/{file_name}",
+            "/api/v1/attachments/{attachment_id}",
             get(attachment_routes::download),
         )
 }
@@ -335,6 +336,7 @@ pub(crate) mod tests {
                 ids.clone(),
                 messages.clone(),
                 test_attachment_files(),
+                crate::config::DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER,
             )),
             maximum_attachment_bytes: crate::config::DEFAULT_MAXIMUM_ATTACHMENT_BYTES,
             messages,
@@ -908,9 +910,12 @@ pub(crate) mod tests {
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\nnot really an image";
     const HTML: &[u8] = b"<html><script>alert(1)</script></html>";
 
+    /// `path` ends with `?file_name=<name>` for readability; the name goes into the header.
     fn upload_request(path: &str, token: &str, bytes: &'static [u8]) -> Request<Body> {
+        let (path, file_name) = path.split_once("?file_name=").unwrap_or((path, "file"));
         Request::post(path)
             .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header("x-mellow-file-name", file_name)
             .header(header::CONTENT_TYPE, "application/octet-stream")
             .body(Body::from(bytes))
             .unwrap()
@@ -957,7 +962,7 @@ pub(crate) mod tests {
             &state,
             authorized(
                 "GET",
-                &format!("/api/v1/attachments/{}/cat.png", image.id),
+                &format!("/api/v1/attachments/{}", image.id),
                 &owner,
                 None,
             ),
@@ -1003,7 +1008,7 @@ pub(crate) mod tests {
             TEST_PEER,
             authorized(
                 "GET",
-                &format!("/api/v1/attachments/{}/cat.png", image.id),
+                &format!("/api/v1/attachments/{}", image.id),
                 &owner,
                 None,
             ),
@@ -1014,7 +1019,7 @@ pub(crate) mod tests {
             TEST_PEER,
             authorized(
                 "GET",
-                &format!("/api/v1/attachments/{}/page.html", page.id),
+                &format!("/api/v1/attachments/{}", page.id),
                 &owner,
                 None,
             ),
@@ -1024,7 +1029,7 @@ pub(crate) mod tests {
             &state,
             authorized(
                 "GET",
-                &format!("/api/v1/attachments/{}/cat.png", image.id),
+                &format!("/api/v1/attachments/{}", image.id),
                 &stranger,
                 None,
             ),
@@ -1085,6 +1090,28 @@ pub(crate) mod tests {
                 .contains("sandbox")
         );
         assert_eq!(stranger_download, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn uploads_stop_at_the_storage_quota_of_each_account() {
+        let (_directory, pool) = migrated_pool().await;
+        let mut state = test_state(pool.clone(), RegistrationMode::Open);
+        state.attachments = Arc::new(crate::domain::attachments::Attachments::new(
+            pool.clone(),
+            Arc::new(SnowflakeGenerator::default()),
+            state.messages.clone(),
+            test_attachment_files(),
+            PNG.len() as u64 + 1,
+        ));
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let path = format!("/api/v1/channels/{general}/attachments?file_name=a.png");
+        let (first, _) = send(&state, upload_request(&path, &owner, PNG)).await;
+        let (second, body) = send(&state, upload_request(&path, &owner, PNG)).await;
+        pool.close().await;
+
+        assert_eq!(first, StatusCode::CREATED);
+        assert_eq!(second, StatusCode::CONFLICT);
+        assert_eq!(json::<ApiErrorBody>(&body).code, ApiErrorCode::LimitReached);
     }
 
     #[tokio::test]

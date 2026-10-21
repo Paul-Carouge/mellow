@@ -114,6 +114,11 @@ pub(crate) const ATTACHMENT_UPLOADS_PER_USER: RateLimit = RateLimit {
     maximum_events: 10,
     window: Duration::from_mins(1),
 };
+/// Attachment downloads per user: each one decrypts a whole file in memory (ADR-0020).
+pub(crate) const ATTACHMENT_DOWNLOADS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 120,
+    window: Duration::from_mins(1),
+};
 /// Sustained uploads per user, so one account cannot fill the disk over a day.
 pub(crate) const ATTACHMENT_UPLOADS_PER_USER_PER_HOUR: RateLimit = RateLimit {
     maximum_events: 100,
