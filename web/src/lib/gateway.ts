@@ -33,6 +33,7 @@ export class GatewayConnection {
    * `isTokenRefused` asks the REST API whether the token still works, as the native client does:
    * a connection closed after `identify` may mean a refused token or a full session table.
    */
+  /** The token is empty for the web client: the instance reads the session cookie instead. */
   constructor(
     private readonly token: string,
     private readonly onUpdate: (update: GatewayUpdate) => void,

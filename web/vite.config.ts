@@ -11,12 +11,19 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // The instance accepts the session cookie only from its own origin, so the proxy presents
+    // requests as coming from it.
     proxy: {
-      "/api": { target: DEVELOPMENT_INSTANCE, changeOrigin: true },
-      "/gateway": { target: DEVELOPMENT_INSTANCE, changeOrigin: true, ws: true },
+      "/api": { target: DEVELOPMENT_INSTANCE, changeOrigin: true, headers: { origin: DEVELOPMENT_INSTANCE } },
+      "/gateway": {
+        target: DEVELOPMENT_INSTANCE,
+        changeOrigin: true,
+        ws: true,
+        headers: { origin: DEVELOPMENT_INSTANCE },
+      },
     },
-    // Figtree is bundled with the desktop client; the web client reads the same files.
-    fs: { allow: [".", "../crates/mellow-desktop/fonts"] },
+    // Figtree and the Phosphor icons are bundled with the desktop client; the web client reads the same files.
+    fs: { allow: [".", "../crates/mellow-desktop/fonts", "../crates/mellow-desktop/icons"] },
   },
   build: { target: "es2022", sourcemap: false },
 });

@@ -1,4 +1,5 @@
-// REST client for `/api/v1` on the origin that served this page (ADR-0019).
+// REST client for `/api/v1` on the origin that served this page (ADR-0019). The session is an
+// HttpOnly cookie the instance sets at sign-in: page scripts never see the token.
 
 import type {
   ApiErrorCode,
@@ -15,6 +16,7 @@ import type {
 
 export const HISTORY_PAGE_SIZE = 50;
 const DEVICE_NAME = "Web browser";
+const SESSION_TRANSPORT_HEADER = "X-Mellow-Session-Transport";
 
 /** A refusal from the instance. Its `message` is the instance's own text: never shown as is. */
 export class ApiError extends Error {
@@ -32,19 +34,10 @@ export class ApiError extends Error {
 }
 
 export class RestClient {
-  constructor(private token: string | null = null) {}
-
-  get sessionToken(): string | null {
-    return this.token;
-  }
-
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { [SESSION_TRANSPORT_HEADER]: "cookie" };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
-    }
-    if (this.token) {
-      headers.Authorization = `Bearer ${this.token}`;
     }
     let response: Response;
     try {
@@ -70,33 +63,25 @@ export class RestClient {
     return (await response.json()) as T;
   }
 
-  async login(login: string, password: string): Promise<SessionCreated> {
-    const session = await this.request<SessionCreated>("POST", "auth/login", {
+  login(login: string, password: string): Promise<SessionCreated> {
+    return this.request<SessionCreated>("POST", "auth/login", {
       login,
       password,
       device_name: DEVICE_NAME,
     });
-    this.token = session.token;
-    return session;
   }
 
-  async register(username: string, email: string, password: string): Promise<SessionCreated> {
-    const session = await this.request<SessionCreated>("POST", "auth/register", {
+  register(username: string, email: string, password: string): Promise<SessionCreated> {
+    return this.request<SessionCreated>("POST", "auth/register", {
       username,
       email,
       password,
       device_name: DEVICE_NAME,
     });
-    this.token = session.token;
-    return session;
   }
 
-  async logout(): Promise<void> {
-    try {
-      await this.request<void>("POST", "auth/logout");
-    } finally {
-      this.token = null;
-    }
+  logout(): Promise<void> {
+    return this.request<void>("POST", "auth/logout");
   }
 
   currentUser(): Promise<CurrentUser> {

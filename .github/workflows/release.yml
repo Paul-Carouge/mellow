@@ -51,7 +51,14 @@ jobs:
         run: |
           # shellcheck disable=SC2086 # the package list is split into words on purpose
           sudo apt-get update && sudo apt-get install --yes --no-install-recommends ${LINUX_DESKTOP_PACKAGES}
-      - run: cargo build --release --locked -p mellow-server -p mellow-desktop
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.node-version
+      # The server embeds the web client it serves (ADR-0019); `npm ci` installs the locked versions.
+      - name: Build the web client
+        working-directory: web
+        run: npm ci && npm run build
+      - run: cargo build --release --locked -p mellow-server -p mellow-desktop --features mellow-server/web-client
       - name: Name the assets
         shell: bash
         run: |
