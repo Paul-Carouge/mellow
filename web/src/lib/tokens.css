@@ -1234,18 +1234,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   :root {
-    --mw-component-dialog-copied-label-duration: 0ms;
-    --mw-component-message-highlight-duration: 0ms;
-    --mw-component-rail-morph-duration: 0ms;
-    --mw-component-rail-tooltip-delay: 0ms;
-    --mw-component-tooltip-delay: 0ms;
-    --mw-component-unsaved-bar-shake-step-duration: 0ms;
-    --mw-component-unsaved-bar-slide-duration: 0ms;
-    --mw-motion-delay-copied-label: 0ms;
-    --mw-motion-delay-pending-label: 0ms;
-    --mw-motion-delay-skeleton: 0ms;
-    --mw-motion-delay-tooltip: 0ms;
-    --mw-motion-delay-tooltip-rail: 0ms;
     --mw-motion-duration-base: 0ms;
     --mw-motion-duration-fast: 0ms;
     --mw-motion-duration-highlight: 0ms;

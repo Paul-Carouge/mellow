@@ -2,6 +2,7 @@
   import { onMount, untrack } from "svelte";
 
   import type { MellowClient } from "../lib/client.svelte";
+  import Button from "./Button.svelte";
   import type { Message, PublicUser, Snowflake } from "../lib/protocol";
   import { displayName } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
@@ -74,6 +75,8 @@
   );
   const hasReachedStart = $derived(client.reachedStartChannelIds.has(channelId));
   const isInitialLoad = $derived(messages.length === 0 && !hasReachedStart);
+  // Set when a history request failed: shown with "Try again" instead of skeletons forever.
+  const hasHistoryFailed = $derived(client.failedHistoryChannelIds.has(channelId));
 
   let viewport: HTMLElement;
   // Not reactive: written by scrolling, read around DOM updates.
@@ -253,6 +256,16 @@
           <p class="type-message text-(--mw-component-message-channel-start-description-text)">{topic}</p>
         {/if}
       </section>
+    {:else if hasHistoryFailed}
+      <div
+        role="alert"
+        class="flex flex-col items-start gap-sm pr-(--mw-component-message-padding-trailing) pl-(--mw-component-message-avatar-inset) py-(--mw-component-message-channel-start-padding-block)"
+      >
+        <p class="type-message text-text-muted">
+          {isInitialLoad ? `Couldn't load messages in ${channelLabel}.` : "Couldn't load older messages."}
+        </p>
+        <Button onclick={() => client.retryLoadingHistory()}>Try again</Button>
+      </div>
     {:else if isSkeletonDelayElapsed && (isInitialLoad || client.isLoadingOlder)}
       {@render skeletons(isInitialLoad ? INITIAL_SKELETON_COUNT : OLDER_HISTORY_SKELETON_COUNT)}
     {/if}

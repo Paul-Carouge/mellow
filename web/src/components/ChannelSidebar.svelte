@@ -30,7 +30,11 @@
   const canInvitePeople = $derived(guild ? hasPermission(guild.my_permissions, Permission.CREATE_INVITE) : false);
   const canCreateChannels = $derived(guild ? hasPermission(guild.my_permissions, Permission.MANAGE_CHANNELS) : false);
   const canLeaveServer = $derived(guild !== null && guild.owner_id !== user?.id);
-  const canSendMessages = $derived(guild ? hasPermission(guild.my_permissions, Permission.SEND_MESSAGES) : true);
+  // Channel overwrites included: a read-only channel shows a lock (DESIGN.md §5.3).
+  function canSendIn(channelId: Snowflake): boolean {
+    const permissions = client.myChannelPermissions(channelId);
+    return permissions === null || hasPermission(permissions, Permission.SEND_MESSAGES);
+  }
   const hasServerMenu = $derived(canInvitePeople || canCreateChannels || canLeaveServer);
 
   let headerButton = $state<HTMLButtonElement | null>(null);
@@ -267,6 +271,11 @@
         onclick={() => void client.signOut()}
       />
     </div>
+    {#if client.signOutError}
+      <p role="alert" class="bg-(--mw-component-user-panel-background) px-sm pb-xs type-body-sm text-text-danger">
+        {client.signOutError}
+      </p>
+    {/if}
   {/if}
 </div>
 
@@ -311,6 +320,7 @@
       {#each section.channels as channel (channel.id)}
         {@const isSelected = channel.id === client.selectedChannelId}
         {@const hasUnread = !isSelected && client.hasUnread(channel.id)}
+        {@const canSendMessages = canSendIn(channel.id)}
         <!-- Collapsed categories still show the selected and unread channels, as on Discord. -->
         {#if !isCollapsed || isSelected || hasUnread}
           <li class="relative mb-(--mw-component-channel-row-gap) px-(--mw-component-channel-row-margin-inline)">

@@ -14,6 +14,8 @@
 
   let channelName = $state("");
   let isBusy = $state(false);
+  // Plain: read by the dialog when it closes, after this component stopped updating.
+  let hasSucceeded = false;
   let errorMessage = $state("");
 
   async function submit() {
@@ -21,6 +23,7 @@
     errorMessage = "";
     try {
       await client.createChannel(channelName.trim());
+      hasSucceeded = true;
       onclose();
     } catch (error) {
       errorMessage = describeError(error, "Couldn't create the channel");
@@ -31,6 +34,7 @@
 </script>
 
 <ModalDialog
+  shouldReturnFocusToOpener={() => !hasSucceeded}
   title="Create channel"
   {errorMessage}
   {isBusy}

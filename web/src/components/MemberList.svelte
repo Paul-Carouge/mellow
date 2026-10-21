@@ -78,7 +78,12 @@
   aria-label="Members of {guild.name}"
   class="flex h-full w-(--mw-component-member-list-width) shrink-0 flex-col overflow-y-auto bg-(--mw-component-member-list-background) pb-xs"
 >
-  {#if members === null}
+  {#if members === null && client.failedMemberGuildIds.has(guild.id)}
+    <div role="alert" class="flex flex-col items-start gap-sm px-md pt-lg">
+      <p class="type-body text-text-muted">Couldn't load the members.</p>
+      <Button onclick={() => client.retryLoadingMembers()}>Try again</Button>
+    </div>
+  {:else if members === null}
     <p role="status" class="px-md pt-lg type-body text-text-muted">Loading members…</p>
   {/if}
   {#each groups as group (group.label)}
