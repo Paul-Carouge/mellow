@@ -1,11 +1,12 @@
 # Mellow design document
 
-Status: draft v0.13 (2026-10-21). Owner: design. Applies to the Slint desktop client, the web client, the Android client (Jetpack Compose, Material 3 Expressive) and the admin web UI embedded in the server.
+Status: draft v0.14 (2026-10-21). Owner: design. Applies to the Slint desktop client, the web client, the Android client (Jetpack Compose, Material 3 Expressive) and the admin web UI embedded in the server.
 
 This document is the reference for every visual and interaction decision in Mellow. Developers should be able to build any MVP screen from it without inventing a colour, a size or a sentence. When something is missing, add it here first, then implement it. Every value named here exists in `design/tokens.json`.
 
 ## Changelog
 
+- **2026-10-21, v0.14 — Melli without its tile:** the owner wants the character alone, with no cream tile behind it (2.10). The cloud gets an ink outline (`color.mascot.outline`) so it stays whole on light surfaces and docks; marks drawn around it use `color.mascot.mark` (peach on dark, ink on light, at least 3:1 on the rail) and switch to ink on apricot; the ground shadow is themed. Home has no fill at rest and turns apricot on hover, focus and selection (5.2). The favicon and the app icons are the character alone on a transparent background. `color.mascot.tile` and `component.rail.home-background-rest` are gone.
 - **2026-10-21, v0.13 — Melli, the Mellow logo and mascot:** the owner's round cloud becomes the logo and the mascot "Melli" (2.10): named SVG parts, eight states (idle, connecting, connection lost, notification, incoming call, in call, update available, sleeping), each with a still pose for reduced motion. The web Home button shows Melli on its peach tile (apricot on hover, focus and selection) and maps connection and unread direct messages to states (5.2); the favicon is the still idle Melli, generated from the tokens by `cargo xtask tokens`. `ref.melli.*`, `color.mascot.*`, `component.melli.*` and `component.rail.home-background-rest` tokens; contrast pairs for `color.mascot.ink`. A development-only gallery shows every state (`npm run dev`, then `/dev/melli.html`).
 - **2026-10-21, v0.12 — avatars and banners on the web (ADR-0021):** avatars show the user's picture wherever they appear, with the initial on the accent fill while it loads, when there is none or when it fails (6.8); animated pictures show their still first frame and play while the row holding them is hovered or focused, always in the profile card, never under reduced motion. The profile popout shows the banner picture in a 120 px strip (5.7). User settings gain "Profile" (5.9): avatar and banner editors beside a live preview of the profile card. `component.profile-popover.banner-image-height` token.
 - **2026-10-21, v0.11 — file attachments (ADR-0020):** the web client attaches files (5.5): attach button, drag and drop with an apricot "Drop to attach to #general" overlay, paste; each file uploads at once into a tray inside the composer box (thumbnail or file icon, middle-truncated name, "Uploading…" then the size, or the error in `text.danger` with a red outline), up to 10 per message, Send waits for running uploads. Messages show images inline and other files as download cards (5.4); the desktop client lists "name · size" rows until it handles files. `component.attachment.*`, `component.drop-overlay.*` and `component.composer.attach-button-size` / `tray-*` tokens; `text.link` and `text.accent` on `surface.sidebar` contrast pairs; Phosphor `file`, `file-arrow-up` and `download-simple` (Fill).
@@ -435,11 +436,11 @@ Reduced motion:
 
 One icon set everywhere: **Phosphor Icons** (MIT), **Fill** weight, which matches the solid, compact feel of Discord's icons without copying their artwork. Sizes: 20 px in rows and the hover bar, 24 px in headers, the composer, the user panel and on Android. Icons are exported as SVG for Slint and the admin web UI, and converted to `ImageVector` for Compose. Emoji are never used as icons.
 
-The **Home button** shows Melli, the Mellow logo (2.10): the cloud fills about 28 px of the 48 px rail icon, on its peach tile at rest and on the apricot fill when hovered, focused or selected.
+The **Home button** shows Melli, the Mellow logo (2.10): the cloud fills about 28 px of the 48 px rail icon, straight on the rail at rest and on the apricot fill when hovered, focused or selected.
 
 ### 2.10 Melli, the logo and mascot
 
-Melli (Melli / Mellow) is a round cloud with two pill eyes on a peach tile, drawn by the owner. It is the logo (Home button, favicon, app icons) and the only character in the interface. It floats, blinks and slowly turns its puffs; everything else it does is built from the same soft, round, bouncy motion. Melli is Mellow's own artwork and shares nothing with Discord's logo or mascot.
+Melli (Melli / Mellow) is a round cloud with two pill eyes, drawn by the owner. It is shown alone, never on a tile: the character is the logo (Home button, favicon, app icons) and the only character in the interface. It floats, blinks and slowly turns its puffs; everything else it does is built from the same soft, round, bouncy motion. Melli is Mellow's own artwork and shares nothing with Discord's logo or mascot.
 
 #### Parts
 
@@ -447,28 +448,28 @@ The drawing lives in a 256 × 256 viewBox (`web/src/components/Melli.svelte`). O
 
 | Part | What it is | Notes |
 |---|---|---|
-| `tile` | Rounded square, radius 56 | Optional: the Home button paints its own tile so it can morph and turn apricot |
-| `shadow` | Ellipse under the cloud | Translucent, so it works on the tile and on apricot |
+| `shadow` | Ellipse under the cloud | Translucent and themed, so it works on the rail and on apricot |
 | `motion` | Group holding the cloud and the face | The state's loop (float, hop, rock, bob, bounce, breathe) pivots on the cloud's base (128, 200) |
-| `puff` | Seven circles: a core of radius 62 and six puffs of radius 30 | Turns once per `puff-spin-duration` around (128, 124); pauses when the connection is lost |
+| `puff` > `cloud-outline`, `cloud-body` | Seven circles: a core of radius 62 and six puffs of radius 30; the outline is the same circles 6 units larger, drawn behind | Turns once per `puff-spin-duration` around (128, 124); pauses when the connection is lost. Only the cloud's outer edge shows the outline |
 | `face` | Eyes, cheeks, mouth | Moves as one (looks up while connecting) |
 | `eyes` > `eyes-blink` | The two pill eyes, plus `glint`s | `eyes` holds the pose (droop, wide), `eyes-blink` the blink, so both combine |
 | `eyes-happy`, `eyes-closed` | Arcs replacing the pill eyes | Happy "^ ^"; sleeping "‿ ‿" |
 | `blush`, `mouth` | Cheeks, a small talking mouth | Hidden at rest |
-| Marks | `dots`, `drops`, `sparkle`, `rings`, `waves`, `arrow`, `zzz` | Drawn in ink, like comic marks; hidden at rest. `drops` sit behind the cloud so they fall out of it |
+| Marks | `dots`, `drops`, `sparkle`, `rings`, `waves`, `arrow`, `zzz` | Drawn in `color.mascot.mark`, like comic marks, on the surface Melli sits on; hidden at rest. `drops` sit behind the cloud so they fall out of it |
 
 #### Palette
 
 | Token | Value | Role |
 |---|---|---|
-| `color.mascot.tile` | `#F4E2D2` | Tile, Home button at rest |
-| `color.mascot.shadow` | `#A46338` at 15 % | Ground shadow: exactly the logo's `#E8CFBB` over the tile |
+| `color.mascot.shadow` | Dark: black at 35 %. Light: `#A46338` at 15 % | Ground shadow, visible on the rail and on apricot |
 | `color.mascot.body` | `#FFFAF3` | The cloud and the eye glints |
 | `color.mascot.body-overcast` | `#E2DBD7` | The cloud while the connection is lost |
-| `color.mascot.ink` | `#3F332D` | Eyes, mouth and every mark |
+| `color.mascot.ink` | `#3F332D` | Eyes and mouth; marks on apricot |
+| `color.mascot.outline` | `#3F332D` | The cloud's edge: keeps it whole on light surfaces and light docks (on dark ones the cloud itself stands out) |
+| `color.mascot.mark` | Dark: `#F4E2D2`. Light: `#3F332D` | Marks drawn around Melli, on the rail |
 | `color.mascot.blush` | `#F5B3A1` | Cheeks (decorative) |
 
-Melli is brand artwork: the same in both themes (light values equal dark ones). Ink reaches at least 3:1 on the tile, the cloud, the overcast cloud and both apricot fills (contrast pairs in `design/tokens.json`), which is why every mark is ink: a mark stays readable whether Home is at rest or selected. Blush is the only colour that carries no meaning.
+Melli is brand artwork: the cloud, its face and its outline are the same in both themes. Melli has no tile, so what it draws outside the cloud depends on the surface: marks use `color.mascot.mark`, at least 3:1 on the rail in both themes, and a host that puts Melli on apricot (Home when hovered, focused or selected) switches them to ink, which reaches at least 3:1 on both apricot fills, the cloud and the overcast cloud (contrast pairs in `design/tokens.json`). The cloud stands out on the dark rail by itself (cream on near black) and on light surfaces by its ink outline. Blush is the only colour that carries no meaning.
 
 #### States
 
@@ -491,8 +492,8 @@ Wherever Melli shows a state, the state is also said in words: Home keeps its ac
 - Every loop starts and ends at rest; a state change restarts the loop from rest, a jump of up to 22 units when leaving the notification hop; poses (eyes, face, colours, marks) ease over `state-change-duration`. Pausing the puffs (`animation-play-state`) keeps their angle.
 - Melli is always animated, idle included, in the rail too (the owner's choice, 2026-10-21): an always-visible infinite SVG loop repaints every frame, a cost accepted for a living mascot; reduced motion still stops it.
 - Under `prefers-reduced-motion: reduce` (or the gallery's "Still poses"), Melli stops every animation and transition and shows the still pose of its state. A still pose must show the state on its own: add a static offset or tilt when the motion was the only sign.
-- Marks stay within 126 units of the tile centre (128, 128), so the Home button's circle (radius 128) never clips them.
-- The favicon is the still idle Melli. `cargo xtask tokens` writes `web/public/favicon.svg` from the mascot tokens; favicons never animate.
+- Marks stay within 126 units of the centre (128, 128), so the Home button's circle (radius 128) never clips them.
+- The favicon and the app icons are the still idle Melli alone: outline, cloud and eyes on a transparent background, framed tight around the cloud (viewBox `42 38 172 172`), without the shadow, so it fills small sizes. `cargo xtask tokens` writes `web/public/favicon.svg` from the mascot tokens; icons never animate.
 
 #### Adding a state
 
@@ -500,7 +501,7 @@ Wherever Melli shows a state, the state is also said in words: Home keeps its ac
 2. If it needs a new part, draw it in ink inside the 120-unit circle, hidden by default (`.mark` or `opacity: 0`).
 3. Add `[data-state="…"]` rules: which parts show, the pose, and a loop with a `component.melli.*-duration` token. Loops start and end at rest.
 4. Give it a still pose under `.is-still` if the pose alone does not show the state.
-5. Add the row to the table above, check it in the gallery at 192 px and 48 px on the tile and on apricot, in both themes, animated and still.
+5. Add the row to the table above, check it in the gallery at 192 px and 48 px on the rail and on apricot, in both themes, animated and still.
 
 #### Desktop (Slint), later
 
@@ -884,7 +885,7 @@ Contents, top to bottom: Home (Mellow mark; mention badge aggregating conversati
 | Mentions | Red badge with the count (`danger.fill`, `text.on-danger`, 3 px ring of `surface.rail`) at the bottom trailing corner; "99+" beyond 99; also unread pill |
 | Selected | Squircle, pill 40 high; icons without artwork stay on `accent.fill` |
 | Home selected | Squircle on `accent.fill` behind Melli, pill 40 |
-| Home states | At rest Home is Melli on `color.mascot.tile` (`component.rail.home-background-rest`). Melli shows `connection-lost` while reconnecting, `connecting` while connecting, `notification` while a direct message is unread, otherwise `idle` (2.10). The pill and the accessible name ("Direct messages, unread") still carry unread on their own; the connection notice says what the connection is doing |
+| Home states | At rest Home is Melli alone on the rail, with no fill; hover, focus and selection fill it apricot and switch Melli's marks to ink. Melli shows `connection-lost` while reconnecting, `connecting` while connecting, `notification` while a direct message is unread, otherwise `idle` (2.10). The pill and the accessible name ("Direct messages, unread") still carry unread on their own; the connection notice says what the connection is doing |
 | Muted server | No unread pill; mention badges still show, because direct mentions are never muted |
 | Instance offline | Its icons are shown at 60 % opacity with a tooltip "chat.example.org is unreachable. Showing saved messages." and the instance icon gets an offline status dot |
 | Loading (first sync) | Static circle skeletons for the expected number of servers |
@@ -1257,7 +1258,7 @@ All components use tokens only (component tier first), support light and dark th
 | 6.47 | ChatPanels (Android) | Channel panel, chat, members | Settling, dragging | `anchoredDraggable`, `size.mobile.panel-peek`. |
 | 6.48 | AdminTable (web) | With search, pagination, row actions | Loading rows, empty, error | `<table>` with `<caption>` and `scope` headers. |
 | 6.49 | AdminStatCard (web) | Health, number, storage bar | Normal, degraded, down | Status in words plus icon. |
-| 6.50 | Melli | With tile, without tile (the host paints it) | The eight states of 2.10, each animated or still | Decorative (`aria-hidden`): the host names what it stands for. Web: `Melli.svelte`, size from a length token. |
+| 6.50 | Melli | The character alone; a host on apricot switches its marks to ink | The eight states of 2.10, each animated or still | Decorative (`aria-hidden`): the host names what it stands for. Web: `Melli.svelte`, size from a length token. |
 
 Before adding a component, check this list. A new component is added here first, with variants and states.
 

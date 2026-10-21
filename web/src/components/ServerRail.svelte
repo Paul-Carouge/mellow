@@ -63,8 +63,8 @@
           : "rounded-(--mw-component-rail-icon-radius-rest) hover:rounded-(--mw-component-rail-icon-radius-active) focus-visible:rounded-(--mw-component-rail-icon-radius-active)",
         kind === "home"
           ? isSelected
-            ? "bg-(--mw-component-rail-icon-background-active)"
-            : "bg-(--mw-component-rail-home-background-rest) hover:bg-(--mw-component-rail-icon-background-active) focus-visible:bg-(--mw-component-rail-icon-background-active)"
+            ? "bg-(--mw-component-rail-icon-background-active) [--melli-mark:var(--mw-color-mascot-ink)]"
+            : "hover:bg-(--mw-component-rail-icon-background-active) hover:[--melli-mark:var(--mw-color-mascot-ink)] focus-visible:bg-(--mw-component-rail-icon-background-active) focus-visible:[--melli-mark:var(--mw-color-mascot-ink)]"
           : kind === "action"
           ? "bg-(--mw-component-rail-icon-background-rest) text-(--mw-component-rail-add-icon) hover:bg-(--mw-component-rail-add-background-hover) hover:text-(--mw-component-rail-add-icon-hover) focus-visible:bg-(--mw-component-rail-add-background-hover) focus-visible:text-(--mw-component-rail-add-icon-hover)"
           : isSelected
@@ -92,8 +92,9 @@
 {/snippet}
 
 {#snippet homeMark()}
-  <!-- The button paints Melli's tile, so it morphs and turns apricot like the other icons. -->
-  <Melli state={homeMelliState(client.status, hasUnreadConversation)} sizeToken="--mw-component-rail-item-size" hasTile={false} />
+  <!-- Melli sits on the rail at rest; hover, focus and selection fill the button apricot, which
+       morphs like the other icons, and switch Melli's marks to ink (DESIGN.md §2.10). -->
+  <Melli state={homeMelliState(client.status, hasUnreadConversation)} sizeToken="--mw-component-rail-item-size" />
 {/snippet}
 
 {#snippet addIcon()}

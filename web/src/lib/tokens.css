@@ -15,8 +15,9 @@
   --mw-color-mascot-body: #FFFAF3;
   --mw-color-mascot-body-overcast: #E2DBD7;
   --mw-color-mascot-ink: #3F332D;
-  --mw-color-mascot-shadow: #A4633826;
-  --mw-color-mascot-tile: #F4E2D2;
+  --mw-color-mascot-mark: #F4E2D2;
+  --mw-color-mascot-outline: #3F332D;
+  --mw-color-mascot-shadow: #00000059;
   --mw-color-mention-background: #403C3C;
   --mw-color-mention-bar: #F2A46E;
   --mw-color-mention-chip-background: #6B5548;
@@ -399,7 +400,6 @@
   --mw-component-rail-add-icon: #23A55A;
   --mw-component-rail-add-icon-hover: #FFFFFF;
   --mw-component-rail-background: #1E1F22;
-  --mw-component-rail-home-background-rest: #F4E2D2;
   --mw-component-rail-icon-background-active: #F2A46E;
   --mw-component-rail-icon-background-rest: #313338;
   --mw-component-rail-icon-radius-active: 1rem;
@@ -822,6 +822,8 @@
     --mw-color-border-divider: #E3E5E8;
     --mw-color-border-quote: #D4D7DC;
     --mw-color-focus: #005FCC;
+    --mw-color-mascot-mark: #3F332D;
+    --mw-color-mascot-shadow: #A4633826;
     --mw-color-mention-background: #FDF4EE;
     --mw-color-mention-bar: #A84F1A;
     --mw-color-mention-chip-background: #FBE6D6;
@@ -1095,6 +1097,8 @@
   --mw-color-border-divider: #E3E5E8;
   --mw-color-border-quote: #D4D7DC;
   --mw-color-focus: #005FCC;
+  --mw-color-mascot-mark: #3F332D;
+  --mw-color-mascot-shadow: #A4633826;
   --mw-color-mention-background: #FDF4EE;
   --mw-color-mention-bar: #A84F1A;
   --mw-color-mention-chip-background: #FBE6D6;
@@ -1384,8 +1388,9 @@
   --color-mascot-body: var(--mw-color-mascot-body);
   --color-mascot-body-overcast: var(--mw-color-mascot-body-overcast);
   --color-mascot-ink: var(--mw-color-mascot-ink);
+  --color-mascot-mark: var(--mw-color-mascot-mark);
+  --color-mascot-outline: var(--mw-color-mascot-outline);
   --color-mascot-shadow: var(--mw-color-mascot-shadow);
-  --color-mascot-tile: var(--mw-color-mascot-tile);
   --color-mention-background: var(--mw-color-mention-background);
   --color-mention-bar: var(--mw-color-mention-bar);
   --color-mention-chip-background: var(--mw-color-mention-chip-background);
