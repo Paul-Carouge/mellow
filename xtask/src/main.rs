@@ -82,24 +82,29 @@ fn generate_tokens(is_check_only: bool) -> Result<()> {
     }
     for (relative_path, generated) in outputs {
         let output_path = root.join(&relative_path);
-        if is_check_only {
-            let current = std::fs::read(&output_path).unwrap_or_default();
-            if let Some(icon_file_name) = icon_file_names
-                .iter()
-                .find(|name| relative_path.ends_with(name.as_str()))
-            {
-                app_icons::check_icon_is_up_to_date(icon_file_name, &current, &generated)?;
-            } else if current != generated {
-                bail!(
-                    "{} is out of date; run `cargo xtask tokens`",
-                    output_path.display()
-                );
+        let current = std::fs::read(&output_path).unwrap_or_default();
+        // A rasteriser's rounding differences alone never rewrite an icon (app_icons.rs).
+        let is_up_to_date = match icon_file_names
+            .iter()
+            .find(|name| relative_path.ends_with(name.as_str()))
+        {
+            Some(icon_file_name) => {
+                app_icons::is_icon_up_to_date(icon_file_name, &current, &generated)?
             }
-        } else {
-            std::fs::write(&output_path, generated)
-                .with_context(|| format!("cannot write {}", output_path.display()))?;
-            eprintln!("wrote {}", output_path.display());
+            None => current == generated,
+        };
+        if is_up_to_date {
+            continue;
         }
+        if is_check_only {
+            bail!(
+                "{} is out of date; run `cargo xtask tokens`",
+                output_path.display()
+            );
+        }
+        std::fs::write(&output_path, generated)
+            .with_context(|| format!("cannot write {}", output_path.display()))?;
+        eprintln!("wrote {}", output_path.display());
     }
     if is_check_only {
         eprintln!("design tokens are up to date");
