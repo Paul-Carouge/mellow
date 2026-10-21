@@ -18,6 +18,15 @@ export struct ChannelListRow {
     is-read-only: bool,
 }
 
+// One conversation on Home (DESIGN.md §5.6); `id` is the conversation's channel id.
+export struct DirectMessageRow {
+    id: string,
+    name: string,
+    initial: string,
+    status: PresenceStatus,
+    has-unread: bool,
+}
+
 component CategoryHeader inherits Rectangle {
     in property <string> name;
     in property <string> display-name;
@@ -158,6 +167,105 @@ component ChannelRow inherits Rectangle {
     }
 }
 
+// Discord's "Direct messages" header: category type, not collapsible.
+component DirectMessagesHeader inherits Rectangle {
+    height: MellowComponent.category-margin-top + MellowComponent.category-height;
+    accessible-role: text;
+    accessible-label: "Direct messages";
+    Text {
+        x: MellowComponent.category-padding-inline;
+        y: MellowComponent.category-margin-top;
+        height: MellowComponent.category-height;
+        // Uppercase copy of the accessible label: Slint has no text-transform.
+        text: "DIRECT MESSAGES";
+        accessible-role: none;
+        color: MellowComponent.category-text;
+        font-size: MellowType.category.font-size;
+        font-weight: MellowType.category.font-weight;
+        letter-spacing: MellowType.category.letter-spacing;
+        vertical-alignment: center;
+    }
+}
+
+// A conversation row: same states as a channel row, with the person's avatar instead of `#`.
+component ConversationRow inherits Rectangle {
+    in property <DirectMessageRow> conversation;
+    in property <bool> is-selected;
+    callback clicked();
+    height: MellowComponent.conversation-row-height + MellowComponent.channel-row-gap;
+    accessible-role: list-item;
+    accessible-label: conversation.name
+        + (conversation.status == PresenceStatus.online ? ", online"
+            : conversation.status == PresenceStatus.idle ? ", idle"
+            : conversation.status == PresenceStatus.do-not-disturb ? ", do not disturb" : ", offline")
+        + (conversation.has-unread ? ", unread" : "");
+    accessible-item-selected: is-selected;
+    accessible-action-default => { root.clicked(); }
+
+    if conversation.has-unread && !is-selected: Rectangle {
+        x: 0;
+        y: (MellowComponent.conversation-row-height - self.height) / 2;
+        width: MellowComponent.channel-row-unread-pill-width;
+        height: MellowComponent.channel-row-unread-pill-height;
+        border-radius: self.width / 2;
+        background: MellowComponent.channel-row-unread-pill-color;
+    }
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    row := Rectangle {
+        x: MellowComponent.channel-row-margin-inline;
+        width: parent.width - 2 * MellowComponent.channel-row-margin-inline;
+        height: MellowComponent.conversation-row-height;
+        border-radius: MellowComponent.channel-row-radius;
+        background: is-selected ? MellowComponent.channel-row-background-selected
+            : touch.has-hover || focus-scope.has-focus ? MellowComponent.channel-row-background-hover
+            : MellowComponent.sidebar-background;
+        border-width: focus-scope.has-focus ? MellowComponent.focus-ring-width : 0px;
+        border-color: MellowComponent.focus-ring-color;
+
+        property <color> text-color: is-selected ? MellowComponent.channel-row-text-selected
+            : touch.has-hover || focus-scope.has-focus ? MellowComponent.channel-row-text-hover
+            : conversation.has-unread ? MellowComponent.channel-row-text-unread : MellowComponent.channel-row-text-read;
+
+        touch := TouchArea { clicked => { root.clicked(); } }
+        HorizontalLayout {
+            padding-left: MellowComponent.channel-row-padding-inline;
+            padding-right: MellowComponent.channel-row-padding-inline;
+            spacing: MellowComponent.conversation-row-avatar-gap;
+            VerticalLayout {
+                alignment: center;
+                Avatar {
+                    initial: conversation.initial;
+                    size: MellowComponent.conversation-row-avatar-size;
+                    has-presence: true;
+                    status: conversation.status;
+                    // The status dot's cut-out follows the row's own background.
+                    ring-color: row.background;
+                }
+            }
+            Text {
+                text: conversation.name;
+                color: row.text-color;
+                font-size: MellowType.channel-name.font-size;
+                font-weight: conversation.has-unread || is-selected ? MellowType.message-author.font-weight : MellowType.channel-name.font-weight;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+                accessible-role: none;
+            }
+        }
+    }
+}
+
 component UserPanel inherits Rectangle {
     in property <string> display-name;
     in property <string> initial;
@@ -268,9 +376,13 @@ export component ChannelSidebar inherits Rectangle {
     callback create-channel();
     callback leave-server();
     changed server-header-focus-request-count => { header-focus.focus(); }
+    // Home: conversations replace categories and channels, and the header is plain text.
+    in property <bool> is-home;
+    in property <[DirectMessageRow]> direct-message-rows;
 
     property <bool> has-items-above-leave: can-invite-people || can-open-server-settings || can-create-channels;
-    property <bool> has-server-menu: has-items-above-leave || can-leave-server;
+    property <bool> has-server-menu: !is-home && (has-items-above-leave || can-leave-server);
+    property <string> header-text: is-home ? "Direct messages" : server-name;
 
     function open-server-menu() {
         if root.has-server-menu {
@@ -373,12 +485,12 @@ export component ChannelSidebar inherits Rectangle {
             Rectangle {
                 visible: !root.has-server-menu;
                 accessible-role: text;
-                accessible-label: root.server-name;
+                accessible-label: root.header-text;
             }
             Rectangle {
                 visible: root.has-server-menu;
                 accessible-role: button;
-                accessible-label: root.server-name;
+                accessible-label: root.header-text;
                 accessible-expandable: true;
                 accessible-expanded: server-menu.is-open;
                 accessible-action-default => { root.open-server-menu(); }
@@ -406,7 +518,7 @@ export component ChannelSidebar inherits Rectangle {
                 padding-right: MellowComponent.sidebar-header-padding-inline;
                 spacing: MellowSpace.xs;
                 Text {
-                    text: server-name;
+                    text: root.header-text;
                     color: MellowComponent.sidebar-header-text;
                     font-size: MellowType.heading-md.font-size;
                     font-weight: MellowType.heading-md.font-weight;
@@ -438,7 +550,35 @@ export component ChannelSidebar inherits Rectangle {
             }
         }
 
-        ListView {
+        if root.is-home: VerticalLayout {
+            vertical-stretch: 1;
+            DirectMessagesHeader { }
+            if root.direct-message-rows.length == 0: VerticalLayout {
+                padding: MellowComponent.conversation-row-empty-padding;
+                alignment: start;
+                vertical-stretch: 1;
+                Text {
+                    text: "No conversations yet. Start one with someone from your servers.";
+                    color: MellowComponent.conversation-row-empty-text;
+                    font-size: MellowType.body.font-size;
+                    wrap: word-wrap;
+                    accessible-role: text;
+                }
+            }
+            if root.direct-message-rows.length > 0: ListView {
+                vertical-stretch: 1;
+                accessible-role: list;
+                accessible-label: "Direct messages";
+                for conversation in root.direct-message-rows: ConversationRow {
+                    conversation: conversation;
+                    is-selected: conversation.id == root.selected-channel-id;
+                    clicked => { root.select-channel(conversation.id); }
+                }
+            }
+        }
+
+        if !root.is-home: ListView {
+            vertical-stretch: 1;
             accessible-role: list;
             accessible-label: "Channels";
             for row in rows: VerticalLayout {

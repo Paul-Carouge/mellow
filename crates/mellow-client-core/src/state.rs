@@ -205,8 +205,13 @@ impl ClientState {
 
     /// True when the newest known message is after the user's read position.
     #[must_use]
+    /// A conversation also knows its last message without any cached (`Ready`, offline messages).
     pub fn has_unread(&self, channel_id: Snowflake) -> bool {
-        let newest = self.messages(channel_id).last().map(|message| message.id);
+        let newest_cached = self.messages(channel_id).last().map(|message| message.id);
+        let newest_known = self
+            .direct_message_channel(channel_id)
+            .and_then(|channel| channel.last_message_id);
+        let newest = newest_cached.max(newest_known);
         match (newest, self.last_read_by_channel.get(&channel_id)) {
             (Some(newest), Some(last_read)) => newest > *last_read,
             (Some(_), None) => true,
@@ -1533,5 +1538,14 @@ mod tests {
             std::slice::from_ref(&empty)
         );
         assert_eq!(state.pending_messages(empty.id).count(), 1);
+    }
+
+    #[test]
+    fn a_conversation_with_messages_received_offline_is_unread_before_any_is_cached() {
+        let mut state = ready_state();
+        state.upsert_direct_message_channel(conversation(300, OTHER, Some(310)));
+        assert!(state.has_unread(Snowflake::from_raw(300)));
+        state.mark_read(Snowflake::from_raw(300), Snowflake::from_raw(310));
+        assert!(!state.has_unread(Snowflake::from_raw(300)));
     }
 }

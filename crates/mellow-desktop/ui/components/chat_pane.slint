@@ -530,6 +530,8 @@ component HistoryStart inherits VerticalLayout {
     in property <HistoryStartState> state;
     in property <string> channel-name;
     in property <string> channel-topic;
+    // A conversation: Discord's direct-message hero, with `@` instead of `#`.
+    in property <bool> is-direct-message;
     // An empty list shows 5 skeletons; above loaded messages, 3.
     in property <bool> is-list-empty;
     // Held by ChatPane: rows are recreated on every model reset and must not restart the delay.
@@ -619,7 +621,8 @@ component HistoryStart inherits VerticalLayout {
         padding-right: MellowComponent.message-padding-trailing;
         spacing: MellowComponent.message-channel-start-gap;
         accessible-role: groupbox;
-        accessible-label: "Start of #" + root.channel-name;
+        accessible-label: root.is-direct-message ? "Start of your direct messages with @" + root.channel-name
+            : "Start of #" + root.channel-name;
         HorizontalLayout {
             alignment: start;
             Rectangle {
@@ -628,7 +631,7 @@ component HistoryStart inherits VerticalLayout {
                 border-radius: self.width / 2;
                 background: MellowComponent.message-channel-start-icon-background;
                 Image {
-                    source: @image-url("../../icons/hash.svg");
+                    source: root.is-direct-message ? @image-url("../../icons/at.svg") : @image-url("../../icons/hash.svg");
                     colorize: MellowComponent.message-channel-start-icon;
                     width: MellowComponent.message-channel-start-icon-size;
                     height: self.width;
@@ -637,7 +640,7 @@ component HistoryStart inherits VerticalLayout {
             }
         }
         Text {
-            text: "Welcome to #" + root.channel-name;
+            text: root.is-direct-message ? root.channel-name : "Welcome to #" + root.channel-name;
             color: MellowComponent.message-channel-start-title-text;
             font-size: MellowType.display.font-size;
             font-weight: MellowType.display.font-weight;
@@ -645,7 +648,8 @@ component HistoryStart inherits VerticalLayout {
             accessible-role: text;
         }
         Text {
-            text: "This is the start of the #" + root.channel-name + " channel.";
+            text: root.is-direct-message ? "This is the beginning of your direct message history with @" + root.channel-name + "."
+                : "This is the start of the #" + root.channel-name + " channel.";
             color: MellowComponent.message-channel-start-description-text;
             font-size: MellowType.message.font-size;
             wrap: word-wrap;
@@ -664,6 +668,10 @@ component HistoryStart inherits VerticalLayout {
 export component ChatPane inherits Rectangle {
     in property <string> channel-name;
     in property <string> channel-topic;
+    // The open channel is a conversation: `@name` replaces `#name`, and there is no member list.
+    in property <bool> is-direct-message;
+    // How the open channel is named in copy: "#general" or "@Ana".
+    property <string> channel-reference: (is-direct-message ? "@" : "#") + channel-name;
     in property <[MessageRow]> messages;
     in property <bool> is-text-selection-mode;
     in property <string> latest-announcement;
@@ -764,7 +772,8 @@ export component ChatPane inherits Rectangle {
     property <bool> has-history-skeleton-delay-elapsed;
     changed history-start-state => { has-history-skeleton-delay-elapsed = false; }
     property <string> history-error-text: messages.length > 0 ? "Couldn't load older messages."
-        : "Couldn't load messages in #" + channel-name + ".";
+        : is-direct-message ? "Couldn't load messages with " + channel-reference + "."
+        : "Couldn't load messages in " + channel-reference + ".";
     Timer {
         interval: MellowMotion.delay-skeleton;
         running: root.history-start-state == HistoryStartState.loading && !root.has-history-skeleton-delay-elapsed;
@@ -832,7 +841,7 @@ export component ChatPane inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     Image {
-                        source: @image-url("../../icons/hash.svg");
+                        source: root.is-direct-message ? @image-url("../../icons/at.svg") : @image-url("../../icons/hash.svg");
                         colorize: MellowComponent.chat-header-icon;
                         width: MellowComponent.chat-header-icon-size;
                         height: self.width;
@@ -860,7 +869,7 @@ export component ChatPane inherits Rectangle {
                     overflow: elide;
                     horizontal-stretch: 1;
                 }
-                VerticalLayout {
+                if !root.is-direct-message: VerticalLayout {
                     alignment: center;
                     IconButton {
                         icon: @image-url("../../icons/users.svg");
@@ -919,7 +928,7 @@ export component ChatPane inherits Rectangle {
                     root.load-older-messages-when-near-top();
                 }
                 accessible-role: list;
-                accessible-label: "Messages in " + channel-name;
+                accessible-label: (is-direct-message ? "Messages with " : "Messages in ") + channel-reference;
                 // Row 0 carries the history start above its message, so it scrolls with the rows and
                 // row indices stay those of the model, which Rust addresses rows by.
                 for message[index] in messages: VerticalLayout {
@@ -928,6 +937,7 @@ export component ChatPane inherits Rectangle {
                         state: root.history-start-state;
                         channel-name: root.channel-name;
                         channel-topic: root.channel-topic;
+                        is-direct-message: root.is-direct-message;
                         is-list-empty: false;
                         has-skeleton-delay-elapsed: root.has-history-skeleton-delay-elapsed;
                         error-text: root.history-error-text;
@@ -991,6 +1001,7 @@ export component ChatPane inherits Rectangle {
                     state: root.history-start-state;
                     channel-name: root.channel-name;
                     channel-topic: root.channel-topic;
+                    is-direct-message: root.is-direct-message;
                     is-list-empty: true;
                     has-skeleton-delay-elapsed: root.has-history-skeleton-delay-elapsed;
                     error-text: root.history-error-text;
@@ -1142,7 +1153,7 @@ export component ChatPane inherits Rectangle {
                         horizontal-stretch: 1;
                         if root.can-send-messages && composer.text == "": Text {
                             x: 0;
-                            text: "Message #" + channel-name;
+                            text: "Message " + root.channel-reference;
                             color: MellowComponent.composer-placeholder;
                             font-size: MellowType.message.font-size;
                             vertical-alignment: center;
@@ -1176,7 +1187,7 @@ export component ChatPane inherits Rectangle {
                                 vertical-alignment: center;
                                 single-line: true;
                                 enabled: root.can-send-messages;
-                                accessible-label: "Message #" + channel-name;
+                                accessible-label: "Message " + root.channel-reference;
                                 accessible-description: root.is-replying
                                     ? "Replying to " + root.replying-to-author + ". Escape cancels the reply." : "";
                                 accepted => {

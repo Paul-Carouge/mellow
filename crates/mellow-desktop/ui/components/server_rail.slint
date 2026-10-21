@@ -99,6 +99,7 @@ component RailItem inherits Rectangle {
 export component ServerRail inherits Rectangle {
     in property <[ServerItem]> servers;
     in-out property <int> selected-server-index;
+    in property <bool> has-unread-direct-messages;
     callback select-server(int);
     callback add-server();
 
@@ -118,6 +119,7 @@ export component ServerRail inherits Rectangle {
                 label: "Direct messages";
                 initials: "M";
                 is-home: true;
+                has-unread: root.has-unread-direct-messages;
                 // -1 is the home index; main.rs maps any negative index to HOME_SERVER_NAME.
                 is-selected: selected-server-index == -1;
                 clicked => { root.select-server(-1); }

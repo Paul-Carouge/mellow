@@ -3,7 +3,7 @@ import { MellowColor, MellowSize, MellowTheme, MellowType } from "tokens.slint";
 import "../fonts/Figtree[wght].ttf";
 import "../fonts/Figtree-Italic[wght].ttf";
 import { ServerRail, ServerItem } from "components/server_rail.slint";
-import { ChannelSidebar, ChannelListRow } from "components/channel_sidebar.slint";
+import { ChannelSidebar, ChannelListRow, DirectMessageRow } from "components/channel_sidebar.slint";
 import { ChatPane, HistoryStartState, MessageDelivery, MessageRow } from "components/chat_pane.slint";
 import { MemberList, MemberListRow } from "components/member_list.slint";
 import { PresenceStatus } from "components/primitives.slint";
@@ -14,7 +14,7 @@ import { UpdateStatus, UserSettingsScreen } from "components/user_settings.slint
 import { RoleListRow, RolePermissionRow, ServerSettingsScreen } from "components/server_settings.slint";
 import { AddServerDialog, CreateChannelDialog, InvitePeopleDialog, LeaveServerDialog } from "components/server_dialogs.slint";
 
-export { ServerItem, ChannelListRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, UpdateStatus, RoleListRow, RolePermissionRow }
+export { ServerItem, ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, UpdateStatus, RoleListRow, RolePermissionRow }
 
 // The window-wide dialog open over the shell, if any (DESIGN.md §6.35).
 export enum ShellDialog { none, add-server, invite-people, create-channel, leave-server }
@@ -95,6 +95,14 @@ export component AppWindow inherits Window {
     in property <bool> can-invite-people;
     in property <bool> can-create-channels;
     in property <bool> can-leave-server;
+    // Direct messages (DESIGN.md §5.6). Home is selected: the sidebar lists conversations.
+    in property <bool> is-home;
+    in property <[DirectMessageRow]> direct-message-rows;
+    in property <bool> has-unread-direct-messages;
+    // The open channel is a conversation: `@` naming, no member list.
+    in property <bool> is-direct-message-open;
+    // User id, from the member list's profile popout. Selecting a conversation calls select-channel.
+    callback open-direct-message(string);
 
     property <bool> has-update-available: update-status == UpdateStatus.available || update-status == UpdateStatus.ready-to-restart;
     property <int> settings-button-focus-request-count;
@@ -198,6 +206,9 @@ export component AppWindow inherits Window {
         }
     }
 
+    public function focus-composer() {
+        chat.focus-composer();
+    }
     public function scroll-to-latest-message() {
         chat.scroll-to-latest-message();
     }
@@ -261,12 +272,15 @@ export component AppWindow inherits Window {
             if root.is-wide-enough-for-sidebar: ServerRail {
                 servers: root.servers;
                 selected-server-index: root.selected-server-index;
+                has-unread-direct-messages: root.has-unread-direct-messages;
                 select-server(index) => { root.select-server(index); }
                 add-server => { root.open-dialog = ShellDialog.add-server; }
             }
             if root.is-wide-enough-for-sidebar: ChannelSidebar {
                 server-name: root.server-name;
                 rows: root.channel-rows;
+                is-home: root.is-home;
+                direct-message-rows: root.direct-message-rows;
                 selected-channel-id: root.selected-channel-id;
                 current-user-name: root.current-user-name;
                 current-user-initial: root.current-user-initial;
@@ -292,6 +306,7 @@ export component AppWindow inherits Window {
                 horizontal-stretch: 1;
                 channel-name: root.selected-channel-name;
                 channel-topic: root.selected-channel-topic;
+                is-direct-message: root.is-direct-message-open;
                 messages: root.messages;
                 is-text-selection-mode: root.is-text-selection-mode;
                 latest-announcement: root.latest-announcement;
@@ -318,8 +333,12 @@ export component AppWindow inherits Window {
                 retry-loading-history => { root.retry-loading-history(); }
             }
             // shortcut: below 1032 px the member list is hidden instead of becoming an overlay.
-            if root.is-member-list-visible && root.is-wide-enough-for-member-list: MemberList {
+            if root.is-member-list-visible && root.is-wide-enough-for-member-list && !root.is-direct-message-open: MemberList {
                 rows: root.member-rows;
+                // Typing goes to the conversation, as on Discord; the popout and its row are gone.
+                // Rust focuses the composer once the conversation is open: until then it still
+                // sends to the channel being read.
+                open-direct-message(user-id) => { root.open-direct-message(user-id); }
             }
         }
         }

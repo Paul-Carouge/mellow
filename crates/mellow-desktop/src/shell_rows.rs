@@ -94,6 +94,8 @@ pub fn member_rows(role_groups: &[FakeRoleGroup]) -> Vec<MemberListRow> {
                 initial: "".into(),
                 activity: "".into(),
                 status: PresenceStatus::Offline,
+                user_id: "".into(),
+                can_message: false,
             };
             let members = group.members.iter().map(|member| MemberListRow {
                 is_group_header: false,
@@ -103,6 +105,9 @@ pub fn member_rows(role_groups: &[FakeRoleGroup]) -> Vec<MemberListRow> {
                 initial: first_letter(member.display_name).into(),
                 activity: member.activity.into(),
                 status: presence_status(member.presence),
+                // The demo has no accounts: the name stands in for an id.
+                user_id: member.display_name.into(),
+                can_message: true,
             });
             std::iter::once(header).chain(members)
         })

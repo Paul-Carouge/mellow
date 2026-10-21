@@ -6,6 +6,7 @@ This document is the reference for every visual and interaction decision in Mell
 
 ## Changelog
 
+- **2026-10-21, v0.8 — one-to-one direct messages on desktop:** Home lists conversations in the sidebar (5.6), the rail's Home item carries the unread pill, clicking a member opens a reduced profile popout with "Message" (5.7), and conversations use `@name` in the chat header, hero, composer and errors (5.4, 5.5); `component.conversation-row.*` and `component.profile-popover.*` tokens, Phosphor `at` icon (Bold).
 - **2026-10-21, v0.7 — server membership dialogs on desktop:** the rail's `+` opens "Create a server" / "Join a server" (one dialog, two pages switched by a link, as on Discord); the server menu gets "Invite people" (accent text), "Create channel" and "Leave server" (danger, separated), each shown only when allowed (5.3); invite, create-channel and leave-server dialogs (8); a shared `ModalDialog` frame for 6.35 (title, optional sentence, inline error with icon, Cancel plus one action, focus trapped, Esc and scrim close except while busy); `TextField` leading icon (`#`) and copy-only variant (6.3); `color.text.accent`, `component.context-menu.accent-text` and `separator-height`, `component.dialog.subtitle-*`, `error-*`, `mode-link-*`, `copied-label-duration` and `motion.delay.copied-label` tokens; Phosphor `user-plus` and `sign-out` (Fill) icons.
 - **2026-10-20, v0.6 — user settings and app updates on desktop:** the user panel's settings button opens the user settings screen (5.3, 5.9) instead of a one-item menu; "Sign out" moves into the settings navigation; About shows the app version and drives the self-update, with a green dot on the settings button while an update waits; Primary and disabled variants of the desktop `Button` (6.1); `component.settings.*`, `component.user-panel.update-badge*` and `component.button.disabled-opacity` tokens; Phosphor `x` (Bold) icon for the close button.
 - **2026-10-20, v0.5 — channel permissions on desktop:** read-only channel rows (5.3), Delete and Reply follow the user's permissions in the hover action bar (5.4), and the read-only composer (5.5); `component.composer.locked-text` token.
@@ -932,6 +933,7 @@ Layout: Discord's composer, a `surface.input` field with `radius.md`, min 44 px,
 - New message: a picker to choose one or more people (from shared servers and previous conversations on the same instance), with a visible limit "Up to 9 people" for groups. Conversations cannot mix instances; the picker explains: "People from different instances can't be in the same conversation yet."
 - Group conversation header: name (auto-generated until renamed), member avatars, actions "Add people", "Rename", "Leave conversation".
 - Empty: "No conversations yet. Start one with someone from your servers." with "New message".
+- Desktop, until "New message" and the quick switcher exist: the header reads "Direct messages" as plain text (no menu), the list starts with the "Direct messages" category header (no `+`), rows share the channel rows' colours, unread pill and selection, and the empty state has no button, since conversations start from a member's profile popout. In a conversation the chat header shows the `at` icon and the name, the hero shows the name as its title and "This is the beginning of your direct message history with @Ana.", errors read "Couldn't load messages with @Ana.", and the member list and its toggle are hidden.
 - Error and offline: as in 5.4.
 
 ### 5.7 Member list and profile
@@ -942,6 +944,7 @@ Layout: Discord's composer, a `surface.input` field with `radius.md`, min 44 px,
 - Accessible name: "Ana, online, Moderator, custom status: Reviewing PRs".
 - Large servers: offline members are not listed above 1,000 members ("Offline members are hidden in large servers.").
 - Loading: row skeletons. Error: "Couldn't load members." with "Try again".
+- Desktop, first version: click, `Enter` or `Space` on a member row opens a reduced popout to the leading side of the member list, top-aligned with the row (`component.profile-popover.*`): banner strip, avatar 80, display name, and "Message" (primary, full width, focused on open; accessible label "Message Ana") for anyone but yourself. "Message" opens or creates the conversation and moves focus to its composer. `Esc` or a click outside closes it, and the row shows `state.selected` while it is open.
 - Profile popover (click, `Enter`, or context menu → "Profile"): 300 px, `surface.popover`, banner strip in the user's accent or a default grey, avatar 80, display name (`type.heading-md`), `@username@instance`, about text, roles as chips, member since, actions "Message" (primary), "Mention", and for moderators a "Moderation" menu (Kick, Ban, Manage roles).
 
 ### 5.8 Server settings
