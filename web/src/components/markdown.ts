@@ -73,14 +73,16 @@ export function markdownMentionsUser(blocks: readonly BlockNode[], userId: Snowf
   });
 }
 
-/** The http(s) URL `candidate` names, normalised; null for any other scheme or no URL. */
+/** The http(s) URL `candidate` names, normalised; null for any other scheme, a user name or password, or no URL. */
 export function safeHttpUrl(candidate: string): string | null {
   if (!HTTP_URL_PREFIX.test(candidate)) {
     return null;
   }
   try {
     const url = new URL(candidate);
-    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+    // "https://paypal.com@evil.example" reads as paypal.com but leads to evil.example.
+    const hasUserInfo = url.username !== "" || url.password !== "";
+    return (url.protocol === "http:" || url.protocol === "https:") && !hasUserInfo ? url.href : null;
   } catch {
     // Not a URL after all: it stays plain text.
     return null;

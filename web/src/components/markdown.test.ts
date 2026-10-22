@@ -111,6 +111,12 @@ describe("links", () => {
     ]);
   });
 
+  it("never links a URL carrying a user name or password", () => {
+    expect(inlines("https://paypal.com@evil.example")).toEqual([text("https://paypal.com@evil.example")]);
+    expect(inlines("[pay](https://user:secret@evil.example)")).toEqual([text("[pay](https://user:secret@evil.example)")]);
+    expect(safeHttpUrl("https://paypal.com@evil.example")).toBeNull();
+  });
+
   it("never links other schemes", () => {
     for (const literal of [
       "[click](javascript:alert(1))",
