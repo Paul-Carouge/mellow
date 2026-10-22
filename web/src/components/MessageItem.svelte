@@ -15,7 +15,9 @@
   import IconButton from "./IconButton.svelte";
   import type { ReactionAndPinActions } from "./message-actions";
   import MessageReactions from "./MessageReactions.svelte";
-  import { quickReactionEmoji } from "./recent-emoji.svelte";
+  import { reactionKey } from "../lib/reactions";
+  import { createPopoverToggle } from "./popover-toggle";
+  import { noteEmojiUsed, quickReactionEmoji } from "./recent-emoji.svelte";
   import { markdownMentionsUser, parseMessageMarkdown } from "./markdown";
   import type { MentionablePeople } from "./mentions";
   import MessageAttachments from "./MessageAttachments.svelte";
@@ -123,6 +125,8 @@
   let moreButton = $state<HTMLButtonElement | null>(null);
   let menu = $state<HTMLElement | null>(null);
   let isMenuOpen = $state(false);
+  const menuToggle = createPopoverToggle(() => isMenuOpen);
+  const pickerToggle = createPopoverToggle(() => message !== null && actions.heldMessageId === message.id);
   let menuPosition = $state({ top: 0, right: 0 });
   const hasMenu = $derived(actions.canManagePins || (reactions.length > 0 && (actions.canJoinReactions || actions.canRemoveReactions)));
 
@@ -376,9 +380,13 @@
           <button
             type="button"
             aria-label={strings.reactions.reactWith(emoji)}
+            aria-pressed={reactions.some((reaction) => reaction.me && reaction.emoji === reactionKey(emoji))}
             title={strings.reactions.reactWith(emoji)}
             class="{buttonClass} inline-flex shrink-0 items-center justify-center rounded-sm text-(length:--mw-component-action-bar-icon-size) leading-none transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) pointer-coarse:hidden"
-            onclick={() => actions.toggleReaction(message, emoji)}>{emoji}</button
+            onclick={() => {
+              noteEmojiUsed(emoji);
+              actions.toggleReaction(message, emoji);
+            }}>{emoji}</button
           >
         {/each}
         <IconButton
@@ -386,7 +394,8 @@
           label={strings.reactions.addReaction}
           class={buttonClass}
           {iconClass}
-          onclick={(event) => actions.openPicker(message, event.currentTarget)}
+          onpointerdown={pickerToggle.notePress}
+          onclick={(event) => pickerToggle.shouldOpenOnClick() && actions.openPicker(message, event.currentTarget)}
         />
       {/if}
       {#if isOwn && canSendMessages}
@@ -415,7 +424,8 @@
           aria-controls="message-menu-{message.id}"
           class={buttonClass}
           {iconClass}
-          onclick={() => (isMenuOpen ? menu?.hidePopover() : openMenu())}
+          onpointerdown={menuToggle.notePress}
+          onclick={() => (menuToggle.shouldOpenOnClick() ? openMenu() : menu?.hidePopover())}
         />
       {/if}
     </div>

@@ -26,6 +26,7 @@
   import MessageList from "./MessageList.svelte";
   import PinnedMessagesPanel from "./PinnedMessagesPanel.svelte";
   import ReactionsDialog from "./ReactionsDialog.svelte";
+  import { createPopoverToggle } from "./popover-toggle";
   import { noteEmojiUsed } from "./recent-emoji.svelte";
 
   // The chat pane (DESIGN.md §5.4, §5.5): header, message list, composer and typing band.
@@ -108,8 +109,7 @@
   let viewingReactionsOfId = $state<Snowflake | null>(null);
   let isPinsPanelOpen = $state(false);
   let pinsButton = $state<HTMLButtonElement | null>(null);
-  // A press on the button first light-dismisses the open panel: the click must not reopen it.
-  let wasPinsPanelOpenAtPress = false;
+  const pinsPanelToggle = createPopoverToggle(() => isPinsPanelOpen);
   let actionError = $state("");
   let fileInput = $state<HTMLInputElement | null>(null);
   // Each channel keeps its own tray, like its draft: its files were uploaded to that channel.
@@ -458,7 +458,7 @@
 
   function pickEmoji(emoji: string) {
     const target = picker?.message;
-    closePicker();
+    closePicker(true);
     if (target) {
       noteEmojiUsed(emoji);
       void toggleReaction(target, emoji);
@@ -466,10 +466,10 @@
   }
 
   /** Back to the button that opened the picker: its bar is still held open at this point. */
-  function closePicker() {
+  function closePicker(shouldReturnFocus: boolean) {
     const anchor = picker?.anchor;
     picker = null;
-    if (anchor?.isConnected) {
+    if (shouldReturnFocus && anchor?.isConnected) {
       anchor.focus();
     }
   }
@@ -590,11 +590,8 @@
         aria-expanded={isPinsPanelOpen}
         class="{headerButtonClass} aria-expanded:text-text-heading"
         iconClass="size-(--mw-component-chat-header-icon-size)"
-        onpointerdown={() => (wasPinsPanelOpenAtPress = isPinsPanelOpen)}
-        onclick={() => {
-          isPinsPanelOpen = !(isPinsPanelOpen || wasPinsPanelOpenAtPress);
-          wasPinsPanelOpenAtPress = false;
-        }}
+        onpointerdown={pinsPanelToggle.notePress}
+        onclick={() => (isPinsPanelOpen = pinsPanelToggle.shouldOpenOnClick())}
       />
     {/if}
     {#if channel}
@@ -838,10 +835,9 @@
     canManagePins={reactionAndPinActions.canManagePins}
     onjump={(messageId) => messageList?.revealMessage(messageId)}
     onunpin={(message) => (pinning = { message, isPinned: false })}
-    onclose={() => {
+    onclose={(shouldReturnFocus) => {
       isPinsPanelOpen = false;
-      // Jump moved focus to the message; anything else goes back to the button.
-      if (!document.activeElement?.closest("[data-row-key]")) {
+      if (shouldReturnFocus) {
         pinsButton?.focus();
       }
     }}

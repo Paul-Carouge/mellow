@@ -14,8 +14,11 @@
     anchor: HTMLElement;
     isCompact: boolean;
     onpick: (emoji: string) => void;
-    /** Closed by Esc, a click outside, or after a pick; the caller puts focus back. */
-    onclose: () => void;
+    /**
+     * Closed by Esc or a click outside; the caller puts focus back only if it was in the picker
+     * (or nowhere): a click elsewhere keeps the focus it gave.
+     */
+    onclose: (shouldReturnFocus: boolean) => void;
   }
 
   let { anchor, isCompact, onpick, onclose }: Props = $props();
@@ -67,10 +70,14 @@
   }
 
   /** How many cells sit on one row: the ones level with the first. */
-  function columnCount(all: readonly HTMLButtonElement[]): number {
-    const firstTop = all[0]?.offsetTop;
-    const sameRow = all.findIndex((cell) => cell.offsetTop !== firstTop);
-    return sameRow === -1 ? all.length : sameRow;
+  /** How many cells a row of the grid holds, from its laid-out columns (a short row says nothing). */
+  function columnCount(cell: HTMLElement | undefined): number {
+    const grid = cell?.parentElement;
+    if (!grid) {
+      return 1;
+    }
+    const columns = getComputedStyle(grid).gridTemplateColumns.split(" ").filter(Boolean).length;
+    return Math.max(columns, 1);
   }
 
   async function focusCell(index: number) {
@@ -87,7 +94,7 @@
     if (current === -1) {
       return;
     }
-    const columns = columnCount(all);
+    const columns = columnCount(all[current]);
     const next =
       event.key === "ArrowRight"
         ? current + 1
@@ -139,7 +146,7 @@
   style:left={isCompact ? undefined : `${position.left}px`}
   ontoggle={(event) => {
     if (event.newState === "closed") {
-      onclose();
+      onclose(panel.contains(document.activeElement) || document.activeElement === document.body);
     }
   }}
 >

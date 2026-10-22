@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { tick } from "svelte";
+
   import { strings } from "../i18n";
   import { describeError } from "../lib/client.svelte";
   import type { PublicUser, ReactionSummary, Snowflake } from "../lib/protocol";
@@ -31,6 +33,11 @@
   let users = $state<PublicUser[]>([]);
   let loadState = $state<"loading" | "loaded" | "failed">("loading");
   let errorMessage = $state("");
+  let panel = $state<HTMLElement | null>(null);
+  /** The emoji `users` belong to: a reload of the same one keeps them on screen meanwhile. */
+  let loadedEmoji: string | null = null;
+  /** Where a removed person's Remove button was, so focus lands on the next one after reload. */
+  let removedRowIndex: number | null = null;
 
   // Asked again whenever the emoji or its count changes, so removals and new reactions show.
   $effect(() => {
@@ -40,12 +47,17 @@
       return;
     }
     let isCurrent = true;
-    loadState = "loading";
+    if (emoji !== loadedEmoji) {
+      users = [];
+      loadState = "loading";
+    }
     loadUsers(emoji).then(
       (loaded) => {
         if (isCurrent) {
           users = loaded;
+          loadedEmoji = emoji;
           loadState = "loaded";
+          void focusAfterRemoval();
         }
       },
       (error: unknown) => {
@@ -62,11 +74,28 @@
 
   async function remove(emoji: string, user: PublicUser) {
     errorMessage = "";
+    // Noted before the request: its event may reload the list before the answer arrives.
+    removedRowIndex = users.findIndex((candidate) => candidate.id === user.id);
     try {
       await onremove(emoji, user.id);
     } catch (error) {
+      removedRowIndex = null;
       errorMessage = describeError(error, strings.reactions.removeFailed);
     }
+  }
+
+  /** The next person's Remove button, or the previous one at the end, or the emoji's tab. */
+  async function focusAfterRemoval() {
+    if (removedRowIndex === null) {
+      return;
+    }
+    const index = removedRowIndex;
+    removedRowIndex = null;
+    await tick();
+    const removeButtons = [...(panel?.querySelectorAll<HTMLElement>("[data-remove-reaction]") ?? [])];
+    const next = removeButtons[Math.min(index, removeButtons.length - 1)];
+    const fallback = document.querySelector<HTMLElement>(`[role=tab][aria-selected="true"]`);
+    (next ?? fallback)?.focus();
   }
 
   function moveTabFocus(event: KeyboardEvent) {
@@ -115,7 +144,7 @@
         </button>
       {/each}
     </div>
-    <div id="{id}-panel" role="tabpanel" aria-labelledby="{id}-tab-{selectedEmoji}" class="min-h-0">
+    <div bind:this={panel} id="{id}-panel" role="tabpanel" aria-labelledby="{id}-tab-{selectedEmoji}" class="min-h-0">
       {#if loadState === "loading"}
         <p role="status" class="type-body text-text-muted">{strings.reactions.loadingWho}</p>
       {:else if loadState === "failed"}
@@ -128,7 +157,7 @@
               <span class="min-w-0 flex-1 truncate type-member-name text-text-normal">{displayName(user)}</span>
               {#if canRemoveOthers && selectedEmoji}
                 {@const emoji = selectedEmoji}
-                <Button variant="ghost" aria-label={strings.reactions.remove(displayName(user))} onclick={() => void remove(emoji, user)}
+                <Button variant="ghost" data-remove-reaction aria-label={strings.reactions.remove(displayName(user))} onclick={() => void remove(emoji, user)}
                   >{strings.reactions.removeShort}</Button
                 >
               {/if}

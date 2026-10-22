@@ -27,8 +27,11 @@
     /** Scrolls to the message in the list and focuses it. */
     onjump: (messageId: Snowflake) => void;
     onunpin: (message: Message) => void;
-    /** Closed by Esc, a click outside or the close button; the caller puts focus back. */
-    onclose: () => void;
+    /**
+     * Closed by Esc, a click outside, the close button or Jump; the caller puts focus back only
+     * if it was in the panel (or nowhere): a click elsewhere and Jump keep the focus they gave.
+     */
+    onclose: (shouldReturnFocus: boolean) => void;
   }
 
   let { client, channelId, anchor, isCompact, canManagePins, onjump, onunpin, onclose }: Props = $props();
@@ -47,7 +50,7 @@
     panel.focus();
   });
 
-  function summary(message: Message): string {
+  function pinnedMessageSummaryText(message: Message): string {
     return [message.content, attachmentCountLabel(message.attachments?.length ?? 0)].filter(Boolean).join(" ");
   }
 </script>
@@ -69,7 +72,7 @@
   style:right={isCompact ? undefined : `${position.right}px`}
   ontoggle={(event) => {
     if (event.newState === "closed") {
-      onclose();
+      onclose(panel.contains(document.activeElement) || document.activeElement === document.body);
     }
   }}
 >
@@ -120,7 +123,7 @@
                 >
               </p>
               <p class="line-clamp-4 type-message break-words whitespace-pre-wrap text-(--mw-component-message-body-text)">
-                {summary(message)}
+                {pinnedMessageSummaryText(message)}
               </p>
               <div class="flex flex-wrap gap-xs">
                 {#if loadedIds.has(message.id)}
