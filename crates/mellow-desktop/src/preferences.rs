@@ -44,13 +44,24 @@ impl Default for Preferences {
 impl Preferences {
     /// Reads the stored preferences; the defaults when there are none or they cannot be read.
     pub fn load() -> Self {
-        let Some(path) = file_path() else {
-            return Self::default();
-        };
-        let read = std::fs::File::open(&path).and_then(|file| {
+        file_path().map_or_else(Self::default, |path| Self::load_from(&path))
+    }
+
+    /// Only a regular file of a size Mellow writes is read: a FIFO would block startup, and
+    /// anything larger was not written by Mellow.
+    fn load_from(path: &std::path::Path) -> Self {
+        let read = std::fs::metadata(path).and_then(|metadata| {
             use std::io::Read as _;
+            if !metadata.is_file() {
+                return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+            }
             let mut text = String::new();
-            file.take(MAXIMUM_FILE_LENGTH).read_to_string(&mut text)?;
+            std::fs::File::open(path)?
+                .take(MAXIMUM_FILE_LENGTH + 1)
+                .read_to_string(&mut text)?;
+            if u64::try_from(text.len()).unwrap_or(u64::MAX) > MAXIMUM_FILE_LENGTH {
+                return Err(std::io::Error::from(std::io::ErrorKind::FileTooLarge));
+            }
             Ok(text)
         });
         match read {
@@ -201,6 +212,29 @@ mod tests {
         assert_eq!(read_back, preferences);
         assert!(read_back.is_member_sheet_open("42"));
         assert!(!read_back.is_member_sheet_open("7"));
+    }
+
+    #[test]
+    fn only_a_regular_file_of_a_sane_size_is_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("preferences");
+        let light = "theme=light\n";
+        std::fs::write(&path, light).unwrap();
+        assert_eq!(Preferences::load_from(&path).theme, ThemeChoice::Light);
+
+        // Truncated reading used to keep the first 64 KiB of an oversized file.
+        let oversized = format!(
+            "{light}{}",
+            "#".repeat(usize::try_from(MAXIMUM_FILE_LENGTH).unwrap())
+        );
+        std::fs::write(&path, oversized).unwrap();
+        assert_eq!(Preferences::load_from(&path), Preferences::default());
+
+        // A directory (or a FIFO) is never opened for reading.
+        assert_eq!(
+            Preferences::load_from(directory.path()),
+            Preferences::default()
+        );
     }
 
     #[test]
