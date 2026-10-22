@@ -164,11 +164,6 @@ export function reactionsPath(channelId: Snowflake, messageId: Snowflake, emoji?
   return emoji === undefined ? base : `${base}/${encodeURIComponent(emoji)}`;
 }
 
-/** Path of the requester's own reaction (`PUT` adds it, `DELETE` removes it). */
-export function ownReactionPath(channelId: Snowflake, messageId: Snowflake, emoji: string): string {
-  return `/api/v1/${reactionsPath(channelId, messageId, emoji)}/@me`;
-}
-
 export interface ReadState {
   channel_id: Snowflake;
   last_read_message_id: Snowflake;

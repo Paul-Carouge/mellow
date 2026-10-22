@@ -240,7 +240,6 @@ export const fr: Catalogue = {
     loadingWho: "Chargement des réactions…",
     whoFailed: "Impossible de savoir qui a réagi.",
     failed: "Impossible de réagir",
-    noNewEmoji: "Tu ne peux pas ajouter de nouvelles réactions ici.",
     removeShort: "Retirer",
     remove: (person) => `Retirer la réaction de ${person}`,
     removeFailed: "Impossible de retirer la réaction",
