@@ -13,6 +13,7 @@
   } from "./format";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import { type MentionablePeople, mentionsUser, splitMentions } from "./mentions";
   import MessageAttachments from "./MessageAttachments.svelte";
   import type { MessageListRow } from "./message-rows";
   import { durationTokenInMilliseconds } from "./tokens";
@@ -26,6 +27,8 @@
     replyReference: { author: PublicUser | null; text: string } | null;
     /** The author's role colour, already readable on the sheet; null keeps the heading colour. */
     authorColor: string | null;
+    /** Who "@name" can point at here: the server's members or the conversation's people. */
+    mentionablePeople: MentionablePeople;
     canSendMessages: boolean;
     canManageMessages: boolean;
     isEditing: boolean;
@@ -49,6 +52,7 @@
     currentUser,
     replyReference,
     authorColor,
+    mentionablePeople,
     canSendMessages,
     canManageMessages,
     isEditing,
@@ -73,6 +77,7 @@
   const isOwn = $derived(author.id === currentUser.id);
   const isSending = $derived(row.kind === "pending" && row.pending.status === "sending");
   const isFailed = $derived(row.kind === "pending" && row.pending.status === "failed");
+  const isMentioningCurrentUser = $derived(mentionsUser(content, mentionablePeople, currentUser.id));
 
   // Taken from the message when the editor opens; later updates to the message keep the typing.
   let draft = $state("");
@@ -123,7 +128,10 @@
           target="_blank"
           rel="noopener noreferrer"
           class="text-text-link hover:underline">{segment.text}</a
-        >{:else}{segment.text}{/if}{/each}{#if message?.edited_at_unix_milliseconds}
+        >{:else}{#each splitMentions(segment.text, mentionablePeople) as part, partIndex (partIndex)}{#if part.kind === "mention"}<span
+                class="rounded-(--mw-component-mention-chip-radius) bg-(--mw-component-mention-chip-background) px-(--mw-component-mention-chip-padding-inline) font-medium text-(--mw-component-mention-chip-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-mention-chip-background-hover) hover:text-(--mw-component-mention-chip-text-hover)"
+                >{part.text}</span
+              >{:else}{part.text}{/if}{/each}{/if}{/each}{#if message?.edited_at_unix_milliseconds}
       <span
         class="type-message-timestamp text-(--mw-component-message-edited-text)"
         title="Edited {fullTimestampLabel(message.edited_at_unix_milliseconds)}">(edited)</span
@@ -141,9 +149,17 @@
   class={[
     "group relative pr-(--message-padding-trailing,var(--mw-component-message-padding-trailing)) pl-(--mw-component-message-gutter) py-(--mw-component-message-padding-block) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-visible:focus-ring-inset",
     row.startsAuthorGroup && "mt-(--mw-component-message-group-gap)",
-    isEditing ? "bg-(--mw-component-message-background-hover)" : "hover:bg-(--mw-component-message-background-hover) focus-within:bg-(--mw-component-message-background-hover)",
+    // A message that mentions you: tint and a leading bar, so colour is never the only sign.
+    isMentioningCurrentUser
+      ? "bg-(--mw-component-mention-background) shadow-[inset_var(--mw-component-mention-bar-width)_0_0_0_var(--mw-component-mention-bar-color)] hover:bg-(--mw-component-mention-background-hover)"
+      : isEditing
+        ? "bg-(--mw-component-message-background-hover)"
+        : "hover:bg-(--mw-component-message-background-hover) focus-within:bg-(--mw-component-message-background-hover)",
   ]}
 >
+  {#if isMentioningCurrentUser}
+    <span class="sr-only">Mentions you.</span>
+  {/if}
   {#if replyReference}
     <!-- The spine runs from the author's avatar up to the original (DESIGN.md §5.4). -->
     <p class="reply-reference relative flex h-(--mw-component-message-reply-height) min-w-0 items-center gap-2xs type-body text-text-secondary">

@@ -7,6 +7,7 @@
   import { attachmentCountLabel, displayName } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
   import MessageItem from "./MessageItem.svelte";
+  import { mentionablePeople } from "./mentions";
   import { buildMessageRows } from "./message-rows";
   import { nameColorsByUserId } from "./name-colors.svelte";
   import { durationTokenInMilliseconds, lengthTokenInPixels } from "./tokens";
@@ -78,6 +79,13 @@
       client.selectedGuild ? client.membersByGuild.get(client.selectedGuild.id) : undefined,
       "color-surface-chat",
     ),
+  );
+  const mentionable = $derived(
+    mentionablePeople([
+      currentUser,
+      ...(client.selectedGuild ? (client.membersByGuild.get(client.selectedGuild.id) ?? []).map((member) => member.user) : []),
+      ...(client.selectedConversation?.recipients ?? []),
+    ]),
   );
   const rows = $derived(
     buildMessageRows(messages, client.pendingMessagesIn(channelId), currentUser.id, Date.now()),
@@ -295,6 +303,7 @@
         <MessageItem
           {row}
           {currentUser}
+          mentionablePeople={mentionable}
           authorColor={authorColors.get(row.kind === "sent" ? row.message.author.id : currentUser.id) ?? null}
           replyReference={row.kind === "sent" ? replyReferenceOf(row.message) : null}
           {canSendMessages}
