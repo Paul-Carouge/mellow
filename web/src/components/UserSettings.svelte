@@ -131,7 +131,13 @@
 <dialog
   bind:this={dialog}
   aria-label="User settings"
-  class="fixed inset-0 m-0 size-full max-h-none max-w-none bg-(--mw-component-settings-content-background) p-0 font-sans text-text-normal"
+  class={[
+    "fixed inset-0 m-0 size-full max-h-none max-w-none font-sans text-text-normal",
+    // Wide: the navigation on the ground and the page as a sheet beside it (ADR-0022 §1).
+    isWide
+      ? "bg-(--mw-component-settings-sidebar-background) p-(--mw-size-sheet-inset)"
+      : "bg-(--mw-component-settings-content-background) p-0",
+  ]}
   onkeydown={(event) => {
     // Handled here rather than in `cancel`, which browsers stop honouring after repeated Esc.
     if (event.key === "Escape") {
@@ -146,12 +152,12 @@
     onclose();
   }}
 >
-  <div class="flex h-full">
+  <div class={["flex h-full", isWide && "gap-(--mw-size-sheet-inset)"]}>
     {#if isNavigationShown}
       <div
         class={[
           "flex justify-end overflow-y-auto bg-(--mw-component-settings-sidebar-background)",
-          isWide ? "flex-[1_0_var(--mw-component-settings-nav-width)]" : "flex-1 flex-col justify-start",
+          isWide ? "flex-[1_1_0]" : "flex-1 flex-col justify-start",
         ]}
       >
         {#if !isWide}
@@ -190,7 +196,15 @@
     {/if}
 
     {#if isPageShown}
-      <div class="flex min-w-0 flex-[1_1_var(--mw-component-settings-content-max-width)] flex-col overflow-y-auto">
+      <div
+        class={[
+          "flex min-w-0 flex-col overflow-y-auto bg-(--mw-component-settings-content-background)",
+          // The padding counts in the flex share, as in the mockup's settings sheet.
+          isWide
+            ? "flex-[2_1_0] rounded-(--mw-component-sheet-radius) ps-(--mw-component-settings-content-padding-inline) pe-lg"
+            : "flex-1",
+        ]}
+      >
         {#if !isWide}
           <div class="flex items-center justify-between gap-xs px-(--mw-component-settings-content-padding-inline-narrow) pt-xs">
             <IconButton
@@ -207,7 +221,7 @@
           class={[
             "flex gap-(--mw-component-settings-close-gap) pb-(--mw-component-settings-content-padding-bottom)",
             isWide
-              ? "px-(--mw-component-settings-content-padding-inline) pt-(--mw-component-settings-content-padding-top)"
+              ? "pt-(--mw-component-settings-content-padding-top)"
               : "px-(--mw-component-settings-content-padding-inline-narrow) pt-xs",
           ]}
         >
