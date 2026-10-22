@@ -875,7 +875,8 @@ Phone (< 792)                     Drawer open
 - Message text is rendered as Discord's Markdown (5.4) by a parser of its own (`markdown.ts`, a typed tree rendered element by element, never as HTML): bold, italic, underline, strikethrough, inline code, fenced code blocks (language kept, no highlighting), `>` and `>>>` quotes, `||spoilers||` (a button, "Spoiler, select to reveal", that gives way to the text and moves focus to it; `component.message.spoiler-*`), headings `#` to `###`, `-`/`*` lists, masked links `[text](url)` (destination in the tooltip, no confirmation dialog yet) and bare URLs, backslash escapes. Only `http:` and `https:` become links, opened in a new tab with `rel="noopener noreferrer"`. Mentions are never read inside code. Not yet: subtext `-#`, numbered lists, "Copy code", nested lists.
 - User settings (5.9) open from the user panel's gear button ("User settings"), as on desktop; "Sign out" is the last item of their navigation.
 - Attachments (5.4, 5.5): images open in a new tab instead of the viewer; an image that fails to load becomes its download card instead of "Couldn't load this image."; no upload progress percentage (the tray says "Uploading…"), no "Add a description" or "Mark as spoiler" yet.
-- Not in the web client yet: server settings, mention badges, day dividers, the connection dock's "Back online" and session-expired states. Mentions are matched client-side by name until the protocol carries mention ids ([design/web-dusk-navigator.md](docs/design/web-dusk-navigator.md)).
+- Server settings follow 5.8 ([design/web-server-settings.md](docs/design/web-server-settings.md)); channel settings are not there yet.
+- Not in the web client yet: channel settings, mention badges, day dividers, the connection dock's "Back online" and session-expired states. Mentions are matched client-side by name until the protocol carries mention ids ([design/web-dusk-navigator.md](docs/design/web-dusk-navigator.md)).
 
 ### 4.4 Admin web UI (server-rendered HTML + htmx)
 
@@ -1182,6 +1183,8 @@ Discord's full-screen settings layout: navigation on `surface.sidebar` (right-al
 - Empty (only @everyone): "Roles let you group people and give them permissions." with "Create a role".
 
 **Desktop, first slice (2026-10-21)**: the server header turns into a menu button (chevron) only for members who can open settings; Roles is the only section. `@everyone` hides the colour picker and "Delete role", and its name field is read-only ("@everyone can't be renamed."). A locked role shows a lock and "You can only edit roles below your highest role." above the tabs. With only `@everyone`, the empty-state text and "Create a role" sit above the list, and `@everyone` stays editable below. Colours come from presets only, as radio buttons marked by a check and a ring.
+
+**Web (2026-10-22)**: every section but Channels, with the user settings' layout (5.9). Lists are rows (avatar, name, a muted second line, one action) rather than tables, so they read the same on phones; roles are given from a member's "Manage" dialog as switches, not with chip × buttons (too small a target); the moderation log reads as sentences in the reader's language. Details: [design/web-server-settings.md](docs/design/web-server-settings.md).
 
 **Invites**: table of active invites (code in mono, created by, uses / maximum, expires). "Create invite" dialog: "Expire after" (30 minutes, 1 hour, 1 day, 7 days, Never), "Maximum uses" (No limit, 1, 5, 10, 25, 100), result with the full link and "Copy" (confirmation "Copied"). Revoking asks for confirmation (section 8). Empty: "No active invites." with "Create invite".
 
