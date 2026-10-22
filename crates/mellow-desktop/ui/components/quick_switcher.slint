@@ -1,0 +1,240 @@
+import { MellowColor, MellowComponent, MellowRadius, MellowSpace, MellowTheme, MellowType } from "../tokens.slint";
+
+export enum QuickSwitcherKind { conversation, channel, server }
+
+// A group label or a result of the quick switcher, built in Rust (`quick_switcher.rs`).
+export struct QuickSwitcherRow {
+    is-group: bool,
+    label: string,
+    kind: QuickSwitcherKind,
+    // The server a channel belongs to; empty otherwise.
+    place: string,
+    has-unread: bool,
+    // The result's position among the results, or -1 for a group label.
+    option-index: int,
+}
+
+component QuickSwitcherOption inherits Rectangle {
+    in property <QuickSwitcherRow> result;
+    in property <bool> is-selected;
+    callback chosen();
+    callback hovered();
+    height: MellowComponent.quick-switcher-option-height;
+    border-radius: MellowRadius.sm;
+    background: is-selected ? MellowColor.state-selected : transparent;
+    accessible-role: list-item;
+    accessible-label: result.label + (result.place != "" ? ", " + result.place : "") + (result.has-unread ? ", unread" : "");
+    accessible-item-selected: is-selected;
+    accessible-action-default => { root.chosen(); }
+
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.chosen(); }
+        moved => { root.hovered(); }
+    }
+    HorizontalLayout {
+        padding-left: MellowSpace.xs;
+        padding-right: MellowSpace.xs;
+        spacing: MellowSpace.xs;
+        VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.result.kind == QuickSwitcherKind.conversation ? @image-url("../../icons/at.svg")
+                    : root.result.kind == QuickSwitcherKind.server ? @image-url("../../icons/users.svg")
+                    : @image-url("../../icons/hash.svg");
+                colorize: MellowColor.text-muted;
+                width: MellowComponent.channel-row-icon-size;
+                height: self.width;
+                accessible-role: none;
+            }
+        }
+        Text {
+            text: root.result.label;
+            color: root.is-selected ? MellowColor.text-heading : MellowColor.text-normal;
+            font-size: MellowType.body-lg.font-size;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: none;
+        }
+        if root.result.has-unread: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: MellowComponent.channel-row-unread-pill-width;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: MellowColor.unread-pill;
+            }
+        }
+        Text {
+            text: root.result.place;
+            horizontal-stretch: 1;
+            horizontal-alignment: right;
+            color: MellowColor.text-muted;
+            font-size: MellowType.body-sm.font-size;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: none;
+        }
+    }
+}
+
+// The quick switcher (DESIGN.md §5.10): Ctrl+K or "Go to… Ctrl K". Type to filter, arrows to choose,
+// Enter to open, Esc or the scrim to close. Rust filters (`quick-switcher-query-changed`) and opens.
+export component QuickSwitcher inherits Rectangle {
+    in property <[QuickSwitcherRow]> rows;
+    callback query-changed(string);
+    // The chosen result's option index.
+    callback chosen(int);
+    callback close();
+
+    property <int> selected-index: 0;
+    property <int> option-count: rows.length == 0 ? 0 : rows[rows.length - 1].option-index + 1;
+    property <string> query;
+    changed rows => { selected-index = 0; }
+
+    function move-selection(step: int) {
+        if option-count > 0 {
+            selected-index = mod(selected-index + step + option-count, option-count);
+        }
+    }
+
+    background: MellowComponent.dialog-scrim;
+    // Clicking the scrim closes it, and nothing behind it reacts.
+    TouchArea {
+        clicked => { root.close(); }
+    }
+
+    card := Rectangle {
+        width: min(MellowComponent.quick-switcher-width, root.width - 2 * MellowComponent.dialog-margin);
+        height: content.preferred-height;
+        x: (root.width - self.width) / 2;
+        y: root.height * MellowComponent.quick-switcher-offset-top;
+        background: MellowComponent.dialog-background;
+        border-radius: MellowComponent.dialog-radius;
+        // A line in the dark theme, where the card would otherwise melt into the scrim.
+        border-width: MellowTheme.is-dark ? 1px : 0px;
+        border-color: MellowColor.border-divider;
+        accessible-role: groupbox;
+        accessible-label: "Go to";
+        // Clicks on the card stay in it.
+        TouchArea { }
+
+        content := VerticalLayout {
+            padding: MellowSpace.md;
+            spacing: MellowSpace.sm;
+            Rectangle {
+                height: MellowComponent.quick-switcher-input-height;
+                border-radius: MellowRadius.md;
+                background: MellowColor.surface-input;
+                // Outside the field, with a gap, as in the mockup.
+                if input.has-focus: Rectangle {
+                    x: -(MellowComponent.focus-ring-offset + MellowComponent.focus-ring-width);
+                    y: self.x;
+                    width: parent.width - 2 * self.x;
+                    height: parent.height - 2 * self.y;
+                    border-width: MellowComponent.focus-ring-width;
+                    border-color: MellowComponent.focus-ring-color;
+                    border-radius: MellowRadius.md - self.x;
+                }
+                if input.text == "": Text {
+                    x: MellowSpace.md;
+                    text: "Where would you like to go?";
+                    color: MellowColor.text-muted;
+                    font-size: MellowType.heading-lg.font-size;
+                    font-weight: MellowType.heading-lg.font-weight;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                FocusScope {
+                    focus-on-click: false;
+                    focus-on-tab-navigation: false;
+                    capture-key-pressed(event) => {
+                        if event.text == Key.Escape {
+                            root.close();
+                            return accept;
+                        }
+                        if event.text == Key.DownArrow {
+                            root.move-selection(1);
+                            return accept;
+                        }
+                        if event.text == Key.UpArrow {
+                            root.move-selection(-1);
+                            return accept;
+                        }
+                        if event.text == Key.Return {
+                            if root.option-count > 0 {
+                                root.chosen(root.selected-index);
+                            }
+                            return accept;
+                        }
+                        reject
+                    }
+                    input := TextInput {
+                        x: MellowSpace.md;
+                        width: parent.width - 2 * MellowSpace.md;
+                        single-line: true;
+                        color: MellowColor.text-heading;
+                        font-size: MellowType.heading-lg.font-size;
+                        font-weight: MellowType.heading-lg.font-weight;
+                        vertical-alignment: center;
+                        accessible-label: "Where would you like to go?";
+                        accessible-description: "Prefixes: @ people, # channels, * servers";
+                        init => { self.focus(); }
+                        edited => {
+                            root.query = self.text;
+                            root.query-changed(self.text);
+                        }
+                    }
+                }
+            }
+
+            // Results, then their count for screen readers.
+            if root.rows.length > 0: VerticalLayout {
+                accessible-role: list;
+                accessible-label: "Results";
+                for row in root.rows: VerticalLayout {
+                    // Padded like the mockup's group labels: 8 above, 4 below, 8 at the sides.
+                    if row.is-group: HorizontalLayout {
+                        padding-top: MellowSpace.xs;
+                        padding-bottom: MellowSpace.space-2xs;
+                        padding-left: MellowSpace.xs;
+                        padding-right: MellowSpace.xs;
+                        Text {
+                            text: row.label;
+                            color: MellowColor.text-muted;
+                            font-size: MellowType.category.font-size;
+                            font-weight: MellowType.category.font-weight;
+                            accessible-role: none;
+                        }
+                    }
+                    if !row.is-group: QuickSwitcherOption {
+                        result: row;
+                        is-selected: row.option-index == root.selected-index;
+                        chosen => { root.chosen(row.option-index); }
+                        hovered => { root.selected-index = row.option-index; }
+                    }
+                }
+            }
+            if root.rows.length == 0 && root.query != "": Text {
+                text: "No results for '" + root.query + "'. Check the spelling or search another server.";
+                color: MellowColor.text-secondary;
+                font-size: MellowType.body.font-size;
+                wrap: word-wrap;
+            }
+            Text {
+                text: "Arrows to choose, Enter to open, Esc to close. Prefixes: @ people, # channels, * servers.";
+                color: MellowColor.text-muted;
+                font-size: MellowType.body-sm.font-size;
+                wrap: word-wrap;
+                // The field's description says it.
+                accessible-role: none;
+            }
+            Text {
+                height: 0px;
+                text: root.option-count == 1 ? "1 result" : root.option-count + " results";
+                accessible-role: text;
+                accessible-live-region: polite;
+            }
+        }
+    }
+}

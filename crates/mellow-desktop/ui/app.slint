@@ -6,6 +6,7 @@ import "../fonts/Figtree[wght].ttf";
 import "../fonts/Figtree-Italic[wght].ttf";
 import { ServerItem } from "components/server_rail.slint";
 import { Navigator } from "components/navigator.slint";
+import { QuickSwitcher, QuickSwitcherKind, QuickSwitcherRow } from "components/quick_switcher.slint";
 import { MelliAnimation, MelliState } from "components/melli.slint";
 import { ChannelListRow, DirectMessageRow } from "components/channel_sidebar.slint";
 import { AttachmentRow, ChatPane, HistoryStartState, MessageDelivery, MessageRow } from "components/chat_pane.slint";
@@ -18,7 +19,7 @@ import { UpdateStatus, UserSettingsScreen } from "components/user_settings.slint
 import { RoleListRow, RolePermissionRow, ServerSettingsScreen } from "components/server_settings.slint";
 import { AddServerDialog, CreateChannelDialog, InvitePeopleDialog, LeaveServerDialog } from "components/server_dialogs.slint";
 
-export { AttachmentRow, MellowComponent, RoleColor, MelliAnimation, MelliState, ServerItem, ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, MotionPreference, ThemeChoice, UpdateStatus, RoleListRow, RolePermissionRow }
+export { AttachmentRow, MellowComponent, QuickSwitcherKind, QuickSwitcherRow, RoleColor, MelliAnimation, MelliState, ServerItem, ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, MotionPreference, ThemeChoice, UpdateStatus, RoleListRow, RolePermissionRow }
 
 // The window-wide dialog open over the shell, if any (DESIGN.md §6.35).
 export enum ShellDialog { none, add-server, invite-people, create-channel, leave-server }
@@ -57,8 +58,8 @@ export component AppWindow inherits Window {
     // Appearance (DESIGN.md §5.9): Rust loads and saves both, and is told after each change.
     in-out property <ThemeChoice> theme-choice: ThemeChoice.system;
     callback appearance-changed();
-    // Development builds preview controls whose feature has not shipped (microphone, headset,
-    // "Go to…"); release builds hide them (ADR-0022 §5).
+    // Development builds preview controls whose feature has not shipped (microphone and headset);
+    // release builds hide them (ADR-0022 §5).
     in property <bool> shows-unreleased-controls;
     in property <bool> is-signed-in;
     // Empty hides the banner.
@@ -200,6 +201,12 @@ export component AppWindow inherits Window {
     // "N new messages since HH:MM" (DESIGN.md §5.4); empty hides the bar. Rust clears it on Mark as read.
     in property <string> unread-bar-text;
     callback mark-channel-read();
+    // The quick switcher (DESIGN.md §5.10): Rust fills the rows for each query and opens the
+    // chosen result (its option index).
+    in-out property <bool> is-quick-switcher-open;
+    in property <[QuickSwitcherRow]> quick-switcher-rows;
+    callback quick-switcher-query-changed(string);
+    callback quick-switcher-chosen(int);
     // Who types in the open channel ("Ana and Léo"), and whether it reads "are typing".
     in property <string> typing-names;
     in property <bool> is-typing-plural;
@@ -268,6 +275,12 @@ export component AppWindow inherits Window {
         root.create-channel-category-index = category-index;
         root.create-channel-category-name = category-name;
         root.open-dialog = ShellDialog.create-channel;
+    }
+
+    function open-quick-switcher() {
+        root.is-navigator-drawer-open = false;
+        root.is-quick-switcher-open = true;
+        root.quick-switcher-query-changed("");
     }
 
     function close-dialog() {
@@ -345,6 +358,11 @@ export component AppWindow inherits Window {
                 root.is-text-selection-mode = !root.is-text-selection-mode;
                 return accept;
             }
+            // Ctrl+K opens the quick switcher (DESIGN.md §5.10).
+            if event.modifiers.control && (event.text == "k" || event.text == "K") {
+                root.open-quick-switcher();
+                return accept;
+            }
             // Ctrl+U shows or hides the members, as on Discord (DESIGN.md §7.2).
             if event.modifiers.control && (event.text == "u" || event.text == "U") {
                 root.toggle-member-sheet();
@@ -414,7 +432,7 @@ export component AppWindow inherits Window {
                     channel-topic: root.selected-channel-topic;
                     is-direct-message: root.is-direct-message-open;
                     is-narrow: !root.is-wide-enough-for-sidebar;
-                    shows-go-to-button: root.shows-unreleased-controls;
+                    open-quick-switcher => { root.open-quick-switcher(); }
                     is-member-sheet-open: root.is-member-sheet-shown;
                     toggle-member-sheet => { root.toggle-member-sheet(); }
                     open-navigator-drawer => { root.is-navigator-drawer-open = true; }
@@ -640,6 +658,22 @@ export component AppWindow inherits Window {
         error-message: root.dialog-error;
         leave-server => { root.leave-server(); }
         close => { root.close-dialog(); }
+    }
+
+    if root.is-signed-in && root.is-quick-switcher-open: QuickSwitcher {
+        width: root.width;
+        height: root.height;
+        rows: root.quick-switcher-rows;
+        query-changed(query) => { root.quick-switcher-query-changed(query); }
+        chosen(index) => {
+            root.is-quick-switcher-open = false;
+            root.quick-switcher-chosen(index);
+            chat.focus-composer();
+        }
+        close => {
+            root.is-quick-switcher-open = false;
+            chat.focus-composer();
+        }
     }
 
     if root.is-signed-in && root.is-user-settings-open: UserSettingsScreen {

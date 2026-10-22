@@ -17,6 +17,7 @@ mod mentions;
 mod message_markup;
 mod person_style;
 mod preferences;
+mod quick_switcher;
 mod role_settings;
 mod scroll_benchmark;
 mod session_store;
@@ -71,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     window.set_app_version(mellow_update::current_version().to_string().into());
     app_icons::install_in_background();
     melli_animation::pause_while_window_is_hidden(&window);
-    // Microphone, headset and "Go to…" are previewed in development builds only (ADR-0022 §5).
+    // Microphone and headset are previewed in development builds only (ADR-0022 §5).
     window.set_shows_unreleased_controls(cfg!(debug_assertions));
 
     // The scroll benchmark and snapshots measure the shell itself, on stable fake data.
