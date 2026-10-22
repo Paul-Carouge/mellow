@@ -19,8 +19,9 @@ use crate::http::api_error::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::http::authentication::AuthenticatedUser;
 use crate::http::rate_limit::{
     DIRECT_MESSAGE_OPENS_PER_USER, DIRECT_MESSAGE_OPENS_PER_USER_PER_DAY, MESSAGE_WRITES_PER_USER,
-    MESSAGE_WRITES_PER_USER_PER_HOUR, MESSAGES_PER_CHANNEL, REACTION_WRITES_PER_USER,
-    REACTION_WRITES_PER_USER_PER_HOUR, READ_STATE_WRITES_PER_USER, TYPING_INDICATORS_PER_USER,
+    MESSAGE_WRITES_PER_USER_PER_HOUR, MESSAGES_PER_CHANNEL, REACTION_WRITES_PER_CHANNEL,
+    REACTION_WRITES_PER_USER, REACTION_WRITES_PER_USER_PER_HOUR, READ_STATE_WRITES_PER_USER,
+    TYPING_INDICATORS_PER_USER,
 };
 
 /// Send, edit and delete share the per-user budgets (burst and hourly).
@@ -43,8 +44,13 @@ fn limit_message_writes(state: &AppState, user_id: Snowflake) -> Result<(), ApiE
     }
 }
 
-/// Adding and removing reactions share the per-user budgets (burst and hourly).
-fn limit_reaction_writes(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
+/// Adding and removing reactions share the per-user budgets (burst and hourly), then the
+/// channel's.
+fn limit_reaction_writes(
+    state: &AppState,
+    user_id: Snowflake,
+    channel_id: Snowflake,
+) -> Result<(), ApiError> {
     let now = Instant::now();
     let within_burst = state.rate_limiter.record_event(
         &format!("reaction-write:{user_id}"),
@@ -56,7 +62,14 @@ fn limit_reaction_writes(state: &AppState, user_id: Snowflake) -> Result<(), Api
         REACTION_WRITES_PER_USER_PER_HOUR,
         now,
     );
-    if within_burst && within_hour {
+    if !(within_burst && within_hour) {
+        return Err(ApiError::rate_limited());
+    }
+    if state.rate_limiter.record_event(
+        &format!("reaction-channel:{channel_id}"),
+        REACTION_WRITES_PER_CHANNEL,
+        now,
+    ) {
         Ok(())
     } else {
         Err(ApiError::rate_limited())
@@ -70,7 +83,7 @@ pub(crate) async fn add_reaction(
     AuthenticatedUser(user): AuthenticatedUser,
     ApiPath((channel_id, message_id, emoji)): ApiPath<(Snowflake, Snowflake, String)>,
 ) -> Result<StatusCode, ApiError> {
-    limit_reaction_writes(&state, user.id)?;
+    limit_reaction_writes(&state, user.id, channel_id)?;
     state
         .messages
         .add_reaction(user.id, channel_id, message_id, &emoji)
@@ -84,7 +97,7 @@ pub(crate) async fn remove_own_reaction(
     AuthenticatedUser(user): AuthenticatedUser,
     ApiPath((channel_id, message_id, emoji)): ApiPath<(Snowflake, Snowflake, String)>,
 ) -> Result<StatusCode, ApiError> {
-    limit_reaction_writes(&state, user.id)?;
+    limit_reaction_writes(&state, user.id, channel_id)?;
     state
         .messages
         .remove_own_reaction(user.id, channel_id, message_id, &emoji)
@@ -155,7 +168,7 @@ async fn remove_reactions(
     message_id: Snowflake,
     removal: ReactionRemoval,
 ) -> Result<StatusCode, ApiError> {
-    limit_reaction_writes(state, moderator_id)?;
+    limit_reaction_writes(state, moderator_id, channel_id)?;
     state
         .messages
         .remove_reactions(moderator_id, channel_id, message_id, removal)

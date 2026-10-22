@@ -102,6 +102,11 @@ pub(crate) const REACTION_WRITES_PER_USER_PER_HOUR: RateLimit = RateLimit {
     maximum_events: 1_200,
     window: Duration::from_hours(1),
 };
+/// Reaction writes per channel, whoever makes them (slows coordinated floods of events).
+pub(crate) const REACTION_WRITES_PER_CHANNEL: RateLimit = RateLimit {
+    maximum_events: 60,
+    window: Duration::from_secs(10),
+};
 /// Read-state acknowledgements per user; clients send one per channel switch or scroll.
 pub(crate) const READ_STATE_WRITES_PER_USER: RateLimit = RateLimit {
     maximum_events: 30,
