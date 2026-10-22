@@ -1,9 +1,12 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
+
   import { strings } from "../i18n";
   import type { PublicUser, ReactionSummary, Snowflake } from "../lib/protocol";
   import { displayEmoji } from "../lib/reactions";
   import { displayName } from "./format";
   import Icon from "./Icon.svelte";
+  import { createPopoverToggle } from "./popover-toggle";
   import { durationTokenInMilliseconds, lengthTokenInPixels } from "./tokens";
 
   // Reaction chips under a message (DESIGN.md §5.4): emoji and count, pressed when the user is
@@ -34,7 +37,31 @@
   let tooltipPosition = $state({ top: 0, left: 0 });
   let showTimer: ReturnType<typeof setTimeout> | undefined;
   /** Who reacted, per emoji, for the count it had: a new count asks again. */
-  const sentences = new Map<string, { count: number; text: string }>();
+  const reactorSentenceByEmoji = new Map<string, { count: number; text: string }>();
+  let list = $state<HTMLElement | null>(null);
+  const pickerToggle = createPopoverToggle(() => isHeld);
+
+  // A chip that went (its last reaction removed, here or elsewhere) takes its tooltip with it.
+  $effect(() => {
+    if (tooltipEmoji !== null && !reactions.some((reaction) => reaction.emoji === tooltipEmoji)) {
+      hideTooltip();
+    }
+  });
+
+  onDestroy(hideTooltip);
+
+  /**
+   * Taking back the last reaction of an emoji removes its chip, focus with it: focus moves first
+   * to the add button, or to the message.
+   */
+  function toggle(chip: HTMLElement, reaction: ReactionSummary) {
+    if (reaction.me && reaction.count === 1 && chip.matches(":focus")) {
+      const addButton = list?.querySelector<HTMLElement>("[data-add-reaction]");
+      (addButton ?? chip.closest<HTMLElement>("[data-row-key]"))?.focus();
+      hideTooltip();
+    }
+    ontoggle(reaction.emoji);
+  }
 
   function sentenceFor(reaction: ReactionSummary, users: readonly PublicUser[]): string {
     const others = users.filter((user) => user.id !== currentUserId);
@@ -50,7 +77,7 @@
 
   async function openTooltip(chip: HTMLElement, reaction: ReactionSummary) {
     tooltipEmoji = reaction.emoji;
-    const cached = sentences.get(reaction.emoji);
+    const cached = reactorSentenceByEmoji.get(reaction.emoji);
     tooltipText = cached?.count === reaction.count ? cached.text : strings.reactions.loadingWho;
     if (!tooltip.matches(":popover-open")) {
       tooltip.showPopover();
@@ -69,7 +96,7 @@
     }
     try {
       const text = sentenceFor(reaction, await loadUsers(reaction.emoji));
-      sentences.set(reaction.emoji, { count: reaction.count, text });
+      reactorSentenceByEmoji.set(reaction.emoji, { count: reaction.count, text });
       if (tooltipEmoji === reaction.emoji) {
         tooltipText = text;
       }
@@ -92,6 +119,7 @@
 
 {#if reactions.length > 0}
   <ul
+    bind:this={list}
     aria-label={strings.reactions.reactions}
     class="mt-(--mw-component-reaction-margin-top) flex flex-wrap items-center gap-(--mw-component-reaction-row-gap)"
   >
@@ -111,7 +139,7 @@
               : "border-(--mw-component-reaction-border) bg-(--mw-component-reaction-background) text-(--mw-component-reaction-count-text)",
             isUsable && !reaction.me && "hover:border-(--mw-component-reaction-border-hover) hover:bg-(--mw-component-reaction-background-hover)",
           ]}
-          onclick={() => isUsable && ontoggle(reaction.emoji)}
+          onclick={(event) => isUsable && toggle(event.currentTarget, reaction)}
           onpointerenter={(event) => showTooltip(event.currentTarget, reaction)}
           onpointerleave={hideTooltip}
           onfocus={(event) => showTooltip(event.currentTarget, reaction)}
@@ -128,10 +156,12 @@
       <li class={["invisible group-focus-within:visible group-hover:visible pointer-coarse:visible", isHeld && "visible"]}>
         <button
           type="button"
+          data-add-reaction
           aria-label={strings.reactions.addReaction}
           title={strings.reactions.addReaction}
           class="grid h-(--mw-component-reaction-height) place-items-center rounded-(--mw-component-reaction-radius) border-(length:--mw-component-reaction-border-width) border-(--mw-component-reaction-border) bg-(--mw-component-reaction-background) px-(--mw-component-reaction-padding-inline) text-(--mw-component-reaction-add-icon) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:border-(--mw-component-reaction-border-hover) hover:text-(--mw-component-reaction-add-icon-hover) focus-visible:focus-ring pointer-coarse:h-(--mw-size-hit-web-min)"
-          onclick={(event) => onopenpicker(event.currentTarget)}
+          onpointerdown={pickerToggle.notePress}
+          onclick={(event) => pickerToggle.shouldOpenOnClick() && onopenpicker(event.currentTarget)}
         >
           <Icon name="smiley" class="size-(--mw-component-reaction-emoji-size)" />
         </button>
