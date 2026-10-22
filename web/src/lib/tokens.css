@@ -406,6 +406,9 @@
   --mw-component-message-skeleton-bar-height: 0.75rem;
   --mw-component-message-skeleton-fill: #362E37;
   --mw-component-message-skeleton-name-max-width: 10rem;
+  --mw-component-message-spoiler-background: #8C828D;
+  --mw-component-message-spoiler-background-hover: #A99FAA;
+  --mw-component-message-spoiler-revealed-background: #362E37;
   --mw-component-message-status-icon-size: 1rem;
   --mw-component-message-timestamp-text: #A99FAA;
   --mw-component-navigator-background: #1B151C;
@@ -1054,6 +1057,8 @@
     --mw-component-message-reply-spine-color: #CBC5CC;
     --mw-component-message-selection-background: #005FCC59;
     --mw-component-message-skeleton-fill: #ECE6ED;
+    --mw-component-message-spoiler-background-hover: #726874;
+    --mw-component-message-spoiler-revealed-background: #ECE6ED;
     --mw-component-message-timestamp-text: #695F6B;
     --mw-component-navigator-background: #FFFFFF;
     --mw-component-profile-popover-background: #FFFFFF;
@@ -1338,6 +1343,8 @@
   --mw-component-message-reply-spine-color: #CBC5CC;
   --mw-component-message-selection-background: #005FCC59;
   --mw-component-message-skeleton-fill: #ECE6ED;
+  --mw-component-message-spoiler-background-hover: #726874;
+  --mw-component-message-spoiler-revealed-background: #ECE6ED;
   --mw-component-message-timestamp-text: #695F6B;
   --mw-component-navigator-background: #FFFFFF;
   --mw-component-profile-popover-background: #FFFFFF;
