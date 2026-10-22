@@ -13,6 +13,7 @@ mod idle_benchmark;
 mod live_rows;
 mod live_shell;
 mod melli_animation;
+mod mentions;
 mod message_markup;
 mod person_style;
 mod preferences;

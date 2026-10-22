@@ -18,7 +18,7 @@ import { UpdateStatus, UserSettingsScreen } from "components/user_settings.slint
 import { RoleListRow, RolePermissionRow, ServerSettingsScreen } from "components/server_settings.slint";
 import { AddServerDialog, CreateChannelDialog, InvitePeopleDialog, LeaveServerDialog } from "components/server_dialogs.slint";
 
-export { AttachmentRow, RoleColor, MelliAnimation, MelliState, ServerItem, ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, MotionPreference, ThemeChoice, UpdateStatus, RoleListRow, RolePermissionRow }
+export { AttachmentRow, MellowComponent, RoleColor, MelliAnimation, MelliState, ServerItem, ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, MotionPreference, ThemeChoice, UpdateStatus, RoleListRow, RolePermissionRow }
 
 // The window-wide dialog open over the shell, if any (DESIGN.md §6.35).
 export enum ShellDialog { none, add-server, invite-people, create-channel, leave-server }
@@ -159,7 +159,12 @@ export component AppWindow inherits Window {
     // Theme: the OS's scheme through Slint's palette, unless the person chose one.
     property <bool> is-dark-theme: theme-choice == ThemeChoice.dark
         || (theme-choice == ThemeChoice.system && Palette.color-scheme != ColorScheme.light);
-    changed is-dark-theme => { MellowTheme.is-dark = self.is-dark-theme; }
+    changed is-dark-theme => {
+        MellowTheme.is-dark = self.is-dark-theme;
+        self.theme-changed();
+    }
+    // After the theme changes: Rust rebuilds what it coloured itself (mentions in messages).
+    callback theme-changed();
 
     function toggle-member-sheet() {
         if root.is-direct-message-open {

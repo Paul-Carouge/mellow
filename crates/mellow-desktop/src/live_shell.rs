@@ -20,15 +20,16 @@ use mellow_client_core::{
 };
 use mellow_protocol::{
     ApiErrorCode, GatewayEvent, LoginRequest, Message, MessageHistoryQuery, Permissions,
-    RegisterRequest, SendMessageRequest, Snowflake,
+    PublicUser, RegisterRequest, SendMessageRequest, Snowflake,
 };
 use slint::{ComponentHandle as _, Model as _, ModelRc, SharedString, VecModel, Weak};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
-use crate::generated_ui::{AppWindow, MessageRow};
+use crate::generated_ui::{AppWindow, MellowComponent, MessageRow};
 use crate::live_rows::ConnectionStatus;
+use crate::mentions::MentionablePeople;
 use crate::preferences::Preferences;
 use crate::role_settings::MoveDirection;
 use crate::session_store::{self, StoredSession};
@@ -1031,6 +1032,9 @@ fn connect_layout_callbacks(window: &AppWindow, shell: &SharedShell) {
     window.on_mark_channel_read(move || forget_unread_divider(&shell_for_callback));
     let shell_for_callback = shell.clone();
     window.on_member_sheet_toggled(move || remember_member_sheet(&shell_for_callback));
+    let shell_for_callback = shell.clone();
+    // Mentions are coloured in Rust, so the rows follow the theme.
+    window.on_theme_changed(move || refresh_messages(&mut shell_for_callback.borrow_mut()));
 }
 
 /// "Mark as read", or sending: the divider and the bar go (the channel is already acknowledged).
@@ -1661,6 +1665,47 @@ fn selected_role_colors(shell: &LiveShell) -> HashMap<Snowflake, u32> {
     live_rows::role_colors_by_user(guild, members)
 }
 
+/// Who a mention in the open channel can name: the server's members, or the conversation's
+/// participants, and the signed-in user.
+fn selected_mentionable_people(shell: &LiveShell) -> MentionablePeople {
+    let members = shell
+        .selected_guild_id
+        .map(|id| shell.state.members(id))
+        .unwrap_or_default()
+        .iter()
+        .map(|member| &member.user);
+    let recipients = shell
+        .selected_channel_id
+        .and_then(|id| shell.state.direct_message_channel(id))
+        .map(|channel| channel.recipients.as_slice())
+        .unwrap_or_default();
+    let current_user = shell.state.current_user().map(|user| PublicUser {
+        id: user.id,
+        username: user.username.clone(),
+        display_name: user.display_name.clone(),
+        avatar: None,
+        banner: None,
+    });
+    let people: Vec<&PublicUser> = members
+        .chain(recipients)
+        .chain(current_user.as_ref())
+        .collect();
+    MentionablePeople::new(people.iter().copied())
+}
+
+/// `component.mention.chip-text` in the current theme, as `#RRGGBB` for the message markup.
+fn mention_color(shell: &LiveShell) -> String {
+    shell.window.upgrade().map_or_else(String::new, |window| {
+        let color = window.global::<MellowComponent>().get_mention_chip_text();
+        format!(
+            "#{:02X}{:02X}{:02X}",
+            color.red(),
+            color.green(),
+            color.blue()
+        )
+    })
+}
+
 /// Whether the signed-in user may delete other people's messages in the open channel.
 fn can_manage_messages(shell: &LiveShell) -> bool {
     shell
@@ -1698,11 +1743,18 @@ fn refresh_messages(shell: &mut LiveShell) {
         shell.read_position_at_open = None;
     }
     let unread_divider_message_id = shell.unread_divider_message_id;
+    let mentionable = selected_mentionable_people(shell);
+    let mention_color = mention_color(shell);
+    let people = live_rows::PeopleContext {
+        role_colors: &role_colors,
+        mentionable: &mentionable,
+        mention_color: &mention_color,
+    };
     let mut rows = live_rows::message_rows(
         messages,
         current_user_id,
         can_manage_messages,
-        &role_colors,
+        &people,
         unread_divider_message_id,
     );
     if let Some(current_user) = current_user {
