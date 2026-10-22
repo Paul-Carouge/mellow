@@ -64,6 +64,23 @@ export function avatarInitial(user: Pick<PublicUser, "display_name" | "username"
   return (Array.from(name)[0] ?? "").toUpperCase();
 }
 
+/** `color.avatar.tint-1` to `tint-8` in design/tokens.json. */
+const AVATAR_TINT_COUNT = 8;
+const FNV_OFFSET_BASIS = 0x811c9dc5;
+const FNV_PRIME = 0x01000193;
+
+/**
+ * The default avatar's tint (DESIGN.md §2.3): the same person keeps the same colour everywhere.
+ * FNV-1a over the id's digits, so neighbouring Snowflakes still spread over the palette.
+ */
+export function avatarTintToken(userId: Snowflake): string {
+  let hash = FNV_OFFSET_BASIS;
+  for (const character of userId) {
+    hash = Math.imul(hash ^ character.charCodeAt(0), FNV_PRIME) >>> 0;
+  }
+  return `--mw-color-avatar-tint-${(hash % AVATAR_TINT_COUNT) + 1}`;
+}
+
 export function displayName(user: Pick<PublicUser, "display_name" | "username">): string {
   return user.display_name.trim() || user.username;
 }

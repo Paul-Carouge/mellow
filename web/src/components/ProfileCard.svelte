@@ -10,7 +10,7 @@
   // Profile settings (§5.9): the banner picture, or the plain strip, with the avatar overlapping
   // it; both play animated, as in Discord's popout, except under reduced motion.
   interface Props {
-    user: Pick<PublicUser, "display_name" | "username" | "avatar" | "banner">;
+    user: Pick<PublicUser, "id" | "display_name" | "username" | "avatar" | "banner">;
     /** A heading in the side sheet; plain text in the settings preview, under its own heading. */
     nameElement?: "h3" | "p";
     /** The surface behind the card: the avatar's ring is cut from it. */
