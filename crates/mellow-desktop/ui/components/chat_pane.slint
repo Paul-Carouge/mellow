@@ -1067,9 +1067,6 @@ export component ChatPane inherits Rectangle {
     // Below the navigator breakpoint: the sheet is full-bleed, a button opens the navigator drawer,
     // and the topic and "Go to…" leave the header (DESIGN.md §4.2).
     in property <bool> is-narrow;
-    // "Go to… Ctrl K" opens the quick switcher (DESIGN.md §5.10), which the desktop does not have
-    // yet: the button shows only where unreleased controls are previewed.
-    in property <bool> shows-go-to-button;
     // Changes with every channel or conversation opened: the list fades and rises in.
     in property <string> channel-id;
     // "N new messages since HH:MM" while the channel was opened with unread messages; empty hides it.
@@ -1319,7 +1316,8 @@ export component ChatPane inherits Rectangle {
                 overflow: elide;
                 horizontal-stretch: 1;
             }
-            if root.shows-go-to-button && !root.is-narrow: VerticalLayout {
+            // "Go to… Ctrl K" opens the quick switcher (DESIGN.md §5.10).
+            if !root.is-narrow: VerticalLayout {
                 alignment: center;
                 GoToButton {
                     clicked => { root.open-quick-switcher(); }

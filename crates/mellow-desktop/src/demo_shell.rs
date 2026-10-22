@@ -12,10 +12,12 @@ use crate::fake_workspace::{
     FakeCategory, FakeServer, fake_categories, fake_role_groups, fake_servers,
 };
 use crate::generated_ui::{
-    AppWindow, AttachmentRow, MellowComponent, MessageDelivery, MessageRow, RoleColor,
+    AppWindow, AttachmentRow, MellowComponent, MessageDelivery, MessageRow, QuickSwitcherKind,
+    RoleColor,
 };
 use crate::mentions::{MentionablePeople, find_mentions};
 use crate::message_markup::{styled_text_from_message_body, styled_text_with_mentions};
+use crate::quick_switcher::{self, Destination};
 use crate::{idle_benchmark, person_style, scroll_benchmark, shell_rows};
 
 /// The busiest channel gets the 10 000-message history used by the scroll benchmark.
@@ -37,6 +39,8 @@ struct ShellState {
     messages: Rc<VecModel<MessageRow>>,
     /// See `clipboard::copy_text`.
     clipboard: Option<arboard::Clipboard>,
+    /// What each result of the open quick switcher leads to, by option index.
+    quick_switcher_destinations: Vec<Destination>,
 }
 
 /// Each fake member's role colour, by display name (the demo's stand-in for an id).
@@ -176,6 +180,7 @@ pub fn start(window: &AppWindow) -> Result<(), slint::PlatformError> {
     let servers = fake_servers();
 
     let state = Rc::new(RefCell::new(ShellState {
+        quick_switcher_destinations: Vec::new(),
         categories: fake_categories(),
         collapsed_category_indexes: BTreeSet::new(),
         selected_channel_name: String::new(),
@@ -218,6 +223,81 @@ pub fn start(window: &AppWindow) -> Result<(), slint::PlatformError> {
     Ok(())
 }
 
+/// The quick switcher on fake data: the shared fake channels and the fake servers; no
+/// conversations, since the demo has none.
+fn connect_quick_switcher(
+    window: &AppWindow,
+    state: &Rc<RefCell<ShellState>>,
+    servers: &[FakeServer],
+) {
+    let server_destinations: Vec<Destination> = servers
+        .iter()
+        .enumerate()
+        .map(|(index, server)| Destination {
+            kind: QuickSwitcherKind::Server,
+            id: index.to_string(),
+            server_id: index.to_string(),
+            name: server.name.to_owned(),
+            place: String::new(),
+            has_unread: server.has_unread_messages,
+        })
+        .collect();
+    let place = servers
+        .first()
+        .map(|server| server.name.to_owned())
+        .unwrap_or_default();
+    let weak_window = window.as_weak();
+    let shared_state = state.clone();
+    window.on_quick_switcher_query_changed(move |query| {
+        let Some(window) = weak_window.upgrade() else {
+            return;
+        };
+        let mut state = shared_state.borrow_mut();
+        let channels = state
+            .categories
+            .iter()
+            .flat_map(|category| &category.channels)
+            .map(|channel| Destination {
+                kind: QuickSwitcherKind::Channel,
+                id: channel.name.to_owned(),
+                server_id: String::new(),
+                name: channel.name.to_owned(),
+                // The demo's servers all share these channels; name the first one.
+                place: place.clone(),
+                has_unread: channel.has_unread_messages,
+            });
+        let destinations: Vec<Destination> = channels.chain(server_destinations.clone()).collect();
+        let (rows, chosen) = quick_switcher::results(&destinations, &query);
+        state.quick_switcher_destinations = chosen;
+        window.set_quick_switcher_rows(ModelRc::new(VecModel::from(rows)));
+    });
+    let weak_window = window.as_weak();
+    let shared_state = state.clone();
+    window.on_quick_switcher_chosen(move |index| {
+        let Some(window) = weak_window.upgrade() else {
+            return;
+        };
+        let destination = usize::try_from(index).ok().and_then(|index| {
+            shared_state
+                .borrow()
+                .quick_switcher_destinations
+                .get(index)
+                .cloned()
+        });
+        match destination {
+            Some(destination) if destination.kind == QuickSwitcherKind::Channel => {
+                open_channel(&window, &mut shared_state.borrow_mut(), &destination.id);
+            }
+            Some(destination) => {
+                if let Ok(server_index) = destination.id.parse::<i32>() {
+                    window.invoke_select_server(server_index);
+                }
+            }
+            None => {}
+        }
+    });
+}
+
 fn connect_navigation_callbacks(
     window: &AppWindow,
     state: &Rc<RefCell<ShellState>>,
@@ -232,6 +312,8 @@ fn connect_navigation_callbacks(
             open_channel(&window, &mut shared_state.borrow_mut(), &channel_name);
         }
     });
+
+    connect_quick_switcher(window, state, &servers);
 
     let weak_window = window.as_weak();
     window.on_select_server(move |server_index| {

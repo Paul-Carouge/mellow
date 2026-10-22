@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use slint::ComponentHandle as _;
+use slint::{ComponentHandle as _, SharedString};
 
 use crate::generated_ui::{AppWindow, ThemeChoice};
 
@@ -21,7 +21,7 @@ const TGA_IMAGE_DESCRIPTOR: u8 = 0x28;
 const SNAPSHOT_SIZE_VARIABLE: &str = "MELLOW_SPIKE_SNAPSHOT_SIZE";
 /// Optional theme for snapshots: `dark` or `light`.
 const SNAPSHOT_THEME_VARIABLE: &str = "MELLOW_SPIKE_SNAPSHOT_THEME";
-/// Optional state to show before the first snapshot: `members`, `drawer`, `settings` or `typing`.
+/// Optional state to show before the first snapshot: `members`, `drawer`, `settings`, `typing` or `switcher`.
 const SNAPSHOT_STATE_VARIABLE: &str = "MELLOW_SPIKE_SNAPSHOT_STATE";
 /// Who types in the `typing` state.
 const SNAPSHOT_TYPING_NAME: &str = "Basile";
@@ -47,6 +47,10 @@ fn prepare(window: &AppWindow) {
         Ok("drawer") => window.set_is_navigator_drawer_open(true),
         Ok("settings") => window.set_is_user_settings_open(true),
         Ok("typing") => window.set_typing_names(SNAPSHOT_TYPING_NAME.into()),
+        Ok("switcher") => {
+            window.set_is_quick_switcher_open(true);
+            window.invoke_quick_switcher_query_changed(SharedString::default());
+        }
         _ => {}
     }
 }

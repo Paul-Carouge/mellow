@@ -27,13 +27,13 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
-use crate::generated_ui::{AppWindow, MellowComponent, MessageRow};
+use crate::generated_ui::{AppWindow, MellowComponent, MessageRow, QuickSwitcherKind};
 use crate::live_rows::ConnectionStatus;
 use crate::mentions::MentionablePeople;
 use crate::preferences::Preferences;
 use crate::role_settings::MoveDirection;
 use crate::session_store::{self, StoredSession};
-use crate::{clipboard, live_rows, shell_rows};
+use crate::{clipboard, live_rows, quick_switcher, shell_rows};
 
 const GATEWAY_UPDATE_QUEUE_CAPACITY: usize = 256;
 const LOGOUT_ON_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -94,6 +94,8 @@ pub struct LiveShell {
     unread_divider_message_id: Option<Snowflake>,
     /// Ticks while someone types in the open channel, so the indicator clears when typing expires.
     typing_timer: slint::Timer,
+    /// What each result of the open quick switcher leads to, by option index.
+    quick_switcher_destinations: Vec<quick_switcher::Destination>,
     /// For the typing timer: the shell owns the timer, so the timer must not own the shell.
     self_reference: std::rc::Weak<RefCell<LiveShell>>,
     /// The message the composer answers, shown as "Replying to …".
@@ -145,6 +147,7 @@ pub fn start(
         read_position_at_open: None,
         unread_divider_message_id: None,
         typing_timer: slint::Timer::default(),
+        quick_switcher_destinations: Vec::new(),
         self_reference: std::rc::Weak::new(),
         reply_to_message_id: None,
         clipboard: None,
@@ -1046,12 +1049,45 @@ fn end_session(shell: &SharedShell, message: &str) -> tokio::task::JoinHandle<bo
 /// The unread bar and the member sheet (DESIGN.md §5.4, §5.7).
 fn connect_layout_callbacks(window: &AppWindow, shell: &SharedShell) {
     let shell_for_callback = shell.clone();
+    window.on_quick_switcher_query_changed(move |query| {
+        let mut shell = shell_for_callback.borrow_mut();
+        let destinations = live_rows::quick_switcher_destinations(&shell.state);
+        let (rows, chosen) = quick_switcher::results(&destinations, &query);
+        shell.quick_switcher_destinations = chosen;
+        if let Some(window) = shell.window.upgrade() {
+            window.set_quick_switcher_rows(ModelRc::new(VecModel::from(rows)));
+        }
+    });
+    let shell_for_callback = shell.clone();
+    window.on_quick_switcher_chosen(move |index| go_to(&shell_for_callback, index));
+    let shell_for_callback = shell.clone();
     window.on_mark_channel_read(move || forget_unread_divider(&shell_for_callback));
     let shell_for_callback = shell.clone();
     window.on_member_sheet_toggled(move || remember_member_sheet(&shell_for_callback));
     let shell_for_callback = shell.clone();
     // Mentions are coloured in Rust, so the rows follow the theme.
     window.on_theme_changed(move || refresh_messages(&mut shell_for_callback.borrow_mut()));
+}
+
+/// Opens the quick switcher's result at `index` (DESIGN.md §5.10).
+fn go_to(shell: &SharedShell, index: i32) {
+    let destination = usize::try_from(index).ok().and_then(|index| {
+        shell
+            .borrow()
+            .quick_switcher_destinations
+            .get(index)
+            .cloned()
+    });
+    let Some(destination) = destination else {
+        return;
+    };
+    let id = destination.id.parse::<Snowflake>().ok();
+    let server_id = destination.server_id.parse::<Snowflake>().ok();
+    match destination.kind {
+        QuickSwitcherKind::Conversation => select_guild(shell, None, id),
+        QuickSwitcherKind::Channel => select_guild(shell, server_id, id),
+        QuickSwitcherKind::Server => select_guild(shell, server_id, None),
+    }
 }
 
 /// "Mark as read", or sending: the divider and the bar go (the channel is already acknowledged).

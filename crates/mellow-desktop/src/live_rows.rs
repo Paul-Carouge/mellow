@@ -11,11 +11,12 @@ use slint::{ModelRc, SharedString, VecModel};
 
 use crate::generated_ui::{
     AttachmentRow, ChannelListRow, DirectMessageRow, HistoryStartState, MelliState, MemberListRow,
-    MessageDelivery, MessageRow, PresenceStatus, RoleColor, ServerItem,
+    MessageDelivery, MessageRow, PresenceStatus, QuickSwitcherKind, RoleColor, ServerItem,
 };
 use crate::mentions::{MentionablePeople, find_mentions};
 use crate::message_markup::{styled_text_from_message_body, styled_text_with_mentions};
 use crate::person_style::{avatar_tint_index_of, highest_role_color, role_color};
+use crate::quick_switcher::Destination;
 use crate::shell_rows::{first_letter, saturating_int, server_initials};
 
 /// Discord starts a new author group after this long, even for the same author.
@@ -548,6 +549,51 @@ pub fn member_rows(
         std::iter::once(header).chain(rows)
     })
     .collect()
+}
+
+/// Where a conversation sits, in the quick switcher.
+const DIRECT_MESSAGE_PLACE: &str = "Direct message";
+
+/// Everywhere the quick switcher can go: conversations, then text channels, then servers, unread
+/// ones first within each kind.
+pub fn quick_switcher_destinations(state: &ClientState) -> Vec<Destination> {
+    let conversations = state
+        .direct_message_channels()
+        .iter()
+        .map(|channel| Destination {
+            kind: QuickSwitcherKind::Conversation,
+            id: channel.id.to_string(),
+            server_id: String::new(),
+            name: direct_message_name(channel),
+            place: DIRECT_MESSAGE_PLACE.to_owned(),
+            has_unread: state.has_unread(channel.id),
+        });
+    let channels = state.guilds().iter().flat_map(|guild| {
+        guild
+            .channels
+            .iter()
+            .filter(|channel| channel.kind == ChannelKind::Text)
+            .map(move |channel| Destination {
+                kind: QuickSwitcherKind::Channel,
+                id: channel.id.to_string(),
+                server_id: guild.id.to_string(),
+                name: channel.name.clone(),
+                place: guild.name.clone(),
+                has_unread: state.has_unread(channel.id),
+            })
+    });
+    let servers = state.guilds().iter().map(|guild| Destination {
+        kind: QuickSwitcherKind::Server,
+        id: guild.id.to_string(),
+        server_id: guild.id.to_string(),
+        name: guild.name.clone(),
+        place: String::new(),
+        has_unread: false,
+    });
+    let mut destinations: Vec<Destination> = conversations.chain(channels).chain(servers).collect();
+    // Stable: the kinds and the order within each stay, unread ones come first.
+    destinations.sort_by_key(|destination| !destination.has_unread);
+    destinations
 }
 
 /// Typing indicator names, bold before "is typing…" or "are typing…": "Ana", "Ana and Léo",
