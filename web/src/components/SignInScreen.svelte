@@ -3,6 +3,7 @@
 
   import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
+  import { MINIMUM_PASSWORD_LENGTH } from "../lib/protocol";
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
   import Melli from "./Melli.svelte";
@@ -16,8 +17,6 @@
 
   let { client }: Props = $props();
 
-  // Mirrors the server's rule (mellow-server domain/account_rules.rs); the server still decides.
-  const MINIMUM_PASSWORD_LENGTH = 10;
   const instanceName = window.location.host;
   let isRegistering = $state(false);
   let login = $state("");

@@ -33,6 +33,9 @@ export interface PublicUser {
   banner?: ProfileImage | null;
 }
 
+/** Mirrors the server's rule (mellow-server domain/account_rules.rs); the server still decides. */
+export const MINIMUM_PASSWORD_LENGTH = 10;
+
 /** What `PUT /users/@me/avatar` and `/banner` accept (ADR-0021). */
 export const MAXIMUM_PROFILE_IMAGE_BYTES = 8 * 1024 * 1024;
 
