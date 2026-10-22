@@ -31,13 +31,15 @@ use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::events::EventHub;
 use crate::storage::audit_log::{self as audit_log_storage, ChannelEntryFilter, NewAuditEntry};
 use crate::storage::guilds::{
-    self as guild_storage, GuildStorageError, JoinOutcome, Membership, NewGuild, RoleFieldChanges,
-    StoredChannel, StoredInvite,
+    self as guild_storage, GuildRename, GuildStorageError, JoinOutcome, Membership, NewGuild,
+    RoleFieldChanges, StoredChannel, StoredInvite,
 };
 
 const DEFAULT_CATEGORY_NAME: &str = "Text channels";
 const DEFAULT_CHANNEL_NAME: &str = "general";
 const MILLISECONDS_PER_SECOND: u64 = 1_000;
+/// Characters of an invite code kept in the audit log.
+const INVITE_CODE_HINT_LENGTH: usize = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GuildError {
@@ -117,6 +119,13 @@ fn channel_from_stored(channel: StoredChannel) -> Channel {
         position: channel.position,
         permission_overwrites: channel.permission_overwrites,
     }
+}
+
+/// What the audit log keeps of an invite code: enough to tell invites apart, too little to join
+/// with, since readers of the log need not be allowed to invite.
+fn invite_code_hint(code: &str) -> String {
+    let prefix: String = code.chars().take(INVITE_CODE_HINT_LENGTH).collect();
+    format!("{prefix}…")
 }
 
 /// `Some` when `new` is given and differs from `old`.
@@ -338,31 +347,23 @@ impl Guilds {
         guild_id: Snowflake,
         request: UpdateGuildRequest,
     ) -> Result<Guild, GuildError> {
-        let (membership, permissions) = self.membership_and_permissions(guild_id, user_id).await?;
-        if !permissions.contains(Permissions::MANAGE_GUILD) {
-            return Err(GuildError::MissingPermissions);
-        }
+        self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_GUILD)
+            .await?;
         let name = request
             .name
             .map(|name| normalize_guild_name(&name))
             .transpose()?;
-        if let Some(change) = text_change(
-            AuditChangeKey::Name,
-            &membership.guild_name,
-            name.as_deref(),
-        ) {
-            let name = change.new_value.clone();
-            let audit = NewAuditEntry {
-                changes: vec![change],
-                ..self.audit_entry(guild_id, user_id, AuditAction::GuildUpdate, None, None)?
-            };
-            if !guild_storage::update_guild_name(&self.pool, guild_id, &name, &audit).await? {
-                return Err(GuildError::NotFound);
+        if let Some(name) = name {
+            let audit =
+                self.audit_entry(guild_id, user_id, AuditAction::GuildUpdate, None, None)?;
+            match guild_storage::update_guild_name(&self.pool, guild_id, &name, &audit).await? {
+                GuildRename::Renamed => self.events.publish_to_guild(
+                    guild_id,
+                    &GatewayEvent::GuildUpdate(GuildSummary { id: guild_id, name }),
+                ),
+                GuildRename::Unchanged => {}
+                GuildRename::NotFound => return Err(GuildError::NotFound),
             }
-            self.events.publish_to_guild(
-                guild_id,
-                &GatewayEvent::GuildUpdate(GuildSummary { id: guild_id, name }),
-            );
         }
         self.get_guild(user_id, guild_id).await
     }
@@ -985,7 +986,7 @@ impl Guilds {
             changes: vec![AuditChange {
                 key: AuditChangeKey::Code,
                 old_value: String::new(),
-                new_value: invite.code.clone(),
+                new_value: invite_code_hint(&invite.code),
             }],
             ..self.audit_entry(guild_id, user_id, AuditAction::InviteCreate, None, None)?
         };
@@ -1062,7 +1063,7 @@ impl Guilds {
         let audit = NewAuditEntry {
             changes: vec![AuditChange {
                 key: AuditChangeKey::Code,
-                old_value: code.to_owned(),
+                old_value: invite_code_hint(code),
                 new_value: String::new(),
             }],
             ..self.audit_entry(guild_id, user_id, AuditAction::InviteDelete, None, None)?
@@ -4223,9 +4224,216 @@ mod tests {
                 AuditAction::InviteCreate,
             ]
         );
+        let hint = invite_code_hint(&expiring.code);
         assert_eq!(entries[0].changes[0].key, AuditChangeKey::Code);
-        assert_eq!(entries[0].changes[0].old_value, expiring.code);
-        assert_eq!(entries[1].changes[0].new_value, expiring.code);
+        assert_eq!(entries[0].changes[0].old_value, hint);
+        assert_eq!(entries[1].changes[0].new_value, hint);
         assert_eq!(entries[0].target_id, None);
+    }
+
+    #[tokio::test]
+    async fn auditors_never_read_a_usable_invite_code() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        let guilds = &fixture.guilds;
+        let auditors = guilds
+            .create_role(
+                fixture.owner,
+                guild.id,
+                role_request("Auditors", Permissions::VIEW_AUDIT_LOG),
+                NOW,
+            )
+            .await
+            .unwrap();
+        guilds
+            .add_member_role(fixture.owner, guild.id, fixture.other, auditors.id)
+            .await
+            .unwrap();
+        let invite = guilds
+            .create_invite(fixture.owner, guild.id, CreateInviteRequest::default(), NOW)
+            .await
+            .unwrap();
+        let seen_by_auditor = guilds
+            .list_audit_log(fixture.other, guild.id, AuditLogQuery::default())
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        let created = seen_by_auditor
+            .iter()
+            .find(|entry| entry.action == AuditAction::InviteCreate)
+            .unwrap();
+        let prefix: String = invite.code.chars().take(INVITE_CODE_HINT_LENGTH).collect();
+        assert_eq!(created.changes[0].new_value, format!("{prefix}…"));
+        assert!(
+            seen_by_auditor
+                .iter()
+                .flat_map(|entry| &entry.changes)
+                .all(|change| !change.new_value.contains(&invite.code)
+                    && !change.old_value.contains(&invite.code)),
+            "no entry holds a whole code"
+        );
+    }
+
+    #[tokio::test]
+    async fn each_rename_records_the_name_it_replaced() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        let audit = || {
+            fixture
+                .guilds
+                .audit_entry(
+                    guild.id,
+                    fixture.owner,
+                    AuditAction::GuildUpdate,
+                    None,
+                    None,
+                )
+                .unwrap()
+        };
+        let rename = |name: &'static str, audit: NewAuditEntry| {
+            let pool = fixture.pool.clone();
+            async move { guild_storage::update_guild_name(&pool, guild.id, name, &audit).await }
+        };
+        let first = rename("Book club", audit()).await.unwrap();
+        let second = rename("Reading room", audit()).await.unwrap();
+        let unchanged = rename("Reading room", audit()).await.unwrap();
+        let missing = guild_storage::update_guild_name(
+            &fixture.pool,
+            Snowflake::from_raw(42),
+            "Nowhere",
+            &audit(),
+        )
+        .await
+        .unwrap();
+        let entries = fixture
+            .guilds
+            .list_audit_log(fixture.owner, guild.id, AuditLogQuery::default())
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        assert_eq!(
+            [first, second, unchanged, missing],
+            [
+                GuildRename::Renamed,
+                GuildRename::Renamed,
+                GuildRename::Unchanged,
+                GuildRename::NotFound,
+            ]
+        );
+        let names: Vec<(&str, &str)> = entries
+            .iter()
+            .filter(|entry| entry.action == AuditAction::GuildUpdate)
+            .map(|entry| {
+                (
+                    entry.changes[0].old_value.as_str(),
+                    entry.changes[0].new_value.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [("Book club", "Reading room"), ("Club", "Book club")]
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_guild_removes_what_it_holds_and_keeps_conversations() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        let general = guild.channels[1].id;
+        fixture
+            .guilds
+            .ban_member(fixture.owner, guild.id, fixture.third, ban_request(""), NOW)
+            .await
+            .unwrap();
+        let (conversation, _) = crate::storage::direct_messages::find_or_create_one_to_one(
+            &fixture.pool,
+            fixture.owner,
+            fixture.other,
+            Snowflake::from_raw(900),
+        )
+        .await
+        .unwrap();
+        let pool = &fixture.pool;
+        for (message_id, channel_id) in [(901, general), (902, conversation)] {
+            sqlx::query(
+                "INSERT INTO messages (id, channel_id, author_id, content) VALUES (?, ?, ?, 'hi')",
+            )
+            .bind(message_id)
+            .bind(i64::try_from(channel_id.raw()).unwrap())
+            .bind(i64::try_from(fixture.owner.raw()).unwrap())
+            .execute(pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO read_states (user_id, channel_id, last_read_message_id) VALUES (?, ?, ?)",
+            )
+            .bind(i64::try_from(fixture.other.raw()).unwrap())
+            .bind(i64::try_from(channel_id.raw()).unwrap())
+            .bind(message_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
+             content_type, size_bytes, created_at_unix_milliseconds) \
+             VALUES (903, ?, ?, 901, 'notes.txt', 'application/octet-stream', 5, 0)",
+        )
+        .bind(i64::try_from(general.raw()).unwrap())
+        .bind(i64::try_from(fixture.owner.raw()).unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let member_ids = guild_storage::delete_guild(pool, guild.id, fixture.owner)
+            .await
+            .unwrap();
+        let guild_id = i64::try_from(guild.id.raw()).unwrap();
+        let mut left_in_guild = Vec::new();
+        for query in [
+            "SELECT COUNT(*) FROM guilds WHERE id = ?1",
+            "SELECT COUNT(*) FROM roles WHERE guild_id = ?1",
+            "SELECT COUNT(*) FROM guild_members WHERE guild_id = ?1",
+            "SELECT COUNT(*) FROM channels WHERE guild_id = ?1",
+            "SELECT COUNT(*) FROM invites WHERE guild_id = ?1",
+            "SELECT COUNT(*) FROM bans WHERE guild_id = ?1",
+            "SELECT COUNT(*) FROM audit_log WHERE guild_id = ?1",
+            "SELECT COUNT(*) FROM messages WHERE id = 901",
+            "SELECT COUNT(*) FROM attachments WHERE id = 903",
+            "SELECT COUNT(*) FROM read_states WHERE last_read_message_id = 901",
+        ] {
+            let count: i64 = sqlx::query_scalar(query)
+                .bind(guild_id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            left_in_guild.push(count);
+        }
+        let mut kept_in_conversation = Vec::new();
+        for query in [
+            "SELECT COUNT(*) FROM channels WHERE id = ?1",
+            "SELECT COUNT(*) FROM messages WHERE id = 902",
+            "SELECT COUNT(*) FROM read_states WHERE last_read_message_id = 902",
+            "SELECT COUNT(*) FROM direct_message_participants WHERE channel_id = ?1",
+        ] {
+            let count: i64 = sqlx::query_scalar(query)
+                .bind(i64::try_from(conversation.raw()).unwrap())
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            kept_in_conversation.push(count);
+        }
+        fixture.pool.close().await;
+
+        let mut member_ids = member_ids.unwrap();
+        member_ids.sort_unstable();
+        let mut expected = vec![fixture.owner, fixture.other];
+        expected.sort_unstable();
+        assert_eq!(member_ids, expected);
+        assert_eq!(left_in_guild, [0; 10]);
+        assert_eq!(kept_in_conversation, [1, 1, 1, 2]);
     }
 }
