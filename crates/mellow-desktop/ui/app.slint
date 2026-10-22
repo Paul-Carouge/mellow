@@ -197,6 +197,9 @@ export component AppWindow inherits Window {
     // "N new messages since HH:MM" (DESIGN.md §5.4); empty hides the bar. Rust clears it on Mark as read.
     in property <string> unread-bar-text;
     callback mark-channel-read();
+    // Who types in the open channel ("Ana and Léo"), and whether it reads "are typing".
+    in property <string> typing-names;
+    in property <bool> is-typing-plural;
     callback sign-in();
     callback register();
     callback sign-out();
@@ -429,6 +432,8 @@ export component AppWindow inherits Window {
                     history-start-state: root.history-start-state;
                     retry-loading-history => { root.retry-loading-history(); }
                     unread-bar-text: root.unread-bar-text;
+                    typing-names: root.typing-names;
+                    is-typing-plural: root.is-typing-plural;
                     mark-as-read => { root.mark-channel-read(); }
                 }
                 // Docked beside the sheet from 1064 px; below, it lies over the sheet (further down).

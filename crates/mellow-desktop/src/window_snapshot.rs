@@ -21,8 +21,10 @@ const TGA_IMAGE_DESCRIPTOR: u8 = 0x28;
 const SNAPSHOT_SIZE_VARIABLE: &str = "MELLOW_SPIKE_SNAPSHOT_SIZE";
 /// Optional theme for snapshots: `dark` or `light`.
 const SNAPSHOT_THEME_VARIABLE: &str = "MELLOW_SPIKE_SNAPSHOT_THEME";
-/// Optional state to show before the first snapshot: `members`, `drawer` or `settings`.
+/// Optional state to show before the first snapshot: `members`, `drawer`, `settings` or `typing`.
 const SNAPSHOT_STATE_VARIABLE: &str = "MELLOW_SPIKE_SNAPSHOT_STATE";
+/// Who types in the `typing` state.
+const SNAPSHOT_TYPING_NAME: &str = "Basile";
 
 /// Applies the optional size, theme and state, so the shell can be compared with the reference
 /// mockup at the same window sizes (ADR-0022).
@@ -44,6 +46,7 @@ fn prepare(window: &AppWindow) {
         Ok("members") => window.set_is_member_list_visible(true),
         Ok("drawer") => window.set_is_navigator_drawer_open(true),
         Ok("settings") => window.set_is_user_settings_open(true),
+        Ok("typing") => window.set_typing_names(SNAPSHOT_TYPING_NAME.into()),
         _ => {}
     }
 }

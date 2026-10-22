@@ -917,6 +917,72 @@ component HistoryStart inherits VerticalLayout {
     }
 }
 
+// "Ana is typing…" above the composer (DESIGN.md §6.28). The dots wave only while someone types,
+// and stand still under reduced motion. Not announced to screen readers.
+component TypingIndicator inherits HorizontalLayout {
+    in property <string> names;
+    in property <bool> is-plural;
+    property <bool> is-active: names != "";
+    property <bool> is-waving: is-active && !MotionPreference.is-reduced;
+    property <duration> clock: is-waving ? animation-tick() : 0ms;
+
+    // Up to the peak over the first 30 % of the wave, back down by 60 %, then rest (the mockup's
+    // `typing-dot` keyframes).
+    pure function wave(index: int) -> float {
+        let elapsed = root.clock - index * MellowComponent.composer-typing-dot-stagger;
+        let phase = mod(mod(elapsed, MellowComponent.composer-typing-dot-duration)
+            + MellowComponent.composer-typing-dot-duration, MellowComponent.composer-typing-dot-duration)
+            / MellowComponent.composer-typing-dot-duration;
+        phase < 0.3 ? phase / 0.3 : phase < 0.6 ? 1 - (phase - 0.3) / 0.3 : 0
+    }
+
+    height: MellowComponent.composer-typing-height;
+    padding-left: MellowSpace.xs;
+    spacing: MellowSpace.space-2xs;
+    alignment: start;
+    accessible-role: none;
+
+    if root.is-active: HorizontalLayout {
+        spacing: MellowComponent.composer-typing-dot-gap;
+        alignment: center;
+        for index in 3: VerticalLayout {
+            alignment: center;
+            // Room for the lift above the dot.
+            Rectangle {
+                width: MellowComponent.composer-typing-dot-size;
+                height: MellowComponent.composer-typing-dot-size + MellowComponent.composer-typing-dot-lift;
+                property <float> lift: root.wave(index);
+                Rectangle {
+                    y: MellowComponent.composer-typing-dot-lift * (1 - parent.lift);
+                    width: parent.width;
+                    height: self.width;
+                    border-radius: self.width / 2;
+                    background: MellowComponent.composer-typing-text;
+                    opacity: !root.is-waving ? MellowComponent.composer-typing-dot-opacity-still
+                    : MellowComponent.composer-typing-dot-opacity-rest
+                        + (MellowComponent.composer-typing-dot-opacity-peak - MellowComponent.composer-typing-dot-opacity-rest) * parent.lift;
+                }
+            }
+        }
+    }
+    if root.is-active: Text {
+        text: root.names;
+        color: MellowComponent.composer-typing-text;
+        font-size: MellowType.typing.font-size;
+        font-weight: MellowFont.weight-bold;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    if root.is-active: Text {
+        // The layout's gap stands for the space after the names.
+        text: root.is-plural ? "are typing…" : "is typing…";
+        color: MellowComponent.composer-typing-text;
+        font-size: MellowType.typing.font-size;
+        font-weight: MellowType.typing.font-weight;
+        vertical-alignment: center;
+    }
+}
+
 // "Go to… Ctrl K" in the chat header (ADR-0022 §1): opens the quick switcher.
 component GoToButton inherits Rectangle {
     callback clicked();
@@ -1009,6 +1075,9 @@ export component ChatPane inherits Rectangle {
     // "N new messages since HH:MM" while the channel was opened with unread messages; empty hides it.
     in property <string> unread-bar-text;
     callback mark-as-read();
+    // Who types in the open channel ("Ana and Léo"); empty when nobody does.
+    in property <string> typing-names;
+    in property <bool> is-typing-plural;
     callback toggle-member-sheet();
     callback open-navigator-drawer();
     callback open-quick-switcher();
@@ -1462,8 +1531,11 @@ export component ChatPane inherits Rectangle {
             padding-left: MellowComponent.composer-margin-inline;
             padding-right: MellowComponent.composer-margin-inline;
             padding-bottom: MellowSize.dock-margin;
-            // Reserved for "Aurore is typing…" (DESIGN.md §6.28), so nothing moves when it appears.
-            Rectangle { height: MellowComponent.composer-typing-height; }
+            // Always there, empty or not, so nothing moves when someone starts typing.
+            TypingIndicator {
+                names: root.typing-names;
+                is-plural: root.is-typing-plural;
+            }
             Rectangle {
                 VerticalLayout {
                     composer-box := Rectangle {

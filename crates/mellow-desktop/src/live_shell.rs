@@ -47,6 +47,10 @@ const RECONNECTING_NOTICE: &str = "Connection lost. Reconnecting…";
 const SESSION_ENDED_MESSAGE: &str = "Your session ended. Sign in again.";
 /// Shown when the rail's home entry (index -1 in `server_rail.slint`) is selected.
 const HOME_SERVER_NAME: &str = "Direct messages";
+/// How often the typing indicator checks whether typing has expired.
+const TYPING_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+/// Someone typing whose name this client does not know yet.
+const SOMEONE: &str = "Someone";
 
 struct Connection {
     rest: RestClient,
@@ -88,6 +92,10 @@ pub struct LiveShell {
     read_position_at_open: Option<Snowflake>,
     /// The first message the reader had not read when the channel was opened (DESIGN.md §5.4).
     unread_divider_message_id: Option<Snowflake>,
+    /// Ticks while someone types in the open channel, so the indicator clears when typing expires.
+    typing_timer: slint::Timer,
+    /// For the typing timer: the shell owns the timer, so the timer must not own the shell.
+    self_reference: std::rc::Weak<RefCell<LiveShell>>,
     /// The message the composer answers, shown as "Replying to …".
     reply_to_message_id: Option<Snowflake>,
     /// See `clipboard::copy_text`.
@@ -136,6 +144,8 @@ pub fn start(
         displayed_role_colors: HashMap::new(),
         read_position_at_open: None,
         unread_divider_message_id: None,
+        typing_timer: slint::Timer::default(),
+        self_reference: std::rc::Weak::new(),
         reply_to_message_id: None,
         clipboard: None,
         session_generation: 0,
@@ -146,6 +156,7 @@ pub fn start(
         connection_status: ConnectionStatus::SignedOut,
         preferences,
     }));
+    shell.borrow_mut().self_reference = Rc::downgrade(&shell);
     window.set_is_signed_in(false);
     window.set_messages(shell.borrow().messages.clone().into());
     connect_callbacks(window, &shell);
@@ -820,7 +831,13 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
         (shell.selected_guild_id, shell.selected_channel_id)
     };
     match change {
-        StateChange::Nothing | StateChange::Typing { .. } => return,
+        StateChange::Nothing => return,
+        StateChange::Typing { channel_id } => {
+            if Some(channel_id) == selected_channel_id {
+                refresh_typing(&shell.borrow());
+            }
+            return;
+        }
         StateChange::Guilds => {
             // The selected guild or channel may be gone; `None` is home, which never goes away.
             let guild_is_gone =
@@ -1128,6 +1145,7 @@ fn open_channel(shell: &SharedShell, channel_id: Option<Snowflake>) {
         refresh_header(&shell);
         refresh_channel_rows(&shell);
         refresh_messages(&mut shell);
+        refresh_typing(&shell);
         if let Some(window) = shell.window.upgrade() {
             crate::scroll_to_latest_message_after_layout(&window);
         }
@@ -1663,6 +1681,60 @@ fn selected_role_colors(shell: &LiveShell) -> HashMap<Snowflake, u32> {
         .map(|guild| shell.state.members(guild.id))
         .unwrap_or_default();
     live_rows::role_colors_by_user(guild, members)
+}
+
+/// "Ana is typing…" above the composer (DESIGN.md §6.28), from who types in the open channel.
+/// While anyone types, a timer checks again each second, since typing expires without an event.
+fn refresh_typing(shell: &LiveShell) {
+    let Some(window) = shell.window.upgrade() else {
+        return;
+    };
+    let typing_user_ids = shell
+        .selected_channel_id
+        .map(|id| shell.state.typing_user_ids(id, now_unix_milliseconds()))
+        .unwrap_or_default();
+    let names: Vec<String> = typing_user_ids
+        .iter()
+        .map(|user_id| person_name(shell, *user_id))
+        .collect();
+    let (typing_names, is_plural) = live_rows::typing_names(&names);
+    window.set_typing_names(typing_names.into());
+    window.set_is_typing_plural(is_plural);
+    if names.is_empty() {
+        shell.typing_timer.stop();
+    } else if !shell.typing_timer.running() {
+        let weak_shell = shell.self_reference.clone();
+        shell.typing_timer.start(
+            slint::TimerMode::Repeated,
+            TYPING_REFRESH_INTERVAL,
+            move || {
+                if let Some(shell) = weak_shell.upgrade()
+                    && let Ok(shell) = shell.try_borrow()
+                {
+                    refresh_typing(&shell);
+                }
+            },
+        );
+    }
+}
+
+/// A person's display name from the open server's members or the open conversation.
+fn person_name(shell: &LiveShell, user_id: Snowflake) -> String {
+    let members = shell
+        .selected_guild_id
+        .map(|id| shell.state.members(id))
+        .unwrap_or_default()
+        .iter()
+        .map(|member| &member.user);
+    let recipients = shell
+        .selected_channel_id
+        .and_then(|id| shell.state.direct_message_channel(id))
+        .map(|channel| channel.recipients.as_slice())
+        .unwrap_or_default();
+    members
+        .chain(recipients)
+        .find(|user| user.id == user_id)
+        .map_or_else(|| SOMEONE.to_owned(), |user| user.display_name.clone())
 }
 
 /// Who a mention in the open channel can name: the server's members, or the conversation's
