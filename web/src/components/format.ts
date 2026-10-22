@@ -1,6 +1,6 @@
 // Text shown in the shell, built the way the desktop client builds it (mellow-desktop live_rows.rs).
 
-import { formattingLocale, strings } from "../i18n";
+import { formattingLocale, strings, wordedFormattingLocale } from "../i18n";
 import type { PublicUser, Snowflake } from "../lib/protocol";
 
 /** Unix time of 2026-01-01T00:00:00Z: `MELLOW_EPOCH_UNIX_MILLISECONDS` in mellow-protocol. */
@@ -44,7 +44,7 @@ export function messageTimestampLabel(unixMilliseconds: number, now: Date, local
 }
 
 /** Full date and time, for tooltips and screen readers. */
-export function fullTimestampLabel(unixMilliseconds: number, locale: string = formattingLocale): string {
+export function fullTimestampLabel(unixMilliseconds: number, locale: string = wordedFormattingLocale): string {
   return new Date(unixMilliseconds).toLocaleString(locale, { dateStyle: "full", timeStyle: "short" });
 }
 
