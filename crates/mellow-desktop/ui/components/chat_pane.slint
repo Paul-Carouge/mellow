@@ -242,6 +242,8 @@ component MessageEditor inherits VerticalLayout {
 
 component MessageView inherits Rectangle {
     in property <MessageRow> message;
+    // Narrow windows keep a smaller trailing padding (DESIGN.md §4.2).
+    in property <bool> is-narrow;
     in property <bool> is-text-selection-mode;
     in property <bool> is-editing;
     in property <bool> can-send-messages;
@@ -305,7 +307,7 @@ component MessageView inherits Rectangle {
             padding-top: (message.starts-author-group ? MellowComponent.message-group-gap : 0px) + MellowComponent.message-padding-block;
             padding-bottom: MellowComponent.message-padding-block;
             padding-left: MellowComponent.message-gutter;
-            padding-right: MellowComponent.message-padding-trailing;
+            padding-right: root.is-narrow ? MellowSpace.md : MellowComponent.message-padding-trailing;
             // The avatar sits outside the layout, so the row must still be tall enough to contain it.
             min-height: message.starts-author-group
                 ? root.avatar-y + MellowComponent.message-avatar-size + self.padding-bottom : 0px;
@@ -1209,6 +1211,7 @@ export component ChatPane inherits Rectangle {
                         message: message;
                         is-text-selection-mode: root.is-text-selection-mode;
                         can-send-messages: root.can-send-messages;
+                        is-narrow: root.is-narrow;
                         // Outbox rows never show the editor, whatever index Rust sets.
                         is-editing: index == root.editing-message-index && message.delivery == MessageDelivery.sent;
                         editing-draft <=> root.editing-message-draft;
@@ -1416,7 +1419,7 @@ export component ChatPane inherits Rectangle {
                                         icon-size: MellowComponent.composer-icon-size;
                                         icon-color: MellowComponent.composer-icon;
                                         hover-icon-color: MellowComponent.composer-icon-hover;
-                                        hover-background: transparent;
+                                        hover-background: MellowColor.state-hover;
                                     }
                                 }
                                 field := Rectangle {
@@ -1497,6 +1500,28 @@ export component ChatPane inherits Rectangle {
                                                     }
                                                 }
                                             }
+                                        }
+                                    }
+                                }
+                                // Narrow windows show a send button, as on touch screens (DESIGN.md §5.5).
+                                if root.is-narrow: VerticalLayout {
+                                    alignment: end;
+                                    padding-top: (MellowSize.dock-height - MellowComponent.composer-attach-button-size) / 2;
+                                    padding-bottom: self.padding-top;
+                                    IconButton {
+                                        icon: @image-url("../../icons/paper-plane-right.svg");
+                                        label: "Send";
+                                        size: MellowComponent.composer-attach-button-size;
+                                        icon-size: MellowComponent.composer-icon-size;
+                                        icon-color: MellowComponent.composer-icon;
+                                        hover-icon-color: MellowComponent.composer-icon-hover;
+                                        hover-background: MellowColor.state-hover;
+                                        clicked => {
+                                            if composer.text != "" {
+                                                root.send-message(composer.text);
+                                                composer.text = "";
+                                            }
+                                            root.focus-composer();
                                         }
                                     }
                                 }

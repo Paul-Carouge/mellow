@@ -133,6 +133,7 @@ pub fn start(window: &AppWindow) -> Result<(), slint::PlatformError> {
     ))));
     window.set_current_user_name(CURRENT_USER_NAME.into());
     window.set_current_user_initial(shell_rows::first_letter(CURRENT_USER_NAME).into());
+    window.set_account_display_name(CURRENT_USER_NAME.into());
     window.set_account_username(CURRENT_USERNAME.into());
     window.set_messages(state.borrow().messages.clone().into());
     open_channel(window, &mut state.borrow_mut(), BUSIEST_CHANNEL_NAME);

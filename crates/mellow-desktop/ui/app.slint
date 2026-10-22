@@ -439,11 +439,12 @@ export component AppWindow inherits Window {
                 clicked => { root.toggle-member-sheet(); }
             }
         }
+        // Inset from the sheet's own edges (top, trailing, bottom), as in the reference mockup.
         if root.is-member-sheet-shown && !root.is-wide-enough-to-dock-side-sheet: MemberSheet {
-            x: root.is-wide-enough-for-sidebar ? parent.width - self.width - MellowSize.sheet-inset : 0px;
-            y: root.is-wide-enough-for-sidebar ? MellowSize.sheet-inset : 0px;
+            x: root.is-wide-enough-for-sidebar ? parent.width - self.width - 2 * MellowSize.sheet-inset : 0px;
+            y: root.is-wide-enough-for-sidebar ? 3 * MellowSize.sheet-inset : 0px;
             width: root.is-wide-enough-for-sidebar ? MellowComponent.side-sheet-width : parent.width;
-            height: parent.height - 2 * self.y;
+            height: parent.height - (root.is-wide-enough-for-sidebar ? 5 * MellowSize.sheet-inset : 0px);
             card-radius: root.is-wide-enough-for-sidebar ? MellowComponent.side-sheet-radius : 0px;
             rows: root.member-rows;
             server-name: root.server-name;
