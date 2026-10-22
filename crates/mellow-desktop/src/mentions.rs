@@ -57,6 +57,9 @@ pub struct Mention {
     pub user_id: Snowflake,
 }
 
+/// Usernames and display names are at most 32 characters (`account_rules.rs` on the server).
+const MAXIMUM_NAME_LENGTH: usize = 32;
+
 fn is_name_character(character: char) -> bool {
     character.is_alphanumeric() || character == '_' || character == '.'
 }
@@ -73,22 +76,35 @@ pub fn find_mentions(text: &str, people: &MentionablePeople) -> Vec<Mention> {
             continue;
         }
         let name_start = at_index + character.len_utf8();
-        let name_end = text[name_start..]
-            .char_indices()
-            .find(|(_, character)| !is_name_character(*character))
-            .map_or(text.len(), |(offset, _)| name_start + offset);
-        let mut candidate = &text[name_start..name_end];
-        while !candidate.is_empty() {
-            if let Some(user_id) = people.user_id(candidate) {
+        // At most one character past the longest name (a closing full stop) is read, and a longer
+        // run of name characters is never a mention, so each "@" costs a bounded amount of work.
+        let mut name_end = name_start;
+        let mut name_length = 0;
+        for (offset, character) in text[name_start..].char_indices() {
+            if !is_name_character(character) {
+                break;
+            }
+            name_length += 1;
+            name_end = name_start + offset + character.len_utf8();
+            if name_length > MAXIMUM_NAME_LENGTH + 1 {
+                break;
+            }
+        }
+        if name_length == 0 || name_length > MAXIMUM_NAME_LENGTH + 1 {
+            continue;
+        }
+        let name = &text[name_start..name_end];
+        // The name as typed, then without its closing dots ("@paul." ends a sentence).
+        for candidate in [name, name.trim_end_matches('.')] {
+            if let Some(user_id) = (!candidate.is_empty())
+                .then(|| people.user_id(candidate))
+                .flatten()
+            {
                 mentions.push(Mention {
                     range: at_index..name_start + candidate.len(),
                     user_id,
                 });
                 break;
-            }
-            match candidate.strip_suffix('.') {
-                Some(shorter) => candidate = shorter,
-                None => break,
             }
         }
     }
@@ -122,6 +138,24 @@ mod tests {
             .map(|mention| (&text[mention.range.clone()], mention.user_id.to_string()))
             .collect();
         assert_eq!(found, [("@Paul", "1".into()), ("@ana", "2".into())]);
+    }
+
+    #[test]
+    fn long_runs_of_name_characters_are_never_mentions_and_stay_cheap() {
+        let people = [person(1, "ana", "Ana")];
+        let people = MentionablePeople::new(&people);
+        // Was quadratic: every trailing dot was stripped and looked up again.
+        let dots = format!("@{}", ".".repeat(4_000));
+        assert_eq!(find_mentions(&dots.repeat(50), &people), Vec::new());
+        assert_eq!(
+            find_mentions(&format!("@ana{}", ".".repeat(40)), &people),
+            Vec::new()
+        );
+        assert_eq!(
+            find_mentions(&format!("@ana{}", "x".repeat(40)), &people),
+            Vec::new()
+        );
+        assert_eq!(find_mentions("@ana... ok", &people).len(), 1);
     }
 
     #[test]
