@@ -226,7 +226,16 @@ function parseFence(source: string, start: number): { block: BlockNode; end: num
   if (close === -1) {
     return "unclosed";
   }
-  const text = source.slice(contentStart, close).replace(/^\n+|\n+$/gu, "");
+  // Index loops rather than /\n+$/, which retries at every newline of a long blank run.
+  let textStart = contentStart;
+  let textEnd = close;
+  while (textStart < textEnd && source[textStart] === "\n") {
+    textStart += 1;
+  }
+  while (textEnd > textStart && source[textEnd - 1] === "\n") {
+    textEnd -= 1;
+  }
+  const text = source.slice(textStart, textEnd);
   if (text.trim() === "") {
     return null;
   }
