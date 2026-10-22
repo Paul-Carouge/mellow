@@ -396,7 +396,7 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
   }
   const findClosers = DELIMITER_RULES.map((rule) => closerFinder(text, insideCode, (position) => rule.isCloserAt(text, position)));
   const findClosingBracket = closerFinder(text, insideCode, (position) => text[position] === "]");
-  const findClosingParenthesis = closerFinder(text, insideCode, (position) => text[position] === ")");
+  let closingParentheses: Map<number, number> | null = null;
 
   let position = 0;
   while (position < text.length) {
@@ -430,9 +430,10 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
     if (areLinksAllowed && character === "[") {
       const closingBracket = findClosingBracket(position + 1);
       if (closingBracket > position + 1 && text[closingBracket + 1] === "(") {
-        const closingParenthesis = findClosingParenthesis(closingBracket + 2);
-        const target = closingParenthesis === -1 ? "" : text.slice(closingBracket + 2, closingParenthesis).trim();
-        const url = /\s/u.test(target) ? null : safeHttpUrl(target.replace(/^<(.*)>$/u, "$1"));
+        closingParentheses ??= findBalancedClosingParentheses(text);
+        const closingParenthesis = closingParentheses.get(closingBracket + 1) ?? -1;
+        const target = closingParenthesis === -1 ? "" : text.slice(closingBracket + 2, closingParenthesis);
+        const url = safeHttpUrl(target.replace(/^<(.*)>$/u, "$1"));
         const label = text.slice(position + 1, closingBracket);
         if (url && VISIBLE_CHARACTER.test(label) && !LINK_TEXT_LOOKING_LIKE_AN_ADDRESS.test(label)) {
           const spoilerIdBeforeLabel = context.nextSpoilerId;
@@ -474,6 +475,29 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
   return nodes;
 }
 
+/**
+ * For each "(", the ")" that balances it within the same run of non-space characters, so a link
+ * target such as "https://en.wikipedia.org/wiki/Mellow_(album)" keeps its own parentheses.
+ */
+function findBalancedClosingParentheses(text: string): Map<number, number> {
+  const closingByOpening = new Map<number, number>();
+  const openings: number[] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === "(") {
+      openings.push(index);
+    } else if (character === ")") {
+      const opening = openings.pop();
+      if (opening !== undefined) {
+        closingByOpening.set(opening, index);
+      }
+    } else if (isWhitespace(character)) {
+      openings.length = 0;
+    }
+  }
+  return closingByOpening;
+}
+
 function autolinkAt(text: string, position: number): { text: string; url: string } | null {
   AUTOLINK.lastIndex = position;
   const match = AUTOLINK.exec(text);
@@ -481,7 +505,18 @@ function autolinkAt(text: string, position: number): { text: string; url: string
     return null;
   }
   let end = match[0].length;
+  let unbalancedClosingParentheses = 0;
+  for (const character of match[0]) {
+    unbalancedClosingParentheses += character === ")" ? 1 : character === "(" ? -1 : 0;
+  }
   while (end > 0 && LINK_TRAILING_PUNCTUATION.includes(match[0][end - 1] ?? "")) {
+    // As on GitHub: a closing parenthesis ends the link only when the link did not open it.
+    if (match[0][end - 1] === ")") {
+      if (unbalancedClosingParentheses <= 0) {
+        break;
+      }
+      unbalancedClosingParentheses -= 1;
+    }
     end -= 1;
   }
   const candidate = match[0].slice(0, end);
