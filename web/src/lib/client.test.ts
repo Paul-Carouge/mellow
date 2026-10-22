@@ -220,4 +220,43 @@ describe("MellowClient", () => {
     expect(client.user?.display_name).toBe("Paul");
     expect(client.messages(GENERAL)[0]?.author.display_name).toBe("Paul");
   });
+
+  it("keeps the last read message of the visit for the New divider, until the channel is left", async () => {
+    const acknowledged: string[] = [];
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        listMessages: () => Promise.resolve([message("200"), message("201")]),
+        acknowledge: (_channelId: string, messageId: string) => {
+          acknowledged.push(messageId);
+          return Promise.resolve();
+        },
+      }),
+    );
+    const start = ready({
+      guilds: [guild([channel(GENERAL), channel(RULES)])],
+      read_states: [{ channel_id: GENERAL, last_read_message_id: "200" }],
+    });
+    client.user = start.user;
+    client.applyReady(start);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(client.unreadMarkers.get(GENERAL)).toBe("200");
+    expect(acknowledged).toEqual(["201"]);
+    // A message arriving during the visit is read at once and moves no line.
+    client.applyEvent({ t: "MESSAGE_CREATE", data: message("202") }, Date.now());
+    expect(client.unreadMarkers.get(GENERAL)).toBe("200");
+
+    client.selectChannel(RULES);
+    expect(client.unreadMarkers.has(GENERAL)).toBe(false);
+  });
+
+  it("draws no New divider for a channel read up to its last message", async () => {
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: () => Promise.resolve([message("200")]) }));
+    const start = ready({ read_states: [{ channel_id: GENERAL, last_read_message_id: "200" }] });
+    client.user = start.user;
+    client.applyReady(start);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(client.unreadMarkers.has(GENERAL)).toBe(false);
+  });
 });

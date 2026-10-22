@@ -86,6 +86,13 @@ export class MellowClient {
   membersByGuild = new SvelteMap<Snowflake, Member[]>();
   onlineUserIds = new SvelteSet<Snowflake>();
   lastReadByChannel = new SvelteMap<Snowflake, Snowflake>();
+  /**
+   * The last message read before the open channel was opened, while that visit shows the "New"
+   * divider and the jump bar (DESIGN.md §5.4). Opening the channel still marks it read at once.
+   */
+  unreadMarkers = new SvelteMap<Snowflake, Snowflake>();
+  /** Set when a channel is opened; the first acknowledgement with messages decides its marker. */
+  private isUnreadMarkerPending = false;
   /** `${channelId}:${userId}` → when the indicator expires. */
   typingUntil = new SvelteMap<string, number>();
   pendingMessages = $state<PendingMessage[]>([]);
@@ -251,6 +258,7 @@ export class MellowClient {
     this.membersByGuild.clear();
     this.onlineUserIds.clear();
     this.lastReadByChannel.clear();
+    this.unreadMarkers.clear();
     this.typingUntil.clear();
     this.selectedGuildId = null;
     this.selectedChannelId = null;
@@ -620,6 +628,11 @@ export class MellowClient {
     const previousChannelId = this.selectedChannelId;
     if (previousChannelId && previousChannelId !== channelId) {
       this.trimHistory(previousChannelId);
+      // Leaving a channel ends its visit: the divider does not come back with it.
+      this.unreadMarkers.delete(previousChannelId);
+    }
+    if (channelId !== previousChannelId) {
+      this.isUnreadMarkerPending = true;
     }
     this.selectedChannelId = channelId;
     if (channelId) {
@@ -737,6 +750,11 @@ export class MellowClient {
   }
 
   /** Messages that arrived while the tab was hidden are read once it shows again. */
+  /** "Mark as read" on the jump bar: the divider and the bar go; the channel is already read. */
+  dismissUnreadMarker(channelId: Snowflake): void {
+    this.unreadMarkers.delete(channelId);
+  }
+
   noteTabVisible(): void {
     void this.acknowledgeSelectedChannel();
   }
@@ -750,6 +768,18 @@ export class MellowClient {
       return;
     }
     const lastRead = this.lastReadByChannel.get(channelId);
+    if (this.isUnreadMarkerPending) {
+      this.isUnreadMarkerPending = false;
+      // Only what others wrote since the last visit; a channel never read has no line to draw.
+      const hasUnreadFromOthers =
+        lastRead !== undefined &&
+        this.messages(channelId).some(
+          (message) => compareSnowflakes(message.id, lastRead) > 0 && message.author.id !== this.user?.id,
+        );
+      if (hasUnreadFromOthers) {
+        this.unreadMarkers.set(channelId, lastRead);
+      }
+    }
     if (lastRead && compareSnowflakes(newest.id, lastRead) <= 0) {
       return;
     }
