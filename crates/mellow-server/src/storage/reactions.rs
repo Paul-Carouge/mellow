@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use mellow_protocol::Snowflake;
 use sqlx::SqlitePool;
 
+use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
 use crate::storage::messages::{MessageStorageError, lookup_integer, to_id, to_integer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +114,60 @@ pub(crate) async fn remove_reaction(
     .await?
     .rows_affected();
     Ok(removed > 0)
+}
+
+/// Which reactions of a message a moderator removes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReactionSelection<'a> {
+    OneUser { user_id: Snowflake, emoji: &'a str },
+    OneEmoji(&'a str),
+    All,
+}
+
+/// Removes the selected reactions and records `audit` in the same transaction when any went.
+/// Returns whether any went.
+///
+/// # Errors
+/// Fails on database errors. Nothing is written then.
+pub(crate) async fn remove_reactions_of_message(
+    pool: &SqlitePool,
+    message_id: Snowflake,
+    selection: ReactionSelection<'_>,
+    audit: Option<&NewAuditEntry>,
+) -> Result<bool, MessageStorageError> {
+    let message_id = to_integer(message_id.raw())?;
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let removed =
+        match selection {
+            ReactionSelection::OneUser { user_id, emoji } => sqlx::query(
+                "DELETE FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
+            )
+            .bind(message_id)
+            .bind(to_integer(user_id.raw())?)
+            .bind(emoji)
+            .execute(&mut *transaction)
+            .await?,
+            ReactionSelection::OneEmoji(emoji) => {
+                sqlx::query("DELETE FROM message_reactions WHERE message_id = ? AND emoji = ?")
+                    .bind(message_id)
+                    .bind(emoji)
+                    .execute(&mut *transaction)
+                    .await?
+            }
+            ReactionSelection::All => {
+                sqlx::query("DELETE FROM message_reactions WHERE message_id = ?")
+                    .bind(message_id)
+                    .execute(&mut *transaction)
+                    .await?
+            }
+        }
+        .rows_affected()
+            > 0;
+    if removed && let Some(audit) = audit {
+        insert_audit_entry(&mut transaction, audit).await?;
+    }
+    transaction.commit().await?;
+    Ok(removed)
 }
 
 /// The reactions of these messages, per emoji in the order each was first added, with whether

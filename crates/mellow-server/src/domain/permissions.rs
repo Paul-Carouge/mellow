@@ -72,6 +72,8 @@ pub enum ReactionAction {
     AddNew,
     /// Taking one's own reaction back.
     RemoveOwn,
+    /// Removing someone else's reaction, every reaction with one emoji, or all of a message's.
+    RemoveOthers,
 }
 
 /// In a guild channel, as on Discord: whoever sees the message (`VIEW_CHANNEL` and
@@ -79,7 +81,8 @@ pub enum ReactionAction {
 /// `ADD_REACTIONS`, and anyone who can view the channel may take their own reaction back. In a
 /// conversation every reaction added needs `ADD_REACTIONS`, which only participants who may still
 /// write hold (`direct_message_permissions`), so someone cut off from the only shared guild cannot
-/// keep notifying the others.
+/// keep notifying the others. Removing other people's reactions needs `MANAGE_MESSAGES` in a guild
+/// channel; no one moderates a conversation, so there each removes only their own.
 #[must_use]
 pub fn may_react(
     channel_permissions: Permissions,
@@ -94,6 +97,8 @@ pub fn may_react(
         ReactionAction::JoinExisting | ReactionAction::AddNew => {
             sees_messages | Permissions::ADD_REACTIONS
         }
+        ReactionAction::RemoveOthers if is_direct_message => return false,
+        ReactionAction::RemoveOthers => sees_messages | Permissions::MANAGE_MESSAGES,
     };
     channel_permissions.contains(needed)
 }
@@ -459,6 +464,33 @@ mod tests {
             [false; 4]
         );
         assert_eq!(reaction_actions(Permissions::all(), false), [true; 4]);
+    }
+
+    #[test]
+    fn only_message_managers_remove_other_peoples_reactions_and_never_in_conversations() {
+        let others = ReactionAction::RemoveOthers;
+        let everyone = Permissions::DEFAULT_EVERYONE;
+        assert!(!may_react(everyone, false, others));
+        assert!(may_react(
+            everyone | Permissions::MANAGE_MESSAGES,
+            false,
+            others
+        ));
+        assert!(
+            !may_react(
+                (everyone | Permissions::MANAGE_MESSAGES) - Permissions::READ_MESSAGE_HISTORY,
+                false,
+                others
+            ),
+            "they must see the message"
+        );
+        assert!(may_react(Permissions::all(), false, others));
+        assert!(!may_react(Permissions::all(), true, others));
+        assert!(!may_react(
+            direct_message_permissions(true, true),
+            true,
+            others
+        ));
     }
 
     #[test]

@@ -164,8 +164,25 @@ pub enum GatewayEvent {
     },
     /// Someone reacted to a message. Sent to the channel's viewers, the reacting user included.
     MessageReactionAdd(MessageReaction),
-    /// Someone took their reaction back.
+    /// Someone took their reaction back, or a moderator removed it.
     MessageReactionRemove(MessageReaction),
+    /// A moderator removed every reaction of a message.
+    MessageReactionRemoveAll {
+        /// `None` in a direct-message conversation, and then left out of the frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guild_id: Option<Snowflake>,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+    },
+    /// A moderator removed every reaction with one emoji from a message.
+    MessageReactionRemoveEmoji {
+        /// `None` in a direct-message conversation, and then left out of the frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guild_id: Option<Snowflake>,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        emoji: String,
+    },
     TypingStart {
         /// `None` in a direct-message conversation, and then left out of the frame.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -277,6 +294,31 @@ mod tests {
             })
         );
         assert_eq!(serde_json::from_value::<GatewayEvent>(json).unwrap(), event);
+        let removed_emoji = GatewayEvent::MessageReactionRemoveEmoji {
+            guild_id: Some(Snowflake::from_raw(1)),
+            channel_id: Snowflake::from_raw(2),
+            message_id: Snowflake::from_raw(3),
+            emoji: "👍".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&removed_emoji).unwrap(),
+            serde_json::json!({
+                "t": "MESSAGE_REACTION_REMOVE_EMOJI",
+                "data": {"guild_id": "1", "channel_id": "2", "message_id": "3", "emoji": "👍"}
+            })
+        );
+        let removed_all = GatewayEvent::MessageReactionRemoveAll {
+            guild_id: None,
+            channel_id: Snowflake::from_raw(2),
+            message_id: Snowflake::from_raw(3),
+        };
+        assert_eq!(
+            serde_json::to_value(&removed_all).unwrap(),
+            serde_json::json!({
+                "t": "MESSAGE_REACTION_REMOVE_ALL",
+                "data": {"channel_id": "2", "message_id": "3"}
+            })
+        );
     }
 
     #[test]

@@ -6,6 +6,8 @@ mod direct_messages;
 mod pins;
 mod reactions;
 
+pub(crate) use reactions::ReactionRemoval;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -2447,6 +2449,140 @@ mod tests {
             removed_own.is_ok(),
             "taking one's own back needs no history"
         );
+        assert_eq!(summaries(&seen[0]), Vec::new());
+    }
+
+    #[tokio::test]
+    async fn moderators_remove_others_reactions_by_user_emoji_or_all_and_are_audited() {
+        use mellow_protocol::{AuditAction, AuditLogQuery};
+
+        let fixture = fixture().await;
+        let message = fixture
+            .messages
+            .send(fixture.member, fixture.general, text("spam magnet"), NOW)
+            .await
+            .unwrap();
+        for (user, emoji) in [
+            (fixture.member, "👍"),
+            (fixture.member, "🍕"),
+            (fixture.owner, "🍕"),
+            (fixture.member, "🎉"),
+        ] {
+            fixture
+                .messages
+                .add_reaction(user, fixture.general, message.id, emoji)
+                .await
+                .unwrap();
+        }
+        let [_owner_events, mut member_events] = live_sessions(&fixture);
+        let remove = |actor, removal| {
+            fixture
+                .messages
+                .remove_reactions(actor, fixture.general, message.id, removal)
+        };
+        let member_refused = remove(fixture.member, ReactionRemoval::Emoji("🍕".into())).await;
+        remove(
+            fixture.owner,
+            ReactionRemoval::User {
+                user_id: fixture.member,
+                emoji: "👍".into(),
+            },
+        )
+        .await
+        .unwrap();
+        remove(fixture.owner, ReactionRemoval::Emoji("🍕".into()))
+            .await
+            .unwrap();
+        let after_emoji = history(&fixture, fixture.owner, fixture.general).await;
+        remove(fixture.owner, ReactionRemoval::All).await.unwrap();
+        // Nothing left: no event and no audit entry.
+        remove(fixture.owner, ReactionRemoval::All).await.unwrap();
+        let after_all = history(&fixture, fixture.owner, fixture.general).await;
+        let entries = fixture
+            .guilds
+            .list_audit_log(fixture.owner, fixture.guild.id, AuditLogQuery::default())
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        assert!(
+            matches!(
+                member_refused,
+                Err(MessageError::Guild(GuildError::MissingPermissions))
+            ),
+            "{member_refused:?}"
+        );
+        assert_eq!(summaries(&after_emoji[0]), [("🎉".to_owned(), 1, false)]);
+        assert_eq!(summaries(&after_all[0]), Vec::new());
+        assert_eq!(
+            event_types(&mut member_events),
+            [
+                "MESSAGE_REACTION_REMOVE",
+                "MESSAGE_REACTION_REMOVE_EMOJI",
+                "MESSAGE_REACTION_REMOVE_ALL"
+            ]
+        );
+        let removals: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.action == AuditAction::MessageReactionRemove)
+            .map(|entry| (entry.actor_id, entry.target_id, entry.context_id))
+            .collect();
+        assert_eq!(
+            removals,
+            [(Some(fixture.owner), Some(message.id), Some(fixture.general)); 3]
+        );
+    }
+
+    #[tokio::test]
+    async fn no_one_removes_others_reactions_in_a_conversation() {
+        let fixture = fixture().await;
+        let conversation = fixture
+            .messages
+            .open_direct_message(fixture.member, open_with(fixture.owner), NOW)
+            .await
+            .unwrap();
+        let message = fixture
+            .messages
+            .send(fixture.member, conversation.id, text("hi"), NOW)
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .add_reaction(fixture.member, conversation.id, message.id, "👋")
+            .await
+            .unwrap();
+        let removed_by_other = fixture
+            .messages
+            .remove_reactions(
+                fixture.owner,
+                conversation.id,
+                message.id,
+                ReactionRemoval::All,
+            )
+            .await;
+        let removed_by_self = fixture
+            .messages
+            .remove_reactions(
+                fixture.member,
+                conversation.id,
+                message.id,
+                ReactionRemoval::User {
+                    user_id: fixture.member,
+                    emoji: "👋".into(),
+                },
+            )
+            .await;
+        let seen = history(&fixture, fixture.owner, conversation.id).await;
+        fixture.pool.close().await;
+
+        assert!(
+            matches!(
+                removed_by_other,
+                Err(MessageError::Guild(GuildError::MissingPermissions))
+            ),
+            "{removed_by_other:?}"
+        );
+        assert!(removed_by_self.is_ok(), "one's own reaction, by user id");
         assert_eq!(summaries(&seen[0]), Vec::new());
     }
 }

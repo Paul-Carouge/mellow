@@ -185,7 +185,8 @@ impl Guilds {
             | AuditAction::OverwriteDelete
             | AuditAction::MessageDelete
             | AuditAction::MessagePin
-            | AuditAction::MessageUnpin => context_id,
+            | AuditAction::MessageUnpin
+            | AuditAction::MessageReactionRemove => context_id,
             _ => None,
         };
         Ok(NewAuditEntry {

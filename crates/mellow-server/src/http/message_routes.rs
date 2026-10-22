@@ -13,6 +13,7 @@ use mellow_protocol::{
 };
 
 use crate::domain::clock::now_unix_milliseconds;
+use crate::domain::messages::ReactionRemoval;
 use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::http::authentication::AuthenticatedUser;
@@ -87,6 +88,77 @@ pub(crate) async fn remove_own_reaction(
     state
         .messages
         .remove_own_reaction(user.id, channel_id, message_id, &emoji)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/{user_id}`: a
+/// moderator removes someone's reaction.
+pub(crate) async fn remove_user_reaction(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id, emoji, user_id)): ApiPath<(
+        Snowflake,
+        Snowflake,
+        String,
+        Snowflake,
+    )>,
+) -> Result<StatusCode, ApiError> {
+    remove_reactions(
+        &state,
+        user.id,
+        channel_id,
+        message_id,
+        ReactionRemoval::User { user_id, emoji },
+    )
+    .await
+}
+
+/// `DELETE /api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}`: a moderator
+/// removes every reaction with this emoji.
+pub(crate) async fn remove_emoji_reactions(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id, emoji)): ApiPath<(Snowflake, Snowflake, String)>,
+) -> Result<StatusCode, ApiError> {
+    remove_reactions(
+        &state,
+        user.id,
+        channel_id,
+        message_id,
+        ReactionRemoval::Emoji(emoji),
+    )
+    .await
+}
+
+/// `DELETE /api/v1/channels/{channel_id}/messages/{message_id}/reactions`: a moderator removes
+/// every reaction of the message.
+pub(crate) async fn remove_all_reactions(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id)): ApiPath<(Snowflake, Snowflake)>,
+) -> Result<StatusCode, ApiError> {
+    remove_reactions(
+        &state,
+        user.id,
+        channel_id,
+        message_id,
+        ReactionRemoval::All,
+    )
+    .await
+}
+
+async fn remove_reactions(
+    state: &AppState,
+    moderator_id: Snowflake,
+    channel_id: Snowflake,
+    message_id: Snowflake,
+    removal: ReactionRemoval,
+) -> Result<StatusCode, ApiError> {
+    limit_reaction_writes(state, moderator_id)?;
+    state
+        .messages
+        .remove_reactions(moderator_id, channel_id, message_id, removal)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

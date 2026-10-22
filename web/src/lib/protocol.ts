@@ -216,6 +216,14 @@ export type GatewayEvent =
   | { t: "MESSAGE_DELETE"; data: { guild_id?: Snowflake; channel_id: Snowflake; id: Snowflake } }
   | { t: "MESSAGE_REACTION_ADD"; data: MessageReaction }
   | { t: "MESSAGE_REACTION_REMOVE"; data: MessageReaction }
+  | {
+      t: "MESSAGE_REACTION_REMOVE_ALL";
+      data: { guild_id?: Snowflake; channel_id: Snowflake; message_id: Snowflake };
+    }
+  | {
+      t: "MESSAGE_REACTION_REMOVE_EMOJI";
+      data: { guild_id?: Snowflake; channel_id: Snowflake; message_id: Snowflake; emoji: string };
+    }
   | { t: "CHANNEL_CREATE"; data: Channel }
   | { t: "CHANNEL_UPDATE"; data: Channel }
   | { t: "CHANNEL_DELETE"; data: { guild_id: Snowflake; id: Snowflake } }

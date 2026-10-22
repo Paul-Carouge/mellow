@@ -150,12 +150,20 @@ fn message_router(maximum_attachment_bytes: u64) -> Router<AppState> {
             patch(message_routes::edit_message).delete(message_routes::delete_message),
         )
         .route(
+            "/api/v1/channels/{channel_id}/messages/{message_id}/reactions",
+            delete(message_routes::remove_all_reactions),
+        )
+        .route(
             "/api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}",
-            get(message_routes::list_reacting_users),
+            get(message_routes::list_reacting_users).delete(message_routes::remove_emoji_reactions),
         )
         .route(
             "/api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me",
             put(message_routes::add_reaction).delete(message_routes::remove_own_reaction),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/{user_id}",
+            delete(message_routes::remove_user_reaction),
         )
         .route(
             "/api/v1/channels/{channel_id}/pins",
@@ -2399,5 +2407,61 @@ pub(crate) mod tests {
         let (status, _) = send(&state, authorized("DELETE", &mine, &owner, None)).await;
         pool.close().await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn moderators_remove_reactions_over_http() {
+        use mellow_protocol::{Guild, Message};
+
+        const THUMBS_UP: &str = "%F0%9F%91%8D";
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, guest, guild_id, guest_id) = guild_with_guest(&state).await;
+        let (_, body) = send(
+            &state,
+            authorized("GET", &format!("/api/v1/guilds/{guild_id}"), &owner, None),
+        )
+        .await;
+        let general = json::<Guild>(&body).channels[1].id;
+        let messages_path = format!("/api/v1/channels/{general}/messages");
+        let (_, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &messages_path,
+                &owner,
+                Some(serde_json::json!({"content": "hi"})),
+            ),
+        )
+        .await;
+        let message: Message = json(&body);
+        let reactions = format!("{messages_path}/{}/reactions", message.id);
+        let guest_reacts = authorized("PUT", &format!("{reactions}/{THUMBS_UP}/@me"), &guest, None);
+        send(&state, guest_reacts).await;
+
+        let mut statuses = Vec::new();
+        for (token, path) in [
+            (&guest, reactions.clone()),
+            (&owner, format!("{reactions}/{THUMBS_UP}/{guest_id}")),
+            (&owner, format!("{reactions}/{THUMBS_UP}")),
+            (&owner, reactions.clone()),
+        ] {
+            statuses.push(
+                send(&state, authorized("DELETE", &path, token, None))
+                    .await
+                    .0,
+            );
+        }
+        pool.close().await;
+
+        assert_eq!(
+            statuses,
+            [
+                StatusCode::FORBIDDEN,
+                StatusCode::NO_CONTENT,
+                StatusCode::NO_CONTENT,
+                StatusCode::NO_CONTENT
+            ]
+        );
     }
 }
