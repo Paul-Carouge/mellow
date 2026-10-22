@@ -81,7 +81,7 @@
   bind:this={dialog}
   aria-labelledby="{id}-title"
   aria-describedby={subtitle ? `${id}-subtitle` : undefined}
-  class="m-auto w-[min(var(--mw-component-dialog-width),calc(100vw_-_2*var(--mw-component-dialog-margin)))] max-w-none overflow-hidden rounded-(--mw-component-dialog-radius) bg-(--mw-component-dialog-background) p-0 text-(--mw-component-dialog-body-text) shadow-high backdrop:bg-(--mw-component-dialog-scrim)"
+  class="modal-dialog m-auto w-[min(var(--mw-component-dialog-width),calc(100vw_-_2*var(--mw-component-dialog-margin)))] max-w-none overflow-hidden rounded-(--mw-component-dialog-radius) bg-(--mw-component-dialog-background) p-0 text-(--mw-component-dialog-body-text) shadow-high backdrop:bg-(--mw-component-dialog-scrim)"
   oncancel={(event) => {
     event.preventDefault();
     requestClose();
@@ -139,3 +139,19 @@
     </div>
   </form>
 </dialog>
+
+<style>
+  /* Dialogs land with the settle curve (ADR-0022 §3); the scrim fades. Reduced motion: at once. */
+  .modal-dialog[open] {
+    animation: modal-dialog-in var(--mw-motion-duration-settle) var(--mw-motion-easing-settle) both;
+  }
+  .modal-dialog[open]::backdrop {
+    animation: mw-fade-in var(--mw-motion-duration-base) var(--mw-motion-easing-standard) both;
+  }
+  @keyframes modal-dialog-in {
+    from {
+      opacity: 0;
+      transform: scale(var(--mw-component-dialog-enter-scale));
+    }
+  }
+</style>
