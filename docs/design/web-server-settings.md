@@ -52,7 +52,7 @@ New group `component.server-settings` (rows, chips, loading rows), built from ch
 
 ## Follow-ups
 
-- Channel settings (rename, topic, delete, permission overwrites with allow, inherit and deny) from a channel's context.
+- Channel settings: done, with the server icon on Overview, see [web-channel-settings.md](web-channel-settings.md); "Delete channel" is still to come. The sheet layout is shared through `SettingsSheet.svelte`.
 - A role's "Members" tab, drag-and-drop reordering, a colour preview on both themes with "Adjusted for readability", custom colours.
 - Invite options (expiry, maximum uses) when creating from Invites; "delete recent messages" when banning (needs the API).
 - The bans and member lists are capped at 1 000 and not paginated; the moderation log pages by 50.
