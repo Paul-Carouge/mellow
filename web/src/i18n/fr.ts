@@ -197,6 +197,8 @@ export const fr: Catalogue = {
     edited: "(modifié)",
     editedAt: (timestamp) => `Modifié le ${timestamp}`,
     mentionsYou: "Te mentionne.",
+    spoilerHidden: "Spoiler, sélectionne pour l’afficher",
+    spoilerRevealedPrefix: `Spoiler${NO_BREAK_SPACE}: `,
     editMessage: "Modifier le message",
     escTo: "Échap pour",
     cancelLowercase: "annuler",
