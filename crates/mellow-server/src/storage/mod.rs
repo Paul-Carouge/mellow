@@ -11,6 +11,7 @@ mod master_key;
 pub(crate) mod messages;
 mod migrations;
 pub(crate) mod profile_images;
+pub(crate) mod reactions;
 
 pub use database::{DatabaseKey, StorageError, open_encrypted_database};
 pub use master_key::{MasterKey, MasterKeyError};

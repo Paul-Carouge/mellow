@@ -343,14 +343,15 @@ export class MellowClient {
         if (!messages || !this.isKnownChannel(event.data.channel_id)) {
           return;
         }
-        // A late REST answer must not undo a newer edit the gateway already brought.
+        // A late REST answer must not undo a newer edit the gateway already brought. Events never
+        // carry reactions (`me` differs per viewer), so the cached ones stay.
         const updated = event.data;
         this.messagesByChannel.set(
           updated.channel_id,
           messages.map((message) =>
             message.id === updated.id &&
             (message.edited_at_unix_milliseconds ?? 0) <= (updated.edited_at_unix_milliseconds ?? 0)
-              ? updated
+              ? { ...updated, reactions: message.reactions }
               : message,
           ),
         );
@@ -457,6 +458,10 @@ export class MellowClient {
         return;
       case "DIRECT_MESSAGE_CHANNEL_CREATE":
         this.upsertConversation(event.data);
+        return;
+      case "MESSAGE_REACTION_ADD":
+      case "MESSAGE_REACTION_REMOVE":
+        // shortcut: nothing shows reactions yet; count them in the cached messages with the UI.
         return;
       default: {
         // An event this client does not know yet: skipped, as the native clients do.

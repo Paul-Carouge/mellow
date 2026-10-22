@@ -92,6 +92,16 @@ pub(crate) const MESSAGES_PER_CHANNEL: RateLimit = RateLimit {
     maximum_events: 30,
     window: Duration::from_secs(10),
 };
+/// Reactions added or removed per user: cheap rows, but each one is fanned out to the channel.
+pub(crate) const REACTION_WRITES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 20,
+    window: Duration::from_secs(10),
+};
+/// Sustained reaction writes per user, so one account cannot grow the database without end.
+pub(crate) const REACTION_WRITES_PER_USER_PER_HOUR: RateLimit = RateLimit {
+    maximum_events: 1_200,
+    window: Duration::from_hours(1),
+};
 /// Read-state acknowledgements per user; clients send one per channel switch or scroll.
 pub(crate) const READ_STATE_WRITES_PER_USER: RateLimit = RateLimit {
     maximum_events: 30,

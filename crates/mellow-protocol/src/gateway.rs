@@ -97,6 +97,18 @@ pub struct Ready {
     pub direct_message_channels: Vec<DirectMessageChannel>,
 }
 
+/// Payload of `MESSAGE_REACTION_ADD` and `MESSAGE_REACTION_REMOVE`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageReaction {
+    /// `None` in a direct-message conversation, and then left out of the frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guild_id: Option<Snowflake>,
+    pub channel_id: Snowflake,
+    pub message_id: Snowflake,
+    pub user_id: Snowflake,
+    pub emoji: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PresenceStatus {
@@ -150,6 +162,10 @@ pub enum GatewayEvent {
         guild_id: Snowflake,
         roles: Vec<Role>,
     },
+    /// Someone reacted to a message. Sent to the channel's viewers, the reacting user included.
+    MessageReactionAdd(MessageReaction),
+    /// Someone took their reaction back.
+    MessageReactionRemove(MessageReaction),
     TypingStart {
         /// `None` in a direct-message conversation, and then left out of the frame.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -240,6 +256,26 @@ mod tests {
         };
         let json = serde_json::to_value(&event).unwrap();
         assert!(json["data"].get("guild_id").is_none());
+        assert_eq!(serde_json::from_value::<GatewayEvent>(json).unwrap(), event);
+    }
+
+    #[test]
+    fn reaction_events_carry_the_emoji_and_string_ids() {
+        let event = GatewayEvent::MessageReactionAdd(MessageReaction {
+            guild_id: None,
+            channel_id: Snowflake::from_raw(2),
+            message_id: Snowflake::from_raw(3),
+            user_id: Snowflake::from_raw(4),
+            emoji: "👍".into(),
+        });
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "t": "MESSAGE_REACTION_ADD",
+                "data": {"channel_id": "2", "message_id": "3", "user_id": "4", "emoji": "👍"}
+            })
+        );
         assert_eq!(serde_json::from_value::<GatewayEvent>(json).unwrap(), event);
     }
 

@@ -47,6 +47,8 @@ fn action_to_text(action: AuditAction) -> &'static str {
         AuditAction::MemberBanAdd => "member_ban_add",
         AuditAction::MemberBanRemove => "member_ban_remove",
         AuditAction::MessageDelete => "message_delete",
+        AuditAction::MessagePin => "message_pin",
+        AuditAction::MessageUnpin => "message_unpin",
         // Only clients produce it, for actions of a newer server; the server never records it.
         AuditAction::Unknown => "unknown",
     }
@@ -69,6 +71,8 @@ fn action_from_text(text: &str) -> Result<AuditAction, GuildStorageError> {
         "member_ban_add" => Ok(AuditAction::MemberBanAdd),
         "member_ban_remove" => Ok(AuditAction::MemberBanRemove),
         "message_delete" => Ok(AuditAction::MessageDelete),
+        "message_pin" => Ok(AuditAction::MessagePin),
+        "message_unpin" => Ok(AuditAction::MessageUnpin),
         other => Err(GuildStorageError::UnknownAuditAction(other.to_owned())),
     }
 }

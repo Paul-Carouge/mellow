@@ -108,6 +108,10 @@ pub enum AuditAction {
     /// A moderator deleted someone else's message: `target_id` is its author, `context_id` the
     /// channel. Authors deleting their own messages are not recorded.
     MessageDelete,
+    /// `target_id` is the message, `context_id` the channel.
+    MessagePin,
+    /// `target_id` is the message, `context_id` the channel.
+    MessageUnpin,
     /// An action added by a newer server; never written, only read by older clients.
     #[serde(other)]
     Unknown,

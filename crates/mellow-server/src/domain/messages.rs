@@ -3,14 +3,16 @@
 //! through its participants (`permissions::direct_message_permissions`).
 
 mod direct_messages;
+mod pins;
+mod reactions;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use mellow_protocol::{
     AcknowledgeRequest, Attachment, AuditAction, ChannelKind, EditMessageRequest, GatewayEvent,
-    Message, MessageHistoryQuery, Permissions, PublicUser, ReadState, SendMessageRequest,
-    Snowflake,
+    Message, MessageHistoryQuery, Permissions, PublicUser, ReactionSummary, ReadState,
+    SendMessageRequest, Snowflake,
 };
 use sqlx::SqlitePool;
 
@@ -28,6 +30,7 @@ use crate::storage::guilds::StoredChannel;
 use crate::storage::messages::{
     self as message_storage, HistoryPage, MessageStorageError, NewMessage, StoredMessage,
 };
+use crate::storage::reactions as reaction_storage;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MessageError {
@@ -95,7 +98,34 @@ fn message_from_stored(
             .into_iter()
             .map(attachment_from_stored)
             .collect(),
+        // Per viewer: filled by `fill_reactions` for REST answers, never in events.
+        reactions: Vec::new(),
+        pinned: message.is_pinned,
     }
+}
+
+/// The reactions of these messages as `viewer_id` sees them (`me`), for REST answers only.
+async fn fill_reactions(
+    pool: &SqlitePool,
+    viewer_id: Snowflake,
+    messages: &mut [Message],
+) -> Result<(), MessageError> {
+    let message_ids: Vec<Snowflake> = messages.iter().map(|message| message.id).collect();
+    let mut reactions =
+        reaction_storage::reactions_of_messages(pool, viewer_id, &message_ids).await?;
+    for message in messages {
+        message.reactions = reactions
+            .remove(&message.id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|reaction| ReactionSummary {
+                emoji: reaction.emoji,
+                count: reaction.count,
+                me: reaction.includes_viewer,
+            })
+            .collect();
+    }
+    Ok(())
 }
 
 /// The attachments of one message, for the paths that build a single one.
@@ -335,6 +365,7 @@ impl Messages {
                 let attachments = attachments_of(&pool, already_sent.id).await?;
                 let mut message = message_from_stored(already_sent, request.nonce, attachments);
                 fill_profile_images(&pool, [&mut message.author]).await?;
+                fill_reactions(&pool, user_id, std::slice::from_mut(&mut message)).await?;
                 return Ok(message);
             }
             if let Some(reply_to_id) = request.reply_to_id {
@@ -401,6 +432,16 @@ impl Messages {
         let limit = history_page_size(query.limit)?;
         let messages =
             message_storage::list_messages(&self.pool, channel.id(), page, limit).await?;
+        self.messages_for_viewer(user_id, messages).await
+    }
+
+    /// Stored messages as `viewer_id` sees them in a REST answer: with their attachments,
+    /// reactions and author pictures.
+    async fn messages_for_viewer(
+        &self,
+        viewer_id: Snowflake,
+        messages: Vec<StoredMessage>,
+    ) -> Result<Vec<Message>, MessageError> {
         let message_ids: Vec<Snowflake> = messages.iter().map(|message| message.id).collect();
         let mut attachments: HashMap<Snowflake, Vec<StoredAttachment>> =
             attachment_storage::attachments_of_messages(&self.pool, &message_ids).await?;
@@ -416,6 +457,7 @@ impl Messages {
             messages.iter_mut().map(|message| &mut message.author),
         )
         .await?;
+        fill_reactions(&self.pool, viewer_id, &mut messages).await?;
         Ok(messages)
     }
 
@@ -456,11 +498,9 @@ impl Messages {
         let mut updated = message_from_stored(updated, None, attachments);
         updated.author.avatar = author_images.avatar;
         updated.author.banner = author_images.banner;
-        publish(
-            &self.guilds,
-            &audience,
-            &GatewayEvent::MessageUpdate(updated.clone()),
-        );
+        let event = GatewayEvent::MessageUpdate(updated.clone());
+        fill_reactions(&self.pool, user_id, std::slice::from_mut(&mut updated)).await?;
+        publish(&self.guilds, &audience, &event);
         Ok(updated)
     }
 
@@ -777,12 +817,17 @@ mod tests {
     fn live_sessions(
         fixture: &Fixture,
     ) -> [tokio::sync::mpsc::Receiver<crate::events::SharedEvent>; 2] {
-        [(fixture.owner, [1; 32]), (fixture.member, [2; 32])].map(|(user_id, token)| {
-            let (key, mut events) = fixture.events.register_session(user_id, token, 1).unwrap();
-            fixture.events.activate_session(key, &[fixture.guild.id]);
-            event_types(&mut events);
-            events
-        })
+        let mut sessions =
+            [(fixture.owner, [1; 32]), (fixture.member, [2; 32])].map(|(user_id, token)| {
+                let (key, events) = fixture.events.register_session(user_id, token, 1).unwrap();
+                fixture.events.activate_session(key, &[fixture.guild.id]);
+                events
+            });
+        // Drained once both are online, so the member's arrival is not left in the owner's queue.
+        for events in &mut sessions {
+            event_types(events);
+        }
+        sessions
     }
 
     #[tokio::test]
@@ -1693,5 +1738,599 @@ mod tests {
         fixture.pool.close().await;
 
         assert_eq!(event_types(&mut owner_events), Vec::<String>::new());
+    }
+
+    fn summaries(message: &Message) -> Vec<(String, u32, bool)> {
+        message
+            .reactions
+            .iter()
+            .map(|reaction| (reaction.emoji.clone(), reaction.count, reaction.me))
+            .collect()
+    }
+
+    async fn history(fixture: &Fixture, viewer: Snowflake, channel: Snowflake) -> Vec<Message> {
+        fixture
+            .messages
+            .list_messages(viewer, channel, MessageHistoryQuery::default())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn reactions_are_idempotent_counted_per_emoji_and_seen_with_me() {
+        use mellow_protocol::ReactionUsersQuery;
+
+        let fixture = fixture().await;
+        let message = fixture
+            .messages
+            .send(fixture.owner, fixture.general, text("vote"), NOW)
+            .await
+            .unwrap();
+        let [mut owner_events, mut member_events] = live_sessions(&fixture);
+        let react = |user, emoji: &'static str| {
+            fixture
+                .messages
+                .add_reaction(user, fixture.general, message.id, emoji)
+        };
+        react(fixture.member, "👍").await.unwrap();
+        react(fixture.member, "👍").await.unwrap();
+        react(fixture.owner, "👍").await.unwrap();
+        react(fixture.owner, "❤️").await.unwrap();
+        let seen_by_member = history(&fixture, fixture.member, fixture.general).await;
+        let seen_by_owner = history(&fixture, fixture.owner, fixture.general).await;
+        let users = fixture
+            .messages
+            .list_reacting_users(
+                fixture.member,
+                fixture.general,
+                message.id,
+                "👍",
+                ReactionUsersQuery::default(),
+            )
+            .await
+            .unwrap();
+        let second_page = fixture
+            .messages
+            .list_reacting_users(
+                fixture.member,
+                fixture.general,
+                message.id,
+                "👍",
+                ReactionUsersQuery {
+                    after: Some(users[0].id),
+                    limit: Some(1),
+                },
+            )
+            .await
+            .unwrap();
+        let events_after_adding = event_types(&mut member_events);
+        fixture
+            .messages
+            .remove_own_reaction(fixture.member, fixture.general, message.id, "👍")
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .remove_own_reaction(fixture.member, fixture.general, message.id, "👍")
+            .await
+            .unwrap();
+        let after_removal = history(&fixture, fixture.member, fixture.general).await;
+        fixture.pool.close().await;
+
+        assert_eq!(
+            events_after_adding,
+            [
+                "MESSAGE_REACTION_ADD",
+                "MESSAGE_REACTION_ADD",
+                "MESSAGE_REACTION_ADD"
+            ],
+            "reacting twice with one emoji sends one event"
+        );
+        assert_eq!(
+            summaries(&seen_by_member[0]),
+            [("👍".to_owned(), 2, true), ("❤️".to_owned(), 1, false)]
+        );
+        assert_eq!(
+            summaries(&seen_by_owner[0]),
+            [("👍".to_owned(), 2, true), ("❤️".to_owned(), 1, true)]
+        );
+        let mut both = vec![fixture.owner, fixture.member];
+        both.sort();
+        assert_eq!(
+            users.iter().map(|user| user.id).collect::<Vec<_>>(),
+            both,
+            "by ascending id"
+        );
+        assert_eq!(second_page.len(), 1);
+        assert_eq!(second_page[0].id, both[1]);
+        assert_eq!(
+            summaries(&after_removal[0]),
+            [("👍".to_owned(), 1, false), ("❤️".to_owned(), 1, false)]
+        );
+        assert_eq!(
+            event_types(&mut owner_events),
+            [
+                "MESSAGE_REACTION_ADD",
+                "MESSAGE_REACTION_ADD",
+                "MESSAGE_REACTION_ADD",
+                "MESSAGE_REACTION_REMOVE"
+            ],
+            "removing a missing reaction sends nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn edits_answer_with_reactions_but_publish_none_and_text_is_no_emoji() {
+        let fixture = fixture().await;
+        let message = fixture
+            .messages
+            .send(fixture.owner, fixture.general, text("vote"), NOW)
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .add_reaction(fixture.member, fixture.general, message.id, "👍")
+            .await
+            .unwrap();
+        let [_owner_events, mut member_events] = live_sessions(&fixture);
+        let edited = fixture
+            .messages
+            .edit(
+                fixture.owner,
+                fixture.general,
+                message.id,
+                EditMessageRequest {
+                    content: "vote!".into(),
+                },
+                NOW + 1,
+            )
+            .await
+            .unwrap();
+        let invalid = fixture
+            .messages
+            .add_reaction(fixture.member, fixture.general, message.id, "lol")
+            .await;
+        fixture.pool.close().await;
+
+        let event: serde_json::Value =
+            serde_json::from_str(&member_events.try_recv().unwrap().payload_json).unwrap();
+        assert_eq!(event["t"], "MESSAGE_UPDATE");
+        assert!(event["data"].get("reactions").is_none(), "{event}");
+        assert_eq!(summaries(&edited), [("👍".to_owned(), 1, false)]);
+        assert!(matches!(
+            invalid,
+            Err(MessageError::InvalidInput(
+                MessageRuleViolation::ReactionEmoji
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_message_holds_at_most_twenty_distinct_emoji() {
+        use crate::domain::message_rules::MAXIMUM_DISTINCT_EMOJI_PER_MESSAGE;
+
+        let fixture = fixture().await;
+        let message = fixture
+            .messages
+            .send(fixture.owner, fixture.general, text("react"), NOW)
+            .await
+            .unwrap();
+        let emoji: Vec<String> = (0..=MAXIMUM_DISTINCT_EMOJI_PER_MESSAGE)
+            .map(|index| char::from_u32(0x1F600 + index).unwrap().to_string())
+            .collect();
+        let mut outcomes = Vec::new();
+        for one in &emoji {
+            outcomes.push(
+                fixture
+                    .messages
+                    .add_reaction(fixture.owner, fixture.general, message.id, one)
+                    .await,
+            );
+        }
+        let joining = fixture
+            .messages
+            .add_reaction(fixture.member, fixture.general, message.id, &emoji[0])
+            .await;
+        fixture.pool.close().await;
+
+        let (last, allowed) = outcomes.split_last().unwrap();
+        assert!(allowed.iter().all(Result::is_ok));
+        assert!(
+            matches!(last, Err(MessageError::Guild(GuildError::LimitReached(_)))),
+            "{last:?}"
+        );
+        assert!(
+            joining.is_ok(),
+            "joining an existing emoji is still possible"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_add_reactions_members_only_join_existing_ones() {
+        use mellow_protocol::{OverwriteKind, SetPermissionOverwriteRequest};
+
+        let fixture = fixture().await;
+        fixture
+            .guilds
+            .set_permission_overwrite(
+                fixture.owner,
+                fixture.general,
+                fixture.guild.id,
+                SetPermissionOverwriteRequest {
+                    kind: OverwriteKind::Role,
+                    allow: Permissions::empty(),
+                    deny: Permissions::ADD_REACTIONS,
+                },
+            )
+            .await
+            .unwrap();
+        let message = fixture
+            .messages
+            .send(fixture.owner, fixture.general, text("hi"), NOW)
+            .await
+            .unwrap();
+        let new_emoji = fixture
+            .messages
+            .add_reaction(fixture.member, fixture.general, message.id, "👍")
+            .await;
+        fixture
+            .messages
+            .add_reaction(fixture.owner, fixture.general, message.id, "👍")
+            .await
+            .unwrap();
+        let joined = fixture
+            .messages
+            .add_reaction(fixture.member, fixture.general, message.id, "👍")
+            .await;
+        let removed = fixture
+            .messages
+            .remove_own_reaction(fixture.member, fixture.general, message.id, "👍")
+            .await;
+        let outsider = fixture
+            .messages
+            .add_reaction(fixture.outsider, fixture.general, message.id, "👍")
+            .await;
+        let unknown_message = fixture
+            .messages
+            .add_reaction(
+                fixture.member,
+                fixture.general,
+                Snowflake::from_raw(1),
+                "👍",
+            )
+            .await;
+        fixture.pool.close().await;
+
+        assert!(
+            matches!(
+                new_emoji,
+                Err(MessageError::Guild(GuildError::MissingPermissions))
+            ),
+            "{new_emoji:?}"
+        );
+        assert!(joined.is_ok() && removed.is_ok());
+        assert!(matches!(
+            outsider,
+            Err(MessageError::Guild(GuildError::NotFound))
+        ));
+        assert!(matches!(
+            unknown_message,
+            Err(MessageError::MessageNotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn reactions_in_a_hidden_channel_are_not_found_and_reach_only_its_viewers() {
+        use mellow_protocol::{OverwriteKind, SetPermissionOverwriteRequest};
+
+        let fixture = fixture().await;
+        let staff = create_text_channel(&fixture, "staff").await;
+        fixture
+            .guilds
+            .set_permission_overwrite(
+                fixture.owner,
+                staff.id,
+                fixture.guild.id,
+                SetPermissionOverwriteRequest {
+                    kind: OverwriteKind::Role,
+                    allow: Permissions::empty(),
+                    deny: Permissions::VIEW_CHANNEL,
+                },
+            )
+            .await
+            .unwrap();
+        let secret = fixture
+            .messages
+            .send(fixture.owner, staff.id, text("staff only"), NOW)
+            .await
+            .unwrap();
+        let [mut owner_events, mut member_events] = live_sessions(&fixture);
+        fixture
+            .messages
+            .add_reaction(fixture.owner, staff.id, secret.id, "👀")
+            .await
+            .unwrap();
+        let member_reacts = fixture
+            .messages
+            .add_reaction(fixture.member, staff.id, secret.id, "👀")
+            .await;
+        let member_lists = fixture
+            .messages
+            .list_reacting_users(
+                fixture.member,
+                staff.id,
+                secret.id,
+                "👀",
+                mellow_protocol::ReactionUsersQuery::default(),
+            )
+            .await;
+        let member_pins = fixture.messages.list_pins(fixture.member, staff.id).await;
+        fixture.pool.close().await;
+
+        assert_eq!(event_types(&mut owner_events), ["MESSAGE_REACTION_ADD"]);
+        assert_eq!(event_types(&mut member_events), Vec::<String>::new());
+        for refused in [
+            member_reacts,
+            member_lists.map(|_| ()),
+            member_pins.map(|_| ()),
+        ] {
+            assert!(
+                matches!(refused, Err(MessageError::Guild(GuildError::NotFound))),
+                "{refused:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn moderators_pin_newest_first_and_each_change_is_audited() {
+        use mellow_protocol::{AuditAction, AuditLogQuery};
+
+        let fixture = fixture().await;
+        let mut sent = Vec::new();
+        for index in 0..3 {
+            sent.push(
+                fixture
+                    .messages
+                    .send(fixture.member, fixture.general, text("note"), NOW + index)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let [_owner_events, mut member_events] = live_sessions(&fixture);
+        for (offset, message) in (10..).zip(&sent) {
+            fixture
+                .messages
+                .pin(fixture.owner, fixture.general, message.id, NOW + offset)
+                .await
+                .unwrap();
+        }
+        // Pinning again and unpinning what is not pinned change nothing.
+        fixture
+            .messages
+            .pin(fixture.owner, fixture.general, sent[0].id, NOW + 20)
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .unpin(fixture.owner, fixture.general, sent[1].id)
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .unpin(fixture.owner, fixture.general, sent[1].id)
+            .await
+            .unwrap();
+        let pins = fixture
+            .messages
+            .list_pins(fixture.member, fixture.general)
+            .await
+            .unwrap();
+        let in_history = history(&fixture, fixture.member, fixture.general).await;
+        let entries = fixture
+            .guilds
+            .list_audit_log(fixture.owner, fixture.guild.id, AuditLogQuery::default())
+            .await
+            .unwrap();
+        let member_received: Vec<_> = std::iter::from_fn(|| member_events.try_recv().ok())
+            .map(|event| serde_json::from_str::<serde_json::Value>(&event.payload_json).unwrap())
+            .map(|event| format!("{} {}", event["t"], event["data"]["pinned"]))
+            .collect();
+        fixture.pool.close().await;
+
+        assert_eq!(
+            pins.iter().map(|message| message.id).collect::<Vec<_>>(),
+            [sent[2].id, sent[0].id],
+            "the most recently pinned first"
+        );
+        assert!(pins.iter().all(|message| message.pinned));
+        assert_eq!(
+            in_history
+                .iter()
+                .map(|message| message.pinned)
+                .collect::<Vec<_>>(),
+            [true, false, true]
+        );
+        let (pinned, unpinned) = ("\"MESSAGE_UPDATE\" true", "\"MESSAGE_UPDATE\" false");
+        assert_eq!(member_received, [pinned, pinned, pinned, unpinned]);
+        let pin_entries: Vec<_> = entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.action,
+                    AuditAction::MessagePin | AuditAction::MessageUnpin
+                )
+            })
+            .map(|entry| {
+                (
+                    entry.action,
+                    entry.actor_id,
+                    entry.target_id,
+                    entry.context_id,
+                )
+            })
+            .collect();
+        let owner = Some(fixture.owner);
+        let general = Some(fixture.general);
+        assert_eq!(
+            pin_entries,
+            [
+                (AuditAction::MessageUnpin, owner, Some(sent[1].id), general),
+                (AuditAction::MessagePin, owner, Some(sent[2].id), general),
+                (AuditAction::MessagePin, owner, Some(sent[1].id), general),
+                (AuditAction::MessagePin, owner, Some(sent[0].id), general),
+            ],
+            "newest first, one entry per change"
+        );
+    }
+
+    #[tokio::test]
+    async fn members_without_manage_messages_neither_pin_nor_unpin() {
+        let fixture = fixture().await;
+        let message = fixture
+            .messages
+            .send(fixture.member, fixture.general, text("mine"), NOW)
+            .await
+            .unwrap();
+        let pinned = fixture
+            .messages
+            .pin(fixture.member, fixture.general, message.id, NOW)
+            .await;
+        fixture
+            .messages
+            .pin(fixture.owner, fixture.general, message.id, NOW)
+            .await
+            .unwrap();
+        let unpinned = fixture
+            .messages
+            .unpin(fixture.member, fixture.general, message.id)
+            .await;
+        fixture.pool.close().await;
+
+        for refused in [pinned, unpinned] {
+            assert!(
+                matches!(
+                    refused,
+                    Err(MessageError::Guild(GuildError::MissingPermissions))
+                ),
+                "even for their own message: {refused:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_channel_holds_at_most_fifty_pins() {
+        use crate::domain::message_rules::MAXIMUM_PINS_PER_CHANNEL;
+
+        let fixture = fixture().await;
+        let mut outcomes = Vec::new();
+        for index in 0..=u64::from(MAXIMUM_PINS_PER_CHANNEL) {
+            let message = fixture
+                .messages
+                .send(fixture.owner, fixture.general, text("pin me"), NOW + index)
+                .await
+                .unwrap();
+            outcomes.push(
+                fixture
+                    .messages
+                    .pin(fixture.owner, fixture.general, message.id, NOW + index)
+                    .await,
+            );
+        }
+        let pins = fixture
+            .messages
+            .list_pins(fixture.owner, fixture.general)
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        let (last, allowed) = outcomes.split_last().unwrap();
+        assert!(allowed.iter().all(Result::is_ok));
+        assert!(
+            matches!(last, Err(MessageError::Guild(GuildError::LimitReached(_)))),
+            "{last:?}"
+        );
+        assert_eq!(
+            pins.len(),
+            usize::try_from(MAXIMUM_PINS_PER_CHANNEL).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn participants_react_and_pin_in_a_conversation_without_audit() {
+        use mellow_protocol::{AuditAction, AuditLogQuery};
+
+        let fixture = fixture().await;
+        let conversation = fixture
+            .messages
+            .open_direct_message(fixture.member, open_with(fixture.owner), NOW)
+            .await
+            .unwrap();
+        let message = fixture
+            .messages
+            .send(fixture.member, conversation.id, text("hello"), NOW)
+            .await
+            .unwrap();
+        let [mut owner_events, _member_events] = live_sessions(&fixture);
+        fixture
+            .messages
+            .add_reaction(fixture.owner, conversation.id, message.id, "👋")
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .pin(fixture.owner, conversation.id, message.id, NOW)
+            .await
+            .unwrap();
+        let outsider_reacts = fixture
+            .messages
+            .add_reaction(fixture.outsider, conversation.id, message.id, "👋")
+            .await;
+        let outsider_pins = fixture
+            .messages
+            .pin(fixture.outsider, conversation.id, message.id, NOW)
+            .await;
+        let pins = fixture
+            .messages
+            .list_pins(fixture.member, conversation.id)
+            .await
+            .unwrap();
+        let entries = fixture
+            .guilds
+            .list_audit_log(fixture.owner, fixture.guild.id, AuditLogQuery::default())
+            .await
+            .unwrap();
+        let mut reaction_event = None;
+        while let Ok(event) = owner_events.try_recv() {
+            let event: serde_json::Value = serde_json::from_str(&event.payload_json).unwrap();
+            if event["t"] == "MESSAGE_REACTION_ADD" {
+                reaction_event = Some(event["data"].clone());
+            }
+        }
+        fixture.pool.close().await;
+
+        assert_eq!(
+            reaction_event.unwrap(),
+            serde_json::json!({
+                "channel_id": conversation.id.to_string(),
+                "message_id": message.id.to_string(),
+                "user_id": fixture.owner.to_string(),
+                "emoji": "👋",
+            }),
+            "no guild_id in a conversation"
+        );
+        for refused in [outsider_reacts, outsider_pins] {
+            assert!(
+                matches!(refused, Err(MessageError::Guild(GuildError::NotFound))),
+                "{refused:?}"
+            );
+        }
+        assert_eq!(pins.len(), 1);
+        assert_eq!(summaries(&pins[0]), [("👋".to_owned(), 1, false)]);
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.action != AuditAction::MessagePin),
+            "conversations have no audit log"
+        );
     }
 }

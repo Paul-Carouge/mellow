@@ -134,6 +134,33 @@ export interface Message {
   nonce?: string | null;
   /** Absent from older servers' payloads. */
   attachments?: Attachment[];
+  /**
+   * In the order first added; `me` is the requester. Only in REST answers: gateway events never
+   * carry them (keep the cached ones on `MESSAGE_UPDATE`). Absent when empty.
+   */
+  reactions?: ReactionSummary[];
+  /** Absent from older servers' payloads. */
+  pinned?: boolean;
+}
+
+export interface ReactionSummary {
+  emoji: string;
+  count: number;
+  me: boolean;
+}
+
+/** `MESSAGE_REACTION_ADD` and `MESSAGE_REACTION_REMOVE`. */
+export interface MessageReaction {
+  guild_id?: Snowflake;
+  channel_id: Snowflake;
+  message_id: Snowflake;
+  user_id: Snowflake;
+  emoji: string;
+}
+
+/** Path of the requester's own reaction (`PUT` adds it, `DELETE` removes it). */
+export function ownReactionPath(channelId: Snowflake, messageId: Snowflake, emoji: string): string {
+  return `/api/v1/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`;
 }
 
 export interface ReadState {
@@ -187,6 +214,8 @@ export type GatewayEvent =
   | { t: "MESSAGE_CREATE"; data: Message }
   | { t: "MESSAGE_UPDATE"; data: Message }
   | { t: "MESSAGE_DELETE"; data: { guild_id?: Snowflake; channel_id: Snowflake; id: Snowflake } }
+  | { t: "MESSAGE_REACTION_ADD"; data: MessageReaction }
+  | { t: "MESSAGE_REACTION_REMOVE"; data: MessageReaction }
   | { t: "CHANNEL_CREATE"; data: Channel }
   | { t: "CHANNEL_UPDATE"; data: Channel }
   | { t: "CHANNEL_DELETE"; data: { guild_id: Snowflake; id: Snowflake } }
@@ -231,6 +260,7 @@ export const Permission = {
   MANAGE_CHANNELS: 1n << 7n,
   MANAGE_ROLES: 1n << 8n,
   CREATE_INVITE: 1n << 10n,
+  ADD_REACTIONS: 1n << 16n,
 } as const;
 
 export function hasPermission(bits: PermissionBits, permission: bigint): boolean {
@@ -240,7 +270,11 @@ export function hasPermission(bits: PermissionBits, permission: bigint): boolean
 
 /** Every bit a participant holds in a direct-message conversation (`direct_message_permissions`). */
 export const DIRECT_MESSAGE_PERMISSIONS: PermissionBits = String(
-  Permission.VIEW_CHANNEL | Permission.SEND_MESSAGES | Permission.READ_MESSAGE_HISTORY | Permission.ATTACH_FILES,
+  Permission.VIEW_CHANNEL |
+    Permission.SEND_MESSAGES |
+    Permission.READ_MESSAGE_HISTORY |
+    Permission.ATTACH_FILES |
+    Permission.ADD_REACTIONS,
 );
 
 /**

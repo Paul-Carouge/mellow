@@ -66,6 +66,37 @@ pub struct Message {
     /// Absent from older servers' payloads.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Attachment>,
+    /// In the order they were first added. Filled in REST answers, where `me` is the requester;
+    /// always empty in gateway events (`MESSAGE_UPDATE` included), since `me` differs per
+    /// viewer: clients keep the reactions they hold and follow `MESSAGE_REACTION_ADD` and
+    /// `MESSAGE_REACTION_REMOVE`. Absent when empty and from older servers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reactions: Vec<ReactionSummary>,
+    /// Pinned to its channel (`GET /api/v1/channels/{channel_id}/pins`). Absent from older
+    /// servers' payloads.
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+/// One emoji's reactions on a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReactionSummary {
+    /// A Unicode emoji, as sent (`"👍"`, `"❤️"`).
+    pub emoji: String,
+    pub count: u32,
+    /// Whether the requesting user is among them.
+    pub me: bool,
+}
+
+/// Query of `GET /api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}`: who
+/// reacted, by ascending user id.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReactionUsersQuery {
+    /// Users whose id is strictly greater than this one.
+    pub after: Option<Snowflake>,
+    /// 1 to 100; defaults to 25.
+    pub limit: Option<u32>,
 }
 
 /// Body of `PUT /api/v1/channels/{channel_id}/read-state`.
@@ -108,10 +139,31 @@ mod tests {
             edited_at_unix_milliseconds: None,
             nonce: Some("abc".into()),
             attachments: Vec::new(),
+            reactions: vec![ReactionSummary {
+                emoji: "👍".into(),
+                count: 2,
+                me: true,
+            }],
+            pinned: true,
         };
         let json = serde_json::to_value(&message).unwrap();
         assert_eq!(json["id"], "9");
         assert_eq!(json["author"]["username"], "aurore");
         assert_eq!(json["nonce"], "abc");
+        assert_eq!(
+            json["reactions"],
+            serde_json::json!([{"emoji": "👍", "count": 2, "me": true}])
+        );
+        assert_eq!(json["pinned"], true);
+    }
+
+    #[test]
+    fn messages_from_older_servers_have_no_reactions_and_are_not_pinned() {
+        let message: Message = serde_json::from_str(
+            r#"{"id":"9","channel_id":"3","author":{"id":"1","username":"a","display_name":"A"},"content":"hi","reply_to_id":null,"edited_at_unix_milliseconds":null,"nonce":null}"#,
+        )
+        .unwrap();
+        assert_eq!(message.reactions, Vec::new());
+        assert!(!message.pinned);
     }
 }

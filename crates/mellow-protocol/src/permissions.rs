@@ -25,6 +25,8 @@ bitflags::bitflags! {
         const CHANGE_NICKNAME      = 1 << 13;
         const MANAGE_NICKNAMES     = 1 << 14;
         const VIEW_AUDIT_LOG       = 1 << 15;
+        /// Adding an emoji no one reacted with yet; joining an existing reaction needs none.
+        const ADD_REACTIONS        = 1 << 16;
     }
 }
 
@@ -38,7 +40,8 @@ impl Permissions {
         .union(Self::MANAGE_MESSAGES)
         .union(Self::MANAGE_CHANNELS)
         .union(Self::MANAGE_ROLES)
-        .union(Self::CREATE_INVITE);
+        .union(Self::CREATE_INVITE)
+        .union(Self::ADD_REACTIONS);
 
     /// Permissions granted to `@everyone` in a newly created guild.
     pub const DEFAULT_EVERYONE: Self = Self::VIEW_CHANNEL
@@ -46,7 +49,8 @@ impl Permissions {
         .union(Self::READ_MESSAGE_HISTORY)
         .union(Self::ATTACH_FILES)
         .union(Self::CREATE_INVITE)
-        .union(Self::CHANGE_NICKNAME);
+        .union(Self::CHANGE_NICKNAME)
+        .union(Self::ADD_REACTIONS);
 }
 
 /// A member's permissions in a guild (ADR-0007 steps 1 to 3): the owner and administrators get

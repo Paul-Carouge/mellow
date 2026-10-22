@@ -44,8 +44,8 @@ pub fn channel_permissions(
 
 /// What someone may do in a direct-message conversation: participants view and read it, and write
 /// only while they share a guild with everyone else in it, so a member kicked or banned from the
-/// only shared guild can no longer message the others; anyone else gets nothing. No one manages
-/// messages there, so each author deletes only their own.
+/// only shared guild can no longer message the others (nor react); anyone else gets nothing. No
+/// one manages messages there, so each author deletes only their own.
 #[must_use]
 pub fn direct_message_permissions(is_participant: bool, shares_a_guild: bool) -> Permissions {
     match (is_participant, shares_a_guild) {
@@ -56,8 +56,58 @@ pub fn direct_message_permissions(is_participant: bool, shares_a_guild: bool) ->
                 | Permissions::SEND_MESSAGES
                 | Permissions::READ_MESSAGE_HISTORY
                 | Permissions::ATTACH_FILES
+                | Permissions::ADD_REACTIONS
         }
     }
+}
+
+/// Something done with reactions on a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReactionAction {
+    /// Seeing who reacted with an emoji.
+    List,
+    /// Adding oneself to an emoji someone already reacted with.
+    JoinExisting,
+    /// Reacting with an emoji no one used on the message yet.
+    AddNew,
+    /// Taking one's own reaction back.
+    RemoveOwn,
+}
+
+/// In a guild channel, as on Discord: whoever sees the message (`VIEW_CHANNEL` and
+/// `READ_MESSAGE_HISTORY`) may list and join existing reactions, a new emoji also needs
+/// `ADD_REACTIONS`, and anyone who can view the channel may take their own reaction back. In a
+/// conversation every reaction added needs `ADD_REACTIONS`, which only participants who may still
+/// write hold (`direct_message_permissions`), so someone cut off from the only shared guild cannot
+/// keep notifying the others.
+#[must_use]
+pub fn may_react(
+    channel_permissions: Permissions,
+    is_direct_message: bool,
+    action: ReactionAction,
+) -> bool {
+    let sees_messages = Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY;
+    let needed = match action {
+        ReactionAction::RemoveOwn => Permissions::VIEW_CHANNEL,
+        ReactionAction::List => sees_messages,
+        ReactionAction::JoinExisting if !is_direct_message => sees_messages,
+        ReactionAction::JoinExisting | ReactionAction::AddNew => {
+            sees_messages | Permissions::ADD_REACTIONS
+        }
+    };
+    channel_permissions.contains(needed)
+}
+
+/// Pinning and unpinning: `MANAGE_MESSAGES` in a guild channel; in a conversation, where no one
+/// moderates, any participant who may still write there.
+#[must_use]
+pub fn may_manage_pins(channel_permissions: Permissions, is_direct_message: bool) -> bool {
+    let needed = if is_direct_message {
+        Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES
+    } else {
+        Permissions::VIEW_CHANNEL | Permissions::MANAGE_MESSAGES
+    };
+    channel_permissions.contains(needed)
 }
 
 /// Whether every member of the guild can view a channel, without looking at members: everyone's
@@ -378,5 +428,77 @@ mod tests {
             &[everyone(), role(10, 2, Permissions::ADMINISTRATOR)],
         );
         assert!(administrator.can_change_permissions(Permissions::empty(), Permissions::all()));
+    }
+
+    /// Which of list, join, add new and remove own `permissions` allow.
+    fn reaction_actions(permissions: Permissions, is_direct_message: bool) -> [bool; 4] {
+        [
+            ReactionAction::List,
+            ReactionAction::JoinExisting,
+            ReactionAction::AddNew,
+            ReactionAction::RemoveOwn,
+        ]
+        .map(|action| may_react(permissions, is_direct_message, action))
+    }
+
+    #[test]
+    fn new_emoji_need_add_reactions_and_joining_only_needs_to_see_the_message() {
+        let everyone = Permissions::DEFAULT_EVERYONE;
+        assert_eq!(reaction_actions(everyone, false), [true; 4]);
+        assert_eq!(
+            reaction_actions(everyone - Permissions::ADD_REACTIONS, false),
+            [true, true, false, true]
+        );
+        assert_eq!(
+            reaction_actions(everyone - Permissions::READ_MESSAGE_HISTORY, false),
+            [false, false, false, true],
+            "taking one's own back only needs the channel"
+        );
+        assert_eq!(
+            reaction_actions(everyone - Permissions::VIEW_CHANNEL, false),
+            [false; 4]
+        );
+        assert_eq!(reaction_actions(Permissions::all(), false), [true; 4]);
+    }
+
+    #[test]
+    fn in_conversations_only_participants_who_may_write_react() {
+        assert_eq!(
+            reaction_actions(direct_message_permissions(true, true), true),
+            [true; 4]
+        );
+        assert_eq!(
+            reaction_actions(direct_message_permissions(true, false), true),
+            [true, false, false, true]
+        );
+        assert_eq!(
+            reaction_actions(direct_message_permissions(false, true), true),
+            [false; 4]
+        );
+    }
+
+    #[test]
+    fn pins_need_manage_messages_in_guilds_and_write_access_in_conversations() {
+        assert!(!may_manage_pins(Permissions::DEFAULT_EVERYONE, false));
+        assert!(may_manage_pins(
+            Permissions::DEFAULT_EVERYONE | Permissions::MANAGE_MESSAGES,
+            false
+        ));
+        assert!(
+            !may_manage_pins(Permissions::MANAGE_MESSAGES, false),
+            "must view the channel"
+        );
+        assert!(may_manage_pins(
+            direct_message_permissions(true, true),
+            true
+        ));
+        assert!(!may_manage_pins(
+            direct_message_permissions(true, false),
+            true
+        ));
+        assert!(!may_manage_pins(
+            direct_message_permissions(false, true),
+            true
+        ));
     }
 }

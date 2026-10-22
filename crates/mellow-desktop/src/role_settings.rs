@@ -48,7 +48,7 @@ const fn describe(
 }
 
 /// Every permission once, in display order; a group header starts where `group` changes.
-const PERMISSION_DESCRIPTIONS: [PermissionDescription; 16] = [
+const PERMISSION_DESCRIPTIONS: [PermissionDescription; 17] = [
     describe(
         Permissions::VIEW_CHANNEL,
         "General",
@@ -124,6 +124,13 @@ const PERMISSION_DESCRIPTIONS: [PermissionDescription; 16] = [
         "Text channels",
         "Attach files",
         "Add files and images to their messages.",
+        false,
+    ),
+    describe(
+        Permissions::ADD_REACTIONS,
+        "Text channels",
+        "Add reactions",
+        "React with a new emoji; anyone can join an existing reaction.",
         false,
     ),
     describe(
