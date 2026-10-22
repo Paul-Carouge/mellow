@@ -8,28 +8,28 @@ use mellow_protocol::{
 use super::{MessageError, Messages, publish};
 use crate::domain::guilds::GuildError;
 use crate::domain::message_rules::{
-    MAXIMUM_DISTINCT_EMOJI_PER_MESSAGE, reacting_users_page_size, validate_reaction_emoji,
+    MAXIMUM_DISTINCT_EMOJI_PER_MESSAGE, reacting_users_page_size, reaction_emoji_key,
 };
 use crate::domain::permissions::{ReactionAction, may_react};
 use crate::domain::profile_images::fill_profile_images;
 use crate::storage::reactions::{self as storage, ReactionAddOutcome};
 
 impl Messages {
-    /// The channel, the message and the user's permissions there. A channel the user cannot view
-    /// is `NotFound`.
+    /// The channel, the message, the user's permissions there and the emoji's stored key. A
+    /// channel the user cannot view is `NotFound`.
     async fn reaction_target(
         &self,
         user_id: Snowflake,
         channel_id: Snowflake,
         message_id: Snowflake,
         emoji: &str,
-    ) -> Result<(super::MessageChannel, Snowflake, Permissions), MessageError> {
-        validate_reaction_emoji(emoji)?;
+    ) -> Result<(super::MessageChannel, Snowflake, Permissions, String), MessageError> {
+        let emoji = reaction_emoji_key(emoji)?;
         let (channel, permissions) = self
             .text_channel_and_permissions_requiring(user_id, channel_id, Permissions::VIEW_CHANNEL)
             .await?;
         let message = self.message_in_channel(channel.id(), message_id).await?;
-        Ok((channel, message.id, permissions))
+        Ok((channel, message.id, permissions, emoji))
     }
 
     /// Reacts with `emoji`. Idempotent: reacting again changes nothing and sends no event.
@@ -40,7 +40,7 @@ impl Messages {
         message_id: Snowflake,
         emoji: &str,
     ) -> Result<(), MessageError> {
-        let (channel, message_id, permissions) = self
+        let (channel, message_id, permissions, emoji) = self
             .reaction_target(user_id, channel_id, message_id, emoji)
             .await?;
         let may = |action| may_react(permissions, channel.guild_id().is_none(), action);
@@ -53,7 +53,7 @@ impl Messages {
             &self.pool,
             message_id,
             user_id,
-            emoji,
+            &emoji,
             may(ReactionAction::AddNew),
             MAXIMUM_DISTINCT_EMOJI_PER_MESSAGE,
         )
@@ -68,7 +68,7 @@ impl Messages {
                         channel_id: channel.id(),
                         message_id,
                         user_id,
-                        emoji: emoji.to_owned(),
+                        emoji: emoji.clone(),
                     }),
                 );
                 Ok(())
@@ -90,7 +90,7 @@ impl Messages {
         message_id: Snowflake,
         emoji: &str,
     ) -> Result<(), MessageError> {
-        let (channel, message_id, permissions) = self
+        let (channel, message_id, permissions, emoji) = self
             .reaction_target(user_id, channel_id, message_id, emoji)
             .await?;
         if !may_react(
@@ -101,7 +101,7 @@ impl Messages {
             return Err(GuildError::MissingPermissions.into());
         }
         let audience = self.audience(&channel).await?;
-        if storage::remove_reaction(&self.pool, message_id, user_id, emoji).await? {
+        if storage::remove_reaction(&self.pool, message_id, user_id, &emoji).await? {
             publish(
                 &self.guilds,
                 &audience,
@@ -110,7 +110,7 @@ impl Messages {
                     channel_id: channel.id(),
                     message_id,
                     user_id,
-                    emoji: emoji.to_owned(),
+                    emoji,
                 }),
             );
         }
@@ -127,7 +127,7 @@ impl Messages {
         query: ReactionUsersQuery,
     ) -> Result<Vec<PublicUser>, MessageError> {
         let limit = reacting_users_page_size(query.limit)?;
-        let (channel, message_id, permissions) = self
+        let (channel, message_id, permissions, emoji) = self
             .reaction_target(user_id, channel_id, message_id, emoji)
             .await?;
         if !may_react(
@@ -138,7 +138,7 @@ impl Messages {
             return Err(GuildError::MissingPermissions.into());
         }
         let mut users: Vec<PublicUser> =
-            storage::list_reacting_users(&self.pool, message_id, emoji, query.after, limit)
+            storage::list_reacting_users(&self.pool, message_id, &emoji, query.after, limit)
                 .await?
                 .into_iter()
                 .map(|user| PublicUser {
