@@ -13,7 +13,7 @@
   import ModerationLogSettings from "./ModerationLogSettings.svelte";
   import RoleSettings from "./RoleSettings.svelte";
   import ServerOverviewSettings from "./ServerOverviewSettings.svelte";
-  import { type ServerSettingsSection, isOwner, visibleSections } from "./server-settings";
+  import { type ServerSettingsSection, isOwner, mustStayOnPage, visibleSections } from "./server-settings";
 
   // Server settings (DESIGN.md §5.8), over the whole window like the user settings, with the same
   // layout: the navigation on the ground and the page as a sheet beside it, or one after the other
@@ -36,7 +36,8 @@
   let pageHeading = $state<HTMLElement | null>(null);
   let isSectionShownOnPhone = $state(false);
   let isDeleteDialogOpen = $state(false);
-  let hasUnsavedChanges = $state(false);
+  /** The page holding unsaved changes, if any; see `mustStayOnPage`. */
+  let unsavedSection = $state<ServerSettingsSection | null>(null);
   let attention = $state(0);
 
   const guild = $derived(client.guilds.find((candidate) => candidate.id === guildId) ?? null);
@@ -58,13 +59,22 @@
     }
   });
 
+  /** Called by a page's effect, and with false when the page goes away. */
+  function noteUnsavedChanges(target: ServerSettingsSection, hasChanges: boolean) {
+    if (hasChanges) {
+      unsavedSection = target;
+    } else if (unsavedSection === target) {
+      unsavedSection = null;
+    }
+  }
+
   function navItemId(target: ServerSettingsSection): string {
     return `${id}-nav-${target}`;
   }
 
   /** Refused while the page holds unsaved changes: the bar asks to save or reset first. */
   function canLeavePage(): boolean {
-    if (hasUnsavedChanges) {
+    if (mustStayOnPage(unsavedSection, section)) {
       attention += 1;
       return false;
     }
@@ -297,9 +307,19 @@
                 </h2>
                 <div class="mt-(--mw-component-settings-page-title-gap) flex flex-1 flex-col pb-(--mw-component-settings-content-padding-bottom)">
                   {#if section === "overview"}
-                    <ServerOverviewSettings {client} {guild} {attention} bind:hasUnsavedChanges />
+                    <ServerOverviewSettings
+                      {client}
+                      {guild}
+                      {attention}
+                      onunsavedchange={(hasChanges) => noteUnsavedChanges("overview", hasChanges)}
+                    />
                   {:else if section === "roles"}
-                    <RoleSettings {client} {guild} {attention} bind:hasUnsavedChanges />
+                    <RoleSettings
+                      {client}
+                      {guild}
+                      {attention}
+                      onunsavedchange={(hasChanges) => noteUnsavedChanges("roles", hasChanges)}
+                    />
                   {:else if section === "invites"}
                     <InviteSettings {client} {guild} />
                   {:else if section === "members"}

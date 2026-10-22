@@ -1226,11 +1226,13 @@ export class MellowClient {
     this.removeGuild(guildId);
   }
 
-  // --- Server settings: each answer is applied at once, before the gateway's own event ---------
+  // --- Server settings ----------------------------------------------------------------------
+  // Edits show when the gateway brings them, never from the REST answer: an answer arriving after
+  // a newer event would put older state back. Only removals (which cannot bring anything back)
+  // and a created role (which the page selects at once) are applied from the answer.
 
   async renameServer(guildId: Snowflake, name: string): Promise<void> {
-    const guild = await this.rest.renameGuild(guildId, name);
-    this.applyEvent({ t: "GUILD_UPDATE", data: { id: guild.id, name: guild.name } }, Date.now());
+    await this.rest.renameGuild(guildId, name);
   }
 
   async deleteServer(guildId: Snowflake): Promise<void> {
@@ -1265,11 +1267,7 @@ export class MellowClient {
     roleId: Snowflake,
     changes: { name?: string; color?: number; permissions?: PermissionBits },
   ): Promise<void> {
-    const role = await this.rest.updateRole(guildId, roleId, changes);
-    this.applyRoles(
-      guildId,
-      this.rolesOf(guildId).map((existing) => (existing.id === role.id ? role : existing)),
-    );
+    await this.rest.updateRole(guildId, roleId, changes);
   }
 
   async deleteRole(guildId: Snowflake, roleId: Snowflake): Promise<void> {
@@ -1281,24 +1279,13 @@ export class MellowClient {
   }
 
   async reorderRoles(guildId: Snowflake, roleIds: readonly Snowflake[]): Promise<void> {
-    this.applyRoles(guildId, await this.rest.reorderRoles(guildId, roleIds));
+    await this.rest.reorderRoles(guildId, roleIds);
   }
 
   async setMemberRole(guildId: Snowflake, userId: Snowflake, roleId: Snowflake, isGiven: boolean): Promise<void> {
     await (isGiven
       ? this.rest.addMemberRole(guildId, userId, roleId)
       : this.rest.removeMemberRole(guildId, userId, roleId));
-    const member = this.membersByGuild.get(guildId)?.find((candidate) => candidate.user.id === userId);
-    if (member) {
-      const roleIds = member.role_ids.filter((id) => id !== roleId);
-      this.applyEvent(
-        {
-          t: "GUILD_MEMBER_UPDATE",
-          data: { guild_id: guildId, user_id: userId, role_ids: isGiven ? [...roleIds, roleId] : roleIds },
-        },
-        Date.now(),
-      );
-    }
   }
 
   /** `banReason` is null for a kick, the (possibly empty) reason of a ban otherwise. */

@@ -6,7 +6,10 @@ import {
   auditEntrySentence,
   canManageRole,
   canOpenServerSettings,
+  focusAfterRemoval,
+  isRoleEditPending,
   matchesMemberSearch,
+  mustStayOnPage,
   outranksMember,
   rebaseRoleEdit,
   roleIdsAfterMove,
@@ -75,6 +78,25 @@ describe("sections", () => {
   });
 });
 
+describe("unsaved changes", () => {
+  it("keep the reader only on the page that holds them", () => {
+    expect(mustStayOnPage("roles", "roles")).toBe(true);
+    // Roles went away with MANAGE_ROLES: the page shown now holds nothing.
+    expect(mustStayOnPage("roles", "members")).toBe(false);
+    expect(mustStayOnPage(null, "overview")).toBe(false);
+    expect(mustStayOnPage(null, null)).toBe(false);
+  });
+});
+
+describe("focus after removing a row", () => {
+  it("moves to the next row, else the previous one, else nowhere", () => {
+    expect(focusAfterRemoval(["a", "b", "c"], "b")).toBe("c");
+    expect(focusAfterRemoval(["a", "b", "c"], "c")).toBe("b");
+    expect(focusAfterRemoval(["a"], "a")).toBeNull();
+    expect(focusAfterRemoval(["a"], "z")).toBeNull();
+  });
+});
+
 describe("roles", () => {
   const moderatorGuild = guild(Permission.MANAGE_ROLES | Permission.KICK_MEMBERS, [MODERATOR.id]);
   const moderator = roleManagerOf(moderatorGuild, ME);
@@ -122,6 +144,22 @@ describe("roles", () => {
     const saved = { ...stored, name: "Helpers", permissions: edit.draft.permissions };
     expect(rebaseRoleEdit(edit, saved)).toBeNull();
     expect(rebaseRoleEdit({ ...edit, draft: { ...edit.base, name: `${stored.name} ` } }, stored)).toBeNull();
+  });
+
+  it("drops an edit once the stored role holds it, so a later undo cannot revive it", () => {
+    const stored = role("201", 1);
+    const edit = {
+      roleId: stored.id,
+      base: { name: stored.name, color: 0, permissions: "0" },
+      draft: { name: "Helpers", color: 0, permissions: "0" },
+    };
+    expect(isRoleEditPending(edit, stored)).toBe(true);
+    // Our save, echoed by the gateway: nothing left to save, the page drops the edit.
+    expect(isRoleEditPending(edit, { ...stored, name: "Helpers" })).toBe(false);
+    // Kept, the same edit would come back once someone renames the role back.
+    expect(rebaseRoleEdit(edit, stored)).not.toBeNull();
+    expect(isRoleEditPending(edit, null)).toBe(false);
+    expect(isRoleEditPending(edit, role("202", 2))).toBe(false);
   });
 
   it("sends only the changed fields, and only permissions for @everyone", () => {

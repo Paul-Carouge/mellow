@@ -295,6 +295,42 @@ describe("MellowClient", () => {
     await client.createRole(GUILD, "new role");
     expect(positions()).toHaveLength(3);
   });
+
+  it("never lets a late settings answer undo newer state from the gateway", async () => {
+    const helper: Role = { id: "201", name: "Helper", color: 0, position: 1, permissions: "0" };
+    const everyone: Role = { id: GUILD, name: "@everyone", color: 0, position: 0, permissions: "6" };
+    const member = { user: { id: OTHER, username: "other", display_name: "Other" }, role_ids: [], joined_at_unix_milliseconds: 0 };
+    const answers: (() => void)[] = [];
+    const late = <T>(value: T) => new Promise<T>((resolve) => answers.push(() => resolve(value)));
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        listMembers: () => Promise.resolve([member]),
+        renameGuild: () => late({ ...guild(), name: "Old answer" }),
+        updateRole: () => late({ ...helper, name: "Old answer" }),
+        reorderRoles: () => late([everyone, helper]),
+        addMemberRole: () => late(undefined),
+      }),
+    );
+    client.applyReady(ready({ guilds: [{ ...guild(), roles: [everyone, helper] }] }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const requests = [
+      client.renameServer(GUILD, "Old answer"),
+      client.updateRole(GUILD, helper.id, { name: "Old answer" }),
+      client.reorderRoles(GUILD, [helper.id]),
+      client.setMemberRole(GUILD, OTHER, helper.id, true),
+    ];
+    // Newer changes reach the gateway before the answers.
+    client.applyEvent({ t: "GUILD_UPDATE", data: { id: GUILD, name: "Newest" } }, 0);
+    client.applyEvent({ t: "GUILD_ROLES_UPDATE", data: { guild_id: GUILD, roles: [everyone, { ...helper, name: "Newest" }] } }, 0);
+    for (const answer of answers) {
+      answer();
+    }
+    await Promise.all(requests);
+    expect(client.selectedGuild?.name).toBe("Newest");
+    expect(client.selectedGuild?.roles.map((role) => role.name)).toEqual(["@everyone", "Newest"]);
+    expect(client.membersByGuild.get(GUILD)?.[0]?.role_ids).toEqual([]);
+  });
 });
 
 describe("reactions and pins", () => {

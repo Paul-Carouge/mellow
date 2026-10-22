@@ -47,6 +47,26 @@ export function canOpenServerSettings(guild: Guild, userId: Snowflake | undefine
   return isOwner(guild, userId) || visibleSections(guild).length > 0;
 }
 
+/**
+ * Whether leaving the shown page must wait for its unsaved changes. Only the page that holds them
+ * keeps the reader: a page that went away (its permission was lost) never traps them.
+ */
+export function mustStayOnPage(
+  unsavedSection: ServerSettingsSection | null,
+  shownSection: ServerSettingsSection | null,
+): boolean {
+  return unsavedSection !== null && unsavedSection === shownSection;
+}
+
+/** The control to focus once a row is gone: the next row's, else the previous one's, else none. */
+export function focusAfterRemoval(rowIds: readonly string[], removedId: string): string | null {
+  const index = rowIds.indexOf(removedId);
+  if (index < 0) {
+    return null;
+  }
+  return rowIds[index + 1] ?? rowIds[index - 1] ?? null;
+}
+
 // --- Roles ------------------------------------------------------------------------------------
 
 /** Discord's role colour presets: user-chosen data shown on names, not design tokens. */
@@ -179,6 +199,15 @@ export function rebaseRoleEdit(edit: RoleEdit, stored: Role): RoleEdit | null {
     permissions: String((BigInt(base.permissions) & ~toggled) | (wanted & toggled)),
   };
   return isSameAsStored(draft, base) ? null : { roleId: edit.roleId, base, draft };
+}
+
+/**
+ * Whether an edit still has something to save on top of the stored role. Once it has not (saved,
+ * undone, or the role is gone) the page drops it, so that a later change of the role (someone
+ * undoing it) cannot bring a stale edit back.
+ */
+export function isRoleEditPending(edit: RoleEdit, stored: Role | null): boolean {
+  return stored !== null && edit.roleId === stored.id && rebaseRoleEdit(edit, stored) !== null;
 }
 
 export function togglePermission(draft: RoleDraft, permission: bigint): RoleDraft {
