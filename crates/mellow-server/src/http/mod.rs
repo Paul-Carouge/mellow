@@ -136,6 +136,27 @@ fn account_router() -> Router<AppState> {
             "/api/v1/profile-images/{id}/still",
             get(profile_image_routes::get_profile_image_still),
         )
+        .route(
+            "/api/v1/guilds/{guild_id}/icon",
+            put(profile_image_routes::put_guild_icon)
+                .delete(profile_image_routes::delete_guild_icon)
+                .layer(DefaultBodyLimit::max(
+                    profile_image_routes::MAXIMUM_PROFILE_IMAGE_BYTES,
+                )),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/icon",
+            put(profile_image_routes::put_channel_icon)
+                .delete(profile_image_routes::delete_channel_icon)
+                .layer(DefaultBodyLimit::max(
+                    profile_image_routes::MAXIMUM_PROFILE_IMAGE_BYTES,
+                )),
+        )
+        .route("/api/v1/icons/{id}", get(profile_image_routes::get_icon))
+        .route(
+            "/api/v1/icons/{id}/still",
+            get(profile_image_routes::get_icon_still),
+        )
 }
 
 /// Messages, reactions, pins, read states, typing and attachments of a channel or conversation.
@@ -1787,6 +1808,139 @@ pub(crate) mod tests {
             .header(header::CONTENT_TYPE, "application/octet-stream")
             .body(Body::from(bytes))
             .unwrap()
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // One scenario: who may set, crop, read and remove icons.
+    async fn guild_and_channel_icons_are_cropped_served_to_members_only_and_audited() {
+        use crate::domain::image_processing::tests::{animated_gif, png};
+        use mellow_protocol::{AuditChangeKey, AuditLogEntry, Channel, Guild, GuildSummary};
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, guest, guild_id, _) = guild_with_guest(&state).await;
+        let stranger = registered_token(&state, "stranger").await;
+        let guild_icon_path = format!("/api/v1/guilds/{guild_id}/icon");
+        let (_, body) = send(
+            &state,
+            authorized("GET", &format!("/api/v1/guilds/{guild_id}"), &owner, None),
+        )
+        .await;
+        let channels = json::<Guild>(&body).channels;
+        let (category, general) = (channels[0].id, channels[1].id);
+
+        let (guest_upload, _) = send(
+            &state,
+            picture_request("PUT", &guild_icon_path, &guest, png(64, 64)),
+        )
+        .await;
+        let (half_crop, _) = send(
+            &state,
+            picture_request(
+                "PUT",
+                &format!("{guild_icon_path}?crop_x=1"),
+                &owner,
+                png(64, 64),
+            ),
+        )
+        .await;
+        let (status, body) = send(
+            &state,
+            picture_request("PUT", &guild_icon_path, &owner, animated_gif(600, 400, 3)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let guild_icon = json::<Guild>(&body).icon.unwrap();
+        let (_, body) = send(
+            &state,
+            authorized("GET", "/api/v1/users/@me/guilds", &guest, None),
+        )
+        .await;
+        let guest_sees = json::<Vec<GuildSummary>>(&body)[0].icon;
+        let icon_path = format!("/api/v1/icons/{}", guild_icon.id);
+        let (member_read, animated) =
+            send(&state, authorized("GET", &icon_path, &guest, None)).await;
+        let (still_read, still) = send(
+            &state,
+            authorized("GET", &format!("{icon_path}/still"), &guest, None),
+        )
+        .await;
+        let (stranger_read, _) = send(&state, authorized("GET", &icon_path, &stranger, None)).await;
+
+        let (status, body) = send(
+            &state,
+            picture_request(
+                "PUT",
+                &format!("/api/v1/channels/{general}/icon?crop_x=10&crop_y=0&crop_size=40"),
+                &owner,
+                png(64, 40),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let channel_icon = json::<Channel>(&body).icon.unwrap();
+        let (_, channel_icon_bytes) = send(
+            &state,
+            authorized(
+                "GET",
+                &format!("/api/v1/icons/{}", channel_icon.id),
+                &guest,
+                None,
+            ),
+        )
+        .await;
+        let (category_upload, _) = send(
+            &state,
+            picture_request(
+                "PUT",
+                &format!("/api/v1/channels/{category}/icon"),
+                &owner,
+                png(64, 64),
+            ),
+        )
+        .await;
+
+        let (_, body) = send(&state, authorized("DELETE", &guild_icon_path, &owner, None)).await;
+        let after_removal = json::<Guild>(&body).icon;
+        let (removed_read, _) = send(&state, authorized("GET", &icon_path, &guest, None)).await;
+        let (_, body) = send(
+            &state,
+            authorized(
+                "GET",
+                &format!("/api/v1/guilds/{guild_id}/audit-log"),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        let icon_changes = json::<Vec<AuditLogEntry>>(&body)
+            .into_iter()
+            .flat_map(|entry| entry.changes)
+            .filter(|change| change.key == AuditChangeKey::Icon)
+            .count();
+        pool.close().await;
+
+        assert_eq!(guest_upload, StatusCode::FORBIDDEN);
+        assert_eq!(half_crop, StatusCode::BAD_REQUEST);
+        assert!(guild_icon.is_animated);
+        assert_eq!(guest_sees, Some(guild_icon));
+        assert_eq!(member_read, StatusCode::OK);
+        let animated = webp_animation::Decoder::new(&animated).unwrap();
+        assert_eq!(animated.dimensions(), (256, 256));
+        assert_eq!(animated.into_iter().count(), 3);
+        assert_eq!(still_read, StatusCode::OK);
+        assert_eq!(image::load_from_memory(&still).unwrap().width(), 256);
+        assert_eq!(stranger_read, StatusCode::NOT_FOUND, "members only");
+        assert!(!channel_icon.is_animated);
+        let channel_picture = image::load_from_memory(&channel_icon_bytes).unwrap();
+        assert_eq!(
+            (channel_picture.width(), channel_picture.height()),
+            (40, 40)
+        );
+        assert_eq!(category_upload, StatusCode::BAD_REQUEST);
+        assert_eq!(after_removal, None);
+        assert_eq!(removed_read, StatusCode::NOT_FOUND);
+        assert_eq!(icon_changes, 3, "set, channel set, removed");
     }
 
     #[tokio::test]

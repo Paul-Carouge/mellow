@@ -343,7 +343,7 @@ impl Accounts {
         let guild_ids: Vec<_> = list_user_guilds(&self.pool, updated.id)
             .await?
             .into_iter()
-            .map(|(guild_id, _)| guild_id)
+            .map(|guild| guild.id)
             .collect();
         self.events.publish_to_user_and_guilds(
             updated.id,

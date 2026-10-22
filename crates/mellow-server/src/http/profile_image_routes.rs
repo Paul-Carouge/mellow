@@ -1,4 +1,4 @@
-//! Avatars and profile banners (ADR-0021).
+//! Avatars, profile banners, and guild and channel icons (ADR-0021).
 
 use std::time::Instant;
 
@@ -7,11 +7,13 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use mellow_protocol::{CurrentUser, Snowflake};
+use mellow_protocol::{Channel, CurrentUser, Guild, IconCropQuery, Snowflake};
 
 use crate::domain::clock::now_unix_milliseconds;
+use crate::domain::guilds::IconUpload;
+use crate::domain::image_processing::SquareCrop;
 use crate::http::AppState;
-use crate::http::api_error::{ApiError, ApiPath};
+use crate::http::api_error::{ApiError, ApiPath, ApiQuery};
 use crate::http::authentication::AuthenticatedUser;
 use crate::http::rate_limit::{PROFILE_IMAGE_DOWNLOADS_PER_USER, PROFILE_IMAGE_WRITES_PER_USER};
 use crate::storage::profile_images::ProfileImageSlot;
@@ -21,31 +23,38 @@ pub(crate) const MAXIMUM_PROFILE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 /// Each version has its own id and never changes.
 const CACHE_IMMUTABLE: &str = "private, max-age=31536000, immutable";
 
+/// Counts a picture change of `user_id`, whatever it is for, and reads the uploaded picture.
+async fn read_upload(
+    state: &AppState,
+    user_id: Snowflake,
+    body: Option<Body>,
+) -> Result<Option<Vec<u8>>, ApiError> {
+    if !state.rate_limiter.record_event(
+        &format!("profile-image:{user_id}"),
+        PROFILE_IMAGE_WRITES_PER_USER,
+        Instant::now(),
+    ) {
+        return Err(ApiError::rate_limited());
+    }
+    let Some(body) = body else {
+        return Ok(None);
+    };
+    let bytes = axum::body::to_bytes(body, MAXIMUM_PROFILE_IMAGE_BYTES)
+        .await
+        .map_err(|_| ApiError::payload_too_large())?;
+    if bytes.is_empty() {
+        return Err(ApiError::validation("a picture cannot be empty".into()));
+    }
+    Ok(Some(Vec::from(bytes)))
+}
+
 async fn replace(
     state: &AppState,
     user: CurrentUser,
     slot: ProfileImageSlot,
     body: Option<Body>,
 ) -> Result<Json<CurrentUser>, ApiError> {
-    if !state.rate_limiter.record_event(
-        &format!("profile-image:{}", user.id),
-        PROFILE_IMAGE_WRITES_PER_USER,
-        Instant::now(),
-    ) {
-        return Err(ApiError::rate_limited());
-    }
-    let bytes = match body {
-        Some(body) => {
-            let bytes = axum::body::to_bytes(body, MAXIMUM_PROFILE_IMAGE_BYTES)
-                .await
-                .map_err(|_| ApiError::payload_too_large())?;
-            if bytes.is_empty() {
-                return Err(ApiError::validation("a picture cannot be empty".into()));
-            }
-            Some(Vec::from(bytes))
-        }
-        None => None,
-    };
+    let bytes = read_upload(state, user.id, body).await?;
     let updated = state
         .profile_images
         .replace(user, slot, bytes, now_unix_milliseconds())
@@ -85,21 +94,31 @@ pub(crate) async fn delete_banner(
     replace(&state, user, ProfileImageSlot::Banner, None).await
 }
 
+fn record_download(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
+    if state.rate_limiter.record_event(
+        &format!("profile-image-download:{user_id}"),
+        PROFILE_IMAGE_DOWNLOADS_PER_USER,
+        Instant::now(),
+    ) {
+        Ok(())
+    } else {
+        Err(ApiError::rate_limited())
+    }
+}
+
 async fn serve(
     state: &AppState,
     user_id: Snowflake,
     id: Snowflake,
     is_still_wanted: bool,
 ) -> Result<Response, ApiError> {
-    if !state.rate_limiter.record_event(
-        &format!("profile-image-download:{user_id}"),
-        PROFILE_IMAGE_DOWNLOADS_PER_USER,
-        Instant::now(),
-    ) {
-        return Err(ApiError::rate_limited());
-    }
+    record_download(state, user_id)?;
     let (bytes, permit) = state.profile_images.read(id, is_still_wanted).await?;
-    Ok((
+    Ok(picture_response(bytes, permit))
+}
+
+fn picture_response(bytes: Vec<u8>, permit: tokio::sync::OwnedSemaphorePermit) -> Response {
+    (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, HeaderValue::from_static("image/webp")),
@@ -122,7 +141,7 @@ async fn serve(
         ],
         crate::http::attachment_routes::body_keeping_permit(bytes, permit),
     )
-        .into_response())
+        .into_response()
 }
 
 /// `GET /api/v1/profile-images/{id}`: animated when the version is.
@@ -141,4 +160,140 @@ pub(crate) async fn get_profile_image_still(
     ApiPath(id): ApiPath<Snowflake>,
 ) -> Result<Response, ApiError> {
     serve(&state, user.id, id, true).await
+}
+
+/// All three crop values or none, as `IconCropQuery` says.
+fn crop_of(query: IconCropQuery) -> Result<Option<SquareCrop>, ApiError> {
+    match (query.crop_x, query.crop_y, query.crop_size) {
+        (Some(x), Some(y), Some(size)) if size > 0 => Ok(Some(SquareCrop { x, y, size })),
+        (None, None, None) => Ok(None),
+        _ => Err(ApiError::validation(
+            "crop_x, crop_y and crop_size go together, with a size of at least 1".into(),
+        )),
+    }
+}
+
+async fn icon_upload(
+    state: &AppState,
+    user_id: Snowflake,
+    query: Option<IconCropQuery>,
+    body: Option<Body>,
+) -> Result<Option<IconUpload>, ApiError> {
+    let crop = query.map(crop_of).transpose()?.flatten();
+    Ok(read_upload(state, user_id, body)
+        .await?
+        .map(|bytes| IconUpload { bytes, crop }))
+}
+
+/// `PUT /api/v1/guilds/{guild_id}/icon`, the picture as the raw body, cropped by the query.
+pub(crate) async fn put_guild_icon(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(guild_id): ApiPath<Snowflake>,
+    ApiQuery(query): ApiQuery<IconCropQuery>,
+    body: Body,
+) -> Result<Json<Guild>, ApiError> {
+    let upload = icon_upload(&state, user.id, Some(query), Some(body)).await?;
+    replace_guild_icon(&state, user.id, guild_id, upload).await
+}
+
+pub(crate) async fn delete_guild_icon(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(guild_id): ApiPath<Snowflake>,
+) -> Result<Json<Guild>, ApiError> {
+    let upload = icon_upload(&state, user.id, None, None).await?;
+    replace_guild_icon(&state, user.id, guild_id, upload).await
+}
+
+async fn replace_guild_icon(
+    state: &AppState,
+    user_id: Snowflake,
+    guild_id: Snowflake,
+    upload: Option<IconUpload>,
+) -> Result<Json<Guild>, ApiError> {
+    let guild = state
+        .guilds
+        .replace_guild_icon(
+            &state.profile_images,
+            user_id,
+            guild_id,
+            upload,
+            now_unix_milliseconds(),
+        )
+        .await?;
+    Ok(Json(guild))
+}
+
+/// `PUT /api/v1/channels/{channel_id}/icon`, the picture as the raw body, cropped by the query.
+pub(crate) async fn put_channel_icon(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(channel_id): ApiPath<Snowflake>,
+    ApiQuery(query): ApiQuery<IconCropQuery>,
+    body: Body,
+) -> Result<Json<Channel>, ApiError> {
+    let upload = icon_upload(&state, user.id, Some(query), Some(body)).await?;
+    replace_channel_icon(&state, user.id, channel_id, upload).await
+}
+
+pub(crate) async fn delete_channel_icon(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(channel_id): ApiPath<Snowflake>,
+) -> Result<Json<Channel>, ApiError> {
+    let upload = icon_upload(&state, user.id, None, None).await?;
+    replace_channel_icon(&state, user.id, channel_id, upload).await
+}
+
+async fn replace_channel_icon(
+    state: &AppState,
+    user_id: Snowflake,
+    channel_id: Snowflake,
+    upload: Option<IconUpload>,
+) -> Result<Json<Channel>, ApiError> {
+    let channel = state
+        .guilds
+        .replace_channel_icon(
+            &state.profile_images,
+            user_id,
+            channel_id,
+            upload,
+            now_unix_milliseconds(),
+        )
+        .await?;
+    Ok(Json(channel))
+}
+
+async fn serve_icon(
+    state: &AppState,
+    user_id: Snowflake,
+    id: Snowflake,
+    is_still_wanted: bool,
+) -> Result<Response, ApiError> {
+    record_download(state, user_id)?;
+    let file_id = state
+        .guilds
+        .readable_icon_file_id(user_id, id, is_still_wanted)
+        .await?;
+    let (bytes, permit) = state.profile_images.read_file(file_id).await?;
+    Ok(picture_response(bytes, permit))
+}
+
+/// `GET /api/v1/icons/{id}`: animated when the version is.
+pub(crate) async fn get_icon(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(id): ApiPath<Snowflake>,
+) -> Result<Response, ApiError> {
+    serve_icon(&state, user.id, id, false).await
+}
+
+/// `GET /api/v1/icons/{id}/still`: the first frame of an animated version.
+pub(crate) async fn get_icon_still(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(id): ApiPath<Snowflake>,
+) -> Result<Response, ApiError> {
+    serve_icon(&state, user.id, id, true).await
 }

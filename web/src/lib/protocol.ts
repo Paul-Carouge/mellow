@@ -7,7 +7,7 @@ export type Snowflake = string;
 /** Permission bitfield as a decimal string (u64). */
 export type PermissionBits = string;
 
-/** An avatar or banner (ADR-0021). Its id changes with the picture, so its URLs are cached forever. */
+/** An avatar, a banner, or a guild or channel icon (ADR-0021). Its id changes with the picture, so its URLs are cached forever. */
 export interface ProfileImage {
   id: Snowflake;
   is_animated: boolean;
@@ -75,6 +75,8 @@ export interface Channel {
   topic: string;
   parent_id: Snowflake | null;
   position: number;
+  /** Never animated. Absent when the channel has none (and from older servers). */
+  icon?: ProfileImage | null;
   permission_overwrites: PermissionOverwrite[];
 }
 
@@ -89,6 +91,8 @@ export interface Role {
 export interface Guild {
   id: Snowflake;
   name: string;
+  /** Absent when the guild has none (and from older servers). */
+  icon?: ProfileImage | null;
   owner_id: Snowflake;
   my_permissions: PermissionBits;
   my_role_ids: Snowflake[];
@@ -298,7 +302,8 @@ export type GatewayEvent =
   | { t: "CHANNEL_UPDATE"; data: Channel }
   | { t: "CHANNEL_DELETE"; data: { guild_id: Snowflake; id: Snowflake } }
   | { t: "GUILD_CREATE"; data: Guild }
-  | { t: "GUILD_UPDATE"; data: { id: Snowflake; name: string } }
+  /** `icon` is the current one: absent means none. */
+  | { t: "GUILD_UPDATE"; data: { id: Snowflake; name: string; icon?: ProfileImage | null } }
   | { t: "GUILD_DELETE"; data: { id: Snowflake } }
   | { t: "GUILD_MEMBER_ADD"; data: { guild_id: Snowflake; member: Member } }
   | { t: "GUILD_MEMBER_REMOVE"; data: { guild_id: Snowflake; user_id: Snowflake } }

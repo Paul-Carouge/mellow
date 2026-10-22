@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use mellow_protocol::{
-    AuditChange, AuditChangeKey, ChannelKind, OverwriteKind, PermissionOverwrite, Permissions,
-    Role, Snowflake,
+    AuditChange, AuditChangeKey, ChannelKind, GuildSummary, OverwriteKind, PermissionOverwrite,
+    Permissions, ProfileImage, Role, Snowflake,
 };
 use sqlx::SqlitePool;
 
@@ -92,13 +92,23 @@ pub(crate) struct StoredChannel {
     pub(crate) topic: String,
     pub(crate) parent_id: Option<Snowflake>,
     pub(crate) position: u32,
+    pub(crate) icon: Option<ProfileImage>,
     pub(crate) permission_overwrites: Vec<PermissionOverwrite>,
 }
 
-type ChannelRow = (i64, i64, String, String, String, Option<i64>, i64);
+pub(crate) type ChannelRow = (
+    i64,
+    i64,
+    String,
+    String,
+    String,
+    Option<i64>,
+    i64,
+    Option<i64>,
+);
 
-fn channel_from_row(row: ChannelRow) -> Result<StoredChannel, GuildStorageError> {
-    let (id, guild_id, kind, name, topic, parent_id, position) = row;
+pub(crate) fn channel_from_row(row: ChannelRow) -> Result<StoredChannel, GuildStorageError> {
+    let (id, guild_id, kind, name, topic, parent_id, position, icon_id) = row;
     Ok(StoredChannel {
         id: to_id(id)?,
         guild_id: to_id(guild_id)?,
@@ -107,6 +117,15 @@ fn channel_from_row(row: ChannelRow) -> Result<StoredChannel, GuildStorageError>
         topic,
         parent_id: parent_id.map(to_id).transpose()?,
         position: u32::try_from(position).map_err(|_| GuildStorageError::IntegerOutOfRange)?,
+        // Channel icons are never animated.
+        icon: icon_id
+            .map(|id| {
+                Ok::<_, GuildStorageError>(ProfileImage {
+                    id: to_id(id)?,
+                    is_animated: false,
+                })
+            })
+            .transpose()?,
         permission_overwrites: Vec::new(),
     })
 }
@@ -254,6 +273,7 @@ pub(crate) async fn insert_guild(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Membership {
     pub(crate) guild_name: String,
+    pub(crate) guild_icon: Option<ProfileImage>,
     pub(crate) owner_id: Snowflake,
     /// The member's roles, `@everyone` included, by position.
     pub(crate) member_roles: Vec<Role>,
@@ -268,6 +288,20 @@ impl Membership {
             .filter(|role_id| *role_id != guild_id)
             .collect()
     }
+}
+
+fn guild_icon(
+    icon_id: Option<i64>,
+    is_animated: i64,
+) -> Result<Option<ProfileImage>, GuildStorageError> {
+    icon_id
+        .map(|id| {
+            Ok(ProfileImage {
+                id: to_id(id)?,
+                is_animated: is_animated != 0,
+            })
+        })
+        .transpose()
 }
 
 type RoleRow = (i64, String, i64, i64, i64);
@@ -297,8 +331,9 @@ pub(crate) async fn find_membership(
     else {
         return Ok(None);
     };
-    let row: Option<(String, i64)> = sqlx::query_as(
-        "SELECT guilds.name, guilds.owner_id FROM guild_members \
+    let row: Option<(String, i64, Option<i64>, i64)> = sqlx::query_as(
+        "SELECT guilds.name, guilds.owner_id, guilds.icon_id, guilds.icon_is_animated \
+         FROM guild_members \
          JOIN guilds ON guilds.id = guild_members.guild_id \
          WHERE guild_members.guild_id = ? AND guild_members.user_id = ?",
     )
@@ -306,7 +341,7 @@ pub(crate) async fn find_membership(
     .bind(user_id)
     .fetch_optional(pool)
     .await?;
-    let Some((guild_name, owner_id)) = row else {
+    let Some((guild_name, owner_id, icon_id, icon_is_animated)) = row else {
         return Ok(None);
     };
     let rows: Vec<RoleRow> = sqlx::query_as(
@@ -321,6 +356,7 @@ pub(crate) async fn find_membership(
     .await?;
     Ok(Some(Membership {
         guild_name,
+        guild_icon: guild_icon(icon_id, icon_is_animated)?,
         owner_id: to_id(owner_id)?,
         member_roles: rows
             .into_iter()
@@ -637,7 +673,7 @@ pub(crate) async fn list_guild_channels(
     guild_id: Snowflake,
 ) -> Result<Vec<StoredChannel>, GuildStorageError> {
     let rows: Vec<ChannelRow> = sqlx::query_as(
-        "SELECT id, guild_id, kind, name, topic, parent_id, position FROM channels \
+        "SELECT id, guild_id, kind, name, topic, parent_id, position, icon_id FROM channels \
          WHERE guild_id = ? ORDER BY position, id",
     )
     .bind(to_integer(guild_id.raw())?)
@@ -661,7 +697,7 @@ pub(crate) async fn find_guild_channel(
         return Ok(None);
     };
     let row: Option<ChannelRow> = sqlx::query_as(
-        "SELECT id, guild_id, kind, name, topic, parent_id, position FROM channels \
+        "SELECT id, guild_id, kind, name, topic, parent_id, position, icon_id FROM channels \
          WHERE id = ? AND guild_id IS NOT NULL",
     )
     .bind(channel_id)
@@ -670,7 +706,7 @@ pub(crate) async fn find_guild_channel(
     attach_overwrites_to_channel(pool, row.map(channel_from_row).transpose()?).await
 }
 
-async fn attach_overwrites_to_channel(
+pub(crate) async fn attach_overwrites_to_channel(
     pool: &SqlitePool,
     channel: Option<StoredChannel>,
 ) -> Result<Option<StoredChannel>, GuildStorageError> {
@@ -875,7 +911,7 @@ pub(crate) async fn update_channel_fields(
     let row: Option<ChannelRow> = sqlx::query_as(
         "UPDATE channels SET name = COALESCE(?, name), topic = COALESCE(?, topic) \
          WHERE id = ? AND guild_id IS NOT NULL \
-         RETURNING id, guild_id, kind, name, topic, parent_id, position",
+         RETURNING id, guild_id, kind, name, topic, parent_id, position, icon_id",
     )
     .bind(name)
     .bind(topic)
@@ -913,7 +949,10 @@ pub(crate) async fn delete_channel(
 /// What renaming a guild did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GuildRename {
-    Renamed,
+    /// With the icon, which `GUILD_UPDATE` carries with the new name.
+    Renamed {
+        icon: Option<ProfileImage>,
+    },
     /// The guild already had that name: nothing written or recorded.
     Unchanged,
     NotFound,
@@ -932,13 +971,15 @@ pub(crate) async fn update_guild_name(
 ) -> Result<GuildRename, GuildStorageError> {
     let guild_id = to_integer(guild_id.raw())?;
     let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
-    let stored: Option<String> = sqlx::query_scalar("SELECT name FROM guilds WHERE id = ?")
-        .bind(guild_id)
-        .fetch_optional(&mut *transaction)
-        .await?;
-    let Some(stored) = stored else {
+    let stored: Option<(String, Option<i64>, i64)> =
+        sqlx::query_as("SELECT name, icon_id, icon_is_animated FROM guilds WHERE id = ?")
+            .bind(guild_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    let Some((stored, icon_id, icon_is_animated)) = stored else {
         return Ok(GuildRename::NotFound);
     };
+    let icon = guild_icon(icon_id, icon_is_animated)?;
     if stored == name {
         return Ok(GuildRename::Unchanged);
     }
@@ -957,7 +998,7 @@ pub(crate) async fn update_guild_name(
     };
     insert_audit_entry(&mut transaction, &audit).await?;
     transaction.commit().await?;
-    Ok(GuildRename::Renamed)
+    Ok(GuildRename::Renamed { icon })
 }
 
 /// Deletes the guild if `owner_id` still owns it, with everything it holds: roles, members,
@@ -1017,9 +1058,9 @@ pub(crate) async fn find_guild_owner_id(
 pub(crate) async fn list_user_guilds(
     pool: &SqlitePool,
     user_id: Snowflake,
-) -> Result<Vec<(Snowflake, String)>, GuildStorageError> {
-    let rows: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT guilds.id, guilds.name FROM guild_members \
+) -> Result<Vec<GuildSummary>, GuildStorageError> {
+    let rows: Vec<(i64, String, Option<i64>, i64)> = sqlx::query_as(
+        "SELECT guilds.id, guilds.name, guilds.icon_id, guilds.icon_is_animated FROM guild_members \
          JOIN guilds ON guilds.id = guild_members.guild_id \
          WHERE guild_members.user_id = ? ORDER BY guild_members.joined_at_unix_milliseconds, guilds.id",
     )
@@ -1027,7 +1068,13 @@ pub(crate) async fn list_user_guilds(
     .fetch_all(pool)
     .await?;
     rows.into_iter()
-        .map(|(id, name)| Ok((to_id(id)?, name)))
+        .map(|(id, name, icon_id, icon_is_animated)| {
+            Ok(GuildSummary {
+                id: to_id(id)?,
+                name,
+                icon: guild_icon(icon_id, icon_is_animated)?,
+            })
+        })
         .collect()
 }
 

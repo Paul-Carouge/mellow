@@ -22,8 +22,8 @@ pub use gateway::{
 pub use guilds::{
     AuditAction, AuditChange, AuditChangeKey, AuditLogEntry, AuditLogQuery, Ban, Channel,
     ChannelKind, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
-    CreateRoleRequest, Guild, GuildInvite, GuildSummary, Invite, Member, OverwriteKind,
-    PermissionOverwrite, ProfileImage, PublicUser, ReorderRolesRequest, Role,
+    CreateRoleRequest, Guild, GuildInvite, GuildSummary, IconCropQuery, Invite, Member,
+    OverwriteKind, PermissionOverwrite, ProfileImage, PublicUser, ReorderRolesRequest, Role,
     SetPermissionOverwriteRequest, UpdateChannelRequest, UpdateGuildRequest, UpdateRoleRequest,
 };
 pub use health::{HealthResponse, HealthStatus};

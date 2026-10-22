@@ -260,11 +260,15 @@ describe("MellowClient", () => {
     expect(client.unreadMarkers.has(GENERAL)).toBe(false);
   });
 
-  it("renames a server from GUILD_UPDATE", () => {
+  it("renames a server and changes its icon from GUILD_UPDATE", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(ready());
-    client.applyEvent({ t: "GUILD_UPDATE", data: { id: GUILD, name: "Book club" } }, 0);
+    const icon = { id: "900", is_animated: true };
+    client.applyEvent({ t: "GUILD_UPDATE", data: { id: GUILD, name: "Book club", icon } }, 0);
     expect(client.selectedGuild?.name).toBe("Book club");
+    expect(client.selectedGuild?.icon).toEqual(icon);
+    client.applyEvent({ t: "GUILD_UPDATE", data: { id: GUILD, name: "Book club" } }, 0);
+    expect(client.selectedGuild?.icon).toBeNull();
   });
 
   it("drops a deleted role from members and from the user's own roles", async () => {

@@ -271,6 +271,7 @@ mod tests {
         let json = serde_json::to_value(GatewayEvent::GuildUpdate(GuildSummary {
             id: Snowflake::from_raw(7),
             name: "Club".into(),
+            icon: None,
         }))
         .unwrap();
         assert_eq!(json["t"], "GUILD_UPDATE");

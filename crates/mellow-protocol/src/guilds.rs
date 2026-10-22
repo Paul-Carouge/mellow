@@ -22,6 +22,9 @@ pub struct Guild {
     pub id: Snowflake,
     pub name: String,
     pub owner_id: Snowflake,
+    /// Absent when the guild has none, and from older servers' payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<ProfileImage>,
     /// What the requesting member may do here (ADR-0007), so clients can hide unusable actions.
     pub my_permissions: Permissions,
     /// The requesting member's roles, without `@everyone` (every member has it).
@@ -147,6 +150,8 @@ pub enum AuditChangeKey {
     Deny,
     /// Of an invite.
     Code,
+    /// Of a guild or channel: the icon's id, empty for none.
+    Icon,
     /// A field added by a newer server.
     #[serde(other)]
     Unknown,
@@ -192,6 +197,9 @@ pub struct AuditLogQuery {
 pub struct GuildSummary {
     pub id: Snowflake,
     pub name: String,
+    /// The current icon: absent means none, also in `GUILD_UPDATE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<ProfileImage>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,6 +219,9 @@ pub struct Channel {
     /// The category this channel sits in; always `None` for categories.
     pub parent_id: Option<Snowflake>,
     pub position: u32,
+    /// Never animated. Absent when the channel has none, and from older servers' payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<ProfileImage>,
     /// Applied on top of guild permissions in this channel only (ADR-0007 step 4).
     pub permission_overwrites: Vec<PermissionOverwrite>,
 }
@@ -264,6 +275,18 @@ pub struct UpdateChannelRequest {
     pub topic: Option<String>,
 }
 
+/// Query of `PUT /api/v1/guilds/{guild_id}/icon` and `PUT /api/v1/channels/{channel_id}/icon`,
+/// whose body is the picture: the square to keep, in pixels of the picture as browsers show it
+/// (EXIF orientation applied). All three or none; none keeps the centred square, and a square
+/// reaching past the picture is cut at its edges.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IconCropQuery {
+    pub crop_x: Option<u32>,
+    pub crop_y: Option<u32>,
+    pub crop_size: Option<u32>,
+}
+
 /// Body of `POST /api/v1/guilds/{guild_id}/invites`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -308,8 +331,9 @@ pub struct PublicUser {
 }
 
 /// An avatar or a profile banner, served at `GET /api/v1/profile-images/{id}` (and
-/// `/profile-images/{id}/still`, its first frame, when animated). Each version has its own id,
-/// so clients cache it forever (ADR-0021).
+/// `/profile-images/{id}/still`, its first frame, when animated); a guild or channel icon, at
+/// `GET /api/v1/icons/{id}` (and `/icons/{id}/still`). Each version has its own id, so clients
+/// cache it forever (ADR-0021).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfileImage {
     pub id: Snowflake,
@@ -334,7 +358,7 @@ mod tests {
         let entry: AuditLogEntry = serde_json::from_str(
             r#"{"id":"1","actor_id":null,"action":"guild_rename","target_id":null,
                "context_id":null,"reason":"",
-               "changes":[{"key":"icon","old_value":"a","new_value":"b"}]}"#,
+               "changes":[{"key":"banner","old_value":"a","new_value":"b"}]}"#,
         )
         .unwrap();
         assert_eq!(entry.action, AuditAction::Unknown);
@@ -351,6 +375,7 @@ mod tests {
             topic: String::new(),
             parent_id: None,
             position: 1,
+            icon: None,
             permission_overwrites: Vec::new(),
         };
         let json = serde_json::to_value(&channel).unwrap();
@@ -362,6 +387,7 @@ mod tests {
             id: Snowflake::from_raw(7),
             name: "Club".into(),
             owner_id: Snowflake::from_raw(1),
+            icon: None,
             my_permissions: Permissions::DEFAULT_EVERYONE,
             my_role_ids: Vec::new(),
             roles: Vec::new(),

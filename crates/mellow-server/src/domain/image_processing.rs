@@ -21,6 +21,10 @@ const MAXIMUM_FRAMES: usize = 600;
 /// Largest display sizes: nothing is ever shown bigger (ADR-0021).
 const AVATAR_SIDE_PIXELS: u32 = 512;
 const BANNER_WIDTH_PIXELS: u32 = 1_920;
+/// Icons are shown small (server rail, channel row), so they are stored small: three times their
+/// largest display size, for high-density screens.
+const GUILD_ICON_SIDE_PIXELS: u32 = 256;
+const CHANNEL_ICON_SIDE_PIXELS: u32 = 96;
 /// libwebp's effort for lossless encoding: 0 (fast) to 100 (smallest); the pixels are the same
 /// whatever the effort. Measured in release on a 480 × 480, 60-frame GIF: 2.4 s at 60/4, 2.2 s at
 /// 25/1, 1.5 s at 10/0, decoding included; it runs after the upload is answered.
@@ -49,6 +53,22 @@ pub(crate) enum ImageProcessingError {
 pub(crate) enum ProfileImageKind {
     Avatar,
     Banner,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IconKind {
+    /// May be animated.
+    Guild,
+    /// Always still: an animated source keeps its first frame.
+    Channel,
+}
+
+/// The square of a picture an icon keeps, in pixels of the picture as shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SquareCrop {
+    pub(crate) x: u32,
+    pub(crate) y: u32,
+    pub(crate) size: u32,
 }
 
 /// A picture ready to store, with its served type.
@@ -234,6 +254,27 @@ fn fit(image: RgbaImage, kind: ProfileImageKind) -> RgbaImage {
         .into_rgba8()
 }
 
+/// The `crop` square, cut at the picture's edges, or the centred square when there is none or it
+/// starts outside; then down to `maximum_side`, never up.
+fn square(image: &RgbaImage, crop: Option<SquareCrop>, maximum_side: u32) -> RgbaImage {
+    let (width, height) = image.dimensions();
+    let (x, y, size) = match crop {
+        Some(crop) if crop.size > 0 && crop.x < width && crop.y < height => {
+            let size = crop.size.min(width - crop.x).min(height - crop.y);
+            (crop.x, crop.y, size)
+        }
+        _ => {
+            let size = width.min(height);
+            ((width - size) / 2, (height - size) / 2, size)
+        }
+    };
+    let cropped = image::imageops::crop_imm(image, x, y, size, size).to_image();
+    if size <= maximum_side {
+        return cropped;
+    }
+    image::imageops::resize(&cropped, maximum_side, maximum_side, FilterType::Lanczos3)
+}
+
 fn lossless_options() -> EncoderOptions {
     EncoderOptions {
         encoding_config: Some(EncodingConfig {
@@ -272,7 +313,13 @@ pub(crate) fn process_profile_image(
     bytes: &[u8],
     kind: ProfileImageKind,
 ) -> Result<ProcessedProfileImage, ImageProcessingError> {
-    let frames = decode_frames(bytes, |frame| fit(frame, kind))?;
+    encode_with_still(&decode_frames(bytes, |frame| fit(frame, kind))?)
+}
+
+/// The frames as one WebP, and their first alone when there are several.
+fn encode_with_still(
+    frames: &[(RgbaImage, u32)],
+) -> Result<ProcessedProfileImage, ImageProcessingError> {
     let is_animated = frames.len() > 1;
     let still = if is_animated {
         Some(encode_webp(&frames[..1])?)
@@ -281,12 +328,30 @@ pub(crate) fn process_profile_image(
     };
     Ok(ProcessedProfileImage {
         picture: ProcessedImage {
-            bytes: encode_webp(&frames)?,
+            bytes: encode_webp(frames)?,
             content_type: "image/webp",
             is_animated,
         },
         still,
     })
+}
+
+/// A guild or channel icon: the square kept, fitted to its display size and stored as lossless
+/// WebP; a guild's animated when the source is, with its first frame as a still.
+pub(crate) fn process_icon(
+    bytes: &[u8],
+    kind: IconKind,
+    crop: Option<SquareCrop>,
+) -> Result<ProcessedProfileImage, ImageProcessingError> {
+    let side = match kind {
+        IconKind::Guild => GUILD_ICON_SIDE_PIXELS,
+        IconKind::Channel => CHANNEL_ICON_SIDE_PIXELS,
+    };
+    let mut frames = decode_frames(bytes, |frame| square(&frame, crop, side))?;
+    if kind == IconKind::Channel {
+        frames.truncate(1);
+    }
+    encode_with_still(&frames)
 }
 
 /// An attachment's smaller form, same pixels: PNG recompressed, animated GIF as animated WebP.
@@ -594,6 +659,66 @@ pub(crate) mod tests {
         let decoder = webp_animation::Decoder::new(&avatar.picture.bytes).unwrap();
         assert_eq!(decoder.dimensions(), (512, 512));
         assert_eq!(decoder.into_iter().count(), 6);
+    }
+
+    #[test]
+    fn icons_keep_the_centred_square_unless_told_otherwise() {
+        // Columns are shaded by x, so the kept square shows in its first pixel.
+        let wide = RgbaImage::from_fn(300, 100, |x, _| {
+            Rgba([u8::try_from(x % 256).unwrap(), 40, 90, 255])
+        });
+        let centred = square(&wide, None, 256);
+        assert_eq!(centred.dimensions(), (100, 100), "never scaled up");
+        assert_eq!(centred.get_pixel(0, 0)[0], 100);
+
+        let chosen = Some(SquareCrop {
+            x: 20,
+            y: 0,
+            size: 100,
+        });
+        assert_eq!(square(&wide, chosen, 256).get_pixel(0, 0)[0], 20);
+
+        let past_the_edge = Some(SquareCrop {
+            x: 250,
+            y: 10,
+            size: 100,
+        });
+        assert_eq!(square(&wide, past_the_edge, 256).dimensions(), (50, 50));
+
+        for outside in [
+            SquareCrop {
+                x: 300,
+                y: 0,
+                size: 10,
+            },
+            SquareCrop {
+                x: 0,
+                y: 0,
+                size: 0,
+            },
+        ] {
+            assert_eq!(square(&wide, Some(outside), 256), centred);
+        }
+    }
+
+    #[test]
+    fn guild_icons_stay_animated_and_channel_icons_keep_one_frame_both_small() {
+        let gif = animated_gif(600, 400, 4);
+        let guild = process_icon(&gif, IconKind::Guild, None).unwrap();
+        assert!(guild.picture.is_animated);
+        assert!(guild.still.is_some());
+        let decoder = webp_animation::Decoder::new(&guild.picture.bytes).unwrap();
+        assert_eq!(decoder.dimensions(), (256, 256));
+        assert_eq!(decoder.into_iter().count(), 4);
+
+        let channel = process_icon(&gif, IconKind::Channel, None).unwrap();
+        assert!(!channel.picture.is_animated);
+        assert!(channel.still.is_none());
+        let channel_picture = image::load_from_memory(&channel.picture.bytes).unwrap();
+        assert_eq!(
+            (channel_picture.width(), channel_picture.height()),
+            (96, 96)
+        );
     }
 
     #[test]

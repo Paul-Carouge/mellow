@@ -6,6 +6,7 @@ pub(crate) mod attachments;
 pub(crate) mod audit_log;
 mod database;
 pub(crate) mod direct_messages;
+pub(crate) mod guild_images;
 pub(crate) mod guilds;
 mod master_key;
 pub(crate) mod messages;

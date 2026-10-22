@@ -341,7 +341,7 @@ impl ClientState {
                 self.upsert_direct_message_channel(channel)
             }
             GatewayEvent::GuildDelete { id } => self.remove_guild(id),
-            GatewayEvent::GuildUpdate(summary) => self.rename_guild(summary),
+            GatewayEvent::GuildUpdate(summary) => self.update_guild_summary(summary),
             GatewayEvent::GuildMemberAdd { guild_id, member } => {
                 if let Some(members) = self.members_by_guild.get_mut(&guild_id)
                     && !members
@@ -405,10 +405,11 @@ impl ClientState {
         StateChange::Typing { channel_id }
     }
 
-    fn rename_guild(&mut self, summary: GuildSummary) -> StateChange {
+    fn update_guild_summary(&mut self, summary: GuildSummary) -> StateChange {
         match self.guilds.iter_mut().find(|guild| guild.id == summary.id) {
             Some(guild) => {
                 guild.name = summary.name;
+                guild.icon = summary.icon;
                 StateChange::Guilds
             }
             None => StateChange::Nothing,
@@ -836,6 +837,7 @@ mod tests {
         position: u32,
     ) -> Channel {
         Channel {
+            icon: None,
             id,
             guild_id: GUILD,
             kind,
@@ -886,6 +888,7 @@ mod tests {
                 banner: None,
             },
             guilds: vec![Guild {
+                icon: None,
                 id: GUILD,
                 name: "Club".into(),
                 owner_id: ME,
@@ -1132,6 +1135,7 @@ mod tests {
 
         let change = state.apply_event(
             GatewayEvent::GuildUpdate(GuildSummary {
+                icon: None,
                 id: GUILD,
                 name: "Renamed".into(),
             }),
@@ -1197,6 +1201,7 @@ mod tests {
         let mut state = ready_state();
         state.apply_event(
             GatewayEvent::GuildCreate(Box::new(Guild {
+                icon: None,
                 id: CLUB,
                 name: "Other's club".into(),
                 owner_id: OTHER,
@@ -1282,6 +1287,7 @@ mod tests {
         let mut can_send_with = |my_permissions, overwrites| {
             state.apply_event(
                 GatewayEvent::GuildCreate(Box::new(Guild {
+                    icon: None,
                     id: CLUB,
                     name: "Other's club".into(),
                     owner_id: OTHER,
@@ -1289,6 +1295,7 @@ mod tests {
                     my_role_ids: vec![MUTED],
                     roles: Vec::new(),
                     channels: vec![Channel {
+                        icon: None,
                         id: ANNOUNCEMENTS,
                         guild_id: CLUB,
                         kind: ChannelKind::Text,

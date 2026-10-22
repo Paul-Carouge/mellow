@@ -422,7 +422,11 @@ export class MellowClient {
         this.upsertGuild(event.data);
         return;
       case "GUILD_UPDATE":
-        this.updateGuild(event.data.id, (guild) => ({ ...guild, name: event.data.name }));
+        this.updateGuild(event.data.id, (guild) => ({
+          ...guild,
+          name: event.data.name,
+          icon: event.data.icon ?? null,
+        }));
         return;
       case "GUILD_DELETE":
         this.removeGuild(event.data.id);

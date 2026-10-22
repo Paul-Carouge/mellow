@@ -83,6 +83,8 @@ pub enum GuildRuleViolation {
     RoleOrder,
     #[error("@everyone keeps its name and colour, and cannot be deleted, given or taken away")]
     EveryoneRole,
+    #[error("categories have no icon")]
+    CategoryIcon,
 }
 
 fn has_hidden_characters(text: &str) -> bool {

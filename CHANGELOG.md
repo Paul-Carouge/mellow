@@ -4,6 +4,9 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Added
+- Server: servers and text channels can have an icon, set by members who can manage the server or the channel and recorded in the moderation log. The picture is cropped to a square (centred, or the square chosen in the app) and stored small; a server icon may be an animated GIF or WebP.
+
 ## [0.8.0] - 2026-10-22
 Reactions, pins, server settings, Markdown and French on the web.
 

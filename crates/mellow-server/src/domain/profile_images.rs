@@ -11,7 +11,7 @@ use sqlx::SqlitePool;
 
 use crate::domain::attachments::Attachments;
 use crate::domain::image_processing::{
-    ImageProcessingError, ProfileImageKind, process_profile_image,
+    ImageProcessingError, ProcessedProfileImage, ProfileImageKind, process_profile_image,
 };
 use crate::domain::messages::MessageError;
 use crate::domain::snowflake_generator::SnowflakeGenerator;
@@ -122,10 +122,21 @@ impl ProfileImages {
                 .await
                 .map_err(crate::domain::guilds::GuildError::from)?
                 .into_iter()
-                .map(|(guild_id, _)| guild_id)
+                .map(|guild| guild.id)
                 .collect();
+        let kind = match slot {
+            ProfileImageSlot::Avatar => ProfileImageKind::Avatar,
+            ProfileImageSlot::Banner => ProfileImageKind::Banner,
+        };
         let new_image = match bytes {
-            Some(bytes) => Some(self.store(slot, bytes, now_unix_milliseconds).await?),
+            Some(bytes) => Some(
+                self.store(
+                    bytes,
+                    move |bytes| process_profile_image(bytes, kind),
+                    now_unix_milliseconds,
+                )
+                .await?,
+            ),
             None => None,
         };
         let replaced = storage::replace_profile_image(
@@ -185,22 +196,21 @@ impl ProfileImages {
         }
     }
 
-    /// Processes the picture and writes its files.
-    async fn store(
+    /// Processes the picture with `process` (avatars, banners and icons alike) and writes its
+    /// files.
+    pub(crate) async fn store(
         &self,
-        slot: ProfileImageSlot,
         bytes: Vec<u8>,
+        process: impl FnOnce(&[u8]) -> Result<ProcessedProfileImage, ImageProcessingError>
+        + Send
+        + 'static,
         now_unix_milliseconds: u64,
     ) -> Result<NewProfileImage, MessageError> {
         let permit = self.attachments.image_processing_permit()?;
-        let kind = match slot {
-            ProfileImageSlot::Avatar => ProfileImageKind::Avatar,
-            ProfileImageSlot::Banner => ProfileImageKind::Banner,
-        };
         let processing = tokio::task::spawn_blocking(move || {
             // Held until the work really ends, even after the caller stopped waiting.
             let _permit = permit;
-            process_profile_image(&bytes, kind)
+            process(&bytes)
         });
         let processed = tokio::time::timeout(PROCESSING_TIME_BUDGET, processing)
             .await
@@ -231,7 +241,7 @@ impl ProfileImages {
     }
 
     /// Files that no row points at any more; a failure leaves them to the orphan sweep.
-    async fn delete_files(&self, id: Snowflake, still_id: Option<Snowflake>) {
+    pub(crate) async fn delete_files(&self, id: Snowflake, still_id: Option<Snowflake>) {
         let _ = self.files.delete(id).await;
         if let Some(still_id) = still_id {
             let _ = self.files.delete(still_id).await;
@@ -253,6 +263,15 @@ impl ProfileImages {
         } else {
             image.id
         };
+        self.read_file(file_id).await
+    }
+
+    /// The bytes of one stored picture file, with the read slot the response keeps until sent;
+    /// callers check who may read it.
+    pub(crate) async fn read_file(
+        &self,
+        file_id: Snowflake,
+    ) -> Result<(Vec<u8>, OwnedSemaphorePermit), MessageError> {
         let permit = tokio::time::timeout(READ_SLOT_WAIT, self.reads.clone().acquire_owned())
             .await
             .map_err(|_| MessageError::Busy)?

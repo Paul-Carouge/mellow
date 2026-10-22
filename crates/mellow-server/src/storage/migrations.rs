@@ -637,6 +637,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn existing_guilds_and_channels_have_no_icon_and_theirs_go_with_them() {
+        const LAST_VERSION_WITHOUT_ICONS: i64 = 13;
+        let directory = tempfile::tempdir().unwrap();
+        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_ICONS, &pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0), (11, 'Other', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0), (21, 10, 'text', 'random', 1);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let guilds: Vec<(Option<i64>, i64)> =
+            sqlx::query_as("SELECT icon_id, icon_is_animated FROM guilds ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let channels: Vec<(Option<i64>,)> =
+            sqlx::query_as("SELECT icon_id FROM channels ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO guild_images (id, guild_id, channel_id, still_id, size_bytes, \
+             created_at_unix_milliseconds) VALUES (50, 10, NULL, 51, 9, 0), \
+             (52, 10, 20, NULL, 9, 0), (53, 10, 21, NULL, 9, 0), (54, 11, NULL, NULL, 9, 0); \
+             DELETE FROM channels WHERE id = 20; \
+             DELETE FROM guilds WHERE id = 11;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let images: Vec<(i64,)> = sqlx::query_as("SELECT id FROM guild_images ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        assert_eq!(
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_ICONS + 1))
+        );
+        assert_eq!(guilds, [(None, 0), (None, 0)]);
+        assert_eq!(channels, [(None,), (None,)]);
+        assert_eq!(
+            images,
+            [(50,), (53,)],
+            "icons go with their channel or guild"
+        );
+    }
+
+    #[tokio::test]
     async fn existing_users_have_no_profile_images_and_theirs_go_with_them() {
         const LAST_VERSION_WITHOUT_PROFILE_IMAGES: i64 = 10;
         let directory = tempfile::tempdir().unwrap();

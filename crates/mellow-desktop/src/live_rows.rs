@@ -873,6 +873,7 @@ mod tests {
         position: u32,
     ) -> Channel {
         Channel {
+            icon: None,
             id: Snowflake::from_raw(id),
             guild_id: Snowflake::from_raw(1),
             kind,
@@ -886,6 +887,7 @@ mod tests {
 
     fn guild() -> Guild {
         Guild {
+            icon: None,
             id: Snowflake::from_raw(1),
             name: "Board Games Night".into(),
             owner_id: Snowflake::from_raw(9),

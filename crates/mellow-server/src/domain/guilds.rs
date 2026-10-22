@@ -35,6 +35,10 @@ use crate::storage::guilds::{
     RoleFieldChanges, StoredChannel, StoredInvite,
 };
 
+mod icons;
+
+pub(crate) use icons::IconUpload;
+
 const DEFAULT_CATEGORY_NAME: &str = "Text channels";
 const DEFAULT_CHANNEL_NAME: &str = "general";
 const MILLISECONDS_PER_SECOND: u64 = 1_000;
@@ -117,6 +121,7 @@ fn channel_from_stored(channel: StoredChannel) -> Channel {
         topic: channel.topic,
         parent_id: channel.parent_id,
         position: channel.position,
+        icon: channel.icon,
         permission_overwrites: channel.permission_overwrites,
     }
 }
@@ -258,6 +263,7 @@ impl Guilds {
                 topic: String::new(),
                 parent_id: None,
                 position: 0,
+                icon: None,
                 permission_overwrites: Vec::new(),
             },
             StoredChannel {
@@ -268,6 +274,7 @@ impl Guilds {
                 topic: String::new(),
                 parent_id: Some(category_id),
                 position: 1,
+                icon: None,
                 permission_overwrites: Vec::new(),
             },
         ];
@@ -299,11 +306,7 @@ impl Guilds {
         &self,
         user_id: Snowflake,
     ) -> Result<Vec<GuildSummary>, GuildError> {
-        Ok(guild_storage::list_user_guilds(&self.pool, user_id)
-            .await?
-            .into_iter()
-            .map(|(id, name)| GuildSummary { id, name })
-            .collect())
+        Ok(guild_storage::list_user_guilds(&self.pool, user_id).await?)
     }
 
     pub(crate) async fn get_guild(
@@ -333,6 +336,7 @@ impl Guilds {
             id: guild_id,
             my_role_ids: membership.member_role_ids(guild_id),
             name: membership.guild_name,
+            icon: membership.guild_icon,
             owner_id: membership.owner_id,
             my_permissions,
             roles: guild_storage::list_roles(&self.pool, guild_id).await?,
@@ -357,9 +361,13 @@ impl Guilds {
             let audit =
                 self.audit_entry(guild_id, user_id, AuditAction::GuildUpdate, None, None)?;
             match guild_storage::update_guild_name(&self.pool, guild_id, &name, &audit).await? {
-                GuildRename::Renamed => self.events.publish_to_guild(
+                GuildRename::Renamed { icon } => self.events.publish_to_guild(
                     guild_id,
-                    &GatewayEvent::GuildUpdate(GuildSummary { id: guild_id, name }),
+                    &GatewayEvent::GuildUpdate(GuildSummary {
+                        id: guild_id,
+                        name,
+                        icon,
+                    }),
                 ),
                 GuildRename::Unchanged => {}
                 GuildRename::NotFound => return Err(GuildError::NotFound),
@@ -443,6 +451,7 @@ impl Guilds {
                 topic,
                 parent_id: request.parent_id,
                 position: 0,
+                icon: None,
                 permission_overwrites: Vec::new(),
             },
             MAXIMUM_CHANNELS_PER_GUILD,
@@ -603,8 +612,8 @@ impl Guilds {
         user_id: Snowflake,
     ) -> Result<HashSet<Snowflake>, GuildError> {
         let mut visible = HashSet::new();
-        for (guild_id, _) in guild_storage::list_user_guilds(&self.pool, user_id).await? {
-            match self.get_guild(user_id, guild_id).await {
+        for summary in guild_storage::list_user_guilds(&self.pool, user_id).await? {
+            match self.get_guild(user_id, summary.id).await {
                 Ok(guild) => visible.extend(guild.channels.iter().map(|channel| channel.id)),
                 Err(GuildError::NotFound) => {}
                 Err(error) => return Err(error),
@@ -4316,8 +4325,8 @@ mod tests {
         assert_eq!(
             [first, second, unchanged, missing],
             [
-                GuildRename::Renamed,
-                GuildRename::Renamed,
+                GuildRename::Renamed { icon: None },
+                GuildRename::Renamed { icon: None },
                 GuildRename::Unchanged,
                 GuildRename::NotFound,
             ]

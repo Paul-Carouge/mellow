@@ -471,6 +471,7 @@ mod tests {
     fn guild() -> Guild {
         let moderator_permissions = Permissions::MANAGE_ROLES | Permissions::KICK_MEMBERS;
         Guild {
+            icon: None,
             id: GUILD,
             name: "Club".to_owned(),
             owner_id: OWNER,
