@@ -16,7 +16,7 @@
   import { autosize } from "./autosize";
   import Button from "./Button.svelte";
   import DeleteMessageDialog from "./DeleteMessageDialog.svelte";
-  import { displayName, humanFileSize, timeOfDayLabel, typingLabel, unixMillisecondsOfSnowflake } from "./format";
+  import { displayName, humanFileSize, timeOfDayLabel, typingSegments, unixMillisecondsOfSnowflake } from "./format";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import MessageList from "./MessageList.svelte";
@@ -153,7 +153,7 @@
     return person ? displayName(person) : "Someone";
   }
 
-  const typingText = $derived(channelId ? typingLabel(client.typingUserIds(channelId, now).map(nameOfUser)) : "");
+  const typing = $derived(channelId ? typingSegments(client.typingUserIds(channelId, now).map(nameOfUser)) : []);
 
   // What others wrote since the last visit, for the jump bar (DESIGN.md §5.4).
   const unreadSinceMarker = $derived.by(() => {
@@ -564,11 +564,14 @@
         aria-hidden="true"
         class="flex h-(--mw-component-composer-typing-height) min-w-0 items-center gap-2xs ps-xs type-typing text-(--mw-component-composer-typing-text)"
       >
-        {#if typingText}
+        {#if typing.length > 0}
           <span class="typing-dots inline-flex shrink-0 gap-(--mw-component-composer-typing-dot-gap)">
             <i></i><i></i><i></i>
           </span>
-          <span class="truncate">{typingText}</span>
+          <span class="truncate"
+            >{#each typing as segment, index (index)}{#if segment.isName}<b class="font-bold">{segment.text}</b
+                >{:else}{segment.text}{/if}{/each}</span
+          >
         {/if}
       </p>
       <div
