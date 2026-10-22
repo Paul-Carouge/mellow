@@ -256,7 +256,11 @@ fn fit(image: RgbaImage, kind: ProfileImageKind) -> RgbaImage {
 
 /// The `crop` square, cut at the picture's edges, or the centred square when there is none or it
 /// starts outside; then down to `maximum_side`, never up.
-fn square(image: &RgbaImage, crop: Option<SquareCrop>, maximum_side: u32) -> RgbaImage {
+fn crop_square_and_shrink(
+    image: &RgbaImage,
+    crop: Option<SquareCrop>,
+    maximum_side: u32,
+) -> RgbaImage {
     let (width, height) = image.dimensions();
     let (x, y, size) = match crop {
         Some(crop) if crop.size > 0 && crop.x < width && crop.y < height => {
@@ -347,8 +351,10 @@ pub(crate) fn process_icon(
         IconKind::Guild => GUILD_ICON_SIDE_PIXELS,
         IconKind::Channel => CHANNEL_ICON_SIDE_PIXELS,
     };
-    let mut frames = decode_frames(bytes, |frame| square(&frame, crop, side))?;
+    let mut frames = decode_frames(bytes, |frame| crop_square_and_shrink(&frame, crop, side))?;
     if kind == IconKind::Channel {
+        // shortcut: every frame is decoded and shrunk before the first is kept; stop decoding
+        // after it if long GIFs as channel icons hit the processing time budget.
         frames.truncate(1);
     }
     encode_with_still(&frames)
@@ -667,7 +673,7 @@ pub(crate) mod tests {
         let wide = RgbaImage::from_fn(300, 100, |x, _| {
             Rgba([u8::try_from(x % 256).unwrap(), 40, 90, 255])
         });
-        let centred = square(&wide, None, 256);
+        let centred = crop_square_and_shrink(&wide, None, 256);
         assert_eq!(centred.dimensions(), (100, 100), "never scaled up");
         assert_eq!(centred.get_pixel(0, 0)[0], 100);
 
@@ -676,14 +682,20 @@ pub(crate) mod tests {
             y: 0,
             size: 100,
         });
-        assert_eq!(square(&wide, chosen, 256).get_pixel(0, 0)[0], 20);
+        assert_eq!(
+            crop_square_and_shrink(&wide, chosen, 256).get_pixel(0, 0)[0],
+            20
+        );
 
         let past_the_edge = Some(SquareCrop {
             x: 250,
             y: 10,
             size: 100,
         });
-        assert_eq!(square(&wide, past_the_edge, 256).dimensions(), (50, 50));
+        assert_eq!(
+            crop_square_and_shrink(&wide, past_the_edge, 256).dimensions(),
+            (50, 50)
+        );
 
         for outside in [
             SquareCrop {
@@ -697,7 +709,7 @@ pub(crate) mod tests {
                 size: 0,
             },
         ] {
-            assert_eq!(square(&wide, Some(outside), 256), centred);
+            assert_eq!(crop_square_and_shrink(&wide, Some(outside), 256), centred);
         }
     }
 

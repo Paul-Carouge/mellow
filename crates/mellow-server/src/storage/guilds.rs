@@ -707,7 +707,7 @@ pub(crate) async fn find_guild_channel(
 }
 
 pub(crate) async fn attach_overwrites_to_channel(
-    pool: &SqlitePool,
+    executor: impl sqlx::SqliteExecutor<'_>,
     channel: Option<StoredChannel>,
 ) -> Result<Option<StoredChannel>, GuildStorageError> {
     let Some(mut channel) = channel else {
@@ -718,7 +718,7 @@ pub(crate) async fn attach_overwrites_to_channel(
          WHERE channel_id = ? ORDER BY target_id",
     )
     .bind(to_integer(channel.id.raw())?)
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await?;
     channel.permission_overwrites = rows
         .into_iter()

@@ -277,8 +277,9 @@ pub struct UpdateChannelRequest {
 
 /// Query of `PUT /api/v1/guilds/{guild_id}/icon` and `PUT /api/v1/channels/{channel_id}/icon`,
 /// whose body is the picture: the square to keep, in pixels of the picture as browsers show it
-/// (EXIF orientation applied). All three or none; none keeps the centred square, and a square
-/// reaching past the picture is cut at its edges.
+/// (EXIF orientation applied). All three or none; none keeps the centred square, a square
+/// reaching past the picture is cut at its edges, and one starting outside it (the picture was
+/// smaller than the client thought) keeps the centred square too.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IconCropQuery {

@@ -1889,6 +1889,38 @@ pub(crate) mod tests {
             ),
         )
         .await;
+        let channel_icon_path = format!("/api/v1/icons/{}", channel_icon.id);
+        let (status, _) = send(
+            &state,
+            authorized(
+                "PUT",
+                &format!("/api/v1/channels/{general}/permissions/{guild_id}"),
+                &owner,
+                Some(serde_json::json!({"kind": "role", "deny": "2"})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (hidden_from_guest, _) =
+            send(&state, authorized("GET", &channel_icon_path, &guest, None)).await;
+        let (hidden_still, _) = send(
+            &state,
+            authorized("GET", &format!("{channel_icon_path}/still"), &guest, None),
+        )
+        .await;
+        let (shown_to_owner, _) =
+            send(&state, authorized("GET", &channel_icon_path, &owner, None)).await;
+        // Icon files are not orphans: the sweep keeps them however old they are.
+        state
+            .attachments
+            .purge(
+                crate::domain::clock::now_unix_milliseconds()
+                    + crate::domain::attachments::UNSENT_UPLOAD_LIFETIME_MILLISECONDS * 2,
+            )
+            .await
+            .unwrap();
+        let (after_sweep, _) =
+            send(&state, authorized("GET", &channel_icon_path, &owner, None)).await;
         let (category_upload, _) = send(
             &state,
             picture_request(
@@ -1937,6 +1969,10 @@ pub(crate) mod tests {
             (channel_picture.width(), channel_picture.height()),
             (40, 40)
         );
+        assert_eq!(hidden_from_guest, StatusCode::NOT_FOUND, "viewers only");
+        assert_eq!(hidden_still, StatusCode::NOT_FOUND);
+        assert_eq!(shown_to_owner, StatusCode::OK);
+        assert_eq!(after_sweep, StatusCode::OK);
         assert_eq!(category_upload, StatusCode::BAD_REQUEST);
         assert_eq!(after_removal, None);
         assert_eq!(removed_read, StatusCode::NOT_FOUND);

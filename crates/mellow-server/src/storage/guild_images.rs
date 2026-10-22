@@ -45,7 +45,7 @@ fn guild_image_from_row(row: GuildImageRow) -> Result<StoredGuildImage, GuildSto
     })
 }
 
-fn icon_id_text(id: Option<i64>) -> String {
+fn icon_id_as_audit_text(id: Option<i64>) -> String {
     id.map(|id| id.to_string()).unwrap_or_default()
 }
 
@@ -100,8 +100,8 @@ fn with_icon_change(
     NewAuditEntry {
         changes: vec![AuditChange {
             key: AuditChangeKey::Icon,
-            old_value: icon_id_text(previous),
-            new_value: icon_id_text(new),
+            old_value: icon_id_as_audit_text(previous),
+            new_value: icon_id_as_audit_text(new),
         }],
         ..audit.clone()
     }
@@ -209,10 +209,11 @@ pub(crate) async fn replace_channel_icon(
     .await?;
     let replaced = delete_guild_image(&mut transaction, previous).await?;
     insert_audit_entry(&mut transaction, &with_icon_change(audit, previous, new_id)).await?;
-    transaction.commit().await?;
-    let updated = attach_overwrites_to_channel(pool, Some(channel_from_row(row)?))
+    // Read before the commit: once it is done, nothing may fail before the caller announces it.
+    let updated = attach_overwrites_to_channel(&mut *transaction, Some(channel_from_row(row)?))
         .await?
         .ok_or(GuildStorageError::ReferenceMissing)?;
+    transaction.commit().await?;
     Ok(IconChange::Changed { updated, replaced })
 }
 

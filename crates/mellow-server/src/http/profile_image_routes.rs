@@ -163,7 +163,7 @@ pub(crate) async fn get_profile_image_still(
 }
 
 /// All three crop values or none, as `IconCropQuery` says.
-fn crop_of(query: IconCropQuery) -> Result<Option<SquareCrop>, ApiError> {
+fn square_crop_from_query(query: IconCropQuery) -> Result<Option<SquareCrop>, ApiError> {
     match (query.crop_x, query.crop_y, query.crop_size) {
         (Some(x), Some(y), Some(size)) if size > 0 => Ok(Some(SquareCrop { x, y, size })),
         (None, None, None) => Ok(None),
@@ -179,7 +179,7 @@ async fn icon_upload(
     query: Option<IconCropQuery>,
     body: Option<Body>,
 ) -> Result<Option<IconUpload>, ApiError> {
-    let crop = query.map(crop_of).transpose()?.flatten();
+    let crop = query.map(square_crop_from_query).transpose()?.flatten();
     Ok(read_upload(state, user_id, body)
         .await?
         .map(|bytes| IconUpload { bytes, crop }))

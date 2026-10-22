@@ -10,6 +10,7 @@ use crate::domain::image_processing::{IconKind, SquareCrop, process_icon};
 use crate::domain::messages::MessageError;
 use crate::domain::profile_images::ProfileImages;
 use crate::storage::guild_images::{self as storage, IconChange};
+use crate::storage::guilds::StoredChannel;
 use crate::storage::profile_images::NewProfileImage;
 
 /// An uploaded picture and the square of it to keep, the centred one when `None`.
@@ -29,10 +30,19 @@ impl Guilds {
         upload: Option<IconUpload>,
         now_unix_milliseconds: u64,
     ) -> Result<Guild, MessageError> {
+        // Checked before processing too, so nobody else can spend processing slots.
         self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_GUILD)
             .await?;
-        let audit = self.audit_entry(guild_id, user_id, AuditAction::GuildUpdate, None, None)?;
         let new_image = store_icon(images, upload, IconKind::Guild, now_unix_milliseconds).await?;
+        // Processing takes seconds: the permission may have been taken away meanwhile.
+        let checked_again = self
+            .require_member_permissions(guild_id, user_id, Permissions::MANAGE_GUILD)
+            .await;
+        if let Err(error) = checked_again {
+            discard(images, new_image).await;
+            return Err(error.into());
+        }
+        let audit = self.audit_entry(guild_id, user_id, AuditAction::GuildUpdate, None, None)?;
         let change = storage::replace_guild_icon(
             &self.pool,
             guild_id,
@@ -42,7 +52,7 @@ impl Guilds {
         )
         .await
         .map_err(GuildError::from);
-        if let Some(summary) = settle(images, new_image, change).await? {
+        if let Some(summary) = keep_change_or_delete_new_files(images, new_image, change).await? {
             self.events
                 .publish_to_guild(guild_id, &GatewayEvent::GuildUpdate(summary));
         }
@@ -59,27 +69,33 @@ impl Guilds {
         upload: Option<IconUpload>,
         now_unix_milliseconds: u64,
     ) -> Result<Channel, MessageError> {
-        let (channel, permissions) = self
-            .channel_and_member_permissions(user_id, channel_id)
-            .await?;
-        if !permissions.contains(Permissions::MANAGE_CHANNELS) {
-            return Err(GuildError::MissingPermissions.into());
-        }
-        if channel.kind == ChannelKind::Category {
-            return Err(GuildError::from(GuildRuleViolation::CategoryIcon).into());
-        }
-        // Who can view it is decided before writing, so nothing can fail between the write and
-        // its announcement (ADR-0015).
-        let audience = self.channel_audience(&channel).await?;
-        let audit = self.audit_entry(
-            channel.guild_id,
-            user_id,
-            AuditAction::ChannelUpdate,
-            Some(channel.id),
-            None,
-        )?;
+        // Checked before processing too, so nobody else can spend processing slots.
+        self.channel_icon_editor_check(user_id, channel_id).await?;
         let new_image =
             store_icon(images, upload, IconKind::Channel, now_unix_milliseconds).await?;
+        // Processing takes seconds: the permission, and who can view the channel, may have
+        // changed meanwhile. The audience is decided before writing, so nothing can fail between
+        // the write and its announcement (ADR-0015).
+        let checked_again = async {
+            let channel = self.channel_icon_editor_check(user_id, channel_id).await?;
+            let audience = self.channel_audience(&channel).await?;
+            let audit = self.audit_entry(
+                channel.guild_id,
+                user_id,
+                AuditAction::ChannelUpdate,
+                Some(channel.id),
+                None,
+            )?;
+            Ok::<_, GuildError>((channel, audience, audit))
+        }
+        .await;
+        let (channel, audience, audit) = match checked_again {
+            Ok(checked) => checked,
+            Err(error) => {
+                discard(images, new_image).await;
+                return Err(error.into());
+            }
+        };
         let change = storage::replace_channel_icon(
             &self.pool,
             channel.id,
@@ -89,7 +105,8 @@ impl Guilds {
         )
         .await
         .map_err(GuildError::from);
-        let Some(updated) = settle(images, new_image, change).await? else {
+        let Some(updated) = keep_change_or_delete_new_files(images, new_image, change).await?
+        else {
             return Ok(channel_from_stored(channel));
         };
         let updated = channel_from_stored(updated);
@@ -99,6 +116,24 @@ impl Guilds {
             &GatewayEvent::ChannelUpdate(updated.clone()),
         );
         Ok(updated)
+    }
+
+    /// The text channel, if `user_id` may change its icon.
+    async fn channel_icon_editor_check(
+        &self,
+        user_id: Snowflake,
+        channel_id: Snowflake,
+    ) -> Result<StoredChannel, GuildError> {
+        let (channel, permissions) = self
+            .channel_and_member_permissions(user_id, channel_id)
+            .await?;
+        if !permissions.contains(Permissions::MANAGE_CHANNELS) {
+            return Err(GuildError::MissingPermissions);
+        }
+        if channel.kind == ChannelKind::Category {
+            return Err(GuildRuleViolation::CategoryIcon.into());
+        }
+        Ok(channel)
     }
 
     /// The file to send for an icon version: to members of its guild, and for a channel's icon
@@ -147,7 +182,7 @@ async fn store_icon(
 
 /// Deletes the files no row points at after a replacement: the replaced version's once it is
 /// done, the new version's when it was not stored. Answers what changed, `None` if nothing did.
-async fn settle<T>(
+async fn keep_change_or_delete_new_files<T>(
     images: &ProfileImages,
     new_image: Option<NewProfileImage>,
     change: Result<IconChange<T>, GuildError>,
@@ -163,8 +198,13 @@ async fn settle<T>(
         Ok(IconChange::NotFound) => GuildError::NotFound,
         Err(error) => error,
     };
+    discard(images, new_image).await;
+    Err(outcome.into())
+}
+
+/// Deletes the files of a version that will not be stored.
+async fn discard(images: &ProfileImages, new_image: Option<NewProfileImage>) {
     if let Some(new_image) = new_image {
         images.delete_files(new_image.id, new_image.still_id).await;
     }
-    Err(outcome.into())
 }
