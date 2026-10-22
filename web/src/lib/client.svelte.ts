@@ -108,6 +108,8 @@ export class MellowClient {
   pinsByChannel = new SvelteMap<Snowflake, PinnedMessages>();
   /** `${messageId}:${emoji key}` of the user's reaction clicks still on their way. */
   private reactionsInFlight = new Set<string>();
+  /** Channels whose pins changed while their list was loading: asked again once it arrives. */
+  private pinsChangedWhileLoading = new Set<Snowflake>();
 
   private gateway: GatewayConnection | null = null;
   /** Before the first `Ready`, no selection exists yet: home then means "not chosen". */
@@ -523,20 +525,29 @@ export class MellowClient {
     if (!this.isKnownChannel(channelId)) {
       return;
     }
-    const update = (message: Message) =>
+    const withChangedReactions = (message: Message) =>
       message.id === messageId ? { ...message, reactions: change(message.reactions ?? []) } : message;
     const messages = this.messagesByChannel.get(channelId);
     if (messages) {
-      this.messagesByChannel.set(channelId, messages.map(update));
+      this.messagesByChannel.set(channelId, messages.map(withChangedReactions));
     }
     const pins = this.pinsByChannel.get(channelId);
     if (pins?.status === "loaded") {
-      this.pinsByChannel.set(channelId, { status: "loaded", messages: pins.messages.map(update) });
+      this.pinsByChannel.set(channelId, { status: "loaded", messages: pins.messages.map(withChangedReactions) });
+    }
+    this.notePinsChangedWhileLoading(channelId);
+  }
+
+  /** A change the list on its way may not hold yet. */
+  private notePinsChangedWhileLoading(channelId: Snowflake): void {
+    if (this.pinsByChannel.get(channelId)?.status === "loading") {
+      this.pinsChangedWhileLoading.add(channelId);
     }
   }
 
   /** A message pinned, unpinned or edited: the loaded pins follow, newest pin first. */
   private applyPinnedState(message: Message): void {
+    this.notePinsChangedWhileLoading(message.channel_id);
     const pins = this.pinsByChannel.get(message.channel_id);
     if (pins?.status !== "loaded") {
       return;
@@ -547,10 +558,15 @@ export class MellowClient {
       this.pinsByChannel.set(message.channel_id, { status: "loaded", messages: others });
       return;
     }
-    const kept = { ...message, reactions: existing?.reactions ?? this.cachedReactions(message) };
+    const pinnedMessageWithReactions = {
+      ...message,
+      reactions: existing?.reactions ?? this.cachedReactions(message),
+    };
     this.pinsByChannel.set(message.channel_id, {
       status: "loaded",
-      messages: existing ? pins.messages.map((candidate) => (candidate.id === message.id ? kept : candidate)) : [kept, ...others],
+      messages: existing
+        ? pins.messages.map((candidate) => (candidate.id === message.id ? pinnedMessageWithReactions : candidate))
+        : [pinnedMessageWithReactions, ...others],
     });
   }
 
@@ -559,6 +575,7 @@ export class MellowClient {
   }
 
   private dropPin(channelId: Snowflake, messageId: Snowflake): void {
+    this.notePinsChangedWhileLoading(channelId);
     const pins = this.pinsByChannel.get(channelId);
     if (pins?.status === "loaded") {
       this.pinsByChannel.set(channelId, {
@@ -1019,12 +1036,12 @@ export class MellowClient {
       this.messages(channelId).find((candidate) => candidate.id === messageId) ??
       this.pinnedMessages(channelId).find((candidate) => candidate.id === messageId);
     const isRemoving = message?.reactions?.some((reaction) => reaction.emoji === key && reaction.me) ?? false;
-    const apply = (adding: boolean) =>
+    const applyOwnReactionLocally = (isAdding: boolean) =>
       this.updateReactions(channelId, messageId, (reactions) =>
-        adding ? withReactionAdded(reactions, key, true) : withReactionRemoved(reactions, key, true),
+        isAdding ? withReactionAdded(reactions, key, true) : withReactionRemoved(reactions, key, true),
       );
     this.reactionsInFlight.add(flightKey);
-    apply(!isRemoving);
+    applyOwnReactionLocally(!isRemoving);
     try {
       if (isRemoving) {
         await this.rest.removeOwnReaction(channelId, messageId, emoji);
@@ -1032,7 +1049,7 @@ export class MellowClient {
         await this.rest.addReaction(channelId, messageId, emoji);
       }
     } catch (error) {
-      apply(isRemoving);
+      applyOwnReactionLocally(isRemoving);
       this.reportError(error, "react");
       throw error;
     } finally {
@@ -1066,13 +1083,22 @@ export class MellowClient {
       return;
     }
     this.pinsByChannel.set(channelId, { status: "loading" });
+    this.pinsChangedWhileLoading.delete(channelId);
     try {
       const messages = await this.rest.listPins(channelId);
-      if (this.isKnownChannel(channelId)) {
-        this.pinsByChannel.set(channelId, { status: "loaded", messages });
+      if (!this.isKnownChannel(channelId)) {
+        return;
       }
+      if (this.pinsChangedWhileLoading.delete(channelId)) {
+        // The answer may predate a pin, an unpin or a reaction: ask for a fresh one.
+        await this.loadPins(channelId, true);
+        return;
+      }
+      this.pinsByChannel.set(channelId, { status: "loaded", messages });
     } catch (error) {
-      this.pinsByChannel.set(channelId, { status: "failed" });
+      if (this.isKnownChannel(channelId)) {
+        this.pinsByChannel.set(channelId, { status: "failed" });
+      }
       this.reportError(error, "load pins");
     }
   }

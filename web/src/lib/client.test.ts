@@ -363,3 +363,67 @@ describe("reactions and pins", () => {
     expect(client.pinsByChannel.get(GENERAL)).toEqual({ status: "loaded", messages: [] });
   });
 });
+
+describe("reaction and pin edge cases", () => {
+  async function clientWithHistory(rest: Partial<Record<keyof RestClient, unknown>> = {}) {
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, listMessages: () => Promise.resolve([message("200")]), ...rest }),
+    );
+    const start = ready();
+    client.user = start.user;
+    client.applyReady(start);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return client;
+  }
+  const reaction = (userId: string, emoji = "👍") => ({ channel_id: GENERAL, message_id: "200", user_id: userId, emoji });
+
+  it("put back a reaction whose removal the instance refused", async () => {
+    const client = await clientWithHistory({
+      removeOwnReaction: () => Promise.reject(new ApiError(503, "SERVER_BUSY")),
+    });
+    client.applyEvent({ t: "MESSAGE_REACTION_ADD", data: reaction(ME) }, 0);
+    const removing = client.toggleReaction(GENERAL, "200", "👍");
+    expect(client.messages(GENERAL)[0]?.reactions).toEqual([]);
+    await expect(removing).rejects.toBeInstanceOf(ApiError);
+    expect(client.messages(GENERAL)[0]?.reactions).toEqual([{ emoji: "👍", count: 1, me: true }]);
+  });
+
+  it("ignore the removal of the user's own reaction when it is not counted", async () => {
+    const client = await clientWithHistory();
+    client.applyEvent({ t: "MESSAGE_REACTION_ADD", data: reaction(OTHER) }, 0);
+    client.applyEvent({ t: "MESSAGE_REACTION_REMOVE", data: reaction(ME) }, 0);
+    expect(client.messages(GENERAL)[0]?.reactions).toEqual([{ emoji: "👍", count: 1, me: false }]);
+  });
+
+  it("count reactions on loaded pins too, and keep them when a pin arrives by MESSAGE_UPDATE", async () => {
+    const client = await clientWithHistory({ listPins: () => Promise.resolve([]) });
+    await client.loadPins(GENERAL);
+    client.applyEvent({ t: "MESSAGE_REACTION_ADD", data: reaction(OTHER) }, 0);
+    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...message("200"), pinned: true } }, 0);
+    expect(client.pinnedMessages(GENERAL)[0]?.reactions).toEqual([{ emoji: "👍", count: 1, me: false }]);
+    client.applyEvent({ t: "MESSAGE_REACTION_ADD", data: reaction(ME) }, 0);
+    expect(client.pinnedMessages(GENERAL)[0]?.reactions).toEqual([{ emoji: "👍", count: 2, me: true }]);
+    expect(client.messages(GENERAL)[0]?.reactions).toEqual([{ emoji: "👍", count: 2, me: true }]);
+  });
+
+  it("ask for the pins again when one changed while they were loading", async () => {
+    const answers = [[], [{ ...message("200"), pinned: true }]];
+    let requests = 0;
+    let answerFirst: () => void = () => undefined;
+    const client = await clientWithHistory({
+      listPins: () => {
+        const answer = answers[requests] ?? [];
+        requests += 1;
+        return requests === 1
+          ? new Promise((resolve) => (answerFirst = () => resolve(answer)))
+          : Promise.resolve(answer);
+      },
+    });
+    const loading = client.loadPins(GENERAL);
+    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...message("200"), pinned: true } }, 0);
+    answerFirst();
+    await loading;
+    expect(requests).toBe(2);
+    expect(client.pinnedMessages(GENERAL).map((pinned) => pinned.id)).toEqual(["200"]);
+  });
+});
