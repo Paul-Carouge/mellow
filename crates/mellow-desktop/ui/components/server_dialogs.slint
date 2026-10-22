@@ -229,6 +229,8 @@ export component InvitePeopleDialog inherits Rectangle {
 
 // Discord's "Create channel" dialog, text channels only for now (DESIGN.md §5.3).
 export component CreateChannelDialog inherits Rectangle {
+    // From a category's "+": the channel goes in it, and the subtitle says so.
+    in property <string> category-name;
     in property <bool> is-busy;
     in property <string> error-message;
     callback create-channel(string);
@@ -247,6 +249,7 @@ export component CreateChannelDialog inherits Rectangle {
         width: root.width;
         height: root.height;
         title: "Create channel";
+        subtitle: root.category-name != "" ? "in " + root.category-name : "";
         error-message: root.error-message;
         is-busy: root.is-busy;
         submit-label: root.is-busy ? "Creating…" : "Create channel";

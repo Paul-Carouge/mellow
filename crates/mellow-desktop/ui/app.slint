@@ -124,6 +124,9 @@ export component AppWindow inherits Window {
     in property <string> invite-code;
     in property <bool> can-invite-people;
     in property <bool> can-create-channels;
+    // Where "Create channel" puts the channel: a category's index from its "+", or -1 for none.
+    in-out property <int> create-channel-category-index: -1;
+    in-out property <string> create-channel-category-name;
     in property <bool> can-leave-server;
     // Direct messages (DESIGN.md §5.6). Home is selected: the sidebar lists conversations.
     in property <bool> is-home;
@@ -261,6 +264,12 @@ export component AppWindow inherits Window {
         }
     }
 
+    function open-create-channel-dialog(category-index: int, category-name: string) {
+        root.create-channel-category-index = category-index;
+        root.create-channel-category-name = category-name;
+        root.open-dialog = ShellDialog.create-channel;
+    }
+
     function close-dialog() {
         root.open-dialog = ShellDialog.none;
         root.dialog-closed();
@@ -386,7 +395,8 @@ export component AppWindow inherits Window {
                         root.open-dialog = ShellDialog.invite-people;
                         root.create-invite();
                     }
-                    create-channel => { root.open-dialog = ShellDialog.create-channel; }
+                    create-channel => { root.open-create-channel-dialog(-1, ""); }
+                    create-channel-in-category(index, name) => { root.open-create-channel-dialog(index, name); }
                     leave-server => { root.open-dialog = ShellDialog.leave-server; }
                     current-user-name: root.current-user-name;
                     current-user-initial: root.current-user-initial;
@@ -534,7 +544,11 @@ export component AppWindow inherits Window {
             }
             create-channel => {
                 root.is-navigator-drawer-open = false;
-                root.open-dialog = ShellDialog.create-channel;
+                root.open-create-channel-dialog(-1, "");
+            }
+            create-channel-in-category(index, name) => {
+                root.is-navigator-drawer-open = false;
+                root.open-create-channel-dialog(index, name);
             }
             leave-server => {
                 root.is-navigator-drawer-open = false;
@@ -611,6 +625,7 @@ export component AppWindow inherits Window {
     if root.is-signed-in && root.open-dialog == ShellDialog.create-channel: CreateChannelDialog {
         width: root.width;
         height: root.height;
+        category-name: root.create-channel-category-name;
         is-busy: root.is-dialog-busy;
         error-message: root.dialog-error;
         create-channel(name) => { root.create-channel(name); }
