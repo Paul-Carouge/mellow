@@ -197,6 +197,9 @@ export const en = {
     edited: "(edited)",
     editedAt: (timestamp: string) => `Edited ${timestamp}`,
     mentionsYou: "Mentions you.",
+    spoilerHidden: "Spoiler, select to reveal",
+    /** Read out before a revealed spoiler's text. */
+    spoilerRevealedPrefix: "Spoiler: ",
     editMessage: "Edit message",
     escTo: "Esc to",
     cancelLowercase: "cancel",

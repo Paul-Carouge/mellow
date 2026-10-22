@@ -2,6 +2,7 @@
   import type { Snippet } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
 
+  import { strings } from "../i18n";
   import type { BlockNode, InlineNode } from "./markdown";
 
   // A message body parsed by `markdown.ts` (DESIGN.md §5.4). Every node becomes an element or a
@@ -13,10 +14,6 @@
   }
 
   let { blocks, trailing }: Props = $props();
-
-  // UI strings, kept here until they move into the translation catalogue.
-  const SPOILER_HIDDEN_LABEL = "Spoiler, select to reveal";
-  const SPOILER_REVEALED_PREFIX = "Spoiler: ";
 
   const revealedSpoilerIds = new SvelteSet<number>();
   let lastRevealedSpoilerId: number | null = null;
@@ -52,11 +49,11 @@
           class="spoiler-revealed"
           tabindex="-1"
           {@attach focusIfJustRevealed(node.id)}
-          ><span class="sr-only">{SPOILER_REVEALED_PREFIX}</span>{@render inlines(node.children, areLinksActive)}</span
+          ><span class="sr-only">{strings.messages.spoilerRevealedPrefix}</span>{@render inlines(node.children, areLinksActive)}</span
         >{:else}<button
           type="button"
           class="spoiler-hidden focus-visible:focus-ring"
-          aria-label={SPOILER_HIDDEN_LABEL}
+          aria-label={strings.messages.spoilerHidden}
           onclick={() => revealSpoiler(node.id)}
           ><span class="invisible" aria-hidden="true">{@render inlines(node.children, false)}</span></button
         >{/if}{:else if node.kind === "link"}{#if areLinksActive}<a
