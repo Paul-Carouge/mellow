@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
 
   import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
@@ -8,6 +8,7 @@
   import Button from "./Button.svelte";
   import { displayName, fullTimestampLabel } from "./format";
   import Icon from "./Icon.svelte";
+  import { focusAfterRemoval } from "./server-settings";
   import SettingsListStatus from "./SettingsListStatus.svelte";
 
   // Bans (DESIGN.md §5.8): who is banned, why and since when, newest first, with "Revoke ban".
@@ -19,6 +20,7 @@
 
   let { client, guild }: Props = $props();
 
+  const id = $props.id();
   let bans = $state<Ban[] | null>(null);
   let hasFailed = $state(false);
   let busyUserId = $state<Snowflake | null>(null);
@@ -49,8 +51,12 @@
     errorMessage = "";
     try {
       await client.rest.unbanMember(guild.id, ban.user.id);
+      // The button pressed goes with its row: focus moves to a neighbour, or to the empty text.
+      const next = focusAfterRemoval(bans?.map((candidate) => candidate.user.id) ?? [], ban.user.id);
       bans = bans?.filter((candidate) => candidate.user.id !== ban.user.id) ?? null;
       notice = strings.serverSettings.bans.revoked(name);
+      await tick();
+      document.getElementById(next ? `${id}-revoke-${next}` : `${id}-empty`)?.focus();
     } catch (error) {
       errorMessage = describeError(error, strings.serverSettings.bans.revokeFailed(name));
     } finally {
@@ -62,7 +68,9 @@
 {#if bans === null}
   <SettingsListStatus status={hasFailed ? "failed" : "loading"} failureText={strings.serverSettings.bans.loadFailed} onretry={() => void load()} />
 {:else if bans.length === 0}
-  <p class="type-body-lg text-(--mw-component-settings-body-text)">{strings.serverSettings.bans.empty(guild.name)}</p>
+  <p id="{id}-empty" tabindex="-1" class="type-body-lg text-(--mw-component-settings-body-text) outline-none">
+    {strings.serverSettings.bans.empty(guild.name)}
+  </p>
 {:else}
   <div role="alert" class="contents">
     {#if errorMessage}
@@ -90,6 +98,7 @@
           </p>
         </div>
         <Button
+          id="{id}-revoke-{ban.user.id}"
           aria-label={strings.serverSettings.bans.revokeLabel(name)}
           isDisabled={busyUserId !== null}
           onclick={() => void revoke(ban)}

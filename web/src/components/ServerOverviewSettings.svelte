@@ -12,27 +12,40 @@
     client: MellowClient;
     guild: Guild;
     attention: number;
-    hasUnsavedChanges: boolean;
+    /** True while the name differs from the stored one; false again when this page goes away. */
+    onunsavedchange: (hasChanges: boolean) => void;
   }
 
-  let { client, guild, attention, hasUnsavedChanges = $bindable() }: Props = $props();
+  let { client, guild, attention, onunsavedchange }: Props = $props();
 
   /** Null while the field shows the stored name. */
   let draft = $state<string | null>(null);
   let isSaving = $state(false);
   let errorMessage = $state("");
   let notice = $state("");
+  /** Saved, and waiting for the gateway to bring it: not an unsaved change any more. */
+  let savedName = $state<string | null>(null);
 
   const id = $props.id();
   const name = $derived(draft ?? guild.name);
-  const isChanged = $derived(draft !== null && draft.trim() !== guild.name);
+  const isChanged = $derived(draft !== null && draft.trim() !== guild.name && draft !== savedName);
 
   $effect(() => {
-    hasUnsavedChanges = isChanged;
+    onunsavedchange(isChanged);
+    return () => onunsavedchange(false);
+  });
+
+  // The stored name caught up with the field (our save, echoed by the gateway).
+  $effect(() => {
+    if (draft !== null && draft === guild.name) {
+      draft = null;
+      savedName = null;
+    }
   });
 
   function reset() {
     draft = null;
+    savedName = null;
     errorMessage = "";
   }
 
@@ -46,9 +59,12 @@
     }
     isSaving = true;
     errorMessage = "";
+    const name = draft.trim();
     try {
-      await client.renameServer(guild.id, draft.trim());
-      draft = null;
+      await client.renameServer(guild.id, name);
+      // The field keeps the saved name until the gateway brings it.
+      draft = name;
+      savedName = name;
       notice = strings.serverSettings.unsaved.saved;
     } catch (error) {
       errorMessage = describeError(error, strings.serverSettings.overview.saveFailed);

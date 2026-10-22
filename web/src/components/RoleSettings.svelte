@@ -19,6 +19,7 @@
     canManageRole,
     canTogglePermission,
     draftOf,
+    isRoleEditPending,
     rebaseRoleEdit,
     roleColorHex,
     roleIdsAfterMove,
@@ -41,10 +42,11 @@
     client: MellowClient;
     guild: Guild;
     attention: number;
-    hasUnsavedChanges: boolean;
+    /** True while a role differs from its stored self; false again when this page goes away. */
+    onunsavedchange: (hasChanges: boolean) => void;
   }
 
-  let { client, guild, attention, hasUnsavedChanges = $bindable() }: Props = $props();
+  let { client, guild, attention, onunsavedchange }: Props = $props();
 
   type Tab = "display" | "permissions";
 
@@ -88,8 +90,21 @@
     return shown && shown.color !== NO_ROLE_COLOR ? readableRoleColor(shown.color, colorTokenValue("color-surface-chat")) : null;
   });
 
+  /** Saved and waiting for the gateway: not an unsaved change any more. */
+  let isAwaitingEcho = $state(false);
+  const hasChanges = $derived(draft !== null && !isAwaitingEcho);
+
   $effect(() => {
-    hasUnsavedChanges = draft !== null;
+    onunsavedchange(hasChanges);
+    return () => onunsavedchange(false);
+  });
+
+  // Saved (the gateway's echo), undone, or the role is gone: nothing is left to save.
+  $effect(() => {
+    if (edit && !isRoleEditPending(edit, selectedRole)) {
+      edit = null;
+      isAwaitingEcho = false;
+    }
   });
 
   function rowId(roleId: Snowflake): string {
@@ -101,6 +116,7 @@
       return;
     }
     edit = { roleId: selectedRole.id, base: draftOf(selectedRole), draft: next };
+    isAwaitingEcho = false;
     saveError = "";
     notice = "";
   }
@@ -109,7 +125,7 @@
     if (role.id === selectedRole?.id) {
       return;
     }
-    if (draft) {
+    if (hasChanges) {
       localAttention += 1;
       return;
     }
@@ -120,8 +136,8 @@
   }
 
   async function createRole() {
-    if (busy || draft) {
-      if (draft) {
+    if (busy || hasChanges) {
+      if (hasChanges) {
         localAttention += 1;
       }
       return;
@@ -144,7 +160,7 @@
   }
 
   async function save() {
-    if (!selectedRole || !draft || busy) {
+    if (!selectedRole || !draft || !hasChanges || busy) {
       return;
     }
     const body = roleUpdateBody(selectedRole, draft, isEveryone);
@@ -156,7 +172,8 @@
     saveError = "";
     try {
       await client.updateRole(guild.id, selectedRole.id, body);
-      edit = null;
+      // The edit stays until the gateway brings the saved role, which ends it.
+      isAwaitingEcho = true;
       notice = strings.serverSettings.unsaved.saved;
     } catch (error) {
       saveError = describeError(error, strings.serverSettings.roles.saveFailed);
@@ -478,13 +495,14 @@
 
   <p role="status" class="sr-only">{notice}</p>
   <div class="flex-1"></div>
-  {#if draft}
+  {#if hasChanges}
     <UnsavedChangesBar
       attention={attention + localAttention}
       isSaving={busy === "save"}
       errorMessage={saveError}
       onreset={() => {
         edit = null;
+        isAwaitingEcho = false;
         saveError = "";
       }}
       onsave={() => void save()}

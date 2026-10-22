@@ -35,6 +35,20 @@
   const canBan = $derived(outranks && holds(guild, Permission.BAN_MEMBERS));
 
   let busyRoleId = $state<string | null>(null);
+  /** The last change asked, shown until the gateway brings the member's new roles. */
+  let askedRole = $state<{ roleId: string; isGiven: boolean } | null>(null);
+
+  // Once the member's roles show the change, they are the truth again (another moderator may
+  // change them next).
+  $effect(() => {
+    if (askedRole && member.role_ids.includes(askedRole.roleId) === askedRole.isGiven) {
+      askedRole = null;
+    }
+  });
+
+  function holdsRole(role: Role): boolean {
+    return askedRole?.roleId === role.id ? askedRole.isGiven : member.role_ids.includes(role.id);
+  }
   let roleError = $state("");
   let confirmation = $state<"kick" | "ban" | null>(null);
   let banReason = $state("");
@@ -45,10 +59,12 @@
     if (busyRoleId) {
       return;
     }
+    askedRole = null;
     busyRoleId = role.id;
     roleError = "";
     try {
       await client.setMemberRole(guild.id, member.user.id, role.id, isGiven);
+      askedRole = { roleId: role.id, isGiven };
     } catch (error) {
       roleError = describeError(error, strings.serverSettings.members.roleFailed);
     } finally {
@@ -104,7 +120,7 @@
               <Icon name="lock" class="size-(--mw-component-roles-row-lock-icon-size) text-(--mw-component-roles-row-lock-icon)" />
             {/if}
             <Switch
-              isOn={member.role_ids.includes(role.id)}
+              isOn={holdsRole(role)}
               isLocked={isLocked || busyRoleId !== null}
               labelledBy="{id}-role-{role.id}"
               describedBy={isLocked ? `${id}-locked` : undefined}
