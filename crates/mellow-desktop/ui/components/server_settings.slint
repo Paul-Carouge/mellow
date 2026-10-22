@@ -294,7 +294,6 @@ component PermissionRow inherits VerticalLayout {
     if root.permission.starts-group: VerticalLayout {
         padding-top: root.is-first ? 0px : MellowComponent.roles-permission-group-gap;
         SectionLabel {
-            text: root.permission.group.to-uppercase();
             label: root.permission.group;
         }
     }
@@ -712,7 +711,6 @@ export component ServerSettingsScreen inherits Rectangle {
                                 padding-bottom: MellowComponent.settings-nav-section-padding-block;
                                 // The tab list's label already says it.
                                 SectionLabel {
-                                    text: root.server-name.to-uppercase();
                                     label: root.server-name;
                                     color: MellowComponent.settings-nav-section-text;
                                     accessible-role: none;
@@ -857,7 +855,6 @@ export component ServerSettingsScreen inherits Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 0px;
                                     SectionLabel {
-                                        text: ("Edit role — " + root.selected-role.name).to-uppercase();
                                         label: "Edit role — " + root.selected-role.name;
                                     }
                                     if root.selected-role.is-locked: HorizontalLayout {
@@ -932,7 +929,6 @@ export component ServerSettingsScreen inherits Rectangle {
                                                 spacing: MellowComponent.roles-editor-gap;
                                                 TextField {
                                                     label: "Role name";
-                                                    display-label: "ROLE NAME";
                                                     helper: root.selected-role.is-everyone ? "@everyone can't be renamed." : "";
                                                     text <=> root.role-draft-name;
                                                     is-read-only: !root.is-role-draft-editable || root.selected-role.is-everyone || root.is-role-action-busy;
@@ -942,7 +938,6 @@ export component ServerSettingsScreen inherits Rectangle {
                                                 if !root.selected-role.is-everyone: VerticalLayout {
                                                     spacing: MellowComponent.settings-section-label-gap;
                                                     SectionLabel {
-                                                        text: "ROLE COLOUR";
                                                         label: "Role colour";
                                                     }
                                                     // Wraps by hand: Slint layouts do not wrap.

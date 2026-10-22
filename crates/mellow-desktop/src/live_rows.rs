@@ -10,7 +10,7 @@ use mellow_protocol::{
 use slint::{ModelRc, SharedString, VecModel};
 
 use crate::generated_ui::{
-    ChannelListRow, DirectMessageRow, HistoryStartState, MelliState, MemberListRow,
+    AttachmentRow, ChannelListRow, DirectMessageRow, HistoryStartState, MelliState, MemberListRow,
     MessageDelivery, MessageRow, PresenceStatus, ServerItem,
 };
 use crate::message_markup::styled_text_from_message_body;
@@ -21,19 +21,15 @@ const AUTHOR_GROUP_MAXIMUM_GAP_MILLISECONDS: u64 = 7 * 60 * 1_000;
 const REPLY_PREVIEW_MAXIMUM_CHARACTERS: usize = 80;
 
 /// "name · size", one per attachment, as the message row lists them (downloads come later).
-fn attachment_summaries(attachments: &[mellow_protocol::Attachment]) -> ModelRc<SharedString> {
-    let summaries: Vec<SharedString> = attachments
+fn attachment_rows(attachments: &[mellow_protocol::Attachment]) -> ModelRc<AttachmentRow> {
+    let rows: Vec<AttachmentRow> = attachments
         .iter()
-        .map(|attachment| {
-            format!(
-                "{} · {}",
-                attachment.file_name,
-                human_file_size(attachment.size_bytes)
-            )
-            .into()
+        .map(|attachment| AttachmentRow {
+            name: attachment.file_name.as_str().into(),
+            size: human_file_size(attachment.size_bytes).into(),
         })
         .collect();
-    ModelRc::new(VecModel::from(summaries))
+    ModelRc::new(VecModel::from(rows))
 }
 
 /// Decimal units with one decimal, as browsers and Discord show sizes ("2.4 MB").
@@ -188,7 +184,6 @@ pub fn channel_rows(
             is_collapsed: false,
             category_index: -1,
             name: channel.name.as_str().into(),
-            display_name: channel.name.as_str().into(),
             has_unread: state.has_unread(channel.id),
             mention_count: 0,
             is_read_only: !can_send_messages(state, channel.id),
@@ -212,7 +207,6 @@ pub fn channel_rows(
                 is_collapsed,
                 category_index: saturating_int(category_index),
                 name: category.name.as_str().into(),
-                display_name: category.name.to_uppercase().into(),
                 has_unread: false,
                 mention_count: 0,
                 is_read_only: false,
@@ -259,21 +253,35 @@ where
         .unwrap_or_default()
 }
 
-fn reply_preview(reply_to_id: Option<Snowflake>, messages: &[Message]) -> String {
+/// What a reply shows above its author: the original's author and the start of its text. The
+/// author is empty when the original is gone; everything is empty when the message replies to none.
+#[derive(Default)]
+struct ReplyReference {
+    author: SharedString,
+    author_initial: SharedString,
+    text: SharedString,
+}
+
+fn reply_reference(reply_to_id: Option<Snowflake>, messages: &[Message]) -> ReplyReference {
     let Some(reply_to_id) = reply_to_id else {
-        return String::new();
+        return ReplyReference::default();
     };
     match messages.iter().find(|message| message.id == reply_to_id) {
-        Some(original) => {
-            let snippet: String = original
+        Some(original) => ReplyReference {
+            author: original.author.display_name.as_str().into(),
+            author_initial: first_letter(&original.author.display_name).into(),
+            text: original
                 .content
                 .chars()
                 .take(REPLY_PREVIEW_MAXIMUM_CHARACTERS)
-                .collect();
-            format!("@{} {snippet}", original.author.display_name)
-        }
+                .collect::<String>()
+                .into(),
+        },
         // Not in the loaded history, or deleted since.
-        None => "Original message was deleted or is not loaded".into(),
+        None => ReplyReference {
+            text: "Original message was deleted or is not loaded".into(),
+            ..ReplyReference::default()
+        },
     }
 }
 
@@ -320,6 +328,7 @@ where
                 });
             previous = Some(message);
             let is_own = Some(message.author.id) == current_user_id;
+            let reply = reply_reference(message.reply_to_id, messages);
             MessageRow {
                 author: message.author.display_name.as_str().into(),
                 author_initial: first_letter(&message.author.display_name).into(),
@@ -327,9 +336,11 @@ where
                 short_time: short_time(sent_at, &now.timezone()).into(),
                 body: styled_text_from_message_body(&message.content),
                 body_plain: message.content.as_str().into(),
-                attachment_summaries: attachment_summaries(&message.attachments),
+                attachments: attachment_rows(&message.attachments),
                 starts_author_group,
-                reply_preview: reply_preview(message.reply_to_id, messages).into(),
+                reply_author: reply.author,
+                reply_author_initial: reply.author_initial,
+                reply_preview: reply.text,
                 // shortcut: mentions are not parsed yet (M2).
                 mentions_current_user: false,
                 is_own,
@@ -371,6 +382,7 @@ where
         .map(|pending| {
             let starts_author_group = pending.reply_to_id.is_some() || !continues_own_group;
             continues_own_group = true;
+            let reply = reply_reference(pending.reply_to_id, confirmed);
             MessageRow {
                 author: current_user.display_name.as_str().into(),
                 author_initial: first_letter(&current_user.display_name).into(),
@@ -379,9 +391,11 @@ where
                 body: styled_text_from_message_body(&pending.content),
                 body_plain: pending.content.as_str().into(),
                 // The desktop does not upload files yet.
-                attachment_summaries: ModelRc::default(),
+                attachments: ModelRc::default(),
                 starts_author_group,
-                reply_preview: reply_preview(pending.reply_to_id, confirmed).into(),
+                reply_author: reply.author,
+                reply_author_initial: reply.author_initial,
+                reply_preview: reply.text,
                 mentions_current_user: false,
                 // Not stored yet: it can be neither edited nor deleted on the server.
                 is_own: false,
@@ -414,7 +428,6 @@ pub fn member_rows(members: &[Member], state: &ClientState) -> Vec<MemberListRow
         let header = MemberListRow {
             is_group_header: true,
             label: label.into(),
-            display_label: label.to_uppercase().into(),
             member_count: saturating_int(group.len()),
             initial: SharedString::default(),
             activity: SharedString::default(),
@@ -427,7 +440,6 @@ pub fn member_rows(members: &[Member], state: &ClientState) -> Vec<MemberListRow
             .map(|member| MemberListRow {
                 is_group_header: false,
                 label: member.user.display_name.as_str().into(),
-                display_label: member.user.display_name.as_str().into(),
                 member_count: 0,
                 initial: first_letter(&member.user.display_name).into(),
                 activity: SharedString::default(),
@@ -531,7 +543,6 @@ mod tests {
                 "lobby"
             ]
         );
-        assert_eq!(rows[1].display_name, "TEXT CHANNELS");
         assert_eq!(rows[4].category_index, 1);
         assert_eq!(
             first_text_channel_id(&guild()),
@@ -611,7 +622,9 @@ mod tests {
         let rows = message_rows_at(&messages, Some(Snowflake::from_raw(2)), false, &Utc::now());
         let groups: Vec<_> = rows.iter().map(|row| row.starts_author_group).collect();
         assert_eq!(groups, [true, false, true, true]);
-        assert_eq!(rows[3].reply_preview, "@Aurore hello");
+        assert_eq!(rows[3].reply_author, "Aurore");
+        assert_eq!(rows[3].reply_author_initial, "A");
+        assert_eq!(rows[3].reply_preview, "hello");
         assert_eq!(rows[0].reply_preview, "");
         let own: Vec<_> = rows.iter().map(|row| row.is_own).collect();
         assert_eq!(own, [false, false, false, true]);
@@ -720,7 +733,8 @@ mod tests {
             pending_message_rows_at(&[&sending, &failed_reply], &ours_a_minute_ago, &me, &now);
         let groups: Vec<_> = rows.iter().map(|row| row.starts_author_group).collect();
         assert_eq!(groups, [false, true]);
-        assert_eq!(rows[1].reply_preview, "@Someone earlier");
+        assert_eq!(rows[1].reply_author, "Someone");
+        assert_eq!(rows[1].reply_preview, "earlier");
         assert_eq!(
             rows.iter().map(|row| row.delivery).collect::<Vec<_>>(),
             [MessageDelivery::Sending, MessageDelivery::Failed]

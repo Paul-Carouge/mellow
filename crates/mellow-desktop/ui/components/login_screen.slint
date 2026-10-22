@@ -89,7 +89,6 @@ export component LoginScreen inherits Rectangle {
                     spacing: MellowComponent.text-field-field-gap;
                     TextField {
                         label: "Instance address";
-                        display-label: "INSTANCE ADDRESS";
                         placeholder: "chat.example.org";
                         text <=> root.instance-address;
                         wants-focus: root.first-empty-field == LoginField.instance-address;
@@ -98,7 +97,6 @@ export component LoginScreen inherits Rectangle {
                     }
                     if !root.is-registering: TextField {
                         label: "Username or email";
-                        display-label: "USERNAME OR EMAIL";
                         text <=> root.login;
                         wants-focus: root.first-empty-field == LoginField.login;
                         focus-request: root.focus-request-count;
@@ -106,7 +104,6 @@ export component LoginScreen inherits Rectangle {
                     }
                     if root.is-registering: TextField {
                         label: "Email";
-                        display-label: "EMAIL";
                         text <=> root.email;
                         wants-focus: root.first-empty-field == LoginField.email;
                         focus-request: root.focus-request-count;
@@ -114,7 +111,6 @@ export component LoginScreen inherits Rectangle {
                     }
                     if root.is-registering: TextField {
                         label: "Username";
-                        display-label: "USERNAME";
                         // Mirrors the server's rule (mellow-server domain/account_rules.rs).
                         helper: "2 to 32 characters: lowercase letters, digits, dots and underscores.";
                         text <=> root.username;
@@ -124,7 +120,6 @@ export component LoginScreen inherits Rectangle {
                     }
                     TextField {
                         label: "Password";
-                        display-label: "PASSWORD";
                         is-password: true;
                         // Requirements up front when creating one (DESIGN.md §5.1); same server rule.
                         helper: root.is-registering ? "At least 10 characters." : "";

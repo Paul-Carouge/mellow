@@ -1,12 +1,15 @@
-import { MellowColor, MellowSize, MellowTheme, MellowType } from "tokens.slint";
+import { Palette } from "std-widgets.slint";
+import { MellowColor, MellowComponent, MellowSize, MellowSpace, MellowTheme, MellowType } from "tokens.slint";
+import { MotionPreference, ThemeChoice } from "preferences.slint";
 // Bundled into the binary so every platform renders the same typeface (DESIGN.md §2.4).
 import "../fonts/Figtree[wght].ttf";
 import "../fonts/Figtree-Italic[wght].ttf";
-import { ServerRail, ServerItem } from "components/server_rail.slint";
+import { ServerItem } from "components/server_rail.slint";
+import { Navigator } from "components/navigator.slint";
 import { MelliAnimation, MelliState } from "components/melli.slint";
-import { ChannelSidebar, ChannelListRow, DirectMessageRow } from "components/channel_sidebar.slint";
-import { ChatPane, HistoryStartState, MessageDelivery, MessageRow } from "components/chat_pane.slint";
-import { MemberList, MemberListRow } from "components/member_list.slint";
+import { ChannelListRow, DirectMessageRow } from "components/channel_sidebar.slint";
+import { AttachmentRow, ChatPane, HistoryStartState, MessageDelivery, MessageRow } from "components/chat_pane.slint";
+import { MemberListRow, MemberSheet } from "components/member_list.slint";
 import { PresenceStatus } from "components/primitives.slint";
 import { LoginScreen } from "components/login_screen.slint";
 import { ConnectionBanner } from "components/connection_banner.slint";
@@ -15,15 +18,19 @@ import { UpdateStatus, UserSettingsScreen } from "components/user_settings.slint
 import { RoleListRow, RolePermissionRow, ServerSettingsScreen } from "components/server_settings.slint";
 import { AddServerDialog, CreateChannelDialog, InvitePeopleDialog, LeaveServerDialog } from "components/server_dialogs.slint";
 
-export { MelliAnimation, MelliState, ServerItem, ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, UpdateStatus, RoleListRow, RolePermissionRow }
+export { AttachmentRow, MelliAnimation, MelliState, ServerItem, ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, MotionPreference, ThemeChoice, UpdateStatus, RoleListRow, RolePermissionRow }
 
 // The window-wide dialog open over the shell, if any (DESIGN.md §6.35).
 export enum ShellDialog { none, add-server, invite-people, create-channel, leave-server }
 
-// Window width breakpoints from DESIGN.md §4.2: each one is the sum of the panes it must fit.
+// Window width breakpoints from DESIGN.md §4.2: each one is the sum of the cards it must fit, with
+// the ground showing `size.sheet.inset` around each card.
 global LayoutBreakpoint {
-    out property <length> sidebar-visible: MellowSize.rail-width + MellowSize.sidebar-width + MellowSize.chat-min-width;
-    out property <length> all-panes: MellowSize.rail-width + MellowSize.sidebar-width + MellowSize.chat-min-width + MellowSize.member-list-width;
+    // 8 + 312 + 8 + 480 + 8 = 816.
+    out property <length> navigator-visible: 3 * MellowSize.sheet-inset + MellowComponent.navigator-strip-width
+        + MellowComponent.sidebar-width + MellowSize.chat-min-width;
+    // 816 + 240 + 8 = 1064.
+    out property <length> side-sheet-docked: navigator-visible + MellowComponent.side-sheet-width + MellowSize.sheet-inset;
 }
 
 export component AppWindow inherits Window {
@@ -41,7 +48,16 @@ export component AppWindow inherits Window {
     in property <string> latest-announcement;
     in-out property <string> composer-text;
     in-out property <bool> is-text-selection-mode;
-    in-out property <bool> is-member-list-visible: true;
+    // The member side sheet: closed by default, remembered per server by Rust (DESIGN.md §5.7).
+    in-out property <bool> is-member-list-visible: false;
+    // After the person opens or closes the member sheet (button or Ctrl+U), so Rust remembers it.
+    callback member-sheet-toggled();
+    // Appearance (DESIGN.md §5.9): Rust loads and saves both, and is told after each change.
+    in-out property <ThemeChoice> theme-choice: ThemeChoice.system;
+    callback appearance-changed();
+    // Development builds preview controls whose feature has not shipped (microphone, headset,
+    // "Go to…"); release builds hide them (ADR-0022 §5).
+    in property <bool> shows-unreleased-controls;
     in property <bool> is-signed-in;
     // Empty hides the banner.
     in property <string> connection-notice;
@@ -123,12 +139,36 @@ export component AppWindow inherits Window {
     property <int> server-header-focus-request-count;
 
     // Set from `changed width` rather than bound to `width`: a binding would make the layout depend
-    // on itself (the panes' presence changes the window's minimum width).
-    property <bool> is-wide-enough-for-member-list: true;
+    // on itself (the cards' presence changes the window's minimum width).
+    property <bool> is-wide-enough-to-dock-side-sheet: true;
     property <bool> is-wide-enough-for-sidebar: true;
     changed width => {
-        self.is-wide-enough-for-member-list = self.width >= LayoutBreakpoint.all-panes;
-        self.is-wide-enough-for-sidebar = self.width >= LayoutBreakpoint.sidebar-visible;
+        self.is-wide-enough-to-dock-side-sheet = self.width >= LayoutBreakpoint.side-sheet-docked;
+        self.is-wide-enough-for-sidebar = self.width >= LayoutBreakpoint.navigator-visible;
+        if self.is-wide-enough-for-sidebar {
+            self.is-navigator-drawer-open = false;
+        }
+    }
+    // Below the navigator breakpoint the navigator opens as a drawer over the sheet.
+    in-out property <bool> is-navigator-drawer-open;
+    property <bool> is-member-sheet-shown: is-member-list-visible && !is-direct-message-open;
+    property <bool> is-member-sheet-docked: is-member-sheet-shown && is-wide-enough-to-dock-side-sheet;
+
+    // Theme: the OS's scheme through Slint's palette, unless the person chose one.
+    property <bool> is-dark-theme: theme-choice == ThemeChoice.dark
+        || (theme-choice == ThemeChoice.system && Palette.color-scheme != ColorScheme.light);
+    changed is-dark-theme => { MellowTheme.is-dark = self.is-dark-theme; }
+
+    function toggle-member-sheet() {
+        if root.is-direct-message-open {
+            return;
+        }
+        root.is-member-list-visible = !root.is-member-list-visible;
+        root.member-sheet-toggled();
+        // Over the sheet it took the focus; give it back to where people type.
+        if !root.is-member-list-visible {
+            chat.focus-composer();
+        }
     }
 
     callback select-server(int);
@@ -248,12 +288,14 @@ export component AppWindow inherits Window {
     preferred-height: MellowSize.window-default-height;
     min-width: MellowSize.window-min-width;
     min-height: MellowSize.window-min-height;
-    background: MellowColor.surface-chat;
+    // The ground the cards sit on (ADR-0022).
+    background: MellowColor.surface-rail;
     default-font-family: MellowType.message.font-family;
 
     forward-focus: key-handler;
     // Typing goes to the composer on launch, as on Discord.
     init => {
+        MellowTheme.is-dark = root.is-dark-theme;
         if root.is-signed-in {
             chat.focus-composer();
         }
@@ -281,88 +323,214 @@ export component AppWindow inherits Window {
                 root.is-text-selection-mode = !root.is-text-selection-mode;
                 return accept;
             }
+            // Ctrl+U shows or hides the members, as on Discord (DESIGN.md §7.2).
+            if event.modifiers.control && (event.text == "u" || event.text == "U") {
+                root.toggle-member-sheet();
+                return accept;
+            }
+            if event.text == Key.Escape && root.is-navigator-drawer-open {
+                root.is-navigator-drawer-open = false;
+                chat.focus-composer();
+                return accept;
+            }
             reject
         }
 
         VerticalLayout {
-        ConnectionBanner {
-            text: root.connection-notice;
-        }
-        HorizontalLayout {
-            // shortcut: below 792 px the rail and sidebar are hidden; the drawer (DESIGN.md §4.2) comes later.
-            if root.is-wide-enough-for-sidebar: ServerRail {
-                servers: root.servers;
-                selected-server-index: root.selected-server-index;
-                has-unread-direct-messages: root.has-unread-direct-messages;
-                home-melli-state: root.home-melli-state;
-                select-server(index) => { root.select-server(index); }
-                add-server => { root.open-dialog = ShellDialog.add-server; }
+            ConnectionBanner {
+                text: root.connection-notice;
             }
-            if root.is-wide-enough-for-sidebar: ChannelSidebar {
-                server-name: root.server-name;
-                rows: root.channel-rows;
-                is-home: root.is-home;
-                direct-message-rows: root.direct-message-rows;
-                selected-channel-id: root.selected-channel-id;
-                current-user-name: root.current-user-name;
-                current-user-initial: root.current-user-initial;
-                toggle-category(index) => { root.toggle-category(index); }
-                select-channel(name) => { root.select-channel(name); }
-                has-update-available: root.has-update-available;
-                settings-button-focus-request-count: root.settings-button-focus-request-count;
-                open-user-settings => { root.is-user-settings-open = true; }
-                can-open-server-settings: root.can-open-server-settings;
-                server-header-focus-request-count: root.server-header-focus-request-count;
-                open-server-settings => { root.open-server-settings(); }
-                can-invite-people: root.can-invite-people;
-                can-create-channels: root.can-create-channels;
-                can-leave-server: root.can-leave-server;
-                invite-people => {
-                    root.open-dialog = ShellDialog.invite-people;
-                    root.create-invite();
+            // Cards on the ground (ADR-0022 §1). The top inset is doubled, and so is the trailing one
+            // while the side sheet is not docked, as in the reference mockup, where the empty top bar
+            // and side sheet tracks each add their gap.
+            HorizontalLayout {
+                padding: root.is-wide-enough-for-sidebar ? MellowSize.sheet-inset : 0px;
+                padding-top: root.is-wide-enough-for-sidebar ? 2 * MellowSize.sheet-inset : 0px;
+                padding-right: !root.is-wide-enough-for-sidebar ? 0px
+                    : root.is-member-sheet-docked ? MellowSize.sheet-inset : 2 * MellowSize.sheet-inset;
+                spacing: root.is-wide-enough-for-sidebar ? MellowSize.sheet-inset : 0px;
+                if root.is-wide-enough-for-sidebar: Navigator {
+                    servers: root.servers;
+                    selected-server-index: root.selected-server-index;
+                    has-unread-direct-messages: root.has-unread-direct-messages;
+                    home-melli-state: root.home-melli-state;
+                    select-server(index) => { root.select-server(index); }
+                    add-server => { root.open-dialog = ShellDialog.add-server; }
+                    server-name: root.server-name;
+                    channel-rows: root.channel-rows;
+                    is-home: root.is-home;
+                    direct-message-rows: root.direct-message-rows;
+                    selected-channel-id: root.selected-channel-id;
+                    toggle-category(index) => { root.toggle-category(index); }
+                    select-channel(id) => { root.select-channel(id); }
+                    can-open-server-settings: root.can-open-server-settings;
+                    server-header-focus-request-count: root.server-header-focus-request-count;
+                    open-server-settings => { root.open-server-settings(); }
+                    can-invite-people: root.can-invite-people;
+                    can-create-channels: root.can-create-channels;
+                    can-leave-server: root.can-leave-server;
+                    invite-people => {
+                        root.open-dialog = ShellDialog.invite-people;
+                        root.create-invite();
+                    }
+                    create-channel => { root.open-dialog = ShellDialog.create-channel; }
+                    leave-server => { root.open-dialog = ShellDialog.leave-server; }
+                    current-user-name: root.current-user-name;
+                    current-user-initial: root.current-user-initial;
+                    current-username: root.account-username;
+                    has-update-available: root.has-update-available;
+                    shows-voice-controls: root.shows-unreleased-controls;
+                    settings-button-focus-request-count: root.settings-button-focus-request-count;
+                    open-user-settings => { root.is-user-settings-open = true; }
                 }
-                create-channel => { root.open-dialog = ShellDialog.create-channel; }
-                leave-server => { root.open-dialog = ShellDialog.leave-server; }
-            }
-            chat := ChatPane {
-                horizontal-stretch: 1;
-                channel-name: root.selected-channel-name;
-                channel-topic: root.selected-channel-topic;
-                is-direct-message: root.is-direct-message-open;
-                messages: root.messages;
-                is-text-selection-mode: root.is-text-selection-mode;
-                latest-announcement: root.latest-announcement;
-                composer-text <=> root.composer-text;
-                is-member-list-visible <=> root.is-member-list-visible;
-                send-message(text) => { root.send-message(text); }
-                link-clicked(url) => { root.link-clicked(url); }
-                copy-message-text(index) => { root.copy-message-text(index); }
-                replying-to-author: root.replying-to-author;
-                editing-message-index <=> root.editing-message-index;
-                editing-message-draft <=> root.editing-message-draft;
-                deleting-message-index <=> root.deleting-message-index;
-                message-action-error: root.message-action-error;
-                can-send-messages: root.can-send-messages;
-                reply-to-message(index) => { root.reply-to-message(index); }
-                cancel-reply => { root.cancel-reply(); }
-                save-message-edit(index, text) => { root.save-message-edit(index, text); }
-                edit-last-own-message => { root.edit-last-own-message(); }
-                delete-message(index) => { root.delete-message(index); }
-                retry-message(index) => { root.retry-message(index); }
-                discard-failed-message(index) => { root.discard-failed-message(index); }
-                load-older-messages => { root.load-older-messages(); }
-                history-start-state: root.history-start-state;
-                retry-loading-history => { root.retry-loading-history(); }
-            }
-            // shortcut: below 1032 px the member list is hidden instead of becoming an overlay.
-            if root.is-member-list-visible && root.is-wide-enough-for-member-list && !root.is-direct-message-open: MemberList {
-                rows: root.member-rows;
-                // Typing goes to the conversation, as on Discord; the popout and its row are gone.
-                // Rust focuses the composer once the conversation is open: until then it still
-                // sends to the channel being read.
-                open-direct-message(user-id) => { root.open-direct-message(user-id); }
+                chat := ChatPane {
+                    horizontal-stretch: 1;
+                    channel-id: root.selected-channel-id;
+                    channel-name: root.selected-channel-name;
+                    channel-topic: root.selected-channel-topic;
+                    is-direct-message: root.is-direct-message-open;
+                    is-narrow: !root.is-wide-enough-for-sidebar;
+                    shows-go-to-button: root.shows-unreleased-controls;
+                    is-member-sheet-open: root.is-member-sheet-shown;
+                    toggle-member-sheet => { root.toggle-member-sheet(); }
+                    open-navigator-drawer => { root.is-navigator-drawer-open = true; }
+                    messages: root.messages;
+                    is-text-selection-mode: root.is-text-selection-mode;
+                    latest-announcement: root.latest-announcement;
+                    composer-text <=> root.composer-text;
+                    send-message(text) => { root.send-message(text); }
+                    link-clicked(url) => { root.link-clicked(url); }
+                    copy-message-text(index) => { root.copy-message-text(index); }
+                    replying-to-author: root.replying-to-author;
+                    editing-message-index <=> root.editing-message-index;
+                    editing-message-draft <=> root.editing-message-draft;
+                    deleting-message-index <=> root.deleting-message-index;
+                    message-action-error: root.message-action-error;
+                    can-send-messages: root.can-send-messages;
+                    reply-to-message(index) => { root.reply-to-message(index); }
+                    cancel-reply => { root.cancel-reply(); }
+                    save-message-edit(index, text) => { root.save-message-edit(index, text); }
+                    edit-last-own-message => { root.edit-last-own-message(); }
+                    delete-message(index) => { root.delete-message(index); }
+                    retry-message(index) => { root.retry-message(index); }
+                    discard-failed-message(index) => { root.discard-failed-message(index); }
+                    load-older-messages => { root.load-older-messages(); }
+                    history-start-state: root.history-start-state;
+                    retry-loading-history => { root.retry-loading-history(); }
+                }
+                // Docked beside the sheet from 1064 px; below, it lies over the sheet (further down).
+                if root.is-member-sheet-docked: MemberSheet {
+                    rows: root.member-rows;
+                    server-name: root.server-name;
+                    is-overlay: false;
+                    close => { root.toggle-member-sheet(); }
+                    // Typing goes to the conversation, as on Discord; Rust focuses the composer once
+                    // the conversation is open: until then it still sends to the channel being read.
+                    open-direct-message(user-id) => { root.open-direct-message(user-id); }
+                }
             }
         }
+
+        // Narrower windows: the side sheet slides over the sheet's trailing side, with a scrim; below
+        // the navigator breakpoint it covers the whole sheet.
+        if root.is-member-sheet-shown && !root.is-wide-enough-to-dock-side-sheet: Rectangle {
+            background: MellowColor.scrim;
+            TouchArea {
+                clicked => { root.toggle-member-sheet(); }
+            }
+        }
+        if root.is-member-sheet-shown && !root.is-wide-enough-to-dock-side-sheet: MemberSheet {
+            x: root.is-wide-enough-for-sidebar ? parent.width - self.width - MellowSize.sheet-inset : 0px;
+            y: root.is-wide-enough-for-sidebar ? MellowSize.sheet-inset : 0px;
+            width: root.is-wide-enough-for-sidebar ? MellowComponent.side-sheet-width : parent.width;
+            height: parent.height - 2 * self.y;
+            card-radius: root.is-wide-enough-for-sidebar ? MellowComponent.side-sheet-radius : 0px;
+            rows: root.member-rows;
+            server-name: root.server-name;
+            is-overlay: true;
+            close => { root.toggle-member-sheet(); }
+            open-direct-message(user-id) => { root.open-direct-message(user-id); }
+        }
+
+        // The navigator as a drawer from the leading edge (DESIGN.md §4.2), the same card over a scrim.
+        if root.is-navigator-drawer-open && !root.is-wide-enough-for-sidebar: Rectangle {
+            background: MellowColor.scrim;
+            TouchArea {
+                clicked => {
+                    root.is-navigator-drawer-open = false;
+                    chat.focus-composer();
+                }
+            }
+        }
+        if root.is-navigator-drawer-open && !root.is-wide-enough-for-sidebar: Navigator {
+            x: self.entry-offset;
+            y: 0;
+            height: parent.height;
+            border-top-left-radius: 0px;
+            border-bottom-left-radius: 0px;
+            // Slides from the leading edge: `motion.duration.slow`, enter curve.
+            property <length> entry-offset: -MellowSpace.md;
+            property <float> entry-opacity: 0;
+            init => {
+                self.entry-offset = 0px;
+                self.entry-opacity = 1;
+            }
+            animate entry-offset { duration: MotionPreference.slow; easing: cubic-bezier(0, 0, 0, 1); }
+            animate entry-opacity { duration: MotionPreference.slow; easing: cubic-bezier(0, 0, 0, 1); }
+            opacity: self.entry-opacity;
+            servers: root.servers;
+            selected-server-index: root.selected-server-index;
+            has-unread-direct-messages: root.has-unread-direct-messages;
+            home-melli-state: root.home-melli-state;
+            select-server(index) => { root.select-server(index); }
+            add-server => {
+                root.is-navigator-drawer-open = false;
+                root.open-dialog = ShellDialog.add-server;
+            }
+            server-name: root.server-name;
+            channel-rows: root.channel-rows;
+            is-home: root.is-home;
+            direct-message-rows: root.direct-message-rows;
+            selected-channel-id: root.selected-channel-id;
+            toggle-category(index) => { root.toggle-category(index); }
+            // Opening a channel closes the drawer and shows its conversation.
+            select-channel(id) => {
+                root.is-navigator-drawer-open = false;
+                root.select-channel(id);
+                chat.focus-composer();
+            }
+            can-open-server-settings: root.can-open-server-settings;
+            server-header-focus-request-count: root.server-header-focus-request-count;
+            open-server-settings => {
+                root.is-navigator-drawer-open = false;
+                root.open-server-settings();
+            }
+            can-invite-people: root.can-invite-people;
+            can-create-channels: root.can-create-channels;
+            can-leave-server: root.can-leave-server;
+            invite-people => {
+                root.is-navigator-drawer-open = false;
+                root.open-dialog = ShellDialog.invite-people;
+                root.create-invite();
+            }
+            create-channel => {
+                root.is-navigator-drawer-open = false;
+                root.open-dialog = ShellDialog.create-channel;
+            }
+            leave-server => {
+                root.is-navigator-drawer-open = false;
+                root.open-dialog = ShellDialog.leave-server;
+            }
+            current-user-name: root.current-user-name;
+            current-user-initial: root.current-user-initial;
+            current-username: root.account-username;
+            has-update-available: root.has-update-available;
+            shows-voice-controls: root.shows-unreleased-controls;
+            settings-button-focus-request-count: root.settings-button-focus-request-count;
+            open-user-settings => {
+                root.is-navigator-drawer-open = false;
+                root.is-user-settings-open = true;
+            }
         }
     }
 
@@ -443,6 +611,8 @@ export component AppWindow inherits Window {
         width: root.width;
         height: root.height;
         is-narrow: !root.is-wide-enough-for-sidebar;
+        theme-choice <=> root.theme-choice;
+        appearance-changed => { root.appearance-changed(); }
         app-version: root.app-version;
         update-status: root.update-status;
         available-version: root.available-version;

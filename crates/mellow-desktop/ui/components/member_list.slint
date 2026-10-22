@@ -1,117 +1,43 @@
 import { ListView } from "std-widgets.slint";
-import { MellowComponent, MellowSpace, MellowType } from "../tokens.slint";
-import { Avatar, Button, PresenceStatus } from "primitives.slint";
+import { MellowColor, MellowComponent, MellowMotion, MellowSpace, MellowType } from "../tokens.slint";
+import { MotionPreference } from "../preferences.slint";
+import { Avatar, Button, IconButton, PresenceStatus } from "primitives.slint";
 
 // Role group headers and members flattened into one list for virtualization.
 export struct MemberListRow {
     is-group-header: bool,
+    // Sentence case, shown and announced as is (ADR-0022).
     label: string,
-    // Uppercased group label for display; Slint has no text-transform.
-    display-label: string,
     member-count: int,
     initial: string,
     activity: string,
     status: PresenceStatus,
     // Empty for group headers.
     user-id: string,
-    // Whether the profile popout offers "Message"; false for the signed-in user.
+    // Whether the profile offers "Send message"; false for the signed-in user.
     can-message: bool,
-}
-
-// Discord's profile popout, reduced to what the client knows today (DESIGN.md §5.7): banner strip,
-// avatar, display name and "Message".
-component ProfilePopover inherits Rectangle {
-    in property <MemberListRow> member;
-    callback message();
-    width: MellowComponent.profile-popover-width;
-    background: MellowComponent.profile-popover-background;
-    border-radius: MellowComponent.profile-popover-radius;
-    border-width: MellowComponent.profile-popover-border-width;
-    border-color: MellowComponent.profile-popover-border;
-    clip: true;
-    accessible-role: groupbox;
-    accessible-label: member.label + ", profile";
-
-    property <length> avatar-outer-size: MellowComponent.profile-popover-avatar-size + 2 * MellowComponent.profile-popover-avatar-ring-width;
-
-    Rectangle {
-        y: 0;
-        height: MellowComponent.profile-popover-banner-height;
-        background: MellowComponent.profile-popover-banner;
-    }
-    VerticalLayout {
-        // The avatar straddles the banner's lower edge, as on Discord.
-        padding-top: MellowComponent.profile-popover-banner-height - root.avatar-outer-size / 2;
-        padding-left: MellowComponent.profile-popover-padding - MellowComponent.profile-popover-avatar-ring-width;
-        padding-right: MellowComponent.profile-popover-padding;
-        padding-bottom: MellowComponent.profile-popover-padding;
-        spacing: MellowComponent.profile-popover-gap;
-        HorizontalLayout {
-            alignment: start;
-            Rectangle {
-                width: root.avatar-outer-size;
-                height: self.width;
-                border-radius: self.width / 2;
-                background: MellowComponent.profile-popover-background;
-                Avatar {
-                    initial: root.member.initial;
-                    size: MellowComponent.profile-popover-avatar-size;
-                }
-            }
-        }
-        VerticalLayout {
-            padding-left: MellowComponent.profile-popover-avatar-ring-width;
-            spacing: MellowComponent.profile-popover-gap;
-            Text {
-                text: root.member.label;
-                color: MellowComponent.profile-popover-name-text;
-                font-size: MellowType.heading-md.font-size;
-                font-weight: MellowType.heading-md.font-weight;
-                wrap: word-wrap;
-                accessible-role: none;
-            }
-            if root.member.can-message: Button {
-                label: "Message";
-                is-primary: true;
-                accessible-label: "Message " + root.member.label;
-                init => { self.focus(); }
-                clicked => { root.message(); }
-            }
-        }
-    }
 }
 
 component MemberRow inherits Rectangle {
     in property <MemberListRow> member;
-    callback open-direct-message(string);
+    callback chosen();
     property <bool> is-offline: member.status == PresenceStatus.offline;
-    property <bool> is-highlighted: touch.has-hover || focus-scope.has-focus || profile.is-open;
-    height: MellowComponent.member-row-height + MellowComponent.member-row-gap;
+    property <bool> is-highlighted: touch.has-hover || focus-scope.has-focus;
+    height: MellowComponent.member-row-gap + MellowComponent.member-row-height;
     accessible-role: list-item;
-    accessible-label: member.label + (is-offline ? ", offline" : "") + (member.activity != "" ? ", " + member.activity : "");
-    accessible-expandable: true;
-    accessible-expanded: profile.is-open;
-    accessible-action-default => { profile.show(); }
-
-    // Opens to the leading side of the member list, top-aligned with the row; Slint keeps it inside
-    // the window. Esc and clicks outside close it, and focus returns to the row.
-    profile := PopupWindow {
-        x: -MellowComponent.profile-popover-width - MellowComponent.profile-popover-offset;
-        y: 0;
-        close-policy: close-on-click-outside;
-        ProfilePopover {
-            member: root.member;
-            message => {
-                profile.close();
-                root.open-direct-message(root.member.user-id);
-            }
-        }
-    }
+    accessible-label: member.label
+        + (member.status == PresenceStatus.online ? ", online"
+            : member.status == PresenceStatus.idle ? ", idle"
+            : member.status == PresenceStatus.do-not-disturb ? ", do not disturb" : ", offline")
+        + (member.activity != "" ? ", " + member.activity : "");
+    accessible-description: "Shows their profile";
+    accessible-action-default => { root.chosen(); }
+    forward-focus: focus-scope;
 
     focus-scope := FocusScope {
         key-pressed(event) => {
             if event.text == " " || event.text == "\n" {
-                profile.show();
+                root.chosen();
                 return accept;
             }
             reject
@@ -120,18 +46,18 @@ component MemberRow inherits Rectangle {
 
     row := Rectangle {
         x: MellowComponent.member-row-margin-inline;
+        y: MellowComponent.member-row-gap;
         width: parent.width - 2 * MellowComponent.member-row-margin-inline;
         height: MellowComponent.member-row-height;
         border-radius: MellowComponent.member-row-radius;
-        background: profile.is-open ? MellowComponent.member-row-background-selected
-            : root.is-highlighted ? MellowComponent.member-row-background-hover : MellowComponent.member-list-background;
+        background: root.is-highlighted ? MellowComponent.member-row-background-hover : MellowComponent.side-sheet-background;
         border-width: focus-scope.has-focus ? MellowComponent.focus-ring-width : 0px;
         border-color: MellowComponent.focus-ring-color;
+        // `motion.easing.standard`; colour only, so reduced motion keeps it.
+        animate background { duration: MellowMotion.duration-fast; easing: cubic-bezier(0.2, 0, 0, 1); }
         touch := TouchArea {
-            clicked => {
-                focus-scope.focus();
-                profile.show();
-            }
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.chosen(); }
         }
         HorizontalLayout {
             padding-left: MellowComponent.member-row-padding-inline;
@@ -144,7 +70,7 @@ component MemberRow inherits Rectangle {
                     opacity: is-offline ? MellowComponent.member-row-offline-avatar-opacity : 1.0;
                     initial: member.initial;
                     size: MellowComponent.member-row-avatar-size;
-                    has-presence: !is-offline;
+                    has-presence: true;
                     status: member.status;
                     ring-color: row.background;
                 }
@@ -158,48 +84,236 @@ component MemberRow inherits Rectangle {
                     font-size: MellowType.member-name.font-size;
                     font-weight: MellowType.member-name.font-weight;
                     overflow: elide;
+                    accessible-role: none;
                 }
                 if member.activity != "": Text {
                     text: member.activity;
                     color: MellowComponent.member-row-activity-text;
                     font-size: MellowType.body-sm.font-size;
                     overflow: elide;
+                    accessible-role: none;
                 }
             }
         }
     }
 }
 
-export component MemberList inherits Rectangle {
-    in property <[MemberListRow]> rows;
-    // User id of the member whose profile popout asked for a conversation.
-    callback open-direct-message(string);
-    width: MellowComponent.member-list-width;
-    background: MellowComponent.member-list-background;
+// A member's profile in the side sheet (DESIGN.md §5.7): banner strip, avatar over its lower edge,
+// display name and "Send message".
+component MemberProfile inherits VerticalLayout {
+    in property <MemberListRow> member;
+    callback send-message();
+    property <length> avatar-outer-size: MellowComponent.profile-popover-avatar-size + 2 * MellowComponent.profile-popover-avatar-ring-width;
+    padding-left: MellowSpace.md;
+    padding-right: MellowSpace.md;
+    padding-bottom: MellowSpace.md;
+    spacing: MellowSpace.xs;
+    alignment: start;
+    accessible-role: groupbox;
+    accessible-label: member.label + ", profile";
 
-    ListView {
-        accessible-role: list;
-        accessible-label: "Members";
-        for row in rows: VerticalLayout {
-            if row.is-group-header: Rectangle {
-                height: MellowComponent.member-list-group-height;
-                accessible-role: text;
-                accessible-label: row.label + ", " + row.member-count;
-                Text {
-                    x: MellowSpace.md;
-                    y: parent.height - self.height - MellowSpace.space-2xs;
-                    text: row.display-label + " — " + row.member-count;
-                    accessible-role: none;
-                    color: MellowComponent.member-list-group-text;
-                    font-size: MellowType.category.font-size;
-                    font-weight: MellowType.category.font-weight;
-                    letter-spacing: MellowType.category.letter-spacing;
-                }
-            }
-            if !row.is-group-header: MemberRow {
-                member: row;
-                open-direct-message(user-id) => { root.open-direct-message(user-id); }
+    Rectangle {
+        height: MellowComponent.profile-popover-banner-height;
+        Rectangle {
+            x: -MellowSpace.md;
+            width: parent.width + 2 * MellowSpace.md;
+            background: MellowComponent.profile-popover-banner;
+        }
+    }
+    // The avatar rises half its height over the banner, ringed in the sheet's colour.
+    Rectangle {
+        height: MellowComponent.profile-popover-avatar-size / 2;
+        Rectangle {
+            x: -MellowComponent.profile-popover-avatar-ring-width;
+            y: -MellowComponent.profile-popover-avatar-size / 2 - MellowComponent.profile-popover-avatar-ring-width;
+            width: root.avatar-outer-size;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: MellowComponent.side-sheet-background;
+            Avatar {
+                initial: root.member.initial;
+                size: MellowComponent.profile-popover-avatar-size;
             }
         }
+    }
+    // An empty row: the name sits one more step below the avatar.
+    Rectangle { height: 0px; }
+    Text {
+        text: root.member.label;
+        color: MellowColor.text-heading;
+        font-size: MellowType.heading-lg.font-size;
+        font-weight: MellowType.heading-lg.font-weight;
+        letter-spacing: MellowType.heading-lg.letter-spacing;
+        wrap: word-wrap;
+        accessible-role: none;
+    }
+    if root.member.can-message: VerticalLayout {
+        padding-top: MellowSpace.xs;
+        Button {
+            label: "Send message";
+            is-primary: true;
+            accessible-label: "Send a message to " + root.member.label;
+            clicked => { root.send-message(); }
+        }
+    }
+}
+
+// The side sheet (ADR-0022 §1): members on demand, then a member's profile. Docked beside the
+// sheet on wide windows, over it otherwise; it slides in from the trailing edge.
+export component MemberSheet inherits Rectangle {
+    in property <[MemberListRow]> rows;
+    in property <string> server-name;
+    // Over the sheet (with a scrim) rather than beside it: focus moves in, and Esc closes it.
+    in property <bool> is-overlay;
+    callback close();
+    // User id of the member whose profile asked for a conversation.
+    callback open-direct-message(string);
+
+    property <bool> is-showing-profile;
+    property <MemberListRow> profile-member;
+
+    // Square when it covers the whole window.
+    in property <length> card-radius: MellowComponent.side-sheet-radius;
+
+    width: MellowComponent.side-sheet-width;
+    accessible-role: groupbox;
+    accessible-label: is-showing-profile ? "Profile of " + profile-member.label : "Members of " + server-name;
+
+    // Slides `space.md` from the trailing edge and fades in: `motion.duration.slow`, enter curve.
+    property <length> entry-offset: MellowSpace.md;
+    property <float> entry-opacity: 0;
+    init => {
+        entry-offset = 0px;
+        entry-opacity = 1;
+        if is-overlay {
+            close-button.focus();
+        }
+    }
+    animate entry-offset { duration: MotionPreference.slow; easing: cubic-bezier(0, 0, 0, 1); }
+    animate entry-opacity { duration: MotionPreference.slow; easing: cubic-bezier(0, 0, 0, 1); }
+
+    function show-members() {
+        is-showing-profile = false;
+        close-button.focus();
+    }
+
+    Rectangle {
+    x: root.entry-offset;
+    width: parent.width;
+    height: parent.height;
+    opacity: root.entry-opacity;
+    background: MellowComponent.side-sheet-background;
+    border-radius: root.card-radius;
+    clip: true;
+
+    // Nothing behind the sheet reacts to the pointer while it lies over the conversation.
+    TouchArea { }
+
+    FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            HorizontalLayout {
+                height: MellowComponent.chat-header-height;
+                padding-left: root.is-showing-profile ? MellowSpace.space-2xs : MellowSpace.md;
+                padding-right: MellowSpace.space-2xs;
+                spacing: MellowSpace.space-2xs;
+                if root.is-showing-profile: VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        // Created when a member is chosen: focus follows into their profile.
+                        init => { self.focus(); }
+                        icon: @image-url("../../icons/caret-right.svg");
+                        icon-rotation: 180deg;
+                        label: "Back to members";
+                        size: MellowComponent.user-panel-button-size;
+                        icon-color: MellowComponent.user-panel-button-icon;
+                        hover-icon-color: MellowColor.text-normal;
+                        hover-background: MellowColor.state-hover;
+                        clicked => { root.show-members(); }
+                    }
+                }
+                Text {
+                    text: root.is-showing-profile ? "Profile" : "Members";
+                    color: MellowColor.text-heading;
+                    font-size: MellowType.heading-md.font-size;
+                    font-weight: MellowType.heading-md.font-weight;
+                    letter-spacing: MellowType.heading-md.letter-spacing;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    accessible-role: none;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    close-button := IconButton {
+                        icon: @image-url("../../icons/x.svg");
+                        label: "Close";
+                        size: MellowComponent.user-panel-button-size;
+                        icon-color: MellowComponent.user-panel-button-icon;
+                        hover-icon-color: MellowColor.text-normal;
+                        hover-background: MellowColor.state-hover;
+                        clicked => { root.close(); }
+                    }
+                }
+            }
+
+            if !root.is-showing-profile: ListView {
+                vertical-stretch: 1;
+                accessible-role: list;
+                accessible-label: "Members";
+                for row in root.rows: VerticalLayout {
+                    // Label at the bottom, sentence case; the count is its own number at the end.
+                    if row.is-group-header: HorizontalLayout {
+                        height: MellowComponent.member-list-group-height;
+                        padding-left: MellowSpace.md;
+                        padding-right: MellowSpace.md;
+                        padding-bottom: MellowSpace.space-2xs;
+                        alignment: space-between;
+                        accessible-role: text;
+                        accessible-label: row.label + ", " + row.member-count + (row.member-count == 1 ? " member" : " members");
+                        Text {
+                            text: row.label;
+                            vertical-alignment: bottom;
+                            overflow: elide;
+                            color: MellowComponent.member-list-group-text;
+                            font-size: MellowType.category.font-size;
+                            font-weight: MellowType.category.font-weight;
+                            letter-spacing: MellowType.category.letter-spacing;
+                            accessible-role: none;
+                        }
+                        Text {
+                            text: row.member-count;
+                            vertical-alignment: bottom;
+                            color: MellowComponent.member-list-group-text;
+                            font-size: MellowType.category.font-size;
+                            font-weight: MellowType.category.font-weight;
+                            accessible-role: none;
+                        }
+                    }
+                    if !row.is-group-header: MemberRow {
+                        member: row;
+                        chosen => {
+                            root.profile-member = row;
+                            root.is-showing-profile = true;
+                        }
+                    }
+                }
+            }
+            if root.is-showing-profile: MemberProfile {
+                vertical-stretch: 1;
+                member: root.profile-member;
+                send-message => { root.open-direct-message(root.profile-member.user-id); }
+            }
+        }
+    }
     }
 }

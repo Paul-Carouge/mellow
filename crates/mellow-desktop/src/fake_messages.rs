@@ -24,8 +24,10 @@ pub struct FakeMessage {
     pub time_of_day: String,
     pub body: &'static str,
     pub starts_author_group: bool,
+    pub reply_author: Option<&'static str>,
     pub reply_preview: Option<&'static str>,
     pub mentions_current_user: bool,
+    pub has_attachment: bool,
 }
 
 pub fn fake_conversation(message_count: usize) -> Vec<FakeMessage> {
@@ -39,8 +41,10 @@ pub fn fake_conversation(message_count: usize) -> Vec<FakeMessage> {
                 time_of_day: format!("{:02}:{:02}", minutes_of_day / 60, minutes_of_day % 60),
                 body,
                 starts_author_group: index % MESSAGES_PER_AUTHOR_TURN == 0,
+                reply_author: (index % 11 == 5).then_some(AUTHORS[0]),
                 reply_preview: (index % 11 == 5).then_some(SAMPLE_BODIES[0]),
                 mentions_current_user: body.contains(MENTION_MARKER),
+                has_attachment: index % 13 == 7,
             }
         })
         .collect()

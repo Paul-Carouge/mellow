@@ -11,7 +11,7 @@ use crate::fake_messages::{FakeMessage, fake_conversation};
 use crate::fake_workspace::{
     FakeCategory, FakeServer, fake_categories, fake_role_groups, fake_servers,
 };
-use crate::generated_ui::{AppWindow, MessageDelivery, MessageRow};
+use crate::generated_ui::{AppWindow, AttachmentRow, MessageDelivery, MessageRow};
 use crate::message_markup::styled_text_from_message_body;
 use crate::{idle_benchmark, scroll_benchmark, shell_rows};
 
@@ -20,6 +20,9 @@ const BUSIEST_CHANNEL_NAME: &str = "general";
 const BUSIEST_CHANNEL_MESSAGE_COUNT: usize = 10_000;
 const QUIET_CHANNEL_MESSAGE_COUNT: usize = 40;
 const CURRENT_USER_NAME: &str = "You";
+const CURRENT_USERNAME: &str = "you";
+const FAKE_ATTACHMENT_NAME: &str = "release-checklist.ods";
+const FAKE_ATTACHMENT_SIZE: &str = "18.0 KB";
 /// Shown when the rail's home entry (index -1 in `server_rail.slint`) is selected.
 const HOME_SERVER_NAME: &str = "Direct messages";
 
@@ -40,8 +43,18 @@ fn message_row(message: &FakeMessage) -> MessageRow {
         short_time: message.time_of_day.clone().into(),
         body: styled_text_from_message_body(message.body),
         body_plain: message.body.into(),
-        attachment_summaries: slint::ModelRc::default(),
+        attachments: if message.has_attachment {
+            ModelRc::new(VecModel::from(vec![AttachmentRow {
+                name: FAKE_ATTACHMENT_NAME.into(),
+                size: FAKE_ATTACHMENT_SIZE.into(),
+            }]))
+        } else {
+            ModelRc::default()
+        },
         starts_author_group: message.starts_author_group,
+        reply_author: message.reply_author.unwrap_or_default().into(),
+        reply_author_initial: shell_rows::first_letter(message.reply_author.unwrap_or_default())
+            .into(),
         reply_preview: message.reply_preview.unwrap_or_default().into(),
         mentions_current_user: message.mentions_current_user,
         is_own: message.author == CURRENT_USER_NAME,
@@ -120,6 +133,7 @@ pub fn start(window: &AppWindow) -> Result<(), slint::PlatformError> {
     ))));
     window.set_current_user_name(CURRENT_USER_NAME.into());
     window.set_current_user_initial(shell_rows::first_letter(CURRENT_USER_NAME).into());
+    window.set_account_username(CURRENT_USERNAME.into());
     window.set_messages(state.borrow().messages.clone().into());
     open_channel(window, &mut state.borrow_mut(), BUSIEST_CHANNEL_NAME);
 
@@ -202,8 +216,10 @@ fn connect_message_callbacks(window: &AppWindow, state: &Rc<RefCell<ShellState>>
             short_time: SharedString::default(),
             body: styled_text_from_message_body(&text),
             body_plain: text.clone(),
-            attachment_summaries: slint::ModelRc::default(),
+            attachments: slint::ModelRc::default(),
             starts_author_group: last_author.as_deref() != Some(CURRENT_USER_NAME),
+            reply_author: SharedString::default(),
+            reply_author_initial: SharedString::default(),
             reply_preview: SharedString::default(),
             mentions_current_user: false,
             // shortcut: the demo shows Edit and Delete on its own messages but does not apply them.

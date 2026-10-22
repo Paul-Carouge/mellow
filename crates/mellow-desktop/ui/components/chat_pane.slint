@@ -1,5 +1,6 @@
 import { ListView } from "std-widgets.slint";
-import { MellowColor, MellowComponent, MellowMotion, MellowRadius, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
+import { MellowColor, MellowComponent, MellowFont, MellowMotion, MellowRadius, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
+import { MotionPreference } from "../preferences.slint";
 import { Avatar, Button, IconButton } from "primitives.slint";
 
 // Where a message the signed-in user sent stands: confirmed by the server, or still in the outbox.
@@ -7,6 +8,12 @@ export enum MessageDelivery { sent, sending, failed }
 // What sits above the oldest loaded message (DESIGN.md §5.4 "List states"): nothing while older
 // history may exist, skeletons while a page loads, an error with "Try again", or the channel-start hero.
 export enum HistoryStartState { unknown, loading, failed, channel-start }
+
+// One attached file: its name and its size, formatted in Rust ("2.4 MB").
+export struct AttachmentRow {
+    name: string,
+    size: string,
+}
 
 export struct MessageRow {
     author: string,
@@ -18,6 +25,9 @@ export struct MessageRow {
     // Source text: copied by "Copy text", read by screen readers, shown in selection mode.
     body-plain: string,
     starts-author-group: bool,
+    // A reply: the original's author (empty when it is gone) and the start of its text.
+    reply-author: string,
+    reply-author-initial: string,
     reply-preview: string,
     mentions-current-user: bool,
     // The signed-in user wrote it: only then is Edit offered.
@@ -28,7 +38,7 @@ export struct MessageRow {
     // Sending and failed rows are the user's own, after every confirmed row; they offer no message actions.
     delivery: MessageDelivery,
     // One "name · size" line per attached file, formatted in Rust; shown under the text.
-    attachment-summaries: [string],
+    attachments: [AttachmentRow],
 }
 
 component HoverActionBar inherits Rectangle {
@@ -247,6 +257,12 @@ component MessageView inherits Rectangle {
     callback retry();
     callback discard();
 
+    property <bool> has-reply: message.reply-preview != "";
+    // 2 px lower than the text column, so the 40 px circle centres on the name and first line; a
+    // reply reference above the name pushes it down by its own height.
+    property <length> avatar-y: layout.padding-top + MellowSpace.space-3xs
+        + (has-reply ? MellowComponent.message-reply-height + MellowSpace.space-3xs : 0px);
+
     // Not set on rows the server has not stored: they cannot be edited, replied to or deleted there yet.
     property <bool> is-confirmed: message.delivery == MessageDelivery.sent;
     // Restarts when the rows are rebuilt (set_vec recreates them), which only delays the label again.
@@ -262,11 +278,13 @@ component MessageView inherits Rectangle {
 
     background: message.mentions-current-user ? (is-hovered ? MellowComponent.mention-background-hover : MellowComponent.mention-background)
         : is-hovered || is-editing ? MellowComponent.message-background-hover : transparent;
+    // `motion.easing.standard`; colour only, so reduced motion keeps it.
+    animate background { duration: MellowMotion.duration-fast; easing: cubic-bezier(0.2, 0, 0, 1); }
     accessible-role: list-item;
     accessible-label: message.author + ", " + message.timestamp + ": " + message.body-plain
         + (message.is-edited ? " (edited)" : "")
-        + (message.attachment-summaries.length == 1 ? ". 1 attachment"
-            : message.attachment-summaries.length > 1 ? ". " + message.attachment-summaries.length + " attachments" : "");
+        + (message.attachments.length == 1 ? ". 1 attachment"
+            : message.attachments.length > 1 ? ". " + message.attachments.length + " attachments" : "");
     accessible-description: message.delivery == MessageDelivery.sending ? "Sending"
         : message.delivery == MessageDelivery.failed ? "Not sent. Retry or delete it." : "";
 
@@ -290,13 +308,35 @@ component MessageView inherits Rectangle {
             padding-right: MellowComponent.message-padding-trailing;
             // The avatar sits outside the layout, so the row must still be tall enough to contain it.
             min-height: message.starts-author-group
-                ? self.padding-top + MellowComponent.message-avatar-size + self.padding-bottom : 0px;
+                ? root.avatar-y + MellowComponent.message-avatar-size + self.padding-bottom : 0px;
 
-            if message.reply-preview != "": Text {
-                text: "↪ " + message.reply-preview;
-                color: MellowColor.text-muted;
-                font-size: MellowType.body-sm.font-size;
-                overflow: elide;
+            // The reply reference (DESIGN.md §5.4): the original's avatar, author and first words.
+            if root.has-reply: HorizontalLayout {
+                height: MellowComponent.message-reply-height;
+                spacing: MellowSpace.space-2xs;
+                alignment: start;
+                if message.reply-author != "": VerticalLayout {
+                    alignment: center;
+                    Avatar {
+                        initial: message.reply-author-initial;
+                        size: MellowComponent.message-reply-avatar-size;
+                    }
+                }
+                if message.reply-author != "": Text {
+                    text: message.reply-author;
+                    color: MellowColor.text-heading;
+                    font-size: MellowType.body.font-size;
+                    font-weight: MellowFont.weight-medium;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: message.reply-preview;
+                    color: MellowColor.text-secondary;
+                    font-size: MellowType.body.font-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
             }
             if message.starts-author-group: HorizontalLayout {
                 spacing: MellowSpace.xs;
@@ -336,29 +376,48 @@ component MessageView inherits Rectangle {
                 // The row's accessible label already says "(edited)".
                 accessible-role: none;
             }
-            // shortcut: names only, no previews or downloads until the desktop client handles files
-            // (DESIGN.md §5.4 "Attachments").
-            if !is-editing: VerticalLayout {
-                spacing: MellowComponent.attachment-row-gap;
-                for summary in message.attachment-summaries: HorizontalLayout {
+            // The file card (DESIGN.md §5.4 "Attachments"). shortcut: no picture previews and no
+            // download button until the desktop client handles files.
+            if !is-editing && message.attachments.length > 0: VerticalLayout {
+                padding-top: MellowSpace.space-2xs;
+                spacing: MellowComponent.attachment-gap;
+                for attachment in message.attachments: HorizontalLayout {
                     alignment: start;
-                    spacing: MellowComponent.attachment-row-gap;
-                    VerticalLayout {
-                        alignment: center;
-                        Image {
-                            source: @image-url("../../icons/file.svg");
-                            colorize: MellowComponent.attachment-file-icon;
-                            width: MellowComponent.attachment-row-icon-size;
-                            height: self.width;
-                            accessible-role: none;
+                    Rectangle {
+                        width: min(MellowComponent.attachment-file-max-width, layout.width - layout.padding-left - layout.padding-right);
+                        border-radius: MellowComponent.attachment-file-radius;
+                        border-width: MellowComponent.attachment-file-border-width;
+                        border-color: MellowComponent.attachment-file-border;
+                        background: MellowComponent.attachment-file-background;
+                        HorizontalLayout {
+                            padding: MellowComponent.attachment-file-padding;
+                            spacing: MellowComponent.attachment-file-gap;
+                            VerticalLayout {
+                                alignment: center;
+                                Image {
+                                    source: @image-url("../../icons/file.svg");
+                                    colorize: MellowComponent.attachment-file-icon;
+                                    width: MellowComponent.attachment-file-icon-size;
+                                    height: self.width;
+                                    accessible-role: none;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: attachment.name;
+                                    color: MellowComponent.attachment-file-name-text;
+                                    font-size: MellowType.message.font-size;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: attachment.size;
+                                    color: MellowComponent.attachment-file-size-text;
+                                    font-size: MellowType.body-sm.font-size;
+                                }
+                            }
                         }
-                    }
-                    Text {
-                        text: summary;
-                        color: MellowComponent.attachment-row-text;
-                        font-size: MellowType.body.font-size;
-                        vertical-alignment: center;
-                        overflow: elide;
                     }
                 }
             }
@@ -416,9 +475,27 @@ component MessageView inherits Rectangle {
             }
         }
 
+        // 2 px lower than the text column, so the 40 px circle centres on the name and first line.
+        // The spine runs from above the avatar's centre to the reply reference.
+        if root.has-reply: Rectangle {
+            x: MellowComponent.message-avatar-inset + (MellowComponent.message-avatar-size - MellowComponent.message-reply-spine-width) / 2;
+            y: layout.padding-top + MellowComponent.message-reply-height / 2;
+            width: MellowComponent.message-reply-spine-inline-size;
+            height: MellowComponent.message-reply-spine-block-size;
+            clip: true;
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: parent.width + MellowComponent.message-reply-spine-radius;
+                height: parent.height + MellowComponent.message-reply-spine-radius;
+                border-width: MellowComponent.message-reply-spine-width;
+                border-color: MellowComponent.message-reply-spine-color;
+                border-top-left-radius: MellowComponent.message-reply-spine-radius;
+            }
+        }
         if message.starts-author-group: Avatar {
             x: MellowComponent.message-avatar-inset;
-            y: layout.padding-top;
+            y: root.avatar-y;
             initial: message.author-initial;
             size: MellowComponent.message-avatar-size;
         }
@@ -494,22 +571,33 @@ component MessageSkeleton inherits Rectangle {
     }
 }
 
-// "You're viewing older messages" bar above the composer (DESIGN.md §5.4 "Unread divider and jump
-// bars"). The whole bar is one button, as on Discord.
+// "You're viewing older messages" bar over the bottom of the list (DESIGN.md §5.4 "Unread divider
+// and jump bars"). The whole bar is one button, as on Discord; it slides in from its edge.
 component JumpToPresentBar inherits Rectangle {
     // Messages that arrived in this channel since the reader scrolled away from the latest one.
     in property <int> new-message-count;
     callback jump();
     property <string> jump-label: new-message-count > 0 ? "Jump to present · " + new-message-count + " new" : "Jump to present";
     height: MellowComponent.jump-bar-height;
-    border-top-left-radius: MellowComponent.jump-bar-radius;
-    border-top-right-radius: MellowComponent.jump-bar-radius;
-    background: touch.has-hover || focus-scope.has-focus ? MellowComponent.jump-bar-background-hover : MellowComponent.jump-bar-background;
+    border-radius: MellowComponent.jump-bar-radius;
+    background: MellowComponent.jump-bar-background;
     accessible-role: button;
     accessible-label: jump-label;
     accessible-description: "You're viewing older messages";
     accessible-action-default => { root.jump(); }
     forward-focus: focus-scope;
+
+    // Starts one switch offset low and transparent, then settles: `base` with `motion.easing.enter`.
+    // The parent adds `entry-offset` to the bar's position.
+    out property <length> entry-offset: MellowComponent.channel-switch-offset;
+    property <float> entry-opacity: 0;
+    init => {
+        entry-offset = 0px;
+        entry-opacity = 1;
+    }
+    animate entry-offset { duration: MotionPreference.base; easing: cubic-bezier(0, 0, 0, 1); }
+    animate entry-opacity { duration: MotionPreference.base; easing: cubic-bezier(0, 0, 0, 1); }
+    opacity: entry-opacity;
 
     focus-scope := FocusScope {
         key-pressed(event) => {
@@ -525,33 +613,42 @@ component JumpToPresentBar inherits Rectangle {
         clicked => { root.jump(); }
     }
     HorizontalLayout {
-        padding-left: MellowSpace.md;
-        padding-right: MellowSpace.md;
+        padding-left: MellowSpace.sm;
+        padding-right: MellowSpace.space-2xs;
         spacing: MellowSpace.xs;
         Text {
             text: "You're viewing older messages";
             color: MellowComponent.jump-bar-text;
             font-size: MellowType.body.font-size;
+            font-weight: MellowFont.weight-semibold;
             vertical-alignment: center;
             overflow: elide;
             horizontal-stretch: 1;
             accessible-role: none;
         }
-        Text {
-            text: root.jump-label;
-            color: MellowComponent.jump-bar-text;
-            font-size: MellowType.button.font-size;
-            font-weight: MellowType.button.font-weight;
-            vertical-alignment: center;
-            accessible-role: none;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: MellowComponent.jump-bar-height - 2 * MellowSpace.space-3xs;
+                width: jump-text.preferred-width + 2 * MellowSpace.xs;
+                border-radius: MellowRadius.sm;
+                background: touch.has-hover || focus-scope.has-focus ? MellowComponent.jump-bar-background-hover : transparent;
+                jump-text := Text {
+                    text: root.jump-label;
+                    color: MellowComponent.jump-bar-text;
+                    font-size: MellowType.body.font-size;
+                    font-weight: MellowFont.weight-semibold;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+            }
         }
     }
-    // Inset, since the list clips it, and in the bar's text colour: the blue ring lacks 3:1 on apricot.
+    // In the bar's text colour: the blue ring lacks 3:1 on apricot.
     if focus-scope.has-focus: Rectangle {
         border-width: MellowComponent.focus-ring-width;
         border-color: MellowComponent.jump-bar-text;
-        border-top-left-radius: parent.border-top-left-radius;
-        border-top-right-radius: parent.border-top-right-radius;
+        border-radius: parent.border-radius;
     }
 }
 
@@ -646,9 +743,9 @@ component HistoryStart inherits VerticalLayout {
     // Discord's channel-start hero, aligned on the avatar column. No "Edit channel" until channel editing exists.
     if root.state == HistoryStartState.channel-start: VerticalLayout {
         padding-top: MellowComponent.message-channel-start-padding-block;
-        padding-bottom: MellowComponent.message-channel-start-padding-block;
+        padding-bottom: MellowSpace.xs;
         padding-left: MellowComponent.message-avatar-inset;
-        padding-right: MellowComponent.message-padding-trailing;
+        padding-right: MellowComponent.message-avatar-inset;
         spacing: MellowComponent.message-channel-start-gap;
         accessible-role: groupbox;
         accessible-label: root.is-direct-message ? "Start of your direct messages with @" + root.channel-name
@@ -669,6 +766,8 @@ component HistoryStart inherits VerticalLayout {
                 }
             }
         }
+        // The title sits a step further from the icon than the lines below it.
+        Rectangle { height: MellowSpace.xs - MellowComponent.message-channel-start-gap; }
         Text {
             text: root.is-direct-message ? root.channel-name : "Welcome to #" + root.channel-name;
             color: MellowComponent.message-channel-start-title-text;
@@ -681,17 +780,85 @@ component HistoryStart inherits VerticalLayout {
             text: root.is-direct-message ? "This is the beginning of your direct message history with @" + root.channel-name + "."
                 : "This is the start of the #" + root.channel-name + " channel.";
             color: MellowComponent.message-channel-start-description-text;
-            font-size: MellowType.message.font-size;
+            font-size: MellowType.body-lg.font-size;
             wrap: word-wrap;
             accessible-role: text;
         }
         if root.channel-topic != "": Text {
             text: root.channel-topic;
             color: MellowComponent.message-channel-start-description-text;
-            font-size: MellowType.message.font-size;
+            font-size: MellowType.body-lg.font-size;
             wrap: word-wrap;
             accessible-role: text;
         }
+    }
+}
+
+// "Go to… Ctrl K" in the chat header (ADR-0022 §1): opens the quick switcher.
+component GoToButton inherits Rectangle {
+    callback clicked();
+    height: MellowComponent.chat-header-button-size;
+    width: content.preferred-width;
+    border-radius: MellowRadius.sm;
+    background: MellowColor.surface-input;
+    accessible-role: button;
+    accessible-label: "Go to a channel, a server or a person";
+    accessible-description: "Ctrl K";
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus-scope;
+
+    property <color> text-color: touch.has-hover || focus-scope.has-focus ? MellowColor.text-heading : MellowColor.text-secondary;
+    animate text-color { duration: MellowMotion.duration-fast; easing: cubic-bezier(0.2, 0, 0, 1); }
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.clicked(); }
+    }
+    content := HorizontalLayout {
+        padding-left: MellowSpace.sm;
+        padding-right: MellowSpace.space-2xs;
+        spacing: MellowSpace.xs;
+        Text {
+            text: "Go to…";
+            color: root.text-color;
+            font-size: MellowType.body.font-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: MellowType.body.line-height;
+                border-radius: MellowRadius.xs;
+                border-width: 1px;
+                border-color: MellowColor.border-divider;
+                HorizontalLayout {
+                    padding-left: MellowSpace.space-2xs;
+                    padding-right: MellowSpace.space-2xs;
+                    Text {
+                        text: "Ctrl K";
+                        color: MellowColor.text-muted;
+                        font-size: MellowType.body-sm.font-size;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+            }
+        }
+    }
+    if focus-scope.has-focus: Rectangle {
+        border-width: MellowComponent.focus-ring-width;
+        border-color: MellowComponent.focus-ring-color;
+        border-radius: parent.border-radius;
     }
 }
 
@@ -706,7 +873,19 @@ export component ChatPane inherits Rectangle {
     in property <bool> is-text-selection-mode;
     in property <string> latest-announcement;
     in-out property <string> composer-text;
-    in-out property <bool> is-member-list-visible;
+    // The side sheet with the members is open; the header's member button shows it.
+    in property <bool> is-member-sheet-open;
+    // Below the navigator breakpoint: the sheet is full-bleed, a button opens the navigator drawer,
+    // and the topic and "Go to…" leave the header (DESIGN.md §4.2).
+    in property <bool> is-narrow;
+    // "Go to… Ctrl K" opens the quick switcher (DESIGN.md §5.10), which the desktop does not have
+    // yet: the button shows only where unreleased controls are previewed.
+    in property <bool> shows-go-to-button;
+    // Changes with every channel or conversation opened: the list fades and rises in.
+    in property <string> channel-id;
+    callback toggle-member-sheet();
+    callback open-navigator-drawer();
+    callback open-quick-switcher();
     // Non-empty while replying: shows the "Replying to" bar above the composer.
     in property <string> replying-to-author;
     // False where the user lacks Send Messages: a notice replaces the composer and replies are hidden.
@@ -830,8 +1009,28 @@ export component ChatPane inherits Rectangle {
         }
     }
 
+    // The sheet (ADR-0022): the brightest card, rounded where it meets the ground.
     background: MellowColor.surface-chat;
-    min-width: MellowSize.chat-min-width;
+    border-radius: is-narrow ? 0px : MellowComponent.sheet-radius;
+    clip: true;
+    // No minimum of its own: the breakpoints (DESIGN.md §4.2) keep it at least `size.chat.min-width`.
+
+    // Channel switch (DESIGN.md §2.8): the list fades in and rises `channel-switch.offset`, the title
+    // cross-fades; instant under reduced motion. Restarted by snapping both back, then animating.
+    property <float> switch-opacity: 1;
+    property <length> switch-offset: 0px;
+    property <bool> is-switching;
+    changed channel-id => {
+        is-switching = true;
+        switch-opacity = 0;
+        switch-offset = MellowComponent.channel-switch-offset;
+        is-switching = false;
+        switch-opacity = 1;
+        switch-offset = 0px;
+    }
+    // `motion.easing.enter`.
+    animate switch-opacity { duration: is-switching ? 0ms : MotionPreference.base; easing: cubic-bezier(0, 0, 0, 1); }
+    animate switch-offset { duration: is-switching ? 0ms : MotionPreference.base; easing: cubic-bezier(0, 0, 0, 1); }
     // Every path that focuses the composer comes here: without Send Messages it is hidden and
     // must not take focus.
     public function focus-composer() {
@@ -861,18 +1060,33 @@ export component ChatPane inherits Rectangle {
     }
 
     VerticalLayout {
-        Rectangle {
+        // No line under it: the sheet continues (DESIGN.md §4.2).
+        HorizontalLayout {
             height: MellowComponent.chat-header-height;
-            background: MellowComponent.chat-header-background;
+            padding-left: root.is-narrow ? MellowSpace.xs : MellowComponent.chat-header-padding-inline;
+            padding-right: MellowSpace.xs;
+            spacing: MellowSpace.xs;
+            if root.is-narrow: VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: @image-url("../../icons/list.svg");
+                    label: "Open servers and channels";
+                    size: MellowComponent.chat-header-button-size;
+                    icon-size: MellowComponent.chat-header-icon-size;
+                    icon-color: MellowComponent.user-panel-button-icon;
+                    hover-icon-color: MellowColor.text-normal;
+                    hover-background: MellowColor.state-hover;
+                    clicked => { root.open-navigator-drawer(); }
+                }
+            }
             HorizontalLayout {
-                padding-left: MellowComponent.chat-header-padding-inline;
-                padding-right: MellowComponent.chat-header-padding-inline;
-                spacing: MellowSpace.xs;
+                spacing: MellowSpace.space-2xs;
+                opacity: root.switch-opacity;
                 VerticalLayout {
                     alignment: center;
                     Image {
                         source: root.is-direct-message ? @image-url("../../icons/at.svg") : @image-url("../../icons/hash.svg");
-                        colorize: MellowComponent.chat-header-icon;
+                        colorize: MellowColor.text-muted;
                         width: MellowComponent.chat-header-icon-size;
                         height: self.width;
                         accessible-role: none;
@@ -883,38 +1097,53 @@ export component ChatPane inherits Rectangle {
                     color: MellowComponent.chat-header-name-text;
                     font-size: MellowType.heading-md.font-size;
                     font-weight: MellowType.heading-md.font-weight;
-                    vertical-alignment: center;
-                    accessible-role: text;
-                }
-                if channel-topic != "": Rectangle {
-                    width: 1px;
-                    height: MellowComponent.chat-header-divider-height;
-                    background: MellowColor.border-divider;
-                }
-                Text {
-                    text: channel-topic;
-                    color: MellowComponent.chat-header-topic-text;
-                    font-size: MellowType.body-sm.font-size;
+                    letter-spacing: MellowType.heading-md.letter-spacing;
                     vertical-alignment: center;
                     overflow: elide;
-                    horizontal-stretch: 1;
+                    accessible-role: text;
                 }
-                if !root.is-direct-message: VerticalLayout {
+            }
+            if !root.is-narrow && channel-topic != "": HorizontalLayout {
+                padding-left: MellowSpace.xs;
+                padding-right: MellowSpace.xs;
+                VerticalLayout {
                     alignment: center;
-                    IconButton {
-                        icon: @image-url("../../icons/users.svg");
-                        label: is-member-list-visible ? "Hide member list" : "Show member list";
-                        size: MellowComponent.chat-header-button-size;
-                        icon-color: is-member-list-visible ? MellowColor.text-heading : MellowComponent.chat-header-icon;
-                        hover-background: MellowColor.state-hover;
-                        clicked => { root.is-member-list-visible = !root.is-member-list-visible; }
+                    Rectangle {
+                        width: 1px;
+                        height: MellowComponent.chat-header-divider-height;
+                        background: MellowColor.border-divider;
                     }
                 }
             }
-            Rectangle {
-                y: parent.height - 1px;
-                height: 1px;
-                background: MellowColor.border-divider;
+            Text {
+                text: root.is-narrow ? "" : channel-topic;
+                opacity: root.switch-opacity;
+                color: MellowComponent.chat-header-topic-text;
+                font-size: MellowType.body.font-size;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            if root.shows-go-to-button && !root.is-narrow: VerticalLayout {
+                alignment: center;
+                GoToButton {
+                    clicked => { root.open-quick-switcher(); }
+                }
+            }
+            if !root.is-direct-message: VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: @image-url("../../icons/users.svg");
+                    label: "Members";
+                    accessible-checkable: true;
+                    accessible-checked: root.is-member-sheet-open;
+                    size: MellowComponent.chat-header-button-size;
+                    icon-size: MellowComponent.chat-header-icon-size;
+                    icon-color: root.is-member-sheet-open ? MellowColor.text-heading : MellowComponent.user-panel-button-icon;
+                    hover-icon-color: root.is-member-sheet-open ? MellowColor.text-heading : MellowColor.text-normal;
+                    hover-background: MellowColor.state-hover;
+                    clicked => { root.toggle-member-sheet(); }
+                }
             }
         }
 
@@ -923,8 +1152,10 @@ export component ChatPane inherits Rectangle {
             vertical-stretch: 1;
             clip: true;
             message-list := ListView {
+                y: root.switch-offset;
                 width: 100%;
-                height: 100%;
+                height: parent.height - MellowSpace.xs;
+                opacity: root.switch-opacity;
                 // ListView estimates unseen row heights and refines them while rendering, which moves
                 // content-y and content-height by itself; while pinned, snap back to the bottom.
                 changed content-height => {
@@ -1027,6 +1258,7 @@ export component ChatPane inherits Rectangle {
             // Bottom-aligned, as Discord fills an empty channel from the composer up.
             if messages.length == 0 && root.history-start-state != HistoryStartState.unknown: VerticalLayout {
                 alignment: end;
+                padding-bottom: MellowSpace.xs;
                 HistoryStart {
                     state: root.history-start-state;
                     channel-name: root.channel-name;
@@ -1042,7 +1274,7 @@ export component ChatPane inherits Rectangle {
             // the rows being read.
             if root.is-viewing-older-messages: JumpToPresentBar {
                 x: MellowComponent.composer-margin-inline;
-                y: parent.height - self.height;
+                y: parent.height - self.height - MellowSpace.space-2xs + self.entry-offset;
                 width: parent.width - 2 * MellowComponent.composer-margin-inline;
                 new-message-count: root.new-message-count-while-viewing-older;
                 jump => { root.jump-to-present(); }
@@ -1086,153 +1318,203 @@ export component ChatPane inherits Rectangle {
             }
         }
 
+        // The composer zone (ADR-0022 §4): the typing row above, then the composer, whose base row is
+        // as tall as the user card and as far from the bottom of its card, so both line up. More
+        // lines and the reply bar grow it upward.
         VerticalLayout {
             padding-left: MellowComponent.composer-margin-inline;
             padding-right: MellowComponent.composer-margin-inline;
-            if root.is-replying: Rectangle {
-                min-height: MellowComponent.composer-reply-bar-min-height;
-                border-top-left-radius: MellowComponent.composer-radius;
-                border-top-right-radius: MellowComponent.composer-radius;
-                background: MellowComponent.composer-reply-bar-background;
-                accessible-role: groupbox;
-                accessible-label: "Replying to " + replying-to-author;
-                HorizontalLayout {
-                    padding-left: MellowComponent.composer-reply-bar-padding-inline;
-                    // The close button's own padding already spaces its icon from the edge.
-                    padding-right: MellowSpace.space-2xs;
-                    Text {
-                        text: "Replying to ";
-                        color: MellowComponent.composer-reply-bar-text;
-                        font-size: MellowType.body.font-size;
-                        vertical-alignment: center;
-                        accessible-role: none;
-                    }
-                    Text {
-                        text: replying-to-author;
-                        color: MellowComponent.composer-reply-bar-author-text;
-                        font-size: MellowType.body.font-size;
-                        font-weight: MellowType.user-panel-name.font-weight;
-                        vertical-alignment: center;
-                        overflow: elide;
-                        horizontal-stretch: 1;
-                        accessible-role: none;
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            icon: @image-url("../../icons/x-circle.svg");
-                            label: "Cancel reply";
-                            size: MellowComponent.composer-reply-bar-button-size;
-                            icon-color: MellowComponent.composer-reply-bar-icon;
-                            hover-icon-color: MellowComponent.composer-icon-hover;
-                            hover-background: MellowComponent.composer-reply-bar-button-background-hover;
-                            clicked => {
-                                root.cancel-reply();
-                                root.focus-composer();
-                            }
-                        }
-                    }
-                }
-            }
+            padding-bottom: MellowSize.dock-margin;
+            // Reserved for "Aurore is typing…" (DESIGN.md §6.28), so nothing moves when it appears.
+            Rectangle { height: MellowComponent.composer-typing-height; }
             Rectangle {
-                min-height: root.can-send-messages ? MellowComponent.composer-min-height
-                    : max(MellowComponent.composer-min-height, locked-notice.preferred-height + 2 * MellowSpace.xs);
-                // The single-line field used to cap this height; the hidden one no longer does, and the
-                // read-only notice would share the list's stretch.
-                vertical-stretch: 0;
-                // Square top corners while the reply bar sits on top, as on Discord.
-                border-top-left-radius: root.is-replying ? 0px : MellowComponent.composer-radius;
-                border-top-right-radius: self.border-top-left-radius;
-                border-bottom-left-radius: MellowComponent.composer-radius;
-                border-bottom-right-radius: MellowComponent.composer-radius;
-                background: MellowComponent.composer-background;
-                // Discord shows no ring here; WCAG 2.4.7 needs one for keyboard users (ADR-0012).
-                border-width: composer.has-focus ? MellowComponent.focus-ring-width : 0px;
-                border-color: MellowComponent.focus-ring-color;
-                // Discord's wording, in the field's place: read by screen readers but never focused, so
-                // nothing suggests typing there. Placed by hand with a fixed width, since neither a
-                // Rectangle nor a horizontal layout grows with wrapped text: min-height above reads
-                // its wrapped height instead.
-                locked-notice := Text {
-                    visible: !root.can-send-messages;
-                    x: MellowComponent.composer-padding-inline;
-                    width: parent.width - 2 * MellowComponent.composer-padding-inline;
-                    height: parent.height;
-                    text: "You do not have permission to send messages in this channel.";
-                    color: MellowComponent.composer-locked-text;
-                    font-size: MellowType.message.font-size;
-                    vertical-alignment: center;
-                    wrap: word-wrap;
-                    accessible-role: text;
-                }
-                HorizontalLayout {
-                    padding-left: MellowComponent.composer-padding-inline;
-                    padding-right: MellowComponent.composer-padding-inline;
-                    spacing: MellowComponent.composer-padding-inline;
-                    if root.can-send-messages: VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            icon: @image-url("../../icons/plus-circle.svg");
-                            label: "Upload a file";
-                            size: MellowComponent.composer-icon-size;
-                            icon-color: MellowComponent.composer-icon;
-                            hover-background: transparent;
-                        }
-                    }
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        if root.can-send-messages && composer.text == "": Text {
-                            x: 0;
-                            text: "Message " + root.channel-reference;
-                            color: MellowComponent.composer-placeholder;
-                            font-size: MellowType.message.font-size;
-                            vertical-alignment: center;
-                            accessible-role: none;
-                        }
-                        // Escape and Up are captured before the field can use them. Kept, hidden, while
-                        // the user cannot send, so `composer` stays addressable and its draft survives.
-                        FocusScope {
-                            visible: root.can-send-messages;
-                            focus-on-click: false;
-                            focus-on-tab-navigation: false;
-                            capture-key-pressed(event) => {
-                                if event.text == Key.Escape && root.is-replying {
-                                    root.cancel-reply();
-                                    return accept;
+                VerticalLayout {
+                    composer-box := Rectangle {
+                        border-radius: MellowComponent.composer-radius;
+                        background: MellowComponent.composer-background;
+                        clip: true;
+                        VerticalLayout {
+                            if root.is-replying: Rectangle {
+                                min-height: MellowComponent.composer-reply-bar-min-height;
+                                background: MellowColor.state-selected;
+                                accessible-role: groupbox;
+                                accessible-label: "Replying to " + replying-to-author;
+                                HorizontalLayout {
+                                    padding-left: MellowComponent.composer-reply-bar-padding-inline;
+                                    padding-right: MellowSpace.space-2xs;
+                                    spacing: MellowSpace.xs;
+                                    HorizontalLayout {
+                                        horizontal-stretch: 1;
+                                        Text {
+                                            text: "Replying to ";
+                                            color: MellowComponent.composer-reply-bar-text;
+                                            font-size: MellowType.body.font-size;
+                                            vertical-alignment: center;
+                                            accessible-role: none;
+                                        }
+                                        Text {
+                                            text: replying-to-author;
+                                            color: MellowComponent.composer-reply-bar-author-text;
+                                            font-size: MellowType.body.font-size;
+                                            font-weight: MellowFont.weight-bold;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                            horizontal-stretch: 1;
+                                            accessible-role: none;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        IconButton {
+                                            icon: @image-url("../../icons/x-circle.svg");
+                                            label: "Cancel reply";
+                                            size: MellowComponent.composer-reply-bar-button-size;
+                                            icon-color: MellowComponent.composer-reply-bar-icon;
+                                            hover-icon-color: MellowColor.text-normal;
+                                            hover-background: MellowColor.state-hover;
+                                            clicked => {
+                                                root.cancel-reply();
+                                                root.focus-composer();
+                                            }
+                                        }
+                                    }
                                 }
-                                if event.text == Key.Escape && root.is-viewing-older-messages {
-                                    root.jump-to-present();
-                                    return accept;
-                                }
-                                if event.text == Key.UpArrow && root.can-send-messages && composer.text == "" {
-                                    root.edit-last-own-message();
-                                    return accept;
-                                }
-                                reject
                             }
-                            composer := TextInput {
-                                text <=> root.composer-text;
-                                color: MellowComponent.composer-text;
-                                font-size: MellowType.message.font-size;
-                                vertical-alignment: center;
-                                single-line: true;
-                                enabled: root.can-send-messages;
-                                accessible-label: "Message " + root.channel-reference;
-                                accessible-description: root.is-replying
-                                    ? "Replying to " + root.replying-to-author + ". Escape cancels the reply." : "";
-                                accepted => {
-                                    if self.text != "" {
-                                        root.send-message(self.text);
-                                        self.text = "";
+                            if !root.can-send-messages: Rectangle {
+                                min-height: max(MellowSize.dock-height, locked-notice.preferred-height + 2 * MellowSpace.xs);
+                                // Discord's wording, in the field's place: read by screen readers but never
+                                // focused, so nothing suggests typing there. Placed by hand with a fixed
+                                // width, since a Rectangle does not grow with wrapped text: min-height
+                                // reads its wrapped height instead.
+                                locked-notice := Text {
+                                    x: MellowComponent.composer-padding-inline;
+                                    width: parent.width - 2 * MellowComponent.composer-padding-inline;
+                                    height: parent.height;
+                                    text: "You do not have permission to send messages in this channel.";
+                                    color: MellowComponent.composer-locked-text;
+                                    font-size: MellowType.message.font-size;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                    accessible-role: text;
+                                }
+                            }
+                            // The base row: the attach button stays on the field's last line.
+                            HorizontalLayout {
+                                visible: root.can-send-messages;
+                                height: root.can-send-messages ? self.preferred-height : 0px;
+                                padding-left: MellowSpace.xs;
+                                padding-right: MellowSpace.xs;
+                                spacing: MellowSpace.space-2xs;
+                                VerticalLayout {
+                                    alignment: end;
+                                    padding-top: (MellowSize.dock-height - MellowComponent.composer-attach-button-size) / 2;
+                                    padding-bottom: self.padding-top;
+                                    IconButton {
+                                        icon: @image-url("../../icons/plus-circle.svg");
+                                        label: "Upload a file";
+                                        size: MellowComponent.composer-attach-button-size;
+                                        icon-size: MellowComponent.composer-icon-size;
+                                        icon-color: MellowComponent.composer-icon;
+                                        hover-icon-color: MellowComponent.composer-icon-hover;
+                                        hover-background: transparent;
+                                    }
+                                }
+                                field := Rectangle {
+                                    horizontal-stretch: 1;
+                                    // One line centred in the base row; more lines grow the composer upward,
+                                    // then the field scrolls. Capped at half the smallest window (DESIGN.md §4.2
+                                    // says half the sheet): a cap read from the sheet's own height would make
+                                    // the layout depend on itself.
+                                    property <length> line-padding: (MellowSize.dock-height - MellowType.message.line-height) / 2;
+                                    property <length> content-height: max(MellowType.message.line-height, composer.preferred-height);
+                                    height: min(self.content-height, MellowSize.window-min-height / 2 - 2 * self.line-padding) + 2 * self.line-padding;
+                                    if composer.text == "": Text {
+                                        x: MellowSpace.space-2xs;
+                                        y: field.line-padding;
+                                        width: parent.width - 2 * MellowSpace.space-2xs;
+                                        height: MellowType.message.line-height;
+                                        text: "Message " + root.channel-reference;
+                                        color: MellowComponent.composer-placeholder;
+                                        font-size: MellowType.message.font-size;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        accessible-role: none;
+                                    }
+                                    field-scroll := Flickable {
+                                        x: MellowSpace.space-2xs;
+                                        y: field.line-padding;
+                                        width: parent.width - 2 * MellowSpace.space-2xs;
+                                        height: parent.height - 2 * field.line-padding;
+                                        content-height: field.content-height;
+                                        // Escape, Up and Enter are captured before the field can use them.
+                                        // Kept, hidden, while the user cannot send, so `composer` stays
+                                        // addressable and its draft survives.
+                                        FocusScope {
+                                            focus-on-click: false;
+                                            focus-on-tab-navigation: false;
+                                            capture-key-pressed(event) => {
+                                                if event.text == Key.Escape && root.is-replying {
+                                                    root.cancel-reply();
+                                                    return accept;
+                                                }
+                                                if event.text == Key.Escape && root.is-viewing-older-messages {
+                                                    root.jump-to-present();
+                                                    return accept;
+                                                }
+                                                if event.text == Key.UpArrow && root.can-send-messages && composer.text == "" {
+                                                    root.edit-last-own-message();
+                                                    return accept;
+                                                }
+                                                // Enter sends; Shift+Enter starts a new line, as on Discord.
+                                                if event.text == Key.Return && !event.modifiers.shift {
+                                                    if composer.text != "" {
+                                                        root.send-message(composer.text);
+                                                        composer.text = "";
+                                                    }
+                                                    return accept;
+                                                }
+                                                reject
+                                            }
+                                            composer := TextInput {
+                                                width: field-scroll.width;
+                                                height: field.content-height;
+                                                text <=> root.composer-text;
+                                                color: MellowComponent.composer-text;
+                                                font-size: MellowType.message.font-size;
+                                                wrap: word-wrap;
+                                                single-line: false;
+                                                enabled: root.can-send-messages;
+                                                selection-background-color: MellowComponent.message-selection-background;
+                                                accessible-label: "Message " + root.channel-reference;
+                                                accessible-description: root.is-replying
+                                                    ? "Replying to " + root.replying-to-author + ". Escape cancels the reply." : "";
+                                                // Keeps the caret in view once the field scrolls.
+                                                cursor-position-changed(position) => {
+                                                    if position.y + field-scroll.content-y < 0px {
+                                                        field-scroll.content-y = -position.y;
+                                                    } else if position.y + MellowType.message.line-height + field-scroll.content-y > field-scroll.height {
+                                                        field-scroll.content-y = field-scroll.height - position.y - MellowType.message.line-height;
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
+                // Outside the composer, with a gap, as on the web (WCAG 2.4.7).
+                if composer.has-focus: Rectangle {
+                    x: -(MellowComponent.focus-ring-offset + MellowComponent.focus-ring-width);
+                    y: self.x;
+                    width: parent.width - 2 * self.x;
+                    height: parent.height - 2 * self.y;
+                    border-width: MellowComponent.focus-ring-width;
+                    border-color: MellowComponent.focus-ring-color;
+                    border-radius: MellowComponent.composer-radius - self.x;
+                }
             }
         }
-        // Reserved band for "Aurore is typing…", as on Discord.
-        Rectangle { height: MellowComponent.composer-typing-height; }
     }
 }

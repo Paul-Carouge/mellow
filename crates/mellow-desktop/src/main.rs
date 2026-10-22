@@ -14,11 +14,15 @@ mod live_rows;
 mod live_shell;
 mod melli_animation;
 mod message_markup;
+mod preferences;
 mod role_settings;
 mod scroll_benchmark;
 mod session_store;
 mod shell_rows;
 mod window_snapshot;
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use slint::ComponentHandle as _;
 
@@ -65,6 +69,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     window.set_app_version(mellow_update::current_version().to_string().into());
     app_icons::install_in_background();
     melli_animation::pause_while_window_is_hidden(&window);
+    // Microphone, headset and "Go to…" are previewed in development builds only (ADR-0022 §5).
+    window.set_shows_unreleased_controls(cfg!(debug_assertions));
 
     // The scroll benchmark and snapshots measure the shell itself, on stable fake data.
     let is_demo = [
@@ -75,6 +81,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ]
     .iter()
     .any(|variable| std::env::var_os(variable).is_some());
+
+    // The demo starts from the defaults and never writes, so its snapshots stay reproducible.
+    let preferences = Rc::new(RefCell::new(if is_demo {
+        preferences::Preferences::default()
+    } else {
+        preferences::Preferences::load()
+    }));
+    preferences.borrow().apply_appearance(&window);
+    let weak_window = window.as_weak();
+    let preferences_for_callback = preferences.clone();
+    window.on_appearance_changed(move || {
+        let Some(window) = weak_window.upgrade() else {
+            return;
+        };
+        let mut preferences = preferences_for_callback.borrow_mut();
+        preferences.read_appearance(&window);
+        if !is_demo {
+            preferences.save_in_background();
+        }
+    });
 
     if is_demo {
         demo_shell::start(&window)?;
@@ -89,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .worker_threads(NETWORK_WORKER_THREADS)
         .enable_all()
         .build()?;
-    let shell = live_shell::start(&window, runtime.handle().clone());
+    let shell = live_shell::start(&window, runtime.handle().clone(), preferences);
     let _update_checks = app_update::start(&window, runtime.handle().clone());
     // The exit cleanup revokes sessions nobody could use again; it runs even when the event loop fails.
     let run_result = window.run();
