@@ -17,6 +17,7 @@
     onaddserver: () => void;
     onopendialog: (dialog: ServerDialog) => void;
     oncreatechannelin: (category: Channel) => void;
+    oneditchannel: (channel: Channel) => void;
     onnavigate: () => void;
     onopenusersettings: () => void;
   }
@@ -28,6 +29,7 @@
     onaddserver,
     onopendialog,
     oncreatechannelin,
+    oneditchannel,
     onnavigate,
     onopenusersettings,
   }: Props =
@@ -41,7 +43,7 @@
   ]}
 >
   <ServerRail {client} {onaddserver} {onnavigate} />
-  <ChannelSidebar {client} {collapsedCategoryIds} {onopendialog} {oncreatechannelin} {onnavigate} />
+  <ChannelSidebar {client} {collapsedCategoryIds} {onopendialog} {oncreatechannelin} {oneditchannel} {onnavigate} />
   {#if client.user}
     <UserCard user={client.user} {onopenusersettings} />
   {/if}

@@ -6,6 +6,7 @@
   import type { MellowClient } from "../lib/client.svelte";
   import type { Channel, Snowflake } from "../lib/protocol";
   import AddServerDialog from "./AddServerDialog.svelte";
+  import ChannelSettings from "./ChannelSettings.svelte";
   import type { ServerDialog } from "./ChannelSidebar.svelte";
   import ChatPane from "./ChatPane.svelte";
   import ConnectionBanner from "./ConnectionBanner.svelte";
@@ -49,11 +50,13 @@
   const serverIdsWithMemberSheet = new SvelteSet<Snowflake>();
   let isMemberOverlayOpen = $state(false);
   let isNavigationDrawerOpen = $state(false);
-  let openDialog = $state<"add-server" | ServerDialog | null>(null);
+  let openDialog = $state<"add-server" | "channel-settings" | ServerDialog | null>(null);
   let isUserSettingsOpen = $state(false);
   let isQuickSwitcherOpen = $state(false);
   /** Kept from the menu that opened them: a deleted server must not hand its settings to the next. */
   let serverSettingsGuildId = $state<Snowflake | null>(null);
+  /** The channel whose gear opened its settings. */
+  let channelSettingsChannelId = $state<Snowflake | null>(null);
   /** The category whose "+" opened "Create channel"; null from the server menu. */
   let newChannelCategory = $state<Channel | null>(null);
 
@@ -84,6 +87,11 @@
 
   function focusComposer() {
     chatPane?.focusComposer();
+  }
+
+  function openChannelSettings(channel: Channel) {
+    channelSettingsChannelId = channel.id;
+    openDialog = "channel-settings";
   }
 
   /** After choosing a channel in the drawer, the chat comes back with the composer focused. */
@@ -179,6 +187,7 @@
       newChannelCategory = category;
       openDialog = "create-channel";
     }}
+    oneditchannel={openChannelSettings}
     onnavigate={() => void closeDrawerAfterNavigation()}
     onopenusersettings={() => (isUserSettingsOpen = true)}
   />
@@ -215,6 +224,7 @@
         isMemberListOpen={isMemberSheetOpen}
         ontogglememberlist={toggleMemberSheet}
         onaddserver={() => (openDialog = "add-server")}
+        oneditchannel={openChannelSettings}
       />
     </main>
 
@@ -262,6 +272,13 @@
   <ServerSettings
     {client}
     guildId={serverSettingsGuildId}
+    isWide={hasRoomForNavigator.current}
+    onclose={() => (openDialog = null)}
+  />
+{:else if openDialog === "channel-settings" && channelSettingsChannelId}
+  <ChannelSettings
+    {client}
+    channelId={channelSettingsChannelId}
     isWide={hasRoomForNavigator.current}
     onclose={() => (openDialog = null)}
   />

@@ -3,11 +3,13 @@
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import { type Guild, MAXIMUM_SERVER_NAME_LENGTH } from "../lib/protocol";
   import Icon from "./Icon.svelte";
+  import IconEditor from "./IconEditor.svelte";
   import TextField from "./TextField.svelte";
   import UnsavedChangesBar from "./UnsavedChangesBar.svelte";
 
-  // Overview (DESIGN.md §5.8): the server's name, saved through the unsaved-changes bar. A rename
-  // by someone else while nothing is typed shows at once; a draft is kept until saved or reset.
+  // Overview (DESIGN.md §5.8): the server's icon, saved at once, then its name, saved through the
+  // unsaved-changes bar. A rename by someone else while nothing is typed shows at once; a draft is
+  // kept until saved or reset.
   interface Props {
     client: MellowClient;
     guild: Guild;
@@ -74,8 +76,16 @@
   }
 </script>
 
+<IconEditor
+  kind="server"
+  icon={guild.icon}
+  name={guild.name}
+  onupload={(file, crop) => client.setServerIcon(guild.id, file, crop)}
+  onremove={() => client.removeServerIcon(guild.id)}
+/>
+
 <form
-  class="flex flex-1 flex-col"
+  class="mt-(--mw-component-settings-section-gap) flex flex-1 flex-col"
   onsubmit={(event) => {
     event.preventDefault();
     void save();

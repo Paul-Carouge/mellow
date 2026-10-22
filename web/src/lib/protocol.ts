@@ -53,6 +53,16 @@ export function profileImageUrl(image: ProfileImage, isAnimationWanted: boolean)
   return image.is_animated && !isAnimationWanted ? `${base}/still` : base;
 }
 
+/** A guild or channel icon, with the same still-or-animated rule as `profileImageUrl`. */
+export function iconUrl(image: ProfileImage, isAnimationWanted: boolean): string {
+  const base = `/api/v1/icons/${image.id}`;
+  return image.is_animated && !isAnimationWanted ? `${base}/still` : base;
+}
+
+/** Mirrors the server's rules (mellow-server domain/guild_rules.rs); the server still decides. */
+export const MAXIMUM_CHANNEL_NAME_LENGTH = 100;
+export const MAXIMUM_CHANNEL_TOPIC_LENGTH = 1024;
+
 export interface SessionCreated {
   token: string;
   user: CurrentUser;
@@ -351,6 +361,19 @@ export const Permission = {
   VIEW_AUDIT_LOG: 1n << 15n,
   ADD_REACTIONS: 1n << 16n,
 } as const;
+
+/** What a channel overwrite may allow or deny (`Permissions::CHANNEL_SCOPED`). */
+export const CHANNEL_SCOPED_PERMISSIONS =
+  Permission.VIEW_CHANNEL |
+  Permission.SEND_MESSAGES |
+  Permission.READ_MESSAGE_HISTORY |
+  Permission.ATTACH_FILES |
+  Permission.MENTION_EVERYONE |
+  Permission.MANAGE_MESSAGES |
+  Permission.MANAGE_CHANNELS |
+  Permission.MANAGE_ROLES |
+  Permission.CREATE_INVITE |
+  Permission.ADD_REACTIONS;
 
 export function hasPermission(bits: PermissionBits, permission: bigint): boolean {
   const value = BigInt(bits);

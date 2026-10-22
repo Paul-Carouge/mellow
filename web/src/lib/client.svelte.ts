@@ -4,7 +4,14 @@
 import { SvelteMap, SvelteSet } from "svelte/reactivity";
 
 import { strings } from "../i18n";
-import { ApiError, HISTORY_PAGE_SIZE, type ProfileImageKind, RestClient, generateMessageNonce } from "./api";
+import {
+  ApiError,
+  HISTORY_PAGE_SIZE,
+  type IconCrop,
+  type ProfileImageKind,
+  RestClient,
+  generateMessageNonce,
+} from "./api";
 import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
 import { reactionKey, withReactionAdded, withReactionRemoved, withoutEmoji } from "./reactions";
@@ -18,6 +25,7 @@ import {
   type Member,
   type Message,
   type PermissionBits,
+  type PermissionOverwrite,
   type PublicUser,
   type ReactionSummary,
   type Ready,
@@ -1237,6 +1245,41 @@ export class MellowClient {
 
   async renameServer(guildId: Snowflake, name: string): Promise<void> {
     await this.rest.renameGuild(guildId, name);
+  }
+
+  /** Cropped and compressed by the instance first: a large animated GIF takes a second or two. */
+  async setServerIcon(guildId: Snowflake, file: File, crop: IconCrop | null): Promise<void> {
+    await this.rest.setGuildIcon(guildId, file, crop);
+  }
+
+  async removeServerIcon(guildId: Snowflake): Promise<void> {
+    await this.rest.removeGuildIcon(guildId);
+  }
+
+  // --- Channel settings ---------------------------------------------------------------------
+
+  async updateChannel(channelId: Snowflake, changes: { name?: string; topic?: string }): Promise<void> {
+    await this.rest.updateChannel(channelId, changes);
+  }
+
+  async setChannelIcon(channelId: Snowflake, file: File, crop: IconCrop | null): Promise<void> {
+    await this.rest.setChannelIcon(channelId, file, crop);
+  }
+
+  async removeChannelIcon(channelId: Snowflake): Promise<void> {
+    await this.rest.removeChannelIcon(channelId);
+  }
+
+  async setPermissionOverwrite(channelId: Snowflake, overwrite: PermissionOverwrite): Promise<void> {
+    await this.rest.setPermissionOverwrite(channelId, overwrite.id, {
+      kind: overwrite.kind,
+      allow: overwrite.allow,
+      deny: overwrite.deny,
+    });
+  }
+
+  async deletePermissionOverwrite(channelId: Snowflake, targetId: Snowflake): Promise<void> {
+    await this.rest.deletePermissionOverwrite(channelId, targetId);
   }
 
   async deleteServer(guildId: Snowflake): Promise<void> {

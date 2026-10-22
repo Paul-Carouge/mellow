@@ -2,8 +2,11 @@
   import type { Snippet } from "svelte";
 
   import { strings } from "../i18n";
+  import { SvelteSet } from "svelte/reactivity";
+
   import type { MellowClient } from "../lib/client.svelte";
-  import type { Snowflake } from "../lib/protocol";
+  import { prefersReducedMotion } from "../lib/motion.svelte";
+  import { type Snowflake, iconUrl } from "../lib/protocol";
   import { serverInitials } from "./format";
   import Icon from "./Icon.svelte";
   import Melli from "./Melli.svelte";
@@ -23,6 +26,10 @@
 
   // The strip scrolls, which would clip a tooltip drawn inside it: it is fixed to the viewport.
   let tooltip = $state<{ text: string; top: number; left: number } | null>(null);
+  /** The server whose animated icon plays: hovered or focused, as avatars do, never under reduced motion. */
+  let animatedGuildId = $state<Snowflake | null>(null);
+  /** Icons that failed to load show the initials instead. */
+  const failedIconIds = new SvelteSet<Snowflake>();
 
   function showTooltip(event: Event, text: string) {
     // Beside the item's slot, whose trailing edge is the strip's.
@@ -40,7 +47,7 @@
   const hasUnreadConversation = $derived(client.conversations.some((conversation) => client.hasUnread(conversation.id)));
 </script>
 
-{#snippet railItem(label: string, isSelected: boolean, hasUnread: boolean, onclick: (event: MouseEvent) => void, content: Snippet, kind: "home" | "server" | "action")}
+{#snippet railItem(label: string, isSelected: boolean, hasUnread: boolean, onclick: (event: MouseEvent) => void, content: Snippet, kind: "home" | "server" | "action", guildId: Snowflake | null = null)}
   <li class="group relative flex w-full justify-center">
     {#if kind !== "action"}
       <!-- At the card's inner edge, half its width showing (ADR-0022 §1). -->
@@ -63,7 +70,7 @@
       aria-label={hasUnread ? strings.common.withUnread(label) : label}
       aria-current={isSelected ? "page" : undefined}
       class={[
-        "rail-item grid size-(--mw-component-rail-item-size) place-items-center overflow-hidden",
+        "rail-item relative grid size-(--mw-component-rail-item-size) place-items-center overflow-hidden",
         isSelected
           ? "rounded-(--mw-component-rail-icon-radius-active)"
           : "rounded-(--mw-component-rail-icon-radius-rest) hover:rounded-(--mw-component-rail-icon-radius-active) focus-visible:rounded-(--mw-component-rail-icon-radius-active)",
@@ -79,18 +86,28 @@
       ]}
       {onclick}
       onpointerenter={(event) => {
+        animatedGuildId = guildId;
         if (event.pointerType === "mouse") {
           showTooltip(event, label);
         }
       }}
-      onpointerleave={() => (tooltip = null)}
+      onpointerleave={(event) => {
+        tooltip = null;
+        if (event.currentTarget !== document.activeElement) {
+          animatedGuildId = null;
+        }
+      }}
       onfocus={(event) => {
+        animatedGuildId = guildId;
         // Keyboard focus only: a tap or a click already shows the server it opens.
         if (event.currentTarget.matches(":focus-visible")) {
           showTooltip(event, label);
         }
       }}
-      onblur={() => (tooltip = null)}
+      onblur={() => {
+        tooltip = null;
+        animatedGuildId = null;
+      }}
     >
       {@render content()}
     </button>
@@ -113,10 +130,21 @@
     <li aria-hidden="true" class="h-(--mw-size-rail-separator-height) w-(--mw-size-rail-separator-width) shrink-0 rounded-full bg-(--mw-component-rail-separator-color)"></li>
     {#each client.guilds as guild (guild.id)}
       {@const hasUnread = guild.channels.some((channel) => client.hasUnread(channel.id))}
-      {#snippet initials()}
-        <span aria-hidden="true" class="type-body font-semibold">{serverInitials(guild.name)}</span>
+      {#snippet serverMark()}
+        {#if guild.icon && !failedIconIds.has(guild.icon.id)}
+          {@const iconId = guild.icon.id}
+          <img
+            src={iconUrl(guild.icon, !prefersReducedMotion.current && animatedGuildId === guild.id)}
+            alt=""
+            draggable="false"
+            class="absolute inset-0 size-full object-cover select-none"
+            onerror={() => failedIconIds.add(iconId)}
+          />
+        {:else}
+          <span aria-hidden="true" class="type-body font-semibold">{serverInitials(guild.name)}</span>
+        {/if}
       {/snippet}
-      {@render railItem(guild.name, client.selectedGuildId === guild.id, hasUnread, () => select(guild.id), initials, "server")}
+      {@render railItem(guild.name, client.selectedGuildId === guild.id, hasUnread, () => select(guild.id), serverMark, "server", guild.id)}
     {/each}
     {@render railItem(strings.rail.addServer, false, false, onaddserver, addIcon, "action")}
   </ul>

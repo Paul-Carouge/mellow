@@ -16,6 +16,7 @@ import {
   type Member,
   type Message,
   type PermissionBits,
+  type PermissionOverwrite,
   type PublicUser,
   type Role,
   type SessionCreated,
@@ -151,6 +152,41 @@ export class RestClient {
 
   renameGuild(guildId: Snowflake, name: string): Promise<Guild> {
     return this.request("PATCH", `guilds/${guildId}`, { name });
+  }
+
+  /** The picture as the raw body, never re-encoded here: the instance crops and compresses it (animated GIFs stay animated). */
+  setGuildIcon(guildId: Snowflake, file: File, crop: IconCrop | null): Promise<Guild> {
+    return this.sendFile("PUT", `guilds/${guildId}/icon${iconCropQuery(crop)}`, file);
+  }
+
+  removeGuildIcon(guildId: Snowflake): Promise<Guild> {
+    return this.request("DELETE", `guilds/${guildId}/icon`);
+  }
+
+  /** Text channels only; always stored still. */
+  setChannelIcon(channelId: Snowflake, file: File, crop: IconCrop | null): Promise<Channel> {
+    return this.sendFile("PUT", `channels/${channelId}/icon${iconCropQuery(crop)}`, file);
+  }
+
+  removeChannelIcon(channelId: Snowflake): Promise<Channel> {
+    return this.request("DELETE", `channels/${channelId}/icon`);
+  }
+
+  /** Absent fields stay unchanged. */
+  updateChannel(channelId: Snowflake, changes: { name?: string; topic?: string }): Promise<Channel> {
+    return this.request("PATCH", `channels/${channelId}`, changes);
+  }
+
+  setPermissionOverwrite(
+    channelId: Snowflake,
+    targetId: Snowflake,
+    overwrite: { kind: PermissionOverwrite["kind"]; allow: PermissionBits; deny: PermissionBits },
+  ): Promise<Channel> {
+    return this.request("PUT", `channels/${channelId}/permissions/${targetId}`, overwrite);
+  }
+
+  deletePermissionOverwrite(channelId: Snowflake, targetId: Snowflake): Promise<Channel> {
+    return this.request("DELETE", `channels/${channelId}/permissions/${targetId}`);
   }
 
   /** The owner only. */
@@ -366,6 +402,26 @@ export class RestClient {
   openDirectMessage(recipientId: Snowflake): Promise<DirectMessageChannel> {
     return this.request("POST", "users/@me/channels", { recipient_id: recipientId });
   }
+}
+
+/** The square kept from an icon, in whole pixels of the picture as the browser shows it. */
+export interface IconCrop {
+  x: number;
+  y: number;
+  size: number;
+}
+
+/** No crop lets the instance keep the centred square. */
+export function iconCropQuery(crop: IconCrop | null): string {
+  if (crop === null) {
+    return "";
+  }
+  const query = new URLSearchParams({
+    crop_x: String(crop.x),
+    crop_y: String(crop.y),
+    crop_size: String(crop.size),
+  });
+  return `?${query}`;
 }
 
 /** 32 hex characters, like the client core's `generate_message_nonce`. */

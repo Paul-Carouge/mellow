@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { SvelteSet } from "svelte/reactivity";
+  import { SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
   import type { MellowClient } from "../lib/client.svelte";
@@ -10,9 +10,11 @@
     Permission,
     type Snowflake,
     hasPermission,
+    iconUrl,
   } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
+  import { visibleChannelSections } from "./channel-settings";
   import { displayName } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
@@ -30,11 +32,13 @@
     onopendialog: (dialog: ServerDialog) => void;
     /** The "+" beside a category: create a channel inside it. */
     oncreatechannelin: (category: Channel) => void;
+    /** The gear of a channel row: its settings (Discord's "Edit channel"). */
+    oneditchannel: (channel: Channel) => void;
     /** After a channel or conversation was chosen (the narrow layout closes its drawer). */
     onnavigate: () => void;
   }
 
-  let { client, collapsedCategoryIds, onopendialog, oncreatechannelin, onnavigate }: Props = $props();
+  let { client, collapsedCategoryIds, onopendialog, oncreatechannelin, oneditchannel, onnavigate }: Props = $props();
 
   const guild = $derived(client.selectedGuild);
   const user = $derived(client.user);
@@ -47,6 +51,11 @@
     const permissions = client.myChannelPermissions(channelId);
     return permissions === null || hasPermission(permissions, Permission.SEND_MESSAGES);
   }
+  function canEditChannel(channel: Channel): boolean {
+    return visibleChannelSections(channel, client.myChannelPermissions(channel.id)).length > 0;
+  }
+  /** Icons that failed to load show the # glyph instead. */
+  const failedIconIds = new SvelteSet<Snowflake>();
   const hasServerMenu = $derived(canInvitePeople || canOpenSettings || canCreateChannels || canLeaveServer);
 
   let headerButton = $state<HTMLButtonElement | null>(null);
@@ -320,23 +329,61 @@
         {@const isSelected = channel.id === client.selectedChannelId}
         {@const hasUnread = !isSelected && client.hasUnread(channel.id)}
         {@const canSendMessages = canSendIn(channel.id)}
+        {@const canEdit = canEditChannel(channel)}
+        {@const icon = channel.icon && !failedIconIds.has(channel.icon.id) ? channel.icon : null}
         <!-- Collapsed categories still show the selected and unread channels, as on Discord. -->
         {#if !isCollapsed || isSelected || hasUnread}
-          <li class="relative mt-(--mw-component-channel-row-gap) me-(--mw-component-channel-row-margin-inline)">
+          <li class="group/row relative mt-(--mw-component-channel-row-gap) me-(--mw-component-channel-row-margin-inline)">
             {#if hasUnread}{@render unreadPill()}{/if}
             <button
               type="button"
               aria-current={isSelected ? "page" : undefined}
               aria-label={[channel.name, !canSendMessages && strings.common.readOnly].filter(Boolean).join(", ") +
                 (hasUnread ? strings.common.unreadSuffix : "")}
-              class={[rowClasses(isSelected, hasUnread), "h-(--mw-component-channel-row-height) pointer-coarse:h-(--mw-size-hit-web-min)"]}
+              class={[
+                rowClasses(isSelected, hasUnread),
+                "h-(--mw-component-channel-row-height) pointer-coarse:h-(--mw-size-hit-web-min)",
+                // Room for the gear, so a long name never runs under it.
+                canEdit &&
+                  "pe-[calc(var(--mw-component-channel-row-settings-button-size)+var(--mw-component-channel-row-padding-inline))] pointer-coarse:pe-(--mw-size-hit-web-min)",
+              ]}
               onclick={() => selectChannel(channel.id)}
             >
-              <Icon name={canSendMessages ? "hash" : "lock"} class="size-(--mw-component-channel-row-icon-size)" />
+              {#if icon}
+                {@const iconId = icon.id}
+                <!-- Channel icons are always still (DESIGN.md §6.54): a rounded square, since circles are people. -->
+                <img
+                  src={iconUrl(icon, false)}
+                  alt=""
+                  draggable="false"
+                  class="size-(--mw-component-channel-row-icon-size) shrink-0 rounded-(--mw-component-channel-row-image-radius) object-cover"
+                  onerror={() => failedIconIds.add(iconId)}
+                />
+              {:else}
+                <Icon name={canSendMessages ? "hash" : "lock"} class="size-(--mw-component-channel-row-icon-size)" />
+              {/if}
               <span class="min-w-0 flex-1 truncate type-channel-name">
                 {channel.name}
               </span>
+              {#if icon && !canSendMessages}
+                <!-- The icon took the lock's place: it moves after the name. -->
+                <Icon name="lock" class="size-(--mw-component-channel-row-trailing-icon-size) shrink-0" />
+              {/if}
             </button>
+            {#if canEdit}
+              <!-- Shown on hover, on focus within the row and on the selected row (touch has no hover). -->
+              <IconButton
+                icon="gear-six"
+                label={strings.sidebar.editChannel(channel.name)}
+                aria-haspopup="dialog"
+                class={[
+                  "absolute inset-y-0 end-2xs my-auto size-(--mw-component-channel-row-settings-button-size) text-(--mw-component-channel-row-settings-icon) hover:text-(--mw-component-channel-row-settings-icon-hover) pointer-coarse:end-0",
+                  isSelected ? "visible" : "invisible group-focus-within/row:visible group-hover/row:visible",
+                ].join(" ")}
+                iconClass="size-(--mw-component-channel-row-settings-icon-size)"
+                onclick={() => oneditchannel(channel)}
+              />
+            {/if}
           </li>
         {/if}
       {/each}

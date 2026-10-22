@@ -131,6 +131,7 @@ export const fr: Catalogue = {
     createAChannel: "Créer un salon",
     noVisibleChannelsYet: "Aucun salon visible pour l’instant. Demande l’accès à la modération.",
     createChannelIn: (category) => `Créer un salon dans ${category}`,
+    editChannel: (channel) => `Modifier le salon ${channel}`,
   },
 
   userCard: {
@@ -147,6 +148,7 @@ export const fr: Catalogue = {
     goToLabel: "Aller à un salon, un serveur ou une personne",
     goTo: "Aller à…",
     memberList: "Liste des membres",
+    channelSettings: "Paramètres du salon",
     markAsRead: "Marquer comme lu",
     newMessagesSince: (newCount, isPartial, since) =>
       `${count(newCount)}${isPartial ? "+" : ""} ${plural(isPartial ? 2 : newCount, { one: "nouveau message", other: "nouveaux messages" })} depuis ${since}`,
@@ -634,6 +636,99 @@ export const fr: Catalogue = {
           : key === "allow"
             ? `Plus autorisé${NO_BREAK_SPACE}: ${names}`
             : `Retiré${NO_BREAK_SPACE}: ${names}`,
+    },
+  },
+
+  channelSettings: {
+    channelSettings: "Paramètres du salon",
+    channelSettingsOf: (channel) => `Paramètres du salon, ${channel}`,
+    sections: {
+      overview: "Vue d’ensemble",
+      permissions: "Permissions",
+    },
+    backToChannelSettings: "Retour aux paramètres du salon",
+
+    overview: {
+      channelName: "Nom du salon",
+      channelNameHelper: "En minuscules, avec des tirets à la place des espaces. Jusqu’à 100 caractères.",
+      topic: "Sujet",
+      topicHelper: `Affiché en haut du salon. Jusqu’à 1${NARROW_NO_BREAK_SPACE}024 caractères.`,
+      nameRequired: "Donne un nom au salon.",
+      saveFailed: "Impossible d’enregistrer le salon",
+    },
+
+    permissions: {
+      intro: (channel) =>
+        `Choisis qui peut voir et utiliser #${channel}. «${NO_BREAK_SPACE}Héritée${NO_BREAK_SPACE}» reprend ce que leurs rôles permettent sur tout le serveur.`,
+      targets: "Rôles et membres",
+      add: "Ajouter un rôle ou un membre",
+      addTitle: (channel) => `Ajouter à #${channel}`,
+      addSubtitle: `Ses permissions ici sont d’abord héritées${NARROW_NO_BREAK_SPACE}; tu les changes une fois qu’il est dans la liste.`,
+      search: "Rechercher un rôle ou un membre",
+      roles: "Rôles",
+      members: "Membres",
+      noMatch: (query) =>
+        `Aucun rôle ni membre ne correspond à «${NO_BREAK_SPACE}${query}${NO_BREAK_SPACE}». Vérifie l’orthographe.`,
+      nothingToAdd: "Tous les rôles et membres que tu peux gérer sont déjà dans la liste.",
+      loadingMembers: "Chargement des membres…",
+      addFailed: "Impossible de l’ajouter au salon",
+      remove: "Retirer",
+      removeLabel: (name) => `Retirer ${name} des permissions de ce salon`,
+      removing: "Retrait…",
+      removeFailed: "Impossible de le retirer du salon",
+      saveFailed: "Impossible d’enregistrer les permissions",
+      lockedTarget: "Tu ne peux modifier que les rôles placés sous ton rôle le plus haut.",
+      lockedTargetRow: (name) => `${name}, verrouillé`,
+      lockedPermissions: "Tu ne peux modifier que les permissions que tu as dans ce salon.",
+      everyoneNote:
+        "@everyone s’applique à tout le monde sur le serveur. Les rôles et les membres de la liste passent avant.",
+      states: { deny: "Refusée", inherit: "Héritée", allow: "Autorisée" },
+      channelWords: {
+        viewChannels: { label: "Voir le salon", description: "Voir ce salon et lire ce qui y est publié." },
+        manageChannels: {
+          label: "Gérer le salon",
+          description: "Renommer ce salon et changer son sujet et son icône.",
+        },
+        manageRoles: { label: "Gérer les permissions", description: "Changer qui peut faire quoi dans ce salon." },
+      },
+    },
+  },
+
+  iconEditor: {
+    formats: (maximumSize) =>
+      `PNG, JPEG, GIF ou WebP, jusqu’à ${maximumSize}. Tu choisis le carré une fois l’image ouverte.`,
+    server: {
+      title: "Icône du serveur",
+      emptyText: "Les initiales du serveur s’affichent tant que tu n’as pas ajouté d’icône.",
+      note: "Affichée dans la liste des serveurs. Les GIF animés s’animent au survol.",
+    },
+    channel: {
+      title: "Icône du salon",
+      emptyText: "Le # s’affiche tant que tu n’as pas ajouté d’icône.",
+      note: "Affichée en petit et sans animation, à la place du # devant le nom du salon.",
+    },
+    upload: "Envoyer une icône",
+    uploading: "Envoi de l’icône…",
+    remove: "Retirer l’icône",
+    removing: "Retrait de l’icône…",
+    saved: "Icône enregistrée.",
+    removed: "Icône retirée.",
+    changeFailed: "Impossible de changer l’icône",
+    removeFailed: "Impossible de retirer l’icône",
+    crop: {
+      title: "Choisis le carré",
+      subtitle:
+        "Fais glisser l’image et zoome jusqu’à ce que le carré contienne ce que tu veux montrer. Le reste est coupé.",
+      stage: "Image à recadrer",
+      stageHint: "Les flèches déplacent l’image, Maj la déplace plus loin, + et − zooment.",
+      zoom: "Zoom",
+      centre: "Recentrer",
+      samples: "À sa taille réelle",
+      sampleAtRest: "Dans la liste",
+      sampleSelected: "Sélectionné",
+      opening: "Ouverture de l’image…",
+      save: "Enregistrer l’icône",
+      saving: "Envoi…",
     },
   },
 

@@ -128,6 +128,7 @@ export const en = {
     createAChannel: "Create a channel",
     noVisibleChannelsYet: "No channels you can see yet. Ask a moderator for access.",
     createChannelIn: (category: string) => `Create a channel in ${category}`,
+    editChannel: (channel: string) => `Edit channel ${channel}`,
   },
 
   userCard: {
@@ -144,6 +145,7 @@ export const en = {
     goToLabel: "Go to a channel, server or person",
     goTo: "Go to…",
     memberList: "Member list",
+    channelSettings: "Channel settings",
     markAsRead: "Mark as read",
     newMessagesSince: (newCount: number, isPartial: boolean, since: string) =>
       `${count(newCount)}${isPartial ? "+" : ""} new ${plural(isPartial ? 2 : newCount, { one: "message", other: "messages" })} since ${since}`,
@@ -611,6 +613,95 @@ export const en = {
         key === "deny" ? `Now denied: ${names}` : key === "allow" ? `Now allowed: ${names}` : `Granted: ${names}`,
       permissionsRemoved: (key: "permissions" | "allow" | "deny", names: string) =>
         key === "deny" ? `No longer denied: ${names}` : key === "allow" ? `No longer allowed: ${names}` : `Removed: ${names}`,
+    },
+  },
+
+  channelSettings: {
+    channelSettings: "Channel settings",
+    /** The settings dialog's name for screen readers: "Channel settings, general". */
+    channelSettingsOf: (channel: string) => `Channel settings, ${channel}`,
+    sections: {
+      overview: "Overview",
+      permissions: "Permissions",
+    },
+    backToChannelSettings: "Back to channel settings",
+
+    overview: {
+      channelName: "Channel name",
+      channelNameHelper: "Lowercase, with dashes instead of spaces. Up to 100 characters.",
+      topic: "Topic",
+      topicHelper: "Shown at the top of the channel. Up to 1,024 characters.",
+      nameRequired: "Give the channel a name.",
+      saveFailed: "Couldn't save the channel",
+    },
+
+    permissions: {
+      intro: (channel: string) =>
+        `Choose who can see and use #${channel}. Inherit keeps what their roles allow on the whole server.`,
+      targets: "Roles and members",
+      add: "Add a role or member",
+      addTitle: (channel: string) => `Add to #${channel}`,
+      addSubtitle: "Its permissions here start on Inherit; change them once it is in the list.",
+      search: "Search roles and members",
+      roles: "Roles",
+      members: "Members",
+      noMatch: (query: string) => `No roles or members match “${query}”. Check the spelling.`,
+      nothingToAdd: "Every role and member you can manage is already in the list.",
+      loadingMembers: "Loading members…",
+      addFailed: "Couldn't add it to the channel",
+      remove: "Remove",
+      removeLabel: (name: string) => `Remove ${name} from this channel's permissions`,
+      removing: "Removing…",
+      removeFailed: "Couldn't remove it from the channel",
+      saveFailed: "Couldn't save the permissions",
+      lockedTarget: "You can only change roles below your highest role.",
+      lockedTargetRow: (name: string) => `${name}, locked`,
+      lockedPermissions: "You can only change permissions you have in this channel.",
+      everyoneNote: "@everyone applies to everyone in the server. Roles and members in the list override it.",
+      states: { deny: "Deny", inherit: "Inherit", allow: "Allow" },
+      /** Channel words where the role editor's server-wide words would mislead. */
+      channelWords: {
+        viewChannels: { label: "View channel", description: "See this channel and read what is posted in it." },
+        manageChannels: { label: "Manage channel", description: "Rename this channel and change its topic and icon." },
+        manageRoles: { label: "Manage permissions", description: "Change who can do what in this channel." },
+      },
+    },
+  },
+
+  iconEditor: {
+    formats: (maximumSize: string) =>
+      `PNG, JPEG, GIF or WebP, up to ${maximumSize}. You choose the square once the picture is open.`,
+    server: {
+      title: "Server icon",
+      emptyText: "The server's initials show until you add an icon.",
+      note: "Shown in the server list. Animated GIFs play while the pointer is on them.",
+    },
+    channel: {
+      title: "Channel icon",
+      emptyText: "The # shows until you add an icon.",
+      note: "Shown small and still, in place of the # beside the channel's name.",
+    },
+    upload: "Upload icon",
+    uploading: "Uploading icon…",
+    remove: "Remove icon",
+    removing: "Removing icon…",
+    saved: "Icon saved.",
+    removed: "Icon removed.",
+    changeFailed: "Couldn't change the icon",
+    removeFailed: "Couldn't remove the icon",
+    crop: {
+      title: "Choose the square",
+      subtitle: "Drag the picture and zoom until the square holds what you want to show. The rest is cut away.",
+      stage: "Picture to crop",
+      stageHint: "Arrow keys move the picture, Shift moves it further, + and − zoom.",
+      zoom: "Zoom",
+      centre: "Centre it",
+      samples: "At its real size",
+      sampleAtRest: "In the list",
+      sampleSelected: "Selected",
+      opening: "Opening the picture…",
+      save: "Save icon",
+      saving: "Uploading…",
     },
   },
 

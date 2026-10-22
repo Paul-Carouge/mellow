@@ -5,16 +5,19 @@
   import { ApiError } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import {
+    type Channel,
     type Message,
     PREVIEWABLE_IMAGE_TYPES,
     Permission,
     type PublicUser,
     type Snowflake,
     hasPermission,
+    iconUrl,
   } from "../lib/protocol";
   import AttachmentTray, { type AttachmentTrayItem } from "./AttachmentTray.svelte";
   import { autosize } from "./autosize";
   import Button from "./Button.svelte";
+  import { visibleChannelSections } from "./channel-settings";
   import ConfirmMessageDialog from "./ConfirmMessageDialog.svelte";
   import DeleteMessageDialog from "./DeleteMessageDialog.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
@@ -39,6 +42,8 @@
     isMemberListOpen: boolean;
     ontogglememberlist: () => void;
     onaddserver: () => void;
+    /** The header's gear: the open channel's settings. */
+    oneditchannel: (channel: Channel) => void;
   }
 
   let {
@@ -49,6 +54,7 @@
     isMemberListOpen,
     ontogglememberlist,
     onaddserver,
+    oneditchannel,
   }: Props = $props();
 
   /** The composer grows with its text up to half of the pane (DESIGN.md §4.2). */
@@ -85,6 +91,10 @@
   const canReadHistory = $derived(
     channelPermissions === null || hasPermission(channelPermissions, Permission.READ_MESSAGE_HISTORY),
   );
+  const canEditChannel = $derived(channel !== null && visibleChannelSections(channel, channelPermissions).length > 0);
+  /** The icon that failed to load shows the # glyph instead. */
+  let failedIconId = $state<Snowflake | null>(null);
+  const channelIcon = $derived(channel?.icon && channel.icon.id !== failedIconId ? channel.icon : null);
   const canAddReactions = $derived(
     canReadHistory && channelPermissions !== null && hasPermission(channelPermissions, Permission.ADD_REACTIONS),
   );
@@ -553,11 +563,25 @@
     {/if}
     {#if channel || conversation}
       <div class="flex max-w-1/2 min-w-0 shrink-0 items-center gap-2xs text-(--mw-component-chat-header-name-text)">
-        <Icon
-          name={channel ? (canSendMessages ? "hash" : "lock") : "at"}
-          class="size-(--mw-component-chat-header-icon-size) text-text-muted"
-        />
+        {#if channelIcon}
+          {@const iconId = channelIcon.id}
+          <img
+            src={iconUrl(channelIcon, false)}
+            alt=""
+            draggable="false"
+            class="size-(--mw-component-chat-header-icon-size) shrink-0 rounded-(--mw-component-channel-row-image-radius) object-cover"
+            onerror={() => (failedIconId = iconId)}
+          />
+        {:else}
+          <Icon
+            name={channel ? (canSendMessages ? "hash" : "lock") : "at"}
+            class="size-(--mw-component-chat-header-icon-size) text-text-muted"
+          />
+        {/if}
         <h1 class="min-w-0 truncate type-heading-md">{channel ? channel.name : conversationName}</h1>
+        {#if channelIcon && !canSendMessages}
+          <Icon name="lock" class="size-(--mw-component-channel-row-trailing-icon-size) shrink-0 text-text-muted" />
+        {/if}
       </div>
     {/if}
     {#if channel?.topic && !hasNavigationDrawer}
@@ -580,6 +604,16 @@
         {strings.chat.goTo}
         <kbd class="rounded-xs border border-border-divider px-2xs font-sans type-body-sm text-text-muted">Ctrl K</kbd>
       </button>
+    {/if}
+    {#if channel && canEditChannel}
+      <IconButton
+        icon="gear-six"
+        label={strings.chat.channelSettings}
+        aria-haspopup="dialog"
+        class={headerButtonClass}
+        iconClass="size-(--mw-component-chat-header-icon-size)"
+        onclick={() => oneditchannel(channel)}
+      />
     {/if}
     {#if channel || conversation}
       <IconButton

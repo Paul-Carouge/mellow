@@ -8,6 +8,7 @@ import {
   compareSnowflakes,
   computeChannelPermissions,
   hasPermission,
+  iconUrl,
   reactionsPath,
   profileImageFileProblem,
   profileImageUrl,
@@ -87,6 +88,12 @@ describe("profile images", () => {
     expect(profileImageUrl(still, true)).toBe("/api/v1/profile-images/7");
     expect(profileImageUrl(animated, false)).toBe("/api/v1/profile-images/8/still");
     expect(profileImageUrl(animated, true)).toBe("/api/v1/profile-images/8");
+  });
+
+  it("serve server and channel icons the same way, still unless the animation is wanted", () => {
+    expect(iconUrl({ id: "7", is_animated: false }, true)).toBe("/api/v1/icons/7");
+    expect(iconUrl({ id: "8", is_animated: true }, false)).toBe("/api/v1/icons/8/still");
+    expect(iconUrl({ id: "8", is_animated: true }, true)).toBe("/api/v1/icons/8");
   });
 
   it("refuse files over 8 MB or of another type before sending them", () => {

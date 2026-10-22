@@ -29,6 +29,7 @@
     | "lock"
     | "magnifying-glass"
     | "microphone"
+    | "minus"
     | "paper-plane-right"
     | "pencil-simple"
     | "plus"
