@@ -2,7 +2,7 @@
   import type { SvelteSet } from "svelte/reactivity";
 
   import type { MellowClient } from "../lib/client.svelte";
-  import type { Snowflake } from "../lib/protocol";
+  import type { Channel, Snowflake } from "../lib/protocol";
   import ChannelSidebar, { type ServerDialog } from "./ChannelSidebar.svelte";
   import ServerRail from "./ServerRail.svelte";
   import UserCard from "./UserCard.svelte";
@@ -16,11 +16,21 @@
     isInDrawer: boolean;
     onaddserver: () => void;
     onopendialog: (dialog: ServerDialog) => void;
+    oncreatechannelin: (category: Channel) => void;
     onnavigate: () => void;
     onopenusersettings: () => void;
   }
 
-  let { client, collapsedCategoryIds, isInDrawer, onaddserver, onopendialog, onnavigate, onopenusersettings }: Props =
+  let {
+    client,
+    collapsedCategoryIds,
+    isInDrawer,
+    onaddserver,
+    onopendialog,
+    oncreatechannelin,
+    onnavigate,
+    onopenusersettings,
+  }: Props =
     $props();
 </script>
 
@@ -31,7 +41,7 @@
   ]}
 >
   <ServerRail {client} {onaddserver} {onnavigate} />
-  <ChannelSidebar {client} {collapsedCategoryIds} {onopendialog} {onnavigate} />
+  <ChannelSidebar {client} {collapsedCategoryIds} {onopendialog} {oncreatechannelin} {onnavigate} />
   {#if client.user}
     <UserCard user={client.user} {onopenusersettings} />
   {/if}
