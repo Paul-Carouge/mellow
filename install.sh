@@ -43,9 +43,11 @@ install_paths() {
   esac
 }
 
+# The newest release carrying this platform's desktop app: some releases carry the server only
+# (ADR-0023). Releases are listed newest first.
 latest_version() {
-  curl -fsSL --proto '=https' "https://api.github.com/repos/${REPOSITORY}/releases/latest" \
-    | sed -n 's/^ *"tag_name": *"v\([^"]*\)".*$/\1/p' | head -n 1
+  curl -fsSL --proto '=https' "https://api.github.com/repos/${REPOSITORY}/releases?per_page=100" \
+    | sed -n "s/^.*\"name\": *\"mellow-desktop-\([0-9][0-9.]*\)-${target}\".*$/\1/p" | head -n 1
 }
 
 # Accepts the file only if its minisign signature names it; without minisign, falls back to the
