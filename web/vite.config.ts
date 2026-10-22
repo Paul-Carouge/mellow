@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
@@ -43,4 +44,5 @@ export default defineConfig({
     fs: { allow: [".", "../crates/mellow-desktop/fonts", "../crates/mellow-desktop/icons"] },
   },
   build: { target: "es2022", sourcemap: false },
+  test: { setupFiles: ["src/test-setup.ts"] },
 });

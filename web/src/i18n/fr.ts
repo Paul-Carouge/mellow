@@ -1,0 +1,385 @@
+// The French catalogue (DESIGN.md §8 "Français"): tutoiement, sentence case, Discord's French
+// words, and French typography. Typed against the English one, so every key must be here.
+
+import type { Catalogue } from "./en";
+import { pluralChooser } from "./plural";
+
+/** Before « ? », « ! » and « ; ». */
+const NARROW_NO_BREAK_SPACE = " ";
+/** Before « : », inside « guillemets » and between a number and its unit. */
+const NO_BREAK_SPACE = " ";
+
+const plural = pluralChooser("fr");
+const count = (value: number) => value.toLocaleString("fr");
+const FRENCH_SIZE_UNITS = { KB: "Ko", MB: "Mo", GB: "Go" } as const;
+
+export const fr: Catalogue = {
+  common: {
+    cancel: "Annuler",
+    close: "Fermer",
+    tryAgain: "Réessayer",
+    save: "Enregistrer",
+    saving: "Enregistrement…",
+    edit: "Modifier",
+    delete: "Supprimer",
+    online: "En ligne",
+    offline: "Hors ligne",
+    withUnread: (name) => `${name}, non lu`,
+    unreadSuffix: ", non lu",
+    readOnly: "lecture seule",
+    someone: "Quelqu’un",
+  },
+
+  errors: {
+    withReason: (summary, reason) => `${summary}${NO_BREAK_SPACE}: ${reason}`,
+    unknownReason: "un problème est survenu. Réessaie.",
+    reasons: {
+      NETWORK: "l’instance est injoignable. Réessaie.",
+      INVALID_CREDENTIALS: "l’identifiant ou le mot de passe est incorrect.",
+      USERNAME_TAKEN: "ce nom d’utilisateur est déjà pris.",
+      EMAIL_TAKEN: "cette adresse e-mail a déjà un compte.",
+      REGISTRATION_CLOSED: "cette instance n’accepte pas de nouveaux comptes.",
+      VALIDATION_FAILED: "l’instance a refusé ce qui a été saisi.",
+      RATE_LIMITED: "trop de tentatives. Patiente un instant, puis réessaie.",
+      SERVER_BUSY: "l’instance est surchargée. Réessaie dans un instant.",
+      MISSING_PERMISSIONS: "tu n’as pas la permission de faire ça ici.",
+      NOT_FOUND: "ça n’existe plus, ou tu ne peux pas le voir.",
+      INVALID_INVITE: "cette invitation est inconnue, expirée ou épuisée.",
+      BANNED: "un bannissement t’empêche d’accéder à ce serveur.",
+      OWNER_CANNOT_LEAVE: "tu ne peux pas quitter un serveur qui t’appartient.",
+      LIMIT_REACHED: "une limite de cette instance est atteinte.",
+      FILE_TOO_LARGE: "le fichier dépasse la taille acceptée par cette instance.",
+    },
+  },
+
+  app: {
+    unreachableTitle: "Impossible de joindre cette instance pour le moment.",
+    unreachableBody: "Vérifie ta connexion, puis réessaie.",
+  },
+
+  connection: {
+    connecting: "Connexion…",
+    reconnecting: "Connexion perdue. Reconnexion…",
+  },
+
+  time: {
+    todayAt: (time) => `Aujourd’hui à ${time}`,
+    yesterdayAt: (time) => `Hier à ${time}`,
+  },
+
+  fileSize: {
+    bytes: (bytes) => plural(bytes, { one: `${count(bytes)}${NO_BREAK_SPACE}octet`, other: `${count(bytes)}${NO_BREAK_SPACE}octets` }),
+    inUnit: (value, unit) => `${value}${NO_BREAK_SPACE}${FRENCH_SIZE_UNITS[unit]}`,
+  },
+
+  typing: {
+    several: "Plusieurs personnes écrivent…",
+    isTyping: " écrit…",
+    and: " et ",
+    areTyping: " écrivent…",
+    listSeparator: ", ",
+    andOthersAreTyping: (others) =>
+      ` et ${count(others)} ${plural(others, { one: "autre", other: "autres" })} écrivent…`,
+  },
+
+  signIn: {
+    signInTitle: (instance) => `Se connecter à ${instance}`,
+    registerTitle: (instance) => `Créer un compte sur ${instance}`,
+    signInSubtitle: "Ton compte est hébergé sur cette instance.",
+    registerSubtitle: "Ton compte sera hébergé sur cette instance.",
+    email: "E-mail",
+    username: "Nom d’utilisateur",
+    usernameHelper: `De 2 à 32 caractères${NO_BREAK_SPACE}: lettres minuscules, chiffres, points et tirets bas.`,
+    password: "Mot de passe",
+    passwordLengthHelper: (minimum) => `Au moins ${count(minimum)} caractères.`,
+    login: "Nom d’utilisateur ou e-mail",
+    signIn: "Se connecter",
+    signingIn: "Connexion…",
+    createAccount: "Créer le compte",
+    creatingAccount: "Création du compte…",
+    hasAccount: `Tu as déjà un compte${NARROW_NO_BREAK_SPACE}?`,
+    hasNoAccount: `Pas encore de compte${NARROW_NO_BREAK_SPACE}?`,
+    createAnAccount: "Créer un compte",
+    signInFailed: "Impossible de te connecter",
+    registerFailed: "Impossible de créer ton compte",
+    showPassword: "Afficher le mot de passe",
+  },
+
+  rail: {
+    servers: "Serveurs",
+    directMessages: "Messages privés",
+    addServer: "Ajouter un serveur",
+  },
+
+  shell: {
+    serversAndChannels: "Serveurs et salons",
+    membersOf: (server) => `Membres de ${server}`,
+  },
+
+  sidebar: {
+    directMessages: "Messages privés",
+    serverMenu: "Menu du serveur",
+    invitePeople: "Inviter des gens",
+    createChannel: "Créer un salon",
+    leaveServer: "Quitter le serveur",
+    channelsIn: (server) => `Salons de ${server}`,
+    noConversations:
+      "Aucune conversation pour l’instant. Ouvre le profil de quelqu’un dans la liste des membres d’un serveur et choisis Envoyer un message.",
+    justYou: "Rien que toi",
+    noChannelsYet: "Aucun salon pour l’instant. Crée le premier pour lancer la conversation.",
+    createAChannel: "Créer un salon",
+    noVisibleChannelsYet: "Aucun salon visible pour l’instant. Demande l’accès à la modération.",
+    createChannelIn: (category) => `Créer un salon dans ${category}`,
+  },
+
+  userCard: {
+    muteMicrophone: "Couper le micro",
+    unmuteMicrophone: "Réactiver le micro",
+    deafen: "Mettre en sourdine",
+    undeafen: "Désactiver la sourdine",
+    userSettings: "Paramètres utilisateur",
+  },
+
+  chat: {
+    chat: "Discussion",
+    openNavigation: "Ouvrir les serveurs et les salons",
+    goToLabel: "Aller à un salon, un serveur ou une personne",
+    goTo: "Aller à…",
+    memberList: "Liste des membres",
+    markAsRead: "Marquer comme lu",
+    newMessagesSince: (newCount, isPartial, since) =>
+      `${count(newCount)}${isPartial ? "+" : ""} ${plural(isPartial ? 2 : newCount, { one: "nouveau message", other: "nouveaux messages" })} depuis ${since}`,
+    composerInChannel: (channel) => `Écrire dans #${channel}`,
+    composerToPerson: (person) => `Écrire à @${person}`,
+    welcomeToChannel: (channel) => `Bienvenue dans #${channel}`,
+    channelStart: (channel) => `C’est le début du salon #${channel}.`,
+    conversationStart: (person) => `C’est le début de ton historique de messages privés avec ${person}.`,
+    replyingTo: "En réponse à",
+    replyHint: (person) => `En réponse à ${person}. Échap annule la réponse.`,
+    cancelReply: "Annuler la réponse",
+    attachFiles: "Joindre des fichiers",
+    sendMessage: "Envoyer le message",
+    cannotSend: "Tu n’as pas la permission d’envoyer des messages dans ce salon.",
+    dropToAttach: (target) => `Dépose pour joindre à ${target}`,
+    dropHint: "Tu pourras ajouter un message avant l’envoi.",
+    tooManyAttachments: (maximum) => `Tu peux joindre jusqu’à ${count(maximum)} fichiers par message.`,
+    uploadsRunning: "Tes fichiers sont encore en cours d’envoi. Renvoie le message quand ils sont prêts.",
+    uploaded: (fileName) => `${fileName} envoyé.`,
+    fileTooLarge: (fileName, size, instance) => `${fileName} fait ${size}, plus que ce qu’accepte ${instance}.`,
+    uploadFailed: (fileName) => `Impossible d’envoyer ${fileName}`,
+    editFailed: "Impossible de modifier le message",
+    deleteFailed: "Impossible de supprimer le message",
+    copyFailed: "Impossible de copier le texte. Sélectionne-le et copie-le à la main.",
+    loadingWorkspace: "Chargement de tes serveurs et conversations…",
+    noVisibleChannelsTitle: "Aucun salon visible",
+    noVisibleChannelsBody: (server) => `Les salons que tu peux lire dans ${server} s’afficheront ici.`,
+    noServersTitle: "Aucun serveur pour l’instant",
+    noServersBody: "Crée un serveur pour ton groupe, ou rejoins-en un avec un code d’invitation.",
+    addServer: "Ajouter un serveur",
+    noConversationsTitle: "Aucune conversation pour l’instant",
+    noConversationsBody: `Lances-en une avec quelqu’un de tes serveurs${NO_BREAK_SPACE}: ouvre son profil dans la liste des membres et choisis Envoyer un message.`,
+  },
+
+  messages: {
+    loading: "Chargement des messages",
+    startOf: (channel) => `Début de ${channel}`,
+    loadFailed: (channel) => `Impossible de charger les messages de ${channel}.`,
+    loadOlderFailed: "Impossible de charger les messages plus anciens.",
+    messagesIn: (channel) => `Messages dans ${channel}`,
+    newSince: (time) => `Nouveaux messages depuis ${time}`,
+    newPill: "Nouveau",
+    viewingOlder: "Tu consultes des messages plus anciens",
+    jumpToPresent: "Revenir au présent",
+    originalUnavailable: "Le message d’origine a été supprimé ou n’est pas chargé",
+    authorSaid: (author, text) => `${author}${NO_BREAK_SPACE}: ${text}`,
+    attachmentCount: (attachments) =>
+      plural(attachments, { one: `${count(attachments)} pièce jointe`, other: `${count(attachments)} pièces jointes` }),
+    edited: "(modifié)",
+    editedAt: (timestamp) => `Modifié le ${timestamp}`,
+    mentionsYou: "Te mentionne.",
+    editMessage: "Modifier le message",
+    escTo: "Échap pour",
+    cancelLowercase: "annuler",
+    enterTo: "· Entrée pour",
+    saveLowercase: "enregistrer",
+    cancelEditing: "Annuler la modification",
+    saveChanges: "Enregistrer les modifications",
+    sending: "Envoi…",
+    notSent: "Non envoyé.",
+    retry: "Réessayer",
+    retryLabel: "Réessayer d’envoyer ce message",
+    deleteUnsentLabel: "Supprimer ce message non envoyé",
+    actions: "Actions du message",
+    reply: "Répondre",
+    copyText: "Copier le texte",
+    download: (fileName) => `Télécharger ${fileName}`,
+  },
+
+  attachmentTray: {
+    filesToSend: "Fichiers à envoyer",
+    uploading: "Envoi…",
+    remove: (fileName) => `Retirer ${fileName}`,
+  },
+
+  deleteMessage: {
+    title: `Supprimer ce message${NARROW_NO_BREAK_SPACE}?`,
+    subtitle: "Il sera supprimé pour tout le monde.",
+    submit: "Supprimer le message",
+    tip: `Astuce${NO_BREAK_SPACE}: maintiens Maj en supprimant pour passer cette étape la prochaine fois.`,
+  },
+
+  addServer: {
+    joinTitle: "Rejoindre un serveur",
+    createTitle: "Créer un serveur",
+    joinSubtitle: "Saisis une invitation pour rejoindre un serveur qui existe déjà.",
+    createSubtitle: "Donne un nom à ton serveur. Tu pourras ensuite ajouter des salons et inviter des gens.",
+    join: "Rejoindre",
+    joining: "Ajout du serveur…",
+    create: "Créer",
+    creating: "Création…",
+    inviteCode: "Code d’invitation",
+    inviteCodeHelper: "Colle le code d’invitation qu’on t’a donné.",
+    serverName: "Nom du serveur",
+    hasNoInvite: `Pas d’invitation${NARROW_NO_BREAK_SPACE}?`,
+    hasInvite: `Tu as déjà une invitation${NARROW_NO_BREAK_SPACE}?`,
+    joinFailed: "Impossible de rejoindre le serveur",
+    createFailed: "Impossible de créer le serveur",
+  },
+
+  createChannel: {
+    title: "Créer un salon",
+    inCategory: (category) => `dans ${category}`,
+    submit: "Créer le salon",
+    creating: "Création…",
+    channelName: "Nom du salon",
+    placeholder: "nouveau-salon",
+    helper: "Les noms sont en minuscules, avec des tirets à la place des espaces.",
+    failed: "Impossible de créer le salon",
+  },
+
+  invitePeople: {
+    title: (server) => `Inviter des gens sur ${server}`,
+    failed: "Impossible de créer une invitation",
+    copyFailed: "Impossible de copier le code. Sélectionne-le et copie-le à la main.",
+    codeLabel: "Envoie ce code d’invitation à quelqu’un",
+    creating: "Création de l’invitation…",
+    copy: "Copier",
+    copied: "Copié",
+    neverExpires: "Cette invitation n’expire jamais.",
+    codeCopied: "Code d’invitation copié",
+  },
+
+  leaveServer: {
+    title: (server) => `Quitter «${NO_BREAK_SPACE}${server}${NO_BREAK_SPACE}»`,
+    subtitle: (server) =>
+      `Tu veux vraiment quitter ${server}${NARROW_NO_BREAK_SPACE}? Tu ne pourras revenir qu’avec une nouvelle invitation.`,
+    submit: "Quitter le serveur",
+    leaving: "Départ…",
+    failed: "Impossible de quitter le serveur",
+  },
+
+  members: {
+    members: "Membres",
+    profile: "Profil",
+    profileOf: (person) => `Profil de ${person}`,
+    backToMembers: "Retour aux membres",
+    sendMessage: "Envoyer un message",
+    opening: "Ouverture…",
+    openConversationFailed: "Impossible d’ouvrir la conversation",
+    loadFailed: "Impossible de charger les membres.",
+    loading: "Chargement des membres…",
+    groupLabel: (group, members) => `${group}, ${count(members)} ${plural(members, { one: "membre", other: "membres" })}`,
+    memberLabel: (person, isOnline) => `${person}, ${isOnline ? "en ligne" : "hors ligne"}`,
+  },
+
+  quickSwitcher: {
+    label: "Aller à",
+    placeholder: `Où veux-tu aller${NARROW_NO_BREAK_SPACE}?`,
+    results: "Résultats",
+    channels: "Salons",
+    people: "Personnes",
+    servers: "Serveurs",
+    directMessage: "Message privé",
+    server: "Serveur",
+    noResults: (query) =>
+      `Aucun résultat pour «${NO_BREAK_SPACE}${query}${NO_BREAK_SPACE}». Vérifie l’orthographe ou cherche un autre serveur.`,
+    resultCount: (results) => `${count(results)} ${plural(results, { one: "résultat", other: "résultats" })}`,
+    help: `Flèches pour choisir, Entrée pour ouvrir, Échap pour fermer. Préfixes${NO_BREAK_SPACE}: @${NO_BREAK_SPACE}personnes, #${NO_BREAK_SPACE}salons, *${NO_BREAK_SPACE}serveurs.`,
+    openConversationFailed: (person) => `Impossible d’ouvrir la conversation avec ${person}`,
+  },
+
+  settings: {
+    userSettings: "Paramètres utilisateur",
+    appSettings: "Paramètres de l’application",
+    myAccount: "Mon compte",
+    profile: "Profil",
+    about: "À propos",
+    closeSettings: "Fermer les paramètres",
+    escapeKey: "Échap",
+    signOut: "Se déconnecter",
+    signOutFailed: "Impossible de te déconnecter",
+    backToUserSettings: "Retour aux paramètres utilisateur",
+    webClient: "Client web Mellow",
+    sourceCode: "Code source",
+    licence: "Mellow est un logiciel libre sous licence AGPL-3.0. Tu peux lire, modifier et partager son code.",
+    sourceCodeOnGitHub: "Code source sur GitHub",
+  },
+
+  account: {
+    displayName: "Nom d’affichage",
+    username: "Nom d’utilisateur",
+    email: "E-mail",
+    password: "Mot de passe",
+    editDisplayName: "Modifier le nom d’affichage",
+    editUsername: "Modifier le nom d’utilisateur",
+    changeDisplayName: "Changer le nom d’affichage",
+    changeUsername: "Changer le nom d’utilisateur",
+    changePassword: "Changer le mot de passe",
+    changingPassword: "Changement du mot de passe…",
+    displayNameHelper: "Jusqu’à 32 caractères. C’est le nom que les autres voient dans la discussion.",
+    currentPassword: "Mot de passe actuel",
+    newPassword: "Nouveau mot de passe",
+    confirmNewPassword: "Confirmer le nouveau mot de passe",
+    passwordsDiffer: "Ne correspond pas au nouveau mot de passe.",
+    wrongCurrentPassword: "le mot de passe actuel est incorrect.",
+    displayNameFailed: "Impossible d’enregistrer le nom d’affichage",
+    usernameFailed: "Impossible de changer le nom d’utilisateur",
+    passwordFailed: "Impossible de changer le mot de passe",
+    displayNameSaved: "Nom d’affichage enregistré.",
+    usernameSaved: "Nom d’utilisateur enregistré.",
+    passwordChanged: "Mot de passe changé. Tes autres appareils sont déconnectés.",
+  },
+
+  profile: {
+    formats: (maximumSize) =>
+      `Les images peuvent être en PNG, JPEG, GIF ou WebP, jusqu’à ${maximumSize}. Les GIF animés restent animés.`,
+    tooLarge: (maximumSize) => `l’image dépasse ${maximumSize}. Choisis-en une plus petite.`,
+    unreadable: `l’image est illisible, ou dépasse 8${NARROW_NO_BREAK_SPACE}192 pixels de côté ou 600 images. Choisis-en une autre.`,
+    notAPicture: "choisis une image PNG, JPEG, GIF ou WebP.",
+    preview: "Aperçu",
+    avatar: {
+      title: "Avatar",
+      emptyText: "Ton initiale s’affiche tant que tu n’as pas ajouté d’image.",
+      saved: "Avatar enregistré.",
+      removed: "Avatar retiré.",
+      change: "Changer l’avatar",
+      uploading: "Envoi de l’avatar…",
+      remove: "Retirer l’avatar",
+      removing: "Retrait de l’avatar…",
+      changeFailed: "Impossible de changer l’avatar",
+      removeFailed: "Impossible de retirer l’avatar",
+    },
+    banner: {
+      title: "Bannière du profil",
+      emptyText: "Un bandeau uni s’affiche tant que tu n’as pas ajouté d’image.",
+      saved: "Bannière enregistrée.",
+      removed: "Bannière retirée.",
+      change: "Changer la bannière",
+      uploading: "Envoi de la bannière…",
+      remove: "Retirer la bannière",
+      removing: "Retrait de la bannière…",
+      changeFailed: "Impossible de changer la bannière",
+      removeFailed: "Impossible de retirer la bannière",
+    },
+  },
+};
