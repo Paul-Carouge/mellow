@@ -4,7 +4,12 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-22
+Reactions, pins, server settings, Markdown and French on the web.
+
 ### Added
+- Web: the whole interface in French or English, following the browser's language; dates, times and sizes follow it too.
+- Web: messages render Discord-style Markdown: bold, italic, underline, strikethrough, inline code, code blocks, quotes, spoilers, headings, lists and links.
 - Server: emoji reactions on messages (one Unicode emoji each, up to 20 different ones per message) with a new "Add reactions" permission, given to everyone in new and existing servers except in channels where they cannot send messages; anyone who can read a message can join a reaction already there, and members who can manage messages can remove other people's reactions.
 - Server: pinned messages, up to 50 per channel, pinned by members who can manage messages (anyone in a direct conversation) and recorded in the moderation log.
 - Web: react to messages with emoji, from three quick reactions or an emoji picker searchable in English and French, and see who reacted; moderators can remove reactions.
