@@ -1,6 +1,6 @@
 //! Pure conversions from the client state to the rows the Slint shell displays.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use chrono::{DateTime, Local, TimeZone};
 use mellow_client_core::state::{ClientState, PendingMessage, PendingMessageStatus};
@@ -11,16 +11,17 @@ use slint::{ModelRc, SharedString, VecModel};
 
 use crate::generated_ui::{
     AttachmentRow, ChannelListRow, DirectMessageRow, HistoryStartState, MelliState, MemberListRow,
-    MessageDelivery, MessageRow, PresenceStatus, ServerItem,
+    MessageDelivery, MessageRow, PresenceStatus, RoleColor, ServerItem,
 };
 use crate::message_markup::styled_text_from_message_body;
+use crate::person_style::{avatar_tint_index_of, highest_role_color, role_color};
 use crate::shell_rows::{first_letter, saturating_int, server_initials};
 
 /// Discord starts a new author group after this long, even for the same author.
 const AUTHOR_GROUP_MAXIMUM_GAP_MILLISECONDS: u64 = 7 * 60 * 1_000;
 const REPLY_PREVIEW_MAXIMUM_CHARACTERS: usize = 80;
 
-/// "name · size", one per attachment, as the message row lists them (downloads come later).
+/// Name and size of each attachment, as the message row lists them (downloads come later).
 fn attachment_rows(attachments: &[mellow_protocol::Attachment]) -> ModelRc<AttachmentRow> {
     let rows: Vec<AttachmentRow> = attachments
         .iter()
@@ -81,6 +82,7 @@ pub fn direct_message_rows(
             DirectMessageRow {
                 id: channel.id.to_string().into(),
                 initial: first_letter(&name).into(),
+                tint: first_recipient_id.map_or(0, avatar_tint_index_of),
                 status: if first_recipient_id.is_some_and(|id| state.is_online(id)) {
                     PresenceStatus::Online
                 } else {
@@ -259,6 +261,7 @@ where
 struct ReplyReference {
     author: SharedString,
     author_initial: SharedString,
+    author_tint: i32,
     text: SharedString,
 }
 
@@ -270,6 +273,7 @@ fn reply_reference(reply_to_id: Option<Snowflake>, messages: &[Message]) -> Repl
         Some(original) => ReplyReference {
             author: original.author.display_name.as_str().into(),
             author_initial: first_letter(&original.author.display_name).into(),
+            author_tint: avatar_tint_index_of(original.author.id),
             text: original
                 .content
                 .chars()
@@ -292,16 +296,31 @@ pub fn can_send_messages(state: &ClientState, channel_id: Snowflake) -> bool {
         .is_none_or(|permissions| permissions.contains(Permissions::SEND_MESSAGES))
 }
 
+/// Each member's highest role colour in `guild`, for author and member names.
+pub fn role_colors_by_user(guild: Option<&Guild>, members: &[Member]) -> HashMap<Snowflake, u32> {
+    let Some(guild) = guild else {
+        return HashMap::new();
+    };
+    members
+        .iter()
+        .filter_map(|member| {
+            highest_role_color(guild, &member.role_ids).map(|color| (member.user.id, color))
+        })
+        .collect()
+}
+
 /// `can_manage_messages`: the signed-in user may delete other people's messages here.
 pub fn message_rows(
     messages: &[Message],
     current_user_id: Option<Snowflake>,
     can_manage_messages: bool,
+    role_colors: &HashMap<Snowflake, u32>,
 ) -> Vec<MessageRow> {
     message_rows_at(
         messages,
         current_user_id,
         can_manage_messages,
+        role_colors,
         &Local::now(),
     )
 }
@@ -310,6 +329,7 @@ fn message_rows_at<Zone: TimeZone>(
     messages: &[Message],
     current_user_id: Option<Snowflake>,
     can_manage_messages: bool,
+    role_colors: &HashMap<Snowflake, u32>,
     now: &DateTime<Zone>,
 ) -> Vec<MessageRow>
 where
@@ -332,6 +352,8 @@ where
             MessageRow {
                 author: message.author.display_name.as_str().into(),
                 author_initial: first_letter(&message.author.display_name).into(),
+                author_tint: avatar_tint_index_of(message.author.id),
+                author_role_color: role_color(role_colors.get(&message.author.id).copied()),
                 timestamp: timestamp_label(sent_at, now).into(),
                 short_time: short_time(sent_at, &now.timezone()).into(),
                 body: styled_text_from_message_body(&message.content),
@@ -340,6 +362,7 @@ where
                 starts_author_group,
                 reply_author: reply.author,
                 reply_author_initial: reply.author_initial,
+                reply_author_tint: reply.author_tint,
                 reply_preview: reply.text,
                 // shortcut: mentions are not parsed yet (M2).
                 mentions_current_user: false,
@@ -358,14 +381,22 @@ pub fn pending_message_rows(
     pending_messages: &[&PendingMessage],
     confirmed: &[Message],
     current_user: &CurrentUser,
+    role_colors: &HashMap<Snowflake, u32>,
 ) -> Vec<MessageRow> {
-    pending_message_rows_at(pending_messages, confirmed, current_user, &Local::now())
+    pending_message_rows_at(
+        pending_messages,
+        confirmed,
+        current_user,
+        role_colors,
+        &Local::now(),
+    )
 }
 
 fn pending_message_rows_at<Zone: TimeZone>(
     pending_messages: &[&PendingMessage],
     confirmed: &[Message],
     current_user: &CurrentUser,
+    role_colors: &HashMap<Snowflake, u32>,
     now: &DateTime<Zone>,
 ) -> Vec<MessageRow>
 where
@@ -386,6 +417,8 @@ where
             MessageRow {
                 author: current_user.display_name.as_str().into(),
                 author_initial: first_letter(&current_user.display_name).into(),
+                author_tint: avatar_tint_index_of(current_user.id),
+                author_role_color: role_color(role_colors.get(&current_user.id).copied()),
                 timestamp: timestamp_label(now_unix_milliseconds, now).into(),
                 short_time: short_time(now_unix_milliseconds, &now.timezone()).into(),
                 body: styled_text_from_message_body(&pending.content),
@@ -395,6 +428,7 @@ where
                 starts_author_group,
                 reply_author: reply.author,
                 reply_author_initial: reply.author_initial,
+                reply_author_tint: reply.author_tint,
                 reply_preview: reply.text,
                 mentions_current_user: false,
                 // Not stored yet: it can be neither edited nor deleted on the server.
@@ -411,7 +445,11 @@ where
 }
 
 /// Online members first, then offline, each sorted by display name.
-pub fn member_rows(members: &[Member], state: &ClientState) -> Vec<MemberListRow> {
+pub fn member_rows(
+    members: &[Member],
+    state: &ClientState,
+    guild: Option<&Guild>,
+) -> Vec<MemberListRow> {
     let (mut online, mut offline): (Vec<&Member>, Vec<&Member>) = members
         .iter()
         .partition(|member| state.is_online(member.user.id));
@@ -430,6 +468,8 @@ pub fn member_rows(members: &[Member], state: &ClientState) -> Vec<MemberListRow
             label: label.into(),
             member_count: saturating_int(group.len()),
             initial: SharedString::default(),
+            tint: 0,
+            role_color: RoleColor::default(),
             activity: SharedString::default(),
             status: PresenceStatus::Offline,
             user_id: SharedString::default(),
@@ -442,6 +482,10 @@ pub fn member_rows(members: &[Member], state: &ClientState) -> Vec<MemberListRow
                 label: member.user.display_name.as_str().into(),
                 member_count: 0,
                 initial: first_letter(&member.user.display_name).into(),
+                tint: avatar_tint_index_of(member.user.id),
+                role_color: role_color(
+                    guild.and_then(|guild| highest_role_color(guild, &member.role_ids)),
+                ),
                 activity: SharedString::default(),
                 status,
                 user_id: member.user.id.to_string().into(),
@@ -619,7 +663,13 @@ mod tests {
                 ..message(at_minute(20, 1), author(2, "Basile"), "hi", Some(first.id))
             },
         ];
-        let rows = message_rows_at(&messages, Some(Snowflake::from_raw(2)), false, &Utc::now());
+        let rows = message_rows_at(
+            &messages,
+            Some(Snowflake::from_raw(2)),
+            false,
+            &HashMap::new(),
+            &Utc::now(),
+        );
         let groups: Vec<_> = rows.iter().map(|row| row.starts_author_group).collect();
         assert_eq!(groups, [true, false, true, true]);
         assert_eq!(rows[3].reply_author, "Aurore");
@@ -636,7 +686,13 @@ mod tests {
             [false, false, false, true],
             "only my own message"
         );
-        let moderated = message_rows_at(&messages, Some(Snowflake::from_raw(2)), true, &Utc::now());
+        let moderated = message_rows_at(
+            &messages,
+            Some(Snowflake::from_raw(2)),
+            true,
+            &HashMap::new(),
+            &Utc::now(),
+        );
         assert!(moderated.iter().all(|row| row.can_delete));
     }
 
@@ -729,8 +785,13 @@ mod tests {
         let sending = pending("a", None, PendingMessageStatus::Sending);
         let failed_reply = pending("b", Some(minutes_ago(1)), PendingMessageStatus::Failed);
         let ours_a_minute_ago = vec![confirmed(minutes_ago(1), 1)];
-        let rows =
-            pending_message_rows_at(&[&sending, &failed_reply], &ours_a_minute_ago, &me, &now);
+        let rows = pending_message_rows_at(
+            &[&sending, &failed_reply],
+            &ours_a_minute_ago,
+            &me,
+            &HashMap::new(),
+            &now,
+        );
         let groups: Vec<_> = rows.iter().map(|row| row.starts_author_group).collect();
         assert_eq!(groups, [false, true]);
         assert_eq!(rows[1].reply_author, "Someone");
@@ -744,7 +805,7 @@ mod tests {
         let theirs = vec![confirmed(minutes_ago(1), 2)];
         let ours_long_ago = vec![confirmed(minutes_ago(30), 1)];
         for confirmed in [theirs, ours_long_ago, Vec::new()] {
-            let rows = pending_message_rows_at(&[&sending], &confirmed, &me, &now);
+            let rows = pending_message_rows_at(&[&sending], &confirmed, &me, &HashMap::new(), &now);
             assert!(rows[0].starts_author_group);
         }
     }
@@ -886,7 +947,7 @@ mod tests {
             online_user_ids: Vec::new(),
             direct_message_channels: Vec::new(),
         });
-        let rows = member_rows(&[member(2, "Me"), member(7, "Aurore")], &state);
+        let rows = member_rows(&[member(2, "Me"), member(7, "Aurore")], &state, None);
         let can_message: Vec<_> = rows
             .iter()
             .filter(|row| !row.is_group_header)

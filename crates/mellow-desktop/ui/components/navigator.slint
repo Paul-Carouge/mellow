@@ -47,6 +47,7 @@ component VoiceToggle inherits IconButton {
 component UserCard inherits Rectangle {
     in property <string> display-name;
     in property <string> initial;
+    in property <int> tint;
     in property <string> username;
     in property <bool> has-update-available;
     // Microphone and headset show only in development builds until voice ships; the card keeps
@@ -93,6 +94,7 @@ component UserCard inherits Rectangle {
             alignment: center;
             Avatar {
                 initial: root.initial;
+                tint-index: root.tint;
                 size: MellowComponent.user-panel-avatar-size;
                 has-presence: true;
                 status: PresenceStatus.online;
@@ -197,6 +199,7 @@ export component Navigator inherits Rectangle {
     // User card.
     in property <string> current-user-name;
     in property <string> current-user-initial;
+    in property <int> current-user-tint;
     in property <string> current-username;
     in property <bool> has-update-available;
     in property <bool> shows-voice-controls;
@@ -251,6 +254,7 @@ export component Navigator inherits Rectangle {
             UserCard {
                 display-name: root.current-user-name;
                 initial: root.current-user-initial;
+                tint: root.current-user-tint;
                 username: root.current-username;
                 has-update-available: root.has-update-available;
                 shows-voice-controls: root.shows-voice-controls;

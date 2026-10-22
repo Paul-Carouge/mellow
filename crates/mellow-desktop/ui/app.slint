@@ -10,7 +10,7 @@ import { MelliAnimation, MelliState } from "components/melli.slint";
 import { ChannelListRow, DirectMessageRow } from "components/channel_sidebar.slint";
 import { AttachmentRow, ChatPane, HistoryStartState, MessageDelivery, MessageRow } from "components/chat_pane.slint";
 import { MemberListRow, MemberSheet } from "components/member_list.slint";
-import { PresenceStatus } from "components/primitives.slint";
+import { PresenceStatus, RoleColor } from "components/primitives.slint";
 import { LoginScreen } from "components/login_screen.slint";
 import { ConnectionBanner } from "components/connection_banner.slint";
 import { DeleteMessageDialog } from "components/delete_message_dialog.slint";
@@ -18,7 +18,7 @@ import { UpdateStatus, UserSettingsScreen } from "components/user_settings.slint
 import { RoleListRow, RolePermissionRow, ServerSettingsScreen } from "components/server_settings.slint";
 import { AddServerDialog, CreateChannelDialog, InvitePeopleDialog, LeaveServerDialog } from "components/server_dialogs.slint";
 
-export { AttachmentRow, MelliAnimation, MelliState, ServerItem, ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, MotionPreference, ThemeChoice, UpdateStatus, RoleListRow, RolePermissionRow }
+export { AttachmentRow, RoleColor, MelliAnimation, MelliState, ServerItem, ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, MotionPreference, ThemeChoice, UpdateStatus, RoleListRow, RolePermissionRow }
 
 // The window-wide dialog open over the shell, if any (DESIGN.md §6.35).
 export enum ShellDialog { none, add-server, invite-people, create-channel, leave-server }
@@ -45,6 +45,8 @@ export component AppWindow inherits Window {
     in property <[MemberListRow]> member-rows;
     in property <string> current-user-name;
     in property <string> current-user-initial;
+    // The signed-in user's default avatar tint, 0 to 7.
+    in property <int> current-user-tint;
     in property <string> latest-announcement;
     in-out property <string> composer-text;
     in-out property <bool> is-text-selection-mode;
@@ -377,6 +379,7 @@ export component AppWindow inherits Window {
                     leave-server => { root.open-dialog = ShellDialog.leave-server; }
                     current-user-name: root.current-user-name;
                     current-user-initial: root.current-user-initial;
+                    current-user-tint: root.current-user-tint;
                     current-username: root.account-username;
                     has-update-available: root.has-update-available;
                     shows-voice-controls: root.shows-unreleased-controls;
@@ -524,6 +527,7 @@ export component AppWindow inherits Window {
             }
             current-user-name: root.current-user-name;
             current-user-initial: root.current-user-initial;
+            current-user-tint: root.current-user-tint;
             current-username: root.account-username;
             has-update-available: root.has-update-available;
             shows-voice-controls: root.shows-unreleased-controls;

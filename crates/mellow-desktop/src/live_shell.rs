@@ -9,7 +9,7 @@ mod server_actions;
 mod server_settings;
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -80,6 +80,8 @@ pub struct LiveShell {
     displayed_pending_nonces: Vec<String>,
     /// What the message rows were built with: rows are rebuilt only when it changes.
     displayed_can_manage_messages: bool,
+    /// Role colours the message rows were built with: rows are rebuilt only when they change.
+    displayed_role_colors: HashMap<Snowflake, u32>,
     /// The message the composer answers, shown as "Replying to …".
     reply_to_message_id: Option<Snowflake>,
     /// See `clipboard::copy_text`.
@@ -125,6 +127,7 @@ pub fn start(
         displayed_message_ids: Vec::new(),
         displayed_pending_nonces: Vec::new(),
         displayed_can_manage_messages: false,
+        displayed_role_colors: HashMap::new(),
         reply_to_message_id: None,
         clipboard: None,
         session_generation: 0,
@@ -847,12 +850,14 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
             }
             // A rename, a new topic or a permission change of the open guild or channel.
             refresh_header(&shell.borrow());
-            // Rebuilding rows recreates an open inline editor, so only when Delete changes.
-            let can_manage_messages_changed = {
+            // Rebuilding rows recreates an open inline editor, so only when Delete or a role
+            // colour changes.
+            let are_message_rows_outdated = {
                 let shell = shell.borrow();
                 can_manage_messages(&shell) != shell.displayed_can_manage_messages
+                    || selected_role_colors(&shell) != shell.displayed_role_colors
             };
-            if can_manage_messages_changed {
+            if are_message_rows_outdated {
                 refresh_messages(&mut shell.borrow_mut());
             }
             server_settings::refresh(&mut shell.borrow_mut());
@@ -863,6 +868,14 @@ fn apply_state_change(shell: &SharedShell, change: StateChange) {
         }
         StateChange::Members { guild_id } if Some(guild_id) == selected_guild_id => {
             refresh_member_rows(&shell.borrow());
+            // Author names take their role colour once the members are known.
+            let are_role_colors_outdated = {
+                let shell = shell.borrow();
+                selected_role_colors(&shell) != shell.displayed_role_colors
+            };
+            if are_role_colors_outdated {
+                refresh_messages(&mut shell.borrow_mut());
+            }
             // Member counts per role.
             server_settings::refresh(&mut shell.borrow_mut());
         }
@@ -898,6 +911,7 @@ fn refresh_user_panel(shell: &LiveShell) {
     if let (Some(window), Some(user)) = (shell.window.upgrade(), shell.state.current_user()) {
         window.set_current_user_name(user.display_name.as_str().into());
         window.set_current_user_initial(shell_rows::first_letter(&user.display_name).into());
+        window.set_current_user_tint(crate::person_style::avatar_tint_index_of(user.id));
     }
 }
 
@@ -1603,10 +1617,21 @@ fn refresh_member_rows(shell: &LiveShell) {
         .selected_guild_id
         .map(|id| shell.state.members(id))
         .unwrap_or_default();
+    let guild = shell.selected_guild_id.and_then(|id| shell.state.guild(id));
     window.set_member_rows(ModelRc::new(VecModel::from(live_rows::member_rows(
         members,
         &shell.state,
+        guild,
     ))));
+}
+
+/// Each member's highest role colour in the selected guild; none on Home.
+fn selected_role_colors(shell: &LiveShell) -> HashMap<Snowflake, u32> {
+    let guild = shell.selected_guild_id.and_then(|id| shell.state.guild(id));
+    let members = guild
+        .map(|guild| shell.state.members(guild.id))
+        .unwrap_or_default();
+    live_rows::role_colors_by_user(guild, members)
 }
 
 /// Whether the signed-in user may delete other people's messages in the open channel.
@@ -1629,16 +1654,19 @@ fn refresh_messages(shell: &mut LiveShell) {
     let current_user = shell.state.current_user();
     let can_manage_messages = can_manage_messages(shell);
     shell.displayed_can_manage_messages = can_manage_messages;
+    let role_colors = selected_role_colors(shell);
     let mut rows = live_rows::message_rows(
         messages,
         current_user.map(|user| user.id),
         can_manage_messages,
+        &role_colors,
     );
     if let Some(current_user) = current_user {
         rows.extend(live_rows::pending_message_rows(
             &pending_messages,
             messages,
             current_user,
+            &role_colors,
         ));
     }
     let message_ids = messages.iter().map(|message| message.id).collect();
@@ -1647,6 +1675,7 @@ fn refresh_messages(shell: &mut LiveShell) {
         .map(|pending| pending.nonce.clone())
         .collect();
     let previous_message_ids = std::mem::replace(&mut shell.displayed_message_ids, message_ids);
+    shell.displayed_role_colors = role_colors;
     shell.messages.set_vec(rows);
     message_actions::remap_open_message_rows(shell, &previous_message_ids);
     refresh_history_start_state(shell);

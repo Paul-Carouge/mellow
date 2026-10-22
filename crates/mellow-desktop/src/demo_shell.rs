@@ -1,7 +1,7 @@
 //! The shell on fake data (ADR-0012), started with `MELLOW_DEMO_WORKSPACE=1`.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
 use slint::{ComponentHandle as _, Model as _, ModelRc, SharedString, VecModel};
@@ -11,9 +11,9 @@ use crate::fake_messages::{FakeMessage, fake_conversation};
 use crate::fake_workspace::{
     FakeCategory, FakeServer, fake_categories, fake_role_groups, fake_servers,
 };
-use crate::generated_ui::{AppWindow, AttachmentRow, MessageDelivery, MessageRow};
+use crate::generated_ui::{AppWindow, AttachmentRow, MessageDelivery, MessageRow, RoleColor};
 use crate::message_markup::styled_text_from_message_body;
-use crate::{idle_benchmark, scroll_benchmark, shell_rows};
+use crate::{idle_benchmark, person_style, scroll_benchmark, shell_rows};
 
 /// The busiest channel gets the 10 000-message history used by the scroll benchmark.
 const BUSIEST_CHANNEL_NAME: &str = "general";
@@ -35,10 +35,26 @@ struct ShellState {
     clipboard: Option<arboard::Clipboard>,
 }
 
-fn message_row(message: &FakeMessage) -> MessageRow {
+/// Each fake member's role colour, by display name (the demo's stand-in for an id).
+fn role_colors_by_name() -> HashMap<&'static str, u32> {
+    fake_role_groups()
+        .iter()
+        .filter_map(|group| group.role_color.map(|color| (group, color)))
+        .flat_map(|(group, color)| {
+            group
+                .members
+                .iter()
+                .map(move |member| (member.display_name, color))
+        })
+        .collect()
+}
+
+fn message_row(message: &FakeMessage, role_colors: &HashMap<&'static str, u32>) -> MessageRow {
     MessageRow {
         author: message.author.into(),
         author_initial: shell_rows::first_letter(message.author).into(),
+        author_tint: person_style::avatar_tint_index(message.author),
+        author_role_color: person_style::role_color(role_colors.get(message.author).copied()),
         timestamp: format!("Today at {}", message.time_of_day).into(),
         short_time: message.time_of_day.clone().into(),
         body: styled_text_from_message_body(message.body),
@@ -55,6 +71,9 @@ fn message_row(message: &FakeMessage) -> MessageRow {
         reply_author: message.reply_author.unwrap_or_default().into(),
         reply_author_initial: shell_rows::first_letter(message.reply_author.unwrap_or_default())
             .into(),
+        reply_author_tint: person_style::avatar_tint_index(
+            message.reply_author.unwrap_or_default(),
+        ),
         reply_preview: message.reply_preview.unwrap_or_default().into(),
         mentions_current_user: message.mentions_current_user,
         is_own: message.author == CURRENT_USER_NAME,
@@ -90,10 +109,11 @@ fn open_channel(window: &AppWindow, state: &mut ShellState, channel_name: &str) 
         .find(|channel| channel.name == channel_name)
         .map(|channel| channel.topic)
         .unwrap_or_default();
+    let role_colors = role_colors_by_name();
     state.messages.set_vec(
         fake_conversation(message_count_for_channel(channel_name))
             .iter()
-            .map(message_row)
+            .map(|message| message_row(message, &role_colors))
             .collect::<Vec<_>>(),
     );
     window.set_selected_channel_id(channel_name.into());
@@ -133,6 +153,7 @@ pub fn start(window: &AppWindow) -> Result<(), slint::PlatformError> {
     ))));
     window.set_current_user_name(CURRENT_USER_NAME.into());
     window.set_current_user_initial(shell_rows::first_letter(CURRENT_USER_NAME).into());
+    window.set_current_user_tint(person_style::avatar_tint_index(CURRENT_USER_NAME));
     window.set_account_display_name(CURRENT_USER_NAME.into());
     window.set_account_username(CURRENT_USERNAME.into());
     window.set_messages(state.borrow().messages.clone().into());
@@ -212,6 +233,8 @@ fn connect_message_callbacks(window: &AppWindow, state: &Rc<RefCell<ShellState>>
         messages.push(MessageRow {
             author: CURRENT_USER_NAME.into(),
             author_initial: shell_rows::first_letter(CURRENT_USER_NAME).into(),
+            author_tint: person_style::avatar_tint_index(CURRENT_USER_NAME),
+            author_role_color: RoleColor::default(),
             // shortcut: fake messages have no real clock; the client core will provide timestamps.
             timestamp: "Today".into(),
             short_time: SharedString::default(),
@@ -221,6 +244,7 @@ fn connect_message_callbacks(window: &AppWindow, state: &Rc<RefCell<ShellState>>
             starts_author_group: last_author.as_deref() != Some(CURRENT_USER_NAME),
             reply_author: SharedString::default(),
             reply_author_initial: SharedString::default(),
+            reply_author_tint: 0,
             reply_preview: SharedString::default(),
             mentions_current_user: false,
             // shortcut: the demo shows Edit and Delete on its own messages but does not apply them.
