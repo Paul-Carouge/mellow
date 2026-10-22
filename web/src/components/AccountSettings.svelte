@@ -4,6 +4,7 @@
   import { tick } from "svelte";
 
   import { ApiError } from "../lib/api";
+  import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import AccountEditForm from "./AccountEditForm.svelte";
   import Button from "./Button.svelte";
@@ -117,7 +118,7 @@
       // No login was typed here: only the current password can be wrong.
       errorMessage =
         error instanceof ApiError && error.code === "INVALID_CREDENTIALS"
-          ? `${failureSummary}: the current password is wrong.`
+          ? strings.errors.withReason(failureSummary, strings.account.wrongCurrentPassword)
           : describeError(error, failureSummary);
     } finally {
       isBusy = false;
@@ -128,22 +129,22 @@
     save(
       "display-name",
       () => client.updateDisplayName(displayNameDraft),
-      "Couldn't save the display name",
-      "Display name saved.",
+      strings.account.displayNameFailed,
+      strings.account.displayNameSaved,
     );
   const saveUsername = () =>
     save(
       "username",
       () => client.updateUsername(usernameDraft, currentPasswordDraft),
-      "Couldn't change the username",
-      "Username saved.",
+      strings.account.usernameFailed,
+      strings.account.usernameSaved,
     );
   const changePassword = () =>
     save(
       "password",
       () => client.changePassword(currentPasswordDraft, newPasswordDraft),
-      "Couldn't change the password",
-      "Password changed. Your other devices are signed out.",
+      strings.account.passwordFailed,
+      strings.account.passwordChanged,
     );
 </script>
 
@@ -154,12 +155,12 @@
   </div>
 {/snippet}
 
-{#snippet editableField(form: AccountForm, label: string, value: string)}
+{#snippet editableField(form: AccountForm, label: string, editLabel: string, value: string)}
   <div class="flex flex-col gap-(--mw-component-settings-section-label-gap)">
     <div class="flex items-center gap-(--mw-component-settings-account-button-gap)">
       {@render fieldValue(label, value)}
-      <Button id={openerId(form)} aria-label="Edit {label.toLowerCase()}" isDisabled={isBusy} onclick={() => void open(form)}
-        >Edit</Button
+      <Button id={openerId(form)} aria-label={editLabel} isDisabled={isBusy} onclick={() => void open(form)}
+        >{strings.common.edit}</Button
       >
     </div>
     {@render savedNotice(form)}
@@ -179,16 +180,16 @@
   {/if}
 {/snippet}
 
-<h2 class="type-heading-lg text-(--mw-component-settings-page-title-text)">My account</h2>
+<h2 class="type-heading-lg text-(--mw-component-settings-page-title-text)">{strings.settings.myAccount}</h2>
 
 <div
   class="mt-(--mw-component-settings-page-title-gap) flex flex-col gap-(--mw-component-settings-account-row-gap) rounded-(--mw-component-settings-account-card-radius) bg-(--mw-component-settings-account-card-background) p-(--mw-component-settings-account-card-padding)"
 >
   {#if openForm === "display-name"}
     <AccountEditForm
-      label="Change display name"
-      saveLabel="Save"
-      busyLabel="Saving…"
+      label={strings.account.changeDisplayName}
+      saveLabel={strings.common.save}
+      busyLabel={strings.common.saving}
       isSaveEnabled={canSaveDisplayName}
       {isBusy}
       {errorMessage}
@@ -197,8 +198,8 @@
     >
       <TextField
         id="{id}-display-name"
-        label="Display name"
-        helper="Up to 32 characters. This is the name people see in chat."
+        label={strings.account.displayName}
+        helper={strings.account.displayNameHelper}
         autocomplete="nickname"
         readonly={isBusy}
         bind:value={displayNameDraft}
@@ -206,14 +207,14 @@
       />
     </AccountEditForm>
   {:else}
-    {@render editableField("display-name", "Display name", user?.display_name ?? "")}
+    {@render editableField("display-name", strings.account.displayName, strings.account.editDisplayName, user?.display_name ?? "")}
   {/if}
 
   {#if openForm === "username"}
     <AccountEditForm
-      label="Change username"
-      saveLabel="Save"
-      busyLabel="Saving…"
+      label={strings.account.changeUsername}
+      saveLabel={strings.common.save}
+      busyLabel={strings.common.saving}
       isSaveEnabled={canSaveUsername}
       {isBusy}
       {errorMessage}
@@ -222,8 +223,8 @@
     >
       <TextField
         id="{id}-username"
-        label="Username"
-        helper="2 to 32 characters: lowercase letters, digits, dots and underscores."
+        label={strings.account.username}
+        helper={strings.signIn.usernameHelper}
         autocomplete="username"
         autocapitalize="none"
         spellcheck={false}
@@ -234,7 +235,7 @@
       />
       <TextField
         id="{id}-username-password"
-        label="Current password"
+        label={strings.account.currentPassword}
         isPassword
         autocomplete="current-password"
         readonly={isBusy}
@@ -242,14 +243,14 @@
       />
     </AccountEditForm>
   {:else}
-    {@render editableField("username", "Username", `@${user?.username ?? ""}`)}
+    {@render editableField("username", strings.account.username, strings.account.editUsername, `@${user?.username ?? ""}`)}
   {/if}
 
-  {@render fieldValue("Email", user?.email ?? "")}
+  {@render fieldValue(strings.account.email, user?.email ?? "")}
 </div>
 
 <h3 class="mt-(--mw-component-settings-section-gap) type-category text-(--mw-component-settings-section-label-text)">
-  Password
+  {strings.account.password}
 </h3>
 <div class="mt-(--mw-component-settings-section-label-gap)">
   {#if openForm === "password"}
@@ -257,9 +258,9 @@
       class="rounded-(--mw-component-settings-account-card-radius) bg-(--mw-component-settings-account-card-background) p-(--mw-component-settings-account-card-padding)"
     >
       <AccountEditForm
-        label="Change password"
-        saveLabel="Change password"
-        busyLabel="Changing password…"
+        label={strings.account.changePassword}
+        saveLabel={strings.account.changePassword}
+        busyLabel={strings.account.changingPassword}
         isSaveEnabled={canChangePassword}
         {isBusy}
         {errorMessage}
@@ -268,7 +269,7 @@
       >
         <TextField
           id="{id}-current-password"
-          label="Current password"
+          label={strings.account.currentPassword}
           isPassword
           autocomplete="current-password"
           readonly={isBusy}
@@ -277,8 +278,8 @@
         />
         <TextField
           id="{id}-new-password"
-          label="New password"
-          helper="At least {MINIMUM_PASSWORD_LENGTH} characters."
+          label={strings.account.newPassword}
+          helper={strings.signIn.passwordLengthHelper(MINIMUM_PASSWORD_LENGTH)}
           isPassword
           autocomplete="new-password"
           readonly={isBusy}
@@ -287,8 +288,8 @@
         <!-- Says why Save stays disabled while the two differ. -->
         <TextField
           id="{id}-confirm-password"
-          label="Confirm new password"
-          helper={confirmPasswordDraft !== "" && !doesConfirmationMatch ? "Doesn't match the new password." : ""}
+          label={strings.account.confirmNewPassword}
+          helper={confirmPasswordDraft !== "" && !doesConfirmationMatch ? strings.account.passwordsDiffer : ""}
           isPassword
           autocomplete="new-password"
           readonly={isBusy}
@@ -299,7 +300,7 @@
   {:else}
     <div class="flex flex-col items-start gap-(--mw-component-settings-action-gap)">
       <Button id={openerId("password")} variant="primary" isDisabled={isBusy} onclick={() => void open("password")}
-        >Change password</Button
+        >{strings.account.changePassword}</Button
       >
       {@render savedNotice("password")}
     </div>

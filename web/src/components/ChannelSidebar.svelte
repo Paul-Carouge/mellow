@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SvelteSet } from "svelte/reactivity";
 
+  import { strings } from "../i18n";
   import type { MellowClient } from "../lib/client.svelte";
   import {
     type Channel,
@@ -91,7 +92,7 @@
 
   function conversationName(conversation: DirectMessageChannel): string {
     const others = conversation.recipients.filter((recipient) => recipient.id !== user?.id);
-    return others.map(displayName).join(", ") || "Just you";
+    return others.map(displayName).join(", ") || strings.sidebar.justYou;
   }
 
   function selectChannel(channelId: Snowflake) {
@@ -177,7 +178,7 @@
       <h2
         class="flex size-full items-center truncate px-xs type-heading-md text-(--mw-component-sidebar-header-text)"
       >
-        {guild ? guild.name : "Direct messages"}
+        {guild ? guild.name : strings.sidebar.directMessages}
       </h2>
     {/if}
   </header>
@@ -189,7 +190,7 @@
     popover="auto"
     role="menu"
     tabindex="-1"
-    aria-label="Server menu"
+    aria-label={strings.sidebar.serverMenu}
     class="fixed inset-auto m-0 flex-col rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) p-(--mw-component-context-menu-padding) shadow-(--mw-component-context-menu-shadow) [&:popover-open]:flex [&:popover-open]:animate-[mw-drop-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]"
     style:top="calc({menuPosition.top}px + var(--mw-component-sidebar-header-menu-margin))"
     style:left="calc({menuPosition.left}px + var(--mw-component-sidebar-header-menu-margin))"
@@ -203,10 +204,10 @@
     }}
   >
     {#if canInvitePeople}
-      {@render menuItem("Invite people", "user-plus", "accent", "invite-people")}
+      {@render menuItem(strings.sidebar.invitePeople, "user-plus", "accent", "invite-people")}
     {/if}
     {#if canCreateChannels}
-      {@render menuItem("Create channel", "plus-circle", "normal", "create-channel")}
+      {@render menuItem(strings.sidebar.createChannel, "plus-circle", "normal", "create-channel")}
     {/if}
     {#if canLeaveServer}
       {#if canInvitePeople || canCreateChannels}
@@ -214,12 +215,12 @@
           class="mx-(--mw-component-context-menu-separator-margin-inline) my-(--mw-component-context-menu-separator-margin-block) h-(--mw-component-context-menu-separator-height) border-0 bg-(--mw-component-context-menu-separator)"
         />
       {/if}
-      {@render menuItem("Leave server", "sign-out", "danger", "leave-server")}
+      {@render menuItem(strings.sidebar.leaveServer, "sign-out", "danger", "leave-server")}
     {/if}
   </div>
 
   <nav
-    aria-label={guild ? `Channels in ${guild.name}` : "Direct messages"}
+    aria-label={guild ? strings.sidebar.channelsIn(guild.name) : strings.sidebar.directMessages}
     class="-ms-(--mw-component-channel-row-unread-pill-offset) min-h-0 flex-1 overflow-y-auto ps-(--mw-component-channel-row-unread-pill-offset) pb-xs [scrollbar-width:thin]"
   >
     <!-- The negative margin lets the unread pills sit in the strip's margin without being clipped. -->
@@ -227,7 +228,7 @@
       {@render guildChannels(guild)}
     {:else if client.conversations.length === 0}
       <p class="mt-xs me-(--mw-component-channel-row-margin-inline) px-(--mw-component-channel-row-padding-inline) type-body text-text-muted">
-        No conversations yet. Open someone's profile in a server's member list and choose Send message.
+        {strings.sidebar.noConversations}
       </p>
     {:else}
       <ul class="mt-xs">
@@ -240,7 +241,7 @@
             <button
               type="button"
               aria-current={isSelected ? "page" : undefined}
-              aria-label={hasUnread ? `${conversationName(conversation)}, unread` : conversationName(conversation)}
+              aria-label={hasUnread ? strings.common.withUnread(conversationName(conversation)) : conversationName(conversation)}
               class={[rowClasses(isSelected, hasUnread), "h-(--mw-component-member-row-height) gap-sm"]}
               onclick={() => selectConversation(conversation.id)}
             >
@@ -268,13 +269,13 @@
   {#if sections.every((section) => section.channels.length === 0)}
     <div class="mt-xs me-(--mw-component-channel-row-margin-inline) flex flex-col items-start gap-xs px-(--mw-component-channel-row-padding-inline)">
       {#if canCreateChannels}
-        <p class="type-body text-text-muted">No channels yet. Create the first one to get the conversation going.</p>
+        <p class="type-body text-text-muted">{strings.sidebar.noChannelsYet}</p>
         <Button
           variant="primary"
-          onclick={() => onopendialog("create-channel")}>Create a channel</Button
+          onclick={() => onopendialog("create-channel")}>{strings.sidebar.createAChannel}</Button
         >
       {:else}
-        <p class="type-body text-text-muted">No channels you can see yet. Ask a moderator for access.</p>
+        <p class="type-body text-text-muted">{strings.sidebar.noVisibleChannelsYet}</p>
       {/if}
     </div>
   {/if}
@@ -301,7 +302,7 @@
         {#if canCreateChannels}
           <IconButton
             icon="plus"
-            label="Create a channel in {category.name}"
+            label={strings.sidebar.createChannelIn(category.name)}
             class="size-(--mw-component-category-height) rounded-xs text-(--mw-component-category-text) hover:text-(--mw-component-category-text-hover)"
             iconClass="size-(--mw-component-category-add-icon-size)"
             onclick={() => oncreatechannelin(category)}
@@ -321,7 +322,8 @@
             <button
               type="button"
               aria-current={isSelected ? "page" : undefined}
-              aria-label={[channel.name, !canSendMessages && "read-only", hasUnread && "unread"].filter(Boolean).join(", ")}
+              aria-label={[channel.name, !canSendMessages && strings.common.readOnly].filter(Boolean).join(", ") +
+                (hasUnread ? strings.common.unreadSuffix : "")}
               class={[rowClasses(isSelected, hasUnread), "h-(--mw-component-channel-row-height) pointer-coarse:h-(--mw-size-hit-web-min)"]}
               onclick={() => selectChannel(channel.id)}
             >

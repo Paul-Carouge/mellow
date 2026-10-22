@@ -3,6 +3,7 @@
 
 import type { IconName } from "./Icon.svelte";
 import type { DirectMessageChannel, Guild, PublicUser, Snowflake } from "../lib/protocol";
+import { strings } from "../i18n";
 import { channelSections } from "../lib/channels";
 import { displayName } from "./format";
 
@@ -84,7 +85,7 @@ export function quickSwitcherResults(query: string, sources: QuickSwitcherSource
       return {
         key: `person:${person.id}`,
         label: displayName(person),
-        where: "Direct message",
+        where: strings.quickSwitcher.directMessage,
         icon: "at",
         hasUnread: conversation !== null && sources.hasUnread(conversation.id),
         target: { kind: "person", userId: person.id, conversationId: conversation?.id ?? null },
@@ -96,7 +97,7 @@ export function quickSwitcherResults(query: string, sources: QuickSwitcherSource
     .map((guild) => ({
       key: `server:${guild.id}`,
       label: guild.name,
-      where: "Server",
+      where: strings.quickSwitcher.server,
       icon: "users",
       hasUnread: guild.channels.some((channel) => sources.hasUnread(channel.id)),
       target: { kind: "server", guildId: guild.id },
@@ -106,8 +107,8 @@ export function quickSwitcherResults(query: string, sources: QuickSwitcherSource
   // every channel and member at once.
   const shown = (items: QuickSwitcherItem[]) => (term === "" ? items.slice(0, MAXIMUM_ITEMS_PER_KIND_BEFORE_TYPING) : items);
   return [
-    { label: "Channels", items: !kind || kind === "channels" ? shown(channels) : [] },
-    { label: "People", items: !kind || kind === "people" ? shown(peopleItems) : [] },
-    { label: "Servers", items: !kind || kind === "servers" ? shown(servers) : [] },
+    { label: strings.quickSwitcher.channels, items: !kind || kind === "channels" ? shown(channels) : [] },
+    { label: strings.quickSwitcher.people, items: !kind || kind === "people" ? shown(peopleItems) : [] },
+    { label: strings.quickSwitcher.servers, items: !kind || kind === "servers" ? shown(servers) : [] },
   ].filter((group) => group.items.length > 0);
 }

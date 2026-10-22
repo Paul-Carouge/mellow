@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
 
+  import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
@@ -15,6 +16,8 @@
 
   let { client }: Props = $props();
 
+  // Mirrors the server's rule (mellow-server domain/account_rules.rs); the server still decides.
+  const MINIMUM_PASSWORD_LENGTH = 10;
   const instanceName = window.location.host;
   let isRegistering = $state(false);
   let login = $state("");
@@ -53,7 +56,7 @@
         await client.signIn(login.trim(), password);
       }
     } catch (error) {
-      errorMessage = describeError(error, isRegistering ? "Couldn't create your account" : "Couldn't sign in");
+      errorMessage = describeError(error, isRegistering ? strings.signIn.registerFailed : strings.signIn.signInFailed);
       isBusy = false;
       await tick();
       focusFirstFieldToFill();
@@ -79,39 +82,39 @@
     </span>
     <div class="flex flex-col gap-(--mw-component-auth-card-subtitle-gap) text-center">
       <h1 id="sign-in-title" class="type-heading-xl break-words text-(--mw-component-auth-card-title-text)">
-        {isRegistering ? `Create an account on ${instanceName}` : `Sign in to ${instanceName}`}
+        {isRegistering ? strings.signIn.registerTitle(instanceName) : strings.signIn.signInTitle(instanceName)}
       </h1>
       <p class="type-body-lg text-(--mw-component-auth-card-subtitle-text)">
-        {isRegistering ? "Your account will live on this instance." : "Your account is hosted on this instance."}
+        {isRegistering ? strings.signIn.registerSubtitle : strings.signIn.signInSubtitle}
       </p>
     </div>
 
     <div class="flex flex-col gap-(--mw-component-text-field-field-gap)">
       {#if isRegistering}
-        <TextField id="register-email" label="Email" type="email" autocomplete="email" required bind:value={email} />
+        <TextField id="register-email" label={strings.signIn.email} type="email" autocomplete="email" required bind:value={email} />
         <TextField
           id="register-username"
-          label="Username"
+          label={strings.signIn.username}
           autocomplete="username"
           autocapitalize="none"
           spellcheck={false}
           required
-          helper="2 to 32 characters: lowercase letters, digits, dots and underscores."
+          helper={strings.signIn.usernameHelper}
           bind:value={username}
         />
         <TextField
           id="register-password"
-          label="Password"
+          label={strings.signIn.password}
           isPassword
           autocomplete="new-password"
           required
-          helper="At least 10 characters."
+          helper={strings.signIn.passwordLengthHelper(MINIMUM_PASSWORD_LENGTH)}
           bind:value={password}
         />
       {:else}
         <TextField
           id="sign-in-login"
-          label="Username or email"
+          label={strings.signIn.login}
           autocomplete="username"
           autocapitalize="none"
           spellcheck={false}
@@ -120,7 +123,7 @@
         />
         <TextField
           id="sign-in-password"
-          label="Password"
+          label={strings.signIn.password}
           isPassword
           autocomplete="current-password"
           required
@@ -141,18 +144,18 @@
       </div>
       <Button type="submit" variant="primary" isFullWidth isDisabled={isBusy}>
         {#if isRegistering}
-          {isBusy ? "Creating account…" : "Create account"}
+          {isBusy ? strings.signIn.creatingAccount : strings.signIn.createAccount}
         {:else}
-          {isBusy ? "Signing in…" : "Sign in"}
+          {isBusy ? strings.signIn.signingIn : strings.signIn.signIn}
         {/if}
       </Button>
     </div>
     <p class="flex flex-wrap items-center justify-center gap-x-2xs type-body text-(--mw-component-auth-card-hint-text)">
-      {isRegistering ? "Already have an account?" : "No account yet?"}
+      {isRegistering ? strings.signIn.hasAccount : strings.signIn.hasNoAccount}
       <button
         type="button"
         class="text-(--mw-component-auth-card-link-text) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
-        onclick={switchMode}>{isRegistering ? "Sign in" : "Create an account"}</button
+        onclick={switchMode}>{isRegistering ? strings.signIn.signIn : strings.signIn.createAnAccount}</button
       >
     </p>
   </form>

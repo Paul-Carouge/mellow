@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import type { Channel } from "../lib/protocol";
   import ModalDialog from "./ModalDialog.svelte";
@@ -29,7 +30,7 @@
       hasSucceeded = true;
       onclose();
     } catch (error) {
-      errorMessage = describeError(error, "Couldn't create the channel");
+      errorMessage = describeError(error, strings.createChannel.failed);
     } finally {
       isBusy = false;
     }
@@ -38,11 +39,11 @@
 
 <ModalDialog
   shouldReturnFocusToOpener={() => !hasSucceeded}
-  title="Create channel"
-  subtitle={category ? `in ${category.name}` : ""}
+  title={strings.createChannel.title}
+  subtitle={category ? strings.createChannel.inCategory(category.name) : ""}
   {errorMessage}
   {isBusy}
-  submitLabel={isBusy ? "Creating…" : "Create channel"}
+  submitLabel={isBusy ? strings.createChannel.creating : strings.createChannel.submit}
   isSubmitEnabled={!isBusy && channelName.trim() !== ""}
   {onclose}
   onsubmit={submit}
@@ -50,9 +51,9 @@
 >
   <TextField
     id="create-channel-name"
-    label="Channel name"
-    placeholder="new-channel"
-    helper="Names are lowercase, with dashes instead of spaces."
+    label={strings.createChannel.channelName}
+    placeholder={strings.createChannel.placeholder}
+    helper={strings.createChannel.helper}
     leadingIcon="hash"
     autocomplete="off"
     readonly={isBusy}

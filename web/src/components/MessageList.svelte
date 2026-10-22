@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
 
+  import { strings } from "../i18n";
   import type { MellowClient } from "../lib/client.svelte";
   import Button from "./Button.svelte";
   import type { Message, PublicUser, Snowflake } from "../lib/protocol";
@@ -235,7 +236,7 @@
       return;
     }
     if (lastAnnouncedKey !== null && latest.key !== lastAnnouncedKey && latest.message.author.id !== currentUser.id) {
-      announcement = `${displayName(latest.message.author)}: ${messageSummary(latest.message)}`;
+      announcement = strings.messages.authorSaid(displayName(latest.message.author), messageSummary(latest.message));
     }
     lastAnnouncedKey = latest.key;
   }
@@ -258,7 +259,7 @@
     const original = messages.find((candidate) => candidate.id === message.reply_to_id);
     return original
       ? { author: original.author, text: messageSummary(original) }
-      : { author: null, text: "Original message was deleted or is not loaded" };
+      : { author: null, text: strings.messages.originalUnavailable };
   }
 
   // One Tab stop for the whole list; arrows move between messages, as on Discord (DESIGN.md §7.2).
@@ -287,7 +288,7 @@
 </script>
 
 {#snippet skeletons(count: number)}
-  <div role="status" aria-label="Loading messages">
+  <div role="status" aria-label={strings.messages.loading}>
     {#each SKELETON_SHAPES.slice(0, count) as shape, index (index)}
       <div
         aria-hidden="true"
@@ -331,7 +332,7 @@
     <div class="flex-1"></div>
     {#if hasReachedStart}
       <section
-        aria-label="Start of {channelLabel}"
+        aria-label={strings.messages.startOf(channelLabel)}
         class="flex flex-col gap-(--mw-component-message-channel-start-gap) px-md pt-md pb-xs"
       >
         <span
@@ -351,29 +352,29 @@
         class="flex flex-col items-start gap-sm pr-(--mw-component-message-padding-trailing) pl-(--mw-component-message-avatar-inset) py-(--mw-component-message-channel-start-padding-block)"
       >
         <p class="type-message text-text-muted">
-          {isInitialLoad ? `Couldn't load messages in ${channelLabel}.` : "Couldn't load older messages."}
+          {isInitialLoad ? strings.messages.loadFailed(channelLabel) : strings.messages.loadOlderFailed}
         </p>
-        <Button onclick={() => client.retryLoadingHistory()}>Try again</Button>
+        <Button onclick={() => client.retryLoadingHistory()}>{strings.common.tryAgain}</Button>
       </div>
     {:else if isSkeletonDelayElapsed && (isInitialLoad || client.isLoadingOlder)}
       {@render skeletons(isInitialLoad ? INITIAL_SKELETON_COUNT : OLDER_HISTORY_SKELETON_COUNT)}
     {/if}
 
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <ol bind:this={list} aria-label="Messages in {channelLabel}" class="pb-xs" onkeydown={moveFocus}>
+    <ol bind:this={list} aria-label={strings.messages.messagesIn(channelLabel)} class="pb-xs" onkeydown={moveFocus}>
       {#each rows as row (row.key)}
         {#if row.kind === "sent" && row.isFirstUnread}
           <!-- An apricot line with its "New" pill: new messages are "now" (DESIGN.md §2.3, §5.4). -->
           <li
             data-unread-divider
             role="separator"
-            aria-label="New messages since {timeOfDayLabel(row.sentAt)}"
+            aria-label={strings.messages.newSince(timeOfDayLabel(row.sentAt))}
             class="relative mx-md mt-(--mw-component-message-group-gap) h-0 border-t-(length:--mw-component-unread-divider-line-width) border-(--mw-component-unread-divider-line)"
           >
             <span
               aria-hidden="true"
               class="absolute end-0 top-[calc(var(--mw-component-unread-divider-pill-height)/-2)] grid h-(--mw-component-unread-divider-pill-height) place-items-center rounded-(--mw-component-unread-divider-pill-radius) bg-(--mw-component-unread-divider-pill-background) px-xs type-badge text-(--mw-component-unread-divider-pill-text)"
-              >New</span
+              >{strings.messages.newPill}</span
             >
           </li>
         {/if}
@@ -414,8 +415,8 @@
         onjumptopresent();
       }}
     >
-      <span class="min-w-0 flex-1 truncate text-start type-body">You're viewing older messages</span>
-      <span class="type-button">Jump to present</span>
+      <span class="min-w-0 flex-1 truncate text-start type-body">{strings.messages.viewingOlder}</span>
+      <span class="type-button">{strings.messages.jumpToPresent}</span>
     </button>
   {/if}
 

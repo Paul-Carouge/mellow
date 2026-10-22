@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { strings } from "../i18n";
   import type { CurrentUser } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
   import { displayName } from "./format";
@@ -42,8 +43,8 @@
     <!-- The accessible name stays; the state is aria-pressed, the strike and the colour (never colour alone). -->
     <IconButton
       icon="microphone"
-      label="Mute microphone"
-      title={voice.isMicrophoneMuted ? "Unmute microphone" : "Mute microphone"}
+      label={strings.userCard.muteMicrophone}
+      title={voice.isMicrophoneMuted ? strings.userCard.unmuteMicrophone : strings.userCard.muteMicrophone}
       aria-pressed={voice.isMicrophoneMuted}
       class="voice-toggle {buttonClass}"
       {iconClass}
@@ -51,8 +52,8 @@
     />
     <IconButton
       icon="headphones"
-      label="Deafen"
-      title={voice.isDeafened ? "Undeafen" : "Deafen"}
+      label={strings.userCard.deafen}
+      title={voice.isDeafened ? strings.userCard.undeafen : strings.userCard.deafen}
       aria-pressed={voice.isDeafened}
       class="voice-toggle {buttonClass}"
       {iconClass}
@@ -60,7 +61,7 @@
     />
   {/if}
   <!-- Sign out lives in the settings navigation, as on desktop (DESIGN.md §5.9). -->
-  <IconButton icon="gear-six" label="User settings" class={buttonClass} {iconClass} onclick={onopenusersettings} />
+  <IconButton icon="gear-six" label={strings.userCard.userSettings} class={buttonClass} {iconClass} onclick={onopenusersettings} />
 </div>
 
 <style>

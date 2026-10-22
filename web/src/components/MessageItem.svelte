@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
+  import { strings } from "../i18n";
   import type { Message, PublicUser } from "../lib/protocol";
   import { autosize } from "./autosize";
   import Avatar from "./Avatar.svelte";
@@ -123,7 +124,7 @@
       isSending ? "text-(--mw-component-message-pending-text)" : "text-(--mw-component-message-body-text)",
     ]}
   >
-    {#if !row.startsAuthorGroup}<span class="sr-only">{displayName(author)}: </span>{/if}{#each splitMessageText(content) as segment, index (index)}{#if segment.kind === "link"}<a
+    {#if !row.startsAuthorGroup}<span class="sr-only">{strings.messages.authorSaid(displayName(author), "")}</span>{/if}{#each splitMessageText(content) as segment, index (index)}{#if segment.kind === "link"}<a
           href={segment.url}
           target="_blank"
           rel="noopener noreferrer"
@@ -134,7 +135,8 @@
               >{:else}{part.text}{/if}{/each}{/if}{/each}{#if message?.edited_at_unix_milliseconds}
       <span
         class="type-message-timestamp text-(--mw-component-message-edited-text)"
-        title="Edited {fullTimestampLabel(message.edited_at_unix_milliseconds)}">(edited)</span
+        title={strings.messages.editedAt(fullTimestampLabel(message.edited_at_unix_milliseconds))}
+        >{strings.messages.edited}</span
       >{/if}
   </p>
 {/snippet}
@@ -158,7 +160,7 @@
   ]}
 >
   {#if isMentioningCurrentUser}
-    <span class="sr-only">Mentions you.</span>
+    <span class="sr-only">{strings.messages.mentionsYou}</span>
   {/if}
   {#if replyReference}
     <!-- The spine runs from the author's avatar up to the original (DESIGN.md §5.4). -->
@@ -212,7 +214,7 @@
       <textarea
         bind:value={draft}
         rows="1"
-        aria-label="Edit message"
+        aria-label={strings.messages.editMessage}
         aria-describedby="edit-hint-{message.id}"
         class="w-full resize-none rounded-(--mw-component-message-editor-radius) bg-(--mw-component-message-editor-background) px-(--mw-component-message-editor-padding-inline) py-(--mw-component-message-editor-padding-block) type-message text-(--mw-component-message-editor-text) focus-visible:focus-ring-inset"
         onkeydown={handleEditorKeydown}
@@ -220,18 +222,18 @@
         {@attach focusEditorAtEnd}
       ></textarea>
       <p id="edit-hint-{message.id}" class="type-message-subtext text-(--mw-component-message-editor-hint-text)">
-        Esc to <button
+        {strings.messages.escTo} <button
           type="button"
           class="text-(--mw-component-message-editor-hint-link) hover:underline"
-          aria-label="Cancel editing"
-          onclick={oncanceledit}>cancel</button
+          aria-label={strings.messages.cancelEditing}
+          onclick={oncanceledit}>{strings.messages.cancelLowercase}</button
         >
-        · Enter to
+        {strings.messages.enterTo}
         <button
           type="button"
           class="text-(--mw-component-message-editor-hint-link) hover:underline"
-          aria-label="Save changes"
-          onclick={() => onsaveedit(message, draft)}>save</button
+          aria-label={strings.messages.saveChanges}
+          onclick={() => onsaveedit(message, draft)}>{strings.messages.saveLowercase}</button
         >
       </p>
     </div>
@@ -243,23 +245,23 @@
   {/if}
 
   {#if isSending && isSendingLabelShown}
-    <p class="type-message-subtext text-(--mw-component-message-pending-text)">Sending…</p>
+    <p class="type-message-subtext text-(--mw-component-message-pending-text)">{strings.messages.sending}</p>
   {/if}
   {#if isFailed && row.kind === "pending"}
     <p class="flex flex-wrap items-center gap-x-xs type-message-subtext text-(--mw-component-message-failed-status-text)">
       <Icon name="warning-circle" class="size-(--mw-component-message-status-icon-size)" />
-      Not sent.
+      {strings.messages.notSent}
       <button
         type="button"
         class="min-h-(--mw-size-hit-desktop-min) text-(--mw-component-message-editor-hint-link) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
-        aria-label="Retry sending this message"
-        onclick={() => onretry(row.pending.nonce)}>Retry</button
+        aria-label={strings.messages.retryLabel}
+        onclick={() => onretry(row.pending.nonce)}>{strings.messages.retry}</button
       >
       <button
         type="button"
         class="min-h-(--mw-size-hit-desktop-min) text-(--mw-component-message-editor-hint-link) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
-        aria-label="Delete this unsent message"
-        onclick={() => ondiscard(row.pending.nonce)}>Delete</button
+        aria-label={strings.messages.deleteUnsentLabel}
+        onclick={() => ondiscard(row.pending.nonce)}>{strings.common.delete}</button
       >
     </p>
   {/if}
@@ -271,20 +273,20 @@
     <!-- Hidden until the row is hovered or holds focus; hidden controls leave the Tab order. -->
     <div
       role="toolbar"
-      aria-label="Message actions"
+      aria-label={strings.messages.actions}
       class="invisible absolute top-(--mw-component-action-bar-offset-top) right-(--mw-component-action-bar-offset-trailing) z-10 flex rounded-(--mw-component-action-bar-radius) border border-(--mw-component-action-bar-border) bg-(--mw-component-action-bar-background) shadow-(--mw-component-action-bar-shadow) group-focus-within:visible group-hover:visible"
     >
       {#if isOwn && canSendMessages}
-        <IconButton icon="pencil-simple" label="Edit" class={buttonClass} {iconClass} onclick={() => onstartedit(message)} />
+        <IconButton icon="pencil-simple" label={strings.common.edit} class={buttonClass} {iconClass} onclick={() => onstartedit(message)} />
       {/if}
       {#if canSendMessages}
-        <IconButton icon="arrow-bend-up-left" label="Reply" class={buttonClass} {iconClass} onclick={() => onreply(message)} />
+        <IconButton icon="arrow-bend-up-left" label={strings.messages.reply} class={buttonClass} {iconClass} onclick={() => onreply(message)} />
       {/if}
-      <IconButton icon="copy" label="Copy text" class={buttonClass} {iconClass} onclick={() => oncopy(message.content)} />
+      <IconButton icon="copy" label={strings.messages.copyText} class={buttonClass} {iconClass} onclick={() => oncopy(message.content)} />
       {#if isOwn || canManageMessages}
         <IconButton
           icon="trash"
-          label="Delete"
+          label={strings.common.delete}
           class={[buttonClass, "hover:text-(--mw-component-action-bar-icon-danger-hover)"].join(" ")}
           {iconClass}
           onclick={(event) => ondelete(message, event.shiftKey)}

@@ -1,10 +1,12 @@
 <script lang="ts">
   import { tick } from "svelte";
 
+  import { strings } from "../i18n";
   import { ApiError, type ProfileImageKind } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import { MAXIMUM_PROFILE_IMAGE_BYTES, PREVIEWABLE_IMAGE_TYPES, profileImageFileProblem } from "../lib/protocol";
   import Button from "./Button.svelte";
+  import { humanFileSize } from "./format";
   import Icon from "./Icon.svelte";
   import ProfileCard from "./ProfileCard.svelte";
 
@@ -18,24 +20,9 @@
 
   let { client }: Props = $props();
 
-  const MAXIMUM_SIZE_LABEL = `${MAXIMUM_PROFILE_IMAGE_BYTES / (1024 * 1024)} MB`;
-  const TOO_LARGE_REASON = `the picture is larger than ${MAXIMUM_SIZE_LABEL}. Choose a smaller one.`;
-  const WORDS: Record<ProfileImageKind, { noun: string; title: string; emptyText: string; savedText: string; removedText: string }> = {
-    avatar: {
-      noun: "avatar",
-      title: "Avatar",
-      emptyText: "Your initial shows until you add a picture.",
-      savedText: "Avatar saved.",
-      removedText: "Avatar removed.",
-    },
-    banner: {
-      noun: "banner",
-      title: "Profile banner",
-      emptyText: "A plain strip shows until you add a picture.",
-      savedText: "Banner saved.",
-      removedText: "Banner removed.",
-    },
-  };
+  const MAXIMUM_SIZE_LABEL = humanFileSize(MAXIMUM_PROFILE_IMAGE_BYTES);
+  const TOO_LARGE_REASON = strings.profile.tooLarge(MAXIMUM_SIZE_LABEL);
+  const WORDS = { avatar: strings.profile.avatar, banner: strings.profile.banner } satisfies Record<ProfileImageKind, unknown>;
 
   const id = $props.id();
   const user = $derived(client.user);
@@ -48,10 +35,10 @@
   /** Says what to do about each refusal, in the words of this page rather than the generic ones. */
   function describeFailure(error: unknown, summary: string): string {
     if (error instanceof ApiError && error.code === "VALIDATION_FAILED") {
-      return `${summary}: the picture couldn't be read, or it's over 8192 pixels a side or 600 frames. Choose another one.`;
+      return strings.errors.withReason(summary, strings.profile.unreadable);
     }
     if (error instanceof ApiError && error.code === "FILE_TOO_LARGE") {
-      return `${summary}: ${TOO_LARGE_REASON}`;
+      return strings.errors.withReason(summary, TOO_LARGE_REASON);
     }
     return describeError(error, summary);
   }
@@ -67,8 +54,8 @@
       await change();
       notice = { kind, text: doneText };
     } catch (error) {
-      const verb = action === "upload" ? "change" : "remove";
-      errorMessage = { kind, text: describeFailure(error, `Couldn't ${verb} the ${WORDS[kind].noun}`) };
+      const summary = action === "upload" ? WORDS[kind].changeFailed : WORDS[kind].removeFailed;
+      errorMessage = { kind, text: describeFailure(error, summary) };
     } finally {
       busy = null;
     }
@@ -82,22 +69,22 @@
       return;
     }
     const problem = profileImageFileProblem(file);
-    const summary = `Couldn't change the ${WORDS[kind].noun}`;
+    const summary = WORDS[kind].changeFailed;
     if (problem === "not-a-picture") {
       notice = null;
-      errorMessage = { kind, text: `${summary}: choose a PNG, JPEG, GIF or WebP picture.` };
+      errorMessage = { kind, text: strings.errors.withReason(summary, strings.profile.notAPicture) };
       return;
     }
     if (problem === "too-large") {
       notice = null;
-      errorMessage = { kind, text: `${summary}: ${TOO_LARGE_REASON}` };
+      errorMessage = { kind, text: strings.errors.withReason(summary, TOO_LARGE_REASON) };
       return;
     }
-    void run(kind, "upload", () => client.setProfileImage(kind, file), WORDS[kind].savedText);
+    void run(kind, "upload", () => client.setProfileImage(kind, file), WORDS[kind].saved);
   }
 
   async function remove(kind: ProfileImageKind) {
-    await run(kind, "remove", () => client.removeProfileImage(kind), WORDS[kind].removedText);
+    await run(kind, "remove", () => client.removeProfileImage(kind), WORDS[kind].removed);
     // The Remove button is gone once it worked: focus stays in the editor rather than on the page.
     await tick();
     if (!user?.[kind]) {
@@ -136,11 +123,11 @@
         isDisabled={busy !== null}
         onclick={() => fileInputs[kind]?.click()}
       >
-        {isThisBusy && busy?.action === "upload" ? `Uploading ${words.noun}…` : `Change ${words.noun}`}
+        {isThisBusy && busy?.action === "upload" ? words.uploading : words.change}
       </Button>
       {#if hasPicture}
         <Button isDisabled={busy !== null} onclick={() => void remove(kind)}>
-          {isThisBusy && busy?.action === "remove" ? `Removing ${words.noun}…` : `Remove ${words.noun}`}
+          {isThisBusy && busy?.action === "remove" ? words.removing : words.remove}
         </Button>
       {/if}
     </div>
@@ -165,9 +152,9 @@
   </section>
 {/snippet}
 
-<h2 class="type-heading-lg text-(--mw-component-settings-page-title-text)">Profile</h2>
+<h2 class="type-heading-lg text-(--mw-component-settings-page-title-text)">{strings.settings.profile}</h2>
 <p id="{id}-formats" class="mt-(--mw-component-settings-section-label-gap) type-body text-(--mw-component-settings-body-text)">
-  Pictures can be PNG, JPEG, GIF or WebP, up to {MAXIMUM_SIZE_LABEL}. Animated GIFs stay animated.
+  {strings.profile.formats(MAXIMUM_SIZE_LABEL)}
 </p>
 
 <!-- Both columns start at the card's width, so the preview wraps under the editors when the page
@@ -179,7 +166,7 @@
   </div>
   {#if user}
     <section aria-labelledby="{id}-preview-title" class="flex flex-[0_1_var(--mw-component-profile-popover-width)] flex-col gap-(--mw-component-settings-section-label-gap)">
-      <h3 id="{id}-preview-title" class="type-category text-(--mw-component-settings-section-label-text)">Preview</h3>
+      <h3 id="{id}-preview-title" class="type-category text-(--mw-component-settings-section-label-text)">{strings.profile.preview}</h3>
       <div
         aria-busy={busy !== null}
         class="w-full max-w-(--mw-component-profile-popover-width) overflow-hidden rounded-(--mw-component-profile-popover-radius) border-(length:--mw-component-profile-popover-border-width) border-(--mw-component-profile-popover-border) bg-(--mw-component-profile-popover-background)"
@@ -191,4 +178,4 @@
 </div>
 
 <!-- Exists from the start, so its first change is announced. -->
-<p role="status" class="sr-only">{notice?.text ?? (busy?.action === "upload" ? `Uploading ${WORDS[busy.kind].noun}…` : "")}</p>
+<p role="status" class="sr-only">{notice?.text ?? (busy?.action === "upload" ? WORDS[busy.kind].uploading : "")}</p>

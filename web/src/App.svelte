@@ -4,6 +4,7 @@
   import Button from "./components/Button.svelte";
   import Shell from "./components/Shell.svelte";
   import SignInScreen from "./components/SignInScreen.svelte";
+  import { strings } from "./i18n";
   import { MellowClient } from "./lib/client.svelte";
 
   const client = new MellowClient();
@@ -34,9 +35,9 @@
 {:else if client.status === "unreachable"}
   <main class="grid min-h-dvh place-items-center bg-(--mw-component-auth-card-backdrop) p-md">
     <div role="alert" class="flex max-w-md flex-col items-center gap-md text-center">
-      <p class="type-heading-md text-text-heading">This instance can't be reached right now.</p>
-      <p class="type-body text-text-muted">Check your connection, then try again.</p>
-      <Button variant="primary" onclick={resume}>Try again</Button>
+      <p class="type-heading-md text-text-heading">{strings.app.unreachableTitle}</p>
+      <p class="type-body text-text-muted">{strings.app.unreachableBody}</p>
+      <Button variant="primary" onclick={resume}>{strings.common.tryAgain}</Button>
     </div>
   </main>
 {:else if client.status === "signed-out"}

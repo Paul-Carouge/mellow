@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { strings } from "../i18n";
   import { prefersReducedMotion } from "../lib/motion.svelte";
   import { type PublicUser, profileImageUrl } from "../lib/protocol";
   import { avatarInitial, avatarTintToken } from "./format";
@@ -111,6 +112,6 @@
         ]}
       ></span>
     </span>
-    <span class="sr-only">{presence === "online" ? "Online" : "Offline"}</span>
+    <span class="sr-only">{presence === "online" ? strings.common.online : strings.common.offline}</span>
   {/if}
 </span>

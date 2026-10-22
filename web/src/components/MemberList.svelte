@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
 
+  import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import type { Guild, Member, PublicUser } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
@@ -36,8 +37,8 @@
     const byName = (left: Member, right: Member) => displayName(left.user).localeCompare(displayName(right.user));
     const all = [...(members ?? [])].sort(byName);
     return [
-      { label: "Online", members: all.filter((member) => isOnline(member.user.id)) },
-      { label: "Offline", members: all.filter((member) => !isOnline(member.user.id)) },
+      { label: strings.common.online, isOnline: true, members: all.filter((member) => isOnline(member.user.id)) },
+      { label: strings.common.offline, isOnline: false, members: all.filter((member) => !isOnline(member.user.id)) },
     ].filter((group) => group.members.length > 0);
   });
 
@@ -72,7 +73,7 @@
       await client.openDirectMessage(user.id);
       onopenedconversation();
     } catch (error) {
-      errorMessage = describeError(error, "Couldn't open the conversation");
+      errorMessage = describeError(error, strings.members.openConversationFailed);
     } finally {
       isOpening = false;
     }
@@ -85,7 +86,7 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <aside
-  aria-label={profile ? `Profile of ${displayName(profile)}` : `Members of ${guild.name}`}
+  aria-label={profile ? strings.members.profileOf(displayName(profile)) : strings.shell.membersOf(guild.name)}
   class={[
     "flex h-full shrink-0 flex-col overflow-hidden bg-(--mw-component-side-sheet-background)",
     isFullWindow ? "w-full" : "w-(--mw-component-side-sheet-width) rounded-(--mw-component-side-sheet-radius)",
@@ -104,14 +105,14 @@
       <IconButton
         bind:element={backButton}
         icon="caret-right"
-        label="Back to members"
+        label={strings.members.backToMembers}
         class={headButtonClass}
         iconClass="{headIconClass} rotate-180"
         onclick={() => void showMembers()}
       />
     {/if}
-    <h2 class="min-w-0 flex-1 truncate type-heading-md">{profile ? "Profile" : "Members"}</h2>
-    <IconButton icon="x" label="Close" class={headButtonClass} iconClass={headIconClass} onclick={onclose} />
+    <h2 class="min-w-0 flex-1 truncate type-heading-md">{profile ? strings.members.profile : strings.members.members}</h2>
+    <IconButton icon="x" label={strings.common.close} class={headButtonClass} iconClass={headIconClass} onclick={onclose} />
   </div>
 
   <div class="min-h-0 flex-1 overflow-y-auto pb-md [scrollbar-width:thin]">
@@ -122,7 +123,7 @@
           {#if !isSelf}
             <div class="mt-xs">
               <Button variant="primary" isFullWidth isDisabled={isOpening} onclick={() => profile && message(profile)}>
-                {isOpening ? "Opening…" : "Send message"}
+                {isOpening ? strings.members.opening : strings.members.sendMessage}
               </Button>
             </div>
           {/if}
@@ -136,16 +137,16 @@
     {:else}
       {#if members === null && client.failedMemberGuildIds.has(guild.id)}
         <div role="alert" class="flex flex-col items-start gap-sm px-md pt-xs">
-          <p class="type-body text-text-muted">Couldn't load the members.</p>
-          <Button onclick={() => client.retryLoadingMembers()}>Try again</Button>
+          <p class="type-body text-text-muted">{strings.members.loadFailed}</p>
+          <Button onclick={() => client.retryLoadingMembers()}>{strings.common.tryAgain}</Button>
         </div>
       {:else if members === null}
-        <p role="status" class="px-md pt-xs type-body text-text-muted">Loading members…</p>
+        <p role="status" class="px-md pt-xs type-body text-text-muted">{strings.members.loading}</p>
       {/if}
       {#each groups as group (group.label)}
         <!-- Sentence case, the count as its own number (ADR-0022 §3). -->
         <h3
-          aria-label="{group.label}, {group.members.length} {group.members.length === 1 ? 'member' : 'members'}"
+          aria-label={strings.members.groupLabel(group.label, group.members.length)}
           class="flex h-(--mw-component-member-list-group-height) items-end justify-between px-md pb-2xs type-category text-(--mw-component-member-list-group-text)"
         >
           <span>{group.label}</span>
@@ -153,11 +154,11 @@
         </h3>
         <ul>
           {#each group.members as member (member.user.id)}
-            {@const isOnline = group.label === "Online"}
+            {@const isOnline = group.isOnline}
             <li class="mx-(--mw-component-member-row-margin-inline) mt-(--mw-component-member-row-gap)">
               <button
                 type="button"
-                aria-label="{displayName(member.user)}, {isOnline ? 'online' : 'offline'}"
+                aria-label={strings.members.memberLabel(displayName(member.user), isOnline)}
                 class="flex h-(--mw-component-member-row-height) w-full items-center gap-sm rounded-(--mw-component-member-row-radius) px-(--mw-component-member-row-padding-inline) text-start text-(--mw-component-member-row-name-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-member-row-background-hover) hover:text-(--mw-component-member-row-name-text-hover) focus-visible:focus-ring-inset pointer-coarse:min-h-(--mw-size-hit-web-min)"
                 onclick={(event) => void showProfile(member.user, event.currentTarget)}
               >

@@ -1,5 +1,6 @@
 // How the shell lays out channels and messages: Discord's rules, as the desktop client applies them.
 
+import { formattingLocale, strings } from "../i18n";
 import type { PendingMessage, UnreadMarker } from "../lib/client.svelte";
 import { type Message, type Snowflake, compareSnowflakes } from "../lib/protocol";
 import { messageTimestampLabel, unixMillisecondsOfSnowflake } from "./format";
@@ -105,10 +106,9 @@ export function isUnreadStartLoaded(messages: readonly Message[], marker: Unread
 /** "3 new messages since today at 14:32", dated from the last message read before the visit. */
 export function unreadBarLabel(summary: UnreadSummary, lastReadAt: number, now: Date): string {
   const since = messageTimestampLabel(lastReadAt, now);
-  const sinceInSentence = since.startsWith("Today") || since.startsWith("Yesterday") ? since.charAt(0).toLowerCase() + since.slice(1) : since;
-  const count = `${summary.count}${summary.isPartial ? "+" : ""}`;
-  const noun = summary.count === 1 && !summary.isPartial ? "message" : "messages";
-  return `${count} new ${noun} since ${sinceInSentence}`;
+  // "Today at" becomes "today at" mid-sentence; dates start with a digit, which this leaves alone.
+  const sinceInSentence = since.charAt(0).toLocaleLowerCase(formattingLocale) + since.slice(1);
+  return strings.chat.newMessagesSince(summary.count, summary.isPartial, sinceInSentence);
 }
 
 export { type ChannelSection, channelSections } from "../lib/channels";

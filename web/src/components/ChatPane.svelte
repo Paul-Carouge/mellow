@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
 
+  import { strings } from "../i18n";
   import { ApiError } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import {
@@ -48,8 +49,8 @@
   const TYPING_REFRESH_INTERVAL_MILLISECONDS = 1_000;
   /** The instance links at most this many files to one message (ADR-0020). */
   const MAXIMUM_ATTACHMENTS_PER_MESSAGE = 10;
-  const TOO_MANY_ATTACHMENTS_SENTENCE = `You can attach up to ${MAXIMUM_ATTACHMENTS_PER_MESSAGE} files to one message.`;
-  const UPLOADS_RUNNING_SENTENCE = "Your files are still uploading. Send again once they're done.";
+  const TOO_MANY_ATTACHMENTS_SENTENCE = strings.chat.tooManyAttachments(MAXIMUM_ATTACHMENTS_PER_MESSAGE);
+  const UPLOADS_RUNNING_SENTENCE = strings.chat.uploadsRunning;
 
   const guild = $derived(client.selectedGuild);
   const channel = $derived(client.selectedChannel);
@@ -77,7 +78,9 @@
   const canAttachFiles = $derived(
     canSendMessages && (channelPermissions === null || hasPermission(channelPermissions, Permission.ATTACH_FILES)),
   );
-  const composerLabel = $derived(channel ? `Message #${channel.name}` : `Message @${conversationName}`);
+  const composerLabel = $derived(
+    channel ? strings.chat.composerInChannel(channel.name) : strings.chat.composerToPerson(conversationName),
+  );
 
   let pane: HTMLElement;
   let composer = $state<HTMLTextAreaElement | null>(null);
@@ -150,7 +153,7 @@
       ...(conversation?.recipients ?? []),
     ];
     const person = people.find((candidate) => candidate.id === userId);
-    return person ? displayName(person) : "Someone";
+    return person ? displayName(person) : strings.common.someone;
   }
 
   const typing = $derived(channelId ? typingSegments(client.typingUserIds(channelId, now).map(nameOfUser)) : []);
@@ -237,7 +240,7 @@
     try {
       item.attachment = await client.uploadAttachment(item.file);
       item.status = "uploaded";
-      announceUpload(item, `${item.file.name} uploaded.`);
+      announceUpload(item, strings.chat.uploaded(item.file.name));
     } catch (error) {
       item.status = "failed";
       item.error = uploadErrorSentence(item.file, error);
@@ -255,9 +258,9 @@
   function uploadErrorSentence(file: File, error: unknown): string {
     // The instance does not tell its limit, so the sentence names the size and the instance (DESIGN.md §8).
     if (error instanceof ApiError && error.code === "FILE_TOO_LARGE") {
-      return `${file.name} is ${humanFileSize(file.size)}, more than ${window.location.host} accepts.`;
+      return strings.chat.fileTooLarge(file.name, humanFileSize(file.size), window.location.host);
     }
-    return describeError(error, `Couldn't upload ${file.name}`);
+    return describeError(error, strings.chat.uploadFailed(file.name));
   }
 
   function removeTrayItem(key: number) {
@@ -393,7 +396,7 @@
     try {
       await client.editMessage(message.id, trimmed);
     } catch (error) {
-      actionError = describeError(error, "Couldn't edit the message");
+      actionError = describeError(error, strings.chat.editFailed);
     }
   }
 
@@ -402,7 +405,7 @@
     try {
       await client.deleteMessage(message.id);
     } catch (error) {
-      actionError = describeError(error, "Couldn't delete the message");
+      actionError = describeError(error, strings.chat.deleteFailed);
     }
   }
 
@@ -412,7 +415,7 @@
       await navigator.clipboard.writeText(text);
     } catch (error) {
       console.warn("copying a message failed", error);
-      actionError = "Couldn't copy the text. Select it and copy it by hand.";
+      actionError = strings.chat.copyFailed;
     }
   }
 
@@ -433,7 +436,7 @@
 
 <section
   bind:this={pane}
-  aria-label={channel ? `#${channel.name}` : conversation ? conversationName : "Chat"}
+  aria-label={channel ? `#${channel.name}` : conversation ? conversationName : strings.chat.chat}
   class={[
     "relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-surface-chat",
     // Full-bleed on phones: square corners, and messages keep more of the narrow width.
@@ -451,7 +454,7 @@
     {#if hasNavigationDrawer}
       <IconButton
         icon="list"
-        label="Open servers and channels"
+        label={strings.chat.openNavigation}
         class={headerButtonClass}
         iconClass="size-(--mw-component-chat-header-icon-size)"
         onclick={onopennavigation}
@@ -478,12 +481,12 @@
       <!-- The quick switcher, visible: Mellow's fastest way around (ADR-0022 §1). -->
       <button
         type="button"
-        aria-label="Go to a channel, server or person"
+        aria-label={strings.chat.goToLabel}
         aria-keyshortcuts="Control+K"
         class="flex h-(--mw-component-chat-header-button-size) shrink-0 items-center gap-xs rounded-sm bg-surface-input ps-sm pe-2xs type-body text-text-secondary transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:text-text-heading pointer-coarse:h-(--mw-size-hit-web-min)"
         onclick={onopenquickswitcher}
       >
-        Go to…
+        {strings.chat.goTo}
         <kbd class="rounded-xs border border-border-divider px-2xs font-sans type-body-sm text-text-muted">Ctrl K</kbd>
       </button>
     {/if}
@@ -491,7 +494,7 @@
       <!-- The member toggle keeps its name; aria-pressed says whether the side sheet is open. -->
       <IconButton
         icon="users"
-        label="Member list"
+        label={strings.chat.memberList}
         aria-pressed={isMemberListOpen}
         aria-keyshortcuts="Control+U"
         class="{headerButtonClass} aria-pressed:text-text-heading"
@@ -511,7 +514,7 @@
         type="button"
         aria-keyshortcuts="Escape"
         class="h-[calc(var(--mw-component-jump-bar-height)_-_2*var(--mw-space-3xs))] shrink-0 rounded-sm px-xs font-semibold whitespace-nowrap transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-jump-bar-background-hover) focus-visible:[outline-color:var(--mw-component-jump-bar-text)] pointer-coarse:h-(--mw-size-hit-web-min)"
-        onclick={markAsRead}>Mark as read</button
+        onclick={markAsRead}>{strings.chat.markAsRead}</button
       >
     </div>
   {/if}
@@ -525,10 +528,10 @@
         currentUser={user}
         channelLabel={channel ? `#${channel.name}` : conversationName}
         heroIcon={channel ? "hash" : "at"}
-        heroTitle={channel ? `Welcome to #${channel.name}` : conversationName}
+        heroTitle={channel ? strings.chat.welcomeToChannel(channel.name) : conversationName}
         heroSentence={channel
-          ? `This is the start of the #${channel.name} channel.`
-          : `This is the beginning of your direct message history with ${conversationName}.`}
+          ? strings.chat.channelStart(channel.name)
+          : strings.chat.conversationStart(conversationName)}
         topic={channel?.topic ?? ""}
         {canSendMessages}
         {canManageMessages}
@@ -581,13 +584,13 @@
             class="reply-bar flex min-h-(--mw-component-composer-reply-bar-min-height) items-center gap-xs bg-(--mw-component-composer-reply-bar-background) ps-(--mw-component-composer-reply-bar-padding-inline) pe-2xs type-body text-(--mw-component-composer-reply-bar-text)"
           >
             <p class="min-w-0 flex-1 truncate">
-              Replying to <span class="font-semibold text-(--mw-component-composer-reply-bar-author-text)"
+              {strings.chat.replyingTo} <span class="font-semibold text-(--mw-component-composer-reply-bar-author-text)"
                 >{displayName(replyingTo.author)}</span
               >
             </p>
             <IconButton
               icon="x-circle"
-              label="Cancel reply"
+              label={strings.chat.cancelReply}
               class="size-(--mw-component-composer-reply-bar-button-size) text-(--mw-component-composer-reply-bar-icon) hover:bg-(--mw-component-composer-reply-bar-button-background-hover) hover:text-(--mw-component-composer-icon-hover)"
               iconClass="size-(--mw-component-composer-reply-bar-icon-size)"
               onclick={() => {
@@ -605,7 +608,7 @@
             {#if canAttachFiles}
               <IconButton
                 icon="plus-circle"
-                label="Attach files"
+                label={strings.chat.attachFiles}
                 class={composerButtonClass}
                 iconClass="size-(--mw-component-composer-icon-size)"
                 onclick={() => fileInput?.click()}
@@ -640,7 +643,7 @@
             ></textarea>
             {#if replyingTo}
               <span id="composer-reply-hint" class="sr-only">
-                Replying to {displayName(replyingTo.author)}. Escape cancels the reply.
+                {strings.chat.replyHint(displayName(replyingTo.author))}
               </span>
             {/if}
             <!-- Phones have no Enter-to-send habit: the send button shows in the phone layout and
@@ -648,7 +651,7 @@
             <span class={hasNavigationDrawer ? "contents" : "hidden pointer-coarse:contents"}>
               <IconButton
                 icon="paper-plane-right"
-                label="Send message"
+                label={strings.chat.sendMessage}
                 aria-disabled={!canSend}
                 class="{composerButtonClass} aria-disabled:opacity-(--mw-component-button-disabled-opacity)"
                 iconClass="size-(--mw-component-composer-icon-size)"
@@ -657,7 +660,7 @@
             </span>
           {:else}
             <p class="flex min-h-(--mw-size-dock-height) items-center px-xs type-message text-(--mw-component-composer-locked-text)">
-              You do not have permission to send messages in this channel.
+              {strings.chat.cannotSend}
             </p>
           {/if}
         </div>
@@ -681,8 +684,10 @@
           class="absolute inset-(--mw-component-drop-overlay-border-inset) rounded-(--mw-component-drop-overlay-radius) border-(length:--mw-component-drop-overlay-border-width) border-dashed border-current"
         ></span>
         <Icon name="file-arrow-up" class="size-(--mw-component-drop-overlay-icon-size)" />
-        <p class="type-heading-xl break-words">Drop to attach to {channel ? `#${channel.name}` : `@${conversationName}`}</p>
-        <p class="type-body">You can add a message before sending.</p>
+        <p class="type-heading-xl break-words">
+          {strings.chat.dropToAttach(channel ? `#${channel.name}` : `@${conversationName}`)}
+        </p>
+        <p class="type-body">{strings.chat.dropHint}</p>
       </div>
     </div>
   {/if}
@@ -691,22 +696,22 @@
 {#snippet emptyState()}
   <div class="flex flex-1 flex-col items-center justify-center gap-xs p-xl text-center">
     {#if client.status === "connecting"}
-      <p role="status" class="type-body text-text-muted">Loading your servers and conversations…</p>
+      <p role="status" class="type-body text-text-muted">{strings.chat.loadingWorkspace}</p>
     {:else if guild}
-      <h2 class="type-heading-lg text-text-heading">No channels you can see</h2>
+      <h2 class="type-heading-lg text-text-heading">{strings.chat.noVisibleChannelsTitle}</h2>
       <p class="max-w-(--mw-component-auth-card-max-width) type-body text-text-muted">
-        Channels you can read in {guild.name} will show here.
+        {strings.chat.noVisibleChannelsBody(guild.name)}
       </p>
     {:else if client.guilds.length === 0}
-      <h2 class="type-heading-lg text-text-heading">No servers yet</h2>
+      <h2 class="type-heading-lg text-text-heading">{strings.chat.noServersTitle}</h2>
       <p class="max-w-(--mw-component-auth-card-max-width) type-body text-text-muted">
-        Create a server for your group, or join one with an invite code.
+        {strings.chat.noServersBody}
       </p>
-      <Button variant="primary" onclick={onaddserver}>Add a server</Button>
+      <Button variant="primary" onclick={onaddserver}>{strings.chat.addServer}</Button>
     {:else}
-      <h2 class="type-heading-lg text-text-heading">No conversations yet</h2>
+      <h2 class="type-heading-lg text-text-heading">{strings.chat.noConversationsTitle}</h2>
       <p class="max-w-(--mw-component-auth-card-max-width) type-body text-text-muted">
-        Start one with someone from your servers: open their profile in the member list and choose Send message.
+        {strings.chat.noConversationsBody}
       </p>
     {/if}
   </div>

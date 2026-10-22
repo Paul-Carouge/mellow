@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
 
+  import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import ModalDialog from "./ModalDialog.svelte";
   import TextField from "./TextField.svelte";
@@ -40,7 +41,7 @@
       hasSucceeded = true;
       onclose();
     } catch (failure) {
-      error = { isJoin, text: describeError(failure, isJoin ? "Couldn't join the server" : "Couldn't create the server") };
+      error = { isJoin, text: describeError(failure, isJoin ? strings.addServer.joinFailed : strings.addServer.createFailed) };
     } finally {
       isBusy = false;
     }
@@ -58,14 +59,18 @@
 
 <ModalDialog
   shouldReturnFocusToOpener={() => !hasSucceeded}
-  title={isJoining ? "Join a server" : "Create a server"}
-  subtitle={isJoining
-    ? "Enter an invite to join a server someone already runs."
-    : "Give your server a name. You can add channels and invite people next."}
+  title={isJoining ? strings.addServer.joinTitle : strings.addServer.createTitle}
+  subtitle={isJoining ? strings.addServer.joinSubtitle : strings.addServer.createSubtitle}
   isHeadingCentered
   errorMessage={error && error.isJoin === isJoining ? error.text : ""}
   {isBusy}
-  submitLabel={isJoining ? (isBusy ? "Joining…" : "Join") : isBusy ? "Creating…" : "Create"}
+  submitLabel={isJoining
+    ? isBusy
+      ? strings.addServer.joining
+      : strings.addServer.join
+    : isBusy
+      ? strings.addServer.creating
+      : strings.addServer.create}
   isSubmitEnabled={canSubmit}
   {onclose}
   onsubmit={submit}
@@ -74,8 +79,8 @@
   {#if isJoining}
     <TextField
       id="join-server-invite-code"
-      label="Invite code"
-      helper="Paste the invite code someone gave you."
+      label={strings.addServer.inviteCode}
+      helper={strings.addServer.inviteCodeHelper}
       autocomplete="off"
       readonly={isBusy}
       data-initial-focus=""
@@ -85,7 +90,7 @@
   {:else}
     <TextField
       id="create-server-name"
-      label="Server name"
+      label={strings.addServer.serverName}
       autocomplete="off"
       readonly={isBusy}
       data-initial-focus=""
@@ -94,12 +99,12 @@
     />
   {/if}
   <p class="flex flex-wrap items-center justify-center gap-x-(--mw-space-2xs) type-body text-(--mw-component-dialog-hint-text)">
-    {isJoining ? "Don't have an invite?" : "Have an invite already?"}
+    {isJoining ? strings.addServer.hasNoInvite : strings.addServer.hasInvite}
     <button
       type="button"
       class="min-h-(--mw-size-hit-web-min) font-medium text-(--mw-component-dialog-mode-link-text) hover:underline aria-disabled:opacity-(--mw-component-button-disabled-opacity)"
       aria-disabled={isBusy || undefined}
-      onclick={switchPage}>{isJoining ? "Create a server" : "Join a server"}</button
+      onclick={switchPage}>{isJoining ? strings.addServer.createTitle : strings.addServer.joinTitle}</button
     >
   </p>
 </ModalDialog>

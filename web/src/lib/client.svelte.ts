@@ -3,6 +3,7 @@
 
 import { SvelteMap, SvelteSet } from "svelte/reactivity";
 
+import { strings } from "../i18n";
 import { ApiError, HISTORY_PAGE_SIZE, type ProfileImageKind, RestClient, generateMessageNonce } from "./api";
 import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
@@ -58,26 +59,10 @@ export interface UnreadMarker {
 /** Text shown to people: built from the error code, never from the instance's own message. */
 export function describeError(error: unknown, summary: string): string {
   if (!(error instanceof ApiError)) {
-    return `${summary}: something went wrong. Try again.`;
+    return strings.errors.withReason(summary, strings.errors.unknownReason);
   }
-  const reasons: Partial<Record<ApiError["code"], string>> = {
-    NETWORK: "the instance could not be reached. Try again.",
-    INVALID_CREDENTIALS: "the login or the password is wrong.",
-    USERNAME_TAKEN: "this username is taken.",
-    EMAIL_TAKEN: "this email already has an account.",
-    REGISTRATION_CLOSED: "this instance does not accept new accounts.",
-    VALIDATION_FAILED: "the instance refused what was entered.",
-    RATE_LIMITED: "too many attempts. Wait a moment and try again.",
-    SERVER_BUSY: "the instance is busy. Try again in a moment.",
-    MISSING_PERMISSIONS: "you don't have the permission to do that here.",
-    NOT_FOUND: "it no longer exists, or you can't see it.",
-    INVALID_INVITE: "this invite is unknown, expired or used up.",
-    BANNED: "you are banned from this server.",
-    OWNER_CANNOT_LEAVE: "the owner cannot leave their own server.",
-    LIMIT_REACHED: "a limit of this instance is reached.",
-    FILE_TOO_LARGE: "the file is larger than this instance accepts.",
-  };
-  return `${summary}: ${reasons[error.code] ?? "something went wrong. Try again."}`;
+  const reasons: Partial<Record<ApiError["code"], string>> = strings.errors.reasons;
+  return strings.errors.withReason(summary, reasons[error.code] ?? strings.errors.unknownReason);
 }
 
 export class MellowClient {
@@ -218,7 +203,7 @@ export class MellowClient {
       await this.rest.logout();
     } catch (error) {
       if (!(error instanceof ApiError && error.needsNewLogin)) {
-        this.signOutError = describeError(error, "Couldn't sign out");
+        this.signOutError = describeError(error, strings.settings.signOutFailed);
         return;
       }
     }

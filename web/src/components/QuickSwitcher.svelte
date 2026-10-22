@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
 
+  import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import { Permission, hasPermission } from "../lib/protocol";
   import Icon from "./Icon.svelte";
@@ -83,7 +84,7 @@
         await client.openDirectMessage(target.userId);
       }
     } catch (error) {
-      errorMessage = describeError(error, `Couldn't open the conversation with ${item.label}`);
+      errorMessage = describeError(error, strings.quickSwitcher.openConversationFailed(item.label));
       return;
     }
     hasNavigated = true;
@@ -108,7 +109,7 @@
 
 <dialog
   bind:this={dialog}
-  aria-label="Go to"
+  aria-label={strings.quickSwitcher.label}
   class="quick-switcher mx-auto mt-[calc(var(--mw-component-quick-switcher-offset-top)*100vh)] w-[min(var(--mw-component-quick-switcher-width),calc(100vw_-_2*var(--mw-component-dialog-margin)))] max-w-none rounded-(--mw-component-dialog-radius) bg-(--mw-component-dialog-background) p-md text-(--mw-component-dialog-body-text) shadow-high backdrop:bg-(--mw-component-dialog-scrim) dark:[outline:1px_solid_var(--mw-color-border-divider)]"
   oncancel={(event) => {
     event.preventDefault();
@@ -128,8 +129,8 @@
     aria-controls="{id}-results"
     aria-autocomplete="list"
     aria-activedescendant={activeItem ? `${id}-option-${activeOptionIndex}` : undefined}
-    aria-label="Where would you like to go?"
-    placeholder="Where would you like to go?"
+    aria-label={strings.quickSwitcher.placeholder}
+    placeholder={strings.quickSwitcher.placeholder}
     autocomplete="off"
     spellcheck="false"
     class="h-(--mw-component-quick-switcher-input-height) w-full rounded-md bg-surface-input px-md type-heading-lg text-text-heading outline-none placeholder:text-text-muted focus-visible:focus-ring"
@@ -138,7 +139,7 @@
   />
   <!-- A listbox of groups of options, each group named by its heading; it scrolls past a share of
        the window height. -->
-  <div id="{id}-results" role="listbox" aria-label="Results" class="mt-sm max-h-[calc(var(--mw-component-quick-switcher-results-max-height)*100vh)] overflow-y-auto">
+  <div id="{id}-results" role="listbox" aria-label={strings.quickSwitcher.results} class="mt-sm max-h-[calc(var(--mw-component-quick-switcher-results-max-height)*100vh)] overflow-y-auto">
     {#each numberedGroups as group, groupIndex (group.label)}
       <div role="group" aria-labelledby="{id}-group-{groupIndex}">
         <div id="{id}-group-{groupIndex}" role="presentation" class="px-xs pt-xs pb-2xs type-category text-text-muted">
@@ -167,7 +168,7 @@
                 aria-hidden="true"
                 class="size-(--mw-component-channel-row-unread-pill-width) shrink-0 rounded-full bg-unread-pill"
               ></span>
-              <span class="sr-only">, unread</span>
+              <span class="sr-only">{strings.common.unreadSuffix}</span>
             {/if}
             <span class="ms-auto shrink-0 type-body-sm text-text-muted">{item.where}</span>
           </div>
@@ -179,10 +180,10 @@
   <div role="status" class="contents">
     {#if items.length === 0}
       <p class="px-xs pt-xs pb-2xs type-body text-text-muted">
-        No results for “{query.trim()}”. Check the spelling or search another server.
+        {strings.quickSwitcher.noResults(query.trim())}
       </p>
     {:else}
-      <p class="sr-only">{items.length} {items.length === 1 ? "result" : "results"}</p>
+      <p class="sr-only">{strings.quickSwitcher.resultCount(items.length)}</p>
     {/if}
   </div>
   <div role="alert" class="contents">
@@ -191,7 +192,7 @@
     {/if}
   </div>
   <p class="mt-sm type-body-sm text-text-muted">
-    Arrows to choose, Enter to open, Esc to close. Prefixes: @ people, # channels, * servers.
+    {strings.quickSwitcher.help}
   </p>
 </dialog>
 

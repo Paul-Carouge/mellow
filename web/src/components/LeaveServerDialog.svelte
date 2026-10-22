@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import ModalDialog from "./ModalDialog.svelte";
 
@@ -25,7 +26,7 @@
       hasSucceeded = true;
       onclose();
     } catch (error) {
-      errorMessage = describeError(error, "Couldn't leave the server");
+      errorMessage = describeError(error, strings.leaveServer.failed);
     } finally {
       isBusy = false;
     }
@@ -34,11 +35,11 @@
 
 <ModalDialog
   shouldReturnFocusToOpener={() => !hasSucceeded}
-  title="Leave '{serverName}'"
-  subtitle="Are you sure you want to leave {serverName}? You won't be able to rejoin unless you are re-invited."
+  title={strings.leaveServer.title(serverName)}
+  subtitle={strings.leaveServer.subtitle(serverName)}
   {errorMessage}
   {isBusy}
-  submitLabel={isBusy ? "Leaving…" : "Leave server"}
+  submitLabel={isBusy ? strings.leaveServer.leaving : strings.leaveServer.submit}
   isSubmitDanger
   {onclose}
   onsubmit={leave}
