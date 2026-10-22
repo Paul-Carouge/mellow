@@ -7,7 +7,7 @@ A self-hostable, open-source (AGPL-3.0) Discord alternative. Rust everywhere exc
 
 Read before working:
 - [ARCHITECTURE.md](ARCHITECTURE.md) — components, layers, data model, protocol, security.
-- [DESIGN.md](DESIGN.md) — visual identity, design tokens, screens, accessibility. The UI is a faithful Discord clone with Mellow's own brand (ADR-0012): match Discord's layout and behaviour, never its blurple, logo or fonts.
+- [DESIGN.md](DESIGN.md) — visual identity, design tokens, screens, accessibility. The UI follows the Dusk direction (ADR-0022, superseding ADR-0012): Discord's concepts and shortcuts in Mellow's own layout (the Navigator), colour, type, shape and motion; never Discord's blurple, logo or fonts. Reference mockup: `design/mockups/dusk-direction.html`.
 - [docs/adr/](docs/adr/) — why things are the way they are. Do not contradict an accepted ADR silently: propose a new ADR that supersedes it.
 - [ROADMAP.md](ROADMAP.md) — milestones and current scope.
 - [docs/development-notes.md](docs/development-notes.md) — where the PR stack stands, the workflow, and traps already hit. Update it at the end of each iteration.
