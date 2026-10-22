@@ -149,7 +149,8 @@ export component QuickSwitcher inherits Rectangle {
                     focus-on-click: false;
                     focus-on-tab-navigation: false;
                     capture-key-pressed(event) => {
-                        if event.text == Key.Escape {
+                        // Esc, or Ctrl+K again, closes it.
+                        if event.text == Key.Escape || (event.modifiers.control && (event.text == "k" || event.text == "K")) {
                             root.close();
                             return accept;
                         }

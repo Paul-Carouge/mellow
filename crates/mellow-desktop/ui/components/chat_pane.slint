@@ -1100,6 +1100,10 @@ export component ChatPane inherits Rectangle {
     // Who types in the open channel; empty when nobody does.
     in property <TypingLine> typing-line;
     callback toggle-member-sheet();
+    // A server is open: the member button shows.
+    in property <bool> has-member-sheet;
+    // Each increment moves focus to the member button (when the member overlay closes).
+    in property <int> member-button-focus-request-count;
     callback open-navigator-drawer();
     callback open-quick-switcher();
     // Non-empty while replying: shows the "Replying to" bar above the composer.
@@ -1351,9 +1355,11 @@ export component ChatPane inherits Rectangle {
                     clicked => { root.open-quick-switcher(); }
                 }
             }
-            if !root.is-direct-message: VerticalLayout {
+            if root.has-member-sheet: VerticalLayout {
                 alignment: center;
                 IconButton {
+                    property <int> focus-request-count: root.member-button-focus-request-count;
+                    changed focus-request-count => { self.focus(); }
                     icon: @image-url("../../icons/users.svg");
                     label: "Members";
                     accessible-checkable: true;

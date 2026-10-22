@@ -43,7 +43,10 @@ fn prepare(window: &AppWindow) {
         _ => {}
     }
     match std::env::var(SNAPSHOT_STATE_VARIABLE).as_deref() {
-        Ok("members") => window.set_is_member_list_visible(true),
+        Ok("members") => {
+            window.set_is_member_list_visible(true);
+            window.set_is_member_overlay_open(true);
+        }
         Ok("drawer") => window.set_is_navigator_drawer_open(true),
         Ok("settings") => window.set_is_user_settings_open(true),
         Ok("typing") => window.set_typing_line(crate::live_rows::typing_line(&[
