@@ -38,10 +38,20 @@ Everything comes from `design/tokens.json`. Added for this work: `component.user
 - Moving focus into a docked side sheet: focus moves in only when the sheet lies over the conversation, so typing keeps going to the composer otherwise.
 - Showing "Go to… Ctrl K", the microphone and the headset in releases before the quick switcher and voice exist: they show in development builds only, and the header and user card keep their size.
 
+## Content
+
+- People: default avatar tints (`color.avatar.tint-1`…`8`, FNV-1a over the id's decimal digits, modulo 8) and role colours on author and member names (highest coloured role, OKLCH lightness moved to 4.5:1), shared with the web client (`person_style.rs`).
+- Mentions: `@username` or a one-word display name of someone known, in the mention chip's text colour; a message naming you gets the mention highlight (`mentions.rs`, the web's `mentions.ts` rules).
+- Unread: the "New" divider above the first message someone else wrote after the read position at opening, and "N new messages since HH:MM" with "Mark as read" (also `Esc` in the composer).
+- Typing: "Ana is typing…" above the composer, with the waving dots only while someone types.
+- The quick switcher (`Ctrl+K`, "Go to… Ctrl K"), and "+" on categories (`parent_id`).
+
 ## Known differences from the mockup
 
-- No quick switcher: "Go to…" does nothing yet (development builds only).
-- No unread divider, "N new messages since" bar, typing indicator content, picture previews, download button, mention chips, role colours on names, "+" on categories, muted channels or user banners/colours: the desktop has no data or feature for them yet.
+- Mention chips have no fill: `StyledText` has no background colour, so only the chip's text colour shows.
+- No picture previews and no download button on file cards: the desktop client has no authenticated attachment download yet (client-core has no download call).
 - No tooltips (Slint 1.18 has none built in) and no shadows (the token generator does not emit shadows for Slint).
+- The member list groups online and offline members, not roles: the protocol has no "show separately" role flag. Profiles show no `@username@instance` line and no banner colour: member rows do not carry them yet.
 - Author and timestamp are centred on their line rather than aligned on a shared baseline (about 1 px apart); Slint has no line-height, so multi-line text uses the font's own line spacing.
 - New messages appear in place rather than rising: rows are recreated whenever the model is rebuilt, so an entrance animation would replay on every update.
+- The desktop does not send typing events of its own yet; it shows other people's.
