@@ -729,7 +729,11 @@ mod tests {
              INSERT INTO roles (id, guild_id, name, permissions, position, color) \
              VALUES (10, 10, '@everyone', 1086, 0, 0), (11, 10, 'Muted', 0, 1, 0); \
              INSERT INTO channels (id, guild_id, kind, name, position) \
-             VALUES (20, 10, 'text', 'general', 0); \
+             VALUES (20, 10, 'text', 'general', 0), (21, 10, 'text', 'announcements', 1); \
+             INSERT INTO channel_permission_overwrites \
+             (channel_id, target_id, target_kind, allow, deny) \
+             VALUES (21, 10, 'role', 0, 4), (21, 11, 'role', 4, 0), (20, 1, 'member', 0, 6), \
+             (20, 11, 'role', 0, 2); \
              INSERT INTO messages (id, channel_id, author_id, content) \
              VALUES (30, 20, 1, 'hello'), (31, 20, 1, 'again');",
         )
@@ -745,6 +749,13 @@ mod tests {
                 .fetch_all(&pool)
                 .await
                 .unwrap();
+        let overwrites: Vec<(i64, i64, i64, i64)> = sqlx::query_as(
+            "SELECT channel_id, target_id, allow, deny FROM channel_permission_overwrites \
+             ORDER BY channel_id, target_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
         let pinned: Vec<(i64, Option<i64>)> =
             sqlx::query_as("SELECT id, pinned_at_unix_milliseconds FROM messages ORDER BY id")
                 .fetch_all(&pool)
@@ -777,6 +788,16 @@ mod tests {
             permissions,
             [(10, 0x043e | 0x1_0000), (11, 0)],
             "only @everyone gains ADD_REACTIONS"
+        );
+        assert_eq!(
+            overwrites,
+            [
+                (20, 1, 0, 0x6 | 0x1_0000),
+                (20, 11, 0, 0x2),
+                (21, 10, 0, 0x4 | 0x1_0000),
+                (21, 11, 0x4, 0),
+            ],
+            "channels closed to sending stay closed to new reactions"
         );
         assert_eq!(pinned, [(30, None), (31, None)]);
         assert_eq!(reactions, [(30,)], "a deleted message takes its reactions");
