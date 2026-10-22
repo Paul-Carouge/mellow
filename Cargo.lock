@@ -3572,6 +3572,7 @@ version = "0.7.0"
 dependencies = [
  "arboard",
  "chrono",
+ "i-slint-backend-testing",
  "keyring",
  "keyring-core",
  "mellow-client-core",

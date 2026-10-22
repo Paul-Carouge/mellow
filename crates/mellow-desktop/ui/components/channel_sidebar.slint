@@ -354,6 +354,8 @@ export component ChannelSidebar inherits Rectangle {
 
     width: ChannelListGeometry.leading-reach + MellowComponent.sidebar-width;
 
+    // Every item calls its action before `server-menu.close()`: closing destroys the popup's content
+    // and silently drops the rest of the handler, so the action would never run.
     // Esc and clicks outside close it; Slint then gives focus back to the header.
     server-menu := PopupWindow {
         x: header.x;
@@ -377,8 +379,8 @@ export component ChannelSidebar inherits Rectangle {
                     icon: @image-url("../../icons/user-plus.svg");
                     init => { self.focus(); }
                     activated => {
-                        server-menu.close();
                         root.invite-people();
+                        server-menu.close();
                     }
                 }
                 if root.can-open-server-settings: ContextMenuItem {
@@ -390,8 +392,8 @@ export component ChannelSidebar inherits Rectangle {
                         }
                     }
                     activated => {
-                        server-menu.close();
                         root.open-server-settings();
+                        server-menu.close();
                     }
                 }
                 if root.can-create-channels: ContextMenuItem {
@@ -403,8 +405,8 @@ export component ChannelSidebar inherits Rectangle {
                         }
                     }
                     activated => {
-                        server-menu.close();
                         root.create-channel();
+                        server-menu.close();
                     }
                 }
                 // Danger items come last, separated (DESIGN.md §6.33).
@@ -427,8 +429,8 @@ export component ChannelSidebar inherits Rectangle {
                         }
                     }
                     activated => {
-                        server-menu.close();
                         root.leave-server();
+                        server-menu.close();
                     }
                 }
             }

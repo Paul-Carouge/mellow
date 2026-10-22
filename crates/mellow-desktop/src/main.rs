@@ -20,6 +20,8 @@ mod preferences;
 mod quick_switcher;
 mod role_settings;
 mod scroll_benchmark;
+#[cfg(test)]
+mod server_menu_tests;
 mod session_store;
 mod shell_rows;
 mod window_snapshot;
