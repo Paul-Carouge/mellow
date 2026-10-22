@@ -27,13 +27,21 @@
     /** Below the sidebar breakpoint the header opens the navigation drawer. */
     hasNavigationDrawer: boolean;
     onopennavigation: () => void;
+    onopenquickswitcher: () => void;
     isMemberListOpen: boolean;
     ontogglememberlist: () => void;
     onaddserver: () => void;
   }
 
-  let { client, hasNavigationDrawer, onopennavigation, isMemberListOpen, ontogglememberlist, onaddserver }: Props =
-    $props();
+  let {
+    client,
+    hasNavigationDrawer,
+    onopennavigation,
+    onopenquickswitcher,
+    isMemberListOpen,
+    ontogglememberlist,
+    onaddserver,
+  }: Props = $props();
 
   /** The composer grows with its text up to half of the pane (DESIGN.md §4.2). */
   const COMPOSER_MAXIMUM_SHARE_OF_PANE = 0.5;
@@ -466,6 +474,19 @@
       </p>
     {:else}
       <span class="flex-1"></span>
+    {/if}
+    {#if !hasNavigationDrawer}
+      <!-- The quick switcher, visible: Mellow's fastest way around (ADR-0022 §1). -->
+      <button
+        type="button"
+        aria-label="Go to a channel, server or person"
+        aria-keyshortcuts="Control+K"
+        class="flex h-(--mw-component-chat-header-button-size) shrink-0 items-center gap-xs rounded-sm bg-surface-input ps-sm pe-2xs type-body text-text-secondary transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:text-text-heading pointer-coarse:h-(--mw-size-hit-web-min)"
+        onclick={onopenquickswitcher}
+      >
+        Go to…
+        <kbd class="rounded-xs border border-border-divider px-2xs font-sans type-body-sm text-text-muted">Ctrl K</kbd>
+      </button>
     {/if}
     {#if channel}
       <!-- The member toggle keeps its name; aria-pressed says whether the side sheet is open. -->

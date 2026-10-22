@@ -430,6 +430,9 @@
   --mw-component-profile-popover-text-gap: 0.5rem;
   --mw-component-profile-popover-username-text: #A99FAA;
   --mw-component-profile-popover-width: 18.75rem;
+  --mw-component-quick-switcher-input-height: 3.5rem;
+  --mw-component-quick-switcher-option-height: 2.5rem;
+  --mw-component-quick-switcher-width: 35.625rem;
   --mw-component-rail-add-background-hover: #23A55A;
   --mw-component-rail-add-icon: #23A55A;
   --mw-component-rail-add-icon-hover: #FFFFFF;

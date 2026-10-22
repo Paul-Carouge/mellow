@@ -14,6 +14,7 @@
   import LeaveServerDialog from "./LeaveServerDialog.svelte";
   import MemberList from "./MemberList.svelte";
   import Navigator from "./Navigator.svelte";
+  import QuickSwitcher from "./QuickSwitcher.svelte";
   import { minimumWidthQueryForPanes } from "./tokens";
   import UserSettings from "./UserSettings.svelte";
 
@@ -48,6 +49,7 @@
   let isNavigationDrawerOpen = $state(false);
   let openDialog = $state<"add-server" | ServerDialog | null>(null);
   let isUserSettingsOpen = $state(false);
+  let isQuickSwitcherOpen = $state(false);
 
   const guild = $derived(client.selectedGuild);
   const hasMemberSheet = $derived(guild !== null && client.selectedChannel !== null);
@@ -107,15 +109,36 @@
     // Ctrl+U, as on Discord; not while a dialog or the settings cover the shell.
     const isShortcut =
       (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "u";
-    if (!isShortcut || !hasMemberSheet || openDialog !== null || isUserSettingsOpen || isNavigationDrawerOpen) {
+    if (!isShortcut || !hasMemberSheet || isShellCovered()) {
       return;
     }
     event.preventDefault();
     toggleMemberSheet();
   }
+
+  /** Ctrl+K, as on Discord, from anywhere in the shell (the composer included). */
+  function openQuickSwitcherWithShortcut(event: KeyboardEvent) {
+    const isShortcut =
+      (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "k";
+    if (!isShortcut || isShellCovered()) {
+      return;
+    }
+    event.preventDefault();
+    isQuickSwitcherOpen = true;
+  }
+
+  /** A dialog, the settings or a drawer covers the shell: its shortcuts wait. */
+  function isShellCovered(): boolean {
+    return openDialog !== null || isUserSettingsOpen || isNavigationDrawerOpen || isQuickSwitcherOpen;
+  }
 </script>
 
-<svelte:window onkeydown={toggleMemberSheetWithShortcut} />
+<svelte:window
+  onkeydown={(event) => {
+    toggleMemberSheetWithShortcut(event);
+    openQuickSwitcherWithShortcut(event);
+  }}
+/>
 
 {#snippet navigator(isInDrawer: boolean)}
   <Navigator
@@ -156,6 +179,7 @@
         {client}
         hasNavigationDrawer={!hasRoomForNavigator.current}
         onopennavigation={() => (isNavigationDrawerOpen = true)}
+        onopenquickswitcher={() => (isQuickSwitcherOpen = true)}
         isMemberListOpen={isMemberSheetOpen}
         ontogglememberlist={toggleMemberSheet}
         onaddserver={() => (openDialog = "add-server")}
@@ -200,4 +224,8 @@
 
 {#if isUserSettingsOpen}
   <UserSettings {client} isWide={hasRoomForNavigator.current} onclose={() => (isUserSettingsOpen = false)} />
+{/if}
+
+{#if isQuickSwitcherOpen}
+  <QuickSwitcher {client} onclose={() => (isQuickSwitcherOpen = false)} onnavigated={focusComposer} />
 {/if}
