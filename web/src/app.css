@@ -27,11 +27,13 @@ body,
 
 body {
   margin: 0;
-  background: var(--mw-color-surface-chat);
+  background: var(--mw-color-surface-rail);
   color: var(--mw-color-text-normal);
   font-family: var(--mw-type-message-font-family);
   font-size: var(--mw-type-message-font-size);
   line-height: var(--mw-type-message-line-height);
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
 }
 
 /* One utility per type token (DESIGN.md §2.4): `type-body`, `type-category`, … */
@@ -118,7 +120,6 @@ body {
   font-weight: var(--mw-type-category-font-weight);
   line-height: var(--mw-type-category-line-height);
   letter-spacing: var(--mw-type-category-letter-spacing);
-  text-transform: uppercase;
 }
 @utility type-channel-name {
   font-family: var(--mw-type-channel-name-font-family);
@@ -187,6 +188,56 @@ body {
 @utility focus-ring-inset {
   outline: var(--mw-size-focus-ring-width) solid var(--mw-color-focus);
   outline-offset: calc(-1 * var(--mw-size-focus-ring-width));
+}
+
+/* Entrances (DESIGN.md §2.8, ADR-0022): every one answers an action; reduced motion sets the
+   duration tokens to 0 ms, so the end state shows at once. */
+@keyframes mw-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes mw-slide-from-start {
+  from {
+    opacity: 0;
+    transform: translateX(calc(-1 * var(--mw-component-navigator-enter-offset)));
+  }
+}
+@keyframes mw-slide-from-end {
+  from {
+    opacity: 0;
+    transform: translateX(var(--mw-component-side-sheet-enter-offset));
+  }
+}
+@keyframes mw-nudge-from-start {
+  from {
+    opacity: 0;
+    transform: translateX(calc(-1 * var(--mw-space-2xs)));
+  }
+}
+@keyframes mw-drop-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-1 * var(--mw-space-2xs)));
+  }
+}
+@keyframes mw-rise {
+  from {
+    opacity: 0;
+    transform: translateY(var(--mw-component-channel-switch-offset));
+  }
+}
+@keyframes mw-typing-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.4;
+    transform: none;
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(calc(-1 * var(--mw-component-composer-typing-dot-lift)));
+  }
 }
 
 @layer base {

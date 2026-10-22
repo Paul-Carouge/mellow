@@ -178,14 +178,14 @@
     return [message.content, attachmentCountLabel(message.attachments?.length ?? 0)].filter(Boolean).join(" ");
   }
 
-  function replyPreviewOf(message: Message): string {
+  function replyReferenceOf(message: Message): { author: PublicUser | null; text: string } | null {
     if (message.reply_to_id === null) {
-      return "";
+      return null;
     }
     const original = messages.find((candidate) => candidate.id === message.reply_to_id);
     return original
-      ? `@${displayName(original.author)} ${messageSummary(original)}`
-      : "Original message was deleted or is not loaded";
+      ? { author: original.author, text: messageSummary(original) }
+      : { author: null, text: "Original message was deleted or is not loaded" };
   }
 
   // One Tab stop for the whole list; arrows move between messages, as on Discord (DESIGN.md §7.2).
@@ -253,17 +253,17 @@
     {#if hasReachedStart}
       <section
         aria-label="Start of {channelLabel}"
-        class="flex flex-col gap-(--mw-component-message-channel-start-gap) pr-(--mw-component-message-padding-trailing) pl-(--mw-component-message-avatar-inset) py-(--mw-component-message-channel-start-padding-block)"
+        class="flex flex-col gap-(--mw-component-message-channel-start-gap) px-md pt-md pb-xs"
       >
         <span
           class="grid size-(--mw-component-message-channel-start-icon-circle-size) place-items-center rounded-full bg-(--mw-component-message-channel-start-icon-background) text-(--mw-component-message-channel-start-icon)"
         >
           <Icon name={heroIcon} class="size-(--mw-component-message-channel-start-icon-size)" />
         </span>
-        <h2 class="type-display break-words text-(--mw-component-message-channel-start-title-text)">{heroTitle}</h2>
-        <p class="type-message text-(--mw-component-message-channel-start-description-text)">{heroSentence}</p>
+        <h2 class="mt-xs type-display break-words text-(--mw-component-message-channel-start-title-text)">{heroTitle}</h2>
+        <p class="type-body-lg text-(--mw-component-message-channel-start-description-text)">{heroSentence}</p>
         {#if topic}
-          <p class="type-message text-(--mw-component-message-channel-start-description-text)">{topic}</p>
+          <p class="type-body-lg text-(--mw-component-message-channel-start-description-text)">{topic}</p>
         {/if}
       </section>
     {:else if hasHistoryFailed}
@@ -281,12 +281,12 @@
     {/if}
 
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <ol bind:this={list} aria-label="Messages in {channelLabel}" class="pb-(--mw-space-lg)" onkeydown={moveFocus}>
+    <ol bind:this={list} aria-label="Messages in {channelLabel}" class="pb-xs" onkeydown={moveFocus}>
       {#each rows as row (row.key)}
         <MessageItem
           {row}
           {currentUser}
-          replyPreview={row.kind === "sent" ? replyPreviewOf(row.message) : ""}
+          replyReference={row.kind === "sent" ? replyReferenceOf(row.message) : null}
           {canSendMessages}
           {canManageMessages}
           isEditing={row.kind === "sent" && row.message.id === editingMessageId}

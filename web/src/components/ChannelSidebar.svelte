@@ -7,13 +7,12 @@
   import Button from "./Button.svelte";
   import { displayName } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
-  import IconButton from "./IconButton.svelte";
   import { channelSections } from "./message-rows";
 
   export type ServerDialog = "invite-people" | "create-channel" | "leave-server";
 
-  // The channel sidebar (DESIGN.md §5.3, §5.6): server header with its menu, then channels by
-  // category, or the conversations at Home; the user panel at the bottom.
+  // The channel list of the navigator card (DESIGN.md §5.3, §5.6, ADR-0022 §1): server header
+  // with its menu, then channels by category, or the conversations at Home.
   interface Props {
     client: MellowClient;
     /** Kept by the shell, so collapsing survives the drawer closing. */
@@ -21,10 +20,9 @@
     onopendialog: (dialog: ServerDialog) => void;
     /** After a channel or conversation was chosen (the narrow layout closes its drawer). */
     onnavigate: () => void;
-    onopenusersettings: () => void;
   }
 
-  let { client, collapsedCategoryIds, onopendialog, onnavigate, onopenusersettings }: Props = $props();
+  let { client, collapsedCategoryIds, onopendialog, onnavigate }: Props = $props();
 
   const guild = $derived(client.selectedGuild);
   const user = $derived(client.user);
@@ -105,7 +103,7 @@
   }
 
   const rowClasses = (isSelected: boolean, hasUnread: boolean) => [
-    "flex w-full items-center gap-(--mw-component-channel-row-icon-gap) rounded-(--mw-component-channel-row-radius) px-(--mw-component-channel-row-padding-inline) text-start focus-visible:focus-ring-inset",
+    "flex w-full items-center gap-(--mw-component-channel-row-icon-gap) rounded-(--mw-component-channel-row-radius) px-(--mw-component-channel-row-padding-inline) text-start transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-visible:focus-ring-inset",
     isSelected
       ? "bg-(--mw-component-channel-row-background-selected) text-(--mw-component-channel-row-text-selected)"
       : [
@@ -118,7 +116,7 @@
 {#snippet unreadPill()}
   <span
     aria-hidden="true"
-    class="absolute top-1/2 left-0 h-(--mw-component-channel-row-unread-pill-height) w-(--mw-component-channel-row-unread-pill-width) -translate-x-1/2 -translate-y-1/2 rounded-full bg-(--mw-component-channel-row-unread-pill-color)"
+    class="absolute top-1/2 -left-(--mw-component-channel-row-unread-pill-offset) h-(--mw-component-channel-row-unread-pill-height) w-(--mw-component-channel-row-unread-pill-width) -translate-y-1/2 rounded-full bg-(--mw-component-channel-row-unread-pill-color)"
   ></span>
 {/snippet}
 
@@ -144,8 +142,8 @@
   </button>
 {/snippet}
 
-<div class="flex h-full w-(--mw-component-sidebar-width) min-w-0 flex-col bg-(--mw-component-sidebar-background)">
-  <header class="relative z-10 h-(--mw-component-sidebar-header-height) shrink-0 shadow-(--mw-component-sidebar-header-shadow)">
+<div class="flex min-h-0 min-w-0 flex-col">
+  <header class="mt-xs me-xs h-(--mw-component-sidebar-header-height) shrink-0">
     {#if guild && hasServerMenu}
       <button
         bind:this={headerButton}
@@ -154,17 +152,20 @@
         aria-expanded={isMenuOpen}
         aria-controls="server-menu"
         class={[
-          "flex size-full items-center gap-xs px-(--mw-component-sidebar-header-padding-inline) text-start text-(--mw-component-sidebar-header-text) hover:bg-(--mw-component-sidebar-header-background-hover) focus-visible:focus-ring-inset",
+          "flex size-full items-center gap-xs rounded-sm px-xs text-start text-(--mw-component-sidebar-header-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-sidebar-header-background-hover)",
           isMenuOpen && "bg-(--mw-component-sidebar-header-background-hover)",
         ]}
         onclick={() => (isMenuOpen ? menu?.hidePopover() : openMenu())}
       >
         <h2 class="min-w-0 flex-1 truncate type-heading-md">{guild.name}</h2>
-        <Icon name={isMenuOpen ? "x" : "caret-down"} class="size-(--mw-component-sidebar-header-chevron-size)" />
+        <Icon
+          name={isMenuOpen ? "x" : "caret-down"}
+          class="size-(--mw-component-sidebar-header-chevron-size) text-text-secondary"
+        />
       </button>
     {:else}
       <h2
-        class="flex size-full items-center truncate px-(--mw-component-sidebar-header-padding-inline) type-heading-md text-(--mw-component-sidebar-header-text)"
+        class="flex size-full items-center truncate px-xs type-heading-md text-(--mw-component-sidebar-header-text)"
       >
         {guild ? guild.name : "Direct messages"}
       </h2>
@@ -179,7 +180,7 @@
     role="menu"
     tabindex="-1"
     aria-label="Server menu"
-    class="fixed inset-auto m-0 flex-col rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) p-(--mw-component-context-menu-padding) shadow-(--mw-component-context-menu-shadow) [&:popover-open]:flex"
+    class="fixed inset-auto m-0 flex-col rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) p-(--mw-component-context-menu-padding) shadow-(--mw-component-context-menu-shadow) [&:popover-open]:flex [&:popover-open]:animate-[mw-drop-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]"
     style:top="calc({menuPosition.top}px + var(--mw-component-sidebar-header-menu-margin))"
     style:left="calc({menuPosition.left}px + var(--mw-component-sidebar-header-menu-margin))"
     style:width="calc({menuPosition.width}px - 2 * var(--mw-component-sidebar-header-menu-margin))"
@@ -209,21 +210,22 @@
 
   <nav
     aria-label={guild ? `Channels in ${guild.name}` : "Direct messages"}
-    class="min-h-0 flex-1 overflow-y-auto pt-(--mw-component-sidebar-list-padding-top) pb-xs"
+    class="-ms-(--mw-component-channel-row-unread-pill-offset) min-h-0 flex-1 overflow-y-auto ps-(--mw-component-channel-row-unread-pill-offset) pb-xs [scrollbar-width:thin]"
   >
+    <!-- The negative margin lets the unread pills sit in the strip's margin without being clipped. -->
     {#if guild}
       {@render guildChannels(guild)}
     {:else if client.conversations.length === 0}
-      <p class="px-md py-xs type-body text-text-muted">
-        No conversations yet. Open someone's profile in a server's member list and choose Message.
+      <p class="mt-xs me-(--mw-component-channel-row-margin-inline) px-(--mw-component-channel-row-padding-inline) type-body text-text-muted">
+        No conversations yet. Open someone's profile in a server's member list and choose Send message.
       </p>
     {:else}
-      <ul class="flex flex-col gap-(--mw-component-member-row-gap)">
+      <ul class="mt-xs">
         {#each client.conversations as conversation (conversation.id)}
           {@const isSelected = conversation.id === client.selectedChannelId}
           {@const hasUnread = !isSelected && client.hasUnread(conversation.id)}
           {@const recipient = conversation.recipients.find((candidate) => candidate.id !== user?.id)}
-          <li class="relative px-(--mw-component-member-row-margin-inline)">
+          <li class="relative mt-(--mw-component-member-row-gap) me-(--mw-component-channel-row-margin-inline)">
             {#if hasUnread}{@render unreadPill()}{/if}
             <button
               type="button"
@@ -237,7 +239,7 @@
                   user={recipient}
                   sizeToken="--mw-component-member-row-avatar-size"
                   presence={client.onlineUserIds.has(recipient.id) ? "online" : "offline"}
-                  ringColorToken="--mw-component-sidebar-background"
+                  ringColorToken="--mw-component-navigator-background"
                 />
               {/if}
               <span class="min-w-0 flex-1 truncate type-channel-name">
@@ -249,37 +251,12 @@
       </ul>
     {/if}
   </nav>
-
-  {#if user}
-    <div
-      class="flex h-(--mw-component-user-panel-height) shrink-0 items-center gap-xs bg-(--mw-component-user-panel-background) px-(--mw-component-user-panel-padding-inline)"
-    >
-      <Avatar
-        {user}
-        sizeToken="--mw-component-user-panel-avatar-size"
-        presence="online"
-        ringColorToken="--mw-component-user-panel-background"
-      />
-      <div class="min-w-0 flex-1">
-        <p class="truncate type-user-panel-name text-(--mw-component-user-panel-name-text)">{displayName(user)}</p>
-        <p class="truncate type-body-sm text-(--mw-component-user-panel-status-text)">@{user.username}</p>
-      </div>
-      <!-- Sign out lives in the settings navigation, as on desktop (DESIGN.md §5.9). -->
-      <IconButton
-        icon="gear-six"
-        label="User settings"
-        class="size-(--mw-component-user-panel-button-size) text-(--mw-component-user-panel-button-icon) hover:bg-(--mw-component-user-panel-button-background-hover)"
-        iconClass="size-(--mw-component-user-panel-button-icon-size)"
-        onclick={onopenusersettings}
-      />
-    </div>
-  {/if}
 </div>
 
 {#snippet guildChannels(guild: Guild)}
   {@const sections = channelSections(guild)}
   {#if sections.every((section) => section.channels.length === 0)}
-    <div class="flex flex-col items-start gap-xs px-md py-xs">
+    <div class="mt-xs me-(--mw-component-channel-row-margin-inline) flex flex-col items-start gap-xs px-(--mw-component-channel-row-padding-inline)">
       {#if canCreateChannels}
         <p class="type-body text-text-muted">No channels yet. Create the first one to get the conversation going.</p>
         <Button
@@ -295,11 +272,11 @@
     {@const category = section.category}
     {@const isCollapsed = category !== null && collapsedCategoryIds.has(category.id)}
     {#if category}
-      <h3 class="mt-(--mw-component-category-margin-top) px-(--mw-component-category-padding-inline)">
+      <h3 class="mt-(--mw-component-category-margin-top) pe-xs">
         <button
           type="button"
           aria-expanded={!isCollapsed}
-          class="flex h-(--mw-component-category-height) w-full items-center gap-(--mw-space-3xs) rounded-(--mw-component-channel-row-radius) type-category text-(--mw-component-category-text) hover:text-(--mw-component-category-text-hover) focus-visible:focus-ring-inset pointer-coarse:h-(--mw-size-hit-web-min)"
+          class="flex h-(--mw-component-category-height) w-full items-center gap-2xs rounded-xs type-category text-(--mw-component-category-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:text-(--mw-component-category-text-hover) focus-visible:focus-ring-inset pointer-coarse:h-(--mw-size-hit-web-min)"
           onclick={() => toggleCategory(category.id)}
           onkeydown={(event) => {
             if ((event.key === "ArrowLeft" && !isCollapsed) || (event.key === "ArrowRight" && isCollapsed)) {
@@ -320,7 +297,7 @@
         {@const canSendMessages = canSendIn(channel.id)}
         <!-- Collapsed categories still show the selected and unread channels, as on Discord. -->
         {#if !isCollapsed || isSelected || hasUnread}
-          <li class="relative mb-(--mw-component-channel-row-gap) px-(--mw-component-channel-row-margin-inline)">
+          <li class="relative mt-(--mw-component-channel-row-gap) me-(--mw-component-channel-row-margin-inline)">
             {#if hasUnread}{@render unreadPill()}{/if}
             <button
               type="button"

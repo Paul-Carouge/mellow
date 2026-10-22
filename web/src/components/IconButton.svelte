@@ -23,7 +23,7 @@
   title={label}
   {...rest}
   class={[
-    "inline-flex shrink-0 items-center justify-center rounded-sm transition-colors duration-(--mw-motion-duration-fast) pointer-coarse:size-(--mw-size-hit-web-min)",
+    "inline-flex shrink-0 items-center justify-center rounded-sm transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) pointer-coarse:size-(--mw-size-hit-web-min)",
     className,
   ]}
 >
