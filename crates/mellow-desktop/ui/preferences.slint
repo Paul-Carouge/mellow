@@ -1,0 +1,17 @@
+import { MellowMotion } from "tokens.slint";
+
+// Appearance → Theme (DESIGN.md §5.9). `system` follows the OS through Slint's `Palette.color-scheme`.
+export enum ThemeChoice { system, dark, light }
+
+// Appearance → Motion (DESIGN.md §2.8). Slint 1.18 does not expose the OS "reduce motion" setting, so
+// the desktop offers a stored choice instead of "Match system". Rust loads and saves `is-reduced`.
+//
+// Durations of things that move or change shape: zero under reduced motion. Colour and opacity
+// changes keep `MellowMotion.duration-fast`, so people still see what changed.
+export global MotionPreference {
+    in-out property <bool> is-reduced;
+    out property <duration> fast: is-reduced ? MellowMotion.duration-instant : MellowMotion.duration-fast;
+    out property <duration> base: is-reduced ? MellowMotion.duration-instant : MellowMotion.duration-base;
+    out property <duration> slow: is-reduced ? MellowMotion.duration-instant : MellowMotion.duration-slow;
+    out property <duration> settle: is-reduced ? MellowMotion.duration-instant : MellowMotion.duration-settle;
+}
