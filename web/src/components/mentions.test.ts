@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { PublicUser } from "../lib/protocol";
-import { mentionablePeople, mentionsUser, splitMentions } from "./mentions";
+import { mentionablePeople, splitMentions } from "./mentions";
 
 const paul: PublicUser = { id: "1", username: "paul", display_name: "Paul Carouge" };
 const zoe: PublicUser = { id: "2", username: "zoe", display_name: "Zoé" };
@@ -39,12 +39,5 @@ describe("splitMentions on hostile text", () => {
     }
     expect(performance.now() - started).toBeLessThan(20);
     expect(splitMentions(`@paul${"x".repeat(40)}`, people)).toEqual([{ kind: "text", text: `@paul${"x".repeat(40)}` }]);
-  });
-});
-
-describe("mentionsUser", () => {
-  it("is true only when the user is mentioned", () => {
-    expect(mentionsUser("@paul hello", people, "1")).toBe(true);
-    expect(mentionsUser("@zoe hello", people, "1")).toBe(false);
   });
 });

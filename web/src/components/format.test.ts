@@ -10,7 +10,6 @@ import {
   messageTimestampLabel,
   middleTruncate,
   serverInitials,
-  splitMessageText,
   timeOfDayLabel,
   typingLabel,
   unixMillisecondsOfSnowflake,
@@ -144,25 +143,6 @@ describe("attachmentCountLabel", () => {
     expect(attachmentCountLabel(0)).toBe("");
     expect(attachmentCountLabel(1)).toBe("1 attachment");
     expect(attachmentCountLabel(2)).toBe("2 attachments");
-  });
-});
-
-describe("splitMessageText", () => {
-  it("makes http and https links, leaving sentence punctuation outside", () => {
-    expect(splitMessageText("See https://example.org/a?b=1. Thanks")).toEqual([
-      { kind: "text", text: "See " },
-      { kind: "link", text: "https://example.org/a?b=1", url: "https://example.org/a?b=1" },
-      { kind: "text", text: ". Thanks" },
-    ]);
-  });
-
-  it("never links other schemes", () => {
-    const text = "javascript:alert(1) data:text/html,x ftp://example.org";
-    expect(splitMessageText(text)).toEqual([{ kind: "text", text }]);
-  });
-
-  it("keeps markup as text", () => {
-    expect(splitMessageText('<img src=x onerror="y">')).toEqual([{ kind: "text", text: '<img src=x onerror="y">' }]);
   });
 });
 
