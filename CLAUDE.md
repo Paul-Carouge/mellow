@@ -33,7 +33,7 @@ cargo xtask tokens          # regenerate ui/tokens.slint after editing design/to
 cargo run -p mellow-desktop
 ```
 Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (`init`, `serve`, `admin create-user`: REST API and WebSocket gateway), `mellow-client-core` (REST, gateway, state), `mellow-desktop` (Discord-like shell signed in to an instance; `MELLOW_DEMO_WORKSPACE=1` for fake data) and `xtask` (design token generator) exist. Update this section when run commands appear.
-CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux, macOS and Windows.
+CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux only while the web client is the focus (ADR-0023).
 
 ## Rules specific to this project
 - **Protocol changes** start in `mellow-protocol` and are made in the same commit on server and clients. API is versioned (`/api/v1`, `/gateway?v=1`); never break a released version.

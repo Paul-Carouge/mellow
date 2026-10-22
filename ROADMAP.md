@@ -15,7 +15,7 @@ Merged into `main`: #1 to #60. Released up to `v0.7.0` (2026-10-22), which runs 
 - Visual direction Dusk (ADR-0022): tokens and dark app icon (`v0.6.0`), the Navigator layout and the mockup's content features on web and desktop (`v0.7.0`).
 
 ### Blocked
-- Nothing blocked. CI runs on Linux, macOS and Windows.
+- Nothing blocked. While the web client is the focus, CI tests on Linux only and releases carry the Linux server only (ADR-0023); the desktop app keeps compiling but gets no new release until its port.
 
 ### Next, in order (web client and the server it needs)
 The goal is Discord's feature set on the web client. In order:
