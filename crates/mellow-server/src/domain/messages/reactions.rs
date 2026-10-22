@@ -15,21 +15,34 @@ use crate::domain::profile_images::fill_profile_images;
 use crate::storage::reactions::{self as storage, ReactionAddOutcome};
 
 impl Messages {
-    /// The channel, the message, the user's permissions there and the emoji's stored key. A
-    /// channel the user cannot view is `NotFound`.
+    /// The channel, the user's permissions there and the emoji's stored key, once `action` is
+    /// allowed. A channel the user cannot view is `NotFound`. Without the channel's history, every
+    /// action but taking one's own reaction back answers `MessageNotFound` before any lookup, so
+    /// an existing message cannot be told apart from a missing one; otherwise the message must
+    /// exist in the channel.
     async fn reaction_target(
         &self,
         user_id: Snowflake,
         channel_id: Snowflake,
         message_id: Snowflake,
         emoji: &str,
-    ) -> Result<(super::MessageChannel, Snowflake, Permissions, String), MessageError> {
+        action: ReactionAction,
+    ) -> Result<(super::MessageChannel, Permissions, String), MessageError> {
         let emoji = reaction_emoji_key(emoji)?;
         let (channel, permissions) = self
             .text_channel_and_permissions_requiring(user_id, channel_id, Permissions::VIEW_CHANNEL)
             .await?;
-        let message = self.message_in_channel(channel.id(), message_id).await?;
-        Ok((channel, message.id, permissions, emoji))
+        let needs_the_message = action != ReactionAction::RemoveOwn;
+        if needs_the_message && !permissions.contains(Permissions::READ_MESSAGE_HISTORY) {
+            return Err(MessageError::MessageNotFound);
+        }
+        if !may_react(permissions, channel.guild_id().is_none(), action) {
+            return Err(GuildError::MissingPermissions.into());
+        }
+        if needs_the_message {
+            self.message_in_channel(channel.id(), message_id).await?;
+        }
+        Ok((channel, permissions, emoji))
     }
 
     /// Reacts with `emoji`. Idempotent: reacting again changes nothing and sends no event.
@@ -40,13 +53,15 @@ impl Messages {
         message_id: Snowflake,
         emoji: &str,
     ) -> Result<(), MessageError> {
-        let (channel, message_id, permissions, emoji) = self
-            .reaction_target(user_id, channel_id, message_id, emoji)
+        let (channel, permissions, emoji) = self
+            .reaction_target(
+                user_id,
+                channel_id,
+                message_id,
+                emoji,
+                ReactionAction::JoinExisting,
+            )
             .await?;
-        let may = |action| may_react(permissions, channel.guild_id().is_none(), action);
-        if !may(ReactionAction::JoinExisting) {
-            return Err(GuildError::MissingPermissions.into());
-        }
         // Decided before the write, so publishing after the commit cannot fail (ADR-0015).
         let audience = self.audience(&channel).await?;
         match storage::add_reaction(
@@ -54,7 +69,11 @@ impl Messages {
             message_id,
             user_id,
             &emoji,
-            may(ReactionAction::AddNew),
+            may_react(
+                permissions,
+                channel.guild_id().is_none(),
+                ReactionAction::AddNew,
+            ),
             MAXIMUM_DISTINCT_EMOJI_PER_MESSAGE,
         )
         .await?
@@ -82,7 +101,8 @@ impl Messages {
         }
     }
 
-    /// Takes the user's own reaction back. Idempotent: nothing to remove sends no event.
+    /// Takes the user's own reaction back. Idempotent: nothing to remove (a missing message
+    /// included) sends no event and is no error.
     pub(crate) async fn remove_own_reaction(
         &self,
         user_id: Snowflake,
@@ -90,18 +110,17 @@ impl Messages {
         message_id: Snowflake,
         emoji: &str,
     ) -> Result<(), MessageError> {
-        let (channel, message_id, permissions, emoji) = self
-            .reaction_target(user_id, channel_id, message_id, emoji)
+        let (channel, _, emoji) = self
+            .reaction_target(
+                user_id,
+                channel_id,
+                message_id,
+                emoji,
+                ReactionAction::RemoveOwn,
+            )
             .await?;
-        if !may_react(
-            permissions,
-            channel.guild_id().is_none(),
-            ReactionAction::RemoveOwn,
-        ) {
-            return Err(GuildError::MissingPermissions.into());
-        }
         let audience = self.audience(&channel).await?;
-        if storage::remove_reaction(&self.pool, message_id, user_id, &emoji).await? {
+        if storage::remove_reaction(&self.pool, channel.id(), message_id, user_id, &emoji).await? {
             publish(
                 &self.guilds,
                 &audience,
@@ -127,16 +146,9 @@ impl Messages {
         query: ReactionUsersQuery,
     ) -> Result<Vec<PublicUser>, MessageError> {
         let limit = reacting_users_page_size(query.limit)?;
-        let (channel, message_id, permissions, emoji) = self
-            .reaction_target(user_id, channel_id, message_id, emoji)
+        let (_, _, emoji) = self
+            .reaction_target(user_id, channel_id, message_id, emoji, ReactionAction::List)
             .await?;
-        if !may_react(
-            permissions,
-            channel.guild_id().is_none(),
-            ReactionAction::List,
-        ) {
-            return Err(GuildError::MissingPermissions.into());
-        }
         let mut users: Vec<PublicUser> =
             storage::list_reacting_users(&self.pool, message_id, &emoji, query.after, limit)
                 .await?

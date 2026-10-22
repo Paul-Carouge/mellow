@@ -2372,4 +2372,81 @@ mod tests {
             "events carry the stored key"
         );
     }
+
+    #[tokio::test]
+    async fn without_the_history_a_message_and_a_missing_one_answer_alike() {
+        use mellow_protocol::{OverwriteKind, SetPermissionOverwriteRequest};
+
+        let fixture = fixture().await;
+        let message = fixture
+            .messages
+            .send(fixture.owner, fixture.general, text("before you came"), NOW)
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .add_reaction(fixture.member, fixture.general, message.id, "👍")
+            .await
+            .unwrap();
+        fixture
+            .guilds
+            .set_permission_overwrite(
+                fixture.owner,
+                fixture.general,
+                fixture.member,
+                SetPermissionOverwriteRequest {
+                    kind: OverwriteKind::Member,
+                    allow: Permissions::empty(),
+                    deny: Permissions::READ_MESSAGE_HISTORY,
+                },
+            )
+            .await
+            .unwrap();
+        let missing = Snowflake::from_raw(1);
+        let mut attempts = Vec::new();
+        for message_id in [message.id, missing] {
+            attempts.push(
+                fixture
+                    .messages
+                    .add_reaction(fixture.member, fixture.general, message_id, "👍")
+                    .await,
+            );
+            attempts.push(
+                fixture
+                    .messages
+                    .list_reacting_users(
+                        fixture.member,
+                        fixture.general,
+                        message_id,
+                        "👍",
+                        mellow_protocol::ReactionUsersQuery::default(),
+                    )
+                    .await
+                    .map(|_| ()),
+            );
+        }
+        let removed_from_missing = fixture
+            .messages
+            .remove_own_reaction(fixture.member, fixture.general, missing, "👍")
+            .await;
+        let removed_own = fixture
+            .messages
+            .remove_own_reaction(fixture.member, fixture.general, message.id, "👍")
+            .await;
+        let seen = history(&fixture, fixture.owner, fixture.general).await;
+        fixture.pool.close().await;
+
+        for attempt in attempts {
+            assert!(
+                matches!(attempt, Err(MessageError::MessageNotFound)),
+                "{attempt:?}"
+            );
+        }
+        assert!(removed_from_missing.is_ok(), "{removed_from_missing:?}");
+        assert!(
+            removed_own.is_ok(),
+            "taking one's own back needs no history"
+        );
+        assert_eq!(summaries(&seen[0]), Vec::new());
+    }
 }
