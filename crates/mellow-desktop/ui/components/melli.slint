@@ -1,4 +1,5 @@
 import { MellowColor, MellowComponent } from "../tokens.slint";
+import { MotionPreference } from "../preferences.slint";
 
 // What Melli is showing (DESIGN.md §2.10). Rust picks the state (`home_melli_state`).
 export enum MelliState { idle, connecting, connection-lost, notification, incoming-call, in-call, update-available, sleeping }
@@ -65,15 +66,17 @@ export component Melli inherits Rectangle {
     // loop before any float division, so the motion stays smooth however long the app runs.
     // While the window cannot be seen the clock stops, and with it every redraw Melli asks for.
     property <bool> is-running: MelliAnimation.is-running;
+    // Reduced motion shows the still pose: every loop at its start, nothing redrawn (DESIGN.md §2.10).
+    property <bool> is-still: MotionPreference.is-reduced;
     property <duration> stopped-at;
-    property <duration> now: is-running ? animation-tick() : stopped-at;
+    property <duration> now: is-running && !is-still ? animation-tick() : stopped-at;
     property <duration> state-started-at;
     // The puffs stop turning while the connection is lost and resume from the same angle.
     property <bool> is-puff-spin-paused;
     property <duration> puff-spin-paused-at;
     property <duration> puff-spin-paused-total;
-    property <duration> since-state-change: now - state-started-at;
-    property <duration> puff-spin-clock: (is-puff-spin-paused ? puff-spin-paused-at : now) - puff-spin-paused-total;
+    property <duration> since-state-change: is-still ? 0ms : now - state-started-at;
+    property <duration> puff-spin-clock: is-still ? 0ms : (is-puff-spin-paused ? puff-spin-paused-at : now) - puff-spin-paused-total;
 
     init => {
         stopped-at = animation-tick();
@@ -82,6 +85,9 @@ export component Melli inherits Rectangle {
         puff-spin-paused-at = now;
     }
     changed is-running => {
+        stopped-at = animation-tick();
+    }
+    changed is-still => {
         stopped-at = animation-tick();
     }
     changed state => {
@@ -124,7 +130,7 @@ export component Melli inherits Rectangle {
     property <float> talk-phase: cycle(since-state-change, MellowComponent.melli-talk-duration, 0);
     property <float> excited-phase: cycle(since-state-change, MellowComponent.melli-excited-duration, 0);
     property <float> sleep-phase: cycle(since-state-change, MellowComponent.melli-sleep-duration, 0);
-    property <float> blink-phase: cycle(now, MellowComponent.melli-blink-duration, 0);
+    property <float> blink-phase: cycle(is-still ? 0ms : now, MellowComponent.melli-blink-duration, 0);
 
     // The cloud's loop: float, sag, hop, ring, bob, bounce or breathe, pivoting on its base.
     property <float> motion-offset-y: state == MelliState.idle || state == MelliState.connecting ? -8 * swell(float-phase)
