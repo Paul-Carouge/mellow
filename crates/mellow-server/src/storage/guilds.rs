@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use mellow_protocol::{
-    ChannelKind, OverwriteKind, PermissionOverwrite, Permissions, Role, Snowflake,
+    AuditChange, AuditChangeKey, ChannelKind, OverwriteKind, PermissionOverwrite, Permissions,
+    Role, Snowflake,
 };
 use sqlx::SqlitePool;
 
@@ -909,7 +910,17 @@ pub(crate) async fn delete_channel(
     Ok(())
 }
 
-/// Renames the guild and records `audit`, in one transaction. Returns whether the guild exists.
+/// What renaming a guild did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GuildRename {
+    Renamed,
+    /// The guild already had that name: nothing written or recorded.
+    Unchanged,
+    NotFound,
+}
+
+/// Renames the guild and records `audit` with the name change, in one transaction. The old name
+/// is read in that transaction, so the log holds the name actually replaced.
 ///
 /// # Errors
 /// Fails on database errors; nothing is written then.
@@ -918,20 +929,35 @@ pub(crate) async fn update_guild_name(
     guild_id: Snowflake,
     name: &str,
     audit: &NewAuditEntry,
-) -> Result<bool, GuildStorageError> {
+) -> Result<GuildRename, GuildStorageError> {
+    let guild_id = to_integer(guild_id.raw())?;
     let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
-    let updated = sqlx::query("UPDATE guilds SET name = ? WHERE id = ?")
-        .bind(name)
-        .bind(to_integer(guild_id.raw())?)
-        .execute(&mut *transaction)
-        .await?
-        .rows_affected();
-    if updated == 0 {
-        return Ok(false);
+    let stored: Option<String> = sqlx::query_scalar("SELECT name FROM guilds WHERE id = ?")
+        .bind(guild_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+    let Some(stored) = stored else {
+        return Ok(GuildRename::NotFound);
+    };
+    if stored == name {
+        return Ok(GuildRename::Unchanged);
     }
-    insert_audit_entry(&mut transaction, audit).await?;
+    sqlx::query("UPDATE guilds SET name = ? WHERE id = ?")
+        .bind(name)
+        .bind(guild_id)
+        .execute(&mut *transaction)
+        .await?;
+    let audit = NewAuditEntry {
+        changes: vec![AuditChange {
+            key: AuditChangeKey::Name,
+            old_value: stored,
+            new_value: name.to_owned(),
+        }],
+        ..audit.clone()
+    };
+    insert_audit_entry(&mut transaction, &audit).await?;
     transaction.commit().await?;
-    Ok(true)
+    Ok(GuildRename::Renamed)
 }
 
 /// Deletes the guild if `owner_id` still owns it, with everything it holds: roles, members,
@@ -952,6 +978,11 @@ pub(crate) async fn delete_guild(
             .bind(guild_id)
             .fetch_all(&mut *transaction)
             .await?;
+    // Converted before the delete, so nothing can fail once it is committed.
+    let member_ids = member_ids
+        .into_iter()
+        .map(to_id)
+        .collect::<Result<Vec<_>, _>>()?;
     let deleted = sqlx::query("DELETE FROM guilds WHERE id = ? AND owner_id = ?")
         .bind(guild_id)
         .bind(to_integer(owner_id.raw())?)
@@ -962,11 +993,7 @@ pub(crate) async fn delete_guild(
         return Ok(None);
     }
     transaction.commit().await?;
-    member_ids
-        .into_iter()
-        .map(to_id)
-        .collect::<Result<_, _>>()
-        .map(Some)
+    Ok(Some(member_ids))
 }
 
 /// # Errors
