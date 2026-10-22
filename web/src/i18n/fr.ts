@@ -492,6 +492,7 @@ export const fr: Catalogue = {
         description: "Lire les messages envoyés avant d’avoir ouvert le salon.",
       },
       attachFiles: { label: "Joindre des fichiers", description: "Ajouter des fichiers et des images à ses messages." },
+      addReactions: { label: "Ajouter des réactions", description: "Réagir aux messages avec un nouvel emoji." },
       mentionEveryone: {
         label: "Mentionner @everyone",
         description: "Prévenir tout le monde dans un salon en une fois.",
@@ -609,6 +610,9 @@ export const fr: Catalogue = {
       memberBanAdd: (actor, member) => `${actor} a banni ${member}`,
       memberBanRemove: (actor, member) => `${actor} a révoqué le bannissement de ${member}`,
       messageDelete: (actor, author, channel) => `${actor} a supprimé un message de ${author} dans #${channel}`,
+      messagePin: (actor, channel) => `${actor} a épinglé un message dans #${channel}`,
+      messageUnpin: (actor, channel) => `${actor} a désépinglé un message dans #${channel}`,
+      messageReactionRemove: (actor, channel) => `${actor} a retiré des réactions d’un message dans #${channel}`,
       guildRename: (actor, before, after) => `${actor} a renommé le serveur ${before} en ${after}`,
       guildUpdate: (actor) => `${actor} a modifié le serveur`,
       inviteCreate: (actor, code) => `${actor} a créé l’invitation ${code}`,

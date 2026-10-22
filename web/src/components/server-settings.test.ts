@@ -216,6 +216,9 @@ describe("moderation log", () => {
     expect(auditEntrySentence(entry({ action: "overwrite_set", target_id: GUILD, context_id: "300" }), context)).toBe(
       "Ana changed what role 100 can do in #general",
     );
+    expect(auditEntrySentence(entry({ action: "message_pin", target_id: "500", context_id: "300" }), context)).toBe(
+      "Ana pinned a message in #general",
+    );
     expect(auditEntrySentence(entry({ action: "role_update", target_id: "404" }), context)).toBe(
       "Ana edited the role a deleted role",
     );

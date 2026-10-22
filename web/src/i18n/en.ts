@@ -488,6 +488,7 @@ export const en = {
         description: "Read messages sent before they opened the channel.",
       },
       attachFiles: { label: "Attach files", description: "Add files and pictures to their messages." },
+      addReactions: { label: "Add reactions", description: "React to messages with a new emoji." },
       mentionEveryone: { label: "Mention @everyone", description: "Notify everyone in a channel at once." },
       manageMessages: { label: "Manage messages", description: "Delete messages sent by other members." },
       kickMembers: { label: "Kick members", description: "Remove people; they can come back with a new invite." },
@@ -592,6 +593,10 @@ export const en = {
       memberBanRemove: (actor: string, member: string) => `${actor} revoked the ban of ${member}`,
       messageDelete: (actor: string, author: string, channel: string) =>
         `${actor} deleted a message by ${author} in #${channel}`,
+      messagePin: (actor: string, channel: string) => `${actor} pinned a message in #${channel}`,
+      messageUnpin: (actor: string, channel: string) => `${actor} unpinned a message in #${channel}`,
+      messageReactionRemove: (actor: string, channel: string) =>
+        `${actor} removed reactions from a message in #${channel}`,
       guildRename: (actor: string, before: string, after: string) =>
         `${actor} renamed the server from ${before} to ${after}`,
       guildUpdate: (actor: string) => `${actor} edited the server`,

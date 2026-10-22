@@ -265,6 +265,7 @@ export const PERMISSION_GROUPS: readonly { group: PermissionGroupKey; permission
       { key: "sendMessages", bit: Permission.SEND_MESSAGES, isSensitive: false },
       { key: "readMessageHistory", bit: Permission.READ_MESSAGE_HISTORY, isSensitive: false },
       { key: "attachFiles", bit: Permission.ATTACH_FILES, isSensitive: false },
+      { key: "addReactions", bit: Permission.ADD_REACTIONS, isSensitive: false },
       { key: "mentionEveryone", bit: Permission.MENTION_EVERYONE, isSensitive: false },
       { key: "manageMessages", bit: Permission.MANAGE_MESSAGES, isSensitive: false },
     ],
@@ -386,6 +387,12 @@ export function auditEntrySentence(entry: AuditLogEntry, context: AuditContext):
       return log.memberBanRemove(actor, personName(context, target));
     case "message_delete":
       return log.messageDelete(actor, personName(context, target), channelName(context, entry.context_id));
+    case "message_pin":
+      return log.messagePin(actor, channelName(context, entry.context_id));
+    case "message_unpin":
+      return log.messageUnpin(actor, channelName(context, entry.context_id));
+    case "message_reaction_remove":
+      return log.messageReactionRemove(actor, channelName(context, entry.context_id));
     case "guild_update": {
       const name = changeOf(entry, "name");
       return name ? log.guildRename(actor, name.old_value, name.new_value) : log.guildUpdate(actor);
