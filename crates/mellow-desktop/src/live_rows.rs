@@ -550,6 +550,18 @@ pub fn member_rows(
     .collect()
 }
 
+/// Typing indicator names, bold before "is typing…" or "are typing…": "Ana", "Ana and Léo",
+/// "Ana, Léo and Zoé", or "Several people" past three. The flag says "are".
+pub fn typing_names(names: &[String]) -> (String, bool) {
+    match names {
+        [] => (String::new(), false),
+        [only] => (only.clone(), false),
+        [first, second] => (format!("{first} and {second}"), true),
+        [first, second, third] => (format!("{first}, {second} and {third}"), true),
+        _ => ("Several people".to_owned(), true),
+    }
+}
+
 /// What the message list shows above its oldest message (DESIGN.md §5.4 "List states").
 pub fn history_start_state(
     state: &ClientState,
@@ -580,6 +592,29 @@ mod tests {
     use mellow_protocol::{Channel, OverwriteKind, PermissionOverwrite, PublicUser, Ready};
 
     use super::*;
+
+    #[test]
+    fn typing_names_read_naturally_for_one_to_many_people() {
+        let names = |list: &[&str]| {
+            list.iter()
+                .map(|name| (*name).to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(typing_names(&[]), (String::new(), false));
+        assert_eq!(typing_names(&names(&["Ana"])), ("Ana".into(), false));
+        assert_eq!(
+            typing_names(&names(&["Ana", "Léo"])),
+            ("Ana and Léo".into(), true)
+        );
+        assert_eq!(
+            typing_names(&names(&["Ana", "Léo", "Zoé"])),
+            ("Ana, Léo and Zoé".into(), true)
+        );
+        assert_eq!(
+            typing_names(&names(&["Ana", "Léo", "Zoé", "Inès"])),
+            ("Several people".into(), true)
+        );
+    }
 
     fn channel(
         id: u64,
