@@ -2410,6 +2410,75 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn reactions_are_rate_limited_per_channel() {
+        use mellow_protocol::{Guild, Invite, Message};
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, guest, guild_id, _) = guild_with_guest(&state).await;
+        let (_, body) = send(
+            &state,
+            authorized("GET", &format!("/api/v1/guilds/{guild_id}"), &owner, None),
+        )
+        .await;
+        let general = json::<Guild>(&body).channels[1].id;
+        let (_, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &format!("/api/v1/guilds/{guild_id}/invites"),
+                &owner,
+                Some(serde_json::json!({})),
+            ),
+        )
+        .await;
+        let code = json::<Invite>(&body).code;
+        let mut members = vec![owner.clone(), guest];
+        for name in ["third", "fourth"] {
+            let token = registered_token(&state, name).await;
+            send(
+                &state,
+                authorized("POST", &format!("/api/v1/invites/{code}"), &token, None),
+            )
+            .await;
+            members.push(token);
+        }
+        let (_, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &format!("/api/v1/channels/{general}/messages"),
+                &owner,
+                Some(serde_json::json!({"content": "hi"})),
+            ),
+        )
+        .await;
+        let message: Message = json(&body);
+        let reaction = format!(
+            "/api/v1/channels/{general}/messages/{}/reactions/%F0%9F%91%8D/@me",
+            message.id
+        );
+        let per_user = rate_limit::REACTION_WRITES_PER_USER.maximum_events;
+        let per_channel = rate_limit::REACTION_WRITES_PER_CHANNEL.maximum_events;
+        let (last, others) = members.split_last().unwrap();
+        let mut accepted = 0;
+        for token in others {
+            for _ in 0..per_user {
+                let (status, _) = send(&state, authorized("PUT", &reaction, token, None)).await;
+                accepted += u32::from(status == StatusCode::NO_CONTENT);
+            }
+        }
+        let (status, _) = send(&state, authorized("PUT", &reaction, last, None)).await;
+        pool.close().await;
+
+        assert_eq!(
+            accepted, per_channel,
+            "three members fill the channel's budget"
+        );
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
     async fn moderators_remove_reactions_over_http() {
         use mellow_protocol::{Guild, Message};
 
