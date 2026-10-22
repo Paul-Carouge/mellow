@@ -214,7 +214,83 @@ export const fr: Catalogue = {
     actions: "Actions du message",
     reply: "Répondre",
     copyText: "Copier le texte",
+    more: "Plus",
     download: (fileName) => `Télécharger ${fileName}`,
+  },
+
+  reactions: {
+    reactions: "Réactions",
+    addReaction: "Ajouter une réaction",
+    reactWith: (emoji) => `Réagir avec ${emoji}`,
+    chip: (emoji, reactions) =>
+      `${emoji}, ${count(reactions)}${NO_BREAK_SPACE}${plural(reactions, { one: "réaction", other: "réactions" })}`,
+    reactedWith: (includesYou, names, others, emoji) => {
+      const people = [...(includesYou ? ["Toi"] : []), ...names];
+      if (others > 0) {
+        people.push(`${count(others)}${NO_BREAK_SPACE}${plural(others, { one: "autre", other: "autres" })}`);
+      }
+      if (people.length === 1) {
+        return includesYou
+          ? `Tu as réagi avec${NO_BREAK_SPACE}${emoji}`
+          : `${people[0]} a réagi avec${NO_BREAK_SPACE}${emoji}`;
+      }
+      const list = `${people.slice(0, -1).join(", ")} et ${people.at(-1)}`;
+      return `${list} ${includesYou ? "avez" : "ont"} réagi avec${NO_BREAK_SPACE}${emoji}`;
+    },
+    loadingWho: "Chargement des réactions…",
+    whoFailed: "Impossible de savoir qui a réagi.",
+    failed: "Impossible de réagir",
+    noNewEmoji: "Tu ne peux pas ajouter de nouvelles réactions ici.",
+    removeShort: "Retirer",
+    remove: (person) => `Retirer la réaction de ${person}`,
+    removeFailed: "Impossible de retirer la réaction",
+    removeAll: "Retirer toutes les réactions",
+    removeAllTitle: `Retirer toutes les réactions${NARROW_NO_BREAK_SPACE}?`,
+    removeAllSubtitle: "Toutes les réactions de ce message seront retirées pour tout le monde.",
+    removeAllSubmit: "Tout retirer",
+    removeAllFailed: "Impossible de retirer les réactions",
+    noReactions: "Plus aucune réaction.",
+  },
+
+  emojiPicker: {
+    label: "Sélecteur d’emoji",
+    search: "Rechercher un emoji",
+    placeholder: "Trouve l’emoji parfait",
+    recent: "Utilisés récemment",
+    results: "Résultats de la recherche",
+    noResults: (query) => `Aucun emoji pour «${NO_BREAK_SPACE}${query}${NO_BREAK_SPACE}».`,
+    help: "Flèches pour te déplacer, Entrée pour choisir, Échap pour fermer.",
+    categories: {
+      people: "Personnes",
+      nature: "Nature",
+      food: "Nourriture et boissons",
+      activities: "Activités",
+      travel: "Voyages et lieux",
+      objects: "Objets",
+      symbols: "Symboles",
+      flags: "Drapeaux",
+    },
+  },
+
+  pins: {
+    pinnedMessages: "Messages épinglés",
+    pin: "Épingler le message",
+    unpin: "Désépingler le message",
+    pinned: "Épinglé",
+    pinTitle: `Épingler ce message${NARROW_NO_BREAK_SPACE}?`,
+    pinSubtitle: (channel) => `Il apparaîtra dans les messages épinglés de ${channel}.`,
+    pinSubmit: "Épingler",
+    unpinTitle: `Désépingler ce message${NARROW_NO_BREAK_SPACE}?`,
+    unpinSubtitle: "Il n’apparaîtra plus dans les messages épinglés.",
+    unpinSubmit: "Désépingler",
+    pinFailed: "Impossible d’épingler le message",
+    unpinFailed: "Impossible de désépingler le message",
+    loading: "Chargement des messages épinglés…",
+    loadFailed: "Impossible de charger les messages épinglés.",
+    emptyTitle: "Aucun message épinglé pour l’instant",
+    emptyBody: "Épingle un message depuis son menu Plus pour le garder ici, à la vue de tous.",
+    jump: "Voir",
+    jumpTo: (author) => `Aller au message de ${author}`,
   },
 
   attachmentTray: {
