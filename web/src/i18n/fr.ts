@@ -121,6 +121,7 @@ export const fr: Catalogue = {
     serverMenu: "Menu du serveur",
     invitePeople: "Inviter des gens",
     createChannel: "Créer un salon",
+    serverSettings: "Paramètres du serveur",
     leaveServer: "Quitter le serveur",
     channelsIn: (server) => `Salons de ${server}`,
     noConversations:
@@ -383,6 +384,253 @@ export const fr: Catalogue = {
     resultCount: (results) => `${count(results)} ${plural(results, { one: "résultat", other: "résultats" })}`,
     help: `Flèches pour choisir, Entrée pour ouvrir, Échap pour fermer. Préfixes${NO_BREAK_SPACE}: @${NO_BREAK_SPACE}personnes, #${NO_BREAK_SPACE}salons, *${NO_BREAK_SPACE}serveurs.`,
     openConversationFailed: (person) => `Impossible d’ouvrir la conversation avec ${person}`,
+  },
+
+  serverSettings: {
+    serverSettings: "Paramètres du serveur",
+    moderation: "Modération",
+    sections: {
+      overview: "Vue d’ensemble",
+      roles: "Rôles",
+      invites: "Invitations",
+      members: "Membres",
+      bans: "Bannissements",
+      "moderation-log": "Journal de modération",
+    },
+    deleteServer: "Supprimer le serveur",
+    backToServerSettings: "Retour aux paramètres du serveur",
+    loading: "Chargement…",
+
+    unsaved: {
+      careful: `Attention${NO_BREAK_SPACE}: tu as des modifications non enregistrées.`,
+      saveOrReset: "Enregistre ou annule tes modifications avant de partir.",
+      reset: "Réinitialiser",
+      saveChanges: "Enregistrer les modifications",
+      saving: "Enregistrement…",
+      saved: "Modifications enregistrées",
+    },
+
+    overview: {
+      serverName: "Nom du serveur",
+      serverNameHelper: "Jusqu’à 100 caractères. Tout le monde sur le serveur le voit.",
+      nameRequired: "Donne un nom au serveur.",
+      saveFailed: "Impossible d’enregistrer le nom du serveur",
+    },
+
+    deleteServerDialog: {
+      title: (server) => `Supprimer «${NO_BREAK_SPACE}${server}${NO_BREAK_SPACE}»`,
+      body: (server) =>
+        `${server} sera supprimé pour tout le monde, avec ses salons, ses messages, ses rôles et ses invitations. C’est définitif.`,
+      confirmLabel: "Saisis le nom du serveur pour confirmer",
+      submit: "Supprimer le serveur",
+      deleting: "Suppression…",
+      failed: "Impossible de supprimer le serveur",
+    },
+
+    roles: {
+      createRole: "Créer un rôle",
+      creating: "Création…",
+      newRoleName: "nouveau rôle",
+      empty: "Les rôles servent à regrouper des gens et à leur donner des permissions.",
+      roleList: "Rôles, du plus haut au plus bas",
+      memberCount: (members) =>
+        plural(members, { one: `${count(members)} membre`, other: `${count(members)} membres` }),
+      locked: "Tu ne peux modifier que les rôles placés sous ton rôle le plus haut.",
+      lockedRole: (role) => `${role}, verrouillé`,
+      display: "Affichage",
+      permissions: "Permissions",
+      roleName: "Nom du rôle",
+      everyoneCannotBeRenamed: "@everyone ne peut pas être renommé.",
+      everyoneNote: "Tout le monde sur le serveur a @everyone. Ses permissions s’appliquent à tous les membres.",
+      color: "Couleur du rôle",
+      noColor: "Aucune couleur",
+      colorOption: (hex) => `Couleur ${hex}`,
+      colorPreview: "Les noms avec ce rôle",
+      moveUp: "Monter",
+      moveDown: "Descendre",
+      moveHint: "Ctrl+Maj+Haut et Ctrl+Maj+Bas déplacent aussi le rôle choisi.",
+      deleteRole: "Supprimer le rôle",
+      deleteTitle: (role) => `Supprimer le rôle «${NO_BREAK_SPACE}${role}${NO_BREAK_SPACE}»${NARROW_NO_BREAK_SPACE}?`,
+      deleteBody: (role) =>
+        `Les membres qui ont ${role} le perdent, avec les permissions qu’il donne. C’est définitif.`,
+      deleting: "Suppression…",
+      nameRequired: "Donne un nom au rôle.",
+      sensitive: "Sensible",
+      permissionLocked: "Tu ne peux donner ou retirer que les permissions que tu as.",
+      createFailed: "Impossible de créer le rôle",
+      saveFailed: "Impossible d’enregistrer le rôle",
+      deleteFailed: "Impossible de supprimer le rôle",
+      moveFailed: "Impossible de déplacer le rôle",
+      groups: {
+        general: "Général",
+        membership: "Adhésion",
+        textChannels: "Salons textuels",
+        moderation: "Modération",
+        advanced: "Avancé",
+      },
+    },
+
+    permissions: {
+      viewChannels: { label: "Voir les salons", description: "Voir les salons textuels et lire ce qui y est publié." },
+      manageChannels: { label: "Gérer les salons", description: "Créer, modifier et supprimer des salons." },
+      manageRoles: {
+        label: "Gérer les rôles",
+        description: "Créer des rôles, et modifier ou supprimer ceux placés sous son rôle le plus haut.",
+      },
+      manageServer: {
+        label: "Gérer le serveur",
+        description: "Renommer le serveur et gérer ses invitations.",
+      },
+      viewModerationLog: {
+        label: "Voir le journal de modération",
+        description: "Voir qui a changé quoi sur ce serveur.",
+      },
+      createInvite: { label: "Créer une invitation", description: "Inviter de nouvelles personnes sur ce serveur." },
+      sendMessages: { label: "Envoyer des messages", description: "Écrire dans les salons textuels." },
+      readMessageHistory: {
+        label: "Voir les anciens messages",
+        description: "Lire les messages envoyés avant d’avoir ouvert le salon.",
+      },
+      attachFiles: { label: "Joindre des fichiers", description: "Ajouter des fichiers et des images à ses messages." },
+      mentionEveryone: {
+        label: "Mentionner @everyone",
+        description: "Prévenir tout le monde dans un salon en une fois.",
+      },
+      manageMessages: {
+        label: "Gérer les messages",
+        description: "Supprimer les messages envoyés par d’autres membres.",
+      },
+      kickMembers: {
+        label: "Expulser des membres",
+        description: "Retirer des gens du serveur, qui peuvent revenir avec une nouvelle invitation.",
+      },
+      banMembers: {
+        label: "Bannir des membres",
+        description: "Retirer des gens du serveur et les empêcher de revenir.",
+      },
+      administrator: {
+        label: "Administrateur",
+        description:
+          "Toutes les permissions dans tous les salons, quels que soient leurs réglages. À donner avec prudence.",
+      },
+    },
+
+    members: {
+      search: "Rechercher des membres",
+      searchHelper: "Par nom affiché ou nom d’utilisateur.",
+      noMatch: (query) =>
+        `Aucun membre ne correspond à «${NO_BREAK_SPACE}${query}${NO_BREAK_SPACE}». Vérifie l’orthographe.`,
+      loadFailed: "Impossible de charger les membres.",
+      owner: "Propriétaire",
+      memberRoles: (person) => `Rôles de ${person}`,
+      manage: "Gérer",
+      manageLabel: (person) => `Gérer ${person}`,
+      addRole: "Ajouter un rôle…",
+      addRoleTo: (person) => `Ajouter un rôle à ${person}`,
+      removeRole: (role, person) => `Retirer ${role} à ${person}`,
+      kick: "Expulser",
+      ban: "Bannir",
+      kickLabel: (person) => `Expulser ${person}`,
+      banLabel: (person) => `Bannir ${person}`,
+      kickTitle: (person, server) => `Expulser ${person} de ${server}${NARROW_NO_BREAK_SPACE}?`,
+      kickBody: (person) =>
+        `${person} ne fera plus partie du serveur. Une nouvelle invitation lui permettra de revenir.`,
+      kicking: "Expulsion…",
+      banTitle: (person, server) => `Bannir ${person} de ${server}${NARROW_NO_BREAK_SPACE}?`,
+      banBody: (person) =>
+        `${person} ne fera plus partie du serveur et ne pourra pas revenir, même avec une invitation.`,
+      banReason: "Raison (facultatif, visible par la modération)",
+      banning: "Bannissement…",
+      kickFailed: (person) => `Impossible d’expulser ${person}`,
+      banFailed: (person) => `Impossible de bannir ${person}`,
+      roleFailed: "Impossible de modifier les rôles",
+      kicked: (person) => `${person} a été expulsé du serveur`,
+      banned: (person) => `${person} a été banni du serveur`,
+    },
+
+    bans: {
+      empty: (server) => `Personne n’est banni de ${server}.`,
+      loadFailed: "Impossible de charger les bannissements.",
+      noReason: "Aucune raison donnée.",
+      bannedOn: (date) => `Banni le ${date}`,
+      revoke: "Révoquer le bannissement",
+      revokeLabel: (person) => `Révoquer le bannissement de ${person}`,
+      revoking: "Révocation…",
+      revokeFailed: (person) => `Impossible de révoquer le bannissement de ${person}`,
+      revoked: (person) => `${person} peut de nouveau rejoindre le serveur`,
+    },
+
+    invites: {
+      empty: "Aucune invitation active.",
+      loadFailed: "Impossible de charger les invitations.",
+      createInvite: "Créer une invitation",
+      creating: "Création…",
+      createFailed: "Impossible de créer une invitation",
+      created: (code) => `Invitation ${code} créée`,
+      createdBy: (person) => `Créée par ${person}`,
+      uses: (uses, maximum) =>
+        maximum === null
+          ? plural(uses, { one: `${count(uses)} utilisation`, other: `${count(uses)} utilisations` })
+          : `${count(uses)} utilisations sur ${count(maximum)}`,
+      expires: (date) => `Expire le ${date}`,
+      neverExpires: "N’expire jamais",
+      revoke: "Révoquer",
+      revokeLabel: (code) => `Révoquer l’invitation ${code}`,
+      revokeTitle: `Révoquer cette invitation${NARROW_NO_BREAK_SPACE}?`,
+      revokeBody: "Le lien ne fonctionnera plus. Les personnes déjà arrivées restent sur le serveur.",
+      revokeSubmit: "Révoquer l’invitation",
+      revoking: "Révocation…",
+      revokeFailed: "Impossible de révoquer l’invitation",
+    },
+
+    moderationLog: {
+      empty: "Rien d’enregistré pour l’instant. Les changements de rôles, de salons, d’invitations et de membres s’afficheront ici.",
+      loadFailed: "Impossible de charger le journal de modération.",
+      loadOlder: "Charger les entrées plus anciennes",
+      loadingOlder: "Chargement des entrées plus anciennes…",
+      loadOlderFailed: "Impossible de charger les entrées plus anciennes.",
+      reason: (reason) => `Raison${NO_BREAK_SPACE}: ${reason}`,
+      deletedAccount: "Un compte supprimé",
+      formerMember: "un ancien membre",
+      deletedRole: "un rôle supprimé",
+      deletedChannel: "un salon supprimé",
+      channelCreate: (actor, channel) => `${actor} a créé #${channel}`,
+      channelUpdate: (actor, channel) => `${actor} a modifié #${channel}`,
+      channelDelete: (actor) => `${actor} a supprimé un salon`,
+      overwriteSet: (actor, target, channel) => `${actor} a changé ce que ${target} peut faire dans #${channel}`,
+      overwriteDelete: (actor, target, channel) => `${actor} a retiré les permissions de ${target} dans #${channel}`,
+      roleCreate: (actor, role) => `${actor} a créé le rôle ${role}`,
+      roleUpdate: (actor, role) => `${actor} a modifié le rôle ${role}`,
+      roleDelete: (actor) => `${actor} a supprimé un rôle`,
+      rolesReorder: (actor) => `${actor} a réordonné les rôles`,
+      memberRoleAdd: (actor, role, member) => `${actor} a donné ${role} à ${member}`,
+      memberRoleRemove: (actor, role, member) => `${actor} a retiré ${role} à ${member}`,
+      memberKick: (actor, member) => `${actor} a expulsé ${member}`,
+      memberBanAdd: (actor, member) => `${actor} a banni ${member}`,
+      memberBanRemove: (actor, member) => `${actor} a révoqué le bannissement de ${member}`,
+      messageDelete: (actor, author, channel) => `${actor} a supprimé un message de ${author} dans #${channel}`,
+      guildRename: (actor, before, after) => `${actor} a renommé le serveur ${before} en ${after}`,
+      guildUpdate: (actor) => `${actor} a modifié le serveur`,
+      inviteCreate: (actor, code) => `${actor} a créé l’invitation ${code}`,
+      inviteDelete: (actor, code) => `${actor} a révoqué l’invitation ${code}`,
+      unknown: (actor) => `${actor} a fait un changement que cette version de Mellow ne sait pas encore afficher`,
+      nameChange: (before, after) => `Nom${NO_BREAK_SPACE}: ${before}, devenu ${after}`,
+      topicChange: (topic) => `Nouveau sujet${NO_BREAK_SPACE}: ${topic}`,
+      topicCleared: "Sujet retiré",
+      colorChange: "Couleur changée",
+      permissionsAdded: (key, names) =>
+        key === "deny"
+          ? `Désormais refusé${NO_BREAK_SPACE}: ${names}`
+          : key === "allow"
+            ? `Désormais autorisé${NO_BREAK_SPACE}: ${names}`
+            : `Ajouté${NO_BREAK_SPACE}: ${names}`,
+      permissionsRemoved: (key, names) =>
+        key === "deny"
+          ? `Plus refusé${NO_BREAK_SPACE}: ${names}`
+          : key === "allow"
+            ? `Plus autorisé${NO_BREAK_SPACE}: ${names}`
+            : `Retiré${NO_BREAK_SPACE}: ${names}`,
+    },
   },
 
   settings: {

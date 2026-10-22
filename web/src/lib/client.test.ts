@@ -260,6 +260,13 @@ describe("MellowClient", () => {
     expect(client.unreadMarkers.has(GENERAL)).toBe(false);
   });
 
+  it("renames a server from GUILD_UPDATE", () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.applyReady(ready());
+    client.applyEvent({ t: "GUILD_UPDATE", data: { id: GUILD, name: "Book club" } }, 0);
+    expect(client.selectedGuild?.name).toBe("Book club");
+  });
+
   it("drops a deleted role from members and from the user's own roles", async () => {
     const helper: Role = { id: "201", name: "Helper", color: 0, position: 1, permissions: "0" };
     const everyone: Role = { id: GUILD, name: "@everyone", color: 0, position: 0, permissions: "6" };
@@ -270,6 +277,23 @@ describe("MellowClient", () => {
     client.applyEvent({ t: "GUILD_ROLES_UPDATE", data: { guild_id: GUILD, roles: [everyone] } }, 0);
     expect(client.selectedGuild?.my_role_ids).toEqual([]);
     expect(client.membersByGuild.get(GUILD)?.[0]?.role_ids).toEqual([]);
+  });
+
+  it("puts a created role above @everyone at once, and once only when the gateway came first", async () => {
+    const everyone: Role = { id: GUILD, name: "@everyone", color: 0, position: 0, permissions: "6" };
+    const helper: Role = { id: "201", name: "Helper", color: 0, position: 1, permissions: "0" };
+    const created: Role = { id: "202", name: "new role", color: 0, position: 1, permissions: "0" };
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, createRole: () => Promise.resolve(created) }));
+    client.applyReady(ready({ guilds: [{ ...guild(), roles: [everyone, helper] }] }));
+    await client.createRole(GUILD, "new role");
+    const positions = () => client.selectedGuild?.roles.map((role) => [role.id, role.position]);
+    expect(positions()).toEqual([
+      [GUILD, 0],
+      ["201", 2],
+      ["202", 1],
+    ]);
+    await client.createRole(GUILD, "new role");
+    expect(positions()).toHaveLength(3);
   });
 });
 

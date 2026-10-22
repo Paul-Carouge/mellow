@@ -12,6 +12,7 @@
     | "at"
     | "caret-down"
     | "caret-right"
+    | "caret-up"
     | "check"
     | "clock"
     | "copy"

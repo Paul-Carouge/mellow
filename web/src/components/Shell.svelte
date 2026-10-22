@@ -16,6 +16,7 @@
   import MemberList from "./MemberList.svelte";
   import Navigator from "./Navigator.svelte";
   import QuickSwitcher from "./QuickSwitcher.svelte";
+  import ServerSettings from "./ServerSettings.svelte";
   import { minimumWidthQueryForPanes } from "./tokens";
   import UserSettings from "./UserSettings.svelte";
 
@@ -51,6 +52,8 @@
   let openDialog = $state<"add-server" | ServerDialog | null>(null);
   let isUserSettingsOpen = $state(false);
   let isQuickSwitcherOpen = $state(false);
+  /** Kept from the menu that opened them: a deleted server must not hand its settings to the next. */
+  let serverSettingsGuildId = $state<Snowflake | null>(null);
   /** The category whose "+" opened "Create channel"; null from the server menu. */
   let newChannelCategory = $state<Channel | null>(null);
 
@@ -169,6 +172,7 @@
     onaddserver={() => (openDialog = "add-server")}
     onopendialog={(dialog) => {
       newChannelCategory = null;
+      serverSettingsGuildId = guild?.id ?? null;
       openDialog = dialog;
     }}
     oncreatechannelin={(category) => {
@@ -253,6 +257,13 @@
     category={newChannelCategory}
     onclose={() => (openDialog = null)}
     fallbackFocus={focusComposer}
+  />
+{:else if openDialog === "server-settings" && serverSettingsGuildId}
+  <ServerSettings
+    {client}
+    guildId={serverSettingsGuildId}
+    isWide={hasRoomForNavigator.current}
+    onclose={() => (openDialog = null)}
   />
 {:else if openDialog === "leave-server" && guild}
   <LeaveServerDialog {client} serverName={guild.name} onclose={() => (openDialog = null)} fallbackFocus={focusComposer} />
