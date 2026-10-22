@@ -453,7 +453,12 @@ impl ClientState {
         if message.edited_at_unix_milliseconds < cached.edited_at_unix_milliseconds {
             return StateChange::Nothing;
         }
-        *cached = message;
+        // Events never carry reactions (`me` differs per viewer): the cached ones stay.
+        let reactions = std::mem::take(&mut cached.reactions);
+        *cached = Message {
+            reactions,
+            ..message
+        };
         StateChange::Messages { channel_id }
     }
 
@@ -995,6 +1000,23 @@ mod tests {
         );
         state.trim_history(GENERAL);
         assert!(!state.has_older_history(GENERAL), "nothing was trimmed");
+    }
+
+    #[test]
+    fn a_message_update_keeps_the_cached_reactions_and_takes_the_pin() {
+        let mut state = ready_state();
+        let mut reacted = message(11, OTHER);
+        reacted.reactions = vec![mellow_protocol::ReactionSummary {
+            emoji: "👍".into(),
+            count: 2,
+            me: true,
+        }];
+        state.apply_event(GatewayEvent::MessageCreate(reacted.clone()), NOW);
+        let mut pinned = message(11, OTHER);
+        pinned.pinned = true;
+        state.apply_event(GatewayEvent::MessageUpdate(pinned), NOW);
+        assert_eq!(state.messages(GENERAL)[0].reactions, reacted.reactions);
+        assert!(state.messages(GENERAL)[0].pinned);
     }
 
     #[test]
