@@ -239,7 +239,6 @@ export const en = {
     loadingWho: "Loading who reacted…",
     whoFailed: "Couldn't load who reacted.",
     failed: "Couldn't react",
-    noNewEmoji: "You can't add new reactions here.",
     removeShort: "Remove",
     remove: (person: string) => `Remove ${person}'s reaction`,
     removeFailed: "Couldn't remove the reaction",

@@ -8,7 +8,7 @@ import {
   compareSnowflakes,
   computeChannelPermissions,
   hasPermission,
-  ownReactionPath,
+  reactionsPath,
   profileImageFileProblem,
   profileImageUrl,
 } from "./protocol";
@@ -31,8 +31,9 @@ describe("permissions", () => {
 
 describe("reactions", () => {
   it("percent-encode the emoji in the path", () => {
-    expect(ownReactionPath("1", "2", "👍")).toBe("/api/v1/channels/1/messages/2/reactions/%F0%9F%91%8D/@me");
-    expect(ownReactionPath("1", "2", "#️⃣")).toBe("/api/v1/channels/1/messages/2/reactions/%23%EF%B8%8F%E2%83%A3/@me");
+    expect(reactionsPath("1", "2", "👍")).toBe("channels/1/messages/2/reactions/%F0%9F%91%8D");
+    expect(reactionsPath("1", "2", "#️⃣")).toBe("channels/1/messages/2/reactions/%23%EF%B8%8F%E2%83%A3");
+    expect(reactionsPath("1", "2")).toBe("channels/1/messages/2/reactions");
   });
 
   it("use bit 16, held by direct-message participants", () => {
