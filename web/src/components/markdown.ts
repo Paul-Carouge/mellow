@@ -434,7 +434,8 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
 
     let matchedRule = false;
     for (const [ruleIndex, rule] of DELIMITER_RULES.entries()) {
-      if (!rule.isOpenerAt(text, position)) {
+      // A spoiler inside a link would put its reveal button inside the link.
+      if (!rule.isOpenerAt(text, position) || (rule.kind === "spoiler" && !areLinksAllowed)) {
         continue;
       }
       const contentStart = position + rule.marker.length;
