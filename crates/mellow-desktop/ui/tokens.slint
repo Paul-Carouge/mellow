@@ -132,6 +132,7 @@ export global MellowComponent {
     out property <length> auth-card-link-underline-width: 1px;
     out property <length> auth-card-margin: 16px;
     out property <length> auth-card-max-width: 480px;
+    out property <float> auth-card-melli-overlap: 0.55;
     out property <length> auth-card-melli-size: 96px;
     out property <length> auth-card-padding: 32px;
     out property <length> auth-card-radius: 24px;
@@ -244,6 +245,9 @@ export global MellowComponent {
     out property <duration> composer-typing-dot-duration: 1200ms;
     out property <length> composer-typing-dot-gap: 3px;
     out property <length> composer-typing-dot-lift: 2px;
+    out property <float> composer-typing-dot-opacity-peak: 1;
+    out property <float> composer-typing-dot-opacity-rest: 0.4;
+    out property <float> composer-typing-dot-opacity-still: 0.8;
     out property <length> composer-typing-dot-size: 5px;
     out property <duration> composer-typing-dot-stagger: 150ms;
     out property <length> composer-typing-height: 24px;
@@ -442,7 +446,9 @@ export global MellowComponent {
     out property <color> profile-popover-username-text: MellowTheme.is-dark ? #A99FAA : #695F6B;
     out property <length> profile-popover-width: 300px;
     out property <length> quick-switcher-input-height: 56px;
+    out property <float> quick-switcher-offset-top: 0.12;
     out property <length> quick-switcher-option-height: 40px;
+    out property <float> quick-switcher-results-max-height: 0.5;
     out property <length> quick-switcher-width: 570px;
     out property <color> rail-add-background-hover: MellowTheme.is-dark ? #23A55A : #1A7F45;
     out property <color> rail-add-icon: MellowTheme.is-dark ? #23A55A : #1A7F45;

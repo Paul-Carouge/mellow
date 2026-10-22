@@ -118,6 +118,7 @@
   --mw-component-auth-card-link-underline-width: 0.0625rem;
   --mw-component-auth-card-margin: 1rem;
   --mw-component-auth-card-max-width: 30rem;
+  --mw-component-auth-card-melli-overlap: 0.55;
   --mw-component-auth-card-melli-size: 6rem;
   --mw-component-auth-card-padding: 2rem;
   --mw-component-auth-card-radius: 1.5rem;
@@ -231,6 +232,9 @@
   --mw-component-composer-typing-dot-duration: 1200ms;
   --mw-component-composer-typing-dot-gap: 0.1875rem;
   --mw-component-composer-typing-dot-lift: 0.125rem;
+  --mw-component-composer-typing-dot-opacity-peak: 1;
+  --mw-component-composer-typing-dot-opacity-rest: 0.4;
+  --mw-component-composer-typing-dot-opacity-still: 0.8;
   --mw-component-composer-typing-dot-size: 0.3125rem;
   --mw-component-composer-typing-dot-stagger: 150ms;
   --mw-component-composer-typing-height: 1.5rem;
@@ -432,7 +436,9 @@
   --mw-component-profile-popover-username-text: #A99FAA;
   --mw-component-profile-popover-width: 18.75rem;
   --mw-component-quick-switcher-input-height: 3.5rem;
+  --mw-component-quick-switcher-offset-top: 0.12;
   --mw-component-quick-switcher-option-height: 2.5rem;
+  --mw-component-quick-switcher-results-max-height: 0.5;
   --mw-component-quick-switcher-width: 35.625rem;
   --mw-component-rail-add-background-hover: #23A55A;
   --mw-component-rail-add-icon: #23A55A;

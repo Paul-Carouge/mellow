@@ -755,7 +755,7 @@
   @media (prefers-reduced-motion: reduce) {
     .typing-dots i {
       animation: none;
-      opacity: 0.8;
+      opacity: var(--mw-component-composer-typing-dot-opacity-still);
     }
   }
 </style>

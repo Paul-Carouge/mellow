@@ -109,7 +109,7 @@
 <dialog
   bind:this={dialog}
   aria-label="Go to"
-  class="quick-switcher mx-auto mt-[12vh] w-[min(var(--mw-component-quick-switcher-width),calc(100vw_-_2*var(--mw-component-dialog-margin)))] max-w-none rounded-(--mw-component-dialog-radius) bg-(--mw-component-dialog-background) p-md text-(--mw-component-dialog-body-text) shadow-high backdrop:bg-(--mw-component-dialog-scrim) dark:[outline:1px_solid_var(--mw-color-border-divider)]"
+  class="quick-switcher mx-auto mt-[calc(var(--mw-component-quick-switcher-offset-top)*100vh)] w-[min(var(--mw-component-quick-switcher-width),calc(100vw_-_2*var(--mw-component-dialog-margin)))] max-w-none rounded-(--mw-component-dialog-radius) bg-(--mw-component-dialog-background) p-md text-(--mw-component-dialog-body-text) shadow-high backdrop:bg-(--mw-component-dialog-scrim) dark:[outline:1px_solid_var(--mw-color-border-divider)]"
   oncancel={(event) => {
     event.preventDefault();
     onclose();
@@ -136,9 +136,9 @@
     oninput={() => (activeIndex = 0)}
     onkeydown={handleKeydown}
   />
-  <!-- 50 vh, as in the mockup: long result lists scroll inside the dialog. -->
-  <!-- A listbox of groups of options, each group named by its heading. -->
-  <div id="{id}-results" role="listbox" aria-label="Results" class="mt-sm max-h-[50vh] overflow-y-auto">
+  <!-- A listbox of groups of options, each group named by its heading; it scrolls past a share of
+       the window height. -->
+  <div id="{id}-results" role="listbox" aria-label="Results" class="mt-sm max-h-[calc(var(--mw-component-quick-switcher-results-max-height)*100vh)] overflow-y-auto">
     {#each numberedGroups as group, groupIndex (group.label)}
       <div role="group" aria-labelledby="{id}-group-{groupIndex}">
         <div id="{id}-group-{groupIndex}" role="presentation" class="px-xs pt-xs pb-2xs type-category text-text-muted">

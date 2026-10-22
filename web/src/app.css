@@ -231,11 +231,11 @@ body {
   0%,
   60%,
   100% {
-    opacity: 0.4;
+    opacity: var(--mw-component-composer-typing-dot-opacity-rest);
     transform: none;
   }
   30% {
-    opacity: 1;
+    opacity: var(--mw-component-composer-typing-dot-opacity-peak);
     transform: translateY(calc(-1 * var(--mw-component-composer-typing-dot-lift)));
   }
 }
