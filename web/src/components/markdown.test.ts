@@ -105,6 +105,24 @@ describe("links", () => {
     ]);
   });
 
+  it("keeps balanced parentheses inside links", () => {
+    const wikipedia = "https://en.wikipedia.org/wiki/Mellow_(album)";
+    expect(inlines(`[the album](${wikipedia})`)).toEqual([
+      { kind: "link", url: wikipedia, isMasked: true, children: [text("the album")] },
+    ]);
+    expect(inlines(`see ${wikipedia}.`)).toEqual([
+      text("see "),
+      { kind: "link", url: wikipedia, isMasked: false, children: [text(wikipedia)] },
+      text("."),
+    ]);
+    expect(inlines("(https://example.org/a)")).toEqual([
+      text("("),
+      { kind: "link", url: "https://example.org/a", isMasked: false, children: [text("https://example.org/a")] },
+      text(")"),
+    ]);
+    expect(inlines("[a](https://example.org/x_(y)").some((node) => node.kind === "link" && node.isMasked)).toBe(false);
+  });
+
   it("keeps spoiler bars literal inside masked link text", () => {
     expect(inlines("[||x||](https://e.org)")).toEqual([
       { kind: "link", url: "https://e.org/", isMasked: true, children: [text("||x||")] },
