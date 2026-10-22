@@ -4,7 +4,7 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
-## [0.9.0] - 2026-10-22
+## [0.9.0] - 2026-10-23
 Channel settings and icons on the web.
 
 ### Added
