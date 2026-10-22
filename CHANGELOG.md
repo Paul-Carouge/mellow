@@ -4,7 +4,12 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-23
+Channel settings and icons on the web.
+
 ### Added
+- Web: channel settings, from the gear on a channel row or the channel header: rename the channel, change its topic and icon, and set who can see and use it, role by role or member by member (deny, inherit or allow each permission).
+- Web: server and channel icons, cropped in a dialog (the centred square by default; drag, zoom, keyboard) and shown in the server rail, the channel list and the channel header; animated server icons move on hover or focus, never with reduced motion.
 - Server: servers and text channels can have an icon, set by members who can manage the server or the channel and recorded in the moderation log. The picture is cropped to a square (centred, or the square chosen in the app) and stored small; a server icon may be an animated GIF or WebP.
 
 ## [0.8.0] - 2026-10-22
