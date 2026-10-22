@@ -1,7 +1,7 @@
 # Development notes
 
 Practical notes for the next iterations: how work is organised, and the traps already hit. The
-project state (what is done, blocked, next, known gaps) lives in [ROADMAP.md](../ROADMAP.md#status-2026-10-21);
+project state (what is done, blocked, next, known gaps) lives in [ROADMAP.md](../ROADMAP.md#status-2026-10-22);
 decisions live in [docs/adr/](adr/). Update this file when a new trap or habit appears.
 
 ## Where things stand (2026-10-22)
@@ -20,10 +20,8 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 
 ## Next candidates
 **Current focus: the web client only** (owner's decision, 2026-10-22). Until the web client is finished, all new features, UI work and fixes target `web/` and the server and protocol it needs. The desktop app (Slint), Android and other platforms wait; they come back once the web is done, and then catch up on what the web gained. Meanwhile the desktop only has to keep compiling and passing CI (shared tokens, client-core); no new desktop work unless the owner asks. Reason: building every feature twice halved the pace.
-1. French interface on the web (typed TS catalogues, French and English from the browser language; native-speaker review before release).
-2. Web gaps left from the mockup that need the protocol: idle and do-not-disturb presence, role-grouped members, mention badges and unread state for never-opened channels (`last_message_id` per channel in `Ready`).
-3. Web parity items still open in ROADMAP M2 (Profile and Appearance settings, server-settings sections, group direct messages, invites screen).
-4. Later, when the owner moves back to the desktop: port what the web gained since `v0.7.0`, the desktop's French interface, picture previews and downloads; confirm the server menu's first item takes focus on opening (DESIGN.md §6.33; not under the Slint testing backend).
+Follow ROADMAP "Next, in order" (Discord's feature set on the web): French interface, Markdown, reactions and pins, server settings on the web, unread and mentions from the server, presence, group direct messages, categories, search.
+Then, Later, when the owner moves back to the desktop: port what the web gained since `v0.7.0`, the desktop's French interface, picture previews and downloads; confirm the server menu's first item takes focus on opening (DESIGN.md §6.33; not under the Slint testing backend).
 
 ## Workflow that worked
 - One branch per milestone step (`feat/…`), atomic Conventional Commits, a `docs:` commit for README/ROADMAP/ARCHITECTURE/ADR.
