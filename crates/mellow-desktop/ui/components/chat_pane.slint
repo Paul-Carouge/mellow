@@ -196,7 +196,8 @@ component MessageEditor inherits VerticalLayout {
                     root.cancel();
                     return accept;
                 }
-                if event.text == Key.Return && !event.modifiers.shift {
+                // Not while an input method composes: its Enter commits the composition.
+                if event.text == Key.Return && !event.modifiers.shift && input.preedit-text == "" {
                     root.save(input.text);
                     return accept;
                 }
@@ -1670,7 +1671,7 @@ export component ChatPane inherits Rectangle {
                                     property <length> line-padding: (MellowSize.dock-height - MellowType.message.line-height) / 2;
                                     property <length> content-height: max(MellowType.message.line-height, composer.preferred-height);
                                     height: min(self.content-height, MellowSize.window-min-height / 2 - 2 * self.line-padding) + 2 * self.line-padding;
-                                    if composer.text == "": Text {
+                                    if composer.text == "" && composer.preedit-text == "": Text {
                                         x: MellowSpace.space-2xs;
                                         y: field.line-padding;
                                         width: parent.width - 2 * MellowSpace.space-2xs;
@@ -1712,10 +1713,12 @@ export component ChatPane inherits Rectangle {
                                                     return accept;
                                                 }
                                                 // Enter sends; Shift+Enter starts a new line, as on Discord.
-                                                if event.text == Key.Return && !event.modifiers.shift {
+                                                // Not while an input method composes: its Enter commits the composition.
+                                                if event.text == Key.Return && !event.modifiers.shift && composer.preedit-text == "" {
                                                     if composer.text != "" {
                                                         root.send-message(composer.text);
                                                         composer.text = "";
+                                                        field-scroll.content-y = 0px;
                                                     }
                                                     return accept;
                                                 }
@@ -1763,6 +1766,7 @@ export component ChatPane inherits Rectangle {
                                             if composer.text != "" {
                                                 root.send-message(composer.text);
                                                 composer.text = "";
+                                                field-scroll.content-y = 0px;
                                             }
                                             root.focus-composer();
                                         }

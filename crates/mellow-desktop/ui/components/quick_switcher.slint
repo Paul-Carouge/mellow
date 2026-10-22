@@ -136,7 +136,7 @@ export component QuickSwitcher inherits Rectangle {
                     border-color: MellowComponent.focus-ring-color;
                     border-radius: MellowRadius.md - self.x;
                 }
-                if input.text == "": Text {
+                if input.text == "" && input.preedit-text == "": Text {
                     x: MellowSpace.md;
                     text: "Where would you like to go?";
                     color: MellowColor.text-muted;
@@ -162,7 +162,7 @@ export component QuickSwitcher inherits Rectangle {
                             root.move-selection(-1);
                             return accept;
                         }
-                        if event.text == Key.Return {
+                        if event.text == Key.Return && input.preedit-text == "" {
                             if root.option-count > 0 {
                                 root.chosen(root.selected-index);
                             }
