@@ -189,6 +189,9 @@ export component AppWindow inherits Window {
     callback load-older-messages();
     in property <HistoryStartState> history-start-state;
     callback retry-loading-history();
+    // "N new messages since HH:MM" (DESIGN.md §5.4); empty hides the bar. Rust clears it on Mark as read.
+    in property <string> unread-bar-text;
+    callback mark-channel-read();
     callback sign-in();
     callback register();
     callback sign-out();
@@ -420,6 +423,8 @@ export component AppWindow inherits Window {
                     load-older-messages => { root.load-older-messages(); }
                     history-start-state: root.history-start-state;
                     retry-loading-history => { root.retry-loading-history(); }
+                    unread-bar-text: root.unread-bar-text;
+                    mark-as-read => { root.mark-channel-read(); }
                 }
                 // Docked beside the sheet from 1064 px; below, it lies over the sheet (further down).
                 if root.is-member-sheet-docked: MemberSheet {
