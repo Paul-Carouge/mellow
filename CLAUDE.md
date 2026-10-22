@@ -9,7 +9,7 @@ Read before working:
 - [ARCHITECTURE.md](ARCHITECTURE.md) — components, layers, data model, protocol, security.
 - [DESIGN.md](DESIGN.md) — visual identity, design tokens, screens, accessibility. The UI follows the Dusk direction (ADR-0022, superseding ADR-0012): Discord's concepts and shortcuts in Mellow's own layout (the Navigator), colour, type, shape and motion; never Discord's blurple, logo or fonts. Reference mockup: `design/mockups/dusk-direction.html`.
 - [docs/adr/](docs/adr/) — why things are the way they are. Do not contradict an accepted ADR silently: propose a new ADR that supersedes it.
-- [ROADMAP.md](ROADMAP.md) — milestones and current scope.
+- [ROADMAP.md](ROADMAP.md) — milestones and current scope. **Current focus: the web client only** (owner's decision, 2026-10-22): new work targets `web/` and the server it needs; desktop, Android and other platforms wait until the web is finished, but must keep compiling.
 - [docs/development-notes.md](docs/development-notes.md) — where the PR stack stands, the workflow, and traps already hit. Update it at the end of each iteration.
 
 ## Repository layout

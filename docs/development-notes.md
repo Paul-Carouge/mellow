@@ -19,10 +19,11 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 - New work branches from `main`, one PR per step. When PRs are stacked, merge them in order by rebasing the top branch on `main` and fast-forwarding `main` to its head (in zsh, write `"origin/${branch}:refs/heads/main"`: `$branch:r…` is read as the `:r` modifier).
 
 ## Next candidates
-1. Release `v0.2.0` (prepared on `chore/release-v0.2.0`), then check the update paths end to end with it, with the user: the app from User settings → About on macOS and CachyOS, the server with `mellow-update`. A web client is proposed in ADR-0019 (after desktop parity).
-2. User settings first (user's choice, 2026-10-21): merge #37, then the desktop My Account (display name, username with password, password change, sign out), Profile and Appearance sections through `ux-ui-designer`, in `user_settings.slint`. Then the next server-settings sections, each its own branch and PR through `ux-ui-designer`, on the client-core REST methods of #31 and in the screen of #36 (`server_settings.slint`, `live_shell/server_settings.rs`): channel overwrites (tri-state rows, DESIGN.md §5.8), members with kick and ban, bans, audit log. Then direct messages.
-3. Desktop message list, from DESIGN.md §5.4: the offline state (needs the local cache first) and the no-access state.
-4. Then an on-disk outbox (needs the local cache of ARCHITECTURE §6 first).
+**Current focus: the web client only** (owner's decision, 2026-10-22). Until the web client is finished, all new features, UI work and fixes target `web/` and the server and protocol it needs. The desktop app (Slint), Android and other platforms wait; they come back once the web is done, and then catch up on what the web gained. Meanwhile the desktop only has to keep compiling and passing CI (shared tokens, client-core); no new desktop work unless the owner asks. Reason: building every feature twice halved the pace.
+1. French interface on the web (typed TS catalogues, French and English from the browser language; native-speaker review before release).
+2. Web gaps left from the mockup that need the protocol: idle and do-not-disturb presence, role-grouped members, mention badges and unread state for never-opened channels (`last_message_id` per channel in `Ready`).
+3. Web parity items still open in ROADMAP M2 (Profile and Appearance settings, server-settings sections, group direct messages, invites screen).
+4. Later, when the owner moves back to the desktop: port what the web gained since `v0.7.0`, the desktop's French interface, picture previews and downloads; confirm the server menu's first item takes focus on opening (DESIGN.md §6.33; not under the Slint testing backend).
 
 ## Workflow that worked
 - One branch per milestone step (`feat/…`), atomic Conventional Commits, a `docs:` commit for README/ROADMAP/ARCHITECTURE/ADR.
