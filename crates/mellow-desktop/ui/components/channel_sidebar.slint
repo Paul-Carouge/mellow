@@ -1,6 +1,6 @@
 import { ListView } from "std-widgets.slint";
-import { MellowColor, MellowComponent, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
-import { Avatar, ContextMenuItem, IconButton, MentionBadge, PresenceStatus } from "primitives.slint";
+import { MellowColor, MellowComponent, MellowMotion, MellowRadius, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
+import { Avatar, ContextMenuItem, MentionBadge, PresenceStatus } from "primitives.slint";
 
 // Categories and channels flattened into one list, so ListView can virtualize long servers.
 export struct ChannelListRow {
@@ -9,9 +9,8 @@ export struct ChannelListRow {
     is-category: bool,
     is-collapsed: bool,
     category-index: int,
+    // Sentence case, shown and announced as is (ADR-0022).
     name: string,
-    // Uppercased in Rust: Slint has no text-transform, and screen readers must get `name`.
-    display-name: string,
     has-unread: bool,
     mention-count: int,
     // The signed-in user cannot send messages there: a lock replaces `#` (DESIGN.md §5.3).
@@ -27,9 +26,14 @@ export struct DirectMessageRow {
     has-unread: bool,
 }
 
+// How far the channel list reaches into the server strip: its unread pills sit just after the
+// server icons, so the list starts this much before its rows (DESIGN.md §4.2).
+export global ChannelListGeometry {
+    out property <length> leading-reach: MellowSpace.sm;
+}
+
 component CategoryHeader inherits Rectangle {
     in property <string> name;
-    in property <string> display-name;
     in property <bool> is-collapsed;
     callback toggled();
     height: MellowComponent.category-margin-top + MellowComponent.category-height;
@@ -54,11 +58,17 @@ component CategoryHeader inherits Rectangle {
             reject
         }
     }
-    touch := TouchArea { clicked => { root.toggled(); } }
+    touch := TouchArea {
+        x: ChannelListGeometry.leading-reach;
+        width: parent.width - ChannelListGeometry.leading-reach - MellowComponent.category-padding-inline;
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.toggled(); }
+    }
     HorizontalLayout {
         padding-top: MellowComponent.category-margin-top;
-        padding-left: MellowComponent.category-padding-inline;
-        spacing: MellowSpace.space-3xs;
+        padding-left: ChannelListGeometry.leading-reach;
+        padding-right: MellowComponent.category-padding-inline;
+        spacing: MellowSpace.space-2xs;
         VerticalLayout {
             alignment: center;
             Image {
@@ -70,7 +80,7 @@ component CategoryHeader inherits Rectangle {
             }
         }
         Text {
-            text: display-name;
+            text: name;
             accessible-role: none;
             color: root.text-color;
             font-size: MellowType.category.font-size;
@@ -78,15 +88,27 @@ component CategoryHeader inherits Rectangle {
             letter-spacing: MellowType.category.letter-spacing;
             vertical-alignment: center;
             overflow: elide;
+            horizontal-stretch: 1;
         }
     }
     if focus-scope.has-focus: Rectangle {
+        x: ChannelListGeometry.leading-reach;
         y: MellowComponent.category-margin-top;
+        width: parent.width - ChannelListGeometry.leading-reach - MellowComponent.category-padding-inline;
         height: MellowComponent.category-height;
         border-width: MellowComponent.focus-ring-width;
         border-color: MellowComponent.focus-ring-color;
-        border-radius: MellowComponent.channel-row-radius;
+        border-radius: MellowRadius.xs;
     }
+}
+
+// The 8 px unread dot just after the server icons; rows centre it on themselves.
+component UnreadPill inherits Rectangle {
+    x: ChannelListGeometry.leading-reach - MellowSpace.sm;
+    width: MellowComponent.channel-row-unread-pill-width;
+    height: MellowComponent.channel-row-unread-pill-height;
+    border-radius: self.height / 2;
+    background: MellowComponent.channel-row-unread-pill-color;
 }
 
 component ChannelRow inherits Rectangle {
@@ -96,19 +118,11 @@ component ChannelRow inherits Rectangle {
     in property <int> mention-count;
     in property <bool> is-read-only;
     callback clicked();
-    height: MellowComponent.channel-row-height + MellowComponent.channel-row-gap;
+    height: MellowComponent.channel-row-gap + MellowComponent.channel-row-height;
     accessible-role: list-item;
     accessible-label: name + (is-read-only ? ", read-only" : "") + (mention-count == 1 ? ", 1 mention" : mention-count > 1 ? ", " + mention-count + " mentions" : has-unread ? ", unread" : "");
     accessible-item-selected: is-selected;
     accessible-action-default => { root.clicked(); }
-
-    if has-unread && !is-selected: Rectangle {
-        x: 0;
-        width: MellowComponent.channel-row-unread-pill-width;
-        height: MellowComponent.channel-row-unread-pill-height;
-        border-radius: self.width / 2;
-        background: MellowComponent.channel-row-unread-pill-color;
-    }
 
     focus-scope := FocusScope {
         key-pressed(event) => {
@@ -121,20 +135,27 @@ component ChannelRow inherits Rectangle {
     }
 
     row := Rectangle {
-        x: MellowComponent.channel-row-margin-inline;
-        width: parent.width - 2 * MellowComponent.channel-row-margin-inline;
+        x: ChannelListGeometry.leading-reach;
+        y: MellowComponent.channel-row-gap;
+        width: parent.width - ChannelListGeometry.leading-reach - MellowComponent.channel-row-margin-inline;
         height: MellowComponent.channel-row-height;
         border-radius: MellowComponent.channel-row-radius;
         background: is-selected ? MellowComponent.channel-row-background-selected
             : touch.has-hover || focus-scope.has-focus ? MellowComponent.channel-row-background-hover : transparent;
         border-width: focus-scope.has-focus ? MellowComponent.focus-ring-width : 0px;
         border-color: MellowComponent.focus-ring-color;
+        // `motion.easing.standard`; colour only, so reduced motion keeps it.
+        animate background { duration: MellowMotion.duration-fast; easing: cubic-bezier(0.2, 0, 0, 1); }
 
         property <color> text-color: is-selected ? MellowComponent.channel-row-text-selected
+            : has-unread ? MellowComponent.channel-row-text-unread
             : touch.has-hover || focus-scope.has-focus ? MellowComponent.channel-row-text-hover
-            : has-unread ? MellowComponent.channel-row-text-unread : MellowComponent.channel-row-text-read;
+            : MellowComponent.channel-row-text-read;
 
-        touch := TouchArea { clicked => { root.clicked(); } }
+        touch := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.clicked(); }
+        }
         HorizontalLayout {
             padding-left: MellowComponent.channel-row-padding-inline;
             padding-right: MellowComponent.channel-row-padding-inline;
@@ -153,7 +174,7 @@ component ChannelRow inherits Rectangle {
                 text: name;
                 color: row.text-color;
                 font-size: MellowType.channel-name.font-size;
-                font-weight: has-unread || is-selected ? MellowType.message-author.font-weight : MellowType.channel-name.font-weight;
+                font-weight: MellowType.channel-name.font-weight;
                 vertical-alignment: center;
                 overflow: elide;
                 horizontal-stretch: 1;
@@ -165,19 +186,22 @@ component ChannelRow inherits Rectangle {
             }
         }
     }
+
+    if has-unread && !is-selected: UnreadPill {
+        y: row.y + (row.height - self.height) / 2;
+    }
 }
 
-// Discord's "Direct messages" header: category type, not collapsible.
+// The "Direct messages" header on Home: category type, not collapsible.
 component DirectMessagesHeader inherits Rectangle {
     height: MellowComponent.category-margin-top + MellowComponent.category-height;
     accessible-role: text;
     accessible-label: "Direct messages";
     Text {
-        x: MellowComponent.category-padding-inline;
+        x: ChannelListGeometry.leading-reach;
         y: MellowComponent.category-margin-top;
         height: MellowComponent.category-height;
-        // Uppercase copy of the accessible label: Slint has no text-transform.
-        text: "DIRECT MESSAGES";
+        text: "Direct messages";
         accessible-role: none;
         color: MellowComponent.category-text;
         font-size: MellowType.category.font-size;
@@ -192,7 +216,7 @@ component ConversationRow inherits Rectangle {
     in property <DirectMessageRow> conversation;
     in property <bool> is-selected;
     callback clicked();
-    height: MellowComponent.conversation-row-height + MellowComponent.channel-row-gap;
+    height: MellowComponent.channel-row-gap + MellowComponent.conversation-row-height;
     accessible-role: list-item;
     accessible-label: conversation.name
         + (conversation.status == PresenceStatus.online ? ", online"
@@ -201,15 +225,6 @@ component ConversationRow inherits Rectangle {
         + (conversation.has-unread ? ", unread" : "");
     accessible-item-selected: is-selected;
     accessible-action-default => { root.clicked(); }
-
-    if conversation.has-unread && !is-selected: Rectangle {
-        x: 0;
-        y: (MellowComponent.conversation-row-height - self.height) / 2;
-        width: MellowComponent.channel-row-unread-pill-width;
-        height: MellowComponent.channel-row-unread-pill-height;
-        border-radius: self.width / 2;
-        background: MellowComponent.channel-row-unread-pill-color;
-    }
 
     focus-scope := FocusScope {
         key-pressed(event) => {
@@ -222,21 +237,27 @@ component ConversationRow inherits Rectangle {
     }
 
     row := Rectangle {
-        x: MellowComponent.channel-row-margin-inline;
-        width: parent.width - 2 * MellowComponent.channel-row-margin-inline;
+        x: ChannelListGeometry.leading-reach;
+        y: MellowComponent.channel-row-gap;
+        width: parent.width - ChannelListGeometry.leading-reach - MellowComponent.channel-row-margin-inline;
         height: MellowComponent.conversation-row-height;
         border-radius: MellowComponent.channel-row-radius;
         background: is-selected ? MellowComponent.channel-row-background-selected
             : touch.has-hover || focus-scope.has-focus ? MellowComponent.channel-row-background-hover
-            : MellowComponent.sidebar-background;
+            : MellowComponent.navigator-background;
         border-width: focus-scope.has-focus ? MellowComponent.focus-ring-width : 0px;
         border-color: MellowComponent.focus-ring-color;
+        animate background { duration: MellowMotion.duration-fast; easing: cubic-bezier(0.2, 0, 0, 1); }
 
         property <color> text-color: is-selected ? MellowComponent.channel-row-text-selected
+            : conversation.has-unread ? MellowComponent.channel-row-text-unread
             : touch.has-hover || focus-scope.has-focus ? MellowComponent.channel-row-text-hover
-            : conversation.has-unread ? MellowComponent.channel-row-text-unread : MellowComponent.channel-row-text-read;
+            : MellowComponent.channel-row-text-read;
 
-        touch := TouchArea { clicked => { root.clicked(); } }
+        touch := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.clicked(); }
+        }
         HorizontalLayout {
             padding-left: MellowComponent.channel-row-padding-inline;
             padding-right: MellowComponent.channel-row-padding-inline;
@@ -256,7 +277,7 @@ component ConversationRow inherits Rectangle {
                 text: conversation.name;
                 color: row.text-color;
                 font-size: MellowType.channel-name.font-size;
-                font-weight: conversation.has-unread || is-selected ? MellowType.message-author.font-weight : MellowType.channel-name.font-weight;
+                font-weight: MellowType.channel-name.font-weight;
                 vertical-alignment: center;
                 overflow: elide;
                 horizontal-stretch: 1;
@@ -264,105 +285,21 @@ component ConversationRow inherits Rectangle {
             }
         }
     }
-}
 
-component UserPanel inherits Rectangle {
-    in property <string> display-name;
-    in property <string> initial;
-    in property <string> status-text;
-    in property <bool> has-update-available;
-    // Each increment moves focus to the settings button (when the settings screen closes).
-    in property <int> settings-button-focus-request-count;
-    callback open-user-settings();
-    changed settings-button-focus-request-count => { settings-button.focus(); }
-    height: MellowComponent.user-panel-height;
-    background: MellowComponent.user-panel-background;
-    HorizontalLayout {
-        padding-left: MellowComponent.user-panel-padding-inline;
-        padding-right: MellowComponent.user-panel-padding-inline;
-        spacing: MellowSpace.xs;
-        alignment: stretch;
-        VerticalLayout {
-            alignment: center;
-            Avatar {
-                initial: root.initial;
-                size: MellowComponent.user-panel-avatar-size;
-                has-presence: true;
-                status: PresenceStatus.online;
-                ring-color: MellowComponent.user-panel-background;
-            }
-        }
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            Text {
-                text: display-name;
-                color: MellowComponent.user-panel-name-text;
-                font-size: MellowType.user-panel-name.font-size;
-                font-weight: MellowType.user-panel-name.font-weight;
-                overflow: elide;
-            }
-            Text {
-                text: status-text;
-                color: MellowComponent.user-panel-status-text;
-                font-size: MellowType.body-sm.font-size;
-                overflow: elide;
-            }
-        }
-        for button in [
-            { icon: @image-url("../../icons/microphone.svg"), label: "Mute" },
-            { icon: @image-url("../../icons/headphones.svg"), label: "Deafen" },
-        ]: VerticalLayout {
-            alignment: center;
-            IconButton {
-                icon: button.icon;
-                label: button.label;
-                size: MellowComponent.user-panel-button-size;
-                icon-color: MellowComponent.user-panel-button-icon;
-                hover-background: MellowComponent.user-panel-button-background-hover;
-            }
-        }
-        VerticalLayout {
-            alignment: center;
-            settings-button := IconButton {
-                icon: @image-url("../../icons/gear-six.svg");
-                label: root.has-update-available ? "User settings, update available" : "User settings";
-                size: MellowComponent.user-panel-button-size;
-                icon-color: MellowComponent.user-panel-button-icon;
-                hover-background: MellowComponent.user-panel-button-background-hover;
-                clicked => { root.open-user-settings(); }
-
-                // Green dot at the top trailing corner, cut out of the panel like presence dots.
-                if root.has-update-available: Rectangle {
-                    width: MellowComponent.user-panel-update-badge-size + 2 * MellowComponent.user-panel-update-badge-ring-width;
-                    height: self.width;
-                    x: parent.width - self.width + MellowComponent.user-panel-update-badge-ring-width;
-                    y: -MellowComponent.user-panel-update-badge-ring-width;
-                    border-radius: self.width / 2;
-                    background: MellowComponent.user-panel-background;
-                    Rectangle {
-                        width: MellowComponent.user-panel-update-badge-size;
-                        height: self.width;
-                        border-radius: self.width / 2;
-                        background: MellowComponent.user-panel-update-badge;
-                    }
-                }
-            }
-        }
+    if conversation.has-unread && !is-selected: UnreadPill {
+        y: row.y + (row.height - self.height) / 2;
     }
 }
 
+// The navigator's second column: the server header and its channels, or Home's conversations.
+// It starts `ChannelListGeometry.leading-reach` before its rows, inside the server strip, so the
+// unread pills can sit there; it draws no surface of its own.
 export component ChannelSidebar inherits Rectangle {
     in property <string> server-name;
     in property <[ChannelListRow]> rows;
     in property <string> selected-channel-id;
-    in property <string> current-user-name;
-    in property <string> current-user-initial;
     callback toggle-category(int);
     callback select-channel(string);
-    in property <bool> has-update-available;
-    in property <int> settings-button-focus-request-count;
-    callback open-user-settings();
     // Server menu (DESIGN.md §5.3): each item shows only when allowed; without any, the header
     // stays plain text.
     in property <bool> can-invite-people;
@@ -390,14 +327,13 @@ export component ChannelSidebar inherits Rectangle {
         }
     }
 
-    width: MellowComponent.sidebar-width;
-    background: MellowComponent.sidebar-background;
+    width: ChannelListGeometry.leading-reach + MellowComponent.sidebar-width;
 
     // Esc and clicks outside close it; Slint then gives focus back to the header.
     server-menu := PopupWindow {
-        x: MellowComponent.sidebar-header-menu-margin;
-        y: MellowComponent.sidebar-header-height + MellowComponent.sidebar-header-menu-margin;
-        width: root.width - 2 * MellowComponent.sidebar-header-menu-margin;
+        x: header.x;
+        y: header.y + header.height + MellowComponent.sidebar-header-menu-margin;
+        width: header.width;
         close-policy: close-on-click-outside;
 
         Rectangle {
@@ -475,78 +411,82 @@ export component ChannelSidebar inherits Rectangle {
     }
 
     VerticalLayout {
-        header := Rectangle {
-            height: MellowComponent.sidebar-header-height;
-            background: root.has-server-menu && (header-touch.has-hover || server-menu.is-open)
-                ? MellowComponent.sidebar-header-background-hover : transparent;
+        padding-top: MellowSpace.xs;
+        HorizontalLayout {
+            padding-left: ChannelListGeometry.leading-reach;
+            padding-right: MellowSpace.xs;
+            header := Rectangle {
+                height: MellowComponent.sidebar-header-height;
+                border-radius: MellowRadius.sm;
+                background: root.has-server-menu && (header-touch.has-hover || server-menu.is-open)
+                    ? MellowComponent.sidebar-header-background-hover : transparent;
+                animate background { duration: MellowMotion.duration-fast; easing: cubic-bezier(0.2, 0, 0, 1); }
 
-            // A button opening the server menu only when the menu has something in it; plain text
-            // otherwise. Hidden items leave the accessibility tree and the Tab order.
-            Rectangle {
-                visible: !root.has-server-menu;
-                accessible-role: text;
-                accessible-label: root.header-text;
-            }
-            Rectangle {
-                visible: root.has-server-menu;
-                accessible-role: button;
-                accessible-label: root.header-text;
-                accessible-expandable: true;
-                accessible-expanded: server-menu.is-open;
-                accessible-action-default => { root.open-server-menu(); }
-                forward-focus: header-focus;
+                // A button opening the server menu only when the menu has something in it; plain
+                // text otherwise. Hidden items leave the accessibility tree and the Tab order.
+                Rectangle {
+                    visible: !root.has-server-menu;
+                    accessible-role: text;
+                    accessible-label: root.header-text;
+                }
+                Rectangle {
+                    visible: root.has-server-menu;
+                    accessible-role: button;
+                    accessible-label: root.header-text;
+                    accessible-expandable: true;
+                    accessible-expanded: server-menu.is-open;
+                    accessible-action-default => { root.open-server-menu(); }
+                    forward-focus: header-focus;
 
-                header-focus := FocusScope {
-                    key-pressed(event) => {
-                        if event.text == " " || event.text == "\n" {
-                            root.open-server-menu();
-                            return accept;
+                    header-focus := FocusScope {
+                        key-pressed(event) => {
+                            if event.text == " " || event.text == "\n" {
+                                root.open-server-menu();
+                                return accept;
+                            }
+                            reject
                         }
-                        reject
+                    }
+                    header-touch := TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => {
+                            header-focus.focus();
+                            root.open-server-menu();
+                        }
                     }
                 }
-                header-touch := TouchArea {
-                    mouse-cursor: MouseCursor.pointer;
-                    clicked => {
-                        header-focus.focus();
-                        root.open-server-menu();
-                    }
-                }
-            }
-            HorizontalLayout {
-                padding-left: MellowComponent.sidebar-header-padding-inline;
-                padding-right: MellowComponent.sidebar-header-padding-inline;
-                spacing: MellowSpace.xs;
-                Text {
-                    text: root.header-text;
-                    color: MellowComponent.sidebar-header-text;
-                    font-size: MellowType.heading-md.font-size;
-                    font-weight: MellowType.heading-md.font-weight;
-                    vertical-alignment: center;
-                    overflow: elide;
-                    horizontal-stretch: 1;
-                    accessible-role: none;
-                }
-                // Chevron, or a cross while the menu is open, as on Discord.
-                if root.has-server-menu: VerticalLayout {
-                    alignment: center;
-                    Image {
-                        source: server-menu.is-open ? @image-url("../../icons/x.svg") : @image-url("../../icons/caret-down.svg");
-                        colorize: MellowComponent.sidebar-header-text;
-                        width: MellowComponent.sidebar-header-chevron-size;
-                        height: self.width;
+                HorizontalLayout {
+                    padding-left: MellowSpace.xs;
+                    padding-right: MellowSpace.xs;
+                    spacing: MellowSpace.xs;
+                    Text {
+                        text: root.header-text;
+                        color: MellowComponent.sidebar-header-text;
+                        font-size: MellowType.heading-md.font-size;
+                        font-weight: MellowType.heading-md.font-weight;
+                        letter-spacing: MellowType.heading-md.letter-spacing;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
                         accessible-role: none;
                     }
+                    // Chevron, or a cross while the menu is open, as on Discord.
+                    if root.has-server-menu: VerticalLayout {
+                        alignment: center;
+                        Image {
+                            source: server-menu.is-open ? @image-url("../../icons/x.svg") : @image-url("../../icons/caret-down.svg");
+                            colorize: MellowColor.text-secondary;
+                            width: MellowComponent.sidebar-header-chevron-size;
+                            height: self.width;
+                            accessible-role: none;
+                        }
+                    }
                 }
-            }
-            if header-focus.has-focus: Rectangle {
-                border-width: MellowComponent.focus-ring-width;
-                border-color: MellowComponent.focus-ring-color;
-            }
-            Rectangle {
-                y: parent.height - 1px;
-                height: 1px;
-                background: MellowColor.border-divider;
+                if header-focus.has-focus: Rectangle {
+                    border-width: MellowComponent.focus-ring-width;
+                    border-color: MellowComponent.focus-ring-color;
+                    border-radius: parent.border-radius;
+                }
             }
         }
 
@@ -554,7 +494,10 @@ export component ChannelSidebar inherits Rectangle {
             vertical-stretch: 1;
             DirectMessagesHeader { }
             if root.direct-message-rows.length == 0: VerticalLayout {
-                padding: MellowComponent.conversation-row-empty-padding;
+                padding-top: MellowComponent.conversation-row-empty-padding;
+                padding-bottom: MellowComponent.conversation-row-empty-padding;
+                padding-left: ChannelListGeometry.leading-reach;
+                padding-right: MellowComponent.channel-row-margin-inline;
                 alignment: start;
                 vertical-stretch: 1;
                 Text {
@@ -584,7 +527,6 @@ export component ChannelSidebar inherits Rectangle {
             for row in rows: VerticalLayout {
                 if row.is-category: CategoryHeader {
                     name: row.name;
-                    display-name: row.display-name;
                     is-collapsed: row.is-collapsed;
                     toggled => { root.toggle-category(row.category-index); }
                 }
@@ -597,15 +539,6 @@ export component ChannelSidebar inherits Rectangle {
                     clicked => { root.select-channel(row.id); }
                 }
             }
-        }
-
-        UserPanel {
-            display-name: current-user-name;
-            initial: current-user-initial;
-            status-text: "Online";
-            has-update-available: root.has-update-available;
-            settings-button-focus-request-count: root.settings-button-focus-request-count;
-            open-user-settings => { root.open-user-settings(); }
         }
     }
 }

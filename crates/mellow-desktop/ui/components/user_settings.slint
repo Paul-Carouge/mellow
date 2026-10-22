@@ -1,5 +1,6 @@
 import { ScrollView } from "std-widgets.slint";
-import { MellowComponent, MellowType } from "../tokens.slint";
+import { MellowColor, MellowComponent, MellowFont, MellowMotion, MellowRadius, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
+import { MotionPreference, ThemeChoice } from "../preferences.slint";
 import { Button, TextField } from "primitives.slint";
 
 // Where the app's self-update stands (DESIGN.md §5.9, About); set from Rust.
@@ -55,11 +56,10 @@ export component SettingsNavItem inherits Rectangle {
     }
 }
 
-// Uppercase section label, as Discord's settings headers (DESIGN.md §8: the source string stays in
-// sentence case for screen readers; Slint has no text-transform, so the capitals are written here).
+// Section label, in sentence case (ADR-0022).
 export component SectionLabel inherits Text {
     in property <string> label;
-    accessible-label: label;
+    text: label;
     color: MellowComponent.settings-section-label-text;
     font-size: MellowType.category.font-size;
     font-weight: MellowType.category.font-weight;
@@ -70,7 +70,7 @@ export component SectionLabel inherits Text {
 // Discord's round close button with "Esc" under it, at the trailing top of the page.
 export component CloseButton inherits VerticalLayout {
     callback clicked();
-    spacing: MellowComponent.settings-close-label-gap;
+    spacing: MellowSpace.space-2xs;
     alignment: start;
 
     property <bool> is-highlighted: touch.has-hover || focus-scope.has-focus;
@@ -120,9 +120,9 @@ export component CloseButton inherits VerticalLayout {
     }
     Text {
         text: "Esc";
-        color: MellowComponent.settings-close-label-text;
-        font-size: MellowType.category.font-size;
-        font-weight: MellowType.category.font-weight;
+        color: MellowColor.text-muted;
+        font-size: MellowType.body-sm.font-size;
+        font-weight: MellowFont.weight-semibold;
         horizontal-alignment: center;
         // The button's description carries it.
         accessible-role: none;
@@ -130,7 +130,90 @@ export component CloseButton inherits VerticalLayout {
 }
 
 // Which page the settings show.
-enum SettingsSection { account, about }
+enum SettingsSection { account, appearance, about }
+
+// One choice of a segmented control (DESIGN.md §5.9, Appearance): the chosen one is lifted onto the
+// sheet's colour.
+component SegmentedChoice inherits Rectangle {
+    in property <string> label;
+    in property <bool> is-chosen;
+    callback chosen();
+    height: MellowComponent.settings-close-button-size;
+    width: choice-text.preferred-width + 2 * MellowSpace.md;
+    border-radius: MellowRadius.sm;
+    background: is-chosen ? MellowColor.surface-chat : transparent;
+    accessible-role: radio-button;
+    accessible-label: label;
+    accessible-checkable: true;
+    accessible-checked: is-chosen;
+    accessible-action-default => { root.chosen(); }
+    forward-focus: focus-scope;
+    // `motion.easing.standard`; colour only, so reduced motion keeps it.
+    animate background { duration: MellowMotion.duration-fast; easing: cubic-bezier(0.2, 0, 0, 1); }
+
+    focus-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.chosen();
+                return accept;
+            }
+            reject
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.chosen(); }
+    }
+    choice-text := Text {
+        text: root.label;
+        color: root.is-chosen ? MellowColor.text-heading : touch.has-hover ? MellowColor.text-normal : MellowColor.text-secondary;
+        font-size: MellowType.body-lg.font-size;
+        vertical-alignment: center;
+        accessible-role: none;
+        animate color { duration: MellowMotion.duration-fast; easing: cubic-bezier(0.2, 0, 0, 1); }
+    }
+    if focus-scope.has-focus: Rectangle {
+        border-width: MellowComponent.focus-ring-width;
+        border-color: MellowComponent.focus-ring-color;
+        border-radius: parent.border-radius;
+    }
+}
+
+// The segmented control's track.
+component Segmented inherits Rectangle {
+    in property <string> label;
+    border-radius: MellowRadius.md;
+    background: MellowColor.surface-input;
+    accessible-role: groupbox;
+    accessible-label: label;
+    HorizontalLayout {
+        padding: MellowSpace.space-2xs;
+        spacing: MellowSpace.space-2xs;
+        @children
+    }
+}
+
+// A labelled settings section: label, optional description, then its control.
+component SettingsSectionBlock inherits VerticalLayout {
+    in property <string> label;
+    in property <string> description;
+    spacing: MellowSpace.sm;
+    alignment: start;
+    SectionLabel {
+        label: root.label;
+        color: MellowColor.text-muted;
+    }
+    if root.description != "": Text {
+        text: root.description;
+        color: MellowColor.text-secondary;
+        font-size: MellowType.body.font-size;
+        wrap: word-wrap;
+    }
+    HorizontalLayout {
+        alignment: start;
+        @children
+    }
+}
 
 // Which My Account form is open; only one at a time, so an error always belongs to the open one.
 enum AccountEditor { none, display-name, username, password }
@@ -146,10 +229,9 @@ component NavSeparator inherits Rectangle {
     }
 }
 
-// A navigation group: its uppercase label, then its items. The tab list's label already says it.
+// A navigation group: its label, then its items. The tab list's label already says it.
 component NavGroup inherits Rectangle {
     in property <string> label;
-    in property <string> display-label;
     accessible-role: tab-list;
     accessible-label: label;
     VerticalLayout {
@@ -160,7 +242,6 @@ component NavGroup inherits Rectangle {
             padding-top: MellowComponent.settings-nav-section-padding-block;
             padding-bottom: MellowComponent.settings-nav-section-padding-block;
             SectionLabel {
-                text: root.display-label;
                 label: root.label;
                 color: MellowComponent.settings-nav-section-text;
                 accessible-role: none;
@@ -196,14 +277,12 @@ component StatusLine inherits HorizontalLayout {
     }
 }
 
-// Uppercase label and value of one account field.
+// Label and value of one account field.
 component AccountFieldValue inherits VerticalLayout {
     in property <string> label;
-    in property <string> display-label;
     in property <string> value;
     spacing: MellowComponent.settings-account-value-gap;
     SectionLabel {
-        text: root.display-label;
         label: root.label;
     }
     Text {
@@ -217,7 +296,6 @@ component AccountFieldValue inherits VerticalLayout {
 // An editable account field with its Edit button at the trailing end, as on Discord.
 component AccountFieldRow inherits HorizontalLayout {
     in property <string> label;
-    in property <string> display-label;
     in property <string> value;
     // "Edit display name": "Edit" alone does not say which field for screen readers.
     in property <string> edit-label;
@@ -236,7 +314,6 @@ component AccountFieldRow inherits HorizontalLayout {
     AccountFieldValue {
         horizontal-stretch: 1;
         label: root.label;
-        display-label: root.display-label;
         value: root.value;
     }
     VerticalLayout {
@@ -314,8 +391,12 @@ export component UserSettingsScreen inherits Rectangle {
     in property <string> account-notice;
     // Incremented by Rust after every successful save: the open form closes and forgets its fields.
     in property <int> account-saved-count;
-    // Below the sidebar breakpoint the page tightens its side padding.
+    // Below the navigator breakpoint the page fills the window and tightens its side padding.
     in property <bool> is-narrow;
+    // Appearance: the theme lives in AppWindow; reduced motion in `MotionPreference`. Rust saves both
+    // after each change.
+    in-out property <ThemeChoice> theme-choice;
+    callback appearance-changed();
     callback close();
     callback sign-out();
     callback check-for-updates();
@@ -446,7 +527,17 @@ export component UserSettingsScreen inherits Rectangle {
         close-editor();
     }
 
-    background: MellowComponent.settings-content-background;
+    // The ground; the page is a card on it, as in the shell (ADR-0022).
+    background: MellowColor.surface-rail;
+
+    function choose-theme(choice: ThemeChoice) {
+        root.theme-choice = choice;
+        root.appearance-changed();
+    }
+    function choose-reduced-motion(is-reduced: bool) {
+        MotionPreference.is-reduced = is-reduced;
+        root.appearance-changed();
+    }
 
     // Nothing behind the screen reacts to the pointer.
     TouchArea { }
@@ -469,12 +560,13 @@ export component UserSettingsScreen inherits Rectangle {
         }
 
         HorizontalLayout {
-            // Grows with the window and keeps the navigation against the content, as on Discord.
+            padding: root.is-narrow ? 0px : MellowSize.sheet-inset;
+            spacing: root.is-narrow ? 0px : MellowSize.sheet-inset;
+            // Grows with the window and keeps the navigation against the content, as on Discord. It
+            // takes a third of what the page's padding leaves, as the mockup's flex basis does.
             Rectangle {
-                background: MellowComponent.settings-sidebar-background;
-                min-width: MellowComponent.settings-nav-width;
-                preferred-width: MellowComponent.settings-nav-width;
-                horizontal-stretch: 1;
+                width: max(MellowComponent.settings-nav-width, (root.width - 3 * MellowSize.sheet-inset
+                    - MellowComponent.settings-content-padding-inline - MellowSpace.lg) / 3);
                 accessible-role: navigation;
                 accessible-label: "User settings";
 
@@ -489,7 +581,6 @@ export component UserSettingsScreen inherits Rectangle {
 
                     NavGroup {
                         label: "User settings";
-                        display-label: "USER SETTINGS";
                         account-item := SettingsNavItem {
                             label: "My account";
                             is-selected: root.section == SettingsSection.account;
@@ -499,7 +590,11 @@ export component UserSettingsScreen inherits Rectangle {
                     NavSeparator { }
                     NavGroup {
                         label: "App settings";
-                        display-label: "APP SETTINGS";
+                        SettingsNavItem {
+                            label: "Appearance";
+                            is-selected: root.section == SettingsSection.appearance;
+                            activated => { root.select-section(SettingsSection.appearance); }
+                        }
                         SettingsNavItem {
                             label: "About";
                             is-selected: root.section == SettingsSection.about;
@@ -520,6 +615,9 @@ export component UserSettingsScreen inherits Rectangle {
                 horizontal-stretch: 1;
                 preferred-width: MellowComponent.settings-content-max-width;
                 min-width: 0px;
+                border-radius: root.is-narrow ? 0px : MellowComponent.sheet-radius;
+                background: MellowComponent.settings-content-background;
+                clip: true;
 
                 // Open forms make My account taller than short windows.
                 page-scroll := ScrollView {
@@ -532,7 +630,7 @@ export component UserSettingsScreen inherits Rectangle {
                         padding-top: MellowComponent.settings-content-padding-top;
                         padding-bottom: MellowComponent.settings-content-padding-bottom;
                         padding-left: root.is-narrow ? MellowComponent.settings-content-padding-inline-narrow : MellowComponent.settings-content-padding-inline;
-                        padding-right: self.padding-left;
+                        padding-right: root.is-narrow ? MellowComponent.settings-content-padding-inline-narrow : MellowSpace.lg;
                         spacing: root.is-narrow ? MellowComponent.settings-close-gap-narrow : MellowComponent.settings-close-gap;
 
                         // Takes the full cap when it fits, and shrinks first on narrow windows.
@@ -562,7 +660,6 @@ export component UserSettingsScreen inherits Rectangle {
                                             spacing: MellowComponent.settings-section-label-gap;
                                             AccountFieldRow {
                                                 label: "Display name";
-                                                display-label: "DISPLAY NAME";
                                                 value: root.account-display-name;
                                                 edit-label: "Edit display name";
                                                 is-edit-enabled: !root.is-account-busy;
@@ -583,7 +680,6 @@ export component UserSettingsScreen inherits Rectangle {
                                             cancel => { root.close-editor(); }
                                             TextField {
                                                 label: "Display name";
-                                                display-label: "DISPLAY NAME";
                                                 helper: "Up to 32 characters. This is the name people see in chat.";
                                                 text <=> root.display-name-draft;
                                                 wants-focus: true;
@@ -596,7 +692,6 @@ export component UserSettingsScreen inherits Rectangle {
                                             spacing: MellowComponent.settings-section-label-gap;
                                             AccountFieldRow {
                                                 label: "Username";
-                                                display-label: "USERNAME";
                                                 value: "@" + root.account-username;
                                                 edit-label: "Edit username";
                                                 is-edit-enabled: !root.is-account-busy;
@@ -617,7 +712,6 @@ export component UserSettingsScreen inherits Rectangle {
                                             cancel => { root.close-editor(); }
                                             TextField {
                                                 label: "Username";
-                                                display-label: "USERNAME";
                                                 // Mirrors the server's rule (mellow-server domain/account_rules.rs).
                                                 helper: "2 to 32 characters: lowercase letters, digits, dots and underscores.";
                                                 text <=> root.username-draft;
@@ -627,7 +721,6 @@ export component UserSettingsScreen inherits Rectangle {
                                             }
                                             TextField {
                                                 label: "Current password";
-                                                display-label: "CURRENT PASSWORD";
                                                 is-password: true;
                                                 text <=> root.current-password-draft;
                                                 is-read-only: root.is-account-busy;
@@ -637,14 +730,12 @@ export component UserSettingsScreen inherits Rectangle {
 
                                         AccountFieldValue {
                                             label: "Email";
-                                            display-label: "EMAIL";
                                             value: root.account-email;
                                         }
                                     }
 
                                     Rectangle { height: MellowComponent.settings-section-gap; }
                                     SectionLabel {
-                                        text: "PASSWORD";
                                         label: "Password";
                                     }
                                     Rectangle { height: MellowComponent.settings-section-label-gap; }
@@ -680,7 +771,6 @@ export component UserSettingsScreen inherits Rectangle {
                                             cancel => { root.close-editor(); }
                                             TextField {
                                                 label: "Current password";
-                                                display-label: "CURRENT PASSWORD";
                                                 is-password: true;
                                                 text <=> root.current-password-draft;
                                                 wants-focus: true;
@@ -689,7 +779,6 @@ export component UserSettingsScreen inherits Rectangle {
                                             }
                                             TextField {
                                                 label: "New password";
-                                                display-label: "NEW PASSWORD";
                                                 is-password: true;
                                                 // Same server rule as registration.
                                                 helper: "At least " + minimum-password-length + " characters.";
@@ -699,7 +788,6 @@ export component UserSettingsScreen inherits Rectangle {
                                             }
                                             TextField {
                                                 label: "Confirm new password";
-                                                display-label: "CONFIRM NEW PASSWORD";
                                                 is-password: true;
                                                 // Says why Save stays disabled while the two differ.
                                                 helper: root.confirm-password-draft != "" && !root.does-confirmation-match
@@ -707,6 +795,64 @@ export component UserSettingsScreen inherits Rectangle {
                                                 text <=> root.confirm-password-draft;
                                                 is-read-only: root.is-account-busy;
                                                 accepted => { root.save-open-form(); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if root.section == SettingsSection.appearance: Rectangle {
+                                accessible-role: tab-panel;
+                                accessible-label: "Appearance";
+                                VerticalLayout {
+                                    alignment: start;
+                                    Text {
+                                        text: "Appearance";
+                                        color: MellowComponent.settings-page-title-text;
+                                        font-size: MellowType.heading-lg.font-size;
+                                        font-weight: MellowType.heading-lg.font-weight;
+                                        letter-spacing: MellowType.heading-lg.letter-spacing;
+                                        overflow: elide;
+                                    }
+                                    Rectangle { height: MellowComponent.settings-page-title-gap; }
+                                    SettingsSectionBlock {
+                                        label: "Theme";
+                                        Segmented {
+                                            label: "Theme";
+                                            SegmentedChoice {
+                                                label: "Match system";
+                                                is-chosen: root.theme-choice == ThemeChoice.system;
+                                                chosen => { root.choose-theme(ThemeChoice.system); }
+                                            }
+                                            SegmentedChoice {
+                                                label: "Dark";
+                                                is-chosen: root.theme-choice == ThemeChoice.dark;
+                                                chosen => { root.choose-theme(ThemeChoice.dark); }
+                                            }
+                                            SegmentedChoice {
+                                                label: "Light";
+                                                is-chosen: root.theme-choice == ThemeChoice.light;
+                                                chosen => { root.choose-theme(ThemeChoice.light); }
+                                            }
+                                        }
+                                    }
+                                    Rectangle { height: MellowSpace.xl; }
+                                    // Slint does not expose the system's reduced-motion setting, so this
+                                    // is a stored choice rather than "Match system" (DESIGN.md §2.8).
+                                    SettingsSectionBlock {
+                                        label: "Motion";
+                                        description: "Reducing motion replaces movement with instant changes. Colour changes stay, so you still see what happened.";
+                                        Segmented {
+                                            label: "Motion";
+                                            SegmentedChoice {
+                                                label: "Allow motion";
+                                                is-chosen: !MotionPreference.is-reduced;
+                                                chosen => { root.choose-reduced-motion(false); }
+                                            }
+                                            SegmentedChoice {
+                                                label: "Reduce motion";
+                                                is-chosen: MotionPreference.is-reduced;
+                                                chosen => { root.choose-reduced-motion(true); }
                                             }
                                         }
                                     }
@@ -743,7 +889,6 @@ export component UserSettingsScreen inherits Rectangle {
                                     Rectangle { height: MellowComponent.settings-section-gap; }
 
                                     SectionLabel {
-                                        text: "UPDATES";
                                         label: "Updates";
                                     }
                                     Rectangle { height: MellowComponent.settings-section-label-gap; }

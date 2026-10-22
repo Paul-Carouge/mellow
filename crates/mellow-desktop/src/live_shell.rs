@@ -29,6 +29,7 @@ use zeroize::Zeroizing;
 
 use crate::generated_ui::{AppWindow, MessageRow};
 use crate::live_rows::ConnectionStatus;
+use crate::preferences::Preferences;
 use crate::role_settings::MoveDirection;
 use crate::session_store::{self, StoredSession};
 use crate::{clipboard, live_rows, shell_rows};
@@ -96,11 +97,17 @@ pub struct LiveShell {
     /// Bumped whenever a server dialog closes, so a late answer never lands in a later dialog.
     dialog_request_generation: u64,
     connection_status: ConnectionStatus,
+    /// Shared with the Appearance callback in `main`; the member sheet is remembered per server.
+    preferences: Rc<RefCell<Preferences>>,
 }
 
 pub type SharedShell = Rc<RefCell<LiveShell>>;
 
-pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
+pub fn start(
+    window: &AppWindow,
+    runtime: Handle,
+    preferences: Rc<RefCell<Preferences>>,
+) -> SharedShell {
     let shell = Rc::new(RefCell::new(LiveShell {
         window: window.as_weak(),
         runtime,
@@ -126,6 +133,7 @@ pub fn start(window: &AppWindow, runtime: Handle) -> SharedShell {
         is_role_request_in_flight: false,
         dialog_request_generation: 0,
         connection_status: ConnectionStatus::SignedOut,
+        preferences,
     }));
     window.set_is_signed_in(false);
     window.set_messages(shell.borrow().messages.clone().into());
@@ -285,6 +293,9 @@ fn connect_callbacks(window: &AppWindow, shell: &SharedShell) {
         });
         select_guild(&shell_for_callback, guild_id, None);
     });
+
+    let shell_for_callback = shell.clone();
+    window.on_member_sheet_toggled(move || remember_member_sheet(&shell_for_callback));
 
     let shell_for_callback = shell.clone();
     window.on_select_channel(move |channel_id: SharedString| {
@@ -994,6 +1005,17 @@ fn end_session(shell: &SharedShell, message: &str) -> tokio::task::JoinHandle<bo
     forget
 }
 
+/// Remembers, for the selected server, whether its member sheet is open.
+fn remember_member_sheet(shell: &SharedShell) {
+    let shell = shell.borrow();
+    let (Some(window), Some(guild_id)) = (shell.window.upgrade(), shell.selected_guild_id) else {
+        return;
+    };
+    let mut preferences = shell.preferences.borrow_mut();
+    preferences.set_member_sheet_open(&guild_id.to_string(), window.get_is_member_list_visible());
+    preferences.save_in_background();
+}
+
 /// Opens `preferred_channel_id` when it belongs to the guild, otherwise its first text channel.
 fn select_guild(
     shell: &SharedShell,
@@ -1027,6 +1049,16 @@ fn select_guild(
         };
         refresh_server_items(&shell);
         refresh_member_rows(&shell);
+        if let Some(window) = shell.window.upgrade() {
+            // Closed by default and on Home; each server remembers its own (DESIGN.md §5.7).
+            let is_member_sheet_open = guild_id.is_some_and(|id| {
+                shell
+                    .preferences
+                    .borrow()
+                    .is_member_sheet_open(&id.to_string())
+            });
+            window.set_is_member_list_visible(is_member_sheet_open);
+        }
         channel_id
     };
     if let Some(guild_id) = guild_id {

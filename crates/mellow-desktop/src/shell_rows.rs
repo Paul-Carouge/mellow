@@ -51,7 +51,6 @@ pub fn channel_rows(
                 is_collapsed,
                 category_index: saturating_int(category_index),
                 name: category.name.into(),
-                display_name: category.name.to_uppercase().into(),
                 has_unread: false,
                 mention_count: 0,
                 is_read_only: false,
@@ -71,7 +70,6 @@ pub fn channel_rows(
                     is_collapsed: false,
                     category_index: saturating_int(category_index),
                     name: channel.name.into(),
-                    display_name: channel.name.into(),
                     has_unread: channel.has_unread_messages,
                     mention_count: saturating_int(channel.unread_mention_count),
                     is_read_only: false,
@@ -89,7 +87,6 @@ pub fn member_rows(role_groups: &[FakeRoleGroup]) -> Vec<MemberListRow> {
             let header = MemberListRow {
                 is_group_header: true,
                 label: group.role_name.into(),
-                display_label: group.role_name.to_uppercase().into(),
                 member_count: saturating_int(group.members.len()),
                 initial: "".into(),
                 activity: "".into(),
@@ -100,7 +97,6 @@ pub fn member_rows(role_groups: &[FakeRoleGroup]) -> Vec<MemberListRow> {
             let members = group.members.iter().map(|member| MemberListRow {
                 is_group_header: false,
                 label: member.display_name.into(),
-                display_label: member.display_name.into(),
                 member_count: 0,
                 initial: first_letter(member.display_name).into(),
                 activity: member.activity.into(),
@@ -158,14 +154,10 @@ mod tests {
     }
 
     #[test]
-    fn expanded_category_lists_all_channels_with_an_uppercase_display_name() {
+    fn expanded_category_lists_all_channels_under_its_sentence_case_name() {
         let rows = channel_rows(&sample_categories(), &BTreeSet::new(), "general");
         assert_eq!(rows.len(), 4);
-        assert_eq!(rows[0].display_name, "TEXT CHANNELS");
-        assert_eq!(
-            rows[0].name, "Text channels",
-            "screen readers get the sentence-case name"
-        );
+        assert_eq!(rows[0].name, "Text channels");
     }
 
     #[test]
@@ -208,7 +200,6 @@ mod tests {
         assert_eq!(labels, ["Moderators", "Aurore", "Offline", "Basile"]);
         assert!(rows[0].is_group_header);
         assert_eq!(rows[0].member_count, 1);
-        assert_eq!(rows[0].display_label, "MODERATORS");
         assert_eq!(rows[1].initial, "A");
         assert_eq!(rows[3].status, PresenceStatus::Offline);
     }

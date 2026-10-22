@@ -69,7 +69,6 @@ export component AddServerDialog inherits Rectangle {
                 visible: !root.is-joining;
                 height: root.is-joining ? 0px : self.preferred-height;
                 label: "Server name";
-                display-label: "SERVER NAME";
                 wants-focus: true;
                 is-read-only: root.is-busy;
                 text <=> root.server-name;
@@ -79,7 +78,6 @@ export component AddServerDialog inherits Rectangle {
                 visible: root.is-joining;
                 height: root.is-joining ? self.preferred-height : 0px;
                 label: "Invite code";
-                display-label: "INVITE CODE";
                 helper: "Paste the invite code someone gave you.";
                 is-read-only: root.is-busy;
                 text <=> root.invite-code;
@@ -184,7 +182,6 @@ export component InvitePeopleDialog inherits Rectangle {
                 code-field := TextField {
                     horizontal-stretch: 1;
                     label: "Send this invite code to a friend";
-                    display-label: "SEND THIS INVITE CODE TO A FRIEND";
                     placeholder: root.is-loading ? "Creating an invite…" : "";
                     wants-focus: true;
                     is-value-to-copy: true;
@@ -261,7 +258,6 @@ export component CreateChannelDialog inherits Rectangle {
 
         name-field := TextField {
             label: "Channel name";
-            display-label: "CHANNEL NAME";
             placeholder: "new-channel";
             // The server normalises the name; saying so up front avoids a surprise in the list.
             helper: "Names are lowercase, with dashes instead of spaces.";

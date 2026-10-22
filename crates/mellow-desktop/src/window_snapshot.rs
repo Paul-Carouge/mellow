@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use slint::ComponentHandle as _;
 
-use crate::generated_ui::AppWindow;
+use crate::generated_ui::{AppWindow, ThemeChoice};
 
 pub const SNAPSHOT_DIRECTORY_VARIABLE: &str = "MELLOW_SPIKE_SNAPSHOT_DIRECTORY";
 const DELAY_BEFORE_FIRST_SNAPSHOT: Duration = Duration::from_millis(1500);
@@ -17,7 +17,44 @@ const TGA_BITS_PER_PIXEL: u8 = 32;
 /// 8 alpha bits, origin at the top-left corner.
 const TGA_IMAGE_DESCRIPTOR: u8 = 0x28;
 
+/// Optional window size for snapshots, as `WIDTHxHEIGHT` in logical pixels (e.g. `1440x900`).
+const SNAPSHOT_SIZE_VARIABLE: &str = "MELLOW_SPIKE_SNAPSHOT_SIZE";
+/// Optional theme for snapshots: `dark` or `light`.
+const SNAPSHOT_THEME_VARIABLE: &str = "MELLOW_SPIKE_SNAPSHOT_THEME";
+/// Optional state to show before the first snapshot: `members`, `drawer` or `settings`.
+const SNAPSHOT_STATE_VARIABLE: &str = "MELLOW_SPIKE_SNAPSHOT_STATE";
+
+/// Applies the optional size, theme and state, so the shell can be compared with the reference
+/// mockup at the same window sizes (ADR-0022).
+fn prepare(window: &AppWindow) {
+    if let Some((width, height)) = std::env::var(SNAPSHOT_SIZE_VARIABLE)
+        .ok()
+        .and_then(|size| parse_size(&size))
+    {
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(width, height));
+    }
+    match std::env::var(SNAPSHOT_THEME_VARIABLE).as_deref() {
+        Ok("light") => window.set_theme_choice(ThemeChoice::Light),
+        Ok("dark") => window.set_theme_choice(ThemeChoice::Dark),
+        _ => {}
+    }
+    match std::env::var(SNAPSHOT_STATE_VARIABLE).as_deref() {
+        Ok("members") => window.set_is_member_list_visible(true),
+        Ok("drawer") => window.set_is_navigator_drawer_open(true),
+        Ok("settings") => window.set_is_user_settings_open(true),
+        _ => {}
+    }
+}
+
+fn parse_size(size: &str) -> Option<(f32, f32)> {
+    let (width, height) = size.split_once('x')?;
+    Some((width.parse().ok()?, height.parse().ok()?))
+}
+
 pub fn schedule(window: &AppWindow, directory: PathBuf) {
+    prepare(window);
     let weak_window = window.as_weak();
     slint::Timer::single_shot(DELAY_BEFORE_FIRST_SNAPSHOT, move || {
         let Some(window) = weak_window.upgrade() else {
