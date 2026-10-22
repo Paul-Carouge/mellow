@@ -2,7 +2,8 @@
 //! (ADR-0007); events reach the channel's audience only (ADR-0015).
 
 use mellow_protocol::{
-    GatewayEvent, MessageReaction, Permissions, PublicUser, ReactionUsersQuery, Snowflake,
+    AuditAction, GatewayEvent, MessageReaction, Permissions, PublicUser, ReactionUsersQuery,
+    Snowflake,
 };
 
 use super::{MessageError, Messages, publish};
@@ -12,14 +13,22 @@ use crate::domain::message_rules::{
 };
 use crate::domain::permissions::{ReactionAction, may_react};
 use crate::domain::profile_images::fill_profile_images;
-use crate::storage::reactions::{self as storage, ReactionAddOutcome};
+use crate::storage::reactions::{self as storage, ReactionAddOutcome, ReactionSelection};
+
+/// What a moderator removes from a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReactionRemoval {
+    /// One user's reaction with one emoji.
+    User { user_id: Snowflake, emoji: String },
+    /// Every reaction with one emoji.
+    Emoji(String),
+    /// Every reaction of the message.
+    All,
+}
 
 impl Messages {
     /// The channel, the user's permissions there and the emoji's stored key, once `action` is
-    /// allowed. A channel the user cannot view is `NotFound`. Without the channel's history, every
-    /// action but taking one's own reaction back answers `MessageNotFound` before any lookup, so
-    /// an existing message cannot be told apart from a missing one; otherwise the message must
-    /// exist in the channel.
+    /// allowed (`reaction_channel`).
     async fn reaction_target(
         &self,
         user_id: Snowflake,
@@ -29,6 +38,23 @@ impl Messages {
         action: ReactionAction,
     ) -> Result<(super::MessageChannel, Permissions, String), MessageError> {
         let emoji = reaction_emoji_key(emoji)?;
+        let (channel, permissions) = self
+            .reaction_channel(user_id, channel_id, message_id, action)
+            .await?;
+        Ok((channel, permissions, emoji))
+    }
+
+    /// The channel and the user's permissions there, once `action` is allowed. A channel the user
+    /// cannot view is `NotFound`. Without the channel's history, every action but taking one's
+    /// own reaction back answers `MessageNotFound` before any lookup, so an existing message cannot
+    /// be told apart from a missing one; otherwise the message must exist in the channel.
+    async fn reaction_channel(
+        &self,
+        user_id: Snowflake,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        action: ReactionAction,
+    ) -> Result<(super::MessageChannel, Permissions), MessageError> {
         let (channel, permissions) = self
             .text_channel_and_permissions_requiring(user_id, channel_id, Permissions::VIEW_CHANNEL)
             .await?;
@@ -42,7 +68,7 @@ impl Messages {
         if needs_the_message {
             self.message_in_channel(channel.id(), message_id).await?;
         }
-        Ok((channel, permissions, emoji))
+        Ok((channel, permissions))
     }
 
     /// Reacts with `emoji`. Idempotent: reacting again changes nothing and sends no event.
@@ -133,6 +159,90 @@ impl Messages {
                 }),
             );
         }
+        Ok(())
+    }
+
+    /// A moderator removes reactions of other people (`MANAGE_MESSAGES`, guild channels only),
+    /// audited when something was removed. Removing one's own reaction this way is
+    /// `remove_own_reaction`. Idempotent: nothing to remove sends no event.
+    pub(crate) async fn remove_reactions(
+        &self,
+        moderator_id: Snowflake,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        removal: ReactionRemoval,
+    ) -> Result<(), MessageError> {
+        let removal = match removal {
+            ReactionRemoval::User { user_id, emoji } if user_id == moderator_id => {
+                return self
+                    .remove_own_reaction(moderator_id, channel_id, message_id, &emoji)
+                    .await;
+            }
+            ReactionRemoval::User { user_id, emoji } => ReactionRemoval::User {
+                user_id,
+                emoji: reaction_emoji_key(&emoji)?,
+            },
+            ReactionRemoval::Emoji(emoji) => ReactionRemoval::Emoji(reaction_emoji_key(&emoji)?),
+            ReactionRemoval::All => ReactionRemoval::All,
+        };
+        let (channel, _) = self
+            .reaction_channel(
+                moderator_id,
+                channel_id,
+                message_id,
+                ReactionAction::RemoveOthers,
+            )
+            .await?;
+        let audience = self.audience(&channel).await?;
+        let audit = channel
+            .guild_id()
+            .map(|guild_id| {
+                self.guilds.audit_entry(
+                    guild_id,
+                    moderator_id,
+                    AuditAction::MessageReactionRemove,
+                    Some(message_id),
+                    Some(channel.id()),
+                )
+            })
+            .transpose()?;
+        let selection = match &removal {
+            ReactionRemoval::User { user_id, emoji } => ReactionSelection::OneUser {
+                user_id: *user_id,
+                emoji,
+            },
+            ReactionRemoval::Emoji(emoji) => ReactionSelection::OneEmoji(emoji),
+            ReactionRemoval::All => ReactionSelection::All,
+        };
+        if !storage::remove_reactions_of_message(&self.pool, message_id, selection, audit.as_ref())
+            .await?
+        {
+            return Ok(());
+        }
+        let (guild_id, channel_id) = (channel.guild_id(), channel.id());
+        let event = match removal {
+            ReactionRemoval::User { user_id, emoji } => {
+                GatewayEvent::MessageReactionRemove(MessageReaction {
+                    guild_id,
+                    channel_id,
+                    message_id,
+                    user_id,
+                    emoji,
+                })
+            }
+            ReactionRemoval::Emoji(emoji) => GatewayEvent::MessageReactionRemoveEmoji {
+                guild_id,
+                channel_id,
+                message_id,
+                emoji,
+            },
+            ReactionRemoval::All => GatewayEvent::MessageReactionRemoveAll {
+                guild_id,
+                channel_id,
+                message_id,
+            },
+        };
+        publish(&self.guilds, &audience, &event);
         Ok(())
     }
 

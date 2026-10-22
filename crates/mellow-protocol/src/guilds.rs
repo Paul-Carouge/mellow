@@ -112,6 +112,9 @@ pub enum AuditAction {
     MessagePin,
     /// `target_id` is the message, `context_id` the channel.
     MessageUnpin,
+    /// A moderator removed reactions (someone's, one emoji's or all): `target_id` is the message,
+    /// `context_id` the channel.
+    MessageReactionRemove,
     /// An action added by a newer server; never written, only read by older clients.
     #[serde(other)]
     Unknown,

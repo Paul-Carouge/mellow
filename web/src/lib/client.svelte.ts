@@ -461,6 +461,8 @@ export class MellowClient {
         return;
       case "MESSAGE_REACTION_ADD":
       case "MESSAGE_REACTION_REMOVE":
+      case "MESSAGE_REACTION_REMOVE_ALL":
+      case "MESSAGE_REACTION_REMOVE_EMOJI":
         // shortcut: nothing shows reactions yet; count them in the cached messages with the UI.
         return;
       default: {

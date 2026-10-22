@@ -390,9 +390,10 @@ impl ClientState {
             GatewayEvent::UserUpdate(user) => self.rename_user(&user),
             // shortcut: no client-core UI shows reactions yet (web first); count them in the
             // cached messages once the desktop does.
-            GatewayEvent::MessageReactionAdd(_) | GatewayEvent::MessageReactionRemove(_) => {
-                StateChange::Nothing
-            }
+            GatewayEvent::MessageReactionAdd(_)
+            | GatewayEvent::MessageReactionRemove(_)
+            | GatewayEvent::MessageReactionRemoveAll { .. }
+            | GatewayEvent::MessageReactionRemoveEmoji { .. } => StateChange::Nothing,
         }
     }
 
