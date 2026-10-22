@@ -9,13 +9,14 @@
     Permission,
     type PublicUser,
     type Snowflake,
+    compareSnowflakes,
     hasPermission,
   } from "../lib/protocol";
   import AttachmentTray, { type AttachmentTrayItem } from "./AttachmentTray.svelte";
   import { autosize } from "./autosize";
   import Button from "./Button.svelte";
   import DeleteMessageDialog from "./DeleteMessageDialog.svelte";
-  import { displayName, humanFileSize, typingLabel } from "./format";
+  import { displayName, humanFileSize, timeOfDayLabel, typingLabel, unixMillisecondsOfSnowflake } from "./format";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import MessageList from "./MessageList.svelte";
@@ -145,6 +146,31 @@
   }
 
   const typingText = $derived(channelId ? typingLabel(client.typingUserIds(channelId, now).map(nameOfUser)) : "");
+
+  // What others wrote since the last visit, for the jump bar (DESIGN.md §5.4).
+  const unreadSinceMarker = $derived.by(() => {
+    const marker = channelId ? client.unreadMarkers.get(channelId) : undefined;
+    return channelId && marker
+      ? client
+          .messages(channelId)
+          .filter((message) => compareSnowflakes(message.id, marker) > 0 && message.author.id !== user?.id)
+      : [];
+  });
+  const unreadBarText = $derived.by(() => {
+    const first = unreadSinceMarker[0];
+    if (!first) {
+      return "";
+    }
+    const count = unreadSinceMarker.length;
+    return `${count} new ${count === 1 ? "message" : "messages"} since ${timeOfDayLabel(unixMillisecondsOfSnowflake(first.id))}`;
+  });
+
+  function markAsRead() {
+    if (channelId) {
+      client.dismissUnreadMarker(channelId);
+    }
+    focusComposer();
+  }
 
   /** Every path that focuses the composer comes here: a read-only channel has none to focus. */
   export function focusComposer() {
@@ -335,6 +361,9 @@
     } else if (event.key === "Escape" && replyingTo) {
       event.preventDefault();
       replyingTo = null;
+    } else if (event.key === "Escape" && unreadSinceMarker.length > 0) {
+      event.preventDefault();
+      markAsRead();
     } else if (event.key === "ArrowUp" && draft === "" && canSendMessages) {
       event.preventDefault();
       editLastOwnMessage();
@@ -451,6 +480,21 @@
       />
     {/if}
   </header>
+
+  {#if unreadBarText}
+    <!-- Over the list, under the header, so the rows being read do not move. -->
+    <div
+      class="unread-bar absolute inset-x-md top-[calc(var(--mw-component-chat-header-height)_+_var(--mw-space-2xs))] z-10 flex h-(--mw-component-jump-bar-height) items-center justify-between gap-xs rounded-(--mw-component-jump-bar-radius) bg-(--mw-component-jump-bar-background) ps-sm pe-2xs type-body font-semibold text-(--mw-component-jump-bar-text) pointer-coarse:h-(--mw-size-hit-web-min)"
+    >
+      <span class="min-w-0 truncate">{unreadBarText}</span>
+      <button
+        type="button"
+        aria-keyshortcuts="Escape"
+        class="h-[calc(var(--mw-component-jump-bar-height)_-_2*var(--mw-space-3xs))] shrink-0 rounded-sm px-xs font-semibold whitespace-nowrap transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-jump-bar-background-hover) focus-visible:[outline-color:var(--mw-component-jump-bar-text)] pointer-coarse:h-(--mw-size-hit-web-min)"
+        onclick={markAsRead}>Mark as read</button
+      >
+    </div>
+  {/if}
 
   {#if channelId && user}
     {#key channelId}
@@ -675,6 +719,15 @@
   }
   .reply-bar {
     animation: mw-fade-in var(--mw-motion-duration-fast) var(--mw-motion-easing-standard) both;
+  }
+  .unread-bar {
+    animation: unread-bar-in var(--mw-motion-duration-base) var(--mw-motion-easing-enter) both;
+  }
+  @keyframes unread-bar-in {
+    from {
+      opacity: 0;
+      transform: translateY(calc(-1 * var(--mw-component-channel-switch-offset)));
+    }
   }
   @media (prefers-reduced-motion: reduce) {
     .typing-dots i {

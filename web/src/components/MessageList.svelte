@@ -4,7 +4,7 @@
   import type { MellowClient } from "../lib/client.svelte";
   import Button from "./Button.svelte";
   import type { Message, PublicUser, Snowflake } from "../lib/protocol";
-  import { attachmentCountLabel, displayName } from "./format";
+  import { attachmentCountLabel, displayName, timeOfDayLabel } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
   import MessageItem from "./MessageItem.svelte";
   import { mentionablePeople } from "./mentions";
@@ -87,8 +87,9 @@
       ...(client.selectedConversation?.recipients ?? []),
     ]),
   );
+  const unreadMarker = $derived(client.unreadMarkers.get(channelId) ?? null);
   const rows = $derived(
-    buildMessageRows(messages, client.pendingMessagesIn(channelId), currentUser.id, Date.now()),
+    buildMessageRows(messages, client.pendingMessagesIn(channelId), currentUser.id, Date.now(), unreadMarker),
   );
   const hasReachedStart = $derived(client.reachedStartChannelIds.has(channelId));
   const isInitialLoad = $derived(messages.length === 0 && !hasReachedStart);
@@ -154,11 +155,13 @@
   });
 
   let lastAnnouncedKey: string | null = null;
+  let hasShownUnreadDivider = false;
   $effect(() => {
     void rows;
     void client.isLoadingOlder;
     if (isPinnedToLatest) {
       viewport.scrollTop = viewport.scrollHeight;
+      showUnreadDividerOnce();
     } else if (anchor) {
       const element = viewport.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(anchor.key)}"]`);
       if (element) {
@@ -171,6 +174,25 @@
     }
     announceLatestMessage();
   });
+
+  /**
+   * Opening a channel with unread messages shows the first of them (DESIGN.md §5.4): when the
+   * "New" divider is above the view, the list scrolls it under the jump bar instead of the bottom.
+   */
+  function showUnreadDividerOnce() {
+    const divider = viewport.querySelector<HTMLElement>("[data-unread-divider]");
+    if (hasShownUnreadDivider || !divider) {
+      return;
+    }
+    hasShownUnreadDivider = true;
+    const distanceAboveView = viewport.getBoundingClientRect().top - divider.getBoundingClientRect().top;
+    if (distanceAboveView > 0) {
+      const clearanceUnderJumpBar = lengthTokenInPixels("component-jump-bar-height") + lengthTokenInPixels("space-md");
+      viewport.scrollTop -= distanceAboveView + clearanceUnderJumpBar;
+      isPinnedToLatest = false;
+      isViewingOlderMessages = true;
+    }
+  }
 
   /** New messages from others are read out politely; the first page and own messages are not. */
   function announceLatestMessage() {
@@ -300,6 +322,21 @@
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <ol bind:this={list} aria-label="Messages in {channelLabel}" class="pb-xs" onkeydown={moveFocus}>
       {#each rows as row (row.key)}
+        {#if row.kind === "sent" && row.isFirstUnread}
+          <!-- An apricot line with its "New" pill: new messages are "now" (DESIGN.md §2.3, §5.4). -->
+          <li
+            data-unread-divider
+            role="separator"
+            aria-label="New messages since {timeOfDayLabel(row.sentAt)}"
+            class="relative mx-md mt-(--mw-component-message-group-gap) h-0 border-t-(length:--mw-component-unread-divider-line-width) border-(--mw-component-unread-divider-line)"
+          >
+            <span
+              aria-hidden="true"
+              class="absolute end-0 top-[calc(var(--mw-component-unread-divider-pill-height)/-2)] grid h-(--mw-component-unread-divider-pill-height) place-items-center rounded-(--mw-component-unread-divider-pill-radius) bg-(--mw-component-unread-divider-pill-background) px-xs type-badge text-(--mw-component-unread-divider-pill-text)"
+              >New</span
+            >
+          </li>
+        {/if}
         <MessageItem
           {row}
           {currentUser}

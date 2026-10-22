@@ -178,6 +178,19 @@ describe("buildMessageRows", () => {
     expect(rows.map((row) => row.startsAuthorGroup)).toEqual([true, false, true, true, true]);
   });
 
+  it("marks the first message from others after the unread marker, which starts a group", () => {
+    const ids = [0, 60_000, 120_000, 180_000].map((offset) => snowflakeAt(start + offset));
+    const rows = buildMessageRows(
+      [message(ids[0] ?? "", "2"), message(ids[1] ?? "", "1"), message(ids[2] ?? "", "1"), message(ids[3] ?? "", "1")],
+      [],
+      "2",
+      start,
+      ids[0] ?? null,
+    );
+    expect(rows.map((row) => row.kind === "sent" && row.isFirstUnread)).toEqual([false, true, false, false]);
+    expect(rows.map((row) => row.startsAuthorGroup)).toEqual([true, true, false, false]);
+  });
+
   it("puts the outbox last, continuing the user's own group", () => {
     const pending: PendingMessage = {
       nonce: "n1",
