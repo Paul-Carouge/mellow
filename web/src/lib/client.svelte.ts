@@ -977,12 +977,12 @@ export class MellowClient {
     return (await this.rest.createInvite(guildId)).code;
   }
 
-  async createChannel(name: string): Promise<void> {
+  async createChannel(name: string, categoryId: Snowflake | null = null): Promise<void> {
     const guildId = this.selectedGuildId;
     if (!guildId) {
       return;
     }
-    const channel = await this.rest.createTextChannel(guildId, name);
+    const channel = await this.rest.createTextChannel(guildId, name, categoryId);
     this.applyEvent({ t: "CHANNEL_CREATE", data: channel }, Date.now());
     if (this.selectedGuildId === guildId) {
       this.selectChannel(channel.id);

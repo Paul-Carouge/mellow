@@ -127,12 +127,13 @@ export class RestClient {
     });
   }
 
-  createTextChannel(guildId: Snowflake, name: string): Promise<Channel> {
+  /** `categoryId` puts the channel in that category; null leaves it uncategorised. */
+  createTextChannel(guildId: Snowflake, name: string, categoryId: Snowflake | null = null): Promise<Channel> {
     return this.request("POST", `guilds/${guildId}/channels`, {
       kind: "text",
       name,
       topic: "",
-      parent_id: null,
+      parent_id: categoryId,
     });
   }
 

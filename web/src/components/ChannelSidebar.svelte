@@ -2,11 +2,19 @@
   import type { SvelteSet } from "svelte/reactivity";
 
   import type { MellowClient } from "../lib/client.svelte";
-  import { type DirectMessageChannel, type Guild, Permission, type Snowflake, hasPermission } from "../lib/protocol";
+  import {
+    type Channel,
+    type DirectMessageChannel,
+    type Guild,
+    Permission,
+    type Snowflake,
+    hasPermission,
+  } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
   import { displayName } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
+  import IconButton from "./IconButton.svelte";
   import { channelSections } from "./message-rows";
 
   export type ServerDialog = "invite-people" | "create-channel" | "leave-server";
@@ -18,11 +26,13 @@
     /** Kept by the shell, so collapsing survives the drawer closing. */
     collapsedCategoryIds: SvelteSet<Snowflake>;
     onopendialog: (dialog: ServerDialog) => void;
+    /** The "+" beside a category: create a channel inside it. */
+    oncreatechannelin: (category: Channel) => void;
     /** After a channel or conversation was chosen (the narrow layout closes its drawer). */
     onnavigate: () => void;
   }
 
-  let { client, collapsedCategoryIds, onopendialog, onnavigate }: Props = $props();
+  let { client, collapsedCategoryIds, onopendialog, oncreatechannelin, onnavigate }: Props = $props();
 
   const guild = $derived(client.selectedGuild);
   const user = $derived(client.user);
@@ -272,11 +282,11 @@
     {@const category = section.category}
     {@const isCollapsed = category !== null && collapsedCategoryIds.has(category.id)}
     {#if category}
-      <h3 class="mt-(--mw-component-category-margin-top) pe-xs">
+      <h3 class="mt-(--mw-component-category-margin-top) flex items-center gap-2xs pe-xs">
         <button
           type="button"
           aria-expanded={!isCollapsed}
-          class="flex h-(--mw-component-category-height) w-full items-center gap-2xs rounded-xs type-category text-(--mw-component-category-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:text-(--mw-component-category-text-hover) focus-visible:focus-ring-inset pointer-coarse:h-(--mw-size-hit-web-min)"
+          class="flex h-(--mw-component-category-height) min-w-0 flex-1 items-center gap-2xs rounded-xs type-category text-(--mw-component-category-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:text-(--mw-component-category-text-hover) focus-visible:focus-ring-inset pointer-coarse:h-(--mw-size-hit-web-min)"
           onclick={() => toggleCategory(category.id)}
           onkeydown={(event) => {
             if ((event.key === "ArrowLeft" && !isCollapsed) || (event.key === "ArrowRight" && isCollapsed)) {
@@ -288,6 +298,15 @@
           <Icon name={isCollapsed ? "caret-right" : "caret-down"} class="size-(--mw-component-category-chevron-size)" />
           <span class="truncate">{category.name}</span>
         </button>
+        {#if canCreateChannels}
+          <IconButton
+            icon="plus"
+            label="Create a channel in {category.name}"
+            class="size-(--mw-component-category-height) rounded-xs text-(--mw-component-category-text) hover:text-(--mw-component-category-text-hover)"
+            iconClass="size-(--mw-component-category-add-icon-size)"
+            onclick={() => oncreatechannelin(category)}
+          />
+        {/if}
       </h3>
     {/if}
     <ul>

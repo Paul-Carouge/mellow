@@ -3,7 +3,7 @@
   import { MediaQuery, SvelteSet } from "svelte/reactivity";
 
   import type { MellowClient } from "../lib/client.svelte";
-  import type { Snowflake } from "../lib/protocol";
+  import type { Channel, Snowflake } from "../lib/protocol";
   import AddServerDialog from "./AddServerDialog.svelte";
   import type { ServerDialog } from "./ChannelSidebar.svelte";
   import ChatPane from "./ChatPane.svelte";
@@ -50,6 +50,8 @@
   let openDialog = $state<"add-server" | ServerDialog | null>(null);
   let isUserSettingsOpen = $state(false);
   let isQuickSwitcherOpen = $state(false);
+  /** The category whose "+" opened "Create channel"; null from the server menu. */
+  let newChannelCategory = $state<Channel | null>(null);
 
   const guild = $derived(client.selectedGuild);
   const hasMemberSheet = $derived(guild !== null && client.selectedChannel !== null);
@@ -146,7 +148,14 @@
     {collapsedCategoryIds}
     {isInDrawer}
     onaddserver={() => (openDialog = "add-server")}
-    onopendialog={(dialog) => (openDialog = dialog)}
+    onopendialog={(dialog) => {
+      newChannelCategory = null;
+      openDialog = dialog;
+    }}
+    oncreatechannelin={(category) => {
+      newChannelCategory = category;
+      openDialog = "create-channel";
+    }}
     onnavigate={() => void closeDrawerAfterNavigation()}
     onopenusersettings={() => (isUserSettingsOpen = true)}
   />
@@ -217,7 +226,12 @@
 {:else if openDialog === "invite-people" && guild}
   <InvitePeopleDialog {client} serverName={guild.name} onclose={() => (openDialog = null)} fallbackFocus={focusComposer} />
 {:else if openDialog === "create-channel"}
-  <CreateChannelDialog {client} onclose={() => (openDialog = null)} fallbackFocus={focusComposer} />
+  <CreateChannelDialog
+    {client}
+    category={newChannelCategory}
+    onclose={() => (openDialog = null)}
+    fallbackFocus={focusComposer}
+  />
 {:else if openDialog === "leave-server" && guild}
   <LeaveServerDialog {client} serverName={guild.name} onclose={() => (openDialog = null)} fallbackFocus={focusComposer} />
 {/if}
