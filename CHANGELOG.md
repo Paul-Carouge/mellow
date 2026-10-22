@@ -5,7 +5,7 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 ## [Unreleased]
 
 ### Added
-- Server: emoji reactions on messages (Unicode emoji, up to 20 different ones per message) with a new "Add reactions" permission, given to everyone in new and existing servers; anyone who can read a message can join a reaction already there.
+- Server: emoji reactions on messages (one Unicode emoji each, up to 20 different ones per message) with a new "Add reactions" permission, given to everyone in new and existing servers except in channels where they cannot send messages; anyone who can read a message can join a reaction already there, and members who can manage messages can remove other people's reactions.
 - Server: pinned messages, up to 50 per channel, pinned by members who can manage messages (anyone in a direct conversation) and recorded in the moderation log.
 
 ## [0.7.0] - 2026-10-22
