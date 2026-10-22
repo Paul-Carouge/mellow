@@ -326,48 +326,98 @@ pub fn message_rows(
     current_user_id: Option<Snowflake>,
     can_manage_messages: bool,
     people: &PeopleContext,
-    unread_divider_message_id: Option<Snowflake>,
+    unread_divider_after_message_id: Option<Snowflake>,
 ) -> Vec<MessageRow> {
     message_rows_at(
         messages,
         current_user_id,
         can_manage_messages,
         people,
-        unread_divider_message_id,
+        unread_divider_after_message_id,
         &Local::now(),
     )
 }
 
-/// "3 new messages since 14:32" for the bar above the list, from the divider's message on; empty
-/// without a divider.
-pub fn unread_bar_text(
-    messages: &[Message],
-    unread_divider_message_id: Option<Snowflake>,
-) -> String {
-    unread_bar_text_in(messages, unread_divider_message_id, &Local)
+/// What a channel's visit counts as new (DESIGN.md §5.4): after the last read message, up to the
+/// newest message when the channel was opened. Live arrivals are never new.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnreadMarker {
+    pub last_read_message_id: Snowflake,
+    pub newest_at_open_message_id: Snowflake,
 }
 
-fn unread_bar_text_in<Zone: TimeZone>(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnreadSummary {
+    /// Messages from others that were new when the channel was opened, among those loaded.
+    pub count: usize,
+    /// Older new messages are not loaded yet: the count is a lower bound ("50+").
+    pub is_partial: bool,
+}
+
+/// What the jump bar counts: never live arrivals, never the user's own messages (as the web).
+pub fn unread_summary(
     messages: &[Message],
-    unread_divider_message_id: Option<Snowflake>,
-    zone: &Zone,
+    marker: &UnreadMarker,
+    current_user_id: Option<Snowflake>,
+    has_reached_start: bool,
+) -> UnreadSummary {
+    let count = messages
+        .iter()
+        .filter(|message| {
+            message.id > marker.last_read_message_id
+                && message.id <= marker.newest_at_open_message_id
+                && Some(message.author.id) != current_user_id
+        })
+        .count();
+    let is_partial = !has_reached_start
+        && messages
+            .first()
+            .is_some_and(|oldest| oldest.id > marker.last_read_message_id);
+    UnreadSummary { count, is_partial }
+}
+
+/// True once the first new message is loaded, so the "New" divider can sit above it without
+/// jumping as older pages arrive.
+pub fn is_unread_start_loaded(
+    messages: &[Message],
+    marker: &UnreadMarker,
+    has_reached_start: bool,
+) -> bool {
+    has_reached_start
+        || messages
+            .first()
+            .is_some_and(|oldest| oldest.id <= marker.last_read_message_id)
+}
+
+/// "3 new messages since today at 14:32", dated from the last message read before the visit.
+pub fn unread_bar_label(summary: &UnreadSummary, last_read_unix_milliseconds: u64) -> String {
+    unread_bar_label_at(summary, last_read_unix_milliseconds, &Local::now())
+}
+
+fn unread_bar_label_at<Zone: TimeZone>(
+    summary: &UnreadSummary,
+    last_read_unix_milliseconds: u64,
+    now: &DateTime<Zone>,
 ) -> String
 where
     Zone::Offset: std::fmt::Display,
 {
-    let Some(divider_id) = unread_divider_message_id else {
-        return String::new();
+    let since = timestamp_label(last_read_unix_milliseconds, now);
+    // "Today at 14:32" inside a sentence.
+    let since = match since.strip_prefix("Today") {
+        Some(rest) => format!("today{rest}"),
+        None => match since.strip_prefix("Yesterday") {
+            Some(rest) => format!("yesterday{rest}"),
+            None => since,
+        },
     };
-    let count = messages
-        .iter()
-        .filter(|message| message.id >= divider_id)
-        .count();
-    let since = short_time(divider_id.unix_milliseconds(), zone);
-    match count {
-        0 => String::new(),
-        1 => format!("1 new message since {since}"),
-        _ => format!("{count} new messages since {since}"),
-    }
+    let plus = if summary.is_partial { "+" } else { "" };
+    let noun = if summary.count == 1 && !summary.is_partial {
+        "message"
+    } else {
+        "messages"
+    };
+    format!("{}{plus} new {noun} since {since}", summary.count)
 }
 
 fn message_rows_at<Zone: TimeZone>(
@@ -375,12 +425,19 @@ fn message_rows_at<Zone: TimeZone>(
     current_user_id: Option<Snowflake>,
     can_manage_messages: bool,
     people: &PeopleContext,
-    unread_divider_message_id: Option<Snowflake>,
+    unread_divider_after_message_id: Option<Snowflake>,
     now: &DateTime<Zone>,
 ) -> Vec<MessageRow>
 where
     Zone::Offset: std::fmt::Display,
 {
+    // Above the first message someone else wrote after the read position.
+    let unread_divider_message_id = unread_divider_after_message_id.and_then(|after| {
+        messages
+            .iter()
+            .find(|message| message.id > after && Some(message.author.id) != current_user_id)
+            .map(|message| message.id)
+    });
     let mut previous: Option<&Message> = None;
     messages
         .iter()
@@ -695,6 +752,117 @@ mod tests {
         );
     }
 
+    mod unread {
+        use super::*;
+
+        const ME: u64 = 1;
+        const SOMEONE: u64 = 2;
+
+        fn at_minute(minute: u64) -> Snowflake {
+            Snowflake::from_parts(1_000_000 + minute * 60_000, 0).unwrap()
+        }
+
+        fn message(minute: u64, author: u64) -> Message {
+            Message {
+                id: at_minute(minute),
+                channel_id: Snowflake::from_raw(11),
+                author: PublicUser {
+                    id: Snowflake::from_raw(author),
+                    username: format!("user{author}"),
+                    display_name: format!("User {author}"),
+                    avatar: None,
+                    banner: None,
+                },
+                content: "hello".into(),
+                reply_to_id: None,
+                edited_at_unix_milliseconds: None,
+                nonce: None,
+                attachments: Vec::new(),
+            }
+        }
+
+        fn marker(last_read: u64, newest_at_open: u64) -> UnreadMarker {
+            UnreadMarker {
+                last_read_message_id: at_minute(last_read),
+                newest_at_open_message_id: at_minute(newest_at_open),
+            }
+        }
+
+        #[test]
+        fn only_what_others_wrote_before_the_visit_counts() {
+            // Read up to 0; 1 to 3 were there at opening (2 is the user's own); 4 arrived live.
+            let messages = [
+                message(0, SOMEONE),
+                message(1, SOMEONE),
+                message(2, ME),
+                message(3, SOMEONE),
+                message(4, SOMEONE),
+            ];
+            let summary = unread_summary(
+                &messages,
+                &marker(0, 3),
+                Some(Snowflake::from_raw(ME)),
+                true,
+            );
+            assert_eq!(
+                summary,
+                UnreadSummary {
+                    count: 2,
+                    is_partial: false
+                }
+            );
+        }
+
+        #[test]
+        fn unloaded_older_news_make_a_partial_count_and_hold_the_divider_back() {
+            let loaded = [message(2, SOMEONE), message(3, SOMEONE)];
+            let summary =
+                unread_summary(&loaded, &marker(0, 3), Some(Snowflake::from_raw(ME)), false);
+            assert_eq!(
+                summary,
+                UnreadSummary {
+                    count: 2,
+                    is_partial: true
+                }
+            );
+            assert!(!is_unread_start_loaded(&loaded, &marker(0, 3), false));
+            assert!(is_unread_start_loaded(&loaded, &marker(0, 3), true));
+            let with_read = [message(0, SOMEONE), message(2, SOMEONE)];
+            assert!(is_unread_start_loaded(&with_read, &marker(0, 3), false));
+        }
+
+        #[test]
+        fn the_label_is_dated_from_the_last_read_message() {
+            let read_at = at_minute(0).unix_milliseconds();
+            let now = Utc
+                .timestamp_millis_opt(i64::try_from(read_at).unwrap() + 600_000)
+                .unwrap();
+            let time = short_time(read_at, &Utc);
+            assert_eq!(
+                unread_bar_label_at(
+                    &UnreadSummary {
+                        count: 2,
+                        is_partial: true
+                    },
+                    read_at,
+                    &now
+                ),
+                format!("2+ new messages since today at {time}")
+            );
+            assert_eq!(
+                unread_bar_label_at(
+                    &UnreadSummary {
+                        count: 1,
+                        is_partial: false
+                    },
+                    read_at,
+                    &now
+                ),
+                format!("1 new message since today at {time}")
+            );
+        }
+    }
+
     fn channel(
         id: u64,
         kind: ChannelKind,
@@ -845,7 +1013,8 @@ mod tests {
         let groups: Vec<_> = rows.iter().map(|row| row.starts_author_group).collect();
         assert_eq!(groups, [true, false, true, true]);
 
-        // The divider breaks the group it falls in, and the bar counts from it.
+        // The divider sits above the first message someone else wrote after the read position,
+        // and breaks the group it falls in.
         let with_divider = message_rows_at(
             &messages,
             Some(Snowflake::from_raw(2)),
@@ -855,16 +1024,11 @@ mod tests {
                 mentionable: &MentionablePeople::default(),
                 mention_color: "",
             },
-            Some(messages[1].id),
+            Some(messages[0].id),
             &Utc::now(),
         );
         assert!(with_divider[1].starts_unread && with_divider[1].starts_author_group);
-        assert!(!with_divider[0].starts_unread);
-        assert_eq!(
-            unread_bar_text_in(&messages, Some(messages[1].id), &Utc),
-            "3 new messages since 00:01"
-        );
-        assert_eq!(unread_bar_text_in(&messages, None, &Utc), "");
+        assert!(!with_divider[0].starts_unread && !with_divider[2].starts_unread);
         assert_eq!(rows[3].reply_author, "Aurore");
         assert_eq!(rows[3].reply_author_initial, "A");
         assert_eq!(rows[3].reply_preview, "hello");

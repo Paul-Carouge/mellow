@@ -155,15 +155,18 @@ fn open_channel(window: &AppWindow, state: &mut ShellState, channel_name: &str) 
         .collect();
     // The last few messages are new, so the "New" divider and its bar show (DESIGN.md §5.4).
     let first_unread_index = rows.len().saturating_sub(DEMO_UNREAD_MESSAGE_COUNT);
+    // Dated from the last message read, as in the live shell.
+    let last_read_time = first_unread_index
+        .checked_sub(1)
+        .and_then(|index| rows.get(index))
+        .map(|row| row.short_time.clone())
+        .unwrap_or_default();
     let unread_bar_text = rows
         .get_mut(first_unread_index)
         .map_or_else(String::new, |row| {
             row.starts_unread = true;
             row.starts_author_group = true;
-            format!(
-                "{DEMO_UNREAD_MESSAGE_COUNT} new messages since {}",
-                row.short_time
-            )
+            format!("{DEMO_UNREAD_MESSAGE_COUNT} new messages since today at {last_read_time}")
         });
     state.messages.set_vec(rows);
     window.set_unread_bar_text(unread_bar_text.into());
@@ -374,6 +377,13 @@ fn connect_message_callbacks(window: &AppWindow, state: &Rc<RefCell<ShellState>>
     let weak_window = window.as_weak();
     let shared_state = state.clone();
     window.on_mark_channel_read(move || {
+        if let Some(window) = weak_window.upgrade() {
+            forget_unread_divider(&window, &shared_state.borrow());
+        }
+    });
+    let weak_window = window.as_weak();
+    let shared_state = state.clone();
+    window.on_unread_divider_read(move || {
         if let Some(window) = weak_window.upgrade() {
             forget_unread_divider(&window, &shared_state.borrow());
         }
