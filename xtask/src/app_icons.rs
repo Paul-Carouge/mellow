@@ -1,11 +1,11 @@
-//! App icons (DESIGN.md §2.10): the favicon's still idle Melli rasterised to PNGs, and a macOS
+//! App icons (DESIGN.md §2.10): the favicon (Melli on its dusk tile) rasterised to PNGs, and a macOS
 //! `.icns` built from them, so every icon comes from the tokens like the favicon does.
 
 use anyhow::{Context as _, Result, anyhow};
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg;
 
-/// Square PNG sizes in `release/icons/`, full bleed: the drawing already has its own margin.
+/// Square PNG sizes in `release/icons/`, full bleed: the tile fills the square.
 /// 256 is the window icon and the Linux menu icon.
 const PNG_SIZES: [u32; 7] = [16, 32, 48, 64, 128, 256, 512];
 /// macOS draws app icons on a 1024 grid with the artwork inside 824 units, so Melli sits as large
