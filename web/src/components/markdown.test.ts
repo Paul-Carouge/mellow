@@ -265,6 +265,11 @@ describe("hostile text", () => {
     ["fences", "```".repeat(1_300)],
     ["quote lines", "> ".repeat(2_000)],
     ["links", "http://a".repeat(500) + ".".repeat(2_000)],
+    // Many openers with no closer: each search must be answered once, not once per opener.
+    ["unclosed stars", "*a ".repeat(15_000)],
+    ["unclosed underscores", "_a ".repeat(15_000)],
+    ["spoilers", "||a ".repeat(15_000)],
+    ["unclosed masked links", "[a](".repeat(15_000)],
     ["blank lines inside a code block", "```\na" + "\n".repeat(20_000) + "b\n```"],
   ])("parses %s quickly", (_, content) => {
     const started = performance.now();
