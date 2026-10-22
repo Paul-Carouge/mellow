@@ -111,6 +111,26 @@ describe("links", () => {
     ]);
   });
 
+  it("keeps masked links literal when their text could mislead", () => {
+    // The destination is still linked on its own, so the reader sees where it goes.
+    const isMaskedLink = (node: InlineNode) => node.kind === "link" && node.isMasked;
+    for (const content of [
+      "[paypal.com](https://evil.example)",
+      "[login.paypal.com/secure](https://evil.example)",
+      "[https://paypal.com](https://evil.example)",
+      "[see ftp://files](https://evil.example)",
+      "[\u200B](https://evil.example)",
+      "[ ](https://evil.example)",
+      "[\u2800](https://evil.example)",
+      "[@paul](https://evil.example)",
+    ]) {
+      expect(inlines(content).some(isMaskedLink)).toBe(false);
+    }
+    expect(inlines("[e.g. this](https://example.org)")).toEqual([
+      { kind: "link", url: "https://example.org/", isMasked: true, children: [text("e.g. this")] },
+    ]);
+  });
+
   it("never links a URL carrying a user name or password", () => {
     expect(inlines("https://paypal.com@evil.example")).toEqual([text("https://paypal.com@evil.example")]);
     expect(inlines("[pay](https://user:secret@evil.example)")).toEqual([text("[pay](https://user:secret@evil.example)")]);
