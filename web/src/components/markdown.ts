@@ -102,7 +102,7 @@ export function safeHttpUrl(candidate: string): string | null {
   }
 }
 
-function endOfLine(source: string, from: number): number {
+function findEndOfLine(source: string, from: number): number {
   const newline = source.indexOf("\n", from);
   return newline === -1 ? source.length : newline;
 }
@@ -130,7 +130,7 @@ function parseBlocks(source: string, context: ParseContext, isInsideQuote: boole
       nextFenceIndex = source.indexOf(FENCE, position);
     }
     if (position === 0 || source[position - 1] === "\n") {
-      const lineEnd = endOfLine(source, position);
+      const lineEnd = findEndOfLine(source, position);
       const line = source.slice(position, lineEnd);
 
       if (!isInsideQuote && line.startsWith(QUOTE_REST_PREFIX) && source.slice(position + QUOTE_REST_PREFIX.length).trim() !== "") {
@@ -147,7 +147,7 @@ function parseBlocks(source: string, context: ParseContext, isInsideQuote: boole
         const quotedLines: string[] = [];
         let next = position;
         while (next < source.length && source.startsWith(QUOTE_LINE_PREFIX, next)) {
-          const quotedLineEnd = endOfLine(source, next);
+          const quotedLineEnd = findEndOfLine(source, next);
           quotedLines.push(source.slice(next + QUOTE_LINE_PREFIX.length, quotedLineEnd));
           next = quotedLineEnd + 1;
         }
@@ -173,7 +173,7 @@ function parseBlocks(source: string, context: ParseContext, isInsideQuote: boole
         const items: InlineNode[][] = [];
         let next = position;
         while (next < source.length) {
-          const itemLineEnd = endOfLine(source, next);
+          const itemLineEnd = findEndOfLine(source, next);
           const item = LIST_ITEM_LINE.exec(source.slice(next, itemLineEnd));
           if (item?.[1] === undefined) {
             break;
@@ -202,7 +202,7 @@ function parseBlocks(source: string, context: ParseContext, isInsideQuote: boole
     }
 
     if (lineEndIndex < position) {
-      lineEndIndex = endOfLine(source, position);
+      lineEndIndex = findEndOfLine(source, position);
     }
     const nextLineStart = lineEndIndex + 1;
     position =
@@ -246,7 +246,7 @@ function parseFence(source: string, start: number): { block: BlockNode; end: num
 function findCodeSpans(text: string): Map<number, { end: number; content: string }> {
   const spans = new Map<number, { end: number; content: string }>();
   const unclosedRunLengths = new Set<number>();
-  const runLength = (from: number) => {
+  const countBacktickRunLength = (from: number) => {
     let end = from;
     while (text[end] === "`") {
       end += 1;
@@ -263,25 +263,25 @@ function findCodeSpans(text: string): Map<number, { end: number; content: string
       index += 1;
       continue;
     }
-    const opening = runLength(index);
+    const opening = countBacktickRunLength(index);
     let search = index + opening;
-    let closed = false;
+    let isCodeSpanClosed = false;
     while (!unclosedRunLengths.has(opening)) {
       const candidate = text.indexOf("`", search);
       if (candidate === -1) {
         break;
       }
-      const closing = runLength(candidate);
+      const closing = countBacktickRunLength(candidate);
       if (closing === opening) {
         const content = text.slice(index + opening, candidate);
         spans.set(index, { end: candidate + closing, content: content.trim() || content });
         index = candidate + closing;
-        closed = true;
+        isCodeSpanClosed = true;
         break;
       }
       search = candidate + closing;
     }
-    if (!closed) {
+    if (!isCodeSpanClosed) {
       unclosedRunLengths.add(opening);
       index += opening;
     }
@@ -368,7 +368,7 @@ function isEscaped(text: string, position: number): boolean {
  * The first position at or after `from` where `isCloser` holds, outside code and escapes; -1 if none.
  * Openers are met in increasing order, so the last answer stays right until `from` passes it.
  */
-function closerFinder(text: string, insideCode: Uint8Array, isCloser: (position: number) => boolean) {
+function createCachedCloserSearch(text: string, insideCode: Uint8Array, isCloser: (position: number) => boolean) {
   let answer = -2;
   return (from: number): number => {
     if (answer === -1 || answer >= from) {
@@ -403,8 +403,8 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
   for (const [start, span] of codeSpans) {
     insideCode.fill(1, start, span.end);
   }
-  const findClosers = DELIMITER_RULES.map((rule) => closerFinder(text, insideCode, (position) => rule.isCloserAt(text, position)));
-  const findClosingBracket = closerFinder(text, insideCode, (position) => text[position] === "]");
+  const findClosers = DELIMITER_RULES.map((rule) => createCachedCloserSearch(text, insideCode, (position) => rule.isCloserAt(text, position)));
+  const findClosingBracket = createCachedCloserSearch(text, insideCode, (position) => text[position] === "]");
   let closingParentheses: Map<number, number> | null = null;
 
   let position = 0;
@@ -458,7 +458,7 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
       }
     }
 
-    let matchedRule = false;
+    let hasMatchedDelimiter = false;
     for (const [ruleIndex, rule] of DELIMITER_RULES.entries()) {
       // A spoiler inside a link would put its reveal button inside the link.
       if (!rule.isOpenerAt(text, position) || (rule.kind === "spoiler" && !areLinksAllowed)) {
@@ -473,10 +473,10 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
       const children = parseInline(text.slice(contentStart, closer), context, depth + 1, areLinksAllowed);
       nodes.push(rule.kind === "spoiler" ? { kind: "spoiler", id: context.nextSpoilerId++, children } : { kind: rule.kind, children });
       position = textStart = closer + rule.marker.length;
-      matchedRule = true;
+      hasMatchedDelimiter = true;
       break;
     }
-    if (!matchedRule) {
+    if (!hasMatchedDelimiter) {
       position += 1;
     }
   }
