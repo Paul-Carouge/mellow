@@ -241,11 +241,11 @@ describe("MellowClient", () => {
     client.applyReady(start);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(client.unreadMarkers.get(GENERAL)).toBe("200");
+    expect(client.unreadMarkers.get(GENERAL)).toEqual({ lastReadMessageId: "200", newestAtOpenMessageId: "201" });
     expect(acknowledged).toEqual(["201"]);
     // A message arriving during the visit is read at once and moves no line.
     client.applyEvent({ t: "MESSAGE_CREATE", data: message("202") }, Date.now());
-    expect(client.unreadMarkers.get(GENERAL)).toBe("200");
+    expect(client.unreadMarkers.get(GENERAL)).toEqual({ lastReadMessageId: "200", newestAtOpenMessageId: "201" });
 
     client.selectChannel(RULES);
     expect(client.unreadMarkers.has(GENERAL)).toBe(false);

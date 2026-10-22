@@ -9,14 +9,14 @@
     Permission,
     type PublicUser,
     type Snowflake,
-    compareSnowflakes,
     hasPermission,
   } from "../lib/protocol";
   import AttachmentTray, { type AttachmentTrayItem } from "./AttachmentTray.svelte";
   import { autosize } from "./autosize";
   import Button from "./Button.svelte";
   import DeleteMessageDialog from "./DeleteMessageDialog.svelte";
-  import { displayName, humanFileSize, timeOfDayLabel, typingSegments, unixMillisecondsOfSnowflake } from "./format";
+  import { displayName, humanFileSize, typingSegments, unixMillisecondsOfSnowflake } from "./format";
+  import { unreadBarLabel, unreadSummary } from "./message-rows";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import MessageList from "./MessageList.svelte";
@@ -155,22 +155,21 @@
 
   const typing = $derived(channelId ? typingSegments(client.typingUserIds(channelId, now).map(nameOfUser)) : []);
 
-  // What others wrote since the last visit, for the jump bar (DESIGN.md §5.4).
-  const unreadSinceMarker = $derived.by(() => {
-    const marker = channelId ? client.unreadMarkers.get(channelId) : undefined;
-    return channelId && marker
-      ? client
-          .messages(channelId)
-          .filter((message) => compareSnowflakes(message.id, marker) > 0 && message.author.id !== user?.id)
-      : [];
-  });
+  // What others wrote before the visit and has not been seen yet, for the jump bar (DESIGN.md §5.4).
   const unreadBarText = $derived.by(() => {
-    const first = unreadSinceMarker[0];
-    if (!first) {
+    const marker = channelId ? client.unreadMarkers.get(channelId) : undefined;
+    if (!channelId || !marker) {
       return "";
     }
-    const count = unreadSinceMarker.length;
-    return `${count} new ${count === 1 ? "message" : "messages"} since ${timeOfDayLabel(unixMillisecondsOfSnowflake(first.id))}`;
+    const summary = unreadSummary(
+      client.messages(channelId),
+      marker,
+      user?.id ?? null,
+      client.reachedStartChannelIds.has(channelId),
+    );
+    return summary.count === 0
+      ? ""
+      : unreadBarLabel(summary, unixMillisecondsOfSnowflake(marker.lastReadMessageId), new Date());
   });
 
   function markAsRead() {
@@ -369,7 +368,7 @@
     } else if (event.key === "Escape" && replyingTo) {
       event.preventDefault();
       replyingTo = null;
-    } else if (event.key === "Escape" && unreadSinceMarker.length > 0) {
+    } else if (event.key === "Escape" && unreadBarText !== "") {
       event.preventDefault();
       markAsRead();
     } else if (event.key === "ArrowUp" && draft === "" && canSendMessages) {

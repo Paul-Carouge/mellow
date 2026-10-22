@@ -8,7 +8,7 @@
   import Icon, { type IconName } from "./Icon.svelte";
   import MessageItem from "./MessageItem.svelte";
   import { mentionablePeople } from "./mentions";
-  import { buildMessageRows } from "./message-rows";
+  import { buildMessageRows, isUnreadStartLoaded } from "./message-rows";
   import { nameColorsByUserId } from "./name-colors.svelte";
   import { durationTokenInMilliseconds, lengthTokenInPixels } from "./tokens";
 
@@ -88,8 +88,14 @@
     ]),
   );
   const unreadMarker = $derived(client.unreadMarkers.get(channelId) ?? null);
+  // The divider waits until the first new message is loaded, so it never jumps as pages arrive.
+  const dividerAfterMessageId = $derived(
+    unreadMarker && isUnreadStartLoaded(messages, unreadMarker, client.reachedStartChannelIds.has(channelId))
+      ? unreadMarker.lastReadMessageId
+      : null,
+  );
   const rows = $derived(
-    buildMessageRows(messages, client.pendingMessagesIn(channelId), currentUser.id, Date.now(), unreadMarker),
+    buildMessageRows(messages, client.pendingMessagesIn(channelId), currentUser.id, Date.now(), dividerAfterMessageId),
   );
   const hasReachedStart = $derived(client.reachedStartChannelIds.has(channelId));
   const isInitialLoad = $derived(messages.length === 0 && !hasReachedStart);
@@ -134,6 +140,33 @@
     isPinnedToLatest = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 1;
     isViewingOlderMessages = !isPinnedToLatest;
     loadOlderWhenNearTop();
+    noteUnreadDividerSeen();
+    releaseUnreadMarkerAtLatest();
+  }
+
+  // The jump bar goes once the divider has been seen and the reader scrolled down to the latest
+  // message (DESIGN.md §5.4). Scrolls the list makes itself (opening, new messages) do not count.
+  let hasReaderScrolled = false;
+  let hasSeenUnreadDivider = false;
+
+  function noteReaderScrolling() {
+    hasReaderScrolled = true;
+  }
+
+  function noteUnreadDividerSeen() {
+    const divider = viewport.querySelector<HTMLElement>("[data-unread-divider]");
+    if (!divider) {
+      return;
+    }
+    const view = viewport.getBoundingClientRect();
+    const line = divider.getBoundingClientRect();
+    hasSeenUnreadDivider ||= line.top >= view.top && line.bottom <= view.bottom;
+  }
+
+  function releaseUnreadMarkerAtLatest() {
+    if (hasReaderScrolled && hasSeenUnreadDivider && isPinnedToLatest && unreadMarker) {
+      client.dismissUnreadMarker(channelId);
+    }
   }
 
   // Before the DOM changes: remember where the first visible row sits, to put it back after.
@@ -192,6 +225,7 @@
       isPinnedToLatest = false;
       isViewingOlderMessages = true;
     }
+    noteUnreadDividerSeen();
   }
 
   /** New messages from others are read out politely; the first page and own messages are not. */
@@ -282,10 +316,16 @@
 {/snippet}
 
 <div class="relative min-h-0 flex-1">
+  <!-- The input listeners only note that the reader scrolls; they handle nothing themselves. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={viewport}
     class="flex h-full flex-col overflow-y-auto [overflow-anchor:none]"
     onscroll={handleScroll}
+    onwheel={noteReaderScrolling}
+    ontouchmove={noteReaderScrolling}
+    onpointerdown={noteReaderScrolling}
+    onkeydown={noteReaderScrolling}
   >
     <!-- Pushes a short history to the bottom, as Discord fills a channel from the composer up. -->
     <div class="flex-1"></div>
@@ -368,7 +408,9 @@
       type="button"
       class="absolute inset-x-(--mw-component-composer-margin-inline) bottom-0 flex h-(--mw-component-jump-bar-height) items-center gap-xs rounded-t-(--mw-component-jump-bar-radius) bg-(--mw-component-jump-bar-background) px-md text-(--mw-component-jump-bar-text) hover:bg-(--mw-component-jump-bar-background-hover) focus-visible:[outline:var(--mw-size-focus-ring-width)_solid_var(--mw-component-jump-bar-text)] focus-visible:[outline-offset:calc(-1*var(--mw-size-focus-ring-width))] pointer-coarse:h-(--mw-size-hit-web-min)"
       onclick={() => {
+        noteReaderScrolling();
         jumpToPresent();
+        releaseUnreadMarkerAtLatest();
         onjumptopresent();
       }}
     >

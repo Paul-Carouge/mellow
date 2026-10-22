@@ -1,8 +1,8 @@
 // How the shell lays out channels and messages: Discord's rules, as the desktop client applies them.
 
-import type { PendingMessage } from "../lib/client.svelte";
+import type { PendingMessage, UnreadMarker } from "../lib/client.svelte";
 import { type Message, type Snowflake, compareSnowflakes } from "../lib/protocol";
-import { unixMillisecondsOfSnowflake } from "./format";
+import { messageTimestampLabel, unixMillisecondsOfSnowflake } from "./format";
 
 /** Discord starts a new author group after this long, even for the same author. */
 export const AUTHOR_GROUP_MAXIMUM_GAP_MILLISECONDS = 7 * 60 * 1_000;
@@ -68,6 +68,47 @@ export function buildMessageRows(
     previous = { authorId, sentAt: now };
   }
   return rows;
+}
+
+export interface UnreadSummary {
+  /** Messages from others that were new when the channel was opened, among those loaded. */
+  count: number;
+  /** Older new messages are not loaded yet: the count is a lower bound ("50+"). */
+  isPartial: boolean;
+}
+
+/** What the jump bar counts (DESIGN.md §5.4): never live arrivals, never the user's own messages. */
+export function unreadSummary(
+  messages: readonly Message[],
+  marker: UnreadMarker,
+  currentUserId: Snowflake | null,
+  hasReachedStart: boolean,
+): UnreadSummary {
+  const count = messages.filter(
+    (message) =>
+      compareSnowflakes(message.id, marker.lastReadMessageId) > 0 &&
+      compareSnowflakes(message.id, marker.newestAtOpenMessageId) <= 0 &&
+      message.author.id !== currentUserId,
+  ).length;
+  const oldestLoaded = messages[0];
+  const isPartial =
+    !hasReachedStart && oldestLoaded !== undefined && compareSnowflakes(oldestLoaded.id, marker.lastReadMessageId) > 0;
+  return { count, isPartial };
+}
+
+/** True when the first new message is loaded, so the "New" divider can sit above it. */
+export function isUnreadStartLoaded(messages: readonly Message[], marker: UnreadMarker, hasReachedStart: boolean): boolean {
+  const oldestLoaded = messages[0];
+  return hasReachedStart || (oldestLoaded !== undefined && compareSnowflakes(oldestLoaded.id, marker.lastReadMessageId) <= 0);
+}
+
+/** "3 new messages since today at 14:32", dated from the last message read before the visit. */
+export function unreadBarLabel(summary: UnreadSummary, lastReadAt: number, now: Date): string {
+  const since = messageTimestampLabel(lastReadAt, now);
+  const sinceInSentence = since.startsWith("Today") || since.startsWith("Yesterday") ? since.charAt(0).toLowerCase() + since.slice(1) : since;
+  const count = `${summary.count}${summary.isPartial ? "+" : ""}`;
+  const noun = summary.count === 1 && !summary.isPartial ? "message" : "messages";
+  return `${count} new ${noun} since ${sinceInSentence}`;
 }
 
 export { type ChannelSection, channelSections } from "../lib/channels";
