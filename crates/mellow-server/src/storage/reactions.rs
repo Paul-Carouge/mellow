@@ -85,22 +85,30 @@ pub(crate) async fn add_reaction(
     Ok(outcome)
 }
 
-/// Whether the user had reacted with this emoji (and no longer has).
+/// Whether the user had reacted with this emoji on that message of `channel_id` (and no longer
+/// has). A message of another channel, or none, removes nothing.
 ///
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn remove_reaction(
     pool: &SqlitePool,
+    channel_id: Snowflake,
     message_id: Snowflake,
     user_id: Snowflake,
     emoji: &str,
 ) -> Result<bool, MessageStorageError> {
+    let Some(message_id) = lookup_integer(message_id) else {
+        return Ok(false);
+    };
     let removed = sqlx::query(
-        "DELETE FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
+        "DELETE FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ? \
+         AND EXISTS (SELECT 1 FROM messages WHERE messages.id = ? AND messages.channel_id = ?)",
     )
-    .bind(to_integer(message_id.raw())?)
+    .bind(message_id)
     .bind(to_integer(user_id.raw())?)
     .bind(emoji)
+    .bind(message_id)
+    .bind(to_integer(channel_id.raw())?)
     .execute(pool)
     .await?
     .rows_affected();
