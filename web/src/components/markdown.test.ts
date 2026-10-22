@@ -251,7 +251,8 @@ describe("blocks", () => {
 });
 
 describe("hostile text", () => {
-  const MAXIMUM_PARSE_MILLISECONDS = 100;
+  // Generous against a cold or busy runner; the quadratic cases these guard take seconds.
+  const MAXIMUM_PARSE_MILLISECONDS = 250;
 
   it.each([
     ["stars", "*".repeat(4_000)],
@@ -270,7 +271,7 @@ describe("hostile text", () => {
     ["unclosed underscores", "_a ".repeat(15_000)],
     ["spoilers", "||a ".repeat(15_000)],
     ["unclosed masked links", "[a](".repeat(15_000)],
-    ["blank lines inside a code block", "```\na" + "\n".repeat(20_000) + "b\n```"],
+    ["blank lines inside a code block", "```\na" + "\n".repeat(50_000) + "b\n```"],
   ])("parses %s quickly", (_, content) => {
     const started = performance.now();
     const blocks = parseMessageMarkdown(content, people);
