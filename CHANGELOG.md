@@ -9,6 +9,11 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 - Server: pinned messages, up to 50 per channel, pinned by members who can manage messages (anyone in a direct conversation) and recorded in the moderation log.
 - Web: react to messages with emoji, from three quick reactions or an emoji picker searchable in English and French, and see who reacted; moderators can remove reactions.
 - Web: pin and unpin messages after a confirmation, see a pin beside pinned messages, and open a channel's pinned messages from the header.
+- Server settings on the web, from the server menu: rename the server, edit roles and their permissions and order, give roles, kick and ban members, revoke bans and invites, read the moderation log in your language, and delete the server (owner only).
+- API: `PATCH` and `DELETE /api/v1/guilds/{guild_id}`, `GET /api/v1/guilds/{guild_id}/invites`, `DELETE /api/v1/invites/{code}`, and the `GUILD_UPDATE` gateway event. Creating and revoking invites now appear in the moderation log.
+
+### Fixed
+- Web: a deleted role no longer stays on members until the next reload.
 
 ## [0.7.0] - 2026-10-22
 The Dusk layout, on the web and the desktop.
