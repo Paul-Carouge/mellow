@@ -16,7 +16,7 @@
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
 
-  // The pinned messages of the open channel (DESIGN.md §5.4), from the chat header's pin button:
+  // The pinned messages of the open channel (DESIGN.md §6.53), from the chat header's pin button:
   // newest pin first, with Jump for the ones loaded in the list and Unpin for those who may.
   interface Props {
     client: MellowClient;
