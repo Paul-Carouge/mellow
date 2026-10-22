@@ -39,6 +39,8 @@ pub struct FakeMember {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FakeRoleGroup {
     pub role_name: &'static str,
+    /// `0xRRGGBB`, as roles carry it; `None` for groups that are not roles.
+    pub role_color: Option<u32>,
     pub members: Vec<FakeMember>,
 }
 
@@ -92,6 +94,9 @@ pub fn fake_categories() -> Vec<FakeCategory> {
     ]
 }
 
+/// The reference mockup's moderator green.
+const MAINTAINER_ROLE_COLOR: u32 = 0x4F_B3_9A;
+
 pub fn fake_role_groups() -> Vec<FakeRoleGroup> {
     let member = |display_name, activity, presence| FakeMember {
         display_name,
@@ -101,6 +106,7 @@ pub fn fake_role_groups() -> Vec<FakeRoleGroup> {
     vec![
         FakeRoleGroup {
             role_name: "Maintainers",
+            role_color: Some(MAINTAINER_ROLE_COLOR),
             members: vec![
                 member("Aurore", "Reviewing PR #2", FakePresence::Online),
                 member("Basile", "", FakePresence::DoNotDisturb),
@@ -108,6 +114,7 @@ pub fn fake_role_groups() -> Vec<FakeRoleGroup> {
         },
         FakeRoleGroup {
             role_name: "Contributors",
+            role_color: None,
             members: vec![
                 member("Chloé", "Playing Factorio", FakePresence::Online),
                 member("Dimitri", "", FakePresence::Idle),
@@ -116,6 +123,7 @@ pub fn fake_role_groups() -> Vec<FakeRoleGroup> {
         },
         FakeRoleGroup {
             role_name: "Offline",
+            role_color: None,
             members: vec![
                 member("Fanny", "", FakePresence::Offline),
                 member("Gaspard", "", FakePresence::Offline),

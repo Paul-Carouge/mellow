@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 use crate::fake_workspace::{FakeCategory, FakePresence, FakeRoleGroup, FakeServer};
 use slint::SharedString;
 
-use crate::generated_ui::{ChannelListRow, MemberListRow, PresenceStatus, ServerItem};
+use crate::generated_ui::{ChannelListRow, MemberListRow, PresenceStatus, RoleColor, ServerItem};
+use crate::person_style;
 
 const MAXIMUM_SERVER_INITIALS: usize = 3;
 
@@ -89,6 +90,8 @@ pub fn member_rows(role_groups: &[FakeRoleGroup]) -> Vec<MemberListRow> {
                 label: group.role_name.into(),
                 member_count: saturating_int(group.members.len()),
                 initial: "".into(),
+                tint: 0,
+                role_color: RoleColor::default(),
                 activity: "".into(),
                 status: PresenceStatus::Offline,
                 user_id: "".into(),
@@ -99,6 +102,8 @@ pub fn member_rows(role_groups: &[FakeRoleGroup]) -> Vec<MemberListRow> {
                 label: member.display_name.into(),
                 member_count: 0,
                 initial: first_letter(member.display_name).into(),
+                tint: person_style::avatar_tint_index(member.display_name),
+                role_color: person_style::role_color(group.role_color),
                 activity: member.activity.into(),
                 status: presence_status(member.presence),
                 // The demo has no accounts: the name stands in for an id.
@@ -182,14 +187,17 @@ mod tests {
         let role_groups = vec![
             FakeRoleGroup {
                 role_name: "Moderators",
+                role_color: None,
                 members: vec![member("Aurore", FakePresence::Online)],
             },
             FakeRoleGroup {
                 role_name: "Empty role",
+                role_color: None,
                 members: Vec::new(),
             },
             FakeRoleGroup {
                 role_name: "Offline",
+                role_color: None,
                 members: vec![member("Basile", FakePresence::Offline)],
             },
         ];

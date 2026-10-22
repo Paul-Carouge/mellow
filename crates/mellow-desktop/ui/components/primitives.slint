@@ -1,4 +1,4 @@
-import { MellowColor, MellowComponent, MellowRadius, MellowSpace, MellowType } from "../tokens.slint";
+import { MellowColor, MellowComponent, MellowRadius, MellowSpace, MellowTheme, MellowType } from "../tokens.slint";
 
 export enum PresenceStatus { online, idle, do-not-disturb, offline }
 
@@ -48,9 +48,36 @@ export component PresenceDot inherits Rectangle {
     }
 }
 
-// shortcut: initials on the accent colour until avatar images exist (M2 attachments).
+// A role colour made readable on the sheet in each theme (DESIGN.md §2.3), computed in Rust.
+export struct RoleColor {
+    is-set: bool,
+    dark: color,
+    light: color,
+}
+
+// Colours that belong to a person: their default avatar tint and their role colour.
+export global PersonColor {
+    // `index` comes from Rust (`person_style::avatar_tint_index`), 0 to 7.
+    public pure function tint(index: int) -> color {
+        index == 1 ? MellowColor.avatar-tint-2
+            : index == 2 ? MellowColor.avatar-tint-3
+            : index == 3 ? MellowColor.avatar-tint-4
+            : index == 4 ? MellowColor.avatar-tint-5
+            : index == 5 ? MellowColor.avatar-tint-6
+            : index == 6 ? MellowColor.avatar-tint-7
+            : index == 7 ? MellowColor.avatar-tint-8
+            : MellowColor.avatar-tint-1
+    }
+    // The role colour for the current theme, or `fallback` without one.
+    public pure function name(role: RoleColor, fallback: color) -> color {
+        role.is-set ? (MellowTheme.is-dark ? role.dark : role.light) : fallback
+    }
+}
+
+// shortcut: the initial on the person's default tint until avatar pictures reach the desktop.
 export component Avatar inherits Rectangle {
     in property <string> initial;
+    in property <int> tint-index;
     in property <length> size;
     in property <bool> has-presence: false;
     in property <PresenceStatus> status;
@@ -61,10 +88,10 @@ export component Avatar inherits Rectangle {
 
     Rectangle {
         border-radius: self.width / 2;
-        background: MellowColor.accent-fill;
+        background: PersonColor.tint(root.tint-index);
         Text {
             text: initial;
-            color: MellowColor.text-on-accent;
+            color: MellowColor.avatar-initial;
             font-size: size * 0.4;
             font-weight: MellowType.message-author.font-weight;
         }

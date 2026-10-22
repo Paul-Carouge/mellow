@@ -1,7 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { MellowColor, MellowComponent, MellowMotion, MellowSpace, MellowType } from "../tokens.slint";
 import { MotionPreference } from "../preferences.slint";
-import { Avatar, Button, IconButton, PresenceStatus } from "primitives.slint";
+import { Avatar, Button, IconButton, PersonColor, PresenceStatus, RoleColor } from "primitives.slint";
 
 // Role group headers and members flattened into one list for virtualization.
 export struct MemberListRow {
@@ -10,6 +10,9 @@ export struct MemberListRow {
     label: string,
     member-count: int,
     initial: string,
+    // Default avatar tint, 0 to 7, and the highest coloured role, if known.
+    tint: int,
+    role-color: RoleColor,
     activity: string,
     status: PresenceStatus,
     // Empty for group headers.
@@ -69,6 +72,7 @@ component MemberRow inherits Rectangle {
                 Avatar {
                     opacity: is-offline ? MellowComponent.member-row-offline-avatar-opacity : 1.0;
                     initial: member.initial;
+                    tint-index: member.tint;
                     size: MellowComponent.member-row-avatar-size;
                     has-presence: true;
                     status: member.status;
@@ -80,7 +84,8 @@ component MemberRow inherits Rectangle {
                 horizontal-stretch: 1;
                 Text {
                     text: member.label;
-                    color: root.is-highlighted ? MellowComponent.member-row-name-text-hover : MellowComponent.member-row-name-text;
+                    color: PersonColor.name(member.role-color,
+                        root.is-highlighted ? MellowComponent.member-row-name-text-hover : MellowComponent.member-row-name-text);
                     font-size: MellowType.member-name.font-size;
                     font-weight: MellowType.member-name.font-weight;
                     overflow: elide;
@@ -132,6 +137,7 @@ component MemberProfile inherits VerticalLayout {
             background: MellowComponent.side-sheet-background;
             Avatar {
                 initial: root.member.initial;
+                tint-index: root.member.tint;
                 size: MellowComponent.profile-popover-avatar-size;
             }
         }

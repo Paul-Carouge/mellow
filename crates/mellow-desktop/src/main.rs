@@ -14,6 +14,7 @@ mod live_rows;
 mod live_shell;
 mod melli_animation;
 mod message_markup;
+mod person_style;
 mod preferences;
 mod role_settings;
 mod scroll_benchmark;

@@ -337,7 +337,7 @@ The composer field (`surface.input` on `surface.chat`) has no 3:1 boundary. It i
 
 Role colours are chosen by server admins and shown on author and member names. Mellow keeps the hue but adjusts lightness in OKLCH until the colour reaches 4.5:1 against the surface it is drawn on, separately for each theme. This adjustment lives in the shared Rust core so both clients render the same result. The role editor shows a live preview on both themes and says "Adjusted for readability" when the displayed colour differs from the picked one.
 
-Default avatars (no uploaded picture) show the first grapheme of the display name on one of eight tints derived from the palette, picked deterministically from the user ID. Each tint/initial pair is validated at 4.5:1 by the token generator.
+Default avatars (no uploaded picture) show the first grapheme of the display name on one of eight tints derived from the palette, picked deterministically from the user ID: FNV-1a (32 bits) over the UTF-8 bytes of the id in decimal, modulo 8, gives `color.avatar.tint-1` to `tint-8` (index 0 is tint 1), with the initial in `color.avatar.initial`. A role colour keeps its hue and its OKLCH lightness moves in 0.005 steps (up on a dark surface, down on a light one) until it reaches 4.5:1 on `surface.chat` (web: `role-colors.ts`, desktop: `person_style.rs`). Each tint/initial pair is validated at 4.5:1 by the token generator.
 
 ### 2.4 Typography
 

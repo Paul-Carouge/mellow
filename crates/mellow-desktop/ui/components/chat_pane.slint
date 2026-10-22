@@ -1,7 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { MellowColor, MellowComponent, MellowFont, MellowMotion, MellowRadius, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
 import { MotionPreference } from "../preferences.slint";
-import { Avatar, Button, IconButton } from "primitives.slint";
+import { Avatar, Button, IconButton, PersonColor, RoleColor } from "primitives.slint";
 
 // Where a message the signed-in user sent stands: confirmed by the server, or still in the outbox.
 export enum MessageDelivery { sent, sending, failed }
@@ -18,6 +18,9 @@ export struct AttachmentRow {
 export struct MessageRow {
     author: string,
     author-initial: string,
+    // Default avatar tint, 0 to 7, and the highest coloured role, if known.
+    author-tint: int,
+    author-role-color: RoleColor,
     timestamp: string,
     // Time of day only, shown in the gutter when a grouped message is hovered.
     short-time: string,
@@ -28,6 +31,7 @@ export struct MessageRow {
     // A reply: the original's author (empty when it is gone) and the start of its text.
     reply-author: string,
     reply-author-initial: string,
+    reply-author-tint: int,
     reply-preview: string,
     mentions-current-user: bool,
     // The signed-in user wrote it: only then is Edit offered.
@@ -321,6 +325,7 @@ component MessageView inherits Rectangle {
                     alignment: center;
                     Avatar {
                         initial: message.reply-author-initial;
+                        tint-index: message.reply-author-tint;
                         size: MellowComponent.message-reply-avatar-size;
                     }
                 }
@@ -345,7 +350,7 @@ component MessageView inherits Rectangle {
                 alignment: start;
                 Text {
                     text: message.author;
-                    color: MellowComponent.message-author-text;
+                    color: PersonColor.name(message.author-role-color, MellowComponent.message-author-text);
                     font-size: MellowType.message-author.font-size;
                     font-weight: MellowType.message-author.font-weight;
                 }
@@ -499,6 +504,7 @@ component MessageView inherits Rectangle {
             x: MellowComponent.message-avatar-inset;
             y: root.avatar-y;
             initial: message.author-initial;
+            tint-index: message.author-tint;
             size: MellowComponent.message-avatar-size;
         }
         if !message.starts-author-group && root.is-hovered: Text {
