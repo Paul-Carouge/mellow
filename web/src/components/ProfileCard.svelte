@@ -4,7 +4,7 @@
   import { type PublicUser, profileImageUrl } from "../lib/protocol";
   import { prefersReducedMotion } from "../lib/motion.svelte";
   import Avatar from "./Avatar.svelte";
-  import { displayName } from "./format";
+  import { avatarTintToken, displayName } from "./format";
 
   // A member's profile (DESIGN.md §5.7, ADR-0022 §1), in the side sheet and as the live preview in
   // Profile settings (§5.9): the banner picture, or the plain strip, with the avatar overlapping
@@ -37,7 +37,12 @@
     onerror={() => (failedBannerId = bannerId)}
   />
 {:else}
-  <div aria-hidden="true" class="h-(--mw-component-profile-popover-banner-height) bg-(--mw-component-profile-popover-banner)"></div>
+  <!-- No banner picture: the strip takes the person's avatar tint, as in the Dusk mockup. -->
+  <div
+    aria-hidden="true"
+    class="h-(--mw-component-profile-popover-banner-height)"
+    style:background-color="var({avatarTintToken(user.id)})"
+  ></div>
 {/if}
 <div class="flex flex-col gap-(--mw-component-profile-popover-text-gap) px-(--mw-component-profile-popover-padding) pb-(--mw-component-profile-popover-padding)">
   <!-- The ring is drawn outside the avatar, so the avatar keeps the card's padding and sits one
