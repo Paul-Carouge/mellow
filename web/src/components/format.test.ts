@@ -11,10 +11,17 @@ import {
   middleTruncate,
   serverInitials,
   splitMessageText,
+  timeOfDayLabel,
   typingLabel,
   unixMillisecondsOfSnowflake,
 } from "./format";
-import { AUTHOR_GROUP_MAXIMUM_GAP_MILLISECONDS, buildMessageRows, channelSections } from "./message-rows";
+import {
+  AUTHOR_GROUP_MAXIMUM_GAP_MILLISECONDS,
+  buildMessageRows,
+  channelSections,
+  unreadBarLabel,
+  unreadSummary,
+} from "./message-rows";
 import { parseDurationInMilliseconds, parseRemLength } from "./tokens";
 
 const MELLOW_EPOCH = 1_767_225_600_000;
@@ -205,6 +212,31 @@ describe("buildMessageRows", () => {
       ["sent", true],
       ["pending", false],
     ]);
+  });
+});
+
+describe("unreadSummary and unreadBarLabel", () => {
+  const start = MELLOW_EPOCH + 1_000_000;
+  const ids = [0, 1, 2, 3, 4].map((minute) => snowflakeAt(start + minute * 60_000));
+  const id = (index: number) => ids[index] ?? "";
+
+  it("counts only what others wrote between the last read message and the visit's opening", () => {
+    const messages = [message(id(0), "2"), message(id(1), "2"), message(id(2), "1"), message(id(3), "2"), message(id(4), "2")];
+    // Read up to 0; 1 to 3 were there at open (2 is the user's own); 4 arrived live.
+    const summary = unreadSummary(messages, { lastReadMessageId: id(0), newestAtOpenMessageId: id(3) }, "1", true);
+    expect(summary).toEqual({ count: 2, isPartial: false });
+  });
+
+  it("says 50+ when older unread messages are not loaded, and dates the label from the marker", () => {
+    const loaded = [message(id(2), "2"), message(id(3), "2")];
+    const marker = { lastReadMessageId: id(0), newestAtOpenMessageId: id(3) };
+    const summary = unreadSummary(loaded, marker, "1", false);
+    expect(summary).toEqual({ count: 2, isPartial: true });
+    const now = new Date(start + 10 * 60_000);
+    expect(unreadBarLabel(summary, start, now)).toBe(`2+ new messages since today at ${timeOfDayLabel(start)}`);
+    expect(unreadBarLabel({ count: 1, isPartial: false }, start, now)).toBe(
+      `1 new message since today at ${timeOfDayLabel(start)}`,
+    );
   });
 });
 
