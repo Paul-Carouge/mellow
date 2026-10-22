@@ -8,6 +8,14 @@ pub const MAXIMUM_MESSAGE_BYTES: usize = 8_000;
 pub const MAXIMUM_NONCE_LENGTH: usize = 64;
 pub const DEFAULT_HISTORY_PAGE_SIZE: u32 = 50;
 pub const MAXIMUM_HISTORY_PAGE_SIZE: u32 = 100;
+/// Long enough for the longest standard sequences (a family with skin tones, a subdivision flag).
+pub const MAXIMUM_REACTION_EMOJI_BYTES: usize = 64;
+/// Distinct emoji on one message, as on Discord.
+pub const MAXIMUM_DISTINCT_EMOJI_PER_MESSAGE: u32 = 20;
+/// Pinned messages per channel, as on Discord.
+pub const MAXIMUM_PINS_PER_CHANNEL: u32 = 50;
+pub const DEFAULT_REACTING_USERS_PAGE_SIZE: u32 = 25;
+pub const MAXIMUM_REACTING_USERS_PAGE_SIZE: u32 = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MessageRuleViolation {
@@ -37,6 +45,12 @@ pub enum MessageRuleViolation {
         "pictures are PNG, JPEG, GIF or WebP, at most 8192 pixels a side, 24 megapixels in all frames together and 600 frames"
     )]
     Picture,
+    #[error(
+        "a reaction is a Unicode emoji (at most {MAXIMUM_REACTION_EMOJI_BYTES} bytes), without text or spaces"
+    )]
+    ReactionEmoji,
+    #[error("pages of reacting users hold 1 to {MAXIMUM_REACTING_USERS_PAGE_SIZE} users")]
+    ReactingUsersQuery,
 }
 
 pub const MAXIMUM_ATTACHMENTS_PER_MESSAGE: usize = 10;
@@ -144,6 +158,90 @@ pub fn history_page_size(requested: Option<u32>) -> Result<u32, MessageRuleViola
     }
 }
 
+/// A code point that shows as an emoji on its own: Unicode's `Extended_Pictographic` and the
+/// regional indicators that pair into flags.
+/// shortcut: hand-written superset of `Extended_Pictographic` (whole symbol blocks); use a Unicode
+/// property table if a non-emoji symbol from those blocks must be refused.
+fn is_emoji_code_point(character: char) -> bool {
+    matches!(
+        character,
+        '\u{A9}'
+            | '\u{AE}'
+            | '\u{203C}'
+            | '\u{2049}'
+            | '\u{2122}'
+            | '\u{2139}'
+            | '\u{2194}'..='\u{2199}'
+            | '\u{21A9}'..='\u{21AA}'
+            | '\u{231A}'..='\u{231B}'
+            | '\u{2328}'
+            | '\u{2388}'
+            | '\u{23CF}'
+            | '\u{23E9}'..='\u{23F3}'
+            | '\u{23F8}'..='\u{23FA}'
+            | '\u{24C2}'
+            | '\u{25AA}'..='\u{25AB}'
+            | '\u{25B6}'
+            | '\u{25C0}'
+            | '\u{25FB}'..='\u{25FE}'
+            | '\u{2600}'..='\u{27BF}'
+            | '\u{2934}'..='\u{2935}'
+            | '\u{2B05}'..='\u{2B07}'
+            | '\u{2B1B}'..='\u{2B1C}'
+            | '\u{2B50}'
+            | '\u{2B55}'
+            | '\u{3030}'
+            | '\u{303D}'
+            | '\u{3297}'
+            | '\u{3299}'
+            | '\u{1F000}'..='\u{1FAFF}'
+            | '\u{1FC00}'..='\u{1FFFD}'
+    )
+}
+
+const KEYCAP: char = '\u{20E3}';
+
+/// What may join emoji code points in a sequence: the zero-width joiner, variation selectors, the
+/// keycap mark and its bases, and the tags of subdivision flags.
+fn is_emoji_sequence_part(character: char) -> bool {
+    matches!(
+        character,
+        '\u{200D}' | '\u{FE0E}' | '\u{FE0F}' | KEYCAP | '0'..='9' | '#' | '*' | '\u{E0020}'..='\u{E007F}'
+    )
+}
+
+/// A reaction is a Unicode emoji as clients send it: emoji code points and the marks that combine
+/// them, nothing else (no text, spaces or control characters), and at least one emoji or keycap.
+/// shortcut: a few emoji in a row also pass (bounded by the byte limit); split grapheme clusters
+/// if exactly one must be enforced.
+///
+/// # Errors
+/// `ReactionEmoji` for anything else.
+pub fn validate_reaction_emoji(emoji: &str) -> Result<(), MessageRuleViolation> {
+    let shows_an_emoji = emoji
+        .chars()
+        .any(|character| is_emoji_code_point(character) || character == KEYCAP);
+    let is_only_emoji = emoji
+        .chars()
+        .all(|character| is_emoji_code_point(character) || is_emoji_sequence_part(character));
+    if emoji.len() <= MAXIMUM_REACTION_EMOJI_BYTES && shows_an_emoji && is_only_emoji {
+        Ok(())
+    } else {
+        Err(MessageRuleViolation::ReactionEmoji)
+    }
+}
+
+/// # Errors
+/// `ReactingUsersQuery` for a limit outside 1..=100.
+pub fn reacting_users_page_size(requested: Option<u32>) -> Result<u32, MessageRuleViolation> {
+    let size = requested.unwrap_or(DEFAULT_REACTING_USERS_PAGE_SIZE);
+    if (1..=MAXIMUM_REACTING_USERS_PAGE_SIZE).contains(&size) {
+        Ok(size)
+    } else {
+        Err(MessageRuleViolation::ReactingUsersQuery)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,6 +270,61 @@ mod tests {
         ] {
             assert!(validate_message_content(invalid).is_err(), "{invalid:?}");
         }
+    }
+
+    #[test]
+    fn reactions_are_one_emoji_and_nothing_else() {
+        for valid in [
+            "👍",
+            "❤️",
+            "👍🏽",
+            "👩‍💻",
+            "👨‍👩‍👧‍👦",
+            "🇫🇷",
+            "#️⃣",
+            "1️⃣",
+            "🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}",
+            "©️",
+        ] {
+            assert_eq!(validate_reaction_emoji(valid), Ok(()), "{valid:?}");
+        }
+        for invalid in [
+            "",
+            "a",
+            "lol",
+            "lol😀",
+            "😀 ",
+            " 😀",
+            "😀\n",
+            "\u{FE0F}",
+            "\u{200D}",
+            "1",
+            "##",
+            "😀\u{202E}",
+            "😀\u{0007}",
+            "<script>",
+            &"😀".repeat(MAXIMUM_REACTION_EMOJI_BYTES / 4 + 1),
+        ] {
+            assert_eq!(
+                validate_reaction_emoji(invalid),
+                Err(MessageRuleViolation::ReactionEmoji),
+                "{invalid:?}"
+            );
+        }
+        assert_eq!(
+            validate_reaction_emoji(&"😀".repeat(MAXIMUM_REACTION_EMOJI_BYTES / 4)),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn reacting_user_pages_are_bounded() {
+        assert_eq!(
+            reacting_users_page_size(None),
+            Ok(DEFAULT_REACTING_USERS_PAGE_SIZE)
+        );
+        assert!(reacting_users_page_size(Some(0)).is_err());
+        assert!(reacting_users_page_size(Some(MAXIMUM_REACTING_USERS_PAGE_SIZE + 1)).is_err());
     }
 
     #[test]

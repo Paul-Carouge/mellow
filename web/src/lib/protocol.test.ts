@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import { generateMessageNonce } from "./api";
 import {
+  DIRECT_MESSAGE_PERMISSIONS,
   MAXIMUM_PROFILE_IMAGE_BYTES,
   Permission,
   compareSnowflakes,
   computeChannelPermissions,
   hasPermission,
+  ownReactionPath,
   profileImageFileProblem,
   profileImageUrl,
 } from "./protocol";
@@ -24,6 +26,18 @@ describe("permissions", () => {
     expect(hasPermission("4", Permission.SEND_MESSAGES)).toBe(true);
     expect(hasPermission("2", Permission.SEND_MESSAGES)).toBe(false);
     expect(hasPermission("1", Permission.MANAGE_CHANNELS)).toBe(true);
+  });
+});
+
+describe("reactions", () => {
+  it("percent-encode the emoji in the path", () => {
+    expect(ownReactionPath("1", "2", "👍")).toBe("/api/v1/channels/1/messages/2/reactions/%F0%9F%91%8D/@me");
+    expect(ownReactionPath("1", "2", "#️⃣")).toBe("/api/v1/channels/1/messages/2/reactions/%23%EF%B8%8F%E2%83%A3/@me");
+  });
+
+  it("use bit 16, held by direct-message participants", () => {
+    expect(Permission.ADD_REACTIONS).toBe(65536n);
+    expect(hasPermission(DIRECT_MESSAGE_PERMISSIONS, Permission.ADD_REACTIONS)).toBe(true);
   });
 });
 

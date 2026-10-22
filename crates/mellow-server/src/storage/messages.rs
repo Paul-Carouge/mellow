@@ -1,4 +1,4 @@
-//! Messages and read states (migration 0003).
+//! Messages, pins and read states (migrations 0003 and 0012).
 
 use mellow_protocol::Snowflake;
 use sqlx::SqlitePool;
@@ -44,6 +44,7 @@ pub(crate) struct StoredMessage {
     pub(crate) content: String,
     pub(crate) reply_to_id: Option<Snowflake>,
     pub(crate) edited_at_unix_milliseconds: Option<u64>,
+    pub(crate) is_pinned: bool,
 }
 
 type MessageRow = (
@@ -55,6 +56,7 @@ type MessageRow = (
     String,
     Option<i64>,
     Option<i64>,
+    Option<i64>,
 );
 
 /// A macro so queries stay `&'static str` through `concat!` (sqlx refuses runtime-built SQL).
@@ -62,13 +64,33 @@ macro_rules! select_message_columns {
     () => {
         "SELECT messages.id, messages.channel_id, messages.author_id, users.username, \
          users.display_name, messages.content, messages.reply_to_id, \
-         messages.edited_at_unix_milliseconds \
+         messages.edited_at_unix_milliseconds, messages.pinned_at_unix_milliseconds \
          FROM messages JOIN users ON users.id = messages.author_id "
     };
 }
 
+/// The same columns, for `UPDATE … RETURNING` and `INSERT … RETURNING` on `messages`.
+macro_rules! returning_message_columns {
+    () => {
+        "RETURNING id, channel_id, author_id, \
+         (SELECT username FROM users WHERE users.id = author_id), \
+         (SELECT display_name FROM users WHERE users.id = author_id), \
+         content, reply_to_id, edited_at_unix_milliseconds, pinned_at_unix_milliseconds"
+    };
+}
+
 fn message_from_row(row: MessageRow) -> Result<StoredMessage, MessageStorageError> {
-    let (id, channel_id, author_id, username, display_name, content, reply_to_id, edited_at) = row;
+    let (
+        id,
+        channel_id,
+        author_id,
+        username,
+        display_name,
+        content,
+        reply_to_id,
+        edited_at,
+        pinned_at,
+    ) = row;
     Ok(StoredMessage {
         id: to_id(id)?,
         channel_id: to_id(channel_id)?,
@@ -80,6 +102,7 @@ fn message_from_row(row: MessageRow) -> Result<StoredMessage, MessageStorageErro
         edited_at_unix_milliseconds: edited_at
             .map(|value| u64::try_from(value).map_err(|_| MessageStorageError::IntegerOutOfRange))
             .transpose()?,
+        is_pinned: pinned_at.is_some(),
     })
 }
 
@@ -105,14 +128,11 @@ pub(crate) async fn insert_message(
     message: &NewMessage,
 ) -> Result<StoredMessage, MessageStorageError> {
     let mut transaction = pool.begin().await?;
-    let row: MessageRow = sqlx::query_as(
+    let row: MessageRow = sqlx::query_as(concat!(
         "INSERT INTO messages (id, channel_id, author_id, content, reply_to_id, nonce) \
-         VALUES (?, ?, ?, ?, ?, ?) \
-         RETURNING id, channel_id, author_id, \
-         (SELECT username FROM users WHERE users.id = author_id), \
-         (SELECT display_name FROM users WHERE users.id = author_id), \
-         content, reply_to_id, edited_at_unix_milliseconds",
-    )
+         VALUES (?, ?, ?, ?, ?, ?) ",
+        returning_message_columns!()
+    ))
     .bind(to_integer(message.id.raw())?)
     .bind(to_integer(message.channel_id.raw())?)
     .bind(to_integer(message.author_id.raw())?)
@@ -266,13 +286,10 @@ pub(crate) async fn update_message_content(
     content: &str,
     edited_at_unix_milliseconds: u64,
 ) -> Result<Option<StoredMessage>, MessageStorageError> {
-    let row: Option<MessageRow> = sqlx::query_as(
-        "UPDATE messages SET content = ?, edited_at_unix_milliseconds = ? WHERE id = ? \
-         RETURNING id, channel_id, author_id, \
-         (SELECT username FROM users WHERE users.id = author_id), \
-         (SELECT display_name FROM users WHERE users.id = author_id), \
-         content, reply_to_id, edited_at_unix_milliseconds",
-    )
+    let row: Option<MessageRow> = sqlx::query_as(concat!(
+        "UPDATE messages SET content = ?, edited_at_unix_milliseconds = ? WHERE id = ? ",
+        returning_message_columns!()
+    ))
     .bind(content)
     .bind(to_integer(edited_at_unix_milliseconds)?)
     .bind(to_integer(message_id.raw())?)
@@ -304,6 +321,122 @@ pub(crate) async fn delete_message(
     }
     transaction.commit().await?;
     Ok(())
+}
+
+/// What pinning a message did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PinOutcome {
+    Pinned(StoredMessage),
+    AlreadyPinned,
+    /// The channel already holds the maximum number of pins.
+    LimitReached,
+    /// Deleted meanwhile, or never in this channel.
+    MessageNotFound,
+}
+
+/// Pins the message unless it already is or the channel is full, and records `audit` in the same
+/// transaction when it pinned.
+///
+/// # Errors
+/// Fails on database errors. Nothing is written then.
+pub(crate) async fn pin_message(
+    pool: &SqlitePool,
+    channel_id: Snowflake,
+    message_id: Snowflake,
+    pinned_at_unix_milliseconds: u64,
+    maximum_pins_per_channel: u32,
+    audit: Option<&NewAuditEntry>,
+) -> Result<PinOutcome, MessageStorageError> {
+    let channel_id = to_integer(channel_id.raw())?;
+    let message_id = to_integer(message_id.raw())?;
+    // Immediate: the count and the update must see the same pins as concurrent pins.
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let pinned_at: Option<Option<i64>> = sqlx::query_scalar(
+        "SELECT pinned_at_unix_milliseconds FROM messages WHERE id = ? AND channel_id = ?",
+    )
+    .bind(message_id)
+    .bind(channel_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    match pinned_at {
+        None => return Ok(PinOutcome::MessageNotFound),
+        Some(Some(_)) => return Ok(PinOutcome::AlreadyPinned),
+        Some(None) => {}
+    }
+    let pin_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages \
+         WHERE channel_id = ? AND pinned_at_unix_milliseconds IS NOT NULL",
+    )
+    .bind(channel_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    if pin_count >= i64::from(maximum_pins_per_channel) {
+        return Ok(PinOutcome::LimitReached);
+    }
+    let row: MessageRow = sqlx::query_as(concat!(
+        "UPDATE messages SET pinned_at_unix_milliseconds = ? WHERE id = ? ",
+        returning_message_columns!()
+    ))
+    .bind(to_integer(pinned_at_unix_milliseconds)?)
+    .bind(message_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    if let Some(audit) = audit {
+        insert_audit_entry(&mut transaction, audit).await?;
+    }
+    transaction.commit().await?;
+    Ok(PinOutcome::Pinned(message_from_row(row)?))
+}
+
+/// Unpins the message and records `audit` in the same transaction; `None` when it was not pinned
+/// (or is gone), and then nothing is written.
+///
+/// # Errors
+/// Fails on database errors. Nothing is written then.
+pub(crate) async fn unpin_message(
+    pool: &SqlitePool,
+    channel_id: Snowflake,
+    message_id: Snowflake,
+    audit: Option<&NewAuditEntry>,
+) -> Result<Option<StoredMessage>, MessageStorageError> {
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let row: Option<MessageRow> = sqlx::query_as(concat!(
+        "UPDATE messages SET pinned_at_unix_milliseconds = NULL \
+         WHERE id = ? AND channel_id = ? AND pinned_at_unix_milliseconds IS NOT NULL ",
+        returning_message_columns!()
+    ))
+    .bind(to_integer(message_id.raw())?)
+    .bind(to_integer(channel_id.raw())?)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if row.is_some()
+        && let Some(audit) = audit
+    {
+        insert_audit_entry(&mut transaction, audit).await?;
+    }
+    transaction.commit().await?;
+    row.map(message_from_row).transpose()
+}
+
+/// The channel's pinned messages, the most recently pinned first.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn list_pinned_messages(
+    pool: &SqlitePool,
+    channel_id: Snowflake,
+    limit: u32,
+) -> Result<Vec<StoredMessage>, MessageStorageError> {
+    let rows: Vec<MessageRow> = sqlx::query_as(concat!(
+        select_message_columns!(),
+        "WHERE messages.channel_id = ? AND messages.pinned_at_unix_milliseconds IS NOT NULL \
+         ORDER BY messages.pinned_at_unix_milliseconds DESC, messages.id DESC LIMIT ?"
+    ))
+    .bind(to_integer(channel_id.raw())?)
+    .bind(i64::from(limit))
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(message_from_row).collect()
 }
 
 /// Moves the user's read position forward only: an older acknowledgement arriving late never

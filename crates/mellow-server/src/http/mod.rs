@@ -138,7 +138,7 @@ fn account_router() -> Router<AppState> {
         )
 }
 
-/// Messages, read states, typing and attachments of a channel or conversation.
+/// Messages, reactions, pins, read states, typing and attachments of a channel or conversation.
 fn message_router(maximum_attachment_bytes: u64) -> Router<AppState> {
     Router::new()
         .route(
@@ -148,6 +148,22 @@ fn message_router(maximum_attachment_bytes: u64) -> Router<AppState> {
         .route(
             "/api/v1/channels/{channel_id}/messages/{message_id}",
             patch(message_routes::edit_message).delete(message_routes::delete_message),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}",
+            get(message_routes::list_reacting_users),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me",
+            put(message_routes::add_reaction).delete(message_routes::remove_own_reaction),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/pins",
+            get(message_routes::list_pins),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/pins/{message_id}",
+            put(message_routes::pin_message).delete(message_routes::unpin_message),
         )
         .route(
             "/api/v1/channels/{channel_id}/read-state",
@@ -2223,6 +2239,164 @@ pub(crate) mod tests {
             send(&state, authorized("POST", &typing_path, &owner, None)).await;
         }
         let (status, _) = send(&state, authorized("POST", &typing_path, &owner, None)).await;
+        pool.close().await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn reactions_and_pins_over_http() {
+        use mellow_protocol::{Guild, Message, PublicUser};
+
+        const THUMBS_UP: &str = "%F0%9F%91%8D";
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, guest, guild_id, guest_id) = guild_with_guest(&state).await;
+        let (_, body) = send(
+            &state,
+            authorized("GET", &format!("/api/v1/guilds/{guild_id}"), &owner, None),
+        )
+        .await;
+        let general = json::<Guild>(&body).channels[1].id;
+        let messages_path = format!("/api/v1/channels/{general}/messages");
+        let (_, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &messages_path,
+                &owner,
+                Some(serde_json::json!({"content": "react to me"})),
+            ),
+        )
+        .await;
+        let message: Message = json(&body);
+        let reactions_path = format!("{messages_path}/{}/reactions", message.id);
+        let mine = format!("{reactions_path}/{THUMBS_UP}/@me");
+
+        let mut statuses = Vec::new();
+        for _ in 0..2 {
+            statuses.push(send(&state, authorized("PUT", &mine, &guest, None)).await.0);
+        }
+        let (_, body) = send(
+            &state,
+            authorized("GET", &format!("{messages_path}?limit=10"), &guest, None),
+        )
+        .await;
+        let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let (status, body) = send(
+            &state,
+            authorized(
+                "GET",
+                &format!("{reactions_path}/{THUMBS_UP}"),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        let users: Vec<PublicUser> = json(&body);
+        let (bad_emoji, bad_emoji_body) = send(
+            &state,
+            authorized("PUT", &format!("{reactions_path}/lol/@me"), &guest, None),
+        )
+        .await;
+        let removed = send(&state, authorized("DELETE", &mine, &guest, None))
+            .await
+            .0;
+        pool.close().await;
+
+        assert_eq!(statuses, [StatusCode::NO_CONTENT, StatusCode::NO_CONTENT]);
+        assert_eq!(
+            history[0]["reactions"],
+            serde_json::json!([{"emoji": "👍", "count": 1, "me": true}])
+        );
+        assert_eq!(history[0]["pinned"], false);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            users.iter().map(|user| user.id).collect::<Vec<_>>(),
+            [guest_id]
+        );
+        assert_eq!(bad_emoji, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json::<ApiErrorBody>(&bad_emoji_body).code,
+            ApiErrorCode::ValidationFailed
+        );
+        assert_eq!(removed, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn pins_over_http() {
+        use mellow_protocol::{Guild, Message};
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, guest, guild_id, _) = guild_with_guest(&state).await;
+        let (_, body) = send(
+            &state,
+            authorized("GET", &format!("/api/v1/guilds/{guild_id}"), &owner, None),
+        )
+        .await;
+        let general = json::<Guild>(&body).channels[1].id;
+        let (_, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &format!("/api/v1/channels/{general}/messages"),
+                &guest,
+                Some(serde_json::json!({"content": "pin me"})),
+            ),
+        )
+        .await;
+        let message: Message = json(&body);
+        let pin_path = format!("/api/v1/channels/{general}/pins/{}", message.id);
+        let guest_pins = send(&state, authorized("PUT", &pin_path, &guest, None)).await;
+        let owner_pins = send(&state, authorized("PUT", &pin_path, &owner, None))
+            .await
+            .0;
+        let pins_path = format!("/api/v1/channels/{general}/pins");
+        let (_, body) = send(&state, authorized("GET", &pins_path, &guest, None)).await;
+        let pins: Vec<Message> = json(&body);
+        let unpinned = send(&state, authorized("DELETE", &pin_path, &owner, None))
+            .await
+            .0;
+        let (_, body) = send(&state, authorized("GET", &pins_path, &guest, None)).await;
+        let pins_after: Vec<Message> = json(&body);
+        pool.close().await;
+
+        assert_eq!(guest_pins.0, StatusCode::FORBIDDEN);
+        assert_eq!(
+            json::<ApiErrorBody>(&guest_pins.1).code,
+            ApiErrorCode::MissingPermissions
+        );
+        assert_eq!(owner_pins, StatusCode::NO_CONTENT);
+        assert_eq!(pins.len(), 1);
+        assert!(pins[0].pinned);
+        assert_eq!(unpinned, StatusCode::NO_CONTENT);
+        assert_eq!(pins_after, Vec::new());
+    }
+
+    #[tokio::test]
+    async fn reactions_are_rate_limited_per_user() {
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let (_, body) = send(
+            &state,
+            authorized(
+                "POST",
+                &format!("/api/v1/channels/{general}/messages"),
+                &owner,
+                Some(serde_json::json!({"content": "hi"})),
+            ),
+        )
+        .await;
+        let message: mellow_protocol::Message = json(&body);
+        let mine = format!(
+            "/api/v1/channels/{general}/messages/{}/reactions/%F0%9F%91%8D/@me",
+            message.id
+        );
+        for _ in 0..rate_limit::REACTION_WRITES_PER_USER.maximum_events {
+            send(&state, authorized("PUT", &mine, &owner, None)).await;
+        }
+        let (status, _) = send(&state, authorized("DELETE", &mine, &owner, None)).await;
         pool.close().await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     }

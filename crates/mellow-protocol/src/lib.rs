@@ -16,7 +16,8 @@ pub use accounts::{
 };
 pub use direct_messages::{DirectMessageChannel, OpenDirectMessageRequest};
 pub use gateway::{
-    ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, PresenceStatus, Ready, ServerFrame,
+    ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, MessageReaction, PresenceStatus, Ready,
+    ServerFrame,
 };
 pub use guilds::{
     AuditAction, AuditChange, AuditChangeKey, AuditLogEntry, AuditLogQuery, Ban, Channel,
@@ -27,8 +28,8 @@ pub use guilds::{
 };
 pub use health::{HealthResponse, HealthStatus};
 pub use messages::{
-    AcknowledgeRequest, Attachment, EditMessageRequest, Message, MessageHistoryQuery, ReadState,
-    SendMessageRequest,
+    AcknowledgeRequest, Attachment, EditMessageRequest, Message, MessageHistoryQuery,
+    ReactionSummary, ReactionUsersQuery, ReadState, SendMessageRequest,
 };
 pub use permissions::{
     Permissions, compute_channel_permissions, compute_guild_permissions, highest_role_position,

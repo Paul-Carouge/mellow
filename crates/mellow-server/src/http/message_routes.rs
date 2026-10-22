@@ -1,4 +1,5 @@
-//! Message history, sending, editing, deleting and read states. All require a signed-in user.
+//! Message history, sending, editing, deleting, reactions, pins and read states. All require a
+//! signed-in user.
 
 use std::time::Instant;
 
@@ -7,7 +8,8 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use mellow_protocol::{
     AcknowledgeRequest, DirectMessageChannel, EditMessageRequest, Message, MessageHistoryQuery,
-    OpenDirectMessageRequest, ReadState, SendMessageRequest, Snowflake,
+    OpenDirectMessageRequest, PublicUser, ReactionUsersQuery, ReadState, SendMessageRequest,
+    Snowflake,
 };
 
 use crate::domain::clock::now_unix_milliseconds;
@@ -16,8 +18,8 @@ use crate::http::api_error::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::http::authentication::AuthenticatedUser;
 use crate::http::rate_limit::{
     DIRECT_MESSAGE_OPENS_PER_USER, DIRECT_MESSAGE_OPENS_PER_USER_PER_DAY, MESSAGE_WRITES_PER_USER,
-    MESSAGE_WRITES_PER_USER_PER_HOUR, MESSAGES_PER_CHANNEL, READ_STATE_WRITES_PER_USER,
-    TYPING_INDICATORS_PER_USER,
+    MESSAGE_WRITES_PER_USER_PER_HOUR, MESSAGES_PER_CHANNEL, REACTION_WRITES_PER_USER,
+    REACTION_WRITES_PER_USER_PER_HOUR, READ_STATE_WRITES_PER_USER, TYPING_INDICATORS_PER_USER,
 };
 
 /// Send, edit and delete share the per-user budgets (burst and hourly).
@@ -38,6 +40,107 @@ fn limit_message_writes(state: &AppState, user_id: Snowflake) -> Result<(), ApiE
     } else {
         Err(ApiError::rate_limited())
     }
+}
+
+/// Adding and removing reactions share the per-user budgets (burst and hourly).
+fn limit_reaction_writes(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
+    let now = Instant::now();
+    let within_burst = state.rate_limiter.record_event(
+        &format!("reaction-write:{user_id}"),
+        REACTION_WRITES_PER_USER,
+        now,
+    );
+    let within_hour = state.rate_limiter.record_event(
+        &format!("reaction-write-hour:{user_id}"),
+        REACTION_WRITES_PER_USER_PER_HOUR,
+        now,
+    );
+    if within_burst && within_hour {
+        Ok(())
+    } else {
+        Err(ApiError::rate_limited())
+    }
+}
+
+/// `PUT /api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me`. The emoji is
+/// percent-encoded in the path; the router decodes it.
+pub(crate) async fn add_reaction(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id, emoji)): ApiPath<(Snowflake, Snowflake, String)>,
+) -> Result<StatusCode, ApiError> {
+    limit_reaction_writes(&state, user.id)?;
+    state
+        .messages
+        .add_reaction(user.id, channel_id, message_id, &emoji)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me`.
+pub(crate) async fn remove_own_reaction(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id, emoji)): ApiPath<(Snowflake, Snowflake, String)>,
+) -> Result<StatusCode, ApiError> {
+    limit_reaction_writes(&state, user.id)?;
+    state
+        .messages
+        .remove_own_reaction(user.id, channel_id, message_id, &emoji)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}`.
+pub(crate) async fn list_reacting_users(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id, emoji)): ApiPath<(Snowflake, Snowflake, String)>,
+    ApiQuery(query): ApiQuery<ReactionUsersQuery>,
+) -> Result<Json<Vec<PublicUser>>, ApiError> {
+    Ok(Json(
+        state
+            .messages
+            .list_reacting_users(user.id, channel_id, message_id, &emoji, query)
+            .await?,
+    ))
+}
+
+/// `GET /api/v1/channels/{channel_id}/pins`.
+pub(crate) async fn list_pins(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(channel_id): ApiPath<Snowflake>,
+) -> Result<Json<Vec<Message>>, ApiError> {
+    Ok(Json(state.messages.list_pins(user.id, channel_id).await?))
+}
+
+/// `PUT /api/v1/channels/{channel_id}/pins/{message_id}`. Counts as a message write.
+pub(crate) async fn pin_message(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id)): ApiPath<(Snowflake, Snowflake)>,
+) -> Result<StatusCode, ApiError> {
+    limit_message_writes(&state, user.id)?;
+    state
+        .messages
+        .pin(user.id, channel_id, message_id, now_unix_milliseconds())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/v1/channels/{channel_id}/pins/{message_id}`. Counts as a message write.
+pub(crate) async fn unpin_message(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id)): ApiPath<(Snowflake, Snowflake)>,
+) -> Result<StatusCode, ApiError> {
+    limit_message_writes(&state, user.id)?;
+    state
+        .messages
+        .unpin(user.id, channel_id, message_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/v1/users/@me/channels`: the conversation with that user, opened if needed.

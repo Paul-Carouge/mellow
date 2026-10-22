@@ -388,6 +388,11 @@ impl ClientState {
                 StateChange::Presence
             }
             GatewayEvent::UserUpdate(user) => self.rename_user(&user),
+            // shortcut: no client-core UI shows reactions yet (web first); count them in the
+            // cached messages once the desktop does.
+            GatewayEvent::MessageReactionAdd(_) | GatewayEvent::MessageReactionRemove(_) => {
+                StateChange::Nothing
+            }
         }
     }
 
@@ -838,6 +843,8 @@ mod tests {
             edited_at_unix_milliseconds: None,
             nonce: None,
             attachments: Vec::new(),
+            reactions: Vec::new(),
+            pinned: false,
         }
     }
 

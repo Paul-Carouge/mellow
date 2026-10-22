@@ -350,7 +350,8 @@ mod tests {
             outcome.applied_versions.first(),
             Some(&(LAST_VERSION_WITHOUT_MEMBER_ROLES + 1))
         );
-        assert_eq!(everyone, ("@everyone".to_owned(), 1610, 0, 0));
+        // Migration 0012 adds ADD_REACTIONS (1 << 16) to every @everyone role.
+        assert_eq!(everyone, ("@everyone".to_owned(), 0x064a | 0x1_0000, 0, 0));
         assert_eq!(
             assignments_after_leaving, 0,
             "leaving drops the member's roles"
@@ -707,6 +708,79 @@ mod tests {
             "a deleted message takes its attachments"
         );
         assert_eq!(messages, [(30,)]);
+    }
+
+    #[tokio::test]
+    async fn existing_everyone_roles_may_react_and_reactions_go_with_their_message() {
+        const LAST_VERSION_WITHOUT_REACTIONS: i64 = 11;
+        let directory = tempfile::tempdir().unwrap();
+        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_REACTIONS, &pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO roles (id, guild_id, name, permissions, position, color) \
+             VALUES (10, 10, '@everyone', 1086, 0, 0), (11, 10, 'Muted', 0, 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) \
+             VALUES (30, 20, 1, 'hello'), (31, 20, 1, 'again');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let permissions: Vec<(i64, i64)> =
+            sqlx::query_as("SELECT id, permissions FROM roles ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let pinned: Vec<(i64, Option<i64>)> =
+            sqlx::query_as("SELECT id, pinned_at_unix_milliseconds FROM messages ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO message_reactions (message_id, user_id, emoji) \
+             VALUES (30, 1, '👍'), (31, 1, '👍'); \
+             DELETE FROM messages WHERE id = 31;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let reactions: Vec<(i64,)> = sqlx::query_as("SELECT message_id FROM message_reactions")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let duplicate = sqlx::query(
+            "INSERT INTO message_reactions (message_id, user_id, emoji) VALUES (30, 1, '👍')",
+        )
+        .execute(&pool)
+        .await;
+        pool.close().await;
+
+        assert_eq!(
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_REACTIONS + 1))
+        );
+        assert_eq!(
+            permissions,
+            [(10, 0x043e | 0x1_0000), (11, 0)],
+            "only @everyone gains ADD_REACTIONS"
+        );
+        assert_eq!(pinned, [(30, None), (31, None)]);
+        assert_eq!(reactions, [(30,)], "a deleted message takes its reactions");
+        assert!(duplicate.is_err(), "one reaction per user and emoji");
     }
 
     #[tokio::test]
