@@ -16,7 +16,8 @@ const MINIMUM_NAME_CONTRAST: f64 = 4.5;
 const LIGHTNESS_STEP: f64 = 0.005;
 /// Below this relative luminance a surface counts as dark: names get lighter on it, not darker.
 const DARK_SURFACE_LUMINANCE: f64 = 0.18;
-/// `color.surface.chat`, where names are drawn, in the dark and light themes.
+/// `color.surface.chat`, where names are drawn, in the dark and light themes; a test keeps them
+/// equal to the generated tokens.
 const DARK_SHEET_RGB: [u8; 3] = [0x22, 0x1B, 0x23];
 const LIGHT_SHEET_RGB: [u8; 3] = [0xFF, 0xFF, 0xFF];
 
@@ -165,6 +166,24 @@ fn contrast(first: [u8; 3], second: [u8; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sheet_colours_match_the_generated_tokens() {
+        let tokens = include_str!("../ui/tokens.slint");
+        let line = tokens
+            .lines()
+            .find(|line| line.contains("property <color> surface-chat:"))
+            .unwrap();
+        let hex = |rgb: [u8; 3]| format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]);
+        assert!(
+            line.ends_with(&format!(
+                "MellowTheme.is-dark ? {} : {};",
+                hex(DARK_SHEET_RGB),
+                hex(LIGHT_SHEET_RGB)
+            )),
+            "{line}"
+        );
+    }
 
     #[test]
     fn tints_are_stable_and_spread_over_the_palette() {
