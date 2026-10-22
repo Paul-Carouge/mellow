@@ -874,7 +874,7 @@ Phone (< 792)                     Drawer open
 - Message text is plain text with line breaks; only `http:` and `https:` URLs become links, opened in a new tab with `rel="noopener noreferrer"`. Markdown rendering (5.4) is not in the web client yet.
 - User settings (5.9) open from the user panel's gear button ("User settings"), as on desktop; "Sign out" is the last item of their navigation.
 - Attachments (5.4, 5.5): images open in a new tab instead of the viewer; an image that fails to load becomes its download card instead of "Couldn't load this image."; no upload progress percentage (the tray says "Uploading…"), no "Add a description" or "Mark as spoiler" yet.
-- Not in the web client yet: server settings, mention badges, the unread divider and "New" bar, day dividers, Markdown, the quick switcher, the connection dock's "Back online" and session-expired states.
+- Not in the web client yet: server settings, mention badges, day dividers, Markdown, the connection dock's "Back online" and session-expired states. Mentions are matched client-side by name until the protocol carries mention ids ([design/web-dusk-navigator.md](docs/design/web-dusk-navigator.md)).
 
 ### 4.4 Admin web UI (server-rendered HTML + htmx)
 
