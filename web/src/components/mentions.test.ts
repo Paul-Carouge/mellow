@@ -30,6 +30,18 @@ describe("splitMentions", () => {
   });
 });
 
+describe("splitMentions on hostile text", () => {
+  it("stays linear on a long run of dots and ignores names longer than any account's", () => {
+    const dots = `@${".".repeat(4_000)}`;
+    const started = performance.now();
+    for (let run = 0; run < 20; run += 1) {
+      expect(splitMentions(dots, people)).toEqual([{ kind: "text", text: dots }]);
+    }
+    expect(performance.now() - started).toBeLessThan(20);
+    expect(splitMentions(`@paul${"x".repeat(40)}`, people)).toEqual([{ kind: "text", text: `@paul${"x".repeat(40)}` }]);
+  });
+});
+
 describe("mentionsUser", () => {
   it("is true only when the user is mentioned", () => {
     expect(mentionsUser("@paul hello", people, "1")).toBe(true);

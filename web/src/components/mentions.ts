@@ -10,8 +10,17 @@ export type MentionSegment = { kind: "text"; text: string } | { kind: "mention";
 /** People by the lowercase names they can be mentioned with. */
 export type MentionablePeople = ReadonlyMap<string, PublicUser>;
 
-/** An "@" at the start or after a space, then a username's characters (dots allowed inside). */
-const MENTION_CANDIDATE = /(?<=^|\s)@([\p{L}\p{N}_.]+)/gu;
+/** Usernames and display names are at most 32 characters (`account_rules.rs` on the server). */
+const MAXIMUM_NAME_LENGTH = 32;
+/**
+ * An "@" at the start or after a space, then a name's characters (dots allowed inside), one more
+ * for a closing full stop. Bounded and followed by no name character, so a long run of dots or
+ * letters is never a mention and costs a constant amount of work.
+ */
+const MENTION_CANDIDATE = new RegExp(
+  `(?<=^|\\s)@([\\p{L}\\p{N}_.]{1,${MAXIMUM_NAME_LENGTH + 1}})(?![\\p{L}\\p{N}_.])`,
+  "gu",
+);
 
 export function mentionablePeople(people: readonly PublicUser[]): MentionablePeople {
   const byName = new Map<string, PublicUser>();
@@ -30,13 +39,11 @@ export function mentionablePeople(people: readonly PublicUser[]): MentionablePeo
 
 function findMentioned(name: string, people: MentionablePeople): { user: PublicUser; length: number } | null {
   // "@paul." at the end of a sentence: the trailing dots are punctuation unless they are the name's.
-  for (let candidate = name; candidate !== ""; candidate = candidate.replace(/\.$/u, "")) {
-    const user = people.get(candidate.toLowerCase());
+  // Lengths come from the original text: lowercasing can change a string's length.
+  for (const candidate of [name, name.replace(/\.+$/u, "")]) {
+    const user = candidate === "" ? undefined : people.get(candidate.toLowerCase());
     if (user) {
       return { user, length: candidate.length };
-    }
-    if (!candidate.endsWith(".")) {
-      return null;
     }
   }
   return null;
