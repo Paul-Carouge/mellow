@@ -1828,11 +1828,11 @@ mod tests {
         );
         assert_eq!(
             summaries(&seen_by_member[0]),
-            [("👍".to_owned(), 2, true), ("❤️".to_owned(), 1, false)]
+            [("👍".to_owned(), 2, true), ("❤".to_owned(), 1, false)]
         );
         assert_eq!(
             summaries(&seen_by_owner[0]),
-            [("👍".to_owned(), 2, true), ("❤️".to_owned(), 1, true)]
+            [("👍".to_owned(), 2, true), ("❤".to_owned(), 1, true)]
         );
         let mut both = vec![fixture.owner, fixture.member];
         both.sort();
@@ -1845,7 +1845,7 @@ mod tests {
         assert_eq!(second_page[0].id, both[1]);
         assert_eq!(
             summaries(&after_removal[0]),
-            [("👍".to_owned(), 1, false), ("❤️".to_owned(), 1, false)]
+            [("👍".to_owned(), 1, false), ("❤".to_owned(), 1, false)]
         );
         assert_eq!(
             event_types(&mut owner_events),
@@ -2331,6 +2331,45 @@ mod tests {
                 .iter()
                 .all(|entry| entry.action != AuditAction::MessagePin),
             "conversations have no audit log"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_emoji_with_or_without_its_variation_selector_is_one_reaction() {
+        let fixture = fixture().await;
+        let message = fixture
+            .messages
+            .send(fixture.owner, fixture.general, text("love"), NOW)
+            .await
+            .unwrap();
+        let [_owner_events, mut member_events] = live_sessions(&fixture);
+        fixture
+            .messages
+            .add_reaction(fixture.owner, fixture.general, message.id, "❤️")
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .add_reaction(fixture.member, fixture.general, message.id, "❤")
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .remove_own_reaction(fixture.owner, fixture.general, message.id, "❤")
+            .await
+            .unwrap();
+        let seen = history(&fixture, fixture.member, fixture.general).await;
+        let emoji_in_events: Vec<String> = std::iter::from_fn(|| member_events.try_recv().ok())
+            .map(|event| serde_json::from_str::<serde_json::Value>(&event.payload_json).unwrap())
+            .map(|event| event["data"]["emoji"].as_str().unwrap().to_owned())
+            .collect();
+        fixture.pool.close().await;
+
+        assert_eq!(summaries(&seen[0]), [("❤".to_owned(), 1, true)]);
+        assert_eq!(
+            emoji_in_events,
+            ["❤", "❤", "❤"],
+            "events carry the stored key"
         );
     }
 }

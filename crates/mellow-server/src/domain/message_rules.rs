@@ -46,7 +46,7 @@ pub enum MessageRuleViolation {
     )]
     Picture,
     #[error(
-        "a reaction is a Unicode emoji (at most {MAXIMUM_REACTION_EMOJI_BYTES} bytes), without text or spaces"
+        "a reaction is exactly one Unicode emoji (at most {MAXIMUM_REACTION_EMOJI_BYTES} bytes), without text or spaces"
     )]
     ReactionEmoji,
     #[error("pages of reacting users hold 1 to {MAXIMUM_REACTING_USERS_PAGE_SIZE} users")]
@@ -158,10 +158,11 @@ pub fn history_page_size(requested: Option<u32>) -> Result<u32, MessageRuleViola
     }
 }
 
-/// A code point that shows as an emoji on its own: Unicode's `Extended_Pictographic` and the
-/// regional indicators that pair into flags.
-/// shortcut: hand-written superset of `Extended_Pictographic` (whole symbol blocks); use a Unicode
-/// property table if a non-emoji symbol from those blocks must be refused.
+/// A code point that starts an emoji: Unicode's `Extended_Pictographic`, without the enclosed
+/// letters and digits of U+1F100 to U+1F1FF that are not emoji (🅵 is a letter, 🅰 is an emoji)
+/// nor the regional indicators, which only count as a pair (a flag).
+/// shortcut: hand-written superset of `Extended_Pictographic` elsewhere (whole symbol blocks); use
+/// a Unicode property table if a non-emoji symbol from those blocks must be refused.
 fn is_emoji_code_point(character: char) -> bool {
     matches!(
         character,
@@ -194,38 +195,84 @@ fn is_emoji_code_point(character: char) -> bool {
             | '\u{303D}'
             | '\u{3297}'
             | '\u{3299}'
-            | '\u{1F000}'..='\u{1FAFF}'
+            | '\u{1F000}'..='\u{1F0FF}'
+            // 🅰 🅱 🅾 🅿 🆎 and 🆑 to 🆚.
+            | '\u{1F170}'..='\u{1F171}'
+            | '\u{1F17E}'..='\u{1F17F}'
+            | '\u{1F18E}'
+            | '\u{1F191}'..='\u{1F19A}'
+            | '\u{1F200}'..='\u{1FAFF}'
             | '\u{1FC00}'..='\u{1FFFD}'
     )
 }
 
+const ZERO_WIDTH_JOINER: char = '\u{200D}';
+const TEXT_PRESENTATION_SELECTOR: char = '\u{FE0E}';
+const EMOJI_PRESENTATION_SELECTOR: char = '\u{FE0F}';
 const KEYCAP: char = '\u{20E3}';
+const BLACK_FLAG: char = '\u{1F3F4}';
+const CANCEL_TAG: char = '\u{E007F}';
 
-/// What may join emoji code points in a sequence: the zero-width joiner, variation selectors, the
-/// keycap mark and its bases, and the tags of subdivision flags.
-fn is_emoji_sequence_part(character: char) -> bool {
+fn is_regional_indicator(character: char) -> bool {
+    matches!(character, '\u{1F1E6}'..='\u{1F1FF}')
+}
+
+fn is_skin_tone(character: char) -> bool {
+    matches!(character, '\u{1F3FB}'..='\u{1F3FF}')
+}
+
+fn is_variation_selector(character: char) -> bool {
     matches!(
         character,
-        '\u{200D}' | '\u{FE0E}' | '\u{FE0F}' | KEYCAP | '0'..='9' | '#' | '*' | '\u{E0020}'..='\u{E007F}'
+        TEXT_PRESENTATION_SELECTOR | EMOJI_PRESENTATION_SELECTOR
     )
 }
 
-/// A reaction is a Unicode emoji as clients send it: emoji code points and the marks that combine
-/// them, nothing else (no text, spaces or control characters), and at least one emoji or keycap.
-/// shortcut: a few emoji in a row also pass (bounded by the byte limit); split grapheme clusters
-/// if exactly one must be enforced.
+/// One emoji of a ZWJ sequence: an emoji code point, then at most a skin tone and one variation
+/// selector.
+fn is_emoji_element(element: &[char]) -> bool {
+    match element {
+        [base, modifiers @ ..] if is_emoji_code_point(*base) => match modifiers {
+            [] => true,
+            [modifier] => is_skin_tone(*modifier) || is_variation_selector(*modifier),
+            [skin_tone, EMOJI_PRESENTATION_SELECTOR] => is_skin_tone(*skin_tone),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Exactly one emoji: a keycap (`1️⃣`), a flag (two regional indicators), a subdivision flag (🏴
+/// with tags), or emoji joined by zero-width joiners, each with at most a skin tone and one
+/// variation selector.
+fn is_one_emoji(characters: &[char]) -> bool {
+    match characters {
+        [base, KEYCAP] | [base, EMOJI_PRESENTATION_SELECTOR, KEYCAP] => {
+            matches!(base, '0'..='9' | '#' | '*')
+        }
+        [first, second] if is_regional_indicator(*first) => is_regional_indicator(*second),
+        [BLACK_FLAG, tags @ .., CANCEL_TAG] if !tags.is_empty() => tags
+            .iter()
+            .all(|tag| matches!(tag, '\u{E0020}'..='\u{E007E}')),
+        _ => characters
+            .split(|character| *character == ZERO_WIDTH_JOINER)
+            .all(is_emoji_element),
+    }
+}
+
+/// The key a reaction is stored and counted under: exactly one Unicode emoji, at most
+/// `MAXIMUM_REACTION_EMOJI_BYTES` as sent, without its variation selectors, so `❤️` and `❤` are
+/// one reaction.
 ///
 /// # Errors
-/// `ReactionEmoji` for anything else.
-pub fn validate_reaction_emoji(emoji: &str) -> Result<(), MessageRuleViolation> {
-    let shows_an_emoji = emoji
-        .chars()
-        .any(|character| is_emoji_code_point(character) || character == KEYCAP);
-    let is_only_emoji = emoji
-        .chars()
-        .all(|character| is_emoji_code_point(character) || is_emoji_sequence_part(character));
-    if emoji.len() <= MAXIMUM_REACTION_EMOJI_BYTES && shows_an_emoji && is_only_emoji {
-        Ok(())
+/// `ReactionEmoji` for anything else (text, spaces, several emoji, stray joiners or selectors).
+pub fn reaction_emoji_key(emoji: &str) -> Result<String, MessageRuleViolation> {
+    let characters: Vec<char> = emoji.chars().collect();
+    if emoji.len() <= MAXIMUM_REACTION_EMOJI_BYTES && is_one_emoji(&characters) {
+        Ok(characters
+            .into_iter()
+            .filter(|character| !is_variation_selector(*character))
+            .collect())
     } else {
         Err(MessageRuleViolation::ReactionEmoji)
     }
@@ -273,20 +320,25 @@ mod tests {
     }
 
     #[test]
-    fn reactions_are_one_emoji_and_nothing_else() {
-        for valid in [
-            "👍",
-            "❤️",
-            "👍🏽",
-            "👩‍💻",
-            "👨‍👩‍👧‍👦",
-            "🇫🇷",
-            "#️⃣",
-            "1️⃣",
-            "🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}",
-            "©️",
+    fn a_reaction_is_exactly_one_emoji() {
+        for (valid, key) in [
+            ("👍", "👍"),
+            ("❤️", "❤"),
+            ("❤", "❤"),
+            ("👍🏽", "👍🏽"),
+            ("👨\u{200D}👩\u{200D}👧", "👨\u{200D}👩\u{200D}👧"),
+            ("🏳️\u{200D}🌈", "🏳\u{200D}🌈"),
+            ("🇫🇷", "🇫🇷"),
+            (
+                "🏴\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}",
+                "🏴\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}",
+            ),
+            ("1️⃣", "1\u{20E3}"),
+            ("#\u{20E3}", "#\u{20E3}"),
+            ("🅰️", "🅰"),
+            ("©️", "©"),
         ] {
-            assert_eq!(validate_reaction_emoji(valid), Ok(()), "{valid:?}");
+            assert_eq!(reaction_emoji_key(valid), Ok(key.to_owned()), "{valid:?}");
         }
         for invalid in [
             "",
@@ -300,21 +352,35 @@ mod tests {
             "\u{200D}",
             "1",
             "##",
+            "😀69",
+            "👍##",
+            "😀0612345678",
+            "🅵🆄🅲🅺",
+            "🅵",
+            "👍\u{FE0F}\u{FE0F}",
+            "\u{FE0F}👍",
+            "👍\u{E0041}",
+            "👍👍",
+            "🇫",
+            "🇫🇷🇫🇷",
+            "🏴\u{E007F}",
+            "🏴\u{E0067}",
+            "👍\u{200D}",
+            "\u{200D}👍",
+            "👍\u{200D}\u{200D}👍",
+            "1\u{FE0F}\u{FE0F}\u{20E3}",
             "😀\u{202E}",
-            "😀\u{0007}",
             "<script>",
-            &"😀".repeat(MAXIMUM_REACTION_EMOJI_BYTES / 4 + 1),
         ] {
             assert_eq!(
-                validate_reaction_emoji(invalid),
+                reaction_emoji_key(invalid),
                 Err(MessageRuleViolation::ReactionEmoji),
                 "{invalid:?}"
             );
         }
-        assert_eq!(
-            validate_reaction_emoji(&"😀".repeat(MAXIMUM_REACTION_EMOJI_BYTES / 4)),
-            Ok(())
-        );
+        let long_family = ["👨"; 11].join("\u{200D}");
+        assert!(long_family.len() > MAXIMUM_REACTION_EMOJI_BYTES);
+        assert!(reaction_emoji_key(&long_family).is_err());
     }
 
     #[test]
