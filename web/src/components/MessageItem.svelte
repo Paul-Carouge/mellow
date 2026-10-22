@@ -24,6 +24,8 @@
     currentUser: PublicUser;
     /** The original's author and text, or no author and a sentence when it is not here; null when not a reply. */
     replyReference: { author: PublicUser | null; text: string } | null;
+    /** The author's role colour, already readable on the sheet; null keeps the heading colour. */
+    authorColor: string | null;
     canSendMessages: boolean;
     canManageMessages: boolean;
     isEditing: boolean;
@@ -46,6 +48,7 @@
     row,
     currentUser,
     replyReference,
+    authorColor,
     canSendMessages,
     canManageMessages,
     isEditing,
@@ -166,7 +169,9 @@
       <Avatar user={author} sizeToken="--mw-component-message-avatar-size" />
     </span>
     <h3 class="flex flex-wrap items-baseline gap-x-xs">
-      <span class="type-message-author text-(--mw-component-message-author-text)">{displayName(author)}</span>
+      <span class="type-message-author text-(--mw-component-message-author-text)" style:color={authorColor}
+        >{displayName(author)}</span
+      >
       {#if sentAt !== null}
         <time
           datetime={new Date(sentAt).toISOString()}

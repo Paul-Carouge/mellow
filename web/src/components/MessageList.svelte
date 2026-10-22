@@ -8,6 +8,7 @@
   import Icon, { type IconName } from "./Icon.svelte";
   import MessageItem from "./MessageItem.svelte";
   import { buildMessageRows } from "./message-rows";
+  import { nameColorsByUserId } from "./name-colors.svelte";
   import { durationTokenInMilliseconds, lengthTokenInPixels } from "./tokens";
 
   // The message list (DESIGN.md §5.4): history start or skeletons above the oldest message, the
@@ -70,6 +71,14 @@
   ];
 
   const messages = $derived(client.messages(channelId));
+  // Role colours on author names, readable on the sheet in the current theme (DESIGN.md §2.3).
+  const authorColors = $derived(
+    nameColorsByUserId(
+      client.selectedGuild,
+      client.selectedGuild ? client.membersByGuild.get(client.selectedGuild.id) : undefined,
+      "color-surface-chat",
+    ),
+  );
   const rows = $derived(
     buildMessageRows(messages, client.pendingMessagesIn(channelId), currentUser.id, Date.now()),
   );
@@ -286,6 +295,7 @@
         <MessageItem
           {row}
           {currentUser}
+          authorColor={authorColors.get(row.kind === "sent" ? row.message.author.id : currentUser.id) ?? null}
           replyReference={row.kind === "sent" ? replyReferenceOf(row.message) : null}
           {canSendMessages}
           {canManageMessages}

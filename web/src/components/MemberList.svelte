@@ -7,6 +7,7 @@
   import Button from "./Button.svelte";
   import { displayName } from "./format";
   import IconButton from "./IconButton.svelte";
+  import { nameColorsByUserId } from "./name-colors.svelte";
   import ProfileCard from "./ProfileCard.svelte";
 
   // The members side sheet (DESIGN.md §5.7, ADR-0022 §1): Online then Offline, offline avatars
@@ -27,6 +28,8 @@
   let { client, guild, isDocked, isFullWindow = false, onclose, onopenedconversation }: Props = $props();
 
   const members = $derived(client.membersByGuild.get(guild.id) ?? null);
+  // Role colours on names, readable on the side sheet in the current theme (DESIGN.md §2.3).
+  const nameColors = $derived(nameColorsByUserId(guild, members ?? undefined, "component-side-sheet-background"));
   // The instance does not list the signed-in user among the online ids: they are online here.
   const isOnline = (userId: string) => userId === client.user?.id || client.onlineUserIds.has(userId);
   const groups = $derived.by(() => {
@@ -165,7 +168,9 @@
                   ringColorToken="--mw-component-side-sheet-background"
                   isDimmed={!isOnline}
                 />
-                <span class="min-w-0 flex-1 truncate type-member-name">{displayName(member.user)}</span>
+                <span class="min-w-0 flex-1 truncate type-member-name" style:color={nameColors.get(member.user.id)}
+                  >{displayName(member.user)}</span
+                >
               </button>
             </li>
           {/each}

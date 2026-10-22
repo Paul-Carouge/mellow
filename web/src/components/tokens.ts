@@ -34,6 +34,11 @@ export function lengthTokenInPixels(name: string): number {
   return parseRemLength(tokenValue(name)) * rootFontSize;
 }
 
+/** A colour token's value in the current theme, for example "color-surface-chat". */
+export function colorTokenValue(name: string): string {
+  return tokenValue(name).trim();
+}
+
 /** Reduced motion already maps these tokens to 0 ms. */
 export function durationTokenInMilliseconds(name: string): number {
   return parseDurationInMilliseconds(tokenValue(name));
