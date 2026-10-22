@@ -19,15 +19,62 @@ fn escape_html(text: &str) -> String {
     text.replace('\\', "\\\\").replace('<', "\\<")
 }
 
+/// Byte ranges of inline code spans: a run of backticks up to the next run of the same length,
+/// as markdown reads them.
+fn code_span_ranges(body: &str) -> Vec<std::ops::Range<usize>> {
+    let bytes = body.as_bytes();
+    let run_length = |start: usize| {
+        bytes[start..]
+            .iter()
+            .take_while(|byte| **byte == b'`')
+            .count()
+    };
+    let mut spans = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'`' {
+            index += 1;
+            continue;
+        }
+        let opening = run_length(index);
+        let mut search = index + opening;
+        let mut closed = false;
+        while search < bytes.len() {
+            if bytes[search] == b'`' {
+                let closing = run_length(search);
+                if closing == opening {
+                    spans.push(index..search + closing);
+                    index = search + closing;
+                    closed = true;
+                    break;
+                }
+                search += closing;
+            } else {
+                search += 1;
+            }
+        }
+        if !closed {
+            index += opening;
+        }
+    }
+    spans
+}
+
 /// The body with each mention coloured as a chip's text (`color` is `#RRGGBB`, from a token).
 /// shortcut: `StyledText` has no background colour, so the chip's fill cannot be drawn on desktop.
 pub fn styled_text_with_mentions(body: &str, mentions: &[Mention], color: &str) -> StyledText {
     if mentions.is_empty() || color.is_empty() {
         return styled_text_from_message_body(body);
     }
+    let code_spans = code_span_ranges(body);
     let mut markup = String::with_capacity(body.len());
     let mut text_start = 0;
-    for mention in mentions {
+    // Inside a code span the text is literal, so a mention there stays code.
+    for mention in mentions.iter().filter(|mention| {
+        !code_spans
+            .iter()
+            .any(|span| span.start <= mention.range.start && mention.range.end <= span.end)
+    }) {
         let (Some(before), Some(name)) = (
             body.get(text_start..mention.range.start),
             body.get(mention.range.clone()),
@@ -73,6 +120,19 @@ mod tests {
         assert_eq!(
             styled_text_from_message_body(body),
             StyledText::from_plain_text(body)
+        );
+    }
+
+    #[test]
+    fn a_mention_inside_a_code_span_stays_code() {
+        let body = "see `@ana` there";
+        let mention = Mention {
+            range: 5..9,
+            user_id: mellow_protocol::Snowflake::from_raw(1),
+        };
+        assert_eq!(
+            styled_text_with_mentions(body, std::slice::from_ref(&mention), "#FFE4D1"),
+            styled_text_from_message_body(body)
         );
     }
 
