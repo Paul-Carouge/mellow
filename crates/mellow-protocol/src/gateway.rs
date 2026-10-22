@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Channel, CurrentUser, DirectMessageChannel, Guild, Member, Message, PublicUser, ReadState,
-    Role, Snowflake,
+    Channel, CurrentUser, DirectMessageChannel, Guild, GuildSummary, Member, Message, PublicUser,
+    ReadState, Role, Snowflake,
 };
 
 pub const GATEWAY_VERSION: u32 = 1;
@@ -137,7 +137,9 @@ pub enum GatewayEvent {
     },
     /// The user joined or created a guild.
     GuildCreate(Box<Guild>),
-    /// The user left a guild (or it disappeared for them).
+    /// The guild was renamed. Sent to every member; older clients skip it.
+    GuildUpdate(GuildSummary),
+    /// The user left a guild (or it disappeared for them, or its owner deleted it).
     GuildDelete {
         id: Snowflake,
     },
@@ -262,6 +264,18 @@ mod tests {
         .unwrap();
         assert_eq!(member_update["t"], "GUILD_MEMBER_UPDATE");
         assert_eq!(member_update["data"]["role_ids"][0], "9");
+    }
+
+    #[test]
+    fn guild_updates_carry_the_new_name() {
+        let json = serde_json::to_value(GatewayEvent::GuildUpdate(GuildSummary {
+            id: Snowflake::from_raw(7),
+            name: "Club".into(),
+        }))
+        .unwrap();
+        assert_eq!(json["t"], "GUILD_UPDATE");
+        assert_eq!(json["data"]["id"], "7");
+        assert_eq!(json["data"]["name"], "Club");
     }
 
     #[test]
