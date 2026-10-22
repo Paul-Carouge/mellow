@@ -60,8 +60,19 @@
   const members = $derived(client.membersByGuild.get(guild.id));
 
   let selectedTargetId = $state<Snowflake | null>(null);
-  // A removed target gives way to the first one, `@everyone` at worst.
-  const selectedTarget = $derived(targets.find((target) => target.id === selectedTargetId) ?? targets[0] ?? null);
+  /** Just added, until the gateway brings its overwrite: nothing else is shown in its place. */
+  let addedTargetId = $state<Snowflake | null>(null);
+  // A removed target gives way to the first one, `@everyone` at worst; one just added is waited for,
+  // so the toggles never edit another target meanwhile.
+  const selectedTarget = $derived(
+    targets.find((target) => target.id === selectedTargetId) ??
+      (selectedTargetId !== null && selectedTargetId === addedTargetId ? null : (targets[0] ?? null)),
+  );
+  $effect(() => {
+    if (addedTargetId !== null && targets.some((target) => target.id === addedTargetId)) {
+      addedTargetId = null;
+    }
+  });
   let edit = $state<OverwriteEdit | null>(null);
   const stored = $derived(selectedTarget ? storedOverwriteOf(channel, selectedTarget.id) : null);
   const draft = $derived(
@@ -170,8 +181,8 @@
     try {
       await client.deletePermissionOverwrite(channel.id, target.id);
       edit = null;
-      selectedTargetId = null;
-      // The row is gone with the gateway's update: the list's first row takes focus.
+      // `@everyone` always stays: it is shown and takes focus, whatever the list's order.
+      selectedTargetId = guild.id;
       document.getElementById(rowId(guild.id))?.focus();
     } catch (error) {
       errorMessage = describeError(error, words.removeFailed);
@@ -394,6 +405,7 @@
     onclose={() => (isAddDialogOpen = false)}
     onadded={(target) => {
       selectedTargetId = target.id;
+      addedTargetId = target.id;
       isAddDialogOpen = false;
     }}
   />

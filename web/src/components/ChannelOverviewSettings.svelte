@@ -2,15 +2,15 @@
   import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import { type Channel, MAXIMUM_CHANNEL_NAME_LENGTH, MAXIMUM_CHANNEL_TOPIC_LENGTH } from "../lib/protocol";
-  import { channelNameAsSaved } from "./channel-settings";
+  import { type ChannelOverviewDrafts, channelNameAsSaved, channelOverviewChanges } from "./channel-settings";
   import Icon from "./Icon.svelte";
   import IconEditor from "./IconEditor.svelte";
   import TextField from "./TextField.svelte";
   import UnsavedChangesBar from "./UnsavedChangesBar.svelte";
 
   // Channel Overview (DESIGN.md §5.8): the icon, saved at once, then the name and the topic, saved
-  // together through the unsaved-changes bar. A change by someone else while nothing is typed shows
-  // at once; a draft is kept until saved or reset.
+  // together through the unsaved-changes bar. A change by someone else to a field not typed in shows
+  // at once; a typed field is kept until saved or reset, and only typed fields are sent.
   interface Props {
     client: MellowClient;
     channel: Channel;
@@ -21,29 +21,20 @@
 
   let { client, channel, attention, onunsavedchange }: Props = $props();
 
-  interface Fields {
-    name: string;
-    topic: string;
-  }
-
-  /** Null while the fields show the stored channel. */
-  let draft = $state<Fields | null>(null);
+  /** Each field typed and not yet stored, apart: a change by someone else to the other one shows. */
+  let drafts = $state<ChannelOverviewDrafts>({ name: null, topic: null });
   /** Saved, and waiting for the gateway to bring it: not an unsaved change any more. */
-  let saved = $state<Fields | null>(null);
+  let saved = $state<ChannelOverviewDrafts | null>(null);
   let isSaving = $state(false);
   let errorMessage = $state("");
   let notice = $state("");
 
   const id = $props.id();
-  const shown = $derived(draft ?? { name: channel.name, topic: channel.topic });
-
-  /** The instance lowercases names, dashes their spaces and trims both fields. */
-  function isStored(fields: Fields): boolean {
-    return channelNameAsSaved(fields.name) === channel.name && fields.topic.trim() === channel.topic;
-  }
+  const shown = $derived({ name: drafts.name ?? channel.name, topic: drafts.topic ?? channel.topic });
+  const changes = $derived(channelOverviewChanges(channel, drafts));
 
   const isChanged = $derived(
-    draft !== null && !isStored(draft) && !(saved !== null && saved.name === draft.name && saved.topic === draft.topic),
+    Object.keys(changes).length > 0 && !(saved !== null && saved.name === drafts.name && saved.topic === drafts.topic),
   );
 
   $effect(() => {
@@ -51,45 +42,46 @@
     return () => onunsavedchange(false);
   });
 
-  // The stored channel caught up with the fields (our save, echoed by the gateway).
+  // The stored channel caught up with a field (our save, echoed by the gateway): it shows the
+  // stored value again. The instance lowercases names, dashes their spaces and trims both fields.
   $effect(() => {
-    if (draft !== null && isStored(draft)) {
-      draft = null;
+    if (drafts.name !== null && channelNameAsSaved(drafts.name) === channel.name) {
+      drafts.name = null;
+    }
+    if (drafts.topic !== null && drafts.topic.trim() === channel.topic) {
+      drafts.topic = null;
+    }
+    if (drafts.name === null && drafts.topic === null) {
       saved = null;
     }
   });
 
-  function edit(fields: Fields) {
-    draft = fields;
+  function edit(field: keyof ChannelOverviewDrafts, value: string) {
+    drafts[field] = value;
     notice = "";
   }
 
   function reset() {
-    draft = null;
+    drafts = { name: null, topic: null };
     saved = null;
     errorMessage = "";
   }
 
   async function save() {
-    if (draft === null || isSaving) {
+    if (!isChanged || isSaving) {
       return;
     }
-    const name = channelNameAsSaved(draft.name);
-    if (name === "") {
+    if (changes.name === "") {
       errorMessage = strings.channelSettings.overview.nameRequired;
       return;
     }
-    const topic = draft.topic.trim();
     isSaving = true;
     errorMessage = "";
-    const fields = draft;
+    const sent = { ...drafts };
     try {
-      await client.updateChannel(channel.id, {
-        ...(name !== channel.name ? { name } : {}),
-        ...(topic !== channel.topic ? { topic } : {}),
-      });
+      await client.updateChannel(channel.id, changes);
       // The fields keep the saved text until the gateway brings it.
-      saved = fields;
+      saved = sent;
       notice = strings.serverSettings.unsaved.saved;
     } catch (error) {
       errorMessage = describeError(error, strings.channelSettings.overview.saveFailed);
@@ -122,7 +114,7 @@
       leadingIcon="hash"
       maxlength={MAXIMUM_CHANNEL_NAME_LENGTH}
       autocomplete="off"
-      bind:value={() => shown.name, (name) => edit({ ...shown, name })}
+      bind:value={() => shown.name, (name) => edit("name", name)}
     />
     <TextField
       id="{id}-topic"
@@ -130,7 +122,7 @@
       helper={strings.channelSettings.overview.topicHelper}
       maxlength={MAXIMUM_CHANNEL_TOPIC_LENGTH}
       autocomplete="off"
-      bind:value={() => shown.topic, (topic) => edit({ ...shown, topic })}
+      bind:value={() => shown.topic, (topic) => edit("topic", topic)}
     />
   </div>
   {#if notice && !isChanged}

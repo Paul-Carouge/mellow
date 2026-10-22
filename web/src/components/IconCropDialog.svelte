@@ -81,6 +81,24 @@
     };
   });
 
+  /**
+   * The crop is in the picture's own pixels, EXIF orientation applied, as the instance cuts it: a
+   * bitmap has that size, unlike `naturalWidth`, which browsers correct for the declared density.
+   */
+  async function measurePicture(source: File) {
+    try {
+      const bitmap = await createImageBitmap(source);
+      const measured = { width: bitmap.width, height: bitmap.height };
+      bitmap.close();
+      if (source === file) {
+        picture = measured;
+        crop = centredSquare(measured);
+      }
+    } catch {
+      isUnreadable = true;
+    }
+  }
+
   async function stillPictureUrl(source: File): Promise<string> {
     const bitmap = await createImageBitmap(source);
     const canvas = document.createElement("canvas");
@@ -254,19 +272,13 @@
         ></div>
       {/if}
       {#if pictureUrl}
-        <!-- Only measured: the visible copies above are placed from its natural size. -->
+        <!-- Only tells when the picture is readable; its size comes from `measurePicture`. -->
         <img
           src={pictureUrl}
           alt=""
           aria-hidden="true"
           class="invisible absolute size-px"
-          onload={(event) => {
-            const image = event.currentTarget;
-            if (image instanceof HTMLImageElement) {
-              picture = { width: image.naturalWidth, height: image.naturalHeight };
-              crop = centredSquare(picture);
-            }
-          }}
+          onload={() => void measurePicture(file)}
           onerror={() => (isUnreadable = true)}
         />
       {/if}

@@ -9,6 +9,7 @@ import {
   canEditTarget,
   canRemoveOverwrite,
   channelNameAsSaved,
+  channelOverviewChanges,
   overwriteStateOf,
   overwriteTargets,
   rebaseOverwriteEdit,
@@ -214,5 +215,19 @@ describe("what a manager may change", () => {
     const members = [member("7", "Ana"), member("8", "Éloïse"), member("9", "Paul")];
     expect(addableMembers(withOverwrites, members, "").map((candidate) => candidate.user.id)).toEqual(["8", "9"]);
     expect(addableMembers(withOverwrites, members, "eloise").map((candidate) => candidate.user.id)).toEqual(["8"]);
+  });
+});
+
+describe("channelOverviewChanges", () => {
+  it("sends only the typed fields, so a rename by someone else is not undone", () => {
+    // Alice typed a topic; Bob renamed #general to #lobby meanwhile.
+    const stored = { name: "lobby", topic: "" };
+    expect(channelOverviewChanges(stored, { name: null, topic: " News " })).toEqual({ topic: "News" });
+  });
+
+  it("sends a name as the instance stores it, and nothing once stored", () => {
+    const stored = { name: "general", topic: "Hi" };
+    expect(channelOverviewChanges(stored, { name: "Off Topic", topic: null })).toEqual({ name: "off-topic" });
+    expect(channelOverviewChanges(stored, { name: "General ", topic: "Hi " })).toEqual({});
   });
 });

@@ -115,3 +115,4 @@ Edits show when the gateway brings them (`GUILD_UPDATE`, `CHANNEL_UPDATE`), neve
 - "Delete channel" in the channel settings (the API exists; the owner did not ask for it in this step).
 - The channel icon in the welcome hero, the quick switcher and mentions of the channel.
 - Real upload progress (bytes sent): `fetch` exposes none; the button shows an indeterminate state.
+- A still WebP carrying an EXIF orientation: browsers may show it turned while the instance crops it as stored (it reads EXIF only from JPEG and PNG), so a chosen square can land elsewhere. Not tried; send no crop for such files, or read WebP orientation on the server, if it shows up.

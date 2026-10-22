@@ -49,6 +49,28 @@ export function channelNameAsSaved(name: string): string {
   return name.trim().split(/\s+/u).filter(Boolean).join("-").toLowerCase();
 }
 
+/** Overview fields typed by the member; `null` for a field left as stored. */
+export interface ChannelOverviewDrafts {
+  name: string | null;
+  topic: string | null;
+}
+
+/**
+ * The fields to send: only those typed and different from the stored channel, as the instance
+ * would store them. A field someone else changed meanwhile is never sent back with its old value.
+ */
+export function channelOverviewChanges(
+  stored: Pick<Channel, "name" | "topic">,
+  drafts: ChannelOverviewDrafts,
+): { name?: string; topic?: string } {
+  const name = drafts.name === null ? null : channelNameAsSaved(drafts.name);
+  const topic = drafts.topic === null ? null : drafts.topic.trim();
+  return {
+    ...(name !== null && name !== stored.name ? { name } : {}),
+    ...(topic !== null && topic !== stored.topic ? { topic } : {}),
+  };
+}
+
 // --- Overwrites -----------------------------------------------------------------------------------
 
 export type OverwriteState = "deny" | "inherit" | "allow";
