@@ -73,7 +73,7 @@
   >
     <!-- Melli sits on the card's top edge, more above it than inside (DESIGN.md §2.10). -->
     <span
-      class="absolute top-0 left-1/2 size-(--mw-component-auth-card-melli-size) -translate-x-1/2 -translate-y-[55%]"
+      class="absolute top-0 left-1/2 size-(--mw-component-auth-card-melli-size) -translate-x-1/2 -translate-y-[calc(var(--mw-component-auth-card-melli-overlap)*100%)]"
     >
       <Melli sizeToken="--mw-component-auth-card-melli-size" />
     </span>
