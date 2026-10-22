@@ -5,6 +5,7 @@ import type { Guild, Message } from "../lib/protocol";
 import {
   attachmentCountLabel,
   avatarInitial,
+  avatarTintToken,
   humanFileSize,
   messageTimestampLabel,
   middleTruncate,
@@ -64,6 +65,18 @@ describe("serverInitials and avatarInitial", () => {
 
   it("falls back to the username when the display name is blank", () => {
     expect(avatarInitial({ display_name: " ", username: "zoé" })).toBe("Z");
+  });
+});
+
+describe("avatarTintToken", () => {
+  it("keeps one tint per person and spreads neighbouring ids over the palette", () => {
+    expect(avatarTintToken("106689215642730496")).toBe(avatarTintToken("106689215642730496"));
+    const ids = Array.from({ length: 64 }, (_, index) => (106689215642730496n + BigInt(index) * 4096n).toString());
+    const tints = new Set(ids.map(avatarTintToken));
+    expect(tints.size).toBe(8);
+    for (const tint of tints) {
+      expect(tint).toMatch(/^--mw-color-avatar-tint-[1-8]$/u);
+    }
   });
 });
 

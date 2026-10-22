@@ -1,12 +1,12 @@
 <script lang="ts">
   import { prefersReducedMotion } from "../lib/motion.svelte";
   import { type PublicUser, profileImageUrl } from "../lib/protocol";
-  import { avatarInitial } from "./format";
+  import { avatarInitial, avatarTintToken } from "./format";
 
-  // The user's picture (ADR-0021), or their initial on the accent fill while it loads, when they
+  // The user's picture (ADR-0021), or their initial on their own tint while it loads, when they
   // have none or when it fails. Decorative: the name always sits next to it.
   interface Props {
-    user: Pick<PublicUser, "display_name" | "username" | "avatar">;
+    user: Pick<PublicUser, "id" | "display_name" | "username" | "avatar">;
     /** A `--mw-*` length token, for example "--mw-component-member-row-avatar-size". */
     sizeToken: string;
     /**
@@ -73,7 +73,8 @@
   <span aria-hidden="true" class={["relative size-full", isDimmed && "opacity-(--mw-component-member-row-offline-avatar-opacity)"]}>
     {#if !isPictureShown}
       <span
-        class="grid size-full place-items-center rounded-full bg-accent-fill font-medium text-text-on-accent select-none"
+        class="grid size-full place-items-center rounded-full font-semibold text-avatar-initial select-none"
+        style:background-color="var({avatarTintToken(user.id)})"
         style:font-size="calc(var({sizeToken}) * 0.4)">{avatarInitial(user)}</span
       >
     {/if}
