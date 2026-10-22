@@ -37,7 +37,7 @@ export const fr: Catalogue = {
       NETWORK: "l’instance est injoignable. Réessaie.",
       INVALID_CREDENTIALS: "l’identifiant ou le mot de passe est incorrect.",
       USERNAME_TAKEN: "ce nom d’utilisateur est déjà pris.",
-      EMAIL_TAKEN: "cette adresse e-mail a déjà un compte.",
+      EMAIL_TAKEN: "un compte utilise déjà cette adresse e-mail.",
       REGISTRATION_CLOSED: "cette instance n’accepte pas de nouveaux comptes.",
       VALIDATION_FAILED: "l’instance a refusé ce qui a été saisi.",
       RATE_LIMITED: "trop de tentatives. Patiente un instant, puis réessaie.",
@@ -274,7 +274,7 @@ export const fr: Catalogue = {
     subtitle: (server) =>
       `Tu veux vraiment quitter ${server}${NARROW_NO_BREAK_SPACE}? Tu ne pourras revenir qu’avec une nouvelle invitation.`,
     submit: "Quitter le serveur",
-    leaving: "Départ…",
+    leaving: "Départ du serveur…",
     failed: "Impossible de quitter le serveur",
   },
 
@@ -354,7 +354,7 @@ export const fr: Catalogue = {
     formats: (maximumSize) =>
       `Les images peuvent être en PNG, JPEG, GIF ou WebP, jusqu’à ${maximumSize}. Les GIF animés restent animés.`,
     tooLarge: (maximumSize) => `l’image dépasse ${maximumSize}. Choisis-en une plus petite.`,
-    unreadable: `l’image est illisible, ou dépasse 8${NARROW_NO_BREAK_SPACE}192 pixels de côté ou 600 images. Choisis-en une autre.`,
+    unreadable: `l’image est illisible, ou dépasse 8${NARROW_NO_BREAK_SPACE}192 pixels de côté ou 600 images d’animation. Choisis-en une autre.`,
     notAPicture: "choisis une image PNG, JPEG, GIF ou WebP.",
     preview: "Aperçu",
     avatar: {
