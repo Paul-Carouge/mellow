@@ -125,8 +125,8 @@ export component AppWindow inherits Window {
     in property <string> invite-code;
     in property <bool> can-invite-people;
     in property <bool> can-create-channels;
-    // Where "Create channel" puts the channel: a category's index from its "+", or -1 for none.
-    in-out property <int> create-channel-category-index: -1;
+    // Where "Create channel" puts the channel: a category's id from its "+", or empty for none.
+    in-out property <string> create-channel-category-id;
     in-out property <string> create-channel-category-name;
     in property <bool> can-leave-server;
     // Direct messages (DESIGN.md §5.6). Home is selected: the sidebar lists conversations.
@@ -270,8 +270,8 @@ export component AppWindow inherits Window {
         }
     }
 
-    function open-create-channel-dialog(category-index: int, category-name: string) {
-        root.create-channel-category-index = category-index;
+    function open-create-channel-dialog(category-id: string, category-name: string) {
+        root.create-channel-category-id = category-id;
         root.create-channel-category-name = category-name;
         root.open-dialog = ShellDialog.create-channel;
     }
@@ -412,8 +412,8 @@ export component AppWindow inherits Window {
                         root.open-dialog = ShellDialog.invite-people;
                         root.create-invite();
                     }
-                    create-channel => { root.open-create-channel-dialog(-1, ""); }
-                    create-channel-in-category(index, name) => { root.open-create-channel-dialog(index, name); }
+                    create-channel => { root.open-create-channel-dialog("", ""); }
+                    create-channel-in-category(id, name) => { root.open-create-channel-dialog(id, name); }
                     leave-server => { root.open-dialog = ShellDialog.leave-server; }
                     current-user-name: root.current-user-name;
                     current-user-initial: root.current-user-initial;
@@ -560,11 +560,11 @@ export component AppWindow inherits Window {
             }
             create-channel => {
                 root.is-navigator-drawer-open = false;
-                root.open-create-channel-dialog(-1, "");
+                root.open-create-channel-dialog("", "");
             }
-            create-channel-in-category(index, name) => {
+            create-channel-in-category(id, name) => {
                 root.is-navigator-drawer-open = false;
-                root.open-create-channel-dialog(index, name);
+                root.open-create-channel-dialog(id, name);
             }
             leave-server => {
                 root.is-navigator-drawer-open = false;
