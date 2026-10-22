@@ -7,6 +7,7 @@ import { strings } from "../i18n";
 import { ApiError, HISTORY_PAGE_SIZE, type ProfileImageKind, RestClient, generateMessageNonce } from "./api";
 import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
+import { reactionKey, withReactionAdded, withReactionRemoved, withoutEmoji } from "./reactions";
 import {
   type Attachment,
   type Channel,
@@ -18,6 +19,7 @@ import {
   type Message,
   type PermissionBits,
   type PublicUser,
+  type ReactionSummary,
   type Ready,
   type Snowflake,
   DIRECT_MESSAGE_PERMISSIONS,
@@ -49,6 +51,12 @@ export interface PendingMessage {
   attachments: Attachment[];
   status: "sending" | "failed";
 }
+
+/** A channel's pinned messages, newest pin first, as far as the client has asked for them. */
+export type PinnedMessages =
+  | { status: "loading" }
+  | { status: "failed" }
+  | { status: "loaded"; messages: Message[] };
 
 /** What a channel's visit counts as new: after the last read message, up to the newest at opening. */
 export interface UnreadMarker {
@@ -96,6 +104,10 @@ export class MellowClient {
   failedMemberGuildIds = new SvelteSet<Snowflake>();
   /** Empty hides it; built with `describeError`. */
   signOutError = $state("");
+  /** Loaded when the pins panel opens; kept up to date by `MESSAGE_UPDATE` and deletions. */
+  pinsByChannel = new SvelteMap<Snowflake, PinnedMessages>();
+  /** `${messageId}:${emoji key}` of the user's reaction clicks still on their way. */
+  private reactionsInFlight = new Set<string>();
 
   private gateway: GatewayConnection | null = null;
   /** Before the first `Ready`, no selection exists yet: home then means "not chosen". */
@@ -251,6 +263,7 @@ export class MellowClient {
     this.lastReadByChannel.clear();
     this.unreadMarkers.clear();
     this.typingUntil.clear();
+    this.pinsByChannel.clear();
     this.selectedGuildId = null;
     this.selectedChannelId = null;
   }
@@ -310,6 +323,8 @@ export class MellowClient {
     for (const userId of ready.online_user_ids) {
       this.onlineUserIds.add(userId);
     }
+    // Pins may have changed while the link was down; the panel asks again when it opens.
+    this.pinsByChannel.clear();
     this.lastReadByChannel.clear();
     for (const state of ready.read_states) {
       this.lastReadByChannel.set(state.channel_id, state.last_read_message_id);
@@ -339,8 +354,12 @@ export class MellowClient {
         return;
       }
       case "MESSAGE_UPDATE": {
+        if (!this.isKnownChannel(event.data.channel_id)) {
+          return;
+        }
+        this.applyPinnedState(event.data);
         const messages = this.messagesByChannel.get(event.data.channel_id);
-        if (!messages || !this.isKnownChannel(event.data.channel_id)) {
+        if (!messages) {
           return;
         }
         // A late REST answer must not undo a newer edit the gateway already brought. Events never
@@ -358,6 +377,7 @@ export class MellowClient {
         return;
       }
       case "MESSAGE_DELETE": {
+        this.dropPin(event.data.channel_id, event.data.id);
         const messages = this.messagesByChannel.get(event.data.channel_id);
         if (messages && this.isKnownChannel(event.data.channel_id)) {
           this.messagesByChannel.set(
@@ -459,11 +479,25 @@ export class MellowClient {
       case "DIRECT_MESSAGE_CHANNEL_CREATE":
         this.upsertConversation(event.data);
         return;
-      case "MESSAGE_REACTION_ADD":
-      case "MESSAGE_REACTION_REMOVE":
+      case "MESSAGE_REACTION_ADD": {
+        const { channel_id, message_id, emoji, user_id } = event.data;
+        const isMine = user_id === this.user?.id;
+        this.updateReactions(channel_id, message_id, (reactions) => withReactionAdded(reactions, emoji, isMine));
+        return;
+      }
+      case "MESSAGE_REACTION_REMOVE": {
+        const { channel_id, message_id, emoji, user_id } = event.data;
+        const isMine = user_id === this.user?.id;
+        this.updateReactions(channel_id, message_id, (reactions) => withReactionRemoved(reactions, emoji, isMine));
+        return;
+      }
+      case "MESSAGE_REACTION_REMOVE_EMOJI": {
+        const { channel_id, message_id, emoji } = event.data;
+        this.updateReactions(channel_id, message_id, (reactions) => withoutEmoji(reactions, emoji));
+        return;
+      }
       case "MESSAGE_REACTION_REMOVE_ALL":
-      case "MESSAGE_REACTION_REMOVE_EMOJI":
-        // shortcut: nothing shows reactions yet; count them in the cached messages with the UI.
+        this.updateReactions(event.data.channel_id, event.data.message_id, () => []);
         return;
       default: {
         // An event this client does not know yet: skipped, as the native clients do.
@@ -480,6 +514,60 @@ export class MellowClient {
     );
   }
 
+  /** Applies `change` to a message's reactions, in the history and in the pins alike. */
+  private updateReactions(
+    channelId: Snowflake,
+    messageId: Snowflake,
+    change: (reactions: readonly ReactionSummary[]) => ReactionSummary[],
+  ): void {
+    if (!this.isKnownChannel(channelId)) {
+      return;
+    }
+    const update = (message: Message) =>
+      message.id === messageId ? { ...message, reactions: change(message.reactions ?? []) } : message;
+    const messages = this.messagesByChannel.get(channelId);
+    if (messages) {
+      this.messagesByChannel.set(channelId, messages.map(update));
+    }
+    const pins = this.pinsByChannel.get(channelId);
+    if (pins?.status === "loaded") {
+      this.pinsByChannel.set(channelId, { status: "loaded", messages: pins.messages.map(update) });
+    }
+  }
+
+  /** A message pinned, unpinned or edited: the loaded pins follow, newest pin first. */
+  private applyPinnedState(message: Message): void {
+    const pins = this.pinsByChannel.get(message.channel_id);
+    if (pins?.status !== "loaded") {
+      return;
+    }
+    const existing = pins.messages.find((candidate) => candidate.id === message.id);
+    const others = pins.messages.filter((candidate) => candidate.id !== message.id);
+    if (!message.pinned) {
+      this.pinsByChannel.set(message.channel_id, { status: "loaded", messages: others });
+      return;
+    }
+    const kept = { ...message, reactions: existing?.reactions ?? this.cachedReactions(message) };
+    this.pinsByChannel.set(message.channel_id, {
+      status: "loaded",
+      messages: existing ? pins.messages.map((candidate) => (candidate.id === message.id ? kept : candidate)) : [kept, ...others],
+    });
+  }
+
+  private cachedReactions(message: Message): ReactionSummary[] {
+    return this.messages(message.channel_id).find((candidate) => candidate.id === message.id)?.reactions ?? [];
+  }
+
+  private dropPin(channelId: Snowflake, messageId: Snowflake): void {
+    const pins = this.pinsByChannel.get(channelId);
+    if (pins?.status === "loaded") {
+      this.pinsByChannel.set(channelId, {
+        status: "loaded",
+        messages: pins.messages.filter((message) => message.id !== messageId),
+      });
+    }
+  }
+
   private updateGuild(guildId: Snowflake, change: (guild: Guild) => Guild): void {
     this.guilds = this.guilds.map((guild) => (guild.id === guildId ? change(guild) : guild));
   }
@@ -487,6 +575,7 @@ export class MellowClient {
   /** A channel gone or hidden from us: its cache, its loads and its unsent messages go too. */
   private forgetChannel(channelId: Snowflake): void {
     this.messagesByChannel.delete(channelId);
+    this.pinsByChannel.delete(channelId);
     this.reachedStartChannelIds.delete(channelId);
     this.requestedHistory.delete(channelId);
     this.failedHistoryChannelIds.delete(channelId);
@@ -911,6 +1000,100 @@ export class MellowClient {
     }
     await this.rest.deleteMessage(channelId, messageId);
     this.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: channelId, id: messageId } }, Date.now());
+  }
+
+  // --- Reactions and pins --------------------------------------------------------------------
+
+  /**
+   * Adds the user's reaction, or takes it back if they already reacted with it. Shown at once and
+   * undone if the instance refuses; the error is thrown for the caller to tell. A second click
+   * while the first is on its way is ignored, so the two cannot arrive out of order.
+   */
+  async toggleReaction(channelId: Snowflake, messageId: Snowflake, emoji: string): Promise<void> {
+    const key = reactionKey(emoji);
+    const flightKey = `${messageId}:${key}`;
+    if (this.reactionsInFlight.has(flightKey)) {
+      return;
+    }
+    const message =
+      this.messages(channelId).find((candidate) => candidate.id === messageId) ??
+      this.pinnedMessages(channelId).find((candidate) => candidate.id === messageId);
+    const isRemoving = message?.reactions?.some((reaction) => reaction.emoji === key && reaction.me) ?? false;
+    const apply = (adding: boolean) =>
+      this.updateReactions(channelId, messageId, (reactions) =>
+        adding ? withReactionAdded(reactions, key, true) : withReactionRemoved(reactions, key, true),
+      );
+    this.reactionsInFlight.add(flightKey);
+    apply(!isRemoving);
+    try {
+      if (isRemoving) {
+        await this.rest.removeOwnReaction(channelId, messageId, emoji);
+      } else {
+        await this.rest.addReaction(channelId, messageId, emoji);
+      }
+    } catch (error) {
+      apply(isRemoving);
+      this.reportError(error, "react");
+      throw error;
+    } finally {
+      this.reactionsInFlight.delete(flightKey);
+    }
+  }
+
+  listReactingUsers(channelId: Snowflake, messageId: Snowflake, emoji: string): Promise<PublicUser[]> {
+    return this.rest.listReactingUsers(channelId, messageId, emoji);
+  }
+
+  /** A moderator's removal: the instance's `MESSAGE_REACTION_REMOVE` updates the count. */
+  removeUserReaction(channelId: Snowflake, messageId: Snowflake, emoji: string, userId: Snowflake): Promise<void> {
+    return this.rest.removeUserReaction(channelId, messageId, emoji, userId);
+  }
+
+  async removeAllReactions(channelId: Snowflake, messageId: Snowflake): Promise<void> {
+    await this.rest.removeAllReactions(channelId, messageId);
+    this.updateReactions(channelId, messageId, () => []);
+  }
+
+  pinnedMessages(channelId: Snowflake): Message[] {
+    const pins = this.pinsByChannel.get(channelId);
+    return pins?.status === "loaded" ? pins.messages : [];
+  }
+
+  /** Asks the instance again unless the pins are loaded or on their way (`force` for Try again). */
+  async loadPins(channelId: Snowflake, force = false): Promise<void> {
+    const current = this.pinsByChannel.get(channelId);
+    if (!force && (current?.status === "loaded" || current?.status === "loading")) {
+      return;
+    }
+    this.pinsByChannel.set(channelId, { status: "loading" });
+    try {
+      const messages = await this.rest.listPins(channelId);
+      if (this.isKnownChannel(channelId)) {
+        this.pinsByChannel.set(channelId, { status: "loaded", messages });
+      }
+    } catch (error) {
+      this.pinsByChannel.set(channelId, { status: "failed" });
+      this.reportError(error, "load pins");
+    }
+  }
+
+  /** The instance answers with no message: the change is applied here, and its event repeats it. */
+  async setPinned(message: Message, isPinned: boolean): Promise<void> {
+    if (isPinned) {
+      await this.rest.pinMessage(message.channel_id, message.id);
+    } else {
+      await this.rest.unpinMessage(message.channel_id, message.id);
+    }
+    const cached = this.messages(message.channel_id).find((candidate) => candidate.id === message.id) ?? message;
+    const changed = { ...cached, pinned: isPinned };
+    const messages = this.messagesByChannel.get(message.channel_id);
+    if (messages) {
+      this.messagesByChannel.set(
+        message.channel_id,
+        messages.map((candidate) => (candidate.id === message.id ? changed : candidate)),
+      );
+    }
+    this.applyPinnedState(changed);
   }
 
   /** At most one indicator every few seconds while typing. */
