@@ -40,7 +40,17 @@
     }),
   );
   const items = $derived(groups.flatMap((group) => group.items));
-  const activeItem = $derived(items[Math.min(activeIndex, items.length - 1)] ?? null);
+  // Each option's position in the whole list, computed once per result set.
+  const numberedGroups = $derived.by(() => {
+    let offset = 0;
+    return groups.map((group) => {
+      const numbered = group.items.map((item, position) => ({ item, index: offset + position }));
+      offset += group.items.length;
+      return { label: group.label, items: numbered };
+    });
+  });
+  const activeOptionIndex = $derived(Math.min(activeIndex, items.length - 1));
+  const activeItem = $derived(items[activeOptionIndex] ?? null);
 
   onMount(() => {
     const opener =
@@ -117,7 +127,7 @@
     aria-expanded="true"
     aria-controls="{id}-results"
     aria-autocomplete="list"
-    aria-activedescendant={activeItem ? `${id}-option-${items.indexOf(activeItem)}` : undefined}
+    aria-activedescendant={activeItem ? `${id}-option-${activeOptionIndex}` : undefined}
     aria-label="Where would you like to go?"
     placeholder="Where would you like to go?"
     autocomplete="off"
@@ -127,43 +137,54 @@
     onkeydown={handleKeydown}
   />
   <!-- 50 vh, as in the mockup: long result lists scroll inside the dialog. -->
-  <ul id="{id}-results" role="listbox" aria-label="Results" class="mt-sm max-h-[50vh] overflow-y-auto">
-    {#each groups as group (group.label)}
-      <li role="presentation" class="px-xs pt-xs pb-2xs type-category text-text-muted">{group.label}</li>
-      {#each group.items as item (item.key)}
-        {@const index = items.indexOf(item)}
-        {@const isActive = item === activeItem}
-        <!-- Pointer only: the keyboard goes through the field's arrows and Enter. -->
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <li
-          id="{id}-option-{index}"
-          role="option"
-          aria-selected={isActive}
-          class={[
-            "flex h-(--mw-component-quick-switcher-option-height) cursor-pointer items-center gap-xs rounded-sm px-xs pointer-coarse:h-(--mw-size-hit-web-min)",
-            isActive && "bg-state-selected text-text-heading",
-          ]}
-          onclick={() => void open(item)}
-          onpointermove={() => (activeIndex = index)}
-        >
-          <Icon name={item.icon} class="size-(--mw-component-channel-row-icon-size) text-text-muted" />
-          <span class="min-w-0 truncate">{item.label}</span>
-          {#if item.hasUnread}
-            <span
-              aria-hidden="true"
-              class="size-(--mw-component-channel-row-unread-pill-width) shrink-0 rounded-full bg-unread-pill"
-            ></span>
-            <span class="sr-only">, unread</span>
-          {/if}
-          <span class="ms-auto shrink-0 type-body-sm text-text-muted">{item.where}</span>
-        </li>
-      {/each}
-    {:else}
-      <li role="presentation" class="px-xs pt-xs pb-2xs type-body text-text-muted">
-        No results for “{query.trim()}”. Check the spelling or search another server.
-      </li>
+  <!-- A listbox of groups of options, each group named by its heading. -->
+  <div id="{id}-results" role="listbox" aria-label="Results" class="mt-sm max-h-[50vh] overflow-y-auto">
+    {#each numberedGroups as group, groupIndex (group.label)}
+      <div role="group" aria-labelledby="{id}-group-{groupIndex}">
+        <div id="{id}-group-{groupIndex}" role="presentation" class="px-xs pt-xs pb-2xs type-category text-text-muted">
+          {group.label}
+        </div>
+        {#each group.items as { item, index } (item.key)}
+          {@const isActive = index === activeOptionIndex}
+          <!-- Pointer only: the keyboard goes through the field's arrows and Enter. -->
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <div
+            id="{id}-option-{index}"
+            role="option"
+            tabindex="-1"
+            aria-selected={isActive}
+            class={[
+              "flex h-(--mw-component-quick-switcher-option-height) cursor-pointer items-center gap-xs rounded-sm px-xs pointer-coarse:h-(--mw-size-hit-web-min)",
+              isActive && "bg-state-selected text-text-heading",
+            ]}
+            onclick={() => void open(item)}
+            onpointermove={() => (activeIndex = index)}
+          >
+            <Icon name={item.icon} class="size-(--mw-component-channel-row-icon-size) text-text-muted" />
+            <span class="min-w-0 truncate">{item.label}</span>
+            {#if item.hasUnread}
+              <span
+                aria-hidden="true"
+                class="size-(--mw-component-channel-row-unread-pill-width) shrink-0 rounded-full bg-unread-pill"
+              ></span>
+              <span class="sr-only">, unread</span>
+            {/if}
+            <span class="ms-auto shrink-0 type-body-sm text-text-muted">{item.where}</span>
+          </div>
+        {/each}
+      </div>
     {/each}
-  </ul>
+  </div>
+  <!-- Outside the listbox, and announced: the count, or why there is nothing to choose. -->
+  <div role="status" class="contents">
+    {#if items.length === 0}
+      <p class="px-xs pt-xs pb-2xs type-body text-text-muted">
+        No results for “{query.trim()}”. Check the spelling or search another server.
+      </p>
+    {:else}
+      <p class="sr-only">{items.length} {items.length === 1 ? "result" : "results"}</p>
+    {/if}
+  </div>
   <div role="alert" class="contents">
     {#if errorMessage}
       <p class="mt-sm type-body text-(--mw-component-dialog-error-text)">{errorMessage}</p>
@@ -172,7 +193,6 @@
   <p class="mt-sm type-body-sm text-text-muted">
     Arrows to choose, Enter to open, Esc to close. Prefixes: @ people, # channels, * servers.
   </p>
-  <p class="sr-only" aria-live="polite">{items.length} {items.length === 1 ? "result" : "results"}</p>
 </dialog>
 
 <style>

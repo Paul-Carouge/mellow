@@ -43,6 +43,13 @@ describe("quickSwitcherResults", () => {
     expect(groups[1]?.items[0]?.target).toEqual({ kind: "person", userId: "ana", conversationId: "dm" });
   });
 
+  it("shows at most twenty of a kind before anything is typed", () => {
+    const crowd = Array.from({ length: 300 }, (_, index) => ({ id: `p${index}`, username: `p${index}`, display_name: "" }));
+    const groups = quickSwitcherResults("", { ...sources, knownPeople: crowd });
+    expect(groups.find((group) => group.label === "People")?.items).toHaveLength(20);
+    expect(quickSwitcherResults("@p", { ...sources, knownPeople: crowd }).at(0)?.items).toHaveLength(300);
+  });
+
   it("narrows with a prefix and matches anywhere in the name", () => {
     expect(quickSwitcherResults("#TOP", sources).map((group) => group.items.map((item) => item.label))).toEqual([
       ["off-topic"],

@@ -36,6 +36,8 @@ export interface QuickSwitcherSources {
   canSendIn: (channelId: Snowflake) => boolean;
 }
 
+const MAXIMUM_ITEMS_PER_KIND_BEFORE_TYPING = 20;
+
 function kindOfPrefix(prefix: string): "channels" | "people" | "servers" | null {
   return prefix === "#" ? "channels" : prefix === "@" ? "people" : prefix === "*" ? "servers" : null;
 }
@@ -100,9 +102,12 @@ export function quickSwitcherResults(query: string, sources: QuickSwitcherSource
       target: { kind: "server", guildId: guild.id },
     }));
 
+  // Before anything is typed, a short list per kind: a large instance would otherwise render
+  // every channel and member at once.
+  const shown = (items: QuickSwitcherItem[]) => (term === "" ? items.slice(0, MAXIMUM_ITEMS_PER_KIND_BEFORE_TYPING) : items);
   return [
-    { label: "Channels", items: !kind || kind === "channels" ? channels : [] },
-    { label: "People", items: !kind || kind === "people" ? peopleItems : [] },
-    { label: "Servers", items: !kind || kind === "servers" ? servers : [] },
+    { label: "Channels", items: !kind || kind === "channels" ? shown(channels) : [] },
+    { label: "People", items: !kind || kind === "people" ? shown(peopleItems) : [] },
+    { label: "Servers", items: !kind || kind === "servers" ? shown(servers) : [] },
   ].filter((group) => group.items.length > 0);
 }
