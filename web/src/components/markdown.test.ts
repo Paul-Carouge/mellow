@@ -105,6 +105,12 @@ describe("links", () => {
     ]);
   });
 
+  it("keeps spoiler bars literal inside masked link text", () => {
+    expect(inlines("[||x||](https://e.org)")).toEqual([
+      { kind: "link", url: "https://e.org/", isMasked: true, children: [text("||x||")] },
+    ]);
+  });
+
   it("never links other schemes", () => {
     for (const literal of [
       "[click](javascript:alert(1))",
@@ -223,7 +229,7 @@ describe("hostile text", () => {
   });
 
   it("caps nesting and shows the rest as text", () => {
-    let nodes = inlines("[||**__~~*_`code`_*~~__**||](https://example.org)");
+    let nodes = inlines("||[**__~~*_`code`_*~~__**](https://example.org)||");
     let depth = 0;
     while (nodes.length === 1 && nodes[0] && "children" in nodes[0]) {
       nodes = nodes[0].children;
