@@ -3,7 +3,7 @@
 // matching "@username" (or a one-word display name) against the people this client knows; move to
 // the instance's own mention ids once the protocol carries them.
 
-import type { PublicUser, Snowflake } from "../lib/protocol";
+import type { PublicUser } from "../lib/protocol";
 
 export type MentionSegment = { kind: "text"; text: string } | { kind: "mention"; text: string; user: PublicUser };
 
@@ -68,8 +68,4 @@ export function splitMentions(text: string, people: MentionablePeople): MentionS
     segments.push({ kind: "text", text: text.slice(textStart) });
   }
   return segments;
-}
-
-export function mentionsUser(content: string, people: MentionablePeople, userId: Snowflake): boolean {
-  return splitMentions(content, people).some((segment) => segment.kind === "mention" && segment.user.id === userId);
 }

@@ -9,13 +9,14 @@
     displayName,
     fullTimestampLabel,
     messageTimestampLabel,
-    splitMessageText,
     timeOfDayLabel,
   } from "./format";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
-  import { type MentionablePeople, mentionsUser, splitMentions } from "./mentions";
+  import { markdownMentionsUser, parseMessageMarkdown } from "./markdown";
+  import type { MentionablePeople } from "./mentions";
   import MessageAttachments from "./MessageAttachments.svelte";
+  import MessageMarkdown from "./MessageMarkdown.svelte";
   import type { MessageListRow } from "./message-rows";
   import { durationTokenInMilliseconds } from "./tokens";
 
@@ -78,7 +79,8 @@
   const isOwn = $derived(author.id === currentUser.id);
   const isSending = $derived(row.kind === "pending" && row.pending.status === "sending");
   const isFailed = $derived(row.kind === "pending" && row.pending.status === "failed");
-  const isMentioningCurrentUser = $derived(mentionsUser(content, mentionablePeople, currentUser.id));
+  const contentBlocks = $derived(parseMessageMarkdown(content, mentionablePeople));
+  const isMentioningCurrentUser = $derived(markdownMentionsUser(contentBlocks, currentUser.id));
 
   // Taken from the message when the editor opens; later updates to the message keep the typing.
   let draft = $state("");
@@ -117,28 +119,22 @@
   }
 </script>
 
+{#snippet editedLabel()}{#if message?.edited_at_unix_milliseconds}<span
+      class="type-message-timestamp text-(--mw-component-message-edited-text)"
+      title={strings.messages.editedAt(fullTimestampLabel(message.edited_at_unix_milliseconds))}
+      >{strings.messages.edited}</span
+    >{/if}{/snippet}
+
 {#snippet body()}
-  <p
+  <div
     class={[
-      "type-message break-words whitespace-pre-wrap",
+      "type-message",
       isSending ? "text-(--mw-component-message-pending-text)" : "text-(--mw-component-message-body-text)",
     ]}
   >
-    {#if !row.startsAuthorGroup}<span class="sr-only">{strings.messages.authorSaid(displayName(author), "")}</span>{/if}{#each splitMessageText(content) as segment, index (index)}{#if segment.kind === "link"}<a
-          href={segment.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          class="text-text-link hover:underline">{segment.text}</a
-        >{:else}{#each splitMentions(segment.text, mentionablePeople) as part, partIndex (partIndex)}{#if part.kind === "mention"}<span
-                class="rounded-(--mw-component-mention-chip-radius) bg-(--mw-component-mention-chip-background) px-(--mw-component-mention-chip-padding-inline) font-medium text-(--mw-component-mention-chip-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-mention-chip-background-hover) hover:text-(--mw-component-mention-chip-text-hover)"
-                >{part.text}</span
-              >{:else}{part.text}{/if}{/each}{/if}{/each}{#if message?.edited_at_unix_milliseconds}
-      <span
-        class="type-message-timestamp text-(--mw-component-message-edited-text)"
-        title={strings.messages.editedAt(fullTimestampLabel(message.edited_at_unix_milliseconds))}
-        >{strings.messages.edited}</span
-      >{/if}
-  </p>
+    {#if !row.startsAuthorGroup}<span class="sr-only">{strings.messages.authorSaid(displayName(author), "")}</span>{/if}
+    <MessageMarkdown blocks={contentBlocks} trailing={message?.edited_at_unix_milliseconds ? editedLabel : undefined} />
+  </div>
 {/snippet}
 
 <!-- Messages take focus (one roving Tab stop, arrows between them) so their actions are reachable
