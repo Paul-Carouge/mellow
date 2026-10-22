@@ -8,9 +8,9 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use mellow_protocol::{
     AuditLogEntry, AuditLogQuery, Ban, Channel, CreateBanRequest, CreateChannelRequest,
-    CreateGuildRequest, CreateInviteRequest, CreateRoleRequest, Guild, GuildSummary, Invite,
-    Member, ReorderRolesRequest, Role, SetPermissionOverwriteRequest, Snowflake,
-    UpdateChannelRequest, UpdateRoleRequest,
+    CreateGuildRequest, CreateInviteRequest, CreateRoleRequest, Guild, GuildInvite, GuildSummary,
+    Invite, Member, ReorderRolesRequest, Role, SetPermissionOverwriteRequest, Snowflake,
+    UpdateChannelRequest, UpdateGuildRequest, UpdateRoleRequest,
 };
 
 use crate::domain::clock::now_unix_milliseconds;
@@ -58,6 +58,31 @@ pub(crate) async fn get_guild(
     ApiPath(guild_id): ApiPath<Snowflake>,
 ) -> Result<Json<Guild>, ApiError> {
     Ok(Json(state.guilds.get_guild(user.id, guild_id).await?))
+}
+
+pub(crate) async fn update_guild(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(guild_id): ApiPath<Snowflake>,
+    ApiJson(request): ApiJson<UpdateGuildRequest>,
+) -> Result<Json<Guild>, ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    Ok(Json(
+        state
+            .guilds
+            .update_guild(user.id, guild_id, request)
+            .await?,
+    ))
+}
+
+pub(crate) async fn delete_guild(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(guild_id): ApiPath<Snowflake>,
+) -> Result<StatusCode, ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    state.guilds.delete_guild(user.id, guild_id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn create_channel(
@@ -111,6 +136,29 @@ pub(crate) async fn create_invite(
         .create_invite(user.id, guild_id, request, now_unix_milliseconds())
         .await?;
     Ok((StatusCode::CREATED, Json(invite)))
+}
+
+pub(crate) async fn list_invites(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(guild_id): ApiPath<Snowflake>,
+) -> Result<Json<Vec<GuildInvite>>, ApiError> {
+    Ok(Json(
+        state
+            .guilds
+            .list_invites(user.id, guild_id, now_unix_milliseconds())
+            .await?,
+    ))
+}
+
+pub(crate) async fn delete_invite(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(code): ApiPath<String>,
+) -> Result<StatusCode, ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    state.guilds.delete_invite(user.id, &code).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Rate limited per address so invite codes cannot be guessed by brute force.

@@ -9,6 +9,13 @@ pub struct CreateGuildRequest {
     pub name: String,
 }
 
+/// Body of `PATCH /api/v1/guilds/{guild_id}`; absent fields are unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateGuildRequest {
+    pub name: Option<String>,
+}
+
 /// A guild ("server" in the UI) with its channels, as returned to a member.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Guild {
@@ -115,6 +122,12 @@ pub enum AuditAction {
     /// A moderator removed reactions (someone's, one emoji's or all): `target_id` is the message,
     /// `context_id` the channel.
     MessageReactionRemove,
+    /// The server's settings changed (its name).
+    GuildUpdate,
+    /// No `target_id`: the invite's code is the `code` change's new value.
+    InviteCreate,
+    /// No `target_id`: the invite's code is the `code` change's old value.
+    InviteDelete,
     /// An action added by a newer server; never written, only read by older clients.
     #[serde(other)]
     Unknown,
@@ -132,6 +145,8 @@ pub enum AuditChangeKey {
     Allow,
     /// Of a channel overwrite.
     Deny,
+    /// Of an invite.
+    Code,
     /// A field added by a newer server.
     #[serde(other)]
     Unknown,
@@ -266,6 +281,17 @@ pub struct Invite {
     pub uses: u32,
     pub max_uses: Option<u32>,
     pub expires_at_unix_milliseconds: Option<u64>,
+}
+
+/// Entry of `GET /api/v1/guilds/{guild_id}/invites`: a usable invite, newest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GuildInvite {
+    pub code: String,
+    pub creator: PublicUser,
+    pub uses: u32,
+    pub max_uses: Option<u32>,
+    pub expires_at_unix_milliseconds: Option<u64>,
+    pub created_at_unix_milliseconds: u64,
 }
 
 /// What other members may see about a user (never the email).

@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mellow_protocol::{
-    Channel, CurrentUser, DirectMessageChannel, GatewayEvent, Guild, Member, Message, Permissions,
-    PresenceStatus, PublicUser, Ready, Role, SendMessageRequest, Snowflake,
+    Channel, CurrentUser, DirectMessageChannel, GatewayEvent, Guild, GuildSummary, Member, Message,
+    Permissions, PresenceStatus, PublicUser, Ready, Role, SendMessageRequest, Snowflake,
     compute_channel_permissions, compute_guild_permissions,
 };
 
@@ -341,6 +341,7 @@ impl ClientState {
                 self.upsert_direct_message_channel(channel)
             }
             GatewayEvent::GuildDelete { id } => self.remove_guild(id),
+            GatewayEvent::GuildUpdate(summary) => self.rename_guild(summary),
             GatewayEvent::GuildMemberAdd { guild_id, member } => {
                 if let Some(members) = self.members_by_guild.get_mut(&guild_id)
                     && !members
@@ -370,16 +371,7 @@ impl ClientState {
                 channel_id,
                 user_id,
                 ..
-            } => {
-                // Expired entries are dropped here, so the map never outgrows who types now.
-                self.typing_until
-                    .retain(|_, until| *until > now_unix_milliseconds);
-                self.typing_until.insert(
-                    (channel_id, user_id),
-                    now_unix_milliseconds.saturating_add(TYPING_INDICATOR_LIFETIME_MILLISECONDS),
-                );
-                StateChange::Typing { channel_id }
-            }
+            } => self.note_typing(channel_id, user_id, now_unix_milliseconds),
             GatewayEvent::PresenceUpdate { user_id, status } => {
                 match status {
                     PresenceStatus::Online => self.online_user_ids.insert(user_id),
@@ -394,6 +386,32 @@ impl ClientState {
             | GatewayEvent::MessageReactionRemove(_)
             | GatewayEvent::MessageReactionRemoveAll { .. }
             | GatewayEvent::MessageReactionRemoveEmoji { .. } => StateChange::Nothing,
+        }
+    }
+
+    fn note_typing(
+        &mut self,
+        channel_id: Snowflake,
+        user_id: Snowflake,
+        now_unix_milliseconds: u64,
+    ) -> StateChange {
+        // Expired entries are dropped here, so the map never outgrows who types now.
+        self.typing_until
+            .retain(|_, until| *until > now_unix_milliseconds);
+        self.typing_until.insert(
+            (channel_id, user_id),
+            now_unix_milliseconds.saturating_add(TYPING_INDICATOR_LIFETIME_MILLISECONDS),
+        );
+        StateChange::Typing { channel_id }
+    }
+
+    fn rename_guild(&mut self, summary: GuildSummary) -> StateChange {
+        match self.guilds.iter_mut().find(|guild| guild.id == summary.id) {
+            Some(guild) => {
+                guild.name = summary.name;
+                StateChange::Guilds
+            }
+            None => StateChange::Nothing,
         }
     }
 
@@ -1111,6 +1129,16 @@ mod tests {
             NOW,
         );
         assert_eq!(state.members(GUILD).len(), 1);
+
+        let change = state.apply_event(
+            GatewayEvent::GuildUpdate(GuildSummary {
+                id: GUILD,
+                name: "Renamed".into(),
+            }),
+            NOW,
+        );
+        assert_eq!(change, StateChange::Guilds);
+        assert_eq!(state.guilds()[0].name, "Renamed");
 
         state.apply_event(GatewayEvent::GuildDelete { id: GUILD }, NOW);
         assert_eq!(state.guilds(), &[]);

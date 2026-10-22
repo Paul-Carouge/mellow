@@ -210,14 +210,19 @@ pub(crate) fn router(state: AppState) -> Router {
             post(message_routes::open_direct_message),
         )
         .route("/api/v1/guilds", post(guild_routes::create_guild))
-        .route("/api/v1/guilds/{guild_id}", get(guild_routes::get_guild))
+        .route(
+            "/api/v1/guilds/{guild_id}",
+            get(guild_routes::get_guild)
+                .patch(guild_routes::update_guild)
+                .delete(guild_routes::delete_guild),
+        )
         .route(
             "/api/v1/guilds/{guild_id}/channels",
             post(guild_routes::create_channel),
         )
         .route(
             "/api/v1/guilds/{guild_id}/invites",
-            post(guild_routes::create_invite),
+            get(guild_routes::list_invites).post(guild_routes::create_invite),
         )
         .route(
             "/api/v1/guilds/{guild_id}/members",
@@ -270,7 +275,7 @@ pub(crate) fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/invites/{code}",
-            post(guild_routes::join_with_invite),
+            post(guild_routes::join_with_invite).delete(guild_routes::delete_invite),
         )
         .merge(message_router(state.maximum_attachment_bytes))
         .route("/gateway", get(crate::gateway::upgrade))
@@ -1707,6 +1712,71 @@ pub(crate) mod tests {
             "the kicked guest is no longer a member"
         );
         assert_eq!(bad_status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn server_settings_over_http() {
+        use mellow_protocol::{Guild, GuildInvite};
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, guest, guild_id, _) = guild_with_guest(&state).await;
+        let guild_path = format!("/api/v1/guilds/{guild_id}");
+        let invites_path = format!("{guild_path}/invites");
+        let rename = || Some(serde_json::json!({"name": "Book club"}));
+
+        let (guest_rename, body) =
+            send(&state, authorized("PATCH", &guild_path, &guest, rename())).await;
+        let guest_rename_code = json::<ApiErrorBody>(&body).code;
+        let (unknown_rename, _) = send(
+            &state,
+            authorized("PATCH", "/api/v1/guilds/42", &owner, rename()),
+        )
+        .await;
+        let (unknown_field, _) = send(
+            &state,
+            authorized(
+                "PATCH",
+                &guild_path,
+                &owner,
+                Some(serde_json::json!({"icon": "x"})),
+            ),
+        )
+        .await;
+        let (_, body) = send(&state, authorized("PATCH", &guild_path, &owner, rename())).await;
+        let renamed: Guild = json(&body);
+
+        let (guest_list, _) = send(&state, authorized("GET", &invites_path, &guest, None)).await;
+        let (_, body) = send(&state, authorized("GET", &invites_path, &owner, None)).await;
+        let invites: Vec<GuildInvite> = json(&body);
+        let code = invites[0].code.clone();
+        let invite_path = format!("/api/v1/invites/{code}");
+        let (guest_revoke, _) =
+            send(&state, authorized("DELETE", &invite_path, &guest, None)).await;
+        let (revoked, _) = send(&state, authorized("DELETE", &invite_path, &owner, None)).await;
+        let (revoked_again, _) =
+            send(&state, authorized("DELETE", &invite_path, &owner, None)).await;
+
+        let (guest_delete, _) = send(&state, authorized("DELETE", &guild_path, &guest, None)).await;
+        let (deleted, _) = send(&state, authorized("DELETE", &guild_path, &owner, None)).await;
+        let (after_delete, _) = send(&state, authorized("GET", &guild_path, &owner, None)).await;
+        pool.close().await;
+
+        assert_eq!(guest_rename, StatusCode::FORBIDDEN);
+        assert_eq!(guest_rename_code, ApiErrorCode::MissingPermissions);
+        assert_eq!(unknown_rename, StatusCode::NOT_FOUND);
+        assert_eq!(unknown_field, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(renamed.name, "Book club");
+        assert_eq!(guest_list, StatusCode::FORBIDDEN);
+        assert_eq!(invites.len(), 1);
+        assert_eq!((invites[0].uses, invites[0].max_uses), (1, None));
+        assert_eq!(invites[0].creator.username, "owner");
+        assert_eq!(guest_revoke, StatusCode::FORBIDDEN);
+        assert_eq!(revoked, StatusCode::NO_CONTENT);
+        assert_eq!(revoked_again, StatusCode::NOT_FOUND);
+        assert_eq!(guest_delete, StatusCode::FORBIDDEN);
+        assert_eq!(deleted, StatusCode::NO_CONTENT);
+        assert_eq!(after_delete, StatusCode::NOT_FOUND);
     }
 
     fn picture_request(method: &str, path: &str, token: &str, bytes: Vec<u8>) -> Request<Body> {

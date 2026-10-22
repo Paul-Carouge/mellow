@@ -7,9 +7,10 @@ use std::sync::Arc;
 use mellow_protocol::{
     AuditAction, AuditChange, AuditChangeKey, AuditLogEntry, AuditLogQuery, Ban, Channel,
     ChannelKind, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
-    CreateRoleRequest, GatewayEvent, Guild, GuildSummary, Invite, Member, OverwriteKind,
-    PermissionOverwrite, Permissions, PresenceStatus, PublicUser, ReorderRolesRequest, Role,
-    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateRoleRequest,
+    CreateRoleRequest, GatewayEvent, Guild, GuildInvite, GuildSummary, Invite, Member,
+    OverwriteKind, PermissionOverwrite, Permissions, PresenceStatus, PublicUser,
+    ReorderRolesRequest, Role, SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest,
+    UpdateGuildRequest, UpdateRoleRequest,
 };
 use sqlx::SqlitePool;
 
@@ -328,6 +329,65 @@ impl Guilds {
             roles: guild_storage::list_roles(&self.pool, guild_id).await?,
             channels,
         })
+    }
+
+    /// Needs `MANAGE_GUILD`. Absent fields stay unchanged; an unchanged name records nothing.
+    pub(crate) async fn update_guild(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        request: UpdateGuildRequest,
+    ) -> Result<Guild, GuildError> {
+        let (membership, permissions) = self.membership_and_permissions(guild_id, user_id).await?;
+        if !permissions.contains(Permissions::MANAGE_GUILD) {
+            return Err(GuildError::MissingPermissions);
+        }
+        let name = request
+            .name
+            .map(|name| normalize_guild_name(&name))
+            .transpose()?;
+        if let Some(change) = text_change(
+            AuditChangeKey::Name,
+            &membership.guild_name,
+            name.as_deref(),
+        ) {
+            let name = change.new_value.clone();
+            let audit = NewAuditEntry {
+                changes: vec![change],
+                ..self.audit_entry(guild_id, user_id, AuditAction::GuildUpdate, None, None)?
+            };
+            if !guild_storage::update_guild_name(&self.pool, guild_id, &name, &audit).await? {
+                return Err(GuildError::NotFound);
+            }
+            self.events.publish_to_guild(
+                guild_id,
+                &GatewayEvent::GuildUpdate(GuildSummary { id: guild_id, name }),
+            );
+        }
+        self.get_guild(user_id, guild_id).await
+    }
+
+    /// The owner only. Everything in the guild goes with it; every member's sessions stop
+    /// receiving it and see it disappear. Nothing is audited: the log goes with the guild.
+    pub(crate) async fn delete_guild(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+    ) -> Result<(), GuildError> {
+        let (membership, _) = self.membership_and_permissions(guild_id, user_id).await?;
+        if membership.owner_id != user_id {
+            return Err(GuildError::MissingPermissions);
+        }
+        let member_ids = guild_storage::delete_guild(&self.pool, guild_id, user_id)
+            .await?
+            .ok_or(GuildError::NotFound)?;
+        for member_id in member_ids {
+            self.events.unsubscribe_user_from_guild(member_id, guild_id);
+            self.events
+                .publish_to_user(member_id, &GatewayEvent::GuildDelete { id: guild_id });
+        }
+        tracing::info!(%guild_id, "a guild was deleted by its owner");
+        Ok(())
     }
 
     /// Needs `MANAGE_CHANNELS`. A text channel may sit in a category of the same guild.
@@ -921,9 +981,22 @@ impl Guilds {
             expires_at_unix_milliseconds,
             created_at_unix_milliseconds: now_unix_milliseconds,
         };
-        guild_storage::insert_invite(&self.pool, &invite, MAXIMUM_ACTIVE_INVITES_PER_GUILD)
-            .await
-            .map_err(limit_reached("a guild has at most 1000 active invites"))?;
+        let audit = NewAuditEntry {
+            changes: vec![AuditChange {
+                key: AuditChangeKey::Code,
+                old_value: String::new(),
+                new_value: invite.code.clone(),
+            }],
+            ..self.audit_entry(guild_id, user_id, AuditAction::InviteCreate, None, None)?
+        };
+        guild_storage::insert_invite(
+            &self.pool,
+            &invite,
+            MAXIMUM_ACTIVE_INVITES_PER_GUILD,
+            &audit,
+        )
+        .await
+        .map_err(limit_reached("a guild has at most 1000 active invites"))?;
         Ok(Invite {
             code: invite.code,
             guild_id,
@@ -931,6 +1004,74 @@ impl Guilds {
             max_uses: invite.max_uses,
             expires_at_unix_milliseconds,
         })
+    }
+
+    /// Needs `MANAGE_GUILD`. Only invites that can still be used, newest first.
+    pub(crate) async fn list_invites(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        now_unix_milliseconds: u64,
+    ) -> Result<Vec<GuildInvite>, GuildError> {
+        self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_GUILD)
+            .await?;
+        let mut invites: Vec<GuildInvite> = guild_storage::list_usable_invites(
+            &self.pool,
+            guild_id,
+            now_unix_milliseconds,
+            MAXIMUM_ACTIVE_INVITES_PER_GUILD,
+        )
+        .await?
+        .into_iter()
+        .map(|listed| GuildInvite {
+            code: listed.invite.code,
+            creator: PublicUser {
+                id: listed.invite.creator_id,
+                username: listed.creator_username,
+                display_name: listed.creator_display_name,
+                avatar: None,
+                banner: None,
+            },
+            uses: listed.invite.uses,
+            max_uses: listed.invite.max_uses,
+            expires_at_unix_milliseconds: listed.invite.expires_at_unix_milliseconds,
+            created_at_unix_milliseconds: listed.invite.created_at_unix_milliseconds,
+        })
+        .collect();
+        fill_profile_images(
+            &self.pool,
+            invites.iter_mut().map(|invite| &mut invite.creator),
+        )
+        .await
+        .map_err(|error| GuildError::Internal(Box::new(error)))?;
+        Ok(invites)
+    }
+
+    /// Needs `MANAGE_GUILD` in the invite's guild. An unknown code and an invite of a guild the
+    /// user is not in are both `NotFound`, so codes cannot be probed.
+    pub(crate) async fn delete_invite(
+        &self,
+        user_id: Snowflake,
+        code: &str,
+    ) -> Result<(), GuildError> {
+        let guild_id = guild_storage::find_invite_guild_id(&self.pool, code)
+            .await?
+            .ok_or(GuildError::NotFound)?;
+        self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_GUILD)
+            .await?;
+        let audit = NewAuditEntry {
+            changes: vec![AuditChange {
+                key: AuditChangeKey::Code,
+                old_value: code.to_owned(),
+                new_value: String::new(),
+            }],
+            ..self.audit_entry(guild_id, user_id, AuditAction::InviteDelete, None, None)?
+        };
+        if guild_storage::delete_invite(&self.pool, guild_id, code, &audit).await? {
+            Ok(())
+        } else {
+            Err(GuildError::NotFound)
+        }
     }
 
     /// Joins (or, for an existing member, simply opens) the guild an invite points to.
@@ -3378,8 +3519,10 @@ mod tests {
                 AuditAction::MemberRoleAdd,
                 AuditAction::RoleCreate,
                 AuditAction::ChannelCreate,
+                AuditAction::InviteCreate,
+                AuditAction::InviteCreate,
             ],
-            "newest first; joins and repeated grants are not moderation"
+            "newest first; joins and repeated grants are not moderation, invites are"
         );
         let ban = &everything[0];
         assert_eq!(
@@ -3420,9 +3563,9 @@ mod tests {
         fixture.pool.close().await;
 
         assert_eq!(newest.len(), 1);
-        assert_eq!(older.len(), 2);
+        assert_eq!(older.len(), 3, "two more channels and the invite");
         assert!(older.iter().all(|entry| entry.id < newest[0].id));
-        assert_eq!(beyond_every_id.len(), 3);
+        assert_eq!(beyond_every_id.len(), 4);
         assert!(matches!(
             bad_limit,
             Err(GuildError::InvalidInput(GuildRuleViolation::AuditLogLimit))
@@ -3694,7 +3837,11 @@ mod tests {
         assert!(!about(&seen_by_auditor, gone.id), "deleted channel");
         assert_eq!(
             actions(&seen_by_auditor),
-            [AuditAction::MemberRoleAdd, AuditAction::RoleCreate]
+            [
+                AuditAction::MemberRoleAdd,
+                AuditAction::RoleCreate,
+                AuditAction::InviteCreate,
+            ]
         );
         assert!(about(&seen_by_owner, staff.id) && about(&seen_by_owner, gone.id));
     }
@@ -3875,5 +4022,210 @@ mod tests {
             .await;
         fixture.pool.close().await;
         assert!(matches!(one_too_many, Err(GuildError::LimitReached(_))));
+    }
+
+    #[tokio::test]
+    async fn managers_rename_a_guild_and_every_member_hears_it() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        let [mut owner_events, mut other_events] = owner_and_other_sessions(&fixture, guild.id);
+        let rename = |name: &str| UpdateGuildRequest {
+            name: Some(name.into()),
+        };
+        let refused = [
+            fixture
+                .guilds
+                .update_guild(fixture.other, guild.id, rename("Mine"))
+                .await,
+            fixture
+                .guilds
+                .update_guild(fixture.third, guild.id, rename("Mine"))
+                .await,
+            fixture
+                .guilds
+                .update_guild(fixture.owner, guild.id, rename("  "))
+                .await,
+        ];
+        let renamed = fixture
+            .guilds
+            .update_guild(fixture.owner, guild.id, rename("  Book club "))
+            .await
+            .unwrap();
+        let unchanged = fixture
+            .guilds
+            .update_guild(fixture.owner, guild.id, rename("Book club"))
+            .await
+            .unwrap();
+        let entries = fixture
+            .guilds
+            .list_audit_log(fixture.owner, guild.id, AuditLogQuery::default())
+            .await
+            .unwrap();
+        let other_sees = fixture.guilds.list_my_guilds(fixture.other).await.unwrap();
+        fixture.pool.close().await;
+        assert!(matches!(refused[0], Err(GuildError::MissingPermissions)));
+        assert!(matches!(refused[1], Err(GuildError::NotFound)));
+        assert!(matches!(refused[2], Err(GuildError::InvalidInput(_))));
+        assert_eq!(renamed.name, "Book club");
+        assert_eq!(unchanged.name, "Book club");
+        assert_eq!(other_sees[0].name, "Book club");
+        assert_eq!(event_types(&mut owner_events), ["GUILD_UPDATE"]);
+        assert_eq!(event_types(&mut other_events), ["GUILD_UPDATE"]);
+        let guild_updates: Vec<&AuditLogEntry> = entries
+            .iter()
+            .filter(|entry| entry.action == AuditAction::GuildUpdate)
+            .collect();
+        assert_eq!(guild_updates.len(), 1, "an unchanged name records nothing");
+        assert_eq!(
+            guild_updates[0].changes,
+            [AuditChange {
+                key: AuditChangeKey::Name,
+                old_value: "Club".into(),
+                new_value: "Book club".into(),
+            }]
+        );
+        assert_eq!(guild_updates[0].actor_id, Some(fixture.owner));
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_deletes_a_guild_and_every_member_sees_it_go() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        let administrator = fixture
+            .guilds
+            .create_role(
+                fixture.owner,
+                guild.id,
+                role_request("admin", Permissions::ADMINISTRATOR),
+                NOW,
+            )
+            .await
+            .unwrap();
+        fixture
+            .guilds
+            .add_member_role(fixture.owner, guild.id, fixture.other, administrator.id)
+            .await
+            .unwrap();
+        let [mut owner_events, mut other_events] = owner_and_other_sessions(&fixture, guild.id);
+        let by_administrator = fixture.guilds.delete_guild(fixture.other, guild.id).await;
+        let by_outsider = fixture.guilds.delete_guild(fixture.third, guild.id).await;
+        let by_owner = fixture.guilds.delete_guild(fixture.owner, guild.id).await;
+        let again = fixture.guilds.delete_guild(fixture.owner, guild.id).await;
+        let snapshot = fixture.guilds.get_guild(fixture.owner, guild.id).await;
+        let other_guilds = fixture.guilds.list_my_guilds(fixture.other).await.unwrap();
+        fixture.pool.close().await;
+        assert!(matches!(
+            by_administrator,
+            Err(GuildError::MissingPermissions)
+        ));
+        assert!(matches!(by_outsider, Err(GuildError::NotFound)));
+        assert!(by_owner.is_ok());
+        assert!(matches!(again, Err(GuildError::NotFound)));
+        assert!(matches!(snapshot, Err(GuildError::NotFound)));
+        assert_eq!(other_guilds, []);
+        assert_eq!(event_types(&mut owner_events), ["GUILD_DELETE"]);
+        assert_eq!(event_types(&mut other_events), ["GUILD_DELETE"]);
+        // Unsubscribed: nothing about the guild reaches them any more.
+        fixture
+            .events
+            .publish_to_guild(guild.id, &GatewayEvent::GuildDelete { id: guild.id });
+        assert_eq!(event_types(&mut other_events), Vec::<String>::new());
+    }
+
+    const SECOND: u64 = 1_000;
+
+    /// The member joined with the first invite; the second lasts a minute from `NOW + SECOND`.
+    async fn guild_with_expiring_invite(fixture: &Fixture) -> (Guild, Invite) {
+        let guild = guild_with_member(fixture).await;
+        let expiring = fixture
+            .guilds
+            .create_invite(
+                fixture.owner,
+                guild.id,
+                CreateInviteRequest {
+                    max_uses: Some(5),
+                    expires_in_seconds: Some(60),
+                },
+                NOW + SECOND,
+            )
+            .await
+            .unwrap();
+        (guild, expiring)
+    }
+
+    fn invite_codes(invites: &[GuildInvite]) -> Vec<String> {
+        invites.iter().map(|invite| invite.code.clone()).collect()
+    }
+
+    #[tokio::test]
+    async fn managers_list_usable_invites_newest_first() {
+        let fixture = fixture().await;
+        let (guild, expiring) = guild_with_expiring_invite(&fixture).await;
+        let list = |user_id, now| fixture.guilds.list_invites(user_id, guild.id, now);
+        let listed_now = list(fixture.owner, NOW + SECOND).await.unwrap();
+        let listed_later = list(fixture.owner, NOW + 120 * SECOND).await.unwrap();
+        let by_member = list(fixture.other, NOW).await;
+        let by_outsider = list(fixture.third, NOW).await;
+        fixture.pool.close().await;
+
+        assert_eq!(listed_now.len(), 2);
+        assert_eq!(listed_now[0].code, expiring.code, "newest first");
+        assert_eq!(listed_now[0].max_uses, Some(5));
+        assert_eq!(listed_now[1].uses, 1);
+        assert_eq!(listed_now[1].creator.username, "owner");
+        assert_eq!(
+            invite_codes(&listed_later),
+            [listed_now[1].code.clone()],
+            "expired invites are left out"
+        );
+        assert!(matches!(by_member, Err(GuildError::MissingPermissions)));
+        assert!(matches!(by_outsider, Err(GuildError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn managers_revoke_invites_and_creating_and_revoking_are_audited() {
+        let fixture = fixture().await;
+        let (guild, expiring) = guild_with_expiring_invite(&fixture).await;
+        let revoke = |user_id, code| fixture.guilds.delete_invite(user_id, code);
+        let by_member = revoke(fixture.other, &expiring.code).await;
+        let by_outsider = revoke(fixture.third, &expiring.code).await;
+        let unknown = revoke(fixture.owner, "unknown").await;
+        revoke(fixture.owner, &expiring.code).await.unwrap();
+        let joined_with_revoked = fixture
+            .guilds
+            .join_with_invite(fixture.third, &expiring.code, NOW + SECOND)
+            .await;
+        let after_revoking = fixture
+            .guilds
+            .list_invites(fixture.owner, guild.id, NOW + SECOND)
+            .await
+            .unwrap();
+        let entries = fixture
+            .guilds
+            .list_audit_log(fixture.owner, guild.id, AuditLogQuery::default())
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        assert!(matches!(by_member, Err(GuildError::MissingPermissions)));
+        assert!(matches!(by_outsider, Err(GuildError::NotFound)));
+        assert!(matches!(unknown, Err(GuildError::NotFound)));
+        assert!(matches!(
+            joined_with_revoked,
+            Err(GuildError::InvalidInvite)
+        ));
+        assert!(!invite_codes(&after_revoking).contains(&expiring.code));
+        assert_eq!(
+            actions(&entries),
+            [
+                AuditAction::InviteDelete,
+                AuditAction::InviteCreate,
+                AuditAction::InviteCreate,
+            ]
+        );
+        assert_eq!(entries[0].changes[0].key, AuditChangeKey::Code);
+        assert_eq!(entries[0].changes[0].old_value, expiring.code);
+        assert_eq!(entries[1].changes[0].new_value, expiring.code);
+        assert_eq!(entries[0].target_id, None);
     }
 }
