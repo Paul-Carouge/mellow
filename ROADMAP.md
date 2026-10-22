@@ -19,7 +19,7 @@ Merged into `main`: #1 to #60. Released up to `v0.7.0` (2026-10-22), which runs 
 
 ### Next, in order (web client and the server it needs)
 The goal is Discord's feature set on the web client. In order:
-1. **French interface** (owner's request): the whole web UI in natural French (tutoiement) next to English, picked from the browser language (typed TS catalogues, ADR-0022), reviewed by a native speaker before release.
+1. **French interface** (owner's request): done on the web, waiting for a native speaker's review before release. The whole web UI is in natural French (tutoiement) next to English, picked from the browser language (typed TS catalogues, ADR-0022).
 2. **Markdown in messages**: bold, italic, strikethrough, inline code, code blocks, quotes, spoilers and links, as Discord renders them.
 3. **Reactions and pinned messages**: emoji reactions on messages (add, remove, who reacted) and pinned messages per channel, with their gateway events.
 4. **Server settings on the web**: overview (name), roles and their permissions, members with kick, ban and roles, bans, audit log, invites (list and revoke), channel settings (name, topic, permissions); the API exists except guild rename and invite listing.
