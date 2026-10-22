@@ -209,6 +209,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn channel_deletions_find_read_states_and_attachments_by_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        migrate_with_backup(&pool, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let mut plans = Vec::new();
+        // What the cascades of a channel deletion look up.
+        for lookup in [
+            "EXPLAIN QUERY PLAN SELECT 1 FROM read_states WHERE channel_id = 1",
+            "EXPLAIN QUERY PLAN SELECT 1 FROM attachments WHERE channel_id = 1",
+        ] {
+            let rows: Vec<(i64, i64, i64, String)> =
+                sqlx::query_as(lookup).fetch_all(&pool).await.unwrap();
+            plans.push(
+                rows.into_iter()
+                    .map(|row| row.3)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+        pool.close().await;
+
+        assert!(
+            plans[0].contains("read_states_by_channel_id"),
+            "{}",
+            plans[0]
+        );
+        assert!(
+            plans[1].contains("attachments_by_channel_id"),
+            "{}",
+            plans[1]
+        );
+    }
+
+    #[tokio::test]
     async fn existing_data_is_backed_up_encrypted_before_migrating() {
         let directory = tempfile::tempdir().unwrap();
         let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
