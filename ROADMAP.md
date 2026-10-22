@@ -2,15 +2,18 @@
 
 Each milestone ends with something usable end to end. Scope changes are made here first.
 
-## Status (2026-10-21)
+## Status (2026-10-22)
 
 ### Done
 Merged into `main`: #1 to #37. M1 (server, gateway, client core, desktop on real data, built-in TLS with ACME, outbox, history pagination, message-list states) is released as `v0.1.0` (2026-10-20), then `v0.1.1` (2026-10-21, the first update, to check the updaters), with signed builds for Linux (x86_64, aarch64), macOS (Apple Silicon) and Windows, and runs on the user's instance. M2 so far: guild roles (#24), role reordering (#25), channel permission overwrites and `VIEW_CHANNEL` filtering (#27), kick and ban (#28), audit log (#29), client-core calls for every M2 endpoint (#31), channel permissions in the desktop UI (#32), desktop server settings with the Roles section (#36). Direct messages: API (#41) and desktop (#42). Create or join a server with an invite code, invite people, create a channel and leave a server from the desktop (#40). User settings: account API for renaming and changing the password, with the `USER_UPDATE` event (#37). Pulled forward from M4: `mellow-server update`, a Docker Compose kit with `mellow-update`, in-app desktop updates and a one-line desktop installer (ADR-0016 to ADR-0018). Every server PR was reviewed by `code-reviewer` and `security-auditor`, with findings fixed.
+
+Visual direction: Dusk (ADR-0022, superseding ADR-0012) accepted on 2026-10-22 and merged (#52), with its reference mockup `design/mockups/dusk-direction.html`; `v0.6.0` ships its tokens and Melli's dark app icon tile on both clients (#53) and runs on the user's instance.
 
 ### Blocked
 - Nothing blocked. CI runs on Linux, macOS and Windows (SQLCipher's storage tests pass on all three).
 
 ### Next, in order
+0. **Dusk, phase 2** (owner's priority, 2026-10-22), each step its own branch and PR through `ux-ui-designer`, web then desktop: the Navigator layout (one floating card with server strip, channels and user card; members as an on-demand side sheet, `Ctrl+U`; `Ctrl+K` switcher), the user card aligned with the composer, microphone and headset toggles (hidden in releases until voice ships), state-change transitions (desktop needs a reduced-motion setting first), sentence-case labels; then a fully French interface next to English (Slint `@tr()` with bundled gettext, typed TS catalogues), reviewed by a native speaker before release.
 1. **Release `v0.2.0`**: everything merged since `v0.1.1` (roles settings, account API); the user approves the `release` environment, then updates from the app (User settings → About) and with `mellow-update`. The ACME path stays covered by the Pebble test only (user's decision: the instance stays behind Caddy).
 2. **M2, continued** (what still separates Mellow from a daily Discord replacement, in order): My account, attachments (web: upload and previews; desktop: listed) and avatars and banners (web; animated, lossless, ADR-0021) and Melli (web and desktop, app icons) are done; next desktop avatars and uploads, then Profile and Appearance sections; server-settings screens (channel overwrites, members with kick and ban, bans, audit log); group direct messages; multi-instance in the client; invites screen; mentions and unread counts from the server; admin web UI.
 3. **Web client** (ADR-0019, accepted): served by the server binary at `/` released in `v0.3.0`: sign-in with an HttpOnly cookie, servers, channels, messages, members, direct messages, error states with Try again, user settings (My account), phone layout. Next: Markdown, unread divider, attachments. Voice and video stay after that, with their own ADR.
