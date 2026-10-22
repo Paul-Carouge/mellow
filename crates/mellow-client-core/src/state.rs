@@ -221,6 +221,12 @@ impl ClientState {
         }
     }
 
+    /// The newest message the signed-in user has read in `channel_id`, if any.
+    #[must_use]
+    pub fn last_read_message_id(&self, channel_id: Snowflake) -> Option<Snowflake> {
+        self.last_read_by_channel.get(&channel_id).copied()
+    }
+
     /// Our unconfirmed messages in `channel_id`, in send order (shown after the confirmed ones).
     pub fn pending_messages(&self, channel_id: Snowflake) -> impl Iterator<Item = &PendingMessage> {
         self.pending_messages
