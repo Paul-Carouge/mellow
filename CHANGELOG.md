@@ -4,6 +4,21 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-22
+The Dusk layout, on the web and the desktop.
+
+### Added
+- Quick switcher: `Ctrl+K` or "Go to…" jumps to any channel, conversation or server.
+- The members panel opens on demand (`Ctrl+U`) beside the conversation, or over it in narrow windows, and shows a member's profile.
+- Each person gets their own avatar colour, names take their highest role's colour, and messages that mention you stand out.
+- A "New" divider and a "new messages since…" bar mark what arrived since your last visit.
+- Create a channel directly inside a category with its "+".
+- Desktop: an Appearance section to choose the theme and reduce motion.
+
+### Changed
+- The navigator: servers, channels and your user card share one floating card, the conversation sits on its own sheet, and your card lines up with the message bar.
+- Labels are in sentence case; transitions follow the Dusk motion, and stay still with reduced motion.
+
 ## [0.6.0] - 2026-10-22
 Dusk, Mellow's own look.
 
