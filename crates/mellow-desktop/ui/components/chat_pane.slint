@@ -28,6 +28,9 @@ export struct MessageRow {
     // Source text: copied by "Copy text", read by screen readers, shown in selection mode.
     body-plain: string,
     starts-author-group: bool,
+    // The first message after the reader's read position when the channel was opened: the "New"
+    // divider sits above it (DESIGN.md §5.4).
+    starts-unread: bool,
     // A reply: the original's author (empty when it is gone) and the start of its text.
     reply-author: string,
     reply-author-initial: string,
@@ -264,6 +267,9 @@ component MessageView inherits Rectangle {
     callback discard();
 
     property <bool> has-reply: message.reply-preview != "";
+    // Space above the message itself: the group gap, and above it the "New" divider with its own gap.
+    property <length> top-gap: (message.starts-author-group || message.starts-unread ? MellowComponent.message-group-gap : 0px)
+        + (message.starts-unread ? MellowComponent.message-group-gap + MellowComponent.unread-divider-line-width : 0px);
     // 2 px lower than the text column, so the 40 px circle centres on the name and first line; a
     // reply reference above the name pushes it down by its own height.
     property <length> avatar-y: layout.padding-top + MellowSpace.space-3xs
@@ -282,10 +288,6 @@ component MessageView inherits Rectangle {
     // bar keeps it hovered too while the pointer is on its part above the row.
     property <bool> is-hovered: touch.has-hover || action-bar.is-hovered;
 
-    background: message.mentions-current-user ? (is-hovered ? MellowComponent.mention-background-hover : MellowComponent.mention-background)
-        : is-hovered || is-editing ? MellowComponent.message-background-hover : transparent;
-    // `motion.easing.standard`; colour only, so reduced motion keeps it.
-    animate background { duration: MellowMotion.duration-fast; easing: cubic-bezier(0.2, 0, 0, 1); }
     accessible-role: list-item;
     accessible-label: message.author + ", " + message.timestamp + ": " + message.body-plain
         + (message.is-edited ? " (edited)" : "")
@@ -300,15 +302,50 @@ component MessageView inherits Rectangle {
         triggered => { root.has-pending-label-delay-elapsed = true; }
     }
 
-    if message.mentions-current-user: Rectangle {
-        x: 0;
-        width: MellowComponent.mention-bar-width;
-        background: MellowComponent.mention-bar-color;
+    // The highlight covers the message, not the gap above it.
+    Rectangle {
+        y: root.top-gap;
+        height: parent.height - self.y;
+        background: message.mentions-current-user ? (root.is-hovered ? MellowComponent.mention-background-hover : MellowComponent.mention-background)
+            : root.is-hovered || root.is-editing ? MellowComponent.message-background-hover : transparent;
+        // `motion.easing.standard`; colour only, so reduced motion keeps it.
+        animate background { duration: MellowMotion.duration-fast; easing: cubic-bezier(0.2, 0, 0, 1); }
+        if message.mentions-current-user: Rectangle {
+            x: 0;
+            width: MellowComponent.mention-bar-width;
+            background: MellowComponent.mention-bar-color;
+        }
+    }
+
+    // The unread divider: an apricot rule with the "New" pill at its trailing end.
+    if message.starts-unread: Rectangle {
+        x: MellowSpace.md;
+        y: MellowComponent.message-group-gap;
+        width: parent.width - 2 * MellowSpace.md;
+        height: MellowComponent.unread-divider-line-width;
+        background: MellowComponent.unread-divider-line;
+        accessible-role: text;
+        accessible-label: "New messages";
+        Rectangle {
+            x: parent.width - self.width;
+            y: (parent.height - self.height) / 2;
+            width: new-label.preferred-width + 2 * MellowSpace.xs;
+            height: MellowComponent.unread-divider-pill-height;
+            border-radius: MellowComponent.unread-divider-pill-radius;
+            background: MellowComponent.unread-divider-pill-background;
+            new-label := Text {
+                text: "New";
+                color: MellowComponent.unread-divider-pill-text;
+                font-size: MellowType.badge.font-size;
+                font-weight: MellowType.badge.font-weight;
+                accessible-role: none;
+            }
+        }
     }
 
     touch := TouchArea {
         layout := VerticalLayout {
-            padding-top: (message.starts-author-group ? MellowComponent.message-group-gap : 0px) + MellowComponent.message-padding-block;
+            padding-top: root.top-gap + MellowComponent.message-padding-block;
             padding-bottom: MellowComponent.message-padding-block;
             padding-left: MellowComponent.message-gutter;
             padding-right: root.is-narrow ? MellowSpace.md : MellowComponent.message-padding-trailing;
@@ -526,8 +563,8 @@ component MessageView inherits Rectangle {
         can-delete: root.message.can-delete;
         can-send-messages: root.can-send-messages;
         x: parent.width - self.width - MellowComponent.action-bar-offset-trailing;
-        // The token is negative: the bar sits above the row's top edge, as on Discord.
-        y: MellowComponent.action-bar-offset-top;
+        // The token is negative: the bar sits above the message's top edge, as on Discord.
+        y: root.top-gap + MellowComponent.action-bar-offset-top;
         edit => { root.start-edit(); }
         reply => { root.reply(); }
         copy-text => { root.copy-text(); }
@@ -657,6 +694,84 @@ component JumpToPresentBar inherits Rectangle {
         border-width: MellowComponent.focus-ring-width;
         border-color: MellowComponent.jump-bar-text;
         border-radius: parent.border-radius;
+    }
+}
+
+// "3 new messages since 14:32" at the top of the sheet, with "Mark as read" (DESIGN.md §5.4).
+component UnreadBar inherits Rectangle {
+    in property <string> text;
+    callback mark-as-read();
+    // Starts one switch offset high and transparent, then settles: `base` with `motion.easing.enter`.
+    // The parent adds `entry-offset` to the bar's position.
+    out property <length> entry-offset: -MellowComponent.channel-switch-offset;
+    property <float> entry-opacity: 0;
+    init => {
+        entry-offset = 0px;
+        entry-opacity = 1;
+    }
+    animate entry-offset { duration: MotionPreference.base; easing: cubic-bezier(0, 0, 0, 1); }
+    animate entry-opacity { duration: MotionPreference.base; easing: cubic-bezier(0, 0, 0, 1); }
+    opacity: entry-opacity;
+    height: MellowComponent.jump-bar-height;
+    border-radius: MellowComponent.jump-bar-radius;
+    background: MellowComponent.jump-bar-background;
+    accessible-role: groupbox;
+    accessible-label: text;
+
+    HorizontalLayout {
+        padding-left: MellowSpace.sm;
+        padding-right: MellowSpace.space-2xs;
+        spacing: MellowSpace.xs;
+        Text {
+            text: root.text;
+            color: MellowComponent.jump-bar-text;
+            font-size: MellowType.body.font-size;
+            font-weight: MellowFont.weight-semibold;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+            accessible-role: none;
+        }
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: MellowComponent.jump-bar-height - 2 * MellowSpace.space-3xs;
+                width: mark-text.preferred-width + 2 * MellowSpace.xs;
+                border-radius: MellowRadius.sm;
+                background: mark-touch.has-hover || mark-focus.has-focus ? MellowComponent.jump-bar-background-hover : transparent;
+                accessible-role: button;
+                accessible-label: "Mark as read";
+                accessible-description: "Esc";
+                accessible-action-default => { root.mark-as-read(); }
+                mark-focus := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == " " || event.text == "\n" {
+                            root.mark-as-read();
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+                mark-touch := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { root.mark-as-read(); }
+                }
+                mark-text := Text {
+                    text: "Mark as read";
+                    color: MellowComponent.jump-bar-text;
+                    font-size: MellowType.body.font-size;
+                    font-weight: MellowFont.weight-semibold;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                // In the bar's text colour: the blue ring lacks 3:1 on apricot.
+                if mark-focus.has-focus: Rectangle {
+                    border-width: MellowComponent.focus-ring-width;
+                    border-color: MellowComponent.jump-bar-text;
+                    border-radius: parent.border-radius;
+                }
+            }
+        }
     }
 }
 
@@ -891,6 +1006,9 @@ export component ChatPane inherits Rectangle {
     in property <bool> shows-go-to-button;
     // Changes with every channel or conversation opened: the list fades and rises in.
     in property <string> channel-id;
+    // "N new messages since HH:MM" while the channel was opened with unread messages; empty hides it.
+    in property <string> unread-bar-text;
+    callback mark-as-read();
     callback toggle-member-sheet();
     callback open-navigator-drawer();
     callback open-quick-switcher();
@@ -1279,6 +1397,16 @@ export component ChatPane inherits Rectangle {
                     retry => { root.retry-loading-history-and-focus-composer(); }
                 }
             }
+            if root.unread-bar-text != "": UnreadBar {
+                x: MellowSpace.md;
+                y: MellowSpace.space-2xs + self.entry-offset;
+                width: parent.width - 2 * MellowSpace.md;
+                text: root.unread-bar-text;
+                mark-as-read => {
+                    root.mark-as-read();
+                    root.focus-composer();
+                }
+            }
             // Over the list rather than above it: taking layout height would resize the list and move
             // the rows being read.
             if root.is-viewing-older-messages: JumpToPresentBar {
@@ -1468,6 +1596,10 @@ export component ChatPane inherits Rectangle {
                                                 }
                                                 if event.text == Key.Escape && root.is-viewing-older-messages {
                                                     root.jump-to-present();
+                                                    return accept;
+                                                }
+                                                if event.text == Key.Escape && root.unread-bar-text != "" {
+                                                    root.mark-as-read();
                                                     return accept;
                                                 }
                                                 if event.text == Key.UpArrow && root.can-send-messages && composer.text == "" {

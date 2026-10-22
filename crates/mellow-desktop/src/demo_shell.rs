@@ -19,6 +19,7 @@ use crate::{idle_benchmark, person_style, scroll_benchmark, shell_rows};
 const BUSIEST_CHANNEL_NAME: &str = "general";
 const BUSIEST_CHANNEL_MESSAGE_COUNT: usize = 10_000;
 const QUIET_CHANNEL_MESSAGE_COUNT: usize = 40;
+const DEMO_UNREAD_MESSAGE_COUNT: usize = 3;
 const CURRENT_USER_NAME: &str = "You";
 const CURRENT_USERNAME: &str = "you";
 const FAKE_ATTACHMENT_NAME: &str = "release-checklist.ods";
@@ -68,6 +69,7 @@ fn message_row(message: &FakeMessage, role_colors: &HashMap<&'static str, u32>) 
             ModelRc::default()
         },
         starts_author_group: message.starts_author_group,
+        starts_unread: false,
         reply_author: message.reply_author.unwrap_or_default().into(),
         reply_author_initial: shell_rows::first_letter(message.reply_author.unwrap_or_default())
             .into(),
@@ -110,12 +112,24 @@ fn open_channel(window: &AppWindow, state: &mut ShellState, channel_name: &str) 
         .map(|channel| channel.topic)
         .unwrap_or_default();
     let role_colors = role_colors_by_name();
-    state.messages.set_vec(
-        fake_conversation(message_count_for_channel(channel_name))
-            .iter()
-            .map(|message| message_row(message, &role_colors))
-            .collect::<Vec<_>>(),
-    );
+    let mut rows: Vec<MessageRow> = fake_conversation(message_count_for_channel(channel_name))
+        .iter()
+        .map(|message| message_row(message, &role_colors))
+        .collect();
+    // The last few messages are new, so the "New" divider and its bar show (DESIGN.md §5.4).
+    let first_unread_index = rows.len().saturating_sub(DEMO_UNREAD_MESSAGE_COUNT);
+    let unread_bar_text = rows
+        .get_mut(first_unread_index)
+        .map_or_else(String::new, |row| {
+            row.starts_unread = true;
+            row.starts_author_group = true;
+            format!(
+                "{DEMO_UNREAD_MESSAGE_COUNT} new messages since {}",
+                row.short_time
+            )
+        });
+    state.messages.set_vec(rows);
+    window.set_unread_bar_text(unread_bar_text.into());
     window.set_selected_channel_id(channel_name.into());
     window.set_selected_channel_name(channel_name.into());
     window.set_selected_channel_topic(topic.into());
@@ -216,7 +230,30 @@ fn connect_navigation_callbacks(
     });
 }
 
+/// "Mark as read": the divider and its bar go.
+fn forget_unread_divider(window: &AppWindow, state: &ShellState) {
+    window.set_unread_bar_text(SharedString::default());
+    let messages = &state.messages;
+    if let Some(index) = (0..messages.row_count()).find(|index| {
+        messages
+            .row_data(*index)
+            .is_some_and(|row| row.starts_unread)
+    }) && let Some(mut row) = messages.row_data(index)
+    {
+        row.starts_unread = false;
+        messages.set_row_data(index, row);
+    }
+}
+
 fn connect_message_callbacks(window: &AppWindow, state: &Rc<RefCell<ShellState>>) {
+    let weak_window = window.as_weak();
+    let shared_state = state.clone();
+    window.on_mark_channel_read(move || {
+        if let Some(window) = weak_window.upgrade() {
+            forget_unread_divider(&window, &shared_state.borrow());
+        }
+    });
+
     let weak_window = window.as_weak();
     let shared_state = state.clone();
     window.on_send_message(move |text: SharedString| {
@@ -226,6 +263,7 @@ fn connect_message_callbacks(window: &AppWindow, state: &Rc<RefCell<ShellState>>
         if text.trim().is_empty() {
             return;
         }
+        forget_unread_divider(&window, &shared_state.borrow());
         let messages = shared_state.borrow().messages.clone();
         let last_author = messages
             .row_data(messages.row_count().saturating_sub(1))
@@ -242,6 +280,7 @@ fn connect_message_callbacks(window: &AppWindow, state: &Rc<RefCell<ShellState>>
             body_plain: text.clone(),
             attachments: slint::ModelRc::default(),
             starts_author_group: last_author.as_deref() != Some(CURRENT_USER_NAME),
+            starts_unread: false,
             reply_author: SharedString::default(),
             reply_author_initial: SharedString::default(),
             reply_author_tint: 0,

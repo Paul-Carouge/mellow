@@ -315,14 +315,48 @@ pub fn message_rows(
     current_user_id: Option<Snowflake>,
     can_manage_messages: bool,
     role_colors: &HashMap<Snowflake, u32>,
+    unread_divider_message_id: Option<Snowflake>,
 ) -> Vec<MessageRow> {
     message_rows_at(
         messages,
         current_user_id,
         can_manage_messages,
         role_colors,
+        unread_divider_message_id,
         &Local::now(),
     )
+}
+
+/// "3 new messages since 14:32" for the bar above the list, from the divider's message on; empty
+/// without a divider.
+pub fn unread_bar_text(
+    messages: &[Message],
+    unread_divider_message_id: Option<Snowflake>,
+) -> String {
+    unread_bar_text_in(messages, unread_divider_message_id, &Local)
+}
+
+fn unread_bar_text_in<Zone: TimeZone>(
+    messages: &[Message],
+    unread_divider_message_id: Option<Snowflake>,
+    zone: &Zone,
+) -> String
+where
+    Zone::Offset: std::fmt::Display,
+{
+    let Some(divider_id) = unread_divider_message_id else {
+        return String::new();
+    };
+    let count = messages
+        .iter()
+        .filter(|message| message.id >= divider_id)
+        .count();
+    let since = short_time(divider_id.unix_milliseconds(), zone);
+    match count {
+        0 => String::new(),
+        1 => format!("1 new message since {since}"),
+        _ => format!("{count} new messages since {since}"),
+    }
 }
 
 fn message_rows_at<Zone: TimeZone>(
@@ -330,6 +364,7 @@ fn message_rows_at<Zone: TimeZone>(
     current_user_id: Option<Snowflake>,
     can_manage_messages: bool,
     role_colors: &HashMap<Snowflake, u32>,
+    unread_divider_message_id: Option<Snowflake>,
     now: &DateTime<Zone>,
 ) -> Vec<MessageRow>
 where
@@ -340,7 +375,10 @@ where
         .iter()
         .map(|message| {
             let sent_at = message.id.unix_milliseconds();
+            let starts_unread = Some(message.id) == unread_divider_message_id;
+            // No group runs across the unread divider (DESIGN.md §5.4).
             let starts_author_group = message.reply_to_id.is_some()
+                || starts_unread
                 || previous.is_none_or(|previous| {
                     previous.author.id != message.author.id
                         || sent_at.saturating_sub(previous.id.unix_milliseconds())
@@ -360,6 +398,7 @@ where
                 body_plain: message.content.as_str().into(),
                 attachments: attachment_rows(&message.attachments),
                 starts_author_group,
+                starts_unread,
                 reply_author: reply.author,
                 reply_author_initial: reply.author_initial,
                 reply_author_tint: reply.author_tint,
@@ -426,6 +465,7 @@ where
                 // The desktop does not upload files yet.
                 attachments: ModelRc::default(),
                 starts_author_group,
+                starts_unread: false,
                 reply_author: reply.author,
                 reply_author_initial: reply.author_initial,
                 reply_author_tint: reply.author_tint,
@@ -668,10 +708,28 @@ mod tests {
             Some(Snowflake::from_raw(2)),
             false,
             &HashMap::new(),
+            None,
             &Utc::now(),
         );
         let groups: Vec<_> = rows.iter().map(|row| row.starts_author_group).collect();
         assert_eq!(groups, [true, false, true, true]);
+
+        // The divider breaks the group it falls in, and the bar counts from it.
+        let with_divider = message_rows_at(
+            &messages,
+            Some(Snowflake::from_raw(2)),
+            false,
+            &HashMap::new(),
+            Some(messages[1].id),
+            &Utc::now(),
+        );
+        assert!(with_divider[1].starts_unread && with_divider[1].starts_author_group);
+        assert!(!with_divider[0].starts_unread);
+        assert_eq!(
+            unread_bar_text_in(&messages, Some(messages[1].id), &Utc),
+            "3 new messages since 00:01"
+        );
+        assert_eq!(unread_bar_text_in(&messages, None, &Utc), "");
         assert_eq!(rows[3].reply_author, "Aurore");
         assert_eq!(rows[3].reply_author_initial, "A");
         assert_eq!(rows[3].reply_preview, "hello");
@@ -691,6 +749,7 @@ mod tests {
             Some(Snowflake::from_raw(2)),
             true,
             &HashMap::new(),
+            None,
             &Utc::now(),
         );
         assert!(moderated.iter().all(|row| row.can_delete));
