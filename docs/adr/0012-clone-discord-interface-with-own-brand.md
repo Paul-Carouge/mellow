@@ -1,6 +1,6 @@
 # 0012. Clone Discord's interface faithfully, keep Mellow's own brand
 
-- Status: Accepted
+- Status: Superseded by [ADR-0022](0022-give-mellow-its-own-visual-language-on-a-familiar-layout.md)
 - Date: 2026-10-19
 
 ## Context

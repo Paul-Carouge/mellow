@@ -1,11 +1,13 @@
 # Mellow design document
 
-Status: draft v0.14 (2026-10-21). Owner: design. Applies to the Slint desktop client, the web client, the Android client (Jetpack Compose, Material 3 Expressive) and the admin web UI embedded in the server.
+Status: draft v0.16 (2026-10-22), visual direction proposed in ADR-0022. Owner: design. Applies to the Slint desktop client, the web client, the Android client (Jetpack Compose, Material 3 Expressive) and the admin web UI embedded in the server.
 
 This document is the reference for every visual and interaction decision in Mellow. Developers should be able to build any MVP screen from it without inventing a colour, a size or a sentence. When something is missing, add it here first, then implement it. Every value named here exists in `design/tokens.json`.
 
 ## Changelog
 
+- **2026-10-22, v0.16 — Dusk after the owner's first review (ADR-0022, proposed):** the layout no longer copies Discord's: a **navigator** card holds the server strip, the channel list and the user card; the member list becomes a **side sheet** opened on demand (`Ctrl+U`), docked when the window is wide; the chat header gets an "Aller à… Ctrl K" button (4.2, 5.3, 5.7, 5.10). The user card and the composer's base row share `size.dock.height` (56 px) and `size.dock.margin`, so their edges line up; the typing indicator moves above the composer (4.2, 5.5). The user card gets microphone and headset toggles, hidden until voice ships (5.3). The app icon and favicon put Melli on a dusk gradient tile with an apricot glow (`color.mascot.tile-*`, 2.10). French becomes a first-class language: tutoiement, French typography, French counterparts for the copy of sections 7 and 8, and a localisation plan in ADR-0022. The dark ground deepens (`ref.dusk.160`) and `color.surface.navigator` is added.
+- **2026-10-22, v0.15 — Dusk, Mellow's own visual language (proposed, [ADR-0022](docs/adr/0022-give-mellow-its-own-visual-language-on-a-familiar-layout.md)):** the layout, behaviour and shortcuts stay Discord's; the look becomes Mellow's own. Principles rewritten (1): familiar where it matters; one ground, one sheet, one lamp; motion answers. Plum-tinted dusk neutrals (`ref.dusk`, named by OKLCH lightness) replace Discord's greys (`ref.grey` removed): rail, sidebar and member list share one ground, the conversation is a lit sheet inset from the window edges (2.2, 2.3, 4.2). Apricot means "you" or "now" only: the selected-server pill (`component.rail.pill-color-selected`, `color.accent.indicator`), the unread divider and an apricot "New" pill; hovered servers and focused menu items use the neutral selected tone. Sentence-case labels at 13 px instead of uppercase, tighter display type, 24 px message lines (2.4). Concentric radius scale 4/8/12/16/24 with `radius.xl` (2.6). Motion rewritten as state transitions with a key transitions table, `motion.duration.settle`, `motion.easing.settle` and Android springs (2.8). Member groups show their count as a separate number instead of "Moderators — 2" (5.7). The user panel becomes a card floating on the ground (5.3); the sign-in card gives Melli room (5.1). Token values change in place, so both clients compile and show the new colours, radii and type at once; the structural changes are phase 2 (ADR-0022).
 - **2026-10-21, v0.14 — Melli without its tile, and on the desktop:** the owner wants the character alone, with no cream tile behind it (2.10). The cloud gets an ink outline (`color.mascot.outline`) so it stays whole on light surfaces and docks; marks drawn around it use `color.mascot.mark` (peach on dark, ink on light, at least 3:1 on the rail) and switch to ink on apricot; the ground shadow is themed. Home has no fill at rest and turns apricot on hover, focus and selection (5.2). The favicon and the app icons are the character alone on a transparent background. `color.mascot.tile` and `component.rail.home-background-rest` are gone. The desktop client shows Melli, animated, in its Home button with the same states, and gets a window icon and app icons for macOS and Linux generated from the tokens (2.10).
 - **2026-10-21, v0.13 — Melli, the Mellow logo and mascot:** the owner's round cloud becomes the logo and the mascot "Melli" (2.10): named SVG parts, eight states (idle, connecting, connection lost, notification, incoming call, in call, update available, sleeping), each with a still pose for reduced motion. The web Home button shows Melli on its peach tile (apricot on hover, focus and selection) and maps connection and unread direct messages to states (5.2); the favicon is the still idle Melli, generated from the tokens by `cargo xtask tokens`. `ref.melli.*`, `color.mascot.*`, `component.melli.*` and `component.rail.home-background-rest` tokens; contrast pairs for `color.mascot.ink`. A development-only gallery shows every state (`npm run dev`, then `/dev/melli.html`).
 - **2026-10-21, v0.12 — avatars and banners on the web (ADR-0021):** avatars show the user's picture wherever they appear, with the initial on the accent fill while it loads, when there is none or when it fails (6.8); animated pictures show their still first frame and play while the row holding them is hovered or focused, always in the profile card, never under reduced motion. The profile popout shows the banner picture in a 120 px strip (5.7). User settings gain "Profile" (5.9): avatar and banner editors beside a live preview of the profile card. `component.profile-popover.banner-image-height` token.
@@ -47,39 +49,46 @@ Vocabulary used in this document and in the UI:
 
 ## 1. Design principles
 
-A design or a pull request that breaks a principle needs an explicit justification in its description.
+A design or a pull request that breaks a principle needs an explicit justification in its description. Since v0.15 the principles follow [ADR-0022](docs/adr/0022-give-mellow-its-own-visual-language-on-a-familiar-layout.md) (accepted 2026-10-22): Discord's concepts and shortcuts, Mellow's own layout (the Navigator) and visual language, called **Dusk**.
 
-### 1.1 Familiar first
+### 1.1 Familiar where it matters
 
-Someone who uses Discord every day must be able to use Mellow without learning anything: the same panes in the same places at the same sizes, the same hover states, the same right-click menus, the same shortcuts and the same message grouping. When in doubt, do what Discord does.
+Someone who uses Discord every day must be able to use Mellow without learning anything: the same panes in the same order, the same right-click menus, the same shortcuts, the same message grouping, the same unread and mention conventions. What may differ is how it looks and moves: colour, type, shape, density and motion. When in doubt about *where* something is or *what* it does, do what Discord does; when in doubt about *how it looks*, follow this document.
 
-- Test: every pane and control matches the dimension table in section 4.2 and the shortcut table in section 7.2.
+- Test: servers, channels, conversations, members and the user panel are where a Discord user looks for them (servers and channels on the leading side, the user panel bottom-leading, members on the trailing side), and every shortcut in section 7.2 works.
 - Test: a Discord user, given five tasks (switch server, find an unread channel, reply to a message, mark a channel as read, open a member's profile), completes them without help on the first try.
 
-### 1.2 Mellow's brand wherever Discord's brand would be
+### 1.2 One ground, a few cards, one lamp
 
-The interface is Discord's; the identity is Mellow's. The rule is mechanical: **every place Discord uses blurple, Mellow uses apricot (`color.accent.fill`), and white text on blurple becomes dark ink on apricot (`color.text.on-accent`)**. The Home button shows the Mellow logo, the font is Figtree, the icons are Phosphor, the emoji are open-licence artwork.
+The interface is a quiet room: a dusk ground with a few cards on it. The navigator (servers, channels, you) and the side sheet (members, profiles) sit one step above the ground; the conversation is the lit sheet, the brightest card (white in the light theme). Regions are separated by tone and space, not by lines and shadows. Apricot is the lamp: it means **"you" or "now"** and nothing else (the primary action, Home, the selected server, the unread divider, mentions, jump bars). Everything else is dusk neutrals.
 
+- Test: a screen shows at most one apricot fill besides Home and mentions; no border separates two cards; no decorative shadow sits on a resting surface.
 - Test: no token, asset or screenshot uses Discord's blurple (`#5865F2`) or any accent with a hue between 215° and 255° in OKLCH; no Discord logo, wordmark, mascot or gg sans/Whitney font file is in the repository.
-- Test: default avatars and empty states use Mellow's own artwork (Melli, 2.10), never Discord's mascot.
 
-### 1.3 Accessible even where Discord is not
+### 1.3 Motion answers
 
-Mellow keeps Discord's look, but not its contrast failures. Every text/background pair meets WCAG 2.2 AA, every non-text indicator meets 3:1, information is never carried by colour alone, and everything reachable by pointer is reachable by keyboard and screen reader. Where a Discord grey fails, the token is adjusted by the smallest step that passes, and the deviation is listed in section 2.3.
+Every animation answers something: a pointer, a key, a message arriving, a state changing. It shows what changed and where it went, ends within 340 ms, and never loops, except Melli (2.10) and the typing indicator while someone types. Nothing animates while the app is idle.
+
+- Test: each animation in the product is listed in the key transitions table (2.8) with its trigger, duration and reduced-motion variant.
+- Test: with the window visible and nobody typing, the desktop client draws no frame except Melli's.
+
+### 1.4 Accessible always
+
+Every text/background pair meets WCAG 2.2 AA, every non-text indicator meets 3:1, information is never carried by colour alone, everything reachable by pointer is reachable by keyboard and screen reader, and every animation has a reduced-motion variant.
 
 - Test: the token generator checks every pair declared in `design/tokens.json` (`$extensions.org.mellow.contrast-pairs`) in both themes and fails the build below the threshold.
 - Test: every hover action also exists in the context menu (`Shift+F10` or the Menu key), as a keyboard shortcut on the focused item, and as an accessibility action.
 
-### 1.4 Say what is happening
+### 1.5 Say what is happening
 
 Self-hosting means several places, connections that drop and servers that are sometimes down. Mellow always tells you which instance you are talking on, whether you are connected, and whether your message was delivered. Pending, failed and queued messages are labelled in words.
 
 - Test: every screen in section 5 defines loading, empty, error, offline and reconnecting states; no state is a lone spinner or a blank area.
 - Test: when the user is signed in to more than one instance, the composer placeholder and every conversation header name the instance.
 
-### 1.5 Honest about platform limits
+### 1.6 Honest about platform limits
 
-When the toolkit cannot reproduce a Discord behaviour, Mellow offers an explicit equivalent instead of a broken imitation. Slint cannot select text across messages, so every message has "Copy text" and a per-message "Select text" mode (section 5.4).
+When the toolkit cannot reproduce a behaviour, Mellow offers an explicit equivalent instead of a broken imitation. Slint cannot select text across messages, so every message has "Copy text" and a per-message "Select text" mode (section 5.4).
 
 - Test: each known gap is listed in section 9 with its replacement pattern, and the replacement is reachable by mouse, keyboard and screen reader.
 
@@ -87,66 +96,70 @@ When the toolkit cannot reproduce a Discord behaviour, Mellow offers an explicit
 
 ## 2. Visual identity
 
-### 2.1 Personality
+### 2.1 Personality: Dusk
 
-Mellow looks like the chat app people already live in, so the brand speaks in a few precise places rather than everywhere: the apricot accent on the actions that matter, the Mellow mark in the Home button, the warm mention highlight that says "this one is for you". Everything else is Discord's quiet, dense, cool-grey workspace.
+Mellow is named for the mellow hour: the light is low and warm, the day's noise has gone, and people talk. Melli is a cloud at that hour, lit by a low apricot sun against a plum-grey sky. The interface borrows that light: dusk neutrals for the room, one lit sheet for the conversation, apricot only where something is for you or happening now.
 
-Three words guide the brand moments: **familiar, warm, dependable**.
+Three words guide every decision: **calm, warm, alive**.
 
-- **Familiar**: layout, density and behaviour are Discord's.
-- **Warm**: apricot is the only warm hue on cool greys, so it reads instantly as "action" or "you". It sits opposite Discord's blurple on the colour wheel, so a screenshot of Mellow is never mistaken for Discord.
-- **Dependable**: connection state, delivery state and the instance you are on are always visible.
+- **Calm**: a few cards on one ground, no lines between them, sentence-case labels, generous line height. The conversation is the brightest thing on screen.
+- **Warm**: apricot is the only saturated warm hue, and the neutrals lean plum rather than blue, so a screenshot of Mellow is never mistaken for Discord.
+- **Alive**: things respond. Rows warm up under the pointer, dialogs land with a small settle, your own message joins the list, Melli reacts to the connection and to direct messages. Nothing moves on its own.
+
+The signature is Melli and the sheet. Each screen spends its boldness in one place (Melli on sign-in and empty states, the sheet in the shell); everything around stays quiet.
 
 ### 2.2 Palette
 
-The reference palette (`ref.*` in `design/tokens.json`) has six families. Components never use them directly; they use the semantic tokens in 2.3.
+The reference palette (`ref.*` in `design/tokens.json`) has seven families. Components never use them directly; they use the semantic tokens in 2.3.
 
 | Family | Role | Anchors |
 |---|---|---|
-| Grey | Discord's layered cool neutrals for surfaces and text, plus Mellow's AA adjustments | `#111214` (floating, dark) to `#FFFFFF` (chat, light); full list in `ref.grey` |
-| Apricot | Mellow's brand accent: primary actions, selected Home, focused menu items, jump bars, mention highlight | `#F2A46E` (dark fill), `#E8894B` (light fill), `#2B1608` (text on apricot) |
+| Dusk | Plum-tinted neutrals for surfaces and text (OKLCH hue 322, chroma 0.004–0.024). Steps are named by OKLCH lightness × 1000, so `ref.dusk.235` is lightness 0.235 | `#150F16` (dark ground) to `#FBF9FC` (light message hover); full list in `ref.dusk` |
+| Apricot | The lamp: primary actions, Home, the selected-server pill, the unread divider, mentions, jump bars | `#F2A46E` (dark fill), `#E8894B` (light fill), `#A84F1A` (light indicator), `#2B1608` (text on apricot) |
 | Sky | Links and the keyboard focus ring | `#33B8FF` (dark), `#005FCC` (light) |
 | Green | Online presence, positive text, add-server button | `#23A55A`, `#2DC770` (dark text), `#1A7F45` (light) |
 | Amber | Idle presence, warning notices | `#F0B232`, `#A06E00` (light idle) |
-| Red | Danger, do-not-disturb, mention badges, unread divider | `#DA373C` (fills and badges), `#FA777C` (dark text), `#C4262B` (light text), `#F45A5E` (dark presence) |
+| Red | Danger, do-not-disturb, mention badges | `#DA373C` (fills and badges), `#FA777C` (dark text), `#C4262B` (light text), `#F45A5E` (dark presence) |
+| Melli | The mascot's own colours (2.10) | `#FFFAF3` (cloud), `#3F332D` (ink), `#F4E2D2` (peach marks) |
 
-**Why apricot and not another hue.** Apricot (hue about 55° in OKLCH) is the complement of blurple (about 270°), the largest possible hue distance from Discord's brand, so the trade-dress risk is low. It is the only warm, saturated colour on Discord's cool greys, so it carries the "primary action" role as strongly as blurple does. It keeps continuity with Mellow's first identity and its name. It does not collide with status colours: green (online), amber (idle) and red (do-not-disturb, badges) all keep their Discord meaning, and apricot never appears on a presence indicator. Dark ink on apricot reaches 8.44:1, better than white on blurple.
+**Why plum-tinted neutrals.** Discord's greys sit at hue 268 with almost no chroma, a cool blue-grey. Mellow's sit at hue 322, a plum dusk, with just enough chroma to read as warm-violet rather than neutral. Apricot (hue 55) sits opposite on the wheel, so the accent glows against them the way a low sun does against an evening sky. Two other families were tried and rejected (ADR-0022): warm charcoal, which with a peach accent looks like several current AI and productivity products, and navy, which is too close to Discord's family.
 
-Apricot and amber are neighbours. Neither carries meaning alone: idle always has its crescent shape, warnings always have an icon and a sentence, and the mention highlight always has its leading bar.
+**Why apricot keeps its role.** It is Mellow's brand from the first draft, the complement of blurple (the largest possible hue distance from Discord), and dark ink on apricot reaches 8.44:1. It never appears on a presence indicator. Apricot and amber are neighbours, so neither carries meaning alone: idle always has its crescent shape, warnings always have an icon and a sentence, and the mention highlight always has its leading bar.
 
 ### 2.3 Semantic colour tokens
 
 Dark is the default theme. Light is offered and follows the system setting when the user picks "Match system". Values below are the resolved hex values; the token file stores them as aliases of `ref.*`.
 
-#### Surfaces (the layered grey family)
+#### Surfaces
 
-Like Discord's dark theme, surfaces get lighter from the window edge toward the conversation: rail, then user panel, then sidebar, then chat.
-
-| Token | Dark | Light | Used for | Discord equivalent |
-|---|---|---|---|---|
-| `color.surface.rail` | `#1E1F22` | `#E3E5E8` | Server rail | background-tertiary |
-| `color.surface.sidebar-footer` | `#232428` | `#EBEDEF` | User panel, connection dock | background-secondary-alt |
-| `color.surface.sidebar` | `#2B2D31` | `#F2F3F5` | Channel sidebar, member list, settings navigation, dialog footers | background-secondary |
-| `color.surface.chat` | `#313338` | `#FFFFFF` | Message pane, chat header, settings content, dialogs, rail icons without artwork | background-primary |
-| `color.surface.input` | `#383A40` | `#EBEDEF` | Composer, search fields | channel text area |
-| `color.surface.field` | `#1E1F22` | `#EBEDEF` | Form text fields (always with `border.strong`) | input background |
-| `color.surface.popover` | `#232428` | `#FFFFFF` | Profile popover, autocomplete, quick switcher | popout background |
-| `color.surface.floating` | `#111214` | `#FFFFFF` | Context menus, tooltips | background-floating |
-| `color.surface.code` | `#2B2D31` | `#F2F3F5` | Code blocks and inline code | — |
-| `color.border.divider` | `#3F4147` | `#E3E5E8` | Decorative dividers, hover bar outline | — |
-| `color.border.strong` | `#80848E` | `#80848E` | Form field and checkbox outlines (3:1) | Mellow addition |
-| `color.border.quote` | `#4E5058` | `#D4D7DC` | Quote bar and reply spine (decorative) | — |
-| `color.scrim` | black 70 % | black 60 % | Behind dialogs and drawers | — |
-
-#### Interaction states
-
-Discord uses solid shade changes, not translucent layers, and so does Mellow, so every state can be contrast-checked.
+Four levels: the **ground** (the window behind everything), the **cards** on it (the navigator and the side sheet), the **sheet** (the conversation, settings content, the user card), and **floating** layers (popovers, dialogs, menus), each a step lighter in dark; in light the cards and the sheet are white and floating layers get a shadow.
 
 | Token | Dark | Light | Used for |
 |---|---|---|---|
-| `color.state.hover` | `#35373C` | `#DEE0E4` | Hover on channel, member, conversation and settings rows; icon button hover |
-| `color.state.selected` | `#404249` | `#D4D7DC` | Selected channel, conversation or settings page; pressed rows |
-| `color.state.hover-message` | `#2E3035` | `#F8F8F8` | Hover on a message row |
+| `color.surface.rail` | `#110B11` | `#F5F1F6` | Ground: the window behind the cards; the server rail in a classic layout |
+| `color.surface.sidebar` | `#110B11` | `#F5F1F6` | Ground: settings navigation, reply bar, file cards |
+| `color.surface.navigator` | `#1B151C` | `#FFFFFF` | The navigator card and the side sheet |
+| `color.surface.sidebar-footer` | `#221B23` | `#FFFFFF` | The user card and connection dock inside the navigator |
+| `color.surface.chat` | `#221B23` | `#FFFFFF` | The sheet: message pane, chat header, settings content, rail icons without artwork |
+| `color.surface.input` | `#312A32` | `#F5F1F6` | Composer, search fields |
+| `color.surface.field` | `#1A141A` | `#F8F4F8` | Form text fields (always with `border.strong`) |
+| `color.surface.popover` | `#2B242C` | `#FFFFFF` | Profile popover, autocomplete, quick switcher, dialogs |
+| `color.surface.floating` | `#2E272F` | `#FFFFFF` | Context menus, tooltips |
+| `color.surface.code` | `#1A141A` | `#F8F4F8` | Code blocks and inline code |
+| `color.border.divider` | `#3C353E` | `#E3DDE4` | Decorative dividers inside a surface, hover bar and menu outlines |
+| `color.border.strong` | `#8C828D` | `#8C828D` | Form field and checkbox outlines (3:1) |
+| `color.border.quote` | `#554C56` | `#CBC5CC` | Quote bar and reply spine (decorative) |
+| `color.scrim` | `#080409` at 72 % | `#1B131C` at 55 % | Behind dialogs and drawers |
+
+#### Interaction states
+
+Solid tone steps, not translucent layers, so every state can be contrast-checked. On the ground, a hovered row lifts to the sheet's tone: the pointer "lights" it.
+
+| Token | Dark | Light | Used for |
+|---|---|---|---|
+| `color.state.hover` | `#221B23` | `#ECE6ED` | Hover on channel, member, conversation and settings rows; icon button hover |
+| `color.state.selected` | `#362E37` | `#DFD8DF` | Selected channel, conversation or settings page; pressed rows; hovered server without artwork; focused menu item |
+| `color.state.hover-message` | `#282129` | `#FBF9FC` | Hover on a message row |
 
 Selection is never conveyed by the background alone: selected rows also switch to `text.heading`, and the rail uses the pill.
 
@@ -154,283 +167,331 @@ Selection is never conveyed by the background alone: selected rows also switch t
 
 | Token | Dark | Light | Used for |
 |---|---|---|---|
-| `color.text.heading` | `#F2F3F5` | `#060607` | Headers, author names without role colour, unread and selected channels |
-| `color.text.normal` | `#DBDEE1` | `#313338` | Message text, menu items, hovered channels |
-| `color.text.secondary` | `#B5BAC1` | `#4E5058` | Member names without role colour, interactive icons |
-| `color.text.muted` | `#A3A9B1` | `#5C5E66` | Read channels, timestamps, category labels, placeholders, activity lines, chat header topic |
-| `color.text.channel-muted` | `#949BA4` | `#686A72` | Channels the user muted |
-| `color.text.disabled` | `#4E5058` | `#80848E` | Disabled controls only (exempt, always paired with a reason) |
+| `color.text.heading` | `#F8F4F8` | `#221B23` | Headers, author names without role colour, unread and selected channels |
+| `color.text.normal` | `#D6D0D7` | `#392F3A` | Message text, menu items, hovered channels |
+| `color.text.secondary` | `#C5BEC6` | `#594E5B` | Member names without role colour, interactive icons |
+| `color.text.muted` | `#A99FAA` | `#695F6B` | Read channels, timestamps, group labels, placeholders, activity lines, chat header topic |
+| `color.text.channel-muted` | `#988E9A` | `#726874` | Channels the user muted |
+| `color.text.disabled` | `#635A64` | `#A99FAA` | Disabled controls only (exempt, always paired with a reason) |
 | `color.text.link` | `#33B8FF` | `#005FCC` | Links |
 | `color.text.danger` | `#FA777C` | `#C4262B` | Error text, danger menu items, "Not sent" |
 | `color.text.positive` | `#2DC770` | `#1A7F45` | Success text such as "Available" |
+| `color.text.accent` | `#F2A46E` | `#A84F1A` | Apricot text: "Invite people", file glyphs |
 | `color.text.on-accent` | `#2B1608` | `#2B1608` | Text and icons on apricot |
-| `color.text.on-danger`, `color.text.on-neutral` | `#FFFFFF` | `#FFFFFF` | Text on red, grey and green fills |
+| `color.text.on-danger`, `color.text.on-neutral` | `#FFFFFF` | `#FFFFFF` | Text on red, dusk and green fills |
+
+Dark normal text stays below pure white (11.1:1 on the sheet) to avoid halation on dark surfaces; headings take the brightest step.
 
 #### Accent, fills and mention
 
 | Token | Dark | Light | Used for |
 |---|---|---|---|
-| `color.accent.fill` | `#F2A46E` | `#E8894B` | Primary buttons, selected or hovered Home, hovered rail icon without artwork, focused context menu item, jump bars, mention chip hover |
+| `color.accent.fill` | `#F2A46E` | `#E8894B` | Primary buttons, Home when hovered or selected, jump bars, the "New" pill, mention chip hover, drop overlay |
 | `color.accent.fill-hover` | `#E8925A` | `#E07B39` | Accent fill on hover |
 | `color.accent.fill-pressed` | `#D47F47` | `#CC6A2C` | Accent fill when pressed |
-| `color.neutral.fill` | `#4E5058` | `#6D6F78` | Secondary buttons |
-| `color.danger.fill` / `-hover` | `#DA373C` / `#A12829` | same | Destructive buttons, mention badges, "New" pill, danger menu item focus |
+| `color.accent.indicator` | `#F2A46E` | `#A84F1A` | Apricot marks that must reach 3:1 on any surface: the selected-server pill, the unread divider, the mention bar |
+| `color.neutral.fill` / `-hover` | `#554C56` / `#635A64` | `#695F6B` / `#594E5B` | Secondary buttons |
+| `color.danger.fill` / `-hover` | `#DA373C` / `#A12829` | same | Destructive buttons, mention badges, danger menu item hover |
 | `color.positive.fill` | `#23A55A` | `#1A7F45` | Add-server icon and its hover fill, success notice |
-| `color.warning.fill` / `on-fill` | `#F0B232` / `#1E1F22` | same | Warning notice bar |
-| `color.mention.background` | `#403C3C` | `#FDF4EE` | Message that mentions you (apricot at 8 % dark, 12 % light, flattened) |
-| `color.mention.bar` | `#F2A46E` | `#A84F1A` | 2 px leading bar on a mentioning message |
-| `color.mention.chip-background` | `#6B5548` | `#FBE6D6` | `@user`, `@role`, `#channel` chips in messages |
+| `color.warning.fill` / `on-fill` | `#F0B232` / `#1A141A` | same | Warning notice bar |
+| `color.mention.background` | `#37292A` | `#FDF4EF` | Message that mentions you (apricot at 10 % on the dark sheet, 9 % on white, flattened) |
+| `color.mention.bar` | `#F2A46E` | `#A84F1A` | 2 px leading bar on a mentioning message (`accent.indicator`) |
+| `color.mention.chip-background` | `#60443A` | `#FAE7DB` | `@user`, `@role`, `#channel` chips in messages |
 | `color.mention.chip-text` | `#FFE4D1` | `#7A3A0E` | Chip text |
-| `color.unread.line` | `#F45A5E` | `#DA373C` | Unread divider rule |
-| `color.unread.pill` | `#F2F3F5` | `#060607` | Rail and channel-list pills |
+| `color.unread.line` | `#F2A46E` | `#A84F1A` | Unread divider rule (`accent.indicator`) |
+| `color.unread.pill` | `#F8F4F8` | `#221B23` | Rail and channel-list unread and hover pills |
 | `color.focus` | `#33B8FF` | `#005FCC` | Keyboard focus ring, 2 px wide with a 2 px gap |
 
-The mention highlight follows Discord's pattern (tinted background plus a leading bar) but uses Mellow's apricot instead of Discord's gold, so "this is for you" is the brand's warmest moment. Mention chips stay distinguishable inside a highlighted message because their tint is almost four times stronger (chip on the highlighted background: 5.15:1 dark, 6.71:1 light).
-
-The focus ring is sky blue, not apricot, so that "focused" and "selected" or "primary" are never confused.
+The unread divider is apricot, not Discord's red: new messages are "now", and red stays for danger and for the mention count, the one red convention people rely on. The focus ring is sky blue, not apricot, so that "focused" and "selected" or "primary" are never confused.
 
 #### Presence
 
-Status colours follow Discord's conventions, with shapes, because these are generic conventions users already read.
+Status colours keep the conventions users already read, with shapes.
 
 | Token | Dark | Light | Shape (never colour alone) |
 |---|---|---|---|
 | `color.status.online` | `#23A55A` | `#1A7F45` | Filled circle |
 | `color.status.idle` | `#F0B232` | `#A06E00` | Crescent moon |
 | `color.status.dnd` | `#F45A5E` | `#DA373C` | Circle with a horizontal bar cut out |
-| `color.status.offline` | `#8A8E98` | `#747881` | Hollow ring |
+| `color.status.offline` | `#988E9A` | `#726874` | Hollow ring |
 
 The indicator sits in a 3 px cut-out ring of the surface it is drawn on (including hover and selected row colours), so it separates from the avatar image. Mobile ("on phone") presence is out of scope for the MVP.
 
 #### Verified contrast ratios (WCAG 2.2 AA)
 
-Ratios were computed with the WCAG 2.x relative-luminance formula by the script that generated `design/tokens.json`; the same pairs are declared in the file so the token generator can re-check them. Body text needs 4.5:1; non-text indicators need 3:1.
+Ratios are computed with the WCAG 2.x relative-luminance formula by `cargo xtask tokens`, which fails below the minimum. Body text needs 4.5:1; non-text indicators need 3:1.
 
 | Pair | Dark | Light | Minimum |
 |---|---|---|---|
-| `text.heading` on `surface.chat` | 11.39 | 20.25 | 4.5 |
-| `text.heading` on `surface.sidebar` | 12.42 | 18.24 | 4.5 |
-| `text.heading` on `state.selected` | 9.03 | 14.04 | 4.5 |
-| `text.heading` on `surface.sidebar-footer` | 13.96 | 17.26 | 4.5 |
-| `text.normal` on `surface.chat` | 9.36 | 12.64 | 4.5 |
-| `text.normal` on `state.hover-message` | 9.78 | 11.90 | 4.5 |
-| `text.normal` on `mention.background` | 8.06 | 11.65 | 4.5 |
-| `text.normal` on `state.hover` | 8.82 | 9.56 | 4.5 |
-| `text.normal` on `surface.input` | 8.42 | 10.77 | 4.5 |
-| `text.normal` on `surface.floating` | 13.88 | 12.64 | 4.5 |
-| `text.normal` on `surface.popover` | 11.48 | 12.64 | 4.5 |
-| `text.normal` on `surface.code` | 10.21 | 11.39 | 4.5 |
-| `text.normal` on `surface.field` | 12.20 | 10.77 | 4.5 |
-| `text.secondary` on `surface.chat` | 6.48 | 8.04 | 4.5 |
-| `text.secondary` on `surface.sidebar` | 7.07 | 7.24 | 4.5 |
-| `text.secondary` on `surface.sidebar-footer` | 7.94 | 6.85 | 4.5 |
-| `text.secondary` on `surface.input` | 5.82 | 6.85 | 4.5 |
-| `text.muted` on `surface.chat` | 5.34 | 6.47 | 4.5 |
-| `text.muted` on `surface.sidebar` | 5.82 | 5.82 | 4.5 |
-| `text.muted` on `surface.sidebar-footer` | 6.55 | 5.51 | 4.5 |
-| `text.muted` on `surface.input` (placeholders) | 4.80 | 5.51 | 4.5 |
-| `text.muted` on `surface.popover` | 6.55 | 6.47 | 4.5 |
-| `text.muted` on `surface.floating` | 7.91 | 6.47 | 4.5 |
-| `text.muted` on `surface.field` | 6.96 | 5.51 | 4.5 |
-| `text.muted` on `state.hover-message` | 5.58 | 6.09 | 4.5 |
-| `text.muted` on `mention.background` | 4.60 | 5.96 | 4.5 |
-| `text.channel-muted` on `surface.sidebar` | 4.92 | 4.86 | 4.5 |
-| `text.link` on `surface.chat` | 5.68 | 5.98 | 4.5 |
-| `text.link` on `mention.background` | 4.89 | 5.52 | 4.5 |
-| `text.link` on `state.hover-message` | 5.94 | 5.64 | 4.5 |
-| `text.danger` on `surface.chat` | 4.81 | 5.74 | 4.5 |
-| `text.danger` on `surface.sidebar` | 5.25 | 5.17 | 4.5 |
-| `text.danger` on `surface.floating` | 7.14 | 5.74 | 4.5 |
-| `text.danger` on `surface.popover` | 5.90 | 5.74 | 4.5 |
-| `text.accent` on `surface.floating` ("Invite people") | 9.20 | 5.53 | 4.5 |
-| `text.positive` on `surface.chat` | 5.73 | 5.04 | 4.5 |
-| `text.positive` on `surface.sidebar` | 6.25 | 4.54 | 4.5 |
+| `text.heading` on `surface.chat` | 15.44 | 16.81 | 4.5 |
+| `text.heading` on `surface.sidebar` | 17.86 | 15.05 | 4.5 |
+| `text.heading` on `state.selected` | 12.03 | 12.03 | 4.5 |
+| `text.heading` on `surface.sidebar-footer` | 15.44 | 16.81 | 4.5 |
+| `text.heading` on `surface.popover` | 13.86 | 16.81 | 4.5 |
+| `text.normal` on `surface.chat` | 11.10 | 12.79 | 4.5 |
+| `text.normal` on `surface.sidebar` | 12.84 | 11.45 | 4.5 |
+| `text.normal` on `state.hover-message` | 10.35 | 12.22 | 4.5 |
+| `text.normal` on `mention.background` | 9.16 | 11.79 | 4.5 |
+| `text.normal` on `state.hover` | 11.10 | 10.42 | 4.5 |
+| `text.normal` on `surface.input` | 9.19 | 11.45 | 4.5 |
+| `text.normal` on `surface.floating` | 9.58 | 12.79 | 4.5 |
+| `text.normal` on `surface.popover` | 9.96 | 12.79 | 4.5 |
+| `text.normal` on `surface.code` | 11.96 | 11.75 | 4.5 |
+| `text.normal` on `surface.field` | 11.96 | 11.75 | 4.5 |
+| `text.secondary` on `surface.chat` | 9.25 | 7.88 | 4.5 |
+| `text.secondary` on `surface.sidebar` | 10.70 | 7.05 | 4.5 |
+| `text.secondary` on `surface.sidebar-footer` | 9.25 | 7.88 | 4.5 |
+| `text.secondary` on `surface.input` | 7.66 | 7.05 | 4.5 |
+| `text.muted` on `surface.chat` | 6.59 | 6.09 | 4.5 |
+| `text.muted` on `surface.sidebar` | 7.62 | 5.45 | 4.5 |
+| `text.muted` on `surface.sidebar-footer` | 6.59 | 6.09 | 4.5 |
+| `text.muted` on `surface.input` | 5.46 | 5.45 | 4.5 |
+| `text.muted` on `surface.popover` | 5.91 | 6.09 | 4.5 |
+| `text.muted` on `surface.floating` | 5.68 | 6.09 | 4.5 |
+| `text.muted` on `surface.field` | 7.10 | 5.59 | 4.5 |
+| `text.muted` on `state.hover-message` | 6.14 | 5.81 | 4.5 |
+| `text.muted` on `mention.background` | 5.44 | 5.61 | 4.5 |
+| `text.channel-muted` on `surface.sidebar` | 6.18 | 4.76 | 4.5 |
+| `text.link` on `surface.chat` | 7.56 | 5.98 | 4.5 |
+| `text.link` on `mention.background` | 6.24 | 5.52 | 4.5 |
+| `text.link` on `state.hover-message` | 7.05 | 5.72 | 4.5 |
+| `text.link` on `surface.sidebar` | 8.74 | 5.36 | 4.5 |
+| `text.accent` on `surface.sidebar` | 9.55 | 4.95 | 3.0 |
+| `text.danger` on `surface.chat` | 6.40 | 5.74 | 4.5 |
+| `text.danger` on `surface.sidebar` | 7.40 | 5.14 | 4.5 |
+| `text.danger` on `surface.floating` | 5.52 | 5.74 | 4.5 |
+| `text.danger` on `surface.popover` | 5.75 | 5.74 | 4.5 |
+| `text.accent` on `surface.floating` | 7.12 | 5.53 | 4.5 |
+| `text.positive` on `surface.chat` | 7.62 | 5.04 | 4.5 |
+| `text.positive` on `surface.sidebar` | 8.81 | 4.51 | 4.5 |
 | `text.on-accent` on `accent.fill` | 8.44 | 6.64 | 4.5 |
 | `text.on-accent` on `accent.fill-hover` | 7.12 | 5.78 | 4.5 |
 | `text.on-accent` on `accent.fill-pressed` | 5.67 | 4.64 | 4.5 |
-| `text.on-danger` on `danger.fill` (badges, "New" pill) | 4.57 | 4.57 | 4.5 |
+| `text.on-danger` on `danger.fill` | 4.57 | 4.57 | 4.5 |
 | `text.on-danger` on `danger.fill-hover` | 7.37 | 7.37 | 4.5 |
-| `text.on-neutral` on `neutral.fill` | 8.04 | 5.01 | 4.5 |
-| `warning.on-fill` on `warning.fill` | 8.73 | 8.73 | 4.5 |
-| `text.on-neutral` on `positive.fill` (add-server icon on hover) | 3.18 | 5.04 | 3.0 |
-| `mention.chip-text` on `mention.chip-background` | 5.72 | 7.13 | 4.5 |
-| `mention.bar` on `mention.background` | 5.34 | 5.09 | 3.0 |
-| `mention.bar` on `surface.chat` | 6.21 | 5.53 | 3.0 |
-| `unread.pill` on `surface.rail` | 14.84 | 16.05 | 3.0 |
-| `unread.pill` on `surface.sidebar` | 12.42 | 18.24 | 3.0 |
-| `unread.line` on `surface.chat` | 3.90 | 4.57 | 3.0 |
-| `focus` on `surface.chat` | 5.68 | 5.98 | 3.0 |
-| `focus` on `surface.sidebar` | 6.20 | 5.39 | 3.0 |
-| `focus` on `surface.rail` | 7.41 | 4.74 | 3.0 |
-| `focus` on `surface.input` | 5.11 | 5.10 | 3.0 |
-| `border.strong` on `surface.chat` | 3.38 | 3.74 | 3.0 |
-| `border.strong` on `surface.sidebar` | 3.68 | 3.37 | 3.0 |
-| `positive.fill` on `surface.chat` (add-server icon) | 3.97 | 5.04 | 3.0 |
-| `status.online` on `surface.sidebar` / `state.selected` | 4.34 / 3.15 | 4.54 / 3.49 | 3.0 |
-| `status.idle` on `surface.sidebar` / `state.selected` | 7.30 / 5.31 | 4.00 / 3.08 | 3.0 |
-| `status.dnd` on `surface.sidebar` / `state.selected` | 4.25 / 3.09 | 4.12 / 3.17 | 3.0 |
-| `status.offline` on `surface.sidebar` / `state.selected` | 4.21 / 3.06 | 3.99 / 3.07 | 3.0 |
-| `status.offline` on `surface.sidebar-footer` / `surface.popover` | 4.73 / 4.73 | 3.77 / 4.42 | 3.0 |
+| `text.on-neutral` on `neutral.fill` | 8.22 | 6.09 | 4.5 |
+| `warning.on-fill` on `warning.fill` | 9.59 | 9.59 | 4.5 |
+| `text.on-neutral` on `positive.fill` | 3.18 | 5.04 | 3.0 |
+| `mention.chip-text` on `mention.chip-background` | 7.24 | 7.18 | 4.5 |
+| `mention.bar` on `mention.background` | 6.81 | 5.10 | 3.0 |
+| `mention.bar` on `surface.chat` | 8.25 | 5.53 | 3.0 |
+| `unread.pill` on `surface.rail` | 17.86 | 15.05 | 3.0 |
+| `unread.pill` on `surface.sidebar` | 17.86 | 15.05 | 3.0 |
+| `unread.line` on `surface.chat` | 8.25 | 5.53 | 3.0 |
+| `focus` on `surface.chat` | 7.56 | 5.98 | 3.0 |
+| `focus` on `surface.sidebar` | 8.74 | 5.36 | 3.0 |
+| `focus` on `surface.rail` | 8.74 | 5.36 | 3.0 |
+| `focus` on `surface.input` | 6.26 | 5.36 | 3.0 |
+| `border.strong` on `surface.chat` | 4.56 | 3.69 | 3.0 |
+| `border.strong` on `surface.sidebar` | 5.27 | 3.30 | 3.0 |
+| `positive.fill` on `surface.chat` | 5.28 | 5.04 | 3.0 |
+| `status.online` on `surface.sidebar` | 6.11 | 4.51 | 3.0 |
+| `status.online` on `state.selected` | 4.12 | 3.61 | 3.0 |
+| `status.idle` on `surface.sidebar` | 10.30 | 3.98 | 3.0 |
+| `status.idle` on `state.selected` | 6.94 | 3.18 | 3.0 |
+| `status.dnd` on `surface.sidebar` | 5.99 | 4.09 | 3.0 |
+| `status.dnd` on `state.selected` | 4.04 | 3.27 | 3.0 |
+| `status.offline` on `surface.sidebar` | 6.18 | 4.76 | 3.0 |
+| `status.offline` on `state.selected` | 4.16 | 3.81 | 3.0 |
+| `status.offline` on `surface.sidebar-footer` | 5.34 | 5.32 | 3.0 |
+| `status.offline` on `surface.popover` | 4.79 | 5.32 | 3.0 |
+| `text.secondary` on `surface.field` | 9.97 | 7.24 | 3.0 |
+| `text.on-neutral` on `neutral.fill-hover` | 6.61 | 7.88 | 4.5 |
+| `text.danger` on `state.hover` | 6.40 | 4.68 | 3.0 |
+| `positive.fill` on `surface.sidebar-footer` | 5.28 | 5.04 | 3.0 |
+| `text.heading` on `state.hover` | 15.44 | 13.70 | 4.5 |
+| `text.muted` on `state.hover` | 6.59 | 4.96 | 4.5 |
+| `text.heading` on `surface.floating` | 13.33 | 16.81 | 4.5 |
+| `positive.fill` on `text.on-neutral` | 3.18 | 5.04 | 3.0 |
+| `neutral.fill` on `text.on-neutral` | 8.22 | 6.09 | 3.0 |
+| `text.secondary` on `state.selected` | 7.21 | 5.64 | 4.5 |
+| `accent.fill-pressed` on `surface.chat` | 5.55 | 3.71 | 3.0 |
+| `mascot.mark` on `component.rail.background` | 15.42 | 10.91 | 3.0 |
+| `mascot.ink` on `mascot.body` | 11.74 | 11.74 | 3.0 |
+| `mascot.ink` on `mascot.body-overcast` | 8.91 | 8.91 | 3.0 |
+| `mascot.ink` on `accent.fill` | 5.98 | 4.71 | 3.0 |
+| `mascot.ink` on `accent.fill-pressed` | 4.02 | 3.29 | 3.0 |
+| `accent.indicator` on `surface.rail` | 9.55 | 4.95 | 3.0 |
+| `text.muted` on `surface.rail` | 7.62 | 5.45 | 4.5 |
+| `text.heading` on `surface.navigator` | 16.48 | 16.81 | 4.5 |
+| `text.normal` on `surface.navigator` | 11.84 | 12.79 | 4.5 |
+| `text.secondary` on `surface.navigator` | 9.87 | 7.88 | 4.5 |
+| `text.muted` on `surface.navigator` | 7.03 | 6.09 | 4.5 |
+| `text.channel-muted` on `surface.navigator` | 5.70 | 5.32 | 4.5 |
+| `text.danger` on `surface.navigator` | 6.83 | 5.74 | 4.5 |
+| `unread.pill` on `surface.navigator` | 16.48 | 16.81 | 3.0 |
+| `accent.indicator` on `surface.navigator` | 8.81 | 5.53 | 3.0 |
+| `focus` on `surface.navigator` | 8.06 | 5.98 | 3.0 |
+| `status.online` on `surface.navigator` | 5.64 | 5.04 | 3.0 |
+| `status.idle` on `surface.navigator` | 9.50 | 4.44 | 3.0 |
+| `status.dnd` on `surface.navigator` | 5.53 | 4.57 | 3.0 |
+| `status.offline` on `surface.navigator` | 5.70 | 5.32 | 3.0 |
+| `text.danger` on `surface.sidebar-footer` | 6.40 | 5.74 | 3.0 |
+| `mascot.body` on `mascot.tile-top` | 10.65 | 10.65 | 3.0 |
 
 `color.border.divider` and `color.border.quote` are intentionally below 3:1. They are decorative and are never the only thing that shows where a control is or what a block is (quotes are also indented).
 
-The composer field (`surface.input` on `surface.chat`, 1.15:1) has no 3:1 boundary, exactly like Discord. It is identified by its placeholder ("Message #general", 4.80:1), its attach button and its fixed position, which satisfies WCAG 1.4.11 because the boundary is not needed to identify the control. Form text fields, which have no such context, get a 1 px `border.strong` outline.
-
-#### Deviations from Discord's greys and colours (AA adjustments)
-
-Each deviation is the smallest change that makes the pair pass. Discord's values are given for reference; ratios are against the surface where Discord's value fails.
-
-| Role | Discord value | Fails at | Mellow value | Now |
-|---|---|---|---|---|
-| Dark muted text (timestamps, placeholders, category labels) | `#949BA4` | 4.05 on input, 3.88 on mention highlight, 4.50 on chat (borderline) | `#A3A9B1` | 4.80, 4.60, 5.34 |
-| Dark read-channel text | `#80848E` | 3.68 on sidebar | `#A3A9B1` (same as muted text) | 5.82 |
-| Dark muted-channel text | `#4E5058` | 1.72 on sidebar | `#949BA4` | 4.92 |
-| Dark composer placeholder | `#6D6F78` | 2.27 on input | `#A3A9B1` | 4.80 |
-| Dark danger text | `#F23F43` | 3.35 on chat | `#FA777C` | 4.81 |
-| Mention badge and "New" pill fill (white text) | `#F23F43` | 3.77 | `#DA373C` | 4.57 |
-| Dark do-not-disturb dot | `#F23F43` | 2.66 on selected row | `#F45A5E` | 3.09 |
-| Dark offline dot | `#80848E` | 2.68 on selected row | `#8A8E98` | 3.06 |
-| Dark link | `#00A8FC` | 4.15 on mention highlight | `#33B8FF` | 4.89 |
-| Offline members | Whole row at 30 % opacity | Text far below 4.5 | Avatar at 50 % opacity, text unchanged | ≥ 4.5 |
-| Light online dot | `#23A55A` | 2.87 on sidebar | `#1A7F45` | 4.54 |
-| Light idle dot | `#F0B232` | 1.70 on sidebar | `#A06E00` | 4.00 |
-| Light offline dot | `#80848E` | 2.59 on selected row | `#747881` | 3.07 |
-| Light danger text | `#DA373C` | 4.12 on sidebar | `#C4262B` | 5.17 |
-| Light link | `#006CE7` | 4.40 on sidebar | `#005FCC` | 5.39 |
-
-The muted-channel adjustment has a visible consequence: in Discord, muted channels are much dimmer than read channels; in Mellow the step is smaller (5.82 versus 4.92 in dark). Muted channels also never show the unread pill or the heading colour, and their accessible description says "muted", so the state does not rely on the shade alone.
+The composer field (`surface.input` on `surface.chat`) has no 3:1 boundary. It is identified by its placeholder ("Message #general", 5.46:1), its attach button and its fixed position, which satisfies WCAG 1.4.11 because the boundary is not needed to identify the control. Form text fields, which have no such context, get a 1 px `border.strong` outline.
 
 #### User-chosen colours (role colours, default avatars)
 
-Role colours are chosen by server admins and shown on author and member names. Discord shows them as-is, which often produces unreadable names. Mellow keeps the hue but adjusts lightness in OKLCH until the colour reaches 4.5:1 against the surface it is drawn on, separately for each theme. This adjustment lives in the shared Rust core so both clients render the same result. The role editor shows a live preview on both themes and says "Adjusted for readability" when the displayed colour differs from the picked one.
+Role colours are chosen by server admins and shown on author and member names. Mellow keeps the hue but adjusts lightness in OKLCH until the colour reaches 4.5:1 against the surface it is drawn on, separately for each theme. This adjustment lives in the shared Rust core so both clients render the same result. The role editor shows a live preview on both themes and says "Adjusted for readability" when the displayed colour differs from the picked one.
 
-Default avatars (no uploaded picture) show the first grapheme of the display name on one of eight tints derived from the palette, picked deterministically from the user ID. Discord's mascot avatars are not reproduced. Each tint/initial pair is validated at 4.5:1 by the token generator.
+Default avatars (no uploaded picture) show the first grapheme of the display name on one of eight tints derived from the palette, picked deterministically from the user ID. Each tint/initial pair is validated at 4.5:1 by the token generator.
 
 ### 2.4 Typography
 
-All fonts are bundled with the apps and the admin web UI, so the product looks the same everywhere and works offline.
+One family, bundled with the apps, so the product looks the same everywhere and works offline.
 
 | Family | Licence | Role | Why |
 |---|---|---|---|
-| Figtree (variable, `wght`) | SIL OFL 1.1 | All UI and message text | Chosen by the user (v0.3): a geometric, friendly sans close to the feel of Discord's gg sans, very legible at 16 px, 63 KB per style, bundled in the desktop binary. |
-| Noto Sans (variable, `wght`) | SIL OFL 1.1 | Fallback for scripts Figtree lacks (Greek, Cyrillic) | Discord's own font stack lists Noto Sans immediately after its proprietary gg sans, so it is what many Discord users already see for text gg sans does not cover; its humanist proportions, open apertures and x-height sit close to gg sans at Discord's sizes, so Discord's dimensions work unchanged. One family covers Latin, Greek and Cyrillic, and sibling Noto families cover other scripts with matching metrics. |
-| Source Code Pro | SIL OFL 1.1 | Inline code, code blocks, invite codes, IDs in the admin UI | Also part of Discord's code font fallback stack; clear distinction of `0O`, `1lI`. |
-| Twemoji (COLR font build) | CC-BY 4.0 (graphics) | Emoji | The emoji artwork Discord users recognise; open-licence with attribution in About. Noto Color Emoji is the fallback. See section 9. |
-| Noto Sans CJK, Arabic, Hebrew, Devanagari (subsets to decide) | SIL OFL 1.1 | Script fallback | Harmonious metrics with Noto Sans. |
+| Figtree (variable, `wght`, upright and italic) | SIL OFL 1.1 | Everything: UI, messages, display | Chosen by the owner (v0.3): a geometric, friendly sans with round bowls that echo Melli's puffs, very legible at 15–16 px, 63 KB per style, bundled in the desktop binary and served by the web client. It carries both the quiet UI sizes and, at 700–800 with tight tracking, the display moments; no second display face is needed (ADR-0022). |
+| Noto Sans (system or later bundle) | SIL OFL 1.1 | Fallback for scripts Figtree lacks (Greek, Cyrillic, others) | Humanist proportions close to Figtree's x-height; script subsets to decide (section 9). |
+| Source Code Pro (system or later bundle) | SIL OFL 1.1 | Inline code, code blocks, invite codes | Clear distinction of `0O`, `1lI`. Not bundled yet; the stack falls back to the platform monospace. |
+| Twemoji (COLR font build) | CC-BY 4.0 (graphics) | Emoji | See section 9. |
 
 Rules:
 
-- Weights used: 400, 500, 600, 700, 800. Emphasised Material 3 Expressive styles on Android add 100.
-- Category headers, member-list group headers and form labels are rendered uppercase with 0.24 px tracking, as on Discord. The uppercase is a rendering transform (`$extensions.org.mellow.text-transform` on the token); source strings, translations and accessible names stay sentence case. Slint has no text transform, so on desktop the Rust layer passes an uppercased display string next to the sentence-case accessible name; Compose and CSS apply the transform at render time.
-- No text is smaller than 12 px at 100 % zoom. Discord sets "(edited)" and its "NEW" pill at 10 px; Mellow uses 12 px.
-- Numbers in tables (admin UI, member counts) use tabular figures.
+- Weights used: 400 (reading), 500 (names and controls), 600 (labels, author names), 700 and 800 (titles and display only).
+- **Sentence case everywhere.** Category headers, member-group headers, settings section labels and form labels are sentence case at 13 px semibold in `text.muted`, never uppercase and never tracked out. Discord's uppercase labels are one of the things Dusk drops: they shout, they are harder to read, and they are a template tell.
+- Display sizes (`type.display`, `heading-xl`, `heading-lg`) use negative tracking (−2 %, −1.5 %, −1 %) so large Figtree stays compact and confident.
+- Messages use a 24 px line (1.5 at 16 px): calmer to read than Discord's 22 px, and the 4 px grid stays intact.
+- No text is smaller than 12 px at 100 % zoom.
+- Numbers that line up (member counts, badges, file sizes, timestamps in the gutter) use tabular figures.
 
 #### Type scale tokens
 
 Sizes are logical pixels on desktop and the admin web, and `sp` on Android. Line height is given in px here and stored as a multiplier in the token file.
 
-| Token | Weight | Size / line height | Used for | Compose `Typography` slot |
-|---|---|---|---|---|
-| `type.display` | 800 | 32 / 40 | Channel-start hero ("Welcome to #general"), first-run title | `displaySmall` |
-| `type.heading-xl` | 600 | 24 / 30 | Sign-in and connect card titles | `headlineSmall` |
-| `type.heading-lg` | 600 | 20 / 24 | Dialog titles, settings page titles, quick switcher input | `titleLarge` |
-| `type.heading-md` | 600 | 16 / 20 | Server name in sidebar header, channel name in chat header, popover display name | `titleMedium` |
-| `type.body-lg` | 400 | 16 / 20 | Settings rows, form values | `bodyLarge` (outside messages) |
-| `type.body` | 400 | 14 / 18 | Descriptions, helper text, dialog body, channel topic | `bodyMedium` |
-| `type.body-sm` | 400 | 12 / 16 | Activity lines, user panel status, field helper text | `bodySmall` |
-| `type.message` | 400 | 16 / 22 | Message text, composer text | extended `MellowTheme.typography.message` |
-| `type.message-author` | 500 | 16 / 22 | Author name on the first message of a group | extended |
-| `type.message-timestamp` | 500 | 12 / 22 | Timestamp after the author name, hover timestamp in the gutter, "(edited)" | extended |
-| `type.message-h1` / `-h2` / `-h3` | 700 | 24/30, 20/26, 16/22 | Markdown headings inside messages | extended |
-| `type.message-subtext` | 400 | 12 / 16 | Markdown subtext (`-# text`) | extended |
-| `type.code` | 400 (mono) | 14 / 18 | Inline code, code blocks | extended |
-| `type.channel-name` | 500 | 16 / 20 | Channel and conversation names in the sidebar | extended |
-| `type.member-name` | 500 | 16 / 20 | Names in the member list | extended |
-| `type.category` | 600, uppercase | 12 / 16 | Category headers, member groups, form labels | `labelMedium` |
-| `type.user-panel-name` | 600 | 14 / 18 | Display name in the user panel | `titleSmall` |
-| `type.button` | 500 | 14 / 16 | Button labels | `labelLarge` |
-| `type.menu-item` | 500 | 14 / 18 | Context menu items | extended |
-| `type.tooltip` | 600 | 14 / 16 | Tooltips | extended |
-| `type.badge` | 700 | 12 / 16 | Mention badges, "New" pill | `labelSmall` |
-| `type.typing` | 500 | 14 / 24 | Typing indicator | extended |
+| Token | Weight | Size / line height | Tracking | Used for | Compose `Typography` slot |
+|---|---|---|---|---|---|
+| `type.display` | 800 | 32 / 36 | −0.64 px | Channel-start hero ("Welcome to #general"), sign-in title | `displaySmall` (emphasized) |
+| `type.heading-xl` | 700 | 26 / 32 | −0.39 px | Card and page titles of first-run flows | `headlineSmall` |
+| `type.heading-lg` | 700 | 20 / 26 | −0.2 px | Dialog titles, settings page titles, quick switcher input | `titleLarge` |
+| `type.heading-md` | 600 | 16 / 20 | 0 | Server name in sidebar header, channel name in chat header, popover display name | `titleMedium` |
+| `type.body-lg` | 400 | 16 / 20 | 0 | Settings rows, form values | `bodyLarge` (outside messages) |
+| `type.body` | 400 | 14 / 20 | 0 | Descriptions, helper text, dialog body, channel topic | `bodyMedium` |
+| `type.body-sm` | 400 | 12 / 16 | 0 | Activity lines, user card status, field helper text | `bodySmall` |
+| `type.message` | 400 | 16 / 24 | 0 | Message text, composer text | extended `MellowTheme.typography.message` |
+| `type.message-author` | 600 | 16 / 24 | 0 | Author name on the first message of a group | extended |
+| `type.message-timestamp` | 500 | 12 / 24 | 0 | Timestamp after the author name, hover timestamp in the gutter, "(edited)" | extended |
+| `type.message-h1` / `-h2` / `-h3` | 700 | 24/30, 20/26, 16/24 | 0 | Markdown headings inside messages | extended |
+| `type.message-subtext` | 400 | 12 / 16 | 0 | Markdown subtext (`-# text`) | extended |
+| `type.code` | 400 (mono) | 14 / 18 | 0 | Inline code, code blocks | extended |
+| `type.channel-name` | 500 | 15 / 20 | 0 | Channel and conversation names in the sidebar | extended |
+| `type.member-name` | 500 | 15 / 20 | 0 | Names in the member list | extended |
+| `type.category` | 600 | 13 / 16 | 0 | Category headers, member groups, settings section labels, form labels (sentence case) | `labelLarge` |
+| `type.user-panel-name` | 600 | 14 / 18 | 0 | Display name on the user card | `titleSmall` |
+| `type.button` | 500 | 14 / 16 | 0 | Button labels | `labelLarge` |
+| `type.menu-item` | 500 | 14 / 18 | 0 | Context menu items | extended |
+| `type.tooltip` | 600 | 14 / 16 | 0 | Tooltips | extended |
+| `type.badge` | 700 | 12 / 16 | 0 | Mention badges, "New" pill | `labelSmall` |
+| `type.typing` | 500 | 14 / 24 | 0 | Typing indicator | extended |
 
-Scaling follows Discord's two settings:
+Scaling:
 
 - **Zoom level** (desktop, 50–200 %, `Ctrl+=`/`Ctrl+-`/`Ctrl+0`) scales every dimension and type token.
-- **Chat font size** (12–24 px, default 16) scales the `type.message*` and `type.code` tokens only; the message gutter and avatar stay put, as on Discord.
-- Android follows the system font scale (including non-linear scaling on Android 14+) and Discord-mobile's chat font size setting.
+- **Chat font size** (12–24 px, default 16) scales the `type.message*` and `type.code` tokens only; the message gutter and avatar stay put.
+- Android follows the system font scale (including non-linear scaling on Android 14+) and the chat font size setting.
 
 ### 2.5 Spacing
 
-A 4 px grid. Discord's odd values (2 px row gaps, 6 px icon gaps, 6 px menu padding) live in component tokens, not in the scale.
+A 4 px grid. Odd values inherited from Discord's components (2 px row gaps, 6 px icon gaps, 6 px menu padding) live in component tokens, not in the scale.
 
 | Token | Value | Typical use |
 |---|---|---|
 | `space.3xs` | 2 | Message vertical padding, chip padding |
 | `space.2xs` | 4 | Badge padding, menu separator margin |
-| `space.xs` | 8 | Row margins and padding, sidebar list top padding |
+| `space.xs` | 8 | Row margins and padding, the user card's margin on the ground |
 | `space.sm` | 12 | Tooltip horizontal padding |
-| `space.md` | 16 | Header padding, avatar inset, composer side margins, default message group gap |
+| `space.md` | 16 | Header padding, avatar inset, composer side margins |
 | `space.lg` | 24 | Composer bottom band (typing indicator), dialog padding |
-| `space.xl` | 32 | Auth card padding, settings section spacing |
+| `space.xl` | 32 | Sign-in card padding, settings section spacing |
 | `space.2xl` | 48 | Message trailing padding (room for the hover bar) |
 | `space.3xl` | 64 | Admin dashboard top spacing on wide screens |
 
-Pane dimensions are in the `size.*` tokens and in the table of section 4.2.
+`size.sheet.inset` (8) is the gap between the cards (navigator, sheet, side sheet) and between them and the window edges on wide layouts (0 below 816 px, where the sheet is full-bleed). `size.dock.height` (56) and `size.dock.margin` (8) are the height of the composer's base row and of the user card and their gap to the bottom of their card, so the two line up (4.2). The space between message groups is 20 by default (`component.message.group-gap`; setting: 0, 4, 8, 16, 20, 24). Pane dimensions are in the `size.*` tokens and in the table of section 4.2.
 
 ### 2.6 Radius and shape
 
+Radii are assigned by hierarchy, not one value everywhere, and nested corners are **concentric**: an inner radius equals its container's radius minus the padding between them (a 12 px menu with 6 px padding has 6 px items). Things that float are rounder than things that sit.
+
 | Token | Value | Use |
 |---|---|---|
-| `radius.xs` | 3 | Buttons, text fields, mention chips, inline code |
-| `radius.sm` | 4 | Channel and member rows, menus, tooltips, code blocks, hover bar, dialogs |
-| `radius.md` | 8 | Composer field, attachments, jump bars, popovers |
-| `radius.lg` | 16 | Hovered or selected server squircle (at 48 px), Android sheets |
-| `radius.full` | 9999 | Avatars, badges, status dots, resting server icons |
+| `radius.xs` | 4 | Mention chips, inline code, small tags |
+| `radius.sm` | 8 | Rows (channel, member, conversation, settings), buttons, tooltips, the hover bar |
+| `radius.md` | 12 | Popovers, context menus, attachments, jump bars, the user card, settings cards |
+| `radius.lg` | 16 | The sheet, dialogs, the composer, the hovered or selected server squircle (at 48 px) |
+| `radius.xl` | 24 | Sign-in card, Android bottom sheets |
+| `radius.full` | 9999 | Avatars, badges, the "New" pill, status dots, resting server icons |
 
-Signature shape, copied from Discord: **server icons are circles at rest and morph into a squircle (`radius.lg`) on hover, focus and selection** (`component.rail.icon-radius-rest` 24 → `icon-radius-active` 16, `motion.duration.base`). Avatars are always circles.
+Signature shape: **server icons are circles at rest (Melli's puffs) and settle into a squircle (`radius.lg`) on hover, focus and selection**, the interaction Discord users know, timed with `motion.easing.settle` so it lands rather than snaps. Avatars are always circles. The navigator, the sheet and the side sheet all have `radius.lg` corners; the user card inside the navigator has `radius.md`, the composer inside the sheet `radius.lg` (both 8 px from their card's edge).
 
 ### 2.7 Elevation
 
-Depth comes from the layered greys; shadows only separate headers and floating layers.
+Depth comes from tone. Shadows exist only on floating layers, and in the light theme, where white floating layers on a white sheet need one.
 
 | Token | Dark | Light | Use |
 |---|---|---|---|
-| `elevation.low` | 0 1 0 black 20 % | 0 1 0 ink 8 % | 1 px line under the sidebar header and chat header |
+| `elevation.low` | 0 1 0 black 20 % | 0 1 0 ink 8 % | Kept for the admin web; the clients' headers no longer draw a line |
 | `elevation.medium` | 0 4 4 black 16 % | 0 4 4 black 10 % | Message hover bar, popovers, jump bars |
 | `elevation.high` | 0 8 16 black 24 % | 0 8 16 black 16 % | Context menus, tooltips, dialogs, quick switcher |
 
-Values are `x y blur colour`. Slint maps them to `drop-shadow-*` (one layer), Compose to `shadowElevation`, CSS to `box-shadow`.
+Values are `x y blur colour`. Slint has no shadow tokens, so floating layers on desktop get a 1 px `border.divider` outline instead; Compose maps them to `shadowElevation`, CSS to `box-shadow`.
 
 ### 2.8 Motion
 
-Discord's motion is quick and functional: colour changes on hover, the squircle morph, the pill growing, menus popping in. Mellow copies that and nothing more.
+Motion is how Mellow feels alive without being busy. Every animation is a **state transition**: it starts because something happened, it shows what changed, and it ends. Nothing loops except Melli (2.10) and the typing dots while someone types, so the app costs nothing while idle.
+
+#### Tokens
 
 | Token | Value | Use |
 |---|---|---|
 | `motion.duration.instant` | 0 ms | Reduced-motion replacement for spatial motion |
-| `motion.duration.fast` | 100 ms | Hover and pressed colour changes, focus ring |
-| `motion.duration.base` | 200 ms | Squircle morph, rail pill height, category collapse, menus, tooltips |
-| `motion.duration.slow` | 250 ms | Dialogs (scale 0.95 → 1 with fade), Android panel settle |
+| `motion.duration.fast` | 120 ms | Hover and pressed colour changes, focus ring, popovers and menus, dialog close |
+| `motion.duration.base` | 200 ms | Rail pill height, category collapse, tooltips, channel switch, a message arriving |
+| `motion.duration.slow` | 280 ms | Drawers and panels sliding, Android panel settle |
+| `motion.duration.settle` | 340 ms | Things that land: dialog open, the rail squircle, your own message joining the list |
 | `motion.duration.highlight` | 2000 ms | Fade-out of the highlight on a message you jumped to |
-| `motion.delay.tooltip` / `tooltip-rail` | 500 ms / 0 ms | Tooltip delay; rail tooltips appear immediately, as on Discord |
+| `motion.delay.tooltip` / `tooltip-rail` | 500 ms / 0 ms | Tooltip delay; rail tooltips appear immediately |
 | `motion.delay.skeleton` | 300 ms | Before skeletons appear, to avoid flicker |
 | `motion.delay.pending-label` | 2000 ms | Before a pending message shows "Sending…" |
-| `motion.easing.standard` | cubic-bezier(0.2, 0, 0, 1) | Most transitions |
+| `motion.easing.standard` | cubic-bezier(0.2, 0, 0, 1) | Colour and opacity |
 | `motion.easing.enter` / `exit` | (0, 0, 0, 1) / (0.3, 0, 1, 1) | Appearing / leaving elements |
+| `motion.easing.settle` | cubic-bezier(0.34, 1.3, 0.64, 1) | About 5 % overshoot, Melli's bounce; only with `duration.settle` |
+| `motion.spring.settle-damping-ratio` / `settle-stiffness` | 0.72 / 500 | Android: `spring()` for the same moments as `settle` |
 
-Rules:
+Slint does not receive easing tokens (the generator skips `cubicBezier`); Slint components write `cubic-bezier(0.34, 1.3, 0.64, 1)` (or `ease-out-back`) next to the token's duration, citing the token in a comment.
 
-- No per-item entrance animation in lists; new messages appear in place.
-- Loading placeholders are static (no shimmer).
-- Animated GIFs, avatars and emoji play on hover or focus by default (Discord's "Play animated emoji/GIFs when the app is focused" setting maps to the "Play animated images" setting in 5.9).
-- Android uses `MotionScheme.standard()` and the expressive spring only for the server squircle morph and the chat panel settle.
+#### Key transitions
 
-Reduced motion:
+| Moment | Trigger | What moves | Duration and curve | Reduced motion |
+|---|---|---|---|---|
+| Row hover | Pointer enters a channel, member, conversation or settings row | Background ground → `state.hover`, text to `text.normal` | `fast`, standard | Same (colour only) |
+| Server hover and select | Pointer, focus or selection on a rail icon | Circle → squircle; pill grows to 20 (hover) or 40 (selected, apricot) | Morph `settle` with the settle curve; pill `base`, standard | Instant shape and pill; colour kept |
+| Channel switch | A channel or conversation is opened | Header title cross-fades; the new message list fades in from 0 and rises `channel-switch.offset` (8 px) | `channel-switch.duration` (`base`), enter | Instant swap |
+| Message arrives | A message from someone else is added while the list is at the bottom | The new row fades in and rises `message.enter-offset` (8 px) | `message.enter-duration` (`base`), enter | Appears in place |
+| Your message | You press Enter | Your message joins the list as pending (muted text), rising 8 px with the settle curve; when the server confirms, its text eases to `text.normal` | `settle`, then `fast` for the colour | Appears in place; colour change kept |
+| Dialog open | A dialog is opened | Scrim fades in; the card grows from `dialog.enter-scale` (0.96) and fades in | Scrim `base`, card `dialog.enter-duration` (`settle`), settle curve | Scrim and card appear at once |
+| Dialog close | Esc, Cancel, scrim, or the action completes | Card and scrim fade out | `dialog.exit-duration` (`fast`), exit | Instant |
+| Menu and popover | Context menu, server menu, profile popover | Fade in and slide 4 px from the anchor side | `fast`, enter | Fade only |
+| Unread divider, jump bar | Opening a channel with unread messages; scrolling up | Jump bar slides 8 px from its edge and fades | `base`, enter | Appears at once |
+| Melli | Connection and direct-message state | See 2.10 | Per-state loops | Still poses |
 
-- Desktop reads the OS preference where available (macOS "Reduce motion", Windows "Show animations in Windows", GNOME `enable-animations`) and offers an in-app override: "Match system", "Reduce motion", "Allow motion".
-- Android follows "Remove animations" and the same in-app override. The admin web uses `@media (prefers-reduced-motion: reduce)`.
-- When reduced motion is on: the squircle morph, pill growth, panel slides and smooth scrolling become `motion.duration.instant`; colour changes are kept; "jump to message" scrolls instantly and keeps the highlight as a static background for `motion.duration.highlight`; animated media never autoplays; the typing indicator shows static dots.
+What never animates: list items on first load or history load (they appear in place), skeletons (static), scrolling (except "Jump to present", which scrolls smoothly unless motion is reduced), the composer while typing, badges and counts.
+
+#### Cost rules
+
+- Web: animate only `opacity` and `transform` (plus colour); no layout properties, no filters, no `backdrop-filter`. Transitions end; no `animation-iteration-count: infinite` outside Melli and the typing dots.
+- Desktop (Slint): an `animate` block runs only while its property changes, so transitions cost frames only while they play. New animations go on the few elements that change (the new row, the dialog card, the rail item), never on a whole list. Melli's clock stays the only continuous one (about 7 % of a core while visible, 2.10).
+- Android: `MotionScheme.expressive()` springs for the settle moments only; `standard()` everywhere else.
+
+#### Reduced motion
+
+- Web and the admin web: `@media (prefers-reduced-motion: reduce)` sets every `motion.duration.*` to 0 ms (generated); delays keep their value.
+- Desktop: reads the OS preference where available (macOS "Reduce motion", Windows "Show animations in Windows", GNOME `enable-animations`) and offers an in-app override: "Match system", "Reduce motion", "Allow motion". The desktop client has no such setting yet; it must exist before the transitions above ship on desktop.
+- Android follows "Remove animations" and the same in-app override.
+- When reduced motion is on: spatial motion (squircle, pill growth, rises, scales, panel slides, smooth scrolling) is instant; colour changes are kept where the platform allows; "jump to message" scrolls instantly and keeps the highlight as a static background for `motion.duration.highlight`; animated media never autoplays; the typing indicator shows static dots; Melli shows its still pose.
 
 ### 2.9 Iconography
 
@@ -440,7 +501,7 @@ The **Home button** shows Melli, the Mellow logo (2.10): the cloud fills about 2
 
 ### 2.10 Melli, the logo and mascot
 
-Melli (Melli / Mellow) is a round cloud with two pill eyes, drawn by the owner. It is shown alone, never on a tile: the character is the logo (Home button, favicon, app icons) and the only character in the interface. It floats, blinks and slowly turns its puffs; everything else it does is built from the same soft, round, bouncy motion. Melli is Mellow's own artwork and shares nothing with Discord's logo or mascot.
+Melli (Melli / Mellow) is a round cloud with two pill eyes, drawn by the owner. Inside the interface it is shown alone (the Home button, sign-in, empty states); as an icon (favicon, window and app icons) it sits on its dusk tile (below). It is the logo and the only character in the interface. It floats, blinks and slowly turns its puffs; everything else it does is built from the same soft, round, bouncy motion. Melli is Mellow's own artwork and shares nothing with Discord's logo or mascot.
 
 #### Parts
 
@@ -468,6 +529,8 @@ The drawing lives in a 256 × 256 viewBox (`web/src/components/Melli.svelte`). O
 | `color.mascot.outline` | `#3F332D` | The cloud's edge: keeps it whole on light surfaces and light docks (on dark ones the cloud itself stands out) |
 | `color.mascot.mark` | Dark: `#F4E2D2`. Light: `#3F332D` | Marks drawn around Melli, on the rail |
 | `color.mascot.blush` | `#F5B3A1` | Cheeks (decorative) |
+| `color.mascot.tile-top` / `tile-bottom` | `#4A3450` / `#140C15` | The icon tile's vertical dusk gradient |
+| `color.mascot.tile-glow` | `#F2A46E` at 55 % | A low apricot glow behind the cloud on the icon tile: the cloud at sunset |
 
 Melli is brand artwork: the cloud, its face and its outline are the same in both themes. Melli has no tile, so what it draws outside the cloud depends on the surface: marks use `color.mascot.mark`, at least 3:1 on the rail in both themes, and a host that puts Melli on apricot (Home when hovered, focused or selected) switches them to ink, which reaches at least 3:1 on both apricot fills, the cloud and the overcast cloud (contrast pairs in `design/tokens.json`). The cloud stands out on the dark rail by itself (cream on near black) and on light surfaces by its ink outline. Blush is the only colour that carries no meaning.
 
@@ -493,7 +556,7 @@ Wherever Melli shows a state, the state is also said in words: Home keeps its ac
 - Melli is always animated, idle included, in the rail too (the owner's choice, 2026-10-21): an always-visible infinite SVG loop repaints every frame, a cost accepted for a living mascot; reduced motion still stops it.
 - Under `prefers-reduced-motion: reduce` (or the gallery's "Still poses"), Melli stops every animation and transition and shows the still pose of its state. A still pose must show the state on its own: add a static offset or tilt when the motion was the only sign.
 - Marks stay within 126 units of the centre (128, 128), so the Home button's circle (radius 128) never clips them.
-- The favicon and the app icons are the still idle Melli alone: outline, cloud and eyes on a transparent background, framed tight around the cloud (viewBox `42 38 172 172`), without the shadow, so it fills small sizes. `cargo xtask tokens` writes `web/public/favicon.svg` from the mascot tokens; icons never animate.
+- The favicon and the app icons are the still idle Melli (outline, cloud and eyes, no shadow) centred on a rounded tile (radius 57 of 256, close to Apple's corner) filled with the dusk gradient and the apricot glow, so the icon reads on light and dark tabs, docks and taskbars alike (ADR-0022). The tile fills the PNGs; macOS insets it into its 824/1024 grid. `cargo xtask tokens` writes `web/public/favicon.svg` from the mascot tokens and rasterises it into every app icon; icons never animate. A textured variant (a few faint stars on the gradient) is reserved for large marketing artwork, because texture turns to noise at 16 and 32 px.
 
 #### Adding a state
 
@@ -536,16 +599,16 @@ The generated paths are indicative and follow ARCHITECTURE.md. Today `crates/mel
 
 ### 3.2 Three tiers
 
-1. **Reference tokens** (`ref.*`): raw values with no meaning, for example `ref.apricot.300 = #F2A46E`, `ref.grey.700 = #313338`. Grey steps are numbered by lightness (0 = white, 950 = near black). Flattened tints (`ref.apricot.wash-dark`, `chip-dark`, …) are also reference values, so semantic tokens never hold raw hex. Only semantic tokens may reference this tier.
+1. **Reference tokens** (`ref.*`): raw values with no meaning, for example `ref.apricot.300 = #F2A46E`, `ref.dusk.235 = #221B23`. Dusk steps are named by OKLCH lightness × 1000 (`ref.dusk.180` is the dark ground, `ref.dusk.985` the light message hover). Flattened tints (`ref.apricot.wash-dark`, `chip-dark`, …) are also reference values, so semantic tokens never hold raw hex. Only semantic tokens may reference this tier.
 2. **Semantic tokens** (`color.*`, `font.*`, `type.*`, `space.*`, `radius.*`, `size.*`, `elevation.*`, `motion.*`): the tokens documented in section 2 and in the dimension table of 4.2.
-3. **Component tokens** (`component.<name>.*`): aliases of semantic tokens for the components that define the Discord look: `rail`, `sidebar`, `category`, `channel-row`, `user-panel`, `chat-header`, `message`, `action-bar`, `mention`, `unread-divider`, `jump-bar`, `composer`, `member-list`, `member-row`, `status`, `badge`, `tooltip`, `context-menu`, `button`, `focus-ring`. Components read this tier first and the semantic tier for anything not listed.
+3. **Component tokens** (`component.<name>.*`): aliases of semantic tokens for the components that define the shell: `rail`, `sidebar`, `category`, `channel-row`, `user-panel`, `chat-header`, `message`, `action-bar`, `mention`, `unread-divider`, `jump-bar`, `composer`, `member-list`, `member-row`, `status`, `badge`, `tooltip`, `context-menu`, `button`, `focus-ring`. Components read this tier first and the semantic tier for anything not listed.
 
 ### 3.3 Themes and naming
 
 - **Themes are values, not names.** A colour token's `$value` is the dark value (dark is the default theme); its light value is in `$extensions["org.mellow.theme"].light`. Elevation tokens use the same extension. Aliases resolve within the active theme, so component tokens need no light value of their own.
 - Source names are dot-separated, lowercase, kebab-case within a segment: `color.text.on-accent`, `component.channel-row.text-selected`.
 - Names describe the role, never the hue: `color.danger.fill`, not `color.red`.
-- Uppercase rendering is a typography extension (`org.mellow.text-transform: uppercase`), never baked into strings.
+- Labels are sentence case (2.4). The `org.mellow.text-transform` typography extension stays available, but no token uses it since v0.15; strings are never baked in capitals.
 
 | Platform | Transformation | Example for `color.text.on-accent` | Example for `component.channel-row.height` |
 |---|---|---|---|
@@ -562,11 +625,11 @@ The generator writes one `.slint` file with the globals `MellowColor`, `MellowTy
 - `MellowColor` has an `in-out property <bool> dark` set by the Rust side from the user's theme setting and the OS appearance. Every colour property is generated as `dark ? <dark value> : <light value>`.
 - `MellowType` and `MellowSize` multiply every length by `in-out property <float> zoom` (0.5–2.0); `type.message*` and `type.code` are also multiplied by `chat-font-scale` (chat font size / 16).
 - `MellowMotion` durations are generated as `reduce-motion ? 0ms : <value>`.
-- We build Mellow components on Slint primitives so the Discord look is identical on every OS; std-widgets are used only for behaviour we cannot reasonably rebuild (for example scrolling), styled with our tokens. Our colour global is `MellowColor` because std-widgets already export `Palette`.
+- We build Mellow components on Slint primitives so the Mellow look is identical on every OS; std-widgets are used only for behaviour we cannot reasonably rebuild (for example scrolling), styled with our tokens. Our colour global is `MellowColor` because std-widgets already export `Palette`.
 
 #### Compose (Android, Material 3 Expressive)
 
-The generator writes `MellowTokens.kt` containing the light and dark `ColorScheme`, the `Typography`, the `Shapes`, and an extended `MellowColors`/`MellowSpacing`/`MellowSizes`/`MellowComponents` object provided through a `CompositionLocal`. `MellowTheme { }` wraps `MaterialExpressiveTheme` (or `MaterialTheme` if the expressive theme is not available in the pinned version) with `motionScheme = MotionScheme.standard()`. Dynamic colour is off (section 9).
+The generator writes `MellowTokens.kt` containing the light and dark `ColorScheme`, the `Typography`, the `Shapes`, and an extended `MellowColors`/`MellowSpacing`/`MellowSizes`/`MellowComponents` object provided through a `CompositionLocal`. `MellowTheme { }` wraps `MaterialExpressiveTheme` (or `MaterialTheme` if the expressive theme is not available in the pinned version) with `motionScheme = MotionScheme.standard()`; the settle moments of 2.8 use `spring(motion.spring.settle-damping-ratio, motion.spring.settle-stiffness)`. Dynamic colour is off (section 9): the dusk neutrals are the brand.
 
 | Material role | Mellow token |
 |---|---|
@@ -576,24 +639,25 @@ The generator writes `MellowTokens.kt` containing the light and dark `ColorSchem
 | `secondaryContainer` / `onSecondaryContainer` (navigation indicator) | `state.selected` / `text.heading` |
 | `tertiary` / `onTertiary` | `text.link` / `surface.chat` |
 | `error` / `onError`, `errorContainer` / `onErrorContainer` | `danger.fill` / `text.on-danger` |
-| `background`, `surface` / `onBackground`, `onSurface` | `surface.chat` / `text.normal` |
+| `background`, `surfaceDim` / `onBackground` | `surface.sidebar` (the ground) / `text.normal` |
+| `surface` / `onSurface` | `surface.chat` (the sheet) / `text.normal` |
 | `onSurfaceVariant` | `text.muted` |
-| `surfaceContainerLowest`, `surfaceDim` | `surface.rail` |
+| `surfaceContainerLowest` | `surface.field` |
 | `surfaceContainerLow` | `surface.sidebar-footer` |
-| `surfaceContainer` | `surface.sidebar` |
+| `surfaceContainer` | `surface.popover` |
 | `surfaceContainerHigh` | `surface.input` |
 | `surfaceContainerHighest`, `surfaceBright` | `state.selected` |
 | `outline` / `outlineVariant` | `border.strong` / `border.divider` |
 | `inverseSurface` / `inverseOnSurface` / `inversePrimary` | the other theme's `surface.chat` / `text.normal` / `accent.fill` |
 | `scrim` | `scrim` |
 
-Menus, tooltips and the message hover bar do not rely on Material defaults; they read `MellowTheme.components.*`. `Shapes`: `extraSmall = radius.xs`, `small = radius.sm`, `medium = radius.md`, `large = radius.lg`, `extraLarge = radius.lg`. Screens never contain raw `dp` values.
+Menus, tooltips and the message hover bar do not rely on Material defaults; they read `MellowTheme.components.*`. `Shapes`: `extraSmall = radius.xs`, `small = radius.sm`, `medium = radius.md`, `large = radius.lg`, `extraLarge = radius.xl`. Screens never contain raw `dp` values.
 
 #### Admin web (CSS custom properties)
 
 - `:root` holds the dark values, `@media (prefers-color-scheme: light)` and `[data-theme="light"]` hold the light values, `[data-theme="dark"]` forces dark.
 - Every token becomes `--mw-<path>`; spacing and type sizes are emitted in `rem` (16 px base) so browser zoom works.
-- Motion durations get `@media (prefers-reduced-motion: reduce)` overrides; uppercase tokens emit `text-transform: uppercase`.
+- Motion durations get `@media (prefers-reduced-motion: reduce)` overrides.
 - Fonts are embedded as WOFF2 files served by the server binary, with `font-display: swap`.
 
 ### 3.5 Generator guarantees (acceptance criteria, not code)
@@ -625,89 +689,95 @@ One client can be signed in to several instances. Discord has no equivalent, so 
 
 ### 4.2 Desktop (Slint)
 
-The reference is Discord's desktop client in its dark theme, as most users know it. Every dimension below is a token.
+Mellow keeps Discord's concepts and where people look for them, but not its silhouette (ADR-0022). The window is a dusk ground holding up to three cards, each inset by `size.sheet.inset`: the **navigator** (server strip, channel list, user card), the **sheet** (the conversation) and, on demand, the **side sheet** (members, a member's profile; later threads and pins). Every dimension below is a token.
 
 #### Dimension table
 
 | Element | Dimension | Token(s) |
 |---|---|---|
 | Window minimum / default | 480 × 560 / 1280 × 800 (or 80 % of the screen if smaller) | `size.window.*` |
-| Server rail width | 72 | `size.rail.width` |
+| Navigator | Card with radius 16 on `surface.navigator`: server strip (72) beside the channel list (240), user card across both at the bottom | `component.navigator.*` |
+| Server strip width | 72 | `size.rail.width`, `component.navigator.strip-width` |
 | Rail icon | 48 × 48; circle at rest (radius 24), squircle radius 16 on hover, focus, selection | `size.rail.icon`, `component.rail.icon-radius-*` |
 | Rail item gap / top padding | 8 / 12 | `size.rail.gap`, `size.rail.padding-top` |
-| Rail pill | 8 wide (4 visible at the rail edge); 8 high unread, 20 hover, 40 selected | `component.rail.pill-*` |
+| Rail pill | 8 wide (4 visible at the rail edge); 8 high unread, 20 hover (`unread.pill`), 40 selected (`accent.indicator`, apricot) | `component.rail.pill-*` |
 | Rail separator | 32 × 2, centred | `size.rail.separator-*` |
 | Mention badge | 16 high, min 16 wide, 3 px cut-out ring, bottom trailing corner of the icon | `component.badge.*` |
-| Channel sidebar width | 240 (resizable 240–360, Mellow addition) | `size.sidebar.*` |
-| Sidebar header (server name) | 48 high, 16 horizontal padding, `elevation.low` below | `size.sidebar.header-height` |
-| Category header | 24 high, 16 top margin, 8 padding, 12 px chevron | `component.category.*` |
-| Channel row | 32 high, 2 gap (34 pitch), 8 margin and 8 padding, radius 4, 20 px icon, 6 px icon gap | `component.channel-row.*` |
+| Channel list width | 240 (resizable 240–360) | `size.sidebar.*` |
+| Sidebar header (server name) | 48 high, 16 horizontal padding, no line below (the ground continues) | `size.sidebar.header-height` |
+| Category header | 24 high, 16 top margin, 8 padding, 12 px chevron, sentence case | `component.category.*` |
+| Channel row | 32 high, 2 gap (34 pitch), 8 margin and 8 padding, radius 8, 20 px icon, 6 px icon gap, 15 px name | `component.channel-row.*` |
 | Channel unread pill | 8 × 8 (4 visible) at the sidebar's leading edge | `component.channel-row.unread-pill-*` |
-| User panel | 52 high, 8 padding, 32 px avatar, 32 px buttons | `size.user-panel.height`, `component.user-panel.*` |
-| Chat header | 48 high, 16 padding, 24 px icons, `elevation.low` below | `size.chat.header-height` |
+| User card | `size.dock.height` (56) high, `size.dock.margin` (8) from the navigator's bottom and sides, radius 12, `surface.sidebar-footer`, 8 padding, 36 px avatar, three 32 px buttons (microphone, headset, settings) | `size.dock.*`, `component.user-panel.*` |
+| Sheet | The conversation card: inset 8 on every side; radius 16; full-bleed and square below 816 | `size.sheet.inset`, `component.sheet.*` |
+| Chat header | 48 high, 16 padding, 24 px icons, inside the sheet, no line below | `size.chat.header-height` |
 | Chat pane minimum width | 480 | `size.chat.min-width` |
 | Message avatar | 40, inset 16 from the pane edge; text gutter 72; trailing padding 48 | `size.message.*`, `component.message.*` |
-| Message row | 2 px top and bottom padding, 22 px line height | `component.message.padding-block` |
-| Space between message groups | 16 by default (setting: 0, 4, 8, 16, 24) | `component.message.group-gap` |
+| Message row | 2 px top and bottom padding, 24 px line height | `component.message.padding-block`, `type.message` |
+| Space between message groups | 20 by default (setting: 0, 4, 8, 16, 20, 24) | `component.message.group-gap` |
 | Reply reference | 16 px avatar, 2 px spine from the avatar centre | `component.message.reply-*` |
 | Hover action bar | 32 high, 32 px buttons, 20 px icons, offset 16 above the row top and 16 from the trailing edge | `component.action-bar.*` |
 | Mention bar | 2 wide | `component.mention.bar-width` |
-| Composer | min 44 high (grows to 50 % of the pane), radius 8, 16 margin each side, 24 bottom band for the typing indicator | `component.composer.*` |
-| Jump bars | 32 high, radius 8 | `component.jump-bar.*` |
-| Member list width | 240 (resizable 240–320, Mellow addition) | `size.member-list.*` |
-| Member group header | 40 high, label at the bottom | `component.member-list.group-height` |
-| Member row | 42 high, 2 gap, 8 margin and padding, 32 px avatar, radius 4 | `component.member-row.*` |
+| Composer | Base row `size.dock.height` (56) high, `size.dock.margin` (8) from the sheet's bottom, grows upward to 50 % of the sheet; radius 16; 16 margin each side; the typing indicator's 24 px row sits above it | `size.dock.*`, `component.composer.*` |
+| Jump bars | 32 high, radius 12 | `component.jump-bar.*` |
+| Side sheet | 240 wide (resizable 240–320), radius 16, `surface.navigator`; docked beside the sheet from 1064 px, over it below | `component.side-sheet.*`, `size.member-list.*` |
+| Member group header | 40 high, label at the bottom, sentence case, count as a separate tabular number at the trailing end | `component.member-list.group-height` |
+| Member row | 42 high, 2 gap, 8 margin and padding, 32 px avatar, radius 8, 15 px name | `component.member-row.*` |
 | Status dot | 10 on 32 px avatars, 16 on 80 px avatars, 3 px ring | `component.status.*` |
 | Profile popover | 300 wide | `size.popover.profile-width` |
 | Quick switcher / small dialog | 570 / 440 wide | `size.dialog.*` |
 | Tooltip | max 190 wide, 8 × 12 padding, 5 px arrow | `component.tooltip.*` |
-| Context menu | 188–320 wide, 6 padding, 32 px items | `component.context-menu.*` |
+| Context menu | 188–320 wide, radius 12, 6 padding, 32 px items with radius 6 (concentric) | `component.context-menu.*` |
 
 #### Breakpoints
 
-The full layout needs 72 + 240 + 480 + 240 = 1032 px.
+The navigator needs 8 + 312 + 8 px beside a sheet of at least 480 px plus its trailing 8: 816 px. A docked side sheet adds 240 + 8: 1064 px. Both are computed from the tokens.
 
 | Window width | Layout |
 |---|---|
-| ≥ 1032 | Rail + channel sidebar + chat + member list (member list shown by default, toggled with `Ctrl+U`, remembered per server) |
-| 792–1031 | Rail + channel sidebar + chat; the member list opens as an overlay on the trailing edge |
-| 480–791 | Chat only; rail and channel sidebar open together as a drawer from the leading edge (header button, or `F6` into the navigation regions). This is a Mellow addition for half-screen tiles and tiling window managers; Discord's minimum width is larger. |
+| ≥ 1064 | Navigator + sheet; the side sheet docks beside the sheet when opened (member button or `Ctrl+U`, remembered per server; closed by default) |
+| 816–1063 | Navigator + sheet; the side sheet slides over the sheet's trailing side, with a scrim |
+| 480–815 | The sheet alone, full-bleed; the navigator opens as a drawer from the leading edge (header button, or `F6` into the navigation regions); the side sheet covers the sheet |
 
-#### Layout (≥ 1032, cozy, dark)
+#### Layout (≥ 1064, side sheet open, dark)
 
 ```
-  72         240                         flexible (≥ 480)                          240
-┌──────┬──────────────────┬───────────────────────────────────────────────┬──────────────────┐
-│ (M)  │ Rust Lyon      ⌄ │ # general │ Talk about anything      ⌕ ⚲ ☰   │                  │ 48
-│ ──── │──────────────────│───────────────────────────────────────────────│ MODERATORS — 2   │
-│▌(RL) │ ⌄ GENERAL        │                                               │ (A) Ana          │
-│ (MB)③│   # welcome      │ (A) Ana  Today at 14:02                       │ (L) Léo   ◐      │
-│▪(XY) │ ▌ # general      │     Has anyone tried Slint on Wayland?        │                  │
-│      │   # off-topic    │     It works for me with winit.               │ ONLINE — 12      │
-│  +   │ ⌄ PROJECTS       │ ──────────────────────────────────── [NEW] ── │ (P) Paul         │
-│      │▪  # mellow    ③  │▌(L) Léo  Today at 14:33          [↩ ⧉ ⋯]      │                  │
-│      │                  │▌    @Paul can you review the PR?              │ OFFLINE — 40     │
-│      │                  │ ┌───────────────────────────────────────────┐ │ (o) Zoé          │
-│      │──────────────────│ │ ⊕  Message #general                       │ │                  │ 44
-│      │ (P) Paul     ⚙   │ └───────────────────────────────────────────┘ │                  │
-│      │     Online       │  Ana is typing…                               │                  │ 24
-└──────┴──────────────────┴───────────────────────────────────────────────┴──────────────────┘
-                user panel 52
+ 8      72          240         8                flexible (≥ 480)                  8      240       8
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ ╭─────────────────────────────╮ ╭─────────────────────────────────────────────╮ ╭──────────────╮ │
+│ │ (M)  │ Rust Lyon         ⌄  │ │ # général │ Parle de tout…  [Aller à… Ctrl K] ☰│ │ Membres    ✕ │ │
+│ │ ──── │                      │ │                                             │ │              │ │
+│ │▌(RL) │ ⌄ Général         +  │ │ (A) Ana  Aujourd'hui à 14:02                │ │ Modération 2 │ │
+│ │ (LC) │   # bienvenue        │ │     Quelqu'un a testé Slint sous Wayland ?  │ │ (A) Ana      │ │
+│ │ (SF)②│ ▌ # général          │ │ ──────────────────────────────── (Nouveau)  │ │ (L) Léo  ◐   │ │
+│ │  +   │   # hors-sujet       │ │▌(Z) Zoé  Aujourd'hui à 14:33     [↩ ⧉ ⋯]    │ │              │ │
+│ │      │ ⌄ Projets            │ │▌    @Paul tu peux relire la PR… ?           │ │ En ligne   4 │ │
+│ │      │ ▪ # mellow        ①  │ │  ••• Léo écrit…                             │ │ (P) Paul     │ │
+│ │ ╭─────────────────────────╮ │ │ ╭─────────────────────────────────────────╮ │ │              │ │ 56
+│ │ │(P) Paul Carouge  🎙 🎧 ⚙ │ │ │ │ ⊕  Écrire dans #général                 │ │ │              │ │
+│ │ ╰─────────────────────────╯ │ │ ╰─────────────────────────────────────────╯ │ │              │ │
+│ ╰─────────────────────────────╯ ╰─────────────────────────────────────────────╯ ╰──────────────╯ │ 8 + 8
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+  navigator (surface.navigator)        the sheet (surface.chat)                     side sheet
 ```
 
 Legend:
 
-- `(M)` is Home with the Mellow mark; the separator below it is the rail separator.
-- In the rail, `▌` is the tall selected pill (40) and `▪` the short unread pill (8). `③` is a red mention badge.
-- In the sidebar, `▌` is the selected row (`state.selected`, heading text), `▪` the channel unread pill, `③` a mention badge.
-- `[NEW]` is the red "New" pill at the trailing end of the unread divider.
-- `[↩ ⧉ ⋯]` is the hover action bar (Reply, Copy text, More; Edit replaces Reply's neighbour on your own messages, see 5.4).
-- `▌` in the chat marks the 2 px apricot mention bar on a message that mentions you.
-- The header holds the channel icon and name (`type.heading-md`), a 1 × 24 divider, the topic (`type.body`, `text.muted`, single line, opens fully on click), then search (reserved slot, section 9), pinned messages (reserved slot) and the member list toggle.
+- `(M)` is Home with Melli; the separator below it is the strip separator.
+- In the server strip, `▌` is the tall selected pill (40, apricot) and the unread pill is 8 (`unread.pill`). `②` is a red mention badge.
+- In the channel list, `▌` is the selected row (`state.selected`, heading text), `▪` the channel unread pill, `①` a mention badge. Category labels are sentence case.
+- `(Nouveau)` is the apricot "New" pill at the trailing end of the apricot unread divider; `▌` in the chat marks the 2 px apricot mention bar.
+- `[↩ ⧉ ⋯]` is the hover action bar (Reply, Copy text, More; Edit replaces Reply on your own messages, see 5.4).
+- The header holds the channel icon and name (`type.heading-md`), a 1 × 24 divider, the topic (`type.body`, `text.muted`, single line), the "Aller à… Ctrl K" button that opens the quick switcher (5.10), and the member button that opens or closes the side sheet.
+- The user card and the composer's base row line up: same height (`size.dock.height`), same gap to the bottom of their card (`size.dock.margin`), cards with the same inset. The typing indicator sits above the composer.
+
+**When the composer grows** (several lines, a reply bar, an attachment tray), it grows upward from its base row: the base row keeps `size.dock.height` and stays aligned with the user card; only the composer's top edge moves, and the message list above it shrinks. The user card never grows with it. On desktop the base row is the field's last line with the attach button; on the web it is the same, laid out with `align-items: end`.
+
+Below 816 px the sheet is full-bleed (no inset, no radius) and the navigator opens as a drawer: the same card, full height, over a scrim. The side sheet then covers the sheet from the trailing edge.
 
 #### Connection dock
 
-Discord shows voice connection status in a panel directly above the user panel. Mellow uses the same slot (`surface.sidebar-footer`, same width) for connection and sync status (section 5.2). When voice arrives, it becomes the voice status panel without a layout change.
+Discord shows voice connection status in a panel directly above the user panel. Mellow uses the same slot (a card like the user card, `surface.sidebar-footer`, directly above it inside the navigator) for connection and sync status (section 5.2). When voice arrives, it becomes the voice status panel without a layout change.
 
 #### Density
 
@@ -778,9 +848,9 @@ The web client ([ADR-0019](docs/adr/0019-web-client-served-by-the-server-binary.
 
 | Window width | Layout |
 |---|---|
-| ≥ 1032 | As on desktop: rail, channel sidebar, chat, member list (toggled from the chat header) |
-| 792–1031 | Rail, channel sidebar and chat; the member list opens over the chat from the trailing edge, with a scrim |
-| < 792 (phones included) | Chat only; a "Open servers and channels" button (`list` icon) at the leading end of the chat header opens rail and sidebar as a drawer from the leading edge, leaving `size.mobile.panel-peek` of chat visible; choosing a channel closes it and focuses the composer |
+| ≥ 1064 | As on desktop: navigator, sheet, and the side sheet docked when opened |
+| 816–1063 | Navigator and sheet; the side sheet opens over the sheet from the trailing edge, with a scrim |
+| < 816 (phones included) | The sheet alone; an "Open servers and channels" button (`list` icon) at the leading end of the chat header opens the navigator as a drawer from the leading edge, leaving `size.mobile.panel-peek` of the sheet visible; choosing a channel closes it and focuses the composer |
 
 ```
 Phone (< 792)                     Drawer open
@@ -808,7 +878,7 @@ Phone (< 792)                     Drawer open
 
 ### 4.4 Admin web UI (server-rendered HTML + htmx)
 
-Purpose: instance administrators check health and manage users, servers, invites and settings. Usage is occasional, often from a laptop, sometimes from a phone. The layout reuses Discord's settings screen, so admins recognise it: a navigation column on `surface.sidebar` and content on `surface.chat`, with the same palette, font and uppercase section labels.
+Purpose: instance administrators check health and manage users, servers, invites and settings. Usage is occasional, often from a laptop, sometimes from a phone. The layout reuses Discord's settings screen, so admins recognise it: a navigation column on `surface.sidebar` and content on `surface.chat`, with the same palette, font and sentence-case section labels.
 
 ```
 Wide (≥ 960 px)                                   Narrow (< 960 px)
@@ -850,7 +920,7 @@ Common state rules for every screen:
 
 Flow: Welcome → Instance address → Instance card → Sign in or Create account → (first server or invite) → Home.
 
-All steps use Discord's authentication layout: a centred card (480 px wide, `surface.chat`, `radius.sm`, `space.xl` padding, `elevation.high`) on a `surface.rail` backdrop, without illustration. Titles use `type.heading-xl`, field labels `type.category`.
+All steps use one centred card (480 px wide, `surface.chat`, `radius.xl`, `space.xl` padding, `elevation.high` in light) on the ground (`surface.rail`). This is the one screen where Melli is the hero: Melli sits above the title at `component.auth-card.melli-size` (96 px), animated in its current state (`connecting` while the instance is checked, `connection-lost` when it cannot be reached, otherwise `idle`), half outside the card's top edge so the card and the cloud read as one object. Titles use `type.heading-xl`, field labels `type.category` (sentence case). The card opens with the dialog transition (2.8); nothing else moves.
 
 **Welcome (first run)**: title "Chat that you can host yourself." One sentence: "Connect to a Mellow instance to sign in or create an account." Primary button "Connect to an instance". Link button "I have an invite link".
 
@@ -879,18 +949,20 @@ All steps use Discord's authentication layout: a centred card (480 px wide, `sur
 
 **Adding another instance**: the `+` at the bottom of the rail opens a menu: "Create a server", "Join with an invite", "Connect another instance". The connect flow is the same, in a dialog on desktop and full screen on Android.
 
-### 5.2 Server rail
+### 5.2 Server strip (the rail)
+
+The rail is now the **server strip** inside the navigator card (4.2): same items, sizes, pills and badges, on `surface.navigator` instead of a column of its own.
 
 Contents, top to bottom: Home (Mellow mark; mention badge aggregating conversations from all instances), unread conversations as avatars (as on Discord, shown only while unread), rail separator, the servers of the first instance, then for each further instance a separator, its instance icon and its servers, then `+` (add) in green.
 
 | Element state | Presentation |
 |---|---|
 | Rest | Server artwork in a 48 px circle; servers without artwork show initials in `text.normal` on `surface.chat` |
-| Hover / focus | Morph to squircle (radius 16); icons without artwork switch to `accent.fill` with `text.on-accent`; pill grows to 20; tooltip with the server name (and instance when ≥ 2) appears immediately, to the trailing side |
+| Hover / focus | Settle into the squircle (radius 16, `motion.duration.settle`, settle curve); icons without artwork switch to `state.selected` with `text.heading`; pill grows to 20; tooltip with the server name (and instance when ≥ 2) appears immediately, to the trailing side |
 | Unread messages | Pill 8 high |
 | Mentions | Red badge with the count (`danger.fill`, `text.on-danger`, 3 px ring of `surface.rail`) at the bottom trailing corner; "99+" beyond 99; also unread pill |
-| Selected | Squircle, pill 40 high; icons without artwork stay on `accent.fill` |
-| Home selected | Squircle on `accent.fill` behind Melli, pill 40 |
+| Selected | Squircle, apricot pill 40 high (`component.rail.pill-color-selected`); icons without artwork stay on `state.selected` |
+| Home selected | Squircle on `accent.fill` behind Melli, apricot pill 40 |
 | Home states | At rest Home is Melli alone on the rail, with no fill; hover, focus and selection fill it apricot and switch Melli's marks to ink. Melli shows `connection-lost` while reconnecting, `connecting` while connecting, `notification` while a direct message is unread, otherwise `idle` (2.10). The pill and the accessible name ("Direct messages, unread") still carry unread on their own; the connection notice says what the connection is doing |
 | Muted server | No unread pill; mention badges still show, because direct mentions are never muted |
 | Instance offline | Its icons are shown at 60 % opacity with a tooltip "chat.example.org is unreachable. Showing saved messages." and the instance icon gets an offline status dot |
@@ -924,7 +996,7 @@ Header (48 px): server name (`type.heading-md`, `text.heading`) with a chevron o
 | Selected | `state.selected` background, `text.heading` |
 | Muted | `text.channel-muted`, no unread pill or heading colour; mention badges still show |
 | Locked (cannot send) | Lock icon (Phosphor `lock`, Fill) replaces `#`, with the same size and colour as `#` in every row state; the accessible name gets ", read-only" (for example "announcements, read-only, unread") |
-| Category | `type.category` (uppercase), chevron, collapsible by click or `Left`/`Right`; collapsed categories still show unread and selected channels, as on Discord |
+| Category | `type.category` (sentence case, as the server admin typed it), chevron, collapsible by click or `Left`/`Right`; collapsed categories still show unread and selected channels, as on Discord |
 
 Channel context menu: Mark as read, Mute channel, Notification settings, Copy channel link, Edit channel (if allowed), Delete channel (danger, if allowed).
 
@@ -934,7 +1006,18 @@ States:
 - Empty server (no channels, user can manage): "No channels yet" + "Create a channel". User cannot manage: "No channels you can see yet. Ask a moderator for access."
 - Error: inline banner "Couldn't load channels for Rust Lyon." with "Try again", while keeping cached channels.
 
-User panel (52 px, `surface.sidebar-footer`): avatar 32 with status dot, display name (`type.user-panel-name`), a second line with the custom status or `@username` (and `@instance` when ≥ 2 instances) in `text.muted`, and a settings button. Clicking the avatar or name opens the status menu (Online, Idle, Do not disturb, Invisible, custom status). The settings button opens the user settings screen (5.9); closing it returns focus to the button (to the composer when the sidebar is hidden below 792 px). While an app update is available or ready to install, the button carries a 10 px dot in `component.user-panel.update-badge` (`positive.fill`, 3 px cut-out ring in the panel colour, top trailing corner, like presence dots) and its accessible label becomes "User settings, update available"; the dot is a shape on the button, so it does not rely on colour alone.
+User card (`size.dock.height`, `surface.sidebar-footer`, radius 12, across the whole navigator at its bottom, aligned with the composer, 4.2): avatar 36 with status dot, display name (`type.user-panel-name`), a second line with the custom status or `@username` (and `@instance` when ≥ 2 instances) in `text.muted`, then three 32 px buttons: microphone, headset, settings. Clicking the avatar or name opens the status menu (Online, Idle, Do not disturb, Invisible, custom status). The settings button opens the user settings screen (5.9); closing it returns focus to the button (to the composer when the navigator is a drawer). While an app update is available or ready to install, the settings button carries a 10 px dot in `component.user-panel.update-badge` (`positive.fill`, 3 px cut-out ring in the card colour, top trailing corner, like presence dots) and its accessible label becomes "User settings, update available" (« Paramètres utilisateur, mise à jour disponible »); the dot is a shape on the button, so it does not rely on colour alone.
+
+**Microphone and headset** (Discord's convention, ADR-0022):
+
+| Control | Rest | Muted | Accessible name (stays the same) | Tooltip at rest / muted |
+|---|---|---|---|---|
+| Microphone (`microphone`) | `text.secondary` icon | The icon with a 2 px diagonal strike-through cut out of the card colour, both in `component.user-panel.toggle-muted-icon` (`text.danger`) | "Mute microphone" / « Couper le micro », with `aria-pressed` (desktop: `accessible-checked`) | "Mute microphone" / "Unmute microphone" · « Couper le micro » / « Réactiver le micro » |
+| Headset (`headphones`) | `text.secondary` icon | Same treatment | "Deafen" / « Couper le son », with `aria-pressed` | "Deafen" / "Undeafen" · « Couper le son » / « Réactiver le son » |
+
+- Deafening also mutes the microphone (it shows muted); undeafening restores the microphone to what it was before, as on Discord. Shortcuts: `Ctrl+Shift+M` (microphone) and `Ctrl+Shift+D` (headset), as on Discord.
+- The strike-through and the colour change together, so the state never relies on colour alone; `text.danger` reaches 6.40:1 (dark) and 5.74:1 (light) on the card.
+- **Until voice ships** (ROADMAP: after the web client, with its own ADR), both buttons are hidden in released builds: a toggle with no effect would mislead. The card keeps its height and layout so nothing moves when they appear. The mockup shows them toggling.
 
 ### 5.4 Message list
 
@@ -972,8 +1055,8 @@ Discord lets people drag-select across several messages; Slint cannot (ADR-0010)
 
 #### Unread divider and jump bars
 
-- When opening a channel with unread messages, the list scrolls to the first unread message and shows the divider: a 1 px `unread.line` rule with a red "New" pill (rendered uppercase, `type.badge`) at its trailing end, as on Discord. The accessible name is "New messages since 14:32".
-- A bar pinned to the top of the pane, in `accent.fill` with `text.on-accent` (Discord's blurple bar): "12 new messages since 14:32" and "Mark as read" (`Esc`). It disappears when the divider has been seen and the user reaches the bottom.
+- When opening a channel with unread messages, the list scrolls to the first unread message and shows the divider: a 1 px `unread.line` rule (apricot) with an apricot "New" pill (`type.badge`, `text.on-accent`, fully rounded) at its trailing end. Discord's divider is red; Mellow's is apricot because new messages are "now", and red stays for danger and mention counts (ADR-0022). The accessible name is "New messages since 14:32".
+- A bar pinned to the top of the sheet, in `accent.fill` with `text.on-accent`, `radius.md`, sliding in with the jump-bar transition (2.8): "12 new messages since 14:32" and "Mark as read" (`Esc`). It disappears when the divider has been seen and the user reaches the bottom.
 - When the user scrolls up, a bar appears directly above the composer, in `accent.fill`: "You're viewing older messages" and "Jump to present" (or "Jump to present · 3 new" when new messages arrived). `End` (list focused) or `Esc` (composer focused) jumps. The list never auto-scrolls while the user reads older messages.
 
 #### Replies
@@ -1029,7 +1112,7 @@ Desktop, until the More menu exists: your own messages show Edit, Reply, Copy te
 
 ### 5.5 Composer
 
-Layout: Discord's composer, a `surface.input` field with `radius.md`, min 44 px, 16 px side margins and a 24 px band below for the typing indicator. Attach button (`⊕`, 24 px) on the leading side; emoji button on the trailing side when the emoji picker ships (section 9). Desktop has no send button by default, as on Discord (`Enter` sends); the accessibility setting "Show send button" adds one. Android always shows the send button.
+Layout: a `surface.input` field with `radius.lg` whose base row is `size.dock.height` (56) high, `size.dock.margin` (8) above the sheet's bottom and aligned with the user card (4.2), 16 px side margins, with the typing indicator's 24 px row above it (not below, as on Discord, so the composer and the user card share a bottom edge). Attach button (`⊕`, 24 px) on the leading side; emoji button on the trailing side when the emoji picker ships (section 9). Desktop has no send button by default, as on Discord (`Enter` sends); the accessibility setting "Show send button" adds one. Android always shows the send button.
 
 - Placeholder: "Message #general", "Message @Ana" in conversations, or "Message #general on chat.example.org" when ≥ 2 instances are connected.
 - Markdown is typed as plain text (the composer field cannot render inline styles, section 9) and rendered in messages as in 5.4.
@@ -1049,7 +1132,7 @@ Layout: Discord's composer, a `surface.input` field with `radius.md`, min 44 px,
   - Send works with text, files, or both. While a file is still uploading, Enter does not send and the error line says "Your files are still uploading. Send again once they're done."; the phone send button is dimmed. Sending clears the tray; failed items are dropped with it.
   - Each channel keeps its own tray, like its draft.
 - Length: a counter appears at 90 % of the instance limit ("3,620 / 4,000"); beyond the limit it turns `text.danger`, sending is blocked and the field's accessible description says "Message is 120 characters too long."
-- Typing indicator: in the 24 px band, `type.typing`, `text.secondary`, with three dots: "Ana is typing…", "Ana and Léo are typing…", "Ana, Léo and 2 others are typing…", "Several people are typing…" (beyond 5). It is not announced by screen readers.
+- Typing indicator: in its 24 px row above the composer (above the reply bar when there is one), `type.typing`, `text.secondary`, with three dots: "Ana is typing…", "Ana and Léo are typing…", "Ana, Léo and 2 others are typing…", "Several people are typing…" (beyond 5); in French « Ana écrit… », « Ana et Léo écrivent… », « Ana, Léo et 2 autres écrivent… », « Plusieurs personnes écrivent… ». The row keeps its height when empty, so the composer never jumps. It is not announced by screen readers.
 - Read-only channel (no "Send messages"): the field is replaced, as on Discord, by "You do not have permission to send messages in this channel." in `component.composer.locked-text` (`text.muted`, 4.80 dark / 5.51 light on `surface.input`) on the same `surface.input` field, same size and position, without the attach button. It is plain text for screen readers, never focused; nothing that would focus the composer (a reply starting, "Jump to present", "Try again", closing a dialog) moves focus there. The reply bar never shows, and `Up` to edit is unavailable since it lives in the composer. At narrow widths the sentence wraps and the field grows to fit it.
 - Offline: the composer stays usable; sent messages are queued (5.4).
 - Draft: unsent text and reply state are kept per channel across channel switches and app restarts.
@@ -1063,11 +1146,14 @@ Layout: Discord's composer, a `surface.input` field with `radius.md`, min 44 px,
 - Desktop, until "New message" and the quick switcher exist: the header reads "Direct messages" as plain text (no menu), the list starts with the "Direct messages" category header (no `+`), rows share the channel rows' colours, unread pill and selection, and the empty state has no button, since conversations start from a member's profile popout. In a conversation the chat header shows the `at` icon and the name, the hero shows the name as its title and "This is the beginning of your direct message history with @Ana.", errors read "Couldn't load messages with @Ana.", and the member list and its toggle are hidden.
 - Error and offline: as in 5.4.
 
-### 5.7 Member list and profile
+### 5.7 Member list and profile (the side sheet)
 
-- Groups: hoisted roles in role order ("Moderators — 2"), then "Online — 12", then "Offline — 40", in `type.category` (uppercase), `text.muted`, 40 px headers.
+The member list lives in the **side sheet** (`component.side-sheet.*`): a card on `surface.navigator` with radius 16, opened by the member button in the chat header or `Ctrl+U`, closed by the same button, its own close button (« Fermer ») or `Esc` when focus is inside it. It is closed by default and remembered per server. From 1064 px it docks beside the sheet and the sheet narrows; below, it slides over the sheet's trailing side with a scrim (focus moves into it and returns to the member button on close). Choosing a member shows their profile in the same side sheet, with a back button (« Retour aux membres »); the profile popout of the classic layout is not used. Later, threads and pinned messages open in the side sheet too. It slides in from the trailing edge over `motion.duration.slow` with the enter curve; reduced motion makes it appear at once.
+
+
+- Groups: hoisted roles in role order, then "Online", then "Offline", in `type.category` (sentence case), `text.muted`, 40 px headers, with the member count as a separate tabular number at the trailing end ("Moderators" … "2"), not joined with a dash. Accessible name: "Moderators, 2 members".
 - Row (42 px): avatar 32 with status dot, display name (`type.member-name`, role colour adjusted, otherwise `text.secondary`; `text.normal` on hover), activity or custom status on a second line in `type.body-sm`, `text.muted`.
-- Offline members: avatar at 50 % opacity, text at full contrast (Discord dims the whole row; see 2.3).
+- Offline members: avatar at 50 % opacity, text at full contrast (Discord dims the whole row, which fails AA for the name).
 - Accessible name: "Ana, online, Moderator, custom status: Reviewing PRs".
 - Large servers: offline members are not listed above 1,000 members ("Offline members are hidden in large servers.").
 - Loading: row skeletons. Error: "Couldn't load members." with "Try again".
@@ -1110,7 +1196,7 @@ Same full-screen layout as server settings. Sections: My account (per instance),
 - Instances: list with status (Connected, Reconnecting, Signed out), "Sign out", "Connect another instance".
 - About: version, open-source licences (including Twemoji attribution), link to the source code (AGPL-3.0 requires offering it), instance versions.
 
-Desktop, first iteration (`UserSettingsScreen` in `user_settings.slint`, `component.settings.*`): the screen covers the whole window and hides the shell, so `Tab` stays inside it and screen readers do not reach the panes behind. The navigation column (218 px, 60 px top padding, 32 px items with a 2 px gap, `type.channel-name`) sits right-aligned in a `surface.sidebar` area that grows with the window; the content area grows too, and the page is capped at 740 px with 60 px top and 40 px side padding (16 px below 792 px). The close button (36 px circle, 2 px `text.secondary` border, 18 px `x` icon) with "Esc" under it sits 24 px after the page (8 px below 792 px). Navigation: section label "App settings" (rendered "APP SETTINGS" with `type.category`), "About" (selected until My account arrived, below), a separator, then "Sign out" (danger, last), which signs out at once and closes the screen, as the old menu item did. "Sign out" fills `danger.fill` with `text.on-danger` on hover, like danger menu items, because `text.danger` on `state.hover` is 4.34:1 in the light theme; keyboard focus shows only the ring.
+Desktop, first iteration (`UserSettingsScreen` in `user_settings.slint`, `component.settings.*`): the screen covers the whole window and hides the shell, so `Tab` stays inside it and screen readers do not reach the panes behind. The navigation column (218 px, 60 px top padding, 32 px items with a 2 px gap, `type.channel-name`) sits right-aligned in a `surface.sidebar` area that grows with the window; the content area grows too, and the page is capped at 740 px with 60 px top and 40 px side padding (16 px below 792 px). The close button (36 px circle, 2 px `text.secondary` border, 18 px `x` icon) with "Esc" under it sits 24 px after the page (8 px below 792 px). Navigation: section label "App settings" (`type.category`, sentence case), "About" (selected until My account arrived, below), a separator, then "Sign out" (danger, last), which signs out at once and closes the screen, as the old menu item did. "Sign out" fills `danger.fill` with `text.on-danger` on hover, like danger menu items, because `text.danger` on `state.hover` is 4.34:1 in the light theme; keyboard focus shows only the ring.
 
 Keyboard and screen readers: focus moves to the selected section ("My account") when the screen opens; `Esc` closes it from anywhere inside (after closing an open My account form). The navigation is a navigation landmark labelled "User settings" holding one tab list per group ("User settings", "App settings"); the page is a tab panel labelled with the section name; the close button is labelled "Close settings" with the description "Esc". Update status changes are announced through a polite live region that exists from the start.
 
@@ -1129,7 +1215,7 @@ About page: the page title "About" (`type.heading-lg`), then "Mellow 0.1.0" (`ty
 
 The button stays in place while busy, so keyboard focus is not lost; when the status becomes unsupported and the button disappears, focus moves to the screen itself so `Esc` still works. Still to come on this page: licences and the source code link (both required above).
 
-**My account, first iteration (2026-10-21, desktop and web)**: the default section, under the navigation label "User settings" (rendered "USER SETTINGS"); About moves under "App settings", with a separator between the groups and before "Sign out". The navigation is otherwise unchanged.
+**My account, first iteration (2026-10-21, desktop and web)**: the default section, under the navigation label "User settings"; About moves under "App settings", with a separator between the groups and before "Sign out". The navigation is otherwise unchanged.
 
 ```
 My account                                         (x)
@@ -1157,7 +1243,7 @@ Editing one field (the row turns into its form):
 └──────────────────────────────────────────────┘
 ```
 
-- The card is `component.settings.account-card-*`: `surface.sidebar` on the `surface.chat` page, `radius.md`, 16 px padding, 24 px between rows. Each row is an uppercase label (`type.category`, `text.muted`) over its value (`type.body-lg`, `text.normal`), with a Secondary "Edit" button at the trailing end, as on Discord. The username shows as `@paul`. The email is read-only (no Edit button): changing it needs a verification flow that does not exist yet.
+- The card is `component.settings.account-card-*`: `surface.sidebar` on the `surface.chat` page, `radius.md`, 16 px padding, 24 px between rows. Each row is a sentence-case label (`type.category`, `text.muted`) over its value (`type.body-lg`, `text.normal`), with a Secondary "Edit" button at the trailing end, as on Discord. The username shows as `@paul`. The email is read-only (no Edit button): changing it needs a verification flow that does not exist yet.
 - "Edit" turns the row into its form in place, prefilled: Display name (one field, helper "Up to 32 characters. This is the name people see in chat.", Save); Username (the username, helper "2 to 32 characters: lowercase letters, digits, dots and underscores.", then "Current password", as Discord asks for it; Save). "Change password" (Primary) turns into a card with "Current password", "New password" (helper "At least 10 characters.") and "Confirm new password" (helper "Doesn't match the new password." while it differs), then Cancel and "Change password". Password fields have the show/hide toggle; on the web they use `autocomplete="current-password"` / `"new-password"`.
 - One form is open at a time: opening another discards the first. Save stays disabled until the form can succeed by the client's checks (display name not empty and changed; username changed and a password typed; new password of at least 10 characters, confirmation equal); the helpers say why. `Enter` in a field saves when Save is enabled.
 - Busy: fields turn read-only (dimmed on desktop), Cancel and every Edit button are disabled, and Save reads "Saving…" ("Changing password…"); disabled buttons stay focusable.
@@ -1193,7 +1279,7 @@ a picture.                           └─────────────�
 
 ### 5.10 Quick switcher
 
-`Ctrl+K` (or "Find or start a conversation") opens Discord's quick switcher: a 570 px dialog on `surface.popover`, `elevation.high`, with a large input ("Where would you like to go?", `type.heading-lg`) and results grouped by type (conversations, channels, servers), each with an icon, the server or instance name in `text.muted` and an unread or mention indicator. Prefixes filter as on Discord: `@` people, `#` text channels, `*` servers. Arrows move, `Enter` opens, `Esc` closes. Empty: "No results for 'anx'. Check the spelling or search another server." The result list is a listbox; the count is announced politely ("5 results").
+`Ctrl+K`, the "Aller à… Ctrl K" button in the chat header ("Go to… Ctrl K"), or "Find or start a conversation" opens the quick switcher, Mellow's fastest way around (« Où veux-tu aller ? »): a 570 px dialog on `surface.popover`, `elevation.high`, with a large input ("Where would you like to go?", `type.heading-lg`) and results grouped by type (conversations, channels, servers), each with an icon, the server or instance name in `text.muted` and an unread or mention indicator. Prefixes filter as on Discord: `@` people, `#` text channels, `*` servers. Arrows move, `Enter` opens, `Esc` closes. Empty: "No results for 'anx'. Check the spelling or search another server." The result list is a listbox; the count is announced politely ("5 results").
 
 ### 5.11 Admin web dashboard
 
@@ -1214,9 +1300,9 @@ All components use tokens only (component tier first), support light and dark th
 
 | # | Component | Variants | States | Notes |
 |---|---|---|---|---|
-| 6.1 | Button | Primary (`accent.fill`), Secondary (`neutral.fill`), Danger (`danger.fill`), Link (text only, `text.link`) · sizes 38 (default), 32 (small), 44 (large and web), 48 on Android | Default, hover, pressed, focus, disabled, loading (label kept, progress inline) | `radius.xs`, `type.button`. One primary button per view. Labels are verbs ("Save changes"). Desktop: disabled and loading buttons dim their fill and label to `button.disabled-opacity` (the focus ring keeps full contrast) and stay focusable, so focus is not lost while an action runs. |
+| 6.1 | Button | Primary (`accent.fill`), Secondary (`neutral.fill`), Danger (`danger.fill`), Link (text only, `text.link`) · sizes 40 (default), 32 (small), 44 (large and web), 48 on Android | Default, hover, pressed, focus, disabled, loading (label kept, progress inline) | `radius.sm`, `type.button`. One primary button per view. Labels are verbs ("Save changes"). Desktop: disabled and loading buttons dim their fill and label to `button.disabled-opacity` (the focus ring keeps full contrast) and stay focusable, so focus is not lost while an action runs. |
 | 6.2 | IconButton | Standard, Toggle, Danger | Same as Button, plus selected | `text.secondary` icon, `state.hover` background; always a tooltip and an accessible label; target ≥ `size.hit.*`. |
-| 6.3 | TextField | Single line, Multiline, Password (show/hide), Search (with clear) | Default, hover, focus, filled, error (message below, `text.danger` icon and text), disabled, read-only | `surface.field` with 1 px `border.strong`, `radius.xs`; uppercase label above, never placeholder-only. |
+| 6.3 | TextField | Single line, Multiline, Password (show/hide), Search (with clear) | Default, hover, focus, filled, error (message below, `text.danger` icon and text), disabled, read-only | `surface.field` with 1 px `border.strong`, `radius.sm`; sentence-case label above, never placeholder-only. |
 | 6.4 | Select | Single select | Closed, open, focus, error, disabled | Options use the ContextMenu visuals. |
 | 6.5 | Checkbox, Switch, Radio group | — | Off, on, mixed (checkbox), focus, disabled | Switch on: `positive.fill` track with a check glyph, as on Discord; off: `neutral.fill` with a cross glyph, so state never relies on colour. |
 | 6.6 | SegmentedControl | 2–4 options; tri-state permission (Allow / Inherit / Deny) | Selected, focus, disabled | Icon + text in each segment. |
@@ -1228,7 +1314,9 @@ All components use tokens only (component tier first), support light and dark th
 | 6.12 | RailPill | Unread (8), hover (20), selected (40) | — | `unread.pill`; height animates over `motion.duration.base`. |
 | 6.13 | ChannelRow | Text channel, category header | Read, hover, unread, mentions, selected, muted, locked, focus, dragging | `component.channel-row.*`, `component.category.*`. |
 | 6.14 | ConversationRow | 1:1, group | Read, unread, selected, offline instance | Instance label when ≥ 2 instances. |
-| 6.15 | UserPanel | — | Default, status menu open, offline | `component.user-panel.*`. |
+| 6.15 | UserPanel (user card) | With or without voice controls | Default, status menu open, offline, microphone muted, deafened, update available | `size.dock.*`, `component.user-panel.*`; aligned with the composer's base row (4.2); voice toggles hidden until voice ships (5.3). |
+| 6.15a | Navigator | Card (wide), drawer (narrow) | Default, drawer open | `component.navigator.*`: server strip, channel list, user card. |
+| 6.15b | SideSheet | Docked, overlay | Closed, members, profile | `component.side-sheet.*`; `Ctrl+U`; focus moves in and back when it overlays. |
 | 6.16 | ChatHeader | Channel, conversation, group | Topic collapsed / expanded | `component.chat-header.*`. |
 | 6.17 | MessageRow | Group start (cozy/compact), continuation, system message (joins, pins) | Default, hover, focus, mentioned, highlighted (jump target), selecting text, pending, queued, failed, editing | Accessible name includes the author even on continuations. |
 | 6.18 | MessageBlock | Paragraph, heading, subtext, quote, code block, list, spoiler | Code block: hover shows "Copy code" | Rendered per block (5.4). |
@@ -1242,14 +1330,14 @@ All components use tokens only (component tier first), support light and dark th
 | 6.26 | Composer | Channel, conversation, edit inline, read-only | Empty, typing, with attachments, uploading, too long, offline, disabled | Includes reply bar and attachment tray. |
 | 6.27 | AttachmentTray item | Image, file | Uploading, uploaded, error, spoiler on | "Add a description" for alt text. Web: `AttachmentTray.svelte`, `component.composer.tray-*`; Remove uses the hover-bar button. |
 | 6.27a | DropOverlay | Channel, conversation | Shown while files are dragged over the chat pane | `component.drop-overlay.*`; hidden from assistive technologies, never focused. |
-| 6.28 | TypingIndicator | 1, 2, 3–5, many | Static under reduced motion | Not announced to screen readers. |
+| 6.28 | TypingIndicator | 1, 2, 3–5, many | Static under reduced motion | Above the composer; keeps its row when empty. Not announced to screen readers. |
 | 6.29 | Autocomplete popover | Users, channels, emoji | Results, no results ("No one called anx in Rust Lyon"), loading | Listbox semantics. |
 | 6.30 | QuickSwitcher | — | Results, no results, loading | 5.10. |
 | 6.31 | MemberRow | With activity, without | Hover, focus, offline (avatar 50 %) | `component.member-row.*`. |
 | 6.32 | ProfilePopover | Self, other, other with moderation | Loading, error | `surface.popover`, `elevation.high`. |
-| 6.33 | ContextMenu | With icons, with shortcut hints, with danger items (last, separated), submenus | Item hover (`accent.fill`), danger hover (`danger.fill`); keyboard focus shows only the focus ring, because the first item takes focus when the menu opens and a menu opened with the mouse must not show a filled danger item; disabled with reason | `component.context-menu.*`; arrow keys, type-ahead, `Esc`. Slint has no shadow tokens, so the menu gets a 1 px `context-menu.border` outline instead of `elevation.high`; the keyboard focus ring is drawn `focus-ring.offset` outside the item so it stays visible on the danger fill (`ContextMenuItem` in `primitives.slint`). |
+| 6.33 | ContextMenu | With icons, with shortcut hints, with danger items (last, separated), submenus | Item hover (`state.selected` with `text.heading`; apricot is kept for 'you' and 'now'), danger hover (`danger.fill`); keyboard focus shows only the focus ring, because the first item takes focus when the menu opens and a menu opened with the mouse must not show a filled danger item; disabled with reason | `component.context-menu.*`; arrow keys, type-ahead, `Esc`. Slint has no shadow tokens, so the menu gets a 1 px `context-menu.border` outline instead of `elevation.high`; the keyboard focus ring is drawn `focus-ring.offset` outside the item so it stays visible on the danger fill (`ContextMenuItem` in `primitives.slint`). |
 | 6.34 | Tooltip | Default, rail (instant, trailing side) | Shown after `motion.delay.tooltip` hover or immediately on focus | `component.tooltip.*`; never the only copy of essential information. |
-| 6.35 | Dialog | Standard, destructive, typed confirmation | Default, submitting, error inline | `surface.chat` body, `surface.sidebar` footer with buttons; focus trapped; `Esc` closes (except while submitting); focus returns to the trigger. Bottom sheet on Android compact. |
+| 6.35 | Dialog | Standard, destructive, typed confirmation | Default, submitting, error inline | One `surface.popover` card, `radius.lg`, no separate footer band; opens with the dialog transition (2.8); focus trapped; `Esc` closes (except while submitting); focus returns to the trigger. Bottom sheet on Android compact. |
 | 6.36 | Toast / Snackbar | Info, success, with action ("Undo") | Auto-dismiss after 5 s (paused on hover/focus), dismissible | Polite live region; never for errors that need action. |
 | 6.37 | NoticeBar | Info (`accent.fill`), warning (`warning.fill`), danger (`danger.fill`), success (`positive.fill`) | With / without action, dismissible or persistent | Full-width strip at the top of the window, as Discord's notices. |
 | 6.38 | ConnectionDock | Hidden, reconnecting, offline, back online, session expired | — | Future voice slot. |
@@ -1257,7 +1345,7 @@ All components use tokens only (component tier first), support light and dark th
 | 6.40 | Badge | Count (mention), "New" pill | — | `component.badge.*`; "99+" cap; accessible text "3 mentions". |
 | 6.41 | RoleChip | With colour dot | Removable | Colour dot plus name, never colour alone. |
 | 6.42 | PermissionRow | Switch (role), tri-state (channel override) | Sensitive marker, locked | Plain-language description. |
-| 6.43 | SettingsNav | Desktop column, Android list, admin web, web client (column; list page on phones) | Selected, focus, danger item | Discord settings look; 44 px items on the admin web. Desktop and web client: `component.settings.nav-*`, 32 px items (44 px under a coarse pointer on the web); groups with an uppercase label, separated by a divider; the danger item fills `danger.fill` on hover (see 5.9). |
+| 6.43 | SettingsNav | Desktop column, Android list, admin web, web client (column; list page on phones) | Selected, focus, danger item | Discord settings look; 44 px items on the admin web. Desktop and web client: `component.settings.nav-*`, 32 px items (44 px under a coarse pointer on the web); groups with a sentence-case label, separated by a divider; the danger item fills `danger.fill` on hover (see 5.9). |
 | 6.44 | UnsavedChangesBar | — | Visible, attention (leave attempted), saving, error | `elevation.high`. |
 | 6.45 | Tabs | Standard | Selected, focus | Arrow keys move between tabs. |
 | 6.46 | PaneResizeHandle | Vertical | Hover, dragging, focus | Keyboard resize. |
@@ -1272,7 +1360,7 @@ Before adding a component, check this list. A new component is added here first,
 
 ## 7. Accessibility
 
-Target: WCAG 2.2 level AA on all three surfaces, verified with real assistive technologies. Where Discord's look and AA conflict, AA wins with the smallest visible change (section 2.3).
+Target: WCAG 2.2 level AA on all three surfaces, verified with real assistive technologies. Every colour pair is checked by the token generator (2.3); where a convention borrowed from Discord conflicts with AA, AA wins.
 
 ### 7.1 Contrast and colour
 
@@ -1294,7 +1382,8 @@ Target: WCAG 2.2 level AA on all three surfaces, verified with real assistive te
 | Global | `Esc` | Close the topmost popover, menu or dialog; otherwise mark the channel as read |
 | Global | `Shift+Esc` | Mark the whole server as read |
 | Global | `Shift+PageUp` | Jump to the oldest unread message |
-| Global | `Ctrl+U` | Toggle member list |
+| Global | `Ctrl+U` | Open or close the side sheet (members) |
+| Global | `Ctrl+Shift+M` / `Ctrl+Shift+D` | Mute microphone / deafen (once voice ships) |
 | Global | `Ctrl+Shift+T` | New message (conversation) |
 | Global | `Ctrl+Shift+U` | Upload a file |
 | Global | `Ctrl+E` | Emoji picker (reserved until it ships) |
@@ -1324,9 +1413,10 @@ Desktop (Slint with AccessKit: VoiceOver, NVDA/Narrator, Orca):
 
 - Every interactive element sets `accessible-role`, `accessible-label` and, where useful, `accessible-description`, `accessible-checked` or `accessible-value`.
 - Regions have names: "Servers", "Channels in Rust Lyon", "Messages in #general", "Message composer", "Members of Rust Lyon".
-- Message accessible name pattern: "[Mentions you.] Ana, Moderator, today at 14:32: Has anyone tried Slint on Wayland? Edited. 2 attachments. Replying to Léo." Continuation messages repeat the author.
+- Message accessible name pattern: "[Mentions you.] Ana, Moderator, today at 14:32: Has anyone tried Slint on Wayland? Edited. 2 attachments. Replying to Léo." In French: « [Te mentionne.] Ana, Modération, aujourd’hui à 14:32 : Quelqu’un a testé Slint sous Wayland ? Modifié. 2 pièces jointes. En réponse à Léo. » Continuation messages repeat the author.
+- Every accessible name, description and announcement exists in English and French in the same catalogue as the visible copy (ADR-0022); region names in French: « Serveurs », « Salons de Rust Lyon », « Messages dans #général », « Zone de saisie », « Membres de Rust Lyon »; badges: « Rust Lyon, 3 mentions, non lu ».
 - Text that cannot be selected with the pointer is still fully exposed as the message's accessible text; "Select text" mode exposes an editable-text role so screen-reader users can review it character by character.
-- Uppercase labels expose their sentence-case source string, so screen readers do not spell them out.
+- Labels are sentence case on screen and in the accessibility tree, so screen readers never spell out capitals.
 - Badges are text: "Rust Lyon, 3 mentions, unread".
 - New messages in the open channel are announced politely when the user is at the bottom, if the accessibility setting is on (the spike exposes a live region; real-AT verification pending, section 9).
 - Decorative elements (skeleton bars, dividers, quote bars, reply spines, status cut-outs) are hidden from the tree.
@@ -1367,11 +1457,11 @@ Drag-and-drop actions (reordering servers, roles, channels) and the Android pane
 
 ## 8. UX copy: voice and tone
 
-Mellow speaks like a calm friend who also happens to run the server: plain, direct, never blaming. Where Discord has a well-known phrase for the same action ("Mark as read", "Jump to present", "You're viewing older messages", "Copy text", "Mark unread", "Server settings"), Mellow uses the same words so the interface feels familiar; it never copies Discord's marketing or jokes.
+Mellow speaks like a calm friend who also happens to run the server: plain, direct, never blaming. Every string exists in English and French (ADR-0022); neither is a word-for-word translation of the other. Where Discord has a well-known phrase for the same action ("Mark as read", "Jump to present", "You're viewing older messages", "Copy text", "Mark unread", "Server settings"), Mellow uses the same words so the interface feels familiar; it never copies Discord's marketing or jokes.
 
 Rules:
 
-- Sentence case in source strings everywhere, including buttons and titles. Category headers, member groups, form labels and the "New" pill are rendered uppercase by their type token, never written in capitals.
+- Sentence case everywhere, on screen as in source strings: buttons, titles, category headers, member groups, form labels and the "New" pill. Nothing is rendered in capitals.
 - Active voice, second person ("You can't send messages here"), first person plural for the app only when it acts ("We couldn't reach…").
 - Buttons name the action: "Save changes", "Ban Ana", "Create invite". Never "OK", "Submit", "Yes".
 - Results echo the action: "Changes saved", "Copied", "Ana was banned".
@@ -1382,35 +1472,44 @@ Rules:
 - Name the instance whenever it matters (errors, sign-in, multi-instance contexts), because self-hosted means different places with different rules.
 - Numbers and dates use the user's locale; relative dates only for "Today" and "Yesterday".
 
+French (Français):
+
+- **Tutoiement** everywhere (« Tu ne peux pas envoyer de messages ici »), the register of a friend who runs the server and of the French Discord interface; the app says « on » or the passive voice when it acts, never « nous » for a single action that failed (« Impossible de joindre chat.example.org »).
+- Sentence case, as in English. Buttons are infinitive verbs (« Enregistrer les modifications », « Bannir Ana », « Créer une invitation »); results are past participles (« Modifications enregistrées », « Copié »).
+- French typography: a narrow no-break space (U+202F) before « ? », « ! » and « ; », a no-break space (U+00A0) before « : » and inside « guillemets », typographic apostrophes (’), the ellipsis character (…), « e-mail » not « email », thousands with a narrow no-break space (« 1 204 »), sizes in Ko, Mo, Go.
+- Words users already know from Discord in French: « serveur », « salon », « Messages privés », « Marquer comme lu », « Revenir au présent », « Répondre », « Copier le texte », « Paramètres utilisateur ». « Instance » stays « instance ».
+- No anglicisms where French has a common word: « diapos » not « slides », « relire » not « reviewer », « notes de version » not « changelog »; product names stay as they are.
+- Avoid gendered agreement on the person addressed or named (« Ana ne fera plus partie du serveur » rather than « Ana sera retiré(e) »), without inclusive punctuation.
+
 Examples:
 
-| Situation | Copy |
-|---|---|
-| Message failed | "Not sent. Retry · Delete" |
-| Upload too large | "photo.heic is 48 MB. chat.example.org accepts files up to 25 MB." Until the instance tells its limit, the web client says "photo.heic is 48 MB, more than chat.example.org accepts." |
-| Too many files | "You can attach up to 10 files to one message." |
-| Sending while uploading | "Your files are still uploading. Send again once they're done." |
-| Drop overlay | "Drop to attach to #general" · "You can add a message before sending." |
-| Connection lost | "Reconnecting to chat.example.org… Messages you send will wait until you're back." |
-| Permission missing | "You can't send messages in #announcements." |
-| Instance unreachable | "We couldn't reach chat.example.org. Check the address, or try again if your connection is down." |
-| Selecting text | "Selecting text · Esc to finish" |
-| Empty server | "No channels yet. Create the first one to get the conversation going." · "Create a channel" |
-| Empty conversations | "No conversations yet. Start one with someone from your servers." · "New message" |
-| Empty bans | "No one is banned from Rust Lyon." |
-| Kick confirmation | Title "Kick Ana from Rust Lyon?" · Body "Ana will be removed from the server. They can rejoin with a new invite." · Buttons "Cancel" / "Kick Ana" |
-| Ban confirmation | Title "Ban Ana from Rust Lyon?" · Body "Ana will be removed and won't be able to rejoin, even with an invite." · Field "Reason (optional, visible to moderators)" · Select "Delete their recent messages" (Don't delete, Last hour, Last 24 hours, Last 7 days) · Buttons "Cancel" / "Ban Ana" |
-| Delete channel | Title "Delete #old-announcements?" · Body "All 1,204 messages in this channel will be deleted for everyone. This can't be undone." · Field "Type old-announcements to confirm" · Buttons "Cancel" / "Delete channel" (enabled when the name matches) |
-| Delete own message | Title "Delete this message?" · Body "It will be removed for everyone." · Buttons "Cancel" / "Delete message" · Hint "Tip: hold Shift while deleting to skip this next time." |
-| Add a server | Title "Create a server" · Body "Give your server a name. You can add channels and invite people next." · Field "Server name" · Link "Have an invite already? Join a server" · Buttons "Cancel" / "Create" ("Creating…" while busy) |
-| Join a server | Title "Join a server" · Body "Enter an invite to join a server someone already runs." · Field "Invite code", helper "Paste the invite code someone gave you." · Link "Don't have an invite? Create a server" · Buttons "Cancel" / "Join" ("Joining…") |
-| Invite people | Title "Invite friends to Rust Lyon" · Field "Send this invite code to a friend" (read-only, "Creating an invite…" while empty) with "Copy" ("Copied" for 2 s) · Hint "This invite never expires." · Button "Close" |
-| Create channel | Title "Create channel" · Field "Channel name" with a `#` prefix, placeholder "new-channel", helper "Names are lowercase, with dashes instead of spaces." · Buttons "Cancel" / "Create channel" |
-| Leave server | Title "Leave 'Rust Lyon'" · Body "Are you sure you want to leave Rust Lyon? You won't be able to rejoin unless you are re-invited." · Buttons "Cancel" / "Leave server" (Danger; Cancel has focus) |
-| Revoke invite | Title "Revoke this invite?" · Body "The link will stop working. People who already joined stay in the server." · Buttons "Cancel" / "Revoke invite" |
-| Leaving a masked link | Title "Leaving Mellow" · Body "This link goes to example.com/page. Only open links you trust." · Buttons "Cancel" / "Open link" |
-| Session expired | "Your session on chat.example.org has ended. Sign in again to keep chatting." · "Sign in" |
-| Notifications denied | "Notifications are off for Mellow. You won't hear about mentions or messages." · "Open Android settings" |
+| Situation | English | Français |
+|---|---|---|
+| Message failed | "Not sent. Retry · Delete" | « Non envoyé. Réessayer · Supprimer » |
+| Upload too large | "photo.heic is 48 MB. chat.example.org accepts files up to 25 MB." Until the instance tells its limit, the web client says "photo.heic is 48 MB, more than chat.example.org accepts." | « photo.heic fait 48 Mo. chat.example.org accepte les fichiers jusqu’à 25 Mo. » |
+| Too many files | "You can attach up to 10 files to one message." | « Tu peux joindre jusqu’à 10 fichiers par message. » |
+| Sending while uploading | "Your files are still uploading. Send again once they're done." | « Tes fichiers sont encore en cours d’envoi. Renvoie le message quand ils sont prêts. » |
+| Drop overlay | "Drop to attach to #general" · "You can add a message before sending." | « Dépose pour joindre à #général » · « Tu pourras ajouter un message avant l’envoi. » |
+| Connection lost | "Reconnecting to chat.example.org… Messages you send will wait until you're back." | « Reconnexion à chat.example.org… Les messages que tu envoies partiront dès ton retour. » |
+| Permission missing | "You can't send messages in #announcements." | « Tu ne peux pas envoyer de messages dans #annonces. » |
+| Instance unreachable | "We couldn't reach chat.example.org. Check the address, or try again if your connection is down." | « Impossible de joindre chat.example.org. Vérifie l’adresse, ou réessaie si ta connexion est coupée. » |
+| Selecting text | "Selecting text · Esc to finish" | « Sélection du texte · Échap pour terminer » |
+| Empty server | "No channels yet. Create the first one to get the conversation going." · "Create a channel" | « Aucun salon pour l’instant. Crée le premier pour lancer la conversation. » · « Créer un salon » |
+| Empty conversations | "No conversations yet. Start one with someone from your servers." · "New message" | « Aucune conversation pour l’instant. Lance-en une avec quelqu’un de tes serveurs. » · « Nouveau message » |
+| Empty bans | "No one is banned from Rust Lyon." | « Personne n’est banni de Rust Lyon. » |
+| Kick confirmation | Title "Kick Ana from Rust Lyon?" · Body "Ana will be removed from the server. They can rejoin with a new invite." · Buttons "Cancel" / "Kick Ana" | Titre « Expulser Ana de Rust Lyon ? » · Texte « Ana ne fera plus partie du serveur. Une nouvelle invitation lui permettra de revenir. » · Boutons « Annuler » / « Expulser Ana » |
+| Ban confirmation | Title "Ban Ana from Rust Lyon?" · Body "Ana will be removed and won't be able to rejoin, even with an invite." · Field "Reason (optional, visible to moderators)" · Select "Delete their recent messages" (Don't delete, Last hour, Last 24 hours, Last 7 days) · Buttons "Cancel" / "Ban Ana" | Titre « Bannir Ana de Rust Lyon ? » · Texte « Ana ne fera plus partie du serveur et ne pourra pas revenir, même avec une invitation. » · Champ « Raison (facultatif, visible par la modération) » · Liste « Supprimer ses messages récents » (Ne rien supprimer, Dernière heure, Dernières 24 heures, 7 derniers jours) · Boutons « Annuler » / « Bannir Ana » |
+| Delete channel | Title "Delete #old-announcements?" · Body "All 1,204 messages in this channel will be deleted for everyone. This can't be undone." · Field "Type old-announcements to confirm" · Buttons "Cancel" / "Delete channel" (enabled when the name matches) | Titre « Supprimer #anciennes-annonces ? » · Texte « Les 1 204 messages de ce salon seront supprimés pour tout le monde. C’est irréversible. » · Champ « Saisis anciennes-annonces pour confirmer » · Boutons « Annuler » / « Supprimer le salon » |
+| Delete own message | Title "Delete this message?" · Body "It will be removed for everyone." · Buttons "Cancel" / "Delete message" · Hint "Tip: hold Shift while deleting to skip this next time." | Titre « Supprimer ce message ? » · Texte « Il sera supprimé pour tout le monde. » · Boutons « Annuler » / « Supprimer le message » · Astuce « Maintiens Maj en supprimant pour passer cette étape la prochaine fois. » |
+| Add a server | Title "Create a server" · Body "Give your server a name. You can add channels and invite people next." · Field "Server name" · Link "Have an invite already? Join a server" · Buttons "Cancel" / "Create" ("Creating…" while busy) | Titre « Créer un serveur » · Texte « Donne un nom à ton serveur. Tu pourras ajouter des salons et inviter du monde ensuite. » · Champ « Nom du serveur » · Lien « Tu as déjà une invitation ? Rejoindre un serveur » · Boutons « Annuler » / « Créer » (« Création… ») |
+| Join a server | Title "Join a server" · Body "Enter an invite to join a server someone already runs." · Field "Invite code", helper "Paste the invite code someone gave you." · Link "Don't have an invite? Create a server" · Buttons "Cancel" / "Join" ("Joining…") | Titre « Rejoindre un serveur » · Texte « Saisis une invitation pour rejoindre un serveur qui existe déjà. » · Champ « Code d’invitation », aide « Colle le code d’invitation qu’on t’a donné. » · Lien « Pas d’invitation ? Créer un serveur » · Boutons « Annuler » / « Rejoindre » (« Connexion au serveur… ») |
+| Invite people | Title "Invite friends to Rust Lyon" · Field "Send this invite code to a friend" (read-only, "Creating an invite…" while empty) with "Copy" ("Copied" for 2 s) · Hint "This invite never expires." · Button "Close" | Titre « Inviter des amis sur Rust Lyon » · Champ « Envoie ce code d’invitation à un ami » (« Création de l’invitation… » tant qu’il est vide) avec « Copier » (« Copié » pendant 2 s) · Note « Cette invitation n’expire jamais. » · Bouton « Fermer » |
+| Create channel | Title "Create channel" · Field "Channel name" with a `#` prefix, placeholder "new-channel", helper "Names are lowercase, with dashes instead of spaces." · Buttons "Cancel" / "Create channel" | Titre « Créer un salon » · Champ « Nom du salon » avec le préfixe `#`, exemple « nouveau-salon », aide « En minuscules, avec des tirets à la place des espaces. » · Boutons « Annuler » / « Créer le salon » |
+| Leave server | Title "Leave 'Rust Lyon'" · Body "Are you sure you want to leave Rust Lyon? You won't be able to rejoin unless you are re-invited." · Buttons "Cancel" / "Leave server" (Danger; Cancel has focus) | Titre « Quitter Rust Lyon » · Texte « Tu veux vraiment quitter Rust Lyon ? Tu ne pourras revenir qu’avec une nouvelle invitation. » · Boutons « Annuler » / « Quitter le serveur » |
+| Revoke invite | Title "Revoke this invite?" · Body "The link will stop working. People who already joined stay in the server." · Buttons "Cancel" / "Revoke invite" | Titre « Révoquer cette invitation ? » · Texte « Le lien ne fonctionnera plus. Les personnes déjà arrivées restent sur le serveur. » · Boutons « Annuler » / « Révoquer l’invitation » |
+| Leaving a masked link | Title "Leaving Mellow" · Body "This link goes to example.com/page. Only open links you trust." · Buttons "Cancel" / "Open link" | Titre « Tu quittes Mellow » · Texte « Ce lien mène à example.com/page. N’ouvre que les liens de confiance. » · Boutons « Annuler » / « Ouvrir le lien » |
+| Session expired | "Your session on chat.example.org has ended. Sign in again to keep chatting." · "Sign in" | « Ta session sur chat.example.org a pris fin. Reconnecte-toi pour continuer à discuter. » · « Se connecter » |
+| Notifications denied | "Notifications are off for Mellow. You won't hear about mentions or messages." · "Open Android settings" | « Les notifications de Mellow sont désactivées. Tu ne recevras aucune alerte pour les mentions ni les messages. » · « Ouvrir les réglages Android » |
 
 Destructive confirmation pattern:
 
@@ -1426,13 +1525,13 @@ Destructive confirmation pattern:
 Brand and legal:
 
 1. **Mellow logo**: chosen (Melli, 2.10), on the web and the desktop, with macOS and Linux app icons. Still to do: the Windows `.ico` (with a Windows installer), the Android adaptive icon and the admin header.
-2. **Trade-dress review** before any public release: check accent hue, logo, fonts, default avatars and marketing screenshots against ADR-0012's brand rules.
+2. **Trade-dress review** before any public release: check accent hue, logo, fonts, default avatars and marketing screenshots against the brand rules of ADR-0022 (inherited from ADR-0012).
 3. **Emoji set**: Twemoji (familiar to Discord users, CC-BY 4.0 with attribution) is preferred over Noto Color Emoji. Confirm that a maintained COLR font build of Twemoji renders in Slint on all three desktop platforms and on Android, and measure its size; otherwise fall back to Noto Color Emoji or the system emoji font.
 
 Fidelity:
 
-4. **Dimension check against Discord**: overlay screenshots of Mellow and the current Discord desktop client at 100 % zoom and verify every row of the table in 4.2 (especially the hover bar, compact mode, typing band and member rows, whose values were taken from Discord's CSS as publicly known in 2023–2024). Discord's interface can change; ADR-0012 says Mellow does not chase every redesign.
-5. **Muted channels**: AA leaves only a small step between read (5.82:1) and muted (4.92:1) channels in dark. Test with Discord users whether muted channels are still recognisable; if not, add a muted icon after the name.
+4. **Dimension check against Discord**: overlay screenshots of Mellow and the current Discord desktop client at 100 % zoom and verify every row of the table in 4.2 (especially the hover bar, compact mode, typing band and member rows, whose values were taken from Discord's CSS as publicly known in 2023–2024). Since ADR-0022 only the pane order, pane widths and interaction targets are kept; colours, radii and line heights are Mellow's own.
+5. **Muted channels**: AA leaves only a small step between read (7.40:1) and muted (6.00:1) channels in dark. Test with Discord users whether muted channels are still recognisable; if not, add a muted icon after the name.
 6. **Mention highlight in apricot instead of Discord's gold**: confirm with users that it still reads as "this mentions you" at a glance.
 
 Product scope:
@@ -1460,9 +1559,24 @@ Platform and technical:
 24. **Android dynamic colour**: off for brand identity. Consider an opt-in "Use wallpaper colours" setting after the MVP if users ask.
 25. **Touchscreen desktops**: consider a "Touch" density that raises desktop targets to 44 px.
 
+Dusk direction (ADR-0022, proposed), decisions for the owner:
+
+30. **Plum-tinted neutrals**: the dusk family (hue 322) is the core of the new identity. Confirm it reads "warm evening" and not "purple" on real screens, especially low-quality laptop panels; the fallback is the same family at lower chroma.
+31. **Apricot unread divider**: Discord users read a red line as "new". Validate that the apricot divider with its "New" pill is noticed as quickly.
+32. **Hovered servers stay neutral**: Discord fills hovered servers without artwork with blurple; Mellow uses the selected tone so apricot means "you" and "now". Confirm the owner wants this restraint.
+33. **Sentence-case labels**: dropping Discord's uppercase category and group labels is the most visible typographic change; it needs a Rust change on desktop (`live_rows.rs`, `shell_rows.rs`).
+34. **Inset sheet**: costs 8 px around the chat on wide windows; confirm on 1280 × 800 and on 13-inch laptops.
+35. **24 px message line**: about 9 % fewer messages per screen than Discord's 22 px; Compact density stays available for people who want more.
+36. **Desktop reduced-motion setting**: must ship before the new transitions on desktop (2.8).
+37. **Navigator and side sheet** (v0.16): test with Discord users that servers and channels in one card, and members on demand, are found without help; check that the side sheet closed by default does not hide who is online for people who rely on it (the setting is remembered per server).
+38. **Typing indicator above the composer**: a change from Discord, made so the composer and the user card share a bottom edge; validate that it is still noticed.
+39. **Microphone and headset hidden until voice**: the owner asked to see them; confirm that hiding them in releases until voice works is acceptable, or show them as a stored preference.
+40. **Icon tile**: confirm the gradient tile at 16 and 32 px on Windows, GNOME and KDE taskbars and on light and dark browser tabs; the textured variant stays for marketing only.
+41. **French copy review** by a native speaker before release, and the language setting's place (User settings → Language).
+
 Visual validation still to do:
 
-26. Render both themes on real screens (OLED phone, low-quality laptop IPS, sunlight) and check that the grey layers stay distinguishable, especially rail versus user panel (`#1E1F22` versus `#232428`).
+26. Render both themes on real screens (OLED phone, low-quality laptop IPS, sunlight) and check that the dusk layers stay distinguishable, especially the ground versus the sheet and the user card (`#150F16` versus `#221B23`).
 27. Check apricot versus amber and red distinguishability under protanopia, deuteranopia and tritanopia simulation, even though none carries meaning alone.
 28. Usability test the multi-instance rail with users who have two or more instances.
 29. Test with real assistive technologies: VoiceOver (macOS), NVDA and Narrator (Windows), Orca (Linux), TalkBack and Switch Access (Android).
@@ -1475,20 +1589,30 @@ For each, the reason it was rejected for Mellow:
 
 | Default | Why we rejected it | What we do instead |
 |---|---|---|
-| Pixel-perfect Discord clone including blurple and gg sans | Uses Discord's brand identity (trade-dress risk), and gg sans cannot be licensed | Discord's interface with apricot, the Mellow mark and Noto Sans (ADR-0012) |
-| Mellow's own calmer layout and warm surfaces (v0.1) | The user wants Discord users to feel at home instantly; a different layout means relearning | Discord's layout, dimensions and layered cool greys |
+| Pixel-perfect Discord clone including blurple and gg sans | Uses Discord's brand identity (trade-dress risk), and gg sans cannot be licensed | Discord's concepts and behaviour with Mellow's own layout and look (ADR-0022) |
+| Faithful Discord look with only the accent changed (ADR-0012) | A clone is judged against the original and loses; the owner wants Mellow to compete | Dusk: Mellow's colour, type, shape and motion in the Navigator layout |
+| A new layout (single column, threads first) | Discord users would have to relearn where things are | Same panes in the same order and sizes |
+| Discord's cool greys | They are Discord's identity, and several fail AA for text roles | Plum-tinted dusk neutrals, checked at AA by the generator |
+| Warm charcoal neutrals with apricot | Looks like several current AI and productivity products | Plum dusk, the evening sky Melli floats in |
+| Navy neutrals | Too close to Discord's blue-grey family | Plum dusk, opposite apricot on the wheel |
 | Any blue or violet accent | Too close to blurple; a screenshot would look like Discord | Apricot, the complement of blurple |
-| Inter or the system UI font | Generic, and further from Discord's look than the font Discord itself falls back to | Noto Sans, from Discord's own font stack |
-| Atkinson Hyperlegible (v0.1) | Its distinctive letterforms and wider set change the density and look Discord users expect | Noto Sans at Discord's sizes; Source Code Pro for codes and IDs |
-| Fraunces display serif (v0.1) | Discord has no serif moments; it would break familiarity | Noto Sans 800 for the few display moments |
-| Discord's greys as-is for every text role | Several fail WCAG AA (muted text, read and muted channels, placeholders, red text) | Minimal adjustments listed in 2.3 |
-| Apricot mention badges (v0.1) | Discord users read a red count as "someone pinged you"; changing it costs familiarity | Red badges with white text at 4.57:1; apricot keeps primary actions and the mention highlight |
-| Square server icons (v0.1) | Discord's circle-to-squircle morph is its most recognisable interaction | Circle at rest, squircle on hover and selection |
+| Four flush panes separated by lines and shadows | Busy, and the conversation does not stand out | One ground, one lit sheet, separation by tone and space |
+| Apricot on every interactive state (hovered servers, focused menu items) | The accent stops meaning anything | Apricot only for "you" and "now"; neutral selected tone elsewhere |
+| Uppercase, tracked-out labels | They shout, read worse and are a template tell | Sentence-case labels at 13 px semibold |
+| "Moderators — 2" group headers | A dash joining label and number is noise | Label and a separate tabular count |
+| Inter, the system UI font, or a second display face | Generic, or more weight to ship in both clients | Figtree only, tighter tracking at display sizes |
+| One radius on everything | Flattens hierarchy | Concentric scale 4/8/12/16/24 by role |
+| Square server icons (v0.1) | The circle-to-squircle morph is the most recognisable rail interaction | Circle at rest, settling into a squircle |
 | Fake drag-selection across messages | Slint cannot do it; a half-working imitation loses text | Copy text, Select text (`F2`), Copy code, Copy link |
-| Material baseline purple, standard Material navigation and dynamic colour on Android | Template look, and not how Discord mobile navigates | Discord's three-panel model with Material 3 Expressive components and Mellow tokens |
-| Expressive motion everywhere on Android | Discord's motion is quick and functional | `MotionScheme.standard()`, expressive only for the squircle morph and panel settle |
-| Shimmering skeletons and per-item entrance animations | Restless and costly | Static skeletons, no list animations |
-| Glassmorphism, gradients, glow | Decoration without function, and not Discord | Flat layered greys, shadows only on headers and floating layers |
+| Material baseline purple, standard Material navigation and dynamic colour on Android | Template look, and not how Discord mobile navigates | Three-panel model with Material 3 Expressive components and Mellow tokens |
+| Expressive motion everywhere on Android | Restless, and costly | `MotionScheme.standard()`, springs only for the settle moments |
+| Shimmering skeletons, per-item entrance animations on load, decorative loops | Restless and costly; nothing should draw while idle | Static skeletons; motion only for state transitions (2.8) |
+| Glassmorphism, gradients, glow | Decoration without function, costly in Slint, hard to keep at AA | Flat tone steps; shadows only on floating layers |
 | Hover-only message actions | Inaccessible to keyboard and touch users | Hover bar, context menu, message keybinds and accessibility actions |
 | Silent connection problems | Users lose messages and trust | Connection dock, labelled pending, queued and failed messages |
 | Text smaller than 12 px | Discord's 10 px "(edited)" and "NEW" are hard to read | 12 px floor |
+| Discord's exact silhouette (72 px rail of circles, flat channel list, permanent member column) | The owner found that Dusk on that layout still reads as Discord | The navigator card, the sheet and the side sheet (4.2) |
+| Palette-first navigation without a channel list | Two actions to switch channel, unread channels out of sight | The quick switcher stays one key or one click away ("Aller à… Ctrl K") |
+| User panel shorter than the composer, misaligned | Two bars side by side at different heights look careless | `size.dock.*` shared by both |
+| Melli on a transparent or white background as the app icon | Disappears on light tabs and docks; the owner disliked it | Melli on a dusk gradient tile |
+| English-only interface | The owner and much of the first audience are French | English and French catalogues, tutoiement, French typography |
