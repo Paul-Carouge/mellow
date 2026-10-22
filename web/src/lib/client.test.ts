@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ApiError, type RestClient } from "./api";
 import { MellowClient } from "./client.svelte";
-import type { Channel, Guild, Message, Ready } from "./protocol";
+import type { Channel, Guild, Message, Ready, Role } from "./protocol";
 
 const ME = "1";
 const OTHER = "2";
@@ -258,6 +258,18 @@ describe("MellowClient", () => {
     client.applyReady(start);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(client.unreadMarkers.has(GENERAL)).toBe(false);
+  });
+
+  it("drops a deleted role from members and from the user's own roles", async () => {
+    const helper: Role = { id: "201", name: "Helper", color: 0, position: 1, permissions: "0" };
+    const everyone: Role = { id: GUILD, name: "@everyone", color: 0, position: 0, permissions: "6" };
+    const member = { user: { id: OTHER, username: "other", display_name: "Other" }, role_ids: [helper.id], joined_at_unix_milliseconds: 0 };
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMembers: () => Promise.resolve([member]) }));
+    client.applyReady(ready({ guilds: [{ ...guild(), roles: [everyone, helper], my_role_ids: [helper.id] }] }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    client.applyEvent({ t: "GUILD_ROLES_UPDATE", data: { guild_id: GUILD, roles: [everyone] } }, 0);
+    expect(client.selectedGuild?.my_role_ids).toEqual([]);
+    expect(client.membersByGuild.get(GUILD)?.[0]?.role_ids).toEqual([]);
   });
 });
 

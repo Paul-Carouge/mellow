@@ -452,9 +452,23 @@ export class MellowClient {
         }
         return;
       }
-      case "GUILD_ROLES_UPDATE":
-        this.updateGuild(event.data.guild_id, (guild) => ({ ...guild, roles: event.data.roles }));
+      case "GUILD_ROLES_UPDATE": {
+        // A deleted role leaves its members without a `GUILD_MEMBER_UPDATE`: drop it here.
+        const roleIds = new Set(event.data.roles.map((role) => role.id));
+        this.updateGuild(event.data.guild_id, (guild) => ({
+          ...guild,
+          roles: event.data.roles,
+          my_role_ids: guild.my_role_ids.filter((id) => roleIds.has(id)),
+        }));
+        const members = this.membersByGuild.get(event.data.guild_id);
+        if (members?.some((member) => member.role_ids.some((id) => !roleIds.has(id)))) {
+          this.membersByGuild.set(
+            event.data.guild_id,
+            members.map((member) => ({ ...member, role_ids: member.role_ids.filter((id) => roleIds.has(id)) })),
+          );
+        }
         return;
+      }
       case "TYPING_START":
         for (const [key, until] of this.typingUntil) {
           if (until <= now) {
