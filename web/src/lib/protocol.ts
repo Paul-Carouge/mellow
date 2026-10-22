@@ -36,6 +36,11 @@ export interface PublicUser {
 /** Mirrors the server's rule (mellow-server domain/account_rules.rs); the server still decides. */
 export const MINIMUM_PASSWORD_LENGTH = 10;
 
+/** Mirrors the server's rules (mellow-server domain/guild_rules.rs); the server still decides. */
+export const MAXIMUM_SERVER_NAME_LENGTH = 100;
+export const MAXIMUM_ROLE_NAME_LENGTH = 100;
+export const MAXIMUM_BAN_REASON_LENGTH = 512;
+
 /** What `PUT /users/@me/avatar` and `/banner` accept (ADR-0021). */
 export const MAXIMUM_PROFILE_IMAGE_BYTES = 8 * 1024 * 1024;
 
@@ -183,6 +188,67 @@ export interface Invite {
   expires_at_unix_milliseconds: number | null;
 }
 
+/** Entry of `GET /guilds/{id}/invites`: a usable invite, newest first. */
+export interface GuildInvite {
+  code: string;
+  creator: PublicUser;
+  uses: number;
+  max_uses: number | null;
+  expires_at_unix_milliseconds: number | null;
+  created_at_unix_milliseconds: number;
+}
+
+export interface Ban {
+  user: PublicUser;
+  /** Shown to moderators only; empty when none was given. */
+  reason: string;
+  created_at_unix_milliseconds: number;
+}
+
+/** A newer server may send an action this client does not know: it reads as "unknown" then. */
+export type AuditAction =
+  | "channel_create"
+  | "channel_update"
+  | "channel_delete"
+  | "overwrite_set"
+  | "overwrite_delete"
+  | "role_create"
+  | "role_update"
+  | "role_delete"
+  | "roles_reorder"
+  | "member_role_add"
+  | "member_role_remove"
+  | "member_kick"
+  | "member_ban_add"
+  | "member_ban_remove"
+  | "message_delete"
+  | "guild_update"
+  | "invite_create"
+  | "invite_delete"
+  | "unknown";
+
+export interface AuditChange {
+  key: "name" | "topic" | "color" | "permissions" | "allow" | "deny" | "code" | "unknown";
+  /** Permissions and colours in decimal. */
+  old_value: string;
+  new_value: string;
+}
+
+/** Entry of `GET /guilds/{id}/audit-log`, newest first; its id encodes when it happened. */
+export interface AuditLogEntry {
+  id: Snowflake;
+  /** Null once that account no longer exists. */
+  actor_id: Snowflake | null;
+  action: AuditAction;
+  target_id: Snowflake | null;
+  context_id: Snowflake | null;
+  reason: string;
+  changes: AuditChange[];
+}
+
+/** What `GET /guilds/{id}/audit-log` answers by default, and the most it answers. */
+export const AUDIT_LOG_PAGE_SIZE = 50;
+
 export interface Ready {
   session_id: string;
   user: CurrentUser;
@@ -229,6 +295,7 @@ export type GatewayEvent =
   | { t: "CHANNEL_UPDATE"; data: Channel }
   | { t: "CHANNEL_DELETE"; data: { guild_id: Snowflake; id: Snowflake } }
   | { t: "GUILD_CREATE"; data: Guild }
+  | { t: "GUILD_UPDATE"; data: { id: Snowflake; name: string } }
   | { t: "GUILD_DELETE"; data: { id: Snowflake } }
   | { t: "GUILD_MEMBER_ADD"; data: { guild_id: Snowflake; member: Member } }
   | { t: "GUILD_MEMBER_REMOVE"; data: { guild_id: Snowflake; user_id: Snowflake } }
@@ -265,10 +332,15 @@ export const Permission = {
   SEND_MESSAGES: 1n << 2n,
   READ_MESSAGE_HISTORY: 1n << 3n,
   ATTACH_FILES: 1n << 4n,
+  MENTION_EVERYONE: 1n << 5n,
   MANAGE_MESSAGES: 1n << 6n,
   MANAGE_CHANNELS: 1n << 7n,
   MANAGE_ROLES: 1n << 8n,
+  MANAGE_GUILD: 1n << 9n,
   CREATE_INVITE: 1n << 10n,
+  KICK_MEMBERS: 1n << 11n,
+  BAN_MEMBERS: 1n << 12n,
+  VIEW_AUDIT_LOG: 1n << 15n,
   ADD_REACTIONS: 1n << 16n,
 } as const;
 

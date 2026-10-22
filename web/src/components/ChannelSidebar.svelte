@@ -17,8 +17,9 @@
   import Icon, { type IconName } from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import { channelSections } from "./message-rows";
+  import { canOpenServerSettings } from "./server-settings";
 
-  export type ServerDialog = "invite-people" | "create-channel" | "leave-server";
+  export type ServerDialog = "invite-people" | "server-settings" | "create-channel" | "leave-server";
 
   // The channel list of the navigator card (DESIGN.md §5.3, §5.6, ADR-0022 §1): server header
   // with its menu, then channels by category, or the conversations at Home.
@@ -40,12 +41,13 @@
   const canInvitePeople = $derived(guild ? hasPermission(guild.my_permissions, Permission.CREATE_INVITE) : false);
   const canCreateChannels = $derived(guild ? hasPermission(guild.my_permissions, Permission.MANAGE_CHANNELS) : false);
   const canLeaveServer = $derived(guild !== null && guild.owner_id !== user?.id);
+  const canOpenSettings = $derived(guild !== null && canOpenServerSettings(guild, user?.id));
   // Channel overwrites included: a read-only channel shows a lock (DESIGN.md §5.3).
   function canSendIn(channelId: Snowflake): boolean {
     const permissions = client.myChannelPermissions(channelId);
     return permissions === null || hasPermission(permissions, Permission.SEND_MESSAGES);
   }
-  const hasServerMenu = $derived(canInvitePeople || canCreateChannels || canLeaveServer);
+  const hasServerMenu = $derived(canInvitePeople || canOpenSettings || canCreateChannels || canLeaveServer);
 
   let headerButton = $state<HTMLButtonElement | null>(null);
   let menu = $state<HTMLElement | null>(null);
@@ -206,11 +208,14 @@
     {#if canInvitePeople}
       {@render menuItem(strings.sidebar.invitePeople, "user-plus", "accent", "invite-people")}
     {/if}
+    {#if canOpenSettings}
+      {@render menuItem(strings.sidebar.serverSettings, "gear-six", "normal", "server-settings")}
+    {/if}
     {#if canCreateChannels}
       {@render menuItem(strings.sidebar.createChannel, "plus-circle", "normal", "create-channel")}
     {/if}
     {#if canLeaveServer}
-      {#if canInvitePeople || canCreateChannels}
+      {#if canInvitePeople || canOpenSettings || canCreateChannels}
         <hr
           class="mx-(--mw-component-context-menu-separator-margin-inline) my-(--mw-component-context-menu-separator-margin-block) h-(--mw-component-context-menu-separator-height) border-0 bg-(--mw-component-context-menu-separator)"
         />

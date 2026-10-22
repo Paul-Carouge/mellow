@@ -1,21 +1,27 @@
 // REST client for `/api/v1` on the origin that served this page (ADR-0019). The session is an
 // HttpOnly cookie the instance sets at sign-in: page scripts never see the token.
 
-import type {
-  ApiErrorCode,
-  Attachment,
-  Channel,
-  CurrentUser,
-  DirectMessageChannel,
-  Guild,
-  Invite,
-  Member,
-  Message,
-  PublicUser,
-  SessionCreated,
-  Snowflake,
+import {
+  AUDIT_LOG_PAGE_SIZE,
+  type ApiErrorCode,
+  type Attachment,
+  type AuditLogEntry,
+  type Ban,
+  type Channel,
+  type CurrentUser,
+  type DirectMessageChannel,
+  type Guild,
+  type GuildInvite,
+  type Invite,
+  type Member,
+  type Message,
+  type PermissionBits,
+  type PublicUser,
+  type Role,
+  type SessionCreated,
+  type Snowflake,
+  reactionsPath,
 } from "./protocol";
-import { reactionsPath } from "./protocol";
 
 export const HISTORY_PAGE_SIZE = 50;
 /** One page of "who reacted": the most the instance gives at once. */
@@ -139,6 +145,84 @@ export class RestClient {
       topic: "",
       parent_id: categoryId,
     });
+  }
+
+  // --- Server settings (DESIGN.md §5.8) -----------------------------------------------------
+
+  renameGuild(guildId: Snowflake, name: string): Promise<Guild> {
+    return this.request("PATCH", `guilds/${guildId}`, { name });
+  }
+
+  /** The owner only. */
+  deleteGuild(guildId: Snowflake): Promise<void> {
+    return this.request("DELETE", `guilds/${guildId}`);
+  }
+
+  createRole(guildId: Snowflake, name: string): Promise<Role> {
+    return this.request("POST", `guilds/${guildId}/roles`, { name });
+  }
+
+  /** Absent fields stay unchanged; `@everyone` takes permissions only. */
+  updateRole(
+    guildId: Snowflake,
+    roleId: Snowflake,
+    changes: { name?: string; color?: number; permissions?: PermissionBits },
+  ): Promise<Role> {
+    return this.request("PATCH", `guilds/${guildId}/roles/${roleId}`, changes);
+  }
+
+  deleteRole(guildId: Snowflake, roleId: Snowflake): Promise<void> {
+    return this.request("DELETE", `guilds/${guildId}/roles/${roleId}`);
+  }
+
+  /** Every role but `@everyone`, lowest to highest; answers the guild's new role list. */
+  reorderRoles(guildId: Snowflake, roleIds: readonly Snowflake[]): Promise<Role[]> {
+    return this.request("PUT", `guilds/${guildId}/roles/order`, { role_ids: roleIds });
+  }
+
+  addMemberRole(guildId: Snowflake, userId: Snowflake, roleId: Snowflake): Promise<void> {
+    return this.request("PUT", `guilds/${guildId}/members/${userId}/roles/${roleId}`);
+  }
+
+  removeMemberRole(guildId: Snowflake, userId: Snowflake, roleId: Snowflake): Promise<void> {
+    return this.request("DELETE", `guilds/${guildId}/members/${userId}/roles/${roleId}`);
+  }
+
+  kickMember(guildId: Snowflake, userId: Snowflake): Promise<void> {
+    return this.request("DELETE", `guilds/${guildId}/members/${userId}`);
+  }
+
+  banMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void> {
+    return this.request("PUT", `guilds/${guildId}/bans/${userId}`, { reason });
+  }
+
+  unbanMember(guildId: Snowflake, userId: Snowflake): Promise<void> {
+    return this.request("DELETE", `guilds/${guildId}/bans/${userId}`);
+  }
+
+  listBans(guildId: Snowflake): Promise<Ban[]> {
+    return this.request("GET", `guilds/${guildId}/bans`);
+  }
+
+  listInvites(guildId: Snowflake): Promise<GuildInvite[]> {
+    return this.request("GET", `guilds/${guildId}/invites`);
+  }
+
+  revokeInvite(code: string): Promise<void> {
+    // The code becomes a path segment: refuse anything that is not a plain code.
+    if (!/^[A-Za-z0-9]+$/.test(code)) {
+      return Promise.reject(new ApiError(404, "NOT_FOUND"));
+    }
+    return this.request("DELETE", `invites/${code}`);
+  }
+
+  /** Newest first; `before` pages back from an entry id. */
+  listAuditLog(guildId: Snowflake, before?: Snowflake): Promise<AuditLogEntry[]> {
+    const query = new URLSearchParams({ limit: String(AUDIT_LOG_PAGE_SIZE) });
+    if (before) {
+      query.set("before", before);
+    }
+    return this.request("GET", `guilds/${guildId}/audit-log?${query}`);
   }
 
   leaveGuild(guildId: Snowflake): Promise<void> {

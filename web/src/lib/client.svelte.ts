@@ -21,6 +21,7 @@ import {
   type PublicUser,
   type ReactionSummary,
   type Ready,
+  type Role,
   type Snowflake,
   DIRECT_MESSAGE_PERMISSIONS,
   compareSnowflakes,
@@ -115,8 +116,8 @@ export class MellowClient {
   /** Before the first `Ready`, no selection exists yet: home then means "not chosen". */
   private hasReceivedReady = false;
 
-  /** `rest` is injected by tests. */
-  constructor(private readonly rest: RestClient = new RestClient()) {}
+  /** `rest` is injected by tests; settings pages read lists (bans, invites, the log) through it. */
+  constructor(readonly rest: RestClient = new RestClient()) {}
   private lastTypingSentAt = 0;
   private requestedHistory = new Set<Snowflake>();
   private requestedMembers = new Set<Snowflake>();
@@ -419,6 +420,9 @@ export class MellowClient {
         return;
       case "GUILD_CREATE":
         this.upsertGuild(event.data);
+        return;
+      case "GUILD_UPDATE":
+        this.updateGuild(event.data.id, (guild) => ({ ...guild, name: event.data.name }));
         return;
       case "GUILD_DELETE":
         this.removeGuild(event.data.id);
@@ -1220,6 +1224,89 @@ export class MellowClient {
     }
     await this.rest.leaveGuild(guildId);
     this.removeGuild(guildId);
+  }
+
+  // --- Server settings: each answer is applied at once, before the gateway's own event ---------
+
+  async renameServer(guildId: Snowflake, name: string): Promise<void> {
+    const guild = await this.rest.renameGuild(guildId, name);
+    this.applyEvent({ t: "GUILD_UPDATE", data: { id: guild.id, name: guild.name } }, Date.now());
+  }
+
+  async deleteServer(guildId: Snowflake): Promise<void> {
+    await this.rest.deleteGuild(guildId);
+    this.removeGuild(guildId);
+  }
+
+  private applyRoles(guildId: Snowflake, roles: Role[]): void {
+    this.applyEvent({ t: "GUILD_ROLES_UPDATE", data: { guild_id: guildId, roles } }, Date.now());
+  }
+
+  private rolesOf(guildId: Snowflake): Role[] {
+    return this.guilds.find((guild) => guild.id === guildId)?.roles ?? [];
+  }
+
+  /** The new role sits just above `@everyone`, pushing the others up one, as the server does. */
+  async createRole(guildId: Snowflake, name: string): Promise<Role> {
+    const created = await this.rest.createRole(guildId, name);
+    const roles = this.rolesOf(guildId);
+    // The gateway's list may have come first; it already holds the new order then.
+    if (!roles.some((role) => role.id === created.id)) {
+      this.applyRoles(guildId, [
+        ...roles.map((role) => (role.id === guildId ? role : { ...role, position: role.position + 1 })),
+        created,
+      ]);
+    }
+    return created;
+  }
+
+  async updateRole(
+    guildId: Snowflake,
+    roleId: Snowflake,
+    changes: { name?: string; color?: number; permissions?: PermissionBits },
+  ): Promise<void> {
+    const role = await this.rest.updateRole(guildId, roleId, changes);
+    this.applyRoles(
+      guildId,
+      this.rolesOf(guildId).map((existing) => (existing.id === role.id ? role : existing)),
+    );
+  }
+
+  async deleteRole(guildId: Snowflake, roleId: Snowflake): Promise<void> {
+    await this.rest.deleteRole(guildId, roleId);
+    this.applyRoles(
+      guildId,
+      this.rolesOf(guildId).filter((role) => role.id !== roleId),
+    );
+  }
+
+  async reorderRoles(guildId: Snowflake, roleIds: readonly Snowflake[]): Promise<void> {
+    this.applyRoles(guildId, await this.rest.reorderRoles(guildId, roleIds));
+  }
+
+  async setMemberRole(guildId: Snowflake, userId: Snowflake, roleId: Snowflake, isGiven: boolean): Promise<void> {
+    await (isGiven
+      ? this.rest.addMemberRole(guildId, userId, roleId)
+      : this.rest.removeMemberRole(guildId, userId, roleId));
+    const member = this.membersByGuild.get(guildId)?.find((candidate) => candidate.user.id === userId);
+    if (member) {
+      const roleIds = member.role_ids.filter((id) => id !== roleId);
+      this.applyEvent(
+        {
+          t: "GUILD_MEMBER_UPDATE",
+          data: { guild_id: guildId, user_id: userId, role_ids: isGiven ? [...roleIds, roleId] : roleIds },
+        },
+        Date.now(),
+      );
+    }
+  }
+
+  /** `banReason` is null for a kick, the (possibly empty) reason of a ban otherwise. */
+  async removeMember(guildId: Snowflake, userId: Snowflake, banReason: string | null): Promise<void> {
+    await (banReason === null
+      ? this.rest.kickMember(guildId, userId)
+      : this.rest.banMember(guildId, userId, banReason));
+    this.applyEvent({ t: "GUILD_MEMBER_REMOVE", data: { guild_id: guildId, user_id: userId } }, Date.now());
   }
 
   async openDirectMessage(userId: Snowflake): Promise<void> {
