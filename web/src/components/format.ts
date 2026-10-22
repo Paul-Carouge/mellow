@@ -86,22 +86,31 @@ export function displayName(user: Pick<PublicUser, "display_name" | "username">)
 }
 
 /** "Ana is typing…" up to "Several people are typing…" (DESIGN.md §5.5); empty for nobody. */
-export function typingLabel(names: readonly string[]): string {
+/** The typing line in pieces, so the names can be set in bold (as in the Dusk mockup). */
+export function typingSegments(names: readonly string[]): { text: string; isName: boolean }[] {
   const [first, second] = names;
+  const name = (text: string) => ({ text, isName: true });
+  const words = (text: string) => ({ text, isName: false });
   if (first === undefined) {
-    return "";
+    return [];
   }
   if (names.length > MAXIMUM_TYPING_PEOPLE_COUNTED) {
-    return "Several people are typing…";
+    return [words("Several people are typing…")];
   }
   if (second === undefined) {
-    return `${first} is typing…`;
+    return [name(first), words(" is typing…")];
   }
   if (names.length === MAXIMUM_TYPING_NAMES_LISTED) {
-    return `${first} and ${second} are typing…`;
+    return [name(first), words(" and "), name(second), words(" are typing…")];
   }
   const others = names.length - MAXIMUM_TYPING_NAMES_LISTED;
-  return `${first}, ${second} and ${others} ${others === 1 ? "other" : "others"} are typing…`;
+  return [name(first), words(", "), name(second), words(` and ${others} ${others === 1 ? "other" : "others"} are typing…`)];
+}
+
+export function typingLabel(names: readonly string[]): string {
+  return typingSegments(names)
+    .map((segment) => segment.text)
+    .join("");
 }
 
 /** Binary steps with Discord's labels: the instance's "25 MB" limit is 25 × 1024 × 1024 bytes. */
