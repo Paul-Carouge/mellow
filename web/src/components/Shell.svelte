@@ -70,6 +70,14 @@
     }
   });
 
+  // Home, a deleted channel or a left server has no members to show: the overlay must not come
+  // back by itself when a server is opened again.
+  $effect(() => {
+    if (!hasMemberSheet) {
+      isMemberOverlayOpen = false;
+    }
+  });
+
   function focusComposer() {
     chatPane?.focusComposer();
   }
@@ -111,26 +119,36 @@
     // Ctrl+U, as on Discord; not while a dialog or the settings cover the shell.
     const isShortcut =
       (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "u";
-    if (!isShortcut || !hasMemberSheet || isShellCovered()) {
+    if (!isShortcut || !hasMemberSheet || isCoveredByModal()) {
       return;
     }
     event.preventDefault();
-    toggleMemberSheet();
+    if (isMemberSheetOpen) {
+      // Focus may be inside the sheet that goes away: it moves to the composer.
+      void closeMemberSheet();
+    } else {
+      toggleMemberSheet();
+    }
   }
 
-  /** Ctrl+K, as on Discord, from anywhere in the shell (the composer included). */
-  function openQuickSwitcherWithShortcut(event: KeyboardEvent) {
+  /** Ctrl+K, as on Discord, from anywhere in the shell (the composer included); again closes it. */
+  function toggleQuickSwitcherWithShortcut(event: KeyboardEvent) {
     const isShortcut =
       (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "k";
-    if (!isShortcut || isShellCovered()) {
+    if (!isShortcut) {
       return;
     }
+    // Never the browser's own Ctrl+K (its search bar), even while something covers the shell.
     event.preventDefault();
-    isQuickSwitcherOpen = true;
+    if (isQuickSwitcherOpen) {
+      isQuickSwitcherOpen = false;
+    } else if (!isCoveredByModal() && !isMemberOverlayOpen) {
+      isQuickSwitcherOpen = true;
+    }
   }
 
-  /** A dialog, the settings or a drawer covers the shell: its shortcuts wait. */
-  function isShellCovered(): boolean {
+  /** A dialog, the settings, the navigation drawer or the switcher covers the shell. */
+  function isCoveredByModal(): boolean {
     return openDialog !== null || isUserSettingsOpen || isNavigationDrawerOpen || isQuickSwitcherOpen;
   }
 </script>
@@ -138,7 +156,7 @@
 <svelte:window
   onkeydown={(event) => {
     toggleMemberSheetWithShortcut(event);
-    openQuickSwitcherWithShortcut(event);
+    toggleQuickSwitcherWithShortcut(event);
   }}
 />
 
@@ -207,14 +225,17 @@
           isFullWindow={!hasRoomForNavigator.current}
           onclose={() => (isMemberOverlayOpen = false)}
         >
-          <MemberList
-            {client}
-            {guild}
-            isDocked={false}
-            isFullWindow={!hasRoomForNavigator.current}
-            onclose={() => (isMemberOverlayOpen = false)}
-            onopenedconversation={() => void closeMemberSheet()}
-          />
+          <!-- Another server starts on its member list, never on the previous server's profile. -->
+          {#key guild.id}
+            <MemberList
+              {client}
+              {guild}
+              isDocked={false}
+              isFullWindow={!hasRoomForNavigator.current}
+              onclose={() => (isMemberOverlayOpen = false)}
+              onopenedconversation={() => void closeMemberSheet()}
+            />
+          {/key}
         </Drawer>
       {/if}
     {/if}
