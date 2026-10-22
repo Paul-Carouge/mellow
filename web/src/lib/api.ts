@@ -11,11 +11,15 @@ import type {
   Invite,
   Member,
   Message,
+  PublicUser,
   SessionCreated,
   Snowflake,
 } from "./protocol";
+import { reactionsPath } from "./protocol";
 
 export const HISTORY_PAGE_SIZE = 50;
+/** One page of "who reacted": the most the instance gives at once. */
+export const REACTING_USERS_PAGE_SIZE = 100;
 /** The path segment of `/users/@me/{kind}` (ADR-0021). */
 export type ProfileImageKind = "avatar" | "banner";
 const DEVICE_NAME = "Web browser";
@@ -225,6 +229,44 @@ export class RestClient {
 
   deleteMessage(channelId: Snowflake, messageId: Snowflake): Promise<void> {
     return this.request("DELETE", `channels/${channelId}/messages/${messageId}`);
+  }
+
+  /** Idempotent: reacting twice with one emoji changes nothing. */
+  addReaction(channelId: Snowflake, messageId: Snowflake, emoji: string): Promise<void> {
+    return this.request("PUT", `${reactionsPath(channelId, messageId, emoji)}/@me`);
+  }
+
+  removeOwnReaction(channelId: Snowflake, messageId: Snowflake, emoji: string): Promise<void> {
+    return this.request("DELETE", `${reactionsPath(channelId, messageId, emoji)}/@me`);
+  }
+
+  /** A moderator removes someone else's reaction. */
+  removeUserReaction(channelId: Snowflake, messageId: Snowflake, emoji: string, userId: Snowflake): Promise<void> {
+    return this.request("DELETE", `${reactionsPath(channelId, messageId, emoji)}/${userId}`);
+  }
+
+  /** A moderator removes every reaction of the message. */
+  removeAllReactions(channelId: Snowflake, messageId: Snowflake): Promise<void> {
+    return this.request("DELETE", reactionsPath(channelId, messageId));
+  }
+
+  /** Who reacted with this emoji, by ascending id: the first page only. */
+  listReactingUsers(channelId: Snowflake, messageId: Snowflake, emoji: string): Promise<PublicUser[]> {
+    const query = new URLSearchParams({ limit: String(REACTING_USERS_PAGE_SIZE) });
+    return this.request("GET", `${reactionsPath(channelId, messageId, emoji)}?${query}`);
+  }
+
+  /** The most recently pinned first. */
+  listPins(channelId: Snowflake): Promise<Message[]> {
+    return this.request("GET", `channels/${channelId}/pins`);
+  }
+
+  pinMessage(channelId: Snowflake, messageId: Snowflake): Promise<void> {
+    return this.request("PUT", `channels/${channelId}/pins/${messageId}`);
+  }
+
+  unpinMessage(channelId: Snowflake, messageId: Snowflake): Promise<void> {
+    return this.request("DELETE", `channels/${channelId}/pins/${messageId}`);
   }
 
   acknowledge(channelId: Snowflake, messageId: Snowflake): Promise<void> {

@@ -158,9 +158,15 @@ export interface MessageReaction {
   emoji: string;
 }
 
+/** A message's reactions under `/api/v1/`, or one emoji's: the emoji percent-encoded. */
+export function reactionsPath(channelId: Snowflake, messageId: Snowflake, emoji?: string): string {
+  const base = `channels/${channelId}/messages/${messageId}/reactions`;
+  return emoji === undefined ? base : `${base}/${encodeURIComponent(emoji)}`;
+}
+
 /** Path of the requester's own reaction (`PUT` adds it, `DELETE` removes it). */
 export function ownReactionPath(channelId: Snowflake, messageId: Snowflake, emoji: string): string {
-  return `/api/v1/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`;
+  return `/api/v1/${reactionsPath(channelId, messageId, emoji)}/@me`;
 }
 
 export interface ReadState {
