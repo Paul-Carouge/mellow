@@ -4,10 +4,11 @@
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
+  import Melli from "./Melli.svelte";
   import TextField from "./TextField.svelte";
 
-  // Discord's authentication card (DESIGN.md §5.1). No instance address: the web client talks to
-  // the instance that served it, named in the subtitle.
+  // The authentication card (DESIGN.md §5.1), with Melli on its edge. No instance address: the
+  // web client talks to the instance that served it, named in the title.
   interface Props {
     client: MellowClient;
   }
@@ -63,19 +64,25 @@
 <main class="grid min-h-dvh place-items-center overflow-y-auto bg-(--mw-component-auth-card-backdrop) p-(--mw-component-auth-card-margin)">
   <form
     bind:this={form}
-    class="flex w-full max-w-(--mw-component-auth-card-max-width) flex-col gap-(--mw-component-auth-card-section-gap) rounded-(--mw-component-auth-card-radius) bg-(--mw-component-auth-card-background) p-(--mw-component-auth-card-padding) shadow-high"
+    class="relative mt-[calc(var(--mw-component-auth-card-melli-size)/2)] flex w-full max-w-(--mw-component-auth-card-max-width) flex-col gap-(--mw-component-auth-card-section-gap) rounded-(--mw-component-auth-card-radius) bg-(--mw-component-auth-card-background) px-(--mw-component-auth-card-padding) pt-[calc(var(--mw-component-auth-card-melli-size)/2_+_var(--mw-space-md))] pb-(--mw-component-auth-card-padding) shadow-high"
     aria-labelledby="sign-in-title"
     onsubmit={(event) => {
       event.preventDefault();
       void submit();
     }}
   >
+    <!-- Melli sits on the card's top edge, more above it than inside (DESIGN.md §2.10). -->
+    <span
+      class="absolute top-0 left-1/2 size-(--mw-component-auth-card-melli-size) -translate-x-1/2 -translate-y-[55%]"
+    >
+      <Melli sizeToken="--mw-component-auth-card-melli-size" />
+    </span>
     <div class="flex flex-col gap-(--mw-component-auth-card-subtitle-gap) text-center">
-      <h1 id="sign-in-title" class="type-heading-xl text-(--mw-component-auth-card-title-text)">
-        {isRegistering ? "Create an account" : "Welcome back"}
+      <h1 id="sign-in-title" class="type-heading-xl break-words text-(--mw-component-auth-card-title-text)">
+        {isRegistering ? `Create an account on ${instanceName}` : `Sign in to ${instanceName}`}
       </h1>
-      <p class="type-body-lg break-words text-(--mw-component-auth-card-subtitle-text)">
-        {isRegistering ? `Your account will live on ${instanceName}.` : `Sign in to ${instanceName}.`}
+      <p class="type-body-lg text-(--mw-component-auth-card-subtitle-text)">
+        {isRegistering ? "Your account will live on this instance." : "Your account is hosted on this instance."}
       </p>
     </div>
 
@@ -139,14 +146,14 @@
           {isBusy ? "Signing in…" : "Sign in"}
         {/if}
       </Button>
-      <p class="flex flex-wrap items-center gap-x-2xs type-body text-(--mw-component-auth-card-hint-text)">
-        {isRegistering ? "Already have an account?" : "Need an account?"}
-        <button
-          type="button"
-          class="min-h-(--mw-size-hit-web-min) font-medium text-(--mw-component-auth-card-link-text) hover:underline"
-          onclick={switchMode}>{isRegistering ? "Sign in" : "Register"}</button
-        >
-      </p>
     </div>
+    <p class="flex flex-wrap items-center justify-center gap-x-2xs type-body text-(--mw-component-auth-card-hint-text)">
+      {isRegistering ? "Already have an account?" : "No account yet?"}
+      <button
+        type="button"
+        class="text-(--mw-component-auth-card-link-text) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
+        onclick={switchMode}>{isRegistering ? "Sign in" : "Create an account"}</button
+      >
+    </p>
   </form>
 </main>
