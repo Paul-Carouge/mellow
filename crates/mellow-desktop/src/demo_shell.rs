@@ -11,8 +11,11 @@ use crate::fake_messages::{FakeMessage, fake_conversation};
 use crate::fake_workspace::{
     FakeCategory, FakeServer, fake_categories, fake_role_groups, fake_servers,
 };
-use crate::generated_ui::{AppWindow, AttachmentRow, MessageDelivery, MessageRow, RoleColor};
-use crate::message_markup::styled_text_from_message_body;
+use crate::generated_ui::{
+    AppWindow, AttachmentRow, MellowComponent, MessageDelivery, MessageRow, RoleColor,
+};
+use crate::mentions::{MentionablePeople, find_mentions};
+use crate::message_markup::{styled_text_from_message_body, styled_text_with_mentions};
 use crate::{idle_benchmark, person_style, scroll_benchmark, shell_rows};
 
 /// The busiest channel gets the 10 000-message history used by the scroll benchmark.
@@ -50,15 +53,45 @@ fn role_colors_by_name() -> HashMap<&'static str, u32> {
         .collect()
 }
 
-fn message_row(message: &FakeMessage, role_colors: &HashMap<&'static str, u32>) -> MessageRow {
+/// Role colours, the names a mention can use and the mention colour, for the fake messages.
+struct DemoPeople {
+    role_colors: HashMap<&'static str, u32>,
+    mentionable: MentionablePeople,
+    mention_color: String,
+}
+
+fn demo_people(window: &AppWindow) -> DemoPeople {
+    let color = window.global::<MellowComponent>().get_mention_chip_text();
+    let member_names: Vec<&str> = fake_role_groups()
+        .iter()
+        .flat_map(|group| group.members.iter().map(|member| member.display_name))
+        .collect();
+    DemoPeople {
+        role_colors: role_colors_by_name(),
+        mentionable: MentionablePeople::from_names(
+            std::iter::once(CURRENT_USERNAME).chain(member_names),
+        ),
+        mention_color: format!(
+            "#{:02X}{:02X}{:02X}",
+            color.red(),
+            color.green(),
+            color.blue()
+        ),
+    }
+}
+
+fn message_row(message: &FakeMessage, people: &DemoPeople) -> MessageRow {
+    let mentions = find_mentions(message.body, &people.mentionable);
     MessageRow {
         author: message.author.into(),
         author_initial: shell_rows::first_letter(message.author).into(),
         author_tint: person_style::avatar_tint_index(message.author),
-        author_role_color: person_style::role_color(role_colors.get(message.author).copied()),
+        author_role_color: person_style::role_color(
+            people.role_colors.get(message.author).copied(),
+        ),
         timestamp: format!("Today at {}", message.time_of_day).into(),
         short_time: message.time_of_day.clone().into(),
-        body: styled_text_from_message_body(message.body),
+        body: styled_text_with_mentions(message.body, &mentions, &people.mention_color),
         body_plain: message.body.into(),
         attachments: if message.has_attachment {
             ModelRc::new(VecModel::from(vec![AttachmentRow {
@@ -111,10 +144,10 @@ fn open_channel(window: &AppWindow, state: &mut ShellState, channel_name: &str) 
         .find(|channel| channel.name == channel_name)
         .map(|channel| channel.topic)
         .unwrap_or_default();
-    let role_colors = role_colors_by_name();
+    let people = demo_people(window);
     let mut rows: Vec<MessageRow> = fake_conversation(message_count_for_channel(channel_name))
         .iter()
-        .map(|message| message_row(message, &role_colors))
+        .map(|message| message_row(message, &people))
         .collect();
     // The last few messages are new, so the "New" divider and its bar show (DESIGN.md §5.4).
     let first_unread_index = rows.len().saturating_sub(DEMO_UNREAD_MESSAGE_COUNT);
@@ -190,6 +223,16 @@ fn connect_navigation_callbacks(
     state: &Rc<RefCell<ShellState>>,
     servers: Vec<FakeServer>,
 ) {
+    // Mentions are coloured in Rust, so the rows follow the theme.
+    let weak_window = window.as_weak();
+    let shared_state = state.clone();
+    window.on_theme_changed(move || {
+        if let Some(window) = weak_window.upgrade() {
+            let channel_name = shared_state.borrow().selected_channel_name.clone();
+            open_channel(&window, &mut shared_state.borrow_mut(), &channel_name);
+        }
+    });
+
     let weak_window = window.as_weak();
     window.on_select_server(move |server_index| {
         let Some(window) = weak_window.upgrade() else {

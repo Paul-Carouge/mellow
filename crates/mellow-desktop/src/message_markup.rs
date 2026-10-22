@@ -1,5 +1,7 @@
 use slint::StyledText;
 
+use crate::mentions::Mention;
+
 /// Renders a message body written in Mellow's markdown subset.
 ///
 /// Raw HTML is escaped first: Slint's markdown accepts `<font color>` and `<u>`, which would let
@@ -8,9 +10,40 @@ use slint::StyledText;
 /// render (code blocks, block quotes, headings) make parsing fail, and the body is then shown as
 /// plain text.
 pub fn styled_text_from_message_body(body: &str) -> StyledText {
-    let body_without_html = body.replace('\\', "\\\\").replace('<', "\\<");
-    StyledText::from_markdown(&body_without_html)
+    StyledText::from_markdown(&escape_html(body))
         .unwrap_or_else(|_| StyledText::from_plain_text(body))
+}
+
+/// Escapes what Slint's markdown would otherwise read as HTML (see above).
+fn escape_html(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('<', "\\<")
+}
+
+/// The body with each mention coloured as a chip's text (`color` is `#RRGGBB`, from a token).
+/// shortcut: `StyledText` has no background colour, so the chip's fill cannot be drawn on desktop.
+pub fn styled_text_with_mentions(body: &str, mentions: &[Mention], color: &str) -> StyledText {
+    if mentions.is_empty() || color.is_empty() {
+        return styled_text_from_message_body(body);
+    }
+    let mut markup = String::with_capacity(body.len());
+    let mut text_start = 0;
+    for mention in mentions {
+        let (Some(before), Some(name)) = (
+            body.get(text_start..mention.range.start),
+            body.get(mention.range.clone()),
+        ) else {
+            return styled_text_from_message_body(body);
+        };
+        markup.push_str(&escape_html(before));
+        markup.push_str("<font color=\"");
+        markup.push_str(color);
+        markup.push_str("\">");
+        markup.push_str(&escape_html(name));
+        markup.push_str("</font>");
+        text_start = mention.range.end;
+    }
+    markup.push_str(&escape_html(body.get(text_start..).unwrap_or_default()));
+    StyledText::from_markdown(&markup).unwrap_or_else(|_| StyledText::from_plain_text(body))
 }
 
 #[cfg(test)]
@@ -41,6 +74,19 @@ mod tests {
             styled_text_from_message_body(body),
             StyledText::from_plain_text(body)
         );
+    }
+
+    #[test]
+    fn mentions_are_coloured_and_the_rest_stays_escaped() {
+        let body = "@ana <u>notice</u>";
+        let mention = Mention {
+            range: 0..4,
+            user_id: mellow_protocol::Snowflake::from_raw(1),
+        };
+        let coloured = styled_text_with_mentions(body, std::slice::from_ref(&mention), "#FFE4D1");
+        assert_ne!(coloured, styled_text_from_message_body(body));
+        let only_the_rest = styled_text_with_mentions(body, &[], "#FFE4D1");
+        assert_eq!(only_the_rest, StyledText::from_plain_text(body));
     }
 
     #[test]

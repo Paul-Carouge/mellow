@@ -13,7 +13,8 @@ use crate::generated_ui::{
     AttachmentRow, ChannelListRow, DirectMessageRow, HistoryStartState, MelliState, MemberListRow,
     MessageDelivery, MessageRow, PresenceStatus, RoleColor, ServerItem,
 };
-use crate::message_markup::styled_text_from_message_body;
+use crate::mentions::{MentionablePeople, find_mentions};
+use crate::message_markup::{styled_text_from_message_body, styled_text_with_mentions};
 use crate::person_style::{avatar_tint_index_of, highest_role_color, role_color};
 use crate::shell_rows::{first_letter, saturating_int, server_initials};
 
@@ -309,19 +310,27 @@ pub fn role_colors_by_user(guild: Option<&Guild>, members: &[Member]) -> HashMap
         .collect()
 }
 
+/// Who the open channel's messages can name, and how: role colours by user, the people a
+/// mention can name, and the mention colour of the current theme (`#RRGGBB`).
+pub struct PeopleContext<'a> {
+    pub role_colors: &'a HashMap<Snowflake, u32>,
+    pub mentionable: &'a MentionablePeople,
+    pub mention_color: &'a str,
+}
+
 /// `can_manage_messages`: the signed-in user may delete other people's messages here.
 pub fn message_rows(
     messages: &[Message],
     current_user_id: Option<Snowflake>,
     can_manage_messages: bool,
-    role_colors: &HashMap<Snowflake, u32>,
+    people: &PeopleContext,
     unread_divider_message_id: Option<Snowflake>,
 ) -> Vec<MessageRow> {
     message_rows_at(
         messages,
         current_user_id,
         can_manage_messages,
-        role_colors,
+        people,
         unread_divider_message_id,
         &Local::now(),
     )
@@ -363,7 +372,7 @@ fn message_rows_at<Zone: TimeZone>(
     messages: &[Message],
     current_user_id: Option<Snowflake>,
     can_manage_messages: bool,
-    role_colors: &HashMap<Snowflake, u32>,
+    people: &PeopleContext,
     unread_divider_message_id: Option<Snowflake>,
     now: &DateTime<Zone>,
 ) -> Vec<MessageRow>
@@ -387,14 +396,15 @@ where
             previous = Some(message);
             let is_own = Some(message.author.id) == current_user_id;
             let reply = reply_reference(message.reply_to_id, messages);
+            let mentions = find_mentions(&message.content, people.mentionable);
             MessageRow {
                 author: message.author.display_name.as_str().into(),
                 author_initial: first_letter(&message.author.display_name).into(),
                 author_tint: avatar_tint_index_of(message.author.id),
-                author_role_color: role_color(role_colors.get(&message.author.id).copied()),
+                author_role_color: role_color(people.role_colors.get(&message.author.id).copied()),
                 timestamp: timestamp_label(sent_at, now).into(),
                 short_time: short_time(sent_at, &now.timezone()).into(),
-                body: styled_text_from_message_body(&message.content),
+                body: styled_text_with_mentions(&message.content, &mentions, people.mention_color),
                 body_plain: message.content.as_str().into(),
                 attachments: attachment_rows(&message.attachments),
                 starts_author_group,
@@ -403,8 +413,9 @@ where
                 reply_author_initial: reply.author_initial,
                 reply_author_tint: reply.author_tint,
                 reply_preview: reply.text,
-                // shortcut: mentions are not parsed yet (M2).
-                mentions_current_user: false,
+                mentions_current_user: mentions
+                    .iter()
+                    .any(|mention| Some(mention.user_id) == current_user_id),
                 is_own,
                 can_delete: is_own || can_manage_messages,
                 is_edited: message.edited_at_unix_milliseconds.is_some(),
@@ -707,7 +718,11 @@ mod tests {
             &messages,
             Some(Snowflake::from_raw(2)),
             false,
-            &HashMap::new(),
+            &PeopleContext {
+                role_colors: &HashMap::new(),
+                mentionable: &MentionablePeople::default(),
+                mention_color: "",
+            },
             None,
             &Utc::now(),
         );
@@ -719,7 +734,11 @@ mod tests {
             &messages,
             Some(Snowflake::from_raw(2)),
             false,
-            &HashMap::new(),
+            &PeopleContext {
+                role_colors: &HashMap::new(),
+                mentionable: &MentionablePeople::default(),
+                mention_color: "",
+            },
             Some(messages[1].id),
             &Utc::now(),
         );
@@ -748,7 +767,11 @@ mod tests {
             &messages,
             Some(Snowflake::from_raw(2)),
             true,
-            &HashMap::new(),
+            &PeopleContext {
+                role_colors: &HashMap::new(),
+                mentionable: &MentionablePeople::default(),
+                mention_color: "",
+            },
             None,
             &Utc::now(),
         );
