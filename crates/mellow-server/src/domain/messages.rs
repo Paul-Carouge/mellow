@@ -487,7 +487,10 @@ impl Messages {
         let content = normalize_line_endings(&request.content);
         validate_message_content(&content)?;
         let audience = self.audience(&channel).await?;
+        // Read before the write (attachments never change once sent), so nothing can fail
+        // between the commit and the event.
         let author_images = profile_images_of_user(&self.pool, user_id).await?;
+        let attachments = attachments_of(&self.pool, message.id).await?;
         let updated = message_storage::update_message_content(
             &self.pool,
             message.id,
@@ -496,13 +499,16 @@ impl Messages {
         )
         .await?
         .ok_or(MessageError::MessageNotFound)?;
-        let attachments = attachments_of(&self.pool, updated.id).await?;
         let mut updated = message_from_stored(updated, None, attachments);
         updated.author.avatar = author_images.avatar;
         updated.author.banner = author_images.banner;
-        let event = GatewayEvent::MessageUpdate(updated.clone());
+        publish(
+            &self.guilds,
+            &audience,
+            &GatewayEvent::MessageUpdate(updated.clone()),
+        );
+        // Only the editor's answer carries reactions; a failure here leaves the edit published.
         fill_reactions(&self.pool, user_id, std::slice::from_mut(&mut updated)).await?;
-        publish(&self.guilds, &audience, &event);
         Ok(updated)
     }
 
@@ -2584,5 +2590,32 @@ mod tests {
         );
         assert!(removed_by_self.is_ok(), "one's own reaction, by user id");
         assert_eq!(summaries(&seen[0]), Vec::new());
+    }
+
+    #[tokio::test]
+    async fn a_pin_event_carries_the_message_as_its_author_left_it() {
+        let fixture = fixture().await;
+        let message = fixture
+            .messages
+            .send(fixture.member, fixture.general, text("pin me"), NOW)
+            .await
+            .unwrap();
+        let [_owner_events, mut member_events] = live_sessions(&fixture);
+        fixture
+            .messages
+            .pin(fixture.owner, fixture.general, message.id, NOW + 1)
+            .await
+            .unwrap();
+        fixture.pool.close().await;
+
+        let event: serde_json::Value =
+            serde_json::from_str(&member_events.try_recv().unwrap().payload_json).unwrap();
+        let mut expected = serde_json::to_value(&message).unwrap();
+        expected["pinned"] = serde_json::json!(true);
+        assert_eq!(event["t"], "MESSAGE_UPDATE");
+        assert_eq!(
+            event["data"], expected,
+            "author, attachments and content read before the write"
+        );
     }
 }

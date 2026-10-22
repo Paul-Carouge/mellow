@@ -8,7 +8,7 @@ use super::{MessageError, Messages, attachments_of, message_from_stored, publish
 use crate::domain::guilds::GuildError;
 use crate::domain::message_rules::MAXIMUM_PINS_PER_CHANNEL;
 use crate::domain::permissions::may_manage_pins;
-use crate::domain::profile_images::fill_profile_images;
+use crate::domain::profile_images::profile_images_of_user;
 use crate::storage::messages::{self as storage, PinOutcome, StoredMessage};
 
 /// Whether the message ends up pinned.
@@ -64,6 +64,10 @@ impl Messages {
         }
         let message = self.message_in_channel(channel.id(), message_id).await?;
         let audience = self.audience(&channel).await?;
+        // Read before the write (neither changes with a pin), so nothing can fail between the
+        // commit and the event.
+        let author_images = profile_images_of_user(&self.pool, message.author_id).await?;
+        let attachments = attachments_of(&self.pool, message.id).await?;
         let audit = channel
             .guild_id()
             .map(|guild_id| {
@@ -104,9 +108,9 @@ impl Messages {
             }
         };
         if let Some(changed) = changed {
-            let attachments = attachments_of(&self.pool, changed.id).await?;
             let mut changed = message_from_stored(changed, None, attachments);
-            fill_profile_images(&self.pool, [&mut changed.author]).await?;
+            changed.author.avatar = author_images.avatar;
+            changed.author.banner = author_images.banner;
             publish(
                 &self.guilds,
                 &audience,
