@@ -195,7 +195,7 @@ export component Navigator inherits Rectangle {
     callback invite-people();
     callback open-server-settings();
     callback create-channel();
-    callback create-channel-in-category(int, string);
+    callback create-channel-in-category(string, string);
     callback leave-server();
     // User card.
     in property <string> current-user-name;
@@ -246,7 +246,7 @@ export component Navigator inherits Rectangle {
                 invite-people => { root.invite-people(); }
                 open-server-settings => { root.open-server-settings(); }
                 create-channel => { root.create-channel(); }
-                create-channel-in-category(index, name) => { root.create-channel-in-category(index, name); }
+                create-channel-in-category(id, name) => { root.create-channel-in-category(id, name); }
                 leave-server => { root.leave-server(); }
             }
         }

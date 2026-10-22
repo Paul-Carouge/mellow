@@ -169,22 +169,21 @@ pub(super) fn create_channel(shell: &SharedShell, name: &str) {
     let Some(guild_id) = shell.borrow().selected_guild_id else {
         return;
     };
-    // From a category's "+", the channel goes in that category.
+    // From a category's "+", the channel goes in that category, if it is still one of this server's.
     let parent_id = {
         let shell = shell.borrow();
-        let category_index = shell
-            .window
-            .upgrade()
-            .map_or(-1, |window| window.get_create_channel_category_index());
-        shell
-            .state
-            .guild(guild_id)
-            .map(live_rows::sorted_category_ids)
-            .and_then(|ids| {
-                usize::try_from(category_index)
-                    .ok()
-                    .and_then(|index| ids.get(index).copied())
-            })
+        let category_id = shell.window.upgrade().and_then(|window| {
+            window
+                .get_create_channel_category_id()
+                .parse::<Snowflake>()
+                .ok()
+        });
+        category_id.filter(|id| {
+            shell
+                .state
+                .guild(guild_id)
+                .is_some_and(|guild| live_rows::sorted_category_ids(guild).contains(id))
+        })
     };
     // The instance lowercases and hyphenates the name, and refuses what it cannot fix.
     let name = name.trim().trim_start_matches('#').trim().to_owned();

@@ -207,7 +207,7 @@ pub fn channel_rows(
                 .find(|channel| channel.id == category_id)?;
             let is_collapsed = collapsed_category_ids.contains(&category_id);
             let header = ChannelListRow {
-                id: SharedString::default(),
+                id: category_id.to_string().into(),
                 is_category: true,
                 is_collapsed,
                 category_index: saturating_int(category_index),
@@ -753,6 +753,8 @@ mod tests {
             ]
         );
         assert_eq!(rows[4].category_index, 1);
+        // A category row carries its own id, so its "+" names the category it was clicked on.
+        assert_eq!(rows[1].id, "10");
         assert_eq!(
             first_text_channel_id(&guild()),
             Some(Snowflake::from_raw(13))

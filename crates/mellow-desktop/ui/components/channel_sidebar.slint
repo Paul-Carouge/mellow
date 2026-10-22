@@ -4,7 +4,7 @@ import { Avatar, ContextMenuItem, IconButton, MentionBadge, PresenceStatus } fro
 
 // Categories and channels flattened into one list, so ListView can virtualize long servers.
 export struct ChannelListRow {
-    // Channel id (names are not unique within a guild); empty for category headers.
+    // Channel id (names are not unique within a guild), or the category's own id on its header.
     id: string,
     is-category: bool,
     is-collapsed: bool,
@@ -334,8 +334,8 @@ export component ChannelSidebar inherits Rectangle {
     callback invite-people();
     callback open-server-settings();
     callback create-channel();
-    // From a category's "+": its index among the categories, and its name.
-    callback create-channel-in-category(int, string);
+    // From a category's "+": its id, and its name.
+    callback create-channel-in-category(string, string);
     callback leave-server();
     changed server-header-focus-request-count => { header-focus.focus(); }
     // Home: conversations replace categories and channels, and the header is plain text.
@@ -555,7 +555,7 @@ export component ChannelSidebar inherits Rectangle {
                     is-collapsed: row.is-collapsed;
                     can-create-channels: root.can-create-channels;
                     toggled => { root.toggle-category(row.category-index); }
-                    create-channel => { root.create-channel-in-category(row.category-index, row.name); }
+                    create-channel => { root.create-channel-in-category(row.id, row.name); }
                 }
                 if !row.is-category: ChannelRow {
                     name: row.name;
