@@ -6,6 +6,7 @@
   import { ApiError } from "../lib/api";
   import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
+  import { MINIMUM_PASSWORD_LENGTH } from "../lib/protocol";
   import AccountEditForm from "./AccountEditForm.svelte";
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
@@ -22,8 +23,6 @@
 
   type AccountForm = "display-name" | "username" | "password";
 
-  // Mirrors the server's rule (mellow-server domain/account_rules.rs); the server still decides.
-  const MINIMUM_PASSWORD_LENGTH = 10;
 
   const id = $props.id();
   const user = $derived(client.user);
