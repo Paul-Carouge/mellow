@@ -7,6 +7,7 @@
   import type { Message, PublicUser, Snowflake } from "../lib/protocol";
   import { attachmentCountLabel, displayName, timeOfDayLabel } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
+  import type { ReactionAndPinActions } from "./message-actions";
   import MessageItem from "./MessageItem.svelte";
   import { mentionablePeople } from "./mentions";
   import { buildMessageRows, isUnreadStartLoaded } from "./message-rows";
@@ -28,6 +29,7 @@
     topic: string;
     canSendMessages: boolean;
     canManageMessages: boolean;
+    reactionAndPinActions: ReactionAndPinActions;
     editingMessageId: Snowflake | null;
     maximumEditorHeight: () => number;
     onreply: (message: Message) => void;
@@ -50,6 +52,7 @@
     topic,
     canSendMessages,
     canManageMessages,
+    reactionAndPinActions,
     editingMessageId,
     maximumEditorHeight,
     onreply,
@@ -241,6 +244,19 @@
     lastAnnouncedKey = latest.key;
   }
 
+  /** A pinned message chosen in the pins panel: scrolled into the middle and focused. */
+  export function revealMessage(messageId: Snowflake): void {
+    const element = viewport.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(messageId)}"]`);
+    if (!element) {
+      return;
+    }
+    noteReaderScrolling();
+    rovingKey = messageId;
+    element.scrollIntoView({ block: "center" });
+    element.focus({ preventScroll: true });
+    handleScroll();
+  }
+
   export function jumpToPresent() {
     isPinnedToLatest = true;
     isViewingOlderMessages = false;
@@ -386,6 +402,7 @@
           replyReference={row.kind === "sent" ? replyReferenceOf(row.message) : null}
           {canSendMessages}
           {canManageMessages}
+          {reactionAndPinActions}
           isEditing={row.kind === "sent" && row.message.id === editingMessageId}
           isRovingTarget={row.key === (rovingKey ?? rows.at(-1)?.key)}
           {maximumEditorHeight}

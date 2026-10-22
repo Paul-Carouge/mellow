@@ -48,6 +48,18 @@ describe("chooseLanguage", () => {
 });
 
 describe("catalogues", () => {
+  it("say who reacted in each language, with French verb agreement", () => {
+    expect(en.reactions.reactedWith(false, ["Ana"], 0, "👍")).toBe("Ana reacted with\u00a0👍");
+    expect(en.reactions.reactedWith(true, ["Ana", "Bo"], 3, "👍")).toBe("You, Ana, Bo and 3 others reacted with\u00a0👍");
+    expect(en.reactions.reactedWith(true, [], 1, "👍")).toBe("You and 1 other reacted with\u00a0👍");
+    expect(fr.reactions.reactedWith(false, ["Ana"], 0, "👍")).toBe("Ana a réagi avec\u00a0👍");
+    expect(fr.reactions.reactedWith(true, [], 0, "👍")).toBe("Tu as réagi avec\u00a0👍");
+    expect(fr.reactions.reactedWith(true, ["Ana"], 2, "👍")).toBe("Toi, Ana et 2\u00a0autres avez réagi avec\u00a0👍");
+    expect(fr.reactions.reactedWith(false, ["Ana", "Bo"], 0, "👍")).toBe("Ana et Bo ont réagi avec\u00a0👍");
+    expect(en.reactions.chip("👍", 1)).toBe("👍, 1 reaction");
+    expect(fr.reactions.chip("👍", 2)).toBe("👍, 2\u00a0réactions");
+  });
+
   it("count attachments with each language's plural rules", () => {
     expect(en.messages.attachmentCount(0)).toBe("0 attachments");
     expect(en.messages.attachmentCount(1)).toBe("1 attachment");

@@ -11,8 +11,11 @@
     messageTimestampLabel,
     timeOfDayLabel,
   } from "./format";
-  import Icon from "./Icon.svelte";
+  import Icon, { type IconName } from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import type { ReactionAndPinActions } from "./message-actions";
+  import MessageReactions from "./MessageReactions.svelte";
+  import { quickReactionEmoji } from "./recent-emoji.svelte";
   import { markdownMentionsUser, parseMessageMarkdown } from "./markdown";
   import type { MentionablePeople } from "./mentions";
   import MessageAttachments from "./MessageAttachments.svelte";
@@ -33,6 +36,7 @@
     mentionablePeople: MentionablePeople;
     canSendMessages: boolean;
     canManageMessages: boolean;
+    reactionAndPinActions: ReactionAndPinActions;
     isEditing: boolean;
     isRovingTarget: boolean;
     maximumEditorHeight: () => number;
@@ -57,6 +61,7 @@
     mentionablePeople,
     canSendMessages,
     canManageMessages,
+    reactionAndPinActions: actions,
     isEditing,
     isRovingTarget,
     maximumEditorHeight,
@@ -113,6 +118,52 @@
     }
   }
 
+  const reactions = $derived(message?.reactions ?? []);
+  const isPinned = $derived(message?.pinned === true);
+  let moreButton = $state<HTMLButtonElement | null>(null);
+  let menu = $state<HTMLElement | null>(null);
+  let isMenuOpen = $state(false);
+  let menuPosition = $state({ top: 0, right: 0 });
+  const hasMenu = $derived(actions.canManagePins || (reactions.length > 0 && (actions.canJoinReactions || actions.canRemoveReactions)));
+
+  function openMenu() {
+    if (!moreButton || !menu) {
+      return;
+    }
+    const bounds = moreButton.getBoundingClientRect();
+    menuPosition = { top: bounds.bottom, right: Math.max(window.innerWidth - bounds.right, 0) };
+    menu.showPopover();
+    menuItems()[0]?.focus();
+  }
+
+  function menuItems(): HTMLElement[] {
+    return [...(menu?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])];
+  }
+
+  function moveMenuFocus(event: KeyboardEvent) {
+    const items = menuItems();
+    const current = items.indexOf(document.activeElement as HTMLElement);
+    const next =
+      event.key === "ArrowDown"
+        ? (current + 1) % items.length
+        : event.key === "ArrowUp"
+          ? (current - 1 + items.length) % items.length
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? items.length - 1
+              : null;
+    if (next !== null) {
+      event.preventDefault();
+      items[next]?.focus();
+    }
+  }
+
+  function chooseMenuItem(action: () => void) {
+    menu?.hidePopover();
+    action();
+  }
+
   function focusEditorAtEnd(textarea: HTMLTextAreaElement) {
     textarea.focus();
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
@@ -124,6 +175,30 @@
       title={strings.messages.editedAt(fullTimestampLabel(message.edited_at_unix_milliseconds))}
       >{strings.messages.edited}</span
     >{/if}{/snippet}
+
+{#snippet pinnedMark()}
+  <span class="inline-flex self-center text-(--mw-component-reaction-pinned-icon)" title={strings.pins.pinned}>
+    <Icon name="push-pin" class="size-(--mw-component-reaction-pinned-icon-size)" />
+    <span class="sr-only">{strings.pins.pinned}</span>
+  </span>
+{/snippet}
+
+{#snippet menuItem(label: string, icon: IconName, isDanger: boolean, action: () => void)}
+  <button
+    type="button"
+    role="menuitem"
+    class={[
+      "flex h-(--mw-component-context-menu-item-height) w-full items-center justify-between gap-xs rounded-(--mw-component-context-menu-item-radius) px-(--mw-component-context-menu-item-padding-inline) type-menu-item focus-visible:focus-ring-inset pointer-coarse:h-(--mw-size-hit-web-min)",
+      isDanger
+        ? "text-(--mw-component-context-menu-danger-text) hover:bg-(--mw-component-context-menu-danger-background-focus) hover:text-(--mw-component-context-menu-danger-text-focus) focus-visible:bg-(--mw-component-context-menu-danger-background-focus) focus-visible:text-(--mw-component-context-menu-danger-text-focus)"
+        : "text-(--mw-component-context-menu-item-text) hover:bg-(--mw-component-context-menu-item-background-focus) hover:text-(--mw-component-context-menu-item-text-focus) focus-visible:bg-(--mw-component-context-menu-item-background-focus) focus-visible:text-(--mw-component-context-menu-item-text-focus)",
+    ]}
+    onclick={() => chooseMenuItem(action)}
+  >
+    {label}
+    <Icon name={icon} class="size-(--mw-component-context-menu-item-icon-size)" />
+  </button>
+{/snippet}
 
 {#snippet body()}
   <div
@@ -194,6 +269,7 @@
           >{messageTimestampLabel(sentAt, new Date())}</time
         >
       {/if}
+      {#if isPinned}{@render pinnedMark()}{/if}
     </h3>
   {:else if sentAt !== null}
     <time
@@ -203,6 +279,12 @@
       class="invisible absolute left-0 w-(--mw-component-message-gutter) text-center type-message-timestamp text-(--mw-component-message-timestamp-text) group-focus-within:visible group-hover:visible"
       >{timeOfDayLabel(sentAt)}</time
     >
+    {#if isPinned}
+      <!-- In the gutter's trailing corner, clear of the hover time. -->
+      <span class="absolute top-(--mw-component-message-padding-block) left-[calc(var(--mw-component-message-gutter)_-_var(--mw-component-reaction-pinned-icon-size)_-_var(--mw-space-xs))]"
+        >{@render pinnedMark()}</span
+      >
+    {/if}
   {/if}
 
   {#if isEditing && message}
@@ -238,6 +320,18 @@
     {#if attachments.length > 0}
       <MessageAttachments {attachments} isPending={row.kind === "pending"} />
     {/if}
+    {#if message}
+      <MessageReactions
+        {reactions}
+        currentUserId={currentUser.id}
+        canJoin={actions.canJoinReactions}
+        canAddNew={actions.canAddReactions}
+        isHeld={actions.heldMessageId === message.id}
+        ontoggle={(emoji) => actions.toggleReaction(message, emoji)}
+        onopenpicker={(anchor) => actions.openPicker(message, anchor)}
+        loadUsers={(emoji) => actions.loadReactors(message, emoji)}
+      />
+    {/if}
   {/if}
 
   {#if isSending && isSendingLabelShown}
@@ -266,12 +360,35 @@
     {@const buttonClass =
       "size-(--mw-component-action-bar-button-size) text-(--mw-component-action-bar-icon) hover:bg-(--mw-component-action-bar-button-background-hover) hover:text-(--mw-component-action-bar-icon-hover) focus-visible:focus-ring-inset"}
     {@const iconClass = "size-(--mw-component-action-bar-icon-size)"}
-    <!-- Hidden until the row is hovered or holds focus; hidden controls leave the Tab order. -->
+    <!-- Hidden until the row is hovered or holds focus; hidden controls leave the Tab order. Its
+         picker or menu open, it stays, so focus can come back to the button that opened them. -->
     <div
       role="toolbar"
       aria-label={strings.messages.actions}
-      class="invisible absolute top-(--mw-component-action-bar-offset-top) right-(--mw-component-action-bar-offset-trailing) z-10 flex rounded-(--mw-component-action-bar-radius) border border-(--mw-component-action-bar-border) bg-(--mw-component-action-bar-background) shadow-(--mw-component-action-bar-shadow) group-focus-within:visible group-hover:visible"
+      class={[
+        "invisible absolute top-(--mw-component-action-bar-offset-top) right-(--mw-component-action-bar-offset-trailing) z-10 flex rounded-(--mw-component-action-bar-radius) border border-(--mw-component-action-bar-border) bg-(--mw-component-action-bar-background) shadow-(--mw-component-action-bar-shadow) group-focus-within:visible group-hover:visible",
+        (isMenuOpen || actions.heldMessageId === message.id) && "visible",
+      ]}
     >
+      {#if actions.canAddReactions}
+        <!-- Quick reactions, as on Discord; too wide for a phone, where the picker stays. -->
+        {#each quickReactionEmoji() as emoji (emoji)}
+          <button
+            type="button"
+            aria-label={strings.reactions.reactWith(emoji)}
+            title={strings.reactions.reactWith(emoji)}
+            class="{buttonClass} inline-flex shrink-0 items-center justify-center rounded-sm text-(length:--mw-component-action-bar-icon-size) leading-none transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) pointer-coarse:hidden"
+            onclick={() => actions.toggleReaction(message, emoji)}>{emoji}</button
+          >
+        {/each}
+        <IconButton
+          icon="smiley"
+          label={strings.reactions.addReaction}
+          class={buttonClass}
+          {iconClass}
+          onclick={(event) => actions.openPicker(message, event.currentTarget)}
+        />
+      {/if}
       {#if isOwn && canSendMessages}
         <IconButton icon="pencil-simple" label={strings.common.edit} class={buttonClass} {iconClass} onclick={() => onstartedit(message)} />
       {/if}
@@ -288,7 +405,57 @@
           onclick={(event) => ondelete(message, event.shiftKey)}
         />
       {/if}
+      {#if hasMenu}
+        <IconButton
+          bind:element={moreButton}
+          icon="dots-three"
+          label={strings.messages.more}
+          aria-haspopup="menu"
+          aria-expanded={isMenuOpen}
+          aria-controls="message-menu-{message.id}"
+          class={buttonClass}
+          {iconClass}
+          onclick={() => (isMenuOpen ? menu?.hidePopover() : openMenu())}
+        />
+      {/if}
     </div>
+
+    {#if hasMenu}
+      <!-- Light dismiss and Esc come from the popover; focus goes back to More when it closes. -->
+      <div
+        bind:this={menu}
+        id="message-menu-{message.id}"
+        popover="auto"
+        role="menu"
+        tabindex="-1"
+        aria-label={strings.messages.actions}
+        class="fixed inset-auto m-0 min-w-(--mw-component-context-menu-min-width) flex-col rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) p-(--mw-component-context-menu-padding) shadow-(--mw-component-context-menu-shadow) [&:popover-open]:flex [&:popover-open]:animate-[mw-drop-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]"
+        style:top="{menuPosition.top}px"
+        style:right="{menuPosition.right}px"
+        onkeydown={moveMenuFocus}
+        ontoggle={(event) => {
+          isMenuOpen = event.newState === "open";
+          if (!isMenuOpen && (menu?.contains(document.activeElement) || document.activeElement === document.body)) {
+            moreButton?.focus();
+          }
+        }}
+      >
+        {#if actions.canManagePins}
+          {@render menuItem(
+            isPinned ? strings.pins.unpin : strings.pins.pin,
+            isPinned ? "push-pin-slash" : "push-pin",
+            false,
+            () => actions.askToPin(message, !isPinned),
+          )}
+        {/if}
+        {#if reactions.length > 0 && actions.canJoinReactions}
+          {@render menuItem(strings.reactions.reactions, "smiley", false, () => actions.viewReactions(message))}
+        {/if}
+        {#if reactions.length > 0 && actions.canRemoveReactions}
+          {@render menuItem(strings.reactions.removeAll, "x-circle", true, () => actions.askToRemoveAllReactions(message))}
+        {/if}
+      </div>
+    {/if}
   {/if}
 </li>
 

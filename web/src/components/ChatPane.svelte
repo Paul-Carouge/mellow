@@ -15,12 +15,18 @@
   import AttachmentTray, { type AttachmentTrayItem } from "./AttachmentTray.svelte";
   import { autosize } from "./autosize";
   import Button from "./Button.svelte";
+  import ConfirmMessageDialog from "./ConfirmMessageDialog.svelte";
   import DeleteMessageDialog from "./DeleteMessageDialog.svelte";
+  import EmojiPicker from "./EmojiPicker.svelte";
   import { displayName, humanFileSize, typingSegments, unixMillisecondsOfSnowflake } from "./format";
   import { unreadBarLabel, unreadSummary } from "./message-rows";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import type { ReactionAndPinActions } from "./message-actions";
   import MessageList from "./MessageList.svelte";
+  import PinnedMessagesPanel from "./PinnedMessagesPanel.svelte";
+  import ReactionsDialog from "./ReactionsDialog.svelte";
+  import { noteEmojiUsed } from "./recent-emoji.svelte";
 
   // The chat pane (DESIGN.md §5.4, §5.5): header, message list, composer and typing band.
   interface Props {
@@ -75,6 +81,12 @@
   const canManageMessages = $derived(
     channelPermissions !== null && hasPermission(channelPermissions, Permission.MANAGE_MESSAGES),
   );
+  const canReadHistory = $derived(
+    channelPermissions === null || hasPermission(channelPermissions, Permission.READ_MESSAGE_HISTORY),
+  );
+  const canAddReactions = $derived(
+    canReadHistory && channelPermissions !== null && hasPermission(channelPermissions, Permission.ADD_REACTIONS),
+  );
   const canAttachFiles = $derived(
     canSendMessages && (channelPermissions === null || hasPermission(channelPermissions, Permission.ATTACH_FILES)),
   );
@@ -84,12 +96,20 @@
 
   let pane: HTMLElement;
   let composer = $state<HTMLTextAreaElement | null>(null);
-  let messageList = $state<{ jumpToPresent: () => void } | null>(null);
+  let messageList = $state<{ jumpToPresent: () => void; revealMessage: (messageId: Snowflake) => void } | null>(null);
   const draftsByChannel = new Map<Snowflake, string>();
   let draft = $state("");
   let replyingTo = $state<Message | null>(null);
   let editingMessageId = $state<Snowflake | null>(null);
   let deletingMessage = $state<Message | null>(null);
+  let picker = $state<{ message: Message; anchor: HTMLElement } | null>(null);
+  let pinning = $state<{ message: Message; isPinned: boolean } | null>(null);
+  let removingReactionsOf = $state<Message | null>(null);
+  let viewingReactionsOfId = $state<Snowflake | null>(null);
+  let isPinsPanelOpen = $state(false);
+  let pinsButton = $state<HTMLButtonElement | null>(null);
+  // A press on the button first light-dismisses the open panel: the click must not reopen it.
+  let wasPinsPanelOpenAtPress = false;
   let actionError = $state("");
   let fileInput = $state<HTMLInputElement | null>(null);
   // Each channel keeps its own tray, like its draft: its files were uploaded to that channel.
@@ -123,6 +143,8 @@
     replyingTo = null;
     editingMessageId = null;
     actionError = "";
+    picker = null;
+    isPinsPanelOpen = false;
   });
 
   // Edits are refused where sending is.
@@ -425,6 +447,75 @@
   const composerButtonClass =
     "my-[calc((var(--mw-size-dock-height)_-_var(--mw-component-composer-attach-button-size))/2)] size-(--mw-component-composer-attach-button-size) text-(--mw-component-composer-icon) hover:bg-state-hover hover:text-(--mw-component-composer-icon-hover)";
 
+  async function toggleReaction(message: Message, emoji: string) {
+    actionError = "";
+    try {
+      await client.toggleReaction(message.channel_id, message.id, emoji);
+    } catch (error) {
+      actionError = describeError(error, strings.reactions.failed);
+    }
+  }
+
+  function pickEmoji(emoji: string) {
+    const target = picker?.message;
+    closePicker();
+    if (target) {
+      noteEmojiUsed(emoji);
+      void toggleReaction(target, emoji);
+    }
+  }
+
+  /** Back to the button that opened the picker: its bar is still held open at this point. */
+  function closePicker() {
+    const anchor = picker?.anchor;
+    picker = null;
+    if (anchor?.isConnected) {
+      anchor.focus();
+    }
+  }
+
+  async function confirmPin(message: Message, isPinned: boolean) {
+    actionError = "";
+    try {
+      await client.setPinned(message, isPinned);
+    } catch (error) {
+      actionError = describeError(error, isPinned ? strings.pins.pinFailed : strings.pins.unpinFailed);
+    }
+  }
+
+  async function removeAllReactions(message: Message) {
+    actionError = "";
+    try {
+      await client.removeAllReactions(message.channel_id, message.id);
+    } catch (error) {
+      actionError = describeError(error, strings.reactions.removeAllFailed);
+    }
+  }
+
+  const reactionsBeingViewed = $derived.by(() => {
+    if (!channelId || !viewingReactionsOfId) {
+      return null;
+    }
+    const message =
+      client.messages(channelId).find((candidate) => candidate.id === viewingReactionsOfId) ??
+      client.pinnedMessages(channelId).find((candidate) => candidate.id === viewingReactionsOfId);
+    return message ? { message, reactions: message.reactions ?? [] } : null;
+  });
+
+  const reactionAndPinActions: ReactionAndPinActions = $derived({
+    canJoinReactions: canReadHistory,
+    canAddReactions,
+    canRemoveReactions: channel !== null && canManageMessages && canReadHistory,
+    canManagePins: conversation !== null || canManageMessages,
+    heldMessageId: picker?.message.id ?? null,
+    toggleReaction: (message, emoji) => void toggleReaction(message, emoji),
+    openPicker: (message, anchor) => (picker = { message, anchor }),
+    loadReactors: (message, emoji) => client.listReactingUsers(message.channel_id, message.id, emoji),
+    askToPin: (message, isPinned) => (pinning = { message, isPinned }),
+    viewReactions: (message) => (viewingReactionsOfId = message.id),
+    askToRemoveAllReactions: (message) => (removingReactionsOf = message),
+  });
+
   async function startReply(message: Message) {
     replyingTo = message;
     await tick();
@@ -490,6 +581,22 @@
         <kbd class="rounded-xs border border-border-divider px-2xs font-sans type-body-sm text-text-muted">Ctrl K</kbd>
       </button>
     {/if}
+    {#if channel || conversation}
+      <IconButton
+        bind:element={pinsButton}
+        icon="push-pin"
+        label={strings.pins.pinnedMessages}
+        aria-haspopup="dialog"
+        aria-expanded={isPinsPanelOpen}
+        class="{headerButtonClass} aria-expanded:text-text-heading"
+        iconClass="size-(--mw-component-chat-header-icon-size)"
+        onpointerdown={() => (wasPinsPanelOpenAtPress = isPinsPanelOpen)}
+        onclick={() => {
+          isPinsPanelOpen = !(isPinsPanelOpen || wasPinsPanelOpenAtPress);
+          wasPinsPanelOpenAtPress = false;
+        }}
+      />
+    {/if}
     {#if channel}
       <!-- The member toggle keeps its name; aria-pressed says whether the side sheet is open. -->
       <IconButton
@@ -535,6 +642,7 @@
         topic={channel?.topic ?? ""}
         {canSendMessages}
         {canManageMessages}
+        {reactionAndPinActions}
         {editingMessageId}
         maximumEditorHeight={maximumComposerHeight}
         onreply={startReply}
@@ -716,6 +824,77 @@
     {/if}
   </div>
 {/snippet}
+
+{#if picker}
+  <EmojiPicker anchor={picker.anchor} isCompact={hasNavigationDrawer} onpick={pickEmoji} onclose={closePicker} />
+{/if}
+
+{#if isPinsPanelOpen && channelId && pinsButton}
+  <PinnedMessagesPanel
+    {client}
+    {channelId}
+    anchor={pinsButton}
+    isCompact={hasNavigationDrawer}
+    canManagePins={reactionAndPinActions.canManagePins}
+    onjump={(messageId) => messageList?.revealMessage(messageId)}
+    onunpin={(message) => (pinning = { message, isPinned: false })}
+    onclose={() => {
+      isPinsPanelOpen = false;
+      // Jump moved focus to the message; anything else goes back to the button.
+      if (!document.activeElement?.closest("[data-row-key]")) {
+        pinsButton?.focus();
+      }
+    }}
+  />
+{/if}
+
+{#if pinning}
+  {@const { message, isPinned } = pinning}
+  <ConfirmMessageDialog
+    {message}
+    title={isPinned ? strings.pins.pinTitle : strings.pins.unpinTitle}
+    subtitle={isPinned
+      ? strings.pins.pinSubtitle(channel ? `#${channel.name}` : conversationName)
+      : strings.pins.unpinSubtitle}
+    submitLabel={isPinned ? strings.pins.pinSubmit : strings.pins.unpinSubmit}
+    isDanger={!isPinned}
+    onclose={() => (pinning = null)}
+    onconfirm={() => {
+      pinning = null;
+      void confirmPin(message, isPinned);
+    }}
+    fallbackFocus={focusComposer}
+  />
+{/if}
+
+{#if removingReactionsOf}
+  {@const message = removingReactionsOf}
+  <ConfirmMessageDialog
+    {message}
+    title={strings.reactions.removeAllTitle}
+    subtitle={strings.reactions.removeAllSubtitle}
+    submitLabel={strings.reactions.removeAllSubmit}
+    isDanger
+    onclose={() => (removingReactionsOf = null)}
+    onconfirm={() => {
+      removingReactionsOf = null;
+      void removeAllReactions(message);
+    }}
+    fallbackFocus={focusComposer}
+  />
+{/if}
+
+{#if reactionsBeingViewed}
+  {@const message = reactionsBeingViewed.message}
+  <ReactionsDialog
+    reactions={reactionsBeingViewed.reactions}
+    canRemoveOthers={reactionAndPinActions.canRemoveReactions}
+    loadUsers={(emoji) => client.listReactingUsers(message.channel_id, message.id, emoji)}
+    onremove={(emoji, userId) => client.removeUserReaction(message.channel_id, message.id, emoji, userId)}
+    onclose={() => (viewingReactionsOfId = null)}
+    fallbackFocus={focusComposer}
+  />
+{/if}
 
 {#if deletingMessage}
   {@const message = deletingMessage}

@@ -215,7 +215,81 @@ export const en = {
     actions: "Message actions",
     reply: "Reply",
     copyText: "Copy text",
+    more: "More",
     download: (fileName: string) => `Download ${fileName}`,
+  },
+
+  reactions: {
+    reactions: "Reactions",
+    addReaction: "Add reaction",
+    reactWith: (emoji: string) => `React with ${emoji}`,
+    /** A chip's name; `aria-pressed` tells whether the user is among them. */
+    chip: (emoji: string, reactions: number) =>
+      `${emoji}, ${count(reactions)} ${plural(reactions, { one: "reaction", other: "reactions" })}`,
+    /** "You, Ana and 3 others reacted with 👍": `names` are other people, up to three. */
+    reactedWith: (includesYou: boolean, names: readonly string[], others: number, emoji: string) => {
+      const people = [...(includesYou ? ["You"] : []), ...names];
+      if (others > 0) {
+        people.push(`${count(others)} ${plural(others, { one: "other", other: "others" })}`);
+      }
+      const list = people.length > 1 ? `${people.slice(0, -1).join(", ")} and ${people.at(-1)}` : (people[0] ?? "");
+      // A no-break space keeps the emoji with its verb when the tooltip wraps.
+      return `${list} reacted with\u00a0${emoji}`;
+    },
+    loadingWho: "Loading who reacted…",
+    whoFailed: "Couldn't load who reacted.",
+    failed: "Couldn't react",
+    noNewEmoji: "You can't add new reactions here.",
+    removeShort: "Remove",
+    remove: (person: string) => `Remove ${person}'s reaction`,
+    removeFailed: "Couldn't remove the reaction",
+    removeAll: "Remove all reactions",
+    removeAllTitle: "Remove all reactions?",
+    removeAllSubtitle: "Every reaction on this message will be removed for everyone.",
+    removeAllSubmit: "Remove all",
+    removeAllFailed: "Couldn't remove the reactions",
+    noReactions: "No reactions left.",
+  },
+
+  emojiPicker: {
+    label: "Emoji picker",
+    search: "Search emoji",
+    placeholder: "Find the perfect emoji",
+    recent: "Recently used",
+    results: "Search results",
+    noResults: (query: string) => `No emoji for “${query}”.`,
+    help: "Arrows to move, Enter to choose, Esc to close.",
+    categories: {
+      people: "People",
+      nature: "Nature",
+      food: "Food & drink",
+      activities: "Activities",
+      travel: "Travel & places",
+      objects: "Objects",
+      symbols: "Symbols",
+      flags: "Flags",
+    },
+  },
+
+  pins: {
+    pinnedMessages: "Pinned messages",
+    pin: "Pin message",
+    unpin: "Unpin message",
+    pinned: "Pinned",
+    pinTitle: "Pin this message?",
+    pinSubtitle: (channel: string) => `It will be listed in the pinned messages of ${channel}.`,
+    pinSubmit: "Pin",
+    unpinTitle: "Unpin this message?",
+    unpinSubtitle: "It will no longer be listed in the pinned messages.",
+    unpinSubmit: "Unpin",
+    pinFailed: "Couldn't pin the message",
+    unpinFailed: "Couldn't unpin the message",
+    loading: "Loading pinned messages…",
+    loadFailed: "Couldn't load the pinned messages.",
+    emptyTitle: "No pinned messages yet",
+    emptyBody: "Pin a message from its More menu to keep it here for everyone.",
+    jump: "Jump",
+    jumpTo: (author: string) => `Jump to ${author}'s message`,
   },
 
   attachmentTray: {
