@@ -41,6 +41,13 @@ const LINK_TRAILING_PUNCTUATION = ".,;:!?'\")]}";
 const ESCAPABLE_CHARACTER = /[^\p{L}\p{N}\s]/u;
 const WORD_CHARACTER = /[\p{L}\p{N}_]/u;
 const WHITESPACE = /\s/u;
+/**
+ * Masked link text that names an address ("paypal.com", "https://…") could point somewhere else:
+ * such text stays literal. Each name run is tried once from its start, so the check stays linear.
+ */
+const LINK_TEXT_LOOKING_LIKE_AN_ADDRESS = /:\/\/|(?<![\p{L}\p{N}-])[\p{L}\p{N}-]+\.\p{L}{2,}/u;
+/** Masked link text must show something: blank, zero-width and filler characters do not count. */
+const VISIBLE_CHARACTER = /[^\s\p{Cf}\p{Z}\u2800\u3164\u115F\u1160\uFFA0]/u;
 
 interface ParseContext {
   people: MentionablePeople;
@@ -54,10 +61,7 @@ export function parseMessageMarkdown(content: string, people: MentionablePeople)
 
 /** Whether the parsed message mentions `userId` outside code. */
 export function markdownMentionsUser(blocks: readonly BlockNode[], userId: Snowflake): boolean {
-  const inlinesMention = (nodes: readonly InlineNode[]): boolean =>
-    nodes.some((node) =>
-      node.kind === "mention" ? node.user.id === userId : "children" in node && inlinesMention(node.children),
-    );
+  const inlinesMention = (nodes: readonly InlineNode[]) => inlinesContainMention(nodes, userId);
   return blocks.some((block) => {
     switch (block.kind) {
       case "paragraph":
@@ -71,6 +75,15 @@ export function markdownMentionsUser(blocks: readonly BlockNode[], userId: Snowf
         return false;
     }
   });
+}
+
+/** Whether `nodes` mention `userId`, or anyone when it is null. */
+function inlinesContainMention(nodes: readonly InlineNode[], userId: Snowflake | null): boolean {
+  return nodes.some((node) =>
+    node.kind === "mention"
+      ? userId === null || node.user.id === userId
+      : "children" in node && inlinesContainMention(node.children, userId),
+  );
 }
 
 /** The http(s) URL `candidate` names, normalised; null for any other scheme, a user name or password, or no URL. */
@@ -420,16 +433,17 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
         const closingParenthesis = findClosingParenthesis(closingBracket + 2);
         const target = closingParenthesis === -1 ? "" : text.slice(closingBracket + 2, closingParenthesis).trim();
         const url = /\s/u.test(target) ? null : safeHttpUrl(target.replace(/^<(.*)>$/u, "$1"));
-        if (url) {
-          flushText(position);
-          nodes.push({
-            kind: "link",
-            url,
-            isMasked: true,
-            children: parseInline(text.slice(position + 1, closingBracket), context, depth + 1, false),
-          });
-          position = textStart = closingParenthesis + 1;
-          continue;
+        const label = text.slice(position + 1, closingBracket);
+        if (url && VISIBLE_CHARACTER.test(label) && !LINK_TEXT_LOOKING_LIKE_AN_ADDRESS.test(label)) {
+          const spoilerIdBeforeLabel = context.nextSpoilerId;
+          const children = parseInline(label, context, depth + 1, false);
+          if (!inlinesContainMention(children, null)) {
+            flushText(position);
+            nodes.push({ kind: "link", url, isMasked: true, children });
+            position = textStart = closingParenthesis + 1;
+            continue;
+          }
+          context.nextSpoilerId = spoilerIdBeforeLabel;
         }
       }
     }
