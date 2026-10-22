@@ -6,15 +6,35 @@ import { catalogueFor, chooseLanguage } from "./index";
 
 describe("chooseLanguage", () => {
   it("speaks French when French is the first language the client knows", () => {
-    expect(chooseLanguage(["fr-FR", "en-US"])).toEqual({ language: "fr", formattingLocale: "fr-FR" });
-    expect(chooseLanguage(["de-DE", "fr-CA", "en"])).toEqual({ language: "fr", formattingLocale: "fr-CA" });
-    expect(chooseLanguage(["FR"])).toEqual({ language: "fr", formattingLocale: "FR" });
+    expect(chooseLanguage(["fr-FR", "en-US"])).toEqual({
+      language: "fr",
+      formattingLocale: "fr-FR",
+      wordedFormattingLocale: "fr-FR",
+    });
+    expect(chooseLanguage(["de-DE", "fr-CA", "en"])).toMatchObject({ language: "fr", formattingLocale: "fr-CA" });
+    expect(chooseLanguage(["FR"])).toMatchObject({ language: "fr", formattingLocale: "FR" });
   });
 
   it("speaks English when English comes first, or when no language is known", () => {
-    expect(chooseLanguage(["en-GB", "fr-FR"])).toEqual({ language: "en", formattingLocale: "en-GB" });
-    expect(chooseLanguage(["de-DE", "es"])).toEqual({ language: "en", formattingLocale: "en" });
-    expect(chooseLanguage([])).toEqual({ language: "en", formattingLocale: "en" });
+    expect(chooseLanguage(["en-GB", "fr-FR"])).toEqual({
+      language: "en",
+      formattingLocale: "en-GB",
+      wordedFormattingLocale: "en-GB",
+    });
+    expect(chooseLanguage([])).toEqual({ language: "en", formattingLocale: "en", wordedFormattingLocale: "en" });
+  });
+
+  it("keeps the browser's own formats without words when it speaks neither language", () => {
+    expect(chooseLanguage(["de-DE", "es"])).toEqual({
+      language: "en",
+      formattingLocale: "de-DE",
+      wordedFormattingLocale: "en",
+    });
+  });
+
+  it("skips tags that are not valid language tags", () => {
+    expect(chooseLanguage(["not a tag", "fr-BE"])).toMatchObject({ language: "fr", formattingLocale: "fr-BE" });
+    expect(chooseLanguage(["not a tag"])).toMatchObject({ language: "en", formattingLocale: "en" });
   });
 
   it("does not read a language that only starts like French", () => {
