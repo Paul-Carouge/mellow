@@ -81,7 +81,7 @@
   bind:this={dialog}
   aria-labelledby="{id}-title"
   aria-describedby={subtitle ? `${id}-subtitle` : undefined}
-  class="modal-dialog m-auto w-[min(var(--mw-component-dialog-width),calc(100vw_-_2*var(--mw-component-dialog-margin)))] max-w-none overflow-hidden rounded-(--mw-component-dialog-radius) bg-(--mw-component-dialog-background) p-0 text-(--mw-component-dialog-body-text) shadow-high backdrop:bg-(--mw-component-dialog-scrim)"
+  class="modal-dialog m-auto w-[min(var(--mw-component-dialog-width),calc(100vw_-_2*var(--mw-component-dialog-margin)))] max-w-none overflow-hidden rounded-(--mw-component-dialog-radius) bg-(--mw-component-dialog-background) p-0 text-(--mw-component-dialog-body-text) shadow-high backdrop:bg-(--mw-component-dialog-scrim) dark:[outline:1px_solid_var(--mw-color-border-divider)]"
   oncancel={(event) => {
     event.preventDefault();
     requestClose();
@@ -124,9 +124,11 @@
       </div>
     </div>
     <div
-      class="flex flex-wrap justify-end gap-(--mw-component-dialog-button-gap) bg-(--mw-component-dialog-footer-background) p-(--mw-component-dialog-padding)"
+      class="flex flex-wrap justify-end gap-(--mw-component-dialog-button-gap) bg-(--mw-component-dialog-footer-background) px-(--mw-component-dialog-padding) pb-(--mw-component-dialog-padding)"
     >
+      <!-- Beside an action, Cancel stays quiet; alone, it is the dialog's button. -->
       <Button
+        variant={submitLabel ? "ghost" : "secondary"}
         isDisabled={isBusy}
         data-initial-focus={isSubmitDanger || !submitLabel ? "" : undefined}
         onclick={requestClose}>{cancelLabel}</Button

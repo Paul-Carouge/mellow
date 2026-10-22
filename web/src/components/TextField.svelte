@@ -68,6 +68,6 @@
     {/if}
   </div>
   {#if helper}
-    <p id="{id}-helper" class="type-body-sm text-(--mw-component-text-field-helper-text)">{helper}</p>
+    <p id="{id}-helper" class="type-body text-(--mw-component-text-field-helper-text)">{helper}</p>
   {/if}
 </div>

@@ -5,7 +5,7 @@
   // DESIGN.md §6.1 at the web size (44 px). Disabled and busy buttons dim but stay focusable
   // (`aria-disabled`), so focus is not lost while an action runs.
   interface Props extends Omit<HTMLButtonAttributes, "disabled" | "class"> {
-    variant?: "primary" | "secondary" | "danger";
+    variant?: "primary" | "secondary" | "danger" | "ghost";
     isDisabled?: boolean;
     isFullWidth?: boolean;
     children: Snippet;
@@ -34,6 +34,8 @@
       "bg-(--mw-component-button-primary-background) text-(--mw-component-button-primary-text) enabled:hover:bg-(--mw-component-button-primary-background-hover) enabled:active:bg-(--mw-component-button-primary-background-pressed)",
     variant === "secondary" &&
       "bg-(--mw-component-button-secondary-background) text-(--mw-component-button-secondary-text) hover:bg-(--mw-component-button-secondary-background-hover)",
+    // Cancel and other quiet actions beside a primary one (as in the Dusk mockup's dialogs).
+    variant === "ghost" && "text-text-normal hover:bg-state-hover",
     variant === "danger" &&
       "bg-(--mw-component-button-danger-background) text-(--mw-component-button-danger-text) hover:bg-(--mw-component-button-danger-background-hover)",
     isDisabled && "pointer-events-none opacity-(--mw-component-button-disabled-opacity)",
