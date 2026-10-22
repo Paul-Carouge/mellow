@@ -15,8 +15,8 @@ use super::{
     LiveShell, SharedShell, apply_state_change, authenticated_rest, now_unix_milliseconds,
     open_channel, report_request_error, run_request, select_guild,
 };
-use crate::clipboard;
 use crate::generated_ui::ShellDialog;
+use crate::{clipboard, live_rows};
 
 pub(super) fn can_invite_people(guild: &Guild) -> bool {
     guild.my_permissions.contains(Permissions::CREATE_INVITE)
@@ -169,6 +169,23 @@ pub(super) fn create_channel(shell: &SharedShell, name: &str) {
     let Some(guild_id) = shell.borrow().selected_guild_id else {
         return;
     };
+    // From a category's "+", the channel goes in that category.
+    let parent_id = {
+        let shell = shell.borrow();
+        let category_index = shell
+            .window
+            .upgrade()
+            .map_or(-1, |window| window.get_create_channel_category_index());
+        shell
+            .state
+            .guild(guild_id)
+            .map(live_rows::sorted_category_ids)
+            .and_then(|ids| {
+                usize::try_from(category_index)
+                    .ok()
+                    .and_then(|index| ids.get(index).copied())
+            })
+    };
     // The instance lowercases and hyphenates the name, and refuses what it cannot fix.
     let name = name.trim().trim_start_matches('#').trim().to_owned();
     if name.is_empty() {
@@ -185,7 +202,7 @@ pub(super) fn create_channel(shell: &SharedShell, name: &str) {
                 kind: ChannelKind::Text,
                 name,
                 topic: String::new(),
-                parent_id: None,
+                parent_id,
             },
         )
         .await

@@ -1,6 +1,6 @@
 import { ListView } from "std-widgets.slint";
 import { MellowColor, MellowComponent, MellowMotion, MellowRadius, MellowSize, MellowSpace, MellowType } from "../tokens.slint";
-import { Avatar, ContextMenuItem, MentionBadge, PresenceStatus } from "primitives.slint";
+import { Avatar, ContextMenuItem, IconButton, MentionBadge, PresenceStatus } from "primitives.slint";
 
 // Categories and channels flattened into one list, so ListView can virtualize long servers.
 export struct ChannelListRow {
@@ -37,13 +37,15 @@ export global ChannelListGeometry {
 component CategoryHeader inherits Rectangle {
     in property <string> name;
     in property <bool> is-collapsed;
+    // A "+" at the trailing end creates a channel in this category (DESIGN.md §5.3).
+    in property <bool> can-create-channels;
     callback toggled();
+    callback create-channel();
     height: MellowComponent.category-margin-top + MellowComponent.category-height;
-    accessible-role: button;
-    accessible-label: name;
-    accessible-expandable: true;
-    accessible-expanded: !is-collapsed;
-    accessible-action-default => { root.toggled(); }
+
+    // The toggle stops before the "+", which is its own button.
+    property <length> toggle-width: self.width - ChannelListGeometry.leading-reach - MellowComponent.category-padding-inline
+        - (can-create-channels ? MellowComponent.category-height : 0px);
 
     property <color> text-color: touch.has-hover || focus-scope.has-focus
         ? MellowComponent.category-text-hover : MellowComponent.category-text;
@@ -62,8 +64,13 @@ component CategoryHeader inherits Rectangle {
     }
     touch := TouchArea {
         x: ChannelListGeometry.leading-reach;
-        width: parent.width - ChannelListGeometry.leading-reach - MellowComponent.category-padding-inline;
+        width: root.toggle-width;
         mouse-cursor: MouseCursor.pointer;
+        accessible-role: button;
+        accessible-label: root.name;
+        accessible-expandable: true;
+        accessible-expanded: !root.is-collapsed;
+        accessible-action-default => { root.toggled(); }
         clicked => { root.toggled(); }
     }
     HorizontalLayout {
@@ -92,11 +99,24 @@ component CategoryHeader inherits Rectangle {
             overflow: elide;
             horizontal-stretch: 1;
         }
+        if root.can-create-channels: VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: @image-url("../../icons/plus.svg");
+                label: "Create a channel in " + root.name;
+                size: MellowComponent.category-height;
+                icon-size: MellowComponent.category-add-icon-size;
+                icon-color: MellowComponent.category-text;
+                hover-icon-color: MellowComponent.category-text-hover;
+                hover-background: transparent;
+                clicked => { root.create-channel(); }
+            }
+        }
     }
     if focus-scope.has-focus: Rectangle {
         x: ChannelListGeometry.leading-reach;
         y: MellowComponent.category-margin-top;
-        width: parent.width - ChannelListGeometry.leading-reach - MellowComponent.category-padding-inline;
+        width: root.toggle-width;
         height: MellowComponent.category-height;
         border-width: MellowComponent.focus-ring-width;
         border-color: MellowComponent.focus-ring-color;
@@ -314,6 +334,8 @@ export component ChannelSidebar inherits Rectangle {
     callback invite-people();
     callback open-server-settings();
     callback create-channel();
+    // From a category's "+": its index among the categories, and its name.
+    callback create-channel-in-category(int, string);
     callback leave-server();
     changed server-header-focus-request-count => { header-focus.focus(); }
     // Home: conversations replace categories and channels, and the header is plain text.
@@ -531,7 +553,9 @@ export component ChannelSidebar inherits Rectangle {
                 if row.is-category: CategoryHeader {
                     name: row.name;
                     is-collapsed: row.is-collapsed;
+                    can-create-channels: root.can-create-channels;
                     toggled => { root.toggle-category(row.category-index); }
+                    create-channel => { root.create-channel-in-category(row.category-index, row.name); }
                 }
                 if !row.is-category: ChannelRow {
                     name: row.name;
