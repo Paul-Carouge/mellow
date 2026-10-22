@@ -15,6 +15,14 @@ export struct AttachmentRow {
     size: string,
 }
 
+// The typing line in pieces, built in Rust (`live_rows::typing_line`): the names are bold.
+export struct TypingLine {
+    first-name: string,
+    joiner: string,
+    second-name: string,
+    tail: string,
+}
+
 export struct MessageRow {
     author: string,
     author-initial: string,
@@ -920,9 +928,8 @@ component HistoryStart inherits VerticalLayout {
 // "Ana is typing…" above the composer (DESIGN.md §6.28). The dots wave only while someone types,
 // and stand still under reduced motion. Not announced to screen readers.
 component TypingIndicator inherits HorizontalLayout {
-    in property <string> names;
-    in property <bool> is-plural;
-    property <bool> is-active: names != "";
+    in property <TypingLine> line;
+    property <bool> is-active: line.tail != "";
     property <bool> is-waving: is-active && !MotionPreference.is-reduced;
     property <duration> clock: is-waving ? animation-tick() : 0ms;
 
@@ -965,21 +972,16 @@ component TypingIndicator inherits HorizontalLayout {
             }
         }
     }
-    if root.is-active: Text {
-        text: root.names;
-        color: MellowComponent.composer-typing-text;
-        font-size: MellowType.typing.font-size;
-        font-weight: MellowFont.weight-bold;
-        vertical-alignment: center;
-        overflow: elide;
-    }
-    if root.is-active: Text {
-        // The layout's gap stands for the space after the names.
-        text: root.is-plural ? "are typing…" : "is typing…";
-        color: MellowComponent.composer-typing-text;
-        font-size: MellowType.typing.font-size;
-        font-weight: MellowType.typing.font-weight;
-        vertical-alignment: center;
+    if root.is-active: HorizontalLayout {
+        for part[index] in [root.line.first-name, root.line.joiner, root.line.second-name, root.line.tail]: Text {
+            text: part;
+            color: MellowComponent.composer-typing-text;
+            font-size: MellowType.typing.font-size;
+            // Names in bold, the rest in the typing weight.
+            font-weight: index == 0 || index == 2 ? MellowFont.weight-bold : MellowType.typing.font-weight;
+            vertical-alignment: center;
+            overflow: elide;
+        }
     }
 }
 
@@ -1072,9 +1074,8 @@ export component ChatPane inherits Rectangle {
     // "N new messages since HH:MM" while the channel was opened with unread messages; empty hides it.
     in property <string> unread-bar-text;
     callback mark-as-read();
-    // Who types in the open channel ("Ana and Léo"); empty when nobody does.
-    in property <string> typing-names;
-    in property <bool> is-typing-plural;
+    // Who types in the open channel; empty when nobody does.
+    in property <TypingLine> typing-line;
     callback toggle-member-sheet();
     callback open-navigator-drawer();
     callback open-quick-switcher();
@@ -1531,8 +1532,7 @@ export component ChatPane inherits Rectangle {
             padding-bottom: MellowSize.dock-margin;
             // Always there, empty or not, so nothing moves when someone starts typing.
             TypingIndicator {
-                names: root.typing-names;
-                is-plural: root.is-typing-plural;
+                line: root.typing-line;
             }
             Rectangle {
                 VerticalLayout {

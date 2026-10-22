@@ -46,7 +46,9 @@ fn prepare(window: &AppWindow) {
         Ok("members") => window.set_is_member_list_visible(true),
         Ok("drawer") => window.set_is_navigator_drawer_open(true),
         Ok("settings") => window.set_is_user_settings_open(true),
-        Ok("typing") => window.set_typing_names(SNAPSHOT_TYPING_NAME.into()),
+        Ok("typing") => window.set_typing_line(crate::live_rows::typing_line(&[
+            SNAPSHOT_TYPING_NAME.to_owned(),
+        ])),
         Ok("switcher") => {
             window.set_is_quick_switcher_open(true);
             window.invoke_quick_switcher_query_changed(SharedString::default());

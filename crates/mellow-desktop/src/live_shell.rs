@@ -1733,9 +1733,7 @@ fn refresh_typing(shell: &LiveShell) {
         .iter()
         .map(|user_id| person_name(shell, *user_id))
         .collect();
-    let (typing_names, is_plural) = live_rows::typing_names(&names);
-    window.set_typing_names(typing_names.into());
-    window.set_is_typing_plural(is_plural);
+    window.set_typing_line(live_rows::typing_line(&names));
     if names.is_empty() {
         shell.typing_timer.stop();
     } else if !shell.typing_timer.running() {

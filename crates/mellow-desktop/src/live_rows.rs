@@ -12,6 +12,7 @@ use slint::{ModelRc, SharedString, VecModel};
 use crate::generated_ui::{
     AttachmentRow, ChannelListRow, DirectMessageRow, HistoryStartState, MelliState, MemberListRow,
     MessageDelivery, MessageRow, PresenceStatus, QuickSwitcherKind, RoleColor, ServerItem,
+    TypingLine,
 };
 use crate::mentions::{MentionablePeople, find_mentions};
 use crate::message_markup::{styled_text_from_message_body, styled_text_with_mentions};
@@ -596,15 +597,38 @@ pub fn quick_switcher_destinations(state: &ClientState) -> Vec<Destination> {
     destinations
 }
 
-/// Typing indicator names, bold before "is typing…" or "are typing…": "Ana", "Ana and Léo",
-/// "Ana, Léo and Zoé", or "Several people" past three. The flag says "are".
-pub fn typing_names(names: &[String]) -> (String, bool) {
+/// Names the typing line lists before counting the others, as on the web.
+const MAXIMUM_TYPING_NAMES_LISTED: usize = 2;
+/// Past this many people the line stops counting: "Several people are typing…".
+const MAXIMUM_TYPING_PEOPLE_COUNTED: usize = 5;
+
+/// The typing line in pieces, so the names can be set in bold (the web's `typingSegments`):
+/// "Ana is typing…", "Ana and Léo are typing…", "Ana, Léo and 2 others are typing…", then
+/// "Several people are typing…"; all empty for nobody.
+pub fn typing_line(names: &[String]) -> TypingLine {
+    let line = |first: &str, joiner: &str, second: &str, tail: String| TypingLine {
+        first_name: first.into(),
+        joiner: joiner.into(),
+        second_name: second.into(),
+        tail: tail.into(),
+    };
     match names {
-        [] => (String::new(), false),
-        [only] => (only.clone(), false),
-        [first, second] => (format!("{first} and {second}"), true),
-        [first, second, third] => (format!("{first}, {second} and {third}"), true),
-        _ => ("Several people".to_owned(), true),
+        [] => TypingLine::default(),
+        _ if names.len() > MAXIMUM_TYPING_PEOPLE_COUNTED => {
+            line("", "", "", "Several people are typing…".into())
+        }
+        [only] => line(only, "", "", " is typing…".into()),
+        [first, second] => line(first, " and ", second, " are typing…".into()),
+        [first, second, ..] => {
+            let others = names.len() - MAXIMUM_TYPING_NAMES_LISTED;
+            let noun = if others == 1 { "other" } else { "others" };
+            line(
+                first,
+                ", ",
+                second,
+                format!(" and {others} {noun} are typing…"),
+            )
+        }
     }
 }
 
@@ -640,25 +664,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn typing_names_read_naturally_for_one_to_many_people() {
+    fn the_typing_line_names_two_people_then_counts_the_others() {
         let names = |list: &[&str]| {
             list.iter()
                 .map(|name| (*name).to_owned())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(typing_names(&[]), (String::new(), false));
-        assert_eq!(typing_names(&names(&["Ana"])), ("Ana".into(), false));
+        // Bold names, plain words, as the web's `typingSegments`.
+        let read = |list: &[&str]| {
+            let line = typing_line(&names(list));
+            [line.first_name, line.joiner, line.second_name, line.tail].map(|part| part.to_string())
+        };
+        assert_eq!(read(&[]), ["", "", "", ""]);
+        assert_eq!(read(&["Ana"]), ["Ana", "", "", " is typing…"]);
         assert_eq!(
-            typing_names(&names(&["Ana", "Léo"])),
-            ("Ana and Léo".into(), true)
+            read(&["Ana", "Léo"]),
+            ["Ana", " and ", "Léo", " are typing…"]
         );
         assert_eq!(
-            typing_names(&names(&["Ana", "Léo", "Zoé"])),
-            ("Ana, Léo and Zoé".into(), true)
+            read(&["Ana", "Léo", "Zoé"]),
+            ["Ana", ", ", "Léo", " and 1 other are typing…"]
         );
         assert_eq!(
-            typing_names(&names(&["Ana", "Léo", "Zoé", "Inès"])),
-            ("Several people".into(), true)
+            read(&["Ana", "Léo", "Zoé", "Inès", "Malik"]),
+            ["Ana", ", ", "Léo", " and 3 others are typing…"]
+        );
+        assert_eq!(
+            read(&["Ana", "Léo", "Zoé", "Inès", "Malik", "Hugo"]),
+            ["", "", "", "Several people are typing…"]
         );
     }
 

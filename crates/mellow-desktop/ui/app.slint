@@ -9,7 +9,7 @@ import { Navigator } from "components/navigator.slint";
 import { QuickSwitcher, QuickSwitcherKind, QuickSwitcherRow } from "components/quick_switcher.slint";
 import { MelliAnimation, MelliState } from "components/melli.slint";
 import { ChannelListRow, DirectMessageRow } from "components/channel_sidebar.slint";
-import { AttachmentRow, ChatPane, HistoryStartState, MessageDelivery, MessageRow } from "components/chat_pane.slint";
+import { AttachmentRow, TypingLine, ChatPane, HistoryStartState, MessageDelivery, MessageRow } from "components/chat_pane.slint";
 import { MemberListRow, MemberSheet } from "components/member_list.slint";
 import { PresenceStatus, RoleColor } from "components/primitives.slint";
 import { LoginScreen } from "components/login_screen.slint";
@@ -19,7 +19,7 @@ import { UpdateStatus, UserSettingsScreen } from "components/user_settings.slint
 import { RoleListRow, RolePermissionRow, ServerSettingsScreen } from "components/server_settings.slint";
 import { AddServerDialog, CreateChannelDialog, InvitePeopleDialog, LeaveServerDialog } from "components/server_dialogs.slint";
 
-export { AttachmentRow, MellowComponent, QuickSwitcherKind, QuickSwitcherRow, RoleColor, MelliAnimation, MelliState, ServerItem, ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, MotionPreference, ThemeChoice, UpdateStatus, RoleListRow, RolePermissionRow }
+export { AttachmentRow, TypingLine, MellowComponent, QuickSwitcherKind, QuickSwitcherRow, RoleColor, MelliAnimation, MelliState, ServerItem, ChannelListRow, DirectMessageRow, HistoryStartState, MessageDelivery, MessageRow, MemberListRow, PresenceStatus, MellowTheme, MotionPreference, ThemeChoice, UpdateStatus, RoleListRow, RolePermissionRow }
 
 // The window-wide dialog open over the shell, if any (DESIGN.md §6.35).
 export enum ShellDialog { none, add-server, invite-people, create-channel, leave-server }
@@ -207,9 +207,8 @@ export component AppWindow inherits Window {
     in property <[QuickSwitcherRow]> quick-switcher-rows;
     callback quick-switcher-query-changed(string);
     callback quick-switcher-chosen(int);
-    // Who types in the open channel ("Ana and Léo"), and whether it reads "are typing".
-    in property <string> typing-names;
-    in property <bool> is-typing-plural;
+    // Who types in the open channel, in pieces so the names are bold; empty when nobody does.
+    in property <TypingLine> typing-line;
     callback sign-in();
     callback register();
     callback sign-out();
@@ -460,8 +459,7 @@ export component AppWindow inherits Window {
                     history-start-state: root.history-start-state;
                     retry-loading-history => { root.retry-loading-history(); }
                     unread-bar-text: root.unread-bar-text;
-                    typing-names: root.typing-names;
-                    is-typing-plural: root.is-typing-plural;
+                    typing-line: root.typing-line;
                     mark-as-read => { root.mark-channel-read(); }
                 }
                 // Docked beside the sheet from 1064 px; below, it lies over the sheet (further down).
