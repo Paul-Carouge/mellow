@@ -87,11 +87,11 @@ pub struct LiveShell {
     displayed_can_manage_messages: bool,
     /// Role colours the message rows were built with: rows are rebuilt only when they change.
     displayed_role_colors: HashMap<Snowflake, u32>,
-    /// The open channel's read position when it was opened, until the "New" divider is placed or
-    /// there turns out to be nothing unread. Acknowledging on open moves the stored one at once.
+    /// The open channel's read position when it was opened, until its messages are known and the
+    /// marker below can be set. Acknowledging on open moves the stored one at once.
     read_position_at_open: Option<Snowflake>,
-    /// The first message the reader had not read when the channel was opened (DESIGN.md §5.4).
-    unread_divider_message_id: Option<Snowflake>,
+    /// What this visit counts as new (DESIGN.md §5.4); gone once read or marked as read.
+    unread_marker: Option<live_rows::UnreadMarker>,
     /// Ticks while someone types in the open channel, so the indicator clears when typing expires.
     typing_timer: slint::Timer,
     /// What each result of the open quick switcher leads to, by option index.
@@ -145,7 +145,7 @@ pub fn start(
         displayed_can_manage_messages: false,
         displayed_role_colors: HashMap::new(),
         read_position_at_open: None,
-        unread_divider_message_id: None,
+        unread_marker: None,
         typing_timer: slint::Timer::default(),
         quick_switcher_destinations: Vec::new(),
         self_reference: std::rc::Weak::new(),
@@ -1063,6 +1063,8 @@ fn connect_layout_callbacks(window: &AppWindow, shell: &SharedShell) {
     let shell_for_callback = shell.clone();
     window.on_mark_channel_read(move || forget_unread_divider(&shell_for_callback));
     let shell_for_callback = shell.clone();
+    window.on_unread_divider_read(move || forget_unread_divider(&shell_for_callback));
+    let shell_for_callback = shell.clone();
     window.on_member_sheet_toggled(move || remember_member_sheet(&shell_for_callback));
     let shell_for_callback = shell.clone();
     // Mentions are coloured in Rust, so the rows follow the theme.
@@ -1090,11 +1092,12 @@ fn go_to(shell: &SharedShell, index: i32) {
     }
 }
 
-/// "Mark as read", or sending: the divider and the bar go (the channel is already acknowledged).
+/// "Mark as read", sending, or the new messages seen down to the latest one: the divider and the
+/// bar go (the channel is already acknowledged).
 fn forget_unread_divider(shell: &SharedShell) {
     let mut shell = shell.borrow_mut();
     shell.read_position_at_open = None;
-    if shell.unread_divider_message_id.take().is_some() {
+    if shell.unread_marker.take().is_some() {
         refresh_messages(&mut shell);
     }
 }
@@ -1175,7 +1178,7 @@ fn open_channel(shell: &SharedShell, channel_id: Option<Snowflake>) {
             }
             shell.read_position_at_open =
                 channel_id.and_then(|id| shell.state.last_read_message_id(id));
-            shell.unread_divider_message_id = None;
+            shell.unread_marker = None;
         }
         shell.selected_channel_id = channel_id;
         refresh_header(&shell);
@@ -1834,21 +1837,36 @@ fn refresh_messages(shell: &mut LiveShell) {
     shell.displayed_can_manage_messages = can_manage_messages;
     let role_colors = selected_role_colors(shell);
     let current_user_id = current_user.map(|user| user.id);
-    // Placed once, at the first message someone else wrote after the read position at opening;
-    // without one among the loaded messages there was nothing unread.
-    if shell.unread_divider_message_id.is_none()
-        && let Some(read_position) = shell.read_position_at_open
-        && !messages.is_empty()
+    // The visit's marker, once the channel's newest message is known: what lies between the read
+    // position and it is new; nothing after it ever is.
+    if shell.unread_marker.is_none()
+        && let Some(last_read_message_id) = shell.read_position_at_open
+        && let Some(newest) = messages.last()
     {
-        shell.unread_divider_message_id = messages
-            .iter()
-            .find(|message| {
-                message.id > read_position && Some(message.author.id) != current_user_id
-            })
-            .map(|message| message.id);
+        shell.unread_marker =
+            (newest.id > last_read_message_id).then_some(live_rows::UnreadMarker {
+                last_read_message_id,
+                newest_at_open_message_id: newest.id,
+            });
         shell.read_position_at_open = None;
     }
-    let unread_divider_message_id = shell.unread_divider_message_id;
+    let has_reached_start = shell
+        .selected_channel_id
+        .is_some_and(|id| !shell.state.has_older_history(id));
+    let unread_marker = shell.unread_marker;
+    // The divider waits until the first new message is loaded, so it never jumps as pages arrive.
+    let unread_divider_after_message_id = unread_marker
+        .filter(|marker| live_rows::is_unread_start_loaded(messages, marker, has_reached_start))
+        .map(|marker| marker.last_read_message_id);
+    let unread_bar_text = unread_marker.map_or_else(String::new, |marker| {
+        let summary =
+            live_rows::unread_summary(messages, &marker, current_user_id, has_reached_start);
+        if summary.count == 0 {
+            String::new()
+        } else {
+            live_rows::unread_bar_label(&summary, marker.last_read_message_id.unix_milliseconds())
+        }
+    });
     let mentionable = selected_mentionable_people(shell);
     let mention_color = mention_color(shell);
     let people = live_rows::PeopleContext {
@@ -1861,7 +1879,7 @@ fn refresh_messages(shell: &mut LiveShell) {
         current_user_id,
         can_manage_messages,
         &people,
-        unread_divider_message_id,
+        unread_divider_after_message_id,
     );
     if let Some(current_user) = current_user {
         rows.extend(live_rows::pending_message_rows(
@@ -1879,9 +1897,7 @@ fn refresh_messages(shell: &mut LiveShell) {
     let previous_message_ids = std::mem::replace(&mut shell.displayed_message_ids, message_ids);
     shell.displayed_role_colors = role_colors;
     if let Some(window) = shell.window.upgrade() {
-        window.set_unread_bar_text(
-            live_rows::unread_bar_text(messages, unread_divider_message_id).into(),
-        );
+        window.set_unread_bar_text(unread_bar_text.into());
     }
     shell.messages.set_vec(rows);
     message_actions::remap_open_message_rows(shell, &previous_message_ids);

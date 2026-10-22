@@ -273,6 +273,14 @@ component MessageView inherits Rectangle {
     callback delete(bool);
     callback retry();
     callback discard();
+    // The row carrying the "New" divider was laid out: the list shows it (ListView only creates
+    // the rows it shows).
+    callback unread-divider-shown();
+    init => {
+        if root.message.starts-unread {
+            root.unread-divider-shown();
+        }
+    }
 
     property <bool> has-reply: message.reply-preview != "";
     // Space above the message itself: the group gap, and above it the "New" divider with its own gap.
@@ -1073,6 +1081,21 @@ export component ChatPane inherits Rectangle {
     in property <string> channel-id;
     // "N new messages since HH:MM" while the channel was opened with unread messages; empty hides it.
     in property <string> unread-bar-text;
+    // The "New" divider has been on screen and the reader then reached the latest message by
+    // scrolling or "Jump to present": the bar and the divider can go (DESIGN.md §5.4).
+    callback unread-divider-read();
+    property <bool> has-seen-unread-divider;
+    changed unread-bar-text => {
+        if self.unread-bar-text == "" {
+            self.has-seen-unread-divider = false;
+        }
+    }
+    function release-unread-at-latest() {
+        if root.has-seen-unread-divider && root.unread-bar-text != "" {
+            root.has-seen-unread-divider = false;
+            root.unread-divider-read();
+        }
+    }
     callback mark-as-read();
     // Who types in the open channel; empty when nobody does.
     in property <TypingLine> typing-line;
@@ -1199,6 +1222,8 @@ export component ChatPane inherits Rectangle {
             pinned-distance-from-latest-message = 0px;
             is-viewing-older-messages = false;
             new-message-count-while-viewing-older = 0;
+            // Only a reader's scroll unpins the list, so this is the reader arriving.
+            root.release-unread-at-latest();
         }
     }
 
@@ -1214,6 +1239,7 @@ export component ChatPane inherits Rectangle {
     property <length> switch-offset: 0px;
     property <bool> is-switching;
     changed channel-id => {
+        has-seen-unread-divider = false;
         is-switching = true;
         switch-opacity = 0;
         switch-offset = MellowComponent.channel-switch-offset;
@@ -1244,6 +1270,7 @@ export component ChatPane inherits Rectangle {
     // The bar disappears once at the latest message, so focus goes to the composer, as on Discord.
     function jump-to-present() {
         root.scroll-to-latest-message();
+        root.release-unread-at-latest();
         root.focus-composer();
     }
     // "Try again" disappears with the failed state, so focus goes back to the composer.
@@ -1379,6 +1406,7 @@ export component ChatPane inherits Rectangle {
                     root.is-viewing-older-messages = !root.is-pinned-to-latest-message;
                     if root.is-pinned-to-latest-message {
                         root.new-message-count-while-viewing-older = 0;
+                        root.release-unread-at-latest();
                     }
                     root.load-older-messages-when-near-top();
                 }
@@ -1447,6 +1475,7 @@ export component ChatPane inherits Rectangle {
                             root.discard-failed-message(index);
                             root.focus-composer();
                         }
+                        unread-divider-shown => { root.has-seen-unread-divider = true; }
                     }
                 }
             }

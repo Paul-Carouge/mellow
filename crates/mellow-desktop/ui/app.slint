@@ -201,6 +201,8 @@ export component AppWindow inherits Window {
     // "N new messages since HH:MM" (DESIGN.md §5.4); empty hides the bar. Rust clears it on Mark as read.
     in property <string> unread-bar-text;
     callback mark-channel-read();
+    // The reader saw the "New" divider and reached the latest message: Rust forgets the divider.
+    callback unread-divider-read();
     // The quick switcher (DESIGN.md §5.10): Rust fills the rows for each query and opens the
     // chosen result (its option index).
     in-out property <bool> is-quick-switcher-open;
@@ -461,6 +463,7 @@ export component AppWindow inherits Window {
                     unread-bar-text: root.unread-bar-text;
                     typing-line: root.typing-line;
                     mark-as-read => { root.mark-channel-read(); }
+                    unread-divider-read => { root.unread-divider-read(); }
                 }
                 // Docked beside the sheet from 1064 px; below, it lies over the sheet (further down).
                 if root.is-member-sheet-docked: MemberSheet {
