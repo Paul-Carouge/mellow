@@ -58,7 +58,7 @@ export global MellowColor {
     out property <color> surface-popover: MellowTheme.is-dark ? #2B242C : #FFFFFF;
     out property <color> surface-rail: MellowTheme.is-dark ? #110B11 : #F5F1F6;
     out property <color> surface-sidebar: MellowTheme.is-dark ? #110B11 : #F5F1F6;
-    out property <color> surface-sidebar-footer: MellowTheme.is-dark ? #221B23 : #FFFFFF;
+    out property <color> surface-sidebar-footer: MellowTheme.is-dark ? #221B23 : #F5F1F6;
     out property <color> text-accent: MellowTheme.is-dark ? #F2A46E : #A84F1A;
     out property <color> text-channel-muted: MellowTheme.is-dark ? #988E9A : #726874;
     out property <color> text-danger: MellowTheme.is-dark ? #FA777C : #C4262B;
@@ -175,6 +175,7 @@ export global MellowComponent {
     out property <color> channel-row-text-unread: MellowTheme.is-dark ? #F8F4F8 : #221B23;
     out property <color> channel-row-unread-pill-color: MellowTheme.is-dark ? #F8F4F8 : #221B23;
     out property <length> channel-row-unread-pill-height: 8px;
+    out property <length> channel-row-unread-pill-offset: 12px;
     out property <length> channel-row-unread-pill-width: 8px;
     out property <duration> channel-switch-duration: 200ms;
     out property <length> channel-switch-offset: 8px;
@@ -202,7 +203,7 @@ export global MellowComponent {
     out property <color> composer-placeholder: MellowTheme.is-dark ? #A99FAA : #695F6B;
     out property <length> composer-radius: 16px;
     out property <color> composer-reply-bar-author-text: MellowTheme.is-dark ? #F8F4F8 : #221B23;
-    out property <color> composer-reply-bar-background: MellowTheme.is-dark ? #110B11 : #F5F1F6;
+    out property <color> composer-reply-bar-background: MellowTheme.is-dark ? #362E37 : #DFD8DF;
     out property <color> composer-reply-bar-button-background-hover: MellowTheme.is-dark ? #221B23 : #ECE6ED;
     out property <length> composer-reply-bar-button-size: 32px;
     out property <color> composer-reply-bar-icon: MellowTheme.is-dark ? #C5BEC6 : #594E5B;
@@ -230,6 +231,11 @@ export global MellowComponent {
     out property <float> composer-tray-item-uploading-opacity: 0.5;
     out property <length> composer-tray-item-width: 160px;
     out property <length> composer-tray-padding: 12px;
+    out property <duration> composer-typing-dot-duration: 1200ms;
+    out property <length> composer-typing-dot-gap: 3px;
+    out property <length> composer-typing-dot-lift: 2px;
+    out property <length> composer-typing-dot-size: 5px;
+    out property <duration> composer-typing-dot-stagger: 150ms;
     out property <length> composer-typing-height: 24px;
     out property <color> composer-typing-text: MellowTheme.is-dark ? #C5BEC6 : #594E5B;
     out property <color> context-menu-accent-text: MellowTheme.is-dark ? #F2A46E : #A84F1A;
@@ -387,7 +393,9 @@ export global MellowComponent {
     out property <color> message-quote-bar-color: MellowTheme.is-dark ? #554C56 : #CBC5CC;
     out property <length> message-quote-bar-width: 4px;
     out property <length> message-reply-avatar-size: 16px;
+    out property <length> message-reply-height: 22px;
     out property <color> message-reply-spine-color: MellowTheme.is-dark ? #554C56 : #CBC5CC;
+    out property <length> message-reply-spine-radius: 6px;
     out property <length> message-reply-spine-width: 2px;
     out property <color> message-selection-background: MellowTheme.is-dark ? #33B8FF59 : #005FCC59;
     out property <length> message-skeleton-bar-height: 12px;
@@ -396,6 +404,7 @@ export global MellowComponent {
     out property <length> message-status-icon-size: 16px;
     out property <color> message-timestamp-text: MellowTheme.is-dark ? #A99FAA : #695F6B;
     out property <color> navigator-background: MellowTheme.is-dark ? #1B151C : #FFFFFF;
+    out property <length> navigator-enter-offset: 16px;
     out property <length> navigator-radius: 16px;
     out property <length> navigator-strip-width: 72px;
     out property <length> notice-bar-icon-gap: 8px;
@@ -553,6 +562,7 @@ export global MellowComponent {
     out property <length> sheet-inset: 8px;
     out property <length> sheet-radius: 16px;
     out property <color> side-sheet-background: MellowTheme.is-dark ? #1B151C : #FFFFFF;
+    out property <length> side-sheet-enter-offset: 16px;
     out property <length> side-sheet-radius: 16px;
     out property <length> side-sheet-width: 240px;
     out property <color> sidebar-background: MellowTheme.is-dark ? #110B11 : #F5F1F6;
@@ -638,8 +648,8 @@ export global MellowComponent {
     out property <duration> unsaved-bar-slide-duration: 200ms;
     out property <color> unsaved-bar-text: MellowTheme.is-dark ? #D6D0D7 : #392F3A;
     out property <length> user-panel-avatar-size: 36px;
-    out property <color> user-panel-background: MellowTheme.is-dark ? #221B23 : #FFFFFF;
-    out property <color> user-panel-button-background-hover: MellowTheme.is-dark ? #221B23 : #ECE6ED;
+    out property <color> user-panel-background: MellowTheme.is-dark ? #221B23 : #F5F1F6;
+    out property <color> user-panel-button-background-hover: MellowTheme.is-dark ? #362E37 : #DFD8DF;
     out property <color> user-panel-button-icon: MellowTheme.is-dark ? #C5BEC6 : #594E5B;
     out property <length> user-panel-button-icon-size: 20px;
     out property <length> user-panel-button-size: 32px;
@@ -650,6 +660,8 @@ export global MellowComponent {
     out property <length> user-panel-radius: 12px;
     out property <color> user-panel-status-text: MellowTheme.is-dark ? #A99FAA : #695F6B;
     out property <color> user-panel-toggle-muted-icon: MellowTheme.is-dark ? #FA777C : #C4262B;
+    out property <length> user-panel-toggle-strike-cut-width: 2px;
+    out property <length> user-panel-toggle-strike-length: 24px;
     out property <length> user-panel-toggle-strike-width: 2px;
     out property <color> user-panel-update-badge: MellowTheme.is-dark ? #23A55A : #1A7F45;
     out property <length> user-panel-update-badge-ring-width: 3px;

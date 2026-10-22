@@ -161,6 +161,7 @@
   --mw-component-channel-row-text-unread: #F8F4F8;
   --mw-component-channel-row-unread-pill-color: #F8F4F8;
   --mw-component-channel-row-unread-pill-height: 0.5rem;
+  --mw-component-channel-row-unread-pill-offset: 0.75rem;
   --mw-component-channel-row-unread-pill-width: 0.5rem;
   --mw-component-channel-switch-duration: 200ms;
   --mw-component-channel-switch-offset: 0.5rem;
@@ -189,7 +190,7 @@
   --mw-component-composer-placeholder: #A99FAA;
   --mw-component-composer-radius: 1rem;
   --mw-component-composer-reply-bar-author-text: #F8F4F8;
-  --mw-component-composer-reply-bar-background: #110B11;
+  --mw-component-composer-reply-bar-background: #362E37;
   --mw-component-composer-reply-bar-button-background-hover: #221B23;
   --mw-component-composer-reply-bar-button-size: 2rem;
   --mw-component-composer-reply-bar-icon: #C5BEC6;
@@ -217,6 +218,11 @@
   --mw-component-composer-tray-item-uploading-opacity: 0.5;
   --mw-component-composer-tray-item-width: 10rem;
   --mw-component-composer-tray-padding: 0.75rem;
+  --mw-component-composer-typing-dot-duration: 1200ms;
+  --mw-component-composer-typing-dot-gap: 0.1875rem;
+  --mw-component-composer-typing-dot-lift: 0.125rem;
+  --mw-component-composer-typing-dot-size: 0.3125rem;
+  --mw-component-composer-typing-dot-stagger: 150ms;
   --mw-component-composer-typing-height: 1.5rem;
   --mw-component-composer-typing-text: #C5BEC6;
   --mw-component-context-menu-accent-text: #F2A46E;
@@ -376,7 +382,9 @@
   --mw-component-message-quote-bar-color: #554C56;
   --mw-component-message-quote-bar-width: 0.25rem;
   --mw-component-message-reply-avatar-size: 1rem;
+  --mw-component-message-reply-height: 1.375rem;
   --mw-component-message-reply-spine-color: #554C56;
+  --mw-component-message-reply-spine-radius: 0.375rem;
   --mw-component-message-reply-spine-width: 0.125rem;
   --mw-component-message-selection-background: #33B8FF59;
   --mw-component-message-skeleton-bar-height: 0.75rem;
@@ -385,6 +393,7 @@
   --mw-component-message-status-icon-size: 1rem;
   --mw-component-message-timestamp-text: #A99FAA;
   --mw-component-navigator-background: #1B151C;
+  --mw-component-navigator-enter-offset: 1rem;
   --mw-component-navigator-radius: 1rem;
   --mw-component-navigator-strip-width: 4.5rem;
   --mw-component-notice-bar-icon-gap: 0.5rem;
@@ -543,6 +552,7 @@
   --mw-component-sheet-inset: 0.5rem;
   --mw-component-sheet-radius: 1rem;
   --mw-component-side-sheet-background: #1B151C;
+  --mw-component-side-sheet-enter-offset: 1rem;
   --mw-component-side-sheet-radius: 1rem;
   --mw-component-side-sheet-width: 15rem;
   --mw-component-sidebar-background: #110B11;
@@ -631,7 +641,7 @@
   --mw-component-unsaved-bar-text: #D6D0D7;
   --mw-component-user-panel-avatar-size: 2.25rem;
   --mw-component-user-panel-background: #221B23;
-  --mw-component-user-panel-button-background-hover: #221B23;
+  --mw-component-user-panel-button-background-hover: #362E37;
   --mw-component-user-panel-button-icon: #C5BEC6;
   --mw-component-user-panel-button-icon-size: 1.25rem;
   --mw-component-user-panel-button-size: 2rem;
@@ -642,6 +652,8 @@
   --mw-component-user-panel-radius: 0.75rem;
   --mw-component-user-panel-status-text: #A99FAA;
   --mw-component-user-panel-toggle-muted-icon: #FA777C;
+  --mw-component-user-panel-toggle-strike-cut-width: 0.125rem;
+  --mw-component-user-panel-toggle-strike-length: 1.5rem;
   --mw-component-user-panel-toggle-strike-width: 0.125rem;
   --mw-component-user-panel-update-badge: #23A55A;
   --mw-component-user-panel-update-badge-ring-width: 0.1875rem;
@@ -883,7 +895,7 @@
     --mw-color-surface-popover: #FFFFFF;
     --mw-color-surface-rail: #F5F1F6;
     --mw-color-surface-sidebar: #F5F1F6;
-    --mw-color-surface-sidebar-footer: #FFFFFF;
+    --mw-color-surface-sidebar-footer: #F5F1F6;
     --mw-color-text-accent: #A84F1A;
     --mw-color-text-channel-muted: #726874;
     --mw-color-text-danger: #C4262B;
@@ -946,7 +958,7 @@
     --mw-component-composer-locked-text: #695F6B;
     --mw-component-composer-placeholder: #695F6B;
     --mw-component-composer-reply-bar-author-text: #221B23;
-    --mw-component-composer-reply-bar-background: #F5F1F6;
+    --mw-component-composer-reply-bar-background: #DFD8DF;
     --mw-component-composer-reply-bar-button-background-hover: #ECE6ED;
     --mw-component-composer-reply-bar-icon: #594E5B;
     --mw-component-composer-reply-bar-text: #594E5B;
@@ -1120,8 +1132,8 @@
     --mw-component-unsaved-bar-border: #E3DDE4;
     --mw-component-unsaved-bar-border-attention: #C4262B;
     --mw-component-unsaved-bar-text: #392F3A;
-    --mw-component-user-panel-background: #FFFFFF;
-    --mw-component-user-panel-button-background-hover: #ECE6ED;
+    --mw-component-user-panel-background: #F5F1F6;
+    --mw-component-user-panel-button-background-hover: #DFD8DF;
     --mw-component-user-panel-button-icon: #594E5B;
     --mw-component-user-panel-name-text: #221B23;
     --mw-component-user-panel-status-text: #695F6B;
@@ -1167,7 +1179,7 @@
   --mw-color-surface-popover: #FFFFFF;
   --mw-color-surface-rail: #F5F1F6;
   --mw-color-surface-sidebar: #F5F1F6;
-  --mw-color-surface-sidebar-footer: #FFFFFF;
+  --mw-color-surface-sidebar-footer: #F5F1F6;
   --mw-color-text-accent: #A84F1A;
   --mw-color-text-channel-muted: #726874;
   --mw-color-text-danger: #C4262B;
@@ -1230,7 +1242,7 @@
   --mw-component-composer-locked-text: #695F6B;
   --mw-component-composer-placeholder: #695F6B;
   --mw-component-composer-reply-bar-author-text: #221B23;
-  --mw-component-composer-reply-bar-background: #F5F1F6;
+  --mw-component-composer-reply-bar-background: #DFD8DF;
   --mw-component-composer-reply-bar-button-background-hover: #ECE6ED;
   --mw-component-composer-reply-bar-icon: #594E5B;
   --mw-component-composer-reply-bar-text: #594E5B;
@@ -1404,8 +1416,8 @@
   --mw-component-unsaved-bar-border: #E3DDE4;
   --mw-component-unsaved-bar-border-attention: #C4262B;
   --mw-component-unsaved-bar-text: #392F3A;
-  --mw-component-user-panel-background: #FFFFFF;
-  --mw-component-user-panel-button-background-hover: #ECE6ED;
+  --mw-component-user-panel-background: #F5F1F6;
+  --mw-component-user-panel-button-background-hover: #DFD8DF;
   --mw-component-user-panel-button-icon: #594E5B;
   --mw-component-user-panel-name-text: #221B23;
   --mw-component-user-panel-status-text: #695F6B;
