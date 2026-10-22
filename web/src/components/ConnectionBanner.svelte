@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { strings } from "../i18n";
   import type { ConnectionStatus } from "../lib/client.svelte";
   import Icon from "./Icon.svelte";
 
@@ -10,7 +11,11 @@
   let { status }: Props = $props();
 
   const notice = $derived(
-    status === "connecting" ? "Connecting…" : status === "reconnecting" ? "Connection lost. Reconnecting…" : "",
+    status === "connecting"
+      ? strings.connection.connecting
+      : status === "reconnecting"
+        ? strings.connection.reconnecting
+        : "",
   );
 </script>
 

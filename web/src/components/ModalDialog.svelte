@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick, type Snippet } from "svelte";
 
+  import { strings } from "../i18n";
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
 
@@ -35,7 +36,7 @@
     isHeadingCentered = false,
     errorMessage = "",
     isBusy = false,
-    cancelLabel = "Cancel",
+    cancelLabel = strings.common.cancel,
     submitLabel = "",
     isSubmitDanger = false,
     isSubmitEnabled = true,

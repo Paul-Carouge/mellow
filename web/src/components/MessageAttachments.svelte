@@ -1,6 +1,7 @@
 <script lang="ts">
   import { SvelteSet } from "svelte/reactivity";
 
+  import { strings } from "../i18n";
   import { type Attachment, PREVIEWABLE_IMAGE_TYPES, type Snowflake, attachmentUrl } from "../lib/protocol";
   import { attachmentCountLabel, humanFileSize, middleTruncate } from "./format";
   import Icon from "./Icon.svelte";
@@ -77,7 +78,7 @@
               <span aria-hidden="true" class="truncate">
                 {middleTruncate(attachment.file_name, FILE_NAME_MAXIMUM_CHARACTERS)}
               </span>
-              <span class="sr-only">Download {attachment.file_name}</span>
+              <span class="sr-only">{strings.messages.download(attachment.file_name)}</span>
             </a>
           {/if}
           <p class="type-body-sm text-(--mw-component-attachment-file-size-text)">{size}</p>
@@ -90,7 +91,7 @@
             download={attachment.file_name}
             tabindex="-1"
             aria-hidden="true"
-            title="Download {attachment.file_name}"
+            title={strings.messages.download(attachment.file_name)}
             class="grid size-(--mw-component-attachment-download-button-size) shrink-0 place-items-center rounded-sm text-(--mw-component-attachment-download-icon) transition-colors duration-(--mw-motion-duration-fast) hover:text-(--mw-component-attachment-download-icon-hover) pointer-coarse:size-(--mw-size-hit-web-min)"
           >
             <Icon name="download-simple" class="size-(--mw-component-attachment-download-icon-size)" />

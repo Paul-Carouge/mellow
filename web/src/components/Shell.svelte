@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import { MediaQuery, SvelteSet } from "svelte/reactivity";
 
+  import { strings } from "../i18n";
   import type { MellowClient } from "../lib/client.svelte";
   import type { Channel, Snowflake } from "../lib/protocol";
   import AddServerDialog from "./AddServerDialog.svelte";
@@ -195,7 +196,7 @@
     {#if hasRoomForNavigator.current}
       {@render navigator(false)}
     {:else if isNavigationDrawerOpen}
-      <Drawer label="Servers and channels" side="start" onclose={() => (isNavigationDrawerOpen = false)}>
+      <Drawer label={strings.shell.serversAndChannels} side="start" onclose={() => (isNavigationDrawerOpen = false)}>
         {@render navigator(true)}
       </Drawer>
     {/if}
@@ -220,7 +221,7 @@
         {/key}
       {:else}
         <Drawer
-          label="Members of {guild.name}"
+          label={strings.shell.membersOf(guild.name)}
           side="end"
           isFullWindow={!hasRoomForNavigator.current}
           onclose={() => (isMemberOverlayOpen = false)}

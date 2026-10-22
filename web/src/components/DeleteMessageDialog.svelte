@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { strings } from "../i18n";
   import type { Message } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
   import { displayName } from "./format";
@@ -16,9 +17,9 @@
 </script>
 
 <ModalDialog
-  title="Delete this message?"
-  subtitle="It will be removed for everyone."
-  submitLabel="Delete message"
+  title={strings.deleteMessage.title}
+  subtitle={strings.deleteMessage.subtitle}
+  submitLabel={strings.deleteMessage.submit}
   isSubmitDanger
   {onclose}
   onsubmit={onconfirm}
@@ -39,5 +40,5 @@
       </p>
     </div>
   </div>
-  <p class="type-body-sm text-(--mw-component-dialog-hint-text)">Tip: hold Shift while deleting to skip this next time.</p>
+  <p class="type-body-sm text-(--mw-component-dialog-hint-text)">{strings.deleteMessage.tip}</p>
 </ModalDialog>

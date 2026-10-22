@@ -1,5 +1,6 @@
 // Text shown in the shell, built the way the desktop client builds it (mellow-desktop live_rows.rs).
 
+import { formattingLocale, strings } from "../i18n";
 import type { PublicUser, Snowflake } from "../lib/protocol";
 
 /** Unix time of 2026-01-01T00:00:00Z: `MELLOW_EPOCH_UNIX_MILLISECONDS` in mellow-protocol. */
@@ -24,26 +25,26 @@ function isSameLocalDay(left: Date, right: Date): boolean {
 }
 
 /** "14:05" in the reader's locale. */
-export function timeOfDayLabel(unixMilliseconds: number, locale?: string): string {
+export function timeOfDayLabel(unixMilliseconds: number, locale: string = formattingLocale): string {
   return new Date(unixMilliseconds).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
 }
 
 /** "Today at 14:05", "Yesterday at 09:12", or the date and time for older messages (DESIGN.md §5.4). */
-export function messageTimestampLabel(unixMilliseconds: number, now: Date, locale?: string): string {
+export function messageTimestampLabel(unixMilliseconds: number, now: Date, locale: string = formattingLocale): string {
   const sent = new Date(unixMilliseconds);
   const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
   const timeOfDay = timeOfDayLabel(unixMilliseconds, locale);
   if (isSameLocalDay(sent, now)) {
-    return `Today at ${timeOfDay}`;
+    return strings.time.todayAt(timeOfDay);
   }
   if (isSameLocalDay(sent, yesterday)) {
-    return `Yesterday at ${timeOfDay}`;
+    return strings.time.yesterdayAt(timeOfDay);
   }
   return sent.toLocaleString(locale, { dateStyle: "short", timeStyle: "short" });
 }
 
 /** Full date and time, for tooltips and screen readers. */
-export function fullTimestampLabel(unixMilliseconds: number, locale?: string): string {
+export function fullTimestampLabel(unixMilliseconds: number, locale: string = formattingLocale): string {
   return new Date(unixMilliseconds).toLocaleString(locale, { dateStyle: "full", timeStyle: "short" });
 }
 
@@ -95,16 +96,16 @@ export function typingSegments(names: readonly string[]): { text: string; isName
     return [];
   }
   if (names.length > MAXIMUM_TYPING_PEOPLE_COUNTED) {
-    return [words("Several people are typing…")];
+    return [words(strings.typing.several)];
   }
   if (second === undefined) {
-    return [name(first), words(" is typing…")];
+    return [name(first), words(strings.typing.isTyping)];
   }
   if (names.length === MAXIMUM_TYPING_NAMES_LISTED) {
-    return [name(first), words(" and "), name(second), words(" are typing…")];
+    return [name(first), words(strings.typing.and), name(second), words(strings.typing.areTyping)];
   }
   const others = names.length - MAXIMUM_TYPING_NAMES_LISTED;
-  return [name(first), words(", "), name(second), words(` and ${others} ${others === 1 ? "other" : "others"} are typing…`)];
+  return [name(first), words(strings.typing.listSeparator), name(second), words(strings.typing.andOthersAreTyping(others))];
 }
 
 export function typingLabel(names: readonly string[]): string {
@@ -119,9 +120,9 @@ const FILE_SIZE_UNITS = ["KB", "MB", "GB"] as const;
 const FILE_SIZE_MAXIMUM_FRACTION_DIGITS = 1;
 
 /** "512 bytes", "1 KB", "2.4 MB", in the reader's locale. */
-export function humanFileSize(bytes: number, locale?: string): string {
+export function humanFileSize(bytes: number, locale: string = formattingLocale): string {
   if (bytes < BYTES_PER_UNIT_STEP) {
-    return bytes === 1 ? "1 byte" : `${bytes} bytes`;
+    return strings.fileSize.bytes(bytes);
   }
   let value = bytes;
   let unit: (typeof FILE_SIZE_UNITS)[number] = FILE_SIZE_UNITS[0];
@@ -134,7 +135,7 @@ export function humanFileSize(bytes: number, locale?: string): string {
     }
   }
   const number = value.toLocaleString(locale, { maximumFractionDigits: FILE_SIZE_MAXIMUM_FRACTION_DIGITS });
-  return `${number} ${unit}`;
+  return strings.fileSize.inUnit(number, unit);
 }
 
 const TRUNCATION_ELLIPSIS = "…";
@@ -166,7 +167,7 @@ export function attachmentCountLabel(count: number): string {
   if (count === 0) {
     return "";
   }
-  return count === 1 ? "1 attachment" : `${count} attachments`;
+  return strings.messages.attachmentCount(count);
 }
 
 export type MessageTextSegment = { kind: "text"; text: string } | { kind: "link"; text: string; url: string };

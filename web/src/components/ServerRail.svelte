@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
 
+  import { strings } from "../i18n";
   import type { MellowClient } from "../lib/client.svelte";
   import type { Snowflake } from "../lib/protocol";
   import { serverInitials } from "./format";
@@ -59,7 +60,7 @@
     {/if}
     <button
       type="button"
-      aria-label={hasUnread ? `${label}, unread` : label}
+      aria-label={hasUnread ? strings.common.withUnread(label) : label}
       aria-current={isSelected ? "page" : undefined}
       class={[
         "rail-item grid size-(--mw-component-rail-item-size) place-items-center overflow-hidden",
@@ -106,9 +107,9 @@
   <Icon name="plus" class="size-[calc(var(--mw-component-rail-item-size)/2)]" />
 {/snippet}
 
-<nav aria-label="Servers" class="min-h-0 overflow-x-hidden overflow-y-auto [scrollbar-width:none]">
+<nav aria-label={strings.rail.servers} class="min-h-0 overflow-x-hidden overflow-y-auto [scrollbar-width:none]">
   <ul class="flex flex-col items-center gap-(--mw-component-rail-item-gap) pt-(--mw-component-rail-padding-top)">
-    {@render railItem("Direct messages", isHomeSelected, hasUnreadConversation, () => select(null), homeMark, "home")}
+    {@render railItem(strings.rail.directMessages, isHomeSelected, hasUnreadConversation, () => select(null), homeMark, "home")}
     <li aria-hidden="true" class="h-(--mw-size-rail-separator-height) w-(--mw-size-rail-separator-width) shrink-0 rounded-full bg-(--mw-component-rail-separator-color)"></li>
     {#each client.guilds as guild (guild.id)}
       {@const hasUnread = guild.channels.some((channel) => client.hasUnread(channel.id))}
@@ -117,7 +118,7 @@
       {/snippet}
       {@render railItem(guild.name, client.selectedGuildId === guild.id, hasUnread, () => select(guild.id), initials, "server")}
     {/each}
-    {@render railItem("Add a server", false, false, onaddserver, addIcon, "action")}
+    {@render railItem(strings.rail.addServer, false, false, onaddserver, addIcon, "action")}
   </ul>
 </nav>
 

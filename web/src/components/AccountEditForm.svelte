@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
 
+  import { strings } from "../i18n";
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
 
@@ -52,7 +53,7 @@
   </div>
 
   <div class="flex flex-wrap justify-end gap-(--mw-component-settings-account-button-gap)">
-    <Button isDisabled={isBusy} onclick={oncancel}>Cancel</Button>
+    <Button isDisabled={isBusy} onclick={oncancel}>{strings.common.cancel}</Button>
     <Button type="submit" variant="primary" isDisabled={!isSaveEnabled || isBusy}>{isBusy ? busyLabel : saveLabel}</Button>
   </div>
 </form>

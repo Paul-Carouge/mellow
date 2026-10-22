@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { HTMLInputAttributes } from "svelte/elements";
 
+  import { strings } from "../i18n";
   import Icon, { type IconName } from "./Icon.svelte";
 
   // DESIGN.md §6.3: uppercase label above (rendered by the type token, the source stays sentence
@@ -59,7 +60,7 @@
       <button
         type="button"
         class="-me-(--mw-component-text-field-padding-inline) grid size-(--mw-size-hit-web-min) shrink-0 place-items-center text-(--mw-component-text-field-icon) hover:text-(--mw-component-text-field-icon-hover) focus-visible:focus-ring-inset"
-        aria-label="Show password"
+        aria-label={strings.signIn.showPassword}
         aria-pressed={isPasswordShown}
         onclick={() => (isPasswordShown = !isPasswordShown)}
       >

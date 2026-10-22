@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
 
+  import { strings } from "../i18n";
   import type { MellowClient } from "../lib/client.svelte";
   import AccountSettings from "./AccountSettings.svelte";
   import Icon from "./Icon.svelte";
@@ -21,7 +22,11 @@
   let { client, isWide, onclose }: Props = $props();
 
   type Section = "account" | "profile" | "about";
-  const SECTION_TITLES: Record<Section, string> = { account: "My account", profile: "Profile", about: "About" };
+  const SECTION_TITLES: Record<Section, string> = {
+    account: strings.settings.myAccount,
+    profile: strings.settings.profile,
+    about: strings.settings.about,
+  };
   const SOURCE_CODE_URL = "https://github.com/Paul-Carouge/mellow";
 
   const id = $props.id();
@@ -111,7 +116,7 @@
   <div class="flex shrink-0 flex-col items-center gap-(--mw-component-settings-close-label-gap)">
     <button
       type="button"
-      aria-label="Close settings"
+      aria-label={strings.settings.closeSettings}
       aria-keyshortcuts="Escape"
       class="group grid size-(--mw-size-hit-web-min) place-items-center rounded-full"
       onclick={onclose}
@@ -123,14 +128,14 @@
       </span>
     </button>
     {#if isWide}
-      <span aria-hidden="true" class="type-category text-(--mw-component-settings-close-label-text)">Esc</span>
+      <span aria-hidden="true" class="type-category text-(--mw-component-settings-close-label-text)">{strings.settings.escapeKey}</span>
     {/if}
   </div>
 {/snippet}
 
 <dialog
   bind:this={dialog}
-  aria-label="User settings"
+  aria-label={strings.settings.userSettings}
   class={[
     "fixed inset-0 m-0 size-full max-h-none max-w-none font-sans text-text-normal",
     // Wide: the navigation on the ground and the page as a sheet beside it (ADR-0022 §1).
@@ -162,12 +167,12 @@
       >
         {#if !isWide}
           <div class="flex items-center justify-between gap-xs px-(--mw-component-settings-content-padding-inline-narrow) pt-xs">
-            <h1 class="type-heading-md text-(--mw-component-settings-page-title-text)">User settings</h1>
+            <h1 class="type-heading-md text-(--mw-component-settings-page-title-text)">{strings.settings.userSettings}</h1>
             {@render closeButton()}
           </div>
         {/if}
         <nav
-          aria-label="User settings"
+          aria-label={strings.settings.userSettings}
           class={[
             "flex flex-col gap-(--mw-component-settings-nav-item-gap)",
             isWide
@@ -175,16 +180,16 @@
               : "px-(--mw-component-settings-content-padding-inline-narrow) py-xs",
           ]}
         >
-          {@render navGroup("User settings", ["account", "profile"])}
+          {@render navGroup(strings.settings.userSettings, ["account", "profile"])}
           {@render separator()}
-          {@render navGroup("App settings", ["about"])}
+          {@render navGroup(strings.settings.appSettings, ["about"])}
           {@render separator()}
           <button
             type="button"
             class="flex h-(--mw-component-settings-nav-item-height) w-full items-center rounded-(--mw-component-settings-nav-item-radius) px-(--mw-component-settings-nav-item-padding-inline) text-start type-channel-name text-(--mw-component-settings-nav-danger-text) hover:bg-(--mw-component-settings-nav-danger-background-hover) hover:text-(--mw-component-settings-nav-danger-text-hover) pointer-coarse:h-(--mw-size-hit-web-min)"
             onclick={() => void client.signOut()}
           >
-            Sign out
+            {strings.settings.signOut}
           </button>
           {#if client.signOutError}
             <p role="alert" class="px-(--mw-component-settings-nav-item-padding-inline) type-body-sm text-text-danger">
@@ -209,7 +214,7 @@
           <div class="flex items-center justify-between gap-xs px-(--mw-component-settings-content-padding-inline-narrow) pt-xs">
             <IconButton
               icon="caret-right"
-              label="Back to user settings"
+              label={strings.settings.backToUserSettings}
               class="size-(--mw-size-hit-web-min) text-(--mw-component-settings-close-icon) hover:bg-(--mw-component-settings-close-background-hover) hover:text-(--mw-component-settings-close-icon-hover)"
               iconClass="size-(--mw-component-settings-close-icon-size) rotate-180"
               onclick={() => void backToNavigation()}
@@ -237,15 +242,15 @@
             {:else if section === "profile"}
               <ProfileSettings {client} />
             {:else}
-              <h2 class="type-heading-lg text-(--mw-component-settings-page-title-text)">About</h2>
+              <h2 class="type-heading-lg text-(--mw-component-settings-page-title-text)">{strings.settings.about}</h2>
               <p class="mt-(--mw-component-settings-page-title-gap) type-heading-md text-(--mw-component-settings-app-name-text)">
-                Mellow web client
+                {strings.settings.webClient}
               </p>
               <h3 class="mt-(--mw-component-settings-section-gap) type-category text-(--mw-component-settings-section-label-text)">
-                Source code
+                {strings.settings.sourceCode}
               </h3>
               <p class="mt-(--mw-component-settings-section-label-gap) type-body-lg text-(--mw-component-settings-body-text)">
-                Mellow is free software under the AGPL-3.0 licence. You can read, change and share its code.
+                {strings.settings.licence}
               </p>
               <a
                 href={SOURCE_CODE_URL}
@@ -253,7 +258,7 @@
                 rel="noopener noreferrer"
                 class="mt-(--mw-component-settings-action-gap) inline-flex min-h-(--mw-size-hit-web-min) items-center type-body-lg text-text-link hover:underline"
               >
-                Source code on GitHub
+                {strings.settings.sourceCodeOnGitHub}
               </a>
             {/if}
           </section>

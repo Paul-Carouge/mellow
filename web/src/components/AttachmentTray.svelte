@@ -15,6 +15,7 @@
 </script>
 
 <script lang="ts">
+  import { strings } from "../i18n";
   import { humanFileSize, middleTruncate } from "./format";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
@@ -32,7 +33,7 @@
 </script>
 
 <ul
-  aria-label="Files to send"
+  aria-label={strings.attachmentTray.filesToSend}
   class="flex gap-(--mw-component-composer-tray-gap) overflow-x-auto border-b-(length:--mw-component-composer-tray-item-border-width) border-(--mw-component-composer-tray-divider) p-(--mw-component-composer-tray-padding)"
 >
   {#each items as item (item.key)}
@@ -69,7 +70,7 @@
         </p>
       {:else}
         <p class="type-body-sm text-(--mw-component-composer-tray-item-status-text)">
-          {item.status === "uploading" ? "Uploading…" : humanFileSize(item.file.size)}
+          {item.status === "uploading" ? strings.attachmentTray.uploading : humanFileSize(item.file.size)}
         </p>
       {/if}
       <span
@@ -77,7 +78,7 @@
       >
         <IconButton
           icon="trash"
-          label="Remove {item.file.name}"
+          label={strings.attachmentTray.remove(item.file.name)}
           class="size-(--mw-component-action-bar-button-size) text-(--mw-component-action-bar-icon) hover:bg-(--mw-component-action-bar-button-background-hover) hover:text-(--mw-component-action-bar-icon-danger-hover)"
           iconClass="size-(--mw-component-action-bar-icon-size)"
           onclick={() => onremove(item.key)}
