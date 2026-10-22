@@ -51,9 +51,9 @@ export function canOpenServerSettings(guild: Guild, userId: Snowflake | undefine
  * Whether leaving the shown page must wait for its unsaved changes. Only the page that holds them
  * keeps the reader: a page that went away (its permission was lost) never traps them.
  */
-export function mustStayOnPage(
-  unsavedSection: ServerSettingsSection | null,
-  shownSection: ServerSettingsSection | null,
+export function mustStayOnPage<Section extends string>(
+  unsavedSection: Section | null,
+  shownSection: Section | null,
 ): boolean {
   return unsavedSection !== null && unsavedSection === shownSection;
 }
