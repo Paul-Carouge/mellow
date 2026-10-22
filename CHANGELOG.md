@@ -4,6 +4,13 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-22
+Dusk, Mellow's own look.
+
+### Changed
+- A new visual identity, Dusk (ADR-0022): plum-tinted dark and light themes, apricot kept for what concerns you right now, softer nested corners, sentence-case type and more breathing room, on the web and the desktop. The new layout, French interface and transitions follow in the next releases.
+- The app icon and the favicon show Melli on a dark dusk gradient tile.
+
 ## [0.5.0] - 2026-10-22
 Melli on the desktop, and an app icon.
 
