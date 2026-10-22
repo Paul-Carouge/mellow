@@ -7,7 +7,7 @@
   import Icon from "./Icon.svelte";
   import { recentEmoji } from "./recent-emoji.svelte";
 
-  // The emoji picker (DESIGN.md §6.37): search first, then the recently used and the built-in set
+  // The emoji picker (DESIGN.md §6.52): search first, then the recently used and the built-in set
   // by category. One Tab stop for the emoji; arrows move between them, Enter picks, Esc closes.
   // A light-dismiss popover beside its button, or a sheet at the bottom of a phone's screen.
   interface Props {
