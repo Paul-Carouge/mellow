@@ -4,9 +4,9 @@
 import { EMOJI_CATALOGUE } from "./emoji-catalogue";
 import type { ReactionSummary } from "./protocol";
 
-const VARIATION_SELECTORS = /[︎️]/gu;
-const EMOJI_PRESENTATION_SELECTOR = "️";
-const KEYCAP = "⃣";
+const VARIATION_SELECTORS = /[\u{FE0E}\u{FE0F}]/gu;
+const EMOJI_PRESENTATION_SELECTOR = "\u{FE0F}";
+const KEYCAP = "\u{20E3}";
 
 /** The key the instance stores a reaction under: the emoji without variation selectors. */
 export function reactionKey(emoji: string): string {
