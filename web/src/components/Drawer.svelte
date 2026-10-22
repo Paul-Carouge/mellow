@@ -1,17 +1,19 @@
 <script lang="ts">
   import { onMount, type Snippet } from "svelte";
 
-  // A pane that slides over the chat in narrow windows (DESIGN.md §4.2): the rail and channel
-  // sidebar from the leading edge, the member list from the trailing edge. A native modal
-  // <dialog> keeps the chat behind it inert; Esc and the scrim close it.
+  // A panel that slides over the sheet (DESIGN.md §4.2, ADR-0022 §1): the navigator from the
+  // leading edge below 816 px, the side sheet from the trailing edge below 1064 px. A native modal
+  // <dialog> keeps the rest inert; Esc and the scrim close it.
   interface Props {
     label: string;
     side: "start" | "end";
+    /** The side sheet covers the whole window on phones; elsewhere it floats inside the inset. */
+    isFullWindow?: boolean;
     onclose: () => void;
     children: Snippet;
   }
 
-  let { label, side, onclose, children }: Props = $props();
+  let { label, side, isFullWindow = false, onclose, children }: Props = $props();
 
   let dialog: HTMLDialogElement;
 
@@ -38,8 +40,13 @@
   aria-label={label}
   tabindex="-1"
   class={[
-    "fixed inset-y-0 m-0 outline-none h-dvh max-h-none max-w-[calc(100vw_-_var(--mw-size-mobile-panel-peek))] overflow-hidden bg-transparent p-0 shadow-high backdrop:bg-scrim",
-    side === "start" ? "left-0" : "right-0 left-auto",
+    "drawer fixed m-0 max-h-none overflow-hidden bg-transparent p-0 outline-none backdrop:bg-scrim",
+    side === "start"
+      ? "drawer-from-start inset-y-0 left-0 h-dvh max-w-[calc(100vw_-_var(--mw-size-mobile-panel-peek))]"
+      : isFullWindow
+        ? "drawer-from-end inset-0 size-full max-w-none"
+        : // Inside the conversation sheet's frame, one inset in from its top and bottom (as in the mockup).
+          "drawer-from-end top-[calc(3*var(--mw-size-sheet-inset))] right-[calc(2*var(--mw-size-sheet-inset))] bottom-[calc(2*var(--mw-size-sheet-inset))] left-auto h-auto rounded-(--mw-component-side-sheet-radius) shadow-high",
   ]}
   oncancel={(event) => {
     event.preventDefault();
@@ -55,3 +62,15 @@
     {@render children()}
   </div>
 </dialog>
+
+<style>
+  .drawer::backdrop {
+    animation: mw-fade-in var(--mw-motion-duration-base) var(--mw-motion-easing-standard) both;
+  }
+  .drawer-from-start {
+    animation: mw-slide-from-start var(--mw-motion-duration-slow) var(--mw-motion-easing-enter) both;
+  }
+  .drawer-from-end {
+    animation: mw-slide-from-end var(--mw-motion-duration-slow) var(--mw-motion-easing-enter) both;
+  }
+</style>

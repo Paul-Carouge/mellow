@@ -380,6 +380,12 @@
     }
   }
 
+  const headerButtonClass =
+    "size-(--mw-component-chat-header-button-size) text-(--mw-component-chat-header-icon) hover:bg-state-hover hover:text-text-normal";
+  // The composer's buttons sit centred on its base row, which is as tall as the user card.
+  const composerButtonClass =
+    "my-[calc((var(--mw-size-dock-height)_-_var(--mw-component-composer-attach-button-size))/2)] size-(--mw-component-composer-attach-button-size) text-(--mw-component-composer-icon) hover:bg-state-hover hover:text-(--mw-component-composer-icon-hover)";
+
   async function startReply(message: Message) {
     replyingTo = message;
     await tick();
@@ -392,54 +398,57 @@
 <section
   bind:this={pane}
   aria-label={channel ? `#${channel.name}` : conversation ? conversationName : "Chat"}
-  class="relative flex h-full min-w-0 flex-1 flex-col bg-surface-chat"
+  class={[
+    "relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-surface-chat",
+    // Full-bleed on phones: square corners, and messages keep more of the narrow width.
+    hasNavigationDrawer ? "[--message-padding-trailing:var(--mw-space-md)]" : "rounded-(--mw-component-sheet-radius)",
+  ]}
   ondragenter={handleDragEnter}
   ondragover={handleDragOver}
   ondragleave={handleDragLeave}
   ondrop={handleDrop}
 >
+  <!-- No line under the header: the sheet's tone and space separate it (ADR-0022 §2). -->
   <header
-    class="relative z-10 flex h-(--mw-component-chat-header-height) shrink-0 items-center gap-xs bg-(--mw-component-chat-header-background) px-(--mw-component-chat-header-padding-inline) shadow-(--mw-component-chat-header-shadow)"
+    class="flex h-(--mw-component-chat-header-height) shrink-0 items-center gap-xs ps-(--mw-component-chat-header-padding-inline) pe-xs"
   >
     {#if hasNavigationDrawer}
       <IconButton
         icon="list"
         label="Open servers and channels"
-        class="-ms-xs size-(--mw-component-chat-header-button-size) text-(--mw-component-chat-header-icon) hover:bg-state-hover"
+        class={headerButtonClass}
         iconClass="size-(--mw-component-chat-header-icon-size)"
         onclick={onopennavigation}
       />
     {/if}
+    {#if channel || conversation}
+      <div class="flex max-w-1/2 min-w-0 shrink-0 items-center gap-2xs text-(--mw-component-chat-header-name-text)">
+        <Icon
+          name={channel ? (canSendMessages ? "hash" : "lock") : "at"}
+          class="size-(--mw-component-chat-header-icon-size) text-text-muted"
+        />
+        <h1 class="min-w-0 truncate type-heading-md">{channel ? channel.name : conversationName}</h1>
+      </div>
+    {/if}
+    {#if channel?.topic && !hasNavigationDrawer}
+      <span aria-hidden="true" class="mx-xs h-(--mw-component-chat-header-divider-height) w-px shrink-0 bg-border-divider"></span>
+      <p class="min-w-0 flex-1 truncate type-body text-(--mw-component-chat-header-topic-text)" title={channel.topic}>
+        {channel.topic}
+      </p>
+    {:else}
+      <span class="flex-1"></span>
+    {/if}
     {#if channel}
-      <Icon
-        name={canSendMessages ? "hash" : "lock"}
-        class="size-(--mw-component-chat-header-icon-size) text-(--mw-component-chat-header-icon)"
-      />
-      <h1 class="shrink-0 truncate type-heading-md text-(--mw-component-chat-header-name-text) max-w-1/2">{channel.name}</h1>
-      {#if channel.topic}
-        <span aria-hidden="true" class="h-(--mw-component-chat-header-divider-height) w-px shrink-0 bg-border-divider"></span>
-        <p class="min-w-0 flex-1 truncate type-body-sm text-(--mw-component-chat-header-topic-text)" title={channel.topic}>
-          {channel.topic}
-        </p>
-      {:else}
-        <span class="flex-1"></span>
-      {/if}
+      <!-- The member toggle keeps its name; aria-pressed says whether the side sheet is open. -->
       <IconButton
         icon="users"
-        label={isMemberListOpen ? "Hide member list" : "Show member list"}
+        label="Member list"
         aria-pressed={isMemberListOpen}
-        class={[
-          "size-(--mw-component-chat-header-button-size) hover:bg-state-hover",
-          isMemberListOpen ? "text-text-heading" : "text-(--mw-component-chat-header-icon)",
-        ].join(" ")}
+        aria-keyshortcuts="Control+U"
+        class="{headerButtonClass} aria-pressed:text-text-heading"
         iconClass="size-(--mw-component-chat-header-icon-size)"
         onclick={ontogglememberlist}
       />
-    {:else if conversation}
-      <Icon name="at" class="size-(--mw-component-chat-header-icon-size) text-(--mw-component-chat-header-icon)" />
-      <h1 class="min-w-0 flex-1 truncate type-heading-md text-(--mw-component-chat-header-name-text)">
-        {conversationName}
-      </h1>
     {/if}
   </header>
 
@@ -483,49 +492,54 @@
       {/if}
     </div>
 
-    <div class="shrink-0 px-(--mw-component-composer-margin-inline)">
-      {#if replyingTo && canSendMessages}
-        <div
-          class="flex min-h-(--mw-component-composer-reply-bar-min-height) items-center rounded-t-(--mw-component-composer-radius) bg-(--mw-component-composer-reply-bar-background) ps-(--mw-component-composer-reply-bar-padding-inline) pe-2xs type-body text-(--mw-component-composer-reply-bar-text)"
-        >
-          <p class="min-w-0 flex-1 truncate">
-            Replying to <span class="font-semibold text-(--mw-component-composer-reply-bar-author-text)"
-              >{displayName(replyingTo.author)}</span
-            >
-          </p>
-          <IconButton
-            icon="x-circle"
-            label="Cancel reply"
-            class="size-(--mw-component-composer-reply-bar-button-size) text-(--mw-component-composer-reply-bar-icon) hover:bg-(--mw-component-composer-reply-bar-button-background-hover) hover:text-(--mw-component-composer-icon-hover)"
-            iconClass="size-(--mw-component-composer-reply-bar-icon-size)"
-            onclick={() => {
-              replyingTo = null;
-              focusComposer();
-            }}
-          />
-        </div>
-      {/if}
-      <div
-        class={[
-          "rounded-b-(--mw-component-composer-radius) bg-(--mw-component-composer-background)",
-          !(replyingTo && canSendMessages) && "rounded-t-(--mw-component-composer-radius)",
-        ]}
+    <!-- The composer zone (ADR-0022 §4): the typing row above, then the composer, whose base row is
+         as tall as the user card and as far from the bottom; it grows upward. -->
+    <div class="shrink-0 px-(--mw-component-composer-margin-inline) pb-(--mw-size-dock-margin)">
+      <p
+        aria-hidden="true"
+        class="flex h-(--mw-component-composer-typing-height) min-w-0 items-center gap-2xs ps-xs type-typing text-(--mw-component-composer-typing-text)"
       >
+        {#if typingText}
+          <span class="typing-dots inline-flex shrink-0 gap-(--mw-component-composer-typing-dot-gap)">
+            <i></i><i></i><i></i>
+          </span>
+          <span class="truncate">{typingText}</span>
+        {/if}
+      </p>
+      <div
+        class="overflow-hidden rounded-(--mw-component-composer-radius) bg-(--mw-component-composer-background) has-[textarea:focus-visible]:focus-ring"
+      >
+        {#if replyingTo && canSendMessages}
+          <div
+            class="reply-bar flex min-h-(--mw-component-composer-reply-bar-min-height) items-center gap-xs bg-(--mw-component-composer-reply-bar-background) ps-(--mw-component-composer-reply-bar-padding-inline) pe-2xs type-body text-(--mw-component-composer-reply-bar-text)"
+          >
+            <p class="min-w-0 flex-1 truncate">
+              Replying to <span class="font-semibold text-(--mw-component-composer-reply-bar-author-text)"
+                >{displayName(replyingTo.author)}</span
+              >
+            </p>
+            <IconButton
+              icon="x-circle"
+              label="Cancel reply"
+              class="size-(--mw-component-composer-reply-bar-button-size) text-(--mw-component-composer-reply-bar-icon) hover:bg-(--mw-component-composer-reply-bar-button-background-hover) hover:text-(--mw-component-composer-icon-hover)"
+              iconClass="size-(--mw-component-composer-reply-bar-icon-size)"
+              onclick={() => {
+                replyingTo = null;
+                focusComposer();
+              }}
+            />
+          </div>
+        {/if}
         {#if canSendMessages && trayItems.length > 0}
           <AttachmentTray items={trayItems} onremove={removeTrayItem} />
         {/if}
-        <div
-          class={[
-            "flex min-h-(--mw-component-composer-min-height) items-center gap-xs rounded-b-(--mw-component-composer-radius) px-(--mw-component-composer-padding-inline) focus-within:focus-ring-inset",
-            !(replyingTo && canSendMessages) && trayItems.length === 0 && "rounded-t-(--mw-component-composer-radius)",
-          ]}
-        >
+        <div class="flex items-end gap-2xs px-xs">
           {#if canSendMessages}
             {#if canAttachFiles}
               <IconButton
                 icon="plus-circle"
                 label="Attach files"
-                class="-ms-2xs size-(--mw-component-composer-attach-button-size) text-(--mw-component-composer-icon) hover:text-(--mw-component-composer-icon-hover)"
+                class={composerButtonClass}
                 iconClass="size-(--mw-component-composer-icon-size)"
                 onclick={() => fileInput?.click()}
               />
@@ -551,7 +565,7 @@
               aria-label={composerLabel}
               aria-describedby={replyingTo ? "composer-reply-hint" : undefined}
               placeholder={composerLabel}
-              class="min-w-0 flex-1 resize-none bg-transparent py-sm type-message text-(--mw-component-composer-text) outline-none placeholder:text-(--mw-component-composer-placeholder)"
+              class="min-h-(--mw-size-dock-height) min-w-0 flex-1 resize-none bg-transparent px-2xs py-[calc((var(--mw-size-dock-height)_-_var(--mw-type-message-font-size)_*_var(--mw-type-message-line-height))/2)] type-message text-(--mw-component-composer-text) outline-none placeholder:text-(--mw-component-composer-placeholder)"
               onkeydown={handleComposerKeydown}
               onpaste={handleComposerPaste}
               oninput={() => client.noteTyping()}
@@ -562,19 +576,20 @@
                 Replying to {displayName(replyingTo.author)}. Escape cancels the reply.
               </span>
             {/if}
-            <!-- Phones have no Enter-to-send habit: the send button shows under a coarse pointer (DESIGN.md §4.3). -->
-            <span class="hidden pointer-coarse:contents">
+            <!-- Phones have no Enter-to-send habit: the send button shows in the phone layout and
+                 under a coarse pointer (DESIGN.md §4.3). -->
+            <span class={hasNavigationDrawer ? "contents" : "hidden pointer-coarse:contents"}>
               <IconButton
                 icon="paper-plane-right"
                 label="Send message"
                 aria-disabled={!canSend}
-                class="text-(--mw-component-composer-icon) hover:text-(--mw-component-composer-icon-hover) aria-disabled:opacity-(--mw-component-button-disabled-opacity)"
+                class="{composerButtonClass} aria-disabled:opacity-(--mw-component-button-disabled-opacity)"
                 iconClass="size-(--mw-component-composer-icon-size)"
                 onclick={send}
               />
             </span>
           {:else}
-            <p class="py-sm type-message text-(--mw-component-composer-locked-text)">
+            <p class="flex min-h-(--mw-size-dock-height) items-center px-xs type-message text-(--mw-component-composer-locked-text)">
               You do not have permission to send messages in this channel.
             </p>
           {/if}
@@ -582,12 +597,6 @@
       </div>
     </div>
     <p class="sr-only" aria-live="polite">{uploadAnnouncement}</p>
-    <p
-      aria-hidden="true"
-      class="h-(--mw-component-composer-typing-height) shrink-0 truncate px-(--mw-component-composer-margin-inline) type-typing text-(--mw-component-composer-typing-text)"
-    >
-      {typingText}
-    </p>
   {:else}
     {@render emptyState()}
   {/if}
@@ -630,7 +639,7 @@
     {:else}
       <h2 class="type-heading-lg text-text-heading">No conversations yet</h2>
       <p class="max-w-(--mw-component-auth-card-max-width) type-body text-text-muted">
-        Start one with someone from your servers: open their profile in the member list and choose Message.
+        Start one with someone from your servers: open their profile in the member list and choose Send message.
       </p>
     {/if}
   </div>
@@ -648,3 +657,29 @@
     fallbackFocus={focusComposer}
   />
 {/if}
+
+<style>
+  /* Loops only while someone types; under reduced motion the dots hold still (ADR-0022 §3). */
+  .typing-dots i {
+    width: var(--mw-component-composer-typing-dot-size);
+    height: var(--mw-component-composer-typing-dot-size);
+    border-radius: var(--mw-radius-full);
+    background: currentColor;
+    animation: mw-typing-dot var(--mw-component-composer-typing-dot-duration) ease-in-out infinite;
+  }
+  .typing-dots i:nth-child(2) {
+    animation-delay: var(--mw-component-composer-typing-dot-stagger);
+  }
+  .typing-dots i:nth-child(3) {
+    animation-delay: calc(2 * var(--mw-component-composer-typing-dot-stagger));
+  }
+  .reply-bar {
+    animation: mw-fade-in var(--mw-motion-duration-fast) var(--mw-motion-easing-standard) both;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .typing-dots i {
+      animation: none;
+      opacity: 0.8;
+    }
+  }
+</style>

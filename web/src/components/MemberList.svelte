@@ -6,19 +6,25 @@
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
   import { displayName } from "./format";
+  import IconButton from "./IconButton.svelte";
   import ProfileCard from "./ProfileCard.svelte";
-  import { lengthTokenInPixels } from "./tokens";
 
-  // Member list and profile popover (DESIGN.md §5.7): Online then Offline, offline avatars dimmed
-  // while names keep full contrast; a click opens the profile with "Message".
+  // The members side sheet (DESIGN.md §5.7, ADR-0022 §1): Online then Offline, offline avatars
+  // dimmed while names keep full contrast; choosing a member shows their profile in the sheet,
+  // with "Send message".
   interface Props {
     client: MellowClient;
     guild: Guild;
-    /** After "Message" opened a conversation (the narrow layout closes its overlay). */
+    /** Docked beside the conversation, or over it in a drawer (which handles Esc itself). */
+    isDocked: boolean;
+    /** The phone layout: the sheet covers the window, without corners. */
+    isFullWindow?: boolean;
+    onclose: () => void;
+    /** After "Send message" opened a conversation (the overlay closes). */
     onopenedconversation: () => void;
   }
 
-  let { client, guild, onopenedconversation }: Props = $props();
+  let { client, guild, isDocked, isFullWindow = false, onclose, onopenedconversation }: Props = $props();
 
   const members = $derived(client.membersByGuild.get(guild.id) ?? null);
   // The instance does not list the signed-in user among the online ids: they are online here.
@@ -32,34 +38,28 @@
     ].filter((group) => group.members.length > 0);
   });
 
-  let popover = $state<HTMLElement | null>(null);
   let profileUserId = $state<string | null>(null);
-  // From the list, so a USER_UPDATE (a new avatar, say) shows in an open popout too.
+  // From the list, so a USER_UPDATE (a new avatar, say) shows in an open profile too.
   const profile = $derived(members?.find((member) => member.user.id === profileUserId)?.user ?? null);
   let opener: HTMLElement | null = null;
-  let position = $state({ top: 0, right: 0 });
+  let backButton = $state<HTMLButtonElement | null>(null);
   let isOpening = $state(false);
   let errorMessage = $state("");
 
-  async function openProfile(user: PublicUser, row: HTMLElement) {
-    if (!popover) {
-      return;
-    }
+  async function showProfile(user: PublicUser, row: HTMLElement) {
     opener = row;
     profileUserId = user.id;
     errorMessage = "";
-    popover.showPopover();
     await tick();
-    // Beside the row on the leading side, as on Discord, kept inside the window.
-    const bounds = row.getBoundingClientRect();
-    const margin = lengthTokenInPixels("space-md");
-    const gap = lengthTokenInPixels("space-xs");
-    position = {
-      top: Math.max(margin, Math.min(bounds.top, window.innerHeight - popover.offsetHeight - margin)),
-      right: Math.min(window.innerWidth - bounds.left + gap, window.innerWidth - popover.offsetWidth - margin),
-    };
-    // "Message" when there is one; otherwise the card itself, so Esc and screen readers start there.
-    (popover.querySelector<HTMLElement>("button") ?? popover).focus();
+    backButton?.focus();
+  }
+
+  async function showMembers() {
+    profileUserId = null;
+    await tick();
+    if (opener?.isConnected) {
+      opener.focus();
+    }
   }
 
   async function message(user: PublicUser) {
@@ -67,7 +67,6 @@
     errorMessage = "";
     try {
       await client.openDirectMessage(user.id);
-      popover?.hidePopover();
       onopenedconversation();
     } catch (error) {
       errorMessage = describeError(error, "Couldn't open the conversation");
@@ -75,81 +74,112 @@
       isOpening = false;
     }
   }
+
+  const headButtonClass =
+    "size-(--mw-component-user-panel-button-size) text-(--mw-component-user-panel-button-icon) hover:bg-state-hover hover:text-text-normal";
+  const headIconClass = "size-(--mw-component-user-panel-button-icon-size)";
 </script>
 
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <aside
-  aria-label="Members of {guild.name}"
-  class="flex h-full w-(--mw-component-member-list-width) shrink-0 flex-col overflow-y-auto bg-(--mw-component-member-list-background) pb-xs"
->
-  {#if members === null && client.failedMemberGuildIds.has(guild.id)}
-    <div role="alert" class="flex flex-col items-start gap-sm px-md pt-lg">
-      <p class="type-body text-text-muted">Couldn't load the members.</p>
-      <Button onclick={() => client.retryLoadingMembers()}>Try again</Button>
-    </div>
-  {:else if members === null}
-    <p role="status" class="px-md pt-lg type-body text-text-muted">Loading members…</p>
-  {/if}
-  {#each groups as group (group.label)}
-    <h2
-      class="flex h-(--mw-component-member-list-group-height) items-end px-md pb-2xs type-category text-(--mw-component-member-list-group-text)"
-    >
-      {group.label} — {group.members.length}
-    </h2>
-    <ul>
-      {#each group.members as member (member.user.id)}
-        {@const isOnline = group.label === "Online"}
-        <li class="mb-(--mw-component-member-row-gap) px-(--mw-component-member-row-margin-inline)">
-          <button
-            type="button"
-            aria-haspopup="dialog"
-            aria-label="{displayName(member.user)}, {isOnline ? 'online' : 'offline'}"
-            class="group flex h-(--mw-component-member-row-height) w-full items-center gap-sm rounded-(--mw-component-member-row-radius) px-(--mw-component-member-row-padding-inline) text-start text-(--mw-component-member-row-name-text) hover:bg-(--mw-component-member-row-background-hover) hover:text-(--mw-component-member-row-name-text-hover) focus-visible:focus-ring-inset pointer-coarse:min-h-(--mw-size-hit-web-min)"
-            onclick={(event) => void openProfile(member.user, event.currentTarget)}
-          >
-            <Avatar
-              user={member.user}
-              sizeToken="--mw-component-member-row-avatar-size"
-              presence={isOnline ? "online" : null}
-              ringColorToken="--mw-component-member-list-background"
-              isDimmed={!isOnline}
-            />
-            <span class="min-w-0 flex-1 truncate type-member-name">{displayName(member.user)}</span>
-          </button>
-        </li>
-      {/each}
-    </ul>
-  {/each}
-</aside>
-
-<!-- Light dismiss and Esc come from the popover; focus goes back to the member who opened it. -->
-<div
-  bind:this={popover}
-  popover="auto"
-  role="dialog"
-  tabindex="-1"
-  aria-label={profile ? `Profile of ${displayName(profile)}` : "Profile"}
-  class="fixed inset-auto m-0 w-(--mw-component-profile-popover-width) outline-none max-w-[calc(100vw_-_2*var(--mw-space-md))] overflow-hidden rounded-(--mw-component-profile-popover-radius) bg-(--mw-component-profile-popover-background) p-0 shadow-(--mw-component-profile-popover-shadow)"
-  style:top="{position.top}px"
-  style:right="{position.right}px"
-  ontoggle={(event) => {
-    if (event.newState === "closed" && (popover?.contains(document.activeElement) || document.activeElement === document.body)) {
-      opener?.focus();
+  aria-label={profile ? `Profile of ${displayName(profile)}` : `Members of ${guild.name}`}
+  class={[
+    "flex h-full shrink-0 flex-col overflow-hidden bg-(--mw-component-side-sheet-background)",
+    isFullWindow ? "w-full" : "w-(--mw-component-side-sheet-width) rounded-(--mw-component-side-sheet-radius)",
+    isDocked && "side-sheet-docked",
+  ]}
+  onkeydown={(event) => {
+    if (isDocked && event.key === "Escape") {
+      event.preventDefault();
+      onclose();
     }
   }}
 >
-  {#if profile}
-    {@const isSelf = profile.id === client.user?.id}
-    <ProfileCard user={profile}>
-      {#if !isSelf}
-        <Button variant="primary" isFullWidth isDisabled={isOpening} onclick={() => profile && message(profile)}>
-          {isOpening ? "Opening…" : "Message"}
-        </Button>
-      {/if}
-      <div role="alert" class="contents">
-        {#if errorMessage}
-          <p class="type-body text-(--mw-component-profile-popover-error-text)">{errorMessage}</p>
-        {/if}
+  <div class="flex h-(--mw-component-chat-header-height) shrink-0 items-center gap-2xs ps-md pe-2xs text-text-heading">
+    {#if profile}
+      <!-- The caret points back, towards the list. -->
+      <IconButton
+        bind:element={backButton}
+        icon="caret-right"
+        label="Back to members"
+        class={headButtonClass}
+        iconClass="{headIconClass} rotate-180"
+        onclick={() => void showMembers()}
+      />
+    {/if}
+    <h2 class="min-w-0 flex-1 truncate type-heading-md">{profile ? "Profile" : "Members"}</h2>
+    <IconButton icon="x" label="Close" class={headButtonClass} iconClass={headIconClass} onclick={onclose} />
+  </div>
+
+  <div class="min-h-0 flex-1 overflow-y-auto pb-md [scrollbar-width:thin]">
+    {#if profile}
+      {@const isSelf = profile.id === client.user?.id}
+      <div class="profile-enter">
+        <ProfileCard user={profile} surfaceToken="--mw-component-side-sheet-background">
+          {#if !isSelf}
+            <div class="mt-xs">
+              <Button variant="primary" isFullWidth isDisabled={isOpening} onclick={() => profile && message(profile)}>
+                {isOpening ? "Opening…" : "Send message"}
+              </Button>
+            </div>
+          {/if}
+          <div role="alert" class="contents">
+            {#if errorMessage}
+              <p class="type-body text-(--mw-component-profile-popover-error-text)">{errorMessage}</p>
+            {/if}
+          </div>
+        </ProfileCard>
       </div>
-    </ProfileCard>
-  {/if}
-</div>
+    {:else}
+      {#if members === null && client.failedMemberGuildIds.has(guild.id)}
+        <div role="alert" class="flex flex-col items-start gap-sm px-md pt-xs">
+          <p class="type-body text-text-muted">Couldn't load the members.</p>
+          <Button onclick={() => client.retryLoadingMembers()}>Try again</Button>
+        </div>
+      {:else if members === null}
+        <p role="status" class="px-md pt-xs type-body text-text-muted">Loading members…</p>
+      {/if}
+      {#each groups as group (group.label)}
+        <!-- Sentence case, the count as its own number (ADR-0022 §3). -->
+        <h3
+          aria-label="{group.label}, {group.members.length} {group.members.length === 1 ? 'member' : 'members'}"
+          class="flex h-(--mw-component-member-list-group-height) items-end justify-between px-md pb-2xs type-category text-(--mw-component-member-list-group-text)"
+        >
+          <span>{group.label}</span>
+          <span aria-hidden="true">{group.members.length}</span>
+        </h3>
+        <ul>
+          {#each group.members as member (member.user.id)}
+            {@const isOnline = group.label === "Online"}
+            <li class="mx-(--mw-component-member-row-margin-inline) mt-(--mw-component-member-row-gap)">
+              <button
+                type="button"
+                aria-label="{displayName(member.user)}, {isOnline ? 'online' : 'offline'}"
+                class="flex h-(--mw-component-member-row-height) w-full items-center gap-sm rounded-(--mw-component-member-row-radius) px-(--mw-component-member-row-padding-inline) text-start text-(--mw-component-member-row-name-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-member-row-background-hover) hover:text-(--mw-component-member-row-name-text-hover) focus-visible:focus-ring-inset pointer-coarse:min-h-(--mw-size-hit-web-min)"
+                onclick={(event) => void showProfile(member.user, event.currentTarget)}
+              >
+                <Avatar
+                  user={member.user}
+                  sizeToken="--mw-component-member-row-avatar-size"
+                  presence={isOnline ? "online" : null}
+                  ringColorToken="--mw-component-side-sheet-background"
+                  isDimmed={!isOnline}
+                />
+                <span class="min-w-0 flex-1 truncate type-member-name">{displayName(member.user)}</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/each}
+    {/if}
+  </div>
+</aside>
+
+<style>
+  .side-sheet-docked {
+    animation: mw-slide-from-end var(--mw-motion-duration-slow) var(--mw-motion-easing-enter) both;
+  }
+  .profile-enter {
+    animation: mw-rise var(--mw-motion-duration-base) var(--mw-motion-easing-enter) both;
+  }
+</style>

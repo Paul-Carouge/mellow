@@ -22,8 +22,8 @@
   interface Props {
     row: MessageListRow;
     currentUser: PublicUser;
-    /** "@Ana hello…", or a sentence when the original is not here; empty when not a reply. */
-    replyPreview: string;
+    /** The original's author and text, or no author and a sentence when it is not here; null when not a reply. */
+    replyReference: { author: PublicUser | null; text: string } | null;
     canSendMessages: boolean;
     canManageMessages: boolean;
     isEditing: boolean;
@@ -45,7 +45,7 @@
   let {
     row,
     currentUser,
-    replyPreview,
+    replyReference,
     canSendMessages,
     canManageMessages,
     isEditing,
@@ -136,20 +136,33 @@
   tabindex={isRovingTarget ? 0 : -1}
   onfocusin={onfocusrow}
   class={[
-    "group relative pr-(--mw-component-message-padding-trailing) pl-(--mw-component-message-gutter) py-(--mw-component-message-padding-block) focus-visible:focus-ring-inset",
+    "group relative pr-(--message-padding-trailing,var(--mw-component-message-padding-trailing)) pl-(--mw-component-message-gutter) py-(--mw-component-message-padding-block) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-visible:focus-ring-inset",
     row.startsAuthorGroup && "mt-(--mw-component-message-group-gap)",
     isEditing ? "bg-(--mw-component-message-background-hover)" : "hover:bg-(--mw-component-message-background-hover) focus-within:bg-(--mw-component-message-background-hover)",
   ]}
 >
-  {#if replyPreview}
-    <p class="flex items-center gap-2xs truncate type-body-sm text-text-muted">
-      <Icon name="arrow-bend-up-left" class="size-(--mw-component-message-reply-avatar-size)" />
-      <span class="truncate">{replyPreview}</span>
+  {#if replyReference}
+    <!-- The spine runs from the author's avatar up to the original (DESIGN.md §5.4). -->
+    <p class="reply-reference relative flex h-(--mw-component-message-reply-height) min-w-0 items-center gap-2xs type-body text-text-secondary">
+      {#if replyReference.author}
+        <Avatar user={replyReference.author} sizeToken="--mw-component-message-reply-avatar-size" />
+        <span class="shrink-0 font-medium text-text-heading">{displayName(replyReference.author)}</span>
+      {:else}
+        <Icon name="arrow-bend-up-left" class="size-(--mw-component-message-reply-avatar-size)" />
+      {/if}
+      <span class="truncate">{replyReference.text}</span>
     </p>
   {/if}
 
   {#if row.startsAuthorGroup}
-    <span class="absolute left-(--mw-component-message-avatar-inset)">
+    <span
+      class={[
+        "absolute left-(--mw-component-message-avatar-inset)",
+        replyReference
+          ? "top-[calc(var(--mw-component-message-padding-block)_+_var(--mw-space-2xs)_+_var(--mw-component-message-reply-height))]"
+          : "top-[calc(var(--mw-component-message-padding-block)_+_var(--mw-space-3xs))]",
+      ]}
+    >
       <Avatar user={author} sizeToken="--mw-component-message-avatar-size" />
     </span>
     <h3 class="flex flex-wrap items-baseline gap-x-xs">
@@ -259,3 +272,26 @@
     </div>
   {/if}
 </li>
+
+<style>
+  .reply-reference::before {
+    content: "";
+    position: absolute;
+    /* From the centre of the author's avatar in the gutter, up and over to the original. */
+    left: calc(
+      var(--mw-component-message-avatar-inset) + var(--mw-component-message-avatar-size) / 2 -
+        var(--mw-component-message-gutter) - var(--mw-component-message-reply-spine-width) / 2
+    );
+    top: calc(var(--mw-component-message-reply-height) / 2);
+    width: calc(
+      var(--mw-component-message-gutter) - var(--mw-component-message-avatar-inset) -
+        var(--mw-component-message-avatar-size) / 2 - var(--mw-space-xs) + var(--mw-component-message-reply-spine-width)
+    );
+    height: calc(
+      var(--mw-component-message-reply-height) / 2 + var(--mw-space-2xs) + var(--mw-component-message-reply-spine-width) / 2
+    );
+    border-top: var(--mw-component-message-reply-spine-width) solid var(--mw-component-message-reply-spine-color);
+    border-left: var(--mw-component-message-reply-spine-width) solid var(--mw-component-message-reply-spine-color);
+    border-top-left-radius: var(--mw-component-message-reply-spine-radius);
+  }
+</style>
