@@ -385,6 +385,25 @@ async fn build_ready(
             return None;
         }
     };
+    let guild_channel_ids: Vec<Snowflake> = guilds
+        .iter()
+        .flat_map(|guild| guild.channels.iter().map(|channel| channel.id))
+        .collect();
+    let direct_channel_ids: Vec<Snowflake> = direct_message_channels
+        .iter()
+        .map(|channel| channel.id)
+        .collect();
+    let channel_unreads = match state
+        .messages
+        .list_my_channel_unreads(user.id, &guild_channel_ids, &direct_channel_ids)
+        .await
+    {
+        Ok(channel_unreads) => channel_unreads,
+        Err(error) => {
+            tracing::warn!(%error, "gateway identify: cannot list unread channels");
+            return None;
+        }
+    };
     Some(Ready {
         session_id,
         user: user.clone(),
@@ -392,6 +411,7 @@ async fn build_ready(
         read_states,
         online_user_ids: online_user_ids.into_iter().collect(),
         direct_message_channels,
+        channel_unreads,
     })
 }
 
@@ -686,6 +706,24 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn ready_tells_where_each_channel_stands_with_unread_mentions() {
+        let fixture = fixture().await;
+        post_message(&fixture, &fixture.owner_token, "hi @member").await;
+        let posted = post_message(&fixture, &fixture.owner_token, "and @member again").await;
+        let (_socket, ready) = identified(fixture.address, &fixture.member_token).await;
+        fixture.close().await;
+
+        assert_eq!(
+            ready.channel_unreads,
+            [mellow_protocol::ChannelUnread {
+                channel_id: posted.channel_id,
+                last_message_id: posted.id,
+                mention_count: 2,
+            }]
+        );
     }
 
     #[tokio::test]

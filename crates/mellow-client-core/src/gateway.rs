@@ -373,6 +373,7 @@ mod tests {
                 read_states: Vec::new(),
                 online_user_ids: Vec::new(),
                 direct_message_channels: Vec::new(),
+                channel_unreads: Vec::new(),
             }),
         }
     }

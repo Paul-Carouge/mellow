@@ -160,6 +160,11 @@ export interface Message {
   reactions?: ReactionSummary[];
   /** Absent from older servers' payloads. */
   pinned?: boolean;
+  /**
+   * Who the server found mentioned (`@username`, or a one-word display name, outside code) among
+   * those who can view the channel; never the author. Absent when empty and from older servers.
+   */
+  mention_ids?: Snowflake[];
 }
 
 export interface ReactionSummary {
@@ -187,6 +192,20 @@ export interface ReadState {
   channel_id: Snowflake;
   last_read_message_id: Snowflake;
 }
+
+/**
+ * Where a viewable channel with messages stands in `Ready`: its newest message and its unread
+ * mentions (in a conversation: unread messages from others), counted up to
+ * `MAXIMUM_COUNTED_UNREAD_MENTIONS`.
+ */
+export interface ChannelUnread {
+  channel_id: Snowflake;
+  last_message_id: Snowflake;
+  mention_count: number;
+}
+
+/** The server stops counting here: show "99+" from 100. */
+export const MAXIMUM_COUNTED_UNREAD_MENTIONS = 100;
 
 export interface DirectMessageChannel {
   id: Snowflake;
@@ -273,6 +292,8 @@ export interface Ready {
   read_states: ReadState[];
   online_user_ids: Snowflake[];
   direct_message_channels?: DirectMessageChannel[];
+  /** Added after `v0.10.0`: absent from older servers. */
+  channel_unreads?: ChannelUnread[];
 }
 
 export type ApiErrorCode =

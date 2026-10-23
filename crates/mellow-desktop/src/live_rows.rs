@@ -780,6 +780,7 @@ mod tests {
                 attachments: Vec::new(),
                 reactions: Vec::new(),
                 pinned: false,
+                mention_ids: Vec::new(),
             }
         }
 
@@ -993,6 +994,7 @@ mod tests {
             attachments: Vec::new(),
             reactions: Vec::new(),
             pinned: false,
+            mention_ids: Vec::new(),
         };
         let first = message(at_minute(0, 0), author(1, "Aurore"), "hello", None);
         let messages = vec![
@@ -1100,6 +1102,7 @@ mod tests {
             read_states: Vec::new(),
             online_user_ids: Vec::new(),
             direct_message_channels: Vec::new(),
+            channel_unreads: Vec::new(),
         });
         let read_only: Vec<_> = channel_rows(&guild, &state, &BTreeSet::new(), None)
             .iter()
@@ -1144,6 +1147,7 @@ mod tests {
             attachments: Vec::new(),
             reactions: Vec::new(),
             pinned: false,
+            mention_ids: Vec::new(),
         };
         let pending = |nonce: &str, reply_to_id, status| PendingMessage {
             nonce: nonce.into(),
@@ -1200,6 +1204,7 @@ mod tests {
             attachments: Vec::new(),
             reactions: Vec::new(),
             pinned: false,
+            mention_ids: Vec::new(),
         };
         let full_page = vec![message.clone(); usize::try_from(HISTORY_PAGE_SIZE).unwrap()];
         let mut state = ClientState::default();
@@ -1265,6 +1270,7 @@ mod tests {
                 recipients: vec![recipient.clone()],
                 last_message_id: Some(Snowflake::from_raw(40)),
             }],
+            channel_unreads: Vec::new(),
         });
         state.insert_messages(
             Snowflake::from_raw(30),
@@ -1279,6 +1285,7 @@ mod tests {
                 attachments: Vec::new(),
                 reactions: Vec::new(),
                 pinned: false,
+                mention_ids: Vec::new(),
             }],
         );
 
@@ -1320,6 +1327,7 @@ mod tests {
             read_states: Vec::new(),
             online_user_ids: Vec::new(),
             direct_message_channels: Vec::new(),
+            channel_unreads: Vec::new(),
         });
         let rows = member_rows(&[member(2, "Me"), member(7, "Aurore")], &state, None);
         let can_message: Vec<_> = rows

@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Channel, CurrentUser, DirectMessageChannel, Guild, GuildSummary, Member, Message, PublicUser,
-    ReadState, Role, Snowflake,
+    Channel, ChannelUnread, CurrentUser, DirectMessageChannel, Guild, GuildSummary, Member,
+    Message, PublicUser, ReadState, Role, Snowflake,
 };
 
 pub const GATEWAY_VERSION: u32 = 1;
@@ -95,6 +95,9 @@ pub struct Ready {
     /// Added after `v0.2.0`: absent from older servers.
     #[serde(default)]
     pub direct_message_channels: Vec<DirectMessageChannel>,
+    /// Added after `v0.10.0`: absent from older servers.
+    #[serde(default)]
+    pub channel_unreads: Vec<ChannelUnread>,
 }
 
 /// Payload of `MESSAGE_REACTION_ADD` and `MESSAGE_REACTION_REMOVE`.

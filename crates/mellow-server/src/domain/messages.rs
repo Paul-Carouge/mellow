@@ -13,12 +13,13 @@ use std::sync::Arc;
 
 use crate::storage::Database;
 use mellow_protocol::{
-    AcknowledgeRequest, Attachment, AuditAction, ChannelKind, EditMessageRequest, GatewayEvent,
-    Message, MessageHistoryQuery, Permissions, PublicUser, ReactionSummary, ReadState,
-    SendMessageRequest, Snowflake,
+    AcknowledgeRequest, Attachment, AuditAction, ChannelKind, ChannelUnread, EditMessageRequest,
+    GatewayEvent, MAXIMUM_COUNTED_UNREAD_MENTIONS, Message, MessageHistoryQuery, Permissions,
+    PublicUser, ReactionSummary, ReadState, SendMessageRequest, Snowflake,
 };
 
 use crate::domain::guilds::{ChannelAudience, GuildError, Guilds};
+use crate::domain::mentions::{self, MentionablePerson};
 use crate::domain::message_rules::{
     MAXIMUM_ATTACHMENTS_PER_MESSAGE, MessageRuleViolation, history_page_size,
     normalize_line_endings, validate_message_content, validate_nonce,
@@ -103,6 +104,7 @@ fn message_from_stored(
         // Per viewer: filled by `fill_reactions` for REST answers, never in events.
         reactions: Vec::new(),
         pinned: message.is_pinned,
+        mention_ids: message.mention_ids,
     }
 }
 
@@ -175,6 +177,80 @@ enum MessageAudience {
         viewers: ChannelAudience,
     },
     Participants(Vec<Snowflake>),
+}
+
+impl MessageAudience {
+    /// Whether `user_id`, known to be a member or a participant, receives the channel's events.
+    fn includes_member(&self, user_id: Snowflake) -> bool {
+        match self {
+            Self::Guild {
+                viewers: ChannelAudience::EveryMember,
+                ..
+            } => true,
+            Self::Guild {
+                viewers: ChannelAudience::Members(viewers),
+                ..
+            } => viewers.contains(&user_id),
+            Self::Participants(participant_ids) => participant_ids.contains(&user_id),
+        }
+    }
+}
+
+/// The text to store for `request`, after checking its text, attachments and nonce.
+fn validated_content_to_send(request: &SendMessageRequest) -> Result<String, MessageError> {
+    let content = normalize_line_endings(&request.content);
+    let distinct_attachments: HashSet<Snowflake> = request.attachment_ids.iter().copied().collect();
+    if request.attachment_ids.len() > MAXIMUM_ATTACHMENTS_PER_MESSAGE
+        || distinct_attachments.len() != request.attachment_ids.len()
+    {
+        return Err(MessageRuleViolation::Attachments.into());
+    }
+    // A message of files alone may have no text, as on Discord.
+    if request.attachment_ids.is_empty() || !content.trim().is_empty() {
+        validate_message_content(&content)?;
+    }
+    if let Some(nonce) = &request.nonce {
+        validate_nonce(nonce)?;
+    }
+    Ok(if content.trim().is_empty() {
+        String::new()
+    } else {
+        content
+    })
+}
+
+/// Who `content` mentions among the people who can view the channel (`domain::mentions`).
+async fn mentioned_user_ids(
+    database: &Database,
+    channel: &MessageChannel,
+    audience: &MessageAudience,
+    author_id: Snowflake,
+    content: &str,
+) -> Result<Vec<Snowflake>, MessageError> {
+    // Most messages name no one: they never read the member list.
+    if !mentions::may_mention_someone(content) {
+        return Ok(Vec::new());
+    }
+    // shortcut: reads every member of the guild for a message with an "@"; index lowercase
+    // names if large guilds show the cost.
+    let people = match channel {
+        MessageChannel::Guild(channel) => {
+            message_storage::mentionable_members_of_guild(database, channel.guild_id).await?
+        }
+        MessageChannel::Direct {
+            participant_ids, ..
+        } => message_storage::mentionable_users(database, participant_ids).await?,
+    };
+    let people: Vec<MentionablePerson> = people
+        .into_iter()
+        .filter(|(id, _, _)| audience.includes_member(*id))
+        .map(|(id, username, display_name)| MentionablePerson {
+            id,
+            username,
+            display_name,
+        })
+        .collect();
+    Ok(mentions::mentioned_ids(content, author_id, &people))
 }
 
 async fn is_empty_channel(
@@ -329,29 +405,12 @@ impl Messages {
                 },
             )
             .await?;
-        let content = normalize_line_endings(&request.content);
-        let distinct_attachments: HashSet<Snowflake> =
-            request.attachment_ids.iter().copied().collect();
-        if request.attachment_ids.len() > MAXIMUM_ATTACHMENTS_PER_MESSAGE
-            || distinct_attachments.len() != request.attachment_ids.len()
-        {
-            return Err(MessageRuleViolation::Attachments.into());
-        }
-        // A message of files alone may have no text, as on Discord.
-        if request.attachment_ids.is_empty() || !content.trim().is_empty() {
-            validate_message_content(&content)?;
-        }
-        let content = if content.trim().is_empty() {
-            String::new()
-        } else {
-            content
-        };
-        if let Some(nonce) = &request.nonce {
-            validate_nonce(nonce)?;
-        }
+        let content = validated_content_to_send(&request)?;
         // Decided before the lock and the write: a failure leaves nothing stored, and the scan of
         // a restricted channel's members does not hold up every other send (ADR-0015).
         let audience = self.audience(&channel).await?;
+        let mentioned_user_ids =
+            mentioned_user_ids(&self.database, &channel, &audience, user_id, &content).await?;
         let channel_id = channel.id();
         // Read before the write too, so nothing can fail between the insert and the events.
         let conversation_views = match &channel {
@@ -402,6 +461,7 @@ impl Messages {
                     reply_to_id: request.reply_to_id,
                     nonce: request.nonce.clone(),
                     attachment_ids: request.attachment_ids.clone(),
+                    mentioned_user_ids,
                 },
             )
             .await?;
@@ -501,14 +561,18 @@ impl Messages {
         let content = normalize_line_endings(&request.content);
         validate_message_content(&content)?;
         let audience = self.audience(&channel).await?;
+        let mentioned_user_ids =
+            mentioned_user_ids(&self.database, &channel, &audience, user_id, &content).await?;
         // Read before the write (attachments never change once sent), so nothing can fail
         // between the commit and the event.
         let author_images = profile_images_of_user(&self.database, user_id).await?;
         let attachments = attachments_of(&self.database, message.id).await?;
         let updated = message_storage::update_message_content(
             &self.database,
+            channel.id(),
             message.id,
             &content,
+            &mentioned_user_ids,
             now_unix_milliseconds,
         )
         .await?
@@ -634,6 +698,51 @@ impl Messages {
         );
         self.list_my_read_states_in(user_id, &visible_channel_ids)
             .await
+    }
+
+    /// The newest message and unread mention count of each of these channels that has a message
+    /// (`Ready`). In a conversation every unread message from others counts, as on Discord.
+    /// Callers pass only channels the user can view now (ADR-0015).
+    pub(crate) async fn list_my_channel_unreads(
+        &self,
+        user_id: Snowflake,
+        guild_channel_ids: &[Snowflake],
+        direct_channel_ids: &[Snowflake],
+    ) -> Result<Vec<ChannelUnread>, MessageError> {
+        let all_channel_ids: Vec<Snowflake> = guild_channel_ids
+            .iter()
+            .chain(direct_channel_ids)
+            .copied()
+            .collect();
+        let last_message_ids =
+            message_storage::last_message_ids(&self.database, &all_channel_ids).await?;
+        let mut mention_counts: HashMap<Snowflake, u32> =
+            message_storage::unread_mention_counts(&self.database, user_id)
+                .await?
+                .into_iter()
+                .collect();
+        for channel_id in direct_channel_ids {
+            let count = message_storage::unread_count_from_others(
+                &self.database,
+                user_id,
+                *channel_id,
+                MAXIMUM_COUNTED_UNREAD_MENTIONS,
+            )
+            .await?;
+            mention_counts.insert(*channel_id, count);
+        }
+        Ok(last_message_ids
+            .into_iter()
+            .map(|(channel_id, last_message_id)| ChannelUnread {
+                channel_id,
+                last_message_id,
+                mention_count: mention_counts
+                    .get(&channel_id)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(MAXIMUM_COUNTED_UNREAD_MENTIONS),
+            })
+            .collect())
     }
 
     /// For callers that already know which channels the user can view (`Ready`).
@@ -851,6 +960,166 @@ mod tests {
             event_types(events);
         }
         sessions
+    }
+
+    async fn unread_mentions_of(fixture: &Fixture, user_id: Snowflake) -> Vec<(Snowflake, u32)> {
+        fixture
+            .messages
+            .list_my_channel_unreads(user_id, &[fixture.general], &[])
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|unread| (unread.last_message_id, unread.mention_count))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn mentions_are_found_by_the_server_follow_edits_and_count_until_read() {
+        let fixture = fixture().await;
+        let (messages, owner, member, general) = (
+            &fixture.messages,
+            fixture.owner,
+            fixture.member,
+            fixture.general,
+        );
+        let mentioning = messages
+            .send(owner, general, text("hi @Member."), NOW)
+            .await
+            .unwrap();
+        let naming_others = messages
+            .send(
+                owner,
+                general,
+                text("@outsider is no member, @owner is me"),
+                NOW,
+            )
+            .await
+            .unwrap();
+        let before_edits = unread_mentions_of(&fixture, member).await;
+        let edit = |content: &str| {
+            messages.edit(
+                owner,
+                general,
+                mentioning.id,
+                EditMessageRequest {
+                    content: content.into(),
+                },
+                NOW,
+            )
+        };
+        let without_mention = edit("hi").await.unwrap();
+        let after_removal = unread_mentions_of(&fixture, member).await;
+        let with_mention_again = edit("hi `@member` @member").await.unwrap();
+        let history = messages
+            .list_messages(member, general, MessageHistoryQuery::default())
+            .await
+            .unwrap();
+        let after_mentioning_again = unread_mentions_of(&fixture, member).await;
+        messages
+            .acknowledge_read_state(
+                member,
+                general,
+                AcknowledgeRequest {
+                    last_read_message_id: naming_others.id,
+                },
+            )
+            .await
+            .unwrap();
+        let after_reading = unread_mentions_of(&fixture, member).await;
+        let owner_view = unread_mentions_of(&fixture, owner).await;
+        fixture.database.close().await;
+
+        assert_eq!(mentioning.mention_ids, [member]);
+        assert_eq!(naming_others.mention_ids, [], "outsiders and the author");
+        assert_eq!(before_edits, [(naming_others.id, 1)]);
+        assert_eq!(without_mention.mention_ids, []);
+        assert_eq!(after_removal, [(naming_others.id, 0)]);
+        assert_eq!(with_mention_again.mention_ids, [member], "not inside code");
+        assert_eq!(history[0].mention_ids, [member]);
+        assert_eq!(after_mentioning_again, [(naming_others.id, 1)]);
+        assert_eq!(after_reading, [(naming_others.id, 0)]);
+        assert_eq!(owner_view, [(naming_others.id, 0)]);
+    }
+
+    #[tokio::test]
+    async fn no_one_is_mentioned_where_they_cannot_read_and_conversations_count_every_message() {
+        use mellow_protocol::{
+            OpenDirectMessageRequest, OverwriteKind, SetPermissionOverwriteRequest,
+        };
+
+        let fixture = fixture().await;
+        let staff = create_text_channel(&fixture, "staff").await;
+        fixture
+            .guilds
+            .set_permission_overwrite(
+                fixture.owner,
+                staff.id,
+                fixture.guild.id,
+                SetPermissionOverwriteRequest {
+                    kind: OverwriteKind::Role,
+                    allow: Permissions::empty(),
+                    deny: Permissions::VIEW_CHANNEL,
+                },
+            )
+            .await
+            .unwrap();
+        let in_staff = fixture
+            .messages
+            .send(
+                fixture.owner,
+                staff.id,
+                text("@member cannot see this"),
+                NOW,
+            )
+            .await
+            .unwrap();
+        let conversation = fixture
+            .messages
+            .open_direct_message(
+                fixture.member,
+                OpenDirectMessageRequest {
+                    recipient_id: fixture.owner,
+                },
+                NOW,
+            )
+            .await
+            .unwrap();
+        for content in ["one", "two"] {
+            fixture
+                .messages
+                .send(fixture.member, conversation.id, text(content), NOW)
+                .await
+                .unwrap();
+        }
+        let (guild_channels, conversations) = ([staff.id], [conversation.id]);
+        let mut unreads = Vec::new();
+        for user_id in [fixture.owner, fixture.member] {
+            unreads.push(
+                fixture
+                    .messages
+                    .list_my_channel_unreads(user_id, &guild_channels, &conversations)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let [owner_unreads, member_unreads] = <[_; 2]>::try_from(unreads).unwrap();
+        fixture.database.close().await;
+
+        let counts = |unreads: Vec<ChannelUnread>| {
+            unreads
+                .into_iter()
+                .map(|unread| (unread.channel_id, unread.mention_count))
+                .collect::<HashMap<_, _>>()
+        };
+        assert_eq!(in_staff.mention_ids, []);
+        assert_eq!(
+            counts(owner_unreads),
+            HashMap::from([(staff.id, 0), (conversation.id, 2)])
+        );
+        assert_eq!(
+            counts(member_unreads),
+            HashMap::from([(staff.id, 0), (conversation.id, 0)])
+        );
     }
 
     #[tokio::test]
