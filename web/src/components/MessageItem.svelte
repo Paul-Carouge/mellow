@@ -128,6 +128,13 @@
   const menuToggle = createPopoverToggle(() => isMenuOpen);
   const pickerToggle = createPopoverToggle(() => message !== null && actions.heldMessageId === message.id);
   let menuPosition = $state({ top: 0, right: 0 });
+  // Only a hovered or focused row builds its action bar and menu: in every row they were two
+  // thirds of the list's elements. Touch keeps the bar after the finger lifts, as :hover does.
+  let isPointerOver = $state(false);
+  let hasFocusWithin = $state(false);
+  const isActionBarBuilt = $derived(
+    isPointerOver || hasFocusWithin || isMenuOpen || (message !== null && actions.heldMessageId === message.id),
+  );
   const hasMenu = $derived(actions.canManagePins || (reactions.length > 0 && (actions.canJoinReactions || actions.canRemoveReactions)));
 
   function openMenu() {
@@ -222,7 +229,13 @@
 <li
   data-row-key={row.key}
   tabindex={isRovingTarget ? 0 : -1}
-  onfocusin={onfocusrow}
+  onfocusin={() => {
+    hasFocusWithin = true;
+    onfocusrow();
+  }}
+  onfocusout={(event) => (hasFocusWithin = event.currentTarget.contains(event.relatedTarget as Node | null))}
+  onpointerenter={() => (isPointerOver = true)}
+  onpointerleave={(event) => (isPointerOver = event.pointerType === "touch")}
   class={[
     "group relative pr-(--message-padding-trailing,var(--mw-component-message-padding-trailing)) pl-(--mw-component-message-gutter) py-(--mw-component-message-padding-block) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-visible:focus-ring-inset",
     row.startsAuthorGroup && "mt-(--mw-component-message-group-gap)",
@@ -360,7 +373,7 @@
     </p>
   {/if}
 
-  {#if message && !isEditing}
+  {#if message && !isEditing && isActionBarBuilt}
     {@const buttonClass =
       "size-(--mw-component-action-bar-button-size) text-(--mw-component-action-bar-icon) hover:bg-(--mw-component-action-bar-button-background-hover) hover:text-(--mw-component-action-bar-icon-hover) focus-visible:focus-ring-inset"}
     {@const iconClass = "size-(--mw-component-action-bar-icon-size)"}
