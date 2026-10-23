@@ -50,6 +50,9 @@ pub(crate) struct AppState {
     /// Limits keyed by address or login name, before any session: kept apart so a flood of
     /// sign-in attempts cannot fill the table that signed-in users' limits need.
     pub(crate) unauthenticated_rate_limiter: Arc<RateLimiter>,
+    /// Gateway connections per address, apart again: their keys last seconds, so a sign-in flood
+    /// that fills the table above cannot stop signed-in users from reconnecting.
+    pub(crate) gateway_rate_limiter: Arc<RateLimiter>,
     /// Peers whose `X-Forwarded-For` names the client; empty without a reverse proxy.
     pub(crate) trusted_proxy_networks: Arc<[IpNet]>,
 }
@@ -94,6 +97,7 @@ impl AppState {
             pool,
             rate_limiter: Arc::default(),
             unauthenticated_rate_limiter: Arc::default(),
+            gateway_rate_limiter: Arc::default(),
             trusted_proxy_networks: client_address::build_trusted_proxy_networks(
                 config.behind_tls_reverse_proxy,
                 &config.trusted_proxy_networks,
@@ -444,6 +448,7 @@ pub(crate) mod tests {
             pool,
             rate_limiter: Arc::default(),
             unauthenticated_rate_limiter: Arc::default(),
+            gateway_rate_limiter: Arc::default(),
             trusted_proxy_networks: Arc::default(),
         }
     }
