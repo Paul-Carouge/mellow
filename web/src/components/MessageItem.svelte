@@ -16,6 +16,7 @@
   import type { ReactionAndPinActions } from "./message-actions";
   import MessageReactions from "./MessageReactions.svelte";
   import { reactionKey } from "../lib/reactions";
+  import { currentDay } from "./current-day.svelte";
   import { createPopoverToggle } from "./popover-toggle";
   import { noteEmojiUsed, quickReactionEmoji } from "./recent-emoji.svelte";
   import { markdownMentionsUser, parseMessageMarkdown } from "./markdown";
@@ -129,11 +130,18 @@
   const pickerToggle = createPopoverToggle(() => message !== null && actions.heldMessageId === message.id);
   let menuPosition = $state({ top: 0, right: 0 });
   // Only a hovered or focused row builds its action bar and menu: in every row they were two
-  // thirds of the list's elements. Touch keeps the bar after the finger lifts, as :hover does.
+  // thirds of the list's elements. A tapped row keeps its bar after the finger lifts; a row only
+  // crossed while scrolling (its touch is cancelled) does not.
   let isPointerOver = $state(false);
   let hasFocusWithin = $state(false);
   const isActionBarBuilt = $derived(
-    isPointerOver || hasFocusWithin || isMenuOpen || (message !== null && actions.heldMessageId === message.id),
+    isPointerOver ||
+      hasFocusWithin ||
+      // The row holding the Tab stop keeps its bar, so focus can go back to the button that opened
+      // a dialog (focus leaves the row while the dialog is open).
+      isRovingTarget ||
+      isMenuOpen ||
+      (message !== null && actions.heldMessageId === message.id),
   );
   const hasMenu = $derived(actions.canManagePins || (reactions.length > 0 && (actions.canJoinReactions || actions.canRemoveReactions)));
 
@@ -235,7 +243,12 @@
   }}
   onfocusout={(event) => (hasFocusWithin = event.currentTarget.contains(event.relatedTarget as Node | null))}
   onpointerenter={() => (isPointerOver = true)}
-  onpointerleave={(event) => (isPointerOver = event.pointerType === "touch")}
+  onpointerleave={(event) => {
+    if (event.pointerType !== "touch") {
+      isPointerOver = false;
+    }
+  }}
+  onpointercancel={() => (isPointerOver = false)}
   class={[
     "group relative pr-(--message-padding-trailing,var(--mw-component-message-padding-trailing)) pl-(--mw-component-message-gutter) py-(--mw-component-message-padding-block) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-visible:focus-ring-inset",
     row.startsAuthorGroup && "mt-(--mw-component-message-group-gap)",
@@ -283,7 +296,7 @@
           datetime={new Date(sentAt).toISOString()}
           title={fullTimestampLabel(sentAt)}
           class="type-message-timestamp text-(--mw-component-message-timestamp-text)"
-          >{messageTimestampLabel(sentAt, new Date())}</time
+          >{messageTimestampLabel(sentAt, currentDay())}</time
         >
       {/if}
       {#if isPinned}{@render pinnedMark()}{/if}

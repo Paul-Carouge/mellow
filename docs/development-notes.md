@@ -1,7 +1,7 @@
 # Development notes
 
 Practical notes for the next iterations: how work is organised, and the traps already hit. The
-project state (what is done, blocked, next, known gaps) lives in [ROADMAP.md](../ROADMAP.md#status-2026-10-22);
+project state (what is done, blocked, next, known gaps) lives in [ROADMAP.md](../ROADMAP.md#status-2026-10-23);
 decisions live in [docs/adr/](adr/). Update this file when a new trap or habit appears.
 
 ## Where things stand (2026-10-23)
