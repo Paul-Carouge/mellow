@@ -107,26 +107,23 @@ pub(crate) async fn attachments_of_messages(
     message_ids: &[Snowflake],
 ) -> Result<HashMap<Snowflake, Vec<StoredAttachment>>, MessageStorageError> {
     let mut by_message: HashMap<Snowflake, Vec<StoredAttachment>> = HashMap::new();
-    // shortcut: one query per message of the page (at most 100, with an index); one query with a
-    // JSON array of ids when history pages grow.
-    for message_id in message_ids {
-        let Some(id) = lookup_integer(*message_id) else {
-            continue;
-        };
-        let rows: Vec<AttachmentRow> = sqlx::query_as(
-            "SELECT id, channel_id, message_id, file_name, content_type, size_bytes \
-             FROM attachments WHERE message_id = ? ORDER BY id",
-        )
-        .bind(id)
-        .fetch_all(pool)
-        .await?;
-        if !rows.is_empty() {
-            by_message.insert(
-                *message_id,
-                rows.into_iter()
-                    .map(attachment_from_row)
-                    .collect::<Result<_, _>>()?,
-            );
+    if message_ids.is_empty() {
+        return Ok(by_message);
+    }
+    let ids: Vec<u64> = message_ids.iter().map(|id| id.raw()).collect();
+    // The ids as a JSON array: one bound value, read by SQLite's json_each.
+    let ids = serde_json::to_string(&ids).map_err(|_| MessageStorageError::IntegerOutOfRange)?;
+    let rows: Vec<AttachmentRow> = sqlx::query_as(
+        "SELECT id, channel_id, message_id, file_name, content_type, size_bytes \
+         FROM attachments WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY id",
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
+    for row in rows {
+        let attachment = attachment_from_row(row)?;
+        if let Some(message_id) = attachment.message_id {
+            by_message.entry(message_id).or_default().push(attachment);
         }
     }
     Ok(by_message)
