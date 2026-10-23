@@ -3,7 +3,9 @@
 -- before this migration mention no one here.
 CREATE TABLE message_mentions (
     user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    channel_id INTEGER NOT NULL REFERENCES channels (id) ON DELETE CASCADE,
+    -- No foreign key: deleting a message (and so a channel) already removes its rows, and an
+    -- unindexed one would scan this table for every channel deleted.
+    channel_id INTEGER NOT NULL,
     message_id INTEGER NOT NULL REFERENCES messages (id) ON DELETE CASCADE,
     PRIMARY KEY (user_id, channel_id, message_id)
 ) STRICT, WITHOUT ROWID;

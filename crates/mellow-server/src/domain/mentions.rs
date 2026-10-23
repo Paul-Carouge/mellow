@@ -99,21 +99,31 @@ fn mention_candidates(content: &str) -> Vec<[String; 2]> {
 }
 
 /// The people `content` mentions among `people`, in order of first mention, without the author.
-/// A username wins over someone else's display name, as on the web client.
+/// A username wins over someone else's display name, as on the web client; a display name two
+/// people share mentions no one.
 pub(crate) fn mentioned_ids(
     content: &str,
     author_id: Snowflake,
     people: &[MentionablePerson],
 ) -> Vec<Snowflake> {
-    let mut by_name: HashMap<String, Snowflake> = HashMap::new();
+    // `None` for a display name two people share: whoever copies a name must not take its
+    // mentions, so it mentions no one.
+    let mut by_name: HashMap<String, Option<Snowflake>> = HashMap::new();
     for person in people {
         let display_name = person.display_name.trim();
         if !display_name.is_empty() && !display_name.contains(char::is_whitespace) {
-            by_name.insert(display_name.to_lowercase(), person.id);
+            by_name
+                .entry(display_name.to_lowercase())
+                .and_modify(|owner| {
+                    if *owner != Some(person.id) {
+                        *owner = None;
+                    }
+                })
+                .or_insert(Some(person.id));
         }
     }
     for person in people {
-        by_name.insert(person.username.to_lowercase(), person.id);
+        by_name.insert(person.username.to_lowercase(), Some(person.id));
     }
     let mut seen = HashSet::new();
     let mut mentioned = Vec::new();
@@ -121,7 +131,7 @@ pub(crate) fn mentioned_ids(
         let Some(id) = spellings
             .iter()
             .filter(|spelling| !spelling.is_empty())
-            .find_map(|spelling| by_name.get(spelling).copied())
+            .find_map(|spelling| by_name.get(spelling).copied().flatten())
         else {
             continue;
         };
@@ -159,6 +169,8 @@ mod tests {
             person(2, "alice", "Ali"),
             person(3, "bob", "Jean Bob"),
             person(4, "ali", "Someone"),
+            person(5, "eve", "Twin"),
+            person(6, "mallory", "twin"),
         ]
     }
 
@@ -174,6 +186,11 @@ mod tests {
         assert_eq!(mentioned("@Paul hello @ALICE and @paul"), [1, 2]);
         assert_eq!(mentioned("hi @alice."), [2], "a closing full stop");
         assert_eq!(mentioned("@Jean"), Vec::<u64>::new(), "no multi-word names");
+        assert_eq!(
+            mentioned("@twin @eve"),
+            [5],
+            "a shared display name is no one's"
+        );
         assert_eq!(
             mentioned("@ali"),
             [4],
