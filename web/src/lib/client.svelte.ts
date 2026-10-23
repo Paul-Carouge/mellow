@@ -124,6 +124,8 @@ export class MellowClient {
    * must not bring them back. Ids are never reused, so they are kept until sign-out.
    */
   private deletedMessageIds = new Set<Snowflake>();
+  /** Bumped when the cache is emptied (`Ready`, sign-out): answers to older requests are dropped. */
+  private historyGeneration = 0;
 
   private gateway: GatewayConnection | null = null;
   /** Before the first `Ready`, no selection exists yet: home then means "not chosen". */
@@ -281,6 +283,7 @@ export class MellowClient {
     this.typingUntil.clear();
     this.pinsByChannel.clear();
     this.deletedMessageIds.clear();
+    this.historyGeneration += 1;
     this.selectedGuildId = null;
     this.selectedChannelId = null;
   }
@@ -330,6 +333,7 @@ export class MellowClient {
     }
     this.conversations = sortByLastActivity(conversations);
     this.messagesByChannel.clear();
+    this.historyGeneration += 1;
     this.reachedStartChannelIds.clear();
     this.membersByGuild.clear();
     this.requestedHistory.clear();
@@ -584,6 +588,9 @@ export class MellowClient {
 
   /** A message pinned, unpinned or edited: the loaded pins follow, newest pin first. */
   private applyPinnedState(message: Message): void {
+    if (this.deletedMessageIds.has(message.id)) {
+      return;
+    }
     this.notePinsChangedWhileLoading(message.channel_id);
     const pins = this.pinsByChannel.get(message.channel_id);
     if (pins?.status !== "loaded") {
@@ -798,8 +805,12 @@ export class MellowClient {
       return;
     }
     this.requestedHistory.add(channelId);
+    const generation = this.historyGeneration;
     try {
       const page = await this.rest.listMessages(channelId);
+      if (generation !== this.historyGeneration) {
+        return;
+      }
       this.insertMessages(channelId, page);
       if (page.length < HISTORY_PAGE_SIZE) {
         this.reachedStartChannelIds.add(channelId);
@@ -808,6 +819,9 @@ export class MellowClient {
         void this.acknowledgeSelectedChannel();
       }
     } catch (error) {
+      if (generation !== this.historyGeneration) {
+        return;
+      }
       this.requestedHistory.delete(channelId);
       this.failedHistoryChannelIds.add(channelId);
       this.reportError(error, "load messages");
@@ -863,13 +877,22 @@ export class MellowClient {
       return;
     }
     this.isLoadingOlder = true;
+    const generation = this.historyGeneration;
     try {
       const page = await this.rest.listMessages(channelId, oldest.id);
+      // Only next to the cursor: the cache was emptied or trimmed meanwhile, and a page inserted
+      // elsewhere would leave a gap no later page fills.
+      if (generation !== this.historyGeneration || this.messages(channelId)[0]?.id !== oldest.id) {
+        return;
+      }
       this.insertMessages(channelId, page);
       if (page.length < HISTORY_PAGE_SIZE) {
         this.reachedStartChannelIds.add(channelId);
       }
     } catch (error) {
+      if (generation !== this.historyGeneration) {
+        return;
+      }
       // No automatic retry: scrolling at the top would otherwise ask again on every frame.
       this.failedHistoryChannelIds.add(channelId);
       this.reportError(error, "load older messages");

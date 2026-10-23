@@ -221,6 +221,26 @@ describe("MellowClient", () => {
     expect(client.messages(GENERAL).map((cached) => cached.id)).toEqual(["300"]);
   });
 
+  it("drops an older page that comes back after a Ready emptied the cache, so no gap opens", async () => {
+    let answerOlderPage: (page: Message[]) => void = () => {};
+    const latestPage = Array.from({ length: 50 }, (_, index) => message(String(300 + index)));
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        listMessages: (_channelId: string, before?: string) =>
+          before ? new Promise<Message[]>((resolve) => (answerOlderPage = resolve)) : Promise.resolve(latestPage),
+      }),
+    );
+    client.applyReady(ready());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const olderLoad = client.loadOlderMessages();
+    client.applyReady(ready());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    answerOlderPage([message("100"), message("101")]);
+    await olderLoad;
+    expect(client.messages(GENERAL).map((cached) => cached.id)).toEqual(latestPage.map((page) => page.id));
+  });
+
   it("deletes in the message's own channel, and treats an already deleted message as deleted", async () => {
     const deletions: string[] = [];
     const client = new MellowClient(
