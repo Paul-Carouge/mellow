@@ -10,7 +10,7 @@
   import type { ReactionAndPinActions } from "./message-actions";
   import MessageItem from "./MessageItem.svelte";
   import { mentionablePeople } from "./mentions";
-  import { buildMessageRows, isUnreadStartLoaded } from "./message-rows";
+  import { type MessageListRow, buildMessageRows, isUnreadStartLoaded, reuseUnchangedRows } from "./message-rows";
   import { nameColorsByUserId } from "./name-colors.svelte";
   import { durationTokenInMilliseconds, lengthTokenInPixels } from "./tokens";
 
@@ -84,11 +84,14 @@
       "color-surface-chat",
     ),
   );
+  // Each new message re-sorts the conversations into new objects; their recipients stay the same
+  // array, so reading it alone keeps every row from parsing its text again.
+  const conversationRecipients = $derived(client.selectedConversation?.recipients ?? []);
   const mentionable = $derived(
     mentionablePeople([
       currentUser,
       ...(client.selectedGuild ? (client.membersByGuild.get(client.selectedGuild.id) ?? []).map((member) => member.user) : []),
-      ...(client.selectedConversation?.recipients ?? []),
+      ...conversationRecipients,
     ]),
   );
   const unreadMarker = $derived(client.unreadMarkers.get(channelId) ?? null);
@@ -98,9 +101,16 @@
       ? unreadMarker.lastReadMessageId
       : null,
   );
-  const rows = $derived(
-    buildMessageRows(messages, client.pendingMessagesIn(channelId), currentUser.id, Date.now(), dividerAfterMessageId),
-  );
+  // Not reactive: the rows of the last build, so unchanged rows keep their identity.
+  let previousRowsByKey = new Map<string, MessageListRow>();
+  const rows = $derived.by(() => {
+    const built = reuseUnchangedRows(
+      previousRowsByKey,
+      buildMessageRows(messages, client.pendingMessagesIn(channelId), currentUser.id, Date.now(), dividerAfterMessageId),
+    );
+    previousRowsByKey = new Map(built.map((row) => [row.key, row]));
+    return built;
+  });
   const hasReachedStart = $derived(client.reachedStartChannelIds.has(channelId));
   const isInitialLoad = $derived(messages.length === 0 && !hasReachedStart);
   // Set when a history request failed: shown with "Try again" instead of skeletons forever.
@@ -161,6 +171,10 @@
   }
 
   function noteUnreadDividerSeen() {
+    // Runs on every scroll event: skip the query of the whole list when it cannot change anything.
+    if (hasSeenUnreadDivider || dividerAfterMessageId === null) {
+      return;
+    }
     const divider = viewport.querySelector<HTMLElement>("[data-unread-divider]");
     if (!divider) {
       return;
@@ -220,8 +234,11 @@
    * "New" divider is above the view, the list scrolls it under the jump bar instead of the bottom.
    */
   function showUnreadDividerOnce() {
+    if (hasShownUnreadDivider || dividerAfterMessageId === null) {
+      return;
+    }
     const divider = viewport.querySelector<HTMLElement>("[data-unread-divider]");
-    if (hasShownUnreadDivider || !divider) {
+    if (!divider) {
       return;
     }
     hasShownUnreadDivider = true;

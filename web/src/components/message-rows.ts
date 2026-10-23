@@ -112,3 +112,33 @@ export function unreadBarLabel(summary: UnreadSummary, lastReadAt: number, now: 
 }
 
 export { type ChannelSection, channelSections } from "../lib/channels";
+
+/**
+ * `next`, with each row equal to its previous version swapped back for that version: the list
+ * then updates only the rows that changed, instead of every row on each event.
+ */
+export function reuseUnchangedRows(
+  previous: ReadonlyMap<string, MessageListRow>,
+  next: MessageListRow[],
+): MessageListRow[] {
+  return next.map((row) => {
+    const old = previous.get(row.key);
+    return old !== undefined && isSameRow(old, row) ? old : row;
+  });
+}
+
+function isSameRow(left: MessageListRow, right: MessageListRow): boolean {
+  if (left.kind === "sent" && right.kind === "sent") {
+    return (
+      left.message === right.message &&
+      left.startsAuthorGroup === right.startsAuthorGroup &&
+      left.isFirstUnread === right.isFirstUnread
+    );
+  }
+  return (
+    left.kind === "pending" &&
+    right.kind === "pending" &&
+    left.pending === right.pending &&
+    left.startsAuthorGroup === right.startsAuthorGroup
+  );
+}
