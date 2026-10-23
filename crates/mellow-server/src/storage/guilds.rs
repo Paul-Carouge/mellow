@@ -871,6 +871,22 @@ pub(crate) async fn permission_version(
     )
 }
 
+/// The permissions of the guild's `@everyone` role; `None` if the guild does not exist.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn everyone_permissions(
+    database: &Database,
+    guild_id: Snowflake,
+) -> Result<Option<Permissions>, GuildStorageError> {
+    // `@everyone` has the guild's id.
+    let permissions: Option<i64> = sqlx::query_scalar("SELECT permissions FROM roles WHERE id = ?")
+        .bind(to_integer(guild_id.raw())?)
+        .fetch_optional(database.readers())
+        .await?;
+    Ok(permissions.map(permissions_from_integer))
+}
+
 /// Reads the guild's version, owner, roles and members in one read transaction, so they all
 /// match `version`; `None` if the guild does not exist.
 ///

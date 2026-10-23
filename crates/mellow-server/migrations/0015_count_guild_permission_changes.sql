@@ -2,6 +2,8 @@
 -- assignments and the owner. The server caches each guild's members and roles for event fan-out
 -- and checks this counter before using the cache, so triggers bump it: no write path, in this
 -- process or another one, can forget to. Channel overwrites are read fresh and need no counter.
+-- Never write these tables with REPLACE (`INSERT OR REPLACE`, `REPLACE INTO`): the rows it
+-- deletes do not fire DELETE triggers, so the old guild's counter would not move.
 ALTER TABLE guilds ADD COLUMN permission_version INTEGER NOT NULL DEFAULT 0;
 
 CREATE TRIGGER guild_members_insert_bumps_permission_version AFTER INSERT ON guild_members
