@@ -8,10 +8,25 @@
 ADR-0002 and ARCHITECTURE §4.3 say that writes go through a dedicated writer task. That task never existed: the server used one sqlx pool of 10 connections for everything, so any connection could write, and concurrent writers polled for SQLite's write lock through `busy_timeout` (5 s). Only message sends were ordered, by a per-process lock. On 2026-10-23 the owner chose to keep SQLite + SQLCipher and fix this first.
 
 ## Decision
-- `storage::Database` holds two sqlx pools on the same file: a **writer** capped at one connection, and **readers** opened with `PRAGMA query_only = ON`.
+- `storage::Database` holds two sqlx pools on the same file: a **writer** capped at one connection, and **readers** opened with `PRAGMA query_only = ON`, capped at 4 connections.
 - The writer pool's fair (FIFO) acquisition is the write queue. A write waits at most 5 s for it (`acquire_timeout`, the same bound as the former `busy_timeout`), then fails.
 - Each storage function picks the pool it needs; domain, HTTP and gateway code only pass `&Database` along. A write sent to a reader fails, so the test suite catches a function filed under the wrong pool.
 - No dedicated actor task: it would need every write to be rewritten as a message to that task for the same ordering that one pooled connection already gives.
+
+## Measurements
+An ad hoc `performance-optimizer` harness (ignored tests driving the real domain API, not committed), release build, SQLCipher, 1 000 members, Apple M3 with 8 cores, median of 5 runs, quiet machine; `main` at 0c4d4ed against this design with 4 readers:
+
+| Case | Before | After |
+|---|---|---|
+| Mixed writes and reads, 16 tasks: throughput | 5 062 ops/s | 6 157 ops/s |
+| Same: p50 / p99 / max latency | 1.5 / 23.6 / 152 ms | 2.3 / 3.9 / about 12 ms |
+| Mixed, 32 tasks: throughput | 5 432 ops/s | 6 131 ops/s |
+| Same: p50 / p99 | 3.5 / 29.9 ms | 4.6 / 9.4 ms |
+| History page of 100 while 16 tasks write: reads/s, writes/s | 1 131, 2 328 | about 1 520, 3 890 |
+| Single send, public channel: p50 (10 readers) | 396 µs | 363 µs |
+| Sends while a 50 000-message channel is deleted: p99 (10 readers) | 100 ms | 75 ms |
+
+The queue trades a slightly higher median under contention for a tail bounded by the queue length: no request waits behind a writer sleeping in SQLite's busy handler. With sqlx's default of 10 readers, history reads under write load were 26 % slower than before and throughput 11 to 22 % lower; 4 readers fixed both (2 and 32 were worse). The reader count was measured on one 8-core machine only.
 
 ## Consequences
 - No more lock polling between the server's own connections; writes run one after another in arrival order.
