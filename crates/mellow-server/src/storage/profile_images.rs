@@ -6,7 +6,9 @@ use mellow_protocol::{ProfileImage, Snowflake};
 use sqlx::SqlitePool;
 
 use crate::storage::guilds::BEGIN_WRITE_TRANSACTION;
-use crate::storage::messages::{MessageStorageError, lookup_integer, to_id, to_integer};
+use crate::storage::messages::{
+    MessageStorageError, json_array_of_ids, lookup_integer, to_id, to_integer,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProfileImageSlot {
@@ -155,9 +157,7 @@ pub(crate) async fn profile_images_of_users(
     if user_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let ids: Vec<u64> = user_ids.iter().map(|id| id.raw()).collect();
-    // The ids as a JSON array: one bound value, read by SQLite's json_each.
-    let ids = serde_json::to_string(&ids).map_err(|_| MessageStorageError::IntegerOutOfRange)?;
+    let ids = json_array_of_ids(user_ids);
     let rows: Vec<ProfileRow> = sqlx::query_as(
         "SELECT id, avatar_id, avatar_is_animated, banner_id, banner_is_animated FROM users \
          WHERE id IN (SELECT value FROM json_each(?)) \

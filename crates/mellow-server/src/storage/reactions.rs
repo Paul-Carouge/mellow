@@ -6,7 +6,9 @@ use mellow_protocol::Snowflake;
 use sqlx::SqlitePool;
 
 use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
-use crate::storage::messages::{MessageStorageError, lookup_integer, to_id, to_integer};
+use crate::storage::messages::{
+    MessageStorageError, json_array_of_ids, lookup_integer, to_id, to_integer,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoredReactionSummary {
@@ -183,9 +185,7 @@ pub(crate) async fn reactions_of_messages(
     if message_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let ids: Vec<u64> = message_ids.iter().map(|id| id.raw()).collect();
-    // The ids as a JSON array: one bound value, read by SQLite's json_each.
-    let ids = serde_json::to_string(&ids).map_err(|_| MessageStorageError::IntegerOutOfRange)?;
+    let ids = json_array_of_ids(message_ids);
     let rows: Vec<(i64, String, i64, bool)> = sqlx::query_as(
         "SELECT message_id, emoji, COUNT(*), MAX(user_id = ?) FROM message_reactions \
          WHERE message_id IN (SELECT value FROM json_each(?)) \
