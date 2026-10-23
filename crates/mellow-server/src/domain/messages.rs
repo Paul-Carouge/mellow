@@ -358,6 +358,8 @@ impl Messages {
         // insert commits and its event is published. The lock also makes the nonce lookup and
         // the insert atomic for concurrent retries.
         tokio::spawn(async move {
+            // Read before the lock, which every send on the instance waits for.
+            let author_images = profile_images_of_user(&pool, user_id).await?;
             let _send_order = send_order.lock_owned().await;
             if let Some(nonce) = &request.nonce
                 && let Some(already_sent) =
@@ -377,7 +379,6 @@ impl Messages {
             }
             let is_first_direct_message =
                 !conversation_views.is_empty() && is_empty_channel(&pool, channel_id).await?;
-            let author_images = profile_images_of_user(&pool, user_id).await?;
             let stored = message_storage::insert_message(
                 &pool,
                 &NewMessage {
