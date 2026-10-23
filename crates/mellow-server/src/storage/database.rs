@@ -7,9 +7,8 @@ use sqlx::sqlite::{
 };
 use sqlx::{ConnectOptions as _, Connection as _};
 
-/// How long a connection waits for the SQLite write lock before failing with "database is locked".
-/// Inside the server the single writer connection never waits on itself; this covers another
-/// process, such as `mellow-server admin`, writing at the same time.
+/// How long a write waits before failing: for the writer connection inside the server, or for
+/// the SQLite lock ("database is locked") held by another process such as `mellow-server admin`.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// SQLite allows one writer at a time: one connection queues writes in the pool's FIFO order
 /// instead of several connections polling for the lock (ARCHITECTURE §4.3).
@@ -137,6 +136,8 @@ pub async fn open_encrypted_database(
     // The writer opens first, so the file is in WAL mode before any reader connects.
     let writer = SqlitePoolOptions::new()
         .max_connections(WRITER_CONNECTION_COUNT)
+        // Fail queued writes as fast as before the single writer, not after sqlx's default 30 s.
+        .acquire_timeout(BUSY_TIMEOUT)
         .connect_with(pool_options.clone())
         .await?;
     let readers = match SqlitePoolOptions::new()
