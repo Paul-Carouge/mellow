@@ -28,6 +28,13 @@ pub(crate) fn lookup_integer(id: Snowflake) -> Option<i64> {
     i64::try_from(id.raw()).ok()
 }
 
+/// The ids as a JSON array: one bound value, read by SQLite's `json_each`. An id SQLite cannot
+/// hold becomes a number no INTEGER column equals, so it matches nothing.
+pub(crate) fn json_array_of_ids(ids: &[Snowflake]) -> String {
+    let ids: Vec<String> = ids.iter().map(|id| id.raw().to_string()).collect();
+    format!("[{}]", ids.join(","))
+}
+
 pub(crate) fn to_id(value: i64) -> Result<Snowflake, MessageStorageError> {
     u64::try_from(value)
         .map(Snowflake::from_raw)
