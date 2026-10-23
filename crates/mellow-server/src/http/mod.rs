@@ -1051,6 +1051,61 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn history_gives_each_message_its_own_attachments_in_order() {
+        use mellow_protocol::{Attachment, Message};
+
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let mut uploaded = Vec::new();
+        for name in ["a1.png", "b1.png", "a2.png", "b2.png"] {
+            let path = format!("/api/v1/channels/{general}/attachments?file_name={name}");
+            let (_, body) = send(&state, upload_request(&path, &owner, PNG)).await;
+            uploaded.push(json::<Attachment>(&body).id);
+        }
+        let messages_path = format!("/api/v1/channels/{general}/messages");
+        // Ids interleave between the two messages: A gets the 1st and 3rd, B the 2nd and 4th.
+        let expected = [
+            vec![uploaded[0], uploaded[2]],
+            vec![uploaded[1], uploaded[3]],
+            vec![],
+        ];
+        for (index, attachment_ids) in expected.iter().enumerate() {
+            let ids: Vec<String> = attachment_ids.iter().map(ToString::to_string).collect();
+            let (status, _) = send(
+                &state,
+                authorized(
+                    "POST",
+                    &messages_path,
+                    &owner,
+                    Some(serde_json::json!({
+                        "content": format!("message {index}"),
+                        "attachment_ids": ids,
+                        "nonce": format!("nonce-{index}"),
+                    })),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED);
+        }
+        let (_, body) = send(&state, authorized("GET", &messages_path, &owner, None)).await;
+        pool.close().await;
+        let history: Vec<Message> = json(&body);
+        let sent = &history[history.len() - expected.len()..];
+        let attachment_ids: Vec<Vec<_>> = sent
+            .iter()
+            .map(|message| {
+                message
+                    .attachments
+                    .iter()
+                    .map(|attachment| attachment.id)
+                    .collect()
+            })
+            .collect();
+        assert_eq!(attachment_ids, expected);
+    }
+
+    #[tokio::test]
     #[allow(clippy::too_many_lines)] // One scenario: upload, send, list, download, refusals.
     async fn attachments_upload_send_and_download_safely() {
         use mellow_protocol::{Attachment, Message};
