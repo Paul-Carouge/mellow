@@ -4,6 +4,11 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-23
+
+### Fixed
+- Web: confirming a message's deletion, pin or unpin, or the removal of all its reactions in their dialog now does it; the dialog closed and nothing happened (deleting worked only with Shift+click).
+
 ## [0.9.1] - 2026-10-23
 Robustness and speed.
 
