@@ -2,8 +2,9 @@
 
 use std::collections::HashMap;
 
+use super::Database;
+
 use mellow_protocol::Snowflake;
-use sqlx::SqlitePool;
 
 use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
 use crate::storage::messages::{
@@ -43,7 +44,7 @@ pub(crate) enum ReactionAddOutcome {
 /// # Errors
 /// Fails on database errors. Nothing is written then.
 pub(crate) async fn add_reaction(
-    pool: &SqlitePool,
+    database: &Database,
     message_id: Snowflake,
     user_id: Snowflake,
     emoji: &str,
@@ -53,7 +54,7 @@ pub(crate) async fn add_reaction(
     let message_id = to_integer(message_id.raw())?;
     let user_id = to_integer(user_id.raw())?;
     // Immediate: the distinct-emoji count must not change between the check and the insert.
-    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
     let (message_exists, already_reacted, emoji_exists, distinct_emoji): (bool, bool, bool, i64) =
         sqlx::query_as(
             "SELECT EXISTS (SELECT 1 FROM messages WHERE id = ?1), \
@@ -94,7 +95,7 @@ pub(crate) async fn add_reaction(
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn remove_reaction(
-    pool: &SqlitePool,
+    database: &Database,
     channel_id: Snowflake,
     message_id: Snowflake,
     user_id: Snowflake,
@@ -112,7 +113,7 @@ pub(crate) async fn remove_reaction(
     .bind(emoji)
     .bind(message_id)
     .bind(to_integer(channel_id.raw())?)
-    .execute(pool)
+    .execute(database.writer())
     .await?
     .rows_affected();
     Ok(removed > 0)
@@ -132,13 +133,13 @@ pub(crate) enum ReactionSelection<'a> {
 /// # Errors
 /// Fails on database errors. Nothing is written then.
 pub(crate) async fn remove_reactions_of_message(
-    pool: &SqlitePool,
+    database: &Database,
     message_id: Snowflake,
     selection: ReactionSelection<'_>,
     audit: Option<&NewAuditEntry>,
 ) -> Result<bool, MessageStorageError> {
     let message_id = to_integer(message_id.raw())?;
-    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
     let removed =
         match selection {
             ReactionSelection::OneUser { user_id, emoji } => sqlx::query(
@@ -178,7 +179,7 @@ pub(crate) async fn remove_reactions_of_message(
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn reactions_of_messages(
-    pool: &SqlitePool,
+    database: &Database,
     viewer_id: Snowflake,
     message_ids: &[Snowflake],
 ) -> Result<HashMap<Snowflake, Vec<StoredReactionSummary>>, MessageStorageError> {
@@ -193,7 +194,7 @@ pub(crate) async fn reactions_of_messages(
     )
     .bind(to_integer(viewer_id.raw())?)
     .bind(ids)
-    .fetch_all(pool)
+    .fetch_all(database.readers())
     .await?;
     let mut by_message: HashMap<Snowflake, Vec<StoredReactionSummary>> = HashMap::new();
     for (message_id, emoji, count, includes_viewer) in rows {
@@ -214,7 +215,7 @@ pub(crate) async fn reactions_of_messages(
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn list_reacting_users(
-    pool: &SqlitePool,
+    database: &Database,
     message_id: Snowflake,
     emoji: &str,
     after: Option<Snowflake>,
@@ -235,7 +236,7 @@ pub(crate) async fn list_reacting_users(
     .bind(emoji)
     .bind(after)
     .bind(i64::from(limit))
-    .fetch_all(pool)
+    .fetch_all(database.readers())
     .await?;
     rows.into_iter()
         .map(|(id, username, display_name)| {

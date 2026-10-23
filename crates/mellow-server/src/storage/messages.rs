@@ -1,7 +1,8 @@
 //! Messages, pins and read states (migrations 0003 and 0012).
 
 use mellow_protocol::Snowflake;
-use sqlx::SqlitePool;
+
+use super::Database;
 
 use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
 use crate::storage::guilds::GuildStorageError;
@@ -131,10 +132,10 @@ pub(crate) struct NewMessage {
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn insert_message(
-    pool: &SqlitePool,
+    database: &Database,
     message: &NewMessage,
 ) -> Result<StoredMessage, MessageStorageError> {
-    let mut transaction = pool.begin().await?;
+    let mut transaction = database.writer().begin().await?;
     let row: MessageRow = sqlx::query_as(concat!(
         "INSERT INTO messages (id, channel_id, author_id, content, reply_to_id, nonce) \
          VALUES (?, ?, ?, ?, ?, ?) ",
@@ -179,7 +180,7 @@ pub(crate) async fn insert_message(
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn find_message_in_channel(
-    pool: &SqlitePool,
+    database: &Database,
     channel_id: Snowflake,
     message_id: Snowflake,
 ) -> Result<Option<StoredMessage>, MessageStorageError> {
@@ -194,7 +195,7 @@ pub(crate) async fn find_message_in_channel(
     ))
     .bind(channel_id)
     .bind(message_id)
-    .fetch_optional(pool)
+    .fetch_optional(database.readers())
     .await?;
     row.map(message_from_row).transpose()
 }
@@ -204,7 +205,7 @@ pub(crate) async fn find_message_in_channel(
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn find_message_by_nonce(
-    pool: &SqlitePool,
+    database: &Database,
     channel_id: Snowflake,
     author_id: Snowflake,
     nonce: &str,
@@ -216,7 +217,7 @@ pub(crate) async fn find_message_by_nonce(
     .bind(to_integer(channel_id.raw())?)
     .bind(to_integer(author_id.raw())?)
     .bind(nonce)
-    .fetch_optional(pool)
+    .fetch_optional(database.readers())
     .await?;
     row.map(message_from_row).transpose()
 }
@@ -234,7 +235,7 @@ pub(crate) enum HistoryPage {
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn list_messages(
-    pool: &SqlitePool,
+    database: &Database,
     channel_id: Snowflake,
     page: HistoryPage,
     limit: u32,
@@ -253,7 +254,7 @@ pub(crate) async fn list_messages(
             ))
             .bind(channel_id)
             .bind(limit)
-            .fetch_all(pool)
+            .fetch_all(database.readers())
             .await?
         }
         HistoryPage::Before(cursor) => sqlx::query_as(concat!(
@@ -265,7 +266,7 @@ pub(crate) async fn list_messages(
         .bind(channel_id)
         .bind(saturated_cursor(cursor))
         .bind(limit)
-        .fetch_all(pool)
+        .fetch_all(database.readers())
         .await?,
         HistoryPage::After(cursor) => {
             sqlx::query_as(concat!(
@@ -275,7 +276,7 @@ pub(crate) async fn list_messages(
             .bind(channel_id)
             .bind(saturated_cursor(cursor))
             .bind(limit)
-            .fetch_all(pool)
+            .fetch_all(database.readers())
             .await?
         }
     };
@@ -288,7 +289,7 @@ pub(crate) async fn list_messages(
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn update_message_content(
-    pool: &SqlitePool,
+    database: &Database,
     message_id: Snowflake,
     content: &str,
     edited_at_unix_milliseconds: u64,
@@ -300,7 +301,7 @@ pub(crate) async fn update_message_content(
     .bind(content)
     .bind(to_integer(edited_at_unix_milliseconds)?)
     .bind(to_integer(message_id.raw())?)
-    .fetch_optional(pool)
+    .fetch_optional(database.writer())
     .await?;
     row.map(message_from_row).transpose()
 }
@@ -311,11 +312,11 @@ pub(crate) async fn update_message_content(
 /// # Errors
 /// Fails on database errors. Nothing is written then.
 pub(crate) async fn delete_message(
-    pool: &SqlitePool,
+    database: &Database,
     message_id: Snowflake,
     audit: Option<&NewAuditEntry>,
 ) -> Result<(), MessageStorageError> {
-    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
     let deleted = sqlx::query("DELETE FROM messages WHERE id = ?")
         .bind(to_integer(message_id.raw())?)
         .execute(&mut *transaction)
@@ -347,7 +348,7 @@ pub(crate) enum PinOutcome {
 /// # Errors
 /// Fails on database errors. Nothing is written then.
 pub(crate) async fn pin_message(
-    pool: &SqlitePool,
+    database: &Database,
     channel_id: Snowflake,
     message_id: Snowflake,
     pinned_at_unix_milliseconds: u64,
@@ -357,7 +358,7 @@ pub(crate) async fn pin_message(
     let channel_id = to_integer(channel_id.raw())?;
     let message_id = to_integer(message_id.raw())?;
     // Immediate: the count and the update must see the same pins as concurrent pins.
-    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
     let pinned_at: Option<Option<i64>> = sqlx::query_scalar(
         "SELECT pinned_at_unix_milliseconds FROM messages WHERE id = ? AND channel_id = ?",
     )
@@ -401,12 +402,12 @@ pub(crate) async fn pin_message(
 /// # Errors
 /// Fails on database errors. Nothing is written then.
 pub(crate) async fn unpin_message(
-    pool: &SqlitePool,
+    database: &Database,
     channel_id: Snowflake,
     message_id: Snowflake,
     audit: Option<&NewAuditEntry>,
 ) -> Result<Option<StoredMessage>, MessageStorageError> {
-    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
     let row: Option<MessageRow> = sqlx::query_as(concat!(
         "UPDATE messages SET pinned_at_unix_milliseconds = NULL \
          WHERE id = ? AND channel_id = ? AND pinned_at_unix_milliseconds IS NOT NULL ",
@@ -430,7 +431,7 @@ pub(crate) async fn unpin_message(
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn list_pinned_messages(
-    pool: &SqlitePool,
+    database: &Database,
     channel_id: Snowflake,
     limit: u32,
 ) -> Result<Vec<StoredMessage>, MessageStorageError> {
@@ -441,7 +442,7 @@ pub(crate) async fn list_pinned_messages(
     ))
     .bind(to_integer(channel_id.raw())?)
     .bind(i64::from(limit))
-    .fetch_all(pool)
+    .fetch_all(database.readers())
     .await?;
     rows.into_iter().map(message_from_row).collect()
 }
@@ -452,7 +453,7 @@ pub(crate) async fn list_pinned_messages(
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn advance_read_state(
-    pool: &SqlitePool,
+    database: &Database,
     user_id: Snowflake,
     channel_id: Snowflake,
     last_read_message_id: Snowflake,
@@ -465,7 +466,7 @@ pub(crate) async fn advance_read_state(
     .bind(to_integer(user_id.raw())?)
     .bind(to_integer(channel_id.raw())?)
     .bind(to_integer(last_read_message_id.raw())?)
-    .execute(pool)
+    .execute(database.writer())
     .await?;
     Ok(())
 }
@@ -475,7 +476,7 @@ pub(crate) async fn advance_read_state(
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn list_read_states(
-    pool: &SqlitePool,
+    database: &Database,
     user_id: Snowflake,
 ) -> Result<Vec<(Snowflake, Snowflake)>, MessageStorageError> {
     let rows: Vec<(i64, i64)> = sqlx::query_as(
@@ -489,7 +490,7 @@ pub(crate) async fn list_read_states(
                  AND direct_message_participants.user_id = read_states.user_id))",
     )
     .bind(to_integer(user_id.raw())?)
-    .fetch_all(pool)
+    .fetch_all(database.readers())
     .await?;
     rows.into_iter()
         .map(|(channel_id, message_id)| Ok((to_id(channel_id)?, to_id(message_id)?)))

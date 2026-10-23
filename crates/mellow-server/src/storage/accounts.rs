@@ -1,7 +1,8 @@
 //! Users and sessions tables (migration 0001).
 
 use mellow_protocol::{ProfileImage, Snowflake};
-use sqlx::SqlitePool;
+
+use super::Database;
 
 use crate::domain::session_token::SessionTokenSha256;
 
@@ -132,7 +133,7 @@ fn stored_user_from_row(row: StoredUserRow) -> Result<StoredUser, AccountStorage
 
 /// # Errors
 /// `UsernameTaken` / `EmailTaken` when a unique constraint rejects the row (case-insensitive).
-pub async fn insert_user(pool: &SqlitePool, user: &NewUser) -> Result<(), AccountStorageError> {
+pub async fn insert_user(database: &Database, user: &NewUser) -> Result<(), AccountStorageError> {
     let result = sqlx::query(
         "INSERT INTO users (id, username, display_name, email, password_hash, \
          is_instance_administrator, created_at_unix_milliseconds) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -144,7 +145,7 @@ pub async fn insert_user(pool: &SqlitePool, user: &NewUser) -> Result<(), Accoun
     .bind(&user.password_hash)
     .bind(user.is_instance_administrator)
     .bind(to_sqlite_integer(user.created_at_unix_milliseconds)?)
-    .execute(pool)
+    .execute(database.writer())
     .await;
     result.map(|_| ()).map_err(unique_violation_as_taken)
 }
@@ -172,7 +173,7 @@ fn unique_violation_as_taken(error: sqlx::Error) -> AccountStorageError {
 /// # Errors
 /// `UsernameTaken` when another account has this username (case-insensitive); database errors.
 pub async fn update_user_names(
-    pool: &SqlitePool,
+    database: &Database,
     user_id: Snowflake,
     username: Option<&str>,
     display_name: Option<&str>,
@@ -184,7 +185,7 @@ pub async fn update_user_names(
     .bind(username)
     .bind(display_name)
     .bind(to_sqlite_integer(user_id.raw())?)
-    .fetch_optional(pool)
+    .fetch_optional(database.writer())
     .await
     .map_err(unique_violation_as_taken)
 }
@@ -197,7 +198,7 @@ pub async fn update_user_names(
 /// # Errors
 /// Fails on database errors.
 pub async fn replace_password_and_delete_other_sessions(
-    pool: &SqlitePool,
+    database: &Database,
     user_id: Snowflake,
     verified_password_hash: &str,
     new_password_hash: &str,
@@ -205,7 +206,7 @@ pub async fn replace_password_and_delete_other_sessions(
     now_unix_milliseconds: u64,
 ) -> Result<bool, AccountStorageError> {
     let user_id = to_sqlite_integer(user_id.raw())?;
-    let mut transaction = pool.begin().await?;
+    let mut transaction = database.writer().begin().await?;
     let updated = sqlx::query(
         "UPDATE users SET password_hash = ? \
          WHERE id = ? AND password_hash = ? AND disabled_at_unix_milliseconds IS NULL \
@@ -236,7 +237,7 @@ pub async fn replace_password_and_delete_other_sessions(
 /// # Errors
 /// Fails on database errors only; an unknown id is `Ok(None)`.
 pub async fn find_user_by_id(
-    pool: &SqlitePool,
+    database: &Database,
     user_id: Snowflake,
 ) -> Result<Option<StoredUser>, AccountStorageError> {
     let row: Option<StoredUserRow> = sqlx::query_as(concat!(
@@ -245,7 +246,7 @@ pub async fn find_user_by_id(
         " FROM users WHERE users.id = ?"
     ))
     .bind(to_sqlite_integer(user_id.raw())?)
-    .fetch_optional(pool)
+    .fetch_optional(database.readers())
     .await?;
     row.map(stored_user_from_row).transpose()
 }
@@ -253,7 +254,7 @@ pub async fn find_user_by_id(
 /// # Errors
 /// Fails on database errors only; an unknown login is `Ok(None)`.
 pub async fn find_user_by_login(
-    pool: &SqlitePool,
+    database: &Database,
     login: &str,
 ) -> Result<Option<StoredUser>, AccountStorageError> {
     let row: Option<StoredUserRow> = sqlx::query_as(concat!(
@@ -262,7 +263,7 @@ pub async fn find_user_by_login(
         " FROM users WHERE users.username = ?1 OR users.email = ?1"
     ))
     .bind(login)
-    .fetch_optional(pool)
+    .fetch_optional(database.readers())
     .await?;
     row.map(stored_user_from_row).transpose()
 }
@@ -273,7 +274,7 @@ pub async fn find_user_by_login(
 /// # Errors
 /// Fails on database errors.
 pub async fn insert_session(
-    pool: &SqlitePool,
+    database: &Database,
     session: &NewSession,
     verified_password_hash: &str,
 ) -> Result<bool, AccountStorageError> {
@@ -291,7 +292,7 @@ pub async fn insert_session(
     .bind(to_sqlite_integer(session.expires_at_unix_milliseconds)?)
     .bind(to_sqlite_integer(session.user_id.raw())?)
     .bind(verified_password_hash)
-    .execute(pool)
+    .execute(database.writer())
     .await?;
     Ok(result.rows_affected() == 1)
 }
@@ -301,7 +302,7 @@ pub async fn insert_session(
 /// # Errors
 /// Fails on database errors only.
 pub async fn find_session_owner(
-    pool: &SqlitePool,
+    database: &Database,
     token_sha256: &SessionTokenSha256,
     now_unix_milliseconds: u64,
 ) -> Result<Option<SessionOwner>, AccountStorageError> {
@@ -314,7 +315,7 @@ pub async fn find_session_owner(
     ))
     .bind(token_sha256.as_slice())
     .bind(to_sqlite_integer(now_unix_milliseconds)?)
-    .fetch_optional(pool)
+    .fetch_optional(database.readers())
     .await?;
     row.map(|row| {
         use sqlx::{FromRow as _, Row as _};
@@ -333,7 +334,7 @@ pub async fn find_session_owner(
 /// # Errors
 /// Fails on database errors.
 pub async fn record_session_use(
-    pool: &SqlitePool,
+    database: &Database,
     token_sha256: &SessionTokenSha256,
     now_unix_milliseconds: u64,
 ) -> Result<(), AccountStorageError> {
@@ -343,7 +344,7 @@ pub async fn record_session_use(
     )
     .bind(to_sqlite_integer(now_unix_milliseconds)?)
     .bind(token_sha256.as_slice())
-    .execute(pool)
+    .execute(database.writer())
     .await?;
     Ok(())
 }
@@ -353,12 +354,12 @@ pub async fn record_session_use(
 /// # Errors
 /// Fails on database errors.
 pub async fn delete_expired_sessions(
-    pool: &SqlitePool,
+    database: &Database,
     expired_before_unix_milliseconds: u64,
 ) -> Result<u64, AccountStorageError> {
     let result = sqlx::query("DELETE FROM sessions WHERE expires_at_unix_milliseconds <= ?")
         .bind(to_sqlite_integer(expired_before_unix_milliseconds)?)
-        .execute(pool)
+        .execute(database.writer())
         .await?;
     Ok(result.rows_affected())
 }
@@ -368,12 +369,12 @@ pub async fn delete_expired_sessions(
 /// # Errors
 /// Fails on database errors.
 pub async fn delete_session(
-    pool: &SqlitePool,
+    database: &Database,
     token_sha256: &SessionTokenSha256,
 ) -> Result<(), AccountStorageError> {
     sqlx::query("DELETE FROM sessions WHERE token_sha256 = ?")
         .bind(token_sha256.as_slice())
-        .execute(pool)
+        .execute(database.writer())
         .await?;
     Ok(())
 }

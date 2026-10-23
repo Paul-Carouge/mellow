@@ -2,8 +2,9 @@
 
 use std::collections::HashMap;
 
+use super::Database;
+
 use mellow_protocol::{ProfileImage, Snowflake};
-use sqlx::SqlitePool;
 
 use crate::storage::guilds::BEGIN_WRITE_TRANSACTION;
 use crate::storage::messages::{
@@ -54,14 +55,17 @@ fn profile_image(
 /// Stores a new version and makes it the user's current one, in one transaction; answers the
 /// version it replaces, whose files the caller deletes.
 pub(crate) async fn replace_profile_image(
-    pool: &SqlitePool,
+    database: &Database,
     user_id: Snowflake,
     slot: ProfileImageSlot,
     new_image: Option<NewProfileImage>,
     now_unix_milliseconds: u64,
 ) -> Result<Option<StoredProfileImage>, MessageStorageError> {
     let user = to_integer(user_id.raw())?;
-    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
+    let mut transaction = database
+        .writer()
+        .begin_with(BEGIN_WRITE_TRANSACTION)
+        .await?;
     let (previous,): (Option<i64>,) = match slot {
         ProfileImageSlot::Avatar => sqlx::query_as("SELECT avatar_id FROM users WHERE id = ?"),
         ProfileImageSlot::Banner => sqlx::query_as("SELECT banner_id FROM users WHERE id = ?"),
@@ -126,7 +130,7 @@ pub(crate) async fn replace_profile_image(
 }
 
 pub(crate) async fn find_profile_image(
-    pool: &SqlitePool,
+    database: &Database,
     id: Snowflake,
 ) -> Result<Option<StoredProfileImage>, MessageStorageError> {
     let Some(id) = lookup_integer(id) else {
@@ -135,7 +139,7 @@ pub(crate) async fn find_profile_image(
     let row: Option<(i64, i64, Option<i64>)> =
         sqlx::query_as("SELECT id, user_id, still_id FROM profile_images WHERE id = ?")
             .bind(id)
-            .fetch_optional(pool)
+            .fetch_optional(database.readers())
             .await?;
     row.map(|(id, user_id, still_id)| {
         Ok(StoredProfileImage {
@@ -151,7 +155,7 @@ type ProfileRow = (i64, Option<i64>, i64, Option<i64>, i64);
 
 /// The avatars and banners of these users, in one query whatever their number.
 pub(crate) async fn profile_images_of_users(
-    pool: &SqlitePool,
+    database: &Database,
     user_ids: &[Snowflake],
 ) -> Result<HashMap<Snowflake, UserProfileImages>, MessageStorageError> {
     if user_ids.is_empty() {
@@ -164,7 +168,7 @@ pub(crate) async fn profile_images_of_users(
          AND (avatar_id IS NOT NULL OR banner_id IS NOT NULL)",
     )
     .bind(ids)
-    .fetch_all(pool)
+    .fetch_all(database.readers())
     .await?;
     rows.into_iter()
         .map(
@@ -183,10 +187,10 @@ pub(crate) async fn profile_images_of_users(
 
 /// Every file id of every avatar and banner, still frames included, for the orphan sweep.
 pub(crate) async fn all_profile_image_file_ids(
-    pool: &SqlitePool,
+    database: &Database,
 ) -> Result<Vec<Snowflake>, MessageStorageError> {
     let rows: Vec<(i64, Option<i64>)> = sqlx::query_as("SELECT id, still_id FROM profile_images")
-        .fetch_all(pool)
+        .fetch_all(database.readers())
         .await?;
     let mut ids = Vec::with_capacity(rows.len() * 2);
     for (id, still_id) in rows {

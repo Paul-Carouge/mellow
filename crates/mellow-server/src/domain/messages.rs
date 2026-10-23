@@ -11,12 +11,12 @@ pub(crate) use reactions::ReactionRemoval;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::storage::Database;
 use mellow_protocol::{
     AcknowledgeRequest, Attachment, AuditAction, ChannelKind, EditMessageRequest, GatewayEvent,
     Message, MessageHistoryQuery, Permissions, PublicUser, ReactionSummary, ReadState,
     SendMessageRequest, Snowflake,
 };
-use sqlx::SqlitePool;
 
 use crate::domain::guilds::{ChannelAudience, GuildError, Guilds};
 use crate::domain::message_rules::{
@@ -108,13 +108,13 @@ fn message_from_stored(
 
 /// The reactions of these messages as `viewer_id` sees them (`me`), for REST answers only.
 async fn fill_reactions(
-    pool: &SqlitePool,
+    database: &Database,
     viewer_id: Snowflake,
     messages: &mut [Message],
 ) -> Result<(), MessageError> {
     let message_ids: Vec<Snowflake> = messages.iter().map(|message| message.id).collect();
     let mut reactions =
-        reaction_storage::reactions_of_messages(pool, viewer_id, &message_ids).await?;
+        reaction_storage::reactions_of_messages(database, viewer_id, &message_ids).await?;
     for message in messages {
         message.reactions = reactions
             .remove(&message.id)
@@ -132,11 +132,11 @@ async fn fill_reactions(
 
 /// The attachments of one message, for the paths that build a single one.
 async fn attachments_of(
-    pool: &SqlitePool,
+    database: &Database,
     message_id: Snowflake,
 ) -> Result<Vec<StoredAttachment>, MessageError> {
     Ok(
-        attachment_storage::attachments_of_messages(pool, &[message_id])
+        attachment_storage::attachments_of_messages(database, &[message_id])
             .await?
             .remove(&message_id)
             .unwrap_or_default(),
@@ -177,9 +177,12 @@ enum MessageAudience {
     Participants(Vec<Snowflake>),
 }
 
-async fn is_empty_channel(pool: &SqlitePool, channel_id: Snowflake) -> Result<bool, MessageError> {
+async fn is_empty_channel(
+    database: &Database,
+    channel_id: Snowflake,
+) -> Result<bool, MessageError> {
     Ok(
-        message_storage::list_messages(pool, channel_id, HistoryPage::Newest, 1)
+        message_storage::list_messages(database, channel_id, HistoryPage::Newest, 1)
             .await?
             .is_empty(),
     )
@@ -196,7 +199,7 @@ fn publish(guilds: &Guilds, audience: &MessageAudience, event: &GatewayEvent) {
 
 #[derive(Debug)]
 pub(crate) struct Messages {
-    pool: SqlitePool,
+    database: Database,
     ids: Arc<SnowflakeGenerator>,
     /// Also publishes message events, to the members who can view the channel (ADR-0015).
     guilds: Arc<Guilds>,
@@ -206,9 +209,13 @@ pub(crate) struct Messages {
 }
 
 impl Messages {
-    pub(crate) fn new(pool: SqlitePool, ids: Arc<SnowflakeGenerator>, guilds: Arc<Guilds>) -> Self {
+    pub(crate) fn new(
+        database: Database,
+        ids: Arc<SnowflakeGenerator>,
+        guilds: Arc<Guilds>,
+    ) -> Self {
         Self {
-            pool,
+            database,
             ids,
             guilds,
             send_order: Arc::default(),
@@ -223,9 +230,10 @@ impl Messages {
         channel_id: Snowflake,
         needed: Permissions,
     ) -> Result<(MessageChannel, Permissions), MessageError> {
-        let participant_ids = direct_message_storage::list_participant_ids(&self.pool, channel_id)
-            .await
-            .map_err(GuildError::from)?;
+        let participant_ids =
+            direct_message_storage::list_participant_ids(&self.database, channel_id)
+                .await
+                .map_err(GuildError::from)?;
         let (channel, permissions) = if participant_ids.is_empty() {
             let (channel, permissions) = self
                 .guilds
@@ -238,8 +246,12 @@ impl Messages {
         } else {
             let is_participant = participant_ids.contains(&user_id);
             let shares_a_guild = is_participant
-                && direct_messages::shares_a_guild_with_each(&self.pool, user_id, &participant_ids)
-                    .await?;
+                && direct_messages::shares_a_guild_with_each(
+                    &self.database,
+                    user_id,
+                    &participant_ids,
+                )
+                .await?;
             let permissions = direct_message_permissions(is_participant, shares_a_guild);
             if !permissions.contains(Permissions::VIEW_CHANNEL) {
                 return Err(GuildError::NotFound.into());
@@ -286,7 +298,7 @@ impl Messages {
         channel_id: Snowflake,
         message_id: Snowflake,
     ) -> Result<StoredMessage, MessageError> {
-        message_storage::find_message_in_channel(&self.pool, channel_id, message_id)
+        message_storage::find_message_in_channel(&self.database, channel_id, message_id)
             .await?
             .ok_or(MessageError::MessageNotFound)
     }
@@ -346,12 +358,13 @@ impl Messages {
             MessageChannel::Direct {
                 participant_ids, ..
             } => {
-                direct_messages::conversation_views(&self.pool, channel_id, participant_ids).await?
+                direct_messages::conversation_views(&self.database, channel_id, participant_ids)
+                    .await?
             }
             MessageChannel::Guild(_) => Vec::new(),
         };
         let send_order = self.send_order.clone();
-        let pool = self.pool.clone();
+        let database = self.database.clone();
         let ids = self.ids.clone();
         let guilds = self.guilds.clone();
         // A detached task: a client hanging up mid-insert must not release the lock before the
@@ -359,28 +372,28 @@ impl Messages {
         // the insert atomic for concurrent retries.
         tokio::spawn(async move {
             // Read before the lock, which every send on the instance waits for.
-            let author_images = profile_images_of_user(&pool, user_id).await?;
+            let author_images = profile_images_of_user(&database, user_id).await?;
             let _send_order = send_order.lock_owned().await;
             if let Some(nonce) = &request.nonce
                 && let Some(already_sent) =
-                    message_storage::find_message_by_nonce(&pool, channel_id, user_id, nonce)
+                    message_storage::find_message_by_nonce(&database, channel_id, user_id, nonce)
                         .await?
             {
-                let attachments = attachments_of(&pool, already_sent.id).await?;
+                let attachments = attachments_of(&database, already_sent.id).await?;
                 let mut message = message_from_stored(already_sent, request.nonce, attachments);
-                fill_profile_images(&pool, [&mut message.author]).await?;
-                fill_reactions(&pool, user_id, std::slice::from_mut(&mut message)).await?;
+                fill_profile_images(&database, [&mut message.author]).await?;
+                fill_reactions(&database, user_id, std::slice::from_mut(&mut message)).await?;
                 return Ok(message);
             }
             if let Some(reply_to_id) = request.reply_to_id {
-                message_storage::find_message_in_channel(&pool, channel_id, reply_to_id)
+                message_storage::find_message_in_channel(&database, channel_id, reply_to_id)
                     .await?
                     .ok_or(MessageRuleViolation::ReplyTarget)?;
             }
             let is_first_direct_message =
-                !conversation_views.is_empty() && is_empty_channel(&pool, channel_id).await?;
+                !conversation_views.is_empty() && is_empty_channel(&database, channel_id).await?;
             let stored = message_storage::insert_message(
-                &pool,
+                &database,
                 &NewMessage {
                     id: ids.next_id(now_unix_milliseconds)?,
                     channel_id,
@@ -392,7 +405,7 @@ impl Messages {
                 },
             )
             .await?;
-            let attachments = attachments_of(&pool, stored.id).await?;
+            let attachments = attachments_of(&database, stored.id).await?;
             if is_first_direct_message {
                 direct_messages::announce_conversation(&guilds, conversation_views, stored.id);
             }
@@ -434,7 +447,7 @@ impl Messages {
         };
         let limit = history_page_size(query.limit)?;
         let messages =
-            message_storage::list_messages(&self.pool, channel.id(), page, limit).await?;
+            message_storage::list_messages(&self.database, channel.id(), page, limit).await?;
         self.messages_for_viewer(user_id, messages).await
     }
 
@@ -447,7 +460,7 @@ impl Messages {
     ) -> Result<Vec<Message>, MessageError> {
         let message_ids: Vec<Snowflake> = messages.iter().map(|message| message.id).collect();
         let mut attachments: HashMap<Snowflake, Vec<StoredAttachment>> =
-            attachment_storage::attachments_of_messages(&self.pool, &message_ids).await?;
+            attachment_storage::attachments_of_messages(&self.database, &message_ids).await?;
         let mut messages: Vec<Message> = messages
             .into_iter()
             .map(|message| {
@@ -456,11 +469,11 @@ impl Messages {
             })
             .collect();
         fill_profile_images(
-            &self.pool,
+            &self.database,
             messages.iter_mut().map(|message| &mut message.author),
         )
         .await?;
-        fill_reactions(&self.pool, viewer_id, &mut messages).await?;
+        fill_reactions(&self.database, viewer_id, &mut messages).await?;
         Ok(messages)
     }
 
@@ -490,10 +503,10 @@ impl Messages {
         let audience = self.audience(&channel).await?;
         // Read before the write (attachments never change once sent), so nothing can fail
         // between the commit and the event.
-        let author_images = profile_images_of_user(&self.pool, user_id).await?;
-        let attachments = attachments_of(&self.pool, message.id).await?;
+        let author_images = profile_images_of_user(&self.database, user_id).await?;
+        let attachments = attachments_of(&self.database, message.id).await?;
         let updated = message_storage::update_message_content(
-            &self.pool,
+            &self.database,
             message.id,
             &content,
             now_unix_milliseconds,
@@ -509,7 +522,7 @@ impl Messages {
             &GatewayEvent::MessageUpdate(updated.clone()),
         );
         // Only the editor's answer carries reactions; a failure here leaves the edit published.
-        fill_reactions(&self.pool, user_id, std::slice::from_mut(&mut updated)).await?;
+        fill_reactions(&self.database, user_id, std::slice::from_mut(&mut updated)).await?;
         Ok(updated)
     }
 
@@ -543,7 +556,7 @@ impl Messages {
                 )
             })
             .transpose()?;
-        message_storage::delete_message(&self.pool, message.id, audit.as_ref()).await?;
+        message_storage::delete_message(&self.database, message.id, audit.as_ref()).await?;
         publish(
             &self.guilds,
             &audience,
@@ -569,7 +582,8 @@ impl Messages {
         let message = self
             .message_in_channel(channel.id(), request.last_read_message_id)
             .await?;
-        message_storage::advance_read_state(&self.pool, user_id, channel.id(), message.id).await?;
+        message_storage::advance_read_state(&self.database, user_id, channel.id(), message.id)
+            .await?;
         Ok(())
     }
 
@@ -588,7 +602,7 @@ impl Messages {
             .await?;
         // A conversation is announced to the recipient with its first message, not before.
         if matches!(channel, MessageChannel::Direct { .. })
-            && is_empty_channel(&self.pool, channel.id()).await?
+            && is_empty_channel(&self.database, channel.id()).await?
         {
             return Ok(());
         }
@@ -612,7 +626,7 @@ impl Messages {
     ) -> Result<Vec<ReadState>, MessageError> {
         let mut visible_channel_ids = self.guilds.visible_channel_ids(user_id).await?;
         visible_channel_ids.extend(
-            direct_message_storage::list_user_conversations(&self.pool, user_id)
+            direct_message_storage::list_user_conversations(&self.database, user_id)
                 .await
                 .map_err(GuildError::from)?
                 .iter()
@@ -628,7 +642,7 @@ impl Messages {
         user_id: Snowflake,
         visible_channel_ids: &HashSet<Snowflake>,
     ) -> Result<Vec<ReadState>, MessageError> {
-        Ok(message_storage::list_read_states(&self.pool, user_id)
+        Ok(message_storage::list_read_states(&self.database, user_id)
             .await?
             .into_iter()
             .filter(|(channel_id, _)| visible_channel_ids.contains(channel_id))
@@ -647,12 +661,12 @@ mod tests {
     use super::*;
     use crate::domain::account_rules::RegistrationMode;
     use crate::domain::accounts::Accounts;
-    use crate::domain::accounts::tests::{NOW, migrated_pool, register_request};
+    use crate::domain::accounts::tests::{NOW, migrated_database, register_request};
     use crate::events::EventHub;
 
     struct Fixture {
         _directory: tempfile::TempDir,
-        pool: SqlitePool,
+        database: Database,
         messages: Messages,
         guilds: Arc<Guilds>,
         events: Arc<EventHub>,
@@ -664,10 +678,10 @@ mod tests {
     }
 
     async fn fixture() -> Fixture {
-        let (directory, pool) = migrated_pool().await;
+        let (directory, database) = migrated_database().await;
         let ids = Arc::new(SnowflakeGenerator::default());
         let accounts = Accounts::new(
-            pool.clone(),
+            database.clone(),
             RegistrationMode::Open,
             ids.clone(),
             Arc::default(),
@@ -681,7 +695,7 @@ mod tests {
             users.push(session.user.id);
         }
         let events = Arc::new(EventHub::default());
-        let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone(), events.clone()));
+        let guilds = Arc::new(Guilds::new(database.clone(), ids.clone(), events.clone()));
         let guild = guilds
             .create_guild(
                 users[0],
@@ -703,8 +717,8 @@ mod tests {
         let general = guild.channels[1].id;
         Fixture {
             _directory: directory,
-            messages: Messages::new(pool.clone(), ids, guilds.clone()),
-            pool,
+            messages: Messages::new(database.clone(), ids, guilds.clone()),
+            database,
             guilds,
             events,
             owner: users[0],
@@ -779,7 +793,7 @@ mod tests {
             )
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         let ids = |messages: &[Message]| {
             messages
@@ -895,7 +909,7 @@ mod tests {
             .send(fixture.owner, fixture.general, text("public"), NOW)
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(member_after_hiding, ["GUILD_CREATE"], "a fresh snapshot");
         assert_eq!(
@@ -961,7 +975,7 @@ mod tests {
             .list_audit_log(fixture.owner, fixture.guild.id, AuditLogQuery::default())
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
         let deletes: Vec<_> = entries
             .iter()
             .filter(|entry| entry.action == AuditAction::MessageDelete)
@@ -1018,7 +1032,7 @@ mod tests {
             )
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         let mut published_ids = Vec::new();
         while let Ok(event) = events.try_recv() {
@@ -1084,7 +1098,7 @@ mod tests {
                 NOW,
             )
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(reply.reply_to_id, Some(original.id));
         assert_eq!(reply.nonce.as_deref(), Some("outbox-1"));
@@ -1147,7 +1161,7 @@ mod tests {
             )
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(retry, first);
         assert_eq!(retry.content, "hello");
@@ -1190,7 +1204,7 @@ mod tests {
             )
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(first.unwrap().id, second.unwrap().id);
         assert_eq!(history.len(), 1);
@@ -1220,7 +1234,7 @@ mod tests {
             .send(fixture.member, fixture.general, with_nonce(), NOW + 1)
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_ne!(after_deletion.id, first.id);
     }
@@ -1282,7 +1296,7 @@ mod tests {
             )
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(edited.content, "fixed");
         assert_eq!(edited.edited_at_unix_milliseconds, Some(NOW + 5));
@@ -1348,7 +1362,7 @@ mod tests {
                 NOW,
             )
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert!(matches!(
             outsider_sends,
@@ -1418,7 +1432,7 @@ mod tests {
             .list_my_read_states(fixture.member)
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(
             states,
@@ -1455,7 +1469,7 @@ mod tests {
             .messages
             .open_direct_message(fixture.member, open_with(fixture.member), NOW)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(opened.id, reopened_by_the_other.id);
         assert_eq!(opened.recipients[0].id, fixture.owner);
@@ -1508,7 +1522,7 @@ mod tests {
             .messages
             .delete(fixture.owner, conversation.id, sent.id)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(read_by_recipient.len(), 1);
         assert!(matches!(
@@ -1564,7 +1578,7 @@ mod tests {
             .list_my_read_states(fixture.owner)
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(listed_while_empty, Vec::new());
         assert_eq!(
@@ -1636,7 +1650,7 @@ mod tests {
             .messages
             .delete(fixture.member, conversation.id, own.id)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         for refused in [send.map(|_| ()), edit.map(|_| ()), typing] {
             assert!(matches!(
@@ -1707,7 +1721,7 @@ mod tests {
             .guilds
             .delete_channel(fixture.owner, conversation.id)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         for attempt in attempts {
             assert!(matches!(
@@ -1744,7 +1758,7 @@ mod tests {
             .start_typing(fixture.member, conversation.id)
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(event_types(&mut owner_events), Vec::<String>::new());
     }
@@ -1824,7 +1838,7 @@ mod tests {
             .await
             .unwrap();
         let after_removal = history(&fixture, fixture.member, fixture.general).await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(
             events_after_adding,
@@ -1899,7 +1913,7 @@ mod tests {
             .messages
             .add_reaction(fixture.member, fixture.general, message.id, "lol")
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         let event: serde_json::Value =
             serde_json::from_str(&member_events.try_recv().unwrap().payload_json).unwrap();
@@ -1940,7 +1954,7 @@ mod tests {
             .messages
             .add_reaction(fixture.member, fixture.general, message.id, &emoji[0])
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         let (last, allowed) = outcomes.split_last().unwrap();
         assert!(allowed.iter().all(Result::is_ok));
@@ -2008,7 +2022,7 @@ mod tests {
                 "👍",
             )
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert!(
             matches!(
@@ -2074,7 +2088,7 @@ mod tests {
             )
             .await;
         let member_pins = fixture.messages.list_pins(fixture.member, staff.id).await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(event_types(&mut owner_events), ["MESSAGE_REACTION_ADD"]);
         assert_eq!(event_types(&mut member_events), Vec::<String>::new());
@@ -2144,7 +2158,7 @@ mod tests {
             .map(|event| serde_json::from_str::<serde_json::Value>(&event.payload_json).unwrap())
             .map(|event| format!("{} {}", event["t"], event["data"]["pinned"]))
             .collect();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(
             pins.iter().map(|message| message.id).collect::<Vec<_>>(),
@@ -2213,7 +2227,7 @@ mod tests {
             .messages
             .unpin(fixture.member, fixture.general, message.id)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         for refused in [pinned, unpinned] {
             assert!(
@@ -2250,7 +2264,7 @@ mod tests {
             .list_pins(fixture.owner, fixture.general)
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         let (last, allowed) = outcomes.split_last().unwrap();
         assert!(allowed.iter().all(Result::is_ok));
@@ -2315,7 +2329,7 @@ mod tests {
                 reaction_event = Some(event["data"].clone());
             }
         }
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(
             reaction_event.unwrap(),
@@ -2372,7 +2386,7 @@ mod tests {
             .map(|event| serde_json::from_str::<serde_json::Value>(&event.payload_json).unwrap())
             .map(|event| event["data"]["emoji"].as_str().unwrap().to_owned())
             .collect();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(summaries(&seen[0]), [("❤".to_owned(), 1, true)]);
         assert_eq!(
@@ -2443,7 +2457,7 @@ mod tests {
             .remove_own_reaction(fixture.member, fixture.general, message.id, "👍")
             .await;
         let seen = history(&fixture, fixture.owner, fixture.general).await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         for attempt in attempts {
             assert!(
@@ -2510,7 +2524,7 @@ mod tests {
             .list_audit_log(fixture.owner, fixture.guild.id, AuditLogQuery::default())
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert!(
             matches!(
@@ -2580,7 +2594,7 @@ mod tests {
             )
             .await;
         let seen = history(&fixture, fixture.owner, conversation.id).await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert!(
             matches!(
@@ -2607,7 +2621,7 @@ mod tests {
             .pin(fixture.owner, fixture.general, message.id, NOW + 1)
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         let event: serde_json::Value =
             serde_json::from_str(&member_events.try_recv().unwrap().payload_json).unwrap();

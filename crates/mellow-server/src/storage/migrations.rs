@@ -5,6 +5,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use sqlx::SqlitePool;
+
+use super::Database;
 use sqlx::migrate::Migrator;
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
@@ -49,9 +51,10 @@ pub struct MigrationOutcome {
 /// # Errors
 /// Nothing is migrated if the database is in a state sqlx would reject or the backup fails.
 pub async fn migrate_with_backup(
-    pool: &SqlitePool,
+    database: &Database,
     backup_directory: &Path,
 ) -> Result<MigrationOutcome, MigrationError> {
+    let pool = database.writer();
     let applied_versions = applied_migration_versions(pool).await?;
     reject_unknown_or_failed_migrations(&applied_versions)?;
     let applied_version_numbers: BTreeSet<i64> = applied_versions
@@ -192,29 +195,29 @@ mod tests {
     #[tokio::test]
     async fn fresh_database_is_migrated_without_a_backup_and_rerunning_is_a_no_op() {
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
         let backups = directory.path().join("backups");
 
-        let first_run = migrate_with_backup(&pool, &backups).await.unwrap();
+        let first_run = migrate_with_backup(&database, &backups).await.unwrap();
         let every_version: Vec<i64> = MIGRATOR.iter().map(|migration| migration.version).collect();
         assert_eq!(first_run.applied_versions, every_version);
         assert_eq!(first_run.backup_path, None);
 
-        let second_run = migrate_with_backup(&pool, &backups).await.unwrap();
+        let second_run = migrate_with_backup(&database, &backups).await.unwrap();
         assert_eq!(second_run.applied_versions, Vec::<i64>::new());
-        pool.close().await;
+        database.close().await;
         assert!(!backups.exists());
     }
 
     #[tokio::test]
     async fn channel_deletions_find_read_states_and_attachments_by_index() {
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
-        migrate_with_backup(&pool, &directory.path().join("backups"))
+        migrate_with_backup(&database, &directory.path().join("backups"))
             .await
             .unwrap();
         let mut plans = Vec::new();
@@ -223,8 +226,10 @@ mod tests {
             "EXPLAIN QUERY PLAN SELECT 1 FROM read_states WHERE channel_id = 1",
             "EXPLAIN QUERY PLAN SELECT 1 FROM attachments WHERE channel_id = 1",
         ] {
-            let rows: Vec<(i64, i64, i64, String)> =
-                sqlx::query_as(lookup).fetch_all(&pool).await.unwrap();
+            let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(lookup)
+                .fetch_all(database.writer())
+                .await
+                .unwrap();
             plans.push(
                 rows.into_iter()
                     .map(|row| row.3)
@@ -232,7 +237,7 @@ mod tests {
                     .join(" "),
             );
         }
-        pool.close().await;
+        database.close().await;
 
         assert!(
             plans[0].contains("read_states_by_channel_id"),
@@ -249,22 +254,22 @@ mod tests {
     #[tokio::test]
     async fn existing_data_is_backed_up_encrypted_before_migrating() {
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
         sqlx::query("CREATE TABLE legacy (value TEXT)")
-            .execute(&pool)
+            .execute(database.writer())
             .await
             .unwrap();
         sqlx::query("INSERT INTO legacy VALUES ('kept')")
-            .execute(&pool)
+            .execute(database.writer())
             .await
             .unwrap();
 
-        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
             .await
             .unwrap();
-        pool.close().await;
+        database.close().await;
 
         let backup_path = outcome.backup_path.unwrap();
         assert!(backup_path.ends_with("pre-migration-1.db"));
@@ -278,7 +283,7 @@ mod tests {
             .await
             .unwrap();
         let value: String = sqlx::query_scalar("SELECT value FROM legacy")
-            .fetch_one(&backup)
+            .fetch_one(backup.writer())
             .await
             .unwrap();
         backup.close().await;
@@ -289,11 +294,11 @@ mod tests {
     async fn messages_written_before_nonces_were_stored_survive_the_migration() {
         const LAST_VERSION_WITHOUT_NONCES: i64 = 3;
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
         MIGRATOR
-            .run_to(LAST_VERSION_WITHOUT_NONCES, &pool)
+            .run_to(LAST_VERSION_WITHOUT_NONCES, database.writer())
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -306,19 +311,19 @@ mod tests {
              INSERT INTO messages (id, channel_id, author_id, content) \
              VALUES (4, 3, 1, 'hello'), (5, 3, 1, 'again');",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
 
-        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
             .await
             .unwrap();
         let messages: Vec<(i64, String, Option<String>)> =
             sqlx::query_as("SELECT id, content, nonce FROM messages ORDER BY id")
-                .fetch_all(&pool)
+                .fetch_all(database.writer())
                 .await
                 .unwrap();
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(
             outcome.applied_versions.first(),
@@ -334,11 +339,11 @@ mod tests {
     async fn guilds_created_before_named_roles_keep_their_everyone_role() {
         const LAST_VERSION_WITHOUT_MEMBER_ROLES: i64 = 4;
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
         MIGRATOR
-            .run_to(LAST_VERSION_WITHOUT_MEMBER_ROLES, &pool)
+            .run_to(LAST_VERSION_WITHOUT_MEMBER_ROLES, database.writer())
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -352,16 +357,16 @@ mod tests {
              INSERT INTO guild_members (guild_id, user_id, joined_at_unix_milliseconds) \
              VALUES (10, 1, 0), (10, 2, 0);",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
 
-        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
             .await
             .unwrap();
         let everyone: (String, i64, i64, i64) =
             sqlx::query_as("SELECT name, permissions, position, color FROM roles WHERE id = 10")
-                .fetch_one(&pool)
+                .fetch_one(database.writer())
                 .await
                 .unwrap();
         sqlx::raw_sql(
@@ -370,19 +375,19 @@ mod tests {
              INSERT INTO member_roles (guild_id, user_id, role_id) VALUES (10, 2, 11); \
              DELETE FROM guild_members WHERE guild_id = 10 AND user_id = 2;",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
         let assignments_after_leaving: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM member_roles")
-                .fetch_one(&pool)
+                .fetch_one(database.writer())
                 .await
                 .unwrap();
         let assignment_of_non_member =
             sqlx::query("INSERT INTO member_roles (guild_id, user_id, role_id) VALUES (10, 2, 11)")
-                .execute(&pool)
+                .execute(database.writer())
                 .await;
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(
             outcome.applied_versions.first(),
@@ -401,11 +406,11 @@ mod tests {
     async fn channels_created_before_overwrites_keep_their_messages_and_accept_overwrites() {
         const LAST_VERSION_WITHOUT_OVERWRITES: i64 = 5;
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
         MIGRATOR
-            .run_to(LAST_VERSION_WITHOUT_OVERWRITES, &pool)
+            .run_to(LAST_VERSION_WITHOUT_OVERWRITES, database.writer())
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -419,36 +424,36 @@ mod tests {
              VALUES (20, 10, 'text', 'general', 0); \
              INSERT INTO messages (id, channel_id, author_id, content) VALUES (30, 20, 1, 'hello');",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
 
-        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
             .await
             .unwrap();
         sqlx::query(
             "INSERT INTO channel_permission_overwrites (channel_id, target_id, target_kind, allow, deny) \
              VALUES (20, 10, 'role', 0, 2)",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
         let both_allowed_and_denied = sqlx::query(
             "INSERT INTO channel_permission_overwrites (channel_id, target_id, target_kind, allow, deny) \
              VALUES (20, 1, 'member', 2, 2)",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await;
         sqlx::query("DELETE FROM channels WHERE id = 20")
-            .execute(&pool)
+            .execute(database.writer())
             .await
             .unwrap();
         let overwrites_left: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM channel_permission_overwrites")
-                .fetch_one(&pool)
+                .fetch_one(database.writer())
                 .await
                 .unwrap();
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(
             outcome.applied_versions.first(),
@@ -468,11 +473,11 @@ mod tests {
     async fn bans_are_dropped_with_their_guild() {
         const LAST_VERSION_WITHOUT_BANS: i64 = 6;
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
         MIGRATOR
-            .run_to(LAST_VERSION_WITHOUT_BANS, &pool)
+            .run_to(LAST_VERSION_WITHOUT_BANS, database.writer())
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -482,11 +487,11 @@ mod tests {
              INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
              VALUES (10, 'Club', 1, 0), (11, 'Other', 1, 0);",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
 
-        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -494,15 +499,15 @@ mod tests {
              VALUES (10, 2, 'spam', 1, 0), (11, 2, '', 1, 0); \
              DELETE FROM guilds WHERE id = 11;",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
         let bans: Vec<(i64, String)> =
             sqlx::query_as("SELECT guild_id, reason FROM bans ORDER BY guild_id")
-                .fetch_all(&pool)
+                .fetch_all(database.writer())
                 .await
                 .unwrap();
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(
             outcome.applied_versions.first(),
@@ -519,11 +524,11 @@ mod tests {
     async fn audit_entries_follow_their_guild_and_outlive_their_actor() {
         const LAST_VERSION_WITHOUT_AUDIT_LOG: i64 = 7;
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
         MIGRATOR
-            .run_to(LAST_VERSION_WITHOUT_AUDIT_LOG, &pool)
+            .run_to(LAST_VERSION_WITHOUT_AUDIT_LOG, database.writer())
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -533,11 +538,11 @@ mod tests {
              INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
              VALUES (10, 'Club', 1, 0), (11, 'Other', 1, 0);",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
 
-        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -546,15 +551,15 @@ mod tests {
              DELETE FROM guilds WHERE id = 11; \
              DELETE FROM users WHERE id = 2;",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
         let entries: Vec<(i64, Option<i64>)> =
             sqlx::query_as("SELECT id, actor_id FROM audit_log ORDER BY id")
-                .fetch_all(&pool)
+                .fetch_all(database.writer())
                 .await
                 .unwrap();
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(
             outcome.applied_versions.first(),
@@ -571,11 +576,11 @@ mod tests {
     async fn guild_channels_and_their_messages_survive_and_conversations_follow_their_users() {
         const LAST_VERSION_WITHOUT_CONVERSATIONS: i64 = 8;
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
         MIGRATOR
-            .run_to(LAST_VERSION_WITHOUT_CONVERSATIONS, &pool)
+            .run_to(LAST_VERSION_WITHOUT_CONVERSATIONS, database.writer())
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -589,11 +594,11 @@ mod tests {
              INSERT INTO messages (id, channel_id, author_id, content) \
              VALUES (30, 20, 1, 'hello');",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
 
-        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -604,24 +609,24 @@ mod tests {
              VALUES (1, 2, 21); \
              DELETE FROM users WHERE id = 2;",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
         let guild_messages: Vec<(i64,)> =
             sqlx::query_as("SELECT id FROM messages WHERE channel_id = 20")
-                .fetch_all(&pool)
+                .fetch_all(database.writer())
                 .await
                 .unwrap();
         let participants: Vec<(i64,)> =
             sqlx::query_as("SELECT user_id FROM direct_message_participants")
-                .fetch_all(&pool)
+                .fetch_all(database.writer())
                 .await
                 .unwrap();
         let pairs: Vec<(i64,)> = sqlx::query_as("SELECT channel_id FROM direct_message_pairs")
-            .fetch_all(&pool)
+            .fetch_all(database.writer())
             .await
             .unwrap();
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(
             outcome.applied_versions.first(),
@@ -640,11 +645,11 @@ mod tests {
     async fn existing_guilds_and_channels_have_no_icon_and_theirs_go_with_them() {
         const LAST_VERSION_WITHOUT_ICONS: i64 = 13;
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
         MIGRATOR
-            .run_to(LAST_VERSION_WITHOUT_ICONS, &pool)
+            .run_to(LAST_VERSION_WITHOUT_ICONS, database.writer())
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -655,21 +660,21 @@ mod tests {
              INSERT INTO channels (id, guild_id, kind, name, position) \
              VALUES (20, 10, 'text', 'general', 0), (21, 10, 'text', 'random', 1);",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
 
-        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
             .await
             .unwrap();
         let guilds: Vec<(Option<i64>, i64)> =
             sqlx::query_as("SELECT icon_id, icon_is_animated FROM guilds ORDER BY id")
-                .fetch_all(&pool)
+                .fetch_all(database.writer())
                 .await
                 .unwrap();
         let channels: Vec<(Option<i64>,)> =
             sqlx::query_as("SELECT icon_id FROM channels ORDER BY id")
-                .fetch_all(&pool)
+                .fetch_all(database.writer())
                 .await
                 .unwrap();
         sqlx::raw_sql(
@@ -679,14 +684,14 @@ mod tests {
              DELETE FROM channels WHERE id = 20; \
              DELETE FROM guilds WHERE id = 11;",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
         let images: Vec<(i64,)> = sqlx::query_as("SELECT id FROM guild_images ORDER BY id")
-            .fetch_all(&pool)
+            .fetch_all(database.writer())
             .await
             .unwrap();
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(
             outcome.applied_versions.first(),
@@ -705,11 +710,11 @@ mod tests {
     async fn existing_users_have_no_profile_images_and_theirs_go_with_them() {
         const LAST_VERSION_WITHOUT_PROFILE_IMAGES: i64 = 10;
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
         MIGRATOR
-            .run_to(LAST_VERSION_WITHOUT_PROFILE_IMAGES, &pool)
+            .run_to(LAST_VERSION_WITHOUT_PROFILE_IMAGES, database.writer())
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -717,17 +722,17 @@ mod tests {
              created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
              (2, 'bob', 'Bob', 'bob@example.org', 'x', 0);",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
 
-        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
             .await
             .unwrap();
         let before: Vec<(Option<i64>, i64, Option<i64>, i64)> = sqlx::query_as(
             "SELECT avatar_id, avatar_is_animated, banner_id, banner_is_animated FROM users",
         )
-        .fetch_all(&pool)
+        .fetch_all(database.writer())
         .await
         .unwrap();
         sqlx::raw_sql(
@@ -736,14 +741,14 @@ mod tests {
              UPDATE users SET avatar_id = 50, avatar_is_animated = 1 WHERE id = 1; \
              DELETE FROM users WHERE id = 1;",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
         let images: Vec<(i64,)> = sqlx::query_as("SELECT id FROM profile_images")
-            .fetch_all(&pool)
+            .fetch_all(database.writer())
             .await
             .unwrap();
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(
             outcome.applied_versions.first(),
@@ -757,11 +762,11 @@ mod tests {
     async fn attachments_go_with_their_message_and_keep_their_channel_messages() {
         const LAST_VERSION_WITHOUT_ATTACHMENTS: i64 = 9;
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
         MIGRATOR
-            .run_to(LAST_VERSION_WITHOUT_ATTACHMENTS, &pool)
+            .run_to(LAST_VERSION_WITHOUT_ATTACHMENTS, database.writer())
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -774,11 +779,11 @@ mod tests {
              INSERT INTO messages (id, channel_id, author_id, content) \
              VALUES (30, 20, 1, 'hello'), (31, 20, 1, 'files');",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
 
-        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -788,18 +793,18 @@ mod tests {
              (41, 20, 1, NULL, 'b.txt', 'application/octet-stream', 3, 0); \
              DELETE FROM messages WHERE id = 31;",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
         let attachments: Vec<(i64,)> = sqlx::query_as("SELECT id FROM attachments ORDER BY id")
-            .fetch_all(&pool)
+            .fetch_all(database.writer())
             .await
             .unwrap();
         let messages: Vec<(i64,)> = sqlx::query_as("SELECT id FROM messages")
-            .fetch_all(&pool)
+            .fetch_all(database.writer())
             .await
             .unwrap();
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(
             outcome.applied_versions.first(),
@@ -817,11 +822,11 @@ mod tests {
     async fn existing_everyone_roles_may_react_and_reactions_go_with_their_message() {
         const LAST_VERSION_WITHOUT_REACTIONS: i64 = 11;
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
         MIGRATOR
-            .run_to(LAST_VERSION_WITHOUT_REACTIONS, &pool)
+            .run_to(LAST_VERSION_WITHOUT_REACTIONS, database.writer())
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -840,28 +845,28 @@ mod tests {
              INSERT INTO messages (id, channel_id, author_id, content) \
              VALUES (30, 20, 1, 'hello'), (31, 20, 1, 'again');",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
 
-        let outcome = migrate_with_backup(&pool, &directory.path().join("backups"))
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
             .await
             .unwrap();
         let permissions: Vec<(i64, i64)> =
             sqlx::query_as("SELECT id, permissions FROM roles ORDER BY id")
-                .fetch_all(&pool)
+                .fetch_all(database.writer())
                 .await
                 .unwrap();
         let overwrites: Vec<(i64, i64, i64, i64)> = sqlx::query_as(
             "SELECT channel_id, target_id, allow, deny FROM channel_permission_overwrites \
              ORDER BY channel_id, target_id",
         )
-        .fetch_all(&pool)
+        .fetch_all(database.writer())
         .await
         .unwrap();
         let pinned: Vec<(i64, Option<i64>)> =
             sqlx::query_as("SELECT id, pinned_at_unix_milliseconds FROM messages ORDER BY id")
-                .fetch_all(&pool)
+                .fetch_all(database.writer())
                 .await
                 .unwrap();
         sqlx::raw_sql(
@@ -869,19 +874,19 @@ mod tests {
              VALUES (30, 1, '👍'), (31, 1, '👍'); \
              DELETE FROM messages WHERE id = 31;",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
         let reactions: Vec<(i64,)> = sqlx::query_as("SELECT message_id FROM message_reactions")
-            .fetch_all(&pool)
+            .fetch_all(database.writer())
             .await
             .unwrap();
         let duplicate = sqlx::query(
             "INSERT INTO message_reactions (message_id, user_id, emoji) VALUES (30, 1, '👍')",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await;
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(
             outcome.applied_versions.first(),
@@ -910,21 +915,21 @@ mod tests {
     #[tokio::test]
     async fn a_database_from_a_newer_binary_is_refused_even_with_nothing_pending() {
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
         let backups = directory.path().join("backups");
-        migrate_with_backup(&pool, &backups).await.unwrap();
+        migrate_with_backup(&database, &backups).await.unwrap();
         sqlx::query(
             "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
              VALUES (999, 'from a newer binary', 1, x'00', 0)",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
 
-        let result = migrate_with_backup(&pool, &backups).await;
-        pool.close().await;
+        let result = migrate_with_backup(&database, &backups).await;
+        database.close().await;
         assert!(
             matches!(
                 result,
@@ -940,24 +945,24 @@ mod tests {
     #[tokio::test]
     async fn an_existing_backup_is_never_overwritten_and_blocks_the_migration() {
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
             .unwrap();
         sqlx::query("CREATE TABLE legacy (value TEXT)")
-            .execute(&pool)
+            .execute(database.writer())
             .await
             .unwrap();
         let backups = directory.path().join("backups");
         std::fs::create_dir_all(&backups).unwrap();
         std::fs::write(backups.join("pre-migration-1.db"), b"older backup").unwrap();
 
-        let result = migrate_with_backup(&pool, &backups).await;
+        let result = migrate_with_backup(&database, &backups).await;
         let has_users_table: bool =
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'users')")
-                .fetch_one(&pool)
+                .fetch_one(database.writer())
                 .await
                 .unwrap();
-        pool.close().await;
+        database.close().await;
 
         assert!(matches!(
             result,

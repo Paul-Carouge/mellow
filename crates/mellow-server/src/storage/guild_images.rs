@@ -1,7 +1,9 @@
 //! Guild and channel icons (migration 0014); their sealed files are in `attachment_files`.
 
 use mellow_protocol::{AuditChange, AuditChangeKey, GuildSummary, ProfileImage, Snowflake};
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::SqliteConnection;
+
+use super::Database;
 
 use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
 use crate::storage::guilds::{
@@ -113,14 +115,17 @@ fn with_icon_change(
 /// # Errors
 /// Fails on database errors; nothing is written then.
 pub(crate) async fn replace_guild_icon(
-    pool: &SqlitePool,
+    database: &Database,
     guild_id: Snowflake,
     new_image: Option<NewProfileImage>,
     audit: &NewAuditEntry,
     now_unix_milliseconds: u64,
 ) -> Result<IconChange<GuildSummary>, GuildStorageError> {
     let guild = to_integer(guild_id.raw())?;
-    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
+    let mut transaction = database
+        .writer()
+        .begin_with(BEGIN_WRITE_TRANSACTION)
+        .await?;
     let previous: Option<Option<i64>> =
         sqlx::query_scalar("SELECT icon_id FROM guilds WHERE id = ?")
             .bind(guild)
@@ -171,14 +176,17 @@ pub(crate) async fn replace_guild_icon(
 /// # Errors
 /// Fails on database errors; nothing is written then.
 pub(crate) async fn replace_channel_icon(
-    pool: &SqlitePool,
+    database: &Database,
     channel_id: Snowflake,
     new_image: Option<NewProfileImage>,
     audit: &NewAuditEntry,
     now_unix_milliseconds: u64,
 ) -> Result<IconChange<StoredChannel>, GuildStorageError> {
     let channel = to_integer(channel_id.raw())?;
-    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
+    let mut transaction = database
+        .writer()
+        .begin_with(BEGIN_WRITE_TRANSACTION)
+        .await?;
     let row: Option<(i64, Option<i64>)> = sqlx::query_as(
         "SELECT guild_id, icon_id FROM channels WHERE id = ? AND guild_id IS NOT NULL",
     )
@@ -218,7 +226,7 @@ pub(crate) async fn replace_channel_icon(
 }
 
 pub(crate) async fn find_guild_image(
-    pool: &SqlitePool,
+    database: &Database,
     id: Snowflake,
 ) -> Result<Option<StoredGuildImage>, GuildStorageError> {
     let Some(id) = lookup_integer(id) else {
@@ -227,17 +235,17 @@ pub(crate) async fn find_guild_image(
     let row: Option<GuildImageRow> =
         sqlx::query_as("SELECT id, guild_id, channel_id, still_id FROM guild_images WHERE id = ?")
             .bind(id)
-            .fetch_optional(pool)
+            .fetch_optional(database.readers())
             .await?;
     row.map(guild_image_from_row).transpose()
 }
 
 /// Every file id of every icon, still frames included, for the orphan sweep.
 pub(crate) async fn all_guild_image_file_ids(
-    pool: &SqlitePool,
+    database: &Database,
 ) -> Result<Vec<Snowflake>, GuildStorageError> {
     let rows: Vec<(i64, Option<i64>)> = sqlx::query_as("SELECT id, still_id FROM guild_images")
-        .fetch_all(pool)
+        .fetch_all(database.readers())
         .await?;
     let mut ids = Vec::with_capacity(rows.len() * 2);
     for (id, still_id) in rows {

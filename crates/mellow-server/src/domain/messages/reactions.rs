@@ -91,7 +91,7 @@ impl Messages {
         // Decided before the write, so publishing after the commit cannot fail (ADR-0015).
         let audience = self.audience(&channel).await?;
         match storage::add_reaction(
-            &self.pool,
+            &self.database,
             message_id,
             user_id,
             &emoji,
@@ -146,7 +146,9 @@ impl Messages {
             )
             .await?;
         let audience = self.audience(&channel).await?;
-        if storage::remove_reaction(&self.pool, channel.id(), message_id, user_id, &emoji).await? {
+        if storage::remove_reaction(&self.database, channel.id(), message_id, user_id, &emoji)
+            .await?
+        {
             publish(
                 &self.guilds,
                 &audience,
@@ -214,8 +216,13 @@ impl Messages {
             ReactionRemoval::Emoji(emoji) => ReactionSelection::OneEmoji(emoji),
             ReactionRemoval::All => ReactionSelection::All,
         };
-        if !storage::remove_reactions_of_message(&self.pool, message_id, selection, audit.as_ref())
-            .await?
+        if !storage::remove_reactions_of_message(
+            &self.database,
+            message_id,
+            selection,
+            audit.as_ref(),
+        )
+        .await?
         {
             return Ok(());
         }
@@ -260,7 +267,7 @@ impl Messages {
             .reaction_target(user_id, channel_id, message_id, emoji, ReactionAction::List)
             .await?;
         let mut users: Vec<PublicUser> =
-            storage::list_reacting_users(&self.pool, message_id, &emoji, query.after, limit)
+            storage::list_reacting_users(&self.database, message_id, &emoji, query.after, limit)
                 .await?
                 .into_iter()
                 .map(|user| PublicUser {
@@ -271,7 +278,7 @@ impl Messages {
                     banner: None,
                 })
                 .collect();
-        fill_profile_images(&self.pool, users.iter_mut()).await?;
+        fill_profile_images(&self.database, users.iter_mut()).await?;
         Ok(users)
     }
 }

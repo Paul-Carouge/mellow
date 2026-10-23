@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::storage::Database;
 use mellow_protocol::{
     AuditAction, AuditChange, AuditChangeKey, AuditLogEntry, AuditLogQuery, Ban, Channel,
     ChannelKind, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
@@ -12,7 +13,6 @@ use mellow_protocol::{
     ReorderRolesRequest, Role, SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest,
     UpdateGuildRequest, UpdateRoleRequest,
 };
-use sqlx::SqlitePool;
 
 use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::guild_rules::{
@@ -168,18 +168,22 @@ enum AffectedMembers {
 
 #[derive(Debug)]
 pub(crate) struct Guilds {
-    pool: SqlitePool,
+    database: Database,
     ids: Arc<SnowflakeGenerator>,
     events: Arc<EventHub>,
 }
 
 impl Guilds {
     pub(crate) fn new(
-        pool: SqlitePool,
+        database: Database,
         ids: Arc<SnowflakeGenerator>,
         events: Arc<EventHub>,
     ) -> Self {
-        Self { pool, ids, events }
+        Self {
+            database,
+            ids,
+            events,
+        }
     }
 
     /// What the audit log records for an action about to be written, in the same transaction.
@@ -223,7 +227,7 @@ impl Guilds {
         guild_id: Snowflake,
         user_id: Snowflake,
     ) -> Result<(Membership, Permissions), GuildError> {
-        let membership = guild_storage::find_membership(&self.pool, guild_id, user_id)
+        let membership = guild_storage::find_membership(&self.database, guild_id, user_id)
             .await?
             .ok_or(GuildError::NotFound)?;
         let permissions = guild_permissions(user_id, membership.owner_id, &membership.member_roles);
@@ -279,7 +283,7 @@ impl Guilds {
             },
         ];
         guild_storage::insert_guild(
-            &self.pool,
+            &self.database,
             &NewGuild {
                 id: guild_id,
                 name,
@@ -306,7 +310,7 @@ impl Guilds {
         &self,
         user_id: Snowflake,
     ) -> Result<Vec<GuildSummary>, GuildError> {
-        Ok(guild_storage::list_user_guilds(&self.pool, user_id).await?)
+        Ok(guild_storage::list_user_guilds(&self.database, user_id).await?)
     }
 
     pub(crate) async fn get_guild(
@@ -317,7 +321,7 @@ impl Guilds {
         let (membership, my_permissions) =
             self.membership_and_permissions(guild_id, user_id).await?;
         // Channels the member cannot view are left out entirely (ADR-0015).
-        let channels = guild_storage::list_guild_channels(&self.pool, guild_id)
+        let channels = guild_storage::list_guild_channels(&self.database, guild_id)
             .await?
             .into_iter()
             .filter(|channel| {
@@ -339,7 +343,7 @@ impl Guilds {
             icon: membership.guild_icon,
             owner_id: membership.owner_id,
             my_permissions,
-            roles: guild_storage::list_roles(&self.pool, guild_id).await?,
+            roles: guild_storage::list_roles(&self.database, guild_id).await?,
             channels,
         })
     }
@@ -360,7 +364,7 @@ impl Guilds {
         if let Some(name) = name {
             let audit =
                 self.audit_entry(guild_id, user_id, AuditAction::GuildUpdate, None, None)?;
-            match guild_storage::update_guild_name(&self.pool, guild_id, &name, &audit).await? {
+            match guild_storage::update_guild_name(&self.database, guild_id, &name, &audit).await? {
                 GuildRename::Renamed { icon } => self.events.publish_to_guild(
                     guild_id,
                     &GatewayEvent::GuildUpdate(GuildSummary {
@@ -387,7 +391,7 @@ impl Guilds {
         if membership.owner_id != user_id {
             return Err(GuildError::MissingPermissions);
         }
-        let member_ids = guild_storage::delete_guild(&self.pool, guild_id, user_id)
+        let member_ids = guild_storage::delete_guild(&self.database, guild_id, user_id)
             .await?
             .ok_or(GuildError::NotFound)?;
         for member_id in member_ids {
@@ -442,7 +446,7 @@ impl Guilds {
             None,
         )?;
         let channel = guild_storage::insert_channel_last(
-            &self.pool,
+            &self.database,
             &StoredChannel {
                 id: channel_id,
                 guild_id,
@@ -475,10 +479,10 @@ impl Guilds {
         user_id: Snowflake,
         channel_id: Snowflake,
     ) -> Result<(StoredChannel, Permissions), GuildError> {
-        let channel = guild_storage::find_guild_channel(&self.pool, channel_id)
+        let channel = guild_storage::find_guild_channel(&self.database, channel_id)
             .await?
             .ok_or(GuildError::NotFound)?;
-        let membership = guild_storage::find_membership(&self.pool, channel.guild_id, user_id)
+        let membership = guild_storage::find_membership(&self.database, channel.guild_id, user_id)
             .await?
             .ok_or(GuildError::NotFound)?;
         let permissions = channel_permissions(
@@ -501,7 +505,7 @@ impl Guilds {
         &self,
         channel: &StoredChannel,
     ) -> Result<ChannelAudience, GuildError> {
-        let overwrites = guild_storage::find_guild_channel(&self.pool, channel.id)
+        let overwrites = guild_storage::find_guild_channel(&self.database, channel.id)
             .await?
             .map(|current| current.permission_overwrites)
             .unwrap_or_default();
@@ -516,7 +520,7 @@ impl Guilds {
         guild_id: Snowflake,
         overwrites: &[PermissionOverwrite],
     ) -> Result<ChannelAudience, GuildError> {
-        let roles = guild_storage::list_roles(&self.pool, guild_id).await?;
+        let roles = guild_storage::list_roles(&self.database, guild_id).await?;
         let everyone_permissions = roles
             .iter()
             .find(|role| role.id == guild_id)
@@ -538,11 +542,11 @@ impl Guilds {
         roles: &[Role],
         overwrites: &[PermissionOverwrite],
     ) -> Result<HashSet<Snowflake>, GuildError> {
-        let owner_id = guild_storage::find_guild_owner_id(&self.pool, guild_id)
+        let owner_id = guild_storage::find_guild_owner_id(&self.database, guild_id)
             .await?
             .ok_or(GuildError::NotFound)?;
         Ok(
-            guild_storage::member_ids_with_role_ids(&self.pool, guild_id)
+            guild_storage::member_ids_with_role_ids(&self.database, guild_id)
                 .await?
                 .into_iter()
                 .filter(|(member_id, role_ids)| {
@@ -612,7 +616,7 @@ impl Guilds {
         user_id: Snowflake,
     ) -> Result<HashSet<Snowflake>, GuildError> {
         let mut visible = HashSet::new();
-        for summary in guild_storage::list_user_guilds(&self.pool, user_id).await? {
+        for summary in guild_storage::list_user_guilds(&self.database, user_id).await? {
             match self.get_guild(user_id, summary.id).await {
                 Ok(guild) => visible.extend(guild.channels.iter().map(|channel| channel.id)),
                 Err(GuildError::NotFound) => {}
@@ -669,7 +673,7 @@ impl Guilds {
             )?
         };
         let updated = guild_storage::update_channel_fields(
-            &self.pool,
+            &self.database,
             channel.id,
             name.as_deref(),
             topic.as_deref(),
@@ -707,7 +711,7 @@ impl Guilds {
             Some(channel.id),
             None,
         )?;
-        guild_storage::delete_channel(&self.pool, channel.id, &audit).await?;
+        guild_storage::delete_channel(&self.database, channel.id, &audit).await?;
         self.publish_to_audience(
             channel.guild_id,
             &audience,
@@ -784,7 +788,7 @@ impl Guilds {
             )?
         };
         guild_storage::set_overwrite(
-            &self.pool,
+            &self.database,
             channel.id,
             &wanted,
             held,
@@ -815,7 +819,7 @@ impl Guilds {
             .cloned()
             .ok_or(GuildError::NotFound)?;
         if current.kind == OverwriteKind::Role {
-            let role = guild_storage::list_roles(&self.pool, channel.guild_id)
+            let role = guild_storage::list_roles(&self.database, channel.guild_id)
                 .await?
                 .into_iter()
                 .find(|role| role.id == target_id);
@@ -849,7 +853,8 @@ impl Guilds {
             )?
         };
         // Refused if the overwrite gained a permission the member lacks since it was read.
-        if !guild_storage::delete_overwrite(&self.pool, channel.id, target_id, held, &audit).await?
+        if !guild_storage::delete_overwrite(&self.database, channel.id, target_id, held, &audit)
+            .await?
         {
             return Err(GuildError::Conflict);
         }
@@ -878,7 +883,7 @@ impl Guilds {
         user_id: Snowflake,
         guild_id: Snowflake,
     ) -> Result<RoleManager, GuildError> {
-        let membership = guild_storage::find_membership(&self.pool, guild_id, user_id)
+        let membership = guild_storage::find_membership(&self.database, guild_id, user_id)
             .await?
             .ok_or(GuildError::NotFound)?;
         Ok(RoleManager::new(
@@ -899,7 +904,7 @@ impl Guilds {
         let guild_id = channel.guild_id;
         match wanted.kind {
             OverwriteKind::Role => {
-                let role = guild_storage::list_roles(&self.pool, guild_id)
+                let role = guild_storage::list_roles(&self.database, guild_id)
                     .await?
                     .into_iter()
                     .find(|role| role.id == wanted.id)
@@ -913,7 +918,7 @@ impl Guilds {
                 }
             }
             OverwriteKind::Member => {
-                guild_storage::find_member(&self.pool, guild_id, wanted.id)
+                guild_storage::find_member(&self.database, guild_id, wanted.id)
                     .await?
                     .ok_or(GuildError::NotFound)?;
             }
@@ -928,10 +933,10 @@ impl Guilds {
         channel: &StoredChannel,
         viewers_before: &HashSet<Snowflake>,
     ) -> Result<Channel, GuildError> {
-        let updated = guild_storage::find_guild_channel(&self.pool, channel.id)
+        let updated = guild_storage::find_guild_channel(&self.database, channel.id)
             .await?
             .ok_or(GuildError::NotFound)?;
-        let roles = guild_storage::list_roles(&self.pool, channel.guild_id).await?;
+        let roles = guild_storage::list_roles(&self.database, channel.guild_id).await?;
         let viewers_after = self
             .viewer_ids(channel.guild_id, &roles, &updated.permission_overwrites)
             .await?;
@@ -963,7 +968,7 @@ impl Guilds {
         &self,
         channel: &StoredChannel,
     ) -> Result<HashSet<Snowflake>, GuildError> {
-        let roles = guild_storage::list_roles(&self.pool, channel.guild_id).await?;
+        let roles = guild_storage::list_roles(&self.database, channel.guild_id).await?;
         self.viewer_ids(channel.guild_id, &roles, &channel.permission_overwrites)
             .await
     }
@@ -1000,7 +1005,7 @@ impl Guilds {
             ..self.audit_entry(guild_id, user_id, AuditAction::InviteCreate, None, None)?
         };
         guild_storage::insert_invite(
-            &self.pool,
+            &self.database,
             &invite,
             MAXIMUM_ACTIVE_INVITES_PER_GUILD,
             &audit,
@@ -1026,7 +1031,7 @@ impl Guilds {
         self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_GUILD)
             .await?;
         let mut invites: Vec<GuildInvite> = guild_storage::list_usable_invites(
-            &self.pool,
+            &self.database,
             guild_id,
             now_unix_milliseconds,
             MAXIMUM_ACTIVE_INVITES_PER_GUILD,
@@ -1049,7 +1054,7 @@ impl Guilds {
         })
         .collect();
         fill_profile_images(
-            &self.pool,
+            &self.database,
             invites.iter_mut().map(|invite| &mut invite.creator),
         )
         .await
@@ -1064,7 +1069,7 @@ impl Guilds {
         user_id: Snowflake,
         code: &str,
     ) -> Result<(), GuildError> {
-        let guild_id = guild_storage::find_invite_guild_id(&self.pool, code)
+        let guild_id = guild_storage::find_invite_guild_id(&self.database, code)
             .await?
             .ok_or(GuildError::NotFound)?;
         self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_GUILD)
@@ -1077,7 +1082,7 @@ impl Guilds {
             }],
             ..self.audit_entry(guild_id, user_id, AuditAction::InviteDelete, None, None)?
         };
-        if guild_storage::delete_invite(&self.pool, guild_id, code, &audit).await? {
+        if guild_storage::delete_invite(&self.database, guild_id, code, &audit).await? {
             Ok(())
         } else {
             Err(GuildError::NotFound)
@@ -1091,23 +1096,27 @@ impl Guilds {
         code: &str,
         now_unix_milliseconds: u64,
     ) -> Result<Guild, GuildError> {
-        let (guild_id, is_new_member) =
-            match guild_storage::join_with_invite(&self.pool, code, user_id, now_unix_milliseconds)
-                .await?
-            {
-                JoinOutcome::Joined {
-                    guild_id,
-                    is_new_member,
-                } => (guild_id, is_new_member),
-                JoinOutcome::InvalidInvite => return Err(GuildError::InvalidInvite),
-                JoinOutcome::Banned => return Err(GuildError::Banned),
-            };
+        let (guild_id, is_new_member) = match guild_storage::join_with_invite(
+            &self.database,
+            code,
+            user_id,
+            now_unix_milliseconds,
+        )
+        .await?
+        {
+            JoinOutcome::Joined {
+                guild_id,
+                is_new_member,
+            } => (guild_id, is_new_member),
+            JoinOutcome::InvalidInvite => return Err(GuildError::InvalidInvite),
+            JoinOutcome::Banned => return Err(GuildError::Banned),
+        };
         if is_new_member {
             // Subscribed before the snapshot, so nothing between the two is missed.
             self.events.subscribe_user_to_guild(user_id, guild_id);
             // A kick or ban committed between the join and the subscription found nothing to
             // unsubscribe: check again, so the removed user hears nothing more.
-            if guild_storage::find_membership(&self.pool, guild_id, user_id)
+            if guild_storage::find_membership(&self.database, guild_id, user_id)
                 .await?
                 .is_none()
             {
@@ -1117,10 +1126,12 @@ impl Guilds {
         }
         let guild = self.get_guild(user_id, guild_id).await?;
         if is_new_member {
-            if let Some(member) = guild_storage::find_member(&self.pool, guild_id, user_id).await? {
+            if let Some(member) =
+                guild_storage::find_member(&self.database, guild_id, user_id).await?
+            {
                 let mut member = member_from_stored(member);
                 // The join is stored: announce it even without the pictures.
-                if let Err(error) = fill_profile_images(&self.pool, [&mut member.user]).await {
+                if let Err(error) = fill_profile_images(&self.database, [&mut member.user]).await {
                     tracing::warn!(%error, "cannot read a new member's pictures");
                 }
                 self.events
@@ -1149,14 +1160,14 @@ impl Guilds {
         guild_id: Snowflake,
         role_id: Snowflake,
     ) -> Result<(RoleManager, Role), GuildError> {
-        let membership = guild_storage::find_membership(&self.pool, guild_id, user_id)
+        let membership = guild_storage::find_membership(&self.database, guild_id, user_id)
             .await?
             .ok_or(GuildError::NotFound)?;
         let manager = RoleManager::new(user_id, membership.owner_id, &membership.member_roles);
         if !manager.permissions.contains(Permissions::MANAGE_ROLES) {
             return Err(GuildError::MissingPermissions);
         }
-        let role = guild_storage::list_roles(&self.pool, guild_id)
+        let role = guild_storage::list_roles(&self.database, guild_id)
             .await?
             .into_iter()
             .find(|role| role.id == role_id)
@@ -1187,7 +1198,7 @@ impl Guilds {
         let name = normalize_role_name(&request.name)?;
         let color = validate_role_color(request.color)?;
         let permissions = validate_known_permissions(request.permissions)?;
-        let membership = guild_storage::find_membership(&self.pool, guild_id, user_id)
+        let membership = guild_storage::find_membership(&self.database, guild_id, user_id)
             .await?
             .ok_or(GuildError::NotFound)?;
         let manager = RoleManager::new(user_id, membership.owner_id, &membership.member_roles);
@@ -1205,7 +1216,7 @@ impl Guilds {
             None,
         )?;
         let roles = guild_storage::insert_role_above_everyone(
-            &self.pool,
+            &self.database,
             guild_id,
             &Role {
                 id: role_id,
@@ -1293,7 +1304,7 @@ impl Guilds {
             )?
         };
         let updated = guild_storage::update_role_fields(
-            &self.pool,
+            &self.database,
             guild_id,
             role_id,
             &RoleFieldChanges {
@@ -1308,7 +1319,7 @@ impl Guilds {
         .ok_or(GuildError::NotFound)?;
         self.publish_roles(
             guild_id,
-            guild_storage::list_roles(&self.pool, guild_id).await?,
+            guild_storage::list_roles(&self.database, guild_id).await?,
         );
         if updated.permissions != role.permissions {
             self.resynchronize(guild_id, AffectedMembers::Everyone)
@@ -1325,10 +1336,10 @@ impl Guilds {
         guild_id: Snowflake,
         request: ReorderRolesRequest,
     ) -> Result<Vec<Role>, GuildError> {
-        let membership = guild_storage::find_membership(&self.pool, guild_id, user_id)
+        let membership = guild_storage::find_membership(&self.database, guild_id, user_id)
             .await?
             .ok_or(GuildError::NotFound)?;
-        let roles = guild_storage::list_roles(&self.pool, guild_id).await?;
+        let roles = guild_storage::list_roles(&self.database, guild_id).await?;
         // The manager's rank comes from the same read as the order the storage guard checks, so
         // a reordering committed between the two reads cannot leave them a stale, higher rank.
         let member_role_ids = membership.member_role_ids(guild_id);
@@ -1356,7 +1367,7 @@ impl Guilds {
         }
         let audit = self.audit_entry(guild_id, user_id, AuditAction::RolesReorder, None, None)?;
         let roles = guild_storage::reorder_roles(
-            &self.pool,
+            &self.database,
             guild_id,
             &current_order,
             &request.role_ids,
@@ -1387,12 +1398,12 @@ impl Guilds {
             Some(role_id),
             None,
         )?;
-        if !guild_storage::delete_role(&self.pool, guild_id, role_id, &audit).await? {
+        if !guild_storage::delete_role(&self.database, guild_id, role_id, &audit).await? {
             return Err(GuildError::NotFound);
         }
         self.publish_roles(
             guild_id,
-            guild_storage::list_roles(&self.pool, guild_id).await?,
+            guild_storage::list_roles(&self.database, guild_id).await?,
         );
         self.resynchronize(guild_id, AffectedMembers::Everyone)
             .await;
@@ -1421,7 +1432,7 @@ impl Guilds {
             Some(role_id),
         )?;
         let role_ids = guild_storage::add_member_role(
-            &self.pool,
+            &self.database,
             guild_id,
             member_id,
             role_id,
@@ -1457,7 +1468,7 @@ impl Guilds {
             Some(role_id),
         )?;
         let role_ids =
-            guild_storage::remove_member_role(&self.pool, guild_id, member_id, role_id, &audit)
+            guild_storage::remove_member_role(&self.database, guild_id, member_id, role_id, &audit)
                 .await?
                 .ok_or(GuildError::NotFound)?;
         self.publish_member_roles(guild_id, member_id, role_ids);
@@ -1490,13 +1501,13 @@ impl Guilds {
     ) -> Result<Vec<Member>, GuildError> {
         self.membership_and_permissions(guild_id, user_id).await?;
         let mut members: Vec<Member> =
-            guild_storage::list_members(&self.pool, guild_id, MAXIMUM_MEMBERS_LISTED)
+            guild_storage::list_members(&self.database, guild_id, MAXIMUM_MEMBERS_LISTED)
                 .await?
                 .into_iter()
                 .map(member_from_stored)
                 .collect();
         fill_profile_images(
-            &self.pool,
+            &self.database,
             members.iter_mut().map(|member| &mut member.user),
         )
         .await
@@ -1513,7 +1524,7 @@ impl Guilds {
         if membership.owner_id == user_id {
             return Err(GuildError::OwnerCannotLeave);
         }
-        guild_storage::delete_member(&self.pool, guild_id, user_id, None).await?;
+        guild_storage::delete_member(&self.database, guild_id, user_id, None).await?;
         self.publish_member_removed(guild_id, user_id);
         Ok(())
     }
@@ -1538,7 +1549,7 @@ impl Guilds {
         target_id: Snowflake,
         needed: Permissions,
     ) -> Result<(Membership, RoleManager), GuildError> {
-        let membership = guild_storage::find_membership(&self.pool, guild_id, user_id)
+        let membership = guild_storage::find_membership(&self.database, guild_id, user_id)
             .await?
             .ok_or(GuildError::NotFound)?;
         let manager = RoleManager::new(user_id, membership.owner_id, &membership.member_roles);
@@ -1563,7 +1574,8 @@ impl Guilds {
         guild_id: Snowflake,
         target_id: Snowflake,
     ) -> Result<bool, GuildError> {
-        let Some(target) = guild_storage::find_membership(&self.pool, guild_id, target_id).await?
+        let Some(target) =
+            guild_storage::find_membership(&self.database, guild_id, target_id).await?
         else {
             return Ok(false);
         };
@@ -1599,7 +1611,7 @@ impl Guilds {
             Some(target_id),
             None,
         )?;
-        guild_storage::delete_member(&self.pool, guild_id, target_id, Some(&audit)).await?;
+        guild_storage::delete_member(&self.database, guild_id, target_id, Some(&audit)).await?;
         self.publish_member_removed(guild_id, target_id);
         Ok(())
     }
@@ -1621,7 +1633,7 @@ impl Guilds {
         if !self
             .require_rank_below_moderator_if_member(&manager, &membership, guild_id, target_id)
             .await?
-            && !guild_storage::user_exists(&self.pool, target_id).await?
+            && !guild_storage::user_exists(&self.database, target_id).await?
         {
             return Err(GuildError::NotFound);
         }
@@ -1636,7 +1648,7 @@ impl Guilds {
             )?
         };
         let was_member = guild_storage::ban_and_remove_member(
-            &self.pool,
+            &self.database,
             guild_id,
             target_id,
             &reason,
@@ -1667,7 +1679,7 @@ impl Guilds {
             Some(target_id),
             None,
         )?;
-        if guild_storage::delete_ban(&self.pool, guild_id, target_id, &audit).await? {
+        if guild_storage::delete_ban(&self.database, guild_id, target_id, &audit).await? {
             Ok(())
         } else {
             Err(GuildError::NotFound)
@@ -1692,7 +1704,7 @@ impl Guilds {
             ChannelEntryFilter::Only(guild.channels.iter().map(|channel| channel.id).collect())
         };
         Ok(audit_log_storage::list_audit_entries(
-            &self.pool,
+            &self.database,
             guild_id,
             query.before,
             limit,
@@ -1710,7 +1722,7 @@ impl Guilds {
         self.require_member_permissions(guild_id, user_id, Permissions::BAN_MEMBERS)
             .await?;
         let mut bans: Vec<Ban> =
-            guild_storage::list_bans(&self.pool, guild_id, MAXIMUM_BANS_LISTED)
+            guild_storage::list_bans(&self.database, guild_id, MAXIMUM_BANS_LISTED)
                 .await?
                 .into_iter()
                 .map(|ban| Ban {
@@ -1725,7 +1737,7 @@ impl Guilds {
                     created_at_unix_milliseconds: ban.created_at_unix_milliseconds,
                 })
                 .collect();
-        fill_profile_images(&self.pool, bans.iter_mut().map(|ban| &mut ban.user))
+        fill_profile_images(&self.database, bans.iter_mut().map(|ban| &mut ban.user))
             .await
             .map_err(|error| GuildError::Internal(Box::new(error)))?;
         Ok(bans)
@@ -1739,12 +1751,12 @@ mod tests {
     use super::*;
     use crate::domain::account_rules::RegistrationMode;
     use crate::domain::accounts::Accounts;
-    use crate::domain::accounts::tests::{NOW, migrated_pool, register_request};
+    use crate::domain::accounts::tests::{NOW, migrated_database, register_request};
     use crate::domain::guild_rules::MAXIMUM_BAN_REASON_LENGTH;
 
     struct Fixture {
         _directory: tempfile::TempDir,
-        pool: SqlitePool,
+        database: Database,
         guilds: Guilds,
         events: Arc<EventHub>,
         owner: Snowflake,
@@ -1753,11 +1765,11 @@ mod tests {
     }
 
     async fn fixture() -> Fixture {
-        let (directory, pool) = migrated_pool().await;
+        let (directory, database) = migrated_database().await;
         let events = Arc::new(EventHub::default());
         let ids = Arc::new(SnowflakeGenerator::default());
         let accounts = Accounts::new(
-            pool.clone(),
+            database.clone(),
             RegistrationMode::Open,
             ids.clone(),
             Arc::default(),
@@ -1781,9 +1793,9 @@ mod tests {
         Fixture {
             _directory: directory,
             third,
-            guilds: Guilds::new(pool.clone(), ids, events.clone()),
+            guilds: Guilds::new(database.clone(), ids, events.clone()),
             events,
-            pool,
+            database,
             owner,
             other,
         }
@@ -1810,7 +1822,7 @@ mod tests {
             .create_guild(fixture.owner, create_request(" Mellow Dev "), NOW)
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(guild.name, "Mellow Dev");
         assert_eq!(guild.owner_id, fixture.owner);
@@ -1847,7 +1859,7 @@ mod tests {
             .guilds
             .create_channel(fixture.other, guild.id, text_channel("nope", None), NOW)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert!(matches!(outsider_view, Err(GuildError::NotFound)));
         assert_eq!(joined.my_permissions, Permissions::DEFAULT_EVERYONE);
@@ -1903,7 +1915,7 @@ mod tests {
             .guilds
             .join_with_invite(fixture.other, "doesnotexist", NOW)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert!(matches!(expired, Err(GuildError::InvalidInvite)));
         assert_eq!(members.len(), 2);
@@ -1962,7 +1974,7 @@ mod tests {
             .get_guild(fixture.owner, guild.id)
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(created.name, "off-topic");
         assert_eq!(created.position, 2);
@@ -2009,7 +2021,7 @@ mod tests {
             .await
             .unwrap();
         let my_guilds = fixture.guilds.list_my_guilds(fixture.other).await.unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert!(matches!(owner_leaves, Err(GuildError::OwnerCannotLeave)));
         assert_eq!(my_guilds, Vec::new());
@@ -2066,10 +2078,10 @@ mod tests {
             .await;
         let uses: i64 = sqlx::query_scalar("SELECT uses FROM invites WHERE code = ?")
             .bind(&single_use.code)
-            .fetch_one(&fixture.pool)
+            .fetch_one(fixture.database.writer())
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert!(matches!(second_use, Err(GuildError::InvalidInvite)));
         assert_eq!(uses, 1);
     }
@@ -2122,7 +2134,7 @@ mod tests {
             guilds.delete_channel(fixture.other, channel_id).await,
             Err(GuildError::MissingPermissions)
         ));
-        fixture.pool.close().await;
+        fixture.database.close().await;
     }
 
     #[tokio::test]
@@ -2173,7 +2185,7 @@ mod tests {
             .guilds
             .get_guild(fixture.owner, Snowflake::from_raw(u64::MAX))
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         for result in [cross_guild, nested_category, out_of_range_parent] {
             assert!(
@@ -2212,7 +2224,7 @@ mod tests {
             .guilds
             .create_channel(fixture.owner, guild.id, text_channel("overflow", None), NOW)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert!(matches!(one_too_many, Err(GuildError::LimitReached(_))));
     }
 
@@ -2307,7 +2319,7 @@ mod tests {
             .get_guild(fixture.other, guild.id)
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert_eq!(
             snapshot.my_role_ids,
             Vec::<Snowflake>::new(),
@@ -2365,7 +2377,7 @@ mod tests {
             .guilds
             .remove_member_role(fixture.owner, guild.id, fixture.other, channel_managers.id)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert!(matches!(after_removal, Err(GuildError::MissingPermissions)));
         assert!(matches!(removing_again, Err(GuildError::NotFound)));
     }
@@ -2466,7 +2478,7 @@ mod tests {
         let without_manage_roles = guilds
             .add_member_role(fixture.third, guild.id, fixture.third, helper.id)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_all_refused(vec![higher_role.map(|_| ()), own_role.map(|_| ())]);
         assert_all_refused(vec![
@@ -2515,7 +2527,7 @@ mod tests {
                 permissions_update(Permissions::DEFAULT_EVERYONE | Permissions::KICK_MEMBERS),
             )
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(created_below.position, 1);
         assert!(everyone_edit.is_ok(), "{everyone_edit:?}");
@@ -2561,7 +2573,7 @@ mod tests {
             )
             .await;
         let still_moderator_only = guilds.get_guild(other, guild.id).await.unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(administrators.position, 1);
         assert_all_refused(vec![give_to_self, take_away, delete]);
@@ -2656,7 +2668,7 @@ mod tests {
                 order_of(&[&moderator, &helper, &kickers, &admin]),
             )
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         let names = |roles: &[Role]| {
             roles
@@ -2716,7 +2728,7 @@ mod tests {
             )
             .unwrap();
         let outdated = guild_storage::reorder_roles(
-            &fixture.pool,
+            &fixture.database,
             guild.id,
             &seen,
             &[admin.id, helper.id, moderator.id],
@@ -2724,11 +2736,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let roles = guild_storage::list_roles(&fixture.pool, guild.id)
+        let roles = guild_storage::list_roles(&fixture.database, guild.id)
             .await
             .unwrap();
         let audit_log = audit_log_storage::list_audit_entries(
-            &fixture.pool,
+            &fixture.database,
             guild.id,
             None,
             100,
@@ -2736,7 +2748,7 @@ mod tests {
         )
         .await
         .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert_eq!(outdated, None);
         assert!(
             audit_log.iter().all(|entry| entry.id != audit.id),
@@ -2831,7 +2843,7 @@ mod tests {
             .await
             .unwrap()
             .1;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(updated.permission_overwrites.len(), 1);
         assert!(!member_muted.contains(Permissions::SEND_MESSAGES));
@@ -2905,7 +2917,7 @@ mod tests {
                 NOW,
             )
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert!(matches!(hidden, Err(GuildError::NotFound)));
         assert!(revealed.is_ok());
@@ -3011,7 +3023,7 @@ mod tests {
             event_types(&mut owner_events),
             event_types(&mut other_events),
         );
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         let types = |names: &[&str]| {
             names
@@ -3058,7 +3070,7 @@ mod tests {
             .delete_channel(fixture.owner, staff.id)
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert_eq!(event_types(&mut owner_events), ["CHANNEL_DELETE"]);
         assert_eq!(event_types(&mut other_events), Vec::<String>::new());
     }
@@ -3121,7 +3133,7 @@ mod tests {
                 ),
             )
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert!(
             matches!(before, Err(GuildError::MissingPermissions)),
             "{before:?}"
@@ -3169,7 +3181,7 @@ mod tests {
             .delete_permission_overwrite(fixture.owner, general, fixture.third)
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert!(
             matches!(without_the_permission, Err(GuildError::MissingPermissions)),
             "{without_the_permission:?}"
@@ -3220,7 +3232,7 @@ mod tests {
             .guilds
             .set_permission_overwrite(fixture.owner, general, guild.id, hide_from_everyone())
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert!(replace_at_quota.is_ok(), "{replace_at_quota:?}");
         assert!(matches!(one_too_many, Err(GuildError::LimitReached(_))));
     }
@@ -3256,7 +3268,7 @@ mod tests {
                 NOW,
             )
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert!(matches!(
             in_hidden_category,
             Err(GuildError::InvalidInput(GuildRuleViolation::Parent))
@@ -3287,7 +3299,7 @@ mod tests {
             .await
             .unwrap();
         let kick_higher = guilds.kick_member(other, guild.id, fixture.third).await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert!(matches!(kicked_snapshot, Err(GuildError::NotFound)));
         assert_all_refused(vec![kick_owner, without_kick, kick_higher]);
@@ -3355,7 +3367,7 @@ mod tests {
         let rejoin_after_unban = guilds
             .join_with_invite(fixture.third, &invite.code, NOW)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert!(
             matches!(banned_snapshot, Err(GuildError::NotFound)),
@@ -3412,7 +3424,7 @@ mod tests {
         let self_ban = guilds
             .ban_member(other, guild.id, other, ban_request(""), NOW)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert_all_refused(vec![equal_rank, owner]);
         assert!(matches!(
             self_ban,
@@ -3444,7 +3456,7 @@ mod tests {
             .guilds
             .join_with_invite(fixture.other, &invite.code, NOW)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert!(matches!(joined, Err(GuildError::Banned)));
     }
 
@@ -3517,7 +3529,7 @@ mod tests {
             .list_audit_log(owner, guild.id, AuditLogQuery::default())
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_all_refused(vec![refused.map(|_| ())]);
         assert_eq!(
@@ -3570,7 +3582,7 @@ mod tests {
             .await
             .unwrap();
         let bad_limit = page(None, Some(0)).await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(newest.len(), 1);
         assert_eq!(older.len(), 3, "two more channels and the invite");
@@ -3692,7 +3704,7 @@ mod tests {
         assert_eq!(audit_actions(&fixture, guild.id).await.len(), before);
         assert!(matches!(not_held, Err(GuildError::NotFound)));
         assert!(matches!(not_banned, Err(GuildError::NotFound)));
-        fixture.pool.close().await;
+        fixture.database.close().await;
     }
 
     #[tokio::test]
@@ -3748,7 +3760,7 @@ mod tests {
             .list_audit_log(owner, guild.id, AuditLogQuery::default())
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(
             actions(&entries[..9]),
@@ -3836,7 +3848,7 @@ mod tests {
             .list_audit_log(owner, guild.id, AuditLogQuery::default())
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         let about = |entries: &[AuditLogEntry], channel_id: Snowflake| {
             entries.iter().any(|entry| {
@@ -3879,7 +3891,7 @@ mod tests {
         let take = guilds
             .remove_member_role(owner, guild.id, fixture.other, guild.id)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
         for refused in [rename.map(|_| ()), delete, give, take] {
             assert!(
                 matches!(
@@ -3958,7 +3970,7 @@ mod tests {
             .guilds
             .add_member_role(fixture.owner, guild.id, fixture.third, own.id)
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert!(matches!(
             unknown_bits,
             Err(GuildError::InvalidInput(
@@ -4030,7 +4042,7 @@ mod tests {
                 NOW,
             )
             .await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert!(matches!(one_too_many, Err(GuildError::LimitReached(_))));
     }
 
@@ -4072,7 +4084,7 @@ mod tests {
             .await
             .unwrap();
         let other_sees = fixture.guilds.list_my_guilds(fixture.other).await.unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert!(matches!(refused[0], Err(GuildError::MissingPermissions)));
         assert!(matches!(refused[1], Err(GuildError::NotFound)));
         assert!(matches!(refused[2], Err(GuildError::InvalidInput(_))));
@@ -4123,7 +4135,7 @@ mod tests {
         let again = fixture.guilds.delete_guild(fixture.owner, guild.id).await;
         let snapshot = fixture.guilds.get_guild(fixture.owner, guild.id).await;
         let other_guilds = fixture.guilds.list_my_guilds(fixture.other).await.unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
         assert!(matches!(
             by_administrator,
             Err(GuildError::MissingPermissions)
@@ -4176,7 +4188,7 @@ mod tests {
         let listed_later = list(fixture.owner, NOW + 120 * SECOND).await.unwrap();
         let by_member = list(fixture.other, NOW).await;
         let by_outsider = list(fixture.third, NOW).await;
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(listed_now.len(), 2);
         assert_eq!(listed_now[0].code, expiring.code, "newest first");
@@ -4215,7 +4227,7 @@ mod tests {
             .list_audit_log(fixture.owner, guild.id, AuditLogQuery::default())
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert!(matches!(by_member, Err(GuildError::MissingPermissions)));
         assert!(matches!(by_outsider, Err(GuildError::NotFound)));
@@ -4266,7 +4278,7 @@ mod tests {
             .list_audit_log(fixture.other, guild.id, AuditLogQuery::default())
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         let created = seen_by_auditor
             .iter()
@@ -4301,14 +4313,14 @@ mod tests {
                 .unwrap()
         };
         let rename = |name: &'static str, audit: NewAuditEntry| {
-            let pool = fixture.pool.clone();
-            async move { guild_storage::update_guild_name(&pool, guild.id, name, &audit).await }
+            let database = fixture.database.clone();
+            async move { guild_storage::update_guild_name(&database, guild.id, name, &audit).await }
         };
         let first = rename("Book club", audit()).await.unwrap();
         let second = rename("Reading room", audit()).await.unwrap();
         let unchanged = rename("Reading room", audit()).await.unwrap();
         let missing = guild_storage::update_guild_name(
-            &fixture.pool,
+            &fixture.database,
             Snowflake::from_raw(42),
             "Nowhere",
             &audit(),
@@ -4320,7 +4332,7 @@ mod tests {
             .list_audit_log(fixture.owner, guild.id, AuditLogQuery::default())
             .await
             .unwrap();
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         assert_eq!(
             [first, second, unchanged, missing],
@@ -4358,14 +4370,14 @@ mod tests {
             .await
             .unwrap();
         let (conversation, _) = crate::storage::direct_messages::find_or_create_one_to_one(
-            &fixture.pool,
+            &fixture.database,
             fixture.owner,
             fixture.other,
             Snowflake::from_raw(900),
         )
         .await
         .unwrap();
-        let pool = &fixture.pool;
+        let database = &fixture.database;
         for (message_id, channel_id) in [(901, general), (902, conversation)] {
             sqlx::query(
                 "INSERT INTO messages (id, channel_id, author_id, content) VALUES (?, ?, ?, 'hi')",
@@ -4373,7 +4385,7 @@ mod tests {
             .bind(message_id)
             .bind(i64::try_from(channel_id.raw()).unwrap())
             .bind(i64::try_from(fixture.owner.raw()).unwrap())
-            .execute(pool)
+            .execute(database.writer())
             .await
             .unwrap();
             sqlx::query(
@@ -4382,7 +4394,7 @@ mod tests {
             .bind(i64::try_from(fixture.other.raw()).unwrap())
             .bind(i64::try_from(channel_id.raw()).unwrap())
             .bind(message_id)
-            .execute(pool)
+            .execute(database.writer())
             .await
             .unwrap();
         }
@@ -4393,11 +4405,11 @@ mod tests {
         )
         .bind(i64::try_from(general.raw()).unwrap())
         .bind(i64::try_from(fixture.owner.raw()).unwrap())
-        .execute(pool)
+        .execute(database.writer())
         .await
         .unwrap();
 
-        let member_ids = guild_storage::delete_guild(pool, guild.id, fixture.owner)
+        let member_ids = guild_storage::delete_guild(database, guild.id, fixture.owner)
             .await
             .unwrap();
         let guild_id = i64::try_from(guild.id.raw()).unwrap();
@@ -4416,7 +4428,7 @@ mod tests {
         ] {
             let count: i64 = sqlx::query_scalar(query)
                 .bind(guild_id)
-                .fetch_one(pool)
+                .fetch_one(database.writer())
                 .await
                 .unwrap();
             left_in_guild.push(count);
@@ -4430,12 +4442,12 @@ mod tests {
         ] {
             let count: i64 = sqlx::query_scalar(query)
                 .bind(i64::try_from(conversation.raw()).unwrap())
-                .fetch_one(pool)
+                .fetch_one(database.writer())
                 .await
                 .unwrap();
             kept_in_conversation.push(count);
         }
-        fixture.pool.close().await;
+        fixture.database.close().await;
 
         let mut member_ids = member_ids.unwrap();
         member_ids.sort_unstable();

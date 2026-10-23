@@ -2,8 +2,9 @@
 
 use std::collections::HashMap;
 
+use super::Database;
+
 use mellow_protocol::Snowflake;
-use sqlx::SqlitePool;
 
 use crate::storage::messages::{
     MessageStorageError, json_array_of_ids, lookup_integer, to_id, to_integer,
@@ -46,7 +47,7 @@ fn attachment_from_row(row: AttachmentRow) -> Result<StoredAttachment, MessageSt
 }
 
 pub(crate) async fn insert_attachment(
-    pool: &SqlitePool,
+    database: &Database,
     attachment: &NewAttachment,
 ) -> Result<(), MessageStorageError> {
     sqlx::query(
@@ -61,14 +62,14 @@ pub(crate) async fn insert_attachment(
     .bind(&attachment.content_type)
     .bind(to_integer(attachment.size_bytes)?)
     .bind(to_integer(attachment.created_at_unix_milliseconds)?)
-    .execute(pool)
+    .execute(database.writer())
     .await?;
     Ok(())
 }
 
 /// Points the row at its compressed file (ADR-0021); `false` when the attachment is gone.
 pub(crate) async fn update_attachment_file(
-    pool: &SqlitePool,
+    database: &Database,
     attachment_id: Snowflake,
     file_name: &str,
     content_type: &str,
@@ -81,13 +82,13 @@ pub(crate) async fn update_attachment_file(
     .bind(content_type)
     .bind(to_integer(size_bytes)?)
     .bind(to_integer(attachment_id.raw())?)
-    .execute(pool)
+    .execute(database.writer())
     .await?;
     Ok(updated.rows_affected() > 0)
 }
 
 pub(crate) async fn find_attachment(
-    pool: &SqlitePool,
+    database: &Database,
     attachment_id: Snowflake,
 ) -> Result<Option<StoredAttachment>, MessageStorageError> {
     let Some(attachment_id) = lookup_integer(attachment_id) else {
@@ -98,14 +99,14 @@ pub(crate) async fn find_attachment(
          FROM attachments WHERE id = ?",
     )
     .bind(attachment_id)
-    .fetch_optional(pool)
+    .fetch_optional(database.readers())
     .await?;
     row.map(attachment_from_row).transpose()
 }
 
 /// The attachments of each message, in upload order; messages without any are left out.
 pub(crate) async fn attachments_of_messages(
-    pool: &SqlitePool,
+    database: &Database,
     message_ids: &[Snowflake],
 ) -> Result<HashMap<Snowflake, Vec<StoredAttachment>>, MessageStorageError> {
     let mut by_message: HashMap<Snowflake, Vec<StoredAttachment>> = HashMap::new();
@@ -118,7 +119,7 @@ pub(crate) async fn attachments_of_messages(
          FROM attachments WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY id",
     )
     .bind(ids)
-    .fetch_all(pool)
+    .fetch_all(database.readers())
     .await?;
     for row in rows {
         let attachment = attachment_from_row(row)?;
@@ -132,7 +133,7 @@ pub(crate) async fn attachments_of_messages(
 /// Uploads never sent in a message: their rows go, and their ids are returned so their files
 /// can go too.
 pub(crate) async fn delete_unlinked_before(
-    pool: &SqlitePool,
+    database: &Database,
     cutoff_unix_milliseconds: u64,
 ) -> Result<Vec<Snowflake>, MessageStorageError> {
     let rows: Vec<(i64,)> = sqlx::query_as(
@@ -140,31 +141,31 @@ pub(crate) async fn delete_unlinked_before(
          RETURNING id",
     )
     .bind(to_integer(cutoff_unix_milliseconds)?)
-    .fetch_all(pool)
+    .fetch_all(database.writer())
     .await?;
     rows.into_iter().map(|(id,)| to_id(id)).collect()
 }
 
 /// Every attachment id, for the sweep of files whose row is gone (one query per sweep).
 pub(crate) async fn all_attachment_ids(
-    pool: &SqlitePool,
+    database: &Database,
 ) -> Result<Vec<Snowflake>, MessageStorageError> {
     let rows: Vec<(i64,)> = sqlx::query_as("SELECT id FROM attachments")
-        .fetch_all(pool)
+        .fetch_all(database.readers())
         .await?;
     rows.into_iter().map(|(id,)| to_id(id)).collect()
 }
 
 /// What a user's uploads take on disk, sent or not, for the per-user quota.
 pub(crate) async fn stored_bytes_of_uploader(
-    pool: &SqlitePool,
+    database: &Database,
     uploader_id: Snowflake,
 ) -> Result<u64, MessageStorageError> {
     let (total,): (i64,) = sqlx::query_as(
         "SELECT COALESCE(SUM(size_bytes), 0) FROM attachments WHERE uploader_id = ?",
     )
     .bind(to_integer(uploader_id.raw())?)
-    .fetch_one(pool)
+    .fetch_one(database.readers())
     .await?;
     u64::try_from(total).map_err(|_| MessageStorageError::IntegerOutOfRange)
 }

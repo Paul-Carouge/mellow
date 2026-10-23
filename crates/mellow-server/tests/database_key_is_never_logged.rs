@@ -44,14 +44,14 @@ async fn opening_the_database_never_logs_the_key_even_at_trace_level() {
         .init();
 
     let directory = tempfile::tempdir().unwrap();
-    let pool = open_encrypted_database(
+    let database = open_encrypted_database(
         &directory.path().join("mellow.db"),
         &DatabaseKey::from_bytes([KEY_BYTE; KEY_LENGTH_BYTES]),
     )
     .await
     .unwrap();
-    sqlx::query("SELECT 1").execute(&pool).await.unwrap();
-    pool.close().await;
+    database.check_that_readers_answer().await.unwrap();
+    database.close().await;
     tracing::info!("capture sentinel");
 
     let logs = String::from_utf8_lossy(&captured_logs.0.lock().unwrap()).into_owned();
