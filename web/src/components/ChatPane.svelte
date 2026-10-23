@@ -897,8 +897,10 @@
     isDanger={!isPinned}
     onclose={() => (pinning = null)}
     onconfirm={() => {
+      // Read before clearing: `message` and `isPinned` follow `pinning` and would read null after.
+      const [target, shouldPin] = [message, isPinned];
       pinning = null;
-      void confirmPin(message, isPinned);
+      void confirmPin(target, shouldPin);
     }}
     fallbackFocus={focusComposer}
   />
@@ -914,8 +916,10 @@
     isDanger
     onclose={() => (removingReactionsOf = null)}
     onconfirm={() => {
+      // Read before clearing: `message` follows `removingReactionsOf` and would read null after.
+      const target = message;
       removingReactionsOf = null;
-      void removeAllReactions(message);
+      void removeAllReactions(target);
     }}
     fallbackFocus={focusComposer}
   />
@@ -939,8 +943,10 @@
     {message}
     onclose={() => (deletingMessage = null)}
     onconfirm={() => {
+      // Read before clearing: `message` follows `deletingMessage` and would read null after.
+      const target = message;
       deletingMessage = null;
-      void deleteMessage(message);
+      void deleteMessage(target);
     }}
     fallbackFocus={focusComposer}
   />
