@@ -913,6 +913,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mentions_go_with_their_message_and_their_channel() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let writer = database.writer();
+        for statement in [
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'owner', 'Owner', 'o@example.org', 'h', 0)",
+            "INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Guild', 1, 0)",
+            "INSERT INTO channels (id, guild_id, kind, name, topic, parent_id, position) \
+             VALUES (20, 10, 'text', 'general', '', NULL, 0)",
+            "INSERT INTO messages (id, channel_id, author_id, content) \
+             VALUES (30, 20, 1, 'a'), (31, 20, 1, 'b')",
+            "INSERT INTO message_mentions (user_id, channel_id, message_id) \
+             VALUES (1, 20, 30), (1, 20, 31)",
+        ] {
+            sqlx::query(statement).execute(writer).await.unwrap();
+        }
+        let remaining = || async {
+            sqlx::query_scalar::<_, i64>("SELECT message_id FROM message_mentions ORDER BY 1")
+                .fetch_all(writer)
+                .await
+                .unwrap()
+        };
+
+        sqlx::query("DELETE FROM messages WHERE id = 30")
+            .execute(writer)
+            .await
+            .unwrap();
+        let after_message_deletion = remaining().await;
+        sqlx::query("DELETE FROM channels WHERE id = 20")
+            .execute(writer)
+            .await
+            .unwrap();
+        let after_channel_deletion = remaining().await;
+        database.close().await;
+
+        assert_eq!(after_message_deletion, [31]);
+        assert_eq!(after_channel_deletion, Vec::<i64>::new());
+    }
+
+    #[tokio::test]
     async fn every_change_to_who_sees_what_bumps_the_guild_permission_version() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())

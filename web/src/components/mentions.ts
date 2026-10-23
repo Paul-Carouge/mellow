@@ -14,11 +14,12 @@ export type MentionablePeople = ReadonlyMap<string, PublicUser>;
 const MAXIMUM_NAME_LENGTH = 32;
 /**
  * An "@" at the start or after a space, then a name's characters (dots allowed inside), one more
- * for a closing full stop. Bounded and followed by no name character, so a long run of dots or
+ * for a closing full stop. `Alphabetic` keeps combining vowel signs in names, as the server's
+ * `char::is_alphanumeric` does. Bounded and followed by no name character, so a long run of dots or
  * letters is never a mention and costs a constant amount of work.
  */
 const MENTION_CANDIDATE = new RegExp(
-  `(?<=^|\\s)@([\\p{L}\\p{N}_.]{1,${MAXIMUM_NAME_LENGTH + 1}})(?![\\p{L}\\p{N}_.])`,
+  `(?<=^|\\s)@([\\p{Alphabetic}\\p{N}_.]{1,${MAXIMUM_NAME_LENGTH + 1}})(?![\\p{Alphabetic}\\p{N}_.])`,
   "gu",
 );
 
