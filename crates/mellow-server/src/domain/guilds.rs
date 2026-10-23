@@ -153,22 +153,18 @@ fn guild_seen_by_member(
     }
 }
 
-/// `member_id`'s roles in the snapshot, `@everyone` included, by position; `None` if they are not
-/// a member.
-fn member_roles(
+/// The roles of a member holding `role_ids`, `@everyone` included, by position.
+fn roles_with_ids_and_everyone(
     guild_id: Snowflake,
     snapshot: &StoredPermissionSnapshot,
-    member_id: Snowflake,
-) -> Option<Vec<Role>> {
-    let role_ids = snapshot.role_ids_by_member.get(&member_id)?;
-    Some(
-        snapshot
-            .roles
-            .iter()
-            .filter(|role| role.id == guild_id || role_ids.contains(&role.id))
-            .cloned()
-            .collect(),
-    )
+    role_ids: &[Snowflake],
+) -> Vec<Role> {
+    snapshot
+        .roles
+        .iter()
+        .filter(|role| role.id == guild_id || role_ids.contains(&role.id))
+        .cloned()
+        .collect()
 }
 
 /// The members who can view a channel with these overwrites.
@@ -179,20 +175,18 @@ fn viewer_ids(
 ) -> HashSet<Snowflake> {
     snapshot
         .role_ids_by_member
-        .keys()
-        .filter(|member_id| {
-            member_roles(guild_id, snapshot, **member_id).is_some_and(|member_roles| {
-                channel_permissions(
-                    **member_id,
-                    snapshot.owner_id,
-                    guild_id,
-                    &member_roles,
-                    overwrites,
-                )
-                .contains(Permissions::VIEW_CHANNEL)
-            })
+        .iter()
+        .filter(|(member_id, role_ids)| {
+            channel_permissions(
+                **member_id,
+                snapshot.owner_id,
+                guild_id,
+                &roles_with_ids_and_everyone(guild_id, snapshot, role_ids),
+                overwrites,
+            )
+            .contains(Permissions::VIEW_CHANNEL)
         })
-        .copied()
+        .map(|(member_id, _)| *member_id)
         .collect()
 }
 
@@ -282,9 +276,12 @@ impl Guilds {
         &self,
         guild_id: Snowflake,
     ) -> Result<Arc<StoredPermissionSnapshot>, GuildError> {
-        let version = guild_storage::permission_version(&self.database, guild_id)
-            .await?
-            .ok_or(GuildError::NotFound)?;
+        let Some(version) = guild_storage::permission_version(&self.database, guild_id).await?
+        else {
+            // Deleted, maybe by another process: drop what a racing load may have stored.
+            self.cached_permission_snapshots().remove(&guild_id);
+            return Err(GuildError::NotFound);
+        };
         let cached = self
             .cached_permission_snapshots()
             .get(&guild_id)
@@ -300,6 +297,8 @@ impl Guilds {
         );
         let mut snapshots = self.cached_permission_snapshots();
         // A concurrent load may have stored a newer version meanwhile: keep the newest.
+        // shortcut: one entry per guild ever used, never evicted (one racing a deletion is dropped
+        // at the next use); add an LRU bound if memory on large instances shows the need.
         if snapshots
             .get(&guild_id)
             .is_none_or(|cached| cached.version < loaded.version)
@@ -642,15 +641,14 @@ impl Guilds {
         guild_id: Snowflake,
         overwrites: &[PermissionOverwrite],
     ) -> Result<ChannelAudience, GuildError> {
-        let snapshot = self.permission_snapshot(guild_id).await?;
-        let everyone_permissions = snapshot
-            .roles
-            .iter()
-            .find(|role| role.id == guild_id)
-            .map_or(Permissions::empty(), |everyone| everyone.permissions);
+        // One primary-key read, so public channels never load the member list.
+        let everyone_permissions = guild_storage::everyone_permissions(&self.database, guild_id)
+            .await?
+            .unwrap_or(Permissions::empty());
         if is_visible_to_every_member(everyone_permissions, overwrites) {
             return Ok(ChannelAudience::EveryMember);
         }
+        let snapshot = self.permission_snapshot(guild_id).await?;
         Ok(ChannelAudience::Members(viewer_ids(
             guild_id, &snapshot, overwrites,
         )))
@@ -722,14 +720,15 @@ impl Guilds {
         Ok(user_ids
             .iter()
             .filter_map(|user_id| {
-                let member_roles = member_roles(guild_id, &snapshot, *user_id)?;
+                let role_ids = snapshot.role_ids_by_member.get(user_id)?;
+                let roles_of_member = roles_with_ids_and_everyone(guild_id, &snapshot, role_ids);
                 Some((
                     *user_id,
                     guild_seen_by_member(
                         *user_id,
                         summary.clone(),
                         snapshot.owner_id,
-                        &member_roles,
+                        &roles_of_member,
                         snapshot.roles.clone(),
                         &channels,
                     ),
@@ -3169,6 +3168,88 @@ mod tests {
             Permissions::empty(),
             Permissions::VIEW_CHANNEL,
         )
+    }
+
+    /// The guild of each `GUILD_CREATE` received, in order.
+    fn received_guilds(
+        events: &mut tokio::sync::mpsc::Receiver<crate::events::SharedEvent>,
+    ) -> Vec<Guild> {
+        let mut guilds = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let GatewayEvent::GuildCreate(guild) =
+                serde_json::from_str(&event.payload_json).unwrap()
+            {
+                guilds.push(*guild);
+            }
+        }
+        guilds
+    }
+
+    #[tokio::test]
+    async fn a_resynchronized_member_receives_exactly_what_get_guild_answers_them() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        let general = guild.channels[1].id;
+        let guilds = &fixture.guilds;
+        let viewers = guilds
+            .create_role(
+                fixture.owner,
+                guild.id,
+                role_request("Viewers", Permissions::empty()),
+                NOW,
+            )
+            .await
+            .unwrap();
+        guilds
+            .add_member_role(fixture.owner, guild.id, fixture.other, viewers.id)
+            .await
+            .unwrap();
+        // #general is hidden from everyone but Viewers; the other channels stay public.
+        for (target, request) in [
+            (guild.id, hide_from_everyone()),
+            (
+                viewers.id,
+                overwrite_request(
+                    OverwriteKind::Role,
+                    Permissions::VIEW_CHANNEL,
+                    Permissions::empty(),
+                ),
+            ),
+        ] {
+            guilds
+                .set_permission_overwrite(fixture.owner, general, target, request)
+                .await
+                .unwrap();
+        }
+        let [mut owner_events, mut other_events] = owner_and_other_sessions(&fixture, guild.id);
+
+        // Changing a role's permissions resynchronizes every online member.
+        guilds
+            .update_role(
+                fixture.owner,
+                guild.id,
+                viewers.id,
+                UpdateRoleRequest {
+                    name: None,
+                    color: None,
+                    permissions: Some(Permissions::ADD_REACTIONS),
+                },
+            )
+            .await
+            .unwrap();
+        let received = [
+            received_guilds(&mut owner_events),
+            received_guilds(&mut other_events),
+        ];
+        let answered = [
+            guilds.get_guild(fixture.owner, guild.id).await.unwrap(),
+            guilds.get_guild(fixture.other, guild.id).await.unwrap(),
+        ];
+        fixture.database.close().await;
+
+        for (received, answered) in received.into_iter().zip(answered) {
+            assert_eq!(received, [answered]);
+        }
     }
 
     #[tokio::test]
