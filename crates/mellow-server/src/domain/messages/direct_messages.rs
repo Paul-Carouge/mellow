@@ -5,7 +5,7 @@ use mellow_protocol::{
     DirectMessageChannel, GatewayEvent, OpenDirectMessageRequest, PublicUser, Snowflake,
 };
 
-use sqlx::SqlitePool;
+use crate::storage::Database;
 
 use super::{MessageError, Messages};
 use crate::domain::guild_rules::GuildRuleViolation;
@@ -46,21 +46,21 @@ impl Messages {
         if request.recipient_id == user_id {
             return Err(GuildError::from(GuildRuleViolation::DirectMessageRecipient).into());
         }
-        if !storage::share_a_guild(&self.pool, user_id, request.recipient_id)
+        if !storage::share_a_guild(&self.database, user_id, request.recipient_id)
             .await
             .map_err(GuildError::from)?
         {
             return Err(GuildError::NotFound.into());
         }
         let (channel_id, is_new) = storage::find_or_create_one_to_one(
-            &self.pool,
+            &self.database,
             user_id,
             request.recipient_id,
             self.ids.next_id(now_unix_milliseconds)?,
         )
         .await
         .map_err(GuildError::from)?;
-        let channel = conversation_seen_by(&self.pool, user_id, channel_id)
+        let channel = conversation_seen_by(&self.database, user_id, channel_id)
             .await?
             .ok_or(GuildError::NotFound)?;
         if is_new {
@@ -79,7 +79,7 @@ impl Messages {
         user_id: Snowflake,
     ) -> Result<Vec<DirectMessageChannel>, MessageError> {
         let mut channels: Vec<DirectMessageChannel> =
-            storage::list_user_conversations(&self.pool, user_id)
+            storage::list_user_conversations(&self.database, user_id)
                 .await
                 .map_err(GuildError::from)?
                 .into_iter()
@@ -87,7 +87,7 @@ impl Messages {
                 .map(channel_from_stored)
                 .collect();
         fill_profile_images(
-            &self.pool,
+            &self.database,
             channels
                 .iter_mut()
                 .flat_map(|channel| channel.recipients.iter_mut()),
@@ -98,29 +98,29 @@ impl Messages {
 }
 
 async fn conversation_seen_by(
-    pool: &SqlitePool,
+    database: &Database,
     user_id: Snowflake,
     channel_id: Snowflake,
 ) -> Result<Option<DirectMessageChannel>, MessageError> {
-    let Some(mut channel) = storage::find_user_conversation(pool, user_id, channel_id)
+    let Some(mut channel) = storage::find_user_conversation(database, user_id, channel_id)
         .await
         .map_err(GuildError::from)?
         .map(channel_from_stored)
     else {
         return Ok(None);
     };
-    fill_profile_images(pool, channel.recipients.iter_mut()).await?;
+    fill_profile_images(database, channel.recipients.iter_mut()).await?;
     Ok(Some(channel))
 }
 
 /// Whether `user_id` shares a guild with every other participant: writing needs it.
 pub(super) async fn shares_a_guild_with_each(
-    pool: &SqlitePool,
+    database: &Database,
     user_id: Snowflake,
     participant_ids: &[Snowflake],
 ) -> Result<bool, MessageError> {
     for other_id in participant_ids.iter().filter(|id| **id != user_id) {
-        if !storage::share_a_guild(pool, user_id, *other_id)
+        if !storage::share_a_guild(database, user_id, *other_id)
             .await
             .map_err(GuildError::from)?
         {
@@ -132,13 +132,13 @@ pub(super) async fn shares_a_guild_with_each(
 
 /// The conversation as each participant sees it, for `announce_conversation`.
 pub(super) async fn conversation_views(
-    pool: &SqlitePool,
+    database: &Database,
     channel_id: Snowflake,
     participant_ids: &[Snowflake],
 ) -> Result<Vec<(Snowflake, DirectMessageChannel)>, MessageError> {
     let mut views = Vec::with_capacity(participant_ids.len());
     for participant_id in participant_ids {
-        if let Some(view) = conversation_seen_by(pool, *participant_id, channel_id).await? {
+        if let Some(view) = conversation_seen_by(database, *participant_id, channel_id).await? {
             views.push((*participant_id, view));
         }
     }

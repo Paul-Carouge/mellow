@@ -44,7 +44,7 @@ impl Guilds {
         }
         let audit = self.audit_entry(guild_id, user_id, AuditAction::GuildUpdate, None, None)?;
         let change = storage::replace_guild_icon(
-            &self.pool,
+            &self.database,
             guild_id,
             new_image,
             &audit,
@@ -97,7 +97,7 @@ impl Guilds {
             }
         };
         let change = storage::replace_channel_icon(
-            &self.pool,
+            &self.database,
             channel.id,
             new_image,
             &audit,
@@ -144,7 +144,7 @@ impl Guilds {
         id: Snowflake,
         is_still_wanted: bool,
     ) -> Result<Snowflake, GuildError> {
-        let image = storage::find_guild_image(&self.pool, id)
+        let image = storage::find_guild_image(&self.database, id)
             .await?
             .ok_or(GuildError::NotFound)?;
         match image.channel_id {

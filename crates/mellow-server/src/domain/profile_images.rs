@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use tokio::sync::OwnedSemaphorePermit;
 
+use crate::storage::Database;
 use mellow_protocol::{CurrentUser, GatewayEvent, ProfileImage, PublicUser, Snowflake};
-use sqlx::SqlitePool;
 
 use crate::domain::attachments::Attachments;
 use crate::domain::image_processing::{
@@ -42,12 +42,12 @@ impl From<ImageProcessingError> for MessageError {
 
 /// Adds each user's current avatar and banner to user payloads built from other tables.
 pub(crate) async fn fill_profile_images<'a>(
-    pool: &SqlitePool,
+    database: &Database,
     users: impl IntoIterator<Item = &'a mut PublicUser>,
 ) -> Result<(), MessageStorageError> {
     let mut users: Vec<&mut PublicUser> = users.into_iter().collect();
     let ids: Vec<Snowflake> = users.iter().map(|user| user.id).collect();
-    let images = storage::profile_images_of_users(pool, &ids).await?;
+    let images = storage::profile_images_of_users(database, &ids).await?;
     for user in &mut users {
         let found = images.get(&user.id).copied().unwrap_or_default();
         user.avatar = found.avatar;
@@ -59,10 +59,10 @@ pub(crate) async fn fill_profile_images<'a>(
 /// One user's avatar and banner, read before a change is stored so that nothing can fail
 /// between storing it and announcing it.
 pub(crate) async fn profile_images_of_user(
-    pool: &SqlitePool,
+    database: &Database,
     user_id: Snowflake,
 ) -> Result<storage::UserProfileImages, MessageStorageError> {
-    Ok(storage::profile_images_of_users(pool, &[user_id])
+    Ok(storage::profile_images_of_users(database, &[user_id])
         .await?
         .remove(&user_id)
         .unwrap_or_default())
@@ -81,7 +81,7 @@ pub(crate) fn public_user(user: &CurrentUser) -> PublicUser {
 
 #[derive(Debug)]
 pub(crate) struct ProfileImages {
-    pool: SqlitePool,
+    database: Database,
     ids: Arc<SnowflakeGenerator>,
     files: AttachmentFiles,
     attachments: Arc<Attachments>,
@@ -91,14 +91,14 @@ pub(crate) struct ProfileImages {
 
 impl ProfileImages {
     pub(crate) fn new(
-        pool: SqlitePool,
+        database: Database,
         ids: Arc<SnowflakeGenerator>,
         files: AttachmentFiles,
         attachments: Arc<Attachments>,
         events: Arc<EventHub>,
     ) -> Self {
         Self {
-            pool,
+            database,
             ids,
             files,
             attachments,
@@ -118,7 +118,7 @@ impl ProfileImages {
     ) -> Result<CurrentUser, MessageError> {
         // Read before the change: once it is stored, nothing may fail before it is announced.
         let guild_ids: Vec<Snowflake> =
-            crate::storage::guilds::list_user_guilds(&self.pool, user.id)
+            crate::storage::guilds::list_user_guilds(&self.database, user.id)
                 .await
                 .map_err(crate::domain::guilds::GuildError::from)?
                 .into_iter()
@@ -140,7 +140,7 @@ impl ProfileImages {
             None => None,
         };
         let replaced = storage::replace_profile_image(
-            &self.pool,
+            &self.database,
             user.id,
             slot,
             new_image,
@@ -176,7 +176,7 @@ impl ProfileImages {
         slot: ProfileImageSlot,
         new_image: Option<NewProfileImage>,
     ) -> CurrentUser {
-        match crate::storage::accounts::find_user_by_id(&self.pool, user.id).await {
+        match crate::storage::accounts::find_user_by_id(&self.database, user.id).await {
             Ok(Some(stored)) => crate::domain::accounts::current_user(stored),
             stored => {
                 if let Err(error) = stored {
@@ -255,7 +255,7 @@ impl ProfileImages {
         id: Snowflake,
         is_still_wanted: bool,
     ) -> Result<(Vec<u8>, OwnedSemaphorePermit), MessageError> {
-        let image = storage::find_profile_image(&self.pool, id)
+        let image = storage::find_profile_image(&self.database, id)
             .await?
             .ok_or(MessageError::MessageNotFound)?;
         let file_id = if is_still_wanted {

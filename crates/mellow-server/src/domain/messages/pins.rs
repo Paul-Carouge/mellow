@@ -66,8 +66,8 @@ impl Messages {
         let audience = self.audience(&channel).await?;
         // Read before the write (neither changes with a pin), so nothing can fail between the
         // commit and the event.
-        let author_images = profile_images_of_user(&self.pool, message.author_id).await?;
-        let attachments = attachments_of(&self.pool, message.id).await?;
+        let author_images = profile_images_of_user(&self.database, message.author_id).await?;
+        let attachments = attachments_of(&self.database, message.id).await?;
         let audit = channel
             .guild_id()
             .map(|guild_id| {
@@ -87,7 +87,7 @@ impl Messages {
             PinChange::Pin {
                 pinned_at_unix_milliseconds,
             } => match storage::pin_message(
-                &self.pool,
+                &self.database,
                 channel.id(),
                 message.id,
                 pinned_at_unix_milliseconds,
@@ -104,7 +104,8 @@ impl Messages {
                 PinOutcome::MessageNotFound => return Err(MessageError::MessageNotFound),
             },
             PinChange::Unpin => {
-                storage::unpin_message(&self.pool, channel.id(), message.id, audit.as_ref()).await?
+                storage::unpin_message(&self.database, channel.id(), message.id, audit.as_ref())
+                    .await?
             }
         };
         if let Some(changed) = changed {
@@ -135,7 +136,7 @@ impl Messages {
             )
             .await?;
         let pinned =
-            storage::list_pinned_messages(&self.pool, channel.id(), MAXIMUM_PINS_PER_CHANNEL)
+            storage::list_pinned_messages(&self.database, channel.id(), MAXIMUM_PINS_PER_CHANNEL)
                 .await?;
         self.messages_for_viewer(user_id, pinned).await
     }

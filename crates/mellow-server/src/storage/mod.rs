@@ -14,7 +14,7 @@ mod migrations;
 pub(crate) mod profile_images;
 pub(crate) mod reactions;
 
-pub use database::{DatabaseKey, StorageError, open_encrypted_database};
+pub use database::{Database, DatabaseKey, StorageError, open_encrypted_database};
 pub use master_key::{MasterKey, MasterKeyError};
 pub use migrations::{MigrationError, MigrationOutcome, migrate_with_backup};
 

@@ -3,11 +3,11 @@
 
 use std::time::Duration;
 
+use crate::storage::Database;
 use mellow_protocol::{
     ChangePasswordRequest, CurrentUser, GatewayEvent, LoginRequest, RegisterRequest,
     SessionCreated, UpdateCurrentUserRequest,
 };
-use sqlx::SqlitePool;
 use zeroize::Zeroizing;
 
 use crate::domain::account_rules::{
@@ -120,7 +120,7 @@ impl std::fmt::Debug for NewAccount {
 
 #[derive(Debug)]
 pub struct Accounts {
-    pool: SqlitePool,
+    database: Database,
     /// Shared with the other use cases so ids are unique across the whole process.
     ids: std::sync::Arc<SnowflakeGenerator>,
     registration_mode: RegistrationMode,
@@ -131,13 +131,13 @@ pub struct Accounts {
 impl Accounts {
     #[must_use]
     pub(crate) fn new(
-        pool: SqlitePool,
+        database: Database,
         registration_mode: RegistrationMode,
         ids: std::sync::Arc<SnowflakeGenerator>,
         events: std::sync::Arc<crate::events::EventHub>,
     ) -> Self {
         Self {
-            pool,
+            database,
             ids,
             registration_mode,
             events,
@@ -208,7 +208,7 @@ impl Accounts {
             is_instance_administrator: account.is_instance_administrator,
             created_at_unix_milliseconds: now_unix_milliseconds,
         };
-        insert_user(&self.pool, &new_user).await?;
+        insert_user(&self.database, &new_user).await?;
         Ok(StoredUser {
             id: new_user.id,
             username: new_user.username,
@@ -235,7 +235,7 @@ impl Accounts {
         let password = Zeroizing::new(request.password);
         // Bounds Argon2 input; only the maximum, so older passwords keep working.
         validate_password_maximum_length(&password)?;
-        let user = find_user_by_login(&self.pool, &login).await?;
+        let user = find_user_by_login(&self.database, &login).await?;
         let stored_hash = user.as_ref().map(|user| user.password_hash.clone());
         let is_password_correct = verify_password(password, stored_hash).await?;
         let user = match user {
@@ -259,7 +259,7 @@ impl Accounts {
         now_unix_milliseconds: u64,
     ) -> Result<CurrentUser, AccountError> {
         let token_sha256 = session_token_sha256(token).ok_or(AccountError::Unauthorized)?;
-        let owner = find_session_owner(&self.pool, &token_sha256, now_unix_milliseconds)
+        let owner = find_session_owner(&self.database, &token_sha256, now_unix_milliseconds)
             .await?
             .ok_or(AccountError::Unauthorized)?;
         if owner.user.is_disabled {
@@ -268,7 +268,7 @@ impl Accounts {
         // Best effort: a figure precise to the hour must never deny access, e.g. on a full disk.
         if should_record_session_use(owner.last_seen_at_unix_milliseconds, now_unix_milliseconds)
             && let Err(error) =
-                record_session_use(&self.pool, &token_sha256, now_unix_milliseconds).await
+                record_session_use(&self.database, &token_sha256, now_unix_milliseconds).await
         {
             tracing::warn!(%error, "cannot record session use");
         }
@@ -281,7 +281,7 @@ impl Accounts {
     /// `Unauthorized` for a malformed token; database errors.
     pub async fn logout(&self, token: &str) -> Result<(), AccountError> {
         let token_sha256 = session_token_sha256(token).ok_or(AccountError::Unauthorized)?;
-        delete_session(&self.pool, &token_sha256).await?;
+        delete_session(&self.database, &token_sha256).await?;
         self.events.disconnect_token(&token_sha256);
         Ok(())
     }
@@ -328,7 +328,7 @@ impl Accounts {
             }
         }
         let (username, display_name) = update_user_names(
-            &self.pool,
+            &self.database,
             user.id,
             username.as_deref(),
             display_name.as_deref(),
@@ -340,7 +340,7 @@ impl Accounts {
             display_name,
             ..user
         });
-        let guild_ids: Vec<_> = list_user_guilds(&self.pool, updated.id)
+        let guild_ids: Vec<_> = list_user_guilds(&self.database, updated.id)
             .await?
             .into_iter()
             .map(|guild| guild.id)
@@ -378,7 +378,7 @@ impl Accounts {
         }
         let new_password_hash = hash_password(new_password).await?;
         if !replace_password_and_delete_other_sessions(
-            &self.pool,
+            &self.database,
             user.id,
             &user.password_hash,
             &new_password_hash,
@@ -401,7 +401,7 @@ impl Accounts {
         now_unix_milliseconds: u64,
     ) -> Result<StoredUser, AccountError> {
         let token_sha256 = session_token_sha256(token).ok_or(AccountError::Unauthorized)?;
-        let owner = find_session_owner(&self.pool, &token_sha256, now_unix_milliseconds)
+        let owner = find_session_owner(&self.database, &token_sha256, now_unix_milliseconds)
             .await?
             .ok_or(AccountError::Unauthorized)?;
         if owner.user.is_disabled {
@@ -423,7 +423,7 @@ impl Accounts {
         let session_lifetime_milliseconds =
             u64::try_from(SESSION_LIFETIME.as_millis()).unwrap_or(u64::MAX);
         let is_inserted = insert_session(
-            &self.pool,
+            &self.database,
             &NewSession {
                 id: self.ids.next_id(now_unix_milliseconds)?,
                 user_id: user.id,
@@ -449,7 +449,7 @@ impl Accounts {
 
 /// Deletes sessions expired for a day now, then every hour, until the future is dropped. Expired sessions
 /// are already refused; this only keeps the table from growing with every forgotten device.
-pub async fn purge_expired_sessions_periodically(pool: SqlitePool) {
+pub async fn purge_expired_sessions_periodically(database: Database) {
     let mut purge_interval = tokio::time::interval(EXPIRED_SESSION_PURGE_INTERVAL);
     purge_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -457,7 +457,7 @@ pub async fn purge_expired_sessions_periodically(pool: SqlitePool) {
         let grace_milliseconds =
             u64::try_from(EXPIRED_SESSION_PURGE_GRACE.as_millis()).unwrap_or(u64::MAX);
         let expired_before = now_unix_milliseconds().saturating_sub(grace_milliseconds);
-        match delete_expired_sessions(&pool, expired_before).await {
+        match delete_expired_sessions(&database, expired_before).await {
             Ok(0) => {}
             Ok(deleted_sessions) => tracing::info!(deleted_sessions, "expired sessions purged"),
             Err(error) => tracing::warn!(%error, "cannot purge expired sessions"),
@@ -497,19 +497,19 @@ pub(crate) mod tests {
     pub(crate) const NOW: u64 = MELLOW_EPOCH_UNIX_MILLISECONDS + 86_400_000;
     pub(crate) const PASSWORD: &str = "correct horse battery";
 
-    /// A migrated database in a temporary directory; keep the directory alive while using the pool.
-    pub(crate) async fn migrated_pool() -> (tempfile::TempDir, SqlitePool) {
+    /// A migrated database in a temporary directory; keep the directory alive while using the database.
+    pub(crate) async fn migrated_database() -> (tempfile::TempDir, Database) {
         let directory = tempfile::tempdir().unwrap();
-        let pool = open_encrypted_database(
+        let database = open_encrypted_database(
             &directory.path().join("mellow.db"),
             &DatabaseKey::from_bytes([3; 32]),
         )
         .await
         .unwrap();
-        migrate_with_backup(&pool, &directory.path().join("backups"))
+        migrate_with_backup(&database, &directory.path().join("backups"))
             .await
             .unwrap();
-        (directory, pool)
+        (directory, database)
     }
 
     pub(crate) fn register_request(username: &str, email: &str) -> RegisterRequest {
@@ -532,9 +532,9 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn register_then_login_by_username_or_email_and_authenticate() {
-        let (_directory, pool) = migrated_pool().await;
+        let (_directory, database) = migrated_database().await;
         let accounts = Accounts::new(
-            pool.clone(),
+            database.clone(),
             RegistrationMode::Open,
             std::sync::Arc::default(),
             std::sync::Arc::default(),
@@ -558,14 +558,14 @@ pub(crate) mod tests {
                 .unwrap();
             assert_eq!(session.user.id, registered.user.id, "{login}");
         }
-        pool.close().await;
+        database.close().await;
     }
 
     #[tokio::test]
     async fn wrong_password_and_unknown_user_get_the_same_error() {
-        let (_directory, pool) = migrated_pool().await;
+        let (_directory, database) = migrated_database().await;
         let accounts = Accounts::new(
-            pool.clone(),
+            database.clone(),
             RegistrationMode::Open,
             std::sync::Arc::default(),
             std::sync::Arc::default(),
@@ -579,7 +579,7 @@ pub(crate) mod tests {
             .login(login_request("aurore", "not the password"), NOW)
             .await;
         let unknown_user = accounts.login(login_request("nobody", PASSWORD), NOW).await;
-        pool.close().await;
+        database.close().await;
         assert!(matches!(
             wrong_password,
             Err(AccountError::InvalidCredentials)
@@ -592,9 +592,9 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn duplicates_closed_registration_and_invalid_input_are_rejected() {
-        let (_directory, pool) = migrated_pool().await;
+        let (_directory, database) = migrated_database().await;
         let open = Accounts::new(
-            pool.clone(),
+            database.clone(),
             RegistrationMode::Open,
             std::sync::Arc::default(),
             std::sync::Arc::default(),
@@ -613,14 +613,14 @@ pub(crate) mod tests {
             .register(register_request("Aurore!", "x@example.org"), NOW)
             .await;
         let closed = Accounts::new(
-            pool.clone(),
+            database.clone(),
             RegistrationMode::Closed,
             std::sync::Arc::default(),
             std::sync::Arc::default(),
         )
         .register(register_request("chloe", "chloe@example.org"), NOW)
         .await;
-        pool.close().await;
+        database.close().await;
 
         assert!(matches!(same_email, Err(AccountError::EmailTaken)));
         assert!(matches!(same_username, Err(AccountError::UsernameTaken)));
@@ -635,9 +635,9 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn sessions_expire_and_logout_revokes_them() {
-        let (_directory, pool) = migrated_pool().await;
+        let (_directory, database) = migrated_database().await;
         let accounts = Accounts::new(
-            pool.clone(),
+            database.clone(),
             RegistrationMode::Open,
             std::sync::Arc::default(),
             std::sync::Arc::default(),
@@ -655,7 +655,7 @@ pub(crate) mod tests {
         accounts.logout(&session.token).await.unwrap();
         let after_logout = accounts.authenticate(&session.token, NOW).await;
         let malformed = accounts.authenticate("Bearer nonsense", NOW).await;
-        pool.close().await;
+        database.close().await;
 
         assert!(just_before_expiry.is_ok());
         assert!(matches!(at_expiry, Err(AccountError::Unauthorized)));
@@ -665,9 +665,9 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn session_use_is_recorded_at_most_once_per_interval_and_expired_ones_are_purged() {
-        let (_directory, pool) = migrated_pool().await;
+        let (_directory, database) = migrated_database().await;
         let accounts = Accounts::new(
-            pool.clone(),
+            database.clone(),
             RegistrationMode::Open,
             std::sync::Arc::default(),
             std::sync::Arc::default(),
@@ -680,7 +680,7 @@ pub(crate) mod tests {
         let last_seen = || async {
             let (last_seen,): (i64,) =
                 sqlx::query_as("SELECT last_seen_at_unix_milliseconds FROM sessions")
-                    .fetch_one(&pool)
+                    .fetch_one(database.writer())
                     .await
                     .unwrap();
             u64::try_from(last_seen).unwrap()
@@ -701,13 +701,15 @@ pub(crate) mod tests {
         accounts.authenticate(&session.token, NOW).await.unwrap();
         let after_clock_went_back = last_seen().await;
         let token_sha256 = session_token_sha256(&session.token).unwrap();
-        record_session_use(&pool, &token_sha256, NOW).await.unwrap();
+        record_session_use(&database, &token_sha256, NOW)
+            .await
+            .unwrap();
         let recorded_backwards = last_seen().await;
         sqlx::query(
             "CREATE TRIGGER refuse_session_updates BEFORE UPDATE ON sessions \
              BEGIN SELECT RAISE(ABORT, 'disk full'); END",
         )
-        .execute(&pool)
+        .execute(database.writer())
         .await
         .unwrap();
         let despite_failed_record = accounts
@@ -715,13 +717,13 @@ pub(crate) mod tests {
             .await;
 
         let lifetime = u64::try_from(SESSION_LIFETIME.as_millis()).unwrap();
-        let still_valid = delete_expired_sessions(&pool, NOW + lifetime - 1)
+        let still_valid = delete_expired_sessions(&database, NOW + lifetime - 1)
             .await
             .unwrap();
-        let expired = delete_expired_sessions(&pool, NOW + lifetime)
+        let expired = delete_expired_sessions(&database, NOW + lifetime)
             .await
             .unwrap();
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(before_interval, NOW);
         assert_eq!(after_interval, NOW + interval);
@@ -733,9 +735,9 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn the_purge_task_deletes_expired_sessions_as_soon_as_it_starts() {
-        let (_directory, pool) = migrated_pool().await;
+        let (_directory, database) = migrated_database().await;
         let accounts = Accounts::new(
-            pool.clone(),
+            database.clone(),
             RegistrationMode::Open,
             std::sync::Arc::default(),
             std::sync::Arc::default(),
@@ -745,11 +747,11 @@ pub(crate) mod tests {
             .register(register_request("aurore", "aurore@example.org"), NOW)
             .await
             .unwrap();
-        let purge = tokio::spawn(purge_expired_sessions_periodically(pool.clone()));
+        let purge = tokio::spawn(purge_expired_sessions_periodically(database.clone()));
         let mut remaining_sessions = 1;
         for _ in 0..100 {
             let (count,): (i64,) = sqlx::query_as("SELECT count(*) FROM sessions")
-                .fetch_one(&pool)
+                .fetch_one(database.writer())
                 .await
                 .unwrap();
             remaining_sessions = count;
@@ -760,15 +762,15 @@ pub(crate) mod tests {
         }
         purge.abort();
         let _cancelled = purge.await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(remaining_sessions, 0);
     }
 
     #[tokio::test]
     async fn disabled_accounts_cannot_log_in_or_use_existing_sessions() {
-        let (_directory, pool) = migrated_pool().await;
+        let (_directory, database) = migrated_database().await;
         let accounts = Accounts::new(
-            pool.clone(),
+            database.clone(),
             RegistrationMode::Open,
             std::sync::Arc::default(),
             std::sync::Arc::default(),
@@ -779,13 +781,13 @@ pub(crate) mod tests {
             .unwrap();
         sqlx::query("UPDATE users SET disabled_at_unix_milliseconds = ?")
             .bind(i64::try_from(NOW).unwrap())
-            .execute(&pool)
+            .execute(database.writer())
             .await
             .unwrap();
 
         let existing_session = accounts.authenticate(&session.token, NOW).await;
         let new_login = accounts.login(login_request("aurore", PASSWORD), NOW).await;
-        pool.close().await;
+        database.close().await;
         assert!(matches!(
             existing_session,
             Err(AccountError::AccountDisabled)
@@ -807,10 +809,10 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn renaming_validates_refuses_taken_usernames_and_tells_the_user_sessions() {
-        let (_directory, pool) = migrated_pool().await;
+        let (_directory, database) = migrated_database().await;
         let events = std::sync::Arc::new(crate::events::EventHub::default());
         let accounts = Accounts::new(
-            pool.clone(),
+            database.clone(),
             RegistrationMode::Open,
             std::sync::Arc::default(),
             events.clone(),
@@ -858,7 +860,7 @@ pub(crate) mod tests {
             .unwrap();
         let second_event = session_events.try_recv().unwrap().payload_json.to_string();
         let stored = accounts.authenticate(token, NOW).await.unwrap();
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(unchanged, aurore.user);
         assert!(nothing_published);
@@ -910,9 +912,9 @@ pub(crate) mod tests {
     /// password change committed meanwhile.
     #[tokio::test]
     async fn writes_verified_against_a_replaced_password_are_refused() {
-        let (_directory, pool) = migrated_pool().await;
+        let (_directory, database) = migrated_database().await;
         let accounts = Accounts::new(
-            pool.clone(),
+            database.clone(),
             RegistrationMode::Open,
             std::sync::Arc::default(),
             std::sync::Arc::default(),
@@ -921,14 +923,14 @@ pub(crate) mod tests {
             .register(register_request("aurore", "aurore@example.org"), NOW)
             .await
             .unwrap();
-        let old_hash = find_user_by_login(&pool, "aurore")
+        let old_hash = find_user_by_login(&database, "aurore")
             .await
             .unwrap()
             .unwrap()
             .password_hash;
         let token_sha256 = session_token_sha256(&session.token).unwrap();
         let replaced = replace_password_and_delete_other_sessions(
-            &pool,
+            &database,
             session.user.id,
             &old_hash,
             "new-hash",
@@ -939,7 +941,7 @@ pub(crate) mod tests {
         .unwrap();
 
         let late_change = replace_password_and_delete_other_sessions(
-            &pool,
+            &database,
             session.user.id,
             &old_hash,
             "attacker-hash",
@@ -949,7 +951,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         let late_login = insert_session(
-            &pool,
+            &database,
             &NewSession {
                 id: Snowflake::from_raw(999),
                 user_id: session.user.id,
@@ -962,12 +964,12 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        let stored_hash = find_user_by_login(&pool, "aurore")
+        let stored_hash = find_user_by_login(&database, "aurore")
             .await
             .unwrap()
             .unwrap()
             .password_hash;
-        pool.close().await;
+        database.close().await;
 
         assert!(replaced);
         assert!(!late_change);
@@ -977,9 +979,9 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn changing_the_password_needs_the_current_one_and_signs_out_the_other_sessions() {
-        let (_directory, pool) = migrated_pool().await;
+        let (_directory, database) = migrated_database().await;
         let accounts = Accounts::new(
-            pool.clone(),
+            database.clone(),
             RegistrationMode::Open,
             std::sync::Arc::default(),
             std::sync::Arc::default(),
@@ -1022,7 +1024,7 @@ pub(crate) mod tests {
         let new_password = accounts
             .login(login_request("aurore", "a brand new password"), NOW)
             .await;
-        pool.close().await;
+        database.close().await;
 
         assert!(matches!(
             wrong_current,

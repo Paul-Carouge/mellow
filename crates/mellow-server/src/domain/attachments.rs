@@ -4,8 +4,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::storage::Database;
 use mellow_protocol::{Attachment, Permissions, Snowflake};
-use sqlx::SqlitePool;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
 use crate::domain::image_processing::optimize_attachment;
@@ -139,7 +139,7 @@ impl Drop for UploaderGuard {
 
 #[derive(Debug)]
 pub(crate) struct Attachments {
-    pool: SqlitePool,
+    database: Database,
     ids: Arc<SnowflakeGenerator>,
     messages: Arc<Messages>,
     files: AttachmentFiles,
@@ -155,7 +155,7 @@ pub(crate) struct Attachments {
 
 impl Attachments {
     pub(crate) fn new(
-        pool: SqlitePool,
+        database: Database,
         ids: Arc<SnowflakeGenerator>,
         messages: Arc<Messages>,
         files: AttachmentFiles,
@@ -164,7 +164,7 @@ impl Attachments {
         let (optimization_sender, optimization_receiver) =
             mpsc::channel(OPTIMIZATION_QUEUE_CAPACITY);
         Self {
-            pool,
+            database,
             ids,
             messages,
             files,
@@ -207,7 +207,7 @@ impl Attachments {
             )
             .await?;
         let file_name = clean_file_name(raw_file_name)?;
-        let stored_bytes = storage::stored_bytes_of_uploader(&self.pool, user_id).await?;
+        let stored_bytes = storage::stored_bytes_of_uploader(&self.database, user_id).await?;
         if stored_bytes >= self.maximum_stored_bytes_per_user {
             return Err(MessageError::QuotaReached);
         }
@@ -252,14 +252,14 @@ impl Attachments {
         let size_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         // Read now, not when the upload started: a user's uploads are one at a time, so this
         // total cannot change before the row is inserted.
-        let stored_bytes = storage::stored_bytes_of_uploader(&self.pool, slot.user_id).await?;
+        let stored_bytes = storage::stored_bytes_of_uploader(&self.database, slot.user_id).await?;
         if stored_bytes.saturating_add(size_bytes) > self.maximum_stored_bytes_per_user {
             return Err(MessageError::QuotaReached);
         }
         let id = self.ids.next_id(now_unix_milliseconds)?;
         self.files.write(id, bytes).await?;
         let inserted = storage::insert_attachment(
-            &self.pool,
+            &self.database,
             &NewAttachment {
                 id,
                 channel_id: slot.channel_id,
@@ -291,7 +291,8 @@ impl Attachments {
     /// Replaces the file with its compressed form when smaller. Anything undecodable, too slow or
     /// not smaller keeps the original.
     pub(crate) async fn optimize(&self, attachment_id: Snowflake) -> Result<(), MessageError> {
-        let Some(attachment) = storage::find_attachment(&self.pool, attachment_id).await? else {
+        let Some(attachment) = storage::find_attachment(&self.database, attachment_id).await?
+        else {
             return Ok(());
         };
         // Waits for a slot rather than failing: nobody is waiting on this one.
@@ -332,7 +333,7 @@ impl Attachments {
         // file id per version would close it, worth doing if crashes there are ever seen.
         self.files.write(attachment.id, optimized.bytes).await?;
         let updated = storage::update_attachment_file(
-            &self.pool,
+            &self.database,
             attachment.id,
             &file_name,
             optimized.content_type,
@@ -361,7 +362,7 @@ impl Attachments {
         user_id: Snowflake,
         attachment_id: Snowflake,
     ) -> Result<AttachmentDownload, MessageError> {
-        let attachment = storage::find_attachment(&self.pool, attachment_id)
+        let attachment = storage::find_attachment(&self.database, attachment_id)
             .await?
             .filter(|attachment| attachment.message_id.is_some())
             .ok_or(MessageError::MessageNotFound)?;
@@ -398,17 +399,19 @@ impl Attachments {
     pub(crate) async fn purge(&self, now_unix_milliseconds: u64) -> Result<usize, MessageError> {
         let cutoff = now_unix_milliseconds.saturating_sub(UNSENT_UPLOAD_LIFETIME_MILLISECONDS);
         let mut deleted = 0;
-        for id in storage::delete_unlinked_before(&self.pool, cutoff).await? {
+        for id in storage::delete_unlinked_before(&self.database, cutoff).await? {
             self.files.delete(id).await?;
             deleted += 1;
         }
         // Avatars, banners and icons share the file store (ADR-0021).
-        let known_ids: HashSet<Snowflake> = storage::all_attachment_ids(&self.pool)
+        let known_ids: HashSet<Snowflake> = storage::all_attachment_ids(&self.database)
             .await?
             .into_iter()
-            .chain(crate::storage::profile_images::all_profile_image_file_ids(&self.pool).await?)
             .chain(
-                crate::storage::guild_images::all_guild_image_file_ids(&self.pool)
+                crate::storage::profile_images::all_profile_image_file_ids(&self.database).await?,
+            )
+            .chain(
+                crate::storage::guild_images::all_guild_image_file_ids(&self.database)
                     .await
                     .map_err(crate::domain::guilds::GuildError::from)?,
             )

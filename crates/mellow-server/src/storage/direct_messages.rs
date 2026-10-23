@@ -1,7 +1,8 @@
 //! Direct-message conversations (migration 0009). Their messages live in `messages`.
 
 use mellow_protocol::Snowflake;
-use sqlx::SqlitePool;
+
+use super::Database;
 
 use crate::storage::guilds::{
     BEGIN_WRITE_TRANSACTION, GuildStorageError, lookup_integer, to_id, to_integer,
@@ -66,7 +67,7 @@ fn conversations_from_rows(
 }
 
 pub(crate) async fn list_user_conversations(
-    pool: &SqlitePool,
+    database: &Database,
     user_id: Snowflake,
 ) -> Result<Vec<StoredDirectMessageChannel>, GuildStorageError> {
     let Some(user_id) = lookup_integer(user_id) else {
@@ -77,14 +78,14 @@ pub(crate) async fn list_user_conversations(
         "ORDER BY viewer.channel_id, users.id"
     ))
     .bind(user_id)
-    .fetch_all(pool)
+    .fetch_all(database.readers())
     .await?;
     conversations_from_rows(rows)
 }
 
 /// `None` unless `user_id` takes part in that conversation.
 pub(crate) async fn find_user_conversation(
-    pool: &SqlitePool,
+    database: &Database,
     user_id: Snowflake,
     channel_id: Snowflake,
 ) -> Result<Option<StoredDirectMessageChannel>, GuildStorageError> {
@@ -98,7 +99,7 @@ pub(crate) async fn find_user_conversation(
     ))
     .bind(user_id)
     .bind(channel_id)
-    .fetch_all(pool)
+    .fetch_all(database.readers())
     .await?;
     Ok(conversations_from_rows(rows)?.into_iter().next())
 }
@@ -106,7 +107,7 @@ pub(crate) async fn find_user_conversation(
 /// Everyone taking part in the conversation; empty when it is not one (a guild channel or an
 /// unknown id).
 pub(crate) async fn list_participant_ids(
-    pool: &SqlitePool,
+    database: &Database,
     channel_id: Snowflake,
 ) -> Result<Vec<Snowflake>, GuildStorageError> {
     let Some(channel_id) = lookup_integer(channel_id) else {
@@ -116,13 +117,13 @@ pub(crate) async fn list_participant_ids(
         "SELECT user_id FROM direct_message_participants WHERE channel_id = ? ORDER BY user_id",
     )
     .bind(channel_id)
-    .fetch_all(pool)
+    .fetch_all(database.readers())
     .await?;
     rows.into_iter().map(|(user_id,)| to_id(user_id)).collect()
 }
 
 pub(crate) async fn share_a_guild(
-    pool: &SqlitePool,
+    database: &Database,
     user_id: Snowflake,
     other_user_id: Snowflake,
 ) -> Result<bool, GuildStorageError> {
@@ -138,7 +139,7 @@ pub(crate) async fn share_a_guild(
     )
     .bind(user_id)
     .bind(other_user_id)
-    .fetch_one(pool)
+    .fetch_one(database.readers())
     .await?;
     Ok(shares)
 }
@@ -146,7 +147,7 @@ pub(crate) async fn share_a_guild(
 /// The one-to-one conversation of the pair, created with `new_channel_id` when there is none
 /// yet. Answers its id and whether it was created now.
 pub(crate) async fn find_or_create_one_to_one(
-    pool: &SqlitePool,
+    database: &Database,
     user_id: Snowflake,
     other_user_id: Snowflake,
     new_channel_id: Snowflake,
@@ -160,10 +161,13 @@ pub(crate) async fn find_or_create_one_to_one(
     let higher = to_integer(higher.raw())?;
     let channel_id = to_integer(new_channel_id.raw())?;
     // The common case, reopening, takes no write lock.
-    if let Some(existing) = find_pair(pool, lower, higher).await? {
+    if let Some(existing) = find_pair(database, lower, higher).await? {
         return Ok((existing, false));
     }
-    let mut transaction = pool.begin_with(BEGIN_WRITE_TRANSACTION).await?;
+    let mut transaction = database
+        .writer()
+        .begin_with(BEGIN_WRITE_TRANSACTION)
+        .await?;
     sqlx::query(
         "INSERT INTO channels (id, guild_id, kind, name, topic, parent_id, position) \
          VALUES (?, NULL, ?, '', '', NULL, 0)",
@@ -185,7 +189,7 @@ pub(crate) async fn find_or_create_one_to_one(
     if inserted == 0 {
         // Already there: drop the channel inserted above with the transaction.
         transaction.rollback().await?;
-        let existing = find_pair(pool, lower, higher)
+        let existing = find_pair(database, lower, higher)
             .await?
             .ok_or(GuildStorageError::Database(sqlx::Error::RowNotFound))?;
         return Ok((existing, false));
@@ -202,7 +206,7 @@ pub(crate) async fn find_or_create_one_to_one(
 }
 
 async fn find_pair(
-    pool: &SqlitePool,
+    database: &Database,
     lower: i64,
     higher: i64,
 ) -> Result<Option<Snowflake>, GuildStorageError> {
@@ -211,7 +215,7 @@ async fn find_pair(
     )
     .bind(lower)
     .bind(higher)
-    .fetch_optional(pool)
+    .fetch_optional(database.readers())
     .await?;
     row.map(|(channel_id,)| to_id(channel_id)).transpose()
 }

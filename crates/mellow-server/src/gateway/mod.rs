@@ -481,7 +481,7 @@ mod tests {
 
     use super::*;
     use crate::domain::account_rules::RegistrationMode;
-    use crate::domain::accounts::tests::{migrated_pool, register_request};
+    use crate::domain::accounts::tests::{migrated_database, register_request};
     use crate::http::tests::test_state;
 
     type ClientSocket = tokio_tungstenite::WebSocketStream<
@@ -506,8 +506,8 @@ mod tests {
     }
 
     async fn fixture() -> Fixture {
-        let (directory, pool) = migrated_pool().await;
-        let state = test_state(pool, RegistrationMode::Open);
+        let (directory, database) = migrated_database().await;
+        let state = test_state(database, RegistrationMode::Open);
         let owner = state
             .accounts
             .register(register_request("owner", "owner@example.org"), now())
@@ -565,7 +565,7 @@ mod tests {
     impl Fixture {
         /// SQLCipher must not be closing connections when the test process exits (ADR-0006).
         async fn close(self) {
-            self.state.pool.close().await;
+            self.state.database.close().await;
         }
     }
 

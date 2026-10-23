@@ -15,6 +15,7 @@ pub(crate) mod web_client;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use crate::storage::Database;
 use axum::extract::DefaultBodyLimit;
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
@@ -24,7 +25,6 @@ use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use ipnet::IpNet;
 use mellow_protocol::{HealthResponse, HealthStatus};
-use sqlx::SqlitePool;
 
 use crate::config::ServerConfig;
 use crate::domain::accounts::Accounts;
@@ -36,7 +36,7 @@ use crate::http::rate_limit::RateLimiter;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AppState {
-    pub(crate) pool: SqlitePool,
+    pub(crate) database: Database,
     pub(crate) accounts: Arc<Accounts>,
     pub(crate) guilds: Arc<Guilds>,
     pub(crate) messages: Arc<Messages>,
@@ -60,16 +60,16 @@ pub(crate) struct AppState {
 
 impl AppState {
     pub(crate) fn new(
-        pool: SqlitePool,
+        database: Database,
         config: &ServerConfig,
         attachment_files: crate::storage::attachment_files::AttachmentFiles,
     ) -> Self {
         let ids = Arc::new(SnowflakeGenerator::default());
         let events = Arc::new(EventHub::default());
-        let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone(), events.clone()));
-        let messages = Arc::new(Messages::new(pool.clone(), ids.clone(), guilds.clone()));
+        let guilds = Arc::new(Guilds::new(database.clone(), ids.clone(), events.clone()));
+        let messages = Arc::new(Messages::new(database.clone(), ids.clone(), guilds.clone()));
         let attachments = Arc::new(crate::domain::attachments::Attachments::new(
-            pool.clone(),
+            database.clone(),
             ids.clone(),
             messages.clone(),
             attachment_files.clone(),
@@ -77,7 +77,7 @@ impl AppState {
         ));
         Self {
             profile_images: Arc::new(crate::domain::profile_images::ProfileImages::new(
-                pool.clone(),
+                database.clone(),
                 ids.clone(),
                 attachment_files,
                 attachments.clone(),
@@ -86,7 +86,7 @@ impl AppState {
             attachments,
             maximum_attachment_bytes: config.maximum_attachment_bytes,
             accounts: Arc::new(Accounts::new(
-                pool.clone(),
+                database.clone(),
                 config.registration_mode,
                 ids.clone(),
                 events.clone(),
@@ -95,7 +95,7 @@ impl AppState {
             events,
             gateway_sessions: Arc::default(),
             guilds,
-            pool,
+            database,
             rate_limiter: Arc::default(),
             unauthenticated_rate_limiter: Arc::default(),
             gateway_rate_limiter: Arc::default(),
@@ -364,8 +364,8 @@ pub(crate) fn make_tls_service(
 
 /// Healthy only if the database answers, so a monitor sees a broken disk or key, not just a live process.
 async fn health(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
-    let database_answers = match sqlx::query("SELECT 1").execute(&state.pool).await {
-        Ok(_) => true,
+    let database_answers = match state.database.check_that_readers_answer().await {
+        Ok(()) => true,
         Err(error) => {
             tracing::warn!(%error, "health check: the database did not answer");
             false
@@ -399,7 +399,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::domain::account_rules::RegistrationMode;
-    use crate::domain::accounts::tests::{PASSWORD, migrated_pool};
+    use crate::domain::accounts::tests::{PASSWORD, migrated_database};
 
     const TEST_PEER: &str = "192.0.2.10:40000";
 
@@ -413,14 +413,14 @@ pub(crate) mod tests {
         .unwrap()
     }
 
-    pub(crate) fn test_state(pool: SqlitePool, registration_mode: RegistrationMode) -> AppState {
+    pub(crate) fn test_state(database: Database, registration_mode: RegistrationMode) -> AppState {
         let ids = Arc::new(SnowflakeGenerator::default());
         let events = Arc::new(EventHub::default());
-        let guilds = Arc::new(Guilds::new(pool.clone(), ids.clone(), events.clone()));
-        let messages = Arc::new(Messages::new(pool.clone(), ids.clone(), guilds.clone()));
+        let guilds = Arc::new(Guilds::new(database.clone(), ids.clone(), events.clone()));
+        let messages = Arc::new(Messages::new(database.clone(), ids.clone(), guilds.clone()));
         let files = test_attachment_files();
         let attachments = Arc::new(crate::domain::attachments::Attachments::new(
-            pool.clone(),
+            database.clone(),
             ids.clone(),
             messages.clone(),
             files.clone(),
@@ -428,13 +428,13 @@ pub(crate) mod tests {
         ));
         AppState {
             accounts: Arc::new(Accounts::new(
-                pool.clone(),
+                database.clone(),
                 registration_mode,
                 ids.clone(),
                 events.clone(),
             )),
             profile_images: Arc::new(crate::domain::profile_images::ProfileImages::new(
-                pool.clone(),
+                database.clone(),
                 ids.clone(),
                 files.clone(),
                 attachments.clone(),
@@ -446,7 +446,7 @@ pub(crate) mod tests {
             events,
             gateway_sessions: Arc::default(),
             guilds,
-            pool,
+            database,
             rate_limiter: Arc::default(),
             unauthenticated_rate_limiter: Arc::default(),
             gateway_rate_limiter: Arc::default(),
@@ -507,8 +507,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn health_reports_ok_while_the_database_answers_and_unavailable_once_it_is_closed() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Closed);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Closed);
 
         let (status, body) = send(
             &state,
@@ -520,7 +520,7 @@ pub(crate) mod tests {
         assert_eq!(health.status, HealthStatus::Ok);
         assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
 
-        pool.close().await;
+        database.close().await;
         let (status, body) = send(
             &state,
             Request::get("/api/v1/health").body(Body::empty()).unwrap(),
@@ -535,8 +535,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn register_me_logout_round_trip() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
 
         let (status, body) = send(
             &state,
@@ -565,15 +565,15 @@ pub(crate) mod tests {
             with_bearer("/api/v1/users/@me", "GET", &session.token),
         )
         .await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(json::<ApiErrorBody>(&body).code, ApiErrorCode::Unauthorized);
     }
 
     #[tokio::test]
     async fn the_web_client_signs_in_with_a_cookie_usable_only_from_this_origin() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let mut register = post_json("/api/v1/auth/register", &registration("ada"));
         register.headers_mut().insert(
             "x-mellow-session-transport",
@@ -605,7 +605,7 @@ pub(crate) mod tests {
             .unwrap();
         let ((logged_out, _), logout_headers) = send_from(&state, TEST_PEER, logout).await;
         let (after_logout, _) = send(&state, request_from("https://chat.example.org")).await;
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(same_origin, StatusCode::OK);
         assert_eq!(other_origin, StatusCode::UNAUTHORIZED);
@@ -623,8 +623,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn api_answers_are_private_and_the_tls_listener_adds_hsts() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Closed);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Closed);
         let ((_, _), plain) = send_from(
             &state,
             TEST_PEER,
@@ -637,7 +637,7 @@ pub(crate) mod tests {
             .oneshot(Request::get("/api/v1/health").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(plain.get(header::CACHE_CONTROL).unwrap(), "no-store");
         assert_eq!(plain.get(header::VARY).unwrap(), "Cookie");
@@ -653,8 +653,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn errors_use_stable_codes() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         send(
             &state,
             post_json("/api/v1/auth/register", &registration("aurore")),
@@ -705,20 +705,20 @@ pub(crate) mod tests {
             assert_eq!(status, expected_status, "{path}");
             assert_eq!(json::<ApiErrorBody>(&body).code, expected_code, "{path}");
         }
-        pool.close().await;
+        database.close().await;
     }
 
     #[tokio::test]
     async fn authentication_attempts_are_rate_limited_per_address() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Closed);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Closed);
         let attempt = || post_json("/api/v1/auth/register", &registration("aurore"));
         for _ in 0..rate_limit::AUTHENTICATION_ATTEMPTS_PER_ADDRESS.maximum_events {
             let (status, _) = send(&state, attempt()).await;
             assert_eq!(status, StatusCode::FORBIDDEN, "registration is closed");
         }
         let (status, body) = send(&state, attempt()).await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(json::<ApiErrorBody>(&body).code, ApiErrorCode::RateLimited);
     }
@@ -732,8 +732,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn one_address_cycling_login_names_cannot_fill_the_rate_limiter() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Closed);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Closed);
         let attempts = rate_limit::AUTHENTICATION_ATTEMPTS_PER_ADDRESS.maximum_events * 3;
         for index in 0..attempts {
             send_from(
@@ -743,7 +743,7 @@ pub(crate) mod tests {
             )
             .await;
         }
-        pool.close().await;
+        database.close().await;
         // The address key, then two keys per attempt the address limit let through: refused
         // attempts add none, and signed-in users' limits live in their own table.
         let allowed = rate_limit::AUTHENTICATION_ATTEMPTS_PER_ADDRESS.maximum_events as usize;
@@ -756,8 +756,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn login_attempts_are_limited_per_account_and_address_before_the_password_check() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         send(
             &state,
             post_json("/api/v1/auth/register", &registration("aurore")),
@@ -783,15 +783,15 @@ pub(crate) mod tests {
             &serde_json::json!({"login": "aurore", "password": PASSWORD, "device_name": "d"}),
         );
         let ((status, _), headers) = send_from(&state, "203.0.113.50:2000", from_home).await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
     }
 
     #[tokio::test]
     async fn forwarded_for_from_the_loopback_proxy_separates_clients() {
-        let (_directory, pool) = migrated_pool().await;
-        let mut state = test_state(pool.clone(), RegistrationMode::Closed);
+        let (_directory, database) = migrated_database().await;
+        let mut state = test_state(database.clone(), RegistrationMode::Closed);
         state.trusted_proxy_networks =
             client_address::build_trusted_proxy_networks(true, &[]).into();
         let via_proxy = |client: &str| {
@@ -807,15 +807,15 @@ pub(crate) mod tests {
         let ((limited, _), _) = send_from(&state, "127.0.0.1:3000", via_proxy("203.0.113.1")).await;
         let ((other_client, _), _) =
             send_from(&state, "127.0.0.1:3000", via_proxy("203.0.113.2")).await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(limited, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(other_client, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn malformed_bodies_and_unknown_routes_answer_with_json_errors() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let mut unknown_field = registration("aurore");
         unknown_field["is_instance_administrator"] = serde_json::json!(true);
         let cases = [
@@ -858,7 +858,7 @@ pub(crate) mod tests {
             assert_eq!(status, expected_status, "{path}");
             assert_eq!(json::<ApiErrorBody>(&body).code, expected_code, "{path}");
         }
-        pool.close().await;
+        database.close().await;
     }
 
     async fn registered_token(state: &AppState, username: &str) -> String {
@@ -893,8 +893,8 @@ pub(crate) mod tests {
     async fn guild_lifecycle_over_http() {
         use mellow_protocol::{Guild, GuildSummary, Invite, Member, Permissions};
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let owner = registered_token(&state, "owner").await;
         let guest = registered_token(&state, "guest").await;
 
@@ -994,14 +994,14 @@ pub(crate) mod tests {
             authorized("GET", &guild_path, "mlw_not-a-real-token", None),
         )
         .await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn out_of_range_ids_are_not_found_and_invite_guessing_is_rate_limited() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let owner = registered_token(&state, "owner").await;
         let guest = registered_token(&state, "guest").await;
 
@@ -1033,7 +1033,7 @@ pub(crate) mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             "invite codes cannot be brute forced"
         );
-        pool.close().await;
+        database.close().await;
     }
 
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\nnot really an image";
@@ -1054,8 +1054,8 @@ pub(crate) mod tests {
     async fn history_gives_each_message_its_own_attachments_in_order() {
         use mellow_protocol::{Attachment, Message};
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, general) = owner_and_general_channel(&state).await;
         let mut uploaded = Vec::new();
         for name in ["a1.png", "b1.png", "a2.png", "b2.png"] {
@@ -1089,7 +1089,7 @@ pub(crate) mod tests {
             assert_eq!(status, StatusCode::CREATED);
         }
         let (_, body) = send(&state, authorized("GET", &messages_path, &owner, None)).await;
-        pool.close().await;
+        database.close().await;
         let history: Vec<Message> = json(&body);
         let sent = &history[history.len() - expected.len()..];
         let attachment_ids: Vec<Vec<_>> = sent
@@ -1110,8 +1110,8 @@ pub(crate) mod tests {
     async fn attachments_upload_send_and_download_safely() {
         use mellow_protocol::{Attachment, Message};
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, general) = owner_and_general_channel(&state).await;
         let stranger = registered_token(&state, "stranger").await;
         let upload_path =
@@ -1219,7 +1219,7 @@ pub(crate) mod tests {
             ),
         )
         .await;
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(
             stranger_upload,
@@ -1278,10 +1278,10 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn uploads_stop_at_the_storage_quota_of_each_account() {
-        let (_directory, pool) = migrated_pool().await;
-        let mut state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let mut state = test_state(database.clone(), RegistrationMode::Open);
         state.attachments = Arc::new(crate::domain::attachments::Attachments::new(
-            pool.clone(),
+            database.clone(),
             Arc::new(SnowflakeGenerator::default()),
             state.messages.clone(),
             test_attachment_files(),
@@ -1291,7 +1291,7 @@ pub(crate) mod tests {
         let path = format!("/api/v1/channels/{general}/attachments?file_name=a.png");
         let (first, _) = send(&state, upload_request(&path, &owner, PNG)).await;
         let (second, body) = send(&state, upload_request(&path, &owner, PNG)).await;
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(first, StatusCode::CREATED);
         assert_eq!(second, StatusCode::CONFLICT);
@@ -1300,8 +1300,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn attachments_over_the_limit_are_refused_before_being_read() {
-        let (_directory, pool) = migrated_pool().await;
-        let mut state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let mut state = test_state(database.clone(), RegistrationMode::Open);
         state.maximum_attachment_bytes = 8;
         let (owner, general) = owner_and_general_channel(&state).await;
         let (status, _) = send(
@@ -1313,7 +1313,7 @@ pub(crate) mod tests {
             ),
         )
         .await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     }
 
@@ -1321,8 +1321,8 @@ pub(crate) mod tests {
     async fn messages_over_http() {
         use mellow_protocol::{Message, ReadState};
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, general) = owner_and_general_channel(&state).await;
         let messages_path = format!("/api/v1/channels/{general}/messages");
 
@@ -1401,7 +1401,7 @@ pub(crate) mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(json::<ApiErrorBody>(&body).code, ApiErrorCode::NotFound);
 
-        pool.close().await;
+        database.close().await;
     }
 
     /// Owner token, guest token, the owner's guild with the guest as a member, and the guest's id.
@@ -1439,8 +1439,8 @@ pub(crate) mod tests {
     async fn roles_over_http() {
         use mellow_protocol::{Guild, Permissions, Role};
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, guest, guild_id, guest_id) = guild_with_guest(&state).await;
         let guild_path = format!("/api/v1/guilds/{guild_id}");
 
@@ -1540,7 +1540,7 @@ pub(crate) mod tests {
         let (status, _) = send(&state, authorized("DELETE", &role_path, &owner, None)).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let (status, _) = send(&state, authorized("DELETE", &role_path, &owner, None)).await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
@@ -1548,8 +1548,8 @@ pub(crate) mod tests {
     async fn roles_are_reordered_over_http() {
         use mellow_protocol::Role;
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, guest, guild_id, _) = guild_with_guest(&state).await;
         let roles_path = format!("/api/v1/guilds/{guild_id}/roles");
         let mut created = Vec::new();
@@ -1598,7 +1598,7 @@ pub(crate) mod tests {
             ),
         )
         .await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(
             json::<ApiErrorBody>(&body).code,
@@ -1610,8 +1610,8 @@ pub(crate) mod tests {
     async fn overwrites_hide_a_channel_over_http() {
         use mellow_protocol::{Channel, Guild, Message, ReadState};
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, guest, guild_id, _) = guild_with_guest(&state).await;
         let (_, body) = send(
             &state,
@@ -1705,7 +1705,7 @@ pub(crate) mod tests {
         let (status, _) = send(&state, authorized("DELETE", &overwrite_path, &owner, None)).await;
         assert_eq!(status, StatusCode::OK);
         let (status, _) = send(&state, authorized("GET", &messages_path, &guest, None)).await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(status, StatusCode::OK);
     }
 
@@ -1713,8 +1713,8 @@ pub(crate) mod tests {
     async fn kicks_and_bans_over_http() {
         use mellow_protocol::{Ban, Invite};
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, guest, guild_id, guest_id) = guild_with_guest(&state).await;
         let guild_path = format!("/api/v1/guilds/{guild_id}");
         let (status, _) = send(
@@ -1766,7 +1766,7 @@ pub(crate) mod tests {
         let (status, _) = send(&state, authorized("DELETE", &ban_path, &owner, None)).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let (status, _) = send(&state, authorized("POST", &invite_path, &guest, None)).await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(status, StatusCode::OK);
     }
 
@@ -1774,8 +1774,8 @@ pub(crate) mod tests {
     async fn the_audit_log_over_http() {
         use mellow_protocol::{AuditAction, AuditLogEntry};
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, guest, guild_id, guest_id) = guild_with_guest(&state).await;
         let guild_path = format!("/api/v1/guilds/{guild_id}");
         send(
@@ -1817,7 +1817,7 @@ pub(crate) mod tests {
             ),
         )
         .await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(
             status,
             StatusCode::NOT_FOUND,
@@ -1830,8 +1830,8 @@ pub(crate) mod tests {
     async fn server_settings_over_http() {
         use mellow_protocol::{Guild, GuildInvite};
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, guest, guild_id, _) = guild_with_guest(&state).await;
         let guild_path = format!("/api/v1/guilds/{guild_id}");
         let invites_path = format!("{guild_path}/invites");
@@ -1872,7 +1872,7 @@ pub(crate) mod tests {
         let (guest_delete, _) = send(&state, authorized("DELETE", &guild_path, &guest, None)).await;
         let (deleted, _) = send(&state, authorized("DELETE", &guild_path, &owner, None)).await;
         let (after_delete, _) = send(&state, authorized("GET", &guild_path, &owner, None)).await;
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(guest_rename, StatusCode::FORBIDDEN);
         assert_eq!(guest_rename_code, ApiErrorCode::MissingPermissions);
@@ -1907,8 +1907,8 @@ pub(crate) mod tests {
         use crate::domain::image_processing::tests::{animated_gif, png};
         use mellow_protocol::{AuditChangeKey, AuditLogEntry, Channel, Guild, GuildSummary};
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, guest, guild_id, _) = guild_with_guest(&state).await;
         let stranger = registered_token(&state, "stranger").await;
         let guild_icon_path = format!("/api/v1/guilds/{guild_id}/icon");
@@ -2041,7 +2041,7 @@ pub(crate) mod tests {
             .flat_map(|entry| entry.changes)
             .filter(|change| change.key == AuditChangeKey::Icon)
             .count();
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(guest_upload, StatusCode::FORBIDDEN);
         assert_eq!(half_crop, StatusCode::BAD_REQUEST);
@@ -2076,8 +2076,8 @@ pub(crate) mod tests {
         use crate::domain::image_processing::tests::{animated_gif, png};
         use mellow_protocol::{Member, Message};
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, general) = owner_and_general_channel(&state).await;
         let stranger = registered_token(&state, "stranger").await;
 
@@ -2183,7 +2183,7 @@ pub(crate) mod tests {
         .await;
         let without_avatar: CurrentUser = json(&body);
         let (removed, _) = send(&state, authorized("GET", &image_path, &owner, None)).await;
-        pool.close().await;
+        database.close().await;
 
         assert!(avatar.is_animated);
         assert!(!banner.is_animated);
@@ -2225,8 +2225,8 @@ pub(crate) mod tests {
         use crate::domain::image_processing::tests::animated_gif;
         use mellow_protocol::Attachment;
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, general) = owner_and_general_channel(&state).await;
         let gif = animated_gif(120, 80, 4);
         let mut upload = picture_request(
@@ -2277,7 +2277,7 @@ pub(crate) mod tests {
         )
         .await;
         let history: Vec<mellow_protocol::Message> = json(&body);
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(uploaded.content_type, "image/gif", "answered as received");
         assert_eq!(sent.attachments[0].file_name, "party.gif");
@@ -2291,8 +2291,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_download_keeps_its_slot_until_its_body_is_dropped_and_uploads_go_one_per_user() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, general) = owner_and_general_channel(&state).await;
         let (_, body) = send(
             &state,
@@ -2347,7 +2347,7 @@ pub(crate) mod tests {
             .attachments
             .start_upload(owner_id, general, "third.txt")
             .await;
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(slots_while_unsent, all_slots - 1);
         assert_eq!(slots_after, all_slots);
@@ -2385,8 +2385,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn sending_messages_is_rate_limited_per_user() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, general) = owner_and_general_channel(&state).await;
         let messages_path = format!("/api/v1/channels/{general}/messages");
         for _ in 0..rate_limit::MESSAGE_WRITES_PER_USER.maximum_events {
@@ -2411,7 +2411,7 @@ pub(crate) mod tests {
             ),
         )
         .await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     }
 
@@ -2431,8 +2431,8 @@ pub(crate) mod tests {
     /// devices from changing the password (and so revoking it).
     #[tokio::test]
     async fn password_checks_and_profile_writes_are_rate_limited_per_session() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let stolen = registered_token(&state, "aurore").await;
         let own = logged_in_token(&state, "aurore", "own").await;
         let more_sessions = [
@@ -2497,7 +2497,7 @@ pub(crate) mod tests {
         let (own_change, _) = send(&state, change(&own, PASSWORD)).await;
         let (stolen_after_change, _) =
             send(&state, with_bearer("/api/v1/users/@me", "GET", &stolen)).await;
-        pool.close().await;
+        database.close().await;
 
         let session_budget = rate_limit::PASSWORD_CHECKS_PER_SESSION.maximum_events as usize;
         let (checked, refused) = guesses.split_at(session_budget);
@@ -2526,8 +2526,8 @@ pub(crate) mod tests {
     async fn history_cursors_over_http() {
         use mellow_protocol::Message;
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, general) = owner_and_general_channel(&state).await;
         let messages_path = format!("/api/v1/channels/{general}/messages");
         let (_, body) = send(
@@ -2579,13 +2579,13 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(json::<Vec<Message>>(&body), Vec::new());
-        pool.close().await;
+        database.close().await;
     }
 
     #[tokio::test]
     async fn typing_needs_membership_and_is_rate_limited() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, general) = owner_and_general_channel(&state).await;
         let outsider = registered_token(&state, "outsider").await;
         let typing_path = format!("/api/v1/channels/{general}/typing");
@@ -2598,7 +2598,7 @@ pub(crate) mod tests {
             send(&state, authorized("POST", &typing_path, &owner, None)).await;
         }
         let (status, _) = send(&state, authorized("POST", &typing_path, &owner, None)).await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     }
 
@@ -2607,8 +2607,8 @@ pub(crate) mod tests {
         use mellow_protocol::{Guild, Message, PublicUser};
 
         const THUMBS_UP: &str = "%F0%9F%91%8D";
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, guest, guild_id, guest_id) = guild_with_guest(&state).await;
         let (_, body) = send(
             &state,
@@ -2660,7 +2660,7 @@ pub(crate) mod tests {
         let removed = send(&state, authorized("DELETE", &mine, &guest, None))
             .await
             .0;
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(statuses, [StatusCode::NO_CONTENT, StatusCode::NO_CONTENT]);
         assert_eq!(
@@ -2685,8 +2685,8 @@ pub(crate) mod tests {
     async fn pins_over_http() {
         use mellow_protocol::{Guild, Message};
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, guest, guild_id, _) = guild_with_guest(&state).await;
         let (_, body) = send(
             &state,
@@ -2718,7 +2718,7 @@ pub(crate) mod tests {
             .0;
         let (_, body) = send(&state, authorized("GET", &pins_path, &guest, None)).await;
         let pins_after: Vec<Message> = json(&body);
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(guest_pins.0, StatusCode::FORBIDDEN);
         assert_eq!(
@@ -2734,8 +2734,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn reactions_are_rate_limited_per_user() {
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, general) = owner_and_general_channel(&state).await;
         let (_, body) = send(
             &state,
@@ -2756,7 +2756,7 @@ pub(crate) mod tests {
             send(&state, authorized("PUT", &mine, &owner, None)).await;
         }
         let (status, _) = send(&state, authorized("DELETE", &mine, &owner, None)).await;
-        pool.close().await;
+        database.close().await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     }
 
@@ -2764,8 +2764,8 @@ pub(crate) mod tests {
     async fn reactions_are_rate_limited_per_channel() {
         use mellow_protocol::{Guild, Invite, Message};
 
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, guest, guild_id, _) = guild_with_guest(&state).await;
         let (_, body) = send(
             &state,
@@ -2820,7 +2820,7 @@ pub(crate) mod tests {
             }
         }
         let (status, _) = send(&state, authorized("PUT", &reaction, last, None)).await;
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(
             accepted, per_channel,
@@ -2834,8 +2834,8 @@ pub(crate) mod tests {
         use mellow_protocol::{Guild, Message};
 
         const THUMBS_UP: &str = "%F0%9F%91%8D";
-        let (_directory, pool) = migrated_pool().await;
-        let state = test_state(pool.clone(), RegistrationMode::Open);
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
         let (owner, guest, guild_id, guest_id) = guild_with_guest(&state).await;
         let (_, body) = send(
             &state,
@@ -2872,7 +2872,7 @@ pub(crate) mod tests {
                     .0,
             );
         }
-        pool.close().await;
+        database.close().await;
 
         assert_eq!(
             statuses,

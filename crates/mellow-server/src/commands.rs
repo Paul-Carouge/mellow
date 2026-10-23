@@ -110,9 +110,9 @@ pub async fn initialize_instance(options: &InitializeOptions) -> Result<ServerCo
         master_key.write_new_file(&config.master_key_file)?;
         master_key.derive_database_key()
     };
-    let pool = open_encrypted_database(&config.database_path(), &database_key).await?;
-    let migration = migrate_with_backup(&pool, &config.backup_directory()).await;
-    pool.close().await;
+    let database = open_encrypted_database(&config.database_path(), &database_key).await?;
+    let migration = migrate_with_backup(&database, &config.backup_directory()).await;
+    database.close().await;
     migration?;
 
     write_new_file(&options.config_path, &config_text)?;
@@ -173,10 +173,10 @@ pub async fn serve_instance(
     let listener = TcpListener::bind(config.listen_address)
         .await
         .with_context(|| format!("cannot listen on {}", config.listen_address))?;
-    let pool = open_encrypted_database(&database_path, &database_key).await?;
+    let database = open_encrypted_database(&database_path, &database_key).await?;
 
     let result = async {
-        let migration = migrate_with_backup(&pool, &config.backup_directory()).await?;
+        let migration = migrate_with_backup(&database, &config.backup_directory()).await?;
         if !migration.applied_versions.is_empty() {
             tracing::info!(
                 applied_versions = ?migration.applied_versions,
@@ -184,8 +184,8 @@ pub async fn serve_instance(
                 "database migrated"
             );
         }
-        let state = AppState::new(pool.clone(), config, attachment_files);
-        let session_purge = tokio::spawn(purge_expired_sessions_periodically(pool.clone()));
+        let state = AppState::new(database.clone(), config, attachment_files);
+        let session_purge = tokio::spawn(purge_expired_sessions_periodically(database.clone()));
         let attachment_purge = tokio::spawn(
             crate::domain::attachments::purge_attachments_periodically(state.attachments.clone()),
         );
@@ -198,7 +198,7 @@ pub async fn serve_instance(
             Some(tls) => crate::tls::serve_tls_until_shutdown(listener, state, tls, shutdown).await,
             None => serve_until_shutdown(listener, state, shutdown).await,
         };
-        // Awaited, so the purge holds no connection when the pool closes.
+        // Awaited, so the purge holds no connection when the database closes.
         session_purge.abort();
         let _cancelled = session_purge.await;
         attachment_purge.abort();
@@ -210,7 +210,7 @@ pub async fn serve_instance(
     .await;
 
     // SQLCipher crashes if a connection is still closing when the process exits (ADR-0006).
-    pool.close().await;
+    database.close().await;
     result
 }
 
@@ -253,11 +253,11 @@ pub async fn create_user(
         );
     }
     let database_key = MasterKey::read_file(&config.master_key_file)?.derive_database_key();
-    let pool = open_encrypted_database(&database_path, &database_key).await?;
+    let database = open_encrypted_database(&database_path, &database_key).await?;
     let result = async {
-        migrate_with_backup(&pool, &config.backup_directory()).await?;
+        migrate_with_backup(&database, &config.backup_directory()).await?;
         Ok(crate::domain::accounts::Accounts::new(
-            pool.clone(),
+            database.clone(),
             config.registration_mode,
             std::sync::Arc::default(),
             std::sync::Arc::default(),
@@ -275,7 +275,7 @@ pub async fn create_user(
         .await?)
     }
     .await;
-    pool.close().await;
+    database.close().await;
     result
 }
 
@@ -412,15 +412,15 @@ mod tests {
             config
         );
         let key = MasterKey::read_file(&config.master_key_file).unwrap();
-        let pool = open_encrypted_database(&config.database_path(), &key.derive_database_key())
+        let database = open_encrypted_database(&config.database_path(), &key.derive_database_key())
             .await
             .unwrap();
         let has_users_table: bool =
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'users')")
-                .fetch_one(&pool)
+                .fetch_one(database.writer())
                 .await
                 .unwrap();
-        pool.close().await;
+        database.close().await;
         assert!(has_users_table);
 
         let key_before = std::fs::read(&config.master_key_file).unwrap();
@@ -478,7 +478,7 @@ mod tests {
             .await
             .unwrap();
         let key = MasterKey::read_file(&config.master_key_file).unwrap();
-        let pool = open_encrypted_database(&config.database_path(), &key.derive_database_key())
+        let database = open_encrypted_database(&config.database_path(), &key.derive_database_key())
             .await
             .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -487,7 +487,7 @@ mod tests {
         let server = tokio::spawn(serve_until_shutdown(
             listener,
             AppState::new(
-                pool.clone(),
+                database.clone(),
                 &config,
                 crate::storage::attachment_files::AttachmentFiles::new(
                     config.attachment_directory(),
@@ -506,7 +506,7 @@ mod tests {
 
         stop_sender.send(()).unwrap();
         server.await.unwrap().unwrap();
-        pool.close().await;
+        database.close().await;
     }
 
     /// Minimal HTTP/1.1 client, so the test needs no HTTP client dependency.

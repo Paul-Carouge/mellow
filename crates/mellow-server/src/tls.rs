@@ -610,7 +610,7 @@ mod tests {
 
     use super::*;
     use crate::domain::account_rules::RegistrationMode;
-    use crate::domain::accounts::tests::migrated_pool;
+    use crate::domain::accounts::tests::migrated_database;
     use crate::http::tests::test_state;
 
     /// Nothing listens there: certificate requests fail at once, without touching the network.
@@ -646,14 +646,14 @@ mod tests {
 
     #[tokio::test]
     async fn silent_and_excess_connections_are_closed_and_shutdown_is_clean() {
-        let (directory, pool) = migrated_pool().await;
+        let (directory, database) = migrated_database().await;
         let certificate_directory = directory.path().join("certificates");
         create_private_directory(&certificate_directory).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn({
-            let state = test_state(pool.clone(), RegistrationMode::Open);
+            let state = test_state(database.clone(), RegistrationMode::Open);
             let tls = tls_config(&certificate_directory);
             async move {
                 serve_tls_with_policy(
@@ -691,7 +691,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        pool.close().await;
+        database.close().await;
     }
 
     fn guarded_stream(
@@ -889,7 +889,7 @@ mod tests {
 
     fn spawn_server(
         listener: TcpListener,
-        pool: sqlx::SqlitePool,
+        database: crate::storage::Database,
         tls: TlsConfig,
         directory_url: String,
         acme_client_tls_config: Arc<rustls_acme::rustls::ClientConfig>,
@@ -901,7 +901,7 @@ mod tests {
         let server = tokio::spawn(async move {
             serve_tls_with_policy(
                 listener,
-                test_state(pool, RegistrationMode::Open),
+                test_state(database, RegistrationMode::Open),
                 &tls,
                 CertificateAuthority {
                     directory_url: &directory_url,
@@ -942,7 +942,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs Pebble: set MELLOW_PEBBLE_BINARY"]
     async fn a_certificate_is_obtained_over_tls_alpn_and_served_from_the_cache_after_restart() {
-        let (directory, pool) = migrated_pool().await;
+        let (directory, database) = migrated_database().await;
         let certificate_directory = directory.path().join("certificates");
         create_private_directory(&certificate_directory).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -968,7 +968,7 @@ mod tests {
         };
         let (stop, server) = spawn_server(
             listener,
-            pool.clone(),
+            database.clone(),
             tls.clone(),
             directory_url.clone(),
             acme_client_tls_config.clone(),
@@ -997,7 +997,7 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
         let (stop, server) = spawn_server(
             listener,
-            pool.clone(),
+            database.clone(),
             tls,
             directory_url,
             acme_client_tls_config,
@@ -1005,6 +1005,6 @@ mod tests {
         wait_for_https_health(port, &issuing_root).await;
         stop.send(()).unwrap();
         server.await.unwrap().unwrap();
-        pool.close().await;
+        database.close().await;
     }
 }

@@ -2,7 +2,9 @@
 //! they record, inside its transaction.
 
 use mellow_protocol::{AuditAction, AuditChange, AuditLogEntry, Snowflake};
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::SqliteConnection;
+
+use super::Database;
 
 use crate::storage::guilds::{GuildStorageError, to_id, to_integer};
 
@@ -134,7 +136,7 @@ type AuditRow = (
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn list_audit_entries(
-    pool: &SqlitePool,
+    database: &Database,
     guild_id: Snowflake,
     before: Option<Snowflake>,
     limit: u32,
@@ -166,7 +168,7 @@ pub(crate) async fn list_audit_entries(
     .bind(visible_channel_ids.as_deref())
     .bind(visible_channel_ids.as_deref())
     .bind(i64::from(limit))
-    .fetch_all(pool)
+    .fetch_all(database.readers())
     .await?;
     rows.into_iter()
         .map(
