@@ -30,6 +30,8 @@ export const REACTING_USERS_PAGE_SIZE = 100;
 /** The path segment of `/users/@me/{kind}` (ADR-0021). */
 export type ProfileImageKind = "avatar" | "banner";
 const DEVICE_NAME = "Web browser";
+/** JSON requests only: uploads may take longer on a slow link. */
+const REQUEST_TIMEOUT_MILLISECONDS = 30_000;
 const SESSION_TRANSPORT_HEADER = "X-Mellow-Session-Transport";
 
 /** A refusal from the instance. Its `message` is the instance's own text: never shown as is. */
@@ -60,6 +62,9 @@ export class RestClient {
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
         credentials: "same-origin",
+        // A silently dead connection would otherwise leave a send "Sending…" for minutes, with no
+        // way to retry; sends carry a nonce, so retrying after a timeout never duplicates them.
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MILLISECONDS),
       });
     } catch {
       throw new ApiError(0, "NETWORK");
