@@ -42,8 +42,14 @@
   const pins = $derived(client.pinsByChannel.get(channelId) ?? { status: "loading" as const });
   const loadedIds = $derived(new Set(client.messages(channelId).map((message) => message.id)));
 
+  // Asked again whenever the list is gone, as after a `Ready` while the panel is open.
+  $effect(() => {
+    if (!client.pinsByChannel.has(channelId)) {
+      void client.loadPins(channelId);
+    }
+  });
+
   onMount(() => {
-    void client.loadPins(channelId);
     const bounds = anchor.getBoundingClientRect();
     position = { top: bounds.bottom, right: Math.max(window.innerWidth - bounds.right, 0) };
     panel.showPopover();
