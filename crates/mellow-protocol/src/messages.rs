@@ -76,6 +76,11 @@ pub struct Message {
     /// servers' payloads.
     #[serde(default)]
     pub pinned: bool,
+    /// The people the server found mentioned (`@username`, or a one-word display name, outside
+    /// code) who can view the channel; never the author. Absent when empty and from older
+    /// servers' payloads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mention_ids: Vec<Snowflake>,
 }
 
 /// One emoji's reactions on a message.
@@ -113,6 +118,19 @@ pub struct ReadState {
     pub last_read_message_id: Snowflake,
 }
 
+/// Where a channel the user can view stands, in `Ready`: its newest message and how many unread
+/// messages mention the user (in a direct-message conversation: how many unread messages from
+/// others), counted up to `MAXIMUM_COUNTED_UNREAD_MENTIONS`. Only for channels with a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelUnread {
+    pub channel_id: Snowflake,
+    pub last_message_id: Snowflake,
+    pub mention_count: u32,
+}
+
+/// Counting stops here, so a long unread history costs a bounded read; clients show "99+".
+pub const MAXIMUM_COUNTED_UNREAD_MENTIONS: u32 = 100;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +163,7 @@ mod tests {
                 me: true,
             }],
             pinned: true,
+            mention_ids: Vec::new(),
         };
         let json = serde_json::to_value(&message).unwrap();
         assert_eq!(json["id"], "9");

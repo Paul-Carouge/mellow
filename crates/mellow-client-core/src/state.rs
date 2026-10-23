@@ -871,6 +871,7 @@ mod tests {
             attachments: Vec::new(),
             reactions: Vec::new(),
             pinned: false,
+            mention_ids: Vec::new(),
         }
     }
 
@@ -906,6 +907,7 @@ mod tests {
             }],
             online_user_ids: vec![ME],
             direct_message_channels: Vec::new(),
+            channel_unreads: Vec::new(),
         });
         state
     }
@@ -1432,6 +1434,7 @@ mod tests {
             read_states: Vec::new(),
             online_user_ids: Vec::new(),
             direct_message_channels: Vec::new(),
+            channel_unreads: Vec::new(),
         });
         let statuses: Vec<(&str, PendingMessageStatus)> = state
             .pending_messages(GENERAL)
@@ -1526,6 +1529,7 @@ mod tests {
             read_states: Vec::new(),
             online_user_ids: Vec::new(),
             direct_message_channels: Vec::new(),
+            channel_unreads: Vec::new(),
         });
         assert_eq!(state.pending_messages(GENERAL).count(), 0);
     }
@@ -1614,6 +1618,7 @@ mod tests {
             read_states: Vec::new(),
             online_user_ids: Vec::new(),
             direct_message_channels: Vec::new(),
+            channel_unreads: Vec::new(),
         });
         assert_eq!(
             state.direct_message_channels(),

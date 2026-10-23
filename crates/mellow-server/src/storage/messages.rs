@@ -15,6 +15,8 @@ pub(crate) enum MessageStorageError {
     Database(#[from] sqlx::Error),
     #[error("cannot record the audit entry")]
     AuditEntry(#[from] GuildStorageError),
+    #[error("a stored mention list is not a JSON array of ids")]
+    InvalidMentionList,
     /// An attachment id that is not an unsent upload of this author to this channel.
     #[error("attachment unavailable")]
     AttachmentUnavailable,
@@ -53,6 +55,8 @@ pub(crate) struct StoredMessage {
     pub(crate) reply_to_id: Option<Snowflake>,
     pub(crate) edited_at_unix_milliseconds: Option<u64>,
     pub(crate) is_pinned: bool,
+    /// In the order they were stored (`message_mentions`).
+    pub(crate) mention_ids: Vec<Snowflake>,
 }
 
 type MessageRow = (
@@ -65,6 +69,7 @@ type MessageRow = (
     Option<i64>,
     Option<i64>,
     Option<i64>,
+    String,
 );
 
 /// A macro so queries stay `&'static str` through `concat!` (sqlx refuses runtime-built SQL).
@@ -72,7 +77,9 @@ macro_rules! select_message_columns {
     () => {
         "SELECT messages.id, messages.channel_id, messages.author_id, users.username, \
          users.display_name, messages.content, messages.reply_to_id, \
-         messages.edited_at_unix_milliseconds, messages.pinned_at_unix_milliseconds \
+         messages.edited_at_unix_milliseconds, messages.pinned_at_unix_milliseconds, \
+         (SELECT json_group_array(message_mentions.user_id) FROM message_mentions \
+         WHERE message_mentions.message_id = messages.id) \
          FROM messages JOIN users ON users.id = messages.author_id "
     };
 }
@@ -83,7 +90,8 @@ macro_rules! returning_message_columns {
         "RETURNING id, channel_id, author_id, \
          (SELECT username FROM users WHERE users.id = author_id), \
          (SELECT display_name FROM users WHERE users.id = author_id), \
-         content, reply_to_id, edited_at_unix_milliseconds, pinned_at_unix_milliseconds"
+         content, reply_to_id, edited_at_unix_milliseconds, pinned_at_unix_milliseconds, \
+         (SELECT json_group_array(user_id) FROM message_mentions WHERE message_id = id)"
     };
 }
 
@@ -98,6 +106,7 @@ fn message_from_row(row: MessageRow) -> Result<StoredMessage, MessageStorageErro
         reply_to_id,
         edited_at,
         pinned_at,
+        mention_ids_json,
     ) = row;
     Ok(StoredMessage {
         id: to_id(id)?,
@@ -111,6 +120,11 @@ fn message_from_row(row: MessageRow) -> Result<StoredMessage, MessageStorageErro
             .map(|value| u64::try_from(value).map_err(|_| MessageStorageError::IntegerOutOfRange))
             .transpose()?,
         is_pinned: pinned_at.is_some(),
+        mention_ids: serde_json::from_str::<Vec<i64>>(&mention_ids_json)
+            .map_err(|_| MessageStorageError::InvalidMentionList)?
+            .into_iter()
+            .map(to_id)
+            .collect::<Result<_, _>>()?,
     })
 }
 
@@ -125,6 +139,28 @@ pub(crate) struct NewMessage {
     pub(crate) nonce: Option<String>,
     /// Unsent uploads of the author to this channel, linked in the same transaction.
     pub(crate) attachment_ids: Vec<Snowflake>,
+    /// Stored in the same transaction (`domain::mentions`).
+    pub(crate) mentioned_user_ids: Vec<Snowflake>,
+}
+
+async fn insert_mentions(
+    connection: &mut sqlx::SqliteConnection,
+    channel_id: Snowflake,
+    message_id: Snowflake,
+    user_ids: &[Snowflake],
+) -> Result<(), MessageStorageError> {
+    for user_id in user_ids {
+        sqlx::query(
+            "INSERT OR IGNORE INTO message_mentions (user_id, channel_id, message_id) \
+             VALUES (?, ?, ?)",
+        )
+        .bind(to_integer(user_id.raw())?)
+        .bind(to_integer(channel_id.raw())?)
+        .bind(to_integer(message_id.raw())?)
+        .execute(&mut *connection)
+        .await?;
+    }
+    Ok(())
 }
 
 /// Inserts the message and returns it with its author's public fields.
@@ -171,8 +207,19 @@ pub(crate) async fn insert_message(
             return Err(MessageStorageError::AttachmentUnavailable);
         }
     }
+    insert_mentions(
+        &mut transaction,
+        message.channel_id,
+        message.id,
+        &message.mentioned_user_ids,
+    )
+    .await?;
     transaction.commit().await?;
-    message_from_row(row)
+    // RETURNING ran before the mentions were stored.
+    Ok(StoredMessage {
+        mention_ids: message.mentioned_user_ids.clone(),
+        ..message_from_row(row)?
+    })
 }
 
 /// The message if it exists in `channel_id`; a message of another channel is not found.
@@ -290,20 +337,38 @@ pub(crate) async fn list_messages(
 /// Fails on database errors.
 pub(crate) async fn update_message_content(
     database: &Database,
+    channel_id: Snowflake,
     message_id: Snowflake,
     content: &str,
+    mentioned_user_ids: &[Snowflake],
     edited_at_unix_milliseconds: u64,
 ) -> Result<Option<StoredMessage>, MessageStorageError> {
+    let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
     let row: Option<MessageRow> = sqlx::query_as(concat!(
-        "UPDATE messages SET content = ?, edited_at_unix_milliseconds = ? WHERE id = ? ",
+        "UPDATE messages SET content = ?, edited_at_unix_milliseconds = ? \
+         WHERE id = ? AND channel_id = ? ",
         returning_message_columns!()
     ))
     .bind(content)
     .bind(to_integer(edited_at_unix_milliseconds)?)
     .bind(to_integer(message_id.raw())?)
-    .fetch_optional(database.writer())
+    .bind(to_integer(channel_id.raw())?)
+    .fetch_optional(&mut *transaction)
     .await?;
-    row.map(message_from_row).transpose()
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    sqlx::query("DELETE FROM message_mentions WHERE message_id = ?")
+        .bind(to_integer(message_id.raw())?)
+        .execute(&mut *transaction)
+        .await?;
+    insert_mentions(&mut transaction, channel_id, message_id, mentioned_user_ids).await?;
+    transaction.commit().await?;
+    // RETURNING ran before the mentions were replaced.
+    Ok(Some(StoredMessage {
+        mention_ids: mentioned_user_ids.to_vec(),
+        ..message_from_row(row)?
+    }))
 }
 
 /// `audit` records a moderator deleting someone else's message, in the same transaction; an
@@ -494,5 +559,123 @@ pub(crate) async fn list_read_states(
     .await?;
     rows.into_iter()
         .map(|(channel_id, message_id)| Ok((to_id(channel_id)?, to_id(message_id)?)))
+        .collect()
+}
+
+/// The newest message of each of `channel_ids` that has one.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn last_message_ids(
+    database: &Database,
+    channel_ids: &[Snowflake],
+) -> Result<Vec<(Snowflake, Snowflake)>, MessageStorageError> {
+    // One index seek per channel on `messages_by_channel_id`.
+    let rows: Vec<(i64, Option<i64>)> = sqlx::query_as(
+        "SELECT channel.value, \
+         (SELECT MAX(messages.id) FROM messages WHERE messages.channel_id = channel.value) \
+         FROM json_each(?) AS channel",
+    )
+    .bind(json_array_of_ids(channel_ids))
+    .fetch_all(database.readers())
+    .await?;
+    rows.into_iter()
+        .filter_map(|(channel_id, last)| last.map(|last| (channel_id, last)))
+        .map(|(channel_id, last)| Ok((to_id(channel_id)?, to_id(last)?)))
+        .collect()
+}
+
+/// How many messages after the user's read position mention them, per channel that has any.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn unread_mention_counts(
+    database: &Database,
+    user_id: Snowflake,
+) -> Result<Vec<(Snowflake, u32)>, MessageStorageError> {
+    let rows: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT message_mentions.channel_id, COUNT(*) FROM message_mentions \
+         LEFT JOIN read_states ON read_states.user_id = message_mentions.user_id \
+         AND read_states.channel_id = message_mentions.channel_id \
+         WHERE message_mentions.user_id = ? \
+         AND message_mentions.message_id > COALESCE(read_states.last_read_message_id, 0) \
+         GROUP BY message_mentions.channel_id",
+    )
+    .bind(to_integer(user_id.raw())?)
+    .fetch_all(database.readers())
+    .await?;
+    rows.into_iter()
+        .map(|(channel_id, count)| {
+            Ok((
+                to_id(channel_id)?,
+                u32::try_from(count).map_err(|_| MessageStorageError::IntegerOutOfRange)?,
+            ))
+        })
+        .collect()
+}
+
+/// How many messages from others follow the user's read position in `channel_id`, counted up
+/// to `limit`.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn unread_count_from_others(
+    database: &Database,
+    user_id: Snowflake,
+    channel_id: Snowflake,
+    limit: u32,
+) -> Result<u32, MessageStorageError> {
+    let user_id = to_integer(user_id.raw())?;
+    let channel_id = to_integer(channel_id.raw())?;
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM messages WHERE channel_id = ?1 AND author_id != ?2 \
+         AND id > COALESCE((SELECT last_read_message_id FROM read_states \
+             WHERE user_id = ?2 AND channel_id = ?1), 0) \
+         LIMIT ?3)",
+    )
+    .bind(channel_id)
+    .bind(user_id)
+    .bind(i64::from(limit))
+    .fetch_one(database.readers())
+    .await?;
+    u32::try_from(count).map_err(|_| MessageStorageError::IntegerOutOfRange)
+}
+
+/// Id, username and display name of every member of the guild, to find who a message mentions.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn mentionable_members_of_guild(
+    database: &Database,
+    guild_id: Snowflake,
+) -> Result<Vec<(Snowflake, String, String)>, MessageStorageError> {
+    let rows: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT users.id, users.username, users.display_name FROM guild_members \
+         JOIN users ON users.id = guild_members.user_id WHERE guild_members.guild_id = ?",
+    )
+    .bind(to_integer(guild_id.raw())?)
+    .fetch_all(database.readers())
+    .await?;
+    rows.into_iter()
+        .map(|(id, username, display_name)| Ok((to_id(id)?, username, display_name)))
+        .collect()
+}
+
+/// Id, username and display name of each of `user_ids`.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn mentionable_users(
+    database: &Database,
+    user_ids: &[Snowflake],
+) -> Result<Vec<(Snowflake, String, String)>, MessageStorageError> {
+    let rows: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, username, display_name FROM users WHERE id IN (SELECT value FROM json_each(?))",
+    )
+    .bind(json_array_of_ids(user_ids))
+    .fetch_all(database.readers())
+    .await?;
+    rows.into_iter()
+        .map(|(id, username, display_name)| Ok((to_id(id)?, username, display_name)))
         .collect()
 }

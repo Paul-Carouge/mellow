@@ -8,6 +8,7 @@ pub mod clock;
 pub(crate) mod guild_rules;
 pub(crate) mod guilds;
 pub(crate) mod image_processing;
+pub(crate) mod mentions;
 pub(crate) mod message_rules;
 pub(crate) mod messages;
 pub(crate) mod password;
