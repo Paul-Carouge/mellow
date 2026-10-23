@@ -45,7 +45,8 @@ pub(crate) struct AppState {
     pub(crate) maximum_attachment_bytes: u64,
     pub(crate) events: Arc<EventHub>,
     pub(crate) gateway_sessions: Arc<crate::gateway::SessionRegistry>,
-    /// Limits keyed by a signed-in user or one of their channels.
+    /// Limits of signed-in requests: keyed by the user, one of their channels, or the address of
+    /// a request that carries a valid session.
     pub(crate) rate_limiter: Arc<RateLimiter>,
     /// Limits keyed by address or login name, before any session: kept apart so a flood of
     /// sign-in attempts cannot fill the table that signed-in users' limits need.

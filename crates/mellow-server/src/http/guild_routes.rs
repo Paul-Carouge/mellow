@@ -170,7 +170,7 @@ pub(crate) async fn join_with_invite(
     ApiPath(code): ApiPath<String>,
 ) -> Result<Json<Guild>, ApiError> {
     let address = client_address_key(peer, &headers, &state.trusted_proxy_networks);
-    if !state.unauthenticated_rate_limiter.record_event(
+    if !state.rate_limiter.record_event(
         &format!("invite:{address}"),
         INVITE_ATTEMPTS_PER_ADDRESS,
         Instant::now(),
