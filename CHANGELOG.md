@@ -4,6 +4,21 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-23
+Robustness and speed.
+
+### Fixed
+- Web: a deleted message could come back after a late answer, and deleting it again failed; messages are now deleted in their own channel and a message already gone counts as deleted.
+- Web: deleting the focused message no longer leaves the message list out of keyboard reach, and cancelling a dialog opened from a message's actions no longer loses the focus.
+- Web: no gap in a channel's history after a reconnection; the pinned messages panel loads again after one; a send on a dead connection becomes "Not sent" after 30 seconds instead of staying "Sending…".
+- Server: one address trying many login names could fill the rate limiter and lock everyone out of sending and reconnecting; sign-ins, gateway connections and signed-in limits now count apart.
+- Server: members past the first 1 000 of a server now show as online when you connect.
+- Security: `ctutils` updated for RUSTSEC-2026-0385.
+
+### Changed
+- Web: the message list does about 85 % less work per new message, reaction or edit in a long channel, and uses 40 % less memory.
+- Server: history pages load several times faster when messages have attachments.
+
 ## [0.9.0] - 2026-10-23
 Channel settings and icons on the web.
 
