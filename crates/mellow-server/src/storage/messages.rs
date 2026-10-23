@@ -91,7 +91,8 @@ macro_rules! returning_message_columns {
          (SELECT username FROM users WHERE users.id = author_id), \
          (SELECT display_name FROM users WHERE users.id = author_id), \
          content, reply_to_id, edited_at_unix_milliseconds, pinned_at_unix_milliseconds, \
-         (SELECT json_group_array(user_id) FROM message_mentions WHERE message_id = id)"
+         (SELECT json_group_array(message_mentions.user_id) FROM message_mentions \
+         WHERE message_mentions.message_id = messages.id)"
     };
 }
 

@@ -1,7 +1,9 @@
 //! Who a message mentions, with the rule the web client uses to draw mention chips
-//! (`web/src/components/mentions.ts`): "@" at the start or after a space, then a username, or a
-//! display name of one word, outside Markdown code. The protocol has no mention syntax yet, so the
-//! server finds them in the text the same way.
+//! (`web/src/components/mentions.ts`): "@" at the start, after a space or a formatting mark, then
+//! a username, or a display name of one word, outside Markdown code. The protocol has no mention
+//! syntax yet, so the server finds them in the text the same way.
+//! shortcut: escapes ("\*@paul") are not read as Markdown here, so the rare mention right after
+//! one shows a chip but counts for no one; send mention ids from the composer to drop the guess.
 
 use std::collections::{HashMap, HashSet};
 
@@ -21,27 +23,22 @@ pub(crate) struct MentionablePerson {
     pub(crate) display_name: String,
 }
 
+/// What may come right before an "@": the web client looks for mentions in each piece of text
+/// Markdown leaves, so "**@paul**" and "||@paul||" mention too.
+fn may_precede_a_mention(character: char) -> bool {
+    character.is_whitespace() || matches!(character, '*' | '_' | '~' | '|')
+}
+
 fn is_name_character(character: char) -> bool {
     character.is_alphanumeric() || character == '_' || character == '.'
 }
 
-/// The text outside fenced code blocks and inline code spans, where mentions count.
+/// The text outside code, where mentions count. A run of backticks opens code up to the next run
+/// of the same length, across lines too, which covers fenced blocks as the web client reads them;
+/// a run never closed stays text.
 fn text_outside_code(content: &str) -> String {
-    let mut outside = String::with_capacity(content.len());
-    let mut is_in_fence = false;
-    for line in content.split_inclusive('\n') {
-        if line.trim_start().starts_with("```") {
-            is_in_fence = !is_in_fence;
-            outside.push('\n');
-            continue;
-        }
-        if !is_in_fence {
-            outside.push_str(line);
-        }
-    }
-    // Inline code: a run of backticks up to the next run of the same length, as in CommonMark.
-    let characters: Vec<char> = outside.chars().collect();
-    let mut kept = String::with_capacity(outside.len());
+    let characters: Vec<char> = content.chars().collect();
+    let mut kept = String::with_capacity(content.len());
     let mut index = 0;
     while index < characters.len() {
         if characters[index] != '`' {
@@ -72,14 +69,15 @@ fn text_outside_code(content: &str) -> String {
     kept
 }
 
-/// The names written after an "@", in order, each with its spelling without trailing dots
-/// ("@paul." at the end of a sentence), both lowercased.
-fn mention_candidates(content: &str) -> Vec<[String; 2]> {
+/// The names written after an "@", in order, each with its spellings to try, lowercased: as
+/// written, without trailing dots ("@paul." at the end of a sentence), and without a closing
+/// italic mark ("_@paul_").
+fn mention_candidates(content: &str) -> Vec<[String; 3]> {
     let text = text_outside_code(content);
     let characters: Vec<char> = text.chars().collect();
     let mut candidates = Vec::new();
     for (index, character) in characters.iter().enumerate() {
-        let is_after_space_or_start = index == 0 || characters[index - 1].is_whitespace();
+        let is_after_space_or_start = index == 0 || may_precede_a_mention(characters[index - 1]);
         if *character != '@' || !is_after_space_or_start {
             continue;
         }
@@ -93,7 +91,8 @@ fn mention_candidates(content: &str) -> Vec<[String; 2]> {
         }
         let name = name.to_lowercase();
         let without_trailing_dots = name.trim_end_matches('.').to_owned();
-        candidates.push([name, without_trailing_dots]);
+        let without_closing_italic = name.trim_end_matches(['.', '_']).to_owned();
+        candidates.push([name, without_trailing_dots, without_closing_italic]);
     }
     candidates
 }
@@ -205,6 +204,18 @@ mod tests {
         assert_eq!(mentioned("`@paul` and ``a ` @bob``"), Vec::<u64>::new());
         assert_eq!(mentioned("```\n@paul\n```\n@bob"), [3]);
         assert_eq!(mentioned("an `unclosed @paul"), [1]);
+        assert_eq!(
+            mentioned("```npm i```\n@paul look"),
+            [1],
+            "a fence on one line"
+        );
+        assert_eq!(
+            mentioned("```\ncode\n``` @paul"),
+            [1],
+            "after the closing fence"
+        );
+        assert_eq!(mentioned("```\n@paul"), [1], "a fence never closed is text");
+        assert_eq!(mentioned("**@paul** ||@bob|| _@alice_"), [1, 3, 2]);
         assert_eq!(mentioned("line\n@bob"), [3]);
     }
 
