@@ -28,10 +28,18 @@ The goal is Discord's feature set on the web client. In order:
 3. **Reactions and pinned messages**: emoji reactions on messages (add, remove, who reacted) and pinned messages per channel, with their gateway events. Server and protocol done (#64, migration 0012, `ADD_REACTIONS`); web UI on `feat/web-reactions-and-pins` (chips, quick reactions, emoji picker, who reacted, moderator removal, pin confirmations, pins panel).
 4. **Server settings on the web**: done, released in `v0.8.0` and `v0.9.0` (overview with rename and delete, roles, invites, members, bans, moderation log, with the new rename, delete and invite APIs); channel settings and icons: server and protocol (#70), web UI (#71) (channel Overview with icon, name and topic, Permissions with Deny / Inherit / Allow per role and member, the square crop dialog shared with the server icon, icons in the server strip, channel rows and the chat header).
 5. **Unread and mentions from the server**: `last_message_id` per channel and mention counts in `Ready`, so channels opened in no session still show unread state and badges.
-6. **Presence**: idle, do not disturb, invisible, and a custom status.
-7. **Group direct messages** and a "New message" picker.
-8. **Categories and channel management**: create categories, reorder channels, channel topics.
-9. **Message search** (SQLite FTS5), then threads, custom emoji, link previews, notifications (browser), voice and video (own ADR).
+Items 6 to 16 include the owner's wish list (the `#roadmap` channel of their instance and their messages, 2026-10-23); their order can change on request.
+6. **Presence and the user card menu**: idle, do not disturb, invisible, a custom status; clicking the user card at the bottom opens a menu to change status and copy one's user id (owner).
+7. **Friends**: friend requests (send, accept, refuse, cancel), friend list with online state, remove, block; a Friends space above the direct messages to manage them (owner).
+8. **Group direct messages** and a "New message" picker.
+9. **Context menus everywhere** (owner): right-click (and long press, keyboard menu key) on a channel, a member, a message, a server, with the actions that fit, instead of the browser's menu.
+10. **Channels and server creation**: create categories, reorder channels, channel topics; text channel names may keep capitals and spaces if the server wants (owner; Discord forces lowercase and dashes); a richer, more customisable "Create a server" dialog (owner).
+11. **Better invites** (owner): choose the link's lifetime and number of uses (the API already accepts both), codes in a readable style such as `AE8C-78A9`, a nicer invite dialog.
+12. **Interface polish** (owner): the quick switcher ("Go to…") as a search field with a magnifier icon, keeping today's style and colours; nicer permission badges; a better emoji picker.
+13. **Custom emoji**: upload still or animated emoji per server, use them in messages and reactions (owner).
+14. **Notifications**: browser notifications for mentions and direct messages, and Melli reacting to them (owner).
+15. **Message search** (SQLite FTS5), then threads and link previews.
+16. **Voice channels** (owner, own ADR: an SFU in the server binary, WebRTC, no external service), then a soundboard and a join sound per member (owner), then video and screen sharing.
 The desktop, Android and the admin web UI wait until the web is finished, then catch up.
 
 ### Known gaps and debts
@@ -86,7 +94,5 @@ The desktop, Android and the admin web UI wait until the web is finished, then c
 - Announced public release (`v0.1.0` exists since 2026-10-20 for testing), after the trade-dress review.
 
 ## Later (not committed)
-- Voice and video (SFU in the server binary).
-- Message search (SQLite FTS5).
 - End-to-end encrypted DMs.
 - S3-compatible attachment storage, OIDC login.
