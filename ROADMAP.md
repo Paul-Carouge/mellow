@@ -21,6 +21,7 @@ Merged into `main`: #1 to #68. Released up to `v0.8.0` (2026-10-22), which runs 
 
 ### Next, in order (web client and the server it needs)
 The goal is Discord's feature set on the web client. In order:
+0. **Before item 5, decided with the owner (2026-10-23)**: the single SQLite writer task, then a per-guild permission snapshot for event fan-out and resyncs (measured needs, see "Known gaps" and the development notes); SQLite + SQLCipher stays the database.
 1. **French interface** (owner's request): done on the web, waiting for a native speaker's review before release. The whole web UI is in natural French (tutoiement) next to English, picked from the browser language (typed TS catalogues, ADR-0022).
 2. **Markdown in messages**: done on the web: bold, italic, underline, strikethrough, inline code, code blocks, quotes, spoilers, headings, lists and links, as Discord renders them (subtext, numbered lists and "Copy code" not yet).
 3. **Reactions and pinned messages**: emoji reactions on messages (add, remove, who reacted) and pinned messages per channel, with their gateway events. Server and protocol done (#64, migration 0012, `ADD_REACTIONS`); web UI on `feat/web-reactions-and-pins` (chips, quick reactions, emoji picker, who reacted, moderator removal, pin confirmations, pins panel).
