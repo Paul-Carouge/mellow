@@ -18,6 +18,16 @@ describe("splitMentions", () => {
     ]);
   });
 
+  it("gives a display name two people share to no one, but keeps usernames", () => {
+    const eve: PublicUser = { id: "5", username: "eve", display_name: "Twin" };
+    const mallory: PublicUser = { id: "6", username: "mallory", display_name: "twin" };
+    const twins = mentionablePeople([eve, mallory]);
+    expect(splitMentions("@twin @eve", twins)).toEqual([
+      { kind: "text", text: "@twin " },
+      { kind: "mention", text: "@eve", user: eve },
+    ]);
+  });
+
   it("leaves trailing dots, unknown names and addresses as text", () => {
     expect(splitMentions("thanks @j.doe.", people)).toEqual([
       { kind: "text", text: "thanks " },

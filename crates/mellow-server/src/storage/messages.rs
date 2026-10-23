@@ -55,7 +55,7 @@ pub(crate) struct StoredMessage {
     pub(crate) reply_to_id: Option<Snowflake>,
     pub(crate) edited_at_unix_milliseconds: Option<u64>,
     pub(crate) is_pinned: bool,
-    /// In the order they were stored (`message_mentions`).
+    /// By id, so REST answers and events list them alike.
     pub(crate) mention_ids: Vec<Snowflake>,
 }
 
@@ -95,6 +95,11 @@ macro_rules! returning_message_columns {
     };
 }
 
+fn sorted_ids(mut ids: Vec<Snowflake>) -> Vec<Snowflake> {
+    ids.sort_unstable_by_key(|id| id.raw());
+    ids
+}
+
 fn message_from_row(row: MessageRow) -> Result<StoredMessage, MessageStorageError> {
     let (
         id,
@@ -120,11 +125,13 @@ fn message_from_row(row: MessageRow) -> Result<StoredMessage, MessageStorageErro
             .map(|value| u64::try_from(value).map_err(|_| MessageStorageError::IntegerOutOfRange))
             .transpose()?,
         is_pinned: pinned_at.is_some(),
-        mention_ids: serde_json::from_str::<Vec<i64>>(&mention_ids_json)
-            .map_err(|_| MessageStorageError::InvalidMentionList)?
-            .into_iter()
-            .map(to_id)
-            .collect::<Result<_, _>>()?,
+        mention_ids: sorted_ids(
+            serde_json::from_str::<Vec<i64>>(&mention_ids_json)
+                .map_err(|_| MessageStorageError::InvalidMentionList)?
+                .into_iter()
+                .map(to_id)
+                .collect::<Result<_, _>>()?,
+        ),
     })
 }
 
@@ -217,7 +224,7 @@ pub(crate) async fn insert_message(
     transaction.commit().await?;
     // RETURNING ran before the mentions were stored.
     Ok(StoredMessage {
-        mention_ids: message.mentioned_user_ids.clone(),
+        mention_ids: sorted_ids(message.mentioned_user_ids.clone()),
         ..message_from_row(row)?
     })
 }
@@ -366,7 +373,7 @@ pub(crate) async fn update_message_content(
     transaction.commit().await?;
     // RETURNING ran before the mentions were replaced.
     Ok(Some(StoredMessage {
-        mention_ids: mentioned_user_ids.to_vec(),
+        mention_ids: sorted_ids(mentioned_user_ids.to_vec()),
         ..message_from_row(row)?
     }))
 }
@@ -585,25 +592,61 @@ pub(crate) async fn last_message_ids(
         .collect()
 }
 
-/// How many messages after the user's read position mention them, per channel that has any.
+/// How many messages after the user's read position mention them, in each of `channel_ids`,
+/// counted up to `limit`: one bounded range of the primary key per channel.
 ///
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn unread_mention_counts(
     database: &Database,
     user_id: Snowflake,
+    channel_ids: &[Snowflake],
+    limit: u32,
 ) -> Result<Vec<(Snowflake, u32)>, MessageStorageError> {
     let rows: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT message_mentions.channel_id, COUNT(*) FROM message_mentions \
-         LEFT JOIN read_states ON read_states.user_id = message_mentions.user_id \
-         AND read_states.channel_id = message_mentions.channel_id \
-         WHERE message_mentions.user_id = ? \
-         AND message_mentions.message_id > COALESCE(read_states.last_read_message_id, 0) \
-         GROUP BY message_mentions.channel_id",
+        "SELECT channel.value, (SELECT COUNT(*) FROM (SELECT 1 FROM message_mentions \
+             WHERE user_id = ?1 AND channel_id = channel.value \
+             AND message_id > COALESCE((SELECT last_read_message_id FROM read_states \
+                 WHERE user_id = ?1 AND channel_id = channel.value), 0) \
+             LIMIT ?3)) \
+         FROM json_each(?2) AS channel",
     )
     .bind(to_integer(user_id.raw())?)
+    .bind(json_array_of_ids(channel_ids))
+    .bind(i64::from(limit))
     .fetch_all(database.readers())
     .await?;
+    counts_from_rows(rows)
+}
+
+/// How many messages from others follow the user's read position in each of `channel_ids`,
+/// counted up to `limit`.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn unread_counts_from_others(
+    database: &Database,
+    user_id: Snowflake,
+    channel_ids: &[Snowflake],
+    limit: u32,
+) -> Result<Vec<(Snowflake, u32)>, MessageStorageError> {
+    let rows: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT channel.value, (SELECT COUNT(*) FROM (SELECT 1 FROM messages \
+             WHERE channel_id = channel.value AND author_id != ?1 \
+             AND id > COALESCE((SELECT last_read_message_id FROM read_states \
+                 WHERE user_id = ?1 AND channel_id = channel.value), 0) \
+             LIMIT ?3)) \
+         FROM json_each(?2) AS channel",
+    )
+    .bind(to_integer(user_id.raw())?)
+    .bind(json_array_of_ids(channel_ids))
+    .bind(i64::from(limit))
+    .fetch_all(database.readers())
+    .await?;
+    counts_from_rows(rows)
+}
+
+fn counts_from_rows(rows: Vec<(i64, i64)>) -> Result<Vec<(Snowflake, u32)>, MessageStorageError> {
     rows.into_iter()
         .map(|(channel_id, count)| {
             Ok((
@@ -612,33 +655,6 @@ pub(crate) async fn unread_mention_counts(
             ))
         })
         .collect()
-}
-
-/// How many messages from others follow the user's read position in `channel_id`, counted up
-/// to `limit`.
-///
-/// # Errors
-/// Fails on database errors.
-pub(crate) async fn unread_count_from_others(
-    database: &Database,
-    user_id: Snowflake,
-    channel_id: Snowflake,
-    limit: u32,
-) -> Result<u32, MessageStorageError> {
-    let user_id = to_integer(user_id.raw())?;
-    let channel_id = to_integer(channel_id.raw())?;
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM (SELECT 1 FROM messages WHERE channel_id = ?1 AND author_id != ?2 \
-         AND id > COALESCE((SELECT last_read_message_id FROM read_states \
-             WHERE user_id = ?2 AND channel_id = ?1), 0) \
-         LIMIT ?3)",
-    )
-    .bind(channel_id)
-    .bind(user_id)
-    .bind(i64::from(limit))
-    .fetch_one(database.readers())
-    .await?;
-    u32::try_from(count).map_err(|_| MessageStorageError::IntegerOutOfRange)
 }
 
 /// Id, username and display name of every member of the guild, to find who a message mentions.
@@ -651,7 +667,8 @@ pub(crate) async fn mentionable_members_of_guild(
 ) -> Result<Vec<(Snowflake, String, String)>, MessageStorageError> {
     let rows: Vec<(i64, String, String)> = sqlx::query_as(
         "SELECT users.id, users.username, users.display_name FROM guild_members \
-         JOIN users ON users.id = guild_members.user_id WHERE guild_members.guild_id = ?",
+         JOIN users ON users.id = guild_members.user_id WHERE guild_members.guild_id = ? \
+         ORDER BY users.id",
     )
     .bind(to_integer(guild_id.raw())?)
     .fetch_all(database.readers())
@@ -670,7 +687,8 @@ pub(crate) async fn mentionable_users(
     user_ids: &[Snowflake],
 ) -> Result<Vec<(Snowflake, String, String)>, MessageStorageError> {
     let rows: Vec<(i64, String, String)> = sqlx::query_as(
-        "SELECT id, username, display_name FROM users WHERE id IN (SELECT value FROM json_each(?))",
+        "SELECT id, username, display_name FROM users WHERE id IN (SELECT value FROM json_each(?)) \
+         ORDER BY id",
     )
     .bind(json_array_of_ids(user_ids))
     .fetch_all(database.readers())

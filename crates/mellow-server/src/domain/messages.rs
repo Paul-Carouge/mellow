@@ -716,21 +716,24 @@ impl Messages {
             .collect();
         let last_message_ids =
             message_storage::last_message_ids(&self.database, &all_channel_ids).await?;
-        let mut mention_counts: HashMap<Snowflake, u32> =
-            message_storage::unread_mention_counts(&self.database, user_id)
-                .await?
-                .into_iter()
-                .collect();
-        for channel_id in direct_channel_ids {
-            let count = message_storage::unread_count_from_others(
+        let mention_counts: HashMap<Snowflake, u32> = message_storage::unread_mention_counts(
+            &self.database,
+            user_id,
+            guild_channel_ids,
+            MAXIMUM_COUNTED_UNREAD_MENTIONS,
+        )
+        .await?
+        .into_iter()
+        .chain(
+            message_storage::unread_counts_from_others(
                 &self.database,
                 user_id,
-                *channel_id,
+                direct_channel_ids,
                 MAXIMUM_COUNTED_UNREAD_MENTIONS,
             )
-            .await?;
-            mention_counts.insert(*channel_id, count);
-        }
+            .await?,
+        )
+        .collect();
         Ok(last_message_ids
             .into_iter()
             .map(|(channel_id, last_message_id)| ChannelUnread {

@@ -24,12 +24,23 @@ const MENTION_CANDIDATE = new RegExp(
 
 export function mentionablePeople(people: readonly PublicUser[]): MentionablePeople {
   const byName = new Map<string, PublicUser>();
+  // A display name two people share is no one's, as on the server (`domain/mentions.rs`): whoever
+  // copies a name must not take its mentions.
+  const sharedDisplayNames = new Set<string>();
   // Display names first, so a username always wins over someone else's display name.
   for (const person of people) {
     const displayName = person.display_name.trim();
     if (displayName !== "" && !/\s/u.test(displayName)) {
-      byName.set(displayName.toLowerCase(), person);
+      const name = displayName.toLowerCase();
+      const holder = byName.get(name);
+      if (holder && holder.id !== person.id) {
+        sharedDisplayNames.add(name);
+      }
+      byName.set(name, person);
     }
+  }
+  for (const name of sharedDisplayNames) {
+    byName.delete(name);
   }
   for (const person of people) {
     byName.set(person.username.toLowerCase(), person);
