@@ -112,6 +112,9 @@
   let isPinnedToLatest = true;
   let isViewingOlderMessages = $state(false);
   let rovingKey = $state<string | null>(null);
+  // The focused row may be gone (deleted, or a sent row replacing its pending one): the list
+  // must keep its one Tab stop.
+  const rovingTargetKey = $derived(rows.some((row) => row.key === rovingKey) ? rovingKey : (rows.at(-1)?.key ?? null));
   let announcement = $state("");
   let isSkeletonDelayElapsed = $state(false);
 
@@ -404,7 +407,7 @@
           {canManageMessages}
           {reactionAndPinActions}
           isEditing={row.kind === "sent" && row.message.id === editingMessageId}
-          isRovingTarget={row.key === (rovingKey ?? rows.at(-1)?.key)}
+          isRovingTarget={row.key === rovingTargetKey}
           {maximumEditorHeight}
           {onreply}
           {onstartedit}
