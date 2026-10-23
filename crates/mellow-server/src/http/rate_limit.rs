@@ -214,6 +214,17 @@ impl RateLimiter {
     }
 }
 
+#[cfg(test)]
+impl RateLimiter {
+    pub(crate) fn tracked_key_count(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .windows
+            .len()
+    }
+}
+
 impl LimiterState {
     /// Returns whether a new key may be tracked.
     fn make_room(&mut self, now: Instant) -> bool {

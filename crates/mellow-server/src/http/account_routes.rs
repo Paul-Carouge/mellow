@@ -76,7 +76,7 @@ pub(crate) async fn register(
     ApiJson(request): ApiJson<RegisterRequest>,
 ) -> Result<Response, ApiError> {
     let address = client_address_key(peer, &headers, &state.trusted_proxy_networks);
-    if !state.rate_limiter.record_event(
+    if !state.unauthenticated_rate_limiter.record_event(
         &format!("authentication:{address}"),
         AUTHENTICATION_ATTEMPTS_PER_ADDRESS,
         Instant::now(),
@@ -100,23 +100,26 @@ pub(crate) async fn login(
     let account = fixed_size_key(&normalize_login(&request.login).map_err(AccountError::from)?);
     let now = Instant::now();
     // Every attempt is counted before the password check, so concurrent requests cannot all
-    // pass under the limit while Argon2 runs. All three limits are always recorded.
-    let within_address_limit = state.rate_limiter.record_event(
+    // pass under the limit while Argon2 runs. The per-account limits are recorded only for
+    // attempts the address limit lets through: otherwise one address cycling login names would
+    // add two long-lived keys per request until the limiter's table is full.
+    let limiter = &state.unauthenticated_rate_limiter;
+    let within_address_limit = limiter.record_event(
         &format!("authentication:{address}"),
         AUTHENTICATION_ATTEMPTS_PER_ADDRESS,
         now,
     );
-    let within_account_and_address_limit = state.rate_limiter.record_event(
+    if !within_address_limit {
+        return Err(ApiError::rate_limited());
+    }
+    let within_account_and_address_limit = limiter.record_event(
         &format!("login:{account}:{address}"),
         LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS,
         now,
     );
-    let within_account_limit = state.rate_limiter.record_event(
-        &format!("login:{account}"),
-        LOGIN_ATTEMPTS_PER_ACCOUNT,
-        now,
-    );
-    if !(within_address_limit && within_account_and_address_limit && within_account_limit) {
+    let within_account_limit =
+        limiter.record_event(&format!("login:{account}"), LOGIN_ATTEMPTS_PER_ACCOUNT, now);
+    if !(within_account_and_address_limit && within_account_limit) {
         return Err(ApiError::rate_limited());
     }
     let session = state

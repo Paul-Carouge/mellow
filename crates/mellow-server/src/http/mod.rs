@@ -45,7 +45,11 @@ pub(crate) struct AppState {
     pub(crate) maximum_attachment_bytes: u64,
     pub(crate) events: Arc<EventHub>,
     pub(crate) gateway_sessions: Arc<crate::gateway::SessionRegistry>,
+    /// Limits keyed by a signed-in user or one of their channels.
     pub(crate) rate_limiter: Arc<RateLimiter>,
+    /// Limits keyed by address or login name, before any session: kept apart so a flood of
+    /// sign-in attempts cannot fill the table that signed-in users' limits need.
+    pub(crate) unauthenticated_rate_limiter: Arc<RateLimiter>,
     /// Peers whose `X-Forwarded-For` names the client; empty without a reverse proxy.
     pub(crate) trusted_proxy_networks: Arc<[IpNet]>,
 }
@@ -89,6 +93,7 @@ impl AppState {
             guilds,
             pool,
             rate_limiter: Arc::default(),
+            unauthenticated_rate_limiter: Arc::default(),
             trusted_proxy_networks: client_address::build_trusted_proxy_networks(
                 config.behind_tls_reverse_proxy,
                 &config.trusted_proxy_networks,
@@ -438,6 +443,7 @@ pub(crate) mod tests {
             guilds,
             pool,
             rate_limiter: Arc::default(),
+            unauthenticated_rate_limiter: Arc::default(),
             trusted_proxy_networks: Arc::default(),
         }
     }
@@ -716,6 +722,30 @@ pub(crate) mod tests {
             "/api/v1/auth/login",
             &serde_json::json!({"login": login, "password": "wrong password!", "device_name": "d"}),
         )
+    }
+
+    #[tokio::test]
+    async fn one_address_cycling_login_names_cannot_fill_the_rate_limiter() {
+        let (_directory, pool) = migrated_pool().await;
+        let state = test_state(pool.clone(), RegistrationMode::Closed);
+        let attempts = rate_limit::AUTHENTICATION_ATTEMPTS_PER_ADDRESS.maximum_events * 3;
+        for index in 0..attempts {
+            send_from(
+                &state,
+                "198.51.100.1:1000",
+                wrong_login(&format!("n{index}")),
+            )
+            .await;
+        }
+        pool.close().await;
+        // The address key, then two keys per attempt the address limit let through: refused
+        // attempts add none, and signed-in users' limits live in their own table.
+        let allowed = rate_limit::AUTHENTICATION_ATTEMPTS_PER_ADDRESS.maximum_events as usize;
+        assert_eq!(
+            state.unauthenticated_rate_limiter.tracked_key_count(),
+            1 + 2 * allowed
+        );
+        assert_eq!(state.rate_limiter.tracked_key_count(), 0);
     }
 
     #[tokio::test]
