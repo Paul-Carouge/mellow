@@ -1,8 +1,8 @@
 //! Guild, channel, role, invite and membership use cases. Every action checks permissions through
 //! `domain::permissions` (ADR-0007).
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::storage::Database;
 use mellow_protocol::{
@@ -32,7 +32,7 @@ use crate::events::EventHub;
 use crate::storage::audit_log::{self as audit_log_storage, ChannelEntryFilter, NewAuditEntry};
 use crate::storage::guilds::{
     self as guild_storage, GuildRename, GuildStorageError, JoinOutcome, Membership, NewGuild,
-    RoleFieldChanges, StoredChannel, StoredInvite,
+    RoleFieldChanges, StoredChannel, StoredInvite, StoredPermissionSnapshot,
 };
 
 mod icons;
@@ -112,6 +112,90 @@ fn member_from_stored(member: guild_storage::StoredMember) -> Member {
     }
 }
 
+/// What `member_id` receives as their guild: channels they cannot view are left out entirely
+/// (ADR-0015). `member_roles` includes `@everyone`; `roles` is every role of the guild.
+fn guild_seen_by_member(
+    member_id: Snowflake,
+    summary: GuildSummary,
+    owner_id: Snowflake,
+    member_roles: &[Role],
+    roles: Vec<Role>,
+    channels: &[StoredChannel],
+) -> Guild {
+    let guild_id = summary.id;
+    Guild {
+        id: guild_id,
+        my_role_ids: member_roles
+            .iter()
+            .map(|role| role.id)
+            .filter(|role_id| *role_id != guild_id)
+            .collect(),
+        name: summary.name,
+        icon: summary.icon,
+        owner_id,
+        my_permissions: guild_permissions(member_id, owner_id, member_roles),
+        roles,
+        channels: channels
+            .iter()
+            .filter(|channel| {
+                channel_permissions(
+                    member_id,
+                    owner_id,
+                    guild_id,
+                    member_roles,
+                    &channel.permission_overwrites,
+                )
+                .contains(Permissions::VIEW_CHANNEL)
+            })
+            .cloned()
+            .map(channel_from_stored)
+            .collect(),
+    }
+}
+
+/// `member_id`'s roles in the snapshot, `@everyone` included, by position; `None` if they are not
+/// a member.
+fn member_roles(
+    guild_id: Snowflake,
+    snapshot: &StoredPermissionSnapshot,
+    member_id: Snowflake,
+) -> Option<Vec<Role>> {
+    let role_ids = snapshot.role_ids_by_member.get(&member_id)?;
+    Some(
+        snapshot
+            .roles
+            .iter()
+            .filter(|role| role.id == guild_id || role_ids.contains(&role.id))
+            .cloned()
+            .collect(),
+    )
+}
+
+/// The members who can view a channel with these overwrites.
+fn viewer_ids(
+    guild_id: Snowflake,
+    snapshot: &StoredPermissionSnapshot,
+    overwrites: &[PermissionOverwrite],
+) -> HashSet<Snowflake> {
+    snapshot
+        .role_ids_by_member
+        .keys()
+        .filter(|member_id| {
+            member_roles(guild_id, snapshot, **member_id).is_some_and(|member_roles| {
+                channel_permissions(
+                    **member_id,
+                    snapshot.owner_id,
+                    guild_id,
+                    &member_roles,
+                    overwrites,
+                )
+                .contains(Permissions::VIEW_CHANNEL)
+            })
+        })
+        .copied()
+        .collect()
+}
+
 fn channel_from_stored(channel: StoredChannel) -> Channel {
     Channel {
         id: channel.id,
@@ -171,6 +255,9 @@ pub(crate) struct Guilds {
     database: Database,
     ids: Arc<SnowflakeGenerator>,
     events: Arc<EventHub>,
+    /// Each guild's members and roles for event fan-out, trusted only while the guild's
+    /// `permission_version` in the database still matches (`permission_snapshot`).
+    permission_snapshots: Mutex<HashMap<Snowflake, Arc<StoredPermissionSnapshot>>>,
 }
 
 impl Guilds {
@@ -183,7 +270,52 @@ impl Guilds {
             database,
             ids,
             events,
+            permission_snapshots: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The guild's members and roles. The cached copy is used only if the guild's
+    /// `permission_version`, read now, is the one it was loaded at; triggers bump that version on
+    /// every member, role, role assignment and owner change (migration 0015), so the copy is never
+    /// older than the database at the time of the call.
+    async fn permission_snapshot(
+        &self,
+        guild_id: Snowflake,
+    ) -> Result<Arc<StoredPermissionSnapshot>, GuildError> {
+        let version = guild_storage::permission_version(&self.database, guild_id)
+            .await?
+            .ok_or(GuildError::NotFound)?;
+        let cached = self
+            .cached_permission_snapshots()
+            .get(&guild_id)
+            .filter(|snapshot| snapshot.version == version)
+            .cloned();
+        if let Some(snapshot) = cached {
+            return Ok(snapshot);
+        }
+        let loaded = Arc::new(
+            guild_storage::permission_snapshot(&self.database, guild_id)
+                .await?
+                .ok_or(GuildError::NotFound)?,
+        );
+        let mut snapshots = self.cached_permission_snapshots();
+        // A concurrent load may have stored a newer version meanwhile: keep the newest.
+        if snapshots
+            .get(&guild_id)
+            .is_none_or(|cached| cached.version < loaded.version)
+        {
+            snapshots.insert(guild_id, loaded.clone());
+        }
+        Ok(loaded)
+    }
+
+    fn cached_permission_snapshots(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<Snowflake, Arc<StoredPermissionSnapshot>>> {
+        // The map holds no invariant a panicking holder could break.
+        self.permission_snapshots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// What the audit log records for an action about to be written, in the same transaction.
@@ -318,34 +450,23 @@ impl Guilds {
         user_id: Snowflake,
         guild_id: Snowflake,
     ) -> Result<Guild, GuildError> {
-        let (membership, my_permissions) =
-            self.membership_and_permissions(guild_id, user_id).await?;
-        // Channels the member cannot view are left out entirely (ADR-0015).
-        let channels = guild_storage::list_guild_channels(&self.database, guild_id)
+        let membership = guild_storage::find_membership(&self.database, guild_id, user_id)
             .await?
-            .into_iter()
-            .filter(|channel| {
-                channel_permissions(
-                    user_id,
-                    membership.owner_id,
-                    guild_id,
-                    &membership.member_roles,
-                    &channel.permission_overwrites,
-                )
-                .contains(Permissions::VIEW_CHANNEL)
-            })
-            .map(channel_from_stored)
-            .collect();
-        Ok(Guild {
-            id: guild_id,
-            my_role_ids: membership.member_role_ids(guild_id),
-            name: membership.guild_name,
-            icon: membership.guild_icon,
-            owner_id: membership.owner_id,
-            my_permissions,
-            roles: guild_storage::list_roles(&self.database, guild_id).await?,
-            channels,
-        })
+            .ok_or(GuildError::NotFound)?;
+        let channels = guild_storage::list_guild_channels(&self.database, guild_id).await?;
+        let roles = guild_storage::list_roles(&self.database, guild_id).await?;
+        Ok(guild_seen_by_member(
+            user_id,
+            GuildSummary {
+                id: guild_id,
+                name: membership.guild_name,
+                icon: membership.guild_icon,
+            },
+            membership.owner_id,
+            &membership.member_roles,
+            roles,
+            &channels,
+        ))
     }
 
     /// Needs `MANAGE_GUILD`. Absent fields stay unchanged; an unchanged name records nothing.
@@ -394,6 +515,7 @@ impl Guilds {
         let member_ids = guild_storage::delete_guild(&self.database, guild_id, user_id)
             .await?
             .ok_or(GuildError::NotFound)?;
+        self.cached_permission_snapshots().remove(&guild_id);
         for member_id in member_ids {
             self.events.unsubscribe_user_from_guild(member_id, guild_id);
             self.events
@@ -520,47 +642,18 @@ impl Guilds {
         guild_id: Snowflake,
         overwrites: &[PermissionOverwrite],
     ) -> Result<ChannelAudience, GuildError> {
-        let roles = guild_storage::list_roles(&self.database, guild_id).await?;
-        let everyone_permissions = roles
+        let snapshot = self.permission_snapshot(guild_id).await?;
+        let everyone_permissions = snapshot
+            .roles
             .iter()
             .find(|role| role.id == guild_id)
             .map_or(Permissions::empty(), |everyone| everyone.permissions);
         if is_visible_to_every_member(everyone_permissions, overwrites) {
             return Ok(ChannelAudience::EveryMember);
         }
-        Ok(ChannelAudience::Members(
-            self.viewer_ids(guild_id, &roles, overwrites).await?,
-        ))
-    }
-
-    /// The members who can view a channel with these overwrites.
-    /// shortcut: two queries over every member and role assignment of the guild per call; cache
-    /// per guild if the M4 load test shows the need.
-    async fn viewer_ids(
-        &self,
-        guild_id: Snowflake,
-        roles: &[Role],
-        overwrites: &[PermissionOverwrite],
-    ) -> Result<HashSet<Snowflake>, GuildError> {
-        let owner_id = guild_storage::find_guild_owner_id(&self.database, guild_id)
-            .await?
-            .ok_or(GuildError::NotFound)?;
-        Ok(
-            guild_storage::member_ids_with_role_ids(&self.database, guild_id)
-                .await?
-                .into_iter()
-                .filter(|(member_id, role_ids)| {
-                    let member_roles: Vec<Role> = roles
-                        .iter()
-                        .filter(|role| role.id == guild_id || role_ids.contains(&role.id))
-                        .cloned()
-                        .collect();
-                    channel_permissions(*member_id, owner_id, guild_id, &member_roles, overwrites)
-                        .contains(Permissions::VIEW_CHANNEL)
-                })
-                .map(|(member_id, _)| member_id)
-                .collect(),
-        )
+        Ok(ChannelAudience::Members(viewer_ids(
+            guild_id, &snapshot, overwrites,
+        )))
     }
 
     /// Delivers an event about a channel of `guild_id` to its audience; never fails, so it can
@@ -596,18 +689,53 @@ impl Guilds {
             AffectedMembers::Everyone => online.into_iter().collect(),
             AffectedMembers::Some(user_ids) => online.intersection(&user_ids).copied().collect(),
         };
-        for user_id in recipients {
-            match self.get_guild(user_id, guild_id).await {
-                Ok(guild) => self
-                    .events
-                    .publish_to_user(user_id, &GatewayEvent::GuildCreate(Box::new(guild))),
-                // Left meanwhile: their GUILD_DELETE is already on its way.
-                Err(GuildError::NotFound) => {}
-                Err(error) => {
-                    tracing::warn!(%error, "cannot resynchronize a member after a permission change");
+        if recipients.is_empty() {
+            return;
+        }
+        match self.guild_seen_by_each(guild_id, &recipients).await {
+            Ok(guilds) => {
+                for (user_id, guild) in guilds {
+                    self.events
+                        .publish_to_user(user_id, &GatewayEvent::GuildCreate(Box::new(guild)));
                 }
             }
+            // Deleted meanwhile: every member's GUILD_DELETE is already on its way.
+            Err(GuildError::NotFound) => {}
+            Err(error) => {
+                tracing::warn!(%error, "cannot resynchronize members after a permission change");
+            }
         }
+    }
+
+    /// The guild as each of `user_ids` sees it, read once for all of them; users who are not
+    /// members (left meanwhile, so their `GUILD_DELETE` is on its way) are left out.
+    async fn guild_seen_by_each(
+        &self,
+        guild_id: Snowflake,
+        user_ids: &[Snowflake],
+    ) -> Result<Vec<(Snowflake, Guild)>, GuildError> {
+        let snapshot = self.permission_snapshot(guild_id).await?;
+        let summary = guild_storage::find_guild_summary(&self.database, guild_id)
+            .await?
+            .ok_or(GuildError::NotFound)?;
+        let channels = guild_storage::list_guild_channels(&self.database, guild_id).await?;
+        Ok(user_ids
+            .iter()
+            .filter_map(|user_id| {
+                let member_roles = member_roles(guild_id, &snapshot, *user_id)?;
+                Some((
+                    *user_id,
+                    guild_seen_by_member(
+                        *user_id,
+                        summary.clone(),
+                        snapshot.owner_id,
+                        &member_roles,
+                        snapshot.roles.clone(),
+                        &channels,
+                    ),
+                ))
+            })
+            .collect())
     }
 
     /// The ids of every channel `user_id` can view, across their guilds.
@@ -936,10 +1064,8 @@ impl Guilds {
         let updated = guild_storage::find_guild_channel(&self.database, channel.id)
             .await?
             .ok_or(GuildError::NotFound)?;
-        let roles = guild_storage::list_roles(&self.database, channel.guild_id).await?;
-        let viewers_after = self
-            .viewer_ids(channel.guild_id, &roles, &updated.permission_overwrites)
-            .await?;
+        let snapshot = self.permission_snapshot(channel.guild_id).await?;
+        let viewers_after = viewer_ids(channel.guild_id, &snapshot, &updated.permission_overwrites);
         let still_viewing: HashSet<Snowflake> = viewers_before
             .intersection(&viewers_after)
             .copied()
@@ -968,9 +1094,12 @@ impl Guilds {
         &self,
         channel: &StoredChannel,
     ) -> Result<HashSet<Snowflake>, GuildError> {
-        let roles = guild_storage::list_roles(&self.database, channel.guild_id).await?;
-        self.viewer_ids(channel.guild_id, &roles, &channel.permission_overwrites)
-            .await
+        let snapshot = self.permission_snapshot(channel.guild_id).await?;
+        Ok(viewer_ids(
+            channel.guild_id,
+            &snapshot,
+            &channel.permission_overwrites,
+        ))
     }
 
     /// Needs `CREATE_INVITE`.
@@ -2766,6 +2895,81 @@ mod tests {
         deny: Permissions,
     ) -> SetPermissionOverwriteRequest {
         SetPermissionOverwriteRequest { kind, allow, deny }
+    }
+
+    #[tokio::test]
+    async fn a_restricted_audience_follows_role_changes_made_outside_this_process() {
+        let fixture = fixture().await;
+        let ModeratedGuild { guild, helper, .. } = moderated_guild(&fixture).await;
+        let general = guild.channels[1].id;
+        // Only the owner and Helper members can view #general.
+        for (target, request) in [
+            (
+                guild.id,
+                overwrite_request(
+                    OverwriteKind::Role,
+                    Permissions::empty(),
+                    Permissions::VIEW_CHANNEL,
+                ),
+            ),
+            (
+                helper.id,
+                overwrite_request(
+                    OverwriteKind::Role,
+                    Permissions::VIEW_CHANNEL,
+                    Permissions::empty(),
+                ),
+            ),
+        ] {
+            fixture
+                .guilds
+                .set_permission_overwrite(fixture.owner, general, target, request)
+                .await
+                .unwrap();
+        }
+        let channel = guild_storage::find_guild_channel(&fixture.database, general)
+            .await
+            .unwrap()
+            .unwrap();
+        let audience = || async {
+            match fixture.guilds.channel_audience(&channel).await.unwrap() {
+                ChannelAudience::Members(viewers) => viewers,
+                ChannelAudience::EveryMember => panic!("#general is restricted"),
+            }
+        };
+        let integer = |id: Snowflake| i64::try_from(id.raw()).unwrap();
+        // Written as another process (`admin`) would, so only the database knows.
+        let write = |statement: &'static str, ids: &[Snowflake]| {
+            let mut query = sqlx::query(statement);
+            for id in ids {
+                query = query.bind(integer(*id));
+            }
+            query.execute(fixture.database.writer())
+        };
+
+        let before = audience().await;
+        write(
+            "INSERT INTO member_roles (guild_id, user_id, role_id) VALUES (?, ?, ?)",
+            &[guild.id, fixture.third, helper.id],
+        )
+        .await
+        .unwrap();
+        let after_assignment = audience().await;
+        write(
+            "DELETE FROM roles WHERE guild_id = ? AND id = ?",
+            &[guild.id, helper.id],
+        )
+        .await
+        .unwrap();
+        let after_role_deletion = audience().await;
+        fixture.database.close().await;
+
+        assert_eq!(before, HashSet::from([fixture.owner]));
+        assert_eq!(
+            after_assignment,
+            HashSet::from([fixture.owner, fixture.third])
+        );
+        assert_eq!(after_role_deletion, HashSet::from([fixture.owner]));
     }
 
     #[tokio::test]
