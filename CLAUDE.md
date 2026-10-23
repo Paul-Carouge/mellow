@@ -41,7 +41,7 @@ CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux only w
 - **Unknown permission bits** from clients are rejected at the server boundary (`Permissions::from_bits`); only clients keep unknown bits.
 - **Database key**: never log `SqliteConnectOptions` (its `Debug` prints the key) and keep `disable_statement_logging()` on them; a test guards it.
 - **SQLCipher shutdown**: always `pool.close().await` before the process exits, in code and in tests (ADR-0006 spike results).
-- **SQLite**: all writes go through the single writer task; keep transactions short; no I/O or fan-out inside a transaction. Queries use `sqlx` compile-time checked macros.
+- **SQLite**: all writes go through the single writer connection (`Database::writer`, ADR-0024); keep transactions short; no I/O or fan-out inside a transaction. Queries use `sqlx` compile-time checked macros.
 - **Migrations** are forward-only, embedded, and tested on realistic data. Never edit a released migration.
 - **Logs** never contain message content, tokens, passwords, emails or attachment names.
 - **IDs** are 64-bit Snowflake-style, serialized as strings in JSON.
