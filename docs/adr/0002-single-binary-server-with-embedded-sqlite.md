@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-19
+- Amended by: [ADR-0024](0024-serialize-sqlite-writes-through-one-pooled-connection.md) (how writes are serialized)
 
 ## Context
 The first product goal is self-hosting that is "hyper simple": no Docker requirement, no external database, simple updates. The target is up to about 10 000 monthly active users on one node. The user referenced PocketBase as the model to follow, but PocketBase is written in Go and the project is 100% Rust.
