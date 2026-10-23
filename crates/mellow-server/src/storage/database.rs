@@ -13,6 +13,10 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// SQLite allows one writer at a time: one connection queues writes in the pool's FIFO order
 /// instead of several connections polling for the lock (ARCHITECTURE §4.3).
 const WRITER_CONNECTION_COUNT: u32 = 1;
+/// Each SQLite connection runs on its own thread. Measured on 8 cores with 16 writers running
+/// (ADR-0024): 4 readers served about 80 % more history reads and 35 % more writes than sqlx's
+/// default of 10, probably because 11 connection threads then compete for 8 cores.
+const READER_CONNECTION_COUNT: u32 = 4;
 const DATABASE_KEY_LENGTH_BYTES: usize = 32;
 /// `SQLITE_NOTADB`: what SQLCipher reports when the key does not decrypt the file.
 const SQLITE_NOT_A_DATABASE_ERROR_CODE: &str = "26";
@@ -141,6 +145,7 @@ pub async fn open_encrypted_database(
         .connect_with(pool_options.clone())
         .await?;
     let readers = match SqlitePoolOptions::new()
+        .max_connections(READER_CONNECTION_COUNT)
         .connect_with(pool_options.pragma("query_only", "ON"))
         .await
     {
