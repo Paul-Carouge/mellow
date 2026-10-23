@@ -113,7 +113,7 @@ pub(crate) async fn upgrade(
     // The web client identifies with an empty token: its session is this cookie (ADR-0019).
     let cookie_token = session_cookie(&headers).map(|token| Zeroizing::new(token.to_owned()));
     let address = client_address_key(peer, &headers, &state.trusted_proxy_networks);
-    if !state.unauthenticated_rate_limiter.record_event(
+    if !state.gateway_rate_limiter.record_event(
         &format!("gateway:{address}"),
         GATEWAY_CONNECTIONS_PER_ADDRESS,
         std::time::Instant::now(),
