@@ -913,6 +913,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_change_to_who_sees_what_bumps_the_guild_permission_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let writer = database.writer();
+        for statement in [
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'owner', 'Owner', 'o@example.org', 'h', 0), \
+             (2, 'member', 'Member', 'm@example.org', 'h', 0), \
+             (3, 'heir', 'Heir', 'h@example.org', 'h', 0)",
+            "INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Guild', 1, 0), (20, 'Other guild', 1, 0)",
+        ] {
+            sqlx::query(statement).execute(writer).await.unwrap();
+        }
+        let version = || async {
+            sqlx::query_scalar::<_, i64>("SELECT permission_version FROM guilds WHERE id = 10")
+                .fetch_one(writer)
+                .await
+                .unwrap()
+        };
+
+        // Each statement must bump the version; the second list must not.
+        let bumping = [
+            "INSERT INTO guild_members (guild_id, user_id, joined_at_unix_milliseconds) \
+             VALUES (10, 1, 0), (10, 2, 0), (10, 3, 0)",
+            "INSERT INTO roles (id, guild_id, name, permissions, position) \
+             VALUES (10, 10, '@everyone', 0, 0), (11, 10, 'Staff', 0, 1)",
+            "INSERT INTO member_roles (guild_id, user_id, role_id) VALUES (10, 2, 11)",
+            "UPDATE roles SET permissions = 1024 WHERE id = 11",
+            "DELETE FROM member_roles WHERE user_id = 2",
+            "INSERT INTO member_roles (guild_id, user_id, role_id) VALUES (10, 2, 11)",
+            "DELETE FROM roles WHERE id = 11",
+            "UPDATE guilds SET owner_id = 3 WHERE id = 10",
+            "DELETE FROM guild_members WHERE guild_id = 10 AND user_id = 3",
+            "DELETE FROM users WHERE id = 2",
+        ];
+        let mut bumped = Vec::new();
+        for statement in bumping {
+            let before = version().await;
+            sqlx::query(statement).execute(writer).await.unwrap();
+            bumped.push((statement, version().await > before));
+        }
+        let neutral = [
+            "UPDATE guilds SET name = 'Renamed' WHERE id = 10",
+            "INSERT INTO guild_members (guild_id, user_id, joined_at_unix_milliseconds) \
+             VALUES (20, 1, 0)",
+        ];
+        let mut unchanged = Vec::new();
+        for statement in neutral {
+            let before = version().await;
+            sqlx::query(statement).execute(writer).await.unwrap();
+            unchanged.push((statement, version().await == before));
+        }
+        database.close().await;
+
+        for (statement, did_bump) in bumped {
+            assert!(did_bump, "no bump after: {statement}");
+        }
+        for (statement, did_not_bump) in unchanged {
+            assert!(did_not_bump, "unexpected bump after: {statement}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_database_from_a_newer_binary_is_refused_even_with_nothing_pending() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())

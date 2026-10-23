@@ -377,12 +377,19 @@ pub(crate) async fn list_roles(
     database: &Database,
     guild_id: Snowflake,
 ) -> Result<Vec<Role>, GuildStorageError> {
+    roles_of_guild(database.readers(), guild_id).await
+}
+
+async fn roles_of_guild(
+    executor: impl sqlx::SqliteExecutor<'_>,
+    guild_id: Snowflake,
+) -> Result<Vec<Role>, GuildStorageError> {
     let rows: Vec<RoleRow> = sqlx::query_as(
         "SELECT id, name, color, position, permissions FROM roles WHERE guild_id = ? \
          ORDER BY position, id",
     )
     .bind(to_integer(guild_id.raw())?)
-    .fetch_all(database.readers())
+    .fetch_all(executor)
     .await?;
     rows.into_iter().map(role_from_row).collect()
 }
@@ -835,42 +842,82 @@ pub(crate) async fn delete_overwrite(
     Ok(true)
 }
 
-/// Every member of the guild with their named role ids: who a restricted channel's events go to
-/// is computed from it (ADR-0015).
+/// Everything that decides a member's guild permissions apart from channel overwrites, as one
+/// consistent read. `version` is the guild's `permission_version` it was read at.
+#[derive(Debug)]
+pub(crate) struct StoredPermissionSnapshot {
+    pub(crate) version: i64,
+    pub(crate) owner_id: Snowflake,
+    /// By position, `@everyone` first.
+    pub(crate) roles: Vec<Role>,
+    /// Every member, with the ids of their roles (`@everyone` left out).
+    pub(crate) role_ids_by_member: HashMap<Snowflake, Vec<Snowflake>>,
+}
+
+/// The guild's `permission_version`, bumped by triggers on members, roles, role assignments and
+/// the owner (migration 0015); `None` if the guild does not exist.
 ///
 /// # Errors
 /// Fails on database errors.
-pub(crate) async fn member_ids_with_role_ids(
+pub(crate) async fn permission_version(
     database: &Database,
     guild_id: Snowflake,
-) -> Result<Vec<(Snowflake, Vec<Snowflake>)>, GuildStorageError> {
+) -> Result<Option<i64>, GuildStorageError> {
+    Ok(
+        sqlx::query_scalar("SELECT permission_version FROM guilds WHERE id = ?")
+            .bind(to_integer(guild_id.raw())?)
+            .fetch_optional(database.readers())
+            .await?,
+    )
+}
+
+/// Reads the guild's version, owner, roles and members in one read transaction, so they all
+/// match `version`; `None` if the guild does not exist.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn permission_snapshot(
+    database: &Database,
+    guild_id: Snowflake,
+) -> Result<Option<StoredPermissionSnapshot>, GuildStorageError> {
     let guild_id_integer = to_integer(guild_id.raw())?;
+    let mut transaction = database.readers().begin().await?;
+    let Some((version, owner_id)): Option<(i64, i64)> =
+        sqlx::query_as("SELECT permission_version, owner_id FROM guilds WHERE id = ?")
+            .bind(guild_id_integer)
+            .fetch_optional(&mut *transaction)
+            .await?
+    else {
+        return Ok(None);
+    };
+    let roles = roles_of_guild(&mut *transaction, guild_id).await?;
     let member_ids: Vec<i64> =
         sqlx::query_scalar("SELECT user_id FROM guild_members WHERE guild_id = ?")
             .bind(guild_id_integer)
-            .fetch_all(database.readers())
+            .fetch_all(&mut *transaction)
             .await?;
     let assignments: Vec<(i64, i64)> =
         sqlx::query_as("SELECT user_id, role_id FROM member_roles WHERE guild_id = ?")
             .bind(guild_id_integer)
-            .fetch_all(database.readers())
+            .fetch_all(&mut *transaction)
             .await?;
-    let mut role_ids_by_user: HashMap<i64, Vec<Snowflake>> = HashMap::new();
-    for (user_id, role_id) in assignments {
-        role_ids_by_user
-            .entry(user_id)
-            .or_default()
-            .push(to_id(role_id)?);
-    }
-    member_ids
+    transaction.commit().await?;
+    let mut role_ids_by_member: HashMap<Snowflake, Vec<Snowflake>> = member_ids
         .into_iter()
-        .map(|user_id| {
-            Ok((
-                to_id(user_id)?,
-                role_ids_by_user.remove(&user_id).unwrap_or_default(),
-            ))
-        })
-        .collect()
+        .map(|user_id| Ok((to_id(user_id)?, Vec::new())))
+        .collect::<Result<_, GuildStorageError>>()?;
+    for (user_id, role_id) in assignments {
+        // The foreign key to guild_members guarantees the member is in the map.
+        if let Some(role_ids) = role_ids_by_member.get_mut(&to_id(user_id)?) {
+            role_ids.push(to_id(role_id)?);
+        }
+    }
+    Ok(Some(StoredPermissionSnapshot {
+        version,
+        owner_id: to_id(owner_id)?,
+        roles,
+        role_ids_by_member,
+    }))
 }
 
 /// Inserts the channel at the end of its guild (position = last + 1) and returns it, provided
@@ -1080,20 +1127,30 @@ pub(crate) async fn delete_guild(
     Ok(Some(member_ids))
 }
 
+/// The guild's name and icon; `None` if it does not exist.
+///
 /// # Errors
 /// Fails on database errors.
-pub(crate) async fn find_guild_owner_id(
+pub(crate) async fn find_guild_summary(
     database: &Database,
     guild_id: Snowflake,
-) -> Result<Option<Snowflake>, GuildStorageError> {
+) -> Result<Option<GuildSummary>, GuildStorageError> {
     let Some(guild_id) = lookup_integer(guild_id) else {
         return Ok(None);
     };
-    let owner_id: Option<i64> = sqlx::query_scalar("SELECT owner_id FROM guilds WHERE id = ?")
-        .bind(guild_id)
-        .fetch_optional(database.readers())
-        .await?;
-    owner_id.map(to_id).transpose()
+    let row: Option<(i64, String, Option<i64>, i64)> =
+        sqlx::query_as("SELECT id, name, icon_id, icon_is_animated FROM guilds WHERE id = ?")
+            .bind(guild_id)
+            .fetch_optional(database.readers())
+            .await?;
+    row.map(|(id, name, icon_id, icon_is_animated)| {
+        Ok(GuildSummary {
+            id: to_id(id)?,
+            name,
+            icon: guild_icon(icon_id, icon_is_animated)?,
+        })
+    })
+    .transpose()
 }
 
 /// # Errors
