@@ -56,6 +56,12 @@
     }
   }
 
+  /** An element gone, or hidden like a message's action bar outside its row, cannot take focus. */
+  function focusIfPossible(element: HTMLElement): boolean {
+    element.focus();
+    return element.isConnected && document.activeElement === element;
+  }
+
   onMount(() => {
     const opener =
       document.activeElement instanceof HTMLElement && document.activeElement !== document.body
@@ -66,9 +72,8 @@
     dialog.querySelector<HTMLElement>("[data-initial-focus]")?.focus();
     return () => {
       dialog.close();
-      if (shouldReturnFocusToOpener() && opener?.isConnected) {
-        opener.focus();
-      } else if (fallbackFocus) {
+      const isFocusBackOnOpener = shouldReturnFocusToOpener() && opener !== null && focusIfPossible(opener);
+      if (!isFocusBackOnOpener && fallbackFocus) {
         // After the view the dialog changed (a new server, a new channel) has rendered, and after
         // the native dialog put focus back on its opener.
         const focusFallback = fallbackFocus;
