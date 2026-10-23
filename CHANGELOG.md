@@ -4,6 +4,13 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-23
+Server speed under load. This version migrates the database (migration 15, with the usual automatic backup); older versions refuse it afterwards.
+
+### Changed
+- Server: writes go through a single database connection in arrival order, next to four read-only ones. Under many simultaneous actions the slowest 1 % of requests is 3 to 6 times faster and throughput is 13 to 22 % higher; a write still waiting after 5 seconds fails, as before (ADR-0024).
+- Server: messages in private channels reach their readers about 4 times faster, and changing a role's permissions with 1 000 members online takes about 9 ms instead of 150 ms.
+
 ## [0.9.2] - 2026-10-23
 
 ### Fixed
