@@ -100,4 +100,10 @@ describe("catalogues", () => {
     expect(en.typing.andOthersAreTyping(1)).toBe(" and 1 other are typing…");
     expect(fr.typing.andOthersAreTyping(2)).toBe(" et 2 autres écrivent…");
   });
+  it("count mentions with each language's plural rules, up to the server's limit", () => {
+    expect(en.common.withMentions("general", 1)).toBe("general, 1 mention");
+    expect(en.common.withMentions("general, unread", 3)).toBe("general, unread, 3 mentions");
+    expect(fr.common.withMentions("général", 1)).toBe("général, 1 mention");
+    expect(fr.common.withMentions("général", 100)).toBe("général, 99+ mentions");
+  });
 });

@@ -37,6 +37,8 @@
     authorColor: string | null;
     /** Who "@name" can point at here: the server's members or the conversation's people. */
     mentionablePeople: MentionablePeople;
+    /** The server fills `mention_ids` (absent when empty): it decides who a message mentions. */
+    doesServerFindMentions: boolean;
     canSendMessages: boolean;
     canManageMessages: boolean;
     reactionAndPinActions: ReactionAndPinActions;
@@ -62,6 +64,7 @@
     replyReference,
     authorColor,
     mentionablePeople,
+    doesServerFindMentions,
     canSendMessages,
     canManageMessages,
     reactionAndPinActions: actions,
@@ -88,7 +91,12 @@
   const isSending = $derived(row.kind === "pending" && row.pending.status === "sending");
   const isFailed = $derived(row.kind === "pending" && row.pending.status === "failed");
   const contentBlocks = $derived(parseMessageMarkdown(content, mentionablePeople));
-  const isMentioningCurrentUser = $derived(markdownMentionsUser(contentBlocks, currentUser.id));
+  // An older server sends no `mention_ids`: the client finds mentions itself, as it did before.
+  const isMentioningCurrentUser = $derived(
+    message && doesServerFindMentions
+      ? (message.mention_ids ?? []).includes(currentUser.id)
+      : markdownMentionsUser(contentBlocks, currentUser.id),
+  );
 
   // Taken from the message when the editor opens; later updates to the message keep the typing.
   let draft = $state("");

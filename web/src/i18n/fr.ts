@@ -1,6 +1,7 @@
 // The French catalogue (DESIGN.md §8 "Français"): tutoiement, sentence case, Discord's French
 // words, and French typography. Typed against the English one, so every key must be here.
 
+import { MAXIMUM_COUNTED_UNREAD_MENTIONS } from "../lib/protocol";
 import type { Catalogue } from "./en";
 import { pluralChooser } from "./plural";
 
@@ -26,6 +27,10 @@ export const fr: Catalogue = {
     offline: "Hors ligne",
     withUnread: (name) => `${name}, non lu`,
     unreadSuffix: ", non lu",
+    withMentions: (name, mentions) =>
+      mentions >= MAXIMUM_COUNTED_UNREAD_MENTIONS
+        ? `${name}, ${count(MAXIMUM_COUNTED_UNREAD_MENTIONS - 1)}+ mentions`
+        : `${name}, ${plural(mentions, { one: `${count(mentions)} mention`, other: `${count(mentions)} mentions` })}`,
     readOnly: "lecture seule",
     someone: "Quelqu’un",
   },
