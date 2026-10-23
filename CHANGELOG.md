@@ -4,6 +4,19 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-23
+Unread channels and mention badges. This version migrates the database (migration 16, with the usual automatic backup); older versions refuse it afterwards.
+
+### Added
+- Web: red mention badges on channels, servers, conversations and Home, with "99+" from 100; channels you have not opened since you connected now show as unread too.
+- Server: the server finds who a message mentions ("@username", or a one-word display name, outside code) among those who can see the channel, and tells each client its unread channels and mentions when it connects.
+
+### Changed
+- Web and server: a display name two people share no longer mentions either of them, so copying someone's name cannot take their mentions; "**@name**" and "||@name||" now mention.
+
+### Known limits
+- Messages sent before this version count as mentioning no one, though the web client still highlights them; reading a channel on another device clears its badge here at the next reconnection.
+
 ## [0.10.0] - 2026-10-23
 Server speed under load. This version migrates the database (migration 15, with the usual automatic backup); older versions refuse it afterwards.
 
