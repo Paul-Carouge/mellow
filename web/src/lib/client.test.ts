@@ -206,6 +206,43 @@ describe("MellowClient", () => {
     expect(olderRequests).toBe(2);
   });
 
+  it("never brings back a message deleted while a history page was on its way", async () => {
+    let answerFirstPage: (page: Message[]) => void = () => {};
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        listMessages: () => new Promise<Message[]>((resolve) => (answerFirstPage = resolve)),
+      }),
+    );
+    client.applyReady(ready());
+    client.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: GENERAL, id: "301" } }, 0);
+    answerFirstPage([message("300"), message("301")]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(client.messages(GENERAL).map((cached) => cached.id)).toEqual(["300"]);
+  });
+
+  it("deletes in the message's own channel, and treats an already deleted message as deleted", async () => {
+    const deletions: string[] = [];
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        listMessages: (channelId: string) => Promise.resolve(channelId === GENERAL ? [message("300")] : []),
+        deleteMessage: (channelId: string, messageId: string) => {
+          deletions.push(`${channelId}/${messageId}`);
+          return Promise.reject(new ApiError(404, "NOT_FOUND"));
+        },
+      }),
+    );
+    client.applyReady(ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const deleted = client.messages(GENERAL)[0];
+    expect(deleted).toBeDefined();
+    client.selectChannel(RULES);
+    await client.deleteMessage(deleted as Message);
+    expect(deletions).toEqual([`${GENERAL}/300`]);
+    expect(client.messages(GENERAL)).toEqual([]);
+  });
+
   it("shows a new display name at once, in the user panel and on own messages", async () => {
     const client = new MellowClient(
       fakeRest({
