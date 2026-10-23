@@ -95,6 +95,19 @@ export class MellowClient {
   onlineUserIds = new SvelteSet<Snowflake>();
   lastReadByChannel = new SvelteMap<Snowflake, Snowflake>();
   /**
+   * Each channel's newest message as far as this session knows (`Ready.channel_unreads`, then
+   * `MESSAGE_CREATE`), so a channel never opened still shows unread. Kept apart from the guild
+   * snapshots, which `GUILD_CREATE` and `CHANNEL_UPDATE` replace.
+   */
+  private newestMessageIdByChannel = new SvelteMap<Snowflake, Snowflake>();
+  /**
+   * Unread messages that mention the user (in a conversation: unread messages from others), from
+   * `Ready.channel_unreads`, then counted live; absent means none.
+   */
+  private mentionCountByChannel = new SvelteMap<Snowflake, number>();
+  /** `Ready` carried `channel_unreads`: the server fills `Message.mention_ids`, absent when empty. */
+  doesServerFindMentions = $state(false);
+  /**
    * The last message read before the open channel was opened, while that visit shows the "New"
    * divider and the jump bar (DESIGN.md §5.4). Opening the channel still marks it read at once.
    */
@@ -181,7 +194,8 @@ export class MellowClient {
   hasUnread(channelId: Snowflake): boolean {
     const cached = this.messages(channelId).at(-1)?.id ?? null;
     const known = this.conversations.find((channel) => channel.id === channelId)?.last_message_id ?? null;
-    const newest = [cached, known]
+    const reported = this.newestMessageIdByChannel.get(channelId) ?? null;
+    const newest = [cached, known, reported]
       .filter((id): id is Snowflake => id !== null)
       .sort(compareSnowflakes)
       .at(-1);
@@ -190,6 +204,20 @@ export class MellowClient {
     }
     const lastRead = this.lastReadByChannel.get(channelId);
     return !lastRead || compareSnowflakes(newest, lastRead) > 0;
+  }
+
+  mentionCount(channelId: Snowflake): number {
+    return this.mentionCountByChannel.get(channelId) ?? 0;
+  }
+
+  /** The red count on a server: the sum of its visible channels. */
+  guildMentionCount(guild: Guild): number {
+    return guild.channels.reduce((sum, channel) => sum + this.mentionCount(channel.id), 0);
+  }
+
+  /** The red count on Home: the sum of the conversations. */
+  conversationsMentionCount(): number {
+    return this.conversations.reduce((sum, conversation) => sum + this.mentionCount(conversation.id), 0);
   }
 
   typingUserIds(channelId: Snowflake, now: number): Snowflake[] {
@@ -279,6 +307,9 @@ export class MellowClient {
     this.membersByGuild.clear();
     this.onlineUserIds.clear();
     this.lastReadByChannel.clear();
+    this.newestMessageIdByChannel.clear();
+    this.mentionCountByChannel.clear();
+    this.doesServerFindMentions = false;
     this.unreadMarkers.clear();
     this.typingUntil.clear();
     this.pinsByChannel.clear();
@@ -350,6 +381,15 @@ export class MellowClient {
     for (const state of ready.read_states) {
       this.lastReadByChannel.set(state.channel_id, state.last_read_message_id);
     }
+    this.doesServerFindMentions = ready.channel_unreads !== undefined;
+    this.newestMessageIdByChannel.clear();
+    this.mentionCountByChannel.clear();
+    for (const unread of ready.channel_unreads ?? []) {
+      this.newestMessageIdByChannel.set(unread.channel_id, unread.last_message_id);
+      if (unread.mention_count > 0) {
+        this.mentionCountByChannel.set(unread.channel_id, unread.mention_count);
+      }
+    }
     this.pendingMessages = this.pendingMessages.filter((pending) => this.isKnownChannel(pending.channelId));
     const guildId = this.guilds.some((guild) => guild.id === this.selectedGuildId)
       ? this.selectedGuildId
@@ -368,10 +408,15 @@ export class MellowClient {
         }
         this.typingUntil.delete(`${message.channel_id}:${message.author.id}`);
         this.noteConversationActivity(message.channel_id, message.id);
+        const previous = this.cachedMessage(message.channel_id, message.id);
+        const newest = newestOf(this.newestMessageIdByChannel.get(message.channel_id) ?? null, message.id);
+        this.newestMessageIdByChannel.set(message.channel_id, newest ?? message.id);
         this.insertMessages(message.channel_id, [message]);
         if (message.channel_id === this.selectedChannelId) {
+          // Moves the read position while the user looks, so the message is not counted below.
           void this.acknowledgeSelectedChannel();
         }
+        this.adjustMentionCount(message.channel_id, previous, message);
         return;
       }
       case "MESSAGE_UPDATE": {
@@ -386,6 +431,10 @@ export class MellowClient {
         // A late REST answer must not undo a newer edit the gateway already brought. Events never
         // carry reactions (`me` differs per viewer), so the cached ones stay.
         const updated = event.data;
+        const previous = messages.find((message) => message.id === updated.id);
+        if (previous && (previous.edited_at_unix_milliseconds ?? 0) <= (updated.edited_at_unix_milliseconds ?? 0)) {
+          this.adjustMentionCount(updated.channel_id, previous, updated);
+        }
         this.messagesByChannel.set(
           updated.channel_id,
           messages.map((message) =>
@@ -402,6 +451,8 @@ export class MellowClient {
         this.dropPin(event.data.channel_id, event.data.id);
         const messages = this.messagesByChannel.get(event.data.channel_id);
         if (messages && this.isKnownChannel(event.data.channel_id)) {
+          const deleted = this.cachedMessage(event.data.channel_id, event.data.id);
+          this.adjustMentionCount(event.data.channel_id, deleted, undefined);
           this.messagesByChannel.set(
             event.data.channel_id,
             messages.filter((message) => message.id !== event.data.id),
@@ -636,6 +687,8 @@ export class MellowClient {
   /** A channel gone or hidden from us: its cache, its loads and its unsent messages go too. */
   private forgetChannel(channelId: Snowflake): void {
     this.messagesByChannel.delete(channelId);
+    this.newestMessageIdByChannel.delete(channelId);
+    this.mentionCountByChannel.delete(channelId);
     this.pinsByChannel.delete(channelId);
     this.reachedStartChannelIds.delete(channelId);
     this.requestedHistory.delete(channelId);
@@ -936,6 +989,8 @@ export class MellowClient {
     if (!channelId || !newest || !isTabVisible) {
       return;
     }
+    // The user is looking at the channel: its mentions are read.
+    this.mentionCountByChannel.delete(channelId);
     const lastRead = this.lastReadByChannel.get(channelId);
     if (this.isUnreadMarkerPending) {
       this.isUnreadMarkerPending = false;
@@ -957,6 +1012,47 @@ export class MellowClient {
       await this.rest.acknowledge(channelId, newest.id);
     } catch (error) {
       this.reportError(error, "acknowledge");
+    }
+  }
+
+  private cachedMessage(channelId: Snowflake, messageId: Snowflake): Message | undefined {
+    return this.messages(channelId).find((message) => message.id === messageId);
+  }
+
+  /**
+   * Whether the message counts in its channel's red badge: after the read position, from someone
+   * else, and mentioning the user, or anything in a conversation.
+   */
+  private isUnreadMentionOfCurrentUser(message: Message): boolean {
+    const userId = this.user?.id;
+    if (!userId || message.author.id === userId) {
+      return false;
+    }
+    const lastRead = this.lastReadByChannel.get(message.channel_id);
+    if (lastRead && compareSnowflakes(message.id, lastRead) <= 0) {
+      return false;
+    }
+    const isConversation = this.conversations.some((channel) => channel.id === message.channel_id);
+    return isConversation || (message.mention_ids ?? []).includes(userId);
+  }
+
+  /**
+   * Follows a message from `before` to `after` (`undefined`: not known here, or deleted).
+   * shortcut: a message this session never cached (counted in `Ready` only) cannot be followed,
+   * so its edits and deletion leave the count as it is until the next `Ready`; upgrade if the
+   * gateway ever sends mention counts.
+   */
+  private adjustMentionCount(channelId: Snowflake, before: Message | undefined, after: Message | undefined): void {
+    const counts = (message: Message | undefined) => (message && this.isUnreadMentionOfCurrentUser(message) ? 1 : 0);
+    const change = counts(after) - counts(before);
+    if (change === 0) {
+      return;
+    }
+    const next = Math.max(0, this.mentionCount(channelId) + change);
+    if (next === 0) {
+      this.mentionCountByChannel.delete(channelId);
+    } else {
+      this.mentionCountByChannel.set(channelId, next);
     }
   }
 

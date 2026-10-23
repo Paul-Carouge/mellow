@@ -560,3 +560,165 @@ describe("reaction and pin edge cases", () => {
     expect(client.pinnedMessages(GENERAL).map((pinned) => pinned.id)).toEqual(["200"]);
   });
 });
+
+describe("unread state and mention counts", () => {
+  const CONVERSATION = "500";
+  const conversation = {
+    id: CONVERSATION,
+    recipients: [{ id: OTHER, username: "other", display_name: "Other" }],
+    last_message_id: "400",
+  };
+  const mentioning = (id: string, channelId = RULES): Message => ({
+    ...message(id, channelId),
+    mention_ids: [ME],
+  });
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  /** GENERAL is open and read; RULES was read up to 300, has 310 and 3 unread mentions. */
+  async function clientWithUnreadRules(rest: Partial<Record<keyof RestClient, unknown>> = {}) {
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, ...rest }));
+    client.applyReady(
+      ready({
+        guilds: [guild([channel(GENERAL), channel(RULES)])],
+        read_states: [{ channel_id: RULES, last_read_message_id: "300" }],
+        direct_message_channels: [conversation],
+        channel_unreads: [
+          { channel_id: GENERAL, last_message_id: "290", mention_count: 0 },
+          { channel_id: RULES, last_message_id: "310", mention_count: 3 },
+          {
+            channel_id: CONVERSATION,
+            last_message_id: "400",
+            mention_count: 2,
+          },
+        ],
+      }),
+    );
+    await flush();
+    return client;
+  }
+
+  it("show a channel never opened as unread, with its mentions, from Ready", async () => {
+    const client = await clientWithUnreadRules();
+    expect(client.hasUnread(RULES)).toBe(true);
+    expect(client.mentionCount(RULES)).toBe(3);
+    expect(client.guildMentionCount(client.guilds[0] as Guild)).toBe(3);
+    expect(client.conversationsMentionCount()).toBe(2);
+    expect(client.doesServerFindMentions).toBe(true);
+  });
+
+  it("keep the unread state and the counts through GUILD_CREATE and CHANNEL_UPDATE", async () => {
+    const client = await clientWithUnreadRules();
+    client.applyEvent({ t: "GUILD_CREATE", data: guild([channel(GENERAL), channel(RULES)]) }, 0);
+    client.applyEvent({ t: "CHANNEL_UPDATE", data: { ...channel(RULES), name: "renamed" } }, 0);
+    expect(client.hasUnread(RULES)).toBe(true);
+    expect(client.mentionCount(RULES)).toBe(3);
+  });
+
+  it("show a channel read up to its newest message as read", async () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.applyReady(
+      ready({
+        guilds: [guild([channel(GENERAL), channel(RULES)])],
+        read_states: [{ channel_id: RULES, last_read_message_id: "310" }],
+        channel_unreads: [{ channel_id: RULES, last_message_id: "310", mention_count: 0 }],
+      }),
+    );
+    expect(client.hasUnread(RULES)).toBe(false);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: message("320", RULES) }, 0);
+    expect(client.hasUnread(RULES)).toBe(true);
+    expect(client.mentionCount(RULES)).toBe(0);
+  });
+
+  it("count a new mention outside the open channel, never one in it or from the user", async () => {
+    const client = await clientWithUnreadRules();
+    client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("320") }, 0);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("320") }, 0);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: message("321", RULES) }, 0);
+    client.applyEvent(
+      {
+        t: "MESSAGE_CREATE",
+        data: {
+          ...mentioning("322"),
+          author: { id: ME, username: "me", display_name: "Me" },
+        },
+      },
+      0,
+    );
+    client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("330", GENERAL) }, 0);
+    expect(client.mentionCount(RULES)).toBe(4);
+    expect(client.mentionCount(GENERAL)).toBe(0);
+  });
+
+  it("count every message from someone else in a conversation", async () => {
+    const client = await clientWithUnreadRules();
+    client.applyEvent({ t: "MESSAGE_CREATE", data: message("410", CONVERSATION) }, 0);
+    client.applyEvent(
+      {
+        t: "MESSAGE_CREATE",
+        data: {
+          ...message("411", CONVERSATION),
+          author: { id: ME, username: "me", display_name: "Me" },
+        },
+      },
+      0,
+    );
+    expect(client.conversationsMentionCount()).toBe(3);
+  });
+
+  it("clear the count when the channel is opened and read", async () => {
+    const client = await clientWithUnreadRules({
+      listMessages: () => Promise.resolve([mentioning("310")]),
+    });
+    client.selectChannel(RULES);
+    await flush();
+    expect(client.mentionCount(RULES)).toBe(0);
+    expect(client.hasUnread(RULES)).toBe(false);
+    expect(client.guildMentionCount(client.guilds[0] as Guild)).toBe(0);
+  });
+
+  it("follow edits that add or remove the user, and deletions, never below zero", async () => {
+    const client = await clientWithUnreadRules();
+    client.applyEvent({ t: "MESSAGE_CREATE", data: message("320", RULES) }, 0);
+    client.applyEvent(
+      {
+        t: "MESSAGE_UPDATE",
+        data: { ...mentioning("320"), edited_at_unix_milliseconds: 1 },
+      },
+      0,
+    );
+    expect(client.mentionCount(RULES)).toBe(4);
+    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...message("320", RULES, 2) } }, 0);
+    expect(client.mentionCount(RULES)).toBe(3);
+    client.applyEvent(
+      {
+        t: "MESSAGE_UPDATE",
+        data: { ...mentioning("320"), edited_at_unix_milliseconds: 3 },
+      },
+      0,
+    );
+    client.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "320" } }, 0);
+    expect(client.mentionCount(RULES)).toBe(3);
+    // Counted in Ready only: the client cannot tell, so the count stays.
+    client.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "305" } }, 0);
+    expect(client.mentionCount(RULES)).toBe(3);
+
+    const fresh = new MellowClient(fakeRest(QUIET_REST));
+    fresh.applyReady(
+      ready({
+        guilds: [guild([channel(GENERAL), channel(RULES)])],
+        channel_unreads: [],
+      }),
+    );
+    fresh.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("320") }, 0);
+    fresh["mentionCountByChannel"].set(RULES, 0);
+    fresh.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "320" } }, 0);
+    expect(fresh.mentionCount(RULES)).toBe(0);
+  });
+
+  it("leave counts alone for an older server, which highlights mentions on its own", () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.applyReady(ready());
+    expect(client.doesServerFindMentions).toBe(false);
+    expect(client.mentionCount(GENERAL)).toBe(0);
+  });
+});
