@@ -2,6 +2,7 @@
 // (ADR-0022 §7). `fr.ts` is typed against it, so a key missing there fails `npm run check`.
 
 import type { ApiError } from "../lib/api";
+import { MAXIMUM_COUNTED_UNREAD_MENTIONS } from "../lib/protocol";
 import { pluralChooser } from "./plural";
 
 const plural = pluralChooser("en");
@@ -21,6 +22,11 @@ export const en = {
     /** A name followed by its unread state, for screen readers. */
     withUnread: (name: string) => `${name}, unread`,
     unreadSuffix: ", unread",
+    /** A name followed by its red badge's count, for screen readers: "general, 3 mentions". */
+    withMentions: (name: string, mentions: number) =>
+      mentions >= MAXIMUM_COUNTED_UNREAD_MENTIONS
+        ? `${name}, ${count(MAXIMUM_COUNTED_UNREAD_MENTIONS - 1)}+ mentions`
+        : `${name}, ${plural(mentions, { one: `${count(mentions)} mention`, other: `${count(mentions)} mentions` })}`,
     readOnly: "read-only",
     someone: "Someone",
   },

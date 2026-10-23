@@ -7,9 +7,10 @@
   import type { MellowClient } from "../lib/client.svelte";
   import { prefersReducedMotion } from "../lib/motion.svelte";
   import { type Snowflake, iconUrl } from "../lib/protocol";
-  import { serverInitials } from "./format";
+  import { nameWithUnreadState, serverInitials } from "./format";
   import Icon from "./Icon.svelte";
   import Melli from "./Melli.svelte";
+  import MentionBadge from "./MentionBadge.svelte";
   import { homeMelliState } from "./melli";
 
   // The server strip of the navigator card (DESIGN.md §5.2, ADR-0022 §1): Home, a separator, the
@@ -45,9 +46,10 @@
 
   const isHomeSelected = $derived(client.selectedGuildId === null);
   const hasUnreadConversation = $derived(client.conversations.some((conversation) => client.hasUnread(conversation.id)));
+  const conversationsMentionCount = $derived(client.conversationsMentionCount());
 </script>
 
-{#snippet railItem(label: string, isSelected: boolean, hasUnread: boolean, onclick: (event: MouseEvent) => void, content: Snippet, kind: "home" | "server" | "action", guildId: Snowflake | null = null)}
+{#snippet railItem(label: string, isSelected: boolean, hasUnread: boolean, mentionCount: number, onclick: (event: MouseEvent) => void, content: Snippet, kind: "home" | "server" | "action", guildId: Snowflake | null = null)}
   <li class="group relative flex w-full justify-center">
     {#if kind !== "action"}
       <!-- At the card's inner edge, half its width showing (ADR-0022 §1). -->
@@ -65,52 +67,62 @@
         ]}
       ></span>
     {/if}
-    <button
-      type="button"
-      aria-label={hasUnread ? strings.common.withUnread(label) : label}
-      aria-current={isSelected ? "page" : undefined}
-      class={[
-        "rail-item relative grid size-(--mw-component-rail-item-size) place-items-center overflow-hidden",
-        isSelected
-          ? "rounded-(--mw-component-rail-icon-radius-active)"
-          : "rounded-(--mw-component-rail-icon-radius-rest) hover:rounded-(--mw-component-rail-icon-radius-active) focus-visible:rounded-(--mw-component-rail-icon-radius-active)",
-        kind === "home"
-          ? isSelected
-            ? "bg-accent-fill [--melli-mark:var(--mw-color-mascot-ink)]"
-            : "hover:bg-accent-fill hover:[--melli-mark:var(--mw-color-mascot-ink)] focus-visible:bg-accent-fill focus-visible:[--melli-mark:var(--mw-color-mascot-ink)]"
-          : kind === "action"
-            ? "bg-(--mw-component-rail-icon-background-rest) text-(--mw-component-rail-add-icon) hover:bg-(--mw-component-rail-add-background-hover) hover:text-(--mw-component-rail-add-icon-hover) focus-visible:bg-(--mw-component-rail-add-background-hover) focus-visible:text-(--mw-component-rail-add-icon-hover)"
-            : isSelected
-              ? "bg-(--mw-component-rail-icon-background-active) text-(--mw-component-rail-icon-text-active)"
-              : "bg-(--mw-component-rail-icon-background-rest) text-(--mw-component-rail-icon-text-rest) hover:bg-(--mw-component-rail-icon-background-active) hover:text-(--mw-component-rail-icon-text-active) focus-visible:bg-(--mw-component-rail-icon-background-active) focus-visible:text-(--mw-component-rail-icon-text-active)",
-      ]}
-      {onclick}
-      onpointerenter={(event) => {
-        animatedGuildId = guildId;
-        if (event.pointerType === "mouse") {
-          showTooltip(event, label);
-        }
-      }}
-      onpointerleave={(event) => {
-        tooltip = null;
-        if (event.currentTarget !== document.activeElement) {
+    <!-- The button clips its icon; the badge sits on its corner, outside the clip. -->
+    <span class="relative">
+      <button
+        type="button"
+        aria-label={nameWithUnreadState(label, hasUnread, mentionCount)}
+        aria-current={isSelected ? "page" : undefined}
+        class={[
+          "rail-item relative grid size-(--mw-component-rail-item-size) place-items-center overflow-hidden",
+          isSelected
+            ? "rounded-(--mw-component-rail-icon-radius-active)"
+            : "rounded-(--mw-component-rail-icon-radius-rest) hover:rounded-(--mw-component-rail-icon-radius-active) focus-visible:rounded-(--mw-component-rail-icon-radius-active)",
+          kind === "home"
+            ? isSelected
+              ? "bg-accent-fill [--melli-mark:var(--mw-color-mascot-ink)]"
+              : "hover:bg-accent-fill hover:[--melli-mark:var(--mw-color-mascot-ink)] focus-visible:bg-accent-fill focus-visible:[--melli-mark:var(--mw-color-mascot-ink)]"
+            : kind === "action"
+              ? "bg-(--mw-component-rail-icon-background-rest) text-(--mw-component-rail-add-icon) hover:bg-(--mw-component-rail-add-background-hover) hover:text-(--mw-component-rail-add-icon-hover) focus-visible:bg-(--mw-component-rail-add-background-hover) focus-visible:text-(--mw-component-rail-add-icon-hover)"
+              : isSelected
+                ? "bg-(--mw-component-rail-icon-background-active) text-(--mw-component-rail-icon-text-active)"
+                : "bg-(--mw-component-rail-icon-background-rest) text-(--mw-component-rail-icon-text-rest) hover:bg-(--mw-component-rail-icon-background-active) hover:text-(--mw-component-rail-icon-text-active) focus-visible:bg-(--mw-component-rail-icon-background-active) focus-visible:text-(--mw-component-rail-icon-text-active)",
+        ]}
+        {onclick}
+        onpointerenter={(event) => {
+          animatedGuildId = guildId;
+          if (event.pointerType === "mouse") {
+            showTooltip(event, label);
+          }
+        }}
+        onpointerleave={(event) => {
+          tooltip = null;
+          if (event.currentTarget !== document.activeElement) {
+            animatedGuildId = null;
+          }
+        }}
+        onfocus={(event) => {
+          animatedGuildId = guildId;
+          // Keyboard focus only: a tap or a click already shows the server it opens.
+          if (event.currentTarget.matches(":focus-visible")) {
+            showTooltip(event, label);
+          }
+        }}
+        onblur={() => {
+          tooltip = null;
           animatedGuildId = null;
-        }
-      }}
-      onfocus={(event) => {
-        animatedGuildId = guildId;
-        // Keyboard focus only: a tap or a click already shows the server it opens.
-        if (event.currentTarget.matches(":focus-visible")) {
-          showTooltip(event, label);
-        }
-      }}
-      onblur={() => {
-        tooltip = null;
-        animatedGuildId = null;
-      }}
-    >
-      {@render content()}
-    </button>
+        }}
+      >
+        {@render content()}
+      </button>
+      {#if mentionCount > 0}
+        <MentionBadge
+          {mentionCount}
+          ringColorToken="--mw-component-navigator-background"
+          class="pointer-events-none absolute -end-2xs -bottom-2xs z-10"
+        />
+      {/if}
+    </span>
   </li>
 {/snippet}
 
@@ -126,7 +138,7 @@
 
 <nav aria-label={strings.rail.servers} class="min-h-0 overflow-x-hidden overflow-y-auto [scrollbar-width:none]">
   <ul class="flex flex-col items-center gap-(--mw-component-rail-item-gap) pt-(--mw-component-rail-padding-top)">
-    {@render railItem(strings.rail.directMessages, isHomeSelected, hasUnreadConversation, () => select(null), homeMark, "home")}
+    {@render railItem(strings.rail.directMessages, isHomeSelected, hasUnreadConversation, conversationsMentionCount, () => select(null), homeMark, "home")}
     <li aria-hidden="true" class="h-(--mw-size-rail-separator-height) w-(--mw-size-rail-separator-width) shrink-0 rounded-full bg-(--mw-component-rail-separator-color)"></li>
     {#each client.guilds as guild (guild.id)}
       {@const hasUnread = guild.channels.some((channel) => client.hasUnread(channel.id))}
@@ -144,9 +156,9 @@
           <span aria-hidden="true" class="type-body font-semibold">{serverInitials(guild.name)}</span>
         {/if}
       {/snippet}
-      {@render railItem(guild.name, client.selectedGuildId === guild.id, hasUnread, () => select(guild.id), serverMark, "server", guild.id)}
+      {@render railItem(guild.name, client.selectedGuildId === guild.id, hasUnread, client.guildMentionCount(guild), () => select(guild.id), serverMark, "server", guild.id)}
     {/each}
-    {@render railItem(strings.rail.addServer, false, false, onaddserver, addIcon, "action")}
+    {@render railItem(strings.rail.addServer, false, false, 0, onaddserver, addIcon, "action")}
   </ul>
 </nav>
 

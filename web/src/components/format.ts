@@ -1,7 +1,7 @@
 // Text shown in the shell, built the way the desktop client builds it (mellow-desktop live_rows.rs).
 
 import { formattingLocale, strings, wordedFormattingLocale } from "../i18n";
-import type { PublicUser, Snowflake } from "../lib/protocol";
+import { MAXIMUM_COUNTED_UNREAD_MENTIONS, type PublicUser, type Snowflake } from "../lib/protocol";
 
 /** Unix time of 2026-01-01T00:00:00Z: `MELLOW_EPOCH_UNIX_MILLISECONDS` in mellow-protocol. */
 const MELLOW_EPOCH_UNIX_MILLISECONDS = 1_767_225_600_000;
@@ -168,4 +168,15 @@ export function attachmentCountLabel(count: number): string {
     return "";
   }
   return strings.messages.attachmentCount(count);
+}
+
+/** The red badge's text: the server stops counting at `MAXIMUM_COUNTED_UNREAD_MENTIONS`. */
+export function mentionBadgeText(mentionCount: number): string {
+  return mentionCount >= MAXIMUM_COUNTED_UNREAD_MENTIONS ? `${MAXIMUM_COUNTED_UNREAD_MENTIONS - 1}+` : String(mentionCount);
+}
+
+/** A row's accessible name: its name, then "unread" and its mention count when it has them. */
+export function nameWithUnreadState(name: string, hasUnread: boolean, mentionCount: number): string {
+  const withUnread = hasUnread ? strings.common.withUnread(name) : name;
+  return mentionCount > 0 ? strings.common.withMentions(withUnread, mentionCount) : withUnread;
 }

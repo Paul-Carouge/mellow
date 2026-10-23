@@ -15,9 +15,10 @@
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
   import { visibleChannelSections } from "./channel-settings";
-  import { displayName } from "./format";
+  import { displayName, nameWithUnreadState } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import MentionBadge from "./MentionBadge.svelte";
   import { channelSections } from "./message-rows";
   import { canOpenServerSettings } from "./server-settings";
 
@@ -249,13 +250,14 @@
         {#each client.conversations as conversation (conversation.id)}
           {@const isSelected = conversation.id === client.selectedChannelId}
           {@const hasUnread = !isSelected && client.hasUnread(conversation.id)}
+          {@const mentionCount = isSelected ? 0 : client.mentionCount(conversation.id)}
           {@const recipient = conversation.recipients.find((candidate) => candidate.id !== user?.id)}
           <li class="relative mt-(--mw-component-member-row-gap) me-(--mw-component-channel-row-margin-inline)">
             {#if hasUnread}{@render unreadPill()}{/if}
             <button
               type="button"
               aria-current={isSelected ? "page" : undefined}
-              aria-label={hasUnread ? strings.common.withUnread(conversationName(conversation)) : conversationName(conversation)}
+              aria-label={nameWithUnreadState(conversationName(conversation), hasUnread, mentionCount)}
               class={[rowClasses(isSelected, hasUnread), "h-(--mw-component-member-row-height) gap-sm"]}
               onclick={() => selectConversation(conversation.id)}
             >
@@ -270,6 +272,7 @@
               <span class="min-w-0 flex-1 truncate type-channel-name">
                 {conversationName(conversation)}
               </span>
+              {#if mentionCount > 0}<MentionBadge {mentionCount} />{/if}
             </button>
           </li>
         {/each}
@@ -328,6 +331,7 @@
       {#each section.channels as channel (channel.id)}
         {@const isSelected = channel.id === client.selectedChannelId}
         {@const hasUnread = !isSelected && client.hasUnread(channel.id)}
+        {@const mentionCount = isSelected ? 0 : client.mentionCount(channel.id)}
         {@const canSendMessages = canSendIn(channel.id)}
         {@const canEdit = canEditChannel(channel)}
         {@const icon = channel.icon && !failedIconIds.has(channel.icon.id) ? channel.icon : null}
@@ -338,13 +342,17 @@
             <button
               type="button"
               aria-current={isSelected ? "page" : undefined}
-              aria-label={[channel.name, !canSendMessages && strings.common.readOnly].filter(Boolean).join(", ") +
-                (hasUnread ? strings.common.unreadSuffix : "")}
+              aria-label={nameWithUnreadState(
+                [channel.name, !canSendMessages && strings.common.readOnly].filter(Boolean).join(", "),
+                hasUnread,
+                mentionCount,
+              )}
               class={[
                 rowClasses(isSelected, hasUnread),
                 "h-(--mw-component-channel-row-height) pointer-coarse:h-(--mw-size-hit-web-min)",
-                // Room for the gear, so a long name never runs under it.
+                // Room for the gear, so a long name never runs under it; a badge already keeps it.
                 canEdit &&
+                  mentionCount === 0 &&
                   "pe-[calc(var(--mw-component-channel-row-settings-button-size)+var(--mw-component-channel-row-padding-inline))] pointer-coarse:pe-(--mw-size-hit-web-min)",
               ]}
               onclick={() => selectChannel(channel.id)}
@@ -368,6 +376,13 @@
               {#if icon && !canSendMessages}
                 <!-- The icon took the lock's place: it moves after the name. -->
                 <Icon name="lock" class="size-(--mw-component-channel-row-trailing-icon-size) shrink-0" />
+              {/if}
+              {#if mentionCount > 0}
+                <!-- The gear takes the badge's place while it shows. -->
+                <MentionBadge
+                  {mentionCount}
+                  class={canEdit ? "group-focus-within/row:invisible group-hover/row:invisible" : ""}
+                />
               {/if}
             </button>
             {#if canEdit}

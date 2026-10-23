@@ -7,8 +7,10 @@ import {
   avatarInitial,
   avatarTintToken,
   humanFileSize,
+  mentionBadgeText,
   messageTimestampLabel,
   middleTruncate,
+  nameWithUnreadState,
   serverInitials,
   timeOfDayLabel,
   typingLabel,
@@ -267,5 +269,19 @@ describe("token parsing", () => {
     expect(parseDurationInMilliseconds(".3s")).toBe(300);
     expect(parseRemLength(".5rem")).toBe(0.5);
     expect(() => parseRemLength("12px")).toThrow();
+  });
+});
+
+describe("mention badges", () => {
+  it("count up to 99, then say 99+ as the server stops counting", () => {
+    expect(mentionBadgeText(1)).toBe("1");
+    expect(mentionBadgeText(99)).toBe("99");
+    expect(mentionBadgeText(100)).toBe("99+");
+  });
+
+  it("name a row with its unread state and its mentions", () => {
+    expect(nameWithUnreadState("general", false, 0)).toBe("general");
+    expect(nameWithUnreadState("general", true, 0)).toBe("general, unread");
+    expect(nameWithUnreadState("general", true, 2)).toBe("general, unread, 2 mentions");
   });
 });

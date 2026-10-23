@@ -418,6 +418,7 @@
           {row}
           {currentUser}
           mentionablePeople={mentionable}
+          doesServerFindMentions={client.doesServerFindMentions}
           authorColor={authorColors.get(row.kind === "sent" ? row.message.author.id : currentUser.id) ?? null}
           replyReference={row.kind === "sent" ? replyReferenceOf(row.message) : null}
           {canSendMessages}
