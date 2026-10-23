@@ -877,7 +877,7 @@ Phone (< 792)                     Drawer open
 - User settings (5.9) open from the user panel's gear button ("User settings"), as on desktop; "Sign out" is the last item of their navigation.
 - Attachments (5.4, 5.5): images open in a new tab instead of the viewer; an image that fails to load becomes its download card instead of "Couldn't load this image."; no upload progress percentage (the tray says "Uploading…"), no "Add a description" or "Mark as spoiler" yet.
 - Server settings follow 5.8 ([design/web-server-settings.md](docs/design/web-server-settings.md)); channel settings are not there yet.
-- Not in the web client yet: channel settings, mention badges, day dividers, the connection dock's "Back online" and session-expired states. Mentions are matched client-side by name until the protocol carries mention ids ([design/web-dusk-navigator.md](docs/design/web-dusk-navigator.md)).
+- Not in the web client yet: day dividers, the connection dock's "Back online" and session-expired states. Mentions are found by the server with the client's rule (`Message.mention_ids`) and counted in `Ready.channel_unreads` for the red badges; the client still reads names itself to draw chips, and to highlight messages written before the server found mentions ([design/web-dusk-navigator.md](docs/design/web-dusk-navigator.md)).
 
 ### 4.4 Admin web UI (server-rendered HTML + htmx)
 
