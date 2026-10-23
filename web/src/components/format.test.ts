@@ -282,6 +282,6 @@ describe("mention badges", () => {
   it("name a row with its unread state and its mentions", () => {
     expect(nameWithUnreadState("general", false, 0)).toBe("general");
     expect(nameWithUnreadState("general", true, 0)).toBe("general, unread");
-    expect(nameWithUnreadState("general", true, 2)).toBe("general, unread, 2 mentions");
+    expect(nameWithUnreadState("general", true, 2)).toBe("general, 2 mentions, unread");
   });
 });

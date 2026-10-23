@@ -177,6 +177,7 @@ export function mentionBadgeText(mentionCount: number): string {
 
 /** A row's accessible name: its name, then "unread" and its mention count when it has them. */
 export function nameWithUnreadState(name: string, hasUnread: boolean, mentionCount: number): string {
-  const withUnread = hasUnread ? strings.common.withUnread(name) : name;
-  return mentionCount > 0 ? strings.common.withMentions(withUnread, mentionCount) : withUnread;
+  // "Rust Lyon, 3 mentions, unread" (DESIGN.md): the count first, the state last.
+  const withMentions = mentionCount > 0 ? strings.common.withMentions(name, mentionCount) : name;
+  return hasUnread ? strings.common.withUnread(withMentions) : withMentions;
 }
