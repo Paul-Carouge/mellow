@@ -119,6 +119,11 @@ export class MellowClient {
   private reactionsInFlight = new Set<string>();
   /** Channels whose pins changed while their list was loading: asked again once it arrives. */
   private pinsChangedWhileLoading = new Set<Snowflake>();
+  /**
+   * Messages deleted this session: a history page or a send answer that left before the deletion
+   * must not bring them back. Ids are never reused, so they are kept until sign-out.
+   */
+  private deletedMessageIds = new Set<Snowflake>();
 
   private gateway: GatewayConnection | null = null;
   /** Before the first `Ready`, no selection exists yet: home then means "not chosen". */
@@ -275,6 +280,7 @@ export class MellowClient {
     this.unreadMarkers.clear();
     this.typingUntil.clear();
     this.pinsByChannel.clear();
+    this.deletedMessageIds.clear();
     this.selectedGuildId = null;
     this.selectedChannelId = null;
   }
@@ -388,6 +394,7 @@ export class MellowClient {
         return;
       }
       case "MESSAGE_DELETE": {
+        this.deletedMessageIds.add(event.data.id);
         this.dropPin(event.data.channel_id, event.data.id);
         const messages = this.messagesByChannel.get(event.data.channel_id);
         if (messages && this.isKnownChannel(event.data.channel_id)) {
@@ -727,7 +734,9 @@ export class MellowClient {
   private insertMessages(channelId: Snowflake, incoming: Message[]): void {
     const byId = new Map(this.messages(channelId).map((message) => [message.id, message]));
     for (const message of incoming) {
-      byId.set(message.id, message);
+      if (!this.deletedMessageIds.has(message.id)) {
+        byId.set(message.id, message);
+      }
     }
     let merged = [...byId.values()].sort((left, right) => compareSnowflakes(left.id, right.id));
     if (channelId !== this.selectedChannelId && merged.length > MAXIMUM_CACHED_MESSAGES_PER_CHANNEL) {
@@ -1031,22 +1040,22 @@ export class MellowClient {
     }
   }
 
-  async editMessage(messageId: Snowflake, content: string): Promise<void> {
-    const channelId = this.selectedChannelId;
-    if (!channelId) {
-      return;
-    }
-    const updated = await this.rest.editMessage(channelId, messageId, content);
+  /** In the message's own channel: the open channel may have changed while the editor was open. */
+  async editMessage(message: Message, content: string): Promise<void> {
+    const updated = await this.rest.editMessage(message.channel_id, message.id, content);
     this.applyEvent({ t: "MESSAGE_UPDATE", data: updated }, Date.now());
   }
 
-  async deleteMessage(messageId: Snowflake): Promise<void> {
-    const channelId = this.selectedChannelId;
-    if (!channelId) {
-      return;
+  /** A message already gone (deleted elsewhere, its event not here yet) counts as deleted. */
+  async deleteMessage(message: Message): Promise<void> {
+    try {
+      await this.rest.deleteMessage(message.channel_id, message.id);
+    } catch (error) {
+      if (!(error instanceof ApiError && error.code === "NOT_FOUND")) {
+        throw error;
+      }
     }
-    await this.rest.deleteMessage(channelId, messageId);
-    this.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: channelId, id: messageId } }, Date.now());
+    this.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: message.channel_id, id: message.id } }, Date.now());
   }
 
   // --- Reactions and pins --------------------------------------------------------------------

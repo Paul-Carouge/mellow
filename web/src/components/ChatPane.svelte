@@ -426,7 +426,7 @@
     }
     actionError = "";
     try {
-      await client.editMessage(message.id, trimmed);
+      await client.editMessage(message, trimmed);
     } catch (error) {
       actionError = describeError(error, strings.chat.editFailed);
     }
@@ -435,7 +435,7 @@
   async function deleteMessage(message: Message) {
     actionError = "";
     try {
-      await client.deleteMessage(message.id);
+      await client.deleteMessage(message);
     } catch (error) {
       actionError = describeError(error, strings.chat.deleteFailed);
     }
