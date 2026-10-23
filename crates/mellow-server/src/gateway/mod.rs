@@ -113,7 +113,7 @@ pub(crate) async fn upgrade(
     // The web client identifies with an empty token: its session is this cookie (ADR-0019).
     let cookie_token = session_cookie(&headers).map(|token| Zeroizing::new(token.to_owned()));
     let address = client_address_key(peer, &headers, &state.trusted_proxy_networks);
-    if !state.rate_limiter.record_event(
+    if !state.unauthenticated_rate_limiter.record_event(
         &format!("gateway:{address}"),
         GATEWAY_CONNECTIONS_PER_ADDRESS,
         std::time::Instant::now(),
@@ -348,21 +348,15 @@ async fn build_ready(
     let mut guilds = Vec::with_capacity(guild_ids.len());
     let mut online_user_ids = BTreeSet::new();
     for guild_id in guild_ids {
-        let guild = state.guilds.get_guild(user.id, *guild_id).await;
-        let members = state.guilds.list_members(user.id, *guild_id).await;
-        match (guild, members) {
-            (Ok(guild), Ok(members)) => {
+        match state.guilds.get_guild(user.id, *guild_id).await {
+            Ok(guild) => {
                 guilds.push(guild);
-                online_user_ids.extend(
-                    members
-                        .iter()
-                        .map(|member| member.user.id)
-                        .filter(|member_id| state.events.is_online(*member_id)),
-                );
+                // From the hub, not the member list: that list stops at its first 1 000 members.
+                online_user_ids.extend(state.events.online_user_ids_of_guild(*guild_id));
             }
             // Left meanwhile: its GUILD_DELETE is already queued for this session.
-            (Err(GuildError::NotFound), _) | (_, Err(GuildError::NotFound)) => {}
-            (Err(error), _) | (_, Err(error)) => {
+            Err(GuildError::NotFound) => {}
+            Err(error) => {
                 tracing::warn!(%error, "gateway identify: cannot build ready");
                 return None;
             }
