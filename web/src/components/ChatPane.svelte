@@ -428,7 +428,14 @@
     try {
       await client.editMessage(message, trimmed);
     } catch (error) {
-      actionError = describeError(error, strings.chat.editFailed);
+      showActionError(message.channel_id, describeError(error, strings.chat.editFailed));
+    }
+  }
+
+  /** An answer that comes back after the reader moved on is not told under another channel. */
+  function showActionError(messageChannelId: Snowflake, text: string) {
+    if (messageChannelId === channelId) {
+      actionError = text;
     }
   }
 
@@ -437,7 +444,7 @@
     try {
       await client.deleteMessage(message);
     } catch (error) {
-      actionError = describeError(error, strings.chat.deleteFailed);
+      showActionError(message.channel_id, describeError(error, strings.chat.deleteFailed));
     }
   }
 
@@ -462,7 +469,7 @@
     try {
       await client.toggleReaction(message.channel_id, message.id, emoji);
     } catch (error) {
-      actionError = describeError(error, strings.reactions.failed);
+      showActionError(message.channel_id, describeError(error, strings.reactions.failed));
     }
   }
 
@@ -489,7 +496,7 @@
     try {
       await client.setPinned(message, isPinned);
     } catch (error) {
-      actionError = describeError(error, isPinned ? strings.pins.pinFailed : strings.pins.unpinFailed);
+      showActionError(message.channel_id, describeError(error, isPinned ? strings.pins.pinFailed : strings.pins.unpinFailed));
     }
   }
 
@@ -498,7 +505,7 @@
     try {
       await client.removeAllReactions(message.channel_id, message.id);
     } catch (error) {
-      actionError = describeError(error, strings.reactions.removeAllFailed);
+      showActionError(message.channel_id, describeError(error, strings.reactions.removeAllFailed));
     }
   }
 
