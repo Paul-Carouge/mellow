@@ -32,6 +32,7 @@ import {
   type Role,
   type Snowflake,
   DIRECT_MESSAGE_PERMISSIONS,
+  MAXIMUM_COUNTED_UNREAD_MENTIONS,
   compareSnowflakes,
   computeChannelPermissions,
 } from "./protocol";
@@ -105,6 +106,12 @@ export class MellowClient {
    * `Ready.channel_unreads`, then counted live; absent means none.
    */
   private mentionCountByChannel = new SvelteMap<Snowflake, number>();
+  /**
+   * Each channel's newest message when the server built `Ready`. The gateway replays what was
+   * committed while it did, and `Ready` already counted those: a replayed message at or below
+   * this id is cached but not counted again. Not reactive: it never drives the interface.
+   */
+  private newestCountedByReady = new Map<Snowflake, Snowflake>();
   /** `Ready` carried `channel_unreads`: the server fills `Message.mention_ids`, absent when empty. */
   doesServerFindMentions = $state(false);
   /**
@@ -384,8 +391,10 @@ export class MellowClient {
     this.doesServerFindMentions = ready.channel_unreads !== undefined;
     this.newestMessageIdByChannel.clear();
     this.mentionCountByChannel.clear();
+    this.newestCountedByReady.clear();
     for (const unread of ready.channel_unreads ?? []) {
       this.newestMessageIdByChannel.set(unread.channel_id, unread.last_message_id);
+      this.newestCountedByReady.set(unread.channel_id, unread.last_message_id);
       if (unread.mention_count > 0) {
         this.mentionCountByChannel.set(unread.channel_id, unread.mention_count);
       }
@@ -416,7 +425,10 @@ export class MellowClient {
           // Moves the read position while the user looks, so the message is not counted below.
           void this.acknowledgeSelectedChannel();
         }
-        this.adjustMentionCount(message.channel_id, previous, message);
+        const countedByReady = this.newestCountedByReady.get(message.channel_id);
+        if (countedByReady === undefined || compareSnowflakes(message.id, countedByReady) > 0) {
+          this.adjustMentionCount(message.channel_id, previous, message);
+        }
         return;
       }
       case "MESSAGE_UPDATE": {
@@ -1043,9 +1055,15 @@ export class MellowClient {
    * gateway ever sends mention counts.
    */
   private adjustMentionCount(channelId: Snowflake, before: Message | undefined, after: Message | undefined): void {
+    // An older server sends no counts in `Ready`, so live ones would vanish at the next one.
+    if (!this.doesServerFindMentions) {
+      return;
+    }
     const counts = (message: Message | undefined) => (message && this.isUnreadMentionOfCurrentUser(message) ? 1 : 0);
     const change = counts(after) - counts(before);
-    if (change === 0) {
+    // The server stops counting at the maximum: "at least 100" minus one is not 99.
+    const isSaturated = this.mentionCount(channelId) >= MAXIMUM_COUNTED_UNREAD_MENTIONS;
+    if (change === 0 || (change < 0 && isSaturated)) {
       return;
     }
     const next = Math.max(0, this.mentionCount(channelId) + change);

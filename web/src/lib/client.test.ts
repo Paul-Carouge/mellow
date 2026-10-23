@@ -701,24 +701,41 @@ describe("unread state and mention counts", () => {
     // Counted in Ready only: the client cannot tell, so the count stays.
     client.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "305" } }, 0);
     expect(client.mentionCount(RULES)).toBe(3);
+  });
 
-    const fresh = new MellowClient(fakeRest(QUIET_REST));
-    fresh.applyReady(
+  it("count a message Ready already counted once, even when the gateway replays it", async () => {
+    const client = await clientWithUnreadRules();
+    // 310 was committed while the server built Ready: counted there, then replayed.
+    client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("310") }, 0);
+    expect(client.mentionCount(RULES)).toBe(3);
+    client.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "310" } }, 0);
+    expect(client.mentionCount(RULES)).toBe(2);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("311") }, 0);
+    expect(client.mentionCount(RULES)).toBe(3);
+  });
+
+  it("keep a saturated count when a counted message goes", async () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.applyReady(
       ready({
         guilds: [guild([channel(GENERAL), channel(RULES)])],
-        channel_unreads: [],
+        channel_unreads: [{ channel_id: RULES, last_message_id: "310", mention_count: 100 }],
       }),
     );
-    fresh.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("320") }, 0);
-    fresh["mentionCountByChannel"].set(RULES, 0);
-    fresh.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "320" } }, 0);
-    expect(fresh.mentionCount(RULES)).toBe(0);
+    await flush();
+    client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("320") }, 0);
+    client.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "320" } }, 0);
+    expect(client.mentionCount(RULES)).toBe(101);
   });
 
   it("leave counts alone for an older server, which highlights mentions on its own", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
-    client.applyReady(ready());
+    client.applyReady(ready({ direct_message_channels: [conversation] }));
     expect(client.doesServerFindMentions).toBe(false);
+    expect(client.mentionCount(GENERAL)).toBe(0);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: message("410", CONVERSATION) }, 0);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("411", GENERAL) }, 0);
+    expect(client.mentionCount(CONVERSATION)).toBe(0);
     expect(client.mentionCount(GENERAL)).toBe(0);
   });
 });

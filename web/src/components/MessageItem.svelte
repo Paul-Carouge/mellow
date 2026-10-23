@@ -91,11 +91,10 @@
   const isSending = $derived(row.kind === "pending" && row.pending.status === "sending");
   const isFailed = $derived(row.kind === "pending" && row.pending.status === "failed");
   const contentBlocks = $derived(parseMessageMarkdown(content, mentionablePeople));
-  // An older server sends no `mention_ids`: the client finds mentions itself, as it did before.
+  // The server's ids first; the client's own reading too, for messages written before the server
+  // found mentions (migration 16) and for older servers.
   const isMentioningCurrentUser = $derived(
-    message && doesServerFindMentions
-      ? (message.mention_ids ?? []).includes(currentUser.id)
-      : markdownMentionsUser(contentBlocks, currentUser.id),
+    (message?.mention_ids ?? []).includes(currentUser.id) || markdownMentionsUser(contentBlocks, currentUser.id),
   );
 
   // Taken from the message when the editor opens; later updates to the message keep the typing.
