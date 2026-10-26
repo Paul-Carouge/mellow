@@ -9,8 +9,8 @@ services:
     build:
       context: .
       args:
-        MELLOW_VERSION: 0.12.0
-    image: local/mellow-server:0.12.0
+        MELLOW_VERSION: 0.13.0
+    image: local/mellow-server:0.13.0
     restart: unless-stopped
     # Behind a reverse proxy, join its Docker network instead of publishing a port.
     volumes:
