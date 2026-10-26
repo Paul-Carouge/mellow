@@ -90,7 +90,7 @@ pub struct Ready {
     pub user: CurrentUser,
     pub guilds: Vec<Guild>,
     pub read_states: Vec<ReadState>,
-    /// Members of the user's guilds who are online now.
+    /// Members of the user's guilds who are online now (idle and do not disturb included).
     pub online_user_ids: Vec<Snowflake>,
     /// Added after `v0.2.0`: absent from older servers.
     #[serde(default)]
@@ -98,6 +98,19 @@ pub struct Ready {
     /// Added after `v0.10.0`: absent from older servers.
     #[serde(default)]
     pub channel_unreads: Vec<ChannelUnread>,
+    /// The status of each user in `online_user_ids`. Added after `v0.11.0`: absent from older
+    /// servers, whose online users are all `Online`.
+    #[serde(default)]
+    pub presences: Vec<Presence>,
+}
+
+/// What others see of a user's presence. An invisible user is `Offline`, without custom status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Presence {
+    pub user_id: Snowflake,
+    pub status: PresenceStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_status: Option<String>,
 }
 
 /// Payload of `MESSAGE_REACTION_ADD` and `MESSAGE_REACTION_REMOVE`.
@@ -116,6 +129,10 @@ pub struct MessageReaction {
 #[serde(rename_all = "snake_case")]
 pub enum PresenceStatus {
     Online,
+    /// `Idle` and `DoNotDisturb` were added after `v0.11.0`: older clients cannot parse them and
+    /// skip the frame.
+    Idle,
+    DoNotDisturb,
     Offline,
 }
 
@@ -195,10 +212,9 @@ pub enum GatewayEvent {
         channel_id: Snowflake,
         user_id: Snowflake,
     },
-    PresenceUpdate {
-        user_id: Snowflake,
-        status: PresenceStatus,
-    },
+    /// A user's status or custom status changed, or they connected or left. Sent to the members
+    /// of their guilds.
+    PresenceUpdate(Presence),
     /// A conversation was opened with the user, by them or by someone else (before its first
     /// message reaches them).
     DirectMessageChannelCreate(DirectMessageChannel),
@@ -346,5 +362,39 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ready.direct_message_channels, Vec::new());
+        assert_eq!(ready.presences, Vec::new());
+        assert_eq!(ready.user.status, crate::ChosenStatus::Online);
+        assert_eq!(ready.user.custom_status, None);
+    }
+
+    #[test]
+    fn presence_updates_keep_their_v1_shape() {
+        let event = GatewayEvent::PresenceUpdate(Presence {
+            user_id: Snowflake::from_raw(4),
+            status: PresenceStatus::DoNotDisturb,
+            custom_status: Some("Focus".into()),
+        });
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "t": "PRESENCE_UPDATE",
+                "data": {"user_id": "4", "status": "do_not_disturb", "custom_status": "Focus"}
+            })
+        );
+        assert_eq!(serde_json::from_value::<GatewayEvent>(json).unwrap(), event);
+        let from_an_older_server: GatewayEvent = serde_json::from_value(serde_json::json!({
+            "t": "PRESENCE_UPDATE",
+            "data": {"user_id": "4", "status": "offline"}
+        }))
+        .unwrap();
+        assert_eq!(
+            from_an_older_server,
+            GatewayEvent::PresenceUpdate(Presence {
+                user_id: Snowflake::from_raw(4),
+                status: PresenceStatus::Offline,
+                custom_status: None,
+            })
+        );
     }
 }

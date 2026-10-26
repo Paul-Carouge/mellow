@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use mellow_protocol::{
     ChangePasswordRequest, CurrentUser, LoginRequest, RegisterRequest, SessionCreated,
-    UpdateCurrentUserRequest,
+    UpdateCurrentUserRequest, UpdatePresenceRequest,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -160,16 +160,11 @@ fn is_password_check_allowed(state: &AppState, user: &CurrentUser, token: &str) 
     )
 }
 
-pub(crate) async fn update_current_user(
-    State(state): State<AppState>,
-    AuthenticatedUser(user): AuthenticatedUser,
-    headers: HeaderMap,
-    ApiJson(request): ApiJson<UpdateCurrentUserRequest>,
-) -> Result<Json<CurrentUser>, ApiError> {
-    let token = session_token(&headers)?;
-    // The user's budget counts only what the session's allowed, as for password checks.
+/// Counts a profile write. The user's budget counts only what the session's allowed, as for
+/// password checks.
+fn is_profile_write_allowed(state: &AppState, user: &CurrentUser, token: &str) -> bool {
     let now = Instant::now();
-    let within_profile_limit = state.rate_limiter.record_event(
+    state.rate_limiter.record_event(
         &format!("profile:{}", fixed_size_key(token)),
         PROFILE_WRITES_PER_SESSION,
         now,
@@ -177,8 +172,17 @@ pub(crate) async fn update_current_user(
         &format!("profile:{}", user.id),
         PROFILE_WRITES_PER_USER,
         now,
-    );
-    if !within_profile_limit
+    )
+}
+
+pub(crate) async fn update_current_user(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<UpdateCurrentUserRequest>,
+) -> Result<Json<CurrentUser>, ApiError> {
+    let token = session_token(&headers)?;
+    if !is_profile_write_allowed(&state, &user, token)
         || (request.current_password.is_some() && !is_password_check_allowed(&state, &user, token))
     {
         return Err(ApiError::rate_limited());
@@ -187,6 +191,25 @@ pub(crate) async fn update_current_user(
         state
             .accounts
             .update_current_user(token, request, now_unix_milliseconds())
+            .await?,
+    ))
+}
+
+pub(crate) async fn update_presence(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<UpdatePresenceRequest>,
+) -> Result<Json<CurrentUser>, ApiError> {
+    let token = session_token(&headers)?;
+    // Shares the profile budget: each change is a write and a fan-out to every guild of the user.
+    if !is_profile_write_allowed(&state, &user, token) {
+        return Err(ApiError::rate_limited());
+    }
+    Ok(Json(
+        state
+            .accounts
+            .update_presence(token, request, now_unix_milliseconds())
             .await?,
     ))
 }

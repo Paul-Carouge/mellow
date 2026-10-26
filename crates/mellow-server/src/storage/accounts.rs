@@ -1,6 +1,6 @@
 //! Users and sessions tables (migration 0001).
 
-use mellow_protocol::{ProfileImage, Snowflake};
+use mellow_protocol::{ChosenStatus, ProfileImage, Snowflake};
 
 use super::Database;
 
@@ -20,6 +20,8 @@ pub struct StoredUser {
     pub is_disabled: bool,
     pub avatar: Option<ProfileImage>,
     pub banner: Option<ProfileImage>,
+    pub status: ChosenStatus,
+    pub custom_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +60,8 @@ pub enum AccountStorageError {
     EmailTaken,
     #[error("value does not fit SQLite's signed 64-bit integer")]
     IntegerOutOfRange,
+    #[error("unknown presence status in the database")]
+    UnknownPresenceStatus,
     #[error("database error")]
     Database(#[from] sqlx::Error),
 }
@@ -74,6 +78,8 @@ type StoredUserRow = (
     bool,
     Option<i64>,
     bool,
+    String,
+    Option<String>,
 );
 
 /// A macro, not a `const`, so queries can be built with `concat!` and stay `&'static str`
@@ -82,7 +88,8 @@ macro_rules! select_user_columns {
     () => {
         "users.id, users.username, users.display_name, users.email, users.password_hash, \
          users.is_instance_administrator, users.disabled_at_unix_milliseconds, users.avatar_id, \
-         users.avatar_is_animated, users.banner_id, users.banner_is_animated"
+         users.avatar_is_animated, users.banner_id, users.banner_is_animated, \
+         users.presence_status, users.custom_status"
     };
 }
 
@@ -104,6 +111,8 @@ fn stored_user_from_row(row: StoredUserRow) -> Result<StoredUser, AccountStorage
         avatar_is_animated,
         banner_id,
         banner_is_animated,
+        presence_status,
+        custom_status,
     ) = row;
     let profile_image = |id: Option<i64>, is_animated: bool| {
         id.map(|id| {
@@ -128,7 +137,29 @@ fn stored_user_from_row(row: StoredUserRow) -> Result<StoredUser, AccountStorage
         is_disabled: disabled_at.is_some(),
         avatar: profile_image(avatar_id, avatar_is_animated)?,
         banner: profile_image(banner_id, banner_is_animated)?,
+        status: chosen_status_from_column(&presence_status)?,
+        custom_status,
     })
+}
+
+/// The `users.presence_status` values (migration 0017).
+fn chosen_status_column(status: ChosenStatus) -> &'static str {
+    match status {
+        ChosenStatus::Online => "online",
+        ChosenStatus::Idle => "idle",
+        ChosenStatus::DoNotDisturb => "do_not_disturb",
+        ChosenStatus::Invisible => "invisible",
+    }
+}
+
+fn chosen_status_from_column(column: &str) -> Result<ChosenStatus, AccountStorageError> {
+    match column {
+        "online" => Ok(ChosenStatus::Online),
+        "idle" => Ok(ChosenStatus::Idle),
+        "do_not_disturb" => Ok(ChosenStatus::DoNotDisturb),
+        "invisible" => Ok(ChosenStatus::Invisible),
+        _ => Err(AccountStorageError::UnknownPresenceStatus),
+    }
 }
 
 /// # Errors
@@ -188,6 +219,61 @@ pub async fn update_user_names(
     .fetch_optional(database.writer())
     .await
     .map_err(unique_violation_as_taken)
+}
+
+/// A user's chosen status, custom status and how many times they changed (migration 0017).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPresence {
+    pub status: ChosenStatus,
+    pub custom_status: Option<String>,
+    pub version: u64,
+}
+
+/// Stores the user's chosen status and custom status and returns the new version, or `None` for
+/// an unknown user. Versions only grow, as every write goes through the single writer.
+///
+/// # Errors
+/// Fails on database errors.
+pub async fn update_user_presence(
+    database: &Database,
+    user_id: Snowflake,
+    status: ChosenStatus,
+    custom_status: Option<&str>,
+) -> Result<Option<u64>, AccountStorageError> {
+    let version: Option<i64> = sqlx::query_scalar(
+        "UPDATE users SET presence_status = ?, custom_status = ?, \
+         presence_version = presence_version + 1 WHERE id = ? RETURNING presence_version",
+    )
+    .bind(chosen_status_column(status))
+    .bind(custom_status)
+    .bind(to_sqlite_integer(user_id.raw())?)
+    .fetch_optional(database.writer())
+    .await?;
+    version
+        .map(|version| u64::try_from(version).map_err(|_| AccountStorageError::IntegerOutOfRange))
+        .transpose()
+}
+
+/// # Errors
+/// Fails on database errors only; an unknown user is `Ok(None)`.
+pub async fn find_user_presence(
+    database: &Database,
+    user_id: Snowflake,
+) -> Result<Option<StoredPresence>, AccountStorageError> {
+    let row: Option<(String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT presence_status, custom_status, presence_version FROM users WHERE id = ?",
+    )
+    .bind(to_sqlite_integer(user_id.raw())?)
+    .fetch_optional(database.readers())
+    .await?;
+    row.map(|(status, custom_status, version)| {
+        Ok(StoredPresence {
+            status: chosen_status_from_column(&status)?,
+            custom_status,
+            version: u64::try_from(version).map_err(|_| AccountStorageError::IntegerOutOfRange)?,
+        })
+    })
+    .transpose()
 }
 
 /// Replaces `verified_password_hash` with `new_password_hash` and deletes every other session of

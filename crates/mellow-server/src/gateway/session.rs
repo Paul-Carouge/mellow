@@ -256,6 +256,14 @@ mod tests {
     async fn detached_sessions_buffer_and_replay_missed_dispatches_then_resumed() {
         let hub = EventHub::default();
         let (hub_key, events) = hub.register_session(USER, [0; 32], NO_CAP).unwrap();
+        hub.set_presence(
+            USER,
+            crate::events::ChosenPresence {
+                status: mellow_protocol::ChosenStatus::Online,
+                custom_status: None,
+                version: 0,
+            },
+        );
         hub.activate_session(hub_key, &[GUILD]);
         let (commands_sender, commands) = mpsc::channel(8);
         let task = tokio::spawn(SessionTask { events, commands }.run());

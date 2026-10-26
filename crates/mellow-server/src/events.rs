@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use mellow_protocol::{GatewayEvent, PresenceStatus, Snowflake};
+use mellow_protocol::{ChosenStatus, GatewayEvent, Presence, PresenceStatus, Snowflake};
 use tokio::sync::mpsc;
 
 use crate::domain::session_token::SessionTokenSha256;
@@ -55,6 +55,42 @@ struct HubState {
     sessions: HashMap<SessionKey, SessionEntry>,
     guild_sessions: HashMap<Snowflake, HashSet<SessionKey>>,
     user_sessions: HashMap<Snowflake, HashSet<SessionKey>>,
+    /// The chosen status and custom status of each user with a session; `None` until read from
+    /// the database, and then shown to no one.
+    chosen_presences: HashMap<Snowflake, Option<ChosenPresence>>,
+}
+
+/// No `Default`: a presence not read yet must stay hidden, never be taken for "online".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChosenPresence {
+    pub(crate) status: ChosenStatus,
+    pub(crate) custom_status: Option<String>,
+    /// `users.presence_version`: a read or write older than the one applied is dropped, so a
+    /// slow identify cannot undo a newer pick.
+    pub(crate) version: u64,
+}
+
+/// What others see of `chosen`: nothing while invisible.
+fn visible_presence(user_id: Snowflake, chosen: &ChosenPresence) -> Option<Presence> {
+    let status = match chosen.status {
+        ChosenStatus::Online => PresenceStatus::Online,
+        ChosenStatus::Idle => PresenceStatus::Idle,
+        ChosenStatus::DoNotDisturb => PresenceStatus::DoNotDisturb,
+        ChosenStatus::Invisible => return None,
+    };
+    Some(Presence {
+        user_id,
+        status,
+        custom_status: chosen.custom_status.clone(),
+    })
+}
+
+fn offline(user_id: Snowflake) -> Presence {
+    Presence {
+        user_id,
+        status: PresenceStatus::Offline,
+        custom_status: None,
+    }
 }
 
 impl HubState {
@@ -104,6 +140,13 @@ impl HubState {
             .get(&user_id)
             .map(|keys| keys.iter().copied().collect())
             .unwrap_or_default()
+    }
+
+    fn visible_presence_of(&self, user_id: Snowflake) -> Option<Presence> {
+        self.chosen_presences
+            .get(&user_id)
+            .and_then(Option::as_ref)
+            .and_then(|chosen| visible_presence(user_id, chosen))
     }
 
     fn publish_to_guilds(
@@ -162,11 +205,12 @@ impl EventHub {
             },
         );
         state.user_sessions.entry(user_id).or_default().insert(key);
+        state.chosen_presences.entry(user_id).or_insert(None);
         Ok((key, receiver))
     }
 
     /// Subscribes the session to its user's guilds. When this is the user's first session,
-    /// announces them online to those guilds.
+    /// announces their presence to those guilds, unless they are invisible.
     pub(crate) fn activate_session(&self, key: SessionKey, guild_ids: &[Snowflake]) {
         let mut state = self.state();
         let Some(entry) = state.sessions.get_mut(&key) else {
@@ -181,17 +225,19 @@ impl EventHub {
                 .or_default()
                 .insert(key);
         }
-        if state.user_sessions.get(&user_id).map_or(0, HashSet::len) == 1 {
-            let presence = GatewayEvent::PresenceUpdate {
-                user_id,
-                status: PresenceStatus::Online,
-            };
-            state.publish_to_guilds(guild_ids.iter().copied(), &presence);
+        if state.user_sessions.get(&user_id).map_or(0, HashSet::len) == 1
+            && let Some(presence) = state.visible_presence_of(user_id)
+        {
+            state.publish_to_guilds(
+                guild_ids.iter().copied(),
+                &GatewayEvent::PresenceUpdate(presence),
+            );
         }
     }
 
     /// Removes the session. When it was the user's last one, announces them offline to the
-    /// guilds it was subscribed to, under the same lock, so a later "online" cannot be overtaken.
+    /// guilds it was subscribed to (unless they were invisible), under the same lock, so a later
+    /// "online" cannot be overtaken.
     pub(crate) fn unregister_session(&self, key: SessionKey) {
         let mut state = self.state();
         let Some(entry) = state.sessions.remove(&key) else {
@@ -214,11 +260,14 @@ impl EventHub {
             });
         if was_last_session {
             state.user_sessions.remove(&entry.user_id);
-            let presence = GatewayEvent::PresenceUpdate {
-                user_id: entry.user_id,
-                status: PresenceStatus::Offline,
-            };
-            state.publish_to_guilds(entry.guild_ids, &presence);
+            let was_visible = state.visible_presence_of(entry.user_id).is_some();
+            state.chosen_presences.remove(&entry.user_id);
+            if was_visible {
+                state.publish_to_guilds(
+                    entry.guild_ids,
+                    &GatewayEvent::PresenceUpdate(offline(entry.user_id)),
+                );
+            }
         }
     }
 
@@ -260,8 +309,43 @@ impl EventHub {
         }
     }
 
-    pub(crate) fn is_online(&self, user_id: Snowflake) -> bool {
-        self.state().user_sessions.contains_key(&user_id)
+    /// Records the status a connected user picked and tells their guilds what changed for them
+    /// (an invisible user going offline, coming back, or a new status). Does nothing for a user
+    /// without sessions (their next session reads it from the database) nor for a version older
+    /// than or equal to the one applied.
+    pub(crate) fn set_presence(&self, user_id: Snowflake, new_chosen: ChosenPresence) {
+        let mut state = self.state();
+        let Some(chosen) = state.chosen_presences.get_mut(&user_id) else {
+            return;
+        };
+        if chosen
+            .as_ref()
+            .is_some_and(|applied| applied.version >= new_chosen.version)
+        {
+            return;
+        }
+        let seen_before = chosen
+            .as_ref()
+            .and_then(|applied| visible_presence(user_id, applied));
+        let seen_after = visible_presence(user_id, &new_chosen);
+        *chosen = Some(new_chosen);
+        if seen_before == seen_after {
+            return;
+        }
+        let guild_ids: HashSet<Snowflake> = state
+            .keys_of_user(user_id)
+            .into_iter()
+            .filter_map(|key| state.sessions.get(&key))
+            .filter(|entry| entry.sender.is_some())
+            .flat_map(|entry| entry.guild_ids.iter().copied())
+            .collect();
+        let presence = seen_after.unwrap_or_else(|| offline(user_id));
+        state.publish_to_guilds(guild_ids, &GatewayEvent::PresenceUpdate(presence));
+    }
+
+    /// What others see of `user_id` now: `None` when offline or invisible.
+    pub(crate) fn visible_presence_of(&self, user_id: Snowflake) -> Option<Presence> {
+        self.state().visible_presence_of(user_id)
     }
 
     /// Starts delivering `guild_id`'s events to every session of `user_id` (after joining it).
@@ -330,7 +414,21 @@ impl EventHub {
         state.send_to(keys, &event);
     }
 
-    /// Users with at least one live session subscribed to `guild_id`.
+    /// The presence of every member of `guild_id` others can see online, invisible ones left out.
+    pub(crate) fn visible_presences_of_guild(&self, guild_id: Snowflake) -> Vec<Presence> {
+        let state = self.state();
+        let user_ids: HashSet<Snowflake> = state
+            .keys_of_guild(guild_id)
+            .into_iter()
+            .filter_map(|key| state.sessions.get(&key).map(|entry| entry.user_id))
+            .collect();
+        user_ids
+            .into_iter()
+            .filter_map(|user_id| state.visible_presence_of(user_id))
+            .collect()
+    }
+
+    /// Users with at least one live session subscribed to `guild_id`, invisible ones included.
     pub(crate) fn online_user_ids_of_guild(&self, guild_id: Snowflake) -> HashSet<Snowflake> {
         let state = self.state();
         state
@@ -390,6 +488,14 @@ mod tests {
             guild_id: Some(GUILD),
             channel_id: Snowflake::from_raw(11),
             user_id: ALICE,
+        }
+    }
+
+    fn chosen(status: ChosenStatus, custom_status: Option<String>, version: u64) -> ChosenPresence {
+        ChosenPresence {
+            status,
+            custom_status,
+            version,
         }
     }
 
@@ -459,6 +565,7 @@ mod tests {
         drain(&mut watcher_events);
 
         let (first, _first_events) = hub.register_session(ALICE, TOKEN_A, NO_CAP).unwrap();
+        hub.set_presence(ALICE, chosen(ChosenStatus::Online, None, 0));
         hub.activate_session(first, &[GUILD]);
         let (second, _second_events) = hub.register_session(ALICE, TOKEN_A, NO_CAP).unwrap();
         hub.activate_session(second, &[GUILD]);
@@ -472,14 +579,101 @@ mod tests {
 
         hub.unregister_session(first);
         assert_eq!(drain(&mut watcher_events), Vec::<String>::new());
-        assert!(hub.is_online(ALICE));
+        assert!(hub.visible_presence_of(ALICE).is_some());
         hub.unregister_session(second);
         let offline = drain(&mut watcher_events);
         assert!(
             offline.len() == 1 && offline[0].contains("offline"),
             "{offline:?}"
         );
-        assert!(!hub.is_online(ALICE));
+        assert_eq!(hub.visible_presence_of(ALICE), None);
+    }
+
+    #[test]
+    fn a_presence_not_read_yet_is_shown_to_no_one() {
+        let hub = EventHub::default();
+        let (watcher, mut watcher_events) = hub.register_session(BOB, TOKEN_B, NO_CAP).unwrap();
+        hub.activate_session(watcher, &[GUILD]);
+        let (alice, _alice_events) = hub.register_session(ALICE, TOKEN_A, NO_CAP).unwrap();
+        assert_eq!(hub.visible_presence_of(ALICE), None);
+        hub.activate_session(alice, &[GUILD]);
+        assert_eq!(drain(&mut watcher_events), Vec::<String>::new());
+        hub.unregister_session(alice);
+        assert_eq!(
+            drain(&mut watcher_events),
+            Vec::<String>::new(),
+            "never announced, never taken back"
+        );
+    }
+
+    #[test]
+    fn invisible_users_look_offline_and_status_changes_reach_their_guilds() {
+        let hub = EventHub::default();
+        let (watcher, mut watcher_events) = hub.register_session(BOB, TOKEN_B, NO_CAP).unwrap();
+        hub.activate_session(watcher, &[GUILD]);
+        let (alice, _alice_events) = hub.register_session(ALICE, TOKEN_A, NO_CAP).unwrap();
+        hub.set_presence(
+            ALICE,
+            chosen(ChosenStatus::Invisible, Some("Away".into()), 1),
+        );
+        hub.activate_session(alice, &[GUILD]);
+        drain(&mut watcher_events);
+        assert_eq!(hub.visible_presence_of(ALICE), None);
+        assert!(
+            hub.visible_presences_of_guild(GUILD)
+                .iter()
+                .all(|presence| presence.user_id != ALICE),
+            "invisible users are left out of Ready"
+        );
+        assert!(
+            hub.online_user_ids_of_guild(GUILD).contains(&ALICE),
+            "invisible users still get resynchronised"
+        );
+
+        hub.set_presence(
+            ALICE,
+            chosen(ChosenStatus::DoNotDisturb, Some("Focus".into()), 2),
+        );
+        let shown = drain(&mut watcher_events);
+        assert!(
+            shown.len() == 1 && shown[0].contains("do_not_disturb") && shown[0].contains("Focus"),
+            "{shown:?}"
+        );
+        hub.set_presence(
+            ALICE,
+            chosen(ChosenStatus::DoNotDisturb, Some("Focus".into()), 3),
+        );
+        assert_eq!(
+            drain(&mut watcher_events),
+            Vec::<String>::new(),
+            "no change, no event"
+        );
+
+        hub.set_presence(
+            ALICE,
+            chosen(ChosenStatus::Invisible, Some("Focus".into()), 4),
+        );
+        let hidden = drain(&mut watcher_events);
+        assert!(
+            hidden.len() == 1 && hidden[0].contains("offline") && !hidden[0].contains("Focus"),
+            "{hidden:?}"
+        );
+        // A slow identify read the pick from before going invisible: it must not reveal them.
+        hub.set_presence(ALICE, chosen(ChosenStatus::Online, None, 3));
+        assert_eq!(drain(&mut watcher_events), Vec::<String>::new());
+        assert_eq!(hub.visible_presence_of(ALICE), None);
+        hub.unregister_session(alice);
+        assert_eq!(
+            drain(&mut watcher_events),
+            Vec::<String>::new(),
+            "an invisible user leaving was already offline"
+        );
+        hub.set_presence(ALICE, chosen(ChosenStatus::Online, None, 5));
+        assert_eq!(
+            hub.visible_presence_of(ALICE),
+            None,
+            "no session, nothing kept"
+        );
     }
 
     #[test]
@@ -488,6 +682,7 @@ mod tests {
         let (watcher, mut watcher_events) = hub.register_session(BOB, TOKEN_B, NO_CAP).unwrap();
         hub.activate_session(watcher, &[GUILD]);
         let (slow, mut slow_events) = hub.register_session(ALICE, TOKEN_A, NO_CAP).unwrap();
+        hub.set_presence(ALICE, chosen(ChosenStatus::Online, None, 0));
         hub.activate_session(slow, &[GUILD]);
         for _ in 0..=SESSION_EVENT_QUEUE_CAPACITY {
             hub.publish_to_guild(GUILD, &typing());

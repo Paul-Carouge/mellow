@@ -1,28 +1,30 @@
 //! Account use cases: register, create by the administrator, log in, authenticate, log out,
-//! rename, change the password.
+//! rename, change the password, pick a status.
 
 use std::time::Duration;
 
 use crate::storage::Database;
 use mellow_protocol::{
-    ChangePasswordRequest, CurrentUser, GatewayEvent, LoginRequest, RegisterRequest,
-    SessionCreated, UpdateCurrentUserRequest,
+    ChangePasswordRequest, ChosenStatus, CurrentUser, GatewayEvent, LoginRequest, RegisterRequest,
+    SessionCreated, Snowflake, UpdateCurrentUserRequest, UpdatePresenceRequest,
 };
 use zeroize::Zeroizing;
 
 use crate::domain::account_rules::{
-    AccountRuleViolation, RegistrationMode, normalize_device_name, normalize_display_name,
-    normalize_email, normalize_login, validate_password_length, validate_password_maximum_length,
-    validate_username,
+    AccountRuleViolation, RegistrationMode, normalize_custom_status, normalize_device_name,
+    normalize_display_name, normalize_email, normalize_login, validate_password_length,
+    validate_password_maximum_length, validate_username,
 };
 use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::password::{PasswordHashError, hash_password, verify_password};
 use crate::domain::session_token::{generate_session_token, session_token_sha256};
 use crate::domain::snowflake_generator::SnowflakeGenerator;
+use crate::events::ChosenPresence;
 use crate::storage::accounts::{
     AccountStorageError, NewSession, NewUser, StoredUser, delete_expired_sessions, delete_session,
-    find_session_owner, find_user_by_login, insert_session, insert_user, record_session_use,
-    replace_password_and_delete_other_sessions, update_user_names,
+    find_session_owner, find_user_by_login, find_user_presence, insert_session, insert_user,
+    record_session_use, replace_password_and_delete_other_sessions, update_user_names,
+    update_user_presence,
 };
 use crate::storage::guilds::{GuildStorageError, list_user_guilds};
 
@@ -219,6 +221,8 @@ impl Accounts {
             is_disabled: false,
             avatar: None,
             banner: None,
+            status: ChosenStatus::Online,
+            custom_status: None,
         })
     }
 
@@ -353,6 +357,70 @@ impl Accounts {
         Ok(updated)
     }
 
+    /// Stores the signed-in user's chosen status and custom status, and tells their guilds what
+    /// changed for them.
+    ///
+    /// # Errors
+    /// `Unauthorized` for an invalid token, invalid input for a custom status breaking the rules.
+    pub async fn update_presence(
+        &self,
+        token: &str,
+        request: UpdatePresenceRequest,
+        now_unix_milliseconds: u64,
+    ) -> Result<CurrentUser, AccountError> {
+        let custom_status = request
+            .custom_status
+            .as_deref()
+            .map(normalize_custom_status)
+            .transpose()?
+            .flatten();
+        let user = self
+            .verified_session_owner(token, now_unix_milliseconds)
+            .await?;
+        let version = update_user_presence(
+            &self.database,
+            user.id,
+            request.status,
+            custom_status.as_deref(),
+        )
+        .await?
+        .ok_or(AccountError::Unauthorized)?;
+        self.events.set_presence(
+            user.id,
+            ChosenPresence {
+                status: request.status,
+                custom_status: custom_status.clone(),
+                version,
+            },
+        );
+        Ok(current_user(StoredUser {
+            status: request.status,
+            custom_status,
+            ..user
+        }))
+    }
+
+    /// Gives the hub the user's stored presence, for a session just registered there. Read after
+    /// the registration, so a pick made meanwhile is either in this read or applied by its own
+    /// request, and the versions keep the newer one.
+    ///
+    /// # Errors
+    /// `Unauthorized` for an unknown user; database errors.
+    pub async fn load_presence_into_events(&self, user_id: Snowflake) -> Result<(), AccountError> {
+        let stored = find_user_presence(&self.database, user_id)
+            .await?
+            .ok_or(AccountError::Unauthorized)?;
+        self.events.set_presence(
+            user_id,
+            ChosenPresence {
+                status: stored.status,
+                custom_status: stored.custom_status,
+                version: stored.version,
+            },
+        );
+        Ok(())
+    }
+
     /// Replaces the password once the current one is proven, and signs out every other session of
     /// the user; the session behind `token` stays valid.
     ///
@@ -484,6 +552,8 @@ pub(crate) fn current_user(user: StoredUser) -> CurrentUser {
         is_instance_administrator: user.is_instance_administrator,
         avatar: user.avatar,
         banner: user.banner,
+        status: user.status,
+        custom_status: user.custom_status,
     }
 }
 

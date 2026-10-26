@@ -271,6 +271,7 @@
   --mw-component-context-menu-item-background-focus: #362E37;
   --mw-component-context-menu-item-height: 2rem;
   --mw-component-context-menu-item-hint-text: #A99FAA;
+  --mw-component-context-menu-item-hint-text-focus: #C5BEC6;
   --mw-component-context-menu-item-icon-size: 1.125rem;
   --mw-component-context-menu-item-padding-inline: 0.5rem;
   --mw-component-context-menu-item-radius: 0.375rem;
@@ -704,6 +705,7 @@
   --mw-component-status-online: #23A55A;
   --mw-component-status-ring-width: 0.1875rem;
   --mw-component-status-size-large: 1rem;
+  --mw-component-status-size-menu: 0.75rem;
   --mw-component-status-size-small: 0.625rem;
   --mw-component-switch-disabled-opacity: 0.5;
   --mw-component-switch-glyph-off: #554C56;
@@ -784,6 +786,7 @@
   --mw-component-user-panel-padding-inline: 0.5rem;
   --mw-component-user-panel-radius: 0.75rem;
   --mw-component-user-panel-status-text: #A99FAA;
+  --mw-component-user-panel-status-text-hover: #C5BEC6;
   --mw-component-user-panel-toggle-muted-icon: #FA777C;
   --mw-component-user-panel-toggle-strike-cut-width: 0.125rem;
   --mw-component-user-panel-toggle-strike-length: 1.5rem;
@@ -1121,6 +1124,7 @@
     --mw-component-context-menu-danger-text: #C4262B;
     --mw-component-context-menu-item-background-focus: #DFD8DF;
     --mw-component-context-menu-item-hint-text: #695F6B;
+    --mw-component-context-menu-item-hint-text-focus: #594E5B;
     --mw-component-context-menu-item-text: #392F3A;
     --mw-component-context-menu-item-text-focus: #221B23;
     --mw-component-context-menu-separator: #E3DDE4;
@@ -1319,6 +1323,7 @@
     --mw-component-user-panel-button-icon: #594E5B;
     --mw-component-user-panel-name-text: #221B23;
     --mw-component-user-panel-status-text: #695F6B;
+    --mw-component-user-panel-status-text-hover: #594E5B;
     --mw-component-user-panel-toggle-muted-icon: #C4262B;
     --mw-component-user-panel-update-badge: #1A7F45;
     --mw-elevation-high: 0 0.5rem 1rem 0 #00000029;
@@ -1454,6 +1459,7 @@
   --mw-component-context-menu-danger-text: #C4262B;
   --mw-component-context-menu-item-background-focus: #DFD8DF;
   --mw-component-context-menu-item-hint-text: #695F6B;
+  --mw-component-context-menu-item-hint-text-focus: #594E5B;
   --mw-component-context-menu-item-text: #392F3A;
   --mw-component-context-menu-item-text-focus: #221B23;
   --mw-component-context-menu-separator: #E3DDE4;
@@ -1652,6 +1658,7 @@
   --mw-component-user-panel-button-icon: #594E5B;
   --mw-component-user-panel-name-text: #221B23;
   --mw-component-user-panel-status-text: #695F6B;
+  --mw-component-user-panel-status-text-hover: #594E5B;
   --mw-component-user-panel-toggle-muted-icon: #C4262B;
   --mw-component-user-panel-update-badge: #1A7F45;
   --mw-elevation-high: 0 0.5rem 1rem 0 #00000029;

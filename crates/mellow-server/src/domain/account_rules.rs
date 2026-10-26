@@ -12,6 +12,7 @@ pub const MINIMUM_PASSWORD_LENGTH: usize = 10;
 /// Bounds Argon2 work per request; long enough for any passphrase.
 pub const MAXIMUM_PASSWORD_LENGTH: usize = 256;
 pub const MAXIMUM_DEVICE_NAME_LENGTH: usize = 64;
+pub const MAXIMUM_CUSTOM_STATUS_LENGTH: usize = 128;
 /// A login is a username or an email address, so the longer of the two bounds it.
 pub const MAXIMUM_LOGIN_LENGTH: usize = MAXIMUM_EMAIL_LENGTH;
 
@@ -45,6 +46,10 @@ pub enum AccountRuleViolation {
     InvalidDeviceName,
     #[error("logins are 1 to {MAXIMUM_LOGIN_LENGTH} characters")]
     InvalidLogin,
+    #[error(
+        "custom statuses are up to {MAXIMUM_CUSTOM_STATUS_LENGTH} characters, without control characters"
+    )]
+    InvalidCustomStatus,
 }
 
 /// Discord-style usernames: lowercase so they are unambiguous when typed or mentioned.
@@ -80,6 +85,31 @@ pub fn normalize_display_name(display_name: &str) -> Result<String, AccountRuleV
 pub fn normalize_device_name(device_name: &str) -> Result<String, AccountRuleViolation> {
     normalize_short_text(device_name, MAXIMUM_DEVICE_NAME_LENGTH)
         .ok_or(AccountRuleViolation::InvalidDeviceName)
+}
+
+/// Trims surrounding whitespace and returns the custom status to store; blank clears it. Emoji
+/// joiners and presentation selectors stay allowed, so emoji such as "❤️" or "🧑‍💻" pass; tag
+/// characters do not, so the flags of England, Scotland and Wales are refused on purpose (tags can
+/// hide ASCII text).
+///
+/// # Errors
+/// `InvalidCustomStatus` when too long or containing control or other invisible characters.
+pub fn normalize_custom_status(
+    custom_status: &str,
+) -> Result<Option<String>, AccountRuleViolation> {
+    let trimmed = custom_status.trim();
+    let length = trimmed.chars().count();
+    let has_hidden_characters = trimmed.chars().any(|character| {
+        character.is_control()
+            || matches!(character, '\u{2028}' | '\u{2029}')
+            || (is_invisible_format_character(character)
+                && !matches!(character, '\u{200D}' | '\u{FE0E}' | '\u{FE0F}'))
+    });
+    if length > MAXIMUM_CUSTOM_STATUS_LENGTH || has_hidden_characters {
+        Err(AccountRuleViolation::InvalidCustomStatus)
+    } else {
+        Ok((length > 0).then(|| trimmed.to_owned()))
+    }
 }
 
 fn normalize_short_text(text: &str, maximum_length: usize) -> Option<String> {
@@ -269,5 +299,26 @@ mod tests {
         assert!(validate_password_length("123456789").is_err());
         assert!(validate_password_length("éééééééééé").is_ok());
         assert!(validate_password_length(&"a".repeat(257)).is_err());
+    }
+
+    #[test]
+    fn custom_statuses_are_trimmed_bounded_and_keep_emoji() {
+        assert_eq!(
+            normalize_custom_status("  En réunion ❤️ 🧑‍💻 ").unwrap(),
+            Some("En réunion ❤️ 🧑‍💻".to_owned())
+        );
+        assert_eq!(normalize_custom_status("   ").unwrap(), None);
+        assert!(normalize_custom_status(&"é".repeat(MAXIMUM_CUSTOM_STATUS_LENGTH)).is_ok());
+        assert!(normalize_custom_status(&"é".repeat(MAXIMUM_CUSTOM_STATUS_LENGTH + 1)).is_err());
+        for hidden in [
+            "line\nbreak",
+            "line\u{2028}separator",
+            "paragraph\u{2029}separator",
+            "bidi \u{202E}flip",
+            "zero\u{200B}width",
+            "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}",
+        ] {
+            assert!(normalize_custom_status(hidden).is_err(), "{hidden:?}");
+        }
     }
 }

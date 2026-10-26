@@ -9,9 +9,9 @@ use mellow_protocol::{
     AuditAction, AuditChange, AuditChangeKey, AuditLogEntry, AuditLogQuery, Ban, Channel,
     ChannelKind, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
     CreateRoleRequest, GatewayEvent, Guild, GuildInvite, GuildSummary, Invite, Member,
-    OverwriteKind, PermissionOverwrite, Permissions, PresenceStatus, PublicUser,
-    ReorderRolesRequest, Role, SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest,
-    UpdateGuildRequest, UpdateRoleRequest,
+    OverwriteKind, PermissionOverwrite, Permissions, PublicUser, ReorderRolesRequest, Role,
+    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateGuildRequest,
+    UpdateRoleRequest,
 };
 
 use crate::domain::clock::now_unix_milliseconds;
@@ -1265,14 +1265,9 @@ impl Guilds {
                 self.events
                     .publish_to_guild(guild_id, &GatewayEvent::GuildMemberAdd { guild_id, member });
             }
-            if self.events.is_online(user_id) {
-                self.events.publish_to_guild(
-                    guild_id,
-                    &GatewayEvent::PresenceUpdate {
-                        user_id,
-                        status: PresenceStatus::Online,
-                    },
-                );
+            if let Some(presence) = self.events.visible_presence_of(user_id) {
+                self.events
+                    .publish_to_guild(guild_id, &GatewayEvent::PresenceUpdate(presence));
             }
             self.events
                 .publish_to_user(user_id, &GatewayEvent::GuildCreate(Box::new(guild.clone())));

@@ -35,6 +35,14 @@ export const fr: Catalogue = {
     someone: "Quelqu’un",
   },
 
+  presence: {
+    online: "En ligne",
+    idle: "Inactif",
+    do_not_disturb: "Ne pas déranger",
+    offline: "Hors ligne",
+    invisible: "Invisible",
+  },
+
   errors: {
     withReason: (summary, reason) => `${summary}${NO_BREAK_SPACE}: ${reason}`,
     unknownReason: "un problème est survenu. Réessaie.",
@@ -145,6 +153,30 @@ export const fr: Catalogue = {
     deafen: "Mettre en sourdine",
     undeafen: "Désactiver la sourdine",
     userSettings: "Paramètres utilisateur",
+    statusButtonLabel: (person, status, customStatus) =>
+      `${person}, ${status}${customStatus ? `, ${customStatus}` : ""}. Définir ton statut`,
+    statusMenu: "Ton statut",
+    doNotDisturbHint: "Tu ne recevras pas de notifications",
+    invisibleHint: "Tu apparaîtras hors ligne",
+    setCustomStatus: "Définir un statut personnalisé",
+    editCustomStatus: "Modifier le statut personnalisé",
+    copyUserId: "Copier l’identifiant utilisateur",
+    userIdCopied: "Identifiant utilisateur copié",
+    copyUserIdFailed: "Impossible de copier ton identifiant. Autorise l’accès au presse-papiers et réessaie.",
+    statusFailed: "Impossible de changer ton statut",
+  },
+
+  customStatus: {
+    field: "Statut personnalisé",
+    placeholder: `Tu fais quoi en ce moment${NARROW_NO_BREAK_SPACE}?`,
+    charactersLeft: (left) =>
+      left >= 0
+        ? `${plural(left, { one: `${count(left)}${NO_BREAK_SPACE}caractère restant`, other: `${count(left)}${NO_BREAK_SPACE}caractères restants` })}`
+        : `${plural(-left, { one: `${count(-left)}${NO_BREAK_SPACE}caractère en trop`, other: `${count(-left)}${NO_BREAK_SPACE}caractères en trop` })}`,
+    save: "Enregistrer le statut",
+    clear: "Effacer le statut",
+    failed: "Impossible d’enregistrer ton statut personnalisé",
+    refused: `Impossible d’enregistrer ton statut personnalisé${NO_BREAK_SPACE}: retire les retours à la ligne et les caractères invisibles, puis réessaie.`,
   },
 
   chat: {
@@ -374,7 +406,8 @@ export const fr: Catalogue = {
     loadFailed: "Impossible de charger les membres.",
     loading: "Chargement des membres…",
     groupLabel: (group, members) => `${group}, ${count(members)} ${plural(members, { one: "membre", other: "membres" })}`,
-    memberLabel: (person, isOnline) => `${person}, ${isOnline ? "en ligne" : "hors ligne"}`,
+    memberLabel: (person, status, customStatus) =>
+      `${person}, ${status}${customStatus ? `, statut personnalisé${NO_BREAK_SPACE}: ${customStatus}` : ""}`,
   },
 
   quickSwitcher: {

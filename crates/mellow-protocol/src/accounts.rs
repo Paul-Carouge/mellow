@@ -45,6 +45,33 @@ pub struct CurrentUser {
     pub avatar: Option<crate::ProfileImage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub banner: Option<crate::ProfileImage>,
+    /// The status the user picked; absent from older servers, which only knew "online".
+    #[serde(default)]
+    pub status: ChosenStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_status: Option<String>,
+}
+
+/// The status a user picks for themselves. Others see `Invisible` as offline.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChosenStatus {
+    #[default]
+    Online,
+    Idle,
+    DoNotDisturb,
+    Invisible,
+}
+
+/// Body of `PUT /api/v1/users/@me/presence`; replaces both fields. Answered with the updated
+/// `CurrentUser`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdatePresenceRequest {
+    pub status: ChosenStatus,
+    /// `None` (or blank) clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_status: Option<String>,
 }
 
 /// Body of `PATCH /api/v1/users/@me`; absent fields stay unchanged. Answered with the updated
@@ -209,6 +236,8 @@ mod tests {
                 is_instance_administrator: false,
                 avatar: None,
                 banner: None,
+                status: ChosenStatus::Online,
+                custom_status: None,
             },
         };
         let password_change = ChangePasswordRequest {
