@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
@@ -12,6 +12,7 @@
   import MessageItem from "./MessageItem.svelte";
   import { mentionablePeople } from "./mentions";
   import {
+    type BlockedRun,
     type MessageListRow,
     buildMessageRows,
     collapseBlockedRuns,
@@ -118,9 +119,12 @@
     previousRowsByKey = new Map(built.map((row) => [row.key, row]));
     return built;
   });
-  /** Runs of messages from someone you blocked that you chose to show, for this visit only. */
-  const revealedBlockedRunKeys = new SvelteSet<string>();
-  const entries = $derived(collapseBlockedRuns(rows, (userId) => client.isBlocked(userId), revealedBlockedRunKeys));
+  /** Messages from someone you blocked that you chose to show, for this visit only: by message,
+   * so a run extended by an older page stays shown. */
+  const revealedBlockedMessageIds = new SvelteSet<Snowflake>();
+  const entries = $derived(
+    collapseBlockedRuns(rows, (userId) => client.isBlocked(userId), revealedBlockedMessageIds),
+  );
   const hasReachedStart = $derived(client.reachedStartChannelIds.has(channelId));
   const isInitialLoad = $derived(messages.length === 0 && !hasReachedStart);
   // Set when a history request failed: shown with "Try again" instead of skeletons forever.
@@ -203,9 +207,11 @@
   }
 
   // Before the DOM changes: remember where the first visible row sits, to put it back after.
-  let anchor: { key: string; offset: number } | null = null;
+  // A folded run's key follows its first message, which an older page can change: it is found
+  // again by its last message (`data-anchor-key`), which a prepended page never changes.
+  let anchor: { key: string; anchorKey: string; offset: number } | null = null;
   $effect.pre(() => {
-    void rows;
+    void entries;
     void client.isLoadingOlder;
     if (!viewport || isPinnedToLatest) {
       anchor = null;
@@ -215,21 +221,29 @@
     const firstVisible = [...viewport.querySelectorAll<HTMLElement>("[data-row-key]")].find(
       (element) => element.getBoundingClientRect().bottom > top,
     );
-    anchor = firstVisible?.dataset.rowKey
-      ? { key: firstVisible.dataset.rowKey, offset: firstVisible.getBoundingClientRect().top - top }
-      : null;
+    const key = firstVisible?.dataset.rowKey;
+    anchor =
+      firstVisible && key
+        ? {
+            key,
+            anchorKey: firstVisible.dataset.anchorKey ?? key,
+            offset: firstVisible.getBoundingClientRect().top - top,
+          }
+        : null;
   });
 
   let lastAnnouncedKey: string | null = null;
   let hasShownUnreadDivider = false;
   $effect(() => {
-    void rows;
+    void entries;
     void client.isLoadingOlder;
     if (isPinnedToLatest) {
       viewport.scrollTop = viewport.scrollHeight;
       showUnreadDividerOnce();
     } else if (anchor) {
-      const element = viewport.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(anchor.key)}"]`);
+      const element =
+        viewport.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(anchor.key)}"]`) ??
+        viewport.querySelector<HTMLElement>(`[data-anchor-key="${CSS.escape(anchor.anchorKey)}"]`);
       if (element) {
         viewport.scrollTop += element.getBoundingClientRect().top - viewport.getBoundingClientRect().top - anchor.offset;
       }
@@ -283,7 +297,13 @@
   }
 
   /** A pinned message chosen in the pins panel: scrolled into the middle and focused. */
-  export function revealMessage(messageId: Snowflake): void {
+  export async function revealMessage(messageId: Snowflake): Promise<void> {
+    // A message folded with someone you blocked shows its run first, as Show would.
+    const run = entries.find((entry) => entry.kind === "blocked-run" && entry.messageIds.includes(messageId));
+    if (run?.kind === "blocked-run" && !run.isRevealed) {
+      toggleBlockedRun(run);
+      await tick();
+    }
     const element = viewport.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(messageId)}"]`);
     if (!element) {
       return;
@@ -301,11 +321,13 @@
     viewport.scrollTop = viewport.scrollHeight;
   }
 
-  function toggleBlockedRun(key: string) {
-    if (revealedBlockedRunKeys.has(key)) {
-      revealedBlockedRunKeys.delete(key);
-    } else {
-      revealedBlockedRunKeys.add(key);
+  function toggleBlockedRun(run: BlockedRun) {
+    for (const messageId of run.messageIds) {
+      if (run.isRevealed) {
+        revealedBlockedMessageIds.delete(messageId);
+      } else {
+        revealedBlockedMessageIds.add(messageId);
+      }
     }
   }
 
@@ -446,17 +468,19 @@
         {#if row.kind === "blocked-run"}
           {@const run = row}
           <!-- Messages from someone you blocked, folded (ADR-0025): one row per run in the message
-               column, with Show and Hide; it holds the list's Tab stop like a message. -->
+               column, with Show and Hide; it holds the list's one Tab stop like a message, where
+               Enter or Space toggles it, so its button stays out of the Tab order. -->
           <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
           <li
             data-row-key={run.key}
+            data-anchor-key={run.anchorKey}
             tabindex={run.key === rovingTargetKey ? 0 : -1}
             class="relative mt-(--mw-component-message-group-gap) flex flex-wrap items-center gap-x-xs pr-(--mw-component-message-padding-trailing) pl-(--mw-component-message-gutter) py-(--mw-component-message-padding-block) type-body text-(--mw-component-message-blocked-text) focus-visible:focus-ring-inset"
-            onfocus={() => (rovingKey = run.key)}
+            onfocusin={() => (rovingKey = run.key)}
             onkeydown={(event) => {
               if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
                 event.preventDefault();
-                toggleBlockedRun(run.key);
+                toggleBlockedRun(run);
               }
             }}
           >
@@ -465,12 +489,13 @@
             >
               <Icon name="prohibit" class="size-(--mw-component-message-blocked-icon-size)" />
             </span>
-            <span>{strings.messages.blockedRun(run.count)}</span>
+            <span>{strings.messages.blockedRun(run.messageIds.length)}</span>
             <button
               type="button"
+              tabindex="-1"
               aria-expanded={run.isRevealed}
               class="rounded-xs font-semibold text-(--mw-component-message-blocked-action-text) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
-              onclick={() => toggleBlockedRun(run.key)}
+              onclick={() => toggleBlockedRun(run)}
               >{run.isRevealed ? strings.messages.hideBlocked : strings.messages.showBlocked}</button
             >
           </li>

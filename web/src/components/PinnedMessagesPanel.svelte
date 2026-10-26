@@ -57,6 +57,10 @@
   });
 
   function pinnedMessageSummaryText(message: Message): string {
+    // Folded like the list and reply previews: Jump still shows it on request (ADR-0025).
+    if (client.isBlocked(message.author.id)) {
+      return strings.messages.blockedReply;
+    }
     return [message.content, attachmentCountLabel(message.attachments?.length ?? 0)].filter(Boolean).join(" ");
   }
 </script>

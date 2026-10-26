@@ -42,7 +42,16 @@ describe("collapseBlockedRuns", () => {
   });
   const isBlocked = (userId: string) => userId === BLOCKED || userId === OTHER_BLOCKED;
   const shape = (entries: ReturnType<typeof collapseBlockedRuns>) =>
-    entries.map((entry) => (entry.kind === "blocked-run" ? `run ${entry.count}` : entry.key));
+    entries.map((entry) => (entry.kind === "blocked-run" ? `run ${entry.messageIds.length}` : entry.key));
+  const runIn = (entries: ReturnType<typeof collapseBlockedRuns>) => {
+    const run = entries.find((entry) => entry.kind === "blocked-run");
+    if (run?.kind !== "blocked-run") {
+      throw new Error("no folded run");
+    }
+    return run;
+  };
+  const dividers = (entries: ReturnType<typeof collapseBlockedRuns>) =>
+    entries.filter((entry) => entry.kind !== "pending" && entry.isFirstUnread).map((entry) => entry.key);
 
   it("folds each run of one blocked author into one row, and leaves everyone else alone", () => {
     const rows = buildMessageRows(
@@ -57,16 +66,32 @@ describe("collapseBlockedRuns", () => {
 
   it("shows a revealed run's messages after its row, and keeps it revealed as the run grows", () => {
     const rows = buildMessageRows([by("2", "100"), by(BLOCKED, "101"), by(BLOCKED, "102")], [], "1", 0);
-    const [, run] = collapseBlockedRuns(rows, isBlocked, new Set());
-    expect(run?.kind).toBe("blocked-run");
-    const revealed = new Set([run?.key ?? ""]);
+    const revealed = new Set(runIn(collapseBlockedRuns(rows, isBlocked, new Set())).messageIds);
     const grown = buildMessageRows([by("2", "100"), by(BLOCKED, "101"), by(BLOCKED, "102"), by(BLOCKED, "103")], [], "1", 0);
     expect(shape(collapseBlockedRuns(grown, isBlocked, revealed))).toEqual(["100", "run 3", "101", "102", "103"]);
   });
 
-  it("carries the unread divider to the run holding the first unread message", () => {
+  it("keeps the scroll anchor and the revealed state when older messages extend the run", () => {
+    const newest = buildMessageRows([by(BLOCKED, "102"), by(BLOCKED, "103"), by("2", "104")], [], "1", 0);
+    const before = runIn(collapseBlockedRuns(newest, isBlocked, new Set()));
+    const revealed = new Set(before.messageIds);
+    const withOlderPage = buildMessageRows(
+      [by(BLOCKED, "100"), by(BLOCKED, "101"), by(BLOCKED, "102"), by(BLOCKED, "103"), by("2", "104")],
+      [],
+      "1",
+      0,
+    );
+    const after = collapseBlockedRuns(withOlderPage, isBlocked, revealed);
+    expect(runIn(after).anchorKey).toBe(before.anchorKey);
+    expect(runIn(after).isRevealed).toBe(true);
+    expect(shape(after)).toEqual(["run 4", "100", "101", "102", "103", "104"]);
+  });
+
+  it("draws the unread divider once: above the folded run, or above the message once revealed", () => {
     const rows = buildMessageRows([by("2", "100"), by(BLOCKED, "101"), by(BLOCKED, "102")], [], "1", 0, "101");
-    const run = collapseBlockedRuns(rows, isBlocked, new Set()).find((entry) => entry.kind === "blocked-run");
-    expect(run?.kind === "blocked-run" && run.isFirstUnread).toBe(true);
+    const folded = collapseBlockedRuns(rows, isBlocked, new Set());
+    expect(dividers(folded)).toEqual([runIn(folded).key]);
+    const revealed = collapseBlockedRuns(rows, isBlocked, new Set(["101"]));
+    expect(dividers(revealed)).toEqual(["102"]);
   });
 });
