@@ -58,6 +58,9 @@ struct HubState {
     /// The chosen status and custom status of each user with a session; `None` until read from
     /// the database, and then shown to no one.
     chosen_presences: HashMap<Snowflake, Option<ChosenPresence>>,
+    /// The friends of each user with a session, who see their presence without a shared guild
+    /// (ADR-0025).
+    friend_ids: HashMap<Snowflake, HashSet<Snowflake>>,
 }
 
 /// No `Default`: a presence not read yet must stay hidden, never be taken for "online".
@@ -149,6 +152,31 @@ impl HubState {
             .and_then(|chosen| visible_presence(user_id, chosen))
     }
 
+    /// Sends `user_id`'s presence once to every session of `guild_ids` and of their friends.
+    fn publish_presence(
+        &mut self,
+        user_id: Snowflake,
+        guild_ids: impl IntoIterator<Item = Snowflake>,
+        presence: Presence,
+    ) {
+        let Some(event) = published(&GatewayEvent::PresenceUpdate(presence)) else {
+            return;
+        };
+        let mut keys: HashSet<SessionKey> = guild_ids
+            .into_iter()
+            .flat_map(|guild_id| self.keys_of_guild(guild_id))
+            .collect();
+        let friends: Vec<Snowflake> = self
+            .friend_ids
+            .get(&user_id)
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default();
+        for friend_id in friends {
+            keys.extend(self.keys_of_user(friend_id));
+        }
+        self.send_to(keys, &event);
+    }
+
     fn publish_to_guilds(
         &mut self,
         guild_ids: impl IntoIterator<Item = Snowflake>,
@@ -228,10 +256,7 @@ impl EventHub {
         if state.user_sessions.get(&user_id).map_or(0, HashSet::len) == 1
             && let Some(presence) = state.visible_presence_of(user_id)
         {
-            state.publish_to_guilds(
-                guild_ids.iter().copied(),
-                &GatewayEvent::PresenceUpdate(presence),
-            );
+            state.publish_presence(user_id, guild_ids.iter().copied(), presence);
         }
     }
 
@@ -263,11 +288,9 @@ impl EventHub {
             let was_visible = state.visible_presence_of(entry.user_id).is_some();
             state.chosen_presences.remove(&entry.user_id);
             if was_visible {
-                state.publish_to_guilds(
-                    entry.guild_ids,
-                    &GatewayEvent::PresenceUpdate(offline(entry.user_id)),
-                );
+                state.publish_presence(entry.user_id, entry.guild_ids, offline(entry.user_id));
             }
+            state.friend_ids.remove(&entry.user_id);
         }
     }
 
@@ -340,7 +363,46 @@ impl EventHub {
             .flat_map(|entry| entry.guild_ids.iter().copied())
             .collect();
         let presence = seen_after.unwrap_or_else(|| offline(user_id));
-        state.publish_to_guilds(guild_ids, &GatewayEvent::PresenceUpdate(presence));
+        state.publish_presence(user_id, guild_ids, presence);
+    }
+
+    /// Records the friends of a user with a session, before `activate_session` announces them.
+    pub(crate) fn set_friends(&self, user_id: Snowflake, friend_ids: &[Snowflake]) {
+        let mut state = self.state();
+        if state.user_sessions.contains_key(&user_id) {
+            state
+                .friend_ids
+                .insert(user_id, friend_ids.iter().copied().collect());
+        }
+    }
+
+    /// `a` and `b` became friends: each now sees the other's presence, starting with the current
+    /// one (sent only if they are visible).
+    pub(crate) fn link_friends(&self, a: Snowflake, b: Snowflake) {
+        let mut state = self.state();
+        for (user_id, friend_id) in [(a, b), (b, a)] {
+            if let Some(ids) = state.friend_ids.get_mut(&user_id) {
+                ids.insert(friend_id);
+            }
+        }
+        for (viewer_id, user_id) in [(a, b), (b, a)] {
+            if let Some(presence) = state.visible_presence_of(user_id)
+                && let Some(event) = published(&GatewayEvent::PresenceUpdate(presence))
+            {
+                let keys = state.keys_of_user(viewer_id);
+                state.send_to(keys, &event);
+            }
+        }
+    }
+
+    /// `a` and `b` are no longer friends.
+    pub(crate) fn unlink_friends(&self, a: Snowflake, b: Snowflake) {
+        let mut state = self.state();
+        for (user_id, friend_id) in [(a, b), (b, a)] {
+            if let Some(ids) = state.friend_ids.get_mut(&user_id) {
+                ids.remove(&friend_id);
+            }
+        }
     }
 
     /// What others see of `user_id` now: `None` when offline or invisible.

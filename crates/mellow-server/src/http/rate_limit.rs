@@ -124,6 +124,22 @@ pub(crate) const DIRECT_MESSAGE_OPENS_PER_USER_PER_DAY: RateLimit = RateLimit {
     window: Duration::from_hours(24),
 };
 
+/// Friend requests per user (ADR-0025): each names a username, so this also bounds probing.
+pub(crate) const FRIEND_REQUESTS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_secs(60),
+};
+/// The daily ceiling behind it.
+pub(crate) const FRIEND_REQUESTS_PER_USER_PER_DAY: RateLimit = RateLimit {
+    maximum_events: 100,
+    window: Duration::from_hours(24),
+};
+/// Accepting, refusing, removing, blocking and unblocking, per user.
+pub(crate) const RELATIONSHIP_WRITES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 30,
+    window: Duration::from_secs(60),
+};
+
 /// Attachment uploads per user (ADR-0020): each one is up to the instance's file limit on disk.
 pub(crate) const ATTACHMENT_UPLOADS_PER_USER: RateLimit = RateLimit {
     maximum_events: 10,

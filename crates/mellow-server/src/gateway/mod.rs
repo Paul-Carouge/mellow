@@ -13,7 +13,8 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
 use mellow_protocol::{
-    ClientFrame, CurrentUser, GATEWAY_VERSION, Hello, Ready, ServerFrame, Snowflake,
+    ClientFrame, CurrentUser, GATEWAY_VERSION, Hello, Ready, RelationshipKind, ServerFrame,
+    Snowflake,
 };
 use serde::Deserialize;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
@@ -284,6 +285,17 @@ async fn identify(
         state.events.unregister_session(hub_key);
         return None;
     }
+    // Before activation, which announces the user to their friends too (ADR-0025).
+    // shortcut: a friendship ended between this read and the hub update keeps sharing presence
+    // with that person until their or this session reconnects; read again if it matters.
+    match state.relationships.friend_ids(user.id).await {
+        Ok(friend_ids) => state.events.set_friends(user.id, &friend_ids),
+        Err(error) => {
+            tracing::warn!(%error, "gateway identify: cannot list friends");
+            state.events.unregister_session(hub_key);
+            return None;
+        }
+    }
     let guild_ids = match state.guilds.list_my_guilds(user.id).await {
         Ok(guilds) => guilds.iter().map(|guild| guild.id).collect::<Vec<_>>(),
         Err(error) => {
@@ -414,6 +426,21 @@ async fn build_ready(
             return None;
         }
     };
+    let relationships = match state.relationships.list(user.id).await {
+        Ok(relationships) => relationships,
+        Err(error) => {
+            tracing::warn!(%error, "gateway identify: cannot list relationships");
+            return None;
+        }
+    };
+    // Friends show their presence without a shared guild (ADR-0025).
+    presences.extend(
+        relationships
+            .iter()
+            .filter(|relationship| relationship.kind == RelationshipKind::Friend)
+            .filter_map(|relationship| state.events.visible_presence_of(relationship.user.id))
+            .map(|presence| (presence.user_id, presence)),
+    );
     Some(Ready {
         session_id,
         user: user.clone(),
@@ -423,6 +450,7 @@ async fn build_ready(
         direct_message_channels,
         channel_unreads,
         presences: presences.into_values().collect(),
+        relationships,
     })
 }
 

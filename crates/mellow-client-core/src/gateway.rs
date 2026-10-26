@@ -377,6 +377,7 @@ mod tests {
                 direct_message_channels: Vec::new(),
                 channel_unreads: Vec::new(),
                 presences: Vec::new(),
+                relationships: Vec::new(),
             }),
         }
     }

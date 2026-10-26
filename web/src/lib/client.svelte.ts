@@ -32,6 +32,8 @@ import {
   type PublicUser,
   type ReactionSummary,
   type Ready,
+  type Relationship,
+  type RelationshipKind,
   type Role,
   type Snowflake,
   DIRECT_MESSAGE_PERMISSIONS,
@@ -98,6 +100,8 @@ export class MellowClient {
   membersByGuild = new SvelteMap<Snowflake, Member[]>();
   /** What others see of each user online now; absent users are offline. */
   presenceByUserId = new SvelteMap<Snowflake, Presence>();
+  /** Friends, requests and blocks by the other person's id (ADR-0025). */
+  relationshipByUserId = new SvelteMap<Snowflake, Relationship>();
   lastReadByChannel = new SvelteMap<Snowflake, Snowflake>();
   /**
    * Each channel's newest message as far as this session knows (`Ready.channel_unreads`, then
@@ -317,6 +321,7 @@ export class MellowClient {
     this.reachedStartChannelIds.clear();
     this.membersByGuild.clear();
     this.presenceByUserId.clear();
+    this.relationshipByUserId.clear();
     this.lastReadByChannel.clear();
     this.newestMessageIdByChannel.clear();
     this.mentionCountByChannel.clear();
@@ -383,6 +388,10 @@ export class MellowClient {
     this.failedHistoryChannelIds.clear();
     this.failedMemberGuildIds.clear();
     this.presenceByUserId.clear();
+    this.relationshipByUserId.clear();
+    for (const relationship of ready.relationships ?? []) {
+      this.relationshipByUserId.set(relationship.user.id, relationship);
+    }
     const presences =
       ready.presences ?? ready.online_user_ids.map((userId): Presence => ({ user_id: userId, status: "online" }));
     for (const presence of presences) {
@@ -591,6 +600,12 @@ export class MellowClient {
         return;
       case "DIRECT_MESSAGE_CHANNEL_CREATE":
         this.upsertConversation(event.data);
+        return;
+      case "RELATIONSHIP_ADD":
+        this.relationshipByUserId.set(event.data.user.id, event.data);
+        return;
+      case "RELATIONSHIP_REMOVE":
+        this.relationshipByUserId.delete(event.data.user_id);
         return;
       case "MESSAGE_REACTION_ADD": {
         const { channel_id, message_id, emoji, user_id } = event.data;
@@ -1341,6 +1356,52 @@ export class MellowClient {
       presence.status === "offline"
         ? { ...this.user, status: "invisible" }
         : { ...this.user, status: presence.status, custom_status: presence.custom_status ?? null };
+  }
+
+  // --- Friends (ADR-0025) ---------------------------------------------------------------------
+
+  /** The relationships of `kind`, by name. */
+  relationshipsOfKind(kind: RelationshipKind): Relationship[] {
+    return [...this.relationshipByUserId.values()]
+      .filter((relationship) => relationship.kind === kind)
+      .sort((a, b) =>
+        (a.user.display_name || a.user.username).localeCompare(b.user.display_name || b.user.username),
+      );
+  }
+
+  /** Requests waiting for the user's answer: the Friends entry's badge. */
+  incomingRequestCount(): number {
+    return this.relationshipsOfKind("incoming_request").length;
+  }
+
+  isBlocked(userId: Snowflake): boolean {
+    return this.relationshipByUserId.get(userId)?.kind === "blocked";
+  }
+
+  /**
+   * Asks `username` to be friends, or accepts their request. The answer is applied at once; the
+   * gateway's `RELATIONSHIP_ADD` brings the same.
+   */
+  async sendFriendRequest(username: string): Promise<Relationship> {
+    const relationship = await this.rest.sendFriendRequest(username.trim());
+    this.relationshipByUserId.set(relationship.user.id, relationship);
+    return relationship;
+  }
+
+  async acceptFriendRequest(userId: Snowflake): Promise<void> {
+    const relationship = await this.rest.setRelationship(userId, "friend");
+    this.relationshipByUserId.set(relationship.user.id, relationship);
+  }
+
+  async blockUser(userId: Snowflake): Promise<void> {
+    const relationship = await this.rest.setRelationship(userId, "blocked");
+    this.relationshipByUserId.set(relationship.user.id, relationship);
+  }
+
+  /** Removes a friend, refuses or cancels a request, or unblocks. */
+  async removeRelationship(userId: Snowflake): Promise<void> {
+    await this.rest.removeRelationship(userId);
+    this.relationshipByUserId.delete(userId);
   }
 
   /** A blank custom status clears it. */

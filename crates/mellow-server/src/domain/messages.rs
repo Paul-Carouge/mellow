@@ -321,14 +321,10 @@ impl Messages {
             (MessageChannel::Guild(channel), permissions)
         } else {
             let is_participant = participant_ids.contains(&user_id);
-            let shares_a_guild = is_participant
-                && direct_messages::shares_a_guild_with_each(
-                    &self.database,
-                    user_id,
-                    &participant_ids,
-                )
-                .await?;
-            let permissions = direct_message_permissions(is_participant, shares_a_guild);
+            let may_reach_each_other = is_participant
+                && direct_messages::may_reach_each(&self.database, user_id, &participant_ids)
+                    .await?;
+            let permissions = direct_message_permissions(is_participant, may_reach_each_other);
             if !permissions.contains(Permissions::VIEW_CHANNEL) {
                 return Err(GuildError::NotFound.into());
             }

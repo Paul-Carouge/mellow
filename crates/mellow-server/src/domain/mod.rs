@@ -14,5 +14,6 @@ pub(crate) mod messages;
 pub(crate) mod password;
 pub(crate) mod permissions;
 pub(crate) mod profile_images;
+pub(crate) mod relationships;
 pub(crate) mod session_token;
 pub mod snowflake_generator;

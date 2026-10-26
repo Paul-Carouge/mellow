@@ -913,6 +913,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relationships_go_with_either_account_and_refuse_self_and_unknown_kinds() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let writer = database.writer();
+        for statement in [
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'a', 'A', 'a@example.org', 'h', 0), \
+             (2, 'b', 'B', 'b@example.org', 'h', 0), (3, 'c', 'C', 'c@example.org', 'h', 0)",
+            "INSERT INTO relationships (user_id, other_user_id, kind, since_unix_milliseconds) \
+             VALUES (1, 2, 'friend', 0), (2, 1, 'friend', 0), (3, 2, 'blocked', 0)",
+        ] {
+            sqlx::query(statement).execute(writer).await.unwrap();
+        }
+        let to_self = sqlx::query(
+            "INSERT INTO relationships (user_id, other_user_id, kind, since_unix_milliseconds) \
+             VALUES (1, 1, 'friend', 0)",
+        )
+        .execute(writer)
+        .await;
+        let unknown_kind = sqlx::query(
+            "INSERT INTO relationships (user_id, other_user_id, kind, since_unix_milliseconds) \
+             VALUES (1, 3, 'enemy', 0)",
+        )
+        .execute(writer)
+        .await;
+        sqlx::query("DELETE FROM users WHERE id = 2")
+            .execute(writer)
+            .await
+            .unwrap();
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM relationships")
+            .fetch_one(writer)
+            .await
+            .unwrap();
+        database.close().await;
+
+        assert!(to_self.is_err() && unknown_kind.is_err());
+        assert_eq!(
+            remaining, 0,
+            "both sides and blocks of a deleted account go"
+        );
+    }
+
+    #[tokio::test]
     async fn mentions_go_with_their_message_and_their_channel() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())

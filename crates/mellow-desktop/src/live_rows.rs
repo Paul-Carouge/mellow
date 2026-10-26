@@ -1106,6 +1106,7 @@ mod tests {
             direct_message_channels: Vec::new(),
             channel_unreads: Vec::new(),
             presences: Vec::new(),
+            relationships: Vec::new(),
         });
         let read_only: Vec<_> = channel_rows(&guild, &state, &BTreeSet::new(), None)
             .iter()
@@ -1279,6 +1280,7 @@ mod tests {
             }],
             channel_unreads: Vec::new(),
             presences: Vec::new(),
+            relationships: Vec::new(),
         });
         state.insert_messages(
             Snowflake::from_raw(30),
@@ -1339,6 +1341,7 @@ mod tests {
             direct_message_channels: Vec::new(),
             channel_unreads: Vec::new(),
             presences: Vec::new(),
+            relationships: Vec::new(),
         });
         let rows = member_rows(&[member(2, "Me"), member(7, "Aurore")], &state, None);
         let can_message: Vec<_> = rows

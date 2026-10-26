@@ -1,0 +1,397 @@
+//! Friends, friend requests and blocks (migration 0018, ADR-0025). A friendship or a pending
+//! request is written on both sides in one transaction; a block only on the blocker's.
+
+use mellow_protocol::{RelationshipKind, Snowflake};
+
+use super::Database;
+
+use crate::storage::guilds::{
+    BEGIN_WRITE_TRANSACTION, GuildStorageError, lookup_integer, to_id, to_integer,
+};
+
+fn kind_to_text(kind: RelationshipKind) -> &'static str {
+    match kind {
+        RelationshipKind::Friend => "friend",
+        RelationshipKind::IncomingRequest => "incoming_request",
+        RelationshipKind::OutgoingRequest => "outgoing_request",
+        RelationshipKind::Blocked => "blocked",
+    }
+}
+
+fn kind_from_text(text: &str) -> Result<RelationshipKind, GuildStorageError> {
+    match text {
+        "friend" => Ok(RelationshipKind::Friend),
+        "incoming_request" => Ok(RelationshipKind::IncomingRequest),
+        "outgoing_request" => Ok(RelationshipKind::OutgoingRequest),
+        "blocked" => Ok(RelationshipKind::Blocked),
+        other => Err(GuildStorageError::UnknownRelationshipKind(other.to_owned())),
+    }
+}
+
+fn to_milliseconds(value: i64) -> Result<u64, GuildStorageError> {
+    u64::try_from(value).map_err(|_| GuildStorageError::IntegerOutOfRange)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoredRelationship {
+    pub(crate) user_id: Snowflake,
+    pub(crate) username: String,
+    pub(crate) display_name: String,
+    pub(crate) kind: RelationshipKind,
+    pub(crate) since_unix_milliseconds: u64,
+}
+
+/// Every relationship of `user_id`, oldest first.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn list_relationships(
+    database: &Database,
+    user_id: Snowflake,
+) -> Result<Vec<StoredRelationship>, GuildStorageError> {
+    let rows: Vec<(i64, String, String, String, i64)> = sqlx::query_as(
+        "SELECT users.id, users.username, users.display_name, relationships.kind, \
+         relationships.since_unix_milliseconds FROM relationships \
+         JOIN users ON users.id = relationships.other_user_id \
+         WHERE relationships.user_id = ? \
+         ORDER BY relationships.since_unix_milliseconds, users.id",
+    )
+    .bind(to_integer(user_id.raw())?)
+    .fetch_all(database.readers())
+    .await?;
+    rows.into_iter()
+        .map(|(id, username, display_name, kind, since)| {
+            Ok(StoredRelationship {
+                user_id: to_id(id)?,
+                username,
+                display_name,
+                kind: kind_from_text(&kind)?,
+                since_unix_milliseconds: to_milliseconds(since)?,
+            })
+        })
+        .collect()
+}
+
+/// The ids of `user_id`'s friends.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn friend_ids(
+    database: &Database,
+    user_id: Snowflake,
+) -> Result<Vec<Snowflake>, GuildStorageError> {
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT other_user_id FROM relationships WHERE user_id = ? AND kind = 'friend'",
+    )
+    .bind(to_integer(user_id.raw())?)
+    .fetch_all(database.readers())
+    .await?;
+    ids.into_iter().map(to_id).collect()
+}
+
+/// The enabled account with this username, case-insensitively.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn find_enabled_user_id_by_username(
+    database: &Database,
+    username: &str,
+) -> Result<Option<Snowflake>, GuildStorageError> {
+    let id: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM users WHERE username = ? COLLATE NOCASE \
+         AND disabled_at_unix_milliseconds IS NULL",
+    )
+    .bind(username)
+    .fetch_optional(database.readers())
+    .await?;
+    id.map(to_id).transpose()
+}
+
+/// Whether two people may open and write direct messages to each other (ADR-0025): they share a
+/// guild or are friends, and neither blocked the other.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn may_reach_each_other(
+    database: &Database,
+    user_id: Snowflake,
+    other_user_id: Snowflake,
+) -> Result<bool, GuildStorageError> {
+    let (Some(user_id), Some(other_user_id)) =
+        (lookup_integer(user_id), lookup_integer(other_user_id))
+    else {
+        return Ok(false);
+    };
+    let (may_reach,): (bool,) = sqlx::query_as(
+        "SELECT NOT EXISTS (SELECT 1 FROM relationships WHERE kind = 'blocked' \
+             AND ((user_id = ?1 AND other_user_id = ?2) OR (user_id = ?2 AND other_user_id = ?1))) \
+         AND (EXISTS (SELECT 1 FROM relationships WHERE user_id = ?1 AND other_user_id = ?2 \
+                 AND kind = 'friend') \
+             OR EXISTS (SELECT 1 FROM guild_members AS mine \
+                 JOIN guild_members AS theirs ON theirs.guild_id = mine.guild_id \
+                 WHERE mine.user_id = ?1 AND theirs.user_id = ?2))",
+    )
+    .bind(user_id)
+    .bind(other_user_id)
+    .fetch_one(database.readers())
+    .await?;
+    Ok(may_reach)
+}
+
+async fn kind_between(
+    connection: &mut sqlx::SqliteConnection,
+    user_id: i64,
+    other_user_id: i64,
+) -> Result<Option<RelationshipKind>, GuildStorageError> {
+    let kind: Option<String> = sqlx::query_scalar(
+        "SELECT kind FROM relationships WHERE user_id = ? AND other_user_id = ?",
+    )
+    .bind(user_id)
+    .bind(other_user_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    kind.as_deref().map(kind_from_text).transpose()
+}
+
+async fn count_relationships(
+    connection: &mut sqlx::SqliteConnection,
+    user_id: i64,
+) -> Result<usize, GuildStorageError> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM relationships WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_one(&mut *connection)
+        .await?;
+    usize::try_from(count).map_err(|_| GuildStorageError::IntegerOutOfRange)
+}
+
+/// Writes `user_id`'s side; never `REPLACE`, which would bypass the row's other constraints.
+async fn set_kind(
+    connection: &mut sqlx::SqliteConnection,
+    user_id: i64,
+    other_user_id: i64,
+    kind: RelationshipKind,
+    now: i64,
+) -> Result<(), GuildStorageError> {
+    sqlx::query(
+        "INSERT INTO relationships (user_id, other_user_id, kind, since_unix_milliseconds) \
+         VALUES (?, ?, ?, ?) ON CONFLICT (user_id, other_user_id) \
+         DO UPDATE SET kind = excluded.kind, since_unix_milliseconds = excluded.since_unix_milliseconds",
+    )
+    .bind(user_id)
+    .bind(other_user_id)
+    .bind(kind_to_text(kind))
+    .bind(now)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
+async fn delete_side(
+    connection: &mut sqlx::SqliteConnection,
+    user_id: i64,
+    other_user_id: i64,
+) -> Result<(), GuildStorageError> {
+    sqlx::query("DELETE FROM relationships WHERE user_id = ? AND other_user_id = ?")
+        .bind(user_id)
+        .bind(other_user_id)
+        .execute(&mut *connection)
+        .await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FriendRequestOutcome {
+    /// A new request: outgoing for the sender, incoming for the recipient.
+    Requested,
+    /// The recipient had already asked: both are friends now.
+    Accepted,
+    /// Nothing changed: already friends, or already asked.
+    Unchanged,
+    /// A block on either side; told apart from nothing by no one (ADR-0025).
+    Refused,
+    /// Either side has `maximum` relationships already.
+    LimitReached,
+}
+
+/// Asks `recipient_id` to be friends, or accepts their request, deciding on the rows as they are
+/// inside the transaction.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn send_friend_request(
+    database: &Database,
+    sender_id: Snowflake,
+    recipient_id: Snowflake,
+    now_unix_milliseconds: u64,
+    maximum: usize,
+) -> Result<FriendRequestOutcome, GuildStorageError> {
+    let (sender, recipient) = (
+        to_integer(sender_id.raw())?,
+        to_integer(recipient_id.raw())?,
+    );
+    let now = to_integer(now_unix_milliseconds)?;
+    let mut transaction = database
+        .writer()
+        .begin_with(BEGIN_WRITE_TRANSACTION)
+        .await?;
+    let mine = kind_between(&mut transaction, sender, recipient).await?;
+    let theirs = kind_between(&mut transaction, recipient, sender).await?;
+    let outcome = match (mine, theirs) {
+        (Some(RelationshipKind::Blocked), _) | (_, Some(RelationshipKind::Blocked)) => {
+            FriendRequestOutcome::Refused
+        }
+        (Some(RelationshipKind::Friend | RelationshipKind::OutgoingRequest), _) => {
+            FriendRequestOutcome::Unchanged
+        }
+        (Some(RelationshipKind::IncomingRequest), _) => {
+            set_kind(
+                &mut transaction,
+                sender,
+                recipient,
+                RelationshipKind::Friend,
+                now,
+            )
+            .await?;
+            set_kind(
+                &mut transaction,
+                recipient,
+                sender,
+                RelationshipKind::Friend,
+                now,
+            )
+            .await?;
+            FriendRequestOutcome::Accepted
+        }
+        (None, _) => {
+            if count_relationships(&mut transaction, sender).await? >= maximum
+                || count_relationships(&mut transaction, recipient).await? >= maximum
+            {
+                FriendRequestOutcome::LimitReached
+            } else {
+                set_kind(
+                    &mut transaction,
+                    sender,
+                    recipient,
+                    RelationshipKind::OutgoingRequest,
+                    now,
+                )
+                .await?;
+                set_kind(
+                    &mut transaction,
+                    recipient,
+                    sender,
+                    RelationshipKind::IncomingRequest,
+                    now,
+                )
+                .await?;
+                FriendRequestOutcome::Requested
+            }
+        }
+    };
+    transaction.commit().await?;
+    Ok(outcome)
+}
+
+/// Accepts `other_user_id`'s request to `user_id`; `false` if there was none.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn accept_friend_request(
+    database: &Database,
+    user_id: Snowflake,
+    other_user_id: Snowflake,
+    now_unix_milliseconds: u64,
+) -> Result<bool, GuildStorageError> {
+    let (user, other) = (to_integer(user_id.raw())?, to_integer(other_user_id.raw())?);
+    let now = to_integer(now_unix_milliseconds)?;
+    let mut transaction = database
+        .writer()
+        .begin_with(BEGIN_WRITE_TRANSACTION)
+        .await?;
+    if kind_between(&mut transaction, user, other).await? != Some(RelationshipKind::IncomingRequest)
+    {
+        return Ok(false);
+    }
+    set_kind(&mut transaction, user, other, RelationshipKind::Friend, now).await?;
+    set_kind(&mut transaction, other, user, RelationshipKind::Friend, now).await?;
+    transaction.commit().await?;
+    Ok(true)
+}
+
+/// What `remove_relationship` or `block_user` removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Removal {
+    /// The user's own row before the change.
+    pub(crate) previous: Option<RelationshipKind>,
+    /// The other person's row about the user, if it went too.
+    pub(crate) other_side_removed: Option<RelationshipKind>,
+}
+
+/// Ends a friendship, refuses or cancels a request (both sides go), or unblocks (only the
+/// blocker's row goes).
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn remove_relationship(
+    database: &Database,
+    user_id: Snowflake,
+    other_user_id: Snowflake,
+) -> Result<Removal, GuildStorageError> {
+    let (user, other) = (to_integer(user_id.raw())?, to_integer(other_user_id.raw())?);
+    let mut transaction = database
+        .writer()
+        .begin_with(BEGIN_WRITE_TRANSACTION)
+        .await?;
+    let previous = kind_between(&mut transaction, user, other).await?;
+    let mut other_side_removed = None;
+    if previous.is_some() {
+        delete_side(&mut transaction, user, other).await?;
+    }
+    if previous.is_some_and(|kind| kind != RelationshipKind::Blocked) {
+        other_side_removed = kind_between(&mut transaction, other, user).await?;
+        delete_side(&mut transaction, other, user).await?;
+    }
+    transaction.commit().await?;
+    Ok(Removal {
+        previous,
+        other_side_removed,
+    })
+}
+
+/// Blocks `other_user_id`: the user's row becomes `blocked`, and the other person's row about
+/// them goes unless it is a block too. No relationship limit applies: blocking must always work.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn block_user(
+    database: &Database,
+    user_id: Snowflake,
+    other_user_id: Snowflake,
+    now_unix_milliseconds: u64,
+) -> Result<Removal, GuildStorageError> {
+    let (user, other) = (to_integer(user_id.raw())?, to_integer(other_user_id.raw())?);
+    let now = to_integer(now_unix_milliseconds)?;
+    let mut transaction = database
+        .writer()
+        .begin_with(BEGIN_WRITE_TRANSACTION)
+        .await?;
+    let previous = kind_between(&mut transaction, user, other).await?;
+    let theirs = kind_between(&mut transaction, other, user).await?;
+    let other_side_removed = theirs.filter(|kind| *kind != RelationshipKind::Blocked);
+    if other_side_removed.is_some() {
+        delete_side(&mut transaction, other, user).await?;
+    }
+    set_kind(
+        &mut transaction,
+        user,
+        other,
+        RelationshipKind::Blocked,
+        now,
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(Removal {
+        previous,
+        other_side_removed,
+    })
+}

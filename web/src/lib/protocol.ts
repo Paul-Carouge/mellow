@@ -314,7 +314,21 @@ export interface Ready {
   channel_unreads?: ChannelUnread[];
   /** Added after `v0.11.0`: absent from older servers, whose online users are all "online". */
   presences?: Presence[];
+  /** Friends, requests and blocks (ADR-0025). Added after `v0.12.0`: absent from older servers. */
+  relationships?: Relationship[];
 }
+
+/** `incoming_request`: they asked; `outgoing_request`: you asked; `blocked`: never shown to them. */
+export type RelationshipKind = "friend" | "incoming_request" | "outgoing_request" | "blocked";
+
+export interface Relationship {
+  user: PublicUser;
+  kind: RelationshipKind;
+  since_unix_milliseconds: number;
+}
+
+/** At most this many relationships per user, of every kind together. */
+export const MAXIMUM_RELATIONSHIPS_PER_USER = 1000;
 
 export type ApiErrorCode =
   | "VALIDATION_FAILED"
@@ -369,7 +383,9 @@ export type GatewayEvent =
     }
   | { t: "PRESENCE_UPDATE"; data: Presence }
   | { t: "USER_UPDATE"; data: PublicUser }
-  | { t: "DIRECT_MESSAGE_CHANNEL_CREATE"; data: DirectMessageChannel };
+  | { t: "DIRECT_MESSAGE_CHANNEL_CREATE"; data: DirectMessageChannel }
+  | { t: "RELATIONSHIP_ADD"; data: Relationship }
+  | { t: "RELATIONSHIP_REMOVE"; data: { user_id: Snowflake } };
 
 export type ServerFrame =
   | { op: "hello"; d: { heartbeat_interval_milliseconds: number } }
