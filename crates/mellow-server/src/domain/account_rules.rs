@@ -88,7 +88,9 @@ pub fn normalize_device_name(device_name: &str) -> Result<String, AccountRuleVio
 }
 
 /// Trims surrounding whitespace and returns the custom status to store; blank clears it. Emoji
-/// joiners and presentation selectors stay allowed, so emoji such as "❤️" or "🧑‍💻" pass.
+/// joiners and presentation selectors stay allowed, so emoji such as "❤️" or "🧑‍💻" pass; tag
+/// characters do not, so the flags of England, Scotland and Wales are refused on purpose (tags can
+/// hide ASCII text).
 ///
 /// # Errors
 /// `InvalidCustomStatus` when too long or containing control or other invisible characters.
@@ -99,6 +101,7 @@ pub fn normalize_custom_status(
     let length = trimmed.chars().count();
     let has_hidden_characters = trimmed.chars().any(|character| {
         character.is_control()
+            || matches!(character, '\u{2028}' | '\u{2029}')
             || (is_invisible_format_character(character)
                 && !matches!(character, '\u{200D}' | '\u{FE0E}' | '\u{FE0F}'))
     });
@@ -307,7 +310,14 @@ mod tests {
         assert_eq!(normalize_custom_status("   ").unwrap(), None);
         assert!(normalize_custom_status(&"é".repeat(MAXIMUM_CUSTOM_STATUS_LENGTH)).is_ok());
         assert!(normalize_custom_status(&"é".repeat(MAXIMUM_CUSTOM_STATUS_LENGTH + 1)).is_err());
-        for hidden in ["line\nbreak", "bidi \u{202E}flip", "zero\u{200B}width"] {
+        for hidden in [
+            "line\nbreak",
+            "line\u{2028}separator",
+            "paragraph\u{2029}separator",
+            "bidi \u{202E}flip",
+            "zero\u{200B}width",
+            "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}",
+        ] {
             assert!(normalize_custom_status(hidden).is_err(), "{hidden:?}");
         }
     }

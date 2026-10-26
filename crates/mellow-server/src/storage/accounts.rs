@@ -221,7 +221,16 @@ pub async fn update_user_names(
     .map_err(unique_violation_as_taken)
 }
 
-/// Stores the user's chosen status and custom status. Returns whether the user exists.
+/// A user's chosen status, custom status and how many times they changed (migration 0017).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPresence {
+    pub status: ChosenStatus,
+    pub custom_status: Option<String>,
+    pub version: u64,
+}
+
+/// Stores the user's chosen status and custom status and returns the new version, or `None` for
+/// an unknown user. Versions only grow, as every write goes through the single writer.
 ///
 /// # Errors
 /// Fails on database errors.
@@ -230,15 +239,41 @@ pub async fn update_user_presence(
     user_id: Snowflake,
     status: ChosenStatus,
     custom_status: Option<&str>,
-) -> Result<bool, AccountStorageError> {
-    let result =
-        sqlx::query("UPDATE users SET presence_status = ?, custom_status = ? WHERE id = ?")
-            .bind(chosen_status_column(status))
-            .bind(custom_status)
-            .bind(to_sqlite_integer(user_id.raw())?)
-            .execute(database.writer())
-            .await?;
-    Ok(result.rows_affected() == 1)
+) -> Result<Option<u64>, AccountStorageError> {
+    let version: Option<i64> = sqlx::query_scalar(
+        "UPDATE users SET presence_status = ?, custom_status = ?, \
+         presence_version = presence_version + 1 WHERE id = ? RETURNING presence_version",
+    )
+    .bind(chosen_status_column(status))
+    .bind(custom_status)
+    .bind(to_sqlite_integer(user_id.raw())?)
+    .fetch_optional(database.writer())
+    .await?;
+    version
+        .map(|version| u64::try_from(version).map_err(|_| AccountStorageError::IntegerOutOfRange))
+        .transpose()
+}
+
+/// # Errors
+/// Fails on database errors only; an unknown user is `Ok(None)`.
+pub async fn find_user_presence(
+    database: &Database,
+    user_id: Snowflake,
+) -> Result<Option<StoredPresence>, AccountStorageError> {
+    let row: Option<(String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT presence_status, custom_status, presence_version FROM users WHERE id = ?",
+    )
+    .bind(to_sqlite_integer(user_id.raw())?)
+    .fetch_optional(database.readers())
+    .await?;
+    row.map(|(status, custom_status, version)| {
+        Ok(StoredPresence {
+            status: chosen_status_from_column(&status)?,
+            custom_status,
+            version: u64::try_from(version).map_err(|_| AccountStorageError::IntegerOutOfRange)?,
+        })
+    })
+    .transpose()
 }
 
 /// Replaces `verified_password_hash` with `new_password_hash` and deletes every other session of

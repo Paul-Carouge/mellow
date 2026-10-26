@@ -279,10 +279,11 @@ async fn identify(
         state.events.unregister_session(hub_key);
         return None;
     };
-    // Read after the registration, so a status picked meanwhile on another device is not lost.
-    state
-        .events
-        .set_presence(user.id, user.status, user.custom_status.clone());
+    if let Err(error) = state.accounts.load_presence_into_events(user.id).await {
+        tracing::warn!(%error, "gateway identify: cannot read the presence");
+        state.events.unregister_session(hub_key);
+        return None;
+    }
     let guild_ids = match state.guilds.list_my_guilds(user.id).await {
         Ok(guilds) => guilds.iter().map(|guild| guild.id).collect::<Vec<_>>(),
         Err(error) => {
@@ -854,6 +855,56 @@ mod tests {
                 ..
             })
         ));
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn an_invisible_member_connecting_is_announced_to_no_one() {
+        let fixture = fixture().await;
+        let member = fixture
+            .state
+            .accounts
+            .update_presence(
+                &fixture.member_token,
+                mellow_protocol::UpdatePresenceRequest {
+                    status: mellow_protocol::ChosenStatus::Invisible,
+                    custom_status: Some("Hidden".into()),
+                },
+                now(),
+            )
+            .await
+            .unwrap();
+        let (mut owner_socket, _) = identified(fixture.address, &fixture.owner_token).await;
+        let (_member_socket, member_ready) =
+            identified(fixture.address, &fixture.member_token).await;
+        assert_eq!(
+            member_ready.user.status,
+            mellow_protocol::ChosenStatus::Invisible
+        );
+        // Anything published now reaches the owner after the member's identify.
+        let marker = GatewayEvent::TypingStart {
+            guild_id: Some(fixture.guild_id),
+            channel_id: fixture.general,
+            user_id: member.id,
+        };
+        fixture
+            .state
+            .events
+            .publish_to_guild(fixture.guild_id, &marker);
+        let (_, before_marker) = receive_dispatch(&mut owner_socket, |event| {
+            *event == marker
+                || matches!(event, GatewayEvent::PresenceUpdate(presence) if presence.user_id == member.id)
+        })
+        .await;
+        assert_eq!(before_marker, marker, "the member was announced");
+        let (_, owner_ready) = identified(fixture.address, &fixture.owner_token).await;
+        assert!(!owner_ready.online_user_ids.contains(&member.id));
+        assert!(
+            owner_ready
+                .presences
+                .iter()
+                .all(|presence| presence.user_id != member.id)
+        );
         fixture.close().await;
     }
 

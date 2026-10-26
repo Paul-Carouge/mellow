@@ -129,7 +129,8 @@ pub struct MessageReaction {
 #[serde(rename_all = "snake_case")]
 pub enum PresenceStatus {
     Online,
-    /// Added after `v0.11.0`, as `DoNotDisturb`: older clients skip the frame.
+    /// `Idle` and `DoNotDisturb` were added after `v0.11.0`: older clients cannot parse them and
+    /// skip the frame.
     Idle,
     DoNotDisturb,
     Offline,
