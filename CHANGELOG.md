@@ -4,6 +4,17 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-26
+Friends. This version migrates the database (migration 18, with the usual automatic backup); older versions refuse it afterwards.
+
+### Added
+- Friends: send a friend request by username, accept, ignore or cancel it, remove a friend, block and unblock; a Friends space at Home (Online, All, Pending, Blocked, Add friend) with a badge for requests waiting for you; friend and block actions in a member's profile.
+- Friends can write to each other and see each other's status without sharing a server.
+- Messages from people you blocked fold in chats ("2 blocked messages — Show"), also in pins and replies; a conversation with someone you blocked waits until you unblock them.
+
+### Changed
+- Direct messages open between people who share a server or are friends, unless either blocked the other; someone you block is never told, they only see the friendship or request end.
+
 ## [0.12.0] - 2026-10-26
 Statuses and the user card menu. This version migrates the database (migration 17, with the usual automatic backup); older versions refuse it afterwards.
 
