@@ -205,6 +205,8 @@ export const en = {
     attachFiles: "Attach files",
     sendMessage: "Send message",
     cannotSend: "You do not have permission to send messages in this channel.",
+    /** The locked composer of a conversation with someone you blocked (ADR-0025). */
+    youBlocked: (person: string) => `You blocked ${person}. Unblock them to send messages.`,
     dropToAttach: (target: string) => `Drop to attach to ${target}`,
     dropHint: "You can add a message before sending.",
     tooManyAttachments: (maximum: number) => `You can attach up to ${count(maximum)} files to one message.`,

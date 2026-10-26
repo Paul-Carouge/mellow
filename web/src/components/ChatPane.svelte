@@ -16,6 +16,7 @@
   } from "../lib/protocol";
   import AttachmentTray, { type AttachmentTrayItem } from "./AttachmentTray.svelte";
   import { autosize } from "./autosize";
+  import Button from "./Button.svelte";
   import { visibleChannelSections } from "./channel-settings";
   import ConfirmMessageDialog from "./ConfirmMessageDialog.svelte";
   import DeleteMessageDialog from "./DeleteMessageDialog.svelte";
@@ -79,9 +80,30 @@
   const channelPermissions = $derived(
     client.selectedChannelId ? client.myChannelPermissions(client.selectedChannelId) : null,
   );
-  const canSendMessages = $derived(
-    channelPermissions === null || hasPermission(channelPermissions, Permission.SEND_MESSAGES),
+  // A conversation with someone you blocked stays readable but locked (ADR-0025). Being blocked
+  // by them changes nothing here: the instance refuses, and the client never tells.
+  const blockedRecipient = $derived(
+    conversation?.recipients.find((recipient) => recipient.id !== user?.id && client.isBlocked(recipient.id)) ?? null,
   );
+  const canSendMessages = $derived(
+    blockedRecipient === null &&
+      (channelPermissions === null || hasPermission(channelPermissions, Permission.SEND_MESSAGES)),
+  );
+  let isUnblocking = $state(false);
+
+  async function unblockRecipient(recipient: PublicUser) {
+    isUnblocking = true;
+    actionError = "";
+    try {
+      await client.removeRelationship(recipient.id);
+      await tick();
+      focusComposer();
+    } catch (error) {
+      actionError = describeError(error, strings.friends.unblockFailed(displayName(recipient)));
+    } finally {
+      isUnblocking = false;
+    }
+  }
   const canManageMessages = $derived(
     channelPermissions !== null && hasPermission(channelPermissions, Permission.MANAGE_MESSAGES),
   );
@@ -802,9 +824,21 @@
               />
             </span>
           {:else}
-            <p class="flex min-h-(--mw-size-dock-height) items-center px-xs type-message text-(--mw-component-composer-locked-text)">
-              {strings.chat.cannotSend}
-            </p>
+            {#if blockedRecipient}
+              {@const recipient = blockedRecipient}
+              <div class="flex min-h-(--mw-size-dock-height) flex-1 flex-wrap items-center justify-between gap-x-sm gap-y-2xs px-xs py-2xs">
+                <p class="type-message text-(--mw-component-composer-locked-text)">
+                  {strings.chat.youBlocked(displayName(recipient))}
+                </p>
+                <Button isDisabled={isUnblocking} onclick={() => void unblockRecipient(recipient)}
+                  >{strings.friends.unblock}</Button
+                >
+              </div>
+            {:else}
+              <p class="flex min-h-(--mw-size-dock-height) items-center px-xs type-message text-(--mw-component-composer-locked-text)">
+                {strings.chat.cannotSend}
+              </p>
+            {/if}
           {/if}
         </div>
       </div>
