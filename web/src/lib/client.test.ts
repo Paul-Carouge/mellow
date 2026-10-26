@@ -865,6 +865,36 @@ describe("Friends", () => {
     expect(client.isFriendsSpaceOpen).toBe(true);
   });
 
+  it("stay open across a new Ready, and take over when the open conversation is gone", () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    const conversation = { id: "500", recipients: [{ id: OTHER, username: "other", display_name: "" }], last_message_id: "501" };
+    client.applyReady(ready({ direct_message_channels: [conversation] }));
+    expect(client.selectedGuildId).toBe(GUILD);
+    client.selectGuild(null, null);
+    client.applyReady(ready({ direct_message_channels: [conversation] }));
+    expect(client.isFriendsSpaceOpen).toBe(true);
+
+    client.selectGuild(null, "500");
+    expect(client.isFriendsSpaceOpen).toBe(false);
+    client.applyReady(ready({ direct_message_channels: [] }));
+    expect(client.selectedGuildId).toBeNull();
+    expect(client.isFriendsSpaceOpen).toBe(true);
+  });
+
+  it("count a removal already done elsewhere as done, and report other refusals", async () => {
+    let refusal = new ApiError(404, "NOT_FOUND");
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, removeRelationship: () => Promise.reject(refusal) }),
+    );
+    client.applyReady(ready({ relationships: [relationshipWith("21", "friend"), relationshipWith("22", "blocked")] }));
+    await client.removeRelationship("21");
+    expect(client.relationshipByUserId.has("21")).toBe(false);
+
+    refusal = new ApiError(429, "RATE_LIMITED");
+    await expect(client.removeRelationship("22")).rejects.toBe(refusal);
+    expect(client.isBlocked("22")).toBe(true);
+  });
+
   it("start empty with an older server", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(ready());
