@@ -14,10 +14,15 @@ use crate::events::EventHub;
 use crate::storage::Database;
 use crate::storage::guilds as guild_storage;
 use crate::storage::messages as message_storage;
-use crate::storage::relationships::{self as storage, FriendRequestOutcome, Removal};
+use crate::storage::relationships::{
+    self as storage, AcceptOutcome, FriendRequestOutcome, Removal,
+};
 
 /// Usernames are at most 32 characters (`account_rules.rs`): anything longer names no one.
 const MAXIMUM_USERNAME_LENGTH: usize = 32;
+/// Requests waiting for one person's answer. Past it, new requests to them are refused like a
+/// block, so strangers cannot fill someone's list (blocks never count).
+const MAXIMUM_INCOMING_REQUESTS: usize = 200;
 
 fn internal(error: impl std::error::Error + Send + Sync + 'static) -> GuildError {
     GuildError::Internal(Box::new(error))
@@ -27,11 +32,19 @@ fn internal(error: impl std::error::Error + Send + Sync + 'static) -> GuildError
 pub(crate) struct Relationships {
     database: Database,
     events: Arc<EventHub>,
+    /// Held from each write to the hub update that follows it, and while a session loads its
+    /// friends, so the hub's friend sets follow the order of the commits: an accept finishing
+    /// after a later block must not link the two again.
+    change_order: tokio::sync::Mutex<()>,
 }
 
 impl Relationships {
-    pub(crate) const fn new(database: Database, events: Arc<EventHub>) -> Self {
-        Self { database, events }
+    pub(crate) fn new(database: Database, events: Arc<EventHub>) -> Self {
+        Self {
+            database,
+            events,
+            change_order: tokio::sync::Mutex::new(()),
+        }
     }
 
     /// The user's friends, requests and blocks, oldest first.
@@ -63,16 +76,20 @@ impl Relationships {
         Ok(relationships)
     }
 
-    /// The ids of the user's friends, for the event hub at `Ready`.
-    pub(crate) async fn friend_ids(
+    /// Gives the event hub the friends of a user whose session is starting (`identify`).
+    pub(crate) async fn load_friends_into_events(
         &self,
         user_id: Snowflake,
-    ) -> Result<Vec<Snowflake>, GuildError> {
-        Ok(storage::friend_ids(&self.database, user_id).await?)
+    ) -> Result<(), GuildError> {
+        let _change_order = self.change_order.lock().await;
+        let friend_ids = storage::friend_ids(&self.database, user_id).await?;
+        self.events.set_friends(user_id, &friend_ids);
+        Ok(())
     }
 
     /// Asks `request.username` to be friends, or accepts their request. A missing account,
-    /// oneself and a block on either side all answer `NotFound` (ADR-0025).
+    /// oneself, a block on either side and a full list of their pending requests all answer
+    /// `NotFound` (ADR-0025).
     pub(crate) async fn send_friend_request(
         &self,
         user_id: Snowflake,
@@ -87,18 +104,25 @@ impl Relationships {
             .await?
             .filter(|other_id| *other_id != user_id)
             .ok_or(GuildError::NotFound)?;
+        // Read before the write, so nothing can fail between the commit and the events.
+        let (me, them) = (
+            self.public_user(user_id).await?,
+            self.public_user(other_id).await?,
+        );
+        let _change_order = self.change_order.lock().await;
         let outcome = storage::send_friend_request(
             &self.database,
             user_id,
             other_id,
             now_unix_milliseconds,
             MAXIMUM_RELATIONSHIPS_PER_USER,
+            MAXIMUM_INCOMING_REQUESTS,
         )
         .await?;
         let (mine, theirs) = match outcome {
             FriendRequestOutcome::Refused => return Err(GuildError::NotFound),
             FriendRequestOutcome::LimitReached => {
-                return Err(GuildError::LimitReached("relationships per user"));
+                return Err(GuildError::LimitReached("friends and requests per user"));
             }
             FriendRequestOutcome::Unchanged => {
                 return self
@@ -114,9 +138,7 @@ impl Relationships {
             ),
             FriendRequestOutcome::Accepted => (RelationshipKind::Friend, RelationshipKind::Friend),
         };
-        let relationship = self
-            .announce_pair(user_id, other_id, mine, theirs, now_unix_milliseconds)
-            .await?;
+        let relationship = self.announce_pair(me, them, mine, theirs, now_unix_milliseconds);
         if outcome == FriendRequestOutcome::Accepted {
             self.events.link_friends(user_id, other_id);
         }
@@ -131,43 +153,50 @@ impl Relationships {
         kind: SetRelationshipKind,
         now_unix_milliseconds: u64,
     ) -> Result<Relationship, GuildError> {
-        if other_id == user_id {
+        if other_id == user_id || !guild_storage::user_exists(&self.database, other_id).await? {
             return Err(GuildError::NotFound);
         }
+        let (me, them) = (
+            self.public_user(user_id).await?,
+            self.public_user(other_id).await?,
+        );
+        let _change_order = self.change_order.lock().await;
         match kind {
             SetRelationshipKind::Friend => {
-                if !storage::accept_friend_request(
+                match storage::accept_friend_request(
                     &self.database,
                     user_id,
                     other_id,
                     now_unix_milliseconds,
+                    MAXIMUM_RELATIONSHIPS_PER_USER,
                 )
                 .await?
                 {
-                    return Err(GuildError::NotFound);
+                    AcceptOutcome::NoRequest => return Err(GuildError::NotFound),
+                    AcceptOutcome::LimitReached => {
+                        return Err(GuildError::LimitReached("friends and requests per user"));
+                    }
+                    AcceptOutcome::Accepted => {}
                 }
-                let relationship = self
-                    .announce_pair(
-                        user_id,
-                        other_id,
-                        RelationshipKind::Friend,
-                        RelationshipKind::Friend,
-                        now_unix_milliseconds,
-                    )
-                    .await?;
+                let relationship = self.announce_pair(
+                    me,
+                    them,
+                    RelationshipKind::Friend,
+                    RelationshipKind::Friend,
+                    now_unix_milliseconds,
+                );
                 self.events.link_friends(user_id, other_id);
                 Ok(relationship)
             }
             SetRelationshipKind::Blocked => {
-                if !guild_storage::user_exists(&self.database, other_id).await? {
-                    return Err(GuildError::NotFound);
-                }
                 let removal =
                     storage::block_user(&self.database, user_id, other_id, now_unix_milliseconds)
                         .await?;
-                let relationship = self
-                    .relationship_with(other_id, RelationshipKind::Blocked, now_unix_milliseconds)
-                    .await?;
+                let relationship = Relationship {
+                    user: them,
+                    kind: RelationshipKind::Blocked,
+                    since_unix_milliseconds: now_unix_milliseconds,
+                };
                 self.events.publish_to_user(
                     user_id,
                     &GatewayEvent::RelationshipAdd(relationship.clone()),
@@ -184,6 +213,7 @@ impl Relationships {
         user_id: Snowflake,
         other_id: Snowflake,
     ) -> Result<(), GuildError> {
+        let _change_order = self.change_order.lock().await;
         let removal = storage::remove_relationship(&self.database, user_id, other_id).await?;
         if removal.previous.is_none() {
             return Err(GuildError::NotFound);
@@ -208,56 +238,52 @@ impl Relationships {
     }
 
     /// Sends each side its new relationship with the other, and answers the user's.
-    async fn announce_pair(
+    fn announce_pair(
         &self,
-        user_id: Snowflake,
-        other_id: Snowflake,
+        me: PublicUser,
+        them: PublicUser,
         mine: RelationshipKind,
         theirs: RelationshipKind,
         now_unix_milliseconds: u64,
-    ) -> Result<Relationship, GuildError> {
-        let with_other = self
-            .relationship_with(other_id, mine, now_unix_milliseconds)
-            .await?;
-        let with_user = self
-            .relationship_with(user_id, theirs, now_unix_milliseconds)
-            .await?;
+    ) -> Relationship {
+        let (user_id, other_id) = (me.id, them.id);
+        let with_other = Relationship {
+            user: them,
+            kind: mine,
+            since_unix_milliseconds: now_unix_milliseconds,
+        };
+        let with_user = Relationship {
+            user: me,
+            kind: theirs,
+            since_unix_milliseconds: now_unix_milliseconds,
+        };
         self.events
             .publish_to_user(other_id, &GatewayEvent::RelationshipAdd(with_user));
         self.events
             .publish_to_user(user_id, &GatewayEvent::RelationshipAdd(with_other.clone()));
-        Ok(with_other)
+        with_other
     }
 
-    /// A relationship of `kind` with `other_id`, with their public profile.
-    async fn relationship_with(
-        &self,
-        other_id: Snowflake,
-        kind: RelationshipKind,
-        now_unix_milliseconds: u64,
-    ) -> Result<Relationship, GuildError> {
+    /// `user_id`'s public profile, with their avatar.
+    async fn public_user(&self, user_id: Snowflake) -> Result<PublicUser, GuildError> {
         let (_, username, display_name) =
-            message_storage::mentionable_users(&self.database, &[other_id])
+            message_storage::mentionable_users(&self.database, &[user_id])
                 .await
                 .map_err(internal)?
                 .into_iter()
                 .next()
                 .ok_or(GuildError::NotFound)?;
-        let mut relationship = Relationship {
-            user: PublicUser {
-                id: other_id,
-                username,
-                display_name,
-                avatar: None,
-                banner: None,
-            },
-            kind,
-            since_unix_milliseconds: now_unix_milliseconds,
+        let mut user = PublicUser {
+            id: user_id,
+            username,
+            display_name,
+            avatar: None,
+            banner: None,
         };
-        fill_profile_images(&self.database, [&mut relationship.user])
+        fill_profile_images(&self.database, [&mut user])
             .await
             .map_err(internal)?;
-        Ok(relationship)
+        Ok(user)
     }
 }
 
@@ -283,6 +309,7 @@ mod tests {
         accounts: Accounts,
         relationships: Relationships,
         messages: Messages,
+        guilds: Arc<Guilds>,
         alice: Snowflake,
         bob: Snowflake,
         carol: Snowflake,
@@ -314,7 +341,8 @@ mod tests {
         Fixture {
             _directory: directory,
             relationships: Relationships::new(database.clone(), events.clone()),
-            messages: Messages::new(database.clone(), ids, guilds),
+            messages: Messages::new(database.clone(), ids, guilds.clone()),
+            guilds,
             accounts,
             database,
             events,
@@ -339,8 +367,11 @@ mod tests {
             .load_presence_into_events(user_id)
             .await
             .unwrap();
-        let friend_ids = fixture.relationships.friend_ids(user_id).await.unwrap();
-        fixture.events.set_friends(user_id, &friend_ids);
+        fixture
+            .relationships
+            .load_friends_into_events(user_id)
+            .await
+            .unwrap();
         fixture.events.activate_session(key, &[]);
         events
     }
@@ -554,17 +585,25 @@ mod tests {
         fixture.database.close().await;
 
         assert_eq!(blocked.kind, RelationshipKind::Blocked);
+        // Exactly what removing a friend shows: the friendship ends and Bob goes offline.
         assert!(
-            matches!(after_block.0.as_slice(), [GatewayEvent::RelationshipRemove { user_id }] if *user_id == bob),
+            matches!(
+                after_block.0.as_slice(),
+                [GatewayEvent::RelationshipRemove { user_id }, GatewayEvent::PresenceUpdate(presence)]
+                    if *user_id == bob && presence.status == PresenceStatus::Offline
+            ),
             "alice only sees the friendship end: {:?}",
             after_block.0
         );
         assert!(matches!(
             after_block.1.as_slice(),
-            [GatewayEvent::RelationshipAdd(Relationship {
-                kind: RelationshipKind::Blocked,
+            [
+                GatewayEvent::RelationshipAdd(Relationship {
+                    kind: RelationshipKind::Blocked,
+                    ..
+                }),
                 ..
-            })]
+            ]
         ));
         assert_eq!(kinds(&views.0), []);
         assert_eq!(kinds(&views.1), [(alice, RelationshipKind::Blocked)]);
@@ -572,5 +611,193 @@ mod tests {
         assert!(reopen.is_err());
         assert_eq!(kinds(&after_unblock), []);
         assert!(matches!(unblock_again, Err(GuildError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn a_block_stops_sharing_presence_both_ways() {
+        use mellow_protocol::ChosenStatus;
+
+        use crate::events::ChosenPresence;
+
+        let fixture = fixture().await;
+        let (alice, bob) = (fixture.alice, fixture.bob);
+        let relationships = &fixture.relationships;
+        relationships
+            .send_friend_request(alice, request("bob"), NOW)
+            .await
+            .unwrap();
+        relationships
+            .set(bob, alice, SetRelationshipKind::Friend, NOW)
+            .await
+            .unwrap();
+        let mut alice_events = connect(&fixture, alice, 1).await;
+        let mut bob_events = connect(&fixture, bob, 2).await;
+        let go_idle = |user_id| {
+            fixture.events.set_presence(
+                user_id,
+                ChosenPresence {
+                    status: ChosenStatus::Idle,
+                    custom_status: None,
+                    version: 1_000,
+                },
+            );
+        };
+        go_idle(alice);
+        let bob_saw_while_friends = received(&mut bob_events);
+        received(&mut alice_events);
+
+        relationships
+            .set(bob, alice, SetRelationshipKind::Blocked, NOW)
+            .await
+            .unwrap();
+        received(&mut alice_events);
+        received(&mut bob_events);
+        go_idle(bob);
+        fixture.events.set_presence(
+            alice,
+            ChosenPresence {
+                status: ChosenStatus::DoNotDisturb,
+                custom_status: None,
+                version: 2_000,
+            },
+        );
+        let after_block = (received(&mut alice_events), received(&mut bob_events));
+        fixture.database.close().await;
+
+        let presence_of = |events: &[GatewayEvent], user_id: Snowflake| {
+            events.iter().any(|event| {
+                matches!(event, GatewayEvent::PresenceUpdate(presence) if presence.user_id == user_id)
+            })
+        };
+        assert!(presence_of(&bob_saw_while_friends, alice));
+        assert!(!presence_of(&after_block.0, bob), "{:?}", after_block.0);
+        assert!(!presence_of(&after_block.1, alice), "{:?}", after_block.1);
+    }
+
+    #[tokio::test]
+    async fn pending_requests_and_friends_are_capped_but_blocks_never_count() {
+        let fixture = fixture().await;
+        let (alice, bob, carol) = (fixture.alice, fixture.bob, fixture.carol);
+        let database = &fixture.database;
+        // Carol blocks Alice: a block takes none of Carol's friend slots.
+        storage::block_user(database, carol, alice, NOW)
+            .await
+            .unwrap();
+        let carol_asks_bob = storage::send_friend_request(database, carol, bob, NOW, 1, 1)
+            .await
+            .unwrap();
+        // Bob's one pending slot is taken: Alice is refused like a missing account.
+        let alice_asks_bob = storage::send_friend_request(database, alice, bob, NOW, 1, 1)
+            .await
+            .unwrap();
+        // Bob has no slot left for friends or requests of his own.
+        let bob_asks_alice = storage::send_friend_request(database, bob, alice, NOW, 0, 1)
+            .await
+            .unwrap();
+        fixture.database.close().await;
+
+        assert_eq!(carol_asks_bob, FriendRequestOutcome::Requested);
+        assert_eq!(alice_asks_bob, FriendRequestOutcome::Refused);
+        assert_eq!(bob_asks_alice, FriendRequestOutcome::LimitReached);
+    }
+
+    #[tokio::test]
+    async fn refusing_cancelling_and_removing_reach_both_sides_and_a_block_wins_over_a_guild() {
+        use mellow_protocol::{CreateGuildRequest, CreateInviteRequest};
+
+        let fixture = fixture().await;
+        let (alice, bob, carol) = (fixture.alice, fixture.bob, fixture.carol);
+        let relationships = &fixture.relationships;
+        let mut alice_events = connect(&fixture, alice, 1).await;
+        let mut bob_events = connect(&fixture, bob, 2).await;
+        let ask = |sender, username: &'static str| {
+            relationships.send_friend_request(sender, request(username), NOW)
+        };
+        let removed_for = |events: &mut tokio::sync::mpsc::Receiver<SharedEvent>, other| {
+            received(events).iter().any(|event| {
+                matches!(event, GatewayEvent::RelationshipRemove { user_id } if *user_id == other)
+            })
+        };
+
+        ask(alice, "bob").await.unwrap();
+        received(&mut alice_events);
+        received(&mut bob_events);
+        relationships.remove(bob, alice).await.unwrap();
+        let refused = (
+            removed_for(&mut alice_events, bob),
+            removed_for(&mut bob_events, alice),
+        );
+        ask(alice, "bob").await.unwrap();
+        received(&mut bob_events);
+        relationships.remove(alice, bob).await.unwrap();
+        let cancelled = (
+            removed_for(&mut alice_events, bob),
+            removed_for(&mut bob_events, alice),
+        );
+        // Blocking from a pending request: the requester only sees it go.
+        ask(alice, "bob").await.unwrap();
+        received(&mut alice_events);
+        relationships
+            .set(bob, alice, SetRelationshipKind::Blocked, NOW)
+            .await
+            .unwrap();
+        let alice_saw_request_go = removed_for(&mut alice_events, bob);
+        // Both block; one unblocks; the other block keeps them apart.
+        relationships
+            .set(alice, bob, SetRelationshipKind::Blocked, NOW)
+            .await
+            .unwrap();
+        relationships.remove(alice, bob).await.unwrap();
+        let still_blocked = ask(alice, "bob").await;
+        // Sharing a guild does not open a conversation past a block.
+        let guild = fixture
+            .guilds
+            .create_guild(
+                carol,
+                CreateGuildRequest {
+                    name: "Club".into(),
+                },
+                NOW,
+            )
+            .await
+            .unwrap();
+        let invite = fixture
+            .guilds
+            .create_invite(carol, guild.id, CreateInviteRequest::default(), NOW)
+            .await
+            .unwrap();
+        for member in [alice, bob] {
+            fixture
+                .guilds
+                .join_with_invite(member, &invite.code, NOW)
+                .await
+                .unwrap();
+        }
+        let conversation_past_block = fixture
+            .messages
+            .open_direct_message(alice, OpenDirectMessageRequest { recipient_id: bob }, NOW)
+            .await;
+        let conversation_with_carol = fixture
+            .messages
+            .open_direct_message(
+                alice,
+                OpenDirectMessageRequest {
+                    recipient_id: carol,
+                },
+                NOW,
+            )
+            .await;
+        let unknown_id = relationships
+            .remove(alice, Snowflake::from_raw(u64::MAX))
+            .await;
+        fixture.database.close().await;
+
+        assert_eq!(refused, (true, true));
+        assert_eq!(cancelled, (true, true));
+        assert!(alice_saw_request_go);
+        assert!(matches!(still_blocked, Err(GuildError::NotFound)));
+        assert!(conversation_past_block.is_err());
+        assert!(conversation_with_carol.is_ok());
+        assert!(matches!(unknown_id, Err(GuildError::NotFound)));
     }
 }

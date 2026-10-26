@@ -805,7 +805,7 @@ describe("Presence", () => {
 });
 
 describe("Friends", () => {
-  const friend = (id: string, kind: Relationship["kind"], name = `user${id}`): Relationship => ({
+  const relationshipWith = (id: string, kind: Relationship["kind"], name = `user${id}`): Relationship => ({
     user: { id, username: name, display_name: "" },
     kind,
     since_unix_milliseconds: 0,
@@ -818,15 +818,15 @@ describe("Friends", () => {
         ...QUIET_REST,
         sendFriendRequest: (username: string) => {
           sentTo.push(username);
-          return Promise.resolve(friend("30", "outgoing_request", username));
+          return Promise.resolve(relationshipWith("30", "outgoing_request", username));
         },
-        setRelationship: (userId: string, kind: "friend" | "blocked") => Promise.resolve(friend(userId, kind)),
+        setRelationship: (userId: string, kind: "friend" | "blocked") => Promise.resolve(relationshipWith(userId, kind)),
         removeRelationship: () => Promise.resolve(),
       }),
     );
     client.applyReady(
       ready({
-        relationships: [friend("20", "incoming_request"), friend("21", "friend", "zoe"), friend("22", "friend", "anna")],
+        relationships: [relationshipWith("20", "incoming_request"), relationshipWith("21", "friend", "zoe"), relationshipWith("22", "friend", "anna")],
       }),
     );
     expect(client.incomingRequestCount()).toBe(1);
@@ -839,8 +839,9 @@ describe("Friends", () => {
     await client.sendFriendRequest("  carol ");
     await client.blockUser("22");
     await client.removeRelationship("21");
-    client.applyEvent({ t: "RELATIONSHIP_ADD", data: friend("40", "incoming_request") }, 0);
+    client.applyEvent({ t: "RELATIONSHIP_ADD", data: relationshipWith("40", "incoming_request") }, 0);
     client.applyEvent({ t: "RELATIONSHIP_REMOVE", data: { user_id: "30" } }, 0);
+    client.applyEvent({ t: "USER_UPDATE", data: { id: "20", username: "renamed", display_name: "" } }, 0);
 
     expect(sentTo).toEqual(["carol"]);
     expect(client.relationshipByUserId.get("20")?.kind).toBe("friend");
@@ -848,6 +849,7 @@ describe("Friends", () => {
     expect(client.relationshipByUserId.has("21")).toBe(false);
     expect(client.relationshipByUserId.has("30")).toBe(false);
     expect(client.incomingRequestCount()).toBe(1);
+    expect(client.relationshipByUserId.get("20")?.user.username).toBe("renamed");
   });
 
   it("start empty with an older server", () => {

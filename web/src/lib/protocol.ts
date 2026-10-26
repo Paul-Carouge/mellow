@@ -327,9 +327,6 @@ export interface Relationship {
   since_unix_milliseconds: number;
 }
 
-/** At most this many relationships per user, of every kind together. */
-export const MAXIMUM_RELATIONSHIPS_PER_USER = 1000;
-
 export type ApiErrorCode =
   | "VALIDATION_FAILED"
   | "USERNAME_TAKEN"

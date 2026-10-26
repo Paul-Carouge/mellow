@@ -36,8 +36,8 @@ impl Messages {
     /// The one-to-one conversation with the recipient, opened if needed. Only with someone the
     /// caller may reach (a shared guild or a friendship, no block either way, ADR-0025), so
     /// accounts cannot be found or spammed by id; anyone else is `NotFound`, like an unknown user.
-    /// Writing there keeps needing it (`direct_message_permissions`). Only the caller hears of a new conversation now; the
-    /// recipient does with its first message.
+    /// Writing there keeps needing it (`direct_message_permissions`). Only the caller hears of a
+    /// new conversation now; the recipient does with its first message.
     pub(crate) async fn open_direct_message(
         &self,
         user_id: Snowflake,

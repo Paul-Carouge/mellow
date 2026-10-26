@@ -822,6 +822,10 @@ export class MellowClient {
       ...channel,
       recipients: channel.recipients.map(updateIfThisUser),
     }));
+    const relationship = this.relationshipByUserId.get(userId);
+    if (relationship) {
+      this.relationshipByUserId.set(userId, { ...relationship, user: updateIfThisUser(relationship.user) });
+    }
   }
 
   /** Merges by id, oldest first; outside the open channel the cache keeps the newest messages. */
