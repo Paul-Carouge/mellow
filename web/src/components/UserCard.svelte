@@ -117,9 +117,10 @@
     "relative size-(--mw-component-user-panel-button-size) text-(--mw-component-user-panel-button-icon) hover:bg-(--mw-component-user-panel-button-background-hover) hover:text-text-normal";
   const iconClass = "size-(--mw-component-user-panel-button-icon-size)";
   const menuItemClass =
-    "flex min-h-(--mw-component-context-menu-item-height) w-full items-center gap-xs rounded-(--mw-component-context-menu-item-radius) px-(--mw-component-context-menu-item-padding-inline) py-2xs text-start text-(--mw-component-context-menu-item-text) hover:bg-(--mw-component-context-menu-item-background-focus) hover:text-(--mw-component-context-menu-item-text-focus) aria-disabled:opacity-(--mw-component-button-disabled-opacity) pointer-coarse:min-h-(--mw-size-hit-web-min)";
+    "group flex min-h-(--mw-component-context-menu-item-height) w-full items-center gap-xs rounded-(--mw-component-context-menu-item-radius) px-(--mw-component-context-menu-item-padding-inline) py-2xs text-start text-(--mw-component-context-menu-item-text) hover:bg-(--mw-component-context-menu-item-background-focus) hover:text-(--mw-component-context-menu-item-text-focus) aria-disabled:opacity-(--mw-component-button-disabled-opacity) pointer-coarse:min-h-(--mw-size-hit-web-min)";
   const menuIconBoxClass = "grid size-(--mw-component-context-menu-item-icon-size) shrink-0 place-items-center";
-  const menuHintClass = "truncate type-body-sm text-(--mw-component-context-menu-item-hint-text)";
+  const menuHintClass =
+    "truncate type-body-sm text-(--mw-component-context-menu-item-hint-text) group-hover:text-(--mw-component-context-menu-item-hint-text-focus)";
   const separatorClass =
     "mx-(--mw-component-context-menu-separator-margin-inline) my-(--mw-component-context-menu-separator-margin-block) h-(--mw-component-context-menu-separator-height) shrink-0 border-0 bg-(--mw-component-context-menu-separator)";
 </script>
@@ -143,12 +144,12 @@
     <span class="flex min-w-0 flex-1 flex-col">
       <span class="truncate type-user-panel-name text-(--mw-component-user-panel-name-text)">{displayName(user)}</span>
       {#if isUserIdCopied}
-        <span class="flex min-w-0 items-center gap-2xs type-body-sm text-(--mw-component-user-panel-status-text)">
+        <span class="status-line flex min-w-0 items-center gap-2xs type-body-sm">
           <Icon name="check" class="size-(--mw-component-status-size-menu)" />
           <span class="truncate">{strings.userCard.userIdCopied}</span>
         </span>
       {:else}
-        <span class="truncate type-body-sm text-(--mw-component-user-panel-status-text)" title={customStatus ?? undefined}
+        <span class="status-line truncate type-body-sm" title={customStatus ?? undefined}
           >{customStatus ?? `@${user.username}`}</span
         >
       {/if}
@@ -260,6 +261,13 @@
   .status-button:hover,
   .status-button[aria-expanded="true"] {
     --status-cut: var(--mw-component-user-panel-button-background-hover);
+  }
+  .status-line {
+    color: var(--mw-component-user-panel-status-text);
+  }
+  .status-button:hover .status-line,
+  .status-button[aria-expanded="true"] .status-line {
+    color: var(--mw-component-user-panel-status-text-hover);
   }
   /* The strike is cut out of the surface behind it, so it reads across the glyph. */
   :global(.voice-toggle) {
