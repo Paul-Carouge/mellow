@@ -2,7 +2,7 @@
 
 mod session;
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -271,15 +271,18 @@ async fn identify(
         .ok()?;
     // A logout or password change committed between the check above and the registration found no
     // hub session to cut: check the token again now that this one is registered.
-    if state
+    let Ok(user) = state
         .accounts
         .authenticate(token, now_unix_milliseconds())
         .await
-        .is_err()
-    {
+    else {
         state.events.unregister_session(hub_key);
         return None;
-    }
+    };
+    // Read after the registration, so a status picked meanwhile on another device is not lost.
+    state
+        .events
+        .set_presence(user.id, user.status, user.custom_status.clone());
     let guild_ids = match state.guilds.list_my_guilds(user.id).await {
         Ok(guilds) => guilds.iter().map(|guild| guild.id).collect::<Vec<_>>(),
         Err(error) => {
@@ -346,13 +349,19 @@ async fn build_ready(
     guild_ids: &[Snowflake],
 ) -> Option<Ready> {
     let mut guilds = Vec::with_capacity(guild_ids.len());
-    let mut online_user_ids = BTreeSet::new();
+    let mut presences = BTreeMap::new();
     for guild_id in guild_ids {
         match state.guilds.get_guild(user.id, *guild_id).await {
             Ok(guild) => {
                 guilds.push(guild);
                 // From the hub, not the member list: that list stops at its first 1 000 members.
-                online_user_ids.extend(state.events.online_user_ids_of_guild(*guild_id));
+                presences.extend(
+                    state
+                        .events
+                        .visible_presences_of_guild(*guild_id)
+                        .into_iter()
+                        .map(|presence| (presence.user_id, presence)),
+                );
             }
             // Left meanwhile: its GUILD_DELETE is already queued for this session.
             Err(GuildError::NotFound) => {}
@@ -409,9 +418,10 @@ async fn build_ready(
         user: user.clone(),
         guilds,
         read_states,
-        online_user_ids: online_user_ids.into_iter().collect(),
+        online_user_ids: presences.keys().copied().collect(),
         direct_message_channels,
         channel_unreads,
+        presences: presences.into_values().collect(),
     })
 }
 
@@ -495,7 +505,8 @@ mod tests {
 
     use futures_util::{SinkExt as _, StreamExt as _};
     use mellow_protocol::{
-        CreateGuildRequest, CreateInviteRequest, GatewayEvent, PresenceStatus, SendMessageRequest,
+        CreateGuildRequest, CreateInviteRequest, GatewayEvent, Presence, PresenceStatus,
+        SendMessageRequest,
     };
     use tokio_tungstenite::tungstenite::Message as ClientMessage;
 
@@ -833,15 +844,15 @@ mod tests {
         let (_member_socket, member_ready) =
             identified(fixture.address, &fixture.member_token).await;
         let (_, event) = receive_dispatch(&mut owner_socket, |event| {
-            matches!(event, GatewayEvent::PresenceUpdate { user_id, .. } if *user_id == member_ready.user.id)
+            matches!(event, GatewayEvent::PresenceUpdate(presence) if presence.user_id == member_ready.user.id)
         })
         .await;
         assert!(matches!(
             event,
-            GatewayEvent::PresenceUpdate {
+            GatewayEvent::PresenceUpdate(Presence {
                 status: PresenceStatus::Online,
                 ..
-            }
+            })
         ));
         fixture.close().await;
     }

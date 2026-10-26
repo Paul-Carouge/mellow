@@ -123,6 +123,10 @@ fn account_router() -> Router<AppState> {
             post(account_routes::change_password),
         )
         .route(
+            "/api/v1/users/@me/presence",
+            put(account_routes::update_presence),
+        )
+        .route(
             "/api/v1/users/@me/avatar",
             put(profile_image_routes::put_avatar)
                 .delete(profile_image_routes::delete_avatar)
@@ -2425,6 +2429,48 @@ pub(crate) mod tests {
         )
         .await;
         json::<SessionCreated>(&body).token
+    }
+
+    #[tokio::test]
+    async fn the_chosen_status_is_stored_and_validated() {
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let token = registered_token(&state, "aurore").await;
+        let put = |body: serde_json::Value| {
+            authorized("PUT", "/api/v1/users/@me/presence", &token, Some(body))
+        };
+
+        let (status, body) = send(
+            &state,
+            put(serde_json::json!({"status": "do_not_disturb", "custom_status": "  Focus  "})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let updated = json::<CurrentUser>(&body);
+        assert_eq!(updated.status, mellow_protocol::ChosenStatus::DoNotDisturb);
+        assert_eq!(updated.custom_status.as_deref(), Some("Focus"));
+        let (status, body) = send(
+            &state,
+            put(serde_json::json!({"status": "online", "custom_status": "x".repeat(129)})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json::<ApiErrorBody>(&body).code,
+            ApiErrorCode::ValidationFailed
+        );
+        let (status, _) = send(&state, put(serde_json::json!({"status": "away"}))).await;
+        assert!(status.is_client_error());
+        let (_, body) = send(&state, authorized("GET", "/api/v1/users/@me", &token, None)).await;
+        let stored = json::<CurrentUser>(&body);
+        assert_eq!(stored.status, mellow_protocol::ChosenStatus::DoNotDisturb);
+        assert_eq!(stored.custom_status.as_deref(), Some("Focus"));
+
+        let (_, body) = send(&state, put(serde_json::json!({"status": "invisible"}))).await;
+        let cleared = json::<CurrentUser>(&body);
+        assert_eq!(cleared.status, mellow_protocol::ChosenStatus::Invisible);
+        assert_eq!(cleared.custom_status, None);
+        database.close().await;
     }
 
     /// A stolen session that uses up its password-check budget must not keep the owner's other

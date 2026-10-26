@@ -1097,12 +1097,15 @@ mod tests {
                 is_instance_administrator: false,
                 avatar: None,
                 banner: None,
+                status: mellow_protocol::ChosenStatus::Online,
+                custom_status: None,
             },
             guilds: vec![guild.clone()],
             read_states: Vec::new(),
             online_user_ids: Vec::new(),
             direct_message_channels: Vec::new(),
             channel_unreads: Vec::new(),
+            presences: Vec::new(),
         });
         let read_only: Vec<_> = channel_rows(&guild, &state, &BTreeSet::new(), None)
             .iter()
@@ -1122,6 +1125,8 @@ mod tests {
             is_instance_administrator: false,
             avatar: None,
             banner: None,
+            status: mellow_protocol::ChosenStatus::Online,
+            custom_status: None,
         };
         let now = Utc.with_ymd_and_hms(2026, 10, 19, 10, 0, 0).unwrap();
         let minutes_ago = |minutes: i64| {
@@ -1261,6 +1266,8 @@ mod tests {
                 is_instance_administrator: false,
                 avatar: None,
                 banner: None,
+                status: mellow_protocol::ChosenStatus::Online,
+                custom_status: None,
             },
             guilds: Vec::new(),
             read_states: Vec::new(),
@@ -1271,6 +1278,7 @@ mod tests {
                 last_message_id: Some(Snowflake::from_raw(40)),
             }],
             channel_unreads: Vec::new(),
+            presences: Vec::new(),
         });
         state.insert_messages(
             Snowflake::from_raw(30),
@@ -1322,12 +1330,15 @@ mod tests {
                 is_instance_administrator: false,
                 avatar: None,
                 banner: None,
+                status: mellow_protocol::ChosenStatus::Online,
+                custom_status: None,
             },
             guilds: Vec::new(),
             read_states: Vec::new(),
             online_user_ids: Vec::new(),
             direct_message_channels: Vec::new(),
             channel_unreads: Vec::new(),
+            presences: Vec::new(),
         });
         let rows = member_rows(&[member(2, "Me"), member(7, "Aurore")], &state, None);
         let can_message: Vec<_> = rows

@@ -8,6 +8,7 @@ import {
   type AuditLogEntry,
   type Ban,
   type Channel,
+  type ChosenStatus,
   type CurrentUser,
   type DirectMessageChannel,
   type Guild,
@@ -114,6 +115,11 @@ export class RestClient {
     current_password?: string;
   }): Promise<CurrentUser> {
     return this.request("PATCH", "users/@me", changes);
+  }
+
+  /** Replaces both; a blank or absent custom status clears it. */
+  updatePresence(status: ChosenStatus, customStatus: string | null): Promise<CurrentUser> {
+    return this.request("PUT", "users/@me/presence", { status, custom_status: customStatus });
   }
 
   /** Signs out the user's other sessions; this one stays. */

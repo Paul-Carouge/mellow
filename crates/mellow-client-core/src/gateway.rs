@@ -368,12 +368,15 @@ mod tests {
                     is_instance_administrator: false,
                     avatar: None,
                     banner: None,
+                    status: mellow_protocol::ChosenStatus::Online,
+                    custom_status: None,
                 },
                 guilds: Vec::new(),
                 read_states: Vec::new(),
                 online_user_ids: Vec::new(),
                 direct_message_channels: Vec::new(),
                 channel_unreads: Vec::new(),
+                presences: Vec::new(),
             }),
         }
     }

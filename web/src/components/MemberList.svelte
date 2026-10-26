@@ -31,8 +31,7 @@
   const members = $derived(client.membersByGuild.get(guild.id) ?? null);
   // Role colours on names, readable on the side sheet in the current theme (DESIGN.md §2.3).
   const nameColors = $derived(nameColorsByUserId(guild, members ?? undefined, "component-side-sheet-background"));
-  // The instance does not list the signed-in user among the online ids: they are online here.
-  const isOnline = (userId: string) => userId === client.user?.id || client.onlineUserIds.has(userId);
+  const isOnline = (userId: string) => client.presenceOf(userId) !== "offline";
   const groups = $derived.by(() => {
     const byName = (left: Member, right: Member) => displayName(left.user).localeCompare(displayName(right.user));
     const all = [...(members ?? [])].sort(byName);

@@ -22,7 +22,25 @@ export interface CurrentUser {
   /** Absent when the user has none (and from older servers). */
   avatar?: ProfileImage | null;
   banner?: ProfileImage | null;
+  /** Absent from older servers, which only knew "online". */
+  status?: ChosenStatus;
+  custom_status?: string | null;
 }
+
+/** The status a user picks for themselves (`PUT /users/@me/presence`). Others see "invisible" as offline. */
+export type ChosenStatus = "online" | "idle" | "do_not_disturb" | "invisible";
+
+/** What others see of a user's presence. */
+export type PresenceStatus = "online" | "idle" | "do_not_disturb" | "offline";
+
+export interface Presence {
+  user_id: Snowflake;
+  status: PresenceStatus;
+  custom_status?: string | null;
+}
+
+/** The longest custom status the instance accepts, in characters. */
+export const MAXIMUM_CUSTOM_STATUS_LENGTH = 128;
 
 export interface PublicUser {
   id: Snowflake;
@@ -294,6 +312,8 @@ export interface Ready {
   direct_message_channels?: DirectMessageChannel[];
   /** Added after `v0.10.0`: absent from older servers. */
   channel_unreads?: ChannelUnread[];
+  /** Added after `v0.11.0`: absent from older servers, whose online users are all "online". */
+  presences?: Presence[];
 }
 
 export type ApiErrorCode =
@@ -347,7 +367,7 @@ export type GatewayEvent =
       t: "TYPING_START";
       data: { guild_id?: Snowflake; channel_id: Snowflake; user_id: Snowflake };
     }
-  | { t: "PRESENCE_UPDATE"; data: { user_id: Snowflake; status: "online" | "offline" } }
+  | { t: "PRESENCE_UPDATE"; data: Presence }
   | { t: "USER_UPDATE"; data: PublicUser }
   | { t: "DIRECT_MESSAGE_CHANNEL_CREATE"; data: DirectMessageChannel };
 

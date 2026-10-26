@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mellow_protocol::{
     Channel, CurrentUser, DirectMessageChannel, GatewayEvent, Guild, GuildSummary, Member, Message,
-    Permissions, PresenceStatus, PublicUser, Ready, Role, SendMessageRequest, Snowflake,
+    Permissions, Presence, PresenceStatus, PublicUser, Ready, Role, SendMessageRequest, Snowflake,
     compute_channel_permissions, compute_guild_permissions,
 };
 
@@ -372,9 +372,14 @@ impl ClientState {
                 user_id,
                 ..
             } => self.note_typing(channel_id, user_id, now_unix_milliseconds),
-            GatewayEvent::PresenceUpdate { user_id, status } => {
+            // shortcut: idle and do not disturb show as online; show them once the desktop does.
+            GatewayEvent::PresenceUpdate(Presence {
+                user_id, status, ..
+            }) => {
                 match status {
-                    PresenceStatus::Online => self.online_user_ids.insert(user_id),
+                    PresenceStatus::Online
+                    | PresenceStatus::Idle
+                    | PresenceStatus::DoNotDisturb => self.online_user_ids.insert(user_id),
                     PresenceStatus::Offline => self.online_user_ids.remove(&user_id),
                 };
                 StateChange::Presence
@@ -887,6 +892,8 @@ mod tests {
                 is_instance_administrator: false,
                 avatar: None,
                 banner: None,
+                status: mellow_protocol::ChosenStatus::Online,
+                custom_status: None,
             },
             guilds: vec![Guild {
                 icon: None,
@@ -908,6 +915,7 @@ mod tests {
             online_user_ids: vec![ME],
             direct_message_channels: Vec::new(),
             channel_unreads: Vec::new(),
+            presences: Vec::new(),
         });
         state
     }
@@ -1364,18 +1372,20 @@ mod tests {
     fn presence_and_typing_indicators() {
         let mut state = ready_state();
         state.apply_event(
-            GatewayEvent::PresenceUpdate {
+            GatewayEvent::PresenceUpdate(Presence {
                 user_id: OTHER,
                 status: PresenceStatus::Online,
-            },
+                custom_status: None,
+            }),
             NOW,
         );
         assert!(state.is_online(OTHER));
         state.apply_event(
-            GatewayEvent::PresenceUpdate {
+            GatewayEvent::PresenceUpdate(Presence {
                 user_id: OTHER,
                 status: PresenceStatus::Offline,
-            },
+                custom_status: None,
+            }),
             NOW,
         );
         assert!(!state.is_online(OTHER));
@@ -1435,6 +1445,7 @@ mod tests {
             online_user_ids: Vec::new(),
             direct_message_channels: Vec::new(),
             channel_unreads: Vec::new(),
+            presences: Vec::new(),
         });
         let statuses: Vec<(&str, PendingMessageStatus)> = state
             .pending_messages(GENERAL)
@@ -1530,6 +1541,7 @@ mod tests {
             online_user_ids: Vec::new(),
             direct_message_channels: Vec::new(),
             channel_unreads: Vec::new(),
+            presences: Vec::new(),
         });
         assert_eq!(state.pending_messages(GENERAL).count(), 0);
     }
@@ -1619,6 +1631,7 @@ mod tests {
             online_user_ids: Vec::new(),
             direct_message_channels: Vec::new(),
             channel_unreads: Vec::new(),
+            presences: Vec::new(),
         });
         assert_eq!(
             state.direct_message_channels(),

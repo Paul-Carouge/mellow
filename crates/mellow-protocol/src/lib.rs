@@ -11,13 +11,13 @@ mod permissions;
 mod snowflake;
 
 pub use accounts::{
-    ApiErrorBody, ApiErrorCode, ChangePasswordRequest, CurrentUser, LoginRequest, RegisterRequest,
-    SessionCreated, UpdateCurrentUserRequest,
+    ApiErrorBody, ApiErrorCode, ChangePasswordRequest, ChosenStatus, CurrentUser, LoginRequest,
+    RegisterRequest, SessionCreated, UpdateCurrentUserRequest, UpdatePresenceRequest,
 };
 pub use direct_messages::{DirectMessageChannel, OpenDirectMessageRequest};
 pub use gateway::{
-    ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, MessageReaction, PresenceStatus, Ready,
-    ServerFrame,
+    ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, MessageReaction, Presence, PresenceStatus,
+    Ready, ServerFrame,
 };
 pub use guilds::{
     AuditAction, AuditChange, AuditChangeKey, AuditLogEntry, AuditLogQuery, Ban, Channel,

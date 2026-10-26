@@ -1029,6 +1029,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn existing_users_are_online_without_custom_status_and_unknown_statuses_are_refused() {
+        const LAST_VERSION_WITHOUT_PRESENCE: i64 = 16;
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_PRESENCE, database.writer())
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'y', 0);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let users: Vec<(i64, String, Option<String>)> =
+            sqlx::query_as("SELECT id, presence_status, custom_status FROM users ORDER BY id")
+                .fetch_all(database.writer())
+                .await
+                .unwrap();
+        let unknown_status = sqlx::query("UPDATE users SET presence_status = 'away' WHERE id = 1")
+            .execute(database.writer())
+            .await;
+        database.close().await;
+
+        assert_eq!(
+            users,
+            [
+                (1, "online".to_owned(), None),
+                (2, "online".to_owned(), None)
+            ]
+        );
+        assert!(unknown_status.is_err());
+    }
+
+    #[tokio::test]
     async fn a_database_from_a_newer_binary_is_refused_even_with_nothing_pending() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())

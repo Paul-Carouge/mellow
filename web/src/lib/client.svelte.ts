@@ -18,6 +18,7 @@ import { reactionKey, withReactionAdded, withReactionRemoved, withoutEmoji } fro
 import {
   type Attachment,
   type Channel,
+  type ChosenStatus,
   type CurrentUser,
   type DirectMessageChannel,
   type Guild,
@@ -26,6 +27,8 @@ import {
   type Message,
   type PermissionBits,
   type PermissionOverwrite,
+  type Presence,
+  type PresenceStatus,
   type PublicUser,
   type ReactionSummary,
   type Ready,
@@ -93,7 +96,8 @@ export class MellowClient {
   /** Channels whose first message is cached: nothing older to fetch. */
   reachedStartChannelIds = new SvelteSet<Snowflake>();
   membersByGuild = new SvelteMap<Snowflake, Member[]>();
-  onlineUserIds = new SvelteSet<Snowflake>();
+  /** What others see of each user online now; absent users are offline. */
+  presenceByUserId = new SvelteMap<Snowflake, Presence>();
   lastReadByChannel = new SvelteMap<Snowflake, Snowflake>();
   /**
    * Each channel's newest message as far as this session knows (`Ready.channel_unreads`, then
@@ -312,7 +316,7 @@ export class MellowClient {
     this.messagesByChannel.clear();
     this.reachedStartChannelIds.clear();
     this.membersByGuild.clear();
-    this.onlineUserIds.clear();
+    this.presenceByUserId.clear();
     this.lastReadByChannel.clear();
     this.newestMessageIdByChannel.clear();
     this.mentionCountByChannel.clear();
@@ -378,9 +382,11 @@ export class MellowClient {
     this.requestedMembers.clear();
     this.failedHistoryChannelIds.clear();
     this.failedMemberGuildIds.clear();
-    this.onlineUserIds.clear();
-    for (const userId of ready.online_user_ids) {
-      this.onlineUserIds.add(userId);
+    this.presenceByUserId.clear();
+    const presences =
+      ready.presences ?? ready.online_user_ids.map((userId): Presence => ({ user_id: userId, status: "online" }));
+    for (const presence of presences) {
+      this.presenceByUserId.set(presence.user_id, presence);
     }
     // Pins may have changed while the link was down; the panel asks again when it opens.
     this.pinsByChannel.clear();
@@ -573,10 +579,10 @@ export class MellowClient {
         }
         return;
       case "PRESENCE_UPDATE":
-        if (event.data.status === "online") {
-          this.onlineUserIds.add(event.data.user_id);
+        if (event.data.status === "offline") {
+          this.presenceByUserId.delete(event.data.user_id);
         } else {
-          this.onlineUserIds.delete(event.data.user_id);
+          this.presenceByUserId.set(event.data.user_id, event.data);
         }
         return;
       case "USER_UPDATE":
@@ -1319,6 +1325,31 @@ export class MellowClient {
     this.applyCurrentUser(
       await this.rest.updateCurrentUser({ username: username.trim(), current_password: currentPassword }),
     );
+  }
+
+  /** A blank custom status clears it. */
+  async updatePresence(status: ChosenStatus, customStatus: string | null): Promise<void> {
+    this.applyCurrentUser(await this.rest.updatePresence(status, customStatus?.trim() || null));
+  }
+
+  /**
+   * What this client shows for `userId`. The signed-in user sees their own pick, invisible as
+   * offline, even before the instance echoes it.
+   */
+  presenceOf(userId: Snowflake): PresenceStatus {
+    if (userId === this.user?.id) {
+      const chosen = this.user.status ?? "online";
+      return chosen === "invisible" ? "offline" : chosen;
+    }
+    return this.presenceByUserId.get(userId)?.status ?? "offline";
+  }
+
+  /** `null` for offline and invisible users, and for the signed-in user without one. */
+  customStatusOf(userId: Snowflake): string | null {
+    if (userId === this.user?.id) {
+      return this.user.status === "invisible" ? null : (this.user.custom_status ?? null);
+    }
+    return this.presenceByUserId.get(userId)?.custom_status ?? null;
   }
 
   /** Signs out the other devices; this session stays. */

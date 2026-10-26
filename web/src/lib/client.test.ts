@@ -739,3 +739,54 @@ describe("unread state and mention counts", () => {
     expect(client.mentionCount(GENERAL)).toBe(0);
   });
 });
+
+describe("Presence", () => {
+  it("reads statuses from Ready, and every online user of an older server as online", () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.applyReady(
+      ready({
+        online_user_ids: [OTHER],
+        presences: [{ user_id: OTHER, status: "do_not_disturb", custom_status: "Focus" }],
+      }),
+    );
+    expect(client.presenceOf(OTHER)).toBe("do_not_disturb");
+    expect(client.customStatusOf(OTHER)).toBe("Focus");
+
+    client.applyReady(ready({ online_user_ids: [OTHER] }));
+    expect(client.presenceOf(OTHER)).toBe("online");
+    expect(client.customStatusOf(OTHER)).toBeNull();
+  });
+
+  it("follows presence updates, offline dropping the custom status", () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.applyReady(ready());
+    expect(client.presenceOf(OTHER)).toBe("offline");
+    client.applyEvent({ t: "PRESENCE_UPDATE", data: { user_id: OTHER, status: "idle", custom_status: "Lunch" } }, 0);
+    expect(client.presenceOf(OTHER)).toBe("idle");
+    expect(client.customStatusOf(OTHER)).toBe("Lunch");
+    client.applyEvent({ t: "PRESENCE_UPDATE", data: { user_id: OTHER, status: "offline" } }, 0);
+    expect(client.presenceOf(OTHER)).toBe("offline");
+    expect(client.customStatusOf(OTHER)).toBeNull();
+  });
+
+  it("shows the signed-in user their own pick, invisible as offline", async () => {
+    const me = ready().user;
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        updatePresence: (status: string, customStatus: string | null) =>
+          Promise.resolve({ ...me, status, custom_status: customStatus }),
+      }),
+    );
+    client.user = me;
+    client.applyReady(ready());
+    expect(client.presenceOf(ME)).toBe("online");
+    await client.updatePresence("invisible", "  Hidden  ");
+    expect(client.user?.custom_status).toBe("Hidden");
+    expect(client.presenceOf(ME)).toBe("offline");
+    expect(client.customStatusOf(ME)).toBeNull();
+    await client.updatePresence("idle", "   ");
+    expect(client.presenceOf(ME)).toBe("idle");
+    expect(client.user?.custom_status).toBeNull();
+  });
+});
