@@ -136,9 +136,14 @@ export const en = {
     serverSettings: "Server settings",
     leaveServer: "Leave server",
     channelsIn: (server: string) => `Channels in ${server}`,
-    noConversations:
-      "No conversations yet. Open someone's profile in a server's member list and choose Send message.",
+    noConversations: "No conversations yet. Message a friend, or someone from a server's member list.",
     justYou: "Just you",
+    friends: "Friends",
+    /** The Friends entry's name, with the count its red badge shows. */
+    friendsWithRequests: (incoming: number) =>
+      incoming > 0
+        ? `Friends, ${count(incoming)} ${plural(incoming, { one: "friend request", other: "friend requests" })}`
+        : "Friends",
     noChannelsYet: "No channels yet. Create the first one to get the conversation going.",
     createAChannel: "Create a channel",
     noVisibleChannelsYet: "No channels you can see yet. Ask a moderator for access.",
@@ -214,12 +219,6 @@ export const en = {
     loadingWorkspace: "Loading your servers and conversations…",
     noVisibleChannelsTitle: "No channels you can see",
     noVisibleChannelsBody: (server: string) => `Channels you can read in ${server} will show here.`,
-    noServersTitle: "No servers yet",
-    noServersBody: "Create a server for your group, or join one with an invite code.",
-    addServer: "Add a server",
-    noConversationsTitle: "No conversations yet",
-    noConversationsBody:
-      "Start one with someone from your servers: open their profile in the member list and choose Send message.",
   },
 
   messages: {
@@ -233,6 +232,12 @@ export const en = {
     viewingOlder: "You're viewing older messages",
     jumpToPresent: "Jump to present",
     originalUnavailable: "Original message was deleted or is not loaded",
+    /** A reply to someone you blocked: their words stay folded (ADR-0025). */
+    blockedReply: "Blocked message",
+    blockedRun: (messages: number) =>
+      `${count(messages)} blocked ${plural(messages, { one: "message", other: "messages" })}`,
+    showBlocked: "Show",
+    hideBlocked: "Hide",
     /** A message read out, or its hidden author prefix: "Ana: hello". */
     authorSaid: (author: string, text: string) => `${author}: ${text}`,
     attachmentCount: (attachments: number) =>
@@ -405,6 +410,11 @@ export const en = {
     sendMessage: "Send message",
     opening: "Opening…",
     openConversationFailed: "Couldn't open the conversation",
+    addFriend: "Add friend",
+    acceptRequest: "Accept friend request",
+    requestSent: "Friend request sent",
+    friendRequestFailed: "Couldn't send the friend request",
+    acceptFailed: "Couldn't accept the friend request",
     loadFailed: "Couldn't load the members.",
     loading: "Loading members…",
     groupLabel: (group: string, members: number) =>
@@ -412,6 +422,87 @@ export const en = {
     /** "Ana, idle, custom status: Reviewing PRs" (DESIGN.md §5.7). */
     memberLabel: (person: string, status: string, customStatus: string | null) =>
       `${person}, ${status}${customStatus ? `, custom status: ${customStatus}` : ""}`,
+  },
+
+  /** The Friends space at Home (DESIGN.md §5.6.1, ADR-0025). */
+  friends: {
+    title: "Friends",
+    tabs: {
+      online: "Online",
+      all: "All",
+      pending: "Pending",
+      blocked: "Blocked",
+      add: "Add friend",
+    },
+    /** The Pending tab's name, with the count its red badge shows. */
+    pendingWithCount: (incoming: number) =>
+      `Pending, ${count(incoming)} ${plural(incoming, { one: "request", other: "requests" })} received`,
+    groups: {
+      online: "Online",
+      all: "All friends",
+      incoming: "Received",
+      outgoing: "Sent",
+      blocked: "Blocked",
+    },
+    groupLabel: (group: string, people: number) =>
+      `${group}, ${count(people)} ${plural(people, { one: "person", other: "people" })}`,
+    incomingRequest: "Incoming friend request",
+    outgoingRequest: "Outgoing friend request",
+    blockedDetail: "Blocked",
+    message: (person: string) => `Message ${person}`,
+    more: (person: string) => `More actions for ${person}`,
+    menu: (person: string) => `Actions for ${person}`,
+    accept: (person: string) => `Accept ${person}'s request`,
+    ignore: (person: string) => `Ignore ${person}'s request`,
+    cancel: (person: string) => `Cancel the request to ${person}`,
+    unblock: "Unblock",
+    unblockLabel: (person: string) => `Unblock ${person}`,
+    removeFriend: "Remove friend",
+    block: "Block",
+    accepted: (person: string) => `You're now friends with ${person}.`,
+    ignored: (person: string) => `Request from ${person} ignored.`,
+    cancelled: (person: string) => `Request to ${person} cancelled.`,
+    removed: (person: string) => `${person} was removed from your friends.`,
+    blocked: (person: string) => `${person} was blocked.`,
+    unblocked: (person: string) => `${person} was unblocked.`,
+    acceptFailed: (person: string) => `Couldn't accept ${person}'s request`,
+    ignoreFailed: (person: string) => `Couldn't ignore ${person}'s request`,
+    cancelFailed: (person: string) => `Couldn't cancel the request to ${person}`,
+    removeFailed: (person: string) => `Couldn't remove ${person} from your friends`,
+    blockFailed: (person: string) => `Couldn't block ${person}`,
+    unblockFailed: (person: string) => `Couldn't unblock ${person}`,
+    emptyOnline: "None of your friends are around right now.",
+    noFriendsYet: "No friends yet. Add someone by their username and they'll show up here.",
+    emptyPending: "No pending requests. Requests you send or receive wait here.",
+    emptyBlocked: "You haven't blocked anyone.",
+    addFriend: "Add friend",
+    addServer: "Add a server",
+    addTitle: "Add friend",
+    addSubtitle: (instance: string) => `You can add friends with their username on ${instance}.`,
+    username: "Username",
+    usernamePlaceholder: "Their username",
+    send: "Send friend request",
+    sending: "Sending…",
+    sent: (person: string) => `Friend request sent to ${person}.`,
+    alreadySent: (person: string) => `You already asked ${person}. The request is waiting for their answer.`,
+    alreadyFriends: (person: string) => `You're already friends with ${person}.`,
+    acceptedTheirs: (person: string) => `${person} had asked you too: you're now friends.`,
+    /** The same words for a missing account, yourself and a block (ADR-0025). */
+    notFound: "Hm, that didn't work. Check the username and try again.",
+    rateLimited: "You've sent a lot of requests. Wait a moment, then try again.",
+    /** The sender's own cap on friends and requests sent (ADR-0025). */
+    limitReached:
+      "You have as many friends and sent requests as an account can. Cancel a request or remove a friend to add someone new.",
+    sendFailed: "Couldn't send the friend request",
+    removeTitle: (person: string) => `Remove ${person} from your friends?`,
+    removeBody: (person: string) =>
+      `${person} won't be in your friends anymore. To be friends again, one of you sends a new request.`,
+    removing: "Removing…",
+    blockTitle: (person: string) => `Block ${person}?`,
+    blockBody: (person: string) =>
+      `${person} won't be told. You won't be able to message each other or send friend requests, their messages in servers will be hidden, and they'll leave your friends.`,
+    blockSubmit: (person: string) => `Block ${person}`,
+    blocking: "Blocking…",
   },
 
   quickSwitcher: {

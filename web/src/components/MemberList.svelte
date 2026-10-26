@@ -10,6 +10,7 @@
   import IconButton from "./IconButton.svelte";
   import { nameColorsByUserId } from "./name-colors.svelte";
   import ProfileCard from "./ProfileCard.svelte";
+  import RelationshipConfirmDialog from "./RelationshipConfirmDialog.svelte";
 
   // The members side sheet (DESIGN.md §5.7, ADR-0022 §1): Online then Offline, offline avatars
   // dimmed while names keep full contrast; choosing a member shows their profile in the sheet,
@@ -78,6 +79,25 @@
     }
   }
 
+  // Friends and blocks from the profile (ADR-0025); the Friends space at Home has the rest.
+  const relationship = $derived(profile ? (client.relationshipByUserId.get(profile.id) ?? null) : null);
+  let isChangingRelationship = $state(false);
+  let isConfirmingBlock = $state(false);
+  let relationshipAnnouncement = $state("");
+
+  async function changeRelationship(change: () => Promise<unknown>, done: string, failed: string) {
+    isChangingRelationship = true;
+    errorMessage = "";
+    try {
+      await change();
+      relationshipAnnouncement = done;
+    } catch (error) {
+      errorMessage = describeError(error, failed);
+    } finally {
+      isChangingRelationship = false;
+    }
+  }
+
   const headButtonClass =
     "size-(--mw-component-user-panel-button-size) text-(--mw-component-user-panel-button-icon) hover:bg-state-hover hover:text-text-normal";
   const headIconClass = "size-(--mw-component-user-panel-button-icon-size)";
@@ -120,12 +140,58 @@
       <div class="profile-enter">
         <ProfileCard user={profile} surfaceToken="--mw-component-side-sheet-background">
           {#if !isSelf}
-            <div class="mt-xs">
-              <Button variant="primary" isFullWidth isDisabled={isOpening} onclick={() => profile && message(profile)}>
-                {isOpening ? strings.members.opening : strings.members.sendMessage}
-              </Button>
-            </div>
+            {@const user = profile}
+            {@const person = displayName(user)}
+            {#if relationship?.kind === "blocked"}
+              <!-- No conversation while blocked: unblocking comes first. -->
+              <div class="mt-xs">
+                <Button
+                  isFullWidth
+                  isDisabled={isChangingRelationship}
+                  onclick={() =>
+                    void changeRelationship(
+                      () => client.removeRelationship(user.id),
+                      strings.friends.unblocked(person),
+                      strings.friends.unblockFailed(person),
+                    )}>{strings.friends.unblock}</Button
+                >
+              </div>
+            {:else}
+              <div class="mt-xs flex flex-col gap-xs">
+                <Button variant="primary" isFullWidth isDisabled={isOpening} onclick={() => message(user)}>
+                  {isOpening ? strings.members.opening : strings.members.sendMessage}
+                </Button>
+                <!-- Stacked: the side sheet is too narrow for two labels side by side in French. -->
+                <div class="flex flex-col gap-xs [&>*]:w-full">
+                  {#if relationship === null}
+                    <Button
+                      isDisabled={isChangingRelationship}
+                      onclick={() =>
+                        void changeRelationship(
+                          () => client.sendFriendRequest(user.username),
+                          strings.friends.sent(person),
+                          strings.members.friendRequestFailed,
+                        )}>{strings.members.addFriend}</Button
+                    >
+                  {:else if relationship.kind === "incoming_request"}
+                    <Button
+                      isDisabled={isChangingRelationship}
+                      onclick={() =>
+                        void changeRelationship(
+                          () => client.acceptFriendRequest(user.id),
+                          strings.friends.accepted(person),
+                          strings.members.acceptFailed,
+                        )}>{strings.members.acceptRequest}</Button
+                    >
+                  {:else if relationship.kind === "outgoing_request"}
+                    <Button isDisabled>{strings.members.requestSent}</Button>
+                  {/if}
+                  <Button aria-haspopup="dialog" onclick={() => (isConfirmingBlock = true)}>{strings.friends.block}</Button>
+                </div>
+              </div>
+            {/if}
           {/if}
+          <p class="sr-only" aria-live="polite">{relationshipAnnouncement}</p>
           <div role="alert" class="contents">
             {#if errorMessage}
               <p class="type-body text-(--mw-component-profile-popover-error-text)">{errorMessage}</p>
@@ -186,6 +252,17 @@
     {/if}
   </div>
 </aside>
+
+{#if isConfirmingBlock && profile}
+  <RelationshipConfirmDialog
+    {client}
+    action="block"
+    user={profile}
+    onclose={() => (isConfirmingBlock = false)}
+    ondone={(sentence) => (relationshipAnnouncement = sentence)}
+    fallbackFocus={() => backButton?.focus()}
+  />
+{/if}
 
 <style>
   .side-sheet-docked {

@@ -90,7 +90,8 @@
     onnavigate();
   }
 
-  function selectConversation(channelId: Snowflake) {
+  /** `null` opens the Friends space. */
+  function selectConversation(channelId: Snowflake | null) {
     client.selectGuild(null, channelId);
     onnavigate();
   }
@@ -219,42 +220,62 @@
     <!-- The negative margin lets the unread pills sit in the strip's margin without being clipped. -->
     {#if guild}
       {@render guildChannels(guild)}
-    {:else if client.conversations.length === 0}
-      <p class="mt-xs me-(--mw-component-channel-row-margin-inline) px-(--mw-component-channel-row-padding-inline) type-body text-text-muted">
-        {strings.sidebar.noConversations}
-      </p>
     {:else}
-      <ul class="mt-xs">
-        {#each client.conversations as conversation (conversation.id)}
-          {@const isSelected = conversation.id === client.selectedChannelId}
-          {@const hasUnread = !isSelected && client.hasUnread(conversation.id)}
-          {@const mentionCount = isSelected ? 0 : client.mentionCount(conversation.id)}
-          {@const recipient = conversation.recipients.find((candidate) => candidate.id !== user?.id)}
-          <li class="relative mt-(--mw-component-member-row-gap) me-(--mw-component-channel-row-margin-inline)">
-            {#if hasUnread}{@render unreadPill()}{/if}
-            <button
-              type="button"
-              aria-current={isSelected ? "page" : undefined}
-              aria-label={nameWithUnreadState(conversationName(conversation), hasUnread, mentionCount)}
-              class={[rowClasses(isSelected, hasUnread), "h-(--mw-component-member-row-height) gap-sm"]}
-              onclick={() => selectConversation(conversation.id)}
-            >
-              {#if recipient}
-                <Avatar
-                  user={recipient}
-                  sizeToken="--mw-component-member-row-avatar-size"
-                  presence={client.presenceOf(recipient.id)}
-                  ringColorToken="--mw-component-navigator-background"
-                />
-              {/if}
-              <span class="min-w-0 flex-1 truncate type-channel-name">
-                {conversationName(conversation)}
-              </span>
-              {#if mentionCount > 0}<MentionBadge {mentionCount} />{/if}
-            </button>
-          </li>
-        {/each}
-      </ul>
+      {@const incomingRequests = client.incomingRequestCount()}
+      <!-- Friends sits above the conversations, as on Discord (ADR-0025); its badge counts the
+           requests waiting for an answer. -->
+      <div class="mt-xs me-(--mw-component-channel-row-margin-inline)">
+        <button
+          type="button"
+          aria-current={client.isFriendsSpaceOpen ? "page" : undefined}
+          aria-label={strings.sidebar.friendsWithRequests(incomingRequests)}
+          class={[rowClasses(client.isFriendsSpaceOpen, false), "h-(--mw-component-member-row-height) gap-sm"]}
+          onclick={() => selectConversation(null)}
+        >
+          <span class="grid size-(--mw-component-member-row-avatar-size) shrink-0 place-items-center">
+            <Icon name="users" class="size-(--mw-component-channel-row-icon-size)" />
+          </span>
+          <span class="min-w-0 flex-1 truncate type-channel-name">{strings.sidebar.friends}</span>
+          {#if incomingRequests > 0}<MentionBadge mentionCount={incomingRequests} />{/if}
+        </button>
+      </div>
+      {#if client.conversations.length === 0}
+        <p class="mt-xs me-(--mw-component-channel-row-margin-inline) px-(--mw-component-channel-row-padding-inline) type-body text-text-muted">
+          {strings.sidebar.noConversations}
+        </p>
+      {:else}
+        <ul class="mt-xs">
+          {#each client.conversations as conversation (conversation.id)}
+            {@const isSelected = conversation.id === client.selectedChannelId}
+            {@const hasUnread = !isSelected && client.hasUnread(conversation.id)}
+            {@const mentionCount = isSelected ? 0 : client.mentionCount(conversation.id)}
+            {@const recipient = conversation.recipients.find((candidate) => candidate.id !== user?.id)}
+            <li class="relative mt-(--mw-component-member-row-gap) me-(--mw-component-channel-row-margin-inline)">
+              {#if hasUnread}{@render unreadPill()}{/if}
+              <button
+                type="button"
+                aria-current={isSelected ? "page" : undefined}
+                aria-label={nameWithUnreadState(conversationName(conversation), hasUnread, mentionCount)}
+                class={[rowClasses(isSelected, hasUnread), "h-(--mw-component-member-row-height) gap-sm"]}
+                onclick={() => selectConversation(conversation.id)}
+              >
+                {#if recipient}
+                  <Avatar
+                    user={recipient}
+                    sizeToken="--mw-component-member-row-avatar-size"
+                    presence={client.presenceOf(recipient.id)}
+                    ringColorToken="--mw-component-navigator-background"
+                  />
+                {/if}
+                <span class="min-w-0 flex-1 truncate type-channel-name">
+                  {conversationName(conversation)}
+                </span>
+                {#if mentionCount > 0}<MentionBadge {mentionCount} />{/if}
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     {/if}
   </nav>
 </div>

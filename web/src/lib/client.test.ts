@@ -852,6 +852,19 @@ describe("Friends", () => {
     expect(client.relationshipByUserId.get("20")?.user.username).toBe("renamed");
   });
 
+  it("open at Home without a conversation, as Discord's Home opens Friends", () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    expect(client.isFriendsSpaceOpen).toBe(false);
+    const conversation = { id: "500", recipients: [{ id: OTHER, username: "other", display_name: "" }], last_message_id: "501" };
+    client.applyReady(ready({ guilds: [], direct_message_channels: [conversation] }));
+    expect(client.selectedChannelId).toBeNull();
+    expect(client.isFriendsSpaceOpen).toBe(true);
+    client.selectGuild(null, "500");
+    expect(client.isFriendsSpaceOpen).toBe(false);
+    client.selectGuild(null, null);
+    expect(client.isFriendsSpaceOpen).toBe(true);
+  });
+
   it("start empty with an older server", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(ready());

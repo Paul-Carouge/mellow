@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Message } from "../lib/protocol";
-import { buildMessageRows, reuseUnchangedRows } from "./message-rows";
+import { buildMessageRows, collapseBlockedRuns, reuseUnchangedRows } from "./message-rows";
 
 function message(id: string, content = `message ${id}`): Message {
   return {
@@ -30,5 +30,43 @@ describe("reuseUnchangedRows", () => {
     const withDivider = reuseUnchangedRows(previousByKey, buildMessageRows([first, second], [], "1", 0, first.id));
     expect(withDivider[0]).toBe(previous[0]);
     expect(withDivider[1]).not.toBe(previous[1]);
+  });
+});
+
+describe("collapseBlockedRuns", () => {
+  const BLOCKED = "66";
+  const OTHER_BLOCKED = "67";
+  const by = (authorId: string, id: string): Message => ({
+    ...message(id),
+    author: { id: authorId, username: `user${authorId}`, display_name: "" },
+  });
+  const isBlocked = (userId: string) => userId === BLOCKED || userId === OTHER_BLOCKED;
+  const shape = (entries: ReturnType<typeof collapseBlockedRuns>) =>
+    entries.map((entry) => (entry.kind === "blocked-run" ? `run ${entry.count}` : entry.key));
+
+  it("folds each run of one blocked author into one row, and leaves everyone else alone", () => {
+    const rows = buildMessageRows(
+      [by("2", "100"), by(BLOCKED, "101"), by(BLOCKED, "102"), by(OTHER_BLOCKED, "103"), by("2", "104"), by(BLOCKED, "105")],
+      [],
+      "1",
+      0,
+    );
+    expect(shape(collapseBlockedRuns(rows, isBlocked, new Set()))).toEqual(["100", "run 2", "run 1", "104", "run 1"]);
+    expect(shape(collapseBlockedRuns(rows, () => false, new Set()))).toEqual(["100", "101", "102", "103", "104", "105"]);
+  });
+
+  it("shows a revealed run's messages after its row, and keeps it revealed as the run grows", () => {
+    const rows = buildMessageRows([by("2", "100"), by(BLOCKED, "101"), by(BLOCKED, "102")], [], "1", 0);
+    const [, run] = collapseBlockedRuns(rows, isBlocked, new Set());
+    expect(run?.kind).toBe("blocked-run");
+    const revealed = new Set([run?.key ?? ""]);
+    const grown = buildMessageRows([by("2", "100"), by(BLOCKED, "101"), by(BLOCKED, "102"), by(BLOCKED, "103")], [], "1", 0);
+    expect(shape(collapseBlockedRuns(grown, isBlocked, revealed))).toEqual(["100", "run 3", "101", "102", "103"]);
+  });
+
+  it("carries the unread divider to the run holding the first unread message", () => {
+    const rows = buildMessageRows([by("2", "100"), by(BLOCKED, "101"), by(BLOCKED, "102")], [], "1", 0, "101");
+    const run = collapseBlockedRuns(rows, isBlocked, new Set()).find((entry) => entry.kind === "blocked-run");
+    expect(run?.kind === "blocked-run" && run.isFirstUnread).toBe(true);
   });
 });

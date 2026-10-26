@@ -16,7 +16,6 @@
   } from "../lib/protocol";
   import AttachmentTray, { type AttachmentTrayItem } from "./AttachmentTray.svelte";
   import { autosize } from "./autosize";
-  import Button from "./Button.svelte";
   import { visibleChannelSections } from "./channel-settings";
   import ConfirmMessageDialog from "./ConfirmMessageDialog.svelte";
   import DeleteMessageDialog from "./DeleteMessageDialog.svelte";
@@ -41,7 +40,6 @@
     onopenquickswitcher: () => void;
     isMemberListOpen: boolean;
     ontogglememberlist: () => void;
-    onaddserver: () => void;
     /** The header's gear: the open channel's settings. */
     oneditchannel: (channel: Channel) => void;
   }
@@ -53,7 +51,6 @@
     onopenquickswitcher,
     isMemberListOpen,
     ontogglememberlist,
-    onaddserver,
     oneditchannel,
   }: Props = $props();
 
@@ -841,24 +838,14 @@
 
 {#snippet emptyState()}
   <div class="flex flex-1 flex-col items-center justify-center gap-xs p-xl text-center">
-    {#if client.status === "connecting"}
-      <p role="status" class="type-body text-text-muted">{strings.chat.loadingWorkspace}</p>
-    {:else if guild}
+    <!-- Home without a conversation is the Friends space (Shell), so only servers come here. -->
+    {#if guild && client.status !== "connecting"}
       <h2 class="type-heading-lg text-text-heading">{strings.chat.noVisibleChannelsTitle}</h2>
       <p class="max-w-(--mw-component-auth-card-max-width) type-body text-text-muted">
         {strings.chat.noVisibleChannelsBody(guild.name)}
       </p>
-    {:else if client.guilds.length === 0}
-      <h2 class="type-heading-lg text-text-heading">{strings.chat.noServersTitle}</h2>
-      <p class="max-w-(--mw-component-auth-card-max-width) type-body text-text-muted">
-        {strings.chat.noServersBody}
-      </p>
-      <Button variant="primary" onclick={onaddserver}>{strings.chat.addServer}</Button>
     {:else}
-      <h2 class="type-heading-lg text-text-heading">{strings.chat.noConversationsTitle}</h2>
-      <p class="max-w-(--mw-component-auth-card-max-width) type-body text-text-muted">
-        {strings.chat.noConversationsBody}
-      </p>
+      <p role="status" class="type-body text-text-muted">{strings.chat.loadingWorkspace}</p>
     {/if}
   </div>
 {/snippet}

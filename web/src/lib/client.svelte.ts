@@ -157,7 +157,7 @@ export class MellowClient {
 
   private gateway: GatewayConnection | null = null;
   /** Before the first `Ready`, no selection exists yet: home then means "not chosen". */
-  private hasReceivedReady = false;
+  private hasReceivedReady = $state(false);
 
   /** `rest` is injected by tests; settings pages read lists (bans, invites, the log) through it. */
   constructor(readonly rest: RestClient = new RestClient()) {}
@@ -178,6 +178,11 @@ export class MellowClient {
       return null;
     }
     return this.conversations.find((channel) => channel.id === this.selectedChannelId) ?? null;
+  }
+
+  /** Home with no conversation open shows the Friends space, as on Discord (ADR-0025). */
+  get isFriendsSpaceOpen(): boolean {
+    return this.hasReceivedReady && this.selectedGuildId === null && this.selectedConversation === null;
   }
 
   /** What the signed-in user may do in a channel, only to adapt the interface (ADR-0014); `null`
@@ -846,7 +851,7 @@ export class MellowClient {
 
   // --- Navigation ----------------------------------------------------------------------------
 
-  /** `guildId` null is home: it opens the given conversation, or the most recent one. */
+  /** `guildId` null is home: it opens the given conversation, or the Friends space without one. */
   selectGuild(guildId: Snowflake | null, preferredChannelId: Snowflake | null): void {
     this.selectedGuildId = guildId;
     const guild = this.selectedGuild;
@@ -857,10 +862,7 @@ export class MellowClient {
         textChannels.find((channel) => channel.id === preferredChannelId)?.id ?? textChannels[0]?.id ?? null;
       void this.ensureMembersLoaded(guild.id);
     } else {
-      channelId =
-        this.conversations.find((channel) => channel.id === preferredChannelId)?.id ??
-        this.conversations[0]?.id ??
-        null;
+      channelId = this.conversations.find((channel) => channel.id === preferredChannelId)?.id ?? null;
     }
     this.selectChannel(channelId);
   }

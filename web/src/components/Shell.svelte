@@ -12,6 +12,8 @@
   import ConnectionBanner from "./ConnectionBanner.svelte";
   import CreateChannelDialog from "./CreateChannelDialog.svelte";
   import Drawer from "./Drawer.svelte";
+  import type { FriendsTab } from "./friends";
+  import FriendsPane from "./FriendsPane.svelte";
   import InvitePeopleDialog from "./InvitePeopleDialog.svelte";
   import LeaveServerDialog from "./LeaveServerDialog.svelte";
   import MemberList from "./MemberList.svelte";
@@ -45,6 +47,8 @@
   );
 
   let chatPane = $state<{ focusComposer: () => void } | null>(null);
+  let friendsPane = $state<{ focusStart: () => void } | null>(null);
+  let friendsTab = $state<FriendsTab>("online");
   const collapsedCategoryIds = new SvelteSet<Snowflake>();
   // Closed by default, remembered per server while the tab lives (ADR-0022 §1).
   const serverIdsWithMemberSheet = new SvelteSet<Snowflake>();
@@ -85,8 +89,13 @@
     }
   });
 
+  /** The composer, or the Friends space's tab when Home shows it. */
   function focusComposer() {
-    chatPane?.focusComposer();
+    if (client.isFriendsSpaceOpen) {
+      friendsPane?.focusStart();
+    } else {
+      chatPane?.focusComposer();
+    }
   }
 
   function openChannelSettings(channel: Channel) {
@@ -215,17 +224,28 @@
     {/if}
 
     <main class="flex min-w-0 flex-1">
-      <ChatPane
-        bind:this={chatPane}
-        {client}
-        hasNavigationDrawer={!hasRoomForNavigator.current}
-        onopennavigation={() => (isNavigationDrawerOpen = true)}
-        onopenquickswitcher={() => (isQuickSwitcherOpen = true)}
-        isMemberListOpen={isMemberSheetOpen}
-        ontogglememberlist={toggleMemberSheet}
-        onaddserver={() => (openDialog = "add-server")}
-        oneditchannel={openChannelSettings}
-      />
+      {#if client.isFriendsSpaceOpen}
+        <FriendsPane
+          bind:this={friendsPane}
+          bind:tab={friendsTab}
+          {client}
+          hasNavigationDrawer={!hasRoomForNavigator.current}
+          onopennavigation={() => (isNavigationDrawerOpen = true)}
+          onaddserver={() => (openDialog = "add-server")}
+          onopenedconversation={() => void tick().then(focusComposer)}
+        />
+      {:else}
+        <ChatPane
+          bind:this={chatPane}
+          {client}
+          hasNavigationDrawer={!hasRoomForNavigator.current}
+          onopennavigation={() => (isNavigationDrawerOpen = true)}
+          onopenquickswitcher={() => (isQuickSwitcherOpen = true)}
+          isMemberListOpen={isMemberSheetOpen}
+          ontogglememberlist={toggleMemberSheet}
+          oneditchannel={openChannelSettings}
+        />
+      {/if}
     </main>
 
     {#if guild && hasMemberSheet && isMemberSheetOpen}
