@@ -789,4 +789,17 @@ describe("Presence", () => {
     expect(client.presenceOf(ME)).toBe("idle");
     expect(client.user?.custom_status).toBeNull();
   });
+
+  it("takes the signed-in user's pick from another device", () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.user = { ...ready().user, custom_status: "Old" };
+    client.applyReady(ready());
+    client.applyEvent({ t: "PRESENCE_UPDATE", data: { user_id: ME, status: "idle", custom_status: "Lunch" } }, 0);
+    expect(client.user?.status).toBe("idle");
+    expect(client.user?.custom_status).toBe("Lunch");
+    client.applyEvent({ t: "PRESENCE_UPDATE", data: { user_id: ME, status: "offline" } }, 0);
+    expect(client.user?.status).toBe("invisible");
+    expect(client.user?.custom_status).toBe("Lunch");
+    expect(client.presenceOf(ME)).toBe("offline");
+  });
 });

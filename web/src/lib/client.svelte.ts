@@ -584,6 +584,7 @@ export class MellowClient {
         } else {
           this.presenceByUserId.set(event.data.user_id, event.data);
         }
+        this.applyOwnPresenceFromAnotherDevice(event.data);
         return;
       case "USER_UPDATE":
         this.applyUserUpdate(event.data);
@@ -1325,6 +1326,21 @@ export class MellowClient {
     this.applyCurrentUser(
       await this.rest.updateCurrentUser({ username: username.trim(), current_password: currentPassword }),
     );
+  }
+
+  /**
+   * Keeps this tab's own pick in step with the others, so a status chosen here never sends back a
+   * custom status another device already changed. While this session is live, the user can only
+   * look offline by going invisible; the custom status then stays as this tab knew it.
+   */
+  private applyOwnPresenceFromAnotherDevice(presence: Presence): void {
+    if (!this.user || presence.user_id !== this.user.id) {
+      return;
+    }
+    this.user =
+      presence.status === "offline"
+        ? { ...this.user, status: "invisible" }
+        : { ...this.user, status: presence.status, custom_status: presence.custom_status ?? null };
   }
 
   /** A blank custom status clears it. */
