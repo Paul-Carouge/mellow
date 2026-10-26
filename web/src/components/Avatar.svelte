@@ -3,6 +3,7 @@
   import { prefersReducedMotion } from "../lib/motion.svelte";
   import { type PublicUser, profileImageUrl } from "../lib/protocol";
   import { avatarInitial, avatarTintToken } from "./format";
+  import StatusIndicator, { type ShownStatus } from "./StatusIndicator.svelte";
 
   // The user's picture (ADR-0021), or their initial on their own tint while it loads, when they
   // have none or when it fails. Decorative: the name always sits next to it.
@@ -15,8 +16,8 @@
      * hovered or holds focus, as on Discord; "always": the profile card and its settings preview.
      */
     animation?: "on-hover" | "always";
-    /** Shows the presence dot, cut out of `ringColorToken` (the surface behind the avatar). */
-    presence?: "online" | "offline" | null;
+    /** Shows the status shape, cut out of `ringColorToken` (the surface behind the avatar). */
+    presence?: ShownStatus | null;
     ringColorToken?: string;
     isDimmed?: boolean;
   }
@@ -96,22 +97,14 @@
     {/if}
   </span>
   {#if presence}
-    <!-- Shape and colour (DESIGN.md §2.3): a filled dot online, a hollow ring offline. -->
     <span
       class="absolute -right-(--mw-component-status-ring-width) -bottom-(--mw-component-status-ring-width) grid place-items-center rounded-full"
       style:width="calc(var(--mw-component-status-size-small) + 2 * var(--mw-component-status-ring-width))"
       style:height="calc(var(--mw-component-status-size-small) + 2 * var(--mw-component-status-ring-width))"
       style:background-color="var({ringColorToken})"
     >
-      <span
-        class={[
-          "size-(--mw-component-status-size-small) rounded-full",
-          presence === "online"
-            ? "bg-(--mw-component-status-online)"
-            : "border-(length:--mw-component-status-ring-width) border-(--mw-component-status-offline)",
-        ]}
-      ></span>
+      <StatusIndicator status={presence} sizeToken="--mw-component-status-size-small" />
     </span>
-    <span class="sr-only">{presence === "online" ? strings.common.online : strings.common.offline}</span>
+    <span class="sr-only">{strings.presence[presence]}</span>
   {/if}
 </span>

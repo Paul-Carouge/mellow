@@ -45,6 +45,6 @@
   <ServerRail {client} {onaddserver} {onnavigate} />
   <ChannelSidebar {client} {collapsedCategoryIds} {onopendialog} {oncreatechannelin} {oneditchannel} {onnavigate} />
   {#if client.user}
-    <UserCard user={client.user} {onopenusersettings} />
+    <UserCard {client} user={client.user} {onopenusersettings} />
   {/if}
 </div>

@@ -265,7 +265,7 @@
                 <Avatar
                   user={recipient}
                   sizeToken="--mw-component-member-row-avatar-size"
-                  presence={client.presenceOf(recipient.id) === "offline" ? "offline" : "online"}
+                  presence={client.presenceOf(recipient.id)}
                   ringColorToken="--mw-component-navigator-background"
                 />
               {/if}

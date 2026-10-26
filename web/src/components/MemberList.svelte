@@ -154,23 +154,30 @@
         <ul>
           {#each group.members as member (member.user.id)}
             {@const isOnline = group.isOnline}
+            {@const presence = client.presenceOf(member.user.id)}
+            {@const customStatus = client.customStatusOf(member.user.id)}
             <li class="mx-(--mw-component-member-row-margin-inline) mt-(--mw-component-member-row-gap)">
               <button
                 type="button"
-                aria-label={strings.members.memberLabel(displayName(member.user), isOnline)}
+                aria-label={strings.members.memberLabel(displayName(member.user), strings.presence[presence], customStatus)}
                 class="flex h-(--mw-component-member-row-height) w-full items-center gap-sm rounded-(--mw-component-member-row-radius) px-(--mw-component-member-row-padding-inline) text-start text-(--mw-component-member-row-name-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-member-row-background-hover) hover:text-(--mw-component-member-row-name-text-hover) focus-visible:focus-ring-inset pointer-coarse:min-h-(--mw-size-hit-web-min)"
                 onclick={(event) => void showProfile(member.user, event.currentTarget)}
               >
                 <Avatar
                   user={member.user}
                   sizeToken="--mw-component-member-row-avatar-size"
-                  presence={isOnline ? "online" : null}
+                  presence={isOnline ? presence : null}
                   ringColorToken="--mw-component-side-sheet-background"
                   isDimmed={!isOnline}
                 />
-                <span class="min-w-0 flex-1 truncate type-member-name" style:color={nameColors.get(member.user.id)}
-                  >{displayName(member.user)}</span
-                >
+                <span class="flex min-w-0 flex-1 flex-col">
+                  <span class="truncate type-member-name" style:color={nameColors.get(member.user.id)}
+                    >{displayName(member.user)}</span
+                  >
+                  {#if customStatus}
+                    <span class="truncate type-body-sm text-(--mw-component-member-row-activity-text)">{customStatus}</span>
+                  {/if}
+                </span>
               </button>
             </li>
           {/each}

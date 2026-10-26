@@ -704,6 +704,7 @@
   --mw-component-status-online: #23A55A;
   --mw-component-status-ring-width: 0.1875rem;
   --mw-component-status-size-large: 1rem;
+  --mw-component-status-size-menu: 0.75rem;
   --mw-component-status-size-small: 0.625rem;
   --mw-component-switch-disabled-opacity: 0.5;
   --mw-component-switch-glyph-off: #554C56;

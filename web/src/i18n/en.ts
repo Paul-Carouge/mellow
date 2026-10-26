@@ -31,6 +31,15 @@ export const en = {
     someone: "Someone",
   },
 
+  /** Status names, keyed by the protocol's values (DESIGN.md §2.3). */
+  presence: {
+    online: "Online",
+    idle: "Idle",
+    do_not_disturb: "Do not disturb",
+    offline: "Offline",
+    invisible: "Invisible",
+  },
+
   errors: {
     /** "Couldn't sign in: the login or the password is wrong." */
     withReason: (summary: string, reason: string) => `${summary}: ${reason}`,
@@ -143,6 +152,31 @@ export const en = {
     deafen: "Deafen",
     undeafen: "Undeafen",
     userSettings: "User settings",
+    /** The avatar and name button that opens the status menu. */
+    statusButtonLabel: (person: string, status: string, customStatus: string | null) =>
+      `${person}, ${status}${customStatus ? `, ${customStatus}` : ""}. Set your status`,
+    statusMenu: "Your status",
+    doNotDisturbHint: "You won't get notifications",
+    invisibleHint: "You'll look offline",
+    setCustomStatus: "Set a custom status",
+    editCustomStatus: "Edit custom status",
+    copyUserId: "Copy user ID",
+    userIdCopied: "User ID copied",
+    copyUserIdFailed: "Couldn't copy your user ID. Allow clipboard access and try again.",
+    statusFailed: "Couldn't change your status",
+  },
+
+  customStatus: {
+    field: "Custom status",
+    placeholder: "What are you up to?",
+    charactersLeft: (left: number) =>
+      left >= 0
+        ? `${count(left)} ${plural(left, { one: "character", other: "characters" })} left`
+        : `${count(-left)} ${plural(-left, { one: "character", other: "characters" })} too many`,
+    save: "Save status",
+    clear: "Clear status",
+    failed: "Couldn't save your custom status",
+    refused: "Couldn't save your custom status: remove line breaks and invisible characters, then try again.",
   },
 
   chat: {
@@ -375,7 +409,9 @@ export const en = {
     loading: "Loading members…",
     groupLabel: (group: string, members: number) =>
       `${group}, ${count(members)} ${plural(members, { one: "member", other: "members" })}`,
-    memberLabel: (person: string, isOnline: boolean) => `${person}, ${isOnline ? "online" : "offline"}`,
+    /** "Ana, idle, custom status: Reviewing PRs" (DESIGN.md §5.7). */
+    memberLabel: (person: string, status: string, customStatus: string | null) =>
+      `${person}, ${status}${customStatus ? `, custom status: ${customStatus}` : ""}`,
   },
 
   quickSwitcher: {

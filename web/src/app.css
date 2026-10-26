@@ -249,6 +249,13 @@ body {
     transform: translateY(calc(-1 * var(--mw-space-2xs)));
   }
 }
+/* Menus opened from the foot of the window (the user card's status menu) lift into place. */
+@keyframes mw-lift-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--mw-space-2xs));
+  }
+}
 @keyframes mw-rise {
   from {
     opacity: 0;
