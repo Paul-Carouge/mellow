@@ -28,8 +28,11 @@ Member profile ── Add friend | Accept friend request | (Friend request sent)
 | No friends at all | Online and All: idle Melli, "No friends yet. Add someone by their username and they'll show up here.", Add friend, and Add a server when you are in none (the first-run invitation Home used to show). |
 | Friends, none online | Online: Melli `sleeping`, "None of your friends are around right now." |
 | Nothing pending, nobody blocked | Pending and Blocked: idle Melli and one sentence. |
-| A row waiting for the instance | Its actions dim (`aria-disabled`), the others stay usable. |
-| A refusal on a row | Above the list, in an alert, with the usual reason. |
+| A row waiting for the instance | Its actions dim (`aria-disabled`); every other row stays usable and waits on its own. |
+| A refusal on a row | Above the list, in an alert, with the usual reason. A removal, refusal, cancellation or unblock the instance no longer finds counts as done. |
+| The focused row leaves | By your action, a confirmation or someone else's (a request cancelled, a friend going offline under Online): focus goes to the row now in its place, else the selected tab; focus you moved elsewhere stays. |
+| The person stops being a friend while their More menu or confirmation is open | The menu or the dialog closes; focus goes back to More, or to the selected tab when the row is gone. |
+| A conversation with someone you blocked | Readable; the composer is locked: "You blocked Ana. Unblock them to send messages." with Unblock. If they blocked you, nothing shows: the instance refuses the send. |
 | Add friend answered | Under the field, check or warning icon, in a polite live region; the field empties after a success. |
 | Many pending requests | The red badge on the Friends row and on the Pending tab (`MentionBadge`, "99+" past its cap). |
 | Long or French labels on a phone | The tabs wrap onto a second row; nothing hides off the edge. |
@@ -67,7 +70,10 @@ Member profile ── Add friend | Accept friend request | (Friend request sent)
 | Remove friend and Block confirmations | `web/src/components/RelationshipConfirmDialog.svelte` |
 | Friends row and its badge | `web/src/components/ChannelSidebar.svelte` |
 | Space or chat in the sheet, focus after the drawer | `web/src/components/Shell.svelte` |
-| Folding runs of blocked messages | `collapseBlockedRuns` in `web/src/components/message-rows.ts` (tested), rendered by `MessageList.svelte` |
+| Folding runs of blocked messages (revealed by message id; `anchorKey` from the last message keeps the scroll anchor while older pages extend a run; one "New" divider) | `collapseBlockedRuns` in `web/src/components/message-rows.ts` (tested), rendered by `MessageList.svelte`, which also reveals a run before a Jump from the pins panel |
+| Blocked authors in the pins panel | `PinnedMessagesPanel.svelte` |
+| Locked composer with someone you blocked | `ChatPane.svelte` |
+| A removal already done counts as done | `removeRelationship` in `web/src/lib/client.svelte.ts` (tested) |
 | Profile actions | `web/src/components/MemberList.svelte` |
 | Words | `friends`, `sidebar.friends*`, `messages.blocked*`, `members.addFriend` and neighbours in `web/src/i18n/en.ts` and `fr.ts` |
 | Tokens | `component.friends.*`, `component.message.blocked-*` in `design/tokens.json` |
