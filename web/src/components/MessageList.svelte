@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
   import type { MellowClient } from "../lib/client.svelte";
@@ -10,7 +11,13 @@
   import type { ReactionAndPinActions } from "./message-actions";
   import MessageItem from "./MessageItem.svelte";
   import { mentionablePeople } from "./mentions";
-  import { type MessageListRow, buildMessageRows, isUnreadStartLoaded, reuseUnchangedRows } from "./message-rows";
+  import {
+    type MessageListRow,
+    buildMessageRows,
+    collapseBlockedRuns,
+    isUnreadStartLoaded,
+    reuseUnchangedRows,
+  } from "./message-rows";
   import { nameColorsByUserId } from "./name-colors.svelte";
   import { durationTokenInMilliseconds, lengthTokenInPixels } from "./tokens";
 
@@ -111,6 +118,9 @@
     previousRowsByKey = new Map(built.map((row) => [row.key, row]));
     return built;
   });
+  /** Runs of messages from someone you blocked that you chose to show, for this visit only. */
+  const revealedBlockedRunKeys = new SvelteSet<string>();
+  const entries = $derived(collapseBlockedRuns(rows, (userId) => client.isBlocked(userId), revealedBlockedRunKeys));
   const hasReachedStart = $derived(client.reachedStartChannelIds.has(channelId));
   const isInitialLoad = $derived(messages.length === 0 && !hasReachedStart);
   // Set when a history request failed: shown with "Try again" instead of skeletons forever.
@@ -124,7 +134,9 @@
   let rovingKey = $state<string | null>(null);
   // The focused row may be gone (deleted, or a sent row replacing its pending one): the list
   // must keep its one Tab stop.
-  const rovingTargetKey = $derived(rows.some((row) => row.key === rovingKey) ? rovingKey : (rows.at(-1)?.key ?? null));
+  const rovingTargetKey = $derived(
+    entries.some((entry) => entry.key === rovingKey) ? rovingKey : (entries.at(-1)?.key ?? null),
+  );
   let announcement = $state("");
   let isSkeletonDelayElapsed = $state(false);
 
@@ -258,7 +270,13 @@
     if (latest?.kind !== "sent") {
       return;
     }
-    if (lastAnnouncedKey !== null && latest.key !== lastAnnouncedKey && latest.message.author.id !== currentUser.id) {
+    // Someone you blocked is never read out (ADR-0025).
+    if (
+      lastAnnouncedKey !== null &&
+      latest.key !== lastAnnouncedKey &&
+      latest.message.author.id !== currentUser.id &&
+      !client.isBlocked(latest.message.author.id)
+    ) {
       announcement = strings.messages.authorSaid(displayName(latest.message.author), messageSummary(latest.message));
     }
     lastAnnouncedKey = latest.key;
@@ -283,6 +301,14 @@
     viewport.scrollTop = viewport.scrollHeight;
   }
 
+  function toggleBlockedRun(key: string) {
+    if (revealedBlockedRunKeys.has(key)) {
+      revealedBlockedRunKeys.delete(key);
+    } else {
+      revealedBlockedRunKeys.add(key);
+    }
+  }
+
   /** The text, then "2 attachments" when files came with it (DESIGN.md §7.3). */
   function messageSummary(message: Message): string {
     return [message.content, attachmentCountLabel(message.attachments?.length ?? 0)].filter(Boolean).join(" ");
@@ -293,6 +319,9 @@
       return null;
     }
     const original = messages.find((candidate) => candidate.id === message.reply_to_id);
+    if (original && client.isBlocked(original.author.id)) {
+      return { author: null, text: strings.messages.blockedReply };
+    }
     return original
       ? { author: original.author, text: messageSummary(original) }
       : { author: null, text: strings.messages.originalUnavailable };
@@ -398,8 +427,8 @@
 
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <ol bind:this={list} aria-label={strings.messages.messagesIn(channelLabel)} class="pb-xs" onkeydown={moveFocus}>
-      {#each rows as row (row.key)}
-        {#if row.kind === "sent" && row.isFirstUnread}
+      {#each entries as row (row.key)}
+        {#if (row.kind === "sent" || row.kind === "blocked-run") && row.isFirstUnread}
           <!-- An apricot line with its "New" pill: new messages are "now" (DESIGN.md §2.3, §5.4). -->
           <li
             data-unread-divider
@@ -414,29 +443,62 @@
             >
           </li>
         {/if}
-        <MessageItem
-          {row}
-          {currentUser}
-          mentionablePeople={mentionable}
-          doesServerFindMentions={client.doesServerFindMentions}
-          authorColor={authorColors.get(row.kind === "sent" ? row.message.author.id : currentUser.id) ?? null}
-          replyReference={row.kind === "sent" ? replyReferenceOf(row.message) : null}
-          {canSendMessages}
-          {canManageMessages}
-          {reactionAndPinActions}
-          isEditing={row.kind === "sent" && row.message.id === editingMessageId}
-          isRovingTarget={row.key === rovingTargetKey}
-          {maximumEditorHeight}
-          {onreply}
-          {onstartedit}
-          {onsaveedit}
-          {oncanceledit}
-          {ondelete}
-          {oncopy}
-          onretry={(nonce) => void client.retryMessage(nonce)}
-          ondiscard={(nonce) => client.discardMessage(nonce)}
-          onfocusrow={() => (rovingKey = row.key)}
-        />
+        {#if row.kind === "blocked-run"}
+          {@const run = row}
+          <!-- Messages from someone you blocked, folded (ADR-0025): one row per run in the message
+               column, with Show and Hide; it holds the list's Tab stop like a message. -->
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+          <li
+            data-row-key={run.key}
+            tabindex={run.key === rovingTargetKey ? 0 : -1}
+            class="relative mt-(--mw-component-message-group-gap) flex flex-wrap items-center gap-x-xs pr-(--mw-component-message-padding-trailing) pl-(--mw-component-message-gutter) py-(--mw-component-message-padding-block) type-body text-(--mw-component-message-blocked-text) focus-visible:focus-ring-inset"
+            onfocus={() => (rovingKey = run.key)}
+            onkeydown={(event) => {
+              if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+                event.preventDefault();
+                toggleBlockedRun(run.key);
+              }
+            }}
+          >
+            <span
+              class="absolute left-(--mw-component-message-avatar-inset) grid w-(--mw-component-message-avatar-size) place-items-center"
+            >
+              <Icon name="prohibit" class="size-(--mw-component-message-blocked-icon-size)" />
+            </span>
+            <span>{strings.messages.blockedRun(run.count)}</span>
+            <button
+              type="button"
+              aria-expanded={run.isRevealed}
+              class="rounded-xs font-semibold text-(--mw-component-message-blocked-action-text) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
+              onclick={() => toggleBlockedRun(run.key)}
+              >{run.isRevealed ? strings.messages.hideBlocked : strings.messages.showBlocked}</button
+            >
+          </li>
+        {:else}
+          <MessageItem
+            {row}
+            {currentUser}
+            mentionablePeople={mentionable}
+            doesServerFindMentions={client.doesServerFindMentions}
+            authorColor={authorColors.get(row.kind === "sent" ? row.message.author.id : currentUser.id) ?? null}
+            replyReference={row.kind === "sent" ? replyReferenceOf(row.message) : null}
+            {canSendMessages}
+            {canManageMessages}
+            {reactionAndPinActions}
+            isEditing={row.kind === "sent" && row.message.id === editingMessageId}
+            isRovingTarget={row.key === rovingTargetKey}
+            {maximumEditorHeight}
+            {onreply}
+            {onstartedit}
+            {onsaveedit}
+            {oncanceledit}
+            {ondelete}
+            {oncopy}
+            onretry={(nonce) => void client.retryMessage(nonce)}
+            ondiscard={(nonce) => client.discardMessage(nonce)}
+            onfocusrow={() => (rovingKey = row.key)}
+          />
+        {/if}
       {/each}
     </ol>
   </div>

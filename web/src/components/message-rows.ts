@@ -142,3 +142,69 @@ function isSameRow(left: MessageListRow, right: MessageListRow): boolean {
     left.startsAuthorGroup === right.startsAuthorGroup
   );
 }
+
+/** A run of messages from someone the user blocked, folded into one row (Discord's behaviour). */
+export interface BlockedRun {
+  kind: "blocked-run";
+  /** From the run's first message: it stays while later messages join, so "Show" holds. */
+  key: string;
+  count: number;
+  isRevealed: boolean;
+  /** One of its messages is the first unread: the "New" divider goes above the run. */
+  isFirstUnread: boolean;
+  /** When the first unread message was sent, else the first message: dates the divider. */
+  sentAt: number;
+}
+
+export type MessageListEntry = MessageListRow | BlockedRun;
+
+/**
+ * `rows` with each run of consecutive messages by one blocked author folded into a `BlockedRun`;
+ * a revealed run keeps its rows after it. The outbox is the user's own, so never folded.
+ */
+export function collapseBlockedRuns(
+  rows: readonly MessageListRow[],
+  isBlocked: (userId: Snowflake) => boolean,
+  revealedRunKeys: ReadonlySet<string>,
+): MessageListEntry[] {
+  const entries: MessageListEntry[] = [];
+  let run: BlockedRun | null = null;
+  let runAuthorId: Snowflake | null = null;
+  let runRows: MessageListRow[] = [];
+  const closeRun = () => {
+    if (run) {
+      entries.push(run, ...(run.isRevealed ? runRows : []));
+    }
+    run = null;
+    runAuthorId = null;
+    runRows = [];
+  };
+  for (const row of rows) {
+    if (row.kind !== "sent" || !isBlocked(row.message.author.id)) {
+      closeRun();
+      entries.push(row);
+      continue;
+    }
+    if (run === null || runAuthorId !== row.message.author.id) {
+      closeRun();
+      const key = `blocked-${row.key}`;
+      run = {
+        kind: "blocked-run",
+        key,
+        count: 0,
+        isRevealed: revealedRunKeys.has(key),
+        isFirstUnread: false,
+        sentAt: row.sentAt,
+      };
+      runAuthorId = row.message.author.id;
+    }
+    run.count += 1;
+    if (row.isFirstUnread) {
+      run.isFirstUnread = true;
+      run.sentAt = row.sentAt;
+    }
+    runRows.push(row);
+  }
+  closeRun();
+  return entries;
+}
