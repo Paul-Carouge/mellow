@@ -18,6 +18,7 @@
   import { displayName, nameWithUnreadState } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import { menuItemsIn, moveFocusWithinMenu } from "./menu-keyboard";
   import MentionBadge from "./MentionBadge.svelte";
   import { channelSections } from "./message-rows";
   import { canOpenServerSettings } from "./server-settings";
@@ -71,30 +72,7 @@
     const bounds = headerButton.getBoundingClientRect();
     menuPosition = { top: bounds.bottom, left: bounds.left, width: bounds.width };
     menu.showPopover();
-    menuItems()[0]?.focus();
-  }
-
-  function menuItems(): HTMLElement[] {
-    return [...(menu?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])];
-  }
-
-  function moveMenuFocus(event: KeyboardEvent) {
-    const items = menuItems();
-    const current = items.indexOf(document.activeElement as HTMLElement);
-    const next =
-      event.key === "ArrowDown"
-        ? (current + 1) % items.length
-        : event.key === "ArrowUp"
-          ? (current - 1 + items.length) % items.length
-          : event.key === "Home"
-            ? 0
-            : event.key === "End"
-              ? items.length - 1
-              : null;
-    if (next !== null) {
-      event.preventDefault();
-      items[next]?.focus();
-    }
+    menuItemsIn(menu)[0]?.focus();
   }
 
   function chooseMenuItem(dialog: ServerDialog) {
@@ -207,7 +185,7 @@
     style:top="calc({menuPosition.top}px + var(--mw-component-sidebar-header-menu-margin))"
     style:left="calc({menuPosition.left}px + var(--mw-component-sidebar-header-menu-margin))"
     style:width="calc({menuPosition.width}px - 2 * var(--mw-component-sidebar-header-menu-margin))"
-    onkeydown={moveMenuFocus}
+    onkeydown={(event) => moveFocusWithinMenu(event, menu)}
     ontoggle={(event) => {
       isMenuOpen = event.newState === "open";
       if (!isMenuOpen && (menu?.contains(document.activeElement) || document.activeElement === document.body)) {

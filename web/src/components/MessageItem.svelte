@@ -13,6 +13,7 @@
   } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import { menuItemsIn, moveFocusWithinMenu } from "./menu-keyboard";
   import type { ReactionAndPinActions } from "./message-actions";
   import MessageReactions from "./MessageReactions.svelte";
   import { reactionKey } from "../lib/reactions";
@@ -159,30 +160,7 @@
     const bounds = moreButton.getBoundingClientRect();
     menuPosition = { top: bounds.bottom, right: Math.max(window.innerWidth - bounds.right, 0) };
     menu.showPopover();
-    menuItems()[0]?.focus();
-  }
-
-  function menuItems(): HTMLElement[] {
-    return [...(menu?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])];
-  }
-
-  function moveMenuFocus(event: KeyboardEvent) {
-    const items = menuItems();
-    const current = items.indexOf(document.activeElement as HTMLElement);
-    const next =
-      event.key === "ArrowDown"
-        ? (current + 1) % items.length
-        : event.key === "ArrowUp"
-          ? (current - 1 + items.length) % items.length
-          : event.key === "Home"
-            ? 0
-            : event.key === "End"
-              ? items.length - 1
-              : null;
-    if (next !== null) {
-      event.preventDefault();
-      items[next]?.focus();
-    }
+    menuItemsIn(menu)[0]?.focus();
   }
 
   function chooseMenuItem(action: () => void) {
@@ -475,7 +453,7 @@
         class="fixed inset-auto m-0 min-w-(--mw-component-context-menu-min-width) flex-col rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) p-(--mw-component-context-menu-padding) shadow-(--mw-component-context-menu-shadow) [&:popover-open]:flex [&:popover-open]:animate-[mw-drop-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]"
         style:top="{menuPosition.top}px"
         style:right="{menuPosition.right}px"
-        onkeydown={moveMenuFocus}
+        onkeydown={(event) => moveFocusWithinMenu(event, menu)}
         ontoggle={(event) => {
           isMenuOpen = event.newState === "open";
           if (!isMenuOpen && (menu?.contains(document.activeElement) || document.activeElement === document.body)) {
