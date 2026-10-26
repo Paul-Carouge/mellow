@@ -205,6 +205,7 @@ export const fr: Catalogue = {
     attachFiles: "Joindre des fichiers",
     sendMessage: "Envoyer le message",
     cannotSend: "Tu n’as pas la permission d’envoyer des messages dans ce salon.",
+    youBlocked: (person) => `Tu as bloqué ${person}. Débloque cette personne pour lui écrire.`,
     dropToAttach: (target) => `Dépose pour joindre à ${target}`,
     dropHint: "Tu pourras ajouter un message avant l’envoi.",
     tooManyAttachments: (maximum) => `Tu peux joindre jusqu’à ${count(maximum)} fichiers par message.`,
