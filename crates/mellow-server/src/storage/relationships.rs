@@ -153,14 +153,31 @@ async fn kind_between(
     kind.as_deref().map(kind_from_text).transpose()
 }
 
-async fn count_relationships(
+/// `user_id`'s friends and outgoing requests: what their own cap bounds (blocks never count).
+async fn count_friends_and_outgoing_requests(
     connection: &mut sqlx::SqliteConnection,
     user_id: i64,
 ) -> Result<usize, GuildStorageError> {
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM relationships WHERE user_id = ?")
-        .bind(user_id)
-        .fetch_one(&mut *connection)
-        .await?;
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM relationships \
+         WHERE user_id = ? AND kind IN ('friend', 'outgoing_request')",
+    )
+    .bind(user_id)
+    .fetch_one(&mut *connection)
+    .await?;
+    usize::try_from(count).map_err(|_| GuildStorageError::IntegerOutOfRange)
+}
+
+async fn count_incoming_requests(
+    connection: &mut sqlx::SqliteConnection,
+    user_id: i64,
+) -> Result<usize, GuildStorageError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM relationships WHERE user_id = ? AND kind = 'incoming_request'",
+    )
+    .bind(user_id)
+    .fetch_one(&mut *connection)
+    .await?;
     usize::try_from(count).map_err(|_| GuildStorageError::IntegerOutOfRange)
 }
 
@@ -207,9 +224,10 @@ pub(crate) enum FriendRequestOutcome {
     Accepted,
     /// Nothing changed: already friends, or already asked.
     Unchanged,
-    /// A block on either side; told apart from nothing by no one (ADR-0025).
+    /// A block on either side, or the recipient's pending requests are full; answered like a
+    /// missing account (ADR-0025).
     Refused,
-    /// Either side has `maximum` relationships already.
+    /// The sender has `maximum_friends_and_requests` friends and outgoing requests already.
     LimitReached,
 }
 
@@ -223,7 +241,8 @@ pub(crate) async fn send_friend_request(
     sender_id: Snowflake,
     recipient_id: Snowflake,
     now_unix_milliseconds: u64,
-    maximum: usize,
+    maximum_friends_and_requests: usize,
+    maximum_incoming_requests: usize,
 ) -> Result<FriendRequestOutcome, GuildStorageError> {
     let (sender, recipient) = (
         to_integer(sender_id.raw())?,
@@ -244,29 +263,39 @@ pub(crate) async fn send_friend_request(
             FriendRequestOutcome::Unchanged
         }
         (Some(RelationshipKind::IncomingRequest), _) => {
-            set_kind(
-                &mut transaction,
-                sender,
-                recipient,
-                RelationshipKind::Friend,
-                now,
-            )
-            .await?;
-            set_kind(
-                &mut transaction,
-                recipient,
-                sender,
-                RelationshipKind::Friend,
-                now,
-            )
-            .await?;
-            FriendRequestOutcome::Accepted
-        }
-        (None, _) => {
-            if count_relationships(&mut transaction, sender).await? >= maximum
-                || count_relationships(&mut transaction, recipient).await? >= maximum
+            if count_friends_and_outgoing_requests(&mut transaction, sender).await?
+                >= maximum_friends_and_requests
             {
                 FriendRequestOutcome::LimitReached
+            } else {
+                set_kind(
+                    &mut transaction,
+                    sender,
+                    recipient,
+                    RelationshipKind::Friend,
+                    now,
+                )
+                .await?;
+                set_kind(
+                    &mut transaction,
+                    recipient,
+                    sender,
+                    RelationshipKind::Friend,
+                    now,
+                )
+                .await?;
+                FriendRequestOutcome::Accepted
+            }
+        }
+        (None, _) => {
+            if count_friends_and_outgoing_requests(&mut transaction, sender).await?
+                >= maximum_friends_and_requests
+            {
+                FriendRequestOutcome::LimitReached
+            } else if count_incoming_requests(&mut transaction, recipient).await?
+                >= maximum_incoming_requests
+            {
+                FriendRequestOutcome::Refused
             } else {
                 set_kind(
                     &mut transaction,
@@ -292,7 +321,15 @@ pub(crate) async fn send_friend_request(
     Ok(outcome)
 }
 
-/// Accepts `other_user_id`'s request to `user_id`; `false` if there was none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AcceptOutcome {
+    Accepted,
+    NoRequest,
+    /// The user has `maximum_friends_and_requests` friends and outgoing requests already.
+    LimitReached,
+}
+
+/// Accepts `other_user_id`'s request to `user_id`.
 ///
 /// # Errors
 /// Fails on database errors.
@@ -301,7 +338,8 @@ pub(crate) async fn accept_friend_request(
     user_id: Snowflake,
     other_user_id: Snowflake,
     now_unix_milliseconds: u64,
-) -> Result<bool, GuildStorageError> {
+    maximum_friends_and_requests: usize,
+) -> Result<AcceptOutcome, GuildStorageError> {
     let (user, other) = (to_integer(user_id.raw())?, to_integer(other_user_id.raw())?);
     let now = to_integer(now_unix_milliseconds)?;
     let mut transaction = database
@@ -310,12 +348,17 @@ pub(crate) async fn accept_friend_request(
         .await?;
     if kind_between(&mut transaction, user, other).await? != Some(RelationshipKind::IncomingRequest)
     {
-        return Ok(false);
+        return Ok(AcceptOutcome::NoRequest);
+    }
+    if count_friends_and_outgoing_requests(&mut transaction, user).await?
+        >= maximum_friends_and_requests
+    {
+        return Ok(AcceptOutcome::LimitReached);
     }
     set_kind(&mut transaction, user, other, RelationshipKind::Friend, now).await?;
     set_kind(&mut transaction, other, user, RelationshipKind::Friend, now).await?;
     transaction.commit().await?;
-    Ok(true)
+    Ok(AcceptOutcome::Accepted)
 }
 
 /// What `remove_relationship` or `block_user` removed.
@@ -337,7 +380,14 @@ pub(crate) async fn remove_relationship(
     user_id: Snowflake,
     other_user_id: Snowflake,
 ) -> Result<Removal, GuildStorageError> {
-    let (user, other) = (to_integer(user_id.raw())?, to_integer(other_user_id.raw())?);
+    // An id no row can hold names no relationship: `NotFound`, not an internal error.
+    let Some(other) = lookup_integer(other_user_id) else {
+        return Ok(Removal {
+            previous: None,
+            other_side_removed: None,
+        });
+    };
+    let user = to_integer(user_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)

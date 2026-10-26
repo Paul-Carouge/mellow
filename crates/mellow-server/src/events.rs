@@ -145,6 +145,18 @@ impl HubState {
             .unwrap_or_default()
     }
 
+    /// Whether live sessions of `a` and `b` are subscribed to a common guild.
+    fn share_a_live_guild(&self, a: Snowflake, b: Snowflake) -> bool {
+        let guilds_of = |user_id: Snowflake| -> HashSet<Snowflake> {
+            self.keys_of_user(user_id)
+                .iter()
+                .filter_map(|key| self.sessions.get(key))
+                .flat_map(|entry| entry.guild_ids.iter().copied())
+                .collect()
+        };
+        !guilds_of(a).is_disjoint(&guilds_of(b))
+    }
+
     fn visible_presence_of(&self, user_id: Snowflake) -> Option<Presence> {
         self.chosen_presences
             .get(&user_id)
@@ -378,7 +390,8 @@ impl EventHub {
 
     /// `a` and `b` became friends: each now sees the other's presence, starting with the current
     /// one (sent only if they are visible).
-    pub(crate) fn link_friends(&self, a: Snowflake, b: Snowflake) {
+    pub(crate) fn link_friends(&self, first_user_id: Snowflake, second_user_id: Snowflake) {
+        let (a, b) = (first_user_id, second_user_id);
         let mut state = self.state();
         for (user_id, friend_id) in [(a, b), (b, a)] {
             if let Some(ids) = state.friend_ids.get_mut(&user_id) {
@@ -395,12 +408,25 @@ impl EventHub {
         }
     }
 
-    /// `a` and `b` are no longer friends.
-    pub(crate) fn unlink_friends(&self, a: Snowflake, b: Snowflake) {
+    /// The two are no longer friends. Each sees the other go offline unless a guild they share
+    /// keeps telling them, so a presence frozen at "online" never lingers.
+    pub(crate) fn unlink_friends(&self, first_user_id: Snowflake, second_user_id: Snowflake) {
+        let (a, b) = (first_user_id, second_user_id);
         let mut state = self.state();
         for (user_id, friend_id) in [(a, b), (b, a)] {
             if let Some(ids) = state.friend_ids.get_mut(&user_id) {
                 ids.remove(&friend_id);
+            }
+        }
+        if state.share_a_live_guild(a, b) {
+            return;
+        }
+        for (viewer_id, user_id) in [(a, b), (b, a)] {
+            if state.visible_presence_of(user_id).is_some()
+                && let Some(event) = published(&GatewayEvent::PresenceUpdate(offline(user_id)))
+            {
+                let keys = state.keys_of_user(viewer_id);
+                state.send_to(keys, &event);
             }
         }
     }
@@ -512,6 +538,12 @@ impl EventHub {
             return;
         };
         let mut state = self.state();
+        let friends: Vec<Snowflake> = state
+            .friend_ids
+            .get(&user_id)
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default();
+        // Friends too: a friend who shares no guild still shows this name (ADR-0025).
         let keys: HashSet<SessionKey> = state
             .keys_of_user(user_id)
             .into_iter()
@@ -519,6 +551,11 @@ impl EventHub {
                 guild_ids
                     .iter()
                     .flat_map(|guild_id| state.keys_of_guild(*guild_id)),
+            )
+            .chain(
+                friends
+                    .into_iter()
+                    .flat_map(|friend_id| state.keys_of_user(friend_id)),
             )
             .collect();
         state.send_to(keys, &event);
@@ -567,6 +604,54 @@ mod tests {
             received.push(event.payload_json.to_string());
         }
         received
+    }
+
+    /// Alice and Bob online as friends, each subscribed to `guild_ids`, with nothing queued.
+    fn online_friends(hub: &EventHub, guild_ids: &[Snowflake]) -> [mpsc::Receiver<SharedEvent>; 2] {
+        [(ALICE, TOKEN_A, BOB), (BOB, TOKEN_B, ALICE)].map(|(user_id, token, friend_id)| {
+            let (key, mut events) = hub.register_session(user_id, token, NO_CAP).unwrap();
+            hub.set_presence(user_id, chosen(ChosenStatus::Online, None, 1));
+            hub.set_friends(user_id, &[friend_id]);
+            hub.activate_session(key, guild_ids);
+            drain(&mut events);
+            events
+        })
+    }
+
+    #[test]
+    fn friends_without_a_shared_guild_see_names_and_presence_until_unlinked() {
+        let hub = EventHub::default();
+        let [mut alice_events, mut bob_events] = online_friends(&hub, &[]);
+        drain(&mut alice_events);
+
+        hub.publish_to_user_and_guilds(ALICE, &[], &typing());
+        hub.set_presence(ALICE, chosen(ChosenStatus::Idle, None, 2));
+        let while_friends = drain(&mut bob_events);
+        // Alice hears of her own update too.
+        drain(&mut alice_events);
+        hub.unlink_friends(ALICE, BOB);
+        let at_unlink = (drain(&mut alice_events), drain(&mut bob_events));
+        hub.set_presence(ALICE, chosen(ChosenStatus::DoNotDisturb, None, 3));
+        let after_unlink = drain(&mut bob_events);
+
+        assert_eq!(while_friends.len(), 2, "{while_friends:?}");
+        for offline_announcements in [at_unlink.0, at_unlink.1] {
+            assert!(
+                matches!(offline_announcements.as_slice(), [one] if one.contains("offline")),
+                "{offline_announcements:?}"
+            );
+        }
+        assert_eq!(after_unlink, Vec::<String>::new());
+    }
+
+    #[test]
+    fn unlinking_friends_who_share_a_guild_announces_nothing() {
+        let hub = EventHub::default();
+        let [mut alice_events, mut bob_events] = online_friends(&hub, &[GUILD]);
+        drain(&mut alice_events);
+        hub.unlink_friends(ALICE, BOB);
+        assert_eq!(drain(&mut alice_events), Vec::<String>::new());
+        assert_eq!(drain(&mut bob_events), Vec::<String>::new());
     }
 
     #[test]

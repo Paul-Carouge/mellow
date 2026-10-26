@@ -285,11 +285,10 @@ async fn identify(
         state.events.unregister_session(hub_key);
         return None;
     }
-    // Before activation, which announces the user to their friends too (ADR-0025).
-    // shortcut: a friendship ended between this read and the hub update keeps sharing presence
-    // with that person until their or this session reconnects; read again if it matters.
-    match state.relationships.friend_ids(user.id).await {
-        Ok(friend_ids) => state.events.set_friends(user.id, &friend_ids),
+    // Before activation, which announces the user to their friends too (ADR-0025); ordered
+    // against relationship changes, so a friendship ended meanwhile is not restored.
+    match state.relationships.load_friends_into_events(user.id).await {
+        Ok(()) => {}
         Err(error) => {
             tracing::warn!(%error, "gateway identify: cannot list friends");
             state.events.unregister_session(hub_key);

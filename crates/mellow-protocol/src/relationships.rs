@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::PublicUser;
 
-/// At most this many relationships per user, of every kind together.
+/// At most this many friends and outgoing requests per user; blocks never count.
 pub const MAXIMUM_RELATIONSHIPS_PER_USER: usize = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
