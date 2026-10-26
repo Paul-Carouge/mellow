@@ -1,9 +1,10 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
-  import type { PublicUser, Relationship } from "../lib/protocol";
+  import type { PublicUser, Relationship, Snowflake } from "../lib/protocol";
   import AddFriendForm from "./AddFriendForm.svelte";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
@@ -37,6 +38,7 @@
   const id = $props.id();
   const TAB_LABELS: Record<FriendsTab, string> = strings.friends.tabs;
   const GROUP_LABELS: Record<FriendsGroup["kind"], string> = strings.friends.groups;
+  const TAB_ORDER: readonly FriendsTab[] = [...LIST_TABS, "add"];
 
   const incomingCount = $derived(client.incomingRequestCount());
   const hasFriends = $derived(client.relationshipsOfKind("friend").length > 0);
@@ -46,8 +48,8 @@
   let addFriendForm = $state<{ focusField: () => void } | null>(null);
   let announcement = $state("");
   let actionError = $state("");
-  /** The person whose row is waiting for the instance: its actions dim. */
-  let busyUserId = $state<string | null>(null);
+  /** The people whose rows wait for the instance: their actions dim, the others stay usable. */
+  const busyUserIds = new SvelteSet<Snowflake>();
 
   let menu = $state<HTMLElement | null>(null);
   let menuRelationship = $state<Relationship | null>(null);
@@ -56,20 +58,83 @@
   /** Whose menu was open when a More button was pressed: that press closed it already. */
   let menuUserIdAtPress: string | null = null;
   let confirming = $state<{ action: "remove" | "block"; user: PublicUser } | null>(null);
+  /** Where the confirmed person's row was, so focus lands on the next row once it leaves. Plain,
+   * not part of `confirming`: the dialog's callbacks run after `confirming` is cleared. */
+  let confirmedRowIndex = 0;
+
+  // Rows leave on the user's actions and on others' (a request cancelled, a friend going
+  // offline under Online): when the focused row goes, focus moves to the row now at its place,
+  // else the selected tab, instead of falling to the page. Focus elsewhere is left alone.
+  let focusedRowIndexBeforeUpdate: number | null = null;
+  $effect.pre(() => {
+    void groups;
+    const index = rowsInPanel().findIndex((row) => row.contains(document.activeElement));
+    focusedRowIndexBeforeUpdate = index >= 0 ? index : null;
+  });
+  $effect(() => {
+    void groups;
+    const index = focusedRowIndexBeforeUpdate;
+    focusedRowIndexBeforeUpdate = null;
+    if (index !== null && isFocusLost()) {
+      focusRowAt(index);
+    }
+  });
+
+  // The menu and the confirmation are about a friend: once that person is no longer one (removed
+  // or blocked elsewhere, or by the confirmation itself), they close.
+  $effect(() => {
+    if (menuRelationship && !isStillFriend(menuRelationship.user.id) && menu?.matches(":popover-open")) {
+      menu.hidePopover();
+    }
+  });
+  $effect(() => {
+    if (confirming && !isStillFriend(confirming.user.id)) {
+      confirming = null;
+    }
+  });
+
+  function isStillFriend(userId: Snowflake): boolean {
+    return client.relationshipByUserId.get(userId)?.kind === "friend";
+  }
+
+  function rowsInPanel(): HTMLElement[] {
+    return [...(panel?.querySelectorAll<HTMLElement>("[data-friend-row]") ?? [])];
+  }
+
+  function isFocusLost(): boolean {
+    return document.activeElement === null || document.activeElement === document.body;
+  }
+
+  function focusSelectedTab() {
+    document.getElementById(`${id}-tab-${tab}`)?.focus();
+  }
+
+  /** The first action of the row at `index` (or the last row), else the selected tab. */
+  function focusRowAt(index: number) {
+    const rows = rowsInPanel();
+    const row = rows[Math.min(index, rows.length - 1)];
+    const action = row?.querySelector<HTMLElement>("button");
+    if (action) {
+      action.focus();
+    } else {
+      focusSelectedTab();
+    }
+  }
 
   /** The selected tab, for the shell after the drawer closes. */
   export function focusStart(): void {
     if (tab === "add") {
       addFriendForm?.focusField();
     } else {
-      document.getElementById(`${id}-tab-${tab}`)?.focus();
+      focusSelectedTab();
     }
   }
 
-  async function chooseTab(next: FriendsTab) {
+  /** `shouldFocusField`: a click or Enter on Add friend goes to its field; arrows stay on the tabs. */
+  async function chooseTab(next: FriendsTab, shouldFocusField: boolean) {
     tab = next;
     actionError = "";
-    if (next === "add") {
+    if (next === "add" && shouldFocusField) {
       await tick();
       addFriendForm?.focusField();
     }
@@ -88,46 +153,37 @@
             : event.key === "End"
               ? tabs.length - 1
               : null;
-    if (next !== null) {
+    const nextTab = next === null ? undefined : TAB_ORDER[next];
+    if (next !== null && nextTab) {
       event.preventDefault();
       tabs[next]?.focus();
-      tabs[next]?.click();
+      void chooseTab(nextTab, false);
     }
   }
 
-  /** Runs one row action; the row may leave the list, so focus moves to its neighbour. */
+  /** Runs one row action; the row may leave the list, and the effects above move focus then. */
   async function act(
     relationship: Relationship,
     action: () => Promise<void>,
     done: (person: string) => string,
     failed: (person: string) => string,
   ) {
+    const userId = relationship.user.id;
     const person = displayName(relationship.user);
-    const rows = [...(panel?.querySelectorAll<HTMLElement>("[data-friend-row]") ?? [])];
-    const index = rows.findIndex((row) => row.dataset.friendRow === relationship.user.id);
-    busyUserId = relationship.user.id;
+    busyUserIds.add(userId);
     actionError = "";
     try {
       await action();
       announcement = done(person);
-      await focusRowAfterChange(index);
     } catch (error) {
       actionError = describeError(error, failed(person));
     } finally {
-      busyUserId = null;
+      busyUserIds.delete(userId);
     }
   }
 
-  async function focusRowAfterChange(index: number) {
-    await tick();
-    const rows = [...(panel?.querySelectorAll<HTMLElement>("[data-friend-row]") ?? [])];
-    const row = rows[Math.min(index, rows.length - 1)];
-    const target = row?.querySelector<HTMLElement>("button") ?? document.getElementById(`${id}-tab-${tab}`);
-    target?.focus();
-  }
-
   async function message(user: PublicUser) {
-    busyUserId = user.id;
+    busyUserIds.add(user.id);
     actionError = "";
     try {
       await client.openDirectMessage(user.id);
@@ -135,7 +191,7 @@
     } catch (error) {
       actionError = describeError(error, strings.members.openConversationFailed);
     } finally {
-      busyUserId = null;
+      busyUserIds.delete(user.id);
     }
   }
 
@@ -159,6 +215,10 @@
 
   function chooseMenuAction(action: "remove" | "block") {
     const relationship = menuRelationship;
+    confirmedRowIndex = Math.max(
+      rowsInPanel().findIndex((row) => row.contains(menuButton)),
+      0,
+    );
     menu?.hidePopover();
     if (relationship) {
       confirming = { action, user: relationship.user };
@@ -216,7 +276,7 @@
     ]}
     onkeydown={moveTabFocus}
   >
-    {#each [...LIST_TABS, "add" as const] as candidate (candidate)}
+    {#each TAB_ORDER as candidate (candidate)}
       {@const isSelected = candidate === tab}
       <button
         type="button"
@@ -227,7 +287,7 @@
         aria-label={candidate === "pending" && incomingCount > 0 ? strings.friends.pendingWithCount(incomingCount) : undefined}
         tabindex={isSelected ? 0 : -1}
         class={tabClass(isSelected, candidate === "add")}
-        onclick={() => void chooseTab(candidate)}
+        onclick={() => void chooseTab(candidate, true)}
       >
         {TAB_LABELS[candidate]}
         {#if candidate === "pending" && incomingCount > 0}
@@ -260,7 +320,7 @@
     <p class="max-w-(--mw-component-auth-card-max-width) type-body-lg text-text-secondary">{sentence}</p>
     {#if withAddFriend}
       <div class="flex flex-wrap justify-center gap-xs">
-        <Button variant="primary" onclick={() => void chooseTab("add")}>{strings.friends.addFriend}</Button>
+        <Button variant="primary" onclick={() => void chooseTab("add", true)}>{strings.friends.addFriend}</Button>
         {#if client.guilds.length === 0}
           <Button onclick={onaddserver}>{strings.friends.addServer}</Button>
         {/if}
@@ -354,7 +414,7 @@
               {@const user = relationship.user}
               {@const person = displayName(user)}
               {@const presence = client.presenceOf(user.id)}
-              {@const isBusy = busyUserId === user.id}
+              {@const isBusy = busyUserIds.has(user.id)}
               <li
                 data-friend-row={user.id}
                 class="mt-(--mw-component-friends-row-gap) flex h-(--mw-component-friends-row-height) items-center gap-sm rounded-(--mw-component-friends-row-radius) px-(--mw-component-friends-row-padding-inline) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-within:bg-(--mw-component-friends-row-background-hover) hover:bg-(--mw-component-friends-row-background-hover)"
@@ -467,8 +527,13 @@
       return;
     }
     menuRelationship = null;
-    if (menu?.contains(document.activeElement) || document.activeElement === document.body) {
-      menuButton?.focus();
+    if (menu?.contains(document.activeElement) || isFocusLost()) {
+      // The row may have left meanwhile (removed or blocked elsewhere).
+      if (menuButton?.isConnected) {
+        menuButton.focus();
+      } else {
+        focusSelectedTab();
+      }
     }
   }}
 >
@@ -493,7 +558,7 @@
     user={pending.user}
     onclose={() => (confirming = null)}
     ondone={(sentence) => (announcement = sentence)}
-    fallbackFocus={() => document.getElementById(`${id}-tab-${tab}`)?.focus()}
+    fallbackFocus={() => focusRowAt(confirmedRowIndex)}
   />
 {/if}
 

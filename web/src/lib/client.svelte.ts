@@ -1404,9 +1404,18 @@ export class MellowClient {
     this.relationshipByUserId.set(relationship.user.id, relationship);
   }
 
-  /** Removes a friend, refuses or cancels a request, or unblocks. */
+  /**
+   * Removes a friend, refuses or cancels a request, or unblocks. Already gone (the other person
+   * removed it, or another session did) counts as done: the wanted state is reached.
+   */
   async removeRelationship(userId: Snowflake): Promise<void> {
-    await this.rest.removeRelationship(userId);
+    try {
+      await this.rest.removeRelationship(userId);
+    } catch (error) {
+      if (!(error instanceof ApiError && error.code === "NOT_FOUND")) {
+        throw error;
+      }
+    }
     this.relationshipByUserId.delete(userId);
   }
 

@@ -83,14 +83,31 @@
   const relationship = $derived(profile ? (client.relationshipByUserId.get(profile.id) ?? null) : null);
   let isChangingRelationship = $state(false);
   let isConfirmingBlock = $state(false);
+  let sheet = $state<HTMLElement | null>(null);
   let relationshipAnnouncement = $state("");
 
-  async function changeRelationship(change: () => Promise<unknown>, done: string, failed: string) {
+  type ProfileAction = "send-message" | "block" | "unblock";
+
+  /**
+   * The button pressed is replaced once the relationship changes (Add friend becomes "Friend
+   * request sent", Unblock becomes Send message): focus goes to `next`, else the back button.
+   */
+  async function focusProfileActionAfterChange(next: ProfileAction) {
+    await tick();
+    if (document.activeElement !== null && document.activeElement !== document.body) {
+      return;
+    }
+    const target = sheet?.querySelector<HTMLElement>(`[data-profile-action="${next}"]`) ?? backButton;
+    target?.focus();
+  }
+
+  async function changeRelationship(change: () => Promise<unknown>, done: string, failed: string, next: ProfileAction) {
     isChangingRelationship = true;
     errorMessage = "";
     try {
       await change();
       relationshipAnnouncement = done;
+      await focusProfileActionAfterChange(next);
     } catch (error) {
       errorMessage = describeError(error, failed);
     } finally {
@@ -105,6 +122,7 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <aside
+  bind:this={sheet}
   aria-label={profile ? strings.members.profileOf(displayName(profile)) : strings.shell.membersOf(guild.name)}
   class={[
     "flex h-full shrink-0 flex-col overflow-hidden bg-(--mw-component-side-sheet-background)",
@@ -146,6 +164,7 @@
               <!-- No conversation while blocked: unblocking comes first. -->
               <div class="mt-xs">
                 <Button
+                  data-profile-action="unblock"
                   isFullWidth
                   isDisabled={isChangingRelationship}
                   onclick={() =>
@@ -153,12 +172,19 @@
                       () => client.removeRelationship(user.id),
                       strings.friends.unblocked(person),
                       strings.friends.unblockFailed(person),
+                      "send-message",
                     )}>{strings.friends.unblock}</Button
                 >
               </div>
             {:else}
               <div class="mt-xs flex flex-col gap-xs">
-                <Button variant="primary" isFullWidth isDisabled={isOpening} onclick={() => message(user)}>
+                <Button
+                  data-profile-action="send-message"
+                  variant="primary"
+                  isFullWidth
+                  isDisabled={isOpening}
+                  onclick={() => message(user)}
+                >
                   {isOpening ? strings.members.opening : strings.members.sendMessage}
                 </Button>
                 <!-- Stacked: the side sheet is too narrow for two labels side by side in French. -->
@@ -171,6 +197,7 @@
                           () => client.sendFriendRequest(user.username),
                           strings.friends.sent(person),
                           strings.members.friendRequestFailed,
+                          "block",
                         )}>{strings.members.addFriend}</Button
                     >
                   {:else if relationship.kind === "incoming_request"}
@@ -181,12 +208,15 @@
                           () => client.acceptFriendRequest(user.id),
                           strings.friends.accepted(person),
                           strings.members.acceptFailed,
+                          "block",
                         )}>{strings.members.acceptRequest}</Button
                     >
                   {:else if relationship.kind === "outgoing_request"}
                     <Button isDisabled>{strings.members.requestSent}</Button>
                   {/if}
-                  <Button aria-haspopup="dialog" onclick={() => (isConfirmingBlock = true)}>{strings.friends.block}</Button>
+                  <Button data-profile-action="block" aria-haspopup="dialog" onclick={() => (isConfirmingBlock = true)}
+                    >{strings.friends.block}</Button
+                  >
                 </div>
               </div>
             {/if}
@@ -260,7 +290,8 @@
     user={profile}
     onclose={() => (isConfirmingBlock = false)}
     ondone={(sentence) => (relationshipAnnouncement = sentence)}
-    fallbackFocus={() => backButton?.focus()}
+    fallbackFocus={() =>
+      (sheet?.querySelector<HTMLElement>('[data-profile-action="unblock"]') ?? backButton)?.focus()}
   />
 {/if}
 
