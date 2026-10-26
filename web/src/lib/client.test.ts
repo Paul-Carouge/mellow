@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ApiError, type RestClient } from "./api";
 import { MellowClient } from "./client.svelte";
-import type { Channel, Guild, Message, Ready, Role } from "./protocol";
+import type { Channel, Guild, Message, Ready, Relationship, Role } from "./protocol";
 
 const ME = "1";
 const OTHER = "2";
@@ -801,5 +801,58 @@ describe("Presence", () => {
     expect(client.user?.status).toBe("invisible");
     expect(client.user?.custom_status).toBe("Lunch");
     expect(client.presenceOf(ME)).toBe("offline");
+  });
+});
+
+describe("Friends", () => {
+  const friend = (id: string, kind: Relationship["kind"], name = `user${id}`): Relationship => ({
+    user: { id, username: name, display_name: "" },
+    kind,
+    since_unix_milliseconds: 0,
+  });
+
+  it("follow Ready, gateway events and the answers to the user's own actions", async () => {
+    const sentTo: string[] = [];
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        sendFriendRequest: (username: string) => {
+          sentTo.push(username);
+          return Promise.resolve(friend("30", "outgoing_request", username));
+        },
+        setRelationship: (userId: string, kind: "friend" | "blocked") => Promise.resolve(friend(userId, kind)),
+        removeRelationship: () => Promise.resolve(),
+      }),
+    );
+    client.applyReady(
+      ready({
+        relationships: [friend("20", "incoming_request"), friend("21", "friend", "zoe"), friend("22", "friend", "anna")],
+      }),
+    );
+    expect(client.incomingRequestCount()).toBe(1);
+    expect(client.relationshipsOfKind("friend").map((relationship) => relationship.user.username)).toEqual([
+      "anna",
+      "zoe",
+    ]);
+
+    await client.acceptFriendRequest("20");
+    await client.sendFriendRequest("  carol ");
+    await client.blockUser("22");
+    await client.removeRelationship("21");
+    client.applyEvent({ t: "RELATIONSHIP_ADD", data: friend("40", "incoming_request") }, 0);
+    client.applyEvent({ t: "RELATIONSHIP_REMOVE", data: { user_id: "30" } }, 0);
+
+    expect(sentTo).toEqual(["carol"]);
+    expect(client.relationshipByUserId.get("20")?.kind).toBe("friend");
+    expect(client.isBlocked("22")).toBe(true);
+    expect(client.relationshipByUserId.has("21")).toBe(false);
+    expect(client.relationshipByUserId.has("30")).toBe(false);
+    expect(client.incomingRequestCount()).toBe(1);
+  });
+
+  it("start empty with an older server", () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.applyReady(ready());
+    expect(client.relationshipByUserId.size).toBe(0);
   });
 });

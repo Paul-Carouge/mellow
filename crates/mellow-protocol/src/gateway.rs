@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Channel, ChannelUnread, CurrentUser, DirectMessageChannel, Guild, GuildSummary, Member,
-    Message, PublicUser, ReadState, Role, Snowflake,
+    Message, PublicUser, ReadState, Relationship, Role, Snowflake,
 };
 
 pub const GATEWAY_VERSION: u32 = 1;
@@ -102,6 +102,10 @@ pub struct Ready {
     /// servers, whose online users are all `Online`.
     #[serde(default)]
     pub presences: Vec<Presence>,
+    /// The user's friends, requests and blocks (ADR-0025). Added after `v0.12.0`: absent from
+    /// older servers.
+    #[serde(default)]
+    pub relationships: Vec<Relationship>,
 }
 
 /// What others see of a user's presence. An invisible user is `Offline`, without custom status.
@@ -218,6 +222,14 @@ pub enum GatewayEvent {
     /// A conversation was opened with the user, by them or by someone else (before its first
     /// message reaches them).
     DirectMessageChannelCreate(DirectMessageChannel),
+    /// A relationship of the user was created or changed kind (a request sent or received, a
+    /// friendship, a block). Sent to that user only (ADR-0025).
+    RelationshipAdd(Relationship),
+    /// A relationship of the user ended: removed, refused, cancelled, unblocked, or, for the
+    /// person blocked, replaced by a block they are not told about.
+    RelationshipRemove {
+        user_id: Snowflake,
+    },
     /// A user changed their username or display name. Sent to that user and to every member of a
     /// guild they share.
     UserUpdate(PublicUser),

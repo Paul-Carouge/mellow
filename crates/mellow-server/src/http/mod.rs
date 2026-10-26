@@ -10,6 +10,7 @@ mod guild_routes;
 mod message_routes;
 mod profile_image_routes;
 pub(crate) mod rate_limit;
+mod relationship_routes;
 pub(crate) mod web_client;
 
 use std::net::SocketAddr;
@@ -40,6 +41,7 @@ pub(crate) struct AppState {
     pub(crate) accounts: Arc<Accounts>,
     pub(crate) guilds: Arc<Guilds>,
     pub(crate) messages: Arc<Messages>,
+    pub(crate) relationships: Arc<crate::domain::relationships::Relationships>,
     pub(crate) attachments: Arc<crate::domain::attachments::Attachments>,
     pub(crate) profile_images: Arc<crate::domain::profile_images::ProfileImages>,
     pub(crate) maximum_attachment_bytes: u64,
@@ -92,6 +94,10 @@ impl AppState {
                 events.clone(),
             )),
             messages,
+            relationships: Arc::new(crate::domain::relationships::Relationships::new(
+                database.clone(),
+                events.clone(),
+            )),
             events,
             gateway_sessions: Arc::default(),
             guilds,
@@ -239,6 +245,16 @@ pub(crate) fn router(state: AppState) -> Router {
         .route(
             "/api/v1/users/@me/guilds",
             get(guild_routes::list_my_guilds),
+        )
+        .route(
+            "/api/v1/users/@me/relationships",
+            get(relationship_routes::list_relationships)
+                .post(relationship_routes::send_friend_request),
+        )
+        .route(
+            "/api/v1/users/@me/relationships/{user_id}",
+            put(relationship_routes::set_relationship)
+                .delete(relationship_routes::remove_relationship),
         )
         .route(
             "/api/v1/users/@me/channels",
@@ -447,6 +463,10 @@ pub(crate) mod tests {
             attachments,
             maximum_attachment_bytes: crate::config::DEFAULT_MAXIMUM_ATTACHMENT_BYTES,
             messages,
+            relationships: Arc::new(crate::domain::relationships::Relationships::new(
+                database.clone(),
+                events.clone(),
+            )),
             events,
             gateway_sessions: Arc::default(),
             guilds,

@@ -19,6 +19,7 @@ import {
   type PermissionBits,
   type PermissionOverwrite,
   type PublicUser,
+  type Relationship,
   type Role,
   type SessionCreated,
   type Snowflake,
@@ -408,6 +409,25 @@ export class RestClient {
 
   startTyping(channelId: Snowflake): Promise<void> {
     return this.request("POST", `channels/${channelId}/typing`);
+  }
+
+  listRelationships(): Promise<Relationship[]> {
+    return this.request("GET", "users/@me/relationships");
+  }
+
+  /** Asks them to be friends, or accepts their request; a missing account or a block is `NOT_FOUND`. */
+  sendFriendRequest(username: string): Promise<Relationship> {
+    return this.request("POST", "users/@me/relationships", { username });
+  }
+
+  /** `friend` accepts their request; `blocked` blocks them. */
+  setRelationship(userId: Snowflake, kind: "friend" | "blocked"): Promise<Relationship> {
+    return this.request("PUT", `users/@me/relationships/${userId}`, { kind });
+  }
+
+  /** Removes a friend, refuses or cancels a request, or unblocks. */
+  removeRelationship(userId: Snowflake): Promise<void> {
+    return this.request("DELETE", `users/@me/relationships/${userId}`);
   }
 
   openDirectMessage(recipientId: Snowflake): Promise<DirectMessageChannel> {

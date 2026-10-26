@@ -25,6 +25,8 @@ pub(crate) enum GuildStorageError {
     UnknownOverwriteKind(String),
     #[error("the audit action stored in the database is unknown: {0}")]
     UnknownAuditAction(String),
+    #[error("the relationship kind stored in the database is unknown: {0}")]
+    UnknownRelationshipKind(String),
     #[error("the audit changes stored in the database cannot be read")]
     UnreadableAuditChanges,
     /// A quota checked atomically with the insert was reached.

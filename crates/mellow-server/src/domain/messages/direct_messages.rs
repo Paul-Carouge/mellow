@@ -12,6 +12,7 @@ use crate::domain::guild_rules::GuildRuleViolation;
 use crate::domain::guilds::{GuildError, Guilds};
 use crate::domain::profile_images::fill_profile_images;
 use crate::storage::direct_messages::{self as storage, StoredDirectMessageChannel};
+use crate::storage::relationships as relationship_storage;
 
 fn channel_from_stored(stored: StoredDirectMessageChannel) -> DirectMessageChannel {
     DirectMessageChannel {
@@ -32,10 +33,10 @@ fn channel_from_stored(stored: StoredDirectMessageChannel) -> DirectMessageChann
 }
 
 impl Messages {
-    /// The one-to-one conversation with the recipient, opened if needed. Only with someone who
-    /// shares a guild with the caller, so accounts cannot be found or spammed by id; anyone else
-    /// is `NotFound`, like an unknown user. Writing there keeps needing a shared guild
-    /// (`direct_message_permissions`). Only the caller hears of a new conversation now; the
+    /// The one-to-one conversation with the recipient, opened if needed. Only with someone the
+    /// caller may reach (a shared guild or a friendship, no block either way, ADR-0025), so
+    /// accounts cannot be found or spammed by id; anyone else is `NotFound`, like an unknown user.
+    /// Writing there keeps needing it (`direct_message_permissions`). Only the caller hears of a new conversation now; the
     /// recipient does with its first message.
     pub(crate) async fn open_direct_message(
         &self,
@@ -46,9 +47,13 @@ impl Messages {
         if request.recipient_id == user_id {
             return Err(GuildError::from(GuildRuleViolation::DirectMessageRecipient).into());
         }
-        if !storage::share_a_guild(&self.database, user_id, request.recipient_id)
-            .await
-            .map_err(GuildError::from)?
+        if !relationship_storage::may_reach_each_other(
+            &self.database,
+            user_id,
+            request.recipient_id,
+        )
+        .await
+        .map_err(GuildError::from)?
         {
             return Err(GuildError::NotFound.into());
         }
@@ -113,14 +118,14 @@ async fn conversation_seen_by(
     Ok(Some(channel))
 }
 
-/// Whether `user_id` shares a guild with every other participant: writing needs it.
-pub(super) async fn shares_a_guild_with_each(
+/// Whether `user_id` may reach every other participant (ADR-0025): writing needs it.
+pub(super) async fn may_reach_each(
     database: &Database,
     user_id: Snowflake,
     participant_ids: &[Snowflake],
 ) -> Result<bool, MessageError> {
     for other_id in participant_ids.iter().filter(|id| **id != user_id) {
-        if !storage::share_a_guild(database, user_id, *other_id)
+        if !relationship_storage::may_reach_each_other(database, user_id, *other_id)
             .await
             .map_err(GuildError::from)?
         {

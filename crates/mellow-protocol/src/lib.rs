@@ -8,6 +8,7 @@ mod guilds;
 mod health;
 mod messages;
 mod permissions;
+mod relationships;
 mod snowflake;
 
 pub use accounts::{
@@ -34,6 +35,10 @@ pub use messages::{
 };
 pub use permissions::{
     Permissions, compute_channel_permissions, compute_guild_permissions, highest_role_position,
+};
+pub use relationships::{
+    MAXIMUM_RELATIONSHIPS_PER_USER, Relationship, RelationshipKind, SendFriendRequest,
+    SetRelationshipKind, SetRelationshipRequest,
 };
 pub use snowflake::{
     MAXIMUM_SEQUENCE, MAXIMUM_TIMESTAMP_MILLISECONDS_SINCE_EPOCH, MELLOW_EPOCH_UNIX_MILLISECONDS,

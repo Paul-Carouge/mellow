@@ -122,28 +122,6 @@ pub(crate) async fn list_participant_ids(
     rows.into_iter().map(|(user_id,)| to_id(user_id)).collect()
 }
 
-pub(crate) async fn share_a_guild(
-    database: &Database,
-    user_id: Snowflake,
-    other_user_id: Snowflake,
-) -> Result<bool, GuildStorageError> {
-    let (Some(user_id), Some(other_user_id)) =
-        (lookup_integer(user_id), lookup_integer(other_user_id))
-    else {
-        return Ok(false);
-    };
-    let (shares,): (bool,) = sqlx::query_as(
-        "SELECT EXISTS (SELECT 1 FROM guild_members AS mine \
-         JOIN guild_members AS theirs ON theirs.guild_id = mine.guild_id \
-         WHERE mine.user_id = ? AND theirs.user_id = ?)",
-    )
-    .bind(user_id)
-    .bind(other_user_id)
-    .fetch_one(database.readers())
-    .await?;
-    Ok(shares)
-}
-
 /// The one-to-one conversation of the pair, created with `new_channel_id` when there is none
 /// yet. Answers its id and whether it was created now.
 pub(crate) async fn find_or_create_one_to_one(

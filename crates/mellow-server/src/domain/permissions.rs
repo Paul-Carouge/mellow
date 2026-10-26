@@ -43,12 +43,13 @@ pub fn channel_permissions(
 }
 
 /// What someone may do in a direct-message conversation: participants view and read it, and write
-/// only while they share a guild with everyone else in it, so a member kicked or banned from the
-/// only shared guild can no longer message the others (nor react); anyone else gets nothing. No
-/// one manages messages there, so each author deletes only their own.
+/// only while they may reach everyone else in it (a shared guild or a friendship, and no block
+/// either way, ADR-0025), so a member kicked from the only shared guild, or blocked, can no longer
+/// message the others (nor react); anyone else gets nothing. No one manages messages there, so
+/// each author deletes only their own.
 #[must_use]
-pub fn direct_message_permissions(is_participant: bool, shares_a_guild: bool) -> Permissions {
-    match (is_participant, shares_a_guild) {
+pub fn direct_message_permissions(is_participant: bool, may_reach_each_other: bool) -> Permissions {
+    match (is_participant, may_reach_each_other) {
         (false, _) => Permissions::empty(),
         (true, false) => Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY,
         (true, true) => {

@@ -385,6 +385,10 @@ impl ClientState {
                 StateChange::Presence
             }
             GatewayEvent::UserUpdate(user) => self.rename_user(&user),
+            // Friends are on the web only while it is the focus (ADR-0023); the desktop catches up.
+            GatewayEvent::RelationshipAdd(_) | GatewayEvent::RelationshipRemove { .. } => {
+                StateChange::Nothing
+            }
             // shortcut: no client-core UI shows reactions yet (web first); count them in the
             // cached messages once the desktop does.
             GatewayEvent::MessageReactionAdd(_)
@@ -916,6 +920,7 @@ mod tests {
             direct_message_channels: Vec::new(),
             channel_unreads: Vec::new(),
             presences: Vec::new(),
+            relationships: Vec::new(),
         });
         state
     }
@@ -1446,6 +1451,7 @@ mod tests {
             direct_message_channels: Vec::new(),
             channel_unreads: Vec::new(),
             presences: Vec::new(),
+            relationships: Vec::new(),
         });
         let statuses: Vec<(&str, PendingMessageStatus)> = state
             .pending_messages(GENERAL)
@@ -1542,6 +1548,7 @@ mod tests {
             direct_message_channels: Vec::new(),
             channel_unreads: Vec::new(),
             presences: Vec::new(),
+            relationships: Vec::new(),
         });
         assert_eq!(state.pending_messages(GENERAL).count(), 0);
     }
@@ -1632,6 +1639,7 @@ mod tests {
             direct_message_channels: Vec::new(),
             channel_unreads: Vec::new(),
             presences: Vec::new(),
+            relationships: Vec::new(),
         });
         assert_eq!(
             state.direct_message_channels(),
