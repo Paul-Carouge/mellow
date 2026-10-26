@@ -146,11 +146,15 @@ function isSameRow(left: MessageListRow, right: MessageListRow): boolean {
 /** A run of messages from someone the user blocked, folded into one row (Discord's behaviour). */
 export interface BlockedRun {
   kind: "blocked-run";
-  /** From the run's first message: it stays while later messages join, so "Show" holds. */
+  /** From the run's first message; older pages extending the run change it. */
   key: string;
-  count: number;
+  /** From the run's last message: stable while older pages are prepended (the scroll anchor). */
+  anchorKey: string;
+  /** Oldest first: Show reveals these, and a jump to one of them reveals the run. */
+  messageIds: Snowflake[];
   isRevealed: boolean;
-  /** One of its messages is the first unread: the "New" divider goes above the run. */
+  /** Folded and holding the first unread message: the "New" divider goes above the run. Once
+   * revealed, the message itself carries the divider, so it is drawn once. */
   isFirstUnread: boolean;
   /** When the first unread message was sent, else the first message: dates the divider. */
   sentAt: number;
@@ -160,23 +164,36 @@ export type MessageListEntry = MessageListRow | BlockedRun;
 
 /**
  * `rows` with each run of consecutive messages by one blocked author folded into a `BlockedRun`;
- * a revealed run keeps its rows after it. The outbox is the user's own, so never folded.
+ * a run is revealed when any of its messages is in `revealedMessageIds`, and then keeps its rows
+ * after it. The outbox is the user's own, so never folded.
  */
 export function collapseBlockedRuns(
   rows: readonly MessageListRow[],
   isBlocked: (userId: Snowflake) => boolean,
-  revealedRunKeys: ReadonlySet<string>,
+  revealedMessageIds: ReadonlySet<Snowflake>,
 ): MessageListEntry[] {
   const entries: MessageListEntry[] = [];
-  let run: BlockedRun | null = null;
-  let runAuthorId: Snowflake | null = null;
-  let runRows: MessageListRow[] = [];
+  let runRows: Extract<MessageListRow, { kind: "sent" }>[] = [];
   const closeRun = () => {
-    if (run) {
-      entries.push(run, ...(run.isRevealed ? runRows : []));
+    const first = runRows[0];
+    const last = runRows.at(-1);
+    if (first && last) {
+      const messageIds = runRows.map((row) => row.message.id);
+      const isRevealed = messageIds.some((messageId) => revealedMessageIds.has(messageId));
+      const firstUnread = runRows.find((row) => row.isFirstUnread);
+      entries.push(
+        {
+          kind: "blocked-run",
+          key: `blocked-${first.key}`,
+          anchorKey: `blocked-${last.key}`,
+          messageIds,
+          isRevealed,
+          isFirstUnread: !isRevealed && firstUnread !== undefined,
+          sentAt: (firstUnread ?? first).sentAt,
+        },
+        ...(isRevealed ? runRows : []),
+      );
     }
-    run = null;
-    runAuthorId = null;
     runRows = [];
   };
   for (const row of rows) {
@@ -185,23 +202,8 @@ export function collapseBlockedRuns(
       entries.push(row);
       continue;
     }
-    if (run === null || runAuthorId !== row.message.author.id) {
+    if (runRows[0] && runRows[0].message.author.id !== row.message.author.id) {
       closeRun();
-      const key = `blocked-${row.key}`;
-      run = {
-        kind: "blocked-run",
-        key,
-        count: 0,
-        isRevealed: revealedRunKeys.has(key),
-        isFirstUnread: false,
-        sentAt: row.sentAt,
-      };
-      runAuthorId = row.message.author.id;
-    }
-    run.count += 1;
-    if (row.isFirstUnread) {
-      run.isFirstUnread = true;
-      run.sentAt = row.sentAt;
     }
     runRows.push(row);
   }

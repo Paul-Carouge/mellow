@@ -104,7 +104,7 @@
 
   let pane: HTMLElement;
   let composer = $state<HTMLTextAreaElement | null>(null);
-  let messageList = $state<{ jumpToPresent: () => void; revealMessage: (messageId: Snowflake) => void } | null>(null);
+  let messageList = $state<{ jumpToPresent: () => void; revealMessage: (messageId: Snowflake) => Promise<void> } | null>(null);
   const draftsByChannel = new Map<Snowflake, string>();
   let draft = $state("");
   let replyingTo = $state<Message | null>(null);
@@ -861,7 +861,7 @@
     anchor={pinsButton}
     isCompact={hasNavigationDrawer}
     canManagePins={reactionAndPinActions.canManagePins}
-    onjump={(messageId) => messageList?.revealMessage(messageId)}
+    onjump={(messageId) => void messageList?.revealMessage(messageId)}
     onunpin={(message) => (pinning = { message, isPinned: false })}
     onclose={(shouldReturnFocus) => {
       isPinsPanelOpen = false;
