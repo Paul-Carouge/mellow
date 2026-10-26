@@ -4,6 +4,17 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-26
+Statuses and the user card menu. This version migrates the database (migration 17, with the usual automatic backup); older versions refuse it afterwards.
+
+### Added
+- Web: pick online, idle, do not disturb or invisible, and a custom status of up to 128 characters, from a menu on your user card, which also copies your user ID; your pick is kept across devices and reconnections.
+- Web: idle, do not disturb and offline have their own shapes (crescent, bar, ring) wherever presence shows, and custom statuses appear under names in the member list.
+- Server: `PUT /api/v1/users/@me/presence`; connecting clients get each online member's status and custom status. Invisible users look offline to everyone else.
+
+### Known limits
+- No automatic idle after inactivity yet. Custom statuses refuse the flags of England, Scotland and Wales (their tag characters can hide text). The desktop app shows idle and do not disturb as online.
+
 ## [0.11.0] - 2026-10-23
 Unread channels and mention badges. This version migrates the database (migration 16, with the usual automatic backup); older versions refuse it afterwards.
 
