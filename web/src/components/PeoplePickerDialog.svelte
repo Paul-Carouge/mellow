@@ -151,20 +151,18 @@
         await client.addGroupParticipant(target.id, person.id);
         added.push(displayName(person));
       } catch (error) {
-        errorMessage = errorSentence(error, strings.groups.addFailed(displayName(person)), {
+        const refusal = errorSentence(error, strings.groups.addFailed(displayName(person)), {
           NOT_FOUND: strings.groups.addNotFound,
           LIMIT_REACHED: strings.groups.addFull,
         });
-        break;
+        // The page behind the dialog is inert: who joined is said in the dialog's own alert.
+        errorMessage = added.length > 0 ? `${strings.groups.added(added)} ${refusal}` : refusal;
+        return;
       }
     }
-    if (added.length > 0) {
-      onadded(added);
-    }
-    if (errorMessage === "") {
-      hasSucceeded = true;
-      onclose();
-    }
+    onadded(added);
+    hasSucceeded = true;
+    onclose();
   }
 </script>
 
