@@ -126,7 +126,7 @@
   aria-label={profile ? strings.members.profileOf(displayName(profile)) : strings.shell.membersOf(guild.name)}
   class={[
     "flex h-full shrink-0 flex-col overflow-hidden bg-(--mw-component-side-sheet-background)",
-    isFullWindow ? "w-full" : "w-(--mw-component-side-sheet-width) rounded-(--mw-component-side-sheet-radius)",
+    isFullWindow ? "w-full safe-area-padding" : "w-(--mw-component-side-sheet-width) rounded-(--mw-component-side-sheet-radius)",
     isDocked && "side-sheet-docked",
   ]}
   onkeydown={(event) => {

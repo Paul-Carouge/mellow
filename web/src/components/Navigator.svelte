@@ -44,8 +44,9 @@
     "grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto] bg-(--mw-component-navigator-background)",
     isInDrawer
       ? // The drawer leaves the sheet's peek visible, so on the narrowest phones the channel list
-        // gives up width instead of being cut.
-        "grid-cols-[var(--mw-component-navigator-strip-width)_minmax(0,var(--mw-component-sidebar-width))] rounded-e-(--mw-component-navigator-radius)"
+        // gives up width instead of being cut; the card also keeps clear of notches and the
+        // home indicator, its own colour running under them.
+        "grid-cols-[var(--mw-component-navigator-strip-width)_minmax(0,var(--mw-component-sidebar-width))] rounded-e-(--mw-component-navigator-radius) pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
       : "grid-cols-[var(--mw-component-navigator-strip-width)_var(--mw-component-sidebar-width)] rounded-(--mw-component-navigator-radius)",
   ]}
 >

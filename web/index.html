@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- The ground runs under notches and the installed app's status bar (the shell pads itself by
+         the safe-area insets); the soft keyboard shrinks the layout, so the composer stays above it. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <meta name="color-scheme" content="dark light" />
     <!-- theme-color: generated from design/tokens.json by `cargo xtask tokens` -->
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#110B11" />
