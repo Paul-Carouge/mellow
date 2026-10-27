@@ -41,8 +41,12 @@
 
 <div
   class={[
-    "grid h-full min-h-0 grid-cols-[var(--mw-component-navigator-strip-width)_var(--mw-component-sidebar-width)] grid-rows-[minmax(0,1fr)_auto] bg-(--mw-component-navigator-background)",
-    isInDrawer ? "rounded-e-(--mw-component-navigator-radius)" : "rounded-(--mw-component-navigator-radius)",
+    "grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto] bg-(--mw-component-navigator-background)",
+    isInDrawer
+      ? // The drawer leaves the sheet's peek visible, so on the narrowest phones the channel list
+        // gives up width instead of being cut.
+        "grid-cols-[var(--mw-component-navigator-strip-width)_minmax(0,var(--mw-component-sidebar-width))] rounded-e-(--mw-component-navigator-radius)"
+      : "grid-cols-[var(--mw-component-navigator-strip-width)_var(--mw-component-sidebar-width)] rounded-(--mw-component-navigator-radius)",
   ]}
 >
   <ServerRail {client} {onaddserver} {onnavigate} />
