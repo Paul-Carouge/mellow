@@ -1,0 +1,30 @@
+{
+  "background_color": "#110B11",
+  "display": "standalone",
+  "icons": [
+    {
+      "purpose": "any",
+      "sizes": "192x192",
+      "src": "/icons/mellow-192.png",
+      "type": "image/png"
+    },
+    {
+      "purpose": "any",
+      "sizes": "512x512",
+      "src": "/icons/mellow-512.png",
+      "type": "image/png"
+    },
+    {
+      "purpose": "maskable",
+      "sizes": "512x512",
+      "src": "/icons/mellow-maskable-512.png",
+      "type": "image/png"
+    }
+  ],
+  "id": "/",
+  "name": "Mellow",
+  "scope": "/",
+  "short_name": "Mellow",
+  "start_url": "/",
+  "theme_color": "#110B11"
+}

@@ -1,6 +1,7 @@
 //! The web favicon and the source of every app icon: Melli's still idle pose on a dusk tile
 //! (DESIGN.md §2.10, ADR-0022), coloured from the mascot tokens so the logo never drifts from the
-//! palette. Favicons do not animate.
+//! palette. Favicons do not animate. The maskable variant is the same tile without its rounded
+//! corners, for launchers that cut their own shape (the installed web app on Android).
 
 use anyhow::{Result, anyhow};
 
@@ -20,8 +21,8 @@ const FAVICON_TEMPLATE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBo
       <stop offset="0" stop-color="{glow}" stop-opacity="{glow-opacity}"/><stop offset="1" stop-color="{glow}" stop-opacity="0"/>
     </radialGradient>
   </defs>
-  <rect width="256" height="256" rx="57" fill="url(#sky)"/>
-  <rect width="256" height="256" rx="57" fill="url(#glow)"/>
+  <rect width="256" height="256" rx="{tile-radius}" fill="url(#sky)"/>
+  <rect width="256" height="256" rx="{tile-radius}" fill="url(#glow)"/>
   <g transform="translate(128 128) scale(0.9) translate(-128 -124)">
     <g fill="{outline}">
       <circle cx="128" cy="124" r="68"/><circle cx="128" cy="78" r="36"/><circle cx="167.8" cy="101" r="36"/><circle cx="167.8" cy="147" r="36"/><circle cx="128" cy="170" r="36"/><circle cx="88.2" cy="147" r="36"/><circle cx="88.2" cy="101" r="36"/>
@@ -36,6 +37,12 @@ const FAVICON_TEMPLATE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBo
 </svg>
 "#;
 
+/// The favicon's own rounded corners, on the 256 grid.
+const FAVICON_TILE_RADIUS: &str = "57";
+/// Full bleed: the launcher of a maskable icon draws the shape. Melli reaches 29 % of the width
+/// from the centre, inside the specification's 40 % safe zone, so no mask cuts it.
+const MASKABLE_TILE_RADIUS: &str = "0";
+
 /// Opaque colours, written as `#RRGGBB`.
 const PLACEHOLDER_TO_TOKEN: [(&str, &str); 5] = [
     ("{outline}", "color.mascot.outline"),
@@ -48,7 +55,15 @@ const PLACEHOLDER_TO_TOKEN: [(&str, &str); 5] = [
 const GLOW_TOKEN: &str = "color.mascot.tile-glow";
 
 pub fn generate_favicon(tokens: &DesignTokens) -> Result<String> {
-    let mut svg = FAVICON_TEMPLATE.to_owned();
+    generate_tile(tokens, FAVICON_TILE_RADIUS)
+}
+
+pub fn generate_maskable_icon(tokens: &DesignTokens) -> Result<String> {
+    generate_tile(tokens, MASKABLE_TILE_RADIUS)
+}
+
+fn generate_tile(tokens: &DesignTokens, tile_radius: &str) -> Result<String> {
+    let mut svg = FAVICON_TEMPLATE.replace("{tile-radius}", tile_radius);
     for (placeholder, path) in PLACEHOLDER_TO_TOKEN {
         let colour = mascot_colour(tokens, path)?;
         if colour.alpha != u8::MAX {
@@ -105,6 +120,14 @@ mod tests {
             );
         }
         assert!(svg.contains(r##"stop-color="#F2A46E" stop-opacity="0.400""##));
+        assert!(svg.contains(r#"rx="57""#));
         assert!(!svg.contains('{'), "a placeholder was left: {svg}");
+
+        let maskable = generate_maskable_icon(&tokens).unwrap();
+        assert!(maskable.contains(r#"rx="0""#));
+        assert!(
+            !maskable.contains('{'),
+            "a placeholder was left: {maskable}"
+        );
     }
 }
