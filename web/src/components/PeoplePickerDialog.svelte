@@ -202,7 +202,7 @@
                 <button
                   type="button"
                   aria-label={strings.groups.unpick(displayName(person))}
-                  class="flex h-(--mw-component-people-picker-chip-height) max-w-full items-center gap-2xs rounded-(--mw-component-people-picker-chip-radius) bg-(--mw-component-people-picker-chip-background) ps-(--mw-component-people-picker-chip-padding-inline) pe-2xs type-body text-(--mw-component-people-picker-chip-text) focus-visible:focus-ring pointer-coarse:h-(--mw-size-hit-web-min)"
+                  class="flex h-(--mw-component-people-picker-chip-height) max-w-full pointer-coarse:h-(--mw-size-hit-web-min) items-center gap-2xs rounded-(--mw-component-people-picker-chip-radius) bg-(--mw-component-people-picker-chip-background) ps-(--mw-component-people-picker-chip-padding-inline) pe-2xs type-body text-(--mw-component-people-picker-chip-text) focus-visible:focus-ring pointer-coarse:h-(--mw-size-hit-web-min)"
                   onclick={() => unpick(person)}
                 >
                   <Avatar user={person} sizeToken="--mw-component-people-picker-chip-avatar-size" />
