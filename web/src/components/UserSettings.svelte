@@ -140,8 +140,8 @@
     "fixed inset-0 m-0 size-full max-h-none max-w-none font-sans text-text-normal",
     // Wide: the navigation on the ground and the page as a sheet beside it (ADR-0022 §1).
     isWide
-      ? "bg-(--mw-component-settings-sidebar-background) p-(--mw-size-sheet-inset)"
-      : "bg-(--mw-component-settings-content-background) p-0",
+      ? "sheet-inset-padding bg-(--mw-component-settings-sidebar-background)"
+      : "safe-area-padding bg-(--mw-component-settings-content-background)",
   ]}
   onkeydown={(event) => {
     // Handled here rather than in `cancel`, which browsers stop honouring after repeated Esc.

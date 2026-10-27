@@ -138,6 +138,8 @@
   const menuToggle = createPopoverToggle(() => isMenuOpen);
   const pickerToggle = createPopoverToggle(() => message !== null && actions.heldMessageId === message.id);
   let menuPosition = $state({ top: 0, right: 0 });
+  // Above its button, a menu rises into place instead of dropping over the button (DESIGN.md §6.33).
+  let isMenuAboveItsButton = $state(false);
   // Only a hovered or focused row builds its action bar and menu: in every row they were two
   // thirds of the list's elements. A tapped row keeps its bar after the finger lifts; a row only
   // crossed while scrolling (its touch is cancelled) does not.
@@ -164,6 +166,7 @@
       top: menuTopNextToAnchor(bounds, menu.offsetHeight, window.innerHeight, 0),
       right: Math.max(window.innerWidth - bounds.right, 0),
     };
+    isMenuAboveItsButton = menuPosition.top < bounds.top;
     menuItemsIn(menu)[0]?.focus();
   }
 
@@ -454,7 +457,12 @@
         role="menu"
         tabindex="-1"
         aria-label={strings.messages.actions}
-        class="fixed inset-auto m-0 min-w-(--mw-component-context-menu-min-width) flex-col rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) p-(--mw-component-context-menu-padding) shadow-(--mw-component-context-menu-shadow) [&:popover-open]:flex [&:popover-open]:animate-[mw-drop-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]"
+        class={[
+          "fixed inset-auto m-0 min-w-(--mw-component-context-menu-min-width) flex-col rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) p-(--mw-component-context-menu-padding) shadow-(--mw-component-context-menu-shadow) [&:popover-open]:flex",
+          isMenuAboveItsButton
+            ? "[&:popover-open]:animate-[mw-lift-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]"
+            : "[&:popover-open]:animate-[mw-drop-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]",
+        ]}
         style:top="{menuPosition.top}px"
         style:right="{menuPosition.right}px"
         onkeydown={(event) => moveFocusWithinMenu(event, menu)}
