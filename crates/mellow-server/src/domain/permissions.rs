@@ -42,14 +42,19 @@ pub fn channel_permissions(
     )
 }
 
-/// What someone may do in a direct-message conversation: participants view and read it, and write
-/// only while they may reach everyone else in it (a shared guild or a friendship, and no block
-/// either way, ADR-0025), so a member kicked from the only shared guild, or blocked, can no longer
-/// message the others (nor react); anyone else gets nothing. No one manages messages there, so
-/// each author deletes only their own.
+/// What someone may do in a direct-message conversation: participants view and read it. In a
+/// one-to-one conversation they write only while they may reach the other person (a shared guild
+/// or a friendship, and no block either way, ADR-0025), so a member kicked from the only shared
+/// guild, or blocked, can no longer message them (nor react); in a group every participant writes
+/// whatever their relationships (ADR-0026). Anyone else gets nothing. No one manages messages
+/// there, so each author deletes only their own.
 #[must_use]
-pub fn direct_message_permissions(is_participant: bool, may_reach_each_other: bool) -> Permissions {
-    match (is_participant, may_reach_each_other) {
+pub fn direct_message_permissions(
+    is_participant: bool,
+    is_group: bool,
+    may_reach_each_other: bool,
+) -> Permissions {
+    match (is_participant, is_group || may_reach_each_other) {
         (false, _) => Permissions::empty(),
         (true, false) => Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY,
         (true, true) => {
@@ -488,7 +493,7 @@ mod tests {
         assert!(may_react(Permissions::all(), false, others));
         assert!(!may_react(Permissions::all(), true, others));
         assert!(!may_react(
-            direct_message_permissions(true, true),
+            direct_message_permissions(true, false, true),
             true,
             others
         ));
@@ -497,15 +502,15 @@ mod tests {
     #[test]
     fn in_conversations_only_participants_who_may_write_react() {
         assert_eq!(
-            reaction_actions(direct_message_permissions(true, true), true),
+            reaction_actions(direct_message_permissions(true, false, true), true),
             [true; 4]
         );
         assert_eq!(
-            reaction_actions(direct_message_permissions(true, false), true),
+            reaction_actions(direct_message_permissions(true, false, false), true),
             [true, false, false, true]
         );
         assert_eq!(
-            reaction_actions(direct_message_permissions(false, true), true),
+            reaction_actions(direct_message_permissions(false, false, true), true),
             [false; 4]
         );
     }
@@ -522,16 +527,27 @@ mod tests {
             "must view the channel"
         );
         assert!(may_manage_pins(
-            direct_message_permissions(true, true),
+            direct_message_permissions(true, false, true),
             true
         ));
         assert!(!may_manage_pins(
-            direct_message_permissions(true, false),
+            direct_message_permissions(true, false, false),
             true
         ));
         assert!(!may_manage_pins(
-            direct_message_permissions(false, true),
+            direct_message_permissions(false, false, true),
             true
         ));
+    }
+
+    #[test]
+    fn group_participants_write_whatever_their_relationships_and_outsiders_get_nothing() {
+        let writes = Permissions::SEND_MESSAGES | Permissions::ADD_REACTIONS;
+        assert!(direct_message_permissions(true, true, false).contains(writes));
+        assert!(!direct_message_permissions(true, false, false).contains(writes));
+        assert_eq!(
+            direct_message_permissions(false, true, true),
+            Permissions::empty()
+        );
     }
 }

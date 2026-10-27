@@ -913,6 +913,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_group_goes_with_its_channel_and_its_owner_account_cannot_vanish_under_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let writer = database.writer();
+        for statement in [
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'a', 'A', 'a@example.org', 'h', 0), \
+             (2, 'b', 'B', 'b@example.org', 'h', 0)",
+            "INSERT INTO channels (id, guild_id, kind, name, topic, parent_id, position) \
+             VALUES (30, NULL, 'direct_message', 'Trip', '', NULL, 0)",
+            "INSERT INTO group_conversations (channel_id, owner_id) VALUES (30, 1)",
+            "INSERT INTO direct_message_participants (channel_id, user_id) VALUES (30, 1), (30, 2)",
+        ] {
+            sqlx::query(statement).execute(writer).await.unwrap();
+        }
+        let owner_deleted = sqlx::query("DELETE FROM users WHERE id = 1")
+            .execute(writer)
+            .await;
+        sqlx::query("DELETE FROM channels WHERE id = 30")
+            .execute(writer)
+            .await
+            .unwrap();
+        let groups_left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM group_conversations")
+            .fetch_one(writer)
+            .await
+            .unwrap();
+        database.close().await;
+
+        assert!(
+            owner_deleted.is_err(),
+            "no account deletion path exists; one must hand groups over first"
+        );
+        assert_eq!(groups_left, 0);
+    }
+
+    #[tokio::test]
     async fn relationships_go_with_either_account_and_refuse_self_and_unknown_kinds() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())

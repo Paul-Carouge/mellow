@@ -620,8 +620,8 @@ pub(crate) async fn unread_mention_counts(
     counts_from_rows(rows)
 }
 
-/// How many messages from others follow the user's read position in each of `channel_ids`,
-/// counted up to `limit`.
+/// How many messages from others, people the user blocked aside, follow the user's read position
+/// in each of `channel_ids`, counted up to `limit`.
 ///
 /// # Errors
 /// Fails on database errors.
@@ -634,6 +634,8 @@ pub(crate) async fn unread_counts_from_others(
     let rows: Vec<(i64, i64)> = sqlx::query_as(
         "SELECT channel.value, (SELECT COUNT(*) FROM (SELECT 1 FROM messages \
              WHERE channel_id = channel.value AND author_id != ?1 \
+             AND author_id NOT IN (SELECT other_user_id FROM relationships \
+                 WHERE user_id = ?1 AND kind = 'blocked') \
              AND id > COALESCE((SELECT last_read_message_id FROM read_states \
                  WHERE user_id = ?1 AND channel_id = channel.value), 0) \
              LIMIT ?3)) \

@@ -152,6 +152,8 @@ enum MessageChannel {
     Direct {
         id: Snowflake,
         participant_ids: Vec<Snowflake>,
+        /// Announced at creation, so its first message needs no `DIRECT_MESSAGE_CHANNEL_CREATE`.
+        is_group: bool,
     },
 }
 
@@ -322,22 +324,24 @@ impl Messages {
             (MessageChannel::Guild(channel), permissions)
         } else {
             let is_participant = participant_ids.contains(&user_id);
-            // A group stays open to every participant whatever their relationships (ADR-0026).
             let is_group = direct_message_storage::group_owner_id(&self.database, channel_id)
                 .await
                 .map_err(GuildError::from)?
                 .is_some();
+            // Groups skip the reachability reads: every participant writes there (ADR-0026).
             let may_reach_each_other = is_participant
-                && (is_group
-                    || direct_messages::may_reach_each(&self.database, user_id, &participant_ids)
-                        .await?);
-            let permissions = direct_message_permissions(is_participant, may_reach_each_other);
+                && !is_group
+                && direct_messages::may_reach_each(&self.database, user_id, &participant_ids)
+                    .await?;
+            let permissions =
+                direct_message_permissions(is_participant, is_group, may_reach_each_other);
             if !permissions.contains(Permissions::VIEW_CHANNEL) {
                 return Err(GuildError::NotFound.into());
             }
             let channel = MessageChannel::Direct {
                 id: channel_id,
                 participant_ids,
+                is_group,
             };
             (channel, permissions)
         };
@@ -418,12 +422,14 @@ impl Messages {
         // Read before the write too, so nothing can fail between the insert and the events.
         let conversation_views = match &channel {
             MessageChannel::Direct {
-                participant_ids, ..
+                participant_ids,
+                is_group: false,
+                ..
             } => {
                 direct_messages::conversation_views(&self.database, channel_id, participant_ids)
                     .await?
             }
-            MessageChannel::Guild(_) => Vec::new(),
+            MessageChannel::Direct { is_group: true, .. } | MessageChannel::Guild(_) => Vec::new(),
         };
         let send_order = self.send_order.clone();
         let database = self.database.clone();

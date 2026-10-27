@@ -238,7 +238,8 @@ pub(crate) async fn group_owner_id(
     owner_id.map(to_id).transpose()
 }
 
-/// Creates a group of `participant_ids` (the owner included) as `channel_id`.
+/// Creates a group of `participant_ids` (the owner included) as `channel_id`; `false`, with
+/// nothing written, when any two of them blocked each other (ADR-0026).
 ///
 /// # Errors
 /// Fails on database errors.
@@ -248,12 +249,24 @@ pub(crate) async fn create_group(
     owner_id: Snowflake,
     participant_ids: &[Snowflake],
     name: &str,
-) -> Result<(), GuildStorageError> {
+) -> Result<bool, GuildStorageError> {
     let channel = to_integer(channel_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
         .await?;
+    let ids = super::messages::json_array_of_ids(participant_ids);
+    let has_block: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM relationships WHERE kind = 'blocked' \
+         AND user_id IN (SELECT value FROM json_each(?1)) \
+         AND other_user_id IN (SELECT value FROM json_each(?1)))",
+    )
+    .bind(&ids)
+    .fetch_one(&mut *transaction)
+    .await?;
+    if has_block {
+        return Ok(false);
+    }
     sqlx::query(
         "INSERT INTO channels (id, guild_id, kind, name, topic, parent_id, position) \
          VALUES (?, NULL, ?, ?, '', NULL, 0)",
@@ -276,7 +289,7 @@ pub(crate) async fn create_group(
             .await?;
     }
     transaction.commit().await?;
-    Ok(())
+    Ok(true)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,20 +298,27 @@ pub(crate) enum GroupAddOutcome {
     AlreadyIn,
     /// The group already has `maximum` people.
     Full,
+    /// Not a group, or the person adding is no longer in it.
     NotAGroup,
+    /// The newcomer and someone in the group blocked each other; answered like a missing account.
+    Blocked,
 }
 
-/// Adds `user_id` to the group, deciding on its rows as they are inside the transaction.
+/// `adder_id` adds `user_id` to the group, deciding on its rows as they are inside the
+/// transaction: the adder must still be in it, and no one in it may have a block with the
+/// newcomer either way (ADR-0026).
 ///
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn add_group_participant(
     database: &Database,
     channel_id: Snowflake,
+    adder_id: Snowflake,
     user_id: Snowflake,
     maximum: usize,
 ) -> Result<GroupAddOutcome, GuildStorageError> {
     let (channel, user) = (to_integer(channel_id.raw())?, to_integer(user_id.raw())?);
+    let adder = to_integer(adder_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -317,8 +337,23 @@ pub(crate) async fn add_group_participant(
             .bind(channel)
             .fetch_all(&mut *transaction)
             .await?;
-    let outcome = if participant_ids.contains(&user) {
+    let has_block: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM relationships \
+         JOIN direct_message_participants AS participant ON participant.channel_id = ?1 \
+         WHERE relationships.kind = 'blocked' \
+         AND ((relationships.user_id = ?2 AND relationships.other_user_id = participant.user_id) \
+           OR (relationships.user_id = participant.user_id AND relationships.other_user_id = ?2)))",
+    )
+    .bind(channel)
+    .bind(user)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let outcome = if !participant_ids.contains(&adder) {
+        GroupAddOutcome::NotAGroup
+    } else if participant_ids.contains(&user) {
         GroupAddOutcome::AlreadyIn
+    } else if has_block {
+        GroupAddOutcome::Blocked
     } else if participant_ids.len() >= maximum {
         GroupAddOutcome::Full
     } else {
@@ -335,27 +370,55 @@ pub(crate) async fn add_group_participant(
 
 /// What `remove_group_participant` did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct GroupRemoval {
-    pub(crate) was_participant: bool,
+pub(crate) enum GroupRemoval {
+    /// Not a group, or the actor is not in it.
+    NotAllowed,
+    /// The actor may remove others but the person is not in the group.
+    NotAParticipant,
+    /// Someone other than the owner tried to remove someone else.
+    NotOwner,
+    Removed,
     /// The last person left: the conversation and its messages are gone.
-    pub(crate) deleted_conversation: bool,
+    RemovedLastParticipant,
 }
 
-/// Removes `user_id` from the group; the lowest remaining id becomes owner when the owner leaves,
-/// and the conversation goes with its last participant (ADR-0026).
+/// `actor_id` removes `user_id` from the group (themselves, or anyone if they own it), decided on
+/// the rows as they are inside the transaction; the lowest remaining id becomes owner when the
+/// owner leaves, and the conversation goes with its last participant (ADR-0026).
 ///
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn remove_group_participant(
     database: &Database,
     channel_id: Snowflake,
+    actor_id: Snowflake,
     user_id: Snowflake,
 ) -> Result<GroupRemoval, GuildStorageError> {
     let (channel, user) = (to_integer(channel_id.raw())?, to_integer(user_id.raw())?);
+    let actor = to_integer(actor_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
         .await?;
+    let owner: Option<i64> =
+        sqlx::query_scalar("SELECT owner_id FROM group_conversations WHERE channel_id = ?")
+            .bind(channel)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    let is_actor_in: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM direct_message_participants \
+         WHERE channel_id = ? AND user_id = ?)",
+    )
+    .bind(channel)
+    .bind(actor)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let Some(owner) = owner.filter(|_| is_actor_in) else {
+        return Ok(GroupRemoval::NotAllowed);
+    };
+    if user != actor && owner != actor {
+        return Ok(GroupRemoval::NotOwner);
+    }
     let removed = sqlx::query(
         "DELETE FROM direct_message_participants WHERE channel_id = ? AND user_id = ? \
          AND EXISTS (SELECT 1 FROM group_conversations WHERE channel_id = ?)",
@@ -367,10 +430,7 @@ pub(crate) async fn remove_group_participant(
     .await?
     .rows_affected();
     if removed == 0 {
-        return Ok(GroupRemoval {
-            was_participant: false,
-            deleted_conversation: false,
-        });
+        return Ok(GroupRemoval::NotAParticipant);
     }
     let next_owner: Option<i64> = sqlx::query_scalar(
         "SELECT MIN(user_id) FROM direct_message_participants WHERE channel_id = ?",
@@ -378,13 +438,13 @@ pub(crate) async fn remove_group_participant(
     .bind(channel)
     .fetch_one(&mut *transaction)
     .await?;
-    let deleted_conversation = match next_owner {
+    let removal = match next_owner {
         None => {
             sqlx::query("DELETE FROM channels WHERE id = ?")
                 .bind(channel)
                 .execute(&mut *transaction)
                 .await?;
-            true
+            GroupRemoval::RemovedLastParticipant
         }
         Some(next_owner) => {
             sqlx::query(
@@ -395,14 +455,11 @@ pub(crate) async fn remove_group_participant(
             .bind(user)
             .execute(&mut *transaction)
             .await?;
-            false
+            GroupRemoval::Removed
         }
     };
     transaction.commit().await?;
-    Ok(GroupRemoval {
-        was_participant: true,
-        deleted_conversation,
-    })
+    Ok(removal)
 }
 
 /// Renames the group; `false` if it is not one.
