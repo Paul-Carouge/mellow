@@ -46,7 +46,7 @@
       : isFullWindow
         ? "drawer-from-end inset-0 size-full max-w-none"
         : // Inside the conversation sheet's frame, one inset in from its top and bottom (as in the mockup).
-          "drawer-from-end top-[calc(3*var(--mw-size-sheet-inset))] right-[calc(2*var(--mw-size-sheet-inset))] bottom-[calc(2*var(--mw-size-sheet-inset))] left-auto h-auto rounded-(--mw-component-side-sheet-radius) shadow-high",
+          "drawer-from-end top-[calc(3*var(--mw-size-sheet-inset))] right-[calc(2*var(--mw-size-sheet-inset)+env(safe-area-inset-right))] bottom-[calc(2*var(--mw-size-sheet-inset))] left-auto h-auto rounded-(--mw-component-side-sheet-radius) shadow-high",
   ]}
   oncancel={(event) => {
     event.preventDefault();

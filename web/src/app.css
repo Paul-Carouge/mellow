@@ -228,6 +228,13 @@ body {
 @utility safe-area-padding-bottom {
   padding-bottom: env(safe-area-inset-bottom);
 }
+/* A wide sheet's inset, grown to the safe areas in phone landscape (a notch at the side). */
+@utility sheet-inset-padding {
+  padding: max(var(--mw-size-sheet-inset), env(safe-area-inset-top))
+    max(var(--mw-size-sheet-inset), env(safe-area-inset-right))
+    max(var(--mw-size-sheet-inset), env(safe-area-inset-bottom))
+    max(var(--mw-size-sheet-inset), env(safe-area-inset-left));
+}
 
 /* Entrances (DESIGN.md §2.8, ADR-0022): every one answers an action; reduced motion sets the
    duration tokens to 0 ms, so the end state shows at once. */

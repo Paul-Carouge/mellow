@@ -103,7 +103,7 @@
   class={[
     "fixed inset-0 m-0 size-full max-h-none max-w-none font-sans text-text-normal",
     isWide
-      ? "bg-(--mw-component-settings-sidebar-background) p-(--mw-size-sheet-inset)"
+      ? "sheet-inset-padding bg-(--mw-component-settings-sidebar-background)"
       : "safe-area-padding bg-(--mw-component-settings-content-background)",
   ]}
   onkeydown={(event) => {
