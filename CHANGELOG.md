@@ -4,6 +4,20 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-28
+Group conversations, a web client for every screen, and installing it as an app. This version migrates the database (migration 19, with the usual automatic backup); older versions refuse it afterwards.
+
+### Added
+- Group conversations of up to 10 people: a "New message" picker at Home opens a conversation with one friend or creates a group with several; anyone in a group adds their friends, renames it or leaves it; its owner removes people, and the next person takes over when the owner leaves.
+- Web: install Mellow from Chrome, Edge or Android Chrome as its own app window, with its icon and colours. There is no service worker: nothing from your conversations is stored for offline use.
+
+### Changed
+- Web: every screen works from 320 px phones to large monitors, in landscape and with text at 200 %: nothing is cut off or scrolls sideways, touch targets reach 44 px, content stays clear of notches and the home indicator, the soft keyboard keeps the composer visible on Android, menus open above their button near the bottom of the screen, and long file names keep their extension.
+- Server: the web app manifest is served as `application/manifest+json`, and the content security policy refuses workers (`worker-src 'none'`).
+
+### Known limits
+- Groups have no system messages yet ("Ana added Bob"). On iPhone the keyboard may still cover the composer. Not yet checked on real devices.
+
 ## [0.13.0] - 2026-10-26
 Friends. This version migrates the database (migration 18, with the usual automatic backup); older versions refuse it afterwards.
 
