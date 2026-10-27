@@ -33,6 +33,7 @@
       conversations: client.conversations,
       knownPeople: [...client.membersByGuild.values()].flat().map((member) => member.user),
       currentUserId: client.user?.id ?? null,
+      isFriend: (userId) => client.relationshipByUserId.get(userId)?.kind === "friend",
       hasUnread: (channelId) => client.hasUnread(channelId),
       canSendIn: (channelId) => {
         const permissions = client.myChannelPermissions(channelId);
