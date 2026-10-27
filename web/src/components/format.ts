@@ -162,6 +162,24 @@ export function middleTruncate(fileName: string, maximumCharacters: number): str
   return characters.slice(0, startLength).join("") + TRUNCATION_ELLIPSIS + characters.slice(-endLength).join("");
 }
 
+/** Shown whole before the extension when CSS cuts a name, so "…(2).jpg" stays distinguishable. */
+const KEPT_CHARACTERS_BEFORE_EXTENSION = 4;
+
+/**
+ * A file name split for truncation by CSS, which can only cut the end of a text: the start may
+ * end with an ellipsis, the end (extension and a few characters) always shows, at any width.
+ */
+export function fileNameStartAndEnd(fileName: string): { start: string; end: string } {
+  const characters = Array.from(fileName);
+  const extensionStart = fileName.lastIndexOf(".");
+  const extensionLength =
+    extensionStart > 0 ? Array.from(fileName.slice(extensionStart)).length : 0;
+  const keptExtensionLength = extensionLength <= MAXIMUM_KEPT_EXTENSION_LENGTH ? extensionLength : 0;
+  const endLength = Math.min(keptExtensionLength + KEPT_CHARACTERS_BEFORE_EXTENSION, Math.max(characters.length - 1, 0));
+  const startLength = characters.length - endLength;
+  return { start: characters.slice(0, startLength).join(""), end: characters.slice(startLength).join("") };
+}
+
 /** "1 attachment", "2 attachments" (DESIGN.md §7.3); empty for none. */
 export function attachmentCountLabel(count: number): string {
   if (count === 0) {

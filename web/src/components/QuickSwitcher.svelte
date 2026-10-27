@@ -111,7 +111,7 @@
 <dialog
   bind:this={dialog}
   aria-label={strings.quickSwitcher.label}
-  class="quick-switcher mx-auto mt-[calc(var(--mw-component-quick-switcher-offset-top)*100vh)] w-[min(var(--mw-component-quick-switcher-width),calc(100vw_-_2*var(--mw-component-dialog-margin)))] max-w-none rounded-(--mw-component-dialog-radius) bg-(--mw-component-dialog-background) p-md text-(--mw-component-dialog-body-text) shadow-high backdrop:bg-(--mw-component-dialog-scrim) dark:[outline:1px_solid_var(--mw-color-border-divider)]"
+  class="quick-switcher mx-auto mt-[calc(var(--mw-component-quick-switcher-offset-top)*100dvh)] w-[min(var(--mw-component-quick-switcher-width),calc(100vw_-_2*var(--mw-component-dialog-margin)))] max-w-none rounded-(--mw-component-dialog-radius) bg-(--mw-component-dialog-background) p-md text-(--mw-component-dialog-body-text) shadow-high backdrop:bg-(--mw-component-dialog-scrim) dark:[outline:1px_solid_var(--mw-color-border-divider)]"
   oncancel={(event) => {
     event.preventDefault();
     onclose();
@@ -134,13 +134,13 @@
     placeholder={strings.quickSwitcher.placeholder}
     autocomplete="off"
     spellcheck="false"
-    class="h-(--mw-component-quick-switcher-input-height) w-full rounded-md bg-surface-input px-md type-heading-lg text-text-heading outline-none placeholder:text-text-muted focus-visible:focus-ring"
+    class="h-(--mw-component-quick-switcher-input-height) w-full rounded-md bg-surface-input px-md type-heading-lg text-ellipsis text-text-heading outline-none placeholder:text-text-muted focus-visible:focus-ring"
     oninput={() => (activeIndex = 0)}
     onkeydown={handleKeydown}
   />
   <!-- A listbox of groups of options, each group named by its heading; it scrolls past a share of
        the window height. -->
-  <div id="{id}-results" role="listbox" aria-label={strings.quickSwitcher.results} class="mt-sm max-h-[calc(var(--mw-component-quick-switcher-results-max-height)*100vh)] overflow-y-auto">
+  <div id="{id}-results" role="listbox" aria-label={strings.quickSwitcher.results} class="mt-sm max-h-[calc(var(--mw-component-quick-switcher-results-max-height)*100dvh)] overflow-y-auto">
     {#each numberedGroups as group, groupIndex (group.label)}
       <div role="group" aria-labelledby="{id}-group-{groupIndex}">
         <div id="{id}-group-{groupIndex}" role="presentation" class="px-xs pt-xs pb-2xs type-category text-text-muted">
@@ -171,7 +171,8 @@
               ></span>
               <span class="sr-only">{strings.common.unreadSuffix}</span>
             {/if}
-            <span class="ms-auto shrink-0 type-body-sm text-text-muted">{item.where}</span>
+            <!-- A long server name gives way first: the channel or person is what is chosen. -->
+            <span class="ms-auto max-w-1/2 min-w-0 shrink-0 truncate type-body-sm text-text-muted">{item.where}</span>
           </div>
         {/each}
       </div>

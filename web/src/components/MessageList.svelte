@@ -532,7 +532,7 @@
     <!-- Over the list rather than above it: taking height would move the rows being read. -->
     <button
       type="button"
-      class="absolute inset-x-(--mw-component-composer-margin-inline) bottom-0 flex h-(--mw-component-jump-bar-height) items-center gap-xs rounded-t-(--mw-component-jump-bar-radius) bg-(--mw-component-jump-bar-background) px-md text-(--mw-component-jump-bar-text) hover:bg-(--mw-component-jump-bar-background-hover) focus-visible:[outline:var(--mw-size-focus-ring-width)_solid_var(--mw-component-jump-bar-text)] focus-visible:[outline-offset:calc(-1*var(--mw-size-focus-ring-width))] pointer-coarse:h-(--mw-size-hit-web-min)"
+      class="absolute inset-x-(--mw-component-composer-margin-inline) bottom-0 flex min-h-(--mw-component-jump-bar-height) items-center gap-xs rounded-t-(--mw-component-jump-bar-radius) bg-(--mw-component-jump-bar-background) px-md text-(--mw-component-jump-bar-text) hover:bg-(--mw-component-jump-bar-background-hover) focus-visible:[outline:var(--mw-size-focus-ring-width)_solid_var(--mw-component-jump-bar-text)] focus-visible:[outline-offset:calc(-1*var(--mw-size-focus-ring-width))] py-2xs pointer-coarse:min-h-(--mw-size-hit-web-min)"
       onclick={() => {
         noteReaderScrolling();
         jumpToPresent();
@@ -540,8 +540,9 @@
         onjumptopresent();
       }}
     >
-      <span class="min-w-0 flex-1 truncate text-start type-body">{strings.messages.viewingOlder}</span>
-      <span class="type-button">{strings.messages.jumpToPresent}</span>
+      <!-- On the narrowest phones the sentence wraps rather than losing its end. -->
+      <span class="min-w-0 flex-1 text-start type-body">{strings.messages.viewingOlder}</span>
+      <span class="shrink-0 type-button">{strings.messages.jumpToPresent}</span>
     </button>
   {/if}
 

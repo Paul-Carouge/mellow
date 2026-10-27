@@ -6,6 +6,7 @@ import {
   attachmentCountLabel,
   avatarInitial,
   avatarTintToken,
+  fileNameStartAndEnd,
   humanFileSize,
   mentionBadgeText,
   messageTimestampLabel,
@@ -116,6 +117,25 @@ describe("humanFileSize", () => {
 
   it("uses the reader's decimal separator", () => {
     expect(humanFileSize(2_516_582, "fr-FR")).toBe("2,4 MB");
+  });
+});
+
+describe("fileNameStartAndEnd", () => {
+  it("keeps the extension and a few characters before it as the end", () => {
+    expect(fileNameStartAndEnd("compte-rendu-version-finale.txt")).toEqual({
+      start: "compte-rendu-version-fi",
+      end: "nale.txt",
+    });
+  });
+
+  it("keeps the last characters of a name without a recognisable extension", () => {
+    expect(fileNameStartAndEnd("archive.backup-2026")).toEqual({ start: "archive.backup-", end: "2026" });
+    expect(fileNameStartAndEnd("README")).toEqual({ start: "RE", end: "ADME" });
+  });
+
+  it("always leaves something to cut and never splits a character", () => {
+    expect(fileNameStartAndEnd("a.txt")).toEqual({ start: "a", end: ".txt" });
+    expect(fileNameStartAndEnd("😀😀😀😀😀😀.png")).toEqual({ start: "😀😀", end: "😀😀😀😀.png" });
   });
 });
 
