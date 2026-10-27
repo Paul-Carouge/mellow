@@ -3,7 +3,7 @@
 
   import { strings } from "../i18n";
   import { type Attachment, PREVIEWABLE_IMAGE_TYPES, type Snowflake, attachmentUrl } from "../lib/protocol";
-  import { attachmentCountLabel, humanFileSize, middleTruncate } from "./format";
+  import { attachmentCountLabel, fileNameStartAndEnd, humanFileSize } from "./format";
   import Icon from "./Icon.svelte";
 
   // Attachments under a message body (DESIGN.md §5.4 "Attachments"): previewable images inline,
@@ -16,9 +16,6 @@
 
   let { attachments, isPending }: Props = $props();
 
-  /** CSS cannot cut a name in the middle; the card's width fits about this many characters. */
-  const FILE_NAME_MAXIMUM_CHARACTERS = 40;
-
   const loadedImageIds = new SvelteSet<Snowflake>();
   // An image the instance could not serve falls back to its download card.
   const failedImageIds = new SvelteSet<Snowflake>();
@@ -27,6 +24,14 @@
     return !isPending && PREVIEWABLE_IMAGE_TYPES.includes(attachment.content_type) && !failedImageIds.has(attachment.id);
   }
 </script>
+
+<!-- Cut in the middle at any width: the start gives way, the extension stays (DESIGN.md §5.4). -->
+{#snippet fileName(name: string)}
+  {@const parts = fileNameStartAndEnd(name)}
+  <span aria-hidden="true" class="flex min-w-0"
+    ><span class="truncate">{parts.start}</span><span class="shrink-0 whitespace-pre">{parts.end}</span></span
+  >
+{/snippet}
 
 <ul aria-label={attachmentCountLabel(attachments.length)} class="flex flex-col items-start gap-(--mw-component-attachment-gap) pt-(--mw-component-attachment-gap)">
   {#each attachments as attachment (attachment.id)}
@@ -64,8 +69,8 @@
         <Icon name="file" class="size-(--mw-component-attachment-file-icon-size) text-(--mw-component-attachment-file-icon)" />
         <div class="min-w-0 flex-1">
           {#if isPending}
-            <p title={attachment.file_name} class="truncate type-body-lg text-(--mw-component-message-pending-text)">
-              <span aria-hidden="true">{middleTruncate(attachment.file_name, FILE_NAME_MAXIMUM_CHARACTERS)}</span>
+            <p title={attachment.file_name} class="flex type-body-lg text-(--mw-component-message-pending-text)">
+              {@render fileName(attachment.file_name)}
               <span class="sr-only">{attachment.file_name}</span>
             </p>
           {:else}
@@ -75,9 +80,7 @@
               title={attachment.file_name}
               class="flex min-h-(--mw-size-hit-desktop-min) items-center type-body-lg text-(--mw-component-attachment-file-name-text) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
             >
-              <span aria-hidden="true" class="truncate">
-                {middleTruncate(attachment.file_name, FILE_NAME_MAXIMUM_CHARACTERS)}
-              </span>
+              {@render fileName(attachment.file_name)}
               <span class="sr-only">{strings.messages.download(attachment.file_name)}</span>
             </a>
           {/if}

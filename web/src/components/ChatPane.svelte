@@ -704,9 +704,9 @@
   {#if unreadBarText}
     <!-- Over the list, under the header, so the rows being read do not move. -->
     <div
-      class="unread-bar absolute inset-x-md top-[calc(var(--mw-component-chat-header-height)_+_var(--mw-space-2xs))] z-10 flex h-(--mw-component-jump-bar-height) items-center justify-between gap-xs rounded-(--mw-component-jump-bar-radius) bg-(--mw-component-jump-bar-background) ps-sm pe-2xs type-body font-semibold text-(--mw-component-jump-bar-text) pointer-coarse:h-(--mw-size-hit-web-min)"
+      class="unread-bar absolute inset-x-md top-[calc(var(--mw-component-chat-header-height)_+_var(--mw-space-2xs))] z-10 flex min-h-(--mw-component-jump-bar-height) items-center justify-between gap-xs rounded-(--mw-component-jump-bar-radius) bg-(--mw-component-jump-bar-background) ps-sm pe-2xs type-body font-semibold text-(--mw-component-jump-bar-text) pointer-coarse:min-h-(--mw-size-hit-web-min)"
     >
-      <span class="min-w-0 truncate">{unreadBarText}</span>
+      <span class="min-w-0">{unreadBarText}</span>
       <button
         type="button"
         aria-keyshortcuts="Escape"
