@@ -12,7 +12,7 @@ use super::direct_messages::{conversation_seen_by, conversation_views};
 use super::{MessageError, Messages};
 use crate::domain::guild_rules::{GuildRuleViolation, normalize_group_conversation_name};
 use crate::domain::guilds::GuildError;
-use crate::storage::direct_messages::{self as storage, GroupAddOutcome};
+use crate::storage::direct_messages::{self as storage, GroupAddOutcome, GroupRemoval};
 use crate::storage::relationships as relationship_storage;
 
 impl Messages {
@@ -41,22 +41,26 @@ impl Messages {
         let mut participant_ids: Vec<Snowflake> = others.into_iter().collect();
         participant_ids.push(user_id);
         participant_ids.sort_unstable_by_key(|id| id.raw());
-        storage::create_group(&self.database, channel_id, user_id, &participant_ids, &name)
+        // A block between any two of them refuses it like a stranger would be (ADR-0026).
+        if !storage::create_group(&self.database, channel_id, user_id, &participant_ids, &name)
             .await
-            .map_err(GuildError::from)?;
-        let views = conversation_views(&self.database, channel_id, &participant_ids).await?;
-        let created = views
-            .iter()
-            .find(|(participant_id, _)| *participant_id == user_id)
-            .map(|(_, view)| view.clone())
-            .ok_or(GuildError::NotFound)?;
-        for (participant_id, view) in views {
-            self.guilds.publish_to_users(
-                &[participant_id],
-                &GatewayEvent::DirectMessageChannelCreate(view),
-            );
+            .map_err(GuildError::from)?
+        {
+            return Err(GuildError::NotFound.into());
         }
-        Ok(created)
+        // Committed: the events must not fail the request, or a retry would make a second group.
+        match conversation_views(&self.database, channel_id, &participant_ids).await {
+            Ok(views) => {
+                for (participant_id, view) in views {
+                    self.guilds.publish_to_users(
+                        &[participant_id],
+                        &GatewayEvent::DirectMessageChannelCreate(view),
+                    );
+                }
+            }
+            Err(error) => tracing::warn!(%error, "cannot announce a new group"),
+        }
+        self.group_seen_by(user_id, channel_id).await
     }
 
     /// Any participant adds a friend of theirs while the group has room; the newcomer reads its
@@ -74,20 +78,26 @@ impl Messages {
         match storage::add_group_participant(
             &self.database,
             channel_id,
+            user_id,
             new_participant_id,
             MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
         )
         .await
         .map_err(GuildError::from)?
         {
-            GroupAddOutcome::Added | GroupAddOutcome::AlreadyIn => {}
+            GroupAddOutcome::Added => {
+                self.announce_group_change(channel_id, Some(new_participant_id))
+                    .await;
+            }
+            // A retried add changes nothing and tells no one.
+            GroupAddOutcome::AlreadyIn => {}
             GroupAddOutcome::Full => {
                 return Err(GuildError::LimitReached("people per group").into());
             }
-            GroupAddOutcome::NotAGroup => return Err(GuildError::NotFound.into()),
+            GroupAddOutcome::NotAGroup | GroupAddOutcome::Blocked => {
+                return Err(GuildError::NotFound.into());
+            }
         }
-        self.announce_group_change(channel_id, Some(new_participant_id))
-            .await;
         self.group_seen_by(user_id, channel_id).await
     }
 
@@ -98,23 +108,21 @@ impl Messages {
         channel_id: Snowflake,
         removed_id: Snowflake,
     ) -> Result<(), MessageError> {
-        let owner_id = self.require_group_participant(user_id, channel_id).await?;
-        if removed_id != user_id && owner_id != user_id {
-            return Err(GuildError::MissingPermissions.into());
-        }
-        let removal = storage::remove_group_participant(&self.database, channel_id, removed_id)
+        match storage::remove_group_participant(&self.database, channel_id, user_id, removed_id)
             .await
-            .map_err(GuildError::from)?;
-        if !removal.was_participant {
-            return Err(GuildError::NotFound.into());
+            .map_err(GuildError::from)?
+        {
+            GroupRemoval::NotAllowed | GroupRemoval::NotAParticipant => {
+                return Err(GuildError::NotFound.into());
+            }
+            GroupRemoval::NotOwner => return Err(GuildError::MissingPermissions.into()),
+            GroupRemoval::Removed | GroupRemoval::RemovedLastParticipant => {}
         }
         self.guilds.publish_to_users(
             &[removed_id],
             &GatewayEvent::DirectMessageChannelDelete { id: channel_id },
         );
-        if !removal.deleted_conversation {
-            self.announce_group_change(channel_id, None).await;
-        }
+        self.announce_group_change(channel_id, None).await;
         Ok(())
     }
 
@@ -137,14 +145,14 @@ impl Messages {
         self.group_seen_by(user_id, channel_id).await
     }
 
-    /// The group's owner, after checking `user_id` takes part; `NotFound` otherwise, so
-    /// outsiders cannot tell a group from an unknown id.
+    /// Checks `user_id` takes part in the group; `NotFound` otherwise, so outsiders cannot tell
+    /// a group from an unknown id.
     async fn require_group_participant(
         &self,
         user_id: Snowflake,
         channel_id: Snowflake,
-    ) -> Result<Snowflake, MessageError> {
-        let owner_id = storage::group_owner_id(&self.database, channel_id)
+    ) -> Result<(), MessageError> {
+        storage::group_owner_id(&self.database, channel_id)
             .await
             .map_err(GuildError::from)?
             .ok_or(GuildError::NotFound)?;
@@ -152,7 +160,7 @@ impl Messages {
             .await
             .map_err(GuildError::from)?;
         if participant_ids.contains(&user_id) {
-            Ok(owner_id)
+            Ok(())
         } else {
             Err(GuildError::NotFound.into())
         }
@@ -499,10 +507,10 @@ mod tests {
             .messages
             .send(cleo, group.id, text("me too"), NOW)
             .await;
-        let full = storage::add_group_participant(&fixture.database, group.id, dan, 3)
+        let full = storage::add_group_participant(&fixture.database, group.id, ana, dan, 3)
             .await
             .unwrap();
-        let roomy = storage::add_group_participant(&fixture.database, group.id, eve, 4)
+        let roomy = storage::add_group_participant(&fixture.database, group.id, ana, eve, 4)
             .await
             .unwrap();
         fixture.database.close().await;
@@ -510,5 +518,80 @@ mod tests {
         assert!(ana_writes.is_ok() && cleo_writes.is_ok());
         assert_eq!(full, GroupAddOutcome::Full);
         assert_eq!(roomy, GroupAddOutcome::Added);
+    }
+
+    #[tokio::test]
+    async fn blocks_keep_people_out_of_groups_and_outsiders_and_retries_change_nothing() {
+        use mellow_protocol::OpenDirectMessageRequest;
+
+        let fixture = fixture().await;
+        let [ana, bob, cleo, dan, eve] = fixture.users[..] else {
+            unreachable!()
+        };
+        let messages = &fixture.messages;
+        // Dan blocked Cleo: Ana, friend of both, can neither group them nor add one to the other.
+        fixture
+            .relationships
+            .set(dan, cleo, SetRelationshipKind::Blocked, NOW)
+            .await
+            .unwrap();
+        let across_a_block = messages
+            .create_group_conversation(ana, create(&[cleo, dan], ""), NOW)
+            .await;
+        let group = messages
+            .create_group_conversation(ana, create(&[bob, cleo], ""), NOW)
+            .await
+            .unwrap();
+        let add_across_a_block = messages.add_group_participant(ana, group.id, dan).await;
+        let mut bob_events = live_session(&fixture, bob, 2);
+        let retried_add = messages.add_group_participant(ana, group.id, cleo).await;
+        let bob_heard_retry = event_types(&mut bob_events);
+        let outsider_renames = messages
+            .rename_group_conversation(
+                eve,
+                group.id,
+                UpdateGroupConversationRequest {
+                    name: "Mine".into(),
+                },
+            )
+            .await;
+        let outsider_removes = messages.remove_group_participant(eve, group.id, bob).await;
+        let one_to_one = messages
+            .open_direct_message(ana, OpenDirectMessageRequest { recipient_id: bob }, NOW)
+            .await
+            .unwrap();
+        let add_to_one_to_one = messages
+            .add_group_participant(ana, one_to_one.id, cleo)
+            .await;
+        messages
+            .remove_group_participant(ana, group.id, ana)
+            .await
+            .unwrap();
+        let after_owner_left = event_types(&mut bob_events);
+        let bob_view = messages
+            .list_direct_message_channels(bob)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|channel| channel.id == group.id)
+            .unwrap();
+        fixture.database.close().await;
+
+        let not_found = |result: &Result<_, MessageError>| {
+            matches!(result, Err(MessageError::Guild(GuildError::NotFound)))
+        };
+        assert!(not_found(&across_a_block.map(|_| ())));
+        assert!(not_found(&add_across_a_block.map(|_| ())));
+        assert!(retried_add.is_ok());
+        assert_eq!(
+            bob_heard_retry,
+            Vec::<String>::new(),
+            "a retried add tells no one"
+        );
+        assert!(not_found(&outsider_renames.map(|_| ())));
+        assert!(not_found(&outsider_removes));
+        assert!(not_found(&add_to_one_to_one.map(|_| ())));
+        assert_eq!(after_owner_left, ["DIRECT_MESSAGE_CHANNEL_UPDATE"]);
+        assert_eq!(bob_view.owner_id, Some(bob.min(cleo)));
     }
 }

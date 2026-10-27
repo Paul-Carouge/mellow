@@ -20,6 +20,8 @@ ROADMAP "Next, in order" item 8 asks for Discord's group direct messages and a "
 - One new table, routes under `/api/v1/group-conversations`, an `owner_id` and a `name` on `DirectMessageChannel`, and two gateway events (`DIRECT_MESSAGE_CHANNEL_UPDATE`, `DIRECT_MESSAGE_CHANNEL_DELETE`); older clients ignore them and show a group as a conversation with several recipients.
 - Groups appear in `Ready` even before their first message.
 - Unread counts and mentions follow conversations: every unread message from others counts.
+- After the security review: creating a group, or adding someone, is refused like a stranger (`NOT_FOUND`) when the newcomer and anyone in it blocked each other either way, so a mutual friend cannot pull someone into a room with the person they blocked; a block placed inside an existing group leaves it open. Adds and removals are decided inside the write transaction (the actor still in the group, the owner for removals). Unread counts in conversations leave out people the reader blocked.
+- No account deletion exists; one added later must hand the groups an account owns to another participant first (the owner's foreign key has no `ON DELETE`).
 - shortcut: no system messages ("Ana added Bob") yet; members see who joined from the participant list only.
 
 ## Alternatives considered
