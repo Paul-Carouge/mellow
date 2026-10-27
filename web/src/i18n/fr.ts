@@ -14,6 +14,29 @@ const plural = pluralChooser("fr");
 const count = (value: number) => value.toLocaleString("fr");
 const FRENCH_SIZE_UNITS = { KB: "Ko", MB: "Mo", GB: "Go" } as const;
 
+/** « Ana », « Ana et Bob », « Ana, Bob et Chloé », puis « Ana, Bob et 2 autres » ; « Rien que toi ». */
+function participantNamesInFrench(names: readonly string[]): string {
+  const [first, second, third] = names;
+  if (first === undefined) {
+    return "Rien que toi";
+  }
+  if (second === undefined) {
+    return first;
+  }
+  if (names.length === 2) {
+    return `${first} et ${second}`;
+  }
+  if (names.length === 3 && third !== undefined) {
+    return `${first}, ${second} et ${third}`;
+  }
+  const others = names.length - 2;
+  return `${first}, ${second} et ${count(others)} ${plural(others, { one: "autre", other: "autres" })}`;
+}
+
+function memberCountInFrench(members: number): string {
+  return `${count(members)} ${plural(members, { one: "membre", other: "membres" })}`;
+}
+
 export const fr: Catalogue = {
   common: {
     cancel: "Annuler",
@@ -139,7 +162,6 @@ export const fr: Catalogue = {
     channelsIn: (server) => `Salons de ${server}`,
     noConversations:
       "Aucune conversation pour l’instant. Écris à un ami, ou à quelqu’un de la liste des membres d’un serveur.",
-    justYou: "Rien que toi",
     friends: "Amis",
     friendsWithRequests: (incoming) =>
       incoming > 0
@@ -199,6 +221,8 @@ export const fr: Catalogue = {
     welcomeToChannel: (channel) => `Bienvenue dans #${channel}`,
     channelStart: (channel) => `C’est le début du salon #${channel}.`,
     conversationStart: (person) => `C’est le début de ton historique de messages privés avec ${person}.`,
+    composerToGroup: (group) => `Écrire à ${group}`,
+    groupStart: (people) => `C’est le début de ta conversation de groupe avec ${people}.`,
     replyingTo: "En réponse à",
     replyHint: (person) => `En réponse à ${person}. Échap annule la réponse.`,
     cancelReply: "Annuler la réponse",
@@ -494,6 +518,73 @@ export const fr: Catalogue = {
       `On ne le dira pas à ${person}. Vous ne pourrez plus vous écrire ni vous envoyer de demandes d’ami, ses messages sur les serveurs seront masqués et ${person} ne fera plus partie de tes amis.`,
     blockSubmit: (person) => `Bloquer ${person}`,
     blocking: "Blocage…",
+  },
+
+  groups: {
+    participantNames: (names) => participantNamesInFrench(names),
+    memberCount: (members) => memberCountInFrench(members),
+    rowLabel: (group, members) => `${group}, groupe, ${memberCountInFrench(members)}`,
+    group: "Groupe",
+    newMessage: "Nouveau message",
+    pickerSubtitle: "Choisis un ami pour lui écrire, ou plusieurs pour créer un groupe.",
+    addTitle: (group) => `Ajouter des amis à ${group}`,
+    addSubtitle: "Toute la conversation leur sera visible, anciens messages compris.",
+    search: "Chercher parmi tes amis",
+    searchPlaceholder: "Le nom d’un ami",
+    roomLeft: (room) =>
+      room > 0
+        ? `Tu peux encore ajouter ${count(room)} ${plural(room, { one: "ami", other: "amis" })}.`
+        : "Le groupe ne peut pas accueillir plus de monde.",
+    picked: "Amis choisis",
+    unpick: (person) => `Retirer ${person}`,
+    groupName: "Nom du groupe (facultatif)",
+    groupNameHelper: "Laisse vide pour afficher les noms de tout le monde.",
+    message: "Écrire",
+    createGroup: "Créer le groupe",
+    creating: "Création…",
+    addToGroup: "Ajouter au groupe",
+    adding: "Ajout…",
+    noFriends: "Tu n’as pas encore d’amis à qui écrire. Ajoute d’abord un ami avec son nom d’utilisateur.",
+    addFriend: "Ajouter un ami",
+    everyoneIsIn: "Tous tes amis sont déjà dans ce groupe.",
+    noMatch: (query) => `Aucun ami ne correspond à «${NO_BREAK_SPACE}${query}${NO_BREAK_SPACE}».`,
+    createFailed: "Impossible de créer le groupe",
+    cannotJoin: "une de ces personnes ne peut pas le rejoindre. Vérifie ta liste d’amis et réessaie.",
+    addFailed: (person) => `Impossible d’ajouter ${person} au groupe`,
+    addNotFound: "cette personne ne peut pas rejoindre ce groupe. Vérifie ta liste d’amis et réessaie.",
+    addFull: "le groupe est complet.",
+    added: (names) =>
+      `${participantNamesInFrench(names)} ${plural(names.length, { one: "fait", other: "font" })} maintenant partie du groupe.`,
+    members: "Membres",
+    owner: "Propriétaire",
+    memberLabel: (person, status, isOwner, customStatus) =>
+      `${person}, ${status}${isOwner ? ", propriétaire" : ""}${customStatus ? `, statut personnalisé${NO_BREAK_SPACE}: ${customStatus}` : ""}`,
+    addFriends: "Ajouter des amis",
+    addFriendsToGroup: "Ajouter des amis au groupe",
+    rename: "Renommer le groupe",
+    leave: "Quitter le groupe",
+    remove: (person) => `Retirer ${person} du groupe`,
+    nameLabel: "Nom du groupe",
+    saveName: "Enregistrer le nom",
+    renamed: (group) => `Groupe renommé en ${group}.`,
+    nameCleared: "Le groupe affiche de nouveau les noms de tout le monde.",
+    renameFailed: "Impossible de renommer le groupe",
+    leaveTitle: (group) => `Quitter ${group}${NARROW_NO_BREAK_SPACE}?`,
+    leaveBody: "Tu ne verras plus ce groupe ni ses messages. Quelqu’un du groupe pourra te rajouter plus tard.",
+    leaveBodyAsOwner: (nextOwner) =>
+      `Tu ne verras plus ce groupe ni ses messages, et ${nextOwner} en deviendra propriétaire. Quelqu’un du groupe pourra te rajouter plus tard.`,
+    leaveBodyAsLast: `Tu es la dernière personne ici${NO_BREAK_SPACE}: le groupe et ses messages seront supprimés pour de bon.`,
+    leaving: "Départ…",
+    leaveFailed: "Impossible de quitter le groupe",
+    removeTitle: (person) => `Retirer ${person} du groupe${NARROW_NO_BREAK_SPACE}?`,
+    removeBody: (person) =>
+      `${person} ne verra plus ce groupe ni ses messages. Quelqu’un du groupe pourra l’y rajouter plus tard.`,
+    removeSubmit: (person) => `Retirer ${person}`,
+    removing: "Retrait…",
+    removed: (person) => `${person} ne fait plus partie du groupe.`,
+    removeFailed: (person) => `Impossible de retirer ${person} du groupe`,
+    left: (group) => `Tu as quitté le groupe «${NO_BREAK_SPACE}${group}${NO_BREAK_SPACE}».`,
+    removedYou: (group) => `Tu ne fais plus partie du groupe «${NO_BREAK_SPACE}${group}${NO_BREAK_SPACE}».`,
   },
 
   quickSwitcher: {

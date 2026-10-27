@@ -940,12 +940,45 @@ describe("Group conversations", () => {
     await client.leaveGroupConversation("700");
     expect(client.conversations.some((channel) => channel.id === "700")).toBe(false);
     expect(client.selectedChannelId).toBeNull();
+    expect(client.isFriendsSpaceOpen).toBe(true);
+    expect(client.closedConversation).toMatchObject({ reason: "left", conversation: { id: "700", name: "Trip" } });
   });
 
-  it("drop a group the user was removed from", () => {
+  it("take someone the owner removed out of the group at once", async () => {
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, removeGroupParticipant: () => Promise.resolve() }));
+    client.applyReady(ready({ direct_message_channels: [group("850", ["20", "21", "22"], "Trip")] }));
+    await client.removeGroupParticipant("850", "21");
+    expect(client.conversations[0]?.recipients.map((recipient) => recipient.id)).toEqual(["20", "22"]);
+    expect(client.conversations[0]?.name).toBe("Trip");
+  });
+
+  it("drop a group the user was removed from, and say so only when it was open", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
-    client.applyReady(ready({ direct_message_channels: [group("800", ["20", "21"])] }));
+    client.applyReady(ready({ direct_message_channels: [group("800", ["20", "21"]), group("801", ["20", "22"])] }));
+    client.applyEvent({ t: "DIRECT_MESSAGE_CHANNEL_DELETE", data: { id: "801" } }, 0);
+    expect(client.closedConversation).toBeNull();
+
+    client.selectGuild(null, "800");
     client.applyEvent({ t: "DIRECT_MESSAGE_CHANNEL_DELETE", data: { id: "800" } }, 0);
     expect(client.conversations).toEqual([]);
+    expect(client.isFriendsSpaceOpen).toBe(true);
+    expect(client.closedConversation).toMatchObject({ reason: "removed", conversation: { id: "800" } });
+  });
+
+  it("count leaving as leaving when the gateway's delete comes before the instance's answer", async () => {
+    let answer: () => void = () => undefined;
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        removeGroupParticipant: () => new Promise<void>((resolve) => (answer = resolve)),
+      }),
+    );
+    client.applyReady(ready({ direct_message_channels: [group("900", ["20", "21"])] }));
+    client.selectGuild(null, "900");
+    const leaving = client.leaveGroupConversation("900");
+    client.applyEvent({ t: "DIRECT_MESSAGE_CHANNEL_DELETE", data: { id: "900" } }, 0);
+    answer();
+    await leaving;
+    expect(client.closedConversation?.reason).toBe("left");
   });
 });

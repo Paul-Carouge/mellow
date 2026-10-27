@@ -6,16 +6,18 @@ import type { DirectMessageChannel, Guild, PublicUser, Snowflake } from "../lib/
 import { strings } from "../i18n";
 import { channelSections } from "../lib/channels";
 import { displayName } from "./format";
+import { conversationDisplayName, isGroupConversation, otherParticipants } from "./group-conversations";
 
 export type QuickSwitcherTarget =
   | { kind: "channel"; guildId: Snowflake; channelId: Snowflake }
   | { kind: "person"; userId: Snowflake; conversationId: Snowflake | null }
-  | { kind: "server"; guildId: Snowflake };
+  | { kind: "server"; guildId: Snowflake }
+  | { kind: "conversation"; conversationId: Snowflake };
 
 export interface QuickSwitcherItem {
   key: string;
   label: string;
-  /** Where it leads: the server's name, "Direct message" or "Server". */
+  /** Where it leads: the server's name, "Direct message", "Group" or "Server". */
   where: string;
   icon: IconName;
   hasUnread: boolean;
@@ -67,7 +69,10 @@ export function quickSwitcherResults(query: string, sources: QuickSwitcherSource
   const people = new Map<Snowflake, PublicUser>();
   for (const conversation of sources.conversations) {
     for (const recipient of conversation.recipients) {
-      conversationByUserId.set(recipient.id, conversation);
+      // A person leads to their one-to-one conversation, never to a group they are in.
+      if (!isGroupConversation(conversation)) {
+        conversationByUserId.set(recipient.id, conversation);
+      }
       people.set(recipient.id, recipient);
     }
   }
@@ -91,6 +96,25 @@ export function quickSwitcherResults(query: string, sources: QuickSwitcherSource
         target: { kind: "person", userId: person.id, conversationId: conversation?.id ?? null },
       };
     });
+  // Groups by their name or by anyone in them (ADR-0026), after the people.
+  const groupItems: QuickSwitcherItem[] = sources.conversations
+    .filter(isGroupConversation)
+    .map((conversation) => ({ conversation, label: conversationDisplayName(conversation, sources.currentUserId) }))
+    .filter(
+      ({ conversation, label }) =>
+        matches(label) ||
+        otherParticipants(conversation, sources.currentUserId).some(
+          (person) => matches(displayName(person)) || matches(person.username),
+        ),
+    )
+    .map(({ conversation, label }) => ({
+      key: `group:${conversation.id}`,
+      label,
+      where: strings.groups.group,
+      icon: "users",
+      hasUnread: sources.hasUnread(conversation.id),
+      target: { kind: "conversation", conversationId: conversation.id },
+    }));
 
   const servers: QuickSwitcherItem[] = sources.guilds
     .filter((guild) => matches(guild.name))
@@ -108,7 +132,7 @@ export function quickSwitcherResults(query: string, sources: QuickSwitcherSource
   const shown = (items: QuickSwitcherItem[]) => (term === "" ? items.slice(0, MAXIMUM_ITEMS_PER_KIND_BEFORE_TYPING) : items);
   return [
     { label: strings.quickSwitcher.channels, items: !kind || kind === "channels" ? shown(channels) : [] },
-    { label: strings.quickSwitcher.people, items: !kind || kind === "people" ? shown(peopleItems) : [] },
+    { label: strings.quickSwitcher.people, items: !kind || kind === "people" ? shown([...peopleItems, ...groupItems]) : [] },
     { label: strings.quickSwitcher.servers, items: !kind || kind === "servers" ? shown(servers) : [] },
   ].filter((group) => group.items.length > 0);
 }

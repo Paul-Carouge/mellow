@@ -8,6 +8,29 @@ import { pluralChooser } from "./plural";
 const plural = pluralChooser("en");
 const count = (value: number) => value.toLocaleString("en");
 
+/** "Ana", "Ana and Bob", "Ana, Bob and Chloé", then "Ana, Bob and 2 others"; "Just you" for nobody. */
+function participantNamesInEnglish(names: readonly string[]): string {
+  const [first, second, third] = names;
+  if (first === undefined) {
+    return "Just you";
+  }
+  if (second === undefined) {
+    return first;
+  }
+  if (names.length === 2) {
+    return `${first} and ${second}`;
+  }
+  if (names.length === 3 && third !== undefined) {
+    return `${first}, ${second} and ${third}`;
+  }
+  const others = names.length - 2;
+  return `${first}, ${second} and ${count(others)} ${plural(others, { one: "other", other: "others" })}`;
+}
+
+function memberCountInEnglish(members: number): string {
+  return `${count(members)} ${plural(members, { one: "member", other: "members" })}`;
+}
+
 export const en = {
   common: {
     cancel: "Cancel",
@@ -137,7 +160,6 @@ export const en = {
     leaveServer: "Leave server",
     channelsIn: (server: string) => `Channels in ${server}`,
     noConversations: "No conversations yet. Message a friend, or someone from a server's member list.",
-    justYou: "Just you",
     friends: "Friends",
     /** The Friends entry's name, with the count its red badge shows. */
     friendsWithRequests: (incoming: number) =>
@@ -199,6 +221,8 @@ export const en = {
     welcomeToChannel: (channel: string) => `Welcome to #${channel}`,
     channelStart: (channel: string) => `This is the start of the #${channel} channel.`,
     conversationStart: (person: string) => `This is the beginning of your direct message history with ${person}.`,
+    composerToGroup: (group: string) => `Message ${group}`,
+    groupStart: (people: string) => `This is the beginning of your group conversation with ${people}.`,
     replyingTo: "Replying to",
     replyHint: (person: string) => `Replying to ${person}. Escape cancels the reply.`,
     cancelReply: "Cancel reply",
@@ -505,6 +529,78 @@ export const en = {
       `${person} won't be told. You won't be able to message each other or send friend requests, their messages in servers will be hidden, and they'll leave your friends.`,
     blockSubmit: (person: string) => `Block ${person}`,
     blocking: "Blocking…",
+  },
+
+  /** Group conversations and the "New message" picker (DESIGN.md §5.6, ADR-0026). */
+  groups: {
+    /** Everyone in a conversation but you, as its name reads when it has none of its own. */
+    participantNames: (names: readonly string[]) => participantNamesInEnglish(names),
+    memberCount: (members: number) => memberCountInEnglish(members),
+    /** A group row's accessible name: "Trip to Lyon, group, 4 members". */
+    rowLabel: (group: string, members: number) => `${group}, group, ${memberCountInEnglish(members)}`,
+    group: "Group",
+    newMessage: "New message",
+    pickerSubtitle: "Pick one friend to message them, or several to start a group.",
+    addTitle: (group: string) => `Add friends to ${group}`,
+    addSubtitle: "They'll see the whole conversation, older messages included.",
+    search: "Search your friends",
+    searchPlaceholder: "A friend's name",
+    roomLeft: (room: number) =>
+      room > 0
+        ? `You can add ${count(room)} more ${plural(room, { one: "friend", other: "friends" })}.`
+        : "That's as many people as a group can hold.",
+    picked: "Friends you picked",
+    unpick: (person: string) => `Remove ${person}`,
+    groupName: "Group name (optional)",
+    groupNameHelper: "Leave it empty to show everyone's names.",
+    message: "Message",
+    createGroup: "Create group",
+    creating: "Creating…",
+    addToGroup: "Add to group",
+    adding: "Adding…",
+    noFriends: "You don't have friends to message yet. Add a friend by their username first.",
+    addFriend: "Add friend",
+    everyoneIsIn: "All your friends are already in this group.",
+    noMatch: (query: string) => `No friends match “${query}”.`,
+    createFailed: "Couldn't create the group",
+    /** NOT_FOUND when creating: not a friend any more, or a block either way, never told apart (ADR-0026). */
+    cannotJoin: "one of these people can't join it. Check your friends list and try again.",
+    addFailed: (person: string) => `Couldn't add ${person} to the group`,
+    addNotFound: "they can't join this group. Check your friends list and try again.",
+    addFull: "the group is full.",
+    added: (names: readonly string[]) => `${participantNamesInEnglish(names)} joined the group.`,
+    members: "Members",
+    owner: "Owner",
+    /** "Ana, online, owner, custom status: Reviewing PRs". */
+    memberLabel: (person: string, status: string, isOwner: boolean, customStatus: string | null) =>
+      `${person}, ${status}${isOwner ? ", owner" : ""}${customStatus ? `, custom status: ${customStatus}` : ""}`,
+    addFriends: "Add friends",
+    addFriendsToGroup: "Add friends to the group",
+    rename: "Rename group",
+    leave: "Leave group",
+    remove: (person: string) => `Remove ${person} from the group`,
+    nameLabel: "Group name",
+    saveName: "Save name",
+    renamed: (group: string) => `Group renamed to ${group}.`,
+    nameCleared: "The group shows everyone's names again.",
+    renameFailed: "Couldn't rename the group",
+    leaveTitle: (group: string) => `Leave ${group}?`,
+    leaveBody: "You won't see this group or its messages anymore. Someone in it can add you back later.",
+    leaveBodyAsOwner: (nextOwner: string) =>
+      `You won't see this group or its messages anymore, and ${nextOwner} will own it. Someone in it can add you back later.`,
+    leaveBodyAsLast: "You're the last one here: the group and its messages will be deleted for good.",
+    leaving: "Leaving…",
+    leaveFailed: "Couldn't leave the group",
+    removeTitle: (person: string) => `Remove ${person} from the group?`,
+    removeBody: (person: string) =>
+      `${person} won't see this group or its messages anymore. Someone in it can add them back later.`,
+    removeSubmit: (person: string) => `Remove ${person}`,
+    removing: "Removing…",
+    removed: (person: string) => `${person} was removed from the group.`,
+    removeFailed: (person: string) => `Couldn't remove ${person} from the group`,
+    /** Back on Friends after the open group closed (DESIGN.md §5.6). */
+    left: (group: string) => `You left the group “${group}”.`,
+    removedYou: (group: string) => `You're no longer in the group “${group}”.`,
   },
 
   quickSwitcher: {
