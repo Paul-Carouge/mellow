@@ -25,6 +25,7 @@ const sources: QuickSwitcherSources = {
     { id: "zoe", username: "zoe", display_name: "Zoé" },
   ],
   currentUserId: "me",
+  isFriend: () => false,
   hasUnread: (channelId) => channelId === "2",
   canSendIn: (channelId) => channelId !== "3",
 };
@@ -62,19 +63,27 @@ describe("quickSwitcherResults", () => {
   it("lists groups by name or by anyone in them, and keeps people on their own conversation", () => {
     const zoe = { id: "zoe", username: "zoe", display_name: "Zoé" };
     const ana = { id: "ana", username: "ana", display_name: "Ana" };
+    const ines = { id: "ines", username: "ines", display_name: "Inès" };
+    const yann = { id: "yann", username: "yann", display_name: "Yann" };
     const withGroups: QuickSwitcherSources = {
       ...sources,
       conversations: [
-        { id: "trip", recipients: [ana, zoe], last_message_id: null, owner_id: "me", name: "Trip" },
+        { id: "trip", recipients: [ana, zoe, ines, yann], last_message_id: null, owner_id: "me", name: "Trip" },
         ...sources.conversations,
         { id: "unnamed", recipients: [zoe, ana], last_message_id: null, owner_id: "zoe" },
       ],
+      isFriend: (userId) => userId === "ines",
     };
     const people = quickSwitcherResults("@", withGroups)[0]?.items ?? [];
-    expect(people.map((item) => item.label)).toEqual(["Ana", "Zoé", "Trip", "Zoé and Ana"]);
+    // Yann is met only in a group and is no friend: the instance would refuse a conversation.
+    expect(people.map((item) => item.label)).toEqual(["Ana", "Inès", "Zoé", "Trip", "Zoé and Ana"]);
     expect(people[0]?.target).toEqual({ kind: "person", userId: "ana", conversationId: "dm" });
-    expect(people[1]?.target).toEqual({ kind: "person", userId: "zoe", conversationId: null });
-    expect(people[2]).toMatchObject({ where: "Group", icon: "users", target: { kind: "conversation", conversationId: "trip" } });
+    expect(people[1]?.target).toEqual({ kind: "person", userId: "ines", conversationId: null });
+    // Zoé shares a loaded server: she can be messaged without a conversation yet.
+    expect(people[2]?.target).toEqual({ kind: "person", userId: "zoe", conversationId: null });
+    expect(people[3]).toMatchObject({ where: "Group", icon: "users", target: { kind: "conversation", conversationId: "trip" } });
     expect(quickSwitcherResults("trip", withGroups)[0]?.items.map((item) => item.label)).toEqual(["Trip"]);
+    // A group still matches by anyone in it.
+    expect(quickSwitcherResults("yann", withGroups)[0]?.items.map((item) => item.label)).toEqual(["Trip"]);
   });
 });

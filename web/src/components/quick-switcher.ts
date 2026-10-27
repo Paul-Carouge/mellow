@@ -35,6 +35,8 @@ export interface QuickSwitcherSources {
   /** Members of the servers loaded so far, for people without a conversation yet. */
   knownPeople: readonly PublicUser[];
   currentUserId: Snowflake | null;
+  /** Friends can be messaged even when they share no loaded server (ADR-0025). */
+  isFriend: (userId: Snowflake) => boolean;
   hasUnread: (channelId: Snowflake) => boolean;
   canSendIn: (channelId: Snowflake) => boolean;
 }
@@ -68,12 +70,17 @@ export function quickSwitcherResults(query: string, sources: QuickSwitcherSource
   const conversationByUserId = new Map<Snowflake, DirectMessageChannel>();
   const people = new Map<Snowflake, PublicUser>();
   for (const conversation of sources.conversations) {
+    const isGroup = isGroupConversation(conversation);
     for (const recipient of conversation.recipients) {
-      // A person leads to their one-to-one conversation, never to a group they are in.
-      if (!isGroupConversation(conversation)) {
+      // A person leads to their one-to-one conversation, never to a group they are in. Someone met
+      // only in a group is listed when the instance would open a conversation with them: a friend
+      // here, or a member of a loaded server below.
+      if (!isGroup) {
         conversationByUserId.set(recipient.id, conversation);
+        people.set(recipient.id, recipient);
+      } else if (sources.isFriend(recipient.id)) {
+        people.set(recipient.id, recipient);
       }
-      people.set(recipient.id, recipient);
     }
   }
   for (const person of sources.knownPeople) {
