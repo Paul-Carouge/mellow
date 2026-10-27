@@ -58,4 +58,23 @@ describe("quickSwitcherResults", () => {
     expect(quickSwitcherResults("*lyon", sources).map((group) => group.label)).toEqual(["Servers"]);
     expect(quickSwitcherResults("nothing like it", sources)).toEqual([]);
   });
+
+  it("lists groups by name or by anyone in them, and keeps people on their own conversation", () => {
+    const zoe = { id: "zoe", username: "zoe", display_name: "Zoé" };
+    const ana = { id: "ana", username: "ana", display_name: "Ana" };
+    const withGroups: QuickSwitcherSources = {
+      ...sources,
+      conversations: [
+        { id: "trip", recipients: [ana, zoe], last_message_id: null, owner_id: "me", name: "Trip" },
+        ...sources.conversations,
+        { id: "unnamed", recipients: [zoe, ana], last_message_id: null, owner_id: "zoe" },
+      ],
+    };
+    const people = quickSwitcherResults("@", withGroups)[0]?.items ?? [];
+    expect(people.map((item) => item.label)).toEqual(["Ana", "Zoé", "Trip", "Zoé and Ana"]);
+    expect(people[0]?.target).toEqual({ kind: "person", userId: "ana", conversationId: "dm" });
+    expect(people[1]?.target).toEqual({ kind: "person", userId: "zoe", conversationId: null });
+    expect(people[2]).toMatchObject({ where: "Group", icon: "users", target: { kind: "conversation", conversationId: "trip" } });
+    expect(quickSwitcherResults("trip", withGroups)[0]?.items.map((item) => item.label)).toEqual(["Trip"]);
+  });
 });

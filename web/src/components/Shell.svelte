@@ -14,10 +14,13 @@
   import Drawer from "./Drawer.svelte";
   import type { FriendsTab } from "./friends";
   import FriendsPane from "./FriendsPane.svelte";
+  import { conversationDisplayName, isGroupConversation } from "./group-conversations";
+  import GroupMembersSheet from "./GroupMembersSheet.svelte";
   import InvitePeopleDialog from "./InvitePeopleDialog.svelte";
   import LeaveServerDialog from "./LeaveServerDialog.svelte";
   import MemberList from "./MemberList.svelte";
   import Navigator from "./Navigator.svelte";
+  import PeoplePickerDialog from "./PeoplePickerDialog.svelte";
   import QuickSwitcher from "./QuickSwitcher.svelte";
   import ServerSettings from "./ServerSettings.svelte";
   import { minimumWidthQueryForPanes } from "./tokens";
@@ -50,11 +53,15 @@
   let friendsPane = $state<{ focusStart: () => void } | null>(null);
   let friendsTab = $state<FriendsTab>("online");
   const collapsedCategoryIds = new SvelteSet<Snowflake>();
-  // Closed by default, remembered per server while the tab lives (ADR-0022 §1).
-  const serverIdsWithMemberSheet = new SvelteSet<Snowflake>();
+  // Closed by default, remembered per server or group while the tab lives (ADR-0022 §1).
+  const placeIdsWithMemberSheet = new SvelteSet<Snowflake>();
   let isMemberOverlayOpen = $state(false);
   let isNavigationDrawerOpen = $state(false);
-  let openDialog = $state<"add-server" | "channel-settings" | ServerDialog | null>(null);
+  let openDialog = $state<"add-server" | "channel-settings" | "new-message" | "add-to-group" | ServerDialog | null>(
+    null,
+  );
+  /** Group results said by the shell, which outlives the group's own views (ADR-0026). */
+  let announcement = $state("");
   let isUserSettingsOpen = $state(false);
   let isQuickSwitcherOpen = $state(false);
   /** Kept from the menu that opened them: a deleted server must not hand its settings to the next. */
@@ -65,10 +72,15 @@
   let newChannelCategory = $state<Channel | null>(null);
 
   const guild = $derived(client.selectedGuild);
-  const hasMemberSheet = $derived(guild !== null && client.selectedChannel !== null);
+  const group = $derived(
+    client.selectedConversation && isGroupConversation(client.selectedConversation) ? client.selectedConversation : null,
+  );
+  /** The server or the group whose members the side sheet shows. */
+  const memberSheetPlaceId = $derived(guild && client.selectedChannel ? guild.id : (group?.id ?? null));
+  const hasMemberSheet = $derived(memberSheetPlaceId !== null);
   const isMemberSheetOpen = $derived(
-    hasMemberSheet &&
-      (hasRoomForSideSheet.current ? guild !== null && serverIdsWithMemberSheet.has(guild.id) : isMemberOverlayOpen),
+    memberSheetPlaceId !== null &&
+      (hasRoomForSideSheet.current ? placeIdsWithMemberSheet.has(memberSheetPlaceId) : isMemberOverlayOpen),
   );
 
   // A drawer or overlay left open while the window widens would come back on the next shrink.
@@ -114,21 +126,21 @@
   }
 
   function toggleMemberSheet() {
-    if (!guild) {
+    if (memberSheetPlaceId === null) {
       return;
     }
     if (!hasRoomForSideSheet.current) {
       isMemberOverlayOpen = !isMemberOverlayOpen;
-    } else if (serverIdsWithMemberSheet.has(guild.id)) {
-      serverIdsWithMemberSheet.delete(guild.id);
+    } else if (placeIdsWithMemberSheet.has(memberSheetPlaceId)) {
+      placeIdsWithMemberSheet.delete(memberSheetPlaceId);
     } else {
-      serverIdsWithMemberSheet.add(guild.id);
+      placeIdsWithMemberSheet.add(memberSheetPlaceId);
     }
   }
 
   async function closeMemberSheet() {
-    if (hasRoomForSideSheet.current && guild) {
-      serverIdsWithMemberSheet.delete(guild.id);
+    if (hasRoomForSideSheet.current && memberSheetPlaceId !== null) {
+      placeIdsWithMemberSheet.delete(memberSheetPlaceId);
     }
     isMemberOverlayOpen = false;
     await tick();
@@ -168,6 +180,41 @@
     }
   }
 
+  /** After a dialog opened a conversation from the drawer's "+": the drawer goes, the composer focuses. */
+  async function focusComposerAfterDialog() {
+    isNavigationDrawerOpen = false;
+    await tick();
+    focusComposer();
+  }
+
+  /** "Add friend" from the picker's empty state: Friends opens on its Add friend tab. */
+  async function openAddFriend() {
+    openDialog = null;
+    isNavigationDrawerOpen = false;
+    friendsTab = "add";
+    client.selectGuild(null, null);
+    // After the picker's own focus return, which runs as it closes.
+    await tick();
+    friendsPane?.focusStart();
+  }
+
+  // The open group closed under the user (they left, or its owner removed them): Friends shows,
+  // the reason is read out, and focus that fell with the conversation goes to Friends' tab.
+  $effect(() => {
+    const closed = client.closedConversation;
+    if (!closed) {
+      return;
+    }
+    const name = conversationDisplayName(closed.conversation, client.user?.id ?? null);
+    announcement = closed.reason === "left" ? strings.groups.left(name) : strings.groups.removedYou(name);
+    client.closedConversation = null;
+    void tick().then(() => {
+      if (document.activeElement === null || document.activeElement === document.body) {
+        focusComposer();
+      }
+    });
+  });
+
   /** A dialog, the settings, the navigation drawer or the switcher covers the shell. */
   function isCoveredByModal(): boolean {
     return openDialog !== null || isUserSettingsOpen || isNavigationDrawerOpen || isQuickSwitcherOpen;
@@ -187,6 +234,7 @@
     {collapsedCategoryIds}
     {isInDrawer}
     onaddserver={() => (openDialog = "add-server")}
+    onnewmessage={() => (openDialog = "new-message")}
     onopendialog={(dialog) => {
       newChannelCategory = null;
       serverSettingsGuildId = guild?.id ?? null;
@@ -244,11 +292,44 @@
           isMemberListOpen={isMemberSheetOpen}
           ontogglememberlist={toggleMemberSheet}
           oneditchannel={openChannelSettings}
+          onaddtogroup={() => (openDialog = "add-to-group")}
         />
       {/if}
     </main>
 
-    {#if guild && hasMemberSheet && isMemberSheetOpen}
+    {#if group && isMemberSheetOpen}
+      {#if hasRoomForSideSheet.current}
+        {#key group.id}
+          <GroupMembersSheet
+            {client}
+            {group}
+            isDocked
+            onclose={() => void closeMemberSheet()}
+            onaddfriends={() => (openDialog = "add-to-group")}
+            focusAfterLeaving={focusComposer}
+          />
+        {/key}
+      {:else}
+        <Drawer
+          label={strings.shell.membersOf(conversationDisplayName(group, client.user?.id ?? null))}
+          side="end"
+          isFullWindow={!hasRoomForNavigator.current}
+          onclose={() => (isMemberOverlayOpen = false)}
+        >
+          {#key group.id}
+            <GroupMembersSheet
+              {client}
+              {group}
+              isDocked={false}
+              isFullWindow={!hasRoomForNavigator.current}
+              onclose={() => (isMemberOverlayOpen = false)}
+              onaddfriends={() => (openDialog = "add-to-group")}
+              focusAfterLeaving={focusComposer}
+            />
+          {/key}
+        </Drawer>
+      {/if}
+    {:else if guild && hasMemberSheet && isMemberSheetOpen}
       {#if hasRoomForSideSheet.current}
         {#key guild.id}
           <MemberList {client} {guild} isDocked onclose={() => void closeMemberSheet()} onopenedconversation={focusComposer} />
@@ -277,7 +358,18 @@
   </div>
 </div>
 
-{#if openDialog === "add-server"}
+<p class="sr-only" aria-live="polite">{announcement}</p>
+
+{#if openDialog === "new-message" || (openDialog === "add-to-group" && group)}
+  <PeoplePickerDialog
+    {client}
+    group={openDialog === "add-to-group" ? group : null}
+    onclose={() => (openDialog = null)}
+    onaddfriend={() => void openAddFriend()}
+    onadded={(names) => (announcement = strings.groups.added(names))}
+    fallbackFocus={() => void focusComposerAfterDialog()}
+  />
+{:else if openDialog === "add-server"}
   <AddServerDialog {client} onclose={() => (openDialog = null)} fallbackFocus={focusComposer} />
 {:else if openDialog === "invite-people" && guild}
   <InvitePeopleDialog {client} serverName={guild.name} onclose={() => (openDialog = null)} fallbackFocus={focusComposer} />

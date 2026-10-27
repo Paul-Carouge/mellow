@@ -22,6 +22,14 @@
   import DeleteMessageDialog from "./DeleteMessageDialog.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import { displayName, humanFileSize, typingSegments, unixMillisecondsOfSnowflake } from "./format";
+  import GroupAvatar from "./GroupAvatar.svelte";
+  import {
+    conversationDisplayName,
+    isGroupConversation,
+    otherParticipants,
+    participantCount,
+    participantNamesOf,
+  } from "./group-conversations";
   import { unreadBarLabel, unreadSummary } from "./message-rows";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
@@ -43,6 +51,8 @@
     ontogglememberlist: () => void;
     /** The header's gear: the open channel's settings. */
     oneditchannel: (channel: Channel) => void;
+    /** The header's "Add friends to the group" in a group conversation (ADR-0026). */
+    onaddtogroup: () => void;
   }
 
   let {
@@ -53,6 +63,7 @@
     isMemberListOpen,
     ontogglememberlist,
     oneditchannel,
+    onaddtogroup,
   }: Props = $props();
 
   /** The composer grows with its text up to half of the pane (DESIGN.md §4.2). */
@@ -68,22 +79,20 @@
   const conversation = $derived(client.selectedConversation);
   const channelId = $derived(channel?.id ?? conversation?.id ?? null);
   const user = $derived(client.user);
-  const conversationName = $derived(
-    conversation
-      ? conversation.recipients
-          .filter((candidate) => candidate.id !== user?.id)
-          .map(displayName)
-          .join(", ")
-      : "",
-  );
+  const conversationName = $derived(conversation ? conversationDisplayName(conversation, user?.id ?? null) : "");
+  const isGroup = $derived(conversation !== null && isGroupConversation(conversation));
   // Channel overwrites included (read-only channels); only to adapt the interface (ADR-0014).
   const channelPermissions = $derived(
     client.selectedChannelId ? client.myChannelPermissions(client.selectedChannelId) : null,
   );
   // A conversation with someone you blocked stays readable but locked (ADR-0025). Being blocked
-  // by them changes nothing here: the instance refuses, and the client never tells.
+  // by them changes nothing here: the instance refuses, and the client never tells. A group stays
+  // open whatever its people's relationships (ADR-0026): their messages fold instead.
   const blockedRecipient = $derived(
-    conversation?.recipients.find((recipient) => recipient.id !== user?.id && client.isBlocked(recipient.id)) ?? null,
+    isGroup
+      ? null
+      : (conversation?.recipients.find((recipient) => recipient.id !== user?.id && client.isBlocked(recipient.id)) ??
+          null),
   );
   const canSendMessages = $derived(
     blockedRecipient === null &&
@@ -121,7 +130,11 @@
     canSendMessages && (channelPermissions === null || hasPermission(channelPermissions, Permission.ATTACH_FILES)),
   );
   const composerLabel = $derived(
-    channel ? strings.chat.composerInChannel(channel.name) : strings.chat.composerToPerson(conversationName),
+    channel
+      ? strings.chat.composerInChannel(channel.name)
+      : isGroup
+        ? strings.chat.composerToGroup(conversationName)
+        : strings.chat.composerToPerson(conversationName),
   );
 
   let pane: HTMLElement;
@@ -598,6 +611,12 @@
             class="size-(--mw-component-chat-header-icon-size) shrink-0 rounded-(--mw-component-channel-row-image-radius) object-cover"
             onerror={() => (failedIconId = iconId)}
           />
+        {:else if isGroup && conversation}
+          <GroupAvatar
+            people={otherParticipants(conversation, user?.id ?? null)}
+            sizeToken="--mw-component-member-row-avatar-size"
+            ringColorToken="--mw-color-surface-chat"
+          />
         {:else}
           <Icon
             name={channel ? (canSendMessages ? "hash" : "lock") : "at"}
@@ -614,6 +633,12 @@
       <span aria-hidden="true" class="mx-xs h-(--mw-component-chat-header-divider-height) w-px shrink-0 bg-border-divider"></span>
       <p class="min-w-0 flex-1 truncate type-body text-(--mw-component-chat-header-topic-text)" title={channel.topic}>
         {channel.topic}
+      </p>
+    {:else if isGroup && conversation && !hasNavigationDrawer}
+      <!-- A group has no topic: its slot counts the people in it. -->
+      <span aria-hidden="true" class="mx-xs h-(--mw-component-chat-header-divider-height) w-px shrink-0 bg-border-divider"></span>
+      <p class="min-w-0 flex-1 truncate type-body text-(--mw-component-group-avatar-member-count-text)">
+        {strings.groups.memberCount(participantCount(conversation, user?.id ?? null))}
       </p>
     {:else}
       <span class="flex-1"></span>
@@ -654,7 +679,18 @@
         onclick={() => (isPinsPanelOpen = pinsPanelToggle.shouldOpenOnClick())}
       />
     {/if}
-    {#if channel}
+    {#if isGroup}
+      <!-- Discord's "Add friends to DM" in the header; the members sheet has the same action. -->
+      <IconButton
+        icon="user-plus"
+        label={strings.groups.addFriendsToGroup}
+        aria-haspopup="dialog"
+        class={headerButtonClass}
+        iconClass="size-(--mw-component-chat-header-icon-size)"
+        onclick={onaddtogroup}
+      />
+    {/if}
+    {#if channel || isGroup}
       <!-- The member toggle keeps its name; aria-pressed says whether the side sheet is open. -->
       <IconButton
         icon="users"
@@ -691,11 +727,13 @@
         {channelId}
         currentUser={user}
         channelLabel={channel ? `#${channel.name}` : conversationName}
-        heroIcon={channel ? "hash" : "at"}
+        heroIcon={channel ? "hash" : isGroup ? "users" : "at"}
         heroTitle={channel ? strings.chat.welcomeToChannel(channel.name) : conversationName}
         heroSentence={channel
           ? strings.chat.channelStart(channel.name)
-          : strings.chat.conversationStart(conversationName)}
+          : isGroup && conversation
+            ? strings.chat.groupStart(participantNamesOf(conversation, user.id))
+            : strings.chat.conversationStart(conversationName)}
         topic={channel?.topic ?? ""}
         {canSendMessages}
         {canManageMessages}
@@ -862,7 +900,7 @@
         ></span>
         <Icon name="file-arrow-up" class="size-(--mw-component-drop-overlay-icon-size)" />
         <p class="type-heading-xl break-words">
-          {strings.chat.dropToAttach(channel ? `#${channel.name}` : `@${conversationName}`)}
+          {strings.chat.dropToAttach(channel ? `#${channel.name}` : isGroup ? conversationName : `@${conversationName}`)}
         </p>
         <p class="type-body">{strings.chat.dropHint}</p>
       </div>

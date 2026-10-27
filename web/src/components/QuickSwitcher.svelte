@@ -78,7 +78,7 @@
         client.selectGuild(target.guildId, target.channelId);
       } else if (target.kind === "server") {
         client.selectGuild(target.guildId, null);
-      } else if (target.conversationId) {
+      } else if (target.kind === "conversation" || target.conversationId) {
         client.selectGuild(null, target.conversationId);
       } else {
         await client.openDirectMessage(target.userId);

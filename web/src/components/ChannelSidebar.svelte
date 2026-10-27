@@ -5,7 +5,6 @@
   import type { MellowClient } from "../lib/client.svelte";
   import {
     type Channel,
-    type DirectMessageChannel,
     type Guild,
     Permission,
     type Snowflake,
@@ -15,7 +14,14 @@
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
   import { visibleChannelSections } from "./channel-settings";
-  import { displayName, nameWithUnreadState } from "./format";
+  import { nameWithUnreadState } from "./format";
+  import GroupAvatar from "./GroupAvatar.svelte";
+  import {
+    conversationDisplayName,
+    isGroupConversation,
+    otherParticipants,
+    participantCount,
+  } from "./group-conversations";
   import Icon, { type IconName } from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import { menuItemsIn, moveFocusWithinMenu } from "./menu-keyboard";
@@ -31,6 +37,8 @@
     client: MellowClient;
     /** Kept by the shell, so collapsing survives the drawer closing. */
     collapsedCategoryIds: SvelteSet<Snowflake>;
+    /** The "+" beside "Direct messages" at Home: the "New message" picker (ADR-0026). */
+    onnewmessage: () => void;
     onopendialog: (dialog: ServerDialog) => void;
     /** The "+" beside a category: create a channel inside it. */
     oncreatechannelin: (category: Channel) => void;
@@ -40,7 +48,8 @@
     onnavigate: () => void;
   }
 
-  let { client, collapsedCategoryIds, onopendialog, oncreatechannelin, oneditchannel, onnavigate }: Props = $props();
+  let { client, collapsedCategoryIds, onnewmessage, onopendialog, oncreatechannelin, oneditchannel, onnavigate }: Props =
+    $props();
 
   const guild = $derived(client.selectedGuild);
   const user = $derived(client.user);
@@ -78,11 +87,6 @@
   function chooseMenuItem(dialog: ServerDialog) {
     menu?.hidePopover();
     onopendialog(dialog);
-  }
-
-  function conversationName(conversation: DirectMessageChannel): string {
-    const others = conversation.recipients.filter((recipient) => recipient.id !== user?.id);
-    return others.map(displayName).join(", ") || strings.sidebar.justYou;
   }
 
   function selectChannel(channelId: Snowflake) {
@@ -165,12 +169,27 @@
           class="size-(--mw-component-sidebar-header-chevron-size) text-text-secondary"
         />
       </button>
-    {:else}
+    {:else if guild}
       <h2
         class="flex size-full items-center truncate px-xs type-heading-md text-(--mw-component-sidebar-header-text)"
       >
-        {guild ? guild.name : strings.sidebar.directMessages}
+        {guild.name}
       </h2>
+    {:else}
+      <!-- Home: Discord's "+" beside "Direct messages" starts a conversation or a group (ADR-0026). -->
+      <div class="flex size-full items-center gap-2xs ps-xs">
+        <h2 class="min-w-0 flex-1 truncate type-heading-md text-(--mw-component-sidebar-header-text)">
+          {strings.sidebar.directMessages}
+        </h2>
+        <IconButton
+          icon="plus"
+          label={strings.groups.newMessage}
+          aria-haspopup="dialog"
+          class="size-(--mw-component-category-height) rounded-xs text-(--mw-component-category-text) hover:text-(--mw-component-category-text-hover)"
+          iconClass="size-(--mw-component-category-add-icon-size)"
+          onclick={onnewmessage}
+        />
+      </div>
     {/if}
   </header>
 
@@ -249,17 +268,32 @@
             {@const isSelected = conversation.id === client.selectedChannelId}
             {@const hasUnread = !isSelected && client.hasUnread(conversation.id)}
             {@const mentionCount = isSelected ? 0 : client.mentionCount(conversation.id)}
-            {@const recipient = conversation.recipients.find((candidate) => candidate.id !== user?.id)}
+            {@const others = otherParticipants(conversation, user?.id ?? null)}
+            {@const [recipient] = others}
+            {@const name = conversationDisplayName(conversation, user?.id ?? null)}
+            {@const isGroup = isGroupConversation(conversation)}
+            {@const memberCount = participantCount(conversation, user?.id ?? null)}
             <li class="relative mt-(--mw-component-member-row-gap) me-(--mw-component-channel-row-margin-inline)">
               {#if hasUnread}{@render unreadPill()}{/if}
               <button
                 type="button"
                 aria-current={isSelected ? "page" : undefined}
-                aria-label={nameWithUnreadState(conversationName(conversation), hasUnread, mentionCount)}
+                aria-label={nameWithUnreadState(
+                  isGroup ? strings.groups.rowLabel(name, memberCount) : name,
+                  hasUnread,
+                  mentionCount,
+                )}
                 class={[rowClasses(isSelected, hasUnread), "h-(--mw-component-member-row-height) gap-sm"]}
                 onclick={() => selectConversation(conversation.id)}
               >
-                {#if recipient}
+                {#if isGroup}
+                  <!-- No presence on a group: its second line counts its people, as on Discord. -->
+                  <GroupAvatar
+                    people={others}
+                    sizeToken="--mw-component-member-row-avatar-size"
+                    ringColorToken="--mw-component-navigator-background"
+                  />
+                {:else if recipient}
                   <Avatar
                     user={recipient}
                     sizeToken="--mw-component-member-row-avatar-size"
@@ -267,8 +301,13 @@
                     ringColorToken="--mw-component-navigator-background"
                   />
                 {/if}
-                <span class="min-w-0 flex-1 truncate type-channel-name">
-                  {conversationName(conversation)}
+                <span class="flex min-w-0 flex-1 flex-col">
+                  <span class="truncate type-channel-name">{name}</span>
+                  {#if isGroup}
+                    <span class="truncate type-body-sm text-(--mw-component-group-avatar-member-count-text)">
+                      {strings.groups.memberCount(memberCount)}
+                    </span>
+                  {/if}
                 </span>
                 {#if mentionCount > 0}<MentionBadge {mentionCount} />{/if}
               </button>

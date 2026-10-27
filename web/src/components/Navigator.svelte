@@ -15,6 +15,8 @@
     /** In the drawer the card meets the window's leading edge: only its trailing corners round. */
     isInDrawer: boolean;
     onaddserver: () => void;
+    /** The "+" beside "Direct messages": the "New message" picker. */
+    onnewmessage: () => void;
     onopendialog: (dialog: ServerDialog) => void;
     oncreatechannelin: (category: Channel) => void;
     oneditchannel: (channel: Channel) => void;
@@ -27,6 +29,7 @@
     collapsedCategoryIds,
     isInDrawer,
     onaddserver,
+    onnewmessage,
     onopendialog,
     oncreatechannelin,
     oneditchannel,
@@ -43,7 +46,7 @@
   ]}
 >
   <ServerRail {client} {onaddserver} {onnavigate} />
-  <ChannelSidebar {client} {collapsedCategoryIds} {onopendialog} {oncreatechannelin} {oneditchannel} {onnavigate} />
+  <ChannelSidebar {client} {collapsedCategoryIds} {onnewmessage} {onopendialog} {oncreatechannelin} {oneditchannel} {onnavigate} />
   {#if client.user}
     <UserCard {client} user={client.user} {onopenusersettings} />
   {/if}

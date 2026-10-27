@@ -141,6 +141,13 @@ export class MellowClient {
   failedMemberGuildIds = new SvelteSet<Snowflake>();
   /** Empty hides it; built with `describeError`. */
   signOutError = $state("");
+  /**
+   * The open conversation that closed under the user: they left it, or its owner removed them
+   * (ADR-0026). The shell announces it once Friends shows; cleared at sign-out.
+   */
+  closedConversation = $state<{ conversation: DirectMessageChannel; reason: "left" | "removed" } | null>(null);
+  /** Groups the user asked to leave: the gateway's delete may arrive before the answer. */
+  private channelIdsBeingLeft = new Set<Snowflake>();
   /** Loaded when the pins panel opens; kept up to date by `MESSAGE_UPDATE` and deletions. */
   pinsByChannel = new SvelteMap<Snowflake, PinnedMessages>();
   /** `${messageId}:${emoji key}` of the user's reaction clicks still on their way. */
@@ -313,6 +320,7 @@ export class MellowClient {
     this.gateway = null;
     this.hasReceivedReady = false;
     this.signOutError = "";
+    this.closedConversation = null;
     this.requestedHistory.clear();
     this.requestedMembers.clear();
     this.failedHistoryChannelIds.clear();
@@ -1648,6 +1656,11 @@ export class MellowClient {
   /** The owner removes someone; removing oneself leaves (see `leaveGroupConversation`). */
   async removeGroupParticipant(channelId: Snowflake, userId: Snowflake): Promise<void> {
     await this.rest.removeGroupParticipant(channelId, userId);
+    // At once, not on the gateway's update: the sheet moves focus to the next row when this one goes.
+    const group = this.conversations.find((channel) => channel.id === channelId);
+    if (group) {
+      this.upsertConversation({ ...group, recipients: group.recipients.filter((recipient) => recipient.id !== userId) });
+    }
   }
 
   async leaveGroupConversation(channelId: Snowflake): Promise<void> {
@@ -1655,16 +1668,28 @@ export class MellowClient {
     if (!userId) {
       return;
     }
-    await this.rest.removeGroupParticipant(channelId, userId);
-    this.dropConversation(channelId);
+    this.channelIdsBeingLeft.add(channelId);
+    try {
+      await this.rest.removeGroupParticipant(channelId, userId);
+      this.dropConversation(channelId);
+    } finally {
+      this.channelIdsBeingLeft.delete(channelId);
+    }
   }
 
   /** A conversation the user can no longer read: gone from the list, and left if open. */
   private dropConversation(channelId: Snowflake): void {
+    const conversation = this.conversations.find((channel) => channel.id === channelId);
     this.conversations = this.conversations.filter((channel) => channel.id !== channelId);
     this.forgetChannel(channelId);
-    if (this.selectedChannelId === channelId) {
+    if (this.selectedChannelId === channelId && this.selectedGuildId === null) {
       this.selectGuild(null, null);
+      if (conversation) {
+        this.closedConversation = {
+          conversation,
+          reason: this.channelIdsBeingLeft.has(channelId) ? "left" : "removed",
+        };
+      }
     }
   }
 
