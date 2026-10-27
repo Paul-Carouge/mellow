@@ -60,6 +60,10 @@ Against an instance built from this branch (`cargo build -p mellow-server --feat
 | An install banner or a first-run "Add to home screen" sheet | Nags, and duplicates the browser | The browser's own install entry |
 | `100vh` everywhere | Ignores the mobile URL bar and the keyboard | `100dvh` and `interactive-widget=resizes-content` |
 
+## Known limit
+
+Every screen reflows down to 320 px of layout width, which is what WCAG 1.4.10 asks. Below that, the navigator drawer cannot hold the 72 px strip and readable channel names: a 360 px phone with text at 200 % lays out as 180 px, and there the drawer shows the strip, channel icons only and a crowded user card (its settings button is cut off in development builds, where the microphone and headset toggles show). The chat, settings and dialogs stay usable at that size. A narrower strip or a stacked navigator for such widths would be a layout change for the owner to decide.
+
 ## Not verified
 
 - Real devices: an Android phone with Chrome (keyboard resizing, the maskable icon on the launcher, the standalone status bar), an iPhone with Safari (safe areas with the notch and the home indicator, "Add to Home Screen", whether the keyboard covers the composer: Safari ignores `interactive-widget` and overlays the keyboard, so the composer may need a `visualViewport` follow-up there), a touchscreen laptop.
