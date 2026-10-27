@@ -1646,11 +1646,18 @@ export class MellowClient {
   }
 
   async renameGroupConversation(channelId: Snowflake, name: string): Promise<void> {
-    this.upsertConversation(await this.rest.renameGroupConversation(channelId, name.trim()));
+    this.applyGroupAnswer(await this.rest.renameGroupConversation(channelId, name.trim()));
   }
 
   async addGroupParticipant(channelId: Snowflake, userId: Snowflake): Promise<void> {
-    this.upsertConversation(await this.rest.addGroupParticipant(channelId, userId));
+    this.applyGroupAnswer(await this.rest.addGroupParticipant(channelId, userId));
+  }
+
+  /** The instance's answer about a group, unless the group left meanwhile (a delete event came first). */
+  private applyGroupAnswer(group: DirectMessageChannel): void {
+    if (this.conversations.some((channel) => channel.id === group.id)) {
+      this.upsertConversation(group);
+    }
   }
 
   /** The owner removes someone; removing oneself leaves (see `leaveGroupConversation`). */

@@ -944,6 +944,28 @@ describe("Group conversations", () => {
     expect(client.closedConversation).toMatchObject({ reason: "left", conversation: { id: "700", name: "Trip" } });
   });
 
+  it("never bring back a group whose delete event came before the answer to a rename or an add", async () => {
+    const answers: (() => void)[] = [];
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        renameGroupConversation: (channelId: string, name: string) =>
+          new Promise((resolve) => answers.push(() => resolve(group(channelId, ["20", "21"], name)))),
+        addGroupParticipant: (channelId: string, userId: string) =>
+          new Promise((resolve) => answers.push(() => resolve(group(channelId, ["20", "21", userId])))),
+      }),
+    );
+    client.applyReady(ready({ direct_message_channels: [group("860", ["20", "21"])] }));
+    const renaming = client.renameGroupConversation("860", "Trip");
+    const adding = client.addGroupParticipant("860", "22");
+    client.applyEvent({ t: "DIRECT_MESSAGE_CHANNEL_DELETE", data: { id: "860" } }, 0);
+    for (const answer of answers) {
+      answer();
+    }
+    await Promise.all([renaming, adding]);
+    expect(client.conversations).toEqual([]);
+  });
+
   it("take someone the owner removed out of the group at once", async () => {
     const client = new MellowClient(fakeRest({ ...QUIET_REST, removeGroupParticipant: () => Promise.resolve() }));
     client.applyReady(ready({ direct_message_channels: [group("850", ["20", "21", "22"], "Trip")] }));
