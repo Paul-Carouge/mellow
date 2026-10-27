@@ -159,7 +159,7 @@
           data-add-reaction
           aria-label={strings.reactions.addReaction}
           title={strings.reactions.addReaction}
-          class="grid h-(--mw-component-reaction-height) place-items-center rounded-(--mw-component-reaction-radius) border-(length:--mw-component-reaction-border-width) border-(--mw-component-reaction-border) bg-(--mw-component-reaction-background) px-(--mw-component-reaction-padding-inline) text-(--mw-component-reaction-add-icon) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:border-(--mw-component-reaction-border-hover) hover:text-(--mw-component-reaction-add-icon-hover) focus-visible:focus-ring pointer-coarse:h-(--mw-size-hit-web-min)"
+          class="grid h-(--mw-component-reaction-height) place-items-center rounded-(--mw-component-reaction-radius) border-(length:--mw-component-reaction-border-width) border-(--mw-component-reaction-border) bg-(--mw-component-reaction-background) px-(--mw-component-reaction-padding-inline) text-(--mw-component-reaction-add-icon) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:border-(--mw-component-reaction-border-hover) hover:text-(--mw-component-reaction-add-icon-hover) focus-visible:focus-ring pointer-coarse:h-(--mw-size-hit-web-min) pointer-coarse:min-w-(--mw-size-hit-web-min)"
           onpointerdown={pickerToggle.notePress}
           onclick={(event) => pickerToggle.shouldOpenOnClick() && onopenpicker(event.currentTarget)}
         >

@@ -248,7 +248,7 @@
           type="button"
           aria-current={client.isFriendsSpaceOpen ? "page" : undefined}
           aria-label={strings.sidebar.friendsWithRequests(incomingRequests)}
-          class={[rowClasses(client.isFriendsSpaceOpen, false), "h-(--mw-component-member-row-height) gap-sm"]}
+          class={[rowClasses(client.isFriendsSpaceOpen, false), "h-(--mw-component-member-row-height) gap-sm pointer-coarse:h-(--mw-size-hit-web-min)"]}
           onclick={() => selectConversation(null)}
         >
           <span class="grid size-(--mw-component-member-row-avatar-size) shrink-0 place-items-center">
@@ -283,7 +283,7 @@
                   hasUnread,
                   mentionCount,
                 )}
-                class={[rowClasses(isSelected, hasUnread), "h-(--mw-component-member-row-height) gap-sm"]}
+                class={[rowClasses(isSelected, hasUnread), "h-(--mw-component-member-row-height) gap-sm pointer-coarse:h-(--mw-size-hit-web-min)"]}
                 onclick={() => selectConversation(conversation.id)}
               >
                 {#if isGroup}
