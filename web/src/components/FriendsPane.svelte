@@ -278,9 +278,8 @@
     role="tablist"
     aria-label={strings.friends.title}
     class={[
-      "flex items-center gap-(--mw-component-friends-tab-gap)",
-      // Phones wrap the tabs rather than hide one off the edge (long French labels, large text).
-      hasNavigationDrawer && "flex-wrap",
+      // The tabs wrap rather than hide one off the edge (long French labels, large text, touch).
+      "flex flex-wrap items-center gap-(--mw-component-friends-tab-gap)",
     ]}
     onkeydown={moveTabFocus}
   >
@@ -345,7 +344,7 @@
   ]}
 >
   <header
-    class="flex h-(--mw-component-chat-header-height) shrink-0 items-center gap-xs ps-(--mw-component-chat-header-padding-inline) pe-xs"
+    class="flex min-h-(--mw-component-chat-header-height) shrink-0 items-center gap-xs ps-(--mw-component-chat-header-padding-inline) pe-xs"
   >
     {#if hasNavigationDrawer}
       <IconButton
@@ -362,8 +361,9 @@
     </div>
     {#if !hasNavigationDrawer}
       <span aria-hidden="true" class="mx-xs h-(--mw-component-chat-header-divider-height) w-px shrink-0 bg-border-divider"></span>
-      <!-- Scrolls sideways only under large text; the padding keeps the focus ring unclipped. -->
-      <div class="min-w-0 flex-1 overflow-x-auto p-2xs [scrollbar-width:none]">
+      <!-- A narrow sheet wraps the tabs onto a second row (the header grows) rather than hiding
+           Add friend behind a sideways scroll; the padding keeps the focus ring clear. -->
+      <div class="min-w-0 flex-1 p-2xs">
         {@render tabList()}
       </div>
     {/if}

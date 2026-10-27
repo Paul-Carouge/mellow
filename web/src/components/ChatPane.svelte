@@ -598,7 +598,7 @@
       />
     {/if}
     {#if channel || conversation}
-      <div class="flex max-w-1/2 min-w-0 shrink-0 items-center gap-2xs text-(--mw-component-chat-header-name-text)">
+      <div class="flex max-w-1/2 min-w-0 items-center gap-2xs text-(--mw-component-chat-header-name-text)">
         {#if channelIcon}
           {@const iconId = channelIcon.id}
           <img
