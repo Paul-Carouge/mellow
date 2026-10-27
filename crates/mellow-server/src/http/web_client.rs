@@ -16,11 +16,12 @@ const CACHE_HASHED_ASSET: &str = "public, max-age=31536000, immutable";
 const CACHE_REVALIDATE: &str = "no-cache";
 /// Scripts and styles from this origin only; connections to this origin only (REST and the
 /// gateway). Inline styles are allowed for Svelte transitions; inline scripts never are. `blob:`
-/// images are the composer's previews of files about to be uploaded.
+/// images are the composer's previews of files about to be uploaded. The manifest makes the client
+/// installable as an app; there is no service worker (Chrome installs without one).
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; \
      style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; \
-     connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; \
-     frame-ancestors 'none'";
+     connect-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; \
+     form-action 'self'; frame-ancestors 'none'";
 
 pub(crate) async fn serve(uri: Uri) -> Response {
     let path = uri.path();
@@ -40,6 +41,10 @@ pub(crate) async fn serve(uri: Uri) -> Response {
     let Some((name, bytes)) = asset else {
         return ApiError::not_found().into_response();
     };
+    asset_response(name, bytes)
+}
+
+fn asset_response(name: &str, bytes: &'static [u8]) -> Response {
     let cache_control = if name.starts_with(HASHED_ASSETS_PREFIX) {
         CACHE_HASHED_ASSET
     } else {
@@ -97,7 +102,8 @@ fn content_type(name: &str) -> &'static str {
         Some("ico") => "image/x-icon",
         Some("woff2") => "font/woff2",
         Some("ttf") => "font/ttf",
-        Some("json" | "webmanifest") => "application/json",
+        Some("json") => "application/json",
+        Some("webmanifest") => "application/manifest+json",
         Some("txt") => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
@@ -116,6 +122,25 @@ mod tests {
         );
         assert_eq!(content_type("assets/Figtree.ttf"), "font/ttf");
         assert_eq!(content_type("README"), "application/octet-stream");
+    }
+
+    #[test]
+    fn the_manifest_and_app_icons_are_served_with_their_type_and_the_policy() {
+        let manifest = asset_response("manifest.webmanifest", b"{}");
+        let headers = manifest.headers();
+        assert_eq!(headers[header::CONTENT_TYPE], "application/manifest+json");
+        assert_eq!(headers[header::CACHE_CONTROL], CACHE_REVALIDATE);
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        let policy = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+        assert!(policy.contains("manifest-src 'self'"), "{policy}");
+        assert!(
+            !policy.contains("worker-src"),
+            "no service worker: {policy}"
+        );
+
+        let icon = asset_response("icons/mellow-maskable-512.png", b"");
+        assert_eq!(icon.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(icon.headers()[header::CACHE_CONTROL], CACHE_REVALIDATE);
     }
 
     #[tokio::test]
