@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { flushSync, tick } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
@@ -16,7 +16,9 @@
   import type { MelliState } from "./melli";
   import MentionBadge from "./MentionBadge.svelte";
   import { menuItemsIn, moveFocusWithinMenu } from "./menu-keyboard";
+  import { menuTopNextToAnchor } from "./menu-placement";
   import RelationshipConfirmDialog from "./RelationshipConfirmDialog.svelte";
+  import { lengthTokenInPixels } from "./tokens";
 
   // The Friends space (DESIGN.md §5.6.1, ADR-0025): Home's page when no conversation is open, in
   // the sheet. Tabs Online, All, Pending, Blocked and Add friend, as on Discord; each row has its
@@ -206,10 +208,16 @@
     }
     menuUserIdAtPress = null;
     const bounds = button.getBoundingClientRect();
-    menuPosition = { top: bounds.bottom, right: window.innerWidth - bounds.right };
-    menuRelationship = relationship;
-    menuButton = button;
+    // The menu's items follow the relationship: render them before measuring its height.
+    flushSync(() => {
+      menuRelationship = relationship;
+      menuButton = button;
+    });
     menu.showPopover();
+    menuPosition = {
+      top: menuTopNextToAnchor(bounds, menu.offsetHeight, window.innerHeight, lengthTokenInPixels("space-2xs")),
+      right: Math.max(window.innerWidth - bounds.right, 0),
+    };
     menuItemsIn(menu)[0]?.focus();
   }
 
@@ -519,7 +527,7 @@
   tabindex="-1"
   aria-label={menuRelationship ? strings.friends.menu(displayName(menuRelationship.user)) : strings.friends.title}
   class="fixed inset-auto m-0 w-max max-w-(--mw-component-context-menu-max-width) min-w-(--mw-component-context-menu-min-width) flex-col rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) p-(--mw-component-context-menu-padding) shadow-(--mw-component-context-menu-shadow) [&:popover-open]:flex [&:popover-open]:animate-[mw-drop-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]"
-  style:top="calc({menuPosition.top}px + var(--mw-space-2xs))"
+  style:top="{menuPosition.top}px"
   style:right="{menuPosition.right}px"
   onkeydown={(event) => moveFocusWithinMenu(event, menu)}
   ontoggle={(event) => {

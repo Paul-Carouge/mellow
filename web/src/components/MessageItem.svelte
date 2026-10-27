@@ -14,6 +14,7 @@
   import Icon, { type IconName } from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import { menuItemsIn, moveFocusWithinMenu } from "./menu-keyboard";
+  import { menuTopNextToAnchor } from "./menu-placement";
   import type { ReactionAndPinActions } from "./message-actions";
   import MessageReactions from "./MessageReactions.svelte";
   import { reactionKey } from "../lib/reactions";
@@ -158,8 +159,11 @@
       return;
     }
     const bounds = moreButton.getBoundingClientRect();
-    menuPosition = { top: bounds.bottom, right: Math.max(window.innerWidth - bounds.right, 0) };
     menu.showPopover();
+    menuPosition = {
+      top: menuTopNextToAnchor(bounds, menu.offsetHeight, window.innerHeight, 0),
+      right: Math.max(window.innerWidth - bounds.right, 0),
+    };
     menuItemsIn(menu)[0]?.focus();
   }
 
