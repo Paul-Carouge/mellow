@@ -153,7 +153,7 @@
       {isRegistering ? strings.signIn.hasAccount : strings.signIn.hasNoAccount}
       <button
         type="button"
-        class="text-(--mw-component-auth-card-link-text) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
+        class="text-(--mw-component-auth-card-link-text) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min) pointer-coarse:min-w-(--mw-size-hit-web-min)"
         onclick={switchMode}>{isRegistering ? strings.signIn.signIn : strings.signIn.createAnAccount}</button
       >
     </p>
