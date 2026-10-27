@@ -17,11 +17,12 @@ const CACHE_REVALIDATE: &str = "no-cache";
 /// Scripts and styles from this origin only; connections to this origin only (REST and the
 /// gateway). Inline styles are allowed for Svelte transitions; inline scripts never are. `blob:`
 /// images are the composer's previews of files about to be uploaded. The manifest makes the client
-/// installable as an app; there is no service worker (Chrome installs without one).
+/// installable as an app; there is no service worker (Chrome installs without one), and
+/// `worker-src 'none'` keeps a script served from this origin, such as an upload, from becoming one.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; \
      style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; \
-     connect-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; \
-     form-action 'self'; frame-ancestors 'none'";
+     connect-src 'self'; manifest-src 'self'; worker-src 'none'; object-src 'none'; \
+     base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 pub(crate) async fn serve(uri: Uri) -> Response {
     let path = uri.path();
@@ -133,10 +134,7 @@ mod tests {
         assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
         let policy = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
         assert!(policy.contains("manifest-src 'self'"), "{policy}");
-        assert!(
-            !policy.contains("worker-src"),
-            "no service worker: {policy}"
-        );
+        assert!(policy.contains("worker-src 'none'"), "{policy}");
 
         let icon = asset_response("icons/mellow-maskable-512.png", b"");
         assert_eq!(icon.headers()[header::CONTENT_TYPE], "image/png");
