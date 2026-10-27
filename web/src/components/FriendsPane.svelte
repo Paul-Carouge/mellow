@@ -239,7 +239,7 @@
   }
 
   const tabClass = (isSelected: boolean, isAdd: boolean) => [
-    "flex h-(--mw-component-friends-tab-height) shrink-0 items-center gap-2xs rounded-(--mw-component-friends-tab-radius) px-(--mw-component-friends-tab-padding-inline) type-button whitespace-nowrap transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) pointer-coarse:h-(--mw-size-hit-web-min)",
+    "flex h-(--mw-component-friends-tab-height) shrink-0 items-center justify-center gap-2xs rounded-(--mw-component-friends-tab-radius) px-(--mw-component-friends-tab-padding-inline) type-button whitespace-nowrap transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) pointer-coarse:h-(--mw-size-hit-web-min) pointer-coarse:min-w-(--mw-size-hit-web-min)",
     isAdd
       ? isSelected
         ? "text-(--mw-component-friends-add-tab-text-selected)"
