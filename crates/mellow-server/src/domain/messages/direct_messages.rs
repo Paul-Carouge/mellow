@@ -29,6 +29,8 @@ fn channel_from_stored(stored: StoredDirectMessageChannel) -> DirectMessageChann
             })
             .collect(),
         last_message_id: stored.last_message_id,
+        owner_id: stored.owner_id,
+        name: stored.name,
     }
 }
 
@@ -77,8 +79,8 @@ impl Messages {
         Ok(channel)
     }
 
-    /// The conversations listed at `Ready`: those with at least one message, so one opened by
-    /// someone else and left empty never shows up.
+    /// The conversations listed at `Ready`: groups, and one-to-one conversations with at least
+    /// one message, so one opened by someone else and left empty never shows up.
     pub(crate) async fn list_direct_message_channels(
         &self,
         user_id: Snowflake,
@@ -88,7 +90,9 @@ impl Messages {
                 .await
                 .map_err(GuildError::from)?
                 .into_iter()
-                .filter(|conversation| conversation.last_message_id.is_some())
+                .filter(|conversation| {
+                    conversation.owner_id.is_some() || conversation.last_message_id.is_some()
+                })
                 .map(channel_from_stored)
                 .collect();
         fill_profile_images(
@@ -102,7 +106,7 @@ impl Messages {
     }
 }
 
-async fn conversation_seen_by(
+pub(super) async fn conversation_seen_by(
     database: &Database,
     user_id: Snowflake,
     channel_id: Snowflake,
@@ -135,7 +139,7 @@ pub(super) async fn may_reach_each(
     Ok(true)
 }
 
-/// The conversation as each participant sees it, for `announce_conversation`.
+/// The conversation as each participant sees it, for `announce_conversation` and group events.
 pub(super) async fn conversation_views(
     database: &Database,
     channel_id: Snowflake,

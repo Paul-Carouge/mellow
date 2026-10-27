@@ -411,6 +411,26 @@ export class RestClient {
     return this.request("POST", `channels/${channelId}/typing`);
   }
 
+  /** A new group with these friends of the caller (ADR-0026). */
+  createGroupConversation(recipientIds: Snowflake[], name: string): Promise<DirectMessageChannel> {
+    return this.request("POST", "group-conversations", { recipient_ids: recipientIds, name });
+  }
+
+  /** An empty name clears it. */
+  renameGroupConversation(channelId: Snowflake, name: string): Promise<DirectMessageChannel> {
+    return this.request("PATCH", `group-conversations/${channelId}`, { name });
+  }
+
+  /** Adds a friend of the caller's. */
+  addGroupParticipant(channelId: Snowflake, userId: Snowflake): Promise<DirectMessageChannel> {
+    return this.request("PUT", `group-conversations/${channelId}/recipients/${userId}`);
+  }
+
+  /** Removing oneself leaves the group; only its owner removes others. */
+  removeGroupParticipant(channelId: Snowflake, userId: Snowflake): Promise<void> {
+    return this.request("DELETE", `group-conversations/${channelId}/recipients/${userId}`);
+  }
+
   listRelationships(): Promise<Relationship[]> {
     return this.request("GET", "users/@me/relationships");
   }

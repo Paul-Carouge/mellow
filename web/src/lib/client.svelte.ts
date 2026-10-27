@@ -604,7 +604,11 @@ export class MellowClient {
         this.applyUserUpdate(event.data);
         return;
       case "DIRECT_MESSAGE_CHANNEL_CREATE":
+      case "DIRECT_MESSAGE_CHANNEL_UPDATE":
         this.upsertConversation(event.data);
+        return;
+      case "DIRECT_MESSAGE_CHANNEL_DELETE":
+        this.dropConversation(event.data.id);
         return;
       case "RELATIONSHIP_ADD":
         this.relationshipByUserId.set(event.data.user.id, event.data);
@@ -1616,6 +1620,52 @@ export class MellowClient {
     const conversation = await this.rest.openDirectMessage(userId);
     this.upsertConversation(conversation);
     this.selectGuild(null, conversation.id);
+  }
+
+  /**
+   * The "New message" picker: one person opens the one-to-one conversation, several start a new
+   * group (ADR-0026).
+   */
+  async startConversation(userIds: Snowflake[], groupName = ""): Promise<void> {
+    const [onlyUserId] = userIds;
+    if (userIds.length === 1 && onlyUserId !== undefined) {
+      await this.openDirectMessage(onlyUserId);
+      return;
+    }
+    const group = await this.rest.createGroupConversation(userIds, groupName.trim());
+    this.upsertConversation(group);
+    this.selectGuild(null, group.id);
+  }
+
+  async renameGroupConversation(channelId: Snowflake, name: string): Promise<void> {
+    this.upsertConversation(await this.rest.renameGroupConversation(channelId, name.trim()));
+  }
+
+  async addGroupParticipant(channelId: Snowflake, userId: Snowflake): Promise<void> {
+    this.upsertConversation(await this.rest.addGroupParticipant(channelId, userId));
+  }
+
+  /** The owner removes someone; removing oneself leaves (see `leaveGroupConversation`). */
+  async removeGroupParticipant(channelId: Snowflake, userId: Snowflake): Promise<void> {
+    await this.rest.removeGroupParticipant(channelId, userId);
+  }
+
+  async leaveGroupConversation(channelId: Snowflake): Promise<void> {
+    const userId = this.user?.id;
+    if (!userId) {
+      return;
+    }
+    await this.rest.removeGroupParticipant(channelId, userId);
+    this.dropConversation(channelId);
+  }
+
+  /** A conversation the user can no longer read: gone from the list, and left if open. */
+  private dropConversation(channelId: Snowflake): void {
+    this.conversations = this.conversations.filter((channel) => channel.id !== channelId);
+    this.forgetChannel(channelId);
+    if (this.selectedChannelId === channelId) {
+      this.selectGuild(null, null);
+    }
   }
 
   private reportError(error: unknown, action: string): void {

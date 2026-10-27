@@ -15,7 +15,11 @@ pub use accounts::{
     ApiErrorBody, ApiErrorCode, ChangePasswordRequest, ChosenStatus, CurrentUser, LoginRequest,
     RegisterRequest, SessionCreated, UpdateCurrentUserRequest, UpdatePresenceRequest,
 };
-pub use direct_messages::{DirectMessageChannel, OpenDirectMessageRequest};
+pub use direct_messages::{
+    CreateGroupConversationRequest, DirectMessageChannel, MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH,
+    MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS, OpenDirectMessageRequest,
+    UpdateGroupConversationRequest,
+};
 pub use gateway::{
     ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, MessageReaction, Presence, PresenceStatus,
     Ready, ServerFrame,

@@ -2,7 +2,10 @@
 
 use std::time::Duration;
 
-use mellow_protocol::{Permissions, Snowflake};
+use mellow_protocol::{
+    MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH, MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS, Permissions,
+    Snowflake,
+};
 
 use crate::domain::account_rules::is_invisible_format_character;
 
@@ -68,6 +71,15 @@ pub enum GuildRuleViolation {
     #[error("a conversation needs another user")]
     DirectMessageRecipient,
     #[error(
+        "a group starts with 2 to {} other people, each named once",
+        MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS - 1
+    )]
+    GroupConversationRecipients,
+    #[error(
+        "group names are at most {MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH} characters, without hidden characters"
+    )]
+    GroupConversationName,
+    #[error(
         "ban reasons are at most {MAXIMUM_BAN_REASON_LENGTH} characters, without control characters"
     )]
     BanReason,
@@ -104,6 +116,16 @@ pub fn normalize_guild_name(name: &str) -> Result<String, GuildRuleViolation> {
     trimmed_within(name, MINIMUM_GUILD_NAME_LENGTH, MAXIMUM_GUILD_NAME_LENGTH)
         .map(str::to_owned)
         .ok_or(GuildRuleViolation::GuildName)
+}
+
+/// A group's name; empty clears it (ADR-0026).
+///
+/// # Errors
+/// `GroupConversationName` when too long or containing hidden characters.
+pub fn normalize_group_conversation_name(name: &str) -> Result<String, GuildRuleViolation> {
+    trimmed_within(name, 0, MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH)
+        .map(str::to_owned)
+        .ok_or(GuildRuleViolation::GroupConversationName)
 }
 
 /// # Errors

@@ -229,7 +229,16 @@ export interface DirectMessageChannel {
   id: Snowflake;
   recipients: PublicUser[];
   last_message_id: Snowflake | null;
+  /** Present for a group (ADR-0026): who may remove people from it. */
+  owner_id?: Snowflake;
+  /** A group's name; absent or empty for none. */
+  name?: string;
 }
+
+/** At most this many people in a group, its creator included. */
+export const MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS = 10;
+/** A group's name is at most this many characters. */
+export const MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH = 100;
 
 export interface Invite {
   code: string;
@@ -381,6 +390,8 @@ export type GatewayEvent =
   | { t: "PRESENCE_UPDATE"; data: Presence }
   | { t: "USER_UPDATE"; data: PublicUser }
   | { t: "DIRECT_MESSAGE_CHANNEL_CREATE"; data: DirectMessageChannel }
+  | { t: "DIRECT_MESSAGE_CHANNEL_UPDATE"; data: DirectMessageChannel }
+  | { t: "DIRECT_MESSAGE_CHANNEL_DELETE"; data: { id: Snowflake } }
   | { t: "RELATIONSHIP_ADD"; data: Relationship }
   | { t: "RELATIONSHIP_REMOVE"; data: { user_id: Snowflake } };
 
