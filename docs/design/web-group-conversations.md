@@ -69,14 +69,14 @@ Gateway: removed while the group is open ──> Friends, "You're no longer in t
 
 | Piece | File |
 |---|---|
-| Names ("Ana, Bob and 2 others"), counts, room left, search, next owner | `web/src/components/group-conversations.ts` (tested) |
+| Names ("Ana, Bob and 2 others"), counts, room left, search, next owner, who locks the composer (never in a group) | `web/src/components/group-conversations.ts` (tested) |
 | Group picture | `web/src/components/GroupAvatar.svelte` |
 | "New message" and "Add friends" picker | `web/src/components/PeoplePickerDialog.svelte` |
 | Group side sheet: actions, members, Remove | `web/src/components/GroupMembersSheet.svelte` |
 | Leave and Remove confirmations | `web/src/components/GroupConfirmDialog.svelte` |
 | Rename | `web/src/components/RenameGroupDialog.svelte` |
 | "+" beside Direct messages, group rows | `web/src/components/ChannelSidebar.svelte` (through `Navigator.svelte`) |
-| Header avatar, member count, Add friends, member toggle, hero, composer label, no lock in groups | `web/src/components/ChatPane.svelte` |
+| Header avatar, member count, Add friends, member toggle, hero, composer label | `web/src/components/ChatPane.svelte` |
 | Picker and sheet wiring, remembering the sheet per group, the announcement and focus after closing | `web/src/components/Shell.svelte` |
 | Why the open group closed (`closedConversation`), even when the gateway's delete beats the answer | `web/src/lib/client.svelte.ts` (tested) |
 | Groups in the quick switcher; people lead to their own conversation | `web/src/components/quick-switcher.ts` (tested), `QuickSwitcher.svelte` |

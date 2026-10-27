@@ -24,6 +24,7 @@
   import { displayName, humanFileSize, typingSegments, unixMillisecondsOfSnowflake } from "./format";
   import GroupAvatar from "./GroupAvatar.svelte";
   import {
+    blockedRecipientOf,
     conversationDisplayName,
     isGroupConversation,
     otherParticipants,
@@ -86,13 +87,9 @@
     client.selectedChannelId ? client.myChannelPermissions(client.selectedChannelId) : null,
   );
   // A conversation with someone you blocked stays readable but locked (ADR-0025). Being blocked
-  // by them changes nothing here: the instance refuses, and the client never tells. A group stays
-  // open whatever its people's relationships (ADR-0026): their messages fold instead.
+  // by them changes nothing here: the instance refuses, and the client never tells. Groups never lock.
   const blockedRecipient = $derived(
-    isGroup
-      ? null
-      : (conversation?.recipients.find((recipient) => recipient.id !== user?.id && client.isBlocked(recipient.id)) ??
-          null),
+    conversation ? blockedRecipientOf(conversation, user?.id ?? null, (userId) => client.isBlocked(userId)) : null,
   );
   const canSendMessages = $derived(
     blockedRecipient === null &&

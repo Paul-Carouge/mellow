@@ -30,6 +30,21 @@ export function conversationDisplayName(conversation: DirectMessageChannel, curr
   return ownName || participantNamesOf(conversation, currentUserId);
 }
 
+/**
+ * Who locks the composer: the other person of a one-to-one conversation when you blocked them
+ * (ADR-0025). A group never locks, whatever the relationships in it (ADR-0026): their messages fold.
+ */
+export function blockedRecipientOf(
+  conversation: DirectMessageChannel,
+  currentUserId: Snowflake | null,
+  isBlocked: (userId: Snowflake) => boolean,
+): PublicUser | null {
+  if (isGroupConversation(conversation)) {
+    return null;
+  }
+  return otherParticipants(conversation, currentUserId).find((recipient) => isBlocked(recipient.id)) ?? null;
+}
+
 /** Everyone in a group, you included. */
 export function participantCount(conversation: DirectMessageChannel, currentUserId: Snowflake | null): number {
   return otherParticipants(conversation, currentUserId).length + 1;

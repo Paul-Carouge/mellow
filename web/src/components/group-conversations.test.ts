@@ -4,6 +4,7 @@ import { en } from "../i18n/en";
 import { fr } from "../i18n/fr";
 import type { DirectMessageChannel, PublicUser } from "../lib/protocol";
 import {
+  blockedRecipientOf,
   conversationDisplayName,
   friendsMatching,
   isGroupConversation,
@@ -82,6 +83,20 @@ describe("the picker", () => {
     expect(pickerRoom(10, 3)).toBe(0);
     expect(en.groups.roomLeft(1)).toBe("You can add 1 more friend.");
     expect(fr.groups.roomLeft(2)).toBe("Tu peux encore ajouter 2 amis.");
+  });
+});
+
+describe("blockedRecipientOf", () => {
+  const isBlocked = (userId: string) => userId === bob.id;
+
+  it("locks a one-to-one conversation with someone you blocked", () => {
+    const withBob: DirectMessageChannel = { id: "d2", recipients: [bob], last_message_id: null };
+    expect(blockedRecipientOf(withBob, "me", isBlocked)).toEqual(bob);
+    expect(blockedRecipientOf({ ...withBob, recipients: [ana] }, "me", isBlocked)).toBeNull();
+  });
+
+  it("never locks a group, even with someone you blocked in it", () => {
+    expect(blockedRecipientOf(group([ana, bob]), "me", isBlocked)).toBeNull();
   });
 });
 
