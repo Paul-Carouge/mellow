@@ -1,11 +1,12 @@
-//! `cargo xtask tokens [--check]`: generates platform token files and app icons from `design/tokens.json`
-//! and enforces the declared WCAG contrast pairs (DESIGN.md §3.5).
+//! `cargo xtask tokens [--check]`: generates platform token files, app icons and the web app
+//! manifest from `design/tokens.json` and enforces the declared WCAG contrast pairs (DESIGN.md §3.5).
 
 mod app_icons;
 mod css_tokens;
 mod design_tokens;
 mod favicon;
 mod slint_tokens;
+mod web_manifest;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -19,6 +20,9 @@ const TOKENS_SOURCE_PATH: &str = "design/tokens.json";
 const SLINT_TOKENS_OUTPUT_PATH: &str = "crates/mellow-desktop/ui/tokens.slint";
 const CSS_TOKENS_OUTPUT_PATH: &str = "web/src/lib/tokens.css";
 const FAVICON_OUTPUT_PATH: &str = "web/public/favicon.svg";
+const WEB_MANIFEST_OUTPUT_PATH: &str = "web/public/manifest.webmanifest";
+/// Hand-written, except for its marked `theme-color` block.
+const WEB_INDEX_HTML_PATH: &str = "web/index.html";
 
 fn main() -> ExitCode {
     match run(&std::env::args().skip(1).collect::<Vec<_>>()) {
@@ -70,25 +74,46 @@ fn generate_tokens(is_check_only: bool) -> Result<()> {
             favicon_svg.clone().into_bytes(),
         ),
     ];
-    let icons = app_icons::generate_app_icons(&favicon_svg)?;
-    let icon_file_names: Vec<String> = icons.iter().map(|(name, _)| name.clone()).collect();
-    outputs.extend(
-        icons
-            .into_iter()
-            .map(|(name, generated)| (format!("{}/{name}", app_icons::ICONS_DIRECTORY), generated)),
-    );
-    if !is_check_only {
-        std::fs::create_dir_all(root.join(app_icons::ICONS_DIRECTORY))?;
+    outputs.push((
+        WEB_MANIFEST_OUTPUT_PATH.to_owned(),
+        web_manifest::generate_manifest(&tokens)?.into_bytes(),
+    ));
+    let index_html_path = root.join(WEB_INDEX_HTML_PATH);
+    let index_html = std::fs::read_to_string(&index_html_path)
+        .with_context(|| format!("cannot read {}", index_html_path.display()))?;
+    outputs.push((
+        WEB_INDEX_HTML_PATH.to_owned(),
+        web_manifest::with_theme_color_metas(&index_html, &tokens)?.into_bytes(),
+    ));
+    let maskable_svg = favicon::generate_maskable_icon(&tokens)?;
+    let icons_by_directory = [
+        (
+            app_icons::ICONS_DIRECTORY,
+            app_icons::generate_app_icons(&favicon_svg)?,
+        ),
+        (
+            app_icons::WEB_ICONS_DIRECTORY,
+            app_icons::generate_web_app_icons(&favicon_svg, &maskable_svg)?,
+        ),
+    ];
+    // (path, file name) of every icon, compared by pixels rather than bytes below.
+    let mut icon_paths = Vec::new();
+    for (directory, icons) in icons_by_directory {
+        if !is_check_only {
+            std::fs::create_dir_all(root.join(directory))?;
+        }
+        for (name, generated) in icons {
+            let relative_path = format!("{directory}/{name}");
+            icon_paths.push((relative_path.clone(), name));
+            outputs.push((relative_path, generated));
+        }
     }
     for (relative_path, generated) in outputs {
         let output_path = root.join(&relative_path);
         let current = std::fs::read(&output_path).unwrap_or_default();
         // A rasteriser's rounding differences alone never rewrite an icon (app_icons.rs).
-        let is_up_to_date = match icon_file_names
-            .iter()
-            .find(|name| relative_path.ends_with(name.as_str()))
-        {
-            Some(icon_file_name) => {
+        let is_up_to_date = match icon_paths.iter().find(|(path, _)| *path == relative_path) {
+            Some((_, icon_file_name)) => {
                 app_icons::is_icon_up_to_date(icon_file_name, &current, &generated)?
             }
             None => current == generated,

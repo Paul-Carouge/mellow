@@ -30,8 +30,46 @@ pub const MAXIMUM_CHANNEL_DIFFERENCE_ON_CHECK: u8 = 2;
 pub const ICONS_DIRECTORY: &str = "release/icons";
 pub const ICNS_FILE_NAME: &str = "Mellow.icns";
 
+/// The installed web app's icons (`manifest.webmanifest`), served from the web client's `public/`.
+pub const WEB_ICONS_DIRECTORY: &str = "web/public/icons";
+/// Chrome's install criteria ask for 192 and 512 px; Android launchers prefer the maskable one.
+const WEB_ICON_SIZES: [u32; 2] = [192, 512];
+pub const WEB_MASKABLE_ICON_SIZE: u32 = 512;
+/// iOS "Add to Home Screen" draws its own rounded square and fills transparency with black, so it
+/// gets the full-bleed tile.
+const APPLE_TOUCH_ICON_SIZE: u32 = 180;
+pub const APPLE_TOUCH_ICON_FILE_NAME: &str = "apple-touch-icon.png";
+
 pub fn png_file_name(size: u32) -> String {
     format!("mellow-{size}.png")
+}
+
+pub fn maskable_png_file_name(size: u32) -> String {
+    format!("mellow-maskable-{size}.png")
+}
+
+/// The web app's icon files, as (path under `WEB_ICONS_DIRECTORY`, contents).
+pub fn generate_web_app_icons(
+    favicon_svg: &str,
+    maskable_svg: &str,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let favicon = usvg::Tree::from_str(favicon_svg, &usvg::Options::default())
+        .context("the favicon is not valid SVG")?;
+    let maskable = usvg::Tree::from_str(maskable_svg, &usvg::Options::default())
+        .context("the maskable icon is not valid SVG")?;
+    let mut icons = Vec::new();
+    for size in WEB_ICON_SIZES {
+        icons.push((png_file_name(size), render_png(&favicon, size, 1.0)?));
+    }
+    icons.push((
+        maskable_png_file_name(WEB_MASKABLE_ICON_SIZE),
+        render_png(&maskable, WEB_MASKABLE_ICON_SIZE, 1.0)?,
+    ));
+    icons.push((
+        APPLE_TOUCH_ICON_FILE_NAME.to_owned(),
+        render_png(&maskable, APPLE_TOUCH_ICON_SIZE, 1.0)?,
+    ));
+    Ok(icons)
 }
 
 /// Every icon file, as (path under `ICONS_DIRECTORY`, contents).
@@ -210,6 +248,23 @@ mod tests {
         assert_eq!(kinds, expected);
         let total_length = u32::from_be_bytes(icns[4..8].try_into().unwrap());
         assert_eq!(usize::try_from(total_length).unwrap(), icns.len());
+    }
+
+    #[test]
+    fn the_web_app_gets_192_512_maskable_and_apple_icons() {
+        let rounded = SQUARE.replace("<rect ", r#"<rect rx="3" "#);
+        let icons = generate_web_app_icons(&rounded, SQUARE).unwrap();
+        let size_of = |name: &str| {
+            let (_, png) = icons.iter().find(|(file, _)| file == name).unwrap();
+            Pixmap::decode_png(png).unwrap()
+        };
+        assert_eq!(size_of("mellow-192.png").width(), 192);
+        assert_eq!(size_of("mellow-512.png").width(), 512);
+        assert_eq!(size_of(APPLE_TOUCH_ICON_FILE_NAME).width(), 180);
+        // Rounded corners stay transparent on the plain icon; the maskable one fills them.
+        assert_eq!(size_of("mellow-512.png").pixel(0, 0).unwrap().alpha(), 0);
+        let maskable = size_of(&maskable_png_file_name(WEB_MASKABLE_ICON_SIZE));
+        assert_eq!(maskable.pixel(0, 0).unwrap().alpha(), u8::MAX);
     }
 
     #[test]
