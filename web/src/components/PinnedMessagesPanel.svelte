@@ -75,7 +75,7 @@
   class={[
     "fixed m-0 flex-col border-(length:--mw-component-pins-border-width) border-(--mw-component-pins-border) bg-(--mw-component-pins-background) shadow-(--mw-component-pins-shadow) outline-none [&:popover-open]:flex",
     isCompact
-      ? "inset-x-0 top-auto bottom-0 max-h-[80dvh] w-full max-w-none rounded-t-(--mw-component-pins-radius) [&:popover-open]:animate-[mw-rise_var(--mw-motion-duration-base)_var(--mw-motion-easing-enter)_both]"
+      ? "safe-area-padding-bottom inset-x-0 top-auto bottom-0 max-h-[80dvh] w-full max-w-none rounded-t-(--mw-component-pins-radius) [&:popover-open]:animate-[mw-rise_var(--mw-motion-duration-base)_var(--mw-motion-easing-enter)_both]"
       : "inset-auto max-h-[min(var(--mw-component-pins-max-height),calc(100dvh-2*var(--mw-component-chat-header-height)))] w-(--mw-component-pins-width) max-w-[calc(100vw-2*var(--mw-space-xs))] rounded-(--mw-component-pins-radius) [&:popover-open]:animate-[mw-drop-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]",
   ]}
   style:top={isCompact ? undefined : `${position.top}px`}

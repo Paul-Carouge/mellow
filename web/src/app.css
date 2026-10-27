@@ -218,6 +218,17 @@ body {
   outline-offset: calc(-1 * var(--mw-size-focus-ring-width));
 }
 
+/* The page runs under notches, rounded corners, the status bar of the installed app and the home
+   indicator (`viewport-fit=cover`): whatever fills the window keeps its content clear of them. Zero
+   on screens without such areas. */
+@utility safe-area-padding {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}
+@utility safe-area-padding-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
 /* Entrances (DESIGN.md §2.8, ADR-0022): every one answers an action; reduced motion sets the
    duration tokens to 0 ms, so the end state shows at once. */
 @keyframes mw-fade-in {

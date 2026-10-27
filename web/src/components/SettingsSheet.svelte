@@ -104,7 +104,7 @@
     "fixed inset-0 m-0 size-full max-h-none max-w-none font-sans text-text-normal",
     isWide
       ? "bg-(--mw-component-settings-sidebar-background) p-(--mw-size-sheet-inset)"
-      : "bg-(--mw-component-settings-content-background) p-0",
+      : "safe-area-padding bg-(--mw-component-settings-content-background)",
   ]}
   onkeydown={(event) => {
     // Handled here rather than in `cancel`, which browsers stop honouring after repeated Esc. Esc

@@ -139,7 +139,7 @@
   class={[
     "fixed m-0 flex-col gap-(--mw-component-emoji-picker-gap) border-(length:--mw-component-emoji-picker-border-width) border-(--mw-component-emoji-picker-border) bg-(--mw-component-emoji-picker-background) p-(--mw-component-emoji-picker-padding) shadow-(--mw-component-emoji-picker-shadow) [&:popover-open]:flex",
     isCompact
-      ? "inset-x-0 top-auto bottom-0 h-(--mw-component-emoji-picker-height) max-h-[70dvh] w-full max-w-none rounded-t-(--mw-component-emoji-picker-radius) [&:popover-open]:animate-[mw-rise_var(--mw-motion-duration-base)_var(--mw-motion-easing-enter)_both]"
+      ? "inset-x-0 top-auto bottom-0 h-[calc(var(--mw-component-emoji-picker-height)+env(safe-area-inset-bottom))] max-h-[70dvh] pb-[calc(var(--mw-component-emoji-picker-padding)+env(safe-area-inset-bottom))] w-full max-w-none rounded-t-(--mw-component-emoji-picker-radius) [&:popover-open]:animate-[mw-rise_var(--mw-motion-duration-base)_var(--mw-motion-easing-enter)_both]"
       : "inset-auto h-(--mw-component-emoji-picker-height) max-h-[calc(100dvh-2*var(--mw-space-xs))] w-(--mw-component-emoji-picker-width) max-w-[calc(100vw-2*var(--mw-space-xs))] rounded-(--mw-component-emoji-picker-radius) [&:popover-open]:animate-[mw-drop-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]",
   ]}
   style:top={isCompact ? undefined : `${position.top}px`}
