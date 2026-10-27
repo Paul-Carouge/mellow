@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ApiError, type RestClient } from "./api";
 import { MellowClient } from "./client.svelte";
-import type { Channel, Guild, Message, Ready, Relationship, Role } from "./protocol";
+import type { Channel, DirectMessageChannel, Guild, Message, Ready, Relationship, Role } from "./protocol";
 
 const ME = "1";
 const OTHER = "2";
@@ -899,5 +899,53 @@ describe("Friends", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(ready());
     expect(client.relationshipByUserId.size).toBe(0);
+  });
+});
+
+describe("Group conversations", () => {
+  const group = (id: string, recipientIds: string[], name = ""): DirectMessageChannel => ({
+    id,
+    recipients: recipientIds.map((recipientId) => ({ id: recipientId, username: `user${recipientId}`, display_name: "" })),
+    last_message_id: null,
+    owner_id: ME,
+    name,
+  });
+
+  it("open one person's conversation, or a new group for several, then follow its changes", async () => {
+    const calls: string[] = [];
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        openDirectMessage: (userId: string) => {
+          calls.push(`open:${userId}`);
+          return Promise.resolve({ id: "600", recipients: [], last_message_id: null });
+        },
+        createGroupConversation: (recipientIds: string[], name: string) => {
+          calls.push(`group:${recipientIds.join(",")}:${name}`);
+          return Promise.resolve(group("700", recipientIds, name));
+        },
+        removeGroupParticipant: () => Promise.resolve(),
+      }),
+    );
+    client.applyReady(ready());
+
+    await client.startConversation(["20"]);
+    await client.startConversation(["20", "21"], "  Trip ");
+    expect(calls).toEqual(["open:20", "group:20,21:Trip"]);
+    expect(client.selectedChannelId).toBe("700");
+
+    client.applyEvent({ t: "DIRECT_MESSAGE_CHANNEL_UPDATE", data: group("700", ["20", "21", "22"], "Trip") }, 0);
+    expect(client.conversations.find((channel) => channel.id === "700")?.recipients).toHaveLength(3);
+
+    await client.leaveGroupConversation("700");
+    expect(client.conversations.some((channel) => channel.id === "700")).toBe(false);
+    expect(client.selectedChannelId).toBeNull();
+  });
+
+  it("drop a group the user was removed from", () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.applyReady(ready({ direct_message_channels: [group("800", ["20", "21"])] }));
+    client.applyEvent({ t: "DIRECT_MESSAGE_CHANNEL_DELETE", data: { id: "800" } }, 0);
+    expect(client.conversations).toEqual([]);
   });
 });

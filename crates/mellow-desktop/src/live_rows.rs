@@ -1277,6 +1277,8 @@ mod tests {
                 id: Snowflake::from_raw(30),
                 recipients: vec![recipient.clone()],
                 last_message_id: Some(Snowflake::from_raw(40)),
+                owner_id: None,
+                name: String::new(),
             }],
             channel_unreads: Vec::new(),
             presences: Vec::new(),

@@ -124,6 +124,11 @@ pub(crate) const DIRECT_MESSAGE_OPENS_PER_USER_PER_DAY: RateLimit = RateLimit {
     window: Duration::from_hours(24),
 };
 
+/// Group changes per user (ADR-0026): adding, removing, leaving and renaming.
+pub(crate) const GROUP_CONVERSATION_WRITES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 30,
+    window: Duration::from_secs(60),
+};
 /// Friend requests per user (ADR-0025): each names a username, so this also bounds probing.
 pub(crate) const FRIEND_REQUESTS_PER_USER: RateLimit = RateLimit {
     maximum_events: 10,

@@ -7,9 +7,9 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use mellow_protocol::{
-    AcknowledgeRequest, DirectMessageChannel, EditMessageRequest, Message, MessageHistoryQuery,
-    OpenDirectMessageRequest, PublicUser, ReactionUsersQuery, ReadState, SendMessageRequest,
-    Snowflake,
+    AcknowledgeRequest, CreateGroupConversationRequest, DirectMessageChannel, EditMessageRequest,
+    Message, MessageHistoryQuery, OpenDirectMessageRequest, PublicUser, ReactionUsersQuery,
+    ReadState, SendMessageRequest, Snowflake, UpdateGroupConversationRequest,
 };
 
 use crate::domain::clock::now_unix_milliseconds;
@@ -18,11 +18,31 @@ use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::http::authentication::AuthenticatedUser;
 use crate::http::rate_limit::{
-    DIRECT_MESSAGE_OPENS_PER_USER, DIRECT_MESSAGE_OPENS_PER_USER_PER_DAY, MESSAGE_WRITES_PER_USER,
-    MESSAGE_WRITES_PER_USER_PER_HOUR, MESSAGES_PER_CHANNEL, REACTION_WRITES_PER_CHANNEL,
-    REACTION_WRITES_PER_USER, REACTION_WRITES_PER_USER_PER_HOUR, READ_STATE_WRITES_PER_USER,
-    TYPING_INDICATORS_PER_USER,
+    DIRECT_MESSAGE_OPENS_PER_USER, DIRECT_MESSAGE_OPENS_PER_USER_PER_DAY,
+    GROUP_CONVERSATION_WRITES_PER_USER, MESSAGE_WRITES_PER_USER, MESSAGE_WRITES_PER_USER_PER_HOUR,
+    MESSAGES_PER_CHANNEL, REACTION_WRITES_PER_CHANNEL, REACTION_WRITES_PER_USER,
+    REACTION_WRITES_PER_USER_PER_HOUR, READ_STATE_WRITES_PER_USER, TYPING_INDICATORS_PER_USER,
 };
+
+/// Opening a conversation and creating a group share these budgets (burst and daily).
+fn limit_conversation_opens(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
+    let now = Instant::now();
+    let within_burst = state.rate_limiter.record_event(
+        &format!("direct-message-open:{user_id}"),
+        DIRECT_MESSAGE_OPENS_PER_USER,
+        now,
+    );
+    let within_day = state.rate_limiter.record_event(
+        &format!("direct-message-open-day:{user_id}"),
+        DIRECT_MESSAGE_OPENS_PER_USER_PER_DAY,
+        now,
+    );
+    if within_burst && within_day {
+        Ok(())
+    } else {
+        Err(ApiError::rate_limited())
+    }
+}
 
 /// Send, edit and delete share the per-user budgets (burst and hourly).
 fn limit_message_writes(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
@@ -234,26 +254,86 @@ pub(crate) async fn open_direct_message(
     AuthenticatedUser(user): AuthenticatedUser,
     ApiJson(request): ApiJson<OpenDirectMessageRequest>,
 ) -> Result<Json<DirectMessageChannel>, ApiError> {
-    let now = Instant::now();
-    let within_burst = state.rate_limiter.record_event(
-        &format!("direct-message-open:{}", user.id),
-        DIRECT_MESSAGE_OPENS_PER_USER,
-        now,
-    );
-    let within_day = state.rate_limiter.record_event(
-        &format!("direct-message-open-day:{}", user.id),
-        DIRECT_MESSAGE_OPENS_PER_USER_PER_DAY,
-        now,
-    );
-    if !(within_burst && within_day) {
-        return Err(ApiError::rate_limited());
-    }
+    limit_conversation_opens(&state, user.id)?;
     Ok(Json(
         state
             .messages
             .open_direct_message(user.id, request, now_unix_milliseconds())
             .await?,
     ))
+}
+
+/// Shares the conversation-opening budgets: each group is a stored channel, kept for good.
+pub(crate) async fn create_group_conversation(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiJson(request): ApiJson<CreateGroupConversationRequest>,
+) -> Result<(StatusCode, Json<DirectMessageChannel>), ApiError> {
+    limit_conversation_opens(&state, user.id)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            state
+                .messages
+                .create_group_conversation(user.id, request, now_unix_milliseconds())
+                .await?,
+        ),
+    ))
+}
+
+fn limit_group_writes(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
+    if state.rate_limiter.record_event(
+        &format!("group-conversation-write:{user_id}"),
+        GROUP_CONVERSATION_WRITES_PER_USER,
+        Instant::now(),
+    ) {
+        Ok(())
+    } else {
+        Err(ApiError::rate_limited())
+    }
+}
+
+pub(crate) async fn rename_group_conversation(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(channel_id): ApiPath<Snowflake>,
+    ApiJson(request): ApiJson<UpdateGroupConversationRequest>,
+) -> Result<Json<DirectMessageChannel>, ApiError> {
+    limit_group_writes(&state, user.id)?;
+    Ok(Json(
+        state
+            .messages
+            .rename_group_conversation(user.id, channel_id, request)
+            .await?,
+    ))
+}
+
+pub(crate) async fn add_group_participant(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, participant_id)): ApiPath<(Snowflake, Snowflake)>,
+) -> Result<Json<DirectMessageChannel>, ApiError> {
+    limit_group_writes(&state, user.id)?;
+    Ok(Json(
+        state
+            .messages
+            .add_group_participant(user.id, channel_id, participant_id)
+            .await?,
+    ))
+}
+
+/// Removing oneself leaves the group.
+pub(crate) async fn remove_group_participant(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, participant_id)): ApiPath<(Snowflake, Snowflake)>,
+) -> Result<StatusCode, ApiError> {
+    limit_group_writes(&state, user.id)?;
+    state
+        .messages
+        .remove_group_participant(user.id, channel_id, participant_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn send_message(

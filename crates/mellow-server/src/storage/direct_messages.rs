@@ -23,44 +23,65 @@ pub(crate) struct StoredDirectMessageChannel {
     pub(crate) id: Snowflake,
     pub(crate) recipients: Vec<StoredRecipient>,
     pub(crate) last_message_id: Option<Snowflake>,
+    /// `Some` for a group (ADR-0026).
+    pub(crate) owner_id: Option<Snowflake>,
+    pub(crate) name: String,
 }
 
-type ConversationRow = (i64, i64, String, String, Option<i64>);
+type ConversationRow = (
+    i64,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    String,
+    Option<i64>,
+);
 
 /// A macro so queries stay `&'static str` through `concat!` (sqlx refuses runtime-built SQL).
 macro_rules! select_conversation_rows {
     () => {
         "SELECT viewer.channel_id, users.id, users.username, users.display_name, \
-         (SELECT MAX(messages.id) FROM messages WHERE messages.channel_id = viewer.channel_id) \
+         (SELECT MAX(messages.id) FROM messages WHERE messages.channel_id = viewer.channel_id), \
+         channels.name, group_conversations.owner_id \
          FROM direct_message_participants AS viewer \
-         JOIN direct_message_participants AS other \
+         JOIN channels ON channels.id = viewer.channel_id \
+         LEFT JOIN group_conversations ON group_conversations.channel_id = viewer.channel_id \
+         LEFT JOIN direct_message_participants AS other \
            ON other.channel_id = viewer.channel_id AND other.user_id != viewer.user_id \
-         JOIN users ON users.id = other.user_id \
+         LEFT JOIN users ON users.id = other.user_id \
          WHERE viewer.user_id = ? "
     };
 }
 
-/// Rows come ordered by channel, so each conversation's recipients are consecutive.
+/// Rows come ordered by channel, so each conversation's recipients are consecutive. A group whose
+/// other people all left has one row without a recipient: it stays listed for the one left.
 fn conversations_from_rows(
     rows: Vec<ConversationRow>,
 ) -> Result<Vec<StoredDirectMessageChannel>, GuildStorageError> {
     let mut conversations: Vec<StoredDirectMessageChannel> = Vec::new();
-    for (channel_id, user_id, username, display_name, last_message_id) in rows {
+    for (channel_id, user_id, username, display_name, last_message_id, name, owner_id) in rows {
         let channel_id = to_id(channel_id)?;
-        let recipient = StoredRecipient {
-            id: to_id(user_id)?,
-            username,
-            display_name,
-        };
-        match conversations.last_mut() {
-            Some(conversation) if conversation.id == channel_id => {
-                conversation.recipients.push(recipient);
-            }
-            _ => conversations.push(StoredDirectMessageChannel {
+        if conversations
+            .last()
+            .is_none_or(|conversation| conversation.id != channel_id)
+        {
+            conversations.push(StoredDirectMessageChannel {
                 id: channel_id,
-                recipients: vec![recipient],
+                recipients: Vec::new(),
                 last_message_id: last_message_id.map(to_id).transpose()?,
-            }),
+                owner_id: owner_id.map(to_id).transpose()?,
+                name,
+            });
+        }
+        if let (Some(user_id), Some(username), Some(display_name), Some(conversation)) =
+            (user_id, username, display_name, conversations.last_mut())
+        {
+            conversation.recipients.push(StoredRecipient {
+                id: to_id(user_id)?,
+                username,
+                display_name,
+            });
         }
     }
     Ok(conversations)
@@ -196,4 +217,211 @@ async fn find_pair(
     .fetch_optional(database.readers())
     .await?;
     row.map(|(channel_id,)| to_id(channel_id)).transpose()
+}
+
+/// The owner of the group; `None` for a one-to-one conversation or anything else.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn group_owner_id(
+    database: &Database,
+    channel_id: Snowflake,
+) -> Result<Option<Snowflake>, GuildStorageError> {
+    let Some(channel_id) = lookup_integer(channel_id) else {
+        return Ok(None);
+    };
+    let owner_id: Option<i64> =
+        sqlx::query_scalar("SELECT owner_id FROM group_conversations WHERE channel_id = ?")
+            .bind(channel_id)
+            .fetch_optional(database.readers())
+            .await?;
+    owner_id.map(to_id).transpose()
+}
+
+/// Creates a group of `participant_ids` (the owner included) as `channel_id`.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn create_group(
+    database: &Database,
+    channel_id: Snowflake,
+    owner_id: Snowflake,
+    participant_ids: &[Snowflake],
+    name: &str,
+) -> Result<(), GuildStorageError> {
+    let channel = to_integer(channel_id.raw())?;
+    let mut transaction = database
+        .writer()
+        .begin_with(BEGIN_WRITE_TRANSACTION)
+        .await?;
+    sqlx::query(
+        "INSERT INTO channels (id, guild_id, kind, name, topic, parent_id, position) \
+         VALUES (?, NULL, ?, ?, '', NULL, 0)",
+    )
+    .bind(channel)
+    .bind(DIRECT_MESSAGE_CHANNEL_KIND)
+    .bind(name)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query("INSERT INTO group_conversations (channel_id, owner_id) VALUES (?, ?)")
+        .bind(channel)
+        .bind(to_integer(owner_id.raw())?)
+        .execute(&mut *transaction)
+        .await?;
+    for participant_id in participant_ids {
+        sqlx::query("INSERT INTO direct_message_participants (channel_id, user_id) VALUES (?, ?)")
+            .bind(channel)
+            .bind(to_integer(participant_id.raw())?)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    transaction.commit().await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GroupAddOutcome {
+    Added,
+    AlreadyIn,
+    /// The group already has `maximum` people.
+    Full,
+    NotAGroup,
+}
+
+/// Adds `user_id` to the group, deciding on its rows as they are inside the transaction.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn add_group_participant(
+    database: &Database,
+    channel_id: Snowflake,
+    user_id: Snowflake,
+    maximum: usize,
+) -> Result<GroupAddOutcome, GuildStorageError> {
+    let (channel, user) = (to_integer(channel_id.raw())?, to_integer(user_id.raw())?);
+    let mut transaction = database
+        .writer()
+        .begin_with(BEGIN_WRITE_TRANSACTION)
+        .await?;
+    let is_group: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM group_conversations WHERE channel_id = ?)",
+    )
+    .bind(channel)
+    .fetch_one(&mut *transaction)
+    .await?;
+    if !is_group {
+        return Ok(GroupAddOutcome::NotAGroup);
+    }
+    let participant_ids: Vec<i64> =
+        sqlx::query_scalar("SELECT user_id FROM direct_message_participants WHERE channel_id = ?")
+            .bind(channel)
+            .fetch_all(&mut *transaction)
+            .await?;
+    let outcome = if participant_ids.contains(&user) {
+        GroupAddOutcome::AlreadyIn
+    } else if participant_ids.len() >= maximum {
+        GroupAddOutcome::Full
+    } else {
+        sqlx::query("INSERT INTO direct_message_participants (channel_id, user_id) VALUES (?, ?)")
+            .bind(channel)
+            .bind(user)
+            .execute(&mut *transaction)
+            .await?;
+        GroupAddOutcome::Added
+    };
+    transaction.commit().await?;
+    Ok(outcome)
+}
+
+/// What `remove_group_participant` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GroupRemoval {
+    pub(crate) was_participant: bool,
+    /// The last person left: the conversation and its messages are gone.
+    pub(crate) deleted_conversation: bool,
+}
+
+/// Removes `user_id` from the group; the lowest remaining id becomes owner when the owner leaves,
+/// and the conversation goes with its last participant (ADR-0026).
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn remove_group_participant(
+    database: &Database,
+    channel_id: Snowflake,
+    user_id: Snowflake,
+) -> Result<GroupRemoval, GuildStorageError> {
+    let (channel, user) = (to_integer(channel_id.raw())?, to_integer(user_id.raw())?);
+    let mut transaction = database
+        .writer()
+        .begin_with(BEGIN_WRITE_TRANSACTION)
+        .await?;
+    let removed = sqlx::query(
+        "DELETE FROM direct_message_participants WHERE channel_id = ? AND user_id = ? \
+         AND EXISTS (SELECT 1 FROM group_conversations WHERE channel_id = ?)",
+    )
+    .bind(channel)
+    .bind(user)
+    .bind(channel)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if removed == 0 {
+        return Ok(GroupRemoval {
+            was_participant: false,
+            deleted_conversation: false,
+        });
+    }
+    let next_owner: Option<i64> = sqlx::query_scalar(
+        "SELECT MIN(user_id) FROM direct_message_participants WHERE channel_id = ?",
+    )
+    .bind(channel)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let deleted_conversation = match next_owner {
+        None => {
+            sqlx::query("DELETE FROM channels WHERE id = ?")
+                .bind(channel)
+                .execute(&mut *transaction)
+                .await?;
+            true
+        }
+        Some(next_owner) => {
+            sqlx::query(
+                "UPDATE group_conversations SET owner_id = ? WHERE channel_id = ? AND owner_id = ?",
+            )
+            .bind(next_owner)
+            .bind(channel)
+            .bind(user)
+            .execute(&mut *transaction)
+            .await?;
+            false
+        }
+    };
+    transaction.commit().await?;
+    Ok(GroupRemoval {
+        was_participant: true,
+        deleted_conversation,
+    })
+}
+
+/// Renames the group; `false` if it is not one.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn rename_group(
+    database: &Database,
+    channel_id: Snowflake,
+    name: &str,
+) -> Result<bool, GuildStorageError> {
+    let renamed = sqlx::query(
+        "UPDATE channels SET name = ? WHERE id = ? \
+         AND EXISTS (SELECT 1 FROM group_conversations WHERE channel_id = channels.id)",
+    )
+    .bind(name)
+    .bind(to_integer(channel_id.raw())?)
+    .execute(database.writer())
+    .await?
+    .rows_affected();
+    Ok(renamed == 1)
 }

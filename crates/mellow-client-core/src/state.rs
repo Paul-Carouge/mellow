@@ -289,6 +289,17 @@ impl ClientState {
         StateChange::Guilds
     }
 
+    fn forget_cached_message(
+        &mut self,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+    ) -> StateChange {
+        if let Some(history) = self.history_by_channel.get_mut(&channel_id) {
+            history.messages.retain(|message| message.id != message_id);
+        }
+        StateChange::Messages { channel_id }
+    }
+
     pub fn apply_event(&mut self, event: GatewayEvent, now_unix_milliseconds: u64) -> StateChange {
         // An event racing the snapshot that hid its channel must not bring it back (ADR-0015).
         let channel_id = match &event {
@@ -312,10 +323,7 @@ impl ClientState {
             }
             GatewayEvent::MessageUpdate(message) => self.replace_cached_message(message),
             GatewayEvent::MessageDelete { channel_id, id, .. } => {
-                if let Some(history) = self.history_by_channel.get_mut(&channel_id) {
-                    history.messages.retain(|message| message.id != id);
-                }
-                StateChange::Messages { channel_id }
+                self.forget_cached_message(channel_id, id)
             }
             GatewayEvent::ChannelCreate(channel) | GatewayEvent::ChannelUpdate(channel) => {
                 self.upsert_channel(channel);
@@ -385,13 +393,12 @@ impl ClientState {
                 StateChange::Presence
             }
             GatewayEvent::UserUpdate(user) => self.rename_user(&user),
-            // Friends are on the web only while it is the focus (ADR-0023); the desktop catches up.
-            GatewayEvent::RelationshipAdd(_) | GatewayEvent::RelationshipRemove { .. } => {
-                StateChange::Nothing
-            }
-            // shortcut: no client-core UI shows reactions yet (web first); count them in the
-            // cached messages once the desktop does.
-            GatewayEvent::MessageReactionAdd(_)
+            // shortcut: friends, groups, reactions are web-only (ADR-0023) until the desktop port.
+            GatewayEvent::RelationshipAdd(_)
+            | GatewayEvent::RelationshipRemove { .. }
+            | GatewayEvent::DirectMessageChannelUpdate(_)
+            | GatewayEvent::DirectMessageChannelDelete { .. }
+            | GatewayEvent::MessageReactionAdd(_)
             | GatewayEvent::MessageReactionRemove(_)
             | GatewayEvent::MessageReactionRemoveAll { .. }
             | GatewayEvent::MessageReactionRemoveEmoji { .. } => StateChange::Nothing,
@@ -1572,6 +1579,8 @@ mod tests {
             id: Snowflake::from_raw(id),
             recipients: vec![user(with)],
             last_message_id: last_message_id.map(Snowflake::from_raw),
+            owner_id: None,
+            name: String::new(),
         }
     }
 

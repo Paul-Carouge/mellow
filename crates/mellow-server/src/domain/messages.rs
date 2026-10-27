@@ -3,6 +3,7 @@
 //! through its participants (`permissions::direct_message_permissions`).
 
 mod direct_messages;
+mod group_conversations;
 mod pins;
 mod reactions;
 
@@ -321,9 +322,15 @@ impl Messages {
             (MessageChannel::Guild(channel), permissions)
         } else {
             let is_participant = participant_ids.contains(&user_id);
+            // A group stays open to every participant whatever their relationships (ADR-0026).
+            let is_group = direct_message_storage::group_owner_id(&self.database, channel_id)
+                .await
+                .map_err(GuildError::from)?
+                .is_some();
             let may_reach_each_other = is_participant
-                && direct_messages::may_reach_each(&self.database, user_id, &participant_ids)
-                    .await?;
+                && (is_group
+                    || direct_messages::may_reach_each(&self.database, user_id, &participant_ids)
+                        .await?);
             let permissions = direct_message_permissions(is_participant, may_reach_each_other);
             if !permissions.contains(Permissions::VIEW_CHANNEL) {
                 return Err(GuildError::NotFound.into());

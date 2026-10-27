@@ -114,6 +114,24 @@ impl AppState {
     }
 }
 
+/// Group conversations (ADR-0026); their messages use the channel routes.
+fn group_conversation_router() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/v1/group-conversations",
+            post(message_routes::create_group_conversation),
+        )
+        .route(
+            "/api/v1/group-conversations/{channel_id}",
+            patch(message_routes::rename_group_conversation),
+        )
+        .route(
+            "/api/v1/group-conversations/{channel_id}/recipients/{user_id}",
+            put(message_routes::add_group_participant)
+                .delete(message_routes::remove_group_participant),
+        )
+}
+
 /// `/api/v1/auth/*` and the signed-in user's own account.
 fn account_router() -> Router<AppState> {
     Router::new()
@@ -256,6 +274,7 @@ pub(crate) fn router(state: AppState) -> Router {
             put(relationship_routes::set_relationship)
                 .delete(relationship_routes::remove_relationship),
         )
+        .merge(group_conversation_router())
         .route(
             "/api/v1/users/@me/channels",
             post(message_routes::open_direct_message),

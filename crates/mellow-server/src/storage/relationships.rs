@@ -89,6 +89,30 @@ pub(crate) async fn friend_ids(
     ids.into_iter().map(to_id).collect()
 }
 
+/// Whether `user_id` and `other_user_id` are friends.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn are_friends(
+    database: &Database,
+    user_id: Snowflake,
+    other_user_id: Snowflake,
+) -> Result<bool, GuildStorageError> {
+    let (Some(user_id), Some(other_user_id)) =
+        (lookup_integer(user_id), lookup_integer(other_user_id))
+    else {
+        return Ok(false);
+    };
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM relationships \
+         WHERE user_id = ? AND other_user_id = ? AND kind = 'friend')",
+    )
+    .bind(user_id)
+    .bind(other_user_id)
+    .fetch_one(database.readers())
+    .await?)
+}
+
 /// The enabled account with this username, case-insensitively.
 ///
 /// # Errors
