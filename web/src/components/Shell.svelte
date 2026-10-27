@@ -198,6 +198,14 @@
     friendsPane?.focusStart();
   }
 
+  // "Add friends to …" belongs to the open group: when the group goes (removed, last one out), the
+  // picker goes too, or it would keep the shell covered with nothing shown and reopen on the next group.
+  $effect(() => {
+    if (openDialog === "add-to-group" && group === null) {
+      openDialog = null;
+    }
+  });
+
   // The open group closed under the user (they left, or its owner removed them): Friends shows,
   // the reason is read out, and focus that fell with the conversation goes to Friends' tab.
   $effect(() => {
