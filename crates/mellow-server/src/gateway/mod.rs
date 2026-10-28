@@ -450,6 +450,9 @@ async fn build_ready(
         channel_unreads,
         presences: presences.into_values().collect(),
         relationships,
+        may_create_guilds: state
+            .guilds
+            .may_create_guilds(user.is_instance_administrator),
     })
 }
 

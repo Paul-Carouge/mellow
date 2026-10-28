@@ -816,7 +816,12 @@ mod tests {
             users.push(session.user.id);
         }
         let events = Arc::new(EventHub::default());
-        let guilds = Arc::new(Guilds::new(database.clone(), ids.clone(), events.clone()));
+        let guilds = Arc::new(Guilds::new(
+            database.clone(),
+            ids.clone(),
+            events.clone(),
+            crate::domain::account_rules::GuildCreationPolicy::Everyone,
+        ));
         let guild = guilds
             .create_guild(
                 users[0],

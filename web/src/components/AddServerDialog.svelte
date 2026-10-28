@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { tick } from "svelte";
 
   import { strings } from "../i18n";
@@ -38,7 +39,8 @@
   const TOO_LARGE_REASON = strings.profile.tooLarge(humanFileSize(MAXIMUM_PROFILE_IMAGE_BYTES));
   const templates = serverTemplates();
 
-  let isJoining = $state(false);
+  // Read once, as the dialog opens: the instance's rule does not change while it is open.
+  let isJoining = $state(untrack(() => !client.mayCreateGuilds));
   let serverName = $state("");
   let inviteCode = $state("");
   let templateId = $state<string>(SERVER_TEMPLATE_IDS[0] ?? "blank");
@@ -283,7 +285,9 @@
       </div>
     </div>
   {/if}
-  {#if !isCreatedWithoutIcon}
+  {#if !client.mayCreateGuilds}
+    <p class="text-center type-body text-(--mw-component-dialog-hint-text)">{strings.addServer.creationReservedToAdministrators}</p>
+  {:else if !isCreatedWithoutIcon}
     <p class="flex flex-wrap items-center justify-center gap-x-(--mw-space-2xs) type-body text-(--mw-component-dialog-hint-text)">
       {isJoining ? strings.addServer.hasNoInvite : strings.addServer.hasInvite}
       <button

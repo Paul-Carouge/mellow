@@ -68,7 +68,12 @@ impl AppState {
     ) -> Self {
         let ids = Arc::new(SnowflakeGenerator::default());
         let events = Arc::new(EventHub::default());
-        let guilds = Arc::new(Guilds::new(database.clone(), ids.clone(), events.clone()));
+        let guilds = Arc::new(Guilds::new(
+            database.clone(),
+            ids.clone(),
+            events.clone(),
+            config.guild_creation,
+        ));
         let messages = Arc::new(Messages::new(database.clone(), ids.clone(), guilds.clone()));
         let attachments = Arc::new(crate::domain::attachments::Attachments::new(
             database.clone(),
@@ -459,7 +464,12 @@ pub(crate) mod tests {
     pub(crate) fn test_state(database: Database, registration_mode: RegistrationMode) -> AppState {
         let ids = Arc::new(SnowflakeGenerator::default());
         let events = Arc::new(EventHub::default());
-        let guilds = Arc::new(Guilds::new(database.clone(), ids.clone(), events.clone()));
+        let guilds = Arc::new(Guilds::new(
+            database.clone(),
+            ids.clone(),
+            events.clone(),
+            crate::domain::account_rules::GuildCreationPolicy::Everyone,
+        ));
         let messages = Arc::new(Messages::new(database.clone(), ids.clone(), guilds.clone()));
         let files = test_attachment_files();
         let attachments = Arc::new(crate::domain::attachments::Attachments::new(
@@ -1589,6 +1599,47 @@ pub(crate) mod tests {
         let (status, _) = send(&state, authorized("DELETE", &role_path, &owner, None)).await;
         database.close().await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn only_instance_administrators_create_servers_when_the_instance_says_so() {
+        let (_directory, database) = migrated_database().await;
+        let mut state = test_state(database.clone(), RegistrationMode::Open);
+        state.guilds = Arc::new(Guilds::new(
+            database.clone(),
+            Arc::new(SnowflakeGenerator::default()),
+            Arc::new(EventHub::default()),
+            crate::domain::account_rules::GuildCreationPolicy::Administrators,
+        ));
+        let member = registered_token(&state, "member").await;
+        let administrator = registered_token(&state, "admin").await;
+        sqlx::query("UPDATE users SET is_instance_administrator = 1 WHERE username = 'admin'")
+            .execute(database.writer())
+            .await
+            .unwrap();
+        let create = |token: String| {
+            let state = state.clone();
+            async move {
+                send(
+                    &state,
+                    authorized(
+                        "POST",
+                        "/api/v1/guilds",
+                        &token,
+                        Some(serde_json::json!({"name": "Club"})),
+                    ),
+                )
+                .await
+                .0
+            }
+        };
+
+        let by_member = create(member).await;
+        let by_administrator = create(administrator).await;
+        database.close().await;
+
+        assert_eq!(by_member, StatusCode::FORBIDDEN);
+        assert_eq!(by_administrator, StatusCode::CREATED);
     }
 
     #[tokio::test]

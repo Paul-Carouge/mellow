@@ -894,6 +894,7 @@ mod tests {
     fn ready_state() -> ClientState {
         let mut state = ClientState::default();
         state.apply_ready(Ready {
+            may_create_guilds: true,
             session_id: "s".into(),
             user: CurrentUser {
                 id: ME,
@@ -1450,6 +1451,7 @@ mod tests {
         state.mark_send_failed("n1");
         // A reconnect keeps the outbox.
         state.apply_ready(Ready {
+            may_create_guilds: true,
             session_id: "s2".into(),
             user: state.current_user().unwrap().clone(),
             guilds: state.guilds().to_vec(),
@@ -1547,6 +1549,7 @@ mod tests {
         let mut state = ready_state();
         state.queue_message(GENERAL, "a".into(), None, "n1".into());
         state.apply_ready(Ready {
+            may_create_guilds: true,
             session_id: "s2".into(),
             user: state.current_user().unwrap().clone(),
             guilds: Vec::new(),
@@ -1640,6 +1643,7 @@ mod tests {
         let user = state.current_user().cloned().unwrap();
         let guilds = state.guilds().to_vec();
         state.apply_ready(Ready {
+            may_create_guilds: true,
             session_id: "s2".into(),
             user,
             guilds,

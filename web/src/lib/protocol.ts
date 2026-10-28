@@ -339,6 +339,8 @@ export interface Ready {
   presences?: Presence[];
   /** Friends, requests and blocks (ADR-0025). Added after `v0.12.0`: absent from older servers. */
   relationships?: Relationship[];
+  /** Whether the user may create servers on this instance; absent from older servers, which let everyone. */
+  may_create_guilds?: boolean;
 }
 
 /** `incoming_request`: they asked; `outgoing_request`: you asked; `blocked`: never shown to them. */

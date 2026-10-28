@@ -428,6 +428,7 @@ export const fr: Catalogue = {
     serverName: "Nom du serveur",
     hasNoInvite: `Pas d’invitation${NARROW_NO_BREAK_SPACE}?`,
     hasInvite: `Tu as déjà une invitation${NARROW_NO_BREAK_SPACE}?`,
+    creationReservedToAdministrators: "Sur cette instance, seuls ses administrateurs créent des serveurs.",
     joinFailed: "Impossible de rejoindre le serveur",
     createFailed: "Impossible de créer le serveur",
     iconOptional: `Facultatif${NO_BREAK_SPACE}: les initiales s’affichent tant qu’il n’y en a pas.`,

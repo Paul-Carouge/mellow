@@ -151,6 +151,14 @@ describe("MellowClient", () => {
     expect(client.guilds[0]?.channels.map((candidate) => candidate.id)).toEqual([GENERAL]);
   });
 
+  it("knows from Ready whether the user may create servers, and assumes so with older servers", () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.applyReady(ready({ may_create_guilds: false }));
+    expect(client.mayCreateGuilds).toBe(false);
+    client.applyReady(ready());
+    expect(client.mayCreateGuilds).toBe(true);
+  });
+
   it("opens a created text channel but stays put on a created category", async () => {
     const category: Channel = { ...channel("104"), kind: "category" };
     const text: Channel = { ...channel("105"), parent_id: "104" };

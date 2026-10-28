@@ -1088,6 +1088,7 @@ mod tests {
             "unknown before Ready"
         );
         state.apply_ready(Ready {
+            may_create_guilds: true,
             session_id: "session".into(),
             user: CurrentUser {
                 id: Snowflake::from_raw(2),
@@ -1258,6 +1259,7 @@ mod tests {
         };
         let mut state = ClientState::default();
         state.apply_ready(Ready {
+            may_create_guilds: true,
             session_id: "session".into(),
             user: CurrentUser {
                 id: Snowflake::from_raw(2),
@@ -1325,6 +1327,7 @@ mod tests {
         };
         let mut state = ClientState::default();
         state.apply_ready(Ready {
+            may_create_guilds: true,
             session_id: "session".into(),
             user: CurrentUser {
                 id: Snowflake::from_raw(2),

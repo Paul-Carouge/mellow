@@ -434,6 +434,7 @@ export const en = {
     serverName: "Server name",
     hasNoInvite: "Don't have an invite?",
     hasInvite: "Have an invite already?",
+    creationReservedToAdministrators: "On this instance, only its administrators create servers.",
     joinFailed: "Couldn't join the server",
     createFailed: "Couldn't create the server",
     iconOptional: "Optional: the initials show until you add one.",

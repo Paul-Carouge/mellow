@@ -14,6 +14,7 @@ use mellow_protocol::{
     Snowflake, UpdateChannelRequest, UpdateGuildRequest, UpdateRoleRequest,
 };
 
+use crate::domain::account_rules::GuildCreationPolicy;
 use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::guild_rules::{
     ChannelPlace, GuildRuleViolation, MAXIMUM_ACTIVE_INVITES_PER_GUILD, MAXIMUM_BANS_LISTED,
@@ -252,6 +253,7 @@ pub(crate) struct Guilds {
     /// Each guild's members and roles for event fan-out, trusted only while the guild's
     /// `permission_version` in the database still matches (`permission_snapshot`).
     permission_snapshots: Mutex<HashMap<Snowflake, Arc<StoredPermissionSnapshot>>>,
+    creation_policy: GuildCreationPolicy,
 }
 
 impl Guilds {
@@ -259,13 +261,21 @@ impl Guilds {
         database: Database,
         ids: Arc<SnowflakeGenerator>,
         events: Arc<EventHub>,
+        creation_policy: GuildCreationPolicy,
     ) -> Self {
         Self {
             database,
             ids,
             events,
             permission_snapshots: Mutex::new(HashMap::new()),
+            creation_policy,
         }
+    }
+
+    /// Whether a user may create guilds here: everyone, or only instance administrators
+    /// (`GuildCreationPolicy`), which guild ownership and guild roles have nothing to do with.
+    pub(crate) const fn may_create_guilds(&self, is_instance_administrator: bool) -> bool {
+        self.creation_policy.allows(is_instance_administrator)
     }
 
     /// The guild's members and roles. The cached copy is used only if the guild's
@@ -2031,7 +2041,12 @@ mod tests {
         Fixture {
             _directory: directory,
             third,
-            guilds: Guilds::new(database.clone(), ids, events.clone()),
+            guilds: Guilds::new(
+                database.clone(),
+                ids,
+                events.clone(),
+                GuildCreationPolicy::Everyone,
+            ),
             events,
             database,
             owner,

@@ -38,6 +38,7 @@ pub async fn initialize_instance(options: &InitializeOptions) -> Result<ServerCo
             .context("cannot resolve the master key file path")?,
         listen_address: options.listen_address,
         registration_mode: options.registration_mode,
+        guild_creation: crate::domain::account_rules::GuildCreationPolicy::default(),
         behind_tls_reverse_proxy: false,
         trusted_proxy_networks: Vec::new(),
         maximum_attachment_bytes: crate::config::DEFAULT_MAXIMUM_ATTACHMENT_BYTES,

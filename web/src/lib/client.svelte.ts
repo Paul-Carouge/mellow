@@ -168,6 +168,8 @@ export class MellowClient {
   private gateway: GatewayConnection | null = null;
   /** Before the first `Ready`, no selection exists yet: home then means "not chosen". */
   private hasReceivedReady = $state(false);
+  /** The instance may keep creating servers to its administrators (`guild_creation`). */
+  mayCreateGuilds = $state(true);
 
   /** `rest` is injected by tests; settings pages read lists (bans, invites, the log) through it. */
   constructor(readonly rest: RestClient = new RestClient()) {}
@@ -385,6 +387,7 @@ export class MellowClient {
     const wasHome = this.hasReceivedReady && this.selectedGuildId === null;
     this.hasReceivedReady = true;
     this.user = ready.user;
+    this.mayCreateGuilds = ready.may_create_guilds ?? true;
     this.guilds = ready.guilds;
     const conversations = ready.direct_message_channels ?? [];
     // Kept while its first message is still unsent: `Ready` lists only conversations with one.

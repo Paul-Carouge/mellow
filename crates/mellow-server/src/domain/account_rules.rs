@@ -26,6 +26,28 @@ pub enum RegistrationMode {
     Closed,
 }
 
+/// Who may create guilds on this instance (`guild_creation` in the configuration). Instance
+/// administrators are the accounts made with `admin create-user --administrator`: neither guild
+/// owners nor members holding a guild's `ADMINISTRATOR` permission.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuildCreationPolicy {
+    /// Others join guilds through invites; conversations and groups stay open to everyone.
+    #[default]
+    Administrators,
+    Everyone,
+}
+
+impl GuildCreationPolicy {
+    #[must_use]
+    pub const fn allows(self, is_instance_administrator: bool) -> bool {
+        match self {
+            Self::Administrators => is_instance_administrator,
+            Self::Everyone => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AccountRuleViolation {
     #[error(

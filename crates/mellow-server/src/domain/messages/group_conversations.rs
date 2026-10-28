@@ -289,7 +289,12 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let guilds = Arc::new(Guilds::new(database.clone(), ids.clone(), events.clone()));
+        let guilds = Arc::new(Guilds::new(
+            database.clone(),
+            ids.clone(),
+            events.clone(),
+            crate::domain::account_rules::GuildCreationPolicy::Everyone,
+        ));
         Fixture {
             _directory: directory,
             messages: Messages::new(database.clone(), ids, guilds),

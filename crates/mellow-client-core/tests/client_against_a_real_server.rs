@@ -41,7 +41,7 @@ impl RunningInstance {
             .unwrap()
             .local_addr()
             .unwrap();
-        let config = initialize_instance(&InitializeOptions {
+        let mut config = initialize_instance(&InitializeOptions {
             config_path: directory.path().join("mellow.toml"),
             data_directory: directory.path().join("data"),
             master_key_file: directory.path().join("master.key"),
@@ -51,6 +51,8 @@ impl RunningInstance {
         })
         .await
         .unwrap();
+        // The test accounts are not instance administrators, and they create servers.
+        config.guild_creation = mellow_server::domain::account_rules::GuildCreationPolicy::Everyone;
         let (stop, stopped) = oneshot::channel::<()>();
         let server = tokio::spawn(async move {
             serve_instance(&config, async {

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
+use crate::domain::account_rules::GuildCreationPolicy;
 use crate::domain::account_rules::RegistrationMode;
 
 pub const DATA_DIRECTORY_VARIABLE: &str = "MELLOW_DATA_DIRECTORY";
@@ -61,6 +62,9 @@ pub struct ServerConfig {
     pub listen_address: SocketAddr,
     #[serde(default)]
     pub registration_mode: RegistrationMode,
+    /// Who may create servers: `"administrators"` (default) or `"everyone"`.
+    #[serde(default)]
+    pub guild_creation: GuildCreationPolicy,
     /// Set when a TLS reverse proxy on this host forwards to Mellow. Without `[tls]`, required to
     /// listen on a non-loopback address (tokens would otherwise travel in clear), and makes the
     /// client address come from the last `X-Forwarded-For` hop.
@@ -507,6 +511,7 @@ mod tests {
             master_key_file: link_to_data.join("master.key"),
             listen_address: DEFAULT_LISTEN_ADDRESS.parse().unwrap(),
             registration_mode: RegistrationMode::Closed,
+            guild_creation: GuildCreationPolicy::Administrators,
             behind_tls_reverse_proxy: false,
             trusted_proxy_networks: Vec::new(),
             maximum_attachment_bytes: DEFAULT_MAXIMUM_ATTACHMENT_BYTES,
@@ -609,6 +614,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(open.registration_mode, RegistrationMode::Open);
+    }
+
+    #[test]
+    fn only_administrators_create_servers_unless_the_config_says_everyone() {
+        let default = load_text(VALID_CONFIG, &EnvironmentOverrides::default()).unwrap();
+        assert_eq!(default.guild_creation, GuildCreationPolicy::Administrators);
+        assert!(default.guild_creation.allows(true));
+        assert!(!default.guild_creation.allows(false));
+        let everyone = load_text(
+            &format!("{VALID_CONFIG}\nguild_creation = \"everyone\""),
+            &EnvironmentOverrides::default(),
+        )
+        .unwrap();
+        assert!(everyone.guild_creation.allows(false));
+        assert!(
+            load_text(
+                &format!("{VALID_CONFIG}\nguild_creation = \"owners\""),
+                &EnvironmentOverrides::default(),
+            )
+            .is_err()
+        );
     }
 
     #[test]

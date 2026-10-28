@@ -359,6 +359,7 @@ mod tests {
     fn ready(session_id: &str) -> ServerFrame {
         ServerFrame::Ready {
             d: Box::new(Ready {
+                may_create_guilds: true,
                 session_id: session_id.into(),
                 user: CurrentUser {
                     id: Snowflake::from_raw(1),

@@ -106,6 +106,15 @@ pub struct Ready {
     /// older servers.
     #[serde(default)]
     pub relationships: Vec<Relationship>,
+    /// Whether the user may create servers: the instance lets everyone or only its
+    /// administrators (`guild_creation` in its configuration). Added after `v0.16.0`: absent from
+    /// older servers, which let everyone.
+    #[serde(default = "may_create_guilds_on_older_servers")]
+    pub may_create_guilds: bool,
+}
+
+const fn may_create_guilds_on_older_servers() -> bool {
+    true
 }
 
 /// What others see of a user's presence. An invisible user is `Offline`, without custom status.
