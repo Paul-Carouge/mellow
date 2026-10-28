@@ -392,6 +392,7 @@ mod tests {
         assert_eq!(ready.direct_message_channels, Vec::new());
         assert_eq!(ready.presences, Vec::new());
         assert_eq!(ready.user.status, crate::ChosenStatus::Online);
+        assert!(ready.may_create_guilds);
         assert_eq!(ready.user.custom_status, None);
     }
 

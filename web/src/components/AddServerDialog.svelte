@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { untrack } from "svelte";
   import { tick } from "svelte";
 
   import { strings } from "../i18n";
@@ -39,8 +38,10 @@
   const TOO_LARGE_REASON = strings.profile.tooLarge(humanFileSize(MAXIMUM_PROFILE_IMAGE_BYTES));
   const templates = serverTemplates();
 
-  // Read once, as the dialog opens: the instance's rule does not change while it is open.
-  let isJoining = $state(untrack(() => !client.mayCreateGuilds));
+  let hasChosenJoin = $state(false);
+  // Join only when the instance keeps server creation to its administrators, even if that
+  // changed while the dialog was open (a restart and a new `Ready`).
+  const isJoining = $derived(hasChosenJoin || !client.mayCreateGuilds);
   let serverName = $state("");
   let inviteCode = $state("");
   let templateId = $state<string>(SERVER_TEMPLATE_IDS[0] ?? "blank");
@@ -147,7 +148,7 @@
     if (isBusy) {
       return;
     }
-    isJoining = !isJoining;
+    hasChosenJoin = !isJoining;
     await tick();
     (isJoining ? codeField : nameField)?.focus();
   }

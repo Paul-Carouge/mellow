@@ -168,7 +168,7 @@ export class MellowClient {
   private gateway: GatewayConnection | null = null;
   /** Before the first `Ready`, no selection exists yet: home then means "not chosen". */
   private hasReceivedReady = $state(false);
-  /** The instance may keep creating servers to its administrators (`guild_creation`). */
+  /** Whether this user may create servers (`Ready.may_create_guilds`); `true` with servers that predate it. */
   mayCreateGuilds = $state(true);
 
   /** `rest` is injected by tests; settings pages read lists (bans, invites, the log) through it. */

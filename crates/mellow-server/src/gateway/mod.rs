@@ -735,6 +735,8 @@ mod tests {
         assert_eq!(ready.user.username, "member");
         assert_eq!(ready.guilds[0].id, fixture.guild_id);
         assert!(ready.online_user_ids.contains(&ready.user.id));
+        // The fixture's instance lets everyone create servers.
+        assert!(ready.may_create_guilds);
 
         let posted = post_message(&fixture, &fixture.owner_token, "hello").await;
         let (sequence, event) = receive_dispatch(&mut socket, |event| {

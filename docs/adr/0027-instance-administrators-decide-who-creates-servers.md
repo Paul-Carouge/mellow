@@ -12,10 +12,11 @@ The owner wants whoever hosts an instance to choose whether its other accounts m
 ## Decision
 - A new setting in `mellow.toml`, `guild_creation`, says who may create servers: `"administrators"` (instance administrators only) or `"everyone"`. It is a file setting like `registration_mode` (owner's choice, 2026-10-28): changing it means editing the file and restarting, with no web screen or API to change it.
 - The default is `"administrators"`, also for configurations written before this setting existed, so an instance never opens server creation to strangers without the host saying so. `init` writes the line explicitly.
-- `POST /api/v1/guilds` answers `MISSING_PERMISSIONS` when the rule refuses the user; the rule is one function (`GuildCreationPolicy::allows`), decided in the domain. `Ready.may_create_guilds` tells clients, which then offer only "Join a server".
+- `POST /api/v1/guilds` answers `MISSING_PERMISSIONS` when the rule refuses the user; the rule is one function (`GuildCreationPolicy::allows`), checked inside `Guilds::create_guild`, so every caller gets it. `Ready.may_create_guilds` tells clients, which then offer only "Join a server".
 - Servers that already exist are untouched, whoever owns them; conversations, groups and joining by invite stay open to everyone.
 
 ## Consequences
-- After updating, an instance whose members created servers stops letting them create new ones until the host writes `guild_creation = "everyone"`; the CHANGELOG says so.
+- After updating, an instance whose members created servers stops letting them create new ones until the host writes `guild_creation = "everyone"`; the CHANGELOG says so. A host whose own account was not created with `--administrator` is in the same case: no command promotes an existing account yet.
+- A server downgraded below this version refuses a configuration holding `guild_creation` (unknown fields are refused): remove the line first.
 - Older clients still offer "Create a server" and get an error when they use it.
 - shortcut: no admin screen yet; the setting moves there with the admin web UI (ADR-0009).
