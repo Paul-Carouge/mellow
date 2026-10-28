@@ -1003,4 +1003,47 @@ describe("Group conversations", () => {
     await leaving;
     expect(client.closedConversation?.reason).toBe("left");
   });
+  it("create an invite and leave a server for the server given, not the open one", async () => {
+    const invited: string[] = [];
+    const left: string[] = [];
+    const other = { ...guild([channel("202")]), id: "200" };
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        createInvite: (guildId: string) => {
+          invited.push(guildId);
+          return Promise.resolve({ code: `code-${guildId}` });
+        },
+        leaveGuild: (guildId: string) => {
+          left.push(guildId);
+          return Promise.resolve();
+        },
+      }),
+    );
+    client.applyReady(ready({ guilds: [guild(), other] }));
+    expect(client.selectedGuildId).toBe(GUILD);
+
+    expect(await client.createInvite("200")).toBe("code-200");
+    expect(invited).toEqual(["200"]);
+
+    await client.leaveServer("200");
+    expect(left).toEqual(["200"]);
+    expect(client.guilds.map((candidate) => candidate.id)).toEqual([GUILD]);
+    expect(client.selectedGuildId).toBe(GUILD);
+  });
+
+  it("leave the open server and move to another one", async () => {
+    const other = { ...guild([channel("202")]), id: "200" };
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, leaveGuild: () => Promise.resolve() }));
+    client.applyReady(ready({ guilds: [guild(), other] }));
+    await client.leaveServer(GUILD);
+    expect(client.selectedGuildId).toBe("200");
+  });
+
+  it("keep the server when leaving fails", async () => {
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, leaveGuild: () => Promise.reject(new ApiError(500, "SERVER_BUSY")) }));
+    client.applyReady(ready());
+    await expect(client.leaveServer(GUILD)).rejects.toBeInstanceOf(ApiError);
+    expect(client.guilds).toHaveLength(1);
+  });
 });
