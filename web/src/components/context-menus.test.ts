@@ -134,27 +134,40 @@ describe("personMenuActions", () => {
 
 describe("channelMenuActions", () => {
   it("offers Edit channel only with a settings page to show", () => {
-    const reader = { canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false };
+    const reader = { canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false, canDelete: false };
     expect(channelMenuActions({ ...reader, canEditChannel: true })).toEqual(["edit-channel", "separator", "copy-channel-id"]);
     expect(channelMenuActions(reader)).toEqual(["copy-channel-id"]);
   });
 
   it("groups the moves a manager may make between Edit channel and the ID", () => {
     expect(
-      channelMenuActions({ canEditChannel: true, canMoveUp: false, canMoveDown: true, canMoveToCategory: true }),
-    ).toEqual(["edit-channel", "separator", "move-down", "move-to-category", "separator", "copy-channel-id"]);
+      channelMenuActions({ canEditChannel: true, canMoveUp: false, canMoveDown: true, canMoveToCategory: true, canDelete: true }),
+    ).toEqual([
+      "edit-channel",
+      "separator",
+      "move-down",
+      "move-to-category",
+      "separator",
+      "copy-channel-id",
+      "separator",
+      "delete-channel",
+    ]);
   });
 });
 
 describe("categoryMenuActions", () => {
-  it("offers the moves a manager may make, then the ID", () => {
-    expect(categoryMenuActions({ canMoveUp: true, canMoveDown: true })).toEqual([
+  it("renames, moves, copies the ID, and deletes last", () => {
+    expect(categoryMenuActions({ canManage: true, canMoveUp: true, canMoveDown: true })).toEqual([
+      "rename-category",
+      "separator",
       "move-up",
       "move-down",
       "separator",
       "copy-category-id",
+      "separator",
+      "delete-category",
     ]);
-    expect(categoryMenuActions({ canMoveUp: false, canMoveDown: false })).toEqual(["copy-category-id"]);
+    expect(categoryMenuActions({ canManage: false, canMoveUp: false, canMoveDown: false })).toEqual(["copy-category-id"]);
   });
 });
 

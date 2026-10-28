@@ -57,7 +57,9 @@
   import IconButton from "./IconButton.svelte";
   import MentionBadge from "./MentionBadge.svelte";
   import type { MenuOrigin } from "./menu-placement";
+  import DeleteChannelDialog from "./DeleteChannelDialog.svelte";
   import MoveToCategoryDialog from "./MoveToCategoryDialog.svelte";
+  import RenameCategoryDialog from "./RenameCategoryDialog.svelte";
   import PersonContextMenu from "./PersonContextMenu.svelte";
   import RenameGroupDialog from "./RenameGroupDialog.svelte";
   import { lengthTokenInPixels } from "./tokens";
@@ -222,6 +224,8 @@
   }
 
   let movingChannel = $state<Channel | null>(null);
+  /** Delete a channel or a category, or rename a category, from its menu. */
+  let channelDialog = $state<{ kind: "delete" | "rename"; channel: Channel } | null>(null);
 
   function focusListed(id: Snowflake) {
     list?.querySelector<HTMLElement>(`[data-order-id="${id}"] button`)?.focus();
@@ -431,6 +435,7 @@
           canReorderNow &&
           canManageChannel(client.myChannelPermissions(channel.id)) &&
           sections.some((section) => section.category !== null),
+        canDelete: canManageChannel(client.myChannelPermissions(channel.id)),
       };
       return menuEntries(channelMenuActions(facts), (action) => {
         switch (action) {
@@ -443,20 +448,31 @@
             return { onselect: () => (movingChannel = channel) };
           case "copy-channel-id":
             return { onselectAndWait: () => copyIdentifier(channel.id, strings.contextMenu.channelIdCopied) };
+          case "delete-channel":
+            return { onselect: () => (channelDialog = { kind: "delete", channel }) };
         }
       });
     }
     if (target?.kind === "category") {
       const { category } = target;
       const facts = {
+        canManage: canManageChannel(client.myChannelPermissions(category.id)),
         canMoveUp: canReorderNow && categoryStepIndex(sections, category.id, -1) !== null,
         canMoveDown: canReorderNow && categoryStepIndex(sections, category.id, 1) !== null,
       };
-      return menuEntries(categoryMenuActions(facts), (action) =>
-        action === "copy-category-id"
-          ? { onselectAndWait: () => copyIdentifier(category.id, strings.contextMenu.categoryIdCopied) }
-          : { onselectAndWait: () => moveCategoryStep(category, action === "move-up" ? -1 : 1) },
-      );
+      return menuEntries(categoryMenuActions(facts), (action) => {
+        switch (action) {
+          case "rename-category":
+            return { onselect: () => (channelDialog = { kind: "rename", channel: category }) };
+          case "move-up":
+          case "move-down":
+            return { onselectAndWait: () => moveCategoryStep(category, action === "move-up" ? -1 : 1) };
+          case "copy-category-id":
+            return { onselectAndWait: () => copyIdentifier(category.id, strings.contextMenu.categoryIdCopied) };
+          case "delete-category":
+            return { onselect: () => (channelDialog = { kind: "delete", channel: category }) };
+        }
+      });
     }
     if (target?.kind === "group") {
       const { group, invoker } = target;
@@ -921,6 +937,23 @@
     </div>
   {/if}
 {/snippet}
+
+{#if channelDialog?.kind === "delete"}
+  <DeleteChannelDialog
+    {client}
+    channel={channelDialog.channel}
+    onclose={() => (channelDialog = null)}
+    ondone={(sentence) => (announcement = sentence)}
+    fallbackFocus={() => list?.querySelector<HTMLElement>("button")?.focus()}
+  />
+{:else if channelDialog?.kind === "rename"}
+  <RenameCategoryDialog
+    {client}
+    category={channelDialog.channel}
+    onclose={() => (channelDialog = null)}
+    ondone={(sentence) => (announcement = sentence)}
+  />
+{/if}
 
 {#if movingChannel}
   {@const channel = movingChannel}

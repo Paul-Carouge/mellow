@@ -195,6 +195,27 @@ export const en = {
     moving: "Moving…",
   },
 
+  /** Deleting a channel or a category, and renaming a category (DESIGN.md §5.3, §8). */
+  channelRemoval: {
+    deleteChannel: "Delete channel",
+    deleteCategory: "Delete category",
+    renameCategory: "Rename category",
+    channelTitle: (channel: string) => `Delete #${channel}?`,
+    channelBody: "All messages in this channel will be deleted for everyone. This can't be undone.",
+    confirmLabel: (channel: string) => `Type ${channel} to confirm`,
+    categoryTitle: (category: string) => `Delete the category ${category}?`,
+    categoryBody: "Its channels stay, without a category. This can't be undone.",
+    deleting: "Deleting…",
+    channelDeleteFailed: "Couldn't delete the channel",
+    categoryDeleteFailed: "Couldn't delete the category",
+    channelDeleted: (channel: string) => `Deleted #${channel}.`,
+    categoryDeleted: (category: string) => `Deleted the category ${category}.`,
+    renaming: "Renaming…",
+    renameFailed: "Couldn't rename the category",
+    categoryRenamed: (category: string) => `Category renamed to ${category}.`,
+    nameRequired: "Give the category a name.",
+  },
+
   userCard: {
     muteMicrophone: "Mute microphone",
     unmuteMicrophone: "Unmute microphone",

@@ -126,7 +126,13 @@ export function personMenuActions(facts: PersonMenuFacts): MenuLine<PersonMenuAc
 
 // --- A channel row ------------------------------------------------------------------------------
 
-export type ChannelMenuAction = "edit-channel" | "move-up" | "move-down" | "move-to-category" | "copy-channel-id";
+export type ChannelMenuAction =
+  | "edit-channel"
+  | "move-up"
+  | "move-down"
+  | "move-to-category"
+  | "copy-channel-id"
+  | "delete-channel";
 
 export interface ChannelMenuFacts {
   /** The reader sees at least one page of its settings. */
@@ -136,6 +142,8 @@ export interface ChannelMenuFacts {
   readonly canMoveDown: boolean;
   /** `MANAGE_CHANNELS` in the channel too, and somewhere else to go. */
   readonly canMoveToCategory: boolean;
+  /** `MANAGE_CHANNELS` in the channel. */
+  readonly canDelete: boolean;
 }
 
 /** Move up and Move down are the single-pointer and keyboard path for dragging (WCAG 2.2 2.5.7). */
@@ -144,22 +152,28 @@ export function channelMenuActions(facts: ChannelMenuFacts): MenuLine<ChannelMen
     [facts.canEditChannel && "edit-channel"],
     [facts.canMoveUp && "move-up", facts.canMoveDown && "move-down", facts.canMoveToCategory && "move-to-category"],
     ["copy-channel-id"],
+    [facts.canDelete && "delete-channel"],
   ]);
 }
 
 // --- A category header --------------------------------------------------------------------------
 
-export type CategoryMenuAction = "move-up" | "move-down" | "copy-category-id";
+export type CategoryMenuAction = "rename-category" | "move-up" | "move-down" | "copy-category-id" | "delete-category";
 
 export interface CategoryMenuFacts {
+  /** Rename and delete: `MANAGE_CHANNELS` in the category. */
+  readonly canManage: boolean;
   readonly canMoveUp: boolean;
   readonly canMoveDown: boolean;
 }
 
+/** Categories have no settings page: their menu renames them (DESIGN.md §5.3). */
 export function categoryMenuActions(facts: CategoryMenuFacts): MenuLine<CategoryMenuAction>[] {
   return joinSections<CategoryMenuAction>([
+    [facts.canManage && "rename-category"],
     [facts.canMoveUp && "move-up", facts.canMoveDown && "move-down"],
     ["copy-category-id"],
+    [facts.canManage && "delete-category"],
   ]);
 }
 
@@ -256,6 +270,9 @@ const LOOKS: Record<MenuAction, MenuItemLook> = {
   "move-down": { label: strings.contextMenu.moveDown, icon: "caret-down", tone: "normal" },
   "move-to-category": { label: strings.contextMenu.moveToCategory, icon: "list", tone: "normal" },
   "copy-category-id": { label: strings.contextMenu.copyCategoryId, icon: "copy", tone: "normal" },
+  "delete-channel": { label: strings.channelRemoval.deleteChannel, icon: "trash", tone: "danger" },
+  "rename-category": { label: strings.channelRemoval.renameCategory, icon: "pencil-simple", tone: "normal" },
+  "delete-category": { label: strings.channelRemoval.deleteCategory, icon: "trash", tone: "danger" },
   "invite-people": { label: strings.sidebar.invitePeople, icon: "user-plus", tone: "accent" },
   "server-settings": { label: strings.sidebar.serverSettings, icon: "gear-six", tone: "normal" },
   "create-channel": { label: strings.sidebar.createChannel, icon: "plus-circle", tone: "normal" },

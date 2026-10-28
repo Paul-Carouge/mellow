@@ -6,13 +6,15 @@
   import type { Snowflake } from "../lib/protocol";
   import ChannelOverviewSettings from "./ChannelOverviewSettings.svelte";
   import ChannelPermissionSettings from "./ChannelPermissionSettings.svelte";
-  import { type ChannelSettingsSection, visibleChannelSections } from "./channel-settings";
+  import { type ChannelSettingsSection, canManageChannel, visibleChannelSections } from "./channel-settings";
+  import DeleteChannelDialog from "./DeleteChannelDialog.svelte";
   import { mustStayOnPage } from "./server-settings";
   import SettingsNavItem from "./SettingsNavItem.svelte";
   import SettingsSheet from "./SettingsSheet.svelte";
 
   // Channel settings (DESIGN.md §5.8, Discord's "Edit channel"): Overview (icon, name, topic) and
-  // Permissions (overwrites per role and member), in the server settings' sheet. Each section shows
+  // Permissions (overwrites per role and member), in the server settings' sheet, then "Delete
+  // channel" with `MANAGE_CHANNELS` in it, as on Discord. Each section shows
   // only with its permission in this channel; the page follows the gateway, so a channel deleted,
   // hidden, or whose permission was lost closes what can no longer be used.
   interface Props {
@@ -34,6 +36,8 @@
   const channelPermissions = $derived(channel ? client.myChannelPermissions(channel.id) : null);
   const sections = $derived(channel ? visibleChannelSections(channel, channelPermissions) : []);
   let chosenSection = $state<ChannelSettingsSection | null>(null);
+  let isDeleteDialogOpen = $state(false);
+  const canDeleteChannel = $derived(canManageChannel(channelPermissions));
   // A section whose permission was lost gives way to the first one still shown.
   const section = $derived(
     chosenSection !== null && sections.includes(chosenSection) ? chosenSection : (sections[0] ?? null),
@@ -120,6 +124,20 @@
           onclick={() => choose(target)}
         />
       {/each}
+      {#if canDeleteChannel}
+        <hr
+          class="mx-(--mw-component-settings-nav-separator-margin-inline) my-(--mw-component-settings-nav-separator-margin-block) border-0 border-t border-(--mw-component-settings-nav-separator)"
+        />
+        <SettingsNavItem
+          label={strings.channelRemoval.deleteChannel}
+          isDanger
+          onclick={() => {
+            if (canLeavePage()) {
+              isDeleteDialogOpen = true;
+            }
+          }}
+        />
+      {/if}
     {/snippet}
 
     {#snippet page()}
@@ -141,5 +159,10 @@
         />
       {/if}
     {/snippet}
+
+    {#if isDeleteDialogOpen}
+      <!-- The sheet closes with the channel; this dialog goes with it. -->
+      <DeleteChannelDialog {client} {channel} onclose={() => (isDeleteDialogOpen = false)} />
+    {/if}
   </SettingsSheet>
 {/if}

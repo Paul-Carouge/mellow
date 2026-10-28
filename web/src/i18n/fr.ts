@@ -195,6 +195,26 @@ export const fr: Catalogue = {
     moving: "Déplacement…",
   },
 
+  channelRemoval: {
+    deleteChannel: "Supprimer le salon",
+    deleteCategory: "Supprimer la catégorie",
+    renameCategory: "Renommer la catégorie",
+    channelTitle: (channel) => `Supprimer #${channel}${NARROW_NO_BREAK_SPACE}?`,
+    channelBody: "Tous les messages de ce salon seront supprimés pour tout le monde. C’est irréversible.",
+    confirmLabel: (channel) => `Saisis ${channel} pour confirmer`,
+    categoryTitle: (category) => `Supprimer la catégorie ${category}${NARROW_NO_BREAK_SPACE}?`,
+    categoryBody: "Ses salons restent, sans catégorie. C’est irréversible.",
+    deleting: "Suppression…",
+    channelDeleteFailed: "Impossible de supprimer le salon",
+    categoryDeleteFailed: "Impossible de supprimer la catégorie",
+    channelDeleted: (channel) => `#${channel} supprimé.`,
+    categoryDeleted: (category) => `Catégorie ${category} supprimée.`,
+    renaming: "Renommage…",
+    renameFailed: "Impossible de renommer la catégorie",
+    categoryRenamed: (category) => `Catégorie renommée en ${category}.`,
+    nameRequired: "Donne un nom à la catégorie.",
+  },
+
   userCard: {
     muteMicrophone: "Couper le micro",
     unmuteMicrophone: "Réactiver le micro",

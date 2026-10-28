@@ -120,8 +120,8 @@ describe("server menus per role", () => {
 
   it("group and channel menus are well formed", () => {
     assertWellFormed(groupMenuActions());
-    assertWellFormed(channelMenuActions({ canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false }));
-    expect(channelMenuActions({ canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false })).toEqual(["copy-channel-id"]);
+    assertWellFormed(channelMenuActions({ canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false, canDelete: false }));
+    expect(channelMenuActions({ canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false, canDelete: false })).toEqual(["copy-channel-id"]);
   });
 });
 
