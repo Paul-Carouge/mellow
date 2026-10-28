@@ -4,6 +4,12 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-10-28
+No database migration.
+
+### Fixed
+- Web: a message longer than 4 000 characters failed with only "Not sent.". The composer now counts the characters left near the limit and holds a message that is too long back with a sentence saying to split it, and a message the instance refuses shows why next to "Not sent.".
+
 ## [0.17.1] - 2026-10-28
 No database migration.
 
