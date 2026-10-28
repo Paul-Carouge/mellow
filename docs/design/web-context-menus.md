@@ -23,7 +23,7 @@ The browser's menu stays, deliberately:
 - **On links**, file cards included: open in a new tab, copy the link address, save the file.
 - **On selected text**: Copy and the browser's search. A message's own Copy text is in its menu for the rest.
 - **With Shift held** while right-clicking anywhere: the browser's menu on purpose (developers, extensions, "Inspect").
-- **Where Mellow has no menu**: pending or failed messages (their Retry and Delete sit under them), the folded blocked messages, Home and "Add a server" in the strip, category headers, the chat header.
+- **Where Mellow has no menu**: pending or failed messages (their Retry and Delete sit under them), the folded blocked messages, Home and "Add a server" in the strip, the chat header. Category headers gained their own menu in DESIGN.md v0.24 ([web-channels-and-server-creation.md](web-channels-and-server-creation.md)).
 
 ## Menus and their items
 
@@ -35,9 +35,10 @@ Items appear only when the reader may use them, from the same helpers the button
 | **Person**: a member row, a message's author (avatar or name), a friend row | Profile (member list only) · Message (not yourself, not someone you blocked) · — · Add friend, or Accept friend request and Ignore request, or Cancel request, or Unblock · — · Copy user ID · — · Remove friend (friends) · Block |
 | **One-to-one conversation row** | The person's menu without Profile and Message, plus Copy channel ID after Copy user ID |
 | **Group conversation row** | Rename group · — · Copy channel ID · — · Leave group |
-| **Channel row** (the row and its gear) | Edit channel (when a settings page is visible to the reader) · — · Copy channel ID |
+| **Channel row** (the row and its gear) | Edit channel (when a settings page is visible to the reader) · — · Move up, Move down, Move to category… (managers, v0.24) · — · Copy channel ID · — · Delete channel (v0.24) |
+| **Category header** (v0.24) | Rename category · — · Move up, Move down · — · Copy category ID · — · Delete category |
 | **Server icon in the strip** | Invite people (accent, Create invite) · Server settings (when a page is visible) · — · Copy server ID · — · Leave server (not the owner) |
-| **Server header** (unchanged) | Invite people · Server settings · Create channel · — · Leave server |
+| **Server header** | Invite people · Server settings · Create channel · Create category (v0.24) · — · Leave server |
 | **Friend row's More** (unchanged) | Remove friend · Block |
 | **Status menu** (unchanged) | Online, Idle, Do not disturb, Invisible · — · Set or Edit custom status · — · Copy user ID |
 
