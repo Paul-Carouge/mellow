@@ -1524,7 +1524,10 @@ export class MellowClient {
     this.applyEvent({ t: "CHANNEL_DELETE", data: { guild_id: guildId, id: channelId } }, Date.now());
   }
 
-  /** The moves show when the gateway's `CHANNEL_UPDATE`s arrive, as other server settings do. */
+  /**
+   * The moves show when the gateway's `GUILD_CREATE` arrives (one snapshot per member rather than
+   * an event per moved channel), as other server settings do.
+   */
   async reorderChannels(guildId: Snowflake, placements: readonly ChannelPlacement[]): Promise<void> {
     await this.rest.reorderChannels(guildId, placements);
   }

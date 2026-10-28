@@ -123,7 +123,8 @@ fn normalize_short_text(text: &str, maximum_length: usize) -> Option<String> {
 
 /// Invisible or text-reordering characters: Unicode `Default_Ignorable_Code_Point` (zero-width,
 /// bidi controls, fillers, variation selectors, tags), the interlinear annotation marks and the
-/// blank Braille pattern. They let a name look empty, impersonate another one, or flip the text
+/// blank Braille pattern, and the line and paragraph separators (U+2028, U+2029), which break a
+/// name onto a second line. They let a name look empty, impersonate another one, or flip the text
 /// after it (CWE-451).
 pub(crate) fn is_invisible_format_character(character: char) -> bool {
     matches!(
@@ -135,7 +136,7 @@ pub(crate) fn is_invisible_format_character(character: char) -> bool {
             | '\u{17B4}'..='\u{17B5}'
             | '\u{180B}'..='\u{180F}'
             | '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}'
+            | '\u{2028}'..='\u{202E}'
             | '\u{2060}'..='\u{206F}'
             | '\u{2800}'
             | '\u{3164}'

@@ -250,31 +250,36 @@ pub struct ChannelPlace {
 ///
 /// # Errors
 /// `ChannelOrder` unless `requested` lists every viewable channel once, categories at the top
-/// level, and other channels in a viewable category or none.
+/// level, and other channels in a viewable category, none, or the hidden category they are
+/// already in (channels do not inherit their category's overwrites).
 pub fn merge_channel_order(
     current: &[ChannelPlace],
     is_viewable: impl Fn(Snowflake) -> bool,
     requested: &[ChannelPlacement],
 ) -> Result<Vec<ChannelPlace>, GuildRuleViolation> {
-    let viewable_kinds: HashMap<Snowflake, ChannelKind> = current
+    let viewable: HashMap<Snowflake, &ChannelPlace> = current
         .iter()
         .filter(|place| is_viewable(place.id))
-        .map(|place| (place.id, place.kind))
+        .map(|place| (place.id, place))
         .collect();
-    if requested.len() != viewable_kinds.len() {
+    if requested.len() != viewable.len() {
         return Err(GuildRuleViolation::ChannelOrder);
     }
     let mut placed_ids = HashSet::with_capacity(requested.len());
     let mut placed = Vec::with_capacity(requested.len());
     for placement in requested {
-        let kind = *viewable_kinds
+        let before = *viewable
             .get(&placement.id)
             .ok_or(GuildRuleViolation::ChannelOrder)?;
+        let kind = before.kind;
         let is_parent_valid = match (kind, placement.parent_id) {
             (_, None) => true,
             (ChannelKind::Category, Some(_)) => false,
             (ChannelKind::Text, Some(parent_id)) => {
-                viewable_kinds.get(&parent_id) == Some(&ChannelKind::Category)
+                before.parent_id == Some(parent_id)
+                    || viewable
+                        .get(&parent_id)
+                        .is_some_and(|parent| parent.kind == ChannelKind::Category)
             }
         };
         if !placed_ids.insert(placement.id) || !is_parent_valid {
@@ -460,6 +465,16 @@ mod tests {
             place(5, Text, Some(4)),
         ];
         let is_viewable = |id: Snowflake| id.raw() != 3;
+        // A visible channel stays in its category hidden from the requester.
+        let in_hidden_category = [place(6, Category, None), place(7, Text, Some(6))];
+        assert_eq!(
+            merge_channel_order(
+                &in_hidden_category,
+                |id| id.raw() == 7,
+                &[placement(7, Some(6))]
+            ),
+            Ok(in_hidden_category.to_vec())
+        );
         let merged = merge_channel_order(
             &current,
             is_viewable,

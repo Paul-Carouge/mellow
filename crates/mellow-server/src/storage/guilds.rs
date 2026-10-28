@@ -992,8 +992,8 @@ pub(crate) async fn insert_channel_last(
 }
 
 /// Gives the channels of `guild_id` the positions 0, 1, … and the categories in `new_order`,
-/// provided the guild's channels are still `expected_order` (what the permission check saw).
-/// Returns whether it was written.
+/// provided the guild's channels are still `expected_order` (what the permission check saw), and
+/// records `audits`. Returns whether it was written.
 ///
 /// # Errors
 /// Fails on database errors. Nothing is written on error.
@@ -1002,7 +1002,7 @@ pub(crate) async fn reorder_channels(
     guild_id: Snowflake,
     expected_order: &[(Snowflake, Option<Snowflake>)],
     new_order: &[(Snowflake, Option<Snowflake>)],
-    audit: &NewAuditEntry,
+    audits: &[NewAuditEntry],
 ) -> Result<bool, GuildStorageError> {
     let guild_id_integer = to_integer(guild_id.raw())?;
     let mut transaction = database
@@ -1036,7 +1036,9 @@ pub(crate) async fn reorder_channels(
         .execute(&mut *transaction)
         .await?;
     }
-    insert_audit_entry(&mut transaction, audit).await?;
+    for audit in audits {
+        insert_audit_entry(&mut transaction, audit).await?;
+    }
     transaction.commit().await?;
     Ok(true)
 }

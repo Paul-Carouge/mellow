@@ -444,7 +444,8 @@ export function auditChangeLines(entry: AuditLogEntry): string[] {
         return lines;
       }
       default:
-        // The invite code is in the sentence; a field of a newer server is left out.
+        // The invite code is in the sentence; a category change ("parent") reads as the channel's
+        // update without detail, and a field of a newer server is left out.
         return [];
     }
   });

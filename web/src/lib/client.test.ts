@@ -151,6 +151,31 @@ describe("MellowClient", () => {
     expect(client.guilds[0]?.channels.map((candidate) => candidate.id)).toEqual([GENERAL]);
   });
 
+  it("opens a created text channel but stays put on a created category", async () => {
+    const category: Channel = { ...channel("104"), kind: "category" };
+    const text: Channel = { ...channel("105"), parent_id: "104" };
+    const created = [category, text];
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, createChannel: () => Promise.resolve(created.shift()) }),
+    );
+    client.applyReady(ready());
+    client.selectGuild(GUILD, GENERAL);
+    await client.createChannel("category", "Games");
+    expect(client.selectedChannelId).toBe(GENERAL);
+    await client.createChannel("text", "Chess", "", "104");
+    expect(client.selectedChannelId).toBe("105");
+  });
+
+  it("removes a deleted category at once and leaves its channels uncategorised", async () => {
+    const category: Channel = { ...channel("104"), kind: "category" };
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, deleteChannel: () => Promise.resolve() }));
+    client.applyReady(ready({ guilds: [guild([category, { ...channel(GENERAL), parent_id: "104" }])] }));
+    await client.deleteChannel(GUILD, "104");
+    expect(client.guilds[0]?.channels.map((candidate) => [candidate.id, candidate.parent_id])).toEqual([
+      [GENERAL, null],
+    ]);
+  });
+
   it("applies a new avatar and a removed banner from USER_UPDATE to authors and to the signed-in user", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.user = { ...ready().user, banner: { id: "70", is_animated: false } };

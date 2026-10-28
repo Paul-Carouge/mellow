@@ -305,7 +305,7 @@ export type AuditAction =
   | "unknown";
 
 export interface AuditChange {
-  key: "name" | "topic" | "color" | "permissions" | "allow" | "deny" | "code" | "icon" | "unknown";
+  key: "name" | "topic" | "color" | "permissions" | "allow" | "deny" | "code" | "icon" | "parent" | "unknown";
   /** Permissions and colours in decimal. */
   old_value: string;
   new_value: string;

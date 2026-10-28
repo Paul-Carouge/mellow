@@ -191,6 +191,8 @@ pub enum AuditChangeKey {
     Code,
     /// Of a guild or channel: the icon's id, empty for none.
     Icon,
+    /// Of a channel: its category's id, empty for none.
+    Parent,
     /// A field added by a newer server.
     #[serde(other)]
     Unknown,

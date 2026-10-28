@@ -828,8 +828,9 @@ impl Guilds {
     }
 
     /// Needs `MANAGE_CHANNELS`, and also in each channel moved to another category. Only the
-    /// channels the member can view are listed and moved (`merge_channel_order`); each channel
-    /// whose place changed is sent to its viewers as a `CHANNEL_UPDATE`.
+    /// channels the member can view are listed and moved (`merge_channel_order`). Online members
+    /// get one fresh snapshot each rather than an event per moved channel: a move renumbers
+    /// nearly every channel, and hundreds of events at once would fill their session queues.
     pub(crate) async fn reorder_channels(
         &self,
         user_id: Snowflake,
@@ -854,6 +855,11 @@ impl Guilds {
                 (channel.id, permissions)
             })
             .collect();
+        let may = |channel_id: Snowflake, needed: Permissions| {
+            permissions_by_channel
+                .get(&channel_id)
+                .is_some_and(|permissions| permissions.contains(needed))
+        };
         let current: Vec<ChannelPlace> = channels
             .iter()
             .map(|channel| ChannelPlace {
@@ -864,46 +870,45 @@ impl Guilds {
             .collect();
         let merged = merge_channel_order(
             &current,
-            |channel_id| {
-                permissions_by_channel
-                    .get(&channel_id)
-                    .is_some_and(|permissions| permissions.contains(Permissions::VIEW_CHANNEL))
-            },
+            |channel_id| may(channel_id, Permissions::VIEW_CHANNEL),
             &request.channels,
         )?;
-        let changed: Vec<&StoredChannel> = merged
-            .iter()
-            .enumerate()
-            .filter_map(|(position, place)| {
-                let channel = channels.iter().find(|channel| channel.id == place.id)?;
-                let has_moved = usize::try_from(channel.position).ok() != Some(position)
-                    || channel.parent_id != place.parent_id;
-                has_moved.then_some(channel)
-            })
-            .collect();
-        if changed.is_empty() {
+        // Positions left with gaps by deletions are not worth a write on their own.
+        if merged == current {
             return Ok(self.get_guild(user_id, guild_id).await?.channels);
         }
-        let moves_to_another_category_without_permission = merged.iter().any(|place| {
-            let was_in = current.iter().find(|before| before.id == place.id);
-            let may_manage = permissions_by_channel
-                .get(&place.id)
-                .is_some_and(|permissions| permissions.contains(Permissions::MANAGE_CHANNELS));
-            was_in.is_some_and(|before| before.parent_id != place.parent_id) && !may_manage
-        });
-        if moves_to_another_category_without_permission {
-            return Err(GuildError::MissingPermissions);
+        let parent_before: HashMap<Snowflake, Option<Snowflake>> = current
+            .iter()
+            .map(|place| (place.id, place.parent_id))
+            .collect();
+        let mut audits =
+            vec![self.audit_entry(guild_id, user_id, AuditAction::ChannelsReorder, None, None)?];
+        for place in &merged {
+            let Some(&before) = parent_before.get(&place.id) else {
+                continue;
+            };
+            if before == place.parent_id {
+                continue;
+            }
+            if !may(place.id, Permissions::MANAGE_CHANNELS) {
+                return Err(GuildError::MissingPermissions);
+            }
+            let id_text = |id: Option<Snowflake>| id.map(|id| id.to_string()).unwrap_or_default();
+            audits.push(NewAuditEntry {
+                changes: vec![AuditChange {
+                    key: AuditChangeKey::Parent,
+                    old_value: id_text(before),
+                    new_value: id_text(place.parent_id),
+                }],
+                ..self.audit_entry(
+                    guild_id,
+                    user_id,
+                    AuditAction::ChannelUpdate,
+                    Some(place.id),
+                    None,
+                )?
+            });
         }
-        let mut audiences = Vec::with_capacity(changed.len());
-        for channel in &changed {
-            audiences.push((
-                channel.id,
-                self.audience_with_overwrites(guild_id, &channel.permission_overwrites)
-                    .await?,
-            ));
-        }
-        let audit =
-            self.audit_entry(guild_id, user_id, AuditAction::ChannelsReorder, None, None)?;
         let placements = |places: &[ChannelPlace]| -> Vec<(Snowflake, Option<Snowflake>)> {
             places
                 .iter()
@@ -915,38 +920,15 @@ impl Guilds {
             guild_id,
             &placements(&current),
             &placements(&merged),
-            &audit,
+            &audits,
         )
         .await?;
         if !is_written {
             return Err(GuildError::Conflict);
         }
-        self.publish_channel_updates(guild_id, &audiences).await?;
+        self.resynchronize(guild_id, AffectedMembers::Everyone)
+            .await;
         Ok(self.get_guild(user_id, guild_id).await?.channels)
-    }
-
-    /// Sends each channel's current state to the audience computed before the write.
-    async fn publish_channel_updates(
-        &self,
-        guild_id: Snowflake,
-        audiences: &[(Snowflake, ChannelAudience)],
-    ) -> Result<(), GuildError> {
-        let channels_now: HashMap<Snowflake, Channel> =
-            guild_storage::list_guild_channels(&self.database, guild_id)
-                .await?
-                .into_iter()
-                .map(|channel| (channel.id, channel_from_stored(channel)))
-                .collect();
-        for (channel_id, audience) in audiences {
-            if let Some(channel) = channels_now.get(channel_id) {
-                self.publish_to_audience(
-                    guild_id,
-                    audience,
-                    &GatewayEvent::ChannelUpdate(channel.clone()),
-                );
-            }
-        }
-        Ok(())
     }
 
     /// Needs `MANAGE_CHANNELS`. A deleted category's channels stay, uncategorised.
@@ -3352,7 +3334,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn channels_are_reordered_and_only_their_viewers_hear_of_it() {
+    async fn channels_are_reordered_and_each_member_gets_their_own_snapshot() {
         let fixture = fixture().await;
         let guild = guild_with_member(&fixture).await;
         let [text_channels, general] = [guild.channels[0].id, guild.channels[1].id];
@@ -3429,14 +3411,143 @@ mod tests {
             [0, 1, 2, 3]
         );
         let other_ids: Vec<Snowflake> = seen_by_other
+            .as_ref()
             .unwrap()
             .channels
             .iter()
             .map(|channel| channel.id)
             .collect();
         assert_eq!(other_ids, [second, general, text_channels]);
-        assert_eq!(event_types(&mut owner_events), ["CHANNEL_UPDATE"; 4]);
-        assert_eq!(event_types(&mut other_events), ["CHANNEL_UPDATE"; 3]);
+        let seen_by_other = seen_by_other.unwrap();
+        assert_eq!(received_guilds(&mut other_events), [seen_by_other]);
+        assert_eq!(event_types(&mut owner_events), ["GUILD_CREATE"]);
+    }
+
+    /// `other` manages channels everywhere but in `general`. Returns the guild and the ids of
+    /// "Text channels", `general` and a second, empty category, in that order.
+    async fn guild_where_other_manages_channels_but_general(
+        fixture: &Fixture,
+    ) -> (Guild, [Snowflake; 3]) {
+        let guild = guild_with_member(fixture).await;
+        let [text_channels, general] = [guild.channels[0].id, guild.channels[1].id];
+        let guilds = &fixture.guilds;
+        guilds
+            .update_role(
+                fixture.owner,
+                guild.id,
+                guild.id,
+                UpdateRoleRequest {
+                    permissions: Some(Permissions::DEFAULT_EVERYONE | Permissions::MANAGE_CHANNELS),
+                    ..UpdateRoleRequest::default()
+                },
+            )
+            .await
+            .unwrap();
+        let second = guilds
+            .create_channel(
+                fixture.owner,
+                guild.id,
+                CreateChannelRequest {
+                    kind: ChannelKind::Category,
+                    name: "Second".into(),
+                    topic: String::new(),
+                    parent_id: None,
+                },
+                NOW,
+            )
+            .await
+            .unwrap()
+            .id;
+        guilds
+            .set_permission_overwrite(
+                fixture.owner,
+                general,
+                fixture.other,
+                overwrite_request(
+                    OverwriteKind::Member,
+                    Permissions::empty(),
+                    Permissions::MANAGE_CHANNELS,
+                ),
+            )
+            .await
+            .unwrap();
+        (guild, [text_channels, general, second])
+    }
+
+    #[tokio::test]
+    async fn moving_a_channel_to_another_category_needs_manage_channels_in_it() {
+        let fixture = fixture().await;
+        let (guild, [text_channels, general, second]) =
+            guild_where_other_manages_channels_but_general(&fixture).await;
+        let guilds = &fixture.guilds;
+        let placement = |id, parent_id| ChannelPlacement { id, parent_id };
+        let reorder = |channels: Vec<ChannelPlacement>| {
+            guilds.reorder_channels(fixture.other, guild.id, ReorderChannelsRequest { channels })
+        };
+
+        let moved_out = reorder(vec![
+            placement(text_channels, None),
+            placement(second, None),
+            placement(general, Some(second)),
+        ])
+        .await;
+        let categories_swapped = reorder(vec![
+            placement(second, None),
+            placement(text_channels, None),
+            placement(general, Some(text_channels)),
+        ])
+        .await;
+        let audit = guilds
+            .audit_entry(
+                guild.id,
+                fixture.owner,
+                AuditAction::ChannelsReorder,
+                None,
+                None,
+            )
+            .unwrap();
+        // Someone else reordered after the check read the original order.
+        let outdated = guild_storage::reorder_channels(
+            &fixture.database,
+            guild.id,
+            &[
+                (text_channels, None),
+                (general, Some(text_channels)),
+                (second, None),
+            ],
+            &[(general, None), (text_channels, None), (second, None)],
+            &[audit],
+        )
+        .await
+        .unwrap();
+        let after = guilds.get_guild(fixture.owner, guild.id).await.unwrap();
+        let log = guilds
+            .list_audit_log(fixture.owner, guild.id, AuditLogQuery::default())
+            .await;
+        fixture.database.close().await;
+
+        assert!(matches!(moved_out, Err(GuildError::MissingPermissions)));
+        assert!(categories_swapped.is_ok(), "{categories_swapped:?}");
+        assert!(!outdated);
+        let placements: Vec<ChannelPlacement> = after
+            .channels
+            .iter()
+            .map(|channel| placement(channel.id, channel.parent_id))
+            .collect();
+        assert_eq!(
+            placements,
+            [
+                placement(second, None),
+                placement(text_channels, None),
+                placement(general, Some(text_channels)),
+            ]
+        );
+        let reorders = log
+            .unwrap()
+            .iter()
+            .filter(|entry| entry.action == AuditAction::ChannelsReorder)
+            .count();
+        assert_eq!(reorders, 1);
     }
 
     /// A live session for the owner and for `other`, subscribed to `guild_id`, with nothing
