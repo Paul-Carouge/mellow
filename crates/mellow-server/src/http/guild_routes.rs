@@ -38,16 +38,15 @@ pub(crate) async fn create_guild(
     AuthenticatedUser(user): AuthenticatedUser,
     ApiJson(request): ApiJson<CreateGuildRequest>,
 ) -> Result<(StatusCode, Json<Guild>), ApiError> {
-    if !state
-        .guilds
-        .may_create_guilds(user.is_instance_administrator)
-    {
-        return Err(crate::domain::guilds::GuildError::MissingPermissions.into());
-    }
     limit_guild_writes(&state, user.id)?;
     let guild = state
         .guilds
-        .create_guild(user.id, request, now_unix_milliseconds())
+        .create_guild(
+            user.id,
+            user.is_instance_administrator,
+            request,
+            now_unix_milliseconds(),
+        )
         .await?;
     Ok((StatusCode::CREATED, Json(guild)))
 }

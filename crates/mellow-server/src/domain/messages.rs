@@ -825,6 +825,7 @@ mod tests {
         let guild = guilds
             .create_guild(
                 users[0],
+                false,
                 CreateGuildRequest {
                     name: "Club".into(),
                     initial_categories: None,

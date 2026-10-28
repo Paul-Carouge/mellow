@@ -391,12 +391,17 @@ impl Guilds {
 
     /// Creates a guild owned by `owner_id` with the requested categories and channels, or by
     /// default a "Text channels" category holding `general`.
+    /// Refused (`MissingPermissions`) unless the instance's `GuildCreationPolicy` lets the owner.
     pub(crate) async fn create_guild(
         &self,
         owner_id: Snowflake,
+        is_instance_administrator: bool,
         request: CreateGuildRequest,
         now_unix_milliseconds: u64,
     ) -> Result<Guild, GuildError> {
+        if !self.may_create_guilds(is_instance_administrator) {
+            return Err(GuildError::MissingPermissions);
+        }
         let name = normalize_guild_name(&request.name)?;
         let initial_categories = match &request.initial_categories {
             Some(categories) => normalize_initial_categories(categories)?,
@@ -2075,7 +2080,7 @@ mod tests {
         let fixture = fixture().await;
         let guild = fixture
             .guilds
-            .create_guild(fixture.owner, create_request(" Mellow Dev "), NOW)
+            .create_guild(fixture.owner, false, create_request(" Mellow Dev "), NOW)
             .await
             .unwrap();
         fixture.database.close().await;
@@ -2097,7 +2102,7 @@ mod tests {
         let fixture = fixture().await;
         let guild = fixture
             .guilds
-            .create_guild(fixture.owner, create_request("Private"), NOW)
+            .create_guild(fixture.owner, false, create_request("Private"), NOW)
             .await
             .unwrap();
         let outsider_view = fixture.guilds.get_guild(fixture.other, guild.id).await;
@@ -2130,7 +2135,7 @@ mod tests {
         let fixture = fixture().await;
         let guild = fixture
             .guilds
-            .create_guild(fixture.owner, create_request("Club"), NOW)
+            .create_guild(fixture.owner, false, create_request("Club"), NOW)
             .await
             .unwrap();
         let single_use = fixture
@@ -2183,7 +2188,7 @@ mod tests {
         let fixture = fixture().await;
         let guild = fixture
             .guilds
-            .create_guild(fixture.owner, create_request("Club"), NOW)
+            .create_guild(fixture.owner, false, create_request("Club"), NOW)
             .await
             .unwrap();
         let category_id = guild.channels[0].id;
@@ -2256,7 +2261,7 @@ mod tests {
         let fixture = fixture().await;
         let guild = fixture
             .guilds
-            .create_guild(fixture.owner, create_request("Club"), NOW)
+            .create_guild(fixture.owner, false, create_request("Club"), NOW)
             .await
             .unwrap();
         let invite = fixture
@@ -2286,7 +2291,7 @@ mod tests {
     async fn guild_with_member(fixture: &Fixture) -> Guild {
         let guild = fixture
             .guilds
-            .create_guild(fixture.owner, create_request("Club"), NOW)
+            .create_guild(fixture.owner, false, create_request("Club"), NOW)
             .await
             .unwrap();
         let invite = fixture
@@ -2307,7 +2312,7 @@ mod tests {
         let fixture = fixture().await;
         let guild = fixture
             .guilds
-            .create_guild(fixture.owner, create_request("Club"), NOW)
+            .create_guild(fixture.owner, false, create_request("Club"), NOW)
             .await
             .unwrap();
         let single_use = fixture
@@ -2399,7 +2404,7 @@ mod tests {
         let guild = guild_with_member(&fixture).await;
         let other_guild = fixture
             .guilds
-            .create_guild(fixture.owner, create_request("Elsewhere"), NOW)
+            .create_guild(fixture.owner, false, create_request("Elsewhere"), NOW)
             .await
             .unwrap();
         let foreign_category = other_guild.channels[0].id;
@@ -2460,7 +2465,7 @@ mod tests {
         let fixture = fixture().await;
         let guild = fixture
             .guilds
-            .create_guild(fixture.owner, create_request("Busy"), NOW)
+            .create_guild(fixture.owner, false, create_request("Busy"), NOW)
             .await
             .unwrap();
         let already_present = u32::try_from(guild.channels.len()).unwrap();
@@ -3291,13 +3296,14 @@ mod tests {
         };
         let guild = fixture
             .guilds
-            .create_guild(fixture.owner, request, NOW)
+            .create_guild(fixture.owner, false, request, NOW)
             .await
             .unwrap();
         let too_many = fixture
             .guilds
             .create_guild(
                 fixture.owner,
+                false,
                 CreateGuildRequest {
                     name: "Club".into(),
                     initial_categories: Some(vec![
@@ -4156,7 +4162,7 @@ mod tests {
         let fixture = fixture().await;
         let guild = fixture
             .guilds
-            .create_guild(fixture.owner, create_request("Club"), NOW)
+            .create_guild(fixture.owner, false, create_request("Club"), NOW)
             .await
             .unwrap();
         fixture
@@ -4626,7 +4632,7 @@ mod tests {
         let guild = guild_with_member(&fixture).await;
         let elsewhere = fixture
             .guilds
-            .create_guild(fixture.other, create_request("Elsewhere"), NOW)
+            .create_guild(fixture.other, false, create_request("Elsewhere"), NOW)
             .await
             .unwrap();
         let foreign_role = fixture

@@ -759,6 +759,7 @@ mod tests {
             .guilds
             .create_guild(
                 carol,
+                false,
                 CreateGuildRequest {
                     name: "Club".into(),
                     initial_categories: None,

@@ -584,6 +584,7 @@ mod tests {
             .guilds
             .create_guild(
                 owner.user.id,
+                false,
                 CreateGuildRequest {
                     name: "Club".into(),
                     initial_categories: None,
