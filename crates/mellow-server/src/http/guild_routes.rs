@@ -9,8 +9,9 @@ use axum::http::{HeaderMap, StatusCode};
 use mellow_protocol::{
     AuditLogEntry, AuditLogQuery, Ban, Channel, CreateBanRequest, CreateChannelRequest,
     CreateGuildRequest, CreateInviteRequest, CreateRoleRequest, Guild, GuildInvite, GuildSummary,
-    Invite, Member, ReorderRolesRequest, Role, SetPermissionOverwriteRequest, Snowflake,
-    UpdateChannelRequest, UpdateGuildRequest, UpdateRoleRequest,
+    Invite, Member, ReorderChannelsRequest, ReorderRolesRequest, Role,
+    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateGuildRequest,
+    UpdateRoleRequest,
 };
 
 use crate::domain::clock::now_unix_milliseconds;
@@ -278,6 +279,21 @@ pub(crate) async fn reorder_roles(
         state
             .guilds
             .reorder_roles(user.id, guild_id, request)
+            .await?,
+    ))
+}
+
+pub(crate) async fn reorder_channels(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(guild_id): ApiPath<Snowflake>,
+    ApiJson(request): ApiJson<ReorderChannelsRequest>,
+) -> Result<Json<Vec<Channel>>, ApiError> {
+    limit_guild_writes(&state, user.id)?;
+    Ok(Json(
+        state
+            .guilds
+            .reorder_channels(user.id, guild_id, request)
             .await?,
     ))
 }

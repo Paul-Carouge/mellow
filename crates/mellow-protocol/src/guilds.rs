@@ -7,6 +7,26 @@ use crate::{Permissions, Snowflake};
 #[serde(deny_unknown_fields)]
 pub struct CreateGuildRequest {
     pub name: String,
+    /// The categories and channels the server starts with, in order, so clients can offer
+    /// templates in their own language. Absent: one "Text channels" category holding `general`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_categories: Option<Vec<InitialCategory>>,
+}
+
+/// A category a new server starts with, and its text channels in order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InitialCategory {
+    pub name: String,
+    pub channels: Vec<InitialTextChannel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InitialTextChannel {
+    pub name: String,
+    #[serde(default)]
+    pub topic: String,
 }
 
 /// Body of `PATCH /api/v1/guilds/{guild_id}`; absent fields are unchanged.
@@ -75,6 +95,23 @@ pub struct ReorderRolesRequest {
     pub role_ids: Vec<Snowflake>,
 }
 
+/// Body of `PUT /api/v1/guilds/{guild_id}/channels/order`: every channel the requester can view,
+/// once each, in their new order, each with its category. Channels hidden from the requester
+/// keep their places. The answer is the guild's channels as the requester sees them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReorderChannelsRequest {
+    pub channels: Vec<ChannelPlacement>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelPlacement {
+    pub id: Snowflake,
+    /// `None` for categories and uncategorised channels.
+    pub parent_id: Option<Snowflake>,
+}
+
 /// Body of `PUT /api/v1/guilds/{guild_id}/bans/{user_id}`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -108,6 +145,8 @@ pub enum AuditAction {
     RoleDelete,
     /// No `target_id`: the whole order changed.
     RolesReorder,
+    /// No `target_id`: channels moved or changed category.
+    ChannelsReorder,
     /// `target_id` is the member, `context_id` the role.
     MemberRoleAdd,
     /// `target_id` is the member, `context_id` the role.

@@ -238,6 +238,7 @@ impl RestClient {
             "api/v1/guilds",
             &CreateGuildRequest {
                 name: name.to_owned(),
+                initial_categories: None,
             },
             true,
         )

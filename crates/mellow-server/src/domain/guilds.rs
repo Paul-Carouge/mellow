@@ -8,20 +8,20 @@ use crate::storage::Database;
 use mellow_protocol::{
     AuditAction, AuditChange, AuditChangeKey, AuditLogEntry, AuditLogQuery, Ban, Channel,
     ChannelKind, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
-    CreateRoleRequest, GatewayEvent, Guild, GuildInvite, GuildSummary, Invite, Member,
-    OverwriteKind, PermissionOverwrite, Permissions, PublicUser, ReorderRolesRequest, Role,
-    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateGuildRequest,
-    UpdateRoleRequest,
+    CreateRoleRequest, GatewayEvent, Guild, GuildInvite, GuildSummary, InitialCategory,
+    InitialTextChannel, Invite, Member, OverwriteKind, PermissionOverwrite, Permissions,
+    PublicUser, ReorderChannelsRequest, ReorderRolesRequest, Role, SetPermissionOverwriteRequest,
+    Snowflake, UpdateChannelRequest, UpdateGuildRequest, UpdateRoleRequest,
 };
 
 use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::guild_rules::{
-    GuildRuleViolation, MAXIMUM_ACTIVE_INVITES_PER_GUILD, MAXIMUM_BANS_LISTED,
+    ChannelPlace, GuildRuleViolation, MAXIMUM_ACTIVE_INVITES_PER_GUILD, MAXIMUM_BANS_LISTED,
     MAXIMUM_CHANNELS_PER_GUILD, MAXIMUM_MEMBERS_LISTED, MAXIMUM_OVERWRITES_PER_CHANNEL,
     MAXIMUM_OWNED_GUILDS_PER_USER, MAXIMUM_ROLES_PER_GUILD, audit_log_page_size,
-    generate_invite_code, normalize_ban_reason, normalize_category_name, normalize_guild_name,
-    normalize_role_name, normalize_text_channel_name, normalize_topic, validate_invite_limits,
-    validate_known_permissions, validate_role_color, validate_role_order,
+    generate_invite_code, merge_channel_order, normalize_ban_reason, normalize_channel_name,
+    normalize_guild_name, normalize_initial_categories, normalize_role_name, normalize_topic,
+    validate_invite_limits, validate_known_permissions, validate_role_color, validate_role_order,
 };
 use crate::domain::permissions::{
     RoleManager, channel_permissions, guild_permissions, is_visible_to_every_member,
@@ -379,7 +379,8 @@ impl Guilds {
         }
     }
 
-    /// Creates a guild owned by `owner_id`, with a "Text channels" category and `#general`.
+    /// Creates a guild owned by `owner_id` with the requested categories and channels, or by
+    /// default a "Text channels" category holding `general`.
     pub(crate) async fn create_guild(
         &self,
         owner_id: Snowflake,
@@ -387,32 +388,47 @@ impl Guilds {
         now_unix_milliseconds: u64,
     ) -> Result<Guild, GuildError> {
         let name = normalize_guild_name(&request.name)?;
-        let guild_id = self.ids.next_id(now_unix_milliseconds)?;
-        let category_id = self.ids.next_id(now_unix_milliseconds)?;
-        let initial_channels = vec![
-            StoredChannel {
-                id: category_id,
-                guild_id,
-                kind: ChannelKind::Category,
+        let initial_categories = match &request.initial_categories {
+            Some(categories) => normalize_initial_categories(categories)?,
+            None => vec![InitialCategory {
                 name: DEFAULT_CATEGORY_NAME.to_owned(),
-                topic: String::new(),
-                parent_id: None,
-                position: 0,
-                icon: None,
-                permission_overwrites: Vec::new(),
-            },
-            StoredChannel {
-                id: self.ids.next_id(now_unix_milliseconds)?,
-                guild_id,
-                kind: ChannelKind::Text,
-                name: DEFAULT_CHANNEL_NAME.to_owned(),
-                topic: String::new(),
-                parent_id: Some(category_id),
-                position: 1,
-                icon: None,
-                permission_overwrites: Vec::new(),
-            },
-        ];
+                channels: vec![InitialTextChannel {
+                    name: DEFAULT_CHANNEL_NAME.to_owned(),
+                    topic: String::new(),
+                }],
+            }],
+        };
+        let guild_id = self.ids.next_id(now_unix_milliseconds)?;
+        let mut initial_channels = Vec::new();
+        for category in initial_categories {
+            let category_id = self.ids.next_id(now_unix_milliseconds)?;
+            let channels = std::iter::once((ChannelKind::Category, category.name, String::new()))
+                .chain(
+                    category
+                        .channels
+                        .into_iter()
+                        .map(|channel| (ChannelKind::Text, channel.name, channel.topic)),
+                );
+            for (kind, name, topic) in channels {
+                let is_category = kind == ChannelKind::Category;
+                initial_channels.push(StoredChannel {
+                    id: if is_category {
+                        category_id
+                    } else {
+                        self.ids.next_id(now_unix_milliseconds)?
+                    },
+                    guild_id,
+                    kind,
+                    name,
+                    topic,
+                    parent_id: (!is_category).then_some(category_id),
+                    position: u32::try_from(initial_channels.len())
+                        .map_err(|_| GuildRuleViolation::InitialChannels)?,
+                    icon: None,
+                    permission_overwrites: Vec::new(),
+                });
+            }
+        }
         guild_storage::insert_guild(
             &self.database,
             &NewGuild {
@@ -534,10 +550,7 @@ impl Guilds {
     ) -> Result<Channel, GuildError> {
         self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_CHANNELS)
             .await?;
-        let name = match request.kind {
-            ChannelKind::Category => normalize_category_name(&request.name)?,
-            ChannelKind::Text => normalize_text_channel_name(&request.name)?,
-        };
+        let name = normalize_channel_name(&request.name)?;
         let topic = normalize_topic(&request.topic)?;
         if let Some(parent_id) = request.parent_id {
             // A category the creator cannot view is answered like a missing one.
@@ -768,10 +781,7 @@ impl Guilds {
         }
         let name = request
             .name
-            .map(|name| match channel.kind {
-                ChannelKind::Category => normalize_category_name(&name),
-                ChannelKind::Text => normalize_text_channel_name(&name),
-            })
+            .map(|name| normalize_channel_name(&name))
             .transpose()?;
         let topic = request
             .topic
@@ -815,6 +825,128 @@ impl Guilds {
             &GatewayEvent::ChannelUpdate(updated.clone()),
         );
         Ok(updated)
+    }
+
+    /// Needs `MANAGE_CHANNELS`, and also in each channel moved to another category. Only the
+    /// channels the member can view are listed and moved (`merge_channel_order`); each channel
+    /// whose place changed is sent to its viewers as a `CHANNEL_UPDATE`.
+    pub(crate) async fn reorder_channels(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        request: ReorderChannelsRequest,
+    ) -> Result<Vec<Channel>, GuildError> {
+        let (membership, permissions) = self.membership_and_permissions(guild_id, user_id).await?;
+        if !permissions.contains(Permissions::MANAGE_CHANNELS) {
+            return Err(GuildError::MissingPermissions);
+        }
+        let channels = guild_storage::list_guild_channels(&self.database, guild_id).await?;
+        let permissions_by_channel: HashMap<Snowflake, Permissions> = channels
+            .iter()
+            .map(|channel| {
+                let permissions = channel_permissions(
+                    user_id,
+                    membership.owner_id,
+                    guild_id,
+                    &membership.member_roles,
+                    &channel.permission_overwrites,
+                );
+                (channel.id, permissions)
+            })
+            .collect();
+        let current: Vec<ChannelPlace> = channels
+            .iter()
+            .map(|channel| ChannelPlace {
+                id: channel.id,
+                kind: channel.kind,
+                parent_id: channel.parent_id,
+            })
+            .collect();
+        let merged = merge_channel_order(
+            &current,
+            |channel_id| {
+                permissions_by_channel
+                    .get(&channel_id)
+                    .is_some_and(|permissions| permissions.contains(Permissions::VIEW_CHANNEL))
+            },
+            &request.channels,
+        )?;
+        let changed: Vec<&StoredChannel> = merged
+            .iter()
+            .enumerate()
+            .filter_map(|(position, place)| {
+                let channel = channels.iter().find(|channel| channel.id == place.id)?;
+                let has_moved = usize::try_from(channel.position).ok() != Some(position)
+                    || channel.parent_id != place.parent_id;
+                has_moved.then_some(channel)
+            })
+            .collect();
+        if changed.is_empty() {
+            return Ok(self.get_guild(user_id, guild_id).await?.channels);
+        }
+        let moves_to_another_category_without_permission = merged.iter().any(|place| {
+            let was_in = current.iter().find(|before| before.id == place.id);
+            let may_manage = permissions_by_channel
+                .get(&place.id)
+                .is_some_and(|permissions| permissions.contains(Permissions::MANAGE_CHANNELS));
+            was_in.is_some_and(|before| before.parent_id != place.parent_id) && !may_manage
+        });
+        if moves_to_another_category_without_permission {
+            return Err(GuildError::MissingPermissions);
+        }
+        let mut audiences = Vec::with_capacity(changed.len());
+        for channel in &changed {
+            audiences.push((
+                channel.id,
+                self.audience_with_overwrites(guild_id, &channel.permission_overwrites)
+                    .await?,
+            ));
+        }
+        let audit =
+            self.audit_entry(guild_id, user_id, AuditAction::ChannelsReorder, None, None)?;
+        let placements = |places: &[ChannelPlace]| -> Vec<(Snowflake, Option<Snowflake>)> {
+            places
+                .iter()
+                .map(|place| (place.id, place.parent_id))
+                .collect()
+        };
+        let is_written = guild_storage::reorder_channels(
+            &self.database,
+            guild_id,
+            &placements(&current),
+            &placements(&merged),
+            &audit,
+        )
+        .await?;
+        if !is_written {
+            return Err(GuildError::Conflict);
+        }
+        self.publish_channel_updates(guild_id, &audiences).await?;
+        Ok(self.get_guild(user_id, guild_id).await?.channels)
+    }
+
+    /// Sends each channel's current state to the audience computed before the write.
+    async fn publish_channel_updates(
+        &self,
+        guild_id: Snowflake,
+        audiences: &[(Snowflake, ChannelAudience)],
+    ) -> Result<(), GuildError> {
+        let channels_now: HashMap<Snowflake, Channel> =
+            guild_storage::list_guild_channels(&self.database, guild_id)
+                .await?
+                .into_iter()
+                .map(|channel| (channel.id, channel_from_stored(channel)))
+                .collect();
+        for (channel_id, audience) in audiences {
+            if let Some(channel) = channels_now.get(channel_id) {
+                self.publish_to_audience(
+                    guild_id,
+                    audience,
+                    &GatewayEvent::ChannelUpdate(channel.clone()),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Needs `MANAGE_CHANNELS`. A deleted category's channels stay, uncategorised.
@@ -1876,6 +2008,7 @@ mod tests {
     use crate::domain::accounts::Accounts;
     use crate::domain::accounts::tests::{NOW, migrated_database, register_request};
     use crate::domain::guild_rules::MAXIMUM_BAN_REASON_LENGTH;
+    use mellow_protocol::ChannelPlacement;
 
     struct Fixture {
         _directory: tempfile::TempDir,
@@ -1925,7 +2058,10 @@ mod tests {
     }
 
     fn create_request(name: &str) -> CreateGuildRequest {
-        CreateGuildRequest { name: name.into() }
+        CreateGuildRequest {
+            name: name.into(),
+            initial_categories: None,
+        }
     }
 
     fn text_channel(name: &str, parent_id: Option<Snowflake>) -> CreateChannelRequest {
@@ -2099,7 +2235,7 @@ mod tests {
             .unwrap();
         fixture.database.close().await;
 
-        assert_eq!(created.name, "off-topic");
+        assert_eq!(created.name, "Off Topic");
         assert_eq!(created.position, 2);
         assert!(matches!(
             text_as_parent,
@@ -2107,7 +2243,7 @@ mod tests {
         ));
         assert_eq!(
             (renamed.name.as_str(), renamed.topic.as_str()),
-            ("random-stuff", "Anything goes")
+            ("Random Stuff", "Anything goes")
         );
         assert!(
             after
@@ -3126,6 +3262,181 @@ mod tests {
                 .any(|channel| channel.id == general)
         );
         assert!(owner_creates_in_category.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_guild_starts_with_the_requested_categories_and_channels_in_order() {
+        let fixture = fixture().await;
+        let request = CreateGuildRequest {
+            name: "Club".into(),
+            initial_categories: Some(vec![
+                InitialCategory {
+                    name: "Infos".into(),
+                    channels: vec![InitialTextChannel {
+                        name: "Bienvenue".into(),
+                        topic: "Dis bonjour".into(),
+                    }],
+                },
+                InitialCategory {
+                    name: "Discussions".into(),
+                    channels: vec![
+                        InitialTextChannel {
+                            name: "Général".into(),
+                            topic: String::new(),
+                        },
+                        InitialTextChannel {
+                            name: "Jeux vidéo".into(),
+                            topic: String::new(),
+                        },
+                    ],
+                },
+            ]),
+        };
+        let guild = fixture
+            .guilds
+            .create_guild(fixture.owner, request, NOW)
+            .await
+            .unwrap();
+        let too_many = fixture
+            .guilds
+            .create_guild(
+                fixture.owner,
+                CreateGuildRequest {
+                    name: "Club".into(),
+                    initial_categories: Some(vec![
+                        InitialCategory {
+                            name: "a".into(),
+                            channels: Vec::new(),
+                        };
+                        11
+                    ]),
+                },
+                NOW,
+            )
+            .await;
+        fixture.database.close().await;
+
+        let layout: Vec<(&str, Option<&str>, u32)> = guild
+            .channels
+            .iter()
+            .map(|channel| {
+                let parent = channel.parent_id.map(|parent_id| {
+                    guild
+                        .channels
+                        .iter()
+                        .find(|candidate| candidate.id == parent_id)
+                        .unwrap()
+                        .name
+                        .as_str()
+                });
+                (channel.name.as_str(), parent, channel.position)
+            })
+            .collect();
+        assert_eq!(
+            layout,
+            [
+                ("Infos", None, 0),
+                ("Bienvenue", Some("Infos"), 1),
+                ("Discussions", None, 2),
+                ("Général", Some("Discussions"), 3),
+                ("Jeux vidéo", Some("Discussions"), 4),
+            ]
+        );
+        assert_eq!(guild.channels[1].topic, "Dis bonjour");
+        assert!(matches!(
+            too_many,
+            Err(GuildError::InvalidInput(
+                GuildRuleViolation::InitialChannels
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn channels_are_reordered_and_only_their_viewers_hear_of_it() {
+        let fixture = fixture().await;
+        let guild = guild_with_member(&fixture).await;
+        let [text_channels, general] = [guild.channels[0].id, guild.channels[1].id];
+        let category = |name: &str| CreateChannelRequest {
+            kind: ChannelKind::Category,
+            name: name.into(),
+            topic: String::new(),
+            parent_id: None,
+        };
+        let second = fixture
+            .guilds
+            .create_channel(fixture.owner, guild.id, category("Second"), NOW)
+            .await
+            .unwrap()
+            .id;
+        let secret = fixture
+            .guilds
+            .create_channel(
+                fixture.owner,
+                guild.id,
+                text_channel("secret", Some(text_channels)),
+                NOW,
+            )
+            .await
+            .unwrap()
+            .id;
+        fixture
+            .guilds
+            .set_permission_overwrite(fixture.owner, secret, guild.id, hide_from_everyone())
+            .await
+            .unwrap();
+        let [mut owner_events, mut other_events] = owner_and_other_sessions(&fixture, guild.id);
+        let placement = |id, parent_id| ChannelPlacement { id, parent_id };
+        let new_order = vec![
+            placement(second, None),
+            placement(secret, Some(second)),
+            placement(general, Some(second)),
+            placement(text_channels, None),
+        ];
+
+        let reorder = |user_id, channels: &[ChannelPlacement]| {
+            fixture.guilds.reorder_channels(
+                user_id,
+                guild.id,
+                ReorderChannelsRequest {
+                    channels: channels.to_vec(),
+                },
+            )
+        };
+        let member_reorders = reorder(fixture.other, &new_order).await;
+        let incomplete = reorder(fixture.owner, &new_order[..3]).await;
+        let reordered = reorder(fixture.owner, &new_order).await.unwrap();
+        let seen_by_other = fixture.guilds.get_guild(fixture.other, guild.id).await;
+        fixture.database.close().await;
+
+        assert!(matches!(
+            member_reorders,
+            Err(GuildError::MissingPermissions)
+        ));
+        assert!(matches!(
+            incomplete,
+            Err(GuildError::InvalidInput(GuildRuleViolation::ChannelOrder))
+        ));
+        let placements: Vec<ChannelPlacement> = reordered
+            .iter()
+            .map(|channel| placement(channel.id, channel.parent_id))
+            .collect();
+        assert_eq!(placements, new_order);
+        assert_eq!(
+            reordered
+                .iter()
+                .map(|channel| channel.position)
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+        let other_ids: Vec<Snowflake> = seen_by_other
+            .unwrap()
+            .channels
+            .iter()
+            .map(|channel| channel.id)
+            .collect();
+        assert_eq!(other_ids, [second, general, text_channels]);
+        assert_eq!(event_types(&mut owner_events), ["CHANNEL_UPDATE"; 4]);
+        assert_eq!(event_types(&mut other_events), ["CHANNEL_UPDATE"; 3]);
     }
 
     /// A live session for the owner and for `other`, subscribed to `guild_id`, with nothing

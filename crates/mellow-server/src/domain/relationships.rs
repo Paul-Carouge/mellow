@@ -756,6 +756,7 @@ mod tests {
                 carol,
                 CreateGuildRequest {
                     name: "Club".into(),
+                    initial_categories: None,
                 },
                 NOW,
             )

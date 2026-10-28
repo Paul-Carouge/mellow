@@ -583,6 +583,7 @@ mod tests {
                 owner.user.id,
                 CreateGuildRequest {
                     name: "Club".into(),
+                    initial_categories: None,
                 },
                 now(),
             )

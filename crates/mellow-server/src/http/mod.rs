@@ -291,6 +291,10 @@ pub(crate) fn router(state: AppState) -> Router {
             post(guild_routes::create_channel),
         )
         .route(
+            "/api/v1/guilds/{guild_id}/channels/order",
+            put(guild_routes::reorder_channels),
+        )
+        .route(
             "/api/v1/guilds/{guild_id}/invites",
             get(guild_routes::list_invites).post(guild_routes::create_invite),
         )
@@ -1585,6 +1589,43 @@ pub(crate) mod tests {
         let (status, _) = send(&state, authorized("DELETE", &role_path, &owner, None)).await;
         database.close().await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn channels_are_reordered_over_http() {
+        use mellow_protocol::Channel;
+
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let (owner, guest, guild_id, _) = guild_with_guest(&state).await;
+        let (_, body) = send(
+            &state,
+            authorized("GET", &format!("/api/v1/guilds/{guild_id}"), &owner, None),
+        )
+        .await;
+        let channels = json::<mellow_protocol::Guild>(&body).channels;
+        let [category, general] = [channels[0].id, channels[1].id];
+        let order_path = format!("/api/v1/guilds/{guild_id}/channels/order");
+        // `general` leaves its category and moves above it.
+        let order = serde_json::json!({"channels": [
+            {"id": general, "parent_id": null},
+            {"id": category, "parent_id": null},
+        ]});
+        let (status, body) = send(
+            &state,
+            authorized("PUT", &order_path, &owner, Some(order.clone())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let placed: Vec<(Snowflake, Option<Snowflake>)> = json::<Vec<Channel>>(&body)
+            .into_iter()
+            .map(|channel| (channel.id, channel.parent_id))
+            .collect();
+        assert_eq!(placed, [(general, None), (category, None)]);
+
+        let (status, _) = send(&state, authorized("PUT", &order_path, &guest, Some(order))).await;
+        database.close().await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

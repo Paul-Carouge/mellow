@@ -1,8 +1,10 @@
 //! Input rules for guilds, channels and invites.
 
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use mellow_protocol::{
+    ChannelKind, ChannelPlacement, InitialCategory, InitialTextChannel,
     MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH, MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS, Permissions,
     Snowflake,
 };
@@ -19,6 +21,9 @@ pub const INVITE_CODE_LENGTH: usize = 10;
 /// Quotas, as on Discord, so one account cannot grow the database or a response without bound.
 pub const MAXIMUM_CHANNELS_PER_GUILD: u32 = 500;
 pub const MAXIMUM_OWNED_GUILDS_PER_USER: u32 = 100;
+/// What `CreateGuildRequest::initial_categories` may hold.
+pub const MAXIMUM_INITIAL_CATEGORIES: usize = 10;
+pub const MAXIMUM_INITIAL_TEXT_CHANNELS: usize = 50;
 pub const MAXIMUM_ACTIVE_INVITES_PER_GUILD: u32 = 1_000;
 /// `@everyone` included.
 pub const MAXIMUM_ROLES_PER_GUILD: u32 = 250;
@@ -44,12 +49,10 @@ pub enum GuildRuleViolation {
         "guild names are {MINIMUM_GUILD_NAME_LENGTH} to {MAXIMUM_GUILD_NAME_LENGTH} characters, without control characters"
     )]
     GuildName,
-    #[error("channel names are 1 to {MAXIMUM_CHANNEL_NAME_LENGTH} letters, digits, `-` or `_`")]
-    ChannelName,
     #[error(
-        "category names are 1 to {MAXIMUM_CHANNEL_NAME_LENGTH} characters, without control characters"
+        "channel and category names are 1 to {MAXIMUM_CHANNEL_NAME_LENGTH} characters, without hidden characters"
     )]
-    CategoryName,
+    ChannelName,
     #[error(
         "channel topics are at most {MAXIMUM_CHANNEL_TOPIC_LENGTH} characters, without control characters"
     )]
@@ -93,6 +96,14 @@ pub enum GuildRuleViolation {
     OverwriteOutsideChannelScope,
     #[error("role_ids must list every role of the guild except @everyone, once each")]
     RoleOrder,
+    #[error(
+        "channels must list every channel you can view, once each, categories at the top level and other channels in one of the listed categories or none"
+    )]
+    ChannelOrder,
+    #[error(
+        "a new server starts with at most {MAXIMUM_INITIAL_CATEGORIES} categories and {MAXIMUM_INITIAL_TEXT_CHANNELS} channels"
+    )]
+    InitialChannels,
     #[error("@everyone keeps its name and colour, and cannot be deleted, given or taken away")]
     EveryoneRole,
     #[error("categories have no icon")]
@@ -128,37 +139,15 @@ pub fn normalize_group_conversation_name(name: &str) -> Result<String, GuildRule
         .ok_or(GuildRuleViolation::GroupConversationName)
 }
 
-/// # Errors
-/// `CategoryName` when empty, too long or containing hidden characters.
-pub fn normalize_category_name(name: &str) -> Result<String, GuildRuleViolation> {
-    trimmed_within(name, 1, MAXIMUM_CHANNEL_NAME_LENGTH)
-        .map(str::to_owned)
-        .ok_or(GuildRuleViolation::CategoryName)
-}
-
-/// Discord-style text channel names: lowercase, spaces become `-` ("Off Topic" → "off-topic").
+/// Channel and category names are kept as typed, capitals and spaces included (owner's
+/// decision, 2026-10-28: unlike Discord, text channels are not lowercased and hyphenated).
 ///
 /// # Errors
-/// `ChannelName` when empty, too long, or containing anything but letters, digits, `-`, `_`.
-pub fn normalize_text_channel_name(name: &str) -> Result<String, GuildRuleViolation> {
-    // Hangul fillers and similar count as letters for `is_alphanumeric`, yet render as nothing.
-    if has_hidden_characters(name) {
-        return Err(GuildRuleViolation::ChannelName);
-    }
-    let normalized = name
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join("-")
-        .to_lowercase();
-    let length = normalized.chars().count();
-    let has_allowed_characters = normalized
-        .chars()
-        .all(|character| character.is_alphanumeric() || character == '-' || character == '_');
-    if (1..=MAXIMUM_CHANNEL_NAME_LENGTH).contains(&length) && has_allowed_characters {
-        Ok(normalized)
-    } else {
-        Err(GuildRuleViolation::ChannelName)
-    }
+/// `ChannelName` when empty, too long or containing hidden characters.
+pub fn normalize_channel_name(name: &str) -> Result<String, GuildRuleViolation> {
+    trimmed_within(name, 1, MAXIMUM_CHANNEL_NAME_LENGTH)
+        .map(str::to_owned)
+        .ok_or(GuildRuleViolation::ChannelName)
 }
 
 /// # Errors
@@ -246,6 +235,106 @@ pub fn validate_role_order(
         .ok_or(GuildRuleViolation::RoleOrder)
 }
 
+/// A guild channel's place in the guild's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelPlace {
+    pub id: Snowflake,
+    pub kind: ChannelKind,
+    pub parent_id: Option<Snowflake>,
+}
+
+/// The guild's whole new order. `current` is the guild's channels in order; `requested` lists
+/// the channels `is_viewable` accepts, in their new order, and fills the slots those channels
+/// hold in `current`. Hidden channels keep their slots and categories, so the requester needs
+/// to know nothing about them.
+///
+/// # Errors
+/// `ChannelOrder` unless `requested` lists every viewable channel once, categories at the top
+/// level, and other channels in a viewable category or none.
+pub fn merge_channel_order(
+    current: &[ChannelPlace],
+    is_viewable: impl Fn(Snowflake) -> bool,
+    requested: &[ChannelPlacement],
+) -> Result<Vec<ChannelPlace>, GuildRuleViolation> {
+    let viewable_kinds: HashMap<Snowflake, ChannelKind> = current
+        .iter()
+        .filter(|place| is_viewable(place.id))
+        .map(|place| (place.id, place.kind))
+        .collect();
+    if requested.len() != viewable_kinds.len() {
+        return Err(GuildRuleViolation::ChannelOrder);
+    }
+    let mut placed_ids = HashSet::with_capacity(requested.len());
+    let mut placed = Vec::with_capacity(requested.len());
+    for placement in requested {
+        let kind = *viewable_kinds
+            .get(&placement.id)
+            .ok_or(GuildRuleViolation::ChannelOrder)?;
+        let is_parent_valid = match (kind, placement.parent_id) {
+            (_, None) => true,
+            (ChannelKind::Category, Some(_)) => false,
+            (ChannelKind::Text, Some(parent_id)) => {
+                viewable_kinds.get(&parent_id) == Some(&ChannelKind::Category)
+            }
+        };
+        if !placed_ids.insert(placement.id) || !is_parent_valid {
+            return Err(GuildRuleViolation::ChannelOrder);
+        }
+        placed.push(ChannelPlace {
+            id: placement.id,
+            kind,
+            parent_id: placement.parent_id,
+        });
+    }
+    let mut placed = placed.into_iter();
+    current
+        .iter()
+        .map(|place| {
+            if is_viewable(place.id) {
+                placed.next()
+            } else {
+                Some(*place)
+            }
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or(GuildRuleViolation::ChannelOrder)
+}
+
+/// # Errors
+/// `InitialChannels` beyond the quotas, `ChannelName` or `Topic` for an invalid entry. Returns
+/// the categories with normalized names and topics.
+pub fn normalize_initial_categories(
+    categories: &[InitialCategory],
+) -> Result<Vec<InitialCategory>, GuildRuleViolation> {
+    let text_channel_count: usize = categories
+        .iter()
+        .map(|category| category.channels.len())
+        .sum();
+    if categories.len() > MAXIMUM_INITIAL_CATEGORIES
+        || text_channel_count > MAXIMUM_INITIAL_TEXT_CHANNELS
+    {
+        return Err(GuildRuleViolation::InitialChannels);
+    }
+    categories
+        .iter()
+        .map(|category| {
+            Ok(InitialCategory {
+                name: normalize_channel_name(&category.name)?,
+                channels: category
+                    .channels
+                    .iter()
+                    .map(|channel| {
+                        Ok(InitialTextChannel {
+                            name: normalize_channel_name(&channel.name)?,
+                            topic: normalize_topic(&channel.topic)?,
+                        })
+                    })
+                    .collect::<Result<_, GuildRuleViolation>>()?,
+            })
+        })
+        .collect()
+}
+
 /// A 10-character code over 62 symbols (about 59 bits): unguessable at our rate limits.
 ///
 /// # Errors
@@ -271,36 +360,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn text_channel_names_are_lowercased_and_hyphenated() {
+    fn channel_names_keep_capitals_and_spaces() {
         assert_eq!(
-            normalize_text_channel_name("  Off   Topic ").unwrap(),
-            "off-topic"
+            normalize_channel_name("  Off   Topic ").unwrap(),
+            "Off   Topic"
         );
-        assert_eq!(
-            normalize_text_channel_name("général_2").unwrap(),
-            "général_2"
-        );
+        assert_eq!(normalize_channel_name("général_2").unwrap(), "général_2");
+        assert_eq!(normalize_channel_name("Q&A #1").unwrap(), "Q&A #1");
         for invalid in [
             "",
             "   ",
-            "no#hash",
+            "two\nlines",
             "a\u{202E}b",
             "\u{3164}",
             "\u{115F}x",
             &"a".repeat(101),
         ] {
-            assert!(normalize_text_channel_name(invalid).is_err(), "{invalid:?}");
+            assert!(normalize_channel_name(invalid).is_err(), "{invalid:?}");
         }
     }
 
     #[test]
-    fn guild_category_and_topic_rules() {
+    fn guild_name_and_topic_rules() {
         assert_eq!(normalize_guild_name(" Mellow Dev ").unwrap(), "Mellow Dev");
         assert!(normalize_guild_name("M").is_err());
-        assert_eq!(
-            normalize_category_name("Text Channels").unwrap(),
-            "Text Channels"
-        );
         assert_eq!(normalize_topic("").unwrap(), "");
         assert!(normalize_topic("a\u{0007}").is_err());
         assert!(normalize_topic(&"a".repeat(1025)).is_err());
@@ -346,6 +429,135 @@ mod tests {
                 validate_role_order(&[a, b, c], &invalid),
                 Err(GuildRuleViolation::RoleOrder),
                 "{invalid:?}"
+            );
+        }
+    }
+
+    fn place(raw: u64, kind: ChannelKind, parent: Option<u64>) -> ChannelPlace {
+        ChannelPlace {
+            id: Snowflake::from_raw(raw),
+            kind,
+            parent_id: parent.map(Snowflake::from_raw),
+        }
+    }
+
+    fn placement(raw: u64, parent: Option<u64>) -> ChannelPlacement {
+        ChannelPlacement {
+            id: Snowflake::from_raw(raw),
+            parent_id: parent.map(Snowflake::from_raw),
+        }
+    }
+
+    #[test]
+    fn a_channel_order_fills_the_viewable_slots_and_keeps_hidden_channels_in_place() {
+        use ChannelKind::{Category, Text};
+        // 1 and 4 are categories; 3 is hidden from the requester.
+        let current = [
+            place(1, Category, None),
+            place(2, Text, Some(1)),
+            place(3, Text, Some(1)),
+            place(4, Category, None),
+            place(5, Text, Some(4)),
+        ];
+        let is_viewable = |id: Snowflake| id.raw() != 3;
+        let merged = merge_channel_order(
+            &current,
+            is_viewable,
+            &[
+                placement(4, None),
+                placement(5, Some(1)),
+                placement(1, None),
+                placement(2, None),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            merged,
+            [
+                place(4, Category, None),
+                place(5, Text, Some(1)),
+                place(3, Text, Some(1)),
+                place(1, Category, None),
+                place(2, Text, None),
+            ]
+        );
+        for invalid in [
+            // Missing, repeated, hidden or unknown channels.
+            vec![placement(1, None), placement(2, None), placement(4, None)],
+            vec![
+                placement(1, None),
+                placement(2, None),
+                placement(2, None),
+                placement(4, None),
+            ],
+            vec![
+                placement(1, None),
+                placement(2, None),
+                placement(3, None),
+                placement(4, None),
+            ],
+            vec![
+                placement(1, None),
+                placement(2, None),
+                placement(9, None),
+                placement(4, None),
+            ],
+            // A nested category, a channel under a channel, under a missing category.
+            vec![
+                placement(1, Some(4)),
+                placement(2, None),
+                placement(4, None),
+                placement(5, None),
+            ],
+            vec![
+                placement(1, None),
+                placement(2, Some(5)),
+                placement(4, None),
+                placement(5, None),
+            ],
+            vec![
+                placement(1, None),
+                placement(2, Some(9)),
+                placement(4, None),
+                placement(5, None),
+            ],
+        ] {
+            assert_eq!(
+                merge_channel_order(&current, is_viewable, &invalid),
+                Err(GuildRuleViolation::ChannelOrder),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn initial_categories_are_normalized_and_bounded() {
+        let category = |name: &str, channel_names: &[&str]| InitialCategory {
+            name: name.into(),
+            channels: channel_names
+                .iter()
+                .map(|name| InitialTextChannel {
+                    name: (*name).into(),
+                    topic: " Say hi ".into(),
+                })
+                .collect(),
+        };
+        let normalized =
+            normalize_initial_categories(&[category(" Salons textuels ", &[" Général "])]).unwrap();
+        assert_eq!(normalized[0].name, "Salons textuels");
+        assert_eq!(normalized[0].channels[0].name, "Général");
+        assert_eq!(normalized[0].channels[0].topic, "Say hi");
+        assert_eq!(normalize_initial_categories(&[]), Ok(Vec::new()));
+        assert_eq!(
+            normalize_initial_categories(&[category("", &[])]),
+            Err(GuildRuleViolation::ChannelName)
+        );
+        let too_many_categories = vec![category("a", &[]); MAXIMUM_INITIAL_CATEGORIES + 1];
+        let too_many_channels = vec![category("a", &["b"; MAXIMUM_INITIAL_TEXT_CHANNELS + 1])];
+        for invalid in [too_many_categories, too_many_channels] {
+            assert_eq!(
+                normalize_initial_categories(&invalid),
+                Err(GuildRuleViolation::InitialChannels)
             );
         }
     }

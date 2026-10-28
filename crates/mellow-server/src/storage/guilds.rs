@@ -991,6 +991,56 @@ pub(crate) async fn insert_channel_last(
     })
 }
 
+/// Gives the channels of `guild_id` the positions 0, 1, … and the categories in `new_order`,
+/// provided the guild's channels are still `expected_order` (what the permission check saw).
+/// Returns whether it was written.
+///
+/// # Errors
+/// Fails on database errors. Nothing is written on error.
+pub(crate) async fn reorder_channels(
+    database: &Database,
+    guild_id: Snowflake,
+    expected_order: &[(Snowflake, Option<Snowflake>)],
+    new_order: &[(Snowflake, Option<Snowflake>)],
+    audit: &NewAuditEntry,
+) -> Result<bool, GuildStorageError> {
+    let guild_id_integer = to_integer(guild_id.raw())?;
+    let mut transaction = database
+        .writer()
+        .begin_with(BEGIN_WRITE_TRANSACTION)
+        .await?;
+    let stored_order: Vec<(i64, Option<i64>)> = sqlx::query_as(
+        "SELECT id, parent_id FROM channels WHERE guild_id = ? ORDER BY position, id",
+    )
+    .bind(guild_id_integer)
+    .fetch_all(&mut *transaction)
+    .await?;
+    let stored_order: Vec<(Snowflake, Option<Snowflake>)> = stored_order
+        .into_iter()
+        .map(|(id, parent_id)| Ok((to_id(id)?, parent_id.map(to_id).transpose()?)))
+        .collect::<Result<_, GuildStorageError>>()?;
+    if stored_order != expected_order {
+        return Ok(false);
+    }
+    for (position, (channel_id, parent_id)) in (0_i64..).zip(new_order) {
+        sqlx::query(
+            "UPDATE channels SET position = ?, parent_id = ? \
+             WHERE id = ? AND guild_id = ? AND (position != ? OR parent_id IS NOT ?)",
+        )
+        .bind(position)
+        .bind(parent_id.map(|id| to_integer(id.raw())).transpose()?)
+        .bind(to_integer(channel_id.raw())?)
+        .bind(guild_id_integer)
+        .bind(position)
+        .bind(parent_id.map(|id| to_integer(id.raw())).transpose()?)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    insert_audit_entry(&mut transaction, audit).await?;
+    transaction.commit().await?;
+    Ok(true)
+}
+
 /// Writes only the given fields, so concurrent edits of different fields do not overwrite each
 /// other. Returns the updated channel, or `None` if it no longer exists.
 ///
