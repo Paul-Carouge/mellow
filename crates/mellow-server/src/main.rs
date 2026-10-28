@@ -9,7 +9,7 @@ use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use mellow_server::commands::{
     CreateUserOptions, InitializeOptions, create_user, initialize_instance, serve_instance,
-    shutdown_signal,
+    set_instance_administrator, shutdown_signal,
 };
 use mellow_server::config::{
     DEFAULT_CERTIFICATE_DIRECTORY_NAME, DEFAULT_LISTEN_ADDRESS, DEFAULT_TLS_LISTEN_ADDRESS,
@@ -100,6 +100,16 @@ enum AdminCommand {
         /// Give the account access to instance administration.
         #[arg(long)]
         administrator: bool,
+    },
+    /// Make an existing account an instance administrator (who may create servers when
+    /// `guild_creation = "administrators"`), or take it away with `--revoke`.
+    SetAdministrator {
+        #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
+        config: PathBuf,
+        #[arg(long)]
+        username: String,
+        #[arg(long)]
+        revoke: bool,
     },
 }
 
@@ -298,15 +308,18 @@ async fn run(cli: Cli) -> Result<()> {
             serve_instance(&load_config(&config)?, shutdown_signal()).await
         }
         Command::Update { check, rollback } => update_executable(check, rollback).await,
-        Command::Admin {
-            command:
-                AdminCommand::CreateUser {
-                    config,
-                    username,
-                    email,
-                    display_name,
-                    administrator,
-                },
+        Command::Admin { command } => run_admin_command(command).await,
+    }
+}
+
+async fn run_admin_command(command: AdminCommand) -> Result<()> {
+    match command {
+        AdminCommand::CreateUser {
+            config,
+            username,
+            email,
+            display_name,
+            administrator,
         } => {
             let config = load_config(&config)?;
             let user = create_user(
@@ -329,6 +342,18 @@ async fn run(cli: Cli) -> Result<()> {
                 } else {
                     ""
                 }
+            );
+            Ok(())
+        }
+        AdminCommand::SetAdministrator {
+            config,
+            username,
+            revoke,
+        } => {
+            set_instance_administrator(&load_config(&config)?, &username, !revoke).await?;
+            eprintln!(
+                "{username} is {} an instance administrator.",
+                if revoke { "no longer" } else { "now" }
             );
             Ok(())
         }

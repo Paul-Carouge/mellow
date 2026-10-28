@@ -280,6 +280,44 @@ pub async fn create_user(
     result
 }
 
+/// `mellow-server admin set-administrator`: gives an existing account instance administration, or
+/// takes it away. Applies to the account's next request; clients learn it at their next `Ready`.
+/// Safe while `serve` runs (SQLite WAL).
+///
+/// # Errors
+/// Fails on a missing database or key, or an unknown username.
+pub async fn set_instance_administrator(
+    config: &ServerConfig,
+    username: &str,
+    is_instance_administrator: bool,
+) -> Result<()> {
+    let database_path = config.database_path();
+    if !database_path.is_file() {
+        bail!(
+            "no database at {}; run `mellow-server init` first",
+            database_path.display()
+        );
+    }
+    let database_key = MasterKey::read_file(&config.master_key_file)?.derive_database_key();
+    let database = open_encrypted_database(&database_path, &database_key).await?;
+    let result = async {
+        migrate_with_backup(&database, &config.backup_directory()).await?;
+        let exists = crate::storage::accounts::set_instance_administrator(
+            &database,
+            username,
+            is_instance_administrator,
+        )
+        .await?;
+        if !exists {
+            bail!("no account is named {username}");
+        }
+        Ok(())
+    }
+    .await;
+    database.close().await;
+    result
+}
+
 /// Split from `serve_instance` so tests can bind an ephemeral port and read its address.
 ///
 /// # Errors
@@ -552,6 +590,46 @@ mod tests {
         );
         let printed = format!("{:?}", new_user("someone", false));
         assert!(!printed.contains("correct horse"), "{printed}");
+    }
+
+    #[tokio::test]
+    async fn an_existing_account_is_made_administrator_and_back() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = initialize_instance(&options_in(directory.path()))
+            .await
+            .unwrap();
+        create_user(&config, new_user("paul", false)).await.unwrap();
+
+        set_instance_administrator(&config, "Paul", true)
+            .await
+            .unwrap();
+        let promoted = is_administrator(&config, "paul").await;
+        set_instance_administrator(&config, "paul", false)
+            .await
+            .unwrap();
+        let demoted = is_administrator(&config, "paul").await;
+        let unknown = set_instance_administrator(&config, "nobody", true).await;
+
+        assert!(promoted);
+        assert!(!demoted);
+        assert!(unknown.is_err());
+    }
+
+    async fn is_administrator(config: &ServerConfig, username: &str) -> bool {
+        let key = MasterKey::read_file(&config.master_key_file)
+            .unwrap()
+            .derive_database_key();
+        let database = open_encrypted_database(&config.database_path(), &key)
+            .await
+            .unwrap();
+        let is_administrator: bool =
+            sqlx::query_scalar("SELECT is_instance_administrator FROM users WHERE username = ?")
+                .bind(username)
+                .fetch_one(database.readers())
+                .await
+                .unwrap();
+        database.close().await;
+        is_administrator
     }
 
     #[tokio::test]

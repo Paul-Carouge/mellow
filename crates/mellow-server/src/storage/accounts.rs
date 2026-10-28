@@ -221,6 +221,27 @@ pub async fn update_user_names(
     .map_err(unique_violation_as_taken)
 }
 
+/// Makes the account named `username` an instance administrator or takes it away. Returns whether
+/// such an account exists.
+///
+/// # Errors
+/// Fails on database errors.
+pub async fn set_instance_administrator(
+    database: &Database,
+    username: &str,
+    is_instance_administrator: bool,
+) -> Result<bool, AccountStorageError> {
+    let updated = sqlx::query(
+        "UPDATE users SET is_instance_administrator = ? WHERE lower(username) = lower(?)",
+    )
+    .bind(is_instance_administrator)
+    .bind(username)
+    .execute(database.writer())
+    .await?
+    .rows_affected();
+    Ok(updated > 0)
+}
+
 /// A user's chosen status, custom status and how many times they changed (migration 0017).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredPresence {
