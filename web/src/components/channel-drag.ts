@@ -122,13 +122,30 @@ export function channelDragSource(handlers: DragHandlers): Attachment<HTMLElemen
     });
     let pointerId: number | null = null;
 
+    // While pressed, moves and the release are followed on the window: a quick flick leaves the
+    // row before it travels the start distance, and the row may be rebuilt under the pointer.
+    // A press that may become a drag selects no text on its way (a row, a heading, an open menu).
+    const preventSelection = (event: Event) => event.preventDefault();
+
+    function listenToWindow(isListening: boolean) {
+      if (isListening) {
+        window.addEventListener("pointermove", handlePointerMove);
+        window.addEventListener("pointerup", handlePointerUp);
+        window.addEventListener("pointercancel", handlePointerCancel);
+        document.addEventListener("selectstart", preventSelection);
+      } else {
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", handlePointerUp);
+        window.removeEventListener("pointercancel", handlePointerCancel);
+        document.removeEventListener("selectstart", preventSelection);
+      }
+    }
+
     function end(isDropped: boolean) {
       const wasDragging = gesture.isDragging();
       gesture.cancel();
-      if (pointerId !== null && element.hasPointerCapture(pointerId)) {
-        element.releasePointerCapture(pointerId);
-      }
       pointerId = null;
+      listenToWindow(false);
       window.removeEventListener("keydown", handleEscape, true);
       if (wasDragging) {
         handlers.onend(isDropped);
@@ -147,8 +164,10 @@ export function channelDragSource(handlers: DragHandlers): Attachment<HTMLElemen
       if (!event.isPrimary || event.button !== 0 || !handlers.canStart()) {
         return;
       }
+      end(false);
       pointerId = event.pointerId;
       gesture.press(event.pointerType, event.clientX, event.clientY);
+      listenToWindow(true);
     }
 
     function handlePointerMove(event: PointerEvent) {
@@ -157,14 +176,13 @@ export function channelDragSource(handlers: DragHandlers): Attachment<HTMLElemen
       }
       const step = gesture.move(event.clientX, event.clientY);
       if (step === "start") {
-        element.setPointerCapture(event.pointerId);
         window.addEventListener("keydown", handleEscape, true);
         handlers.onstart(event.clientX, event.clientY, element);
         handlers.onmove(event.clientX, event.clientY);
       } else if (step === "move") {
         handlers.onmove(event.clientX, event.clientY);
       } else if (step === "cancel") {
-        pointerId = null;
+        end(false);
       }
     }
 
@@ -173,13 +191,22 @@ export function channelDragSource(handlers: DragHandlers): Attachment<HTMLElemen
         return;
       }
       if (gesture.isDragging()) {
-        // The release is not a click on the row: it would open the channel or fold the category.
-        const swallowClick = (click: Event) => click.stopImmediatePropagation();
-        element.addEventListener("click", swallowClick, { capture: true, once: true });
-        // A click may not follow (the pointer left the element): the guard ends with this turn.
-        setTimeout(() => element.removeEventListener("click", swallowClick, { capture: true }), 0);
+        // The release is not a click: it would open the channel or fold the category now under the
+        // pointer (the drop may have rebuilt the row there). The guard ends with this turn.
+        const swallowClick = (click: Event) => {
+          click.stopImmediatePropagation();
+          click.preventDefault();
+        };
+        window.addEventListener("click", swallowClick, { capture: true, once: true });
+        setTimeout(() => window.removeEventListener("click", swallowClick, { capture: true }), 0);
       }
       end(true);
+    }
+
+    function handlePointerCancel(event: PointerEvent) {
+      if (event.pointerId === pointerId) {
+        end(false);
+      }
     }
 
     function handleTouchMove(event: TouchEvent) {
@@ -189,21 +216,12 @@ export function channelDragSource(handlers: DragHandlers): Attachment<HTMLElemen
       }
     }
 
-    const listeners: [string, EventListener, AddEventListenerOptions][] = [
-      ["pointerdown", handlePointerDown as EventListener, {}],
-      ["pointermove", handlePointerMove as EventListener, {}],
-      ["pointerup", handlePointerUp as EventListener, {}],
-      ["pointercancel", (() => end(false)) as EventListener, {}],
-      ["touchmove", handleTouchMove as EventListener, { passive: false }],
-    ];
-    for (const [type, listener, options] of listeners) {
-      element.addEventListener(type, listener, options);
-    }
+    element.addEventListener("pointerdown", handlePointerDown);
+    element.addEventListener("touchmove", handleTouchMove, { passive: false });
     return () => {
       end(false);
-      for (const [type, listener] of listeners) {
-        element.removeEventListener(type, listener);
-      }
+      element.removeEventListener("pointerdown", handlePointerDown);
+      element.removeEventListener("touchmove", handleTouchMove);
     };
   };
 }

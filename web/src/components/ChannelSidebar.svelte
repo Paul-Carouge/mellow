@@ -299,7 +299,12 @@
     if (!carried || !list || autoScrollSpeed === 0) {
       return;
     }
+    const scrolledFrom = list.scrollTop;
     list.scrollTop += autoScrollSpeed;
+    // At either end of the list: nothing left to scroll until the pointer moves again.
+    if (list.scrollTop === scrolledFrom) {
+      return;
+    }
     updateDrop();
     autoScrollFrame = requestAnimationFrame(scrollUnderCarriedRow);
   }
@@ -909,7 +914,7 @@
       <!-- Where the carried row lands: apricot, "you, now" (DESIGN.md §5.3). -->
       <div
         aria-hidden="true"
-        class="pointer-events-none absolute start-(--mw-component-channel-row-unread-pill-offset) end-(--mw-component-channel-row-margin-inline) z-10 flex -translate-y-1/2 items-center"
+        class="pointer-events-none absolute start-(--mw-component-channel-row-unread-pill-offset) end-(--mw-component-channel-row-margin-inline) z-20 flex -translate-y-1/2 items-center"
         style:top="{dropLineY}px"
       >
         <span
@@ -921,7 +926,7 @@
     <!-- The carried row, lifted into the floating layer under the pointer. -->
     <div
       aria-hidden="true"
-      class="channel-drag-ghost pointer-events-none absolute z-20 flex items-center gap-(--mw-component-channel-row-icon-gap) rounded-(--mw-component-channel-drag-ghost-radius) bg-(--mw-component-channel-drag-ghost-background) px-(--mw-component-channel-row-padding-inline) text-(--mw-component-channel-drag-ghost-text) shadow-high"
+      class="channel-drag-ghost pointer-events-none absolute z-10 flex items-center gap-(--mw-component-channel-row-icon-gap) rounded-(--mw-component-channel-drag-ghost-radius) bg-(--mw-component-channel-drag-ghost-background) px-(--mw-component-channel-row-padding-inline) text-(--mw-component-channel-drag-ghost-text) shadow-high"
       style:top="{carriedY - carried.grabOffset}px"
       style:left="{carried.left}px"
       style:width="{carried.width}px"
