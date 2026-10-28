@@ -4,6 +4,20 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-28
+Channels, categories and server creation. No database migration.
+
+### Added
+- Create categories, from the server menu or "Create channel", and give a new text channel a topic.
+- Reorder channels and categories by dragging them (mouse, or a long press on a touch screen), or from their menus with Move up, Move down and Move to category. Requires Manage channels.
+- Delete a channel (type its name to confirm) or a category (its channels stay), and rename a category.
+- "Create a server": pick and crop an icon, start from a template (Friends, Community, Study group, Gaming or Blank) in your language, and see a live preview.
+- Server: `PUT /api/v1/guilds/{id}/channels/order`, and `initial_categories` in `POST /api/v1/guilds`.
+
+### Changed
+- Channel and category names are kept as you type them, capitals and spaces included (no more lowercase with dashes). Existing names do not change.
+- Server: names refuse the Unicode line and paragraph separators.
+
 ## [0.15.0] - 2026-10-28
 Context menus. No database migration.
 
