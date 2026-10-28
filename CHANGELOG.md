@@ -4,6 +4,19 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-28
+Context menus. No database migration.
+
+### Added
+- Web: right-click, a long press on a touch screen, or Shift+F10 and the Menu key open Mellow's own menu on messages, people (member list, message authors, friends), channels, servers in the strip, conversations and groups, with the actions you are allowed to use. The browser's menu stays in text fields, on links, on selected text, and with Shift held.
+
+### Changed
+- Web: a message's More button opens the full message menu (reply, edit, copy text, pin, reactions, delete).
+
+### Fixed
+- Web: Invites in server settings created the invite for the open server instead of the server being edited.
+- Dependencies: `pulldown-cmark` 0.13.5 (RUSTSEC-2026-0414; reached only through the desktop app's UI toolkit).
+
 ## [0.14.0] - 2026-10-28
 Group conversations, a web client for every screen, and installing it as an app. This version migrates the database (migration 19, with the usual automatic backup); older versions refuse it afterwards.
 
