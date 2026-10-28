@@ -224,6 +224,14 @@
   }
 
   let movingChannel = $state<Channel | null>(null);
+  /** Plain: read once the dialog and its block are gone (the `{@const}` trap). */
+  let movedChannelId: Snowflake | null = null;
+  /** The moved row, rebuilt in its new section, takes focus back. */
+  function focusMovedChannel() {
+    if (movedChannelId !== null) {
+      focusListed(movedChannelId);
+    }
+  }
   /** Delete a channel or a category, or rename a category, from its menu. */
   let channelDialog = $state<{ kind: "delete" | "rename"; channel: Channel } | null>(null);
 
@@ -450,7 +458,12 @@
           case "move-down":
             return { onselectAndWait: () => moveChannelStep(channel, action === "move-up" ? -1 : 1) };
           case "move-to-category":
-            return { onselect: () => (movingChannel = channel) };
+            return {
+              onselect: () => {
+                movingChannel = channel;
+                movedChannelId = channel.id;
+              },
+            };
           case "copy-channel-id":
             return { onselectAndWait: () => copyIdentifier(channel.id, strings.contextMenu.channelIdCopied) };
           case "delete-channel":
@@ -967,7 +980,7 @@
     {sections}
     onmove={(categoryId) => moveChannelTo(channel, categoryId)}
     onclose={() => (movingChannel = null)}
-    fallbackFocus={() => focusListed(channel.id)}
+    fallbackFocus={focusMovedChannel}
   />
 {/if}
 
