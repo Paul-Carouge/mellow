@@ -109,6 +109,17 @@
   >(null);
   let groupDialog = $state<{ kind: "rename" | "leave"; group: DirectMessageChannel; invoker: HTMLElement } | null>(null);
   let announcement = $state("");
+  // A channel or group that disappears (deleted, hidden, left) while its menu is open closes it.
+  $effect(() => {
+    const target = rowMenuTarget;
+    const isGone =
+      target?.kind === "channel"
+        ? client.myChannelPermissions(target.channel.id) === null
+        : target?.kind === "group" && !client.conversations.some((conversation) => conversation.id === target.group.id);
+    if (isGone) {
+      rowMenu?.close();
+    }
+  });
   const rowMenuEntries = $derived.by(() => {
     const target = rowMenuTarget;
     if (target?.kind === "channel") {

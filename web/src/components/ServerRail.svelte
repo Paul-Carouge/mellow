@@ -34,6 +34,12 @@
 
   let menu = $state<ContextMenu | null>(null);
   let menuGuild = $state<Guild | null>(null);
+  // Leaving or being removed from the server while its menu is open closes the menu.
+  $effect(() => {
+    if (menuGuild && !client.guilds.some((guild) => guild.id === menuGuild?.id)) {
+      menu?.close();
+    }
+  });
   const menuEntriesOfGuild = $derived.by(() => {
     const guild = menuGuild;
     if (!guild) {

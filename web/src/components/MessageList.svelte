@@ -155,6 +155,12 @@
   let messageMenu = $state<ContextMenu | null>(null);
   let personMenu = $state<PersonContextMenu | null>(null);
   let menuTarget = $state<{ message: Message; lines: MenuLine<MessageMenuAction>[]; invoker: HTMLElement } | null>(null);
+  // A message deleted while its menu is open takes the menu with it: its actions would act on nothing.
+  $effect(() => {
+    if (menuTarget && !messages.some((message) => message.id === menuTarget?.message.id)) {
+      messageMenu?.close();
+    }
+  });
   const messageMenuEntries = $derived.by(() => {
     if (!menuTarget) {
       return [];
@@ -604,6 +610,7 @@
   bind:this={messageMenu}
   label={strings.messages.actions}
   entries={messageMenuEntries}
+  fallbackFocus={() => list?.querySelector<HTMLElement>('[tabindex="0"]')?.focus()}
   onclose={() => (menuTarget = null)}
 />
 <PersonContextMenu bind:this={personMenu} {client} {onopenedconversation} />

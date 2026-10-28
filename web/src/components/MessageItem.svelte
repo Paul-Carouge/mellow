@@ -243,7 +243,7 @@
   onpointercancel={() => (isPointerOver = false)}
   {@attach contextMenuTrigger(openMenuFrom)}
   class={[
-    "group relative [-webkit-touch-callout:none] pr-(--message-padding-trailing,var(--mw-component-message-padding-trailing)) pl-(--mw-component-message-gutter) py-(--mw-component-message-padding-block) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-visible:focus-ring-inset",
+    "group relative [-webkit-touch-callout:none] [&_a[href]]:[-webkit-touch-callout:default] pr-(--message-padding-trailing,var(--mw-component-message-padding-trailing)) pl-(--mw-component-message-gutter) py-(--mw-component-message-padding-block) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-visible:focus-ring-inset",
     row.startsAuthorGroup && "mt-(--mw-component-message-group-gap)",
     // A message that mentions you: tint and a leading bar, so colour is never the only sign.
     isMentioningCurrentUser
