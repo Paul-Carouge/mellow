@@ -241,12 +241,19 @@
             onchange={(event) => chooseFile(event.currentTarget)}
           />
           <Button
+            id="{id}-icon-upload"
             variant="ghost"
             aria-describedby={icon ? undefined : `${id}-icon-note`}
             onclick={() => fileInput?.click()}>{strings.iconEditor.upload}</Button
           >
           {#if icon}
-            <Button variant="ghost" onclick={() => (icon = null)}>{strings.iconEditor.remove}</Button>
+            <Button
+              variant="ghost"
+              onclick={() => {
+                icon = null;
+                // The button goes with the icon: Upload takes the focus.
+                document.getElementById(`${id}-icon-upload`)?.focus();
+              }}>{strings.iconEditor.remove}</Button>
           {:else}
             <p id="{id}-icon-note" class="w-full type-body-sm text-(--mw-component-dialog-hint-text)">
               {strings.addServer.iconOptional}

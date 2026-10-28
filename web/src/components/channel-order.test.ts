@@ -8,6 +8,7 @@ import {
   categoryStepIndex,
   channelDropAt,
   channelStepDestination,
+  isPendingOrderSettled,
   isSameOrder,
   placementsOf,
   sectionsFromPlacements,
@@ -172,6 +173,25 @@ describe("sectionsFromPlacements", () => {
 
   it("round-trips the instance's order", () => {
     expect(isSameOrder(placementsOf(sectionsFromPlacements(CHANNELS, placementsOf(SECTIONS)) ?? []), placementsOf(SECTIONS))).toBe(true);
+  });
+});
+
+describe("isPendingOrderSettled", () => {
+  const before = placementsOf(SECTIONS);
+  const pending = [...before].reverse().map((placement) => ({ ...placement, parent_id: null }));
+  const otherChannels = [...CHANNELS];
+
+  it("settles when the instance's snapshot matches, even before the answer", () => {
+    expect(isPendingOrderSettled(pending, null, pending, CHANNELS)).toBe(true);
+  });
+
+  it("keeps showing until an answered order is echoed or the channels are replaced", () => {
+    expect(isPendingOrderSettled(pending, null, before, otherChannels)).toBe(false);
+    expect(isPendingOrderSettled(pending, CHANNELS, before, CHANNELS)).toBe(false);
+  });
+
+  it("gives way to a different order from the instance once it answered", () => {
+    expect(isPendingOrderSettled(pending, CHANNELS, before, otherChannels)).toBe(true);
   });
 });
 

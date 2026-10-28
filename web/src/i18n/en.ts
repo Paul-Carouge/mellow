@@ -213,7 +213,6 @@ export const en = {
     renaming: "Renaming…",
     renameFailed: "Couldn't rename the category",
     categoryRenamed: (category: string) => `Category renamed to ${category}.`,
-    nameRequired: "Give the category a name.",
   },
 
   userCard: {
@@ -437,7 +436,6 @@ export const en = {
     hasInvite: "Have an invite already?",
     joinFailed: "Couldn't join the server",
     createFailed: "Couldn't create the server",
-    serverIcon: "Server icon",
     iconOptional: "Optional: the initials show until you add one.",
     iconFailed: (server: string) => `${server} was created, but its icon couldn't be saved`,
     iconLater: "Add it from Server settings.",

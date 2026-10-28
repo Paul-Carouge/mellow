@@ -32,6 +32,23 @@ export function isSameOrder(left: readonly ChannelPlacement[], right: readonly C
 }
 
 /**
+ * Whether a pending order can stop showing: the instance's order now matches it (its snapshot
+ * came, before or after the answer), or the instance answered and the guild's channels were
+ * replaced since (a snapshot came that differs: the instance's order wins).
+ */
+export function isPendingOrderSettled(
+  pendingPlacements: readonly ChannelPlacement[],
+  channelsWhenAnswered: readonly Channel[] | null,
+  instancePlacements: readonly ChannelPlacement[],
+  channelsNow: readonly Channel[],
+): boolean {
+  return (
+    isSameOrder(instancePlacements, pendingPlacements) ||
+    (channelsWhenAnswered !== null && channelsNow !== channelsWhenAnswered)
+  );
+}
+
+/**
  * The sections a pending order shows, with the channels as they are now (a rename meanwhile
  * shows). `null` once the channels and the order no longer list the same ids (one was created or
  * deleted meanwhile): the instance's order shows instead.

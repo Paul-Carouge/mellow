@@ -212,7 +212,6 @@ export const fr: Catalogue = {
     renaming: "Renommage…",
     renameFailed: "Impossible de renommer la catégorie",
     categoryRenamed: (category) => `Catégorie renommée en ${category}.`,
-    nameRequired: "Donne un nom à la catégorie.",
   },
 
   userCard: {
@@ -431,7 +430,6 @@ export const fr: Catalogue = {
     hasInvite: `Tu as déjà une invitation${NARROW_NO_BREAK_SPACE}?`,
     joinFailed: "Impossible de rejoindre le serveur",
     createFailed: "Impossible de créer le serveur",
-    serverIcon: "Icône du serveur",
     iconOptional: `Facultatif${NO_BREAK_SPACE}: les initiales s’affichent tant qu’il n’y en a pas.`,
     iconFailed: (server) => `${server} a été créé, mais son icône n’a pas pu être enregistrée`,
     iconLater: "Ajoute-la depuis les paramètres du serveur.",

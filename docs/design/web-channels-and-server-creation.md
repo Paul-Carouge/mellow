@@ -44,7 +44,7 @@ Rail "+" ─> Create a server: icon (crop dialog), name, "Start with" (Friends, 
 | Item gone during a drag | The drop does nothing. |
 | Create a server, icon refused after the server exists | The dialog stays with "Rust Lyon was created, but its icon couldn't be saved: … Add it from Server settings." and only "Close". |
 | Empty server name | "Create" disabled; the preview says "Your server". |
-| Delete channel | Typed name, "Delete channel" enabled when it matches; the channel goes for everyone at once (CHANNEL_DELETE), focus to the composer. |
+| Delete channel | Typed name, "Delete channel" enabled when it matches; the channel goes for everyone at once (CHANNEL_DELETE), focus to the first row of the channel list. |
 | Delete category | No typing: nothing is lost but the heading. |
 
 ## Design plan

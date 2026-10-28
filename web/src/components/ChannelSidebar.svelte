@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
@@ -25,7 +26,7 @@
     categoryStepIndex,
     channelDropAt,
     channelStepDestination,
-    isSameOrder,
+    isPendingOrderSettled,
     placementsOf,
     sectionsFromPlacements,
     withCategoryMoved,
@@ -138,9 +139,7 @@
     if (pending === null || guild?.id !== pending.guildId) {
       return;
     }
-    const isEchoed = isSameOrder(placementsOf(instanceSections), pending.placements);
-    const isReplaced = pending.answeredChannels !== null && guild.channels !== pending.answeredChannels;
-    if (isEchoed || isReplaced) {
+    if (isPendingOrderSettled(pending.placements, pending.answeredChannels, placementsOf(instanceSections), guild.channels)) {
       pendingOrder = null;
     }
   });
@@ -210,6 +209,10 @@
 
   /** "Move to category…": to the end of the one chosen. */
   async function moveChannelTo(channel: Channel, categoryId: Snowflake | null): Promise<string | null> {
+    // Opened, so the moved row is there to take focus back.
+    if (categoryId !== null) {
+      collapsedCategoryIds.delete(categoryId);
+    }
     const section = sections.find((candidate) => (candidate.category?.id ?? null) === categoryId);
     const next = withChannelMoved(sections, channel.id, { categoryId, index: section?.channels.length ?? 0 });
     if (!guild || next === null) {
@@ -317,10 +320,21 @@
     autoScrollFrame = requestAnimationFrame(scrollUnderCarriedRow);
   }
 
-  function dragHandlers(kind: Carried["kind"], item: Channel, mayChangeCategory: boolean) {
+  /**
+   * Takes only the id, read untracked by the attachment: anything else it read (the channel
+   * object, permissions) would recreate the attachment, and so cancel a drag in progress, on any
+   * unrelated gateway update. The rest is read when the drag starts.
+   */
+  function dragHandlers(kind: Carried["kind"], id: Snowflake) {
     return {
       canStart: () => canReorderNow,
       onstart: (_x: number, y: number, source: HTMLElement) => {
+        const item = sections
+          .flatMap((section) => (section.category ? [section.category, ...section.channels] : section.channels))
+          .find((candidate) => candidate.id === id);
+        if (!item) {
+          return;
+        }
         const bounds = source.getBoundingClientRect();
         const listLeft = list?.getBoundingClientRect().left ?? 0;
         rowMenu?.close();
@@ -329,7 +343,7 @@
           kind,
           id: item.id,
           name: item.name,
-          mayChangeCategory,
+          mayChangeCategory: kind === "category" || canManageChannel(client.myChannelPermissions(id)),
           grabOffset: y - bounds.top,
           left: bounds.left - listLeft,
           width: bounds.width,
@@ -801,7 +815,7 @@
           isCarriedCategory && "cursor-grabbing opacity-(--mw-component-channel-drag-source-opacity)",
         ]}
         {@attach contextMenuTrigger((origin, invoker) => openCategoryMenu(category, origin, invoker))}
-        {@attach canCreateChannels && channelDragSource(dragHandlers("category", category, true))}
+        {@attach canCreateChannels && untrack(() => channelDragSource(dragHandlers("category", category.id)))}
       >
         <button
           type="button"
@@ -853,8 +867,7 @@
                 "cursor-grabbing opacity-(--mw-component-channel-drag-source-opacity)",
             ]}
             {@attach contextMenuTrigger((origin, invoker) => openChannelMenu(channel, origin, invoker))}
-            {@attach canCreateChannels &&
-              channelDragSource(dragHandlers("channel", channel, canManageChannel(client.myChannelPermissions(channel.id))))}
+            {@attach canCreateChannels && untrack(() => channelDragSource(dragHandlers("channel", channel.id)))}
           >
             {#if hasUnread}{@render unreadPill()}{/if}
             <button
