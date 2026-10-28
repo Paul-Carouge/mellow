@@ -9,7 +9,7 @@
   import { displayName } from "./format";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
-  import { menuItemsIn, moveFocusWithinMenu } from "./menu-keyboard";
+  import ContextMenu from "./ContextMenu.svelte";
   import { createPopoverToggle } from "./popover-toggle";
   import StatusIndicator from "./StatusIndicator.svelte";
   import { durationTokenInMilliseconds } from "./tokens";
@@ -44,9 +44,8 @@
 
   let card = $state<HTMLElement | null>(null);
   let statusButton = $state<HTMLButtonElement | null>(null);
-  let menu = $state<HTMLElement | null>(null);
+  let menu = $state<ContextMenu | null>(null);
   let isMenuOpen = $state(false);
-  let menuPosition = $state({ bottom: 0, left: 0, width: 0 });
   let isSavingStatus = $state(false);
   let menuError = $state("");
   let isCustomStatusDialogOpen = $state(false);
@@ -57,16 +56,13 @@
   onMount(() => () => clearTimeout(copiedTimer));
 
   function openMenu() {
-    if (!card || !menu) {
+    if (!card) {
       return;
     }
-    // Above the card, across its width: the card sits at the bottom of the window.
-    const bounds = card.getBoundingClientRect();
-    menuPosition = { bottom: window.innerHeight - bounds.top, left: bounds.left, width: bounds.width };
+    // Across the card's width, above it: the card sits at the bottom of the window. Focus goes
+    // to the current status.
     menuError = "";
-    menu.showPopover();
-    const items = menuItemsIn(menu);
-    (items.find((item) => item.getAttribute("aria-checked") === "true") ?? items[0])?.focus();
+    menu?.open({ kind: "anchor", bounds: card.getBoundingClientRect(), align: "stretch" }, statusButton);
   }
 
   async function chooseStatus(status: ChosenStatus) {
@@ -74,14 +70,14 @@
       return;
     }
     if (status === chosenStatus) {
-      menu?.hidePopover();
+      menu?.close();
       return;
     }
     isSavingStatus = true;
     menuError = "";
     try {
       await client.updatePresence(status, customStatus);
-      menu?.hidePopover();
+      menu?.close();
     } catch (error) {
       menuError = describeError(error, strings.userCard.statusFailed);
     } finally {
@@ -90,7 +86,7 @@
   }
 
   function openCustomStatusDialog() {
-    menu?.hidePopover();
+    menu?.close();
     isCustomStatusDialogOpen = true;
   }
 
@@ -103,7 +99,7 @@
       menuError = strings.userCard.copyUserIdFailed;
       return;
     }
-    menu?.hidePopover();
+    menu?.close();
     // The card's second line says so where focus lands, and the live region tells screen readers.
     isUserIdCopied = true;
     clearTimeout(copiedTimer);
@@ -138,7 +134,7 @@
     aria-label={strings.userCard.statusButtonLabel(displayName(user), strings.presence[chosenStatus], customStatus)}
     class="status-button flex min-w-0 flex-1 items-center gap-xs self-stretch rounded-sm my-2xs px-2xs text-start transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard)"
     onpointerdown={menuToggle.notePress}
-    onclick={() => (menuToggle.shouldOpenOnClick() ? openMenu() : menu?.hidePopover())}
+    onclick={() => (menuToggle.shouldOpenOnClick() ? openMenu() : menu?.close())}
   >
     <Avatar {user} sizeToken="--mw-component-user-panel-avatar-size" presence={chosenStatus} ringColorToken="--status-cut" />
     <span class="flex min-w-0 flex-1 flex-col">
@@ -180,25 +176,13 @@
   <IconButton icon="gear-six" label={strings.userCard.userSettings} class={buttonClass} {iconClass} onclick={onopenusersettings} />
 </div>
 
-<!-- Light dismiss and Esc come from the popover; focus goes back to the card when it closes. -->
-<div
+<ContextMenu
   bind:this={menu}
+  bind:isOpen={isMenuOpen}
   id="status-menu"
-  popover="auto"
-  role="menu"
-  tabindex="-1"
-  aria-label={strings.userCard.statusMenu}
-  class="fixed inset-auto m-0 min-w-(--mw-component-context-menu-min-width) flex-col rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) p-(--mw-component-context-menu-padding) shadow-(--mw-component-context-menu-shadow) [&:popover-open]:flex [&:popover-open]:animate-[mw-lift-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]"
-  style:bottom="calc({menuPosition.bottom}px + var(--mw-space-2xs))"
-  style:left="{menuPosition.left}px"
-  style:width="{menuPosition.width}px"
-  onkeydown={(event) => moveFocusWithinMenu(event, menu)}
-  ontoggle={(event) => {
-    isMenuOpen = event.newState === "open";
-    if (!isMenuOpen && (menu?.contains(document.activeElement) || document.activeElement === document.body)) {
-      statusButton?.focus();
-    }
-  }}
+  label={strings.userCard.statusMenu}
+  errorMessage={menuError}
+  gapToken="space-2xs"
 >
   {#each CHOSEN_STATUSES as status (status)}
       {@const isChecked = status === chosenStatus}
@@ -230,16 +214,7 @@
     <span class={menuIconBoxClass}><Icon name="copy" class="size-(--mw-component-context-menu-item-icon-size)" /></span>
     <span class="min-w-0 flex-1 type-menu-item">{strings.userCard.copyUserId}</span>
   </button>
-  <!-- Kept in the menu, so the error is announced as soon as it appears. -->
-  <div role="alert" class="contents">
-    {#if menuError}
-      <p class="flex gap-xs px-(--mw-component-context-menu-item-padding-inline) py-2xs type-body-sm text-text-danger">
-        <Icon name="warning-circle" class="size-(--mw-component-context-menu-item-icon-size)" />
-        <span>{menuError}</span>
-      </p>
-    {/if}
-  </div>
-</div>
+</ContextMenu>
 
 <!-- Exists from the start, so its first change is announced. -->
 <p class="sr-only" aria-live="polite">{isUserIdCopied ? strings.userCard.userIdCopied : ""}</p>

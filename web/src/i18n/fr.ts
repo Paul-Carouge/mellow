@@ -444,6 +444,21 @@ export const fr: Catalogue = {
       `${person}, ${status}${customStatus ? `, statut personnalisé${NO_BREAK_SPACE}: ${customStatus}` : ""}`,
   },
 
+  contextMenu: {
+    actionsFor: (name) => `Actions pour ${name}`,
+    message: "Envoyer un message",
+    ignoreRequest: "Ignorer la demande",
+    cancelRequest: "Annuler la demande",
+    deleteMessage: "Supprimer le message",
+    editChannel: "Modifier le salon",
+    copyChannelId: "Copier l’identifiant du salon",
+    copyServerId: "Copier l’identifiant du serveur",
+    userIdCopied: "Identifiant utilisateur copié.",
+    channelIdCopied: "Identifiant du salon copié.",
+    serverIdCopied: "Identifiant du serveur copié.",
+    copyIdFailed: "Impossible de copier l’identifiant. Autorise l’accès au presse-papiers et réessaie.",
+  },
+
   friends: {
     title: "Amis",
     tabs: {

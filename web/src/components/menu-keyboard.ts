@@ -1,5 +1,6 @@
 // Keyboard movement inside the web client's menus (DESIGN.md §6.33): arrows wrap, Home and End
-// jump to the ends; Esc and light dismiss come from the popover itself.
+// jump to the ends, a letter moves to the next item starting with it; Esc and light dismiss come
+// from the popover itself.
 
 /** The items of a menu, plain or radio, in document order. */
 export function menuItemsIn(menu: HTMLElement | null): HTMLElement[] {
@@ -26,11 +27,38 @@ export function nextMenuItemIndex(key: string, currentIndex: number, itemCount: 
   }
 }
 
+/** Lower case without accents, so "e" finds "Épingler". */
+function foldedForTypeahead(text: string): string {
+  return text.normalize("NFD").replace(/\p{Diacritic}/gu, "").trim().toLocaleLowerCase();
+}
+
+/**
+ * Type-ahead: the next item after the current one whose label starts with the typed character,
+ * wrapping; pressing it again cycles through the items that share it. `null` when none does or
+ * the key is not a character.
+ */
+export function typeaheadMenuItemIndex(key: string, currentIndex: number, labels: readonly string[]): number | null {
+  if ([...key].length !== 1 || key.trim() === "") {
+    return null;
+  }
+  const typed = foldedForTypeahead(key);
+  for (let step = 1; step <= labels.length; step += 1) {
+    const index = (Math.max(currentIndex, -1) + step) % labels.length;
+    if (foldedForTypeahead(labels[index] ?? "").startsWith(typed)) {
+      return index;
+    }
+  }
+  return null;
+}
+
 /** The menu's keydown handler: moves focus between its items. */
 export function moveFocusWithinMenu(event: KeyboardEvent, menu: HTMLElement | null): void {
   const items = menuItemsIn(menu);
   const currentIndex = items.findIndex((item) => item === document.activeElement);
-  const next = nextMenuItemIndex(event.key, currentIndex, items.length);
+  const hasModifier = event.ctrlKey || event.metaKey || event.altKey;
+  const next =
+    nextMenuItemIndex(event.key, currentIndex, items.length) ??
+    (hasModifier ? null : typeaheadMenuItemIndex(event.key, currentIndex, items.map((item) => item.textContent ?? "")));
   if (next !== null) {
     event.preventDefault();
     items[next]?.focus();

@@ -6,9 +6,11 @@
   import type { Guild, Member, PublicUser } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
+  import { contextMenuTrigger } from "./context-menu-trigger";
   import { displayName } from "./format";
   import IconButton from "./IconButton.svelte";
   import { nameColorsByUserId } from "./name-colors.svelte";
+  import PersonContextMenu from "./PersonContextMenu.svelte";
   import ProfileCard from "./ProfileCard.svelte";
   import RelationshipConfirmDialog from "./RelationshipConfirmDialog.svelte";
 
@@ -43,6 +45,7 @@
   });
 
   let profileUserId = $state<string | null>(null);
+  let personMenu = $state<PersonContextMenu | null>(null);
   // From the list, so a USER_UPDATE (a new avatar, say) shows in an open profile too.
   const profile = $derived(members?.find((member) => member.user.id === profileUserId)?.user ?? null);
   let opener: HTMLElement | null = null;
@@ -258,6 +261,7 @@
                 aria-label={strings.members.memberLabel(displayName(member.user), strings.presence[presence], customStatus)}
                 class="flex h-(--mw-component-member-row-height) w-full items-center gap-sm rounded-(--mw-component-member-row-radius) px-(--mw-component-member-row-padding-inline) text-start text-(--mw-component-member-row-name-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-member-row-background-hover) hover:text-(--mw-component-member-row-name-text-hover) focus-visible:focus-ring-inset pointer-coarse:min-h-(--mw-size-hit-web-min)"
                 onclick={(event) => void showProfile(member.user, event.currentTarget)}
+                {@attach contextMenuTrigger((origin, invoker) => personMenu?.openFor(member.user, origin, invoker) ?? false)}
               >
                 <Avatar
                   user={member.user}
@@ -282,6 +286,13 @@
     {/if}
   </div>
 </aside>
+
+<PersonContextMenu
+  bind:this={personMenu}
+  {client}
+  onshowprofile={(user, invoker) => void showProfile(user, invoker)}
+  {onopenedconversation}
+/>
 
 {#if isConfirmingBlock && profile}
   <RelationshipConfirmDialog

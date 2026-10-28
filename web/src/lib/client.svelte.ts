@@ -1490,11 +1490,8 @@ export class MellowClient {
     this.selectGuild(guild.id, null);
   }
 
-  async createInvite(): Promise<string> {
-    const guildId = this.selectedGuildId;
-    if (!guildId) {
-      throw new ApiError(404, "NOT_FOUND");
-    }
+  /** For any server, open or not: the strip's menu invites without opening it. */
+  async createInvite(guildId: Snowflake): Promise<string> {
     return (await this.rest.createInvite(guildId)).code;
   }
 
@@ -1510,11 +1507,7 @@ export class MellowClient {
     }
   }
 
-  async leaveServer(): Promise<void> {
-    const guildId = this.selectedGuildId;
-    if (!guildId) {
-      return;
-    }
+  async leaveServer(guildId: Snowflake): Promise<void> {
     await this.rest.leaveGuild(guildId);
     this.removeGuild(guildId);
   }

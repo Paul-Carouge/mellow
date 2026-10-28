@@ -53,7 +53,7 @@
     isCreating = true;
     errorMessage = "";
     try {
-      const code = await client.createInvite();
+      const code = await client.createInvite(guild.id);
       notice = strings.serverSettings.invites.created(code);
       await load();
     } catch (error) {
