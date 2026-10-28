@@ -6,12 +6,17 @@
 
   import type { MellowClient } from "../lib/client.svelte";
   import { prefersReducedMotion } from "../lib/motion.svelte";
-  import { type Snowflake, iconUrl } from "../lib/protocol";
+  import { type Guild, type Snowflake, iconUrl } from "../lib/protocol";
+  import type { ServerDialog } from "./ChannelSidebar.svelte";
+  import { contextMenuTrigger } from "./context-menu-trigger";
+  import { copyIdentifier, menuEntries, serverMenuActions, serverMenuFactsOf } from "./context-menus";
+  import ContextMenu from "./ContextMenu.svelte";
   import { nameWithUnreadState, serverInitials } from "./format";
   import Icon from "./Icon.svelte";
   import Melli from "./Melli.svelte";
   import MentionBadge from "./MentionBadge.svelte";
   import { homeMelliState } from "./melli";
+  import type { MenuOrigin } from "./menu-placement";
 
   // The server strip of the navigator card (DESIGN.md §5.2, ADR-0022 §1): Home, a separator, the
   // servers, then "Add a server". Icons morph from circle to squircle on hover, focus and
@@ -19,11 +24,37 @@
   interface Props {
     client: MellowClient;
     onaddserver: () => void;
+    /** A server icon's menu: its invite, settings or leave dialog, without opening the server. */
+    onopendialog: (dialog: ServerDialog, guildId: Snowflake) => void;
     /** After a server or Home was chosen (the narrow layout closes its drawer). */
     onnavigate: () => void;
   }
 
-  let { client, onaddserver, onnavigate }: Props = $props();
+  let { client, onaddserver, onopendialog, onnavigate }: Props = $props();
+
+  let menu = $state<ContextMenu | null>(null);
+  let menuGuild = $state<Guild | null>(null);
+  const menuEntriesOfGuild = $derived.by(() => {
+    const guild = menuGuild;
+    if (!guild) {
+      return [];
+    }
+    return menuEntries(serverMenuActions(serverMenuFactsOf(guild, client.user?.id), "strip"), (action) =>
+      action === "copy-server-id"
+        ? { onselectAndWait: () => copyIdentifier(guild.id, strings.contextMenu.serverIdCopied) }
+        : { onselect: () => onopendialog(action, guild.id) },
+    );
+  });
+
+  function openServerMenu(guild: Guild, origin: MenuOrigin, invoker: HTMLElement, source: "pointer" | "keyboard"): boolean {
+    tooltip = null;
+    menuGuild = guild;
+    // From the keyboard, beside the icon rather than over the next ones.
+    const besideTheIcon: MenuOrigin =
+      origin.kind === "anchor" ? { kind: "point", x: origin.bounds.right, y: origin.bounds.top } : origin;
+    menu?.open(besideTheIcon, invoker, source === "pointer");
+    return true;
+  }
 
   // The strip scrolls, which would clip a tooltip drawn inside it: it is fixed to the viewport.
   let tooltip = $state<{ text: string; top: number; left: number } | null>(null);
@@ -49,7 +80,8 @@
   const conversationsMentionCount = $derived(client.conversationsMentionCount());
 </script>
 
-{#snippet railItem(label: string, isSelected: boolean, hasUnread: boolean, mentionCount: number, onclick: (event: MouseEvent) => void, content: Snippet, kind: "home" | "server" | "action", guildId: Snowflake | null = null)}
+{#snippet railItem(label: string, isSelected: boolean, hasUnread: boolean, mentionCount: number, onclick: (event: MouseEvent) => void, content: Snippet, kind: "home" | "server" | "action", guild: Guild | null = null)}
+  {@const guildId = guild?.id ?? null}
   <li class="group relative flex w-full justify-center">
     {#if kind !== "action"}
       <!-- At the card's inner edge, half its width showing (ADR-0022 §1). -->
@@ -89,6 +121,7 @@
                 : "bg-(--mw-component-rail-icon-background-rest) text-(--mw-component-rail-icon-text-rest) hover:bg-(--mw-component-rail-icon-background-active) hover:text-(--mw-component-rail-icon-text-active) focus-visible:bg-(--mw-component-rail-icon-background-active) focus-visible:text-(--mw-component-rail-icon-text-active)",
         ]}
         {onclick}
+        {@attach guild && contextMenuTrigger((origin, invoker, source) => openServerMenu(guild, origin, invoker, source))}
         onpointerenter={(event) => {
           animatedGuildId = guildId;
           if (event.pointerType === "mouse") {
@@ -156,11 +189,18 @@
           <span aria-hidden="true" class="type-body font-semibold">{serverInitials(guild.name)}</span>
         {/if}
       {/snippet}
-      {@render railItem(guild.name, client.selectedGuildId === guild.id, hasUnread, client.guildMentionCount(guild), () => select(guild.id), serverMark, "server", guild.id)}
+      {@render railItem(guild.name, client.selectedGuildId === guild.id, hasUnread, client.guildMentionCount(guild), () => select(guild.id), serverMark, "server", guild)}
     {/each}
     {@render railItem(strings.rail.addServer, false, false, 0, onaddserver, addIcon, "action")}
   </ul>
 </nav>
+
+<ContextMenu
+  bind:this={menu}
+  label={menuGuild ? strings.contextMenu.actionsFor(menuGuild.name) : strings.rail.servers}
+  entries={menuEntriesOfGuild}
+  onclose={() => (menuGuild = null)}
+/>
 
 {#if tooltip}
   <!-- Strip tooltips appear at once, to the trailing side (DESIGN.md §5.2); decorative copy of the label. -->

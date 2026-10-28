@@ -11,10 +11,11 @@
     messageTimestampLabel,
     timeOfDayLabel,
   } from "./format";
-  import Icon, { type IconName } from "./Icon.svelte";
+  import { contextMenuTrigger } from "./context-menu-trigger";
+  import { type MenuLine, type MessageMenuAction, messageMenuActions } from "./context-menus";
+  import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
-  import { menuItemsIn, moveFocusWithinMenu } from "./menu-keyboard";
-  import { menuTopNextToAnchor } from "./menu-placement";
+  import type { MenuOrigin } from "./menu-placement";
   import type { ReactionAndPinActions } from "./message-actions";
   import MessageReactions from "./MessageReactions.svelte";
   import { reactionKey } from "../lib/reactions";
@@ -46,6 +47,12 @@
     reactionAndPinActions: ReactionAndPinActions;
     isEditing: boolean;
     isRovingTarget: boolean;
+    /** The list's message menu is open on this message. */
+    isMenuOpen: boolean;
+    /** More, a right-click, a long press or Shift+F10: the list opens its one message menu. */
+    onopenmenu: (message: Message, lines: MenuLine<MessageMenuAction>[], origin: MenuOrigin, invoker: HTMLElement) => void;
+    /** The same on the author's avatar or name: the person's menu. */
+    onopenauthormenu: (author: PublicUser, origin: MenuOrigin, invoker: HTMLElement) => boolean;
     maximumEditorHeight: () => number;
     onreply: (message: Message) => void;
     onstartedit: (message: Message) => void;
@@ -72,6 +79,9 @@
     reactionAndPinActions: actions,
     isEditing,
     isRovingTarget,
+    isMenuOpen,
+    onopenmenu,
+    onopenauthormenu,
     maximumEditorHeight,
     onreply,
     onstartedit,
@@ -133,13 +143,8 @@
   const reactions = $derived(message?.reactions ?? []);
   const isPinned = $derived(message?.pinned === true);
   let moreButton = $state<HTMLButtonElement | null>(null);
-  let menu = $state<HTMLElement | null>(null);
-  let isMenuOpen = $state(false);
   const menuToggle = createPopoverToggle(() => isMenuOpen);
   const pickerToggle = createPopoverToggle(() => message !== null && actions.heldMessageId === message.id);
-  let menuPosition = $state({ top: 0, right: 0 });
-  // Above its button, a menu rises into place instead of dropping over the button (DESIGN.md §6.33).
-  let isMenuAboveItsButton = $state(false);
   // Only a hovered or focused row builds its action bar and menu: in every row they were two
   // thirds of the list's elements. A tapped row keeps its bar after the finger lifts; a row only
   // crossed while scrolling (its touch is cancelled) does not.
@@ -154,26 +159,38 @@
       isMenuOpen ||
       (message !== null && actions.heldMessageId === message.id),
   );
-  const hasMenu = $derived(actions.canManagePins || (reactions.length > 0 && (actions.canJoinReactions || actions.canRemoveReactions)));
+  // The More button and a right-click open the same menu (DESIGN.md §5.4).
+  const menuLines = $derived(
+    message
+      ? messageMenuActions({
+          isOwn,
+          hasText: message.content.trim() !== "",
+          hasReactions: reactions.length > 0,
+          isPinned,
+          canSendMessages,
+          canManageMessages,
+          canAddReactions: actions.canAddReactions,
+          canJoinReactions: actions.canJoinReactions,
+          canRemoveReactions: actions.canRemoveReactions,
+          canManagePins: actions.canManagePins,
+        })
+      : [],
+  );
 
-  function openMenu() {
-    if (!moreButton || !menu) {
-      return;
+  function openMenuFrom(origin: MenuOrigin, invoker: HTMLElement, source: "pointer" | "keyboard"): boolean {
+    if (!message || isEditing || menuLines.length === 0) {
+      return false;
     }
-    const bounds = moreButton.getBoundingClientRect();
-    menu.showPopover();
-    menuPosition = {
-      top: menuTopNextToAnchor(bounds, menu.offsetHeight, window.innerHeight, 0),
-      right: Math.max(window.innerWidth - bounds.right, 0),
-    };
-    isMenuAboveItsButton = menuPosition.top < bounds.top;
-    menuItemsIn(menu)[0]?.focus();
+    // From the keyboard, where the More button would open it, so it does not cover the message.
+    const keyboardOrigin: MenuOrigin | null =
+      source === "keyboard" && moreButton
+        ? { kind: "anchor", bounds: moreButton.getBoundingClientRect(), align: "end" }
+        : null;
+    onopenmenu(message, menuLines, keyboardOrigin ?? origin, invoker);
+    return true;
   }
 
-  function chooseMenuItem(action: () => void) {
-    menu?.hidePopover();
-    action();
-  }
+  const authorMenuTrigger = contextMenuTrigger((origin, invoker) => onopenauthormenu(author, origin, invoker));
 
   function focusEditorAtEnd(textarea: HTMLTextAreaElement) {
     textarea.focus();
@@ -192,23 +209,6 @@
     <Icon name="push-pin" class="size-(--mw-component-reaction-pinned-icon-size)" />
     <span class="sr-only">{strings.pins.pinned}</span>
   </span>
-{/snippet}
-
-{#snippet menuItem(label: string, icon: IconName, isDanger: boolean, action: () => void)}
-  <button
-    type="button"
-    role="menuitem"
-    class={[
-      "flex h-(--mw-component-context-menu-item-height) w-full items-center justify-between gap-xs rounded-(--mw-component-context-menu-item-radius) px-(--mw-component-context-menu-item-padding-inline) type-menu-item focus-visible:focus-ring-inset pointer-coarse:h-(--mw-size-hit-web-min)",
-      isDanger
-        ? "text-(--mw-component-context-menu-danger-text) hover:bg-(--mw-component-context-menu-danger-background-focus) hover:text-(--mw-component-context-menu-danger-text-focus) focus-visible:bg-(--mw-component-context-menu-danger-background-focus) focus-visible:text-(--mw-component-context-menu-danger-text-focus)"
-        : "text-(--mw-component-context-menu-item-text) hover:bg-(--mw-component-context-menu-item-background-focus) hover:text-(--mw-component-context-menu-item-text-focus) focus-visible:bg-(--mw-component-context-menu-item-background-focus) focus-visible:text-(--mw-component-context-menu-item-text-focus)",
-    ]}
-    onclick={() => chooseMenuItem(action)}
-  >
-    {label}
-    <Icon name={icon} class="size-(--mw-component-context-menu-item-icon-size)" />
-  </button>
 {/snippet}
 
 {#snippet body()}
@@ -241,8 +241,9 @@
     }
   }}
   onpointercancel={() => (isPointerOver = false)}
+  {@attach contextMenuTrigger(openMenuFrom)}
   class={[
-    "group relative pr-(--message-padding-trailing,var(--mw-component-message-padding-trailing)) pl-(--mw-component-message-gutter) py-(--mw-component-message-padding-block) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-visible:focus-ring-inset",
+    "group relative [-webkit-touch-callout:none] pr-(--message-padding-trailing,var(--mw-component-message-padding-trailing)) pl-(--mw-component-message-gutter) py-(--mw-component-message-padding-block) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-visible:focus-ring-inset",
     row.startsAuthorGroup && "mt-(--mw-component-message-group-gap)",
     // A message that mentions you: tint and a leading bar, so colour is never the only sign.
     isMentioningCurrentUser
@@ -270,6 +271,7 @@
 
   {#if row.startsAuthorGroup}
     <span
+      {@attach authorMenuTrigger}
       class={[
         "absolute left-(--mw-component-message-avatar-inset)",
         replyReference
@@ -280,8 +282,10 @@
       <Avatar user={author} sizeToken="--mw-component-message-avatar-size" />
     </span>
     <h3 class="flex flex-wrap items-baseline gap-x-xs">
-      <span class="type-message-author text-(--mw-component-message-author-text)" style:color={authorColor}
-        >{displayName(author)}</span
+      <span
+        class="type-message-author text-(--mw-component-message-author-text)"
+        style:color={authorColor}
+        {@attach authorMenuTrigger}>{displayName(author)}</span
       >
       {#if sentAt !== null}
         <time
@@ -432,63 +436,26 @@
           onclick={(event) => ondelete(message, event.shiftKey)}
         />
       {/if}
-      {#if hasMenu}
+      {#if menuLines.length > 0}
         <IconButton
           bind:element={moreButton}
           icon="dots-three"
           label={strings.messages.more}
           aria-haspopup="menu"
           aria-expanded={isMenuOpen}
-          aria-controls="message-menu-{message.id}"
           class={buttonClass}
           {iconClass}
           onpointerdown={menuToggle.notePress}
-          onclick={() => (menuToggle.shouldOpenOnClick() ? openMenu() : menu?.hidePopover())}
+          onclick={(event) => {
+            const button = event.currentTarget;
+            if (menuToggle.shouldOpenOnClick()) {
+              onopenmenu(message, menuLines, { kind: "anchor", bounds: button.getBoundingClientRect(), align: "end" }, button);
+            }
+          }}
         />
       {/if}
     </div>
 
-    {#if hasMenu}
-      <!-- Light dismiss and Esc come from the popover; focus goes back to More when it closes. -->
-      <div
-        bind:this={menu}
-        id="message-menu-{message.id}"
-        popover="auto"
-        role="menu"
-        tabindex="-1"
-        aria-label={strings.messages.actions}
-        class={[
-          "fixed inset-auto m-0 min-w-(--mw-component-context-menu-min-width) flex-col rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) p-(--mw-component-context-menu-padding) shadow-(--mw-component-context-menu-shadow) [&:popover-open]:flex",
-          isMenuAboveItsButton
-            ? "[&:popover-open]:animate-[mw-lift-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]"
-            : "[&:popover-open]:animate-[mw-drop-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]",
-        ]}
-        style:top="{menuPosition.top}px"
-        style:right="{menuPosition.right}px"
-        onkeydown={(event) => moveFocusWithinMenu(event, menu)}
-        ontoggle={(event) => {
-          isMenuOpen = event.newState === "open";
-          if (!isMenuOpen && (menu?.contains(document.activeElement) || document.activeElement === document.body)) {
-            moreButton?.focus();
-          }
-        }}
-      >
-        {#if actions.canManagePins}
-          {@render menuItem(
-            isPinned ? strings.pins.unpin : strings.pins.pin,
-            isPinned ? "push-pin-slash" : "push-pin",
-            false,
-            () => actions.askToPin(message, !isPinned),
-          )}
-        {/if}
-        {#if reactions.length > 0 && actions.canJoinReactions}
-          {@render menuItem(strings.reactions.reactions, "smiley", false, () => actions.viewReactions(message))}
-        {/if}
-        {#if reactions.length > 0 && actions.canRemoveReactions}
-          {@render menuItem(strings.reactions.removeAll, "x-circle", true, () => actions.askToRemoveAllReactions(message))}
-        {/if}
-      </div>
-    {/if}
   {/if}
 </li>
 

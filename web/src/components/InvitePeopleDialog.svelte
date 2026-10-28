@@ -3,6 +3,7 @@
 
   import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
+  import type { Snowflake } from "../lib/protocol";
   import Button from "./Button.svelte";
   import ModalDialog from "./ModalDialog.svelte";
   import TextField from "./TextField.svelte";
@@ -11,12 +12,13 @@
   // Discord's invite dialog, with a code instead of a link (DESIGN.md §5.3, §8 "Invite people").
   interface Props {
     client: MellowClient;
+    guildId: Snowflake;
     serverName: string;
     onclose: () => void;
     fallbackFocus: () => void;
   }
 
-  let { client, serverName, onclose, fallbackFocus }: Props = $props();
+  let { client, guildId, serverName, onclose, fallbackFocus }: Props = $props();
 
   let inviteCode = $state("");
   let errorMessage = $state("");
@@ -25,7 +27,7 @@
 
   onMount(() => {
     client
-      .createInvite()
+      .createInvite(guildId)
       .then((code) => (inviteCode = code))
       .catch((error: unknown) => (errorMessage = describeError(error, strings.invitePeople.failed)));
     return () => clearTimeout(copiedTimer);

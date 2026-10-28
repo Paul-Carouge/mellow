@@ -17,7 +17,7 @@
     onaddserver: () => void;
     /** The "+" beside "Direct messages": the "New message" picker. */
     onnewmessage: () => void;
-    onopendialog: (dialog: ServerDialog) => void;
+    onopendialog: (dialog: ServerDialog, guildId: Snowflake) => void;
     oncreatechannelin: (category: Channel) => void;
     oneditchannel: (channel: Channel) => void;
     onnavigate: () => void;
@@ -50,7 +50,7 @@
       : "grid-cols-[var(--mw-component-navigator-strip-width)_var(--mw-component-sidebar-width)] rounded-(--mw-component-navigator-radius)",
   ]}
 >
-  <ServerRail {client} {onaddserver} {onnavigate} />
+  <ServerRail {client} {onaddserver} {onopendialog} {onnavigate} />
   <ChannelSidebar {client} {collapsedCategoryIds} {onnewmessage} {onopendialog} {oncreatechannelin} {oneditchannel} {onnavigate} />
   {#if client.user}
     <UserCard {client} user={client.user} {onopenusersettings} />

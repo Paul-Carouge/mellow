@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { flushSync, tick } from "svelte";
+  import { tick } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
@@ -8,6 +8,8 @@
   import AddFriendForm from "./AddFriendForm.svelte";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
+  import { contextMenuTrigger } from "./context-menu-trigger";
+  import ContextMenu, { type ContextMenuEntry } from "./ContextMenu.svelte";
   import { displayName } from "./format";
   import { type FriendsGroup, type FriendsTab, LIST_TABS, friendsGroupsIn } from "./friends";
   import Icon, { type IconName } from "./Icon.svelte";
@@ -15,10 +17,8 @@
   import Melli from "./Melli.svelte";
   import type { MelliState } from "./melli";
   import MentionBadge from "./MentionBadge.svelte";
-  import { menuItemsIn, moveFocusWithinMenu } from "./menu-keyboard";
-  import { menuTopNextToAnchor } from "./menu-placement";
+  import PersonContextMenu from "./PersonContextMenu.svelte";
   import RelationshipConfirmDialog from "./RelationshipConfirmDialog.svelte";
-  import { lengthTokenInPixels } from "./tokens";
 
   // The Friends space (DESIGN.md §5.6.1, ADR-0025): Home's page when no conversation is open, in
   // the sheet. Tabs Online, All, Pending, Blocked and Add friend, as on Discord; each row has its
@@ -53,12 +53,14 @@
   /** The people whose rows wait for the instance: their actions dim, the others stay usable. */
   const busyUserIds = new SvelteSet<Snowflake>();
 
-  let menu = $state<HTMLElement | null>(null);
+  let menu = $state<ContextMenu | null>(null);
+  let isMenuOpen = $state(false);
   let menuRelationship = $state<Relationship | null>(null);
   let menuButton: HTMLElement | null = null;
-  let menuPosition = $state({ top: 0, right: 0 });
-  // Above its button, a menu rises into place instead of dropping over the button (DESIGN.md §6.33).
-  let isMenuAboveItsButton = $state(false);
+  /** A right-click, a long press or Shift+F10 on a row: the person's whole menu. */
+  let personMenu = $state<PersonContextMenu | null>(null);
+  /** The row the person's menu was opened on, for focus when that row leaves. */
+  let personMenuRowIndex = 0;
   /** Whose menu was open when a More button was pressed: that press closed it already. */
   let menuUserIdAtPress: string | null = null;
   let confirming = $state<{ action: "remove" | "block"; user: PublicUser } | null>(null);
@@ -87,8 +89,8 @@
   // The menu and the confirmation are about a friend: once that person is no longer one (removed
   // or blocked elsewhere, or by the confirmation itself), they close.
   $effect(() => {
-    if (menuRelationship && !isStillFriend(menuRelationship.user.id) && menu?.matches(":popover-open")) {
-      menu.hidePopover();
+    if (menuRelationship && !isStillFriend(menuRelationship.user.id) && isMenuOpen) {
+      menu?.close();
     }
   });
   $effect(() => {
@@ -200,41 +202,36 @@
   }
 
   function openMenu(relationship: Relationship, button: HTMLElement) {
-    if (!menu) {
-      return;
-    }
     if (menuUserIdAtPress === relationship.user.id) {
       // The press already closed this row's menu: the click must not open it again.
       menuUserIdAtPress = null;
       return;
     }
     menuUserIdAtPress = null;
-    const bounds = button.getBoundingClientRect();
-    // The menu's items follow the relationship: render them before measuring its height.
-    flushSync(() => {
-      menuRelationship = relationship;
-      menuButton = button;
-    });
-    menu.showPopover();
-    menuPosition = {
-      top: menuTopNextToAnchor(bounds, menu.offsetHeight, window.innerHeight, lengthTokenInPixels("space-2xs")),
-      right: Math.max(window.innerWidth - bounds.right, 0),
-    };
-    isMenuAboveItsButton = menuPosition.top < bounds.top;
-    menuItemsIn(menu)[0]?.focus();
+    menuRelationship = relationship;
+    menuButton = button;
+    menu?.open({ kind: "anchor", bounds: button.getBoundingClientRect(), align: "end" }, button);
   }
 
-  function chooseMenuAction(action: "remove" | "block") {
-    const relationship = menuRelationship;
+  /** The menu has closed when this runs. */
+  function chooseMenuAction(relationship: Relationship, action: "remove" | "block") {
     confirmedRowIndex = Math.max(
       rowsInPanel().findIndex((row) => row.contains(menuButton)),
       0,
     );
-    menu?.hidePopover();
-    if (relationship) {
-      confirming = { action, user: relationship.user };
-    }
+    confirming = { action, user: relationship.user };
   }
+
+  const menuEntries: ContextMenuEntry[] = $derived.by(() => {
+    const relationship = menuRelationship;
+    if (!relationship) {
+      return [];
+    }
+    return [
+      { label: strings.friends.removeFriend, icon: "user-minus", tone: "danger", onselect: () => chooseMenuAction(relationship, "remove") },
+      { label: strings.friends.block, icon: "prohibit", tone: "danger", onselect: () => chooseMenuAction(relationship, "block") },
+    ];
+  });
 
   function detailOf(relationship: Relationship): string {
     switch (relationship.kind) {
@@ -428,6 +425,10 @@
               {@const isBusy = busyUserIds.has(user.id)}
               <li
                 data-friend-row={user.id}
+                {@attach contextMenuTrigger((origin, invoker) => {
+                  personMenuRowIndex = Math.max(rowsInPanel().findIndex((row) => row.dataset.friendRow === user.id), 0);
+                  return personMenu?.openFor(user, origin, invoker) ?? false;
+                })}
                 class="mt-(--mw-component-friends-row-gap) flex h-(--mw-component-friends-row-height) items-center gap-sm rounded-(--mw-component-friends-row-radius) px-(--mw-component-friends-row-padding-inline) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-within:bg-(--mw-component-friends-row-background-hover) hover:bg-(--mw-component-friends-row-background-hover)"
               >
                 <Avatar
@@ -523,48 +524,22 @@
 </section>
 
 <!-- One menu for every row's More button, placed under the button that opened it. -->
-<div
+<ContextMenu
   bind:this={menu}
-  popover="auto"
-  role="menu"
-  tabindex="-1"
-  aria-label={menuRelationship ? strings.friends.menu(displayName(menuRelationship.user)) : strings.friends.title}
-  class={[
-    "fixed inset-auto m-0 w-max max-w-(--mw-component-context-menu-max-width) min-w-(--mw-component-context-menu-min-width) flex-col rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) p-(--mw-component-context-menu-padding) shadow-(--mw-component-context-menu-shadow) [&:popover-open]:flex",
-    isMenuAboveItsButton
-      ? "[&:popover-open]:animate-[mw-lift-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]"
-      : "[&:popover-open]:animate-[mw-drop-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]",
-  ]}
-  style:top="{menuPosition.top}px"
-  style:right="{menuPosition.right}px"
-  onkeydown={(event) => moveFocusWithinMenu(event, menu)}
-  ontoggle={(event) => {
-    if (event.newState === "open") {
-      return;
-    }
-    menuRelationship = null;
-    if (menu?.contains(document.activeElement) || isFocusLost()) {
-      // The row may have left meanwhile (removed or blocked elsewhere).
-      if (menuButton?.isConnected) {
-        menuButton.focus();
-      } else {
-        focusSelectedTab();
-      }
-    }
-  }}
->
-  {#each [{ action: "remove" as const, label: strings.friends.removeFriend, icon: "user-minus" as const }, { action: "block" as const, label: strings.friends.block, icon: "prohibit" as const }] as item (item.action)}
-    <button
-      type="button"
-      role="menuitem"
-      class="flex h-(--mw-component-context-menu-item-height) w-full items-center justify-between gap-xs rounded-(--mw-component-context-menu-item-radius) px-(--mw-component-context-menu-item-padding-inline) type-menu-item text-(--mw-component-context-menu-danger-text) hover:bg-(--mw-component-context-menu-danger-background-focus) hover:text-(--mw-component-context-menu-danger-text-focus) focus-visible:bg-(--mw-component-context-menu-danger-background-focus) focus-visible:text-(--mw-component-context-menu-danger-text-focus) pointer-coarse:h-(--mw-size-hit-web-min)"
-      onclick={() => chooseMenuAction(item.action)}
-    >
-      {item.label}
-      <Icon name={item.icon} class="size-(--mw-component-context-menu-item-icon-size)" />
-    </button>
-  {/each}
-</div>
+  bind:isOpen={isMenuOpen}
+  label={menuRelationship ? strings.friends.menu(displayName(menuRelationship.user)) : strings.friends.title}
+  entries={menuEntries}
+  gapToken="space-2xs"
+  fallbackFocus={focusSelectedTab}
+  onclose={() => (menuRelationship = null)}
+/>
+
+<PersonContextMenu
+  bind:this={personMenu}
+  {client}
+  {onopenedconversation}
+  fallbackFocus={() => focusRowAt(personMenuRowIndex)}
+/>
 
 {#if confirming}
   {@const pending = confirming}

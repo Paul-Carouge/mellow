@@ -1,17 +1,19 @@
 <script lang="ts">
   import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
+  import type { Snowflake } from "../lib/protocol";
   import ModalDialog from "./ModalDialog.svelte";
 
   // "Leave server" confirmation, the destructive pattern of DESIGN.md §8: Cancel takes focus.
   interface Props {
     client: MellowClient;
+    guildId: Snowflake;
     serverName: string;
     onclose: () => void;
     fallbackFocus: () => void;
   }
 
-  let { client, serverName, onclose, fallbackFocus }: Props = $props();
+  let { client, guildId, serverName, onclose, fallbackFocus }: Props = $props();
 
   let isBusy = $state(false);
   // Plain: read by the dialog when it closes, after this component stopped updating.
@@ -22,7 +24,7 @@
     isBusy = true;
     errorMessage = "";
     try {
-      await client.leaveServer();
+      await client.leaveServer(guildId);
       hasSucceeded = true;
       onclose();
     } catch (error) {

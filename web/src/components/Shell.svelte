@@ -64,8 +64,10 @@
   let announcement = $state("");
   let isUserSettingsOpen = $state(false);
   let isQuickSwitcherOpen = $state(false);
-  /** Kept from the menu that opened them: a deleted server must not hand its settings to the next. */
-  let serverSettingsGuildId = $state<Snowflake | null>(null);
+  /** The server the invite, settings or leave dialog is about, kept from the menu that opened it
+   * (the strip's menu works on any server): a deleted server must not hand its settings to the next. */
+  let dialogGuildId = $state<Snowflake | null>(null);
+  const dialogGuild = $derived(client.guilds.find((candidate) => candidate.id === dialogGuildId) ?? null);
   /** The channel whose gear opened its settings. */
   let channelSettingsChannelId = $state<Snowflake | null>(null);
   /** The category whose "+" opened "Create channel"; null from the server menu. */
@@ -243,9 +245,9 @@
     {isInDrawer}
     onaddserver={() => (openDialog = "add-server")}
     onnewmessage={() => (openDialog = "new-message")}
-    onopendialog={(dialog) => {
+    onopendialog={(dialog, guildId) => {
       newChannelCategory = null;
-      serverSettingsGuildId = guild?.id ?? null;
+      dialogGuildId = guildId;
       openDialog = dialog;
     }}
     oncreatechannelin={(category) => {
@@ -379,8 +381,14 @@
   />
 {:else if openDialog === "add-server"}
   <AddServerDialog {client} onclose={() => (openDialog = null)} fallbackFocus={focusComposer} />
-{:else if openDialog === "invite-people" && guild}
-  <InvitePeopleDialog {client} serverName={guild.name} onclose={() => (openDialog = null)} fallbackFocus={focusComposer} />
+{:else if openDialog === "invite-people" && dialogGuild}
+  <InvitePeopleDialog
+    {client}
+    guildId={dialogGuild.id}
+    serverName={dialogGuild.name}
+    onclose={() => (openDialog = null)}
+    fallbackFocus={focusComposer}
+  />
 {:else if openDialog === "create-channel"}
   <CreateChannelDialog
     {client}
@@ -388,10 +396,10 @@
     onclose={() => (openDialog = null)}
     fallbackFocus={focusComposer}
   />
-{:else if openDialog === "server-settings" && serverSettingsGuildId}
+{:else if openDialog === "server-settings" && dialogGuildId}
   <ServerSettings
     {client}
-    guildId={serverSettingsGuildId}
+    guildId={dialogGuildId}
     isWide={hasRoomForNavigator.current}
     onclose={() => (openDialog = null)}
   />
@@ -402,8 +410,14 @@
     isWide={hasRoomForNavigator.current}
     onclose={() => (openDialog = null)}
   />
-{:else if openDialog === "leave-server" && guild}
-  <LeaveServerDialog {client} serverName={guild.name} onclose={() => (openDialog = null)} fallbackFocus={focusComposer} />
+{:else if openDialog === "leave-server" && dialogGuild}
+  <LeaveServerDialog
+    {client}
+    guildId={dialogGuild.id}
+    serverName={dialogGuild.name}
+    onclose={() => (openDialog = null)}
+    fallbackFocus={focusComposer}
+  />
 {/if}
 
 {#if isUserSettingsOpen}

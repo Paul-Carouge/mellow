@@ -450,6 +450,23 @@ export const en = {
       `${person}, ${status}${customStatus ? `, custom status: ${customStatus}` : ""}`,
   },
 
+  /** Right-click, long press and Shift+F10 menus (DESIGN.md §6.33, docs/design/web-context-menus.md). */
+  contextMenu: {
+    /** A menu's name: "Actions for Ana", "Actions for #general", "Actions for Rust Lyon". */
+    actionsFor: (name: string) => `Actions for ${name}`,
+    message: "Message",
+    ignoreRequest: "Ignore request",
+    cancelRequest: "Cancel request",
+    deleteMessage: "Delete message",
+    editChannel: "Edit channel",
+    copyChannelId: "Copy channel ID",
+    copyServerId: "Copy server ID",
+    userIdCopied: "User ID copied.",
+    channelIdCopied: "Channel ID copied.",
+    serverIdCopied: "Server ID copied.",
+    copyIdFailed: "Couldn't copy the ID. Allow clipboard access and try again.",
+  },
+
   /** The Friends space at Home (DESIGN.md §5.6.1, ADR-0025). */
   friends: {
     title: "Friends",

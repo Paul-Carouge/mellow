@@ -5,10 +5,13 @@
   import { strings } from "../i18n";
   import type { MellowClient } from "../lib/client.svelte";
   import Button from "./Button.svelte";
+  import { type MenuLine, type MessageMenuAction, menuEntries } from "./context-menus";
+  import ContextMenu from "./ContextMenu.svelte";
   import type { Message, PublicUser, Snowflake } from "../lib/protocol";
   import { attachmentCountLabel, displayName, timeOfDayLabel } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
   import type { ReactionAndPinActions } from "./message-actions";
+  import type { MenuOrigin } from "./menu-placement";
   import MessageItem from "./MessageItem.svelte";
   import { mentionablePeople } from "./mentions";
   import {
@@ -20,6 +23,7 @@
     reuseUnchangedRows,
   } from "./message-rows";
   import { nameColorsByUserId } from "./name-colors.svelte";
+  import PersonContextMenu from "./PersonContextMenu.svelte";
   import { durationTokenInMilliseconds, lengthTokenInPixels } from "./tokens";
 
   // The message list (DESIGN.md §5.4): history start or skeletons above the oldest message, the
@@ -47,6 +51,8 @@
     ondelete: (message: Message, skipConfirmation: boolean) => void;
     oncopy: (text: string) => void;
     onjumptopresent: () => void;
+    /** After "Message" in an author's menu opened their conversation. */
+    onopenedconversation: () => void;
   }
 
   let {
@@ -70,6 +76,7 @@
     ondelete,
     oncopy,
     onjumptopresent,
+    onopenedconversation,
   }: Props = $props();
 
   const INITIAL_SKELETON_COUNT = 5;
@@ -142,6 +149,47 @@
     entries.some((entry) => entry.key === rovingKey) ? rovingKey : (entries.at(-1)?.key ?? null),
   );
   let announcement = $state("");
+
+  // One menu for every message (DESIGN.md §6.33): its More button, a right-click, a long press or
+  // Shift+F10 on the message; and one for the people who wrote them.
+  let messageMenu = $state<ContextMenu | null>(null);
+  let personMenu = $state<PersonContextMenu | null>(null);
+  let menuTarget = $state<{ message: Message; lines: MenuLine<MessageMenuAction>[]; invoker: HTMLElement } | null>(null);
+  const messageMenuEntries = $derived.by(() => {
+    if (!menuTarget) {
+      return [];
+    }
+    const { message, lines, invoker } = menuTarget;
+    const actions = reactionAndPinActions;
+    return menuEntries(lines, (action) => {
+      switch (action) {
+        case "add-reaction":
+          return { onselect: () => actions.openPicker(message, invoker) };
+        case "reply":
+          return { onselect: () => onreply(message) };
+        case "edit":
+          return { onselect: () => onstartedit(message) };
+        case "copy-text":
+          return { onselect: () => oncopy(message.content) };
+        case "pin":
+          return { onselect: () => actions.askToPin(message, true) };
+        case "unpin":
+          return { onselect: () => actions.askToPin(message, false) };
+        case "view-reactions":
+          return { onselect: () => actions.viewReactions(message) };
+        case "remove-all-reactions":
+          return { onselect: () => actions.askToRemoveAllReactions(message) };
+        case "delete":
+          return { onselect: () => ondelete(message, false) };
+      }
+    });
+  });
+
+  function openMessageMenu(message: Message, lines: MenuLine<MessageMenuAction>[], origin: MenuOrigin, invoker: HTMLElement) {
+    menuTarget = { message, lines, invoker };
+    messageMenu?.open(origin, invoker);
+  }
+
   let isSkeletonDelayElapsed = $state(false);
 
   onMount(() => {
@@ -512,6 +560,9 @@
             {reactionAndPinActions}
             isEditing={row.kind === "sent" && row.message.id === editingMessageId}
             isRovingTarget={row.key === rovingTargetKey}
+            isMenuOpen={row.kind === "sent" && menuTarget?.message.id === row.message.id}
+            onopenmenu={openMessageMenu}
+            onopenauthormenu={(author, origin, invoker) => personMenu?.openFor(author, origin, invoker) ?? false}
             {maximumEditorHeight}
             {onreply}
             {onstartedit}
@@ -548,3 +599,11 @@
 
   <p class="sr-only" aria-live="polite">{announcement}</p>
 </div>
+
+<ContextMenu
+  bind:this={messageMenu}
+  label={strings.messages.actions}
+  entries={messageMenuEntries}
+  onclose={() => (menuTarget = null)}
+/>
+<PersonContextMenu bind:this={personMenu} {client} {onopenedconversation} />

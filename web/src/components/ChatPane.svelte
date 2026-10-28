@@ -748,6 +748,7 @@
           skipConfirmation ? void deleteMessage(message) : (deletingMessage = message)}
         oncopy={copyText}
         onjumptopresent={focusComposer}
+        onopenedconversation={() => void tick().then(focusComposer)}
       />
     {/key}
 

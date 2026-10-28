@@ -5,8 +5,10 @@
   import type { MellowClient } from "../lib/client.svelte";
   import {
     type Channel,
+    type DirectMessageChannel,
     type Guild,
     Permission,
+    type PublicUser,
     type Snowflake,
     hasPermission,
     iconUrl,
@@ -14,6 +16,16 @@
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
   import { visibleChannelSections } from "./channel-settings";
+  import { contextMenuTrigger } from "./context-menu-trigger";
+  import {
+    type ServerMenuAction,
+    channelMenuActions,
+    copyIdentifier,
+    groupMenuActions,
+    menuEntries,
+    serverMenuActions,
+    serverMenuFactsOf,
+  } from "./context-menus";
   import { nameWithUnreadState } from "./format";
   import GroupAvatar from "./GroupAvatar.svelte";
   import {
@@ -22,12 +34,16 @@
     otherParticipants,
     participantCount,
   } from "./group-conversations";
-  import Icon, { type IconName } from "./Icon.svelte";
+  import ContextMenu from "./ContextMenu.svelte";
+  import GroupConfirmDialog from "./GroupConfirmDialog.svelte";
+  import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
-  import { menuItemsIn, moveFocusWithinMenu } from "./menu-keyboard";
   import MentionBadge from "./MentionBadge.svelte";
+  import type { MenuOrigin } from "./menu-placement";
   import { channelSections } from "./message-rows";
-  import { canOpenServerSettings } from "./server-settings";
+  import PersonContextMenu from "./PersonContextMenu.svelte";
+  import RenameGroupDialog from "./RenameGroupDialog.svelte";
+  import { lengthTokenInPixels } from "./tokens";
 
   export type ServerDialog = "invite-people" | "server-settings" | "create-channel" | "leave-server";
 
@@ -39,7 +55,8 @@
     collapsedCategoryIds: SvelteSet<Snowflake>;
     /** The "+" beside "Direct messages" at Home: the "New message" picker (ADR-0026). */
     onnewmessage: () => void;
-    onopendialog: (dialog: ServerDialog) => void;
+    /** A dialog about the open server (the header's menu). */
+    onopendialog: (dialog: ServerDialog, guildId: Snowflake) => void;
     /** The "+" beside a category: create a channel inside it. */
     oncreatechannelin: (category: Channel) => void;
     /** The gear of a channel row: its settings (Discord's "Edit channel"). */
@@ -53,10 +70,7 @@
 
   const guild = $derived(client.selectedGuild);
   const user = $derived(client.user);
-  const canInvitePeople = $derived(guild ? hasPermission(guild.my_permissions, Permission.CREATE_INVITE) : false);
   const canCreateChannels = $derived(guild ? hasPermission(guild.my_permissions, Permission.MANAGE_CHANNELS) : false);
-  const canLeaveServer = $derived(guild !== null && guild.owner_id !== user?.id);
-  const canOpenSettings = $derived(guild !== null && canOpenServerSettings(guild, user?.id));
   // Channel overwrites included: a read-only channel shows a lock (DESIGN.md §5.3).
   function canSendIn(channelId: Snowflake): boolean {
     const permissions = client.myChannelPermissions(channelId);
@@ -67,26 +81,94 @@
   }
   /** Icons that failed to load show the # glyph instead. */
   const failedIconIds = new SvelteSet<Snowflake>();
-  const hasServerMenu = $derived(canInvitePeople || canOpenSettings || canCreateChannels || canLeaveServer);
 
   let headerButton = $state<HTMLButtonElement | null>(null);
-  let menu = $state<HTMLElement | null>(null);
+  let menu = $state<ContextMenu | null>(null);
   let isMenuOpen = $state(false);
-  let menuPosition = $state({ top: 0, left: 0, width: 0 });
+  const serverMenuEntries = $derived(
+    guild
+      ? menuEntries(serverMenuActions(serverMenuFactsOf(guild, user?.id), "header"), (action) => serverMenuHandler(action, guild))
+      : [],
+  );
+  const hasServerMenu = $derived(serverMenuEntries.length > 0);
 
-  function openMenu() {
-    if (!headerButton || !menu) {
-      return;
-    }
-    const bounds = headerButton.getBoundingClientRect();
-    menuPosition = { top: bounds.bottom, left: bounds.left, width: bounds.width };
-    menu.showPopover();
-    menuItemsIn(menu)[0]?.focus();
+  /** The header's dialogs and the strip's share their names with the menu's actions. */
+  function serverMenuHandler(action: ServerMenuAction, server: Guild) {
+    return action === "copy-server-id"
+      ? { onselectAndWait: () => copyIdentifier(server.id, strings.contextMenu.serverIdCopied) }
+      : { onselect: () => onopendialog(action, server.id) };
   }
 
-  function chooseMenuItem(dialog: ServerDialog) {
-    menu?.hidePopover();
-    onopendialog(dialog);
+  // The rows' menus: a channel's, a group's, or the person's for a one-to-one conversation.
+  let rowMenu = $state<ContextMenu | null>(null);
+  let personMenu = $state<PersonContextMenu | null>(null);
+  let rowMenuTarget = $state<
+    | { kind: "channel"; channel: Channel; invoker: HTMLElement }
+    | { kind: "group"; group: DirectMessageChannel; invoker: HTMLElement }
+    | null
+  >(null);
+  let groupDialog = $state<{ kind: "rename" | "leave"; group: DirectMessageChannel; invoker: HTMLElement } | null>(null);
+  let announcement = $state("");
+  const rowMenuEntries = $derived.by(() => {
+    const target = rowMenuTarget;
+    if (target?.kind === "channel") {
+      const { channel } = target;
+      return menuEntries(channelMenuActions({ canEditChannel: canEditChannel(channel) }), (action) =>
+        action === "edit-channel"
+          ? { onselect: () => oneditchannel(channel) }
+          : { onselectAndWait: () => copyIdentifier(channel.id, strings.contextMenu.channelIdCopied) },
+      );
+    }
+    if (target?.kind === "group") {
+      const { group, invoker } = target;
+      return menuEntries(groupMenuActions(), (action) =>
+        action === "copy-channel-id"
+          ? { onselectAndWait: () => copyIdentifier(group.id, strings.contextMenu.channelIdCopied) }
+          : {
+              onselect: () =>
+                (groupDialog = { kind: action === "rename-group" ? "rename" : "leave", group, invoker }),
+            },
+      );
+    }
+    return [];
+  });
+
+  function openChannelMenu(channel: Channel, origin: MenuOrigin, invoker: HTMLElement): boolean {
+    rowMenuTarget = { kind: "channel", channel, invoker };
+    rowMenu?.open(origin, invoker);
+    return true;
+  }
+
+  function openConversationMenu(
+    conversation: DirectMessageChannel,
+    recipient: PublicUser | undefined,
+    origin: MenuOrigin,
+    invoker: HTMLElement,
+  ): boolean {
+    if (!isGroupConversation(conversation)) {
+      return recipient
+        ? (personMenu?.openFor(recipient, origin, invoker, {
+            canOpenConversation: false,
+            conversationChannelId: conversation.id,
+          }) ?? false)
+        : false;
+    }
+    rowMenuTarget = { kind: "group", group: conversation, invoker };
+    rowMenu?.open(origin, invoker);
+    return true;
+  }
+
+  function openMenu() {
+    if (!headerButton) {
+      return;
+    }
+    // Inset by the menu margin on both sides, and that far below the header.
+    const bounds = headerButton.getBoundingClientRect();
+    const margin = lengthTokenInPixels("component-sidebar-header-menu-margin");
+    menu?.open(
+      { kind: "anchor", bounds: { top: bounds.top, bottom: bounds.bottom, left: bounds.left + margin, right: bounds.right - margin }, align: "stretch" },
+      headerButton,
+    );
   }
 
   function selectChannel(channelId: Snowflake) {
@@ -126,28 +208,6 @@
   ></span>
 {/snippet}
 
-{#snippet menuItem(label: string, icon: IconName, tone: "accent" | "normal" | "danger", dialog: ServerDialog)}
-  <button
-    type="button"
-    role="menuitem"
-    class={[
-      "flex h-(--mw-component-context-menu-item-height) w-full items-center justify-between gap-xs rounded-(--mw-component-context-menu-item-radius) px-(--mw-component-context-menu-item-padding-inline) type-menu-item pointer-coarse:h-(--mw-size-hit-web-min)",
-      tone === "danger"
-        ? "text-(--mw-component-context-menu-danger-text) hover:bg-(--mw-component-context-menu-danger-background-focus) hover:text-(--mw-component-context-menu-danger-text-focus)"
-        : [
-            tone === "accent"
-              ? "text-(--mw-component-context-menu-accent-text)"
-              : "text-(--mw-component-context-menu-item-text)",
-            "hover:bg-(--mw-component-context-menu-item-background-focus) hover:text-(--mw-component-context-menu-item-text-focus)",
-          ],
-    ]}
-    onclick={() => chooseMenuItem(dialog)}
-  >
-    {label}
-    <Icon name={icon} class="size-(--mw-component-context-menu-item-icon-size)" />
-  </button>
-{/snippet}
-
 <div class="flex min-h-0 min-w-0 flex-col">
   <header class="mt-xs me-xs h-(--mw-component-sidebar-header-height) shrink-0">
     {#if guild && hasServerMenu}
@@ -161,7 +221,7 @@
           "flex size-full items-center gap-xs rounded-sm px-xs text-start text-(--mw-component-sidebar-header-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-sidebar-header-background-hover)",
           isMenuOpen && "bg-(--mw-component-sidebar-header-background-hover)",
         ]}
-        onclick={() => (isMenuOpen ? menu?.hidePopover() : openMenu())}
+        onclick={() => (isMenuOpen ? menu?.close() : openMenu())}
       >
         <h2 class="min-w-0 flex-1 truncate type-heading-md">{guild.name}</h2>
         <Icon
@@ -193,44 +253,27 @@
     {/if}
   </header>
 
-  <!-- Light dismiss and Esc come from the popover; focus goes back to the header when it closes. -->
-  <div
+  <ContextMenu
     bind:this={menu}
+    bind:isOpen={isMenuOpen}
     id="server-menu"
-    popover="auto"
-    role="menu"
-    tabindex="-1"
-    aria-label={strings.sidebar.serverMenu}
-    class="fixed inset-auto m-0 flex-col rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) p-(--mw-component-context-menu-padding) shadow-(--mw-component-context-menu-shadow) [&:popover-open]:flex [&:popover-open]:animate-[mw-drop-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]"
-    style:top="calc({menuPosition.top}px + var(--mw-component-sidebar-header-menu-margin))"
-    style:left="calc({menuPosition.left}px + var(--mw-component-sidebar-header-menu-margin))"
-    style:width="calc({menuPosition.width}px - 2 * var(--mw-component-sidebar-header-menu-margin))"
-    onkeydown={(event) => moveFocusWithinMenu(event, menu)}
-    ontoggle={(event) => {
-      isMenuOpen = event.newState === "open";
-      if (!isMenuOpen && (menu?.contains(document.activeElement) || document.activeElement === document.body)) {
-        headerButton?.focus();
-      }
-    }}
-  >
-    {#if canInvitePeople}
-      {@render menuItem(strings.sidebar.invitePeople, "user-plus", "accent", "invite-people")}
-    {/if}
-    {#if canOpenSettings}
-      {@render menuItem(strings.sidebar.serverSettings, "gear-six", "normal", "server-settings")}
-    {/if}
-    {#if canCreateChannels}
-      {@render menuItem(strings.sidebar.createChannel, "plus-circle", "normal", "create-channel")}
-    {/if}
-    {#if canLeaveServer}
-      {#if canInvitePeople || canOpenSettings || canCreateChannels}
-        <hr
-          class="mx-(--mw-component-context-menu-separator-margin-inline) my-(--mw-component-context-menu-separator-margin-block) h-(--mw-component-context-menu-separator-height) border-0 bg-(--mw-component-context-menu-separator)"
-        />
-      {/if}
-      {@render menuItem(strings.sidebar.leaveServer, "sign-out", "danger", "leave-server")}
-    {/if}
-  </div>
+    label={strings.sidebar.serverMenu}
+    entries={serverMenuEntries}
+    gapToken="component-sidebar-header-menu-margin"
+  />
+
+  <ContextMenu
+    bind:this={rowMenu}
+    label={rowMenuTarget?.kind === "channel"
+      ? strings.contextMenu.actionsFor(`#${rowMenuTarget.channel.name}`)
+      : rowMenuTarget?.kind === "group"
+        ? strings.contextMenu.actionsFor(conversationDisplayName(rowMenuTarget.group, user?.id ?? null))
+        : strings.sidebar.directMessages}
+    entries={rowMenuEntries}
+    onclose={() => (rowMenuTarget = null)}
+  />
+  <PersonContextMenu {client} bind:this={personMenu} onopenedconversation={onnavigate} />
+  <p class="sr-only" aria-live="polite">{announcement}</p>
 
   <nav
     aria-label={guild ? strings.sidebar.channelsIn(guild.name) : strings.sidebar.directMessages}
@@ -275,6 +318,7 @@
             {@const memberCount = participantCount(conversation, user?.id ?? null)}
             <li class="relative mt-(--mw-component-member-row-gap) me-(--mw-component-channel-row-margin-inline)">
               {#if hasUnread}{@render unreadPill()}{/if}
+              <!-- Right-click, long press or Shift+F10: the person's menu, or the group's. -->
               <button
                 type="button"
                 aria-current={isSelected ? "page" : undefined}
@@ -285,6 +329,7 @@
                 )}
                 class={[rowClasses(isSelected, hasUnread), "h-(--mw-component-member-row-height) gap-sm pointer-coarse:h-(--mw-size-hit-web-min)"]}
                 onclick={() => selectConversation(conversation.id)}
+                {@attach contextMenuTrigger((origin, invoker) => openConversationMenu(conversation, recipient, origin, invoker))}
               >
                 {#if isGroup}
                   <!-- No presence on a group: its second line counts its people, as on Discord. -->
@@ -327,7 +372,7 @@
         <p class="type-body text-text-muted">{strings.sidebar.noChannelsYet}</p>
         <Button
           variant="primary"
-          onclick={() => onopendialog("create-channel")}>{strings.sidebar.createAChannel}</Button
+          onclick={() => onopendialog("create-channel", guild.id)}>{strings.sidebar.createAChannel}</Button
         >
       {:else}
         <p class="type-body text-text-muted">{strings.sidebar.noVisibleChannelsYet}</p>
@@ -375,7 +420,11 @@
         {@const icon = channel.icon && !failedIconIds.has(channel.icon.id) ? channel.icon : null}
         <!-- Collapsed categories still show the selected and unread channels, as on Discord. -->
         {#if !isCollapsed || isSelected || hasUnread}
-          <li class="group/row relative mt-(--mw-component-channel-row-gap) me-(--mw-component-channel-row-margin-inline)">
+          <!-- The gear sits inside the row's menu area: right-click on either opens the channel's menu. -->
+          <li
+            class="group/row relative mt-(--mw-component-channel-row-gap) me-(--mw-component-channel-row-margin-inline)"
+            {@attach contextMenuTrigger((origin, invoker) => openChannelMenu(channel, origin, invoker))}
+          >
             {#if hasUnread}{@render unreadPill()}{/if}
             <button
               type="button"
@@ -443,3 +492,22 @@
     </ul>
   {/each}
 {/snippet}
+
+{#if groupDialog?.kind === "rename"}
+  <RenameGroupDialog
+    {client}
+    group={groupDialog.group}
+    onclose={() => (groupDialog = null)}
+    ondone={(sentence) => (announcement = sentence)}
+  />
+{:else if groupDialog?.kind === "leave"}
+  {@const invoker = groupDialog.invoker}
+  <GroupConfirmDialog
+    {client}
+    group={groupDialog.group}
+    person={null}
+    onclose={() => (groupDialog = null)}
+    ondone={(sentence) => (announcement = sentence)}
+    fallbackFocus={() => invoker.isConnected && invoker.focus()}
+  />
+{/if}
