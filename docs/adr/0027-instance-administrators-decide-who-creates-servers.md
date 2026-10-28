@@ -16,7 +16,7 @@ The owner wants whoever hosts an instance to choose whether its other accounts m
 - Servers that already exist are untouched, whoever owns them; conversations, groups and joining by invite stay open to everyone.
 
 ## Consequences
-- After updating, an instance whose members created servers stops letting them create new ones until the host writes `guild_creation = "everyone"`; the CHANGELOG says so. A host whose own account was not created with `--administrator` is in the same case: no command promotes an existing account yet.
+- After updating, an instance whose members created servers stops letting them create new ones until the host writes `guild_creation = "everyone"`; the CHANGELOG says so. A host whose own account was not created with `--administrator` is in the same case until they run `mellow-server admin set-administrator --username <name>` (added in `v0.17.1`; `--revoke` takes it away).
 - A server downgraded below this version refuses a configuration holding `guild_creation` (unknown fields are refused): remove the line first.
 - Older clients still offer "Create a server" and get an error when they use it.
 - shortcut: no admin screen yet; the setting moves there with the admin web UI (ADR-0009).

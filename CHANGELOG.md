@@ -4,11 +4,17 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-10-28
+No database migration.
+
+### Added
+- `mellow-server admin set-administrator --username <name>` makes an existing account an instance administrator (`--revoke` takes it away), for example an account first created through the web sign-up.
+
 ## [0.17.0] - 2026-10-28
 Who creates servers. No database migration.
 
 ### Changed
-- Only instance administrators (accounts created with `mellow-server admin create-user --administrator`) can create servers, unless `mellow.toml` says `guild_creation = "everyone"`. **If other accounts on your instance should keep creating servers, add that line before updating.** This includes your own account if you did not create it with `--administrator` (no command promotes an existing account yet). Existing servers are not affected, and everyone can still join servers with an invite. In the web client, "Add a server" then offers only joining.
+- Only instance administrators (accounts created with `mellow-server admin create-user --administrator`) can create servers, unless `mellow.toml` says `guild_creation = "everyone"`. **If other accounts on your instance should keep creating servers, add that line before updating.** This includes your own account if you did not create it with `--administrator`. Existing servers are not affected, and everyone can still join servers with an invite. In the web client, "Add a server" then offers only joining.
 
 ## [0.16.0] - 2026-10-28
 Channels, categories and server creation. No database migration.
