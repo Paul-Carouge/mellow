@@ -7,7 +7,7 @@ Each milestone ends with something usable end to end. Scope changes are made her
 **Current focus: the web client only** (owner's decision, 2026-10-22). Until the web client is finished, all new features, UI work and fixes target `web/` and the server and protocol it needs. The desktop app (Slint), Android and other platforms wait; they come back once the web is done, and then catch up on what the web gained. Meanwhile the desktop only has to keep compiling and passing CI (shared tokens, client-core); no new desktop work unless the owner asks. Reason: building every feature twice halved the pace.
 
 ### Done
-Merged into `main`: #1 to #108. Released up to `v0.16.0` (2026-10-28), which runs on the owner's instance (server and embedded web client); `v0.8.0` is the last release with desktop builds until the desktop port (ADR-0023).
+Merged into `main`: #1 to #110. Released up to `v0.17.0` (2026-10-28), which runs on the owner's instance (server and embedded web client); `v0.8.0` is the last release with desktop builds until the desktop port (ADR-0023).
 - Presence and the user card menu (2026-10-26, #92, released in `v0.12.0`, migration 17): idle, do not disturb, invisible, custom statuses, copy user ID.
 - Context menus (2026-10-28, #101, released in `v0.15.0`): right-click, long press and Shift+F10 on messages, people, channels, servers, conversations and groups.
 - Group conversations, responsive web and installable app (2026-10-27, #97 and #98, released in `v0.14.0`, migration 19, ADR-0026): groups of up to 10 friends and the "New message" picker; every web screen from 320 px, safe areas and soft keyboard; the web client installs from Chrome as an app (no service worker).
