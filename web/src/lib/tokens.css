@@ -277,6 +277,7 @@
   --mw-component-context-menu-item-radius: 0.375rem;
   --mw-component-context-menu-item-text: #D6D0D7;
   --mw-component-context-menu-item-text-focus: #F8F4F8;
+  --mw-component-context-menu-long-press-move-tolerance: 0.625rem;
   --mw-component-context-menu-max-width: 20rem;
   --mw-component-context-menu-min-width: 11.75rem;
   --mw-component-context-menu-padding: 0.375rem;
@@ -286,6 +287,7 @@
   --mw-component-context-menu-separator-margin-block: 0.25rem;
   --mw-component-context-menu-separator-margin-inline: 0.5rem;
   --mw-component-context-menu-shadow: 0 0.5rem 1rem 0 #0000003D;
+  --mw-component-context-menu-viewport-margin: 0.25rem;
   --mw-component-conversation-row-avatar-gap: 0.75rem;
   --mw-component-conversation-row-avatar-size: 2rem;
   --mw-component-conversation-row-empty-padding: 1rem;
@@ -874,6 +876,7 @@
   --mw-font-weight-regular: 400;
   --mw-font-weight-semibold: 600;
   --mw-motion-delay-copied-label: 2000ms;
+  --mw-motion-delay-long-press: 500ms;
   --mw-motion-delay-pending-label: 2000ms;
   --mw-motion-delay-skeleton: 300ms;
   --mw-motion-delay-tooltip: 500ms;

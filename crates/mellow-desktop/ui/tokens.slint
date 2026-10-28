@@ -290,6 +290,7 @@ export global MellowComponent {
     out property <length> context-menu-item-radius: 6px;
     out property <color> context-menu-item-text: MellowTheme.is-dark ? #D6D0D7 : #392F3A;
     out property <color> context-menu-item-text-focus: MellowTheme.is-dark ? #F8F4F8 : #221B23;
+    out property <length> context-menu-long-press-move-tolerance: 10px;
     out property <length> context-menu-max-width: 320px;
     out property <length> context-menu-min-width: 188px;
     out property <length> context-menu-padding: 6px;
@@ -298,6 +299,7 @@ export global MellowComponent {
     out property <length> context-menu-separator-height: 1px;
     out property <length> context-menu-separator-margin-block: 4px;
     out property <length> context-menu-separator-margin-inline: 8px;
+    out property <length> context-menu-viewport-margin: 4px;
     out property <length> conversation-row-avatar-gap: 12px;
     out property <length> conversation-row-avatar-size: 32px;
     out property <length> conversation-row-empty-padding: 16px;
@@ -883,6 +885,7 @@ export global MellowFont {
 
 export global MellowMotion {
     out property <duration> delay-copied-label: 2000ms;
+    out property <duration> delay-long-press: 500ms;
     out property <duration> delay-pending-label: 2000ms;
     out property <duration> delay-skeleton: 300ms;
     out property <duration> delay-tooltip: 500ms;
