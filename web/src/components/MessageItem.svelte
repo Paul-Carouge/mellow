@@ -367,6 +367,9 @@
     <p class="flex flex-wrap items-center gap-x-xs type-message-subtext text-(--mw-component-message-failed-status-text)">
       <Icon name="warning-circle" class="size-(--mw-component-message-status-icon-size)" />
       {strings.messages.notSent}
+      {#if row.pending.failureReason}
+        <span class="first-letter:uppercase">{row.pending.failureReason}</span>
+      {/if}
       <button
         type="button"
         class="min-h-(--mw-size-hit-desktop-min) text-(--mw-component-message-editor-hint-link) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"

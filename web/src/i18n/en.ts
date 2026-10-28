@@ -277,6 +277,12 @@ export const en = {
     dropHint: "You can add a message before sending.",
     tooManyAttachments: (maximum: number) => `You can attach up to ${count(maximum)} files to one message.`,
     uploadsRunning: "Your files are still uploading. Send again once they're done.",
+    messageCharactersLeft: (left: number) =>
+      left >= 0
+        ? `${count(left)} ${plural(left, { one: "character", other: "characters" })} left`
+        : `${count(-left)} ${plural(-left, { one: "character", other: "characters" })} too many`,
+    messageTooLong: (maximum: number) =>
+      `Messages are at most ${count(maximum)} characters. Split this one into several messages.`,
     uploaded: (fileName: string) => `${fileName} uploaded.`,
     fileTooLarge: (fileName: string, size: string, instance: string) =>
       `${fileName} is ${size}, more than ${instance} accepts.`,

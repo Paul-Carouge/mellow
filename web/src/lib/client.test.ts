@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ApiError, type RestClient } from "./api";
-import { MellowClient } from "./client.svelte";
+import { MellowClient, errorReason } from "./client.svelte";
 import type { Channel, DirectMessageChannel, Guild, Message, Ready, Relationship, Role } from "./protocol";
 
 const ME = "1";
@@ -149,6 +149,16 @@ describe("MellowClient", () => {
     client.applyEvent({ t: "GUILD_CREATE", data: guild([channel(GENERAL)]) }, 0);
     client.applyEvent({ t: "CHANNEL_UPDATE", data: { ...channel(RULES), name: "renamed" } }, 0);
     expect(client.guilds[0]?.channels.map((candidate) => candidate.id)).toEqual([GENERAL]);
+  });
+
+  it("keeps why the instance refused a message, for Not sent", async () => {
+    const refusal = new ApiError(400, "VALIDATION_FAILED");
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, sendMessage: () => Promise.reject(refusal) }));
+    client.applyReady(ready());
+    client.selectGuild(GUILD, GENERAL);
+    await client.sendMessage("hello");
+    expect(client.pendingMessages[0]?.status).toBe("failed");
+    expect(client.pendingMessages[0]?.failureReason).toBe(errorReason(refusal));
   });
 
   it("knows from Ready whether the user may create servers, and assumes so with older servers", () => {

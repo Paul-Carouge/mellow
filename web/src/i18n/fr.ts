@@ -274,6 +274,12 @@ export const fr: Catalogue = {
     dropHint: "Tu pourras ajouter un message avant l’envoi.",
     tooManyAttachments: (maximum) => `Tu peux joindre jusqu’à ${count(maximum)} fichiers par message.`,
     uploadsRunning: "Tes fichiers sont encore en cours d’envoi. Renvoie le message quand ils sont prêts.",
+    messageCharactersLeft: (left) =>
+      left >= 0
+        ? `${plural(left, { one: `${count(left)}${NO_BREAK_SPACE}caractère restant`, other: `${count(left)}${NO_BREAK_SPACE}caractères restants` })}`
+        : `${plural(-left, { one: `${count(-left)}${NO_BREAK_SPACE}caractère en trop`, other: `${count(-left)}${NO_BREAK_SPACE}caractères en trop` })}`,
+    messageTooLong: (maximum) =>
+      `Un message fait au plus ${count(maximum)}${NO_BREAK_SPACE}caractères. Coupe celui-ci en plusieurs messages.`,
     uploaded: (fileName) => `${fileName} envoyé.`,
     fileTooLarge: (fileName, size, instance) => `${fileName} fait ${size}, plus que ce qu’accepte ${instance}.`,
     uploadFailed: (fileName) => `Impossible d’envoyer ${fileName}`,

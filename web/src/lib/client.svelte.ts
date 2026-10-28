@@ -68,6 +68,8 @@ export interface PendingMessage {
   /** Uploaded already; they stay sendable for an hour (ADR-0020). */
   attachments: Attachment[];
   status: "sending" | "failed";
+  /** Why the last attempt failed, shown under "Not sent."; absent while sending. */
+  failureReason?: string;
 }
 
 /** A channel's pinned messages, newest pin first, as far as the client has asked for them. */
@@ -84,11 +86,16 @@ export interface UnreadMarker {
 
 /** Text shown to people: built from the error code, never from the instance's own message. */
 export function describeError(error: unknown, summary: string): string {
+  return strings.errors.withReason(summary, errorReason(error));
+}
+
+/** Why a request failed, as a sentence end ("the instance refused what was entered."). */
+export function errorReason(error: unknown): string {
   if (!(error instanceof ApiError)) {
-    return strings.errors.withReason(summary, strings.errors.unknownReason);
+    return strings.errors.unknownReason;
   }
   const reasons: Partial<Record<ApiError["code"], string>> = strings.errors.reasons;
-  return strings.errors.withReason(summary, reasons[error.code] ?? strings.errors.unknownReason);
+  return reasons[error.code] ?? strings.errors.unknownReason;
 }
 
 export class MellowClient {
@@ -1188,15 +1195,15 @@ export class MellowClient {
       this.insertMessages(message.channel_id, [{ ...message, nonce: null }]);
       return "sent";
     } catch (error) {
-      this.setPendingStatus(pending.nonce, "failed");
+      this.setPendingStatus(pending.nonce, "failed", errorReason(error));
       this.reportError(error, "send message");
       return error instanceof ApiError && REFUSED_FOR_GOOD.has(error.code) ? "refused" : "failed";
     }
   }
 
-  private setPendingStatus(nonce: string, status: PendingMessage["status"]): void {
+  private setPendingStatus(nonce: string, status: PendingMessage["status"], failureReason?: string): void {
     this.pendingMessages = this.pendingMessages.map((pending) =>
-      pending.nonce === nonce ? { ...pending, status } : pending,
+      pending.nonce === nonce ? { ...pending, status, failureReason } : pending,
     );
   }
 

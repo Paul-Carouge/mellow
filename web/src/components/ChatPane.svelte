@@ -11,6 +11,7 @@
     Permission,
     type PublicUser,
     type Snowflake,
+    MAXIMUM_MESSAGE_LENGTH,
     hasPermission,
     iconUrl,
   } from "../lib/protocol";
@@ -31,6 +32,7 @@
     participantCount,
     participantNamesOf,
   } from "./group-conversations";
+  import { MESSAGE_LENGTH_COUNTER_THRESHOLD, messageCharactersLeft } from "./message-length";
   import { unreadBarLabel, unreadSummary } from "./message-rows";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
@@ -164,7 +166,11 @@
   const uploadedAttachments = $derived(
     trayItems.flatMap((item) => (item.status === "uploaded" && item.attachment ? [item.attachment] : [])),
   );
-  const canSend = $derived((draft.trim() !== "" || uploadedAttachments.length > 0) && !isUploading);
+  const charactersLeft = $derived(messageCharactersLeft(draft));
+  const isTooLong = $derived(charactersLeft < 0);
+  // The instance would refuse it: say why at the first try, until the text fits again.
+  let hasTriedSendingTooLong = $state(false);
+  const canSend = $derived((draft.trim() !== "" || uploadedAttachments.length > 0) && !isUploading && !isTooLong);
 
   // Each channel keeps its own unsent text (DESIGN.md §5.5); replies and edits do not carry over.
   let shownChannelId: Snowflake | null = null;
@@ -257,9 +263,14 @@
       actionError = UPLOADS_RUNNING_SENTENCE;
       return;
     }
+    if (isTooLong) {
+      hasTriedSendingTooLong = true;
+      return;
+    }
     if (!canSend) {
       return;
     }
+    hasTriedSendingTooLong = false;
     void client.sendMessage(draft.trim(), replyingTo?.id ?? null, $state.snapshot(uploadedAttachments));
     draft = "";
     replyingTo = null;
@@ -758,6 +769,11 @@
           {actionError}
         </p>
       {/if}
+      {#if isTooLong && hasTriedSendingTooLong}
+        <p class="px-(--mw-component-composer-margin-inline) py-(--mw-component-composer-error-padding-block) type-body text-(--mw-component-composer-error-text)">
+          {strings.chat.messageTooLong(MAXIMUM_MESSAGE_LENGTH)}
+        </p>
+      {/if}
     </div>
 
     <!-- The composer zone (ADR-0022 §4): the typing row above, then the composer, whose base row is
@@ -834,7 +850,12 @@
               bind:value={draft}
               rows="1"
               aria-label={composerLabel}
-              aria-describedby={replyingTo ? "composer-reply-hint" : undefined}
+              aria-describedby={[
+                replyingTo && "composer-reply-hint",
+                charactersLeft <= MESSAGE_LENGTH_COUNTER_THRESHOLD && "composer-characters-left",
+              ]
+                .filter(Boolean)
+                .join(" ") || undefined}
               placeholder={composerLabel}
               class="min-h-(--mw-size-dock-height) min-w-0 flex-1 resize-none bg-transparent px-2xs py-[calc((var(--mw-size-dock-height)_-_var(--mw-type-message-font-size)_*_var(--mw-type-message-line-height))/2)] type-message text-(--mw-component-composer-text) outline-none placeholder:text-(--mw-component-composer-placeholder)"
               onkeydown={handleComposerKeydown}
@@ -842,6 +863,19 @@
               oninput={() => client.noteTyping()}
               {@attach autosize(() => draft, maximumComposerHeight)}
             ></textarea>
+            {#if charactersLeft <= MESSAGE_LENGTH_COUNTER_THRESHOLD}
+              <!-- Discord's counter: only near the limit, the number alone on screen. -->
+              <span
+                id="composer-characters-left"
+                class={[
+                  "flex min-h-(--mw-size-dock-height) shrink-0 items-center px-2xs type-message-subtext tabular-nums",
+                  isTooLong ? "text-(--mw-component-composer-error-text)" : "text-(--mw-component-composer-placeholder)",
+                ]}
+              >
+                <span aria-hidden="true">{charactersLeft}</span>
+                <span class="sr-only">{strings.chat.messageCharactersLeft(charactersLeft)}</span>
+              </span>
+            {/if}
             {#if replyingTo}
               <span id="composer-reply-hint" class="sr-only">
                 {strings.chat.replyHint(displayName(replyingTo.author))}

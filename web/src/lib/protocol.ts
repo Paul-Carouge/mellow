@@ -41,6 +41,9 @@ export interface Presence {
 
 /** The longest custom status the instance accepts, in characters. */
 export const MAXIMUM_CUSTOM_STATUS_LENGTH = 128;
+/** A message's text, as the instance counts it (`validate_message_content`). */
+export const MAXIMUM_MESSAGE_LENGTH = 4_000;
+export const MAXIMUM_MESSAGE_BYTES = 8_000;
 
 export interface PublicUser {
   id: Snowflake;
