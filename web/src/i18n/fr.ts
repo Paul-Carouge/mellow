@@ -836,6 +836,7 @@ export const fr: Catalogue = {
       roleUpdate: (actor, role) => `${actor} a modifié le rôle ${role}`,
       roleDelete: (actor) => `${actor} a supprimé un rôle`,
       rolesReorder: (actor) => `${actor} a réordonné les rôles`,
+      channelsReorder: (actor) => `${actor} a réordonné les salons`,
       memberRoleAdd: (actor, role, member) => `${actor} a donné ${role} à ${member}`,
       memberRoleRemove: (actor, role, member) => `${actor} a retiré ${role} à ${member}`,
       memberKick: (actor, member) => `${actor} a expulsé ${member}`,

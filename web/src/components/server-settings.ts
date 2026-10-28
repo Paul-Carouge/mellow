@@ -375,6 +375,8 @@ export function auditEntrySentence(entry: AuditLogEntry, context: AuditContext):
       return log.roleDelete(actor);
     case "roles_reorder":
       return log.rolesReorder(actor);
+    case "channels_reorder":
+      return log.channelsReorder(actor);
     case "member_role_add":
       return log.memberRoleAdd(actor, roleName(context, entry.context_id), personName(context, target));
     case "member_role_remove":

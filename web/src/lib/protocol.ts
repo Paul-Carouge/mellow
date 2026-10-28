@@ -108,6 +108,19 @@ export interface Channel {
   permission_overwrites: PermissionOverwrite[];
 }
 
+/** Entry of `PUT /guilds/{id}/channels/order`. */
+export interface ChannelPlacement {
+  id: Snowflake;
+  /** `null` for categories and uncategorised channels. */
+  parent_id: Snowflake | null;
+}
+
+/** A category a new server starts with (`POST /guilds`), and its text channels in order. */
+export interface InitialCategory {
+  name: string;
+  channels: { name: string; topic?: string }[];
+}
+
 export interface Role {
   id: Snowflake;
   name: string;
@@ -276,6 +289,7 @@ export type AuditAction =
   | "role_update"
   | "role_delete"
   | "roles_reorder"
+  | "channels_reorder"
   | "member_role_add"
   | "member_role_remove"
   | "member_kick"

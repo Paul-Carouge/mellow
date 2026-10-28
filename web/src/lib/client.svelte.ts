@@ -18,10 +18,13 @@ import { reactionKey, withReactionAdded, withReactionRemoved, withoutEmoji } fro
 import {
   type Attachment,
   type Channel,
+  type ChannelKind,
+  type ChannelPlacement,
   type ChosenStatus,
   type CurrentUser,
   type DirectMessageChannel,
   type Guild,
+  type InitialCategory,
   type GatewayEvent,
   type Member,
   type Message,
@@ -1478,10 +1481,12 @@ export class MellowClient {
 
   // --- Servers and conversations -------------------------------------------------------------
 
-  async createServer(name: string): Promise<void> {
-    const guild = await this.rest.createGuild(name);
+  /** Returns the new server, so its icon can follow. */
+  async createServer(name: string, initialCategories?: readonly InitialCategory[]): Promise<Guild> {
+    const guild = await this.rest.createGuild(name, initialCategories);
     this.upsertGuild(guild);
     this.selectGuild(guild.id, null);
+    return guild;
   }
 
   async joinServer(code: string): Promise<void> {
@@ -1495,16 +1500,33 @@ export class MellowClient {
     return (await this.rest.createInvite(guildId)).code;
   }
 
-  async createChannel(name: string, categoryId: Snowflake | null = null): Promise<void> {
+  /** A text channel opens once created; a category does not. */
+  async createChannel(
+    kind: ChannelKind,
+    name: string,
+    topic = "",
+    categoryId: Snowflake | null = null,
+  ): Promise<void> {
     const guildId = this.selectedGuildId;
     if (!guildId) {
       return;
     }
-    const channel = await this.rest.createTextChannel(guildId, name, categoryId);
+    const channel = await this.rest.createChannel(guildId, kind, name, topic, categoryId);
     this.applyEvent({ t: "CHANNEL_CREATE", data: channel }, Date.now());
-    if (this.selectedGuildId === guildId) {
+    if (kind === "text" && this.selectedGuildId === guildId) {
       this.selectChannel(channel.id);
     }
+  }
+
+  /** Removed at once: a removal cannot bring older state back. */
+  async deleteChannel(guildId: Snowflake, channelId: Snowflake): Promise<void> {
+    await this.rest.deleteChannel(channelId);
+    this.applyEvent({ t: "CHANNEL_DELETE", data: { guild_id: guildId, id: channelId } }, Date.now());
+  }
+
+  /** The moves show when the gateway's `CHANNEL_UPDATE`s arrive, as other server settings do. */
+  async reorderChannels(guildId: Snowflake, placements: readonly ChannelPlacement[]): Promise<void> {
+    await this.rest.reorderChannels(guildId, placements);
   }
 
   async leaveServer(guildId: Snowflake): Promise<void> {

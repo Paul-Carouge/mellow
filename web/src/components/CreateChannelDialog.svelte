@@ -26,7 +26,7 @@
     isBusy = true;
     errorMessage = "";
     try {
-      await client.createChannel(channelName.trim(), category?.id ?? null);
+      await client.createChannel("text", channelName.trim(), "", category?.id ?? null);
       hasSucceeded = true;
       onclose();
     } catch (error) {

@@ -836,6 +836,7 @@ export const en = {
       roleUpdate: (actor: string, role: string) => `${actor} edited the role ${role}`,
       roleDelete: (actor: string) => `${actor} deleted a role`,
       rolesReorder: (actor: string) => `${actor} reordered the roles`,
+      channelsReorder: (actor: string) => `${actor} reordered the channels`,
       memberRoleAdd: (actor: string, role: string, member: string) => `${actor} gave ${role} to ${member}`,
       memberRoleRemove: (actor: string, role: string, member: string) => `${actor} took ${role} from ${member}`,
       memberKick: (actor: string, member: string) => `${actor} kicked ${member}`,

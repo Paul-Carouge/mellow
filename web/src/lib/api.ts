@@ -8,6 +8,9 @@ import {
   type AuditLogEntry,
   type Ban,
   type Channel,
+  type ChannelKind,
+  type ChannelPlacement,
+  type InitialCategory,
   type ChosenStatus,
   type CurrentUser,
   type DirectMessageChannel,
@@ -131,8 +134,9 @@ export class RestClient {
     });
   }
 
-  createGuild(name: string): Promise<Guild> {
-    return this.request("POST", "guilds", { name });
+  /** Without `initialCategories`, the instance adds an English "Text channels" with "general". */
+  createGuild(name: string, initialCategories?: readonly InitialCategory[]): Promise<Guild> {
+    return this.request("POST", "guilds", { name, initial_categories: initialCategories });
   }
 
   joinWithInvite(code: string): Promise<Guild> {
@@ -150,14 +154,30 @@ export class RestClient {
     });
   }
 
-  /** `categoryId` puts the channel in that category; null leaves it uncategorised. */
-  createTextChannel(guildId: Snowflake, name: string, categoryId: Snowflake | null = null): Promise<Channel> {
+  /** `categoryId` puts a text channel in that category; null leaves it uncategorised. */
+  createChannel(
+    guildId: Snowflake,
+    kind: ChannelKind,
+    name: string,
+    topic = "",
+    categoryId: Snowflake | null = null,
+  ): Promise<Channel> {
     return this.request("POST", `guilds/${guildId}/channels`, {
-      kind: "text",
+      kind,
       name,
-      topic: "",
+      topic,
       parent_id: categoryId,
     });
+  }
+
+  /** A deleted category's channels stay, uncategorised. */
+  deleteChannel(channelId: Snowflake): Promise<void> {
+    return this.request("DELETE", `channels/${channelId}`);
+  }
+
+  /** Every channel the user can view, once each, in their new order; answers the new list. */
+  reorderChannels(guildId: Snowflake, placements: readonly ChannelPlacement[]): Promise<Channel[]> {
+    return this.request("PUT", `guilds/${guildId}/channels/order`, { channels: placements });
   }
 
   // --- Server settings (DESIGN.md §5.8) -----------------------------------------------------
