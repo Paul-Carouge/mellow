@@ -12,6 +12,8 @@
     title: string;
     subtitle?: string;
     isHeadingCentered?: boolean;
+    /** Two columns side by side ("Create a server"), stacked when the window is narrower. */
+    isWide?: boolean;
     errorMessage?: string;
     isBusy?: boolean;
     cancelLabel?: string;
@@ -34,6 +36,7 @@
     title,
     subtitle = "",
     isHeadingCentered = false,
+    isWide = false,
     errorMessage = "",
     isBusy = false,
     cancelLabel = strings.common.cancel,
@@ -87,6 +90,7 @@
   bind:this={dialog}
   aria-labelledby="{id}-title"
   aria-describedby={subtitle ? `${id}-subtitle` : undefined}
+  class:dialog-wide={isWide}
   class="modal-dialog m-auto w-[min(var(--mw-component-dialog-width),calc(100vw_-_2*var(--mw-component-dialog-margin)))] max-w-none overflow-hidden rounded-(--mw-component-dialog-radius) bg-(--mw-component-dialog-background) p-0 text-(--mw-component-dialog-body-text) shadow-high backdrop:bg-(--mw-component-dialog-scrim) dark:[outline:1px_solid_var(--mw-color-border-divider)]"
   oncancel={(event) => {
     event.preventDefault();
@@ -150,6 +154,9 @@
 
 <style>
   /* Dialogs land with the settle curve (ADR-0022 §3); the scrim fades. Reduced motion: at once. */
+  .modal-dialog.dialog-wide {
+    width: min(var(--mw-component-dialog-width-wide), calc(100vw - 2 * var(--mw-component-dialog-margin)));
+  }
   .modal-dialog[open] {
     animation: modal-dialog-in var(--mw-motion-duration-settle) var(--mw-motion-easing-settle) both;
   }

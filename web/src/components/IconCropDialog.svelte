@@ -12,6 +12,7 @@
     cropZoomedTo,
     maximumZoom,
     placementInPercent,
+    stillPictureOf,
     zoomOf,
   } from "./icon-crop";
   import ModalDialog from "./ModalDialog.svelte";
@@ -60,7 +61,7 @@
     let url: string | null = null;
     let isCancelled = false;
     const mayMove = file.type === "image/gif" || file.type === "image/webp";
-    void (isStillWanted && mayMove ? stillPictureUrl(file) : Promise.resolve(URL.createObjectURL(file)))
+    void (isStillWanted && mayMove ? stillPictureOf(file).then((still) => still.url) : Promise.resolve(URL.createObjectURL(file)))
       .then((created) => {
         url = created;
         if (isCancelled) {
@@ -97,20 +98,6 @@
     } catch {
       isUnreadable = true;
     }
-  }
-
-  async function stillPictureUrl(source: File): Promise<string> {
-    const bitmap = await createImageBitmap(source);
-    const canvas = document.createElement("canvas");
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
-    canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
-    bitmap.close();
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve));
-    if (!blob) {
-      throw new Error("the first frame could not be drawn");
-    }
-    return URL.createObjectURL(blob);
   }
 
   /** The wheel zooms around the pointer, instead of scrolling the dialog. */

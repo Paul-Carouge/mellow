@@ -425,7 +425,7 @@ export const en = {
     joinTitle: "Join a server",
     createTitle: "Create a server",
     joinSubtitle: "Enter an invite to join a server someone already runs.",
-    createSubtitle: "Give your server a name. You can add channels and invite people next.",
+    createSubtitle: "Give it a picture, a name and a start. You can change all of it later.",
     join: "Join",
     joining: "Joining…",
     create: "Create",
@@ -437,6 +437,48 @@ export const en = {
     hasInvite: "Have an invite already?",
     joinFailed: "Couldn't join the server",
     createFailed: "Couldn't create the server",
+    serverIcon: "Server icon",
+    iconOptional: "Optional: the initials show until you add one.",
+    iconFailed: (server: string) => `${server} was created, but its icon couldn't be saved`,
+    iconLater: "Add it from Server settings.",
+    startWith: "Start with",
+    preview: "Preview",
+    previewPlaceholder: "Your server",
+    /** Starter templates (DESIGN.md §5.2): names in the interface's language, kept as typed. */
+    templates: {
+      friends: {
+        name: "Friends",
+        categories: [{ name: "Text channels", channels: [{ name: "general" }, { name: "photos" }, { name: "plans" }] }],
+      },
+      community: {
+        name: "Community",
+        categories: [
+          {
+            name: "Information",
+            channels: [
+              { name: "welcome", topic: "Start here: who we are and how things work." },
+              { name: "announcements", topic: "News from the people who run the server." },
+            ],
+          },
+          { name: "Community", channels: [{ name: "general" }, { name: "introductions" }, { name: "help" }] },
+        ],
+      },
+      studyGroup: {
+        name: "Study group",
+        categories: [
+          { name: "Information", channels: [{ name: "announcements" }] },
+          { name: "Study", channels: [{ name: "general" }, { name: "questions" }, { name: "resources" }, { name: "schedule" }] },
+        ],
+      },
+      gaming: {
+        name: "Gaming",
+        categories: [{ name: "Text channels", channels: [{ name: "general" }, { name: "clips" }, { name: "looking for group" }] }],
+      },
+      blank: {
+        name: "Blank",
+        categories: [{ name: "Text channels", channels: [{ name: "general" }] }],
+      },
+    },
   },
 
   createChannel: {

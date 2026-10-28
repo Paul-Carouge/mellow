@@ -419,7 +419,7 @@ export const fr: Catalogue = {
     joinTitle: "Rejoindre un serveur",
     createTitle: "Créer un serveur",
     joinSubtitle: "Saisis une invitation pour rejoindre un serveur qui existe déjà.",
-    createSubtitle: "Donne un nom à ton serveur. Tu pourras ensuite ajouter des salons et inviter des gens.",
+    createSubtitle: "Donne-lui une image, un nom et un point de départ. Tu pourras tout changer ensuite.",
     join: "Rejoindre",
     joining: "Ajout du serveur…",
     create: "Créer",
@@ -431,6 +431,49 @@ export const fr: Catalogue = {
     hasInvite: `Tu as déjà une invitation${NARROW_NO_BREAK_SPACE}?`,
     joinFailed: "Impossible de rejoindre le serveur",
     createFailed: "Impossible de créer le serveur",
+    serverIcon: "Icône du serveur",
+    iconOptional: `Facultatif${NO_BREAK_SPACE}: les initiales s’affichent tant qu’il n’y en a pas.`,
+    iconFailed: (server) => `${server} a été créé, mais son icône n’a pas pu être enregistrée`,
+    iconLater: "Ajoute-la depuis les paramètres du serveur.",
+    startWith: "Commencer avec",
+    preview: "Aperçu",
+    previewPlaceholder: "Ton serveur",
+    templates: {
+      friends: {
+        name: "Amis",
+        categories: [{ name: "Salons textuels", channels: [{ name: "général" }, { name: "photos" }, { name: "sorties" }] }],
+      },
+      community: {
+        name: "Communauté",
+        categories: [
+          {
+            name: "Infos",
+            channels: [
+              { name: "bienvenue", topic: `Commence ici${NO_BREAK_SPACE}: qui on est et comment ça marche.` },
+              { name: "annonces", topic: "Les nouvelles de l’équipe du serveur." },
+            ],
+          },
+          { name: "Communauté", channels: [{ name: "général" }, { name: "présentations" }, { name: "entraide" }] },
+        ],
+      },
+      studyGroup: {
+        name: "Groupe d’étude",
+        categories: [
+          { name: "Infos", channels: [{ name: "annonces" }] },
+          { name: "Études", channels: [{ name: "général" }, { name: "questions" }, { name: "ressources" }, { name: "planning" }] },
+        ],
+      },
+      gaming: {
+        name: "Jeux vidéo",
+        categories: [
+          { name: "Salons textuels", channels: [{ name: "général" }, { name: "clips" }, { name: "recherche de groupe" }] },
+        ],
+      },
+      blank: {
+        name: "Vierge",
+        categories: [{ name: "Salons textuels", channels: [{ name: "général" }] }],
+      },
+    },
   },
 
   createChannel: {

@@ -108,3 +108,23 @@ export function placementInPercent(crop: CropSquare, picture: PictureSize): { le
     width: (picture.width / crop.size) * 100,
   };
 }
+
+/**
+ * The picture's first frame as a still object URL (revoke it when done), and its size in its own
+ * pixels, EXIF orientation applied, as the instance measures it. Rejects what the browser cannot
+ * decode. Still, because a server icon rests still in the strip (DESIGN.md §5.2).
+ */
+export async function stillPictureOf(source: Blob): Promise<{ url: string; picture: PictureSize }> {
+  const bitmap = await createImageBitmap(source);
+  const picture = { width: bitmap.width, height: bitmap.height };
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve));
+  if (!blob) {
+    throw new Error("the first frame could not be drawn");
+  }
+  return { url: URL.createObjectURL(blob), picture };
+}
