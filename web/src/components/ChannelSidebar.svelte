@@ -2,9 +2,11 @@
   import { SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
-  import type { MellowClient } from "../lib/client.svelte";
+  import { type ChannelSection, channelSections } from "../lib/channels";
+  import { type MellowClient, describeError } from "../lib/client.svelte";
   import {
     type Channel,
+    type ChannelPlacement,
     type DirectMessageChannel,
     type Guild,
     Permission,
@@ -15,10 +17,25 @@
   } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
-  import { visibleChannelSections } from "./channel-settings";
+  import { channelDragSource } from "./channel-drag";
+  import {
+    type ChannelDrop,
+    type ListedBox,
+    categoryDropAt,
+    categoryStepIndex,
+    channelDropAt,
+    channelStepDestination,
+    isSameOrder,
+    placementsOf,
+    sectionsFromPlacements,
+    withCategoryMoved,
+    withChannelMoved,
+  } from "./channel-order";
+  import { canManageChannel, visibleChannelSections } from "./channel-settings";
   import { contextMenuTrigger } from "./context-menu-trigger";
   import {
     type ServerMenuAction,
+    categoryMenuActions,
     channelMenuActions,
     copyIdentifier,
     groupMenuActions,
@@ -34,13 +51,13 @@
     otherParticipants,
     participantCount,
   } from "./group-conversations";
-  import ContextMenu from "./ContextMenu.svelte";
+  import ContextMenu, { type ContextMenuOutcome } from "./ContextMenu.svelte";
   import GroupConfirmDialog from "./GroupConfirmDialog.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import MentionBadge from "./MentionBadge.svelte";
   import type { MenuOrigin } from "./menu-placement";
-  import { channelSections } from "./message-rows";
+  import MoveToCategoryDialog from "./MoveToCategoryDialog.svelte";
   import PersonContextMenu from "./PersonContextMenu.svelte";
   import RenameGroupDialog from "./RenameGroupDialog.svelte";
   import { lengthTokenInPixels } from "./tokens";
@@ -84,6 +101,282 @@
   function canEditChannel(channel: Channel): boolean {
     return visibleChannelSections(channel, client.myChannelPermissions(channel.id)).length > 0;
   }
+
+  // --- Order: a pending move, the drag, the menus' moves (DESIGN.md §5.3) ------------------------
+
+  /**
+   * How long an agreed order waits for the gateway's `GUILD_CREATE` before the instance's order
+   * shows again: a fallback for an echo that never comes (a dropped connection resyncs anyway).
+   */
+  const PENDING_ORDER_ECHO_TIMEOUT_MILLISECONDS = 5_000;
+
+  interface PendingOrder {
+    readonly guildId: Snowflake;
+    readonly placements: readonly ChannelPlacement[];
+    /** The guild's channels when the instance agreed: the next snapshot replaces them. */
+    readonly answeredChannels: readonly Channel[] | null;
+  }
+
+  /** The order sent and not yet echoed, shown meanwhile so a drop does not snap back. */
+  let pendingOrder = $state.raw<PendingOrder | null>(null);
+  let isReordering = $state(false);
+  let reorderError = $state("");
+  const instanceSections = $derived(guild ? channelSections(guild) : []);
+  const sections = $derived.by(() => {
+    const pending = pendingOrder;
+    if (!guild || pending === null || pending.guildId !== guild.id) {
+      return instanceSections;
+    }
+    return sectionsFromPlacements(guild.channels, pending.placements) ?? instanceSections;
+  });
+  const canReorderNow = $derived(canCreateChannels && !isReordering);
+
+  $effect(() => {
+    const pending = pendingOrder;
+    if (pending === null || guild?.id !== pending.guildId) {
+      return;
+    }
+    const isEchoed = isSameOrder(placementsOf(instanceSections), pending.placements);
+    const isReplaced = pending.answeredChannels !== null && guild.channels !== pending.answeredChannels;
+    if (isEchoed || isReplaced) {
+      pendingOrder = null;
+    }
+  });
+
+  /** Sends the whole new order; resolves to the error to show, or null. */
+  async function applyOrder(guildId: Snowflake, next: readonly ChannelSection[], failureSummary: string): Promise<string | null> {
+    const placements = placementsOf(next);
+    const order: PendingOrder = { guildId, placements, answeredChannels: null };
+    pendingOrder = order;
+    isReordering = true;
+    reorderError = "";
+    try {
+      await client.reorderChannels(guildId, placements);
+      if (pendingOrder === order) {
+        const answered: PendingOrder = {
+          ...order,
+          answeredChannels: client.guilds.find((candidate) => candidate.id === guildId)?.channels ?? null,
+        };
+        pendingOrder = answered;
+        setTimeout(() => {
+          if (pendingOrder === answered) {
+            pendingOrder = null;
+          }
+        }, PENDING_ORDER_ECHO_TIMEOUT_MILLISECONDS);
+      }
+      return null;
+    } catch (error) {
+      if (pendingOrder === order) {
+        pendingOrder = null;
+      }
+      return describeError(error, failureSummary);
+    } finally {
+      isReordering = false;
+    }
+  }
+
+  async function menuOutcome(next: ChannelSection[] | null, failureSummary: string, done: string): Promise<ContextMenuOutcome> {
+    if (!guild || next === null) {
+      return { announcement: "" };
+    }
+    const problem = await applyOrder(guild.id, next, failureSummary);
+    return problem === null ? { announcement: done } : { error: problem };
+  }
+
+  function moveChannelStep(channel: Channel, step: -1 | 1): Promise<ContextMenuOutcome> {
+    const destination = channelStepDestination(sections, channel.id, step);
+    return menuOutcome(
+      destination && withChannelMoved(sections, channel.id, destination),
+      strings.channelOrder.channelMoveFailed,
+      step === -1 ? strings.channelOrder.channelMovedUp(channel.name) : strings.channelOrder.channelMovedDown(channel.name),
+    );
+  }
+
+  function moveCategoryStep(category: Channel, step: -1 | 1): Promise<ContextMenuOutcome> {
+    const index = categoryStepIndex(sections, category.id, step);
+    return menuOutcome(
+      index === null ? null : withCategoryMoved(sections, category.id, index),
+      strings.channelOrder.categoryMoveFailed,
+      step === -1 ? strings.channelOrder.categoryMovedUp(category.name) : strings.channelOrder.categoryMovedDown(category.name),
+    );
+  }
+
+  function channelMovedSentence(channel: Channel, categoryId: Snowflake | null): string {
+    const category = sections.find((section) => section.category?.id === categoryId)?.category;
+    return category ? strings.channelOrder.channelMovedTo(channel.name, category.name) : strings.channelOrder.channelMovedOut(channel.name);
+  }
+
+  /** "Move to category…": to the end of the one chosen. */
+  async function moveChannelTo(channel: Channel, categoryId: Snowflake | null): Promise<string | null> {
+    const section = sections.find((candidate) => (candidate.category?.id ?? null) === categoryId);
+    const next = withChannelMoved(sections, channel.id, { categoryId, index: section?.channels.length ?? 0 });
+    if (!guild || next === null) {
+      return null;
+    }
+    const sentence = channelMovedSentence(channel, categoryId);
+    const problem = await applyOrder(guild.id, next, strings.channelOrder.channelMoveFailed);
+    if (problem === null) {
+      announcement = sentence;
+    }
+    return problem;
+  }
+
+  let movingChannel = $state<Channel | null>(null);
+
+  function focusListed(id: Snowflake) {
+    list?.querySelector<HTMLElement>(`[data-order-id="${id}"] button`)?.focus();
+  }
+
+  // The drag: what is carried, where it would land, and the list scrolling under it.
+  interface Carried {
+    readonly kind: "channel" | "category";
+    readonly id: Snowflake;
+    readonly name: string;
+    readonly mayChangeCategory: boolean;
+    /** Where the pointer grabbed it, from its top. */
+    readonly grabOffset: number;
+    readonly left: number;
+    readonly width: number;
+    readonly height: number;
+  }
+
+  let list = $state<HTMLElement | null>(null);
+  let carried = $state.raw<Carried | null>(null);
+  /** The pointer's height in the list's scrolled content. */
+  let carriedY = $state(0);
+  let channelDrop = $state.raw<ChannelDrop | null>(null);
+  let categoryDrop = $state.raw<{ readonly index: number; readonly y: number } | null>(null);
+  const dropLineY = $derived(
+    carried?.kind === "channel"
+      ? channelDrop?.indicator.kind === "line"
+        ? channelDrop.indicator.y
+        : null
+      : (categoryDrop?.y ?? null),
+  );
+  const dropCategoryId = $derived(channelDrop?.indicator.kind === "category" ? channelDrop.indicator.id : null);
+  let pointerClientY = 0;
+  let autoScrollSpeed = 0;
+  let autoScrollFrame: number | null = null;
+
+  function contentY(clientY: number): number {
+    return list ? clientY - list.getBoundingClientRect().top + list.scrollTop : 0;
+  }
+
+  function listedBoxes(): ListedBox[] {
+    if (!list) {
+      return [];
+    }
+    const top = list.getBoundingClientRect().top - list.scrollTop;
+    return [...list.querySelectorAll<HTMLElement>("[data-order-id]")].map((element) => {
+      const bounds = element.getBoundingClientRect();
+      return {
+        kind: element.dataset.orderKind === "category" ? "category" : "channel",
+        id: element.dataset.orderId ?? "",
+        top: bounds.top - top,
+        bottom: bounds.bottom - top,
+      };
+    });
+  }
+
+  function updateDrop() {
+    if (!carried) {
+      return;
+    }
+    carriedY = contentY(pointerClientY);
+    if (carried.kind === "channel") {
+      channelDrop = channelDropAt(sections, listedBoxes(), carried.id, carriedY, carried.mayChangeCategory);
+    } else {
+      categoryDrop = categoryDropAt(sections, listedBoxes(), carried.id, carriedY);
+    }
+  }
+
+  function scrollUnderCarriedRow() {
+    autoScrollFrame = null;
+    if (!carried || !list || autoScrollSpeed === 0) {
+      return;
+    }
+    list.scrollTop += autoScrollSpeed;
+    updateDrop();
+    autoScrollFrame = requestAnimationFrame(scrollUnderCarriedRow);
+  }
+
+  function dragHandlers(kind: Carried["kind"], item: Channel, mayChangeCategory: boolean) {
+    return {
+      canStart: () => canReorderNow,
+      onstart: (_x: number, y: number, source: HTMLElement) => {
+        const bounds = source.getBoundingClientRect();
+        const listLeft = list?.getBoundingClientRect().left ?? 0;
+        rowMenu?.close();
+        reorderError = "";
+        carried = {
+          kind,
+          id: item.id,
+          name: item.name,
+          mayChangeCategory,
+          grabOffset: y - bounds.top,
+          left: bounds.left - listLeft,
+          width: bounds.width,
+          height: bounds.height,
+        };
+      },
+      onmove: (_x: number, y: number) => {
+        pointerClientY = y;
+        updateDrop();
+        if (!list) {
+          return;
+        }
+        const bounds = list.getBoundingClientRect();
+        const edge = lengthTokenInPixels("component-channel-drag-autoscroll-edge");
+        const step = lengthTokenInPixels("component-channel-drag-autoscroll-step");
+        const nearness = (distance: number) => Math.min(1, Math.max(0, 1 - distance / edge));
+        autoScrollSpeed = step * (nearness(bounds.bottom - y) - nearness(y - bounds.top));
+        if (autoScrollSpeed !== 0 && autoScrollFrame === null) {
+          autoScrollFrame = requestAnimationFrame(scrollUnderCarriedRow);
+        }
+      },
+      onend: (isDropped: boolean) => void drop(isDropped),
+    };
+  }
+
+  async function drop(isDropped: boolean) {
+    const item = carried;
+    const target = channelDrop;
+    const categoryTarget = categoryDrop;
+    carried = null;
+    channelDrop = null;
+    categoryDrop = null;
+    autoScrollSpeed = 0;
+    if (autoScrollFrame !== null) {
+      cancelAnimationFrame(autoScrollFrame);
+      autoScrollFrame = null;
+    }
+    if (!isDropped || !item || !guild) {
+      return;
+    }
+    const guildId = guild.id;
+    let next: ChannelSection[] | null = null;
+    let sentence = "";
+    let failure: string = strings.channelOrder.channelMoveFailed;
+    if (item.kind === "channel" && target) {
+      const channel = sections.flatMap((section) => section.channels).find((candidate) => candidate.id === item.id);
+      next = withChannelMoved(sections, item.id, target.destination);
+      sentence = channel ? channelMovedSentence(channel, target.destination.categoryId) : "";
+    } else if (item.kind === "category" && categoryTarget) {
+      next = withCategoryMoved(sections, item.id, categoryTarget.index);
+      sentence = strings.channelOrder.categoryMoved(item.name);
+      failure = strings.channelOrder.categoryMoveFailed;
+    }
+    if (next === null) {
+      return;
+    }
+    const problem = await applyOrder(guildId, next, failure);
+    if (problem === null) {
+      announcement = sentence;
+    } else {
+      reorderError = problem;
+    }
+  }
+
   /** Icons that failed to load show the # glyph instead. */
   const failedIconIds = new SvelteSet<Snowflake>();
 
@@ -109,6 +402,7 @@
   let personMenu = $state<PersonContextMenu | null>(null);
   let rowMenuTarget = $state<
     | { kind: "channel"; channel: Channel; invoker: HTMLElement }
+    | { kind: "category"; category: Channel; invoker: HTMLElement }
     | { kind: "group"; group: DirectMessageChannel; invoker: HTMLElement }
     | null
   >(null);
@@ -118,8 +412,8 @@
   $effect(() => {
     const target = rowMenuTarget;
     const isGone =
-      target?.kind === "channel"
-        ? client.myChannelPermissions(target.channel.id) === null
+      target?.kind === "channel" || target?.kind === "category"
+        ? client.myChannelPermissions(target.kind === "channel" ? target.channel.id : target.category.id) === null
         : target?.kind === "group" && !client.conversations.some((conversation) => conversation.id === target.group.id);
     if (isGone) {
       rowMenu?.close();
@@ -129,10 +423,39 @@
     const target = rowMenuTarget;
     if (target?.kind === "channel") {
       const { channel } = target;
-      return menuEntries(channelMenuActions({ canEditChannel: canEditChannel(channel) }), (action) =>
-        action === "edit-channel"
-          ? { onselect: () => oneditchannel(channel) }
-          : { onselectAndWait: () => copyIdentifier(channel.id, strings.contextMenu.channelIdCopied) },
+      const facts = {
+        canEditChannel: canEditChannel(channel),
+        canMoveUp: canReorderNow && channelStepDestination(sections, channel.id, -1) !== null,
+        canMoveDown: canReorderNow && channelStepDestination(sections, channel.id, 1) !== null,
+        canMoveToCategory:
+          canReorderNow &&
+          canManageChannel(client.myChannelPermissions(channel.id)) &&
+          sections.some((section) => section.category !== null),
+      };
+      return menuEntries(channelMenuActions(facts), (action) => {
+        switch (action) {
+          case "edit-channel":
+            return { onselect: () => oneditchannel(channel) };
+          case "move-up":
+          case "move-down":
+            return { onselectAndWait: () => moveChannelStep(channel, action === "move-up" ? -1 : 1) };
+          case "move-to-category":
+            return { onselect: () => (movingChannel = channel) };
+          case "copy-channel-id":
+            return { onselectAndWait: () => copyIdentifier(channel.id, strings.contextMenu.channelIdCopied) };
+        }
+      });
+    }
+    if (target?.kind === "category") {
+      const { category } = target;
+      const facts = {
+        canMoveUp: canReorderNow && categoryStepIndex(sections, category.id, -1) !== null,
+        canMoveDown: canReorderNow && categoryStepIndex(sections, category.id, 1) !== null,
+      };
+      return menuEntries(categoryMenuActions(facts), (action) =>
+        action === "copy-category-id"
+          ? { onselectAndWait: () => copyIdentifier(category.id, strings.contextMenu.categoryIdCopied) }
+          : { onselectAndWait: () => moveCategoryStep(category, action === "move-up" ? -1 : 1) },
       );
     }
     if (target?.kind === "group") {
@@ -150,7 +473,19 @@
   });
 
   function openChannelMenu(channel: Channel, origin: MenuOrigin, invoker: HTMLElement): boolean {
+    if (carried) {
+      return false;
+    }
     rowMenuTarget = { kind: "channel", channel, invoker };
+    rowMenu?.open(origin, invoker);
+    return true;
+  }
+
+  function openCategoryMenu(category: Channel, origin: MenuOrigin, invoker: HTMLElement): boolean {
+    if (carried) {
+      return false;
+    }
+    rowMenuTarget = { kind: "category", category, invoker };
     rowMenu?.open(origin, invoker);
     return true;
   }
@@ -282,7 +617,9 @@
     bind:this={rowMenu}
     label={rowMenuTarget?.kind === "channel"
       ? strings.contextMenu.actionsFor(`#${rowMenuTarget.channel.name}`)
-      : rowMenuTarget?.kind === "group"
+      : rowMenuTarget?.kind === "category"
+        ? strings.contextMenu.actionsFor(rowMenuTarget.category.name)
+        : rowMenuTarget?.kind === "group"
         ? strings.contextMenu.actionsFor(conversationDisplayName(rowMenuTarget.group, user?.id ?? null))
         : strings.sidebar.directMessages}
     entries={rowMenuEntries}
@@ -290,10 +627,30 @@
   />
   <PersonContextMenu {client} bind:this={personMenu} onopenedconversation={onnavigate} />
   <p class="sr-only" aria-live="polite">{announcement}</p>
+  <!-- A refused move: the old order is back, and this says why until closed or the next move. -->
+  <div role="alert" class="contents">
+    {#if reorderError}
+      <p class="mt-xs me-(--mw-component-channel-row-margin-inline) flex items-start gap-xs ps-(--mw-component-channel-row-padding-inline) type-body-sm text-text-danger">
+        <Icon name="warning-circle" class="size-(--mw-component-channel-row-trailing-icon-size) shrink-0" />
+        <span class="min-w-0 flex-1">{reorderError}</span>
+        <IconButton
+          icon="x"
+          label={strings.common.close}
+          class="size-(--mw-component-channel-row-settings-button-size) text-(--mw-component-channel-row-settings-icon) hover:text-(--mw-component-channel-row-settings-icon-hover)"
+          iconClass="size-(--mw-component-channel-row-settings-icon-size)"
+          onclick={() => (reorderError = "")}
+        />
+      </p>
+    {/if}
+  </div>
 
   <nav
+    bind:this={list}
     aria-label={guild ? strings.sidebar.channelsIn(guild.name) : strings.sidebar.directMessages}
-    class="-ms-(--mw-component-channel-row-unread-pill-offset) min-h-0 flex-1 overflow-y-auto ps-(--mw-component-channel-row-unread-pill-offset) pb-xs [scrollbar-width:thin]"
+    class={[
+      "relative -ms-(--mw-component-channel-row-unread-pill-offset) min-h-0 flex-1 overflow-y-auto ps-(--mw-component-channel-row-unread-pill-offset) pb-xs [scrollbar-width:thin]",
+      carried && "select-none",
+    ]}
   >
     <!-- The negative margin lets the unread pills sit in the strip's margin without being clipped. -->
     {#if guild}
@@ -381,7 +738,6 @@
 </div>
 
 {#snippet guildChannels(guild: Guild)}
-  {@const sections = channelSections(guild)}
   {#if sections.every((section) => section.channels.length === 0)}
     <div class="mt-xs me-(--mw-component-channel-row-margin-inline) flex flex-col items-start gap-xs px-(--mw-component-channel-row-padding-inline)">
       {#if canCreateChannels}
@@ -398,12 +754,28 @@
   {#each sections as section (section.category?.id ?? "uncategorised")}
     {@const category = section.category}
     {@const isCollapsed = category !== null && collapsedCategoryIds.has(category.id)}
+    {@const isCarriedCategory = category !== null && carried?.kind === "category" && carried.id === category.id}
     {#if category}
-      <h3 class="mt-(--mw-component-category-margin-top) flex items-center gap-2xs pe-xs">
+      {@const isDropTarget = dropCategoryId === category.id}
+      <!-- Right-click, long press or Shift+F10: the category's menu; a manager drags it from here. -->
+      <h3
+        data-order-kind="category"
+        data-order-id={category.id}
+        class={[
+          "mt-(--mw-component-category-margin-top) me-(--mw-component-channel-row-margin-inline) flex items-center gap-2xs rounded-(--mw-component-channel-row-radius)",
+          isDropTarget && "bg-(--mw-component-channel-drag-target-background)",
+          isCarriedCategory && "cursor-grabbing opacity-(--mw-component-channel-drag-source-opacity)",
+        ]}
+        {@attach contextMenuTrigger((origin, invoker) => openCategoryMenu(category, origin, invoker))}
+        {@attach canCreateChannels && channelDragSource(dragHandlers("category", category, true))}
+      >
         <button
           type="button"
           aria-expanded={!isCollapsed}
-          class="flex h-(--mw-component-category-height) min-w-0 flex-1 items-center gap-2xs rounded-xs type-category text-(--mw-component-category-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:text-(--mw-component-category-text-hover) focus-visible:focus-ring-inset pointer-coarse:h-(--mw-size-hit-web-min)"
+          class={[
+            "flex h-(--mw-component-category-height) min-w-0 flex-1 items-center gap-2xs rounded-xs type-category transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:text-(--mw-component-category-text-hover) focus-visible:focus-ring-inset pointer-coarse:h-(--mw-size-hit-web-min)",
+            isDropTarget ? "text-(--mw-component-channel-drag-target-text)" : "text-(--mw-component-category-text)",
+          ]}
           onclick={() => toggleCategory(category.id)}
           onkeydown={(event) => {
             if ((event.key === "ArrowLeft" && !isCollapsed) || (event.key === "ArrowRight" && isCollapsed)) {
@@ -426,7 +798,7 @@
         {/if}
       </h3>
     {/if}
-    <ul>
+    <ul class={[isCarriedCategory && "opacity-(--mw-component-channel-drag-source-opacity)"]}>
       {#each section.channels as channel (channel.id)}
         {@const isSelected = channel.id === client.selectedChannelId}
         {@const hasUnread = !isSelected && client.hasUnread(channel.id)}
@@ -438,8 +810,17 @@
         {#if !isCollapsed || isSelected || hasUnread}
           <!-- The gear sits inside the row's menu area: right-click on either opens the channel's menu. -->
           <li
-            class="group/row relative mt-(--mw-component-channel-row-gap) me-(--mw-component-channel-row-margin-inline)"
+            data-order-kind="channel"
+            data-order-id={channel.id}
+            class={[
+              "group/row relative mt-(--mw-component-channel-row-gap) me-(--mw-component-channel-row-margin-inline)",
+              carried?.kind === "channel" &&
+                carried.id === channel.id &&
+                "cursor-grabbing opacity-(--mw-component-channel-drag-source-opacity)",
+            ]}
             {@attach contextMenuTrigger((origin, invoker) => openChannelMenu(channel, origin, invoker))}
+            {@attach canCreateChannels &&
+              channelDragSource(dragHandlers("channel", channel, canManageChannel(client.myChannelPermissions(channel.id))))}
           >
             {#if hasUnread}{@render unreadPill()}{/if}
             <button
@@ -507,7 +888,50 @@
       {/each}
     </ul>
   {/each}
+  {#if carried}
+    {#if dropLineY !== null}
+      <!-- Where the carried row lands: apricot, "you, now" (DESIGN.md §5.3). -->
+      <div
+        aria-hidden="true"
+        class="pointer-events-none absolute start-(--mw-component-channel-row-unread-pill-offset) end-(--mw-component-channel-row-margin-inline) z-10 flex -translate-y-1/2 items-center"
+        style:top="{dropLineY}px"
+      >
+        <span
+          class="size-(--mw-component-channel-drag-indicator-dot-size) shrink-0 rounded-full border-(length:--mw-component-channel-drag-indicator-height) border-(--mw-component-channel-drag-indicator) bg-(--mw-component-navigator-background)"
+        ></span>
+        <span class="h-(--mw-component-channel-drag-indicator-height) flex-1 rounded-full bg-(--mw-component-channel-drag-indicator)"></span>
+      </div>
+    {/if}
+    <!-- The carried row, lifted into the floating layer under the pointer. -->
+    <div
+      aria-hidden="true"
+      class="channel-drag-ghost pointer-events-none absolute z-20 flex items-center gap-(--mw-component-channel-row-icon-gap) rounded-(--mw-component-channel-drag-ghost-radius) bg-(--mw-component-channel-drag-ghost-background) px-(--mw-component-channel-row-padding-inline) text-(--mw-component-channel-drag-ghost-text) shadow-high"
+      style:top="{carriedY - carried.grabOffset}px"
+      style:left="{carried.left}px"
+      style:width="{carried.width}px"
+      style:height="{carried.height}px"
+    >
+      {#if carried.kind === "channel"}
+        <Icon name="hash" class="size-(--mw-component-channel-row-icon-size) shrink-0" />
+        <span class="min-w-0 truncate type-channel-name">{carried.name}</span>
+      {:else}
+        <Icon name="caret-down" class="size-(--mw-component-category-chevron-size) shrink-0" />
+        <span class="min-w-0 truncate type-category">{carried.name}</span>
+      {/if}
+    </div>
+  {/if}
 {/snippet}
+
+{#if movingChannel}
+  {@const channel = movingChannel}
+  <MoveToCategoryDialog
+    {channel}
+    {sections}
+    onmove={(categoryId) => moveChannelTo(channel, categoryId)}
+    onclose={() => (movingChannel = null)}
+    fallbackFocus={() => focusListed(channel.id)}
+  />
+{/if}
 
 {#if groupDialog?.kind === "rename"}
   <RenameGroupDialog
@@ -527,3 +951,17 @@
     fallbackFocus={() => invoker.isConnected && invoker.focus()}
   />
 {/if}
+
+<style>
+  /* The one motion of a drag: the row lifts (DESIGN.md §5.3); reduced motion zeroes the duration. */
+  .channel-drag-ghost {
+    transform: scale(var(--mw-component-channel-drag-lift-scale));
+    animation: channel-drag-lift var(--mw-motion-duration-fast) var(--mw-motion-easing-settle) both;
+  }
+  @keyframes channel-drag-lift {
+    from {
+      transform: scale(1);
+      box-shadow: none;
+    }
+  }
+</style>

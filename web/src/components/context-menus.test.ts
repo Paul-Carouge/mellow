@@ -4,6 +4,7 @@ import {
   type MenuAction,
   type MessageMenuFacts,
   type PersonMenuFacts,
+  categoryMenuActions,
   channelMenuActions,
   groupMenuActions,
   menuItemLook,
@@ -133,8 +134,27 @@ describe("personMenuActions", () => {
 
 describe("channelMenuActions", () => {
   it("offers Edit channel only with a settings page to show", () => {
-    expect(channelMenuActions({ canEditChannel: true })).toEqual(["edit-channel", "separator", "copy-channel-id"]);
-    expect(channelMenuActions({ canEditChannel: false })).toEqual(["copy-channel-id"]);
+    const reader = { canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false };
+    expect(channelMenuActions({ ...reader, canEditChannel: true })).toEqual(["edit-channel", "separator", "copy-channel-id"]);
+    expect(channelMenuActions(reader)).toEqual(["copy-channel-id"]);
+  });
+
+  it("groups the moves a manager may make between Edit channel and the ID", () => {
+    expect(
+      channelMenuActions({ canEditChannel: true, canMoveUp: false, canMoveDown: true, canMoveToCategory: true }),
+    ).toEqual(["edit-channel", "separator", "move-down", "move-to-category", "separator", "copy-channel-id"]);
+  });
+});
+
+describe("categoryMenuActions", () => {
+  it("offers the moves a manager may make, then the ID", () => {
+    expect(categoryMenuActions({ canMoveUp: true, canMoveDown: true })).toEqual([
+      "move-up",
+      "move-down",
+      "separator",
+      "copy-category-id",
+    ]);
+    expect(categoryMenuActions({ canMoveUp: false, canMoveDown: false })).toEqual(["copy-category-id"]);
   });
 });
 

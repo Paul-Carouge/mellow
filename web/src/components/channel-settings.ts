@@ -44,6 +44,11 @@ export function visibleChannelSections(
   ];
 }
 
+/** Rename, delete, or move to another category: `MANAGE_CHANNELS` held in the channel itself. */
+export function canManageChannel(channelPermissions: PermissionBits | null): boolean {
+  return holdsInChannel(channelPermissions, Permission.MANAGE_CHANNELS);
+}
+
 /** The name as the instance stores it: as typed, trimmed (`normalize_channel_name`). */
 export function channelNameAsSaved(name: string): string {
   return name.trim();

@@ -277,6 +277,22 @@ describe("channelSections", () => {
       ["20", ["21"]],
     ]);
   });
+
+  it("lists a channel of a hidden category with the uncategorised ones, keeping its parent", () => {
+    const hiddenParent = {
+      id: "30",
+      guild_id: "g",
+      kind: "text" as const,
+      name: "30",
+      topic: "",
+      parent_id: "99",
+      position: 2,
+      permission_overwrites: [],
+    };
+    const [section] = channelSections({ channels: [hiddenParent] });
+    expect(section?.category).toBeNull();
+    expect(section?.channels[0]?.parent_id).toBe("99");
+  });
 });
 
 describe("token parsing", () => {

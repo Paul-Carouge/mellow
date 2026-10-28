@@ -12,6 +12,7 @@ export type MenuAction =
   | MessageMenuAction
   | PersonMenuAction
   | ChannelMenuAction
+  | CategoryMenuAction
   | ServerMenuAction
   | GroupMenuAction;
 
@@ -125,11 +126,41 @@ export function personMenuActions(facts: PersonMenuFacts): MenuLine<PersonMenuAc
 
 // --- A channel row ------------------------------------------------------------------------------
 
-export type ChannelMenuAction = "edit-channel" | "copy-channel-id";
+export type ChannelMenuAction = "edit-channel" | "move-up" | "move-down" | "move-to-category" | "copy-channel-id";
 
-/** `canEditChannel`: the reader sees at least one page of its settings. */
-export function channelMenuActions(facts: { readonly canEditChannel: boolean }): MenuLine<ChannelMenuAction>[] {
-  return joinSections<ChannelMenuAction>([[facts.canEditChannel && "edit-channel"], ["copy-channel-id"]]);
+export interface ChannelMenuFacts {
+  /** The reader sees at least one page of its settings. */
+  readonly canEditChannel: boolean;
+  /** `MANAGE_CHANNELS` on the server, the row not first or last of its section, no move in flight. */
+  readonly canMoveUp: boolean;
+  readonly canMoveDown: boolean;
+  /** `MANAGE_CHANNELS` in the channel too, and somewhere else to go. */
+  readonly canMoveToCategory: boolean;
+}
+
+/** Move up and Move down are the single-pointer and keyboard path for dragging (WCAG 2.2 2.5.7). */
+export function channelMenuActions(facts: ChannelMenuFacts): MenuLine<ChannelMenuAction>[] {
+  return joinSections<ChannelMenuAction>([
+    [facts.canEditChannel && "edit-channel"],
+    [facts.canMoveUp && "move-up", facts.canMoveDown && "move-down", facts.canMoveToCategory && "move-to-category"],
+    ["copy-channel-id"],
+  ]);
+}
+
+// --- A category header --------------------------------------------------------------------------
+
+export type CategoryMenuAction = "move-up" | "move-down" | "copy-category-id";
+
+export interface CategoryMenuFacts {
+  readonly canMoveUp: boolean;
+  readonly canMoveDown: boolean;
+}
+
+export function categoryMenuActions(facts: CategoryMenuFacts): MenuLine<CategoryMenuAction>[] {
+  return joinSections<CategoryMenuAction>([
+    [facts.canMoveUp && "move-up", facts.canMoveDown && "move-down"],
+    ["copy-category-id"],
+  ]);
 }
 
 // --- A server (its icon in the strip, or the header's menu) -------------------------------------
@@ -221,6 +252,10 @@ const LOOKS: Record<MenuAction, MenuItemLook> = {
   "remove-friend": { label: strings.friends.removeFriend, icon: "user-minus", tone: "danger" },
   block: { label: strings.friends.block, icon: "prohibit", tone: "danger" },
   "edit-channel": { label: strings.contextMenu.editChannel, icon: "gear-six", tone: "normal" },
+  "move-up": { label: strings.contextMenu.moveUp, icon: "caret-up", tone: "normal" },
+  "move-down": { label: strings.contextMenu.moveDown, icon: "caret-down", tone: "normal" },
+  "move-to-category": { label: strings.contextMenu.moveToCategory, icon: "list", tone: "normal" },
+  "copy-category-id": { label: strings.contextMenu.copyCategoryId, icon: "copy", tone: "normal" },
   "invite-people": { label: strings.sidebar.invitePeople, icon: "user-plus", tone: "accent" },
   "server-settings": { label: strings.sidebar.serverSettings, icon: "gear-six", tone: "normal" },
   "create-channel": { label: strings.sidebar.createChannel, icon: "plus-circle", tone: "normal" },
