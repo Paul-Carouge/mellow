@@ -214,7 +214,11 @@
       collapsedCategoryIds.delete(categoryId);
     }
     const section = sections.find((candidate) => (candidate.category?.id ?? null) === categoryId);
-    const next = withChannelMoved(sections, channel.id, { categoryId, index: section?.channels.length ?? 0 });
+    const next = withChannelMoved(sections, channel.id, {
+      categoryId,
+      index: section?.channels.length ?? 0,
+      leavesHiddenCategory: true,
+    });
     if (!guild || next === null) {
       return null;
     }

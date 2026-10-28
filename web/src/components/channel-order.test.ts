@@ -101,6 +101,15 @@ describe("withChannelMoved", () => {
       { id: "open", parent_id: null },
     ]);
   });
+
+  it("takes a hidden category's channel out of it when No category is chosen on purpose", () => {
+    const sections = channelSections({ channels: [channel("open", "text", 0), channel("secret", "text", 1, "hidden")] });
+    const moved = withChannelMoved(sections, "secret", { categoryId: null, index: 2, leavesHiddenCategory: true });
+    expect(placementsOf(moved ?? [])).toEqual([
+      { id: "open", parent_id: null },
+      { id: "secret", parent_id: null },
+    ]);
+  });
 });
 
 describe("withCategoryMoved", () => {

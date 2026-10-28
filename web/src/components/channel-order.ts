@@ -10,6 +10,11 @@ import type { Channel, ChannelPlacement, Snowflake } from "../lib/protocol";
 export interface ChannelDestination {
   readonly categoryId: Snowflake | null;
   readonly index: number;
+  /**
+   * "No category" chosen on purpose ("Move to category…"): a channel kept in a category hidden
+   * from the reader leaves it too. A drag among the uncategorised rows keeps it there.
+   */
+  readonly leavesHiddenCategory?: boolean;
 }
 
 /**
@@ -113,7 +118,8 @@ export function withChannelMoved(
   const sourceIndex = source.channels.indexOf(channel);
   const index = isSameSection && sourceIndex < destination.index ? destination.index - 1 : destination.index;
   // Out of a category: none. Within the uncategorised rows: its own parent (a hidden category's).
-  const parentId = destination.categoryId ?? (isSameSection ? channel.parent_id : null);
+  const parentId =
+    destination.categoryId ?? (isSameSection && !destination.leavesHiddenCategory ? channel.parent_id : null);
   const moved = { ...channel, parent_id: parentId };
   const withoutChannel = sections.map((section) => ({
     category: section.category,
