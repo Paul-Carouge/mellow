@@ -4,6 +4,9 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Changed
+- Only instance administrators (accounts created with `mellow-server admin create-user --administrator`) can create servers, unless `mellow.toml` says `guild_creation = "everyone"`. **If other accounts on your instance should keep creating servers, add that line before updating.** Existing servers are not affected, and everyone can still join servers with an invite. In the web client, "Add a server" then offers only joining.
+
 ## [0.16.0] - 2026-10-28
 Channels, categories and server creation. No database migration.
 
