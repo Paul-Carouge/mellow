@@ -1115,7 +1115,7 @@ Desktop, until the More menu exists: your own messages show Edit, Reply, Copy te
 | Deleted by a moderator | Removed; the moderation log keeps the record |
 | Pending | Text in `text.muted`; after `motion.delay.pending-label` a "Sending…" label appears |
 | Queued offline | `text.muted`, label "Will send when you're back online", with "Cancel" |
-| Failed | `text.danger` icon and "Not sent." followed by "Retry" and "Delete"; the text stays intact so nothing is lost |
+| Failed | `text.danger` icon and "Not sent." followed by the instance's reason when it gave one ("The instance refused what was entered."), then "Retry" and "Delete"; the text stays intact so nothing is lost |
 
 #### Attachments
 
@@ -1160,6 +1160,7 @@ Layout: a `surface.input` field with `radius.lg` whose base row is `size.dock.he
   - Pasting files into the field attaches them; pasted text stays text.
   - Each file uploads at once into the tray, inside the composer box above the field, separated by `composer.tray-divider` and scrolling sideways when full. Items (`composer.tray-item-*`, 160 px, `surface.sidebar`): a 4:3 preview (the image, contained, or the apricot file glyph), the name middle-truncated, then "Uploading…" (preview at half opacity) or the size once uploaded. A failed upload keeps its item with a 1 px `text.danger` outline, a warning icon and the reason; it is not sent. Each item has a Remove button (trash, the hover-bar button) labelled "Remove photo.png"; removing returns focus to the field. Upload results are announced politely ("photo.png uploaded.", or the error).
   - At most 10 files per message; extra files are not added and "You can attach up to 10 files to one message." appears in the action error line.
+  - Within 500 characters of the instance's limit (4 000 characters or 8 000 bytes), a counter shows the characters left at the end of the composer row, in the placeholder colour, then in `text.danger` and negative once over; screen readers hear it as "120 characters left" / "419 characters too many" through the field's description. Over the limit Enter does not send, the phone send button is dimmed, and the error line says "Messages are at most 4,000 characters. Split this one into several messages." until the text fits again.
   - Send works with text, files, or both. While a file is still uploading, Enter does not send and the error line says "Your files are still uploading. Send again once they're done."; the phone send button is dimmed. Sending clears the tray; failed items are dropped with it.
   - Each channel keeps its own tray, like its draft.
 - Length: a counter appears at 90 % of the instance limit ("3,620 / 4,000"); beyond the limit it turns `text.danger`, sending is blocked and the field's accessible description says "Message is 120 characters too long."
@@ -1603,6 +1604,7 @@ Examples:
 | Message failed | "Not sent. Retry · Delete" | « Non envoyé. Réessayer · Supprimer » |
 | Upload too large | "photo.heic is 48 MB. chat.example.org accepts files up to 25 MB." Until the instance tells its limit, the web client says "photo.heic is 48 MB, more than chat.example.org accepts." | « photo.heic fait 48 Mo. chat.example.org accepte les fichiers jusqu’à 25 Mo. » |
 | Too many files | "You can attach up to 10 files to one message." | « Tu peux joindre jusqu’à 10 fichiers par message. » |
+| Message too long | "Messages are at most 4,000 characters. Split this one into several messages." | « Un message fait au plus 4 000 caractères. Coupe celui-ci en plusieurs messages. » |
 | Sending while uploading | "Your files are still uploading. Send again once they're done." | « Tes fichiers sont encore en cours d’envoi. Renvoie le message quand ils sont prêts. » |
 | Drop overlay | "Drop to attach to #general" · "You can add a message before sending." | « Dépose pour joindre à #général » · « Tu pourras ajouter un message avant l’envoi. » |
 | Connection lost | "Reconnecting to chat.example.org… Messages you send will wait until you're back." | « Reconnexion à chat.example.org… Les messages que tu envoies partiront dès ton retour. » |
