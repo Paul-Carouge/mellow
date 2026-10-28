@@ -1,7 +1,7 @@
 <script lang="ts">
   import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
-  import type { Channel } from "../lib/protocol";
+  import { type Channel, MAXIMUM_CHANNEL_NAME_LENGTH } from "../lib/protocol";
   import ModalDialog from "./ModalDialog.svelte";
   import TextField from "./TextField.svelte";
 
@@ -52,8 +52,7 @@
   <TextField
     id="create-channel-name"
     label={strings.createChannel.channelName}
-    placeholder={strings.createChannel.placeholder}
-    helper={strings.createChannel.helper}
+    maxlength={MAXIMUM_CHANNEL_NAME_LENGTH}
     leadingIcon="hash"
     autocomplete="off"
     readonly={isBusy}

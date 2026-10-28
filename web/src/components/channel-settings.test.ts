@@ -87,9 +87,9 @@ describe("visibleChannelSections", () => {
 });
 
 describe("channelNameAsSaved", () => {
-  it("lowercases and dashes spaces, as the instance does", () => {
-    expect(channelNameAsSaved("  Off Topic  ")).toBe("off-topic");
-    expect(channelNameAsSaved("Book   club")).toBe("book-club");
+  it("keeps capitals and inner spaces, trimming only the ends, as the instance does", () => {
+    expect(channelNameAsSaved("  Off Topic  ")).toBe("Off Topic");
+    expect(channelNameAsSaved("Book   club")).toBe("Book   club");
     expect(channelNameAsSaved("   ")).toBe("");
   });
 });
@@ -227,7 +227,8 @@ describe("channelOverviewChanges", () => {
 
   it("sends a name as the instance stores it, and nothing once stored", () => {
     const stored = { name: "general", topic: "Hi" };
-    expect(channelOverviewChanges(stored, { name: "Off Topic", topic: null })).toEqual({ name: "off-topic" });
-    expect(channelOverviewChanges(stored, { name: "General ", topic: "Hi " })).toEqual({});
+    expect(channelOverviewChanges(stored, { name: " Off Topic ", topic: null })).toEqual({ name: "Off Topic" });
+    expect(channelOverviewChanges(stored, { name: "General", topic: null })).toEqual({ name: "General" });
+    expect(channelOverviewChanges(stored, { name: "general ", topic: "Hi " })).toEqual({});
   });
 });

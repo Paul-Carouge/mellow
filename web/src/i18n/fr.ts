@@ -398,8 +398,6 @@ export const fr: Catalogue = {
     submit: "Créer le salon",
     creating: "Création…",
     channelName: "Nom du salon",
-    placeholder: "nouveau-salon",
-    helper: "Les noms sont en minuscules, avec des tirets à la place des espaces.",
     failed: "Impossible de créer le salon",
   },
 
@@ -881,7 +879,7 @@ export const fr: Catalogue = {
 
     overview: {
       channelName: "Nom du salon",
-      channelNameHelper: "En minuscules, avec des tirets à la place des espaces. Jusqu’à 100 caractères.",
+      channelNameHelper: "Jusqu’à 100 caractères.",
       topic: "Sujet",
       topicHelper: `Affiché en haut du salon. Jusqu’à 1${NARROW_NO_BREAK_SPACE}024 caractères.`,
       nameRequired: "Donne un nom au salon.",

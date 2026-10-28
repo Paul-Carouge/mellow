@@ -402,8 +402,6 @@ export const en = {
     submit: "Create channel",
     creating: "Creating…",
     channelName: "Channel name",
-    placeholder: "new-channel",
-    helper: "Names are lowercase, with dashes instead of spaces.",
     failed: "Couldn't create the channel",
   },
 
@@ -877,7 +875,7 @@ export const en = {
 
     overview: {
       channelName: "Channel name",
-      channelNameHelper: "Lowercase, with dashes instead of spaces. Up to 100 characters.",
+      channelNameHelper: "Up to 100 characters.",
       topic: "Topic",
       topicHelper: "Shown at the top of the channel. Up to 1,024 characters.",
       nameRequired: "Give the channel a name.",

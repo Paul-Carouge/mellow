@@ -43,7 +43,7 @@
   });
 
   // The stored channel caught up with a field (our save, echoed by the gateway): it shows the
-  // stored value again. The instance lowercases names, dashes their spaces and trims both fields.
+  // stored value again. The instance trims both fields and keeps names as typed otherwise.
   $effect(() => {
     if (drafts.name !== null && channelNameAsSaved(drafts.name) === channel.name) {
       drafts.name = null;

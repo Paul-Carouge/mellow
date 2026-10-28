@@ -44,9 +44,9 @@ export function visibleChannelSections(
   ];
 }
 
-/** The name as the instance stores it: spaces become dashes, lowercase (`normalize_text_channel_name`). */
+/** The name as the instance stores it: as typed, trimmed (`normalize_channel_name`). */
 export function channelNameAsSaved(name: string): string {
-  return name.trim().split(/\s+/u).filter(Boolean).join("-").toLowerCase();
+  return name.trim();
 }
 
 /** Overview fields typed by the member; `null` for a field left as stored. */
