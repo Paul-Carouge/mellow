@@ -104,7 +104,7 @@ describe("server menus per role", () => {
   it("an administrator may do it all and still leave", () => {
     const facts = serverMenuFactsOf(guild(Permission.ADMINISTRATOR), "me");
     expect(facts.canLeave).toBe(true);
-    expect(serverMenuActions(facts, "header")).toEqual(["invite-people", "server-settings", "create-channel", "separator", "leave-server"]);
+    expect(serverMenuActions(facts, "header")).toEqual(["invite-people", "server-settings", "create-channel", "create-category", "separator", "leave-server"]);
   });
 
   it("an unknown user id (not signed in yet) is never the owner", () => {

@@ -1,36 +1,54 @@
 <script lang="ts">
+  import { untrack } from "svelte";
+
   import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
-  import { type Channel, MAXIMUM_CHANNEL_NAME_LENGTH } from "../lib/protocol";
+  import { type Channel, type ChannelKind, MAXIMUM_CHANNEL_NAME_LENGTH, MAXIMUM_CHANNEL_TOPIC_LENGTH } from "../lib/protocol";
+  import ChoiceOption from "./ChoiceOption.svelte";
   import ModalDialog from "./ModalDialog.svelte";
   import TextField from "./TextField.svelte";
 
-  // Discord's "Create channel" dialog, text channels only for now (DESIGN.md §5.3, §8).
+  // Discord's "Create channel" (DESIGN.md §5.3, §8): a text channel or a category, its name kept as
+  // typed, and an optional topic for a text channel. From a category's "+" the channel goes in it,
+  // so there is no type to choose: a category cannot hold another.
   interface Props {
     client: MellowClient;
     /** From a category's "+": the channel goes in it, and the subtitle says so. */
     category?: Channel | null;
+    /** "Create category" in the server menu opens on Category. */
+    initialKind?: ChannelKind;
     onclose: () => void;
     fallbackFocus: () => void;
   }
 
-  let { client, category = null, onclose, fallbackFocus }: Props = $props();
+  let { client, category = null, initialKind = "text", onclose, fallbackFocus }: Props = $props();
 
-  let channelName = $state("");
+  const id = $props.id();
+  let kind = $state<ChannelKind>(untrack(() => (category ? "text" : initialKind)));
+  let name = $state("");
+  let topic = $state("");
   let isBusy = $state(false);
   // Plain: read by the dialog when it closes, after this component stopped updating.
   let hasSucceeded = false;
   let errorMessage = $state("");
 
+  const isCategory = $derived(kind === "category");
+
   async function submit() {
+    const kindToCreate = kind;
     isBusy = true;
     errorMessage = "";
     try {
-      await client.createChannel("text", channelName.trim(), "", category?.id ?? null);
+      await client.createChannel(
+        kindToCreate,
+        name.trim(),
+        kindToCreate === "text" ? topic.trim() : "",
+        kindToCreate === "text" ? (category?.id ?? null) : null,
+      );
       hasSucceeded = true;
       onclose();
     } catch (error) {
-      errorMessage = describeError(error, strings.createChannel.failed);
+      errorMessage = describeError(error, kindToCreate === "category" ? strings.createChannel.failedCategory : strings.createChannel.failed);
     } finally {
       isBusy = false;
     }
@@ -39,24 +57,58 @@
 
 <ModalDialog
   shouldReturnFocusToOpener={() => !hasSucceeded}
-  title={strings.createChannel.title}
+  title={isCategory ? strings.createChannel.titleCategory : strings.createChannel.title}
   subtitle={category ? strings.createChannel.inCategory(category.name) : ""}
   {errorMessage}
   {isBusy}
-  submitLabel={isBusy ? strings.createChannel.creating : strings.createChannel.submit}
-  isSubmitEnabled={!isBusy && channelName.trim() !== ""}
+  submitLabel={isBusy ? strings.createChannel.creating : isCategory ? strings.createChannel.submitCategory : strings.createChannel.submit}
+  isSubmitEnabled={!isBusy && name.trim() !== ""}
   {onclose}
   onsubmit={submit}
   {fallbackFocus}
 >
+  {#if !category}
+    <fieldset class="flex flex-col gap-(--mw-component-choice-list-gap)" disabled={isBusy}>
+      <legend class="mb-(--mw-component-text-field-label-gap) type-category text-(--mw-component-text-field-label-text)">
+        {strings.createChannel.channelType}
+      </legend>
+      <ChoiceOption
+        name="{id}-kind"
+        value="text"
+        bind:group={kind}
+        icon="hash"
+        label={strings.createChannel.textChannel}
+        description={strings.createChannel.textChannelDescription}
+      />
+      <ChoiceOption
+        name="{id}-kind"
+        value="category"
+        bind:group={kind}
+        icon="list"
+        label={strings.createChannel.category}
+        description={strings.createChannel.categoryDescription}
+      />
+    </fieldset>
+  {/if}
   <TextField
-    id="create-channel-name"
-    label={strings.createChannel.channelName}
+    id="{id}-name"
+    label={isCategory ? strings.createChannel.categoryName : strings.createChannel.channelName}
+    leadingIcon={isCategory ? undefined : "hash"}
     maxlength={MAXIMUM_CHANNEL_NAME_LENGTH}
-    leadingIcon="hash"
     autocomplete="off"
     readonly={isBusy}
     data-initial-focus=""
-    bind:value={channelName}
+    bind:value={name}
   />
+  {#if !isCategory}
+    <TextField
+      id="{id}-topic"
+      label={strings.createChannel.topic}
+      helper={strings.createChannel.topicHelper}
+      maxlength={MAXIMUM_CHANNEL_TOPIC_LENGTH}
+      autocomplete="off"
+      readonly={isBusy}
+      bind:value={topic}
+    />
+  {/if}
 </ModalDialog>

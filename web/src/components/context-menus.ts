@@ -134,7 +134,13 @@ export function channelMenuActions(facts: { readonly canEditChannel: boolean }):
 
 // --- A server (its icon in the strip, or the header's menu) -------------------------------------
 
-export type ServerMenuAction = "invite-people" | "server-settings" | "create-channel" | "copy-server-id" | "leave-server";
+export type ServerMenuAction =
+  | "invite-people"
+  | "server-settings"
+  | "create-channel"
+  | "create-category"
+  | "copy-server-id"
+  | "leave-server";
 
 export interface ServerMenuFacts {
   readonly canInvitePeople: boolean;
@@ -161,7 +167,12 @@ export function serverMenuFactsOf(guild: Guild, userId: Snowflake | undefined): 
 export function serverMenuActions(facts: ServerMenuFacts, place: "header" | "strip"): MenuLine<ServerMenuAction>[] {
   return place === "header"
     ? joinSections<ServerMenuAction>([
-        [facts.canInvitePeople && "invite-people", facts.canOpenSettings && "server-settings", facts.canCreateChannels && "create-channel"],
+        [
+          facts.canInvitePeople && "invite-people",
+          facts.canOpenSettings && "server-settings",
+          facts.canCreateChannels && "create-channel",
+          facts.canCreateChannels && "create-category",
+        ],
         [facts.canLeave && "leave-server"],
       ])
     : joinSections<ServerMenuAction>([
@@ -213,6 +224,7 @@ const LOOKS: Record<MenuAction, MenuItemLook> = {
   "invite-people": { label: strings.sidebar.invitePeople, icon: "user-plus", tone: "accent" },
   "server-settings": { label: strings.sidebar.serverSettings, icon: "gear-six", tone: "normal" },
   "create-channel": { label: strings.sidebar.createChannel, icon: "plus-circle", tone: "normal" },
+  "create-category": { label: strings.sidebar.createCategory, icon: "list", tone: "normal" },
   "copy-server-id": { label: strings.contextMenu.copyServerId, icon: "copy", tone: "normal" },
   "leave-server": { label: strings.sidebar.leaveServer, icon: "sign-out", tone: "danger" },
   "rename-group": { label: strings.groups.rename, icon: "pencil-simple", tone: "normal" },

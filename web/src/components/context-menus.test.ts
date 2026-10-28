@@ -141,11 +141,12 @@ describe("channelMenuActions", () => {
 describe("serverMenuActions", () => {
   const everything = { canInvitePeople: true, canOpenSettings: true, canCreateChannels: true, canLeave: true };
 
-  it("keeps the header's menu as it was", () => {
+  it("creates channels and categories from the header's menu", () => {
     expect(serverMenuActions(everything, "header")).toEqual([
       "invite-people",
       "server-settings",
       "create-channel",
+      "create-category",
       "separator",
       "leave-server",
     ]);

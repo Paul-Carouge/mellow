@@ -157,6 +157,7 @@ export const fr: Catalogue = {
     serverMenu: "Menu du serveur",
     invitePeople: "Inviter des gens",
     createChannel: "Créer un salon",
+    createCategory: "Créer une catégorie",
     serverSettings: "Paramètres du serveur",
     leaveServer: "Quitter le serveur",
     channelsIn: (server) => `Salons de ${server}`,
@@ -394,11 +395,22 @@ export const fr: Catalogue = {
 
   createChannel: {
     title: "Créer un salon",
+    titleCategory: "Créer une catégorie",
     inCategory: (category) => `dans ${category}`,
+    channelType: "Type de salon",
+    textChannel: "Salon textuel",
+    textChannelDescription: "Messages, images et liens.",
+    category: "Catégorie",
+    categoryDescription: "Un titre qui regroupe des salons dans la liste.",
     submit: "Créer le salon",
+    submitCategory: "Créer la catégorie",
     creating: "Création…",
     channelName: "Nom du salon",
+    categoryName: "Nom de la catégorie",
+    topic: "Sujet (facultatif)",
+    topicHelper: "Affiché en haut du salon.",
     failed: "Impossible de créer le salon",
+    failedCategory: "Impossible de créer la catégorie",
   },
 
   invitePeople: {

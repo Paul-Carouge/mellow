@@ -156,6 +156,7 @@ export const en = {
     serverMenu: "Server menu",
     invitePeople: "Invite people",
     createChannel: "Create channel",
+    createCategory: "Create category",
     serverSettings: "Server settings",
     leaveServer: "Leave server",
     channelsIn: (server: string) => `Channels in ${server}`,
@@ -398,11 +399,22 @@ export const en = {
 
   createChannel: {
     title: "Create channel",
+    titleCategory: "Create category",
     inCategory: (category: string) => `in ${category}`,
+    channelType: "Channel type",
+    textChannel: "Text channel",
+    textChannelDescription: "Messages, pictures and links.",
+    category: "Category",
+    categoryDescription: "A heading that groups channels in the list.",
     submit: "Create channel",
+    submitCategory: "Create category",
     creating: "Creating…",
     channelName: "Channel name",
+    categoryName: "Category name",
+    topic: "Topic (optional)",
+    topicHelper: "Shown at the top of the channel.",
     failed: "Couldn't create the channel",
+    failedCategory: "Couldn't create the category",
   },
 
   invitePeople: {

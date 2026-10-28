@@ -389,10 +389,11 @@
     onclose={() => (openDialog = null)}
     fallbackFocus={focusComposer}
   />
-{:else if openDialog === "create-channel"}
+{:else if openDialog === "create-channel" || openDialog === "create-category"}
   <CreateChannelDialog
     {client}
     category={newChannelCategory}
+    initialKind={openDialog === "create-category" ? "category" : "text"}
     onclose={() => (openDialog = null)}
     fallbackFocus={focusComposer}
   />

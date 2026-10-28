@@ -45,7 +45,12 @@
   import RenameGroupDialog from "./RenameGroupDialog.svelte";
   import { lengthTokenInPixels } from "./tokens";
 
-  export type ServerDialog = "invite-people" | "server-settings" | "create-channel" | "leave-server";
+  export type ServerDialog =
+    | "invite-people"
+    | "server-settings"
+    | "create-channel"
+    | "create-category"
+    | "leave-server";
 
   // The channel list of the navigator card (DESIGN.md §5.3, §5.6, ADR-0022 §1): server header
   // with its menu, then channels by category, or the conversations at Home.
