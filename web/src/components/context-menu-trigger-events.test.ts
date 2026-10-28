@@ -65,6 +65,27 @@ function fire(element: FakeElement, type: string, fields: Record<string, unknown
 const touch = { pointerType: "touch", isPrimary: true, clientX: 50, clientY: 60 };
 
 describe("right-click", () => {
+  it("opens on a word macOS selected under the right press, and clears that word", () => {
+    const { element, open } = setup();
+    fire(element, "pointerdown", { button: 2, pointerType: "mouse", isPrimary: true });
+    selection.isCollapsed = false;
+    selection.containsNode = () => true;
+    const event = fire(element, "contextmenu", { clientX: 5, clientY: 6, shiftKey: false });
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+    expect(selection.removeAllRanges).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the browser's menu on text the reader selected before the right press", () => {
+    const { element, open } = setup();
+    selection.isCollapsed = false;
+    selection.containsNode = () => true;
+    fire(element, "pointerdown", { button: 2, pointerType: "mouse", isPrimary: true });
+    const event = fire(element, "contextmenu", { clientX: 5, clientY: 6, shiftKey: false });
+    expect(open).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
   it("opens at the pointer and takes the event", () => {
     const { element, open } = setup();
     const event = fire(element, "contextmenu", { clientX: 5, clientY: 6, shiftKey: false });
@@ -201,13 +222,22 @@ describe("long press", () => {
     expect(open.mock.calls.length).toBeLessThanOrEqual(1);
   });
 
-  it("opens on pointercancel after a hold when the browser takes the touch over", () => {
+  it("opens on pointercancel after the browser's own long press", () => {
+    const { element, open } = setup();
+    fire(element, "pointerdown", touch);
+    fire(element, "contextmenu", { clientX: 51, clientY: 61, shiftKey: false });
+    fire(element, "pointercancel");
+    vi.advanceTimersByTime(0);
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("does nothing on pointercancel after a hold the browser did not confirm (a pan after resting)", () => {
     const { element, open } = setup();
     fire(element, "pointerdown", touch);
     vi.advanceTimersByTime(500);
     fire(element, "pointercancel");
-    vi.advanceTimersByTime(0);
-    expect(open).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1000);
+    expect(open).not.toHaveBeenCalled();
   });
 
   it("does nothing on pointercancel before the delay (scroll took the touch)", () => {
