@@ -2,6 +2,8 @@
 // with a few English and French search words. No emoji library: this is all the picker needs.
 // shortcut: a curated set, not all of Unicode; grow it, or load Unicode's data, if people ask.
 
+import { foldForSearch } from "./search-text";
+
 export const EMOJI_CATEGORY_IDS = [
   "people",
   "nature",
@@ -372,15 +374,6 @@ function parseEntry(category: EmojiCategoryId, entry: string): CatalogueEmoji {
 export const EMOJI_CATALOGUE: readonly CatalogueEmoji[] = EMOJI_CATEGORY_IDS.flatMap((category) =>
   RAW_CATALOGUE[category].map((entry) => parseEntry(category, entry)),
 );
-
-/** Lowercase, without accents: "Cœur" and "coeur" find the same emoji. */
-function foldForSearch(text: string): string {
-  return text
-    .toLocaleLowerCase("fr")
-    .replaceAll("œ", "oe")
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "");
-}
 
 const FOLDED_KEYWORDS = new Map(
   EMOJI_CATALOGUE.map((entry) => [entry.emoji, entry.keywords.map(foldForSearch)] as const),
