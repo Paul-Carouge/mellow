@@ -12,9 +12,14 @@ use mellow_protocol::{
 
 const MILLISECONDS_PER_DAY: i64 = 86_400_000;
 const MILLISECONDS_PER_MINUTE: i64 = 60_000;
-/// Free words this long or longer also match as a word prefix ("mell" finds "Mellow"); a single
-/// character would match too much to be useful.
-const MINIMUM_IMPLICIT_PREFIX_CHARACTERS: usize = 2;
+/// A word matches as a prefix ("mell" finds "Mellow") only when its last token is this long or
+/// longer, the shortest prefix the index holds (`prefix='2 3'`): a one-character prefix would
+/// walk every word of the index.
+const MINIMUM_PREFIX_CHARACTERS: usize = 2;
+/// Prefix terms (implicit or explicit, excluded ones included) per query; later words match
+/// exactly. Each prefix term reads a range of the index, so a query of many short prefixes is the
+/// most expensive one can write.
+pub(crate) const MAXIMUM_PREFIX_TERMS: usize = 4;
 /// Marks the highlighter puts around matched words. Messages cannot hold control characters
 /// (`message_rules`), so these never collide with content.
 pub(crate) const HIGHLIGHT_START_MARK: char = '\u{1}';
@@ -74,13 +79,19 @@ pub(crate) fn validated_search_request(
     })
 }
 
+/// How a word matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WordMatch {
+    Exact,
+    /// A free word: exactly, or as the start of a longer word (exact words rank first).
+    ExactOrPrefix,
+    /// Typed with a trailing `*`.
+    Prefix,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SearchTerm {
-    Word {
-        text: String,
-        /// Typed with a trailing `*`.
-        is_explicit_prefix: bool,
-    },
+    Word { text: String, matching: WordMatch },
     Phrase(String),
 }
 
@@ -175,16 +186,21 @@ fn included_term_expression(term: &SearchTerm) -> String {
     match term {
         SearchTerm::Word {
             text,
-            is_explicit_prefix: true,
+            matching: WordMatch::Prefix,
         } => format!("{}*", quoted(text)),
-        SearchTerm::Word { text, .. }
-            if text.chars().count() >= MINIMUM_IMPLICIT_PREFIX_CHARACTERS =>
-        {
+        SearchTerm::Word {
+            text,
+            matching: WordMatch::ExactOrPrefix,
+        } => {
             // Both phrases match the exact word, so bm25 ranks it above words merely starting so.
             let quoted_text = quoted(text);
             format!("({quoted_text} OR {quoted_text}*)")
         }
-        SearchTerm::Word { text, .. } | SearchTerm::Phrase(text) => quoted(text),
+        SearchTerm::Word {
+            text,
+            matching: WordMatch::Exact,
+        }
+        | SearchTerm::Phrase(text) => quoted(text),
     }
 }
 
@@ -192,10 +208,18 @@ fn excluded_term_expression(term: &SearchTerm) -> String {
     match term {
         SearchTerm::Word {
             text,
-            is_explicit_prefix: true,
+            matching: WordMatch::Prefix,
         } => format!("{}*", quoted(text)),
         SearchTerm::Word { text, .. } | SearchTerm::Phrase(text) => quoted(text),
     }
+}
+
+/// Whether the last word the tokenizer finds in `text` is long enough to be a prefix: FTS5
+/// applies `*` to it alone ("a.b*" is "a" then "b*").
+fn ends_with_a_prefixable_token(text: &str) -> bool {
+    text.split(|character: char| !character.is_alphanumeric())
+        .rfind(|token| !token.is_empty())
+        .is_some_and(|token| token.chars().count() >= MINIMUM_PREFIX_CHARACTERS)
 }
 
 /// Text the tokenizer would find no word in (only punctuation or emoji) matches nothing, so it
@@ -214,6 +238,7 @@ pub(crate) fn parse_search_query(input: &str) -> Result<ParsedSearchQuery, Searc
     }
     let mut parsed = ParsedSearchQuery::default();
     let mut part_count = 0;
+    let mut prefix_term_count = 0;
     // Control characters separate words: messages hold none but newlines and tabs, and a NUL would
     // end the FTS5 expression early, inside a quoted string.
     let mut characters = input
@@ -261,9 +286,23 @@ pub(crate) fn parse_search_query(input: &str) -> Result<ParsedSearchQuery, Searc
         if is_excluded || !apply_filter(&mut parsed, &token) {
             let text = token.trim_end_matches('*');
             if holds_a_word(text) {
+                let wanted = match (text.len() < token.len(), is_excluded) {
+                    (true, _) => WordMatch::Prefix,
+                    (false, false) => WordMatch::ExactOrPrefix,
+                    (false, true) => WordMatch::Exact,
+                };
+                let matching = if wanted != WordMatch::Exact
+                    && prefix_term_count < MAXIMUM_PREFIX_TERMS
+                    && ends_with_a_prefixable_token(text)
+                {
+                    prefix_term_count += 1;
+                    wanted
+                } else {
+                    WordMatch::Exact
+                };
                 let term = SearchTerm::Word {
                     text: text.to_owned(),
-                    is_explicit_prefix: text.len() < token.len(),
+                    matching,
                 };
                 push_term(&mut parsed, term, is_excluded);
             }
@@ -442,7 +481,14 @@ mod tests {
     fn word(text: &str) -> SearchTerm {
         SearchTerm::Word {
             text: text.to_owned(),
-            is_explicit_prefix: false,
+            matching: WordMatch::ExactOrPrefix,
+        }
+    }
+
+    fn exact(text: &str) -> SearchTerm {
+        SearchTerm::Word {
+            text: text.to_owned(),
+            matching: WordMatch::Exact,
         }
     }
 
@@ -456,9 +502,9 @@ mod tests {
                 SearchTerm::Phrase("hot dog".into()),
                 SearchTerm::Word {
                     text: "mell".into(),
-                    is_explicit_prefix: true
+                    matching: WordMatch::Prefix
                 },
-                word("a"),
+                exact("a"),
             ]
         );
         assert_eq!(
@@ -570,7 +616,7 @@ mod tests {
         let parsed = parse_search_query(r#"a"b OR c"#).unwrap();
         assert_eq!(
             parsed.included_terms,
-            [word("a"), SearchTerm::Phrase("b OR c".into())]
+            [exact("a"), SearchTerm::Phrase("b OR c".into())]
         );
         assert_eq!(quoted(r#"say "hi""#), r#""say ""hi""""#);
     }
@@ -646,6 +692,61 @@ mod tests {
         assert_eq!(
             validated_search_request(&query(None, None, Some(841))),
             Err(SearchQueryViolation::UtcOffset)
+        );
+    }
+
+    #[test]
+    fn prefixes_need_a_last_token_of_two_characters() {
+        let parsed = parse_search_query("a* a.b* x. ab* mellow. -cd*").unwrap();
+        assert_eq!(
+            parsed.included_terms,
+            [
+                exact("a"),
+                exact("a.b"),
+                exact("x."),
+                SearchTerm::Word {
+                    text: "ab".into(),
+                    matching: WordMatch::Prefix
+                },
+                word("mellow."),
+            ]
+        );
+        assert_eq!(
+            parsed.excluded_terms,
+            [SearchTerm::Word {
+                text: "cd".into(),
+                matching: WordMatch::Prefix
+            }]
+        );
+        assert_eq!(
+            parsed.match_expression().as_deref(),
+            Some(r#"("a" AND "a.b" AND "x." AND "ab"* AND ("mellow." OR "mellow."*)) NOT ("cd"*)"#)
+        );
+    }
+
+    #[test]
+    fn prefix_terms_are_capped_and_later_words_match_exactly() {
+        let parsed = parse_search_query("one -two* three four five six*").unwrap();
+        let matchings: Vec<WordMatch> = parsed
+            .included_terms
+            .iter()
+            .chain(&parsed.excluded_terms)
+            .map(|term| match term {
+                SearchTerm::Word { matching, .. } => *matching,
+                SearchTerm::Phrase(_) => WordMatch::Exact,
+            })
+            .collect();
+        // Included: one, three, four, five, six; then excluded: two.
+        assert_eq!(
+            matchings,
+            [
+                WordMatch::ExactOrPrefix,
+                WordMatch::ExactOrPrefix,
+                WordMatch::ExactOrPrefix,
+                WordMatch::Exact,
+                WordMatch::Exact,
+                WordMatch::Prefix,
+            ]
         );
     }
 
