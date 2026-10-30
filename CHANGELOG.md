@@ -4,6 +4,16 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-30
+Better invites. No database migration.
+
+### Added
+- Web: choose how long an invite lasts (30 minutes to 30 days, or never) and how many people may use it (1 to 100, or no limit), in the Invite people dialog and in server settings. A new invite lasts 7 days with no use limit by default.
+
+### Changed
+- Invite codes read like `AE8C-78A9-K2QF`, shown in large in the Invite people dialog with a copy button. When joining, case, spaces and dashes do not matter, and O, I and L are read as 0, 1 and 1. Codes made before this version still work.
+- Server: joining with an invite is also limited to 10 attempts per 10 minutes per account, besides the limit per address.
+
 ## [0.17.2] - 2026-10-28
 No database migration.
 
