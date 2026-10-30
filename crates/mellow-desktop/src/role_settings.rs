@@ -48,7 +48,7 @@ const fn describe(
 }
 
 /// Every permission once, in display order; a group header starts where `group` changes.
-const PERMISSION_DESCRIPTIONS: [PermissionDescription; 17] = [
+const PERMISSION_DESCRIPTIONS: [PermissionDescription; 18] = [
     describe(
         Permissions::VIEW_CHANNEL,
         "General",
@@ -75,6 +75,13 @@ const PERMISSION_DESCRIPTIONS: [PermissionDescription; 17] = [
         "General",
         "Manage server",
         "Change the server's name and settings.",
+        false,
+    ),
+    describe(
+        Permissions::MANAGE_EMOJIS,
+        "General",
+        "Manage emoji",
+        "Add custom emoji to this server, rename and delete them.",
         false,
     ),
     describe(
@@ -472,6 +479,7 @@ mod tests {
         let moderator_permissions = Permissions::MANAGE_ROLES | Permissions::KICK_MEMBERS;
         Guild {
             icon: None,
+            emojis: Vec::new(),
             id: GUILD,
             name: "Club".to_owned(),
             owner_id: OWNER,

@@ -252,6 +252,7 @@ export const PERMISSION_GROUPS: readonly { group: PermissionGroupKey; permission
       { key: "manageChannels", bit: Permission.MANAGE_CHANNELS, isSensitive: false },
       { key: "manageRoles", bit: Permission.MANAGE_ROLES, isSensitive: true },
       { key: "manageServer", bit: Permission.MANAGE_GUILD, isSensitive: false },
+      { key: "manageEmojis", bit: Permission.MANAGE_EMOJIS, isSensitive: false },
       { key: "viewModerationLog", bit: Permission.VIEW_AUDIT_LOG, isSensitive: false },
     ],
   },
@@ -403,6 +404,14 @@ export function auditEntrySentence(entry: AuditLogEntry, context: AuditContext):
       return log.inviteCreate(actor, changeOf(entry, "code")?.new_value ?? "");
     case "invite_delete":
       return log.inviteDelete(actor, changeOf(entry, "code")?.old_value ?? "");
+    case "emoji_create":
+      return log.emojiCreate(actor, changeOf(entry, "name")?.new_value ?? "");
+    case "emoji_update": {
+      const name = changeOf(entry, "name");
+      return log.emojiRename(actor, name?.old_value ?? "", name?.new_value ?? "");
+    }
+    case "emoji_delete":
+      return log.emojiDelete(actor, changeOf(entry, "name")?.old_value ?? "");
     default:
       // "unknown", or an action of a newer server that this client cannot name yet.
       return log.unknown(actor);
@@ -421,7 +430,10 @@ export function auditChangeLines(entry: AuditLogEntry): string[] {
   return entry.changes.flatMap((change): string[] => {
     switch (change.key) {
       case "name":
-        return entry.action === "guild_update" ? [] : [log.nameChange(change.old_value, change.new_value)];
+        // These sentences already name both.
+        return entry.action === "guild_update" || entry.action.startsWith("emoji_")
+          ? []
+          : [log.nameChange(change.old_value, change.new_value)];
       case "topic":
         return [change.new_value === "" ? log.topicCleared : log.topicChange(change.new_value)];
       case "color":

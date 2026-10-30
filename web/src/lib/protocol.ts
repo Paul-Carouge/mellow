@@ -80,6 +80,52 @@ export function iconUrl(image: ProfileImage, isAnimationWanted: boolean): string
   return image.is_animated && !isAnimationWanted ? `${base}/still` : base;
 }
 
+/**
+ * A guild's custom emoji (ADR-0028). Messages write it `<:name:id>` (`<a:name:id>` when animated),
+ * reactions key it `name:id`; members load its picture with `emojiUrl`.
+ */
+export interface CustomEmoji {
+  id: Snowflake;
+  /** 2 to 32 ASCII letters, digits and `_`, unique in its guild whatever the case. */
+  name: string;
+  is_animated: boolean;
+}
+
+/** Mirrors the server's rules (mellow-server domain/guild_rules.rs); the server still decides. */
+export const MAXIMUM_EMOJIS_PER_GUILD_AND_KIND = 50;
+export const MAXIMUM_EMOJI_UPLOAD_BYTES = 256 * 1024;
+const EMOJI_NAME = /^[A-Za-z0-9_]{2,32}$/;
+/** A reaction key `name:id`; the id without leading zero, as the instance writes it. */
+const CUSTOM_EMOJI_REACTION_KEY = /^([A-Za-z0-9_]{2,32}):(0|[1-9][0-9]{0,19})$/;
+
+export function isValidEmojiName(name: string): boolean {
+  return EMOJI_NAME.test(name);
+}
+
+/** A custom emoji's picture, served like an icon: animated only when asked for and there is one. */
+export function emojiUrl(emoji: CustomEmoji, isAnimationWanted: boolean): string {
+  return iconUrl(emoji, isAnimationWanted);
+}
+
+/** What `PUT …/reactions/{emoji}/@me` takes to react with a custom emoji. */
+export function customEmojiReactionKey(emoji: CustomEmoji): string {
+  return `${emoji.name}:${emoji.id}`;
+}
+
+/**
+ * The name and id of a custom emoji's reaction key, `null` for a Unicode emoji. The name is the
+ * emoji's when the first reaction was added: show `:name:` when the guild no longer has the id.
+ */
+export function customEmojiOfReactionKey(key: string): { name: string; id: Snowflake } | null {
+  const match = CUSTOM_EMOJI_REACTION_KEY.exec(key);
+  return match?.[1] !== undefined && match[2] !== undefined ? { name: match[1], id: match[2] } : null;
+}
+
+/** How a message's text carries a custom emoji (Discord's syntax). */
+export function customEmojiMarkup(emoji: CustomEmoji): string {
+  return `<${emoji.is_animated ? "a" : ""}:${emoji.name}:${emoji.id}>`;
+}
+
 /** Mirrors the server's rules (mellow-server domain/guild_rules.rs); the server still decides. */
 export const MAXIMUM_CHANNEL_NAME_LENGTH = 100;
 export const MAXIMUM_CHANNEL_TOPIC_LENGTH = 1024;
@@ -142,6 +188,8 @@ export interface Guild {
   my_role_ids: Snowflake[];
   roles: Role[];
   channels: Channel[];
+  /** Oldest first. Absent from older servers. */
+  emojis?: CustomEmoji[];
 }
 
 export interface Member {
@@ -305,6 +353,12 @@ export type AuditAction =
   | "guild_update"
   | "invite_create"
   | "invite_delete"
+  /** `target_id` is the emoji; its name is the `name` change's new value. */
+  | "emoji_create"
+  /** A rename: the `name` change. */
+  | "emoji_update"
+  /** `target_id` is the emoji; its name is the `name` change's old value. */
+  | "emoji_delete"
   | "unknown";
 
 export interface AuditChange {
@@ -402,6 +456,8 @@ export type GatewayEvent =
       data: { guild_id: Snowflake; user_id: Snowflake; role_ids: Snowflake[] };
     }
   | { t: "GUILD_ROLES_UPDATE"; data: { guild_id: Snowflake; roles: Role[] } }
+  /** The guild's whole emoji list after any was added, renamed or deleted. */
+  | { t: "GUILD_EMOJIS_UPDATE"; data: { guild_id: Snowflake; emojis: CustomEmoji[] } }
   | {
       t: "TYPING_START";
       data: { guild_id?: Snowflake; channel_id: Snowflake; user_id: Snowflake };
@@ -444,6 +500,7 @@ export const Permission = {
   BAN_MEMBERS: 1n << 12n,
   VIEW_AUDIT_LOG: 1n << 15n,
   ADD_REACTIONS: 1n << 16n,
+  MANAGE_EMOJIS: 1n << 17n,
 } as const;
 
 /** What a channel overwrite may allow or deny (`Permissions::CHANNEL_SCOPED`). */

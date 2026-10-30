@@ -7,8 +7,13 @@ import {
   Permission,
   compareSnowflakes,
   computeChannelPermissions,
+  customEmojiMarkup,
+  customEmojiOfReactionKey,
+  customEmojiReactionKey,
+  emojiUrl,
   hasPermission,
   iconUrl,
+  isValidEmojiName,
   reactionsPath,
   profileImageFileProblem,
   profileImageUrl,
@@ -40,6 +45,46 @@ describe("reactions", () => {
   it("use bit 16, held by direct-message participants", () => {
     expect(Permission.ADD_REACTIONS).toBe(65536n);
     expect(hasPermission(DIRECT_MESSAGE_PERMISSIONS, Permission.ADD_REACTIONS)).toBe(true);
+  });
+});
+
+describe("custom emoji", () => {
+  const party = { id: "500", name: "party", is_animated: false };
+  const parrot = { id: "501", name: "parrot", is_animated: true };
+
+  it("are managed with bit 17", () => {
+    expect(Permission.MANAGE_EMOJIS).toBe(131072n);
+  });
+
+  it("serve their picture like icons, still unless the animation is wanted", () => {
+    expect(emojiUrl(party, true)).toBe("/api/v1/icons/500");
+    expect(emojiUrl(parrot, false)).toBe("/api/v1/icons/501/still");
+    expect(emojiUrl(parrot, true)).toBe("/api/v1/icons/501");
+  });
+
+  it("write Discord's syntax in messages and react as name:id", () => {
+    expect(customEmojiMarkup(party)).toBe("<:party:500>");
+    expect(customEmojiMarkup(parrot)).toBe("<a:parrot:501>");
+    expect(customEmojiReactionKey(parrot)).toBe("parrot:501");
+    expect(reactionsPath("1", "2", customEmojiReactionKey(parrot))).toBe(
+      "channels/1/messages/2/reactions/parrot%3A501",
+    );
+  });
+
+  it("read back from reaction keys, Unicode emoji and malformed keys being none", () => {
+    expect(customEmojiOfReactionKey("parrot:501")).toEqual({ name: "parrot", id: "501" });
+    expect(customEmojiOfReactionKey("ok:18446744073709551615")).toEqual({ name: "ok", id: "18446744073709551615" });
+    for (const key of ["👍", "a:1", "ok:", "ok:012", "two words:1", "ok:1:2", "<:ok:1>"]) {
+      expect(customEmojiOfReactionKey(key), key).toBeNull();
+    }
+  });
+
+  it("are named with 2 to 32 ASCII letters, digits and underscores", () => {
+    expect(isValidEmojiName("party_parrot2")).toBe(true);
+    expect(isValidEmojiName("a".repeat(32))).toBe(true);
+    for (const name of ["a", "a".repeat(33), "café", "a-b", "two words", ""]) {
+      expect(isValidEmojiName(name), name).toBe(false);
+    }
   });
 });
 

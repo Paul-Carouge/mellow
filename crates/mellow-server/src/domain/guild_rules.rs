@@ -39,6 +39,12 @@ pub const MAXIMUM_AUDIT_LOG_PAGE_SIZE: u32 = 100;
 pub const MAXIMUM_BANS_LISTED: u32 = 1_000;
 /// shortcut: the member list is capped, not paginated; paginate with the member list UI.
 pub const MAXIMUM_MEMBERS_LISTED: u32 = 1_000;
+/// Custom emoji (ADR-0028), as on Discord: each guild holds this many still and as many animated.
+pub const MAXIMUM_EMOJIS_PER_GUILD_AND_KIND: u32 = 50;
+pub const MINIMUM_EMOJI_NAME_LENGTH: usize = 2;
+pub const MAXIMUM_EMOJI_NAME_LENGTH: usize = 32;
+/// Uploaded emoji pictures larger than this are refused before processing.
+pub const MAXIMUM_EMOJI_UPLOAD_BYTES: usize = 256 * 1024;
 /// Crockford's base 32: digits and capitals without I, L, O and U, so a code read aloud or
 /// copied by hand is not mistaken. 256 is a multiple of 32, so `byte % 32` has no bias.
 const INVITE_CODE_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -107,6 +113,12 @@ pub enum GuildRuleViolation {
     EveryoneRole,
     #[error("categories have no icon")]
     CategoryIcon,
+    #[error(
+        "emoji names are {MINIMUM_EMOJI_NAME_LENGTH} to {MAXIMUM_EMOJI_NAME_LENGTH} ASCII letters, digits and underscores"
+    )]
+    EmojiName,
+    #[error("another emoji of this server already has this name")]
+    EmojiNameTaken,
 }
 
 fn has_hidden_characters(text: &str) -> bool {
@@ -190,6 +202,27 @@ pub fn normalize_ban_reason(reason: &str) -> Result<String, GuildRuleViolation> 
     trimmed_within(reason, 0, MAXIMUM_BAN_REASON_LENGTH)
         .map(str::to_owned)
         .ok_or(GuildRuleViolation::BanReason)
+}
+
+/// Whether `name` may name a custom emoji: ASCII letters, digits and `_` only, so it reads the
+/// same in `:name:`, `<:name:id>` and a reaction's `name:id` key (ADR-0028).
+#[must_use]
+pub fn is_valid_emoji_name(name: &str) -> bool {
+    (MINIMUM_EMOJI_NAME_LENGTH..=MAXIMUM_EMOJI_NAME_LENGTH).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+/// # Errors
+/// `EmojiName` unless `is_valid_emoji_name`, once trimmed.
+pub fn normalize_emoji_name(name: &str) -> Result<String, GuildRuleViolation> {
+    let trimmed = name.trim();
+    if is_valid_emoji_name(trimmed) {
+        Ok(trimmed.to_owned())
+    } else {
+        Err(GuildRuleViolation::EmojiName)
+    }
 }
 
 /// # Errors
@@ -397,6 +430,32 @@ pub fn normalize_invite_code(typed: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emoji_names_are_2_to_32_ascii_letters_digits_and_underscores() {
+        assert_eq!(
+            normalize_emoji_name(" party_parrot2 ").unwrap(),
+            "party_parrot2"
+        );
+        assert_eq!(normalize_emoji_name("ok").unwrap(), "ok");
+        assert!(normalize_emoji_name(&"a".repeat(32)).is_ok());
+        for invalid in [
+            "",
+            "a",
+            "two words",
+            "café",
+            "a-b",
+            "a:b",
+            "<a>",
+            &"a".repeat(33),
+        ] {
+            assert_eq!(
+                normalize_emoji_name(invalid),
+                Err(GuildRuleViolation::EmojiName),
+                "{invalid:?}"
+            );
+        }
+    }
 
     #[test]
     fn channel_names_keep_capitals_and_spaces() {

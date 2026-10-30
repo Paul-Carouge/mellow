@@ -1090,3 +1090,67 @@ describe("Group conversations", () => {
     expect(client.guilds).toHaveLength(1);
   });
 });
+
+describe("Custom emoji", () => {
+  const party = { id: "500", name: "party", is_animated: false };
+  const parrot = { id: "501", name: "parrot", is_animated: true };
+
+  it("follow the instance's list, older instances having none", () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.applyReady(ready());
+    expect(client.emojisOf(GUILD)).toEqual([]);
+    client.applyEvent({ t: "GUILD_EMOJIS_UPDATE", data: { guild_id: GUILD, emojis: [party, parrot] } }, 0);
+    expect(client.emojisOf(GUILD)).toEqual([party, parrot]);
+    client.applyEvent({ t: "GUILD_EMOJIS_UPDATE", data: { guild_id: "999", emojis: [party] } }, 0);
+    expect(client.emojisOf("999")).toEqual([]);
+  });
+
+  it("show the answer at once, whether or not the gateway's list came first", async () => {
+    const calls: unknown[][] = [];
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        createEmoji: (...args: unknown[]) => {
+          calls.push(["create", ...args]);
+          return Promise.resolve(parrot);
+        },
+        renameEmoji: (...args: unknown[]) => {
+          calls.push(["rename", ...args]);
+          return Promise.resolve({ ...party, name: "fiesta" });
+        },
+        deleteEmoji: (...args: unknown[]) => {
+          calls.push(["delete", ...args]);
+          return Promise.resolve();
+        },
+      }),
+    );
+    client.applyReady(ready({ guilds: [{ ...guild(), emojis: [party] }] }));
+    const file = new File(["gif"], "parrot.gif");
+
+    expect(await client.createEmoji(GUILD, "parrot", file)).toEqual(parrot);
+    expect(client.emojisOf(GUILD)).toEqual([party, parrot]);
+    client.applyEvent({ t: "GUILD_EMOJIS_UPDATE", data: { guild_id: GUILD, emojis: [party, parrot] } }, 0);
+    await client.createEmoji(GUILD, "parrot", file);
+    expect(client.emojisOf(GUILD)).toEqual([party, parrot]);
+
+    await client.renameEmoji(GUILD, party.id, "fiesta");
+    expect(client.emojisOf(GUILD).map((emoji) => emoji.name)).toEqual(["fiesta", "parrot"]);
+    await client.deleteEmoji(GUILD, parrot.id);
+    expect(client.emojisOf(GUILD).map((emoji) => emoji.id)).toEqual([party.id]);
+    expect(calls).toEqual([
+      ["create", GUILD, "parrot", file],
+      ["create", GUILD, "parrot", file],
+      ["rename", GUILD, party.id, "fiesta"],
+      ["delete", GUILD, parrot.id],
+    ]);
+  });
+
+  it("stay as they were when the instance refuses", async () => {
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, deleteEmoji: () => Promise.reject(new ApiError(403, "MISSING_PERMISSIONS")) }),
+    );
+    client.applyReady(ready({ guilds: [{ ...guild(), emojis: [party] }] }));
+    await expect(client.deleteEmoji(GUILD, party.id)).rejects.toBeInstanceOf(ApiError);
+    expect(client.emojisOf(GUILD)).toEqual([party]);
+  });
+});

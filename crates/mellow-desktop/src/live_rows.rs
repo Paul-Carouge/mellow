@@ -889,6 +889,7 @@ mod tests {
     fn guild() -> Guild {
         Guild {
             icon: None,
+            emojis: Vec::new(),
             id: Snowflake::from_raw(1),
             name: "Board Games Night".into(),
             owner_id: Snowflake::from_raw(9),

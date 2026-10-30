@@ -9,10 +9,12 @@ use mellow_protocol::{
 use super::{MessageError, Messages, publish};
 use crate::domain::guilds::GuildError;
 use crate::domain::message_rules::{
-    MAXIMUM_DISTINCT_EMOJI_PER_MESSAGE, reacting_users_page_size, reaction_emoji_key,
+    MAXIMUM_DISTINCT_EMOJI_PER_MESSAGE, MessageRuleViolation, custom_emoji_of_reaction_key,
+    reacting_users_page_size, reaction_emoji_key,
 };
-use crate::domain::permissions::{ReactionAction, may_react};
+use crate::domain::permissions::{ReactionAction, may_react, may_react_with_custom_emoji};
 use crate::domain::profile_images::fill_profile_images;
+use crate::storage::guild_emojis::find_guild_emoji;
 use crate::storage::reactions::{self as storage, ReactionAddOutcome, ReactionSelection};
 
 /// What a moderator removes from a message.
@@ -71,6 +73,28 @@ impl Messages {
         Ok((channel, permissions))
     }
 
+    /// `key` itself for a Unicode emoji. A custom emoji must still exist and belong to the guild
+    /// of the channel (`may_react_with_custom_emoji`); its key then takes the emoji's current
+    /// name, whatever name the client sent (ADR-0028).
+    async fn reaction_key_to_add(
+        &self,
+        key: String,
+        channel_guild_id: Option<Snowflake>,
+    ) -> Result<String, MessageError> {
+        let Some((_, emoji_id)) = custom_emoji_of_reaction_key(&key) else {
+            return Ok(key);
+        };
+        let stored = find_guild_emoji(&self.database, emoji_id)
+            .await
+            .map_err(GuildError::from)?;
+        match stored {
+            Some(stored) if may_react_with_custom_emoji(stored.guild_id, channel_guild_id) => {
+                Ok(format!("{}:{emoji_id}", stored.emoji.name))
+            }
+            _ => Err(MessageRuleViolation::CustomReactionEmoji.into()),
+        }
+    }
+
     /// Reacts with `emoji`. Idempotent: reacting again changes nothing and sends no event.
     pub(crate) async fn add_reaction(
         &self,
@@ -88,6 +112,7 @@ impl Messages {
                 ReactionAction::JoinExisting,
             )
             .await?;
+        let emoji = self.reaction_key_to_add(emoji, channel.guild_id()).await?;
         // Decided before the write, so publishing after the commit cannot fail (ADR-0015).
         let audience = self.audience(&channel).await?;
         match storage::add_reaction(

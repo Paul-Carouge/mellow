@@ -839,6 +839,10 @@ export const fr: Catalogue = {
         label: "Gérer le serveur",
         description: "Renommer le serveur et gérer ses invitations.",
       },
+      manageEmojis: {
+        label: "Gérer les emoji",
+        description: "Ajouter des emoji personnalisés au serveur, les renommer et les supprimer.",
+      },
       viewModerationLog: {
         label: "Voir le journal de modération",
         description: "Voir qui a changé quoi sur ce serveur.",
@@ -979,6 +983,9 @@ export const fr: Catalogue = {
       guildUpdate: (actor) => `${actor} a modifié le serveur`,
       inviteCreate: (actor, code) => `${actor} a créé l’invitation ${code}`,
       inviteDelete: (actor, code) => `${actor} a révoqué l’invitation ${code}`,
+      emojiCreate: (actor, name) => `${actor} a ajouté l’emoji :${name}:`,
+      emojiRename: (actor, before, after) => `${actor} a renommé l’emoji :${before}: en :${after}:`,
+      emojiDelete: (actor, name) => `${actor} a supprimé l’emoji :${name}:`,
       unknown: (actor) => `${actor} a fait un changement que cette version de Mellow ne sait pas encore afficher`,
       nameChange: (before, after) => `Nom${NO_BREAK_SPACE}: ${before}, devenu ${after}`,
       topicChange: (topic) => `Nouveau sujet${NO_BREAK_SPACE}: ${topic}`,

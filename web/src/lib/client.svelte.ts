@@ -23,6 +23,7 @@ import {
   type ChannelPlacement,
   type ChosenStatus,
   type CurrentUser,
+  type CustomEmoji,
   type DirectMessageChannel,
   type Guild,
   type InitialCategory,
@@ -602,6 +603,9 @@ export class MellowClient {
         }
         return;
       }
+      case "GUILD_EMOJIS_UPDATE":
+        this.updateGuild(event.data.guild_id, (guild) => ({ ...guild, emojis: event.data.emojis }));
+        return;
       case "TYPING_START":
         for (const [key, until] of this.typingUntil) {
           if (until <= now) {
@@ -1596,6 +1600,44 @@ export class MellowClient {
   async deleteServer(guildId: Snowflake): Promise<void> {
     await this.rest.deleteGuild(guildId);
     this.removeGuild(guildId);
+  }
+
+  // --- Custom emoji (ADR-0028) --------------------------------------------------------------
+
+  /** The guild's custom emoji, oldest first; none from an older instance. */
+  emojisOf(guildId: Snowflake): CustomEmoji[] {
+    return this.guilds.find((guild) => guild.id === guildId)?.emojis ?? [];
+  }
+
+  private applyEmojis(guildId: Snowflake, emojis: CustomEmoji[]): void {
+    this.applyEvent({ t: "GUILD_EMOJIS_UPDATE", data: { guild_id: guildId, emojis } }, Date.now());
+  }
+
+  /** Processed by the instance first: an animated GIF takes a second or two. */
+  async createEmoji(guildId: Snowflake, name: string, file: File): Promise<CustomEmoji> {
+    const created = await this.rest.createEmoji(guildId, name, file);
+    const emojis = this.emojisOf(guildId);
+    // The gateway's list may have come first.
+    if (!emojis.some((emoji) => emoji.id === created.id)) {
+      this.applyEmojis(guildId, [...emojis, created]);
+    }
+    return created;
+  }
+
+  async renameEmoji(guildId: Snowflake, emojiId: Snowflake, name: string): Promise<void> {
+    const renamed = await this.rest.renameEmoji(guildId, emojiId, name);
+    this.applyEmojis(
+      guildId,
+      this.emojisOf(guildId).map((emoji) => (emoji.id === emojiId ? renamed : emoji)),
+    );
+  }
+
+  async deleteEmoji(guildId: Snowflake, emojiId: Snowflake): Promise<void> {
+    await this.rest.deleteEmoji(guildId, emojiId);
+    this.applyEmojis(
+      guildId,
+      this.emojisOf(guildId).filter((emoji) => emoji.id !== emojiId),
+    );
   }
 
   private applyRoles(guildId: Snowflake, roles: Role[]): void {

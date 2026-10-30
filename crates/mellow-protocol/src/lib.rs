@@ -26,11 +26,12 @@ pub use gateway::{
 };
 pub use guilds::{
     AuditAction, AuditChange, AuditChangeKey, AuditLogEntry, AuditLogQuery, Ban, Channel,
-    ChannelKind, ChannelPlacement, CreateBanRequest, CreateChannelRequest, CreateGuildRequest,
-    CreateInviteRequest, CreateRoleRequest, Guild, GuildInvite, GuildSummary, IconCropQuery,
-    InitialCategory, InitialTextChannel, Invite, Member, OverwriteKind, PermissionOverwrite,
-    ProfileImage, PublicUser, ReorderChannelsRequest, ReorderRolesRequest, Role,
-    SetPermissionOverwriteRequest, UpdateChannelRequest, UpdateGuildRequest, UpdateRoleRequest,
+    ChannelKind, ChannelPlacement, CreateBanRequest, CreateChannelRequest, CreateEmojiQuery,
+    CreateGuildRequest, CreateInviteRequest, CreateRoleRequest, CustomEmoji, Guild, GuildInvite,
+    GuildSummary, IconCropQuery, InitialCategory, InitialTextChannel, Invite, Member,
+    OverwriteKind, PermissionOverwrite, ProfileImage, PublicUser, ReorderChannelsRequest,
+    ReorderRolesRequest, Role, SetPermissionOverwriteRequest, UpdateChannelRequest,
+    UpdateEmojiRequest, UpdateGuildRequest, UpdateRoleRequest,
 };
 pub use health::{HealthResponse, HealthStatus};
 pub use messages::{

@@ -13,6 +13,7 @@ import {
   type InitialCategory,
   type ChosenStatus,
   type CurrentUser,
+  type CustomEmoji,
   type DirectMessageChannel,
   type Guild,
   type GuildInvite,
@@ -212,6 +213,25 @@ export class RestClient {
 
   removeChannelIcon(channelId: Snowflake): Promise<Channel> {
     return this.request("DELETE", `channels/${channelId}/icon`);
+  }
+
+  // --- Custom emoji (ADR-0028) --------------------------------------------------------------
+
+  listEmojis(guildId: Snowflake): Promise<CustomEmoji[]> {
+    return this.request("GET", `guilds/${guildId}/emojis`);
+  }
+
+  /** The picture as the raw body (at most `MAXIMUM_EMOJI_UPLOAD_BYTES`); the instance keeps its centred square. */
+  createEmoji(guildId: Snowflake, name: string, file: File): Promise<CustomEmoji> {
+    return this.sendFile("POST", `guilds/${guildId}/emojis?name=${encodeURIComponent(name)}`, file);
+  }
+
+  renameEmoji(guildId: Snowflake, emojiId: Snowflake, name: string): Promise<CustomEmoji> {
+    return this.request("PATCH", `guilds/${guildId}/emojis/${emojiId}`, { name });
+  }
+
+  deleteEmoji(guildId: Snowflake, emojiId: Snowflake): Promise<void> {
+    return this.request("DELETE", `guilds/${guildId}/emojis/${emojiId}`);
   }
 
   /** Absent fields stay unchanged. */

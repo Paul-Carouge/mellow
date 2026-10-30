@@ -12,6 +12,30 @@ function recordFetches(): { url: string; body: unknown }[] {
   return requests;
 }
 
+describe("RestClient custom emoji", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends the picture raw with its name in the query, and renames and deletes by id", async () => {
+    const requests: { url: string; method: string | undefined; body: unknown }[] = [];
+    vi.stubGlobal("fetch", (url: string, init: RequestInit) => {
+      requests.push({ url, method: init.method, body: init.body });
+      return Promise.resolve(new Response(init.method === "DELETE" ? null : "{}", { status: init.method === "DELETE" ? 204 : 200 }));
+    });
+    const file = new File(["gif"], "parrot.gif");
+    const rest = new RestClient();
+    await rest.createEmoji("100", "party parrot", file);
+    await rest.renameEmoji("100", "500", "fiesta");
+    await rest.deleteEmoji("100", "500");
+    await rest.listEmojis("100");
+    expect(requests).toEqual([
+      { url: "/api/v1/guilds/100/emojis?name=party%20parrot", method: "POST", body: file },
+      { url: "/api/v1/guilds/100/emojis/500", method: "PATCH", body: JSON.stringify({ name: "fiesta" }) },
+      { url: "/api/v1/guilds/100/emojis/500", method: "DELETE", body: undefined },
+      { url: "/api/v1/guilds/100/emojis", method: "GET", body: undefined },
+    ]);
+  });
+});
+
 describe("RestClient invites", () => {
   afterEach(() => vi.unstubAllGlobals());
 

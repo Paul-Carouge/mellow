@@ -27,6 +27,8 @@ bitflags::bitflags! {
         const VIEW_AUDIT_LOG       = 1 << 15;
         /// Adding an emoji no one reacted with yet; joining an existing reaction needs none.
         const ADD_REACTIONS        = 1 << 16;
+        /// Adding, renaming and deleting the guild's custom emoji (ADR-0028).
+        const MANAGE_EMOJIS        = 1 << 17;
     }
 }
 

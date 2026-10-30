@@ -23,7 +23,7 @@ use crate::http::rate_limit::{
     GUILD_WRITES_PER_USER, INVITE_ATTEMPTS_PER_ADDRESS, INVITE_ATTEMPTS_PER_USER,
 };
 
-fn limit_guild_writes(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
+pub(super) fn limit_guild_writes(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
     if state.rate_limiter.record_event(
         &format!("guild-write:{user_id}"),
         GUILD_WRITES_PER_USER,

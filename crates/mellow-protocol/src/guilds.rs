@@ -53,6 +53,35 @@ pub struct Guild {
     pub roles: Vec<Role>,
     /// Sorted by `position`; categories and channels interleaved, children reference `parent_id`.
     pub channels: Vec<Channel>,
+    /// The guild's custom emoji, oldest first (ADR-0028). Absent from older servers' payloads.
+    #[serde(default)]
+    pub emojis: Vec<CustomEmoji>,
+}
+
+/// A guild's custom emoji (ADR-0028). Its picture is served like an icon, at
+/// `GET /api/v1/icons/{id}` (and `/icons/{id}/still` when animated), to the guild's members.
+/// Messages write it `<:name:id>` (`<a:name:id>` when animated); reactions key it `name:id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomEmoji {
+    pub id: Snowflake,
+    /// 2 to 32 ASCII letters, digits and `_`, unique in its guild whatever the case.
+    pub name: String,
+    #[serde(default)]
+    pub is_animated: bool,
+}
+
+/// Query of `POST /api/v1/guilds/{guild_id}/emojis`, whose body is the picture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateEmojiQuery {
+    pub name: String,
+}
+
+/// Body of `PATCH /api/v1/guilds/{guild_id}/emojis/{emoji_id}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateEmojiRequest {
+    pub name: String,
 }
 
 /// A guild role. Higher `position` ranks higher: a member manages only roles below their highest.
@@ -170,6 +199,12 @@ pub enum AuditAction {
     InviteCreate,
     /// No `target_id`: the invite's code is the `code` change's old value.
     InviteDelete,
+    /// `target_id` is the emoji; its name is the `name` change's new value.
+    EmojiCreate,
+    /// `target_id` is the emoji: it was renamed (`name` change).
+    EmojiUpdate,
+    /// `target_id` is the emoji; its name is the `name` change's old value.
+    EmojiDelete,
     /// An action added by a newer server; never written, only read by older clients.
     #[serde(other)]
     Unknown,
@@ -434,6 +469,7 @@ mod tests {
             my_role_ids: Vec::new(),
             roles: Vec::new(),
             channels: vec![channel],
+            emojis: Vec::new(),
         };
         let json = serde_json::to_value(&guild).unwrap();
         assert_eq!(

@@ -1161,6 +1161,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn icons_and_reactions_stay_and_emoji_names_are_unique_per_guild_and_go_with_it() {
+        const LAST_VERSION_WITHOUT_EMOJIS: i64 = 19;
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_EMOJIS, database.writer())
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0), (11, 'Other', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) \
+             VALUES (30, 20, 1, 'hello'); \
+             INSERT INTO message_reactions (message_id, user_id, emoji) VALUES (30, 1, '👍'); \
+             INSERT INTO guild_images (id, guild_id, channel_id, still_id, size_bytes, \
+             created_at_unix_milliseconds) VALUES (50, 10, NULL, NULL, 9, 0); \
+             UPDATE guilds SET icon_id = 50 WHERE id = 10;",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO guild_images (id, guild_id, channel_id, still_id, size_bytes, \
+             created_at_unix_milliseconds) VALUES (60, 10, NULL, 61, 9, 0), \
+             (62, 10, NULL, NULL, 9, 0), (63, 11, NULL, NULL, 9, 0), (64, 11, NULL, NULL, 9, 0); \
+             INSERT INTO guild_emojis (id, guild_id, name) \
+             VALUES (60, 10, 'party'), (62, 10, 'cake'), (63, 11, 'Party'), (64, 11, 'cake');",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let same_name_other_case =
+            sqlx::query("UPDATE guild_emojis SET name = 'PARTY' WHERE id = 62")
+                .execute(database.writer())
+                .await;
+        let without_picture =
+            sqlx::query("INSERT INTO guild_emojis (id, guild_id, name) VALUES (70, 10, 'ghost')")
+                .execute(database.writer())
+                .await;
+        sqlx::raw_sql("DELETE FROM guild_images WHERE id = 62; DELETE FROM guilds WHERE id = 11;")
+            .execute(database.writer())
+            .await
+            .unwrap();
+        let emojis: Vec<(i64, String)> =
+            sqlx::query_as("SELECT id, name FROM guild_emojis ORDER BY id")
+                .fetch_all(database.writer())
+                .await
+                .unwrap();
+        let kept: (Option<i64>, String) = sqlx::query_as(
+            "SELECT guilds.icon_id, message_reactions.emoji FROM guilds, message_reactions \
+             WHERE guilds.id = 10",
+        )
+        .fetch_one(database.writer())
+        .await
+        .unwrap();
+        database.close().await;
+
+        assert_eq!(
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_EMOJIS + 1))
+        );
+        assert!(
+            same_name_other_case.is_err(),
+            "names are unique whatever the case"
+        );
+        assert!(without_picture.is_err(), "an emoji is a guild image");
+        assert_eq!(
+            emojis,
+            [(60, "party".to_owned())],
+            "emoji go with their picture or their guild"
+        );
+        assert_eq!(kept, (Some(50), "👍".to_owned()));
+    }
+
+    #[tokio::test]
     async fn a_database_from_a_newer_binary_is_refused_even_with_nothing_pending() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())

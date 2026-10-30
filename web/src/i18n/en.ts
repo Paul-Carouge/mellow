@@ -856,6 +856,10 @@ export const en = {
         label: "Manage server",
         description: "Rename the server and manage its invites.",
       },
+      manageEmojis: {
+        label: "Manage emoji",
+        description: "Add custom emoji to this server, rename and delete them.",
+      },
       viewModerationLog: { label: "View moderation log", description: "See who changed what on this server." },
       createInvite: { label: "Create invite", description: "Invite new people to this server." },
       sendMessages: { label: "Send messages", description: "Write in text channels." },
@@ -983,6 +987,10 @@ export const en = {
       guildUpdate: (actor: string) => `${actor} edited the server`,
       inviteCreate: (actor: string, code: string) => `${actor} created the invite ${code}`,
       inviteDelete: (actor: string, code: string) => `${actor} revoked the invite ${code}`,
+      emojiCreate: (actor: string, name: string) => `${actor} added the emoji :${name}:`,
+      emojiRename: (actor: string, before: string, after: string) =>
+        `${actor} renamed the emoji :${before}: to :${after}:`,
+      emojiDelete: (actor: string, name: string) => `${actor} deleted the emoji :${name}:`,
       unknown: (actor: string) => `${actor} made a change this version of Mellow can't show yet`,
       nameChange: (before: string, after: string) => `Name: ${before} to ${after}`,
       topicChange: (topic: string) => `New topic: ${topic}`,

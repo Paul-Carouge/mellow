@@ -52,7 +52,7 @@ fn icon_id_as_audit_text(id: Option<i64>) -> String {
 }
 
 /// Inserts the new version's row, if any, and answers its id for the owner's column.
-async fn insert_guild_image(
+pub(crate) async fn insert_guild_image(
     connection: &mut SqliteConnection,
     guild_id: i64,
     channel_id: Option<i64>,
@@ -78,7 +78,7 @@ async fn insert_guild_image(
     Ok(Some(id))
 }
 
-async fn delete_guild_image(
+pub(crate) async fn delete_guild_image(
     connection: &mut SqliteConnection,
     id: Option<i64>,
 ) -> Result<Option<StoredGuildImage>, GuildStorageError> {

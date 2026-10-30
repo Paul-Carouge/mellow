@@ -233,6 +233,16 @@ describe("moderation log", () => {
     expect(auditChangeLines(rename)).toEqual([]);
     const revoked = entry({ action: "invite_delete", changes: [{ key: "code", old_value: "abc", new_value: "" }] });
     expect(auditEntrySentence(revoked, context)).toBe("Ana revoked the invite abc");
+    const emojiRename = entry({
+      action: "emoji_update",
+      changes: [{ key: "name", old_value: "party", new_value: "fiesta" }],
+    });
+    expect(auditEntrySentence(emojiRename, context)).toBe("Ana renamed the emoji :party: to :fiesta:");
+    expect(auditChangeLines(emojiRename)).toEqual([]);
+    const emojiAdded = entry({ action: "emoji_create", changes: [{ key: "name", old_value: "", new_value: "party" }] });
+    expect(auditEntrySentence(emojiAdded, context)).toBe("Ana added the emoji :party:");
+    const emojiDeleted = entry({ action: "emoji_delete", changes: [{ key: "name", old_value: "party", new_value: "" }] });
+    expect(auditEntrySentence(emojiDeleted, context)).toBe("Ana deleted the emoji :party:");
     expect(auditEntrySentence(entry({ action: "voice_kick" as AuditLogEntry["action"] }), context)).toBe(
       "Ana made a change this version of Mellow can't show yet",
     );

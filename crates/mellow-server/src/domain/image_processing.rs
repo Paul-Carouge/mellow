@@ -25,6 +25,9 @@ const BANNER_WIDTH_PIXELS: u32 = 1_920;
 /// largest display size, for high-density screens.
 const GUILD_ICON_SIDE_PIXELS: u32 = 256;
 const CHANNEL_ICON_SIDE_PIXELS: u32 = 96;
+/// Custom emoji show at most at 48 px (jumbo, alone in a message), so they are stored at 128 px,
+/// as on Discord (ADR-0028).
+const EMOJI_SIDE_PIXELS: u32 = 128;
 /// libwebp's effort for lossless encoding: 0 (fast) to 100 (smallest); the pixels are the same
 /// whatever the effort. Measured in release on a 480 × 480, 60-frame GIF: 2.4 s at 60/4, 2.2 s at
 /// 25/1, 1.5 s at 10/0, decoding included; it runs after the upload is answered.
@@ -61,6 +64,8 @@ pub(crate) enum IconKind {
     Guild,
     /// Always still: an animated source keeps its first frame.
     Channel,
+    /// A custom emoji (ADR-0028); may be animated.
+    Emoji,
 }
 
 /// The square of a picture an icon keeps, in pixels of the picture as shown.
@@ -340,8 +345,9 @@ fn encode_with_still(
     })
 }
 
-/// A guild or channel icon: the square kept, fitted to its display size and stored as lossless
-/// WebP; a guild's animated when the source is, with its first frame as a still.
+/// A guild or channel icon or a custom emoji: the square kept, fitted to its display size and
+/// stored as lossless WebP; a guild's icon and an emoji animated when the source is, with its
+/// first frame as a still.
 pub(crate) fn process_icon(
     bytes: &[u8],
     kind: IconKind,
@@ -350,6 +356,7 @@ pub(crate) fn process_icon(
     let side = match kind {
         IconKind::Guild => GUILD_ICON_SIDE_PIXELS,
         IconKind::Channel => CHANNEL_ICON_SIDE_PIXELS,
+        IconKind::Emoji => EMOJI_SIDE_PIXELS,
     };
     let mut frames = decode_frames(bytes, |frame| crop_square_and_shrink(&frame, crop, side))?;
     if kind == IconKind::Channel {
@@ -731,6 +738,12 @@ pub(crate) mod tests {
             (channel_picture.width(), channel_picture.height()),
             (96, 96)
         );
+
+        let emoji = process_icon(&gif, IconKind::Emoji, None).unwrap();
+        assert!(emoji.picture.is_animated);
+        assert!(emoji.still.is_some());
+        let decoder = webp_animation::Decoder::new(&emoji.picture.bytes).unwrap();
+        assert_eq!(decoder.dimensions(), (128, 128));
     }
 
     #[test]

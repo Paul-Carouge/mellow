@@ -165,7 +165,7 @@ impl Guilds {
     }
 }
 
-async fn store_icon(
+pub(super) async fn store_icon(
     images: &ProfileImages,
     upload: Option<IconUpload>,
     kind: IconKind,
@@ -203,7 +203,7 @@ async fn keep_change_or_delete_new_files<T>(
 }
 
 /// Deletes the files of a version that will not be stored.
-async fn discard(images: &ProfileImages, new_image: Option<NewProfileImage>) {
+pub(super) async fn discard(images: &ProfileImages, new_image: Option<NewProfileImage>) {
     if let Some(new_image) = new_image {
         images.delete_files(new_image.id, new_image.still_id).await;
     }

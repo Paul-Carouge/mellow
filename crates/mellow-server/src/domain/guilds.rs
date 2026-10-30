@@ -8,10 +8,11 @@ use crate::storage::Database;
 use mellow_protocol::{
     AuditAction, AuditChange, AuditChangeKey, AuditLogEntry, AuditLogQuery, Ban, Channel,
     ChannelKind, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
-    CreateRoleRequest, GatewayEvent, Guild, GuildInvite, GuildSummary, InitialCategory,
-    InitialTextChannel, Invite, Member, OverwriteKind, PermissionOverwrite, Permissions,
-    PublicUser, ReorderChannelsRequest, ReorderRolesRequest, Role, SetPermissionOverwriteRequest,
-    Snowflake, UpdateChannelRequest, UpdateGuildRequest, UpdateRoleRequest,
+    CreateRoleRequest, CustomEmoji, GatewayEvent, Guild, GuildInvite, GuildSummary,
+    InitialCategory, InitialTextChannel, Invite, Member, OverwriteKind, PermissionOverwrite,
+    Permissions, PublicUser, ReorderChannelsRequest, ReorderRolesRequest, Role,
+    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateGuildRequest,
+    UpdateRoleRequest,
 };
 
 use crate::domain::account_rules::GuildCreationPolicy;
@@ -32,11 +33,13 @@ use crate::domain::profile_images::fill_profile_images;
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::events::EventHub;
 use crate::storage::audit_log::{self as audit_log_storage, ChannelEntryFilter, NewAuditEntry};
+use crate::storage::guild_emojis as guild_emojis_storage;
 use crate::storage::guilds::{
     self as guild_storage, GuildRename, GuildStorageError, JoinOutcome, Membership, NewGuild,
     RoleFieldChanges, StoredChannel, StoredInvite, StoredPermissionSnapshot,
 };
 
+mod emojis;
 mod icons;
 
 pub(crate) use icons::IconUpload;
@@ -123,6 +126,7 @@ fn guild_seen_by_member(
     member_roles: &[Role],
     roles: Vec<Role>,
     channels: &[StoredChannel],
+    emojis: Vec<CustomEmoji>,
 ) -> Guild {
     let guild_id = summary.id;
     Guild {
@@ -152,6 +156,7 @@ fn guild_seen_by_member(
             .cloned()
             .map(channel_from_stored)
             .collect(),
+        emojis,
     }
 }
 
@@ -486,6 +491,7 @@ impl Guilds {
             .ok_or(GuildError::NotFound)?;
         let channels = guild_storage::list_guild_channels(&self.database, guild_id).await?;
         let roles = guild_storage::list_roles(&self.database, guild_id).await?;
+        let emojis = guild_emojis_storage::list_guild_emojis(&self.database, guild_id).await?;
         Ok(guild_seen_by_member(
             user_id,
             GuildSummary {
@@ -497,6 +503,7 @@ impl Guilds {
             &membership.member_roles,
             roles,
             &channels,
+            emojis,
         ))
     }
 
@@ -746,6 +753,7 @@ impl Guilds {
             .await?
             .ok_or(GuildError::NotFound)?;
         let channels = guild_storage::list_guild_channels(&self.database, guild_id).await?;
+        let emojis = guild_emojis_storage::list_guild_emojis(&self.database, guild_id).await?;
         Ok(user_ids
             .iter()
             .filter_map(|user_id| {
@@ -760,6 +768,7 @@ impl Guilds {
                         &roles_of_member,
                         snapshot.roles.clone(),
                         &channels,
+                        emojis.clone(),
                     ),
                 ))
             })

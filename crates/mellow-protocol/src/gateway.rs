@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Channel, ChannelUnread, CurrentUser, DirectMessageChannel, Guild, GuildSummary, Member,
-    Message, PublicUser, ReadState, Relationship, Role, Snowflake,
+    Channel, ChannelUnread, CurrentUser, CustomEmoji, DirectMessageChannel, Guild, GuildSummary,
+    Member, Message, PublicUser, ReadState, Relationship, Role, Snowflake,
 };
 
 pub const GATEWAY_VERSION: u32 = 1;
@@ -135,6 +135,7 @@ pub struct MessageReaction {
     pub channel_id: Snowflake,
     pub message_id: Snowflake,
     pub user_id: Snowflake,
+    /// The stored key, as in `ReactionSummary::emoji`.
     pub emoji: String,
 }
 
@@ -196,6 +197,12 @@ pub enum GatewayEvent {
     GuildRolesUpdate {
         guild_id: Snowflake,
         roles: Vec<Role>,
+    },
+    /// A custom emoji was added, renamed or deleted: the guild's full list, as in `Guild::emojis`.
+    /// Sent to every member. Added after `v0.19.0`: older clients skip it.
+    GuildEmojisUpdate {
+        guild_id: Snowflake,
+        emojis: Vec<CustomEmoji>,
     },
     /// Someone reacted to a message. Sent to the channel's viewers, the reacting user included.
     MessageReactionAdd(MessageReaction),
@@ -311,6 +318,29 @@ mod tests {
         .unwrap();
         assert_eq!(member_update["t"], "GUILD_MEMBER_UPDATE");
         assert_eq!(member_update["data"]["role_ids"][0], "9");
+    }
+
+    #[test]
+    fn emoji_updates_carry_the_whole_list_and_older_guilds_have_none() {
+        let json = serde_json::to_value(GatewayEvent::GuildEmojisUpdate {
+            guild_id: Snowflake::from_raw(7),
+            emojis: vec![CustomEmoji {
+                id: Snowflake::from_raw(8),
+                name: "party_parrot".into(),
+                is_animated: true,
+            }],
+        })
+        .unwrap();
+        assert_eq!(json["t"], "GUILD_EMOJIS_UPDATE");
+        assert_eq!(json["data"]["guild_id"], "7");
+        assert_eq!(json["data"]["emojis"][0]["id"], "8");
+        assert_eq!(json["data"]["emojis"][0]["is_animated"], true);
+        let older: Guild = serde_json::from_str(
+            r#"{"id":"7","name":"Club","owner_id":"1","my_permissions":"0","my_role_ids":[],
+               "roles":[],"channels":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(older.emojis, []);
     }
 
     #[test]

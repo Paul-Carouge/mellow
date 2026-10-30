@@ -109,6 +109,18 @@ pub fn may_react(
     channel_permissions.contains(needed)
 }
 
+/// Whether a custom emoji of `emoji_guild_id` may be added as a reaction in a channel of
+/// `channel_guild_id` (`None` for a conversation): only in its own guild's channels, so everyone
+/// who sees the reaction is a member who can load its picture (ADR-0028). The other reaction
+/// rights still apply (`may_react`).
+#[must_use]
+pub fn may_react_with_custom_emoji(
+    emoji_guild_id: Snowflake,
+    channel_guild_id: Option<Snowflake>,
+) -> bool {
+    channel_guild_id == Some(emoji_guild_id)
+}
+
 /// Pinning and unpinning: `MANAGE_MESSAGES` in a guild channel; in a conversation, where no one
 /// moderates, any participant who may still write there.
 #[must_use]
