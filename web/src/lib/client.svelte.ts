@@ -1608,9 +1608,22 @@ export class MellowClient {
    * Every custom emoji of the user's guilds by id: the pictures this user may load, so the ones a
    * message or reaction can show. Others read as their name.
    */
-  readonly knownCustomEmojis: ReadonlyMap<Snowflake, CustomEmoji> = $derived(
-    new Map(this.guilds.flatMap((guild) => (guild.emojis ?? []).map((emoji) => [emoji.id, emoji] as const))),
-  );
+  readonly knownCustomEmojis: ReadonlyMap<Snowflake, CustomEmoji> = $derived.by(() => {
+    const lists = this.guilds.map((guild) => guild.emojis);
+    // Channel and role events replace the guild but keep its list: the same map then spares every
+    // message row a new parse.
+    const isUnchanged =
+      lists.length === this.knownCustomEmojiLists.length &&
+      lists.every((list, index) => list === this.knownCustomEmojiLists[index]);
+    if (!isUnchanged) {
+      this.knownCustomEmojiLists = lists;
+      this.knownCustomEmojiMap = new Map(lists.flatMap((list) => (list ?? []).map((emoji) => [emoji.id, emoji] as const)));
+    }
+    return this.knownCustomEmojiMap;
+  });
+  /** The lists `knownCustomEmojis` was last built from; never reactive. */
+  private knownCustomEmojiLists: readonly (CustomEmoji[] | undefined)[] = [];
+  private knownCustomEmojiMap: ReadonlyMap<Snowflake, CustomEmoji> = new Map();
 
   /** The guild's custom emoji, oldest first; none from an older instance. */
   emojisOf(guildId: Snowflake): CustomEmoji[] {

@@ -1105,6 +1105,18 @@ describe("Custom emoji", () => {
     expect(client.emojisOf("999")).toEqual([]);
   });
 
+  it("are known by id across servers, the same map until a list changes", () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.applyReady(ready({ guilds: [{ ...guild(), emojis: [party] }] }));
+    const known = client.knownCustomEmojis;
+    expect([...known.values()]).toEqual([party]);
+    client.applyEvent({ t: "GUILD_ROLES_UPDATE", data: { guild_id: GUILD, roles: [] } }, 0);
+    expect(client.knownCustomEmojis).toBe(known);
+    client.applyEvent({ t: "GUILD_EMOJIS_UPDATE", data: { guild_id: GUILD, emojis: [party, parrot] } }, 0);
+    expect(client.knownCustomEmojis).not.toBe(known);
+    expect(client.knownCustomEmojis.get(parrot.id)).toEqual(parrot);
+  });
+
   it("show a creation or deletion at once, and a rename with the gateway's list", async () => {
     const calls: unknown[][] = [];
     const client = new MellowClient(
