@@ -94,15 +94,22 @@ export function withSearchHighlights(blocks: readonly BlockNode[], content: stri
   function markInlines(nodes: readonly InlineNode[]): InlineNode[] {
     return nodes.flatMap((node): InlineNode[] => {
       switch (node.kind) {
-        case "text": {
-          const offset = locate(node.text);
-          if (offset === -1) {
-            return [node];
-          }
-          return splitByHighlights(node.text, offset, normalized).map((segment) =>
-            segment.isMatch ? { kind: "match", text: segment.text } : { kind: "text", text: segment.text },
-          );
-        }
+        case "text":
+          // Line by line: a quote's text has lost the "> " starting each line of the content.
+          return node.text.split("\n").flatMap((line, index): InlineNode[] => {
+            const lineBreak: InlineNode[] = index > 0 ? [{ kind: "text", text: "\n" }] : [];
+            const offset = locate(line);
+            if (offset === -1) {
+              return line === "" ? lineBreak : [...lineBreak, { kind: "text", text: line }];
+            }
+            return [
+              ...lineBreak,
+              ...splitByHighlights(line, offset, normalized).map((segment): InlineNode =>
+                segment.isMatch ? { kind: "match", text: segment.text } : { kind: "text", text: segment.text },
+              ),
+            ];
+          });
+        // shortcut: a mention chip stays whole and unlit even when its name matched; mark the chip if people miss it.
         case "mention":
         case "code":
           locate(node.text);

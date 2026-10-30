@@ -80,6 +80,36 @@ describe("withSearchHighlights", () => {
     });
   });
 
+  it("marks words on every line of a quote, whose text lost each line's \"> \"", () => {
+    const content = "> one pizza\n> two pizza\nafter";
+    const ranges = [
+      { start: 6, end: 11 },
+      { start: 18, end: 23 },
+    ];
+    const matches = JSON.stringify(marked(content, ranges)).match(/"kind":"match","text":"pizza"/g) ?? [];
+    expect(matches).toHaveLength(2);
+  });
+
+  it("leaves a mention chip whole and unlit when its name matched (documented shortcut)", () => {
+    const ada = { id: "1", username: "ada", display_name: "Ada" };
+    const content = "ask @ada about pizza";
+    const blocks = withSearchHighlights(parseMessageMarkdown(content, mentionablePeople([ada])), content, [
+      { start: 5, end: 8 },
+      { start: 15, end: 20 },
+    ]);
+    expect(blocks).toEqual([
+      {
+        kind: "paragraph",
+        children: [
+          { kind: "text", text: "ask " },
+          { kind: "mention", text: "@ada", user: ada },
+          { kind: "text", text: " about " },
+          { kind: "match", text: "pizza" },
+        ],
+      },
+    ]);
+  });
+
   it("leaves the message as parsed without ranges", () => {
     const content = "> quoted\nplain";
     expect(marked(content, [])).toEqual(parseMessageMarkdown(content, NOBODY));
