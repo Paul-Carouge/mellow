@@ -1180,6 +1180,7 @@ export const fr: Catalogue = {
     notNow: "Plus tard",
     turnedOn: "Notifications activées.",
     refused: "Ton navigateur a bloqué les notifications. Tu pourras les autoriser plus tard dans les paramètres du site.",
+    askLater: "Les notifications restent désactivées. Tu peux les activer dans Paramètres utilisateur, Notifications.",
     title: "Notifications",
     intro: `Quand ton statut est «${NO_BREAK_SPACE}Ne pas déranger${NO_BREAK_SPACE}», rien ne te notifie. Ces réglages restent dans ce navigateur.`,
     desktop: "Notifications sur le bureau",

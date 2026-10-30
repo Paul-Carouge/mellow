@@ -1179,6 +1179,7 @@ export const en = {
     notNow: "Not now",
     turnedOn: "Notifications turned on.",
     refused: "Your browser blocked notifications. You can allow them later in the site settings.",
+    askLater: "Notifications stay off. You can turn them on in User settings, Notifications.",
     // User settings → Notifications.
     title: "Notifications",
     intro: "While your status is Do not disturb, nothing notifies you. These settings stay in this browser.",

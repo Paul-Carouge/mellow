@@ -28,7 +28,13 @@
       hasAnsweredPermissionBar: true,
       areDesktopNotificationsEnabled: answer === "granted" || settings.areDesktopNotificationsEnabled,
     }));
-    announcement = answer === "granted" ? strings.notifications.turnedOn : strings.notifications.refused;
+    // A prompt closed without an answer ("default") blocked nothing: the settings switch asks again.
+    announcement =
+      answer === "granted"
+        ? strings.notifications.turnedOn
+        : answer === "denied"
+          ? strings.notifications.refused
+          : strings.notifications.askLater;
   }
 
   function dismiss() {
