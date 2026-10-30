@@ -597,7 +597,11 @@
 >
   <!-- No line under the header: the sheet's tone and space separate it (ADR-0022 §2). -->
   <header
-    class="flex h-(--mw-component-chat-header-height) shrink-0 items-center gap-xs ps-(--mw-component-chat-header-padding-inline) pe-xs pointer-coarse:gap-0"
+    class={[
+      "flex h-(--mw-component-chat-header-height) shrink-0 items-center gap-xs ps-(--mw-component-chat-header-padding-inline) pe-xs",
+      // Phones only: the drawer layout needs the room for the channel name; tablets keep the gaps.
+      hasNavigationDrawer && "pointer-coarse:gap-0",
+    ]}
   >
     {#if hasNavigationDrawer}
       <IconButton
