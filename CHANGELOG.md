@@ -4,6 +4,17 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-30
+Notifications. No database migration.
+
+### Added
+- Web: browser notifications for mentions and for messages in conversations and groups, while Mellow is open in a background tab or an unfocused window (one per channel, updated; click to open it). Turn them on from the bar that asks once, or in User settings → Notifications, where you can also hide message previews and turn the sound off. Nothing is shown in Do not disturb.
+- Web: mute a server, channel, conversation or group for 15 minutes to "until I turn it back on", and choose to be notified for all messages, only mentions or nothing, from their right-click menus. Muted rows are greyed out; mentions still get through. These choices are kept in this browser.
+- Web: Melli rings a little bell when something arrives, and closes its eyes in Do not disturb. The tab title shows the count, as in "(3) Mellow".
+
+### Fixed
+- Web: a blocked person's message in a group no longer counts as an unread mention.
+
 ## [0.20.0] - 2026-10-30
 Custom emoji. This version migrates the database (migration 20, with the usual automatic backup); older versions refuse it afterwards.
 
