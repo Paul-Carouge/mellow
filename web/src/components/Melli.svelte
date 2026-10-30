@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from "svelte";
+
   import { prefersReducedMotion } from "../lib/motion.svelte";
   import type { MelliState } from "./melli";
 
@@ -12,9 +14,28 @@
     sizeToken: string;
     /** The still pose of the state even when motion is allowed (the gallery); reduced motion always gets it. */
     isStill?: boolean;
+    /**
+     * Something for the reader arrived: each increase plays the chime once (a hop and a swinging
+     * bell). An increase during a chime does not restart it; a still Melli never chimes.
+     */
+    chime?: number;
   }
 
-  let { state = "idle", sizeToken, isStill = false }: Props = $props();
+  // Renamed: a binding called `state` would shadow the `$state` rune.
+  let { state: shownState = "idle", sizeToken, isStill = false, chime = 0 }: Props = $props();
+
+  const isStillPose = $derived(isStill || prefersReducedMotion.current);
+  let isChiming = $state(false);
+  // Plain: only an increase after mounting plays, never the count Melli was created with.
+  let chimesSeen = untrack(() => chime);
+  $effect(() => {
+    if (chime > chimesSeen) {
+      chimesSeen = chime;
+      if (!untrack(() => isStillPose)) {
+        isChiming = true;
+      }
+    }
+  });
 
   // The cloud: a core and six puffs. The outline is the same circles grown by OUTLINE_WIDTH and
   // drawn behind, so only the cloud's outer edge shows.
@@ -31,13 +52,19 @@
 </script>
 
 <svg
-  class={["melli", (isStill || prefersReducedMotion.current) && "is-still"]}
-  data-state={state}
+  class={["melli", isStillPose && "is-still", isChiming && !isStillPose && "is-chiming"]}
+  data-state={shownState}
   viewBox="0 0 256 256"
   aria-hidden="true"
   focusable="false"
   style:width="var({sizeToken})"
   style:height="var({sizeToken})"
+  onanimationend={(event) => {
+    // Scoped keyframe names carry a prefix; the hop is the chime's longest part.
+    if (event.animationName.endsWith("chime-hop")) {
+      isChiming = false;
+    }
+  }}
 >
   <ellipse class="shadow" cx="128" cy="222" rx="54" ry="7" />
   <!-- Behind the cloud, so each drop falls out of it. -->
@@ -46,6 +73,8 @@
     <path class="drop" d="M128 194C132 200 135 204 135 207A7 7 0 0 1 121 207C121 204 124 200 128 194Z" />
     <path class="drop" d="M152 194C156 200 159 204 159 207A7 7 0 0 1 145 207C145 204 148 200 152 194Z" />
   </g>
+  <!-- The chime's hop wraps the state's own loop, so both play together. -->
+  <g class="chime-hop">
   <g class="motion">
     <g class="puff">
       <g class="cloud-outline">
@@ -83,6 +112,7 @@
       <ellipse class="mouth" cx="128" cy="150" rx="6" ry="5" />
     </g>
   </g>
+  </g>
   <g class="mark dots">
     <circle class="dot" cx="156" cy="44" r="8" />
     <circle class="dot" cx="180" cy="44" r="8" />
@@ -104,6 +134,15 @@
   </g>
   <g class="stroke mark arrow">
     <path d="M200 84V44M186 58L200 44L214 58" />
+  </g>
+  <!-- A small bell where the big sparkle sits: it swings in the chime and is crossed out in
+       Do not disturb. -->
+  <g class="mark bell">
+    <path d="M176 76V62A16 16 0 0 1 208 62V76L214 82H170Z" />
+    <circle cx="192" cy="88" r="6" />
+  </g>
+  <g class="stroke mark bell-slash">
+    <path d="M168 44L216 92" />
   </g>
   <g class="stroke mark zzz">
     <path class="z" d="M164 58H180L164 74H180" />
@@ -188,8 +227,13 @@
   /* Marks sit on the host's surface, not on the cloud. */
   .dots,
   .sparkle,
-  .drops {
+  .drops,
+  .bell {
     fill: var(--mark);
+  }
+  /* The bell swings from its top. */
+  .bell {
+    transform-origin: 50% 0;
   }
   .stroke.mark {
     stroke: var(--mark);
@@ -249,24 +293,56 @@
     animation-delay: calc(var(--mw-component-melli-rain-duration) / -1.5);
   }
 
-  /* notification: happy eyes, blush, a hop and a sparkle. */
+  /* notification: happy eyes, blush and a sparkle; it floats as at idle (the hop is the chime's). */
   [data-state="notification"] .eyes {
     opacity: 0;
   }
   [data-state="notification"] :is(.eyes-happy, .blush, .sparkle) {
     opacity: 1;
   }
-  [data-state="notification"] .motion {
-    animation: hop var(--mw-component-melli-hop-duration) ease-in-out infinite;
-  }
-  [data-state="notification"] .shadow {
-    animation: shadow-hop var(--mw-component-melli-hop-duration) ease-in-out infinite;
-  }
   [data-state="notification"] .star {
     animation: twinkle var(--mw-component-melli-hop-duration) ease-in-out infinite;
   }
   [data-state="notification"] .star-small {
     animation-delay: calc(var(--mw-component-melli-hop-duration) / -2);
+  }
+
+  /* do-not-disturb: eyes softly closed under a crossed-out bell, puffs still, a slow breath. */
+  [data-state="do-not-disturb"] .eyes {
+    opacity: 0;
+  }
+  [data-state="do-not-disturb"] :is(.eyes-closed, .bell, .bell-slash) {
+    opacity: 1;
+  }
+  [data-state="do-not-disturb"] .puff {
+    animation-play-state: paused;
+  }
+  [data-state="do-not-disturb"] .motion {
+    animation: breathe var(--mw-component-melli-sleep-duration) ease-in-out infinite;
+  }
+  [data-state="do-not-disturb"] .shadow {
+    animation: shadow-breathe var(--mw-component-melli-sleep-duration) ease-in-out infinite;
+  }
+
+  /* The chime, over any state: one hop with happy eyes, the bell swinging where the sparkle was. */
+  .chime-hop {
+    transform-box: view-box;
+    transform-origin: 128px 200px;
+  }
+  .is-chiming .chime-hop {
+    animation: chime-hop var(--mw-component-melli-chime-duration) ease-in-out;
+  }
+  .is-chiming .shadow {
+    animation: shadow-chime var(--mw-component-melli-chime-duration) ease-in-out;
+  }
+  .is-chiming :is(.eyes, .sparkle) {
+    opacity: 0;
+  }
+  .is-chiming :is(.eyes-happy, .blush) {
+    opacity: 1;
+  }
+  .is-chiming .bell {
+    animation: bell-swing var(--mw-component-melli-chime-duration) ease-in-out;
   }
 
   /* incoming-call: wide eyes, rocking like a ringing phone. */
@@ -347,9 +423,6 @@
   .is-still[data-state="incoming-call"] .motion {
     transform: rotate(-10deg);
   }
-  .is-still[data-state="notification"] .motion {
-    transform: translateY(-6px);
-  }
 
   @keyframes float {
     50% {
@@ -408,34 +481,64 @@
       transform: translateY(16px);
     }
   }
-  @keyframes hop {
+  @keyframes chime-hop {
     0%,
-    60%,
+    78%,
     100% {
       transform: none;
     }
-    12% {
-      transform: scale(1.08, 0.9);
+    10% {
+      transform: scale(1.1, 0.88);
     }
-    28% {
-      transform: translateY(-22px) scale(0.94, 1.08);
+    26% {
+      transform: translateY(-18px) scale(0.94, 1.08);
     }
-    44% {
-      transform: scale(1.06, 0.92);
+    42% {
+      transform: scale(1.07, 0.92);
+    }
+    54% {
+      transform: none;
+    }
+    66% {
+      transform: translateY(-6px);
     }
   }
-  @keyframes shadow-hop {
-    0%,
-    60%,
-    100% {
-      transform: none;
+  @keyframes shadow-chime {
+    26% {
+      transform: scaleX(0.72);
+      opacity: 0.5;
+    }
+    66% {
+      transform: scaleX(0.9);
+    }
+  }
+  @keyframes bell-swing {
+    0% {
+      opacity: 0;
+      transform: scale(0.6);
     }
     12% {
-      transform: scaleX(1.08);
+      opacity: 1;
+      transform: none;
     }
-    28% {
-      transform: scaleX(0.7);
-      opacity: 0.5;
+    24% {
+      transform: rotate(-18deg);
+    }
+    38% {
+      transform: rotate(14deg);
+    }
+    52% {
+      transform: rotate(-8deg);
+    }
+    66% {
+      transform: rotate(4deg);
+    }
+    82% {
+      opacity: 1;
+      transform: none;
+    }
+    100% {
+      opacity: 0;
     }
   }
   @keyframes twinkle {

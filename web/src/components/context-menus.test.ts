@@ -80,6 +80,7 @@ describe("personMenuActions", () => {
     canShowProfile: true,
     canOpenConversation: true,
     conversationChannel: false,
+    isConversationMuted: false,
   };
 
   it("offers someone you don't know a message, a request, their ID and Block", () => {
@@ -128,22 +129,52 @@ describe("personMenuActions", () => {
 
   it("copies the conversation's ID too from its row, where Message is pointless", () => {
     const row = personMenuActions({ ...stranger, relationship: "friend", canShowProfile: false, canOpenConversation: false, conversationChannel: true });
-    expect(row).toEqual(["copy-user-id", "copy-channel-id", "separator", "remove-friend", "block"]);
+    expect(row).toEqual([
+      "mute",
+      "notification-settings",
+      "separator",
+      "copy-user-id",
+      "copy-channel-id",
+      "separator",
+      "remove-friend",
+      "block",
+    ]);
+  });
+
+  it("unmutes a muted conversation from its row, and never mutes from elsewhere", () => {
+    const row = personMenuActions({ ...stranger, relationship: "friend", canShowProfile: false, canOpenConversation: false, conversationChannel: true, isConversationMuted: true });
+    expect(row.slice(0, 2)).toEqual(["unmute", "notification-settings"]);
+    expect(personMenuActions({ ...stranger, isConversationMuted: true })).not.toContain("unmute");
   });
 });
 
 describe("channelMenuActions", () => {
   it("offers Edit channel only with a settings page to show", () => {
-    const reader = { canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false, canDelete: false };
-    expect(channelMenuActions({ ...reader, canEditChannel: true })).toEqual(["edit-channel", "separator", "copy-channel-id"]);
-    expect(channelMenuActions(reader)).toEqual(["copy-channel-id"]);
+    const reader = { canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false, canDelete: false, isMuted: false };
+    expect(channelMenuActions({ ...reader, canEditChannel: true })).toEqual([
+      "edit-channel",
+      "separator",
+      "mute",
+      "notification-settings",
+      "separator",
+      "copy-channel-id",
+    ]);
+    expect(channelMenuActions(reader)).toEqual(["mute", "notification-settings", "separator", "copy-channel-id"]);
+  });
+
+  it("offers Unmute on a muted channel", () => {
+    const muted = { canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false, canDelete: false, isMuted: true };
+    expect(channelMenuActions(muted)).toEqual(["unmute", "notification-settings", "separator", "copy-channel-id"]);
   });
 
   it("groups the moves a manager may make between Edit channel and the ID", () => {
     expect(
-      channelMenuActions({ canEditChannel: true, canMoveUp: false, canMoveDown: true, canMoveToCategory: true, canDelete: true }),
+      channelMenuActions({ canEditChannel: true, canMoveUp: false, canMoveDown: true, canMoveToCategory: true, canDelete: true, isMuted: false }),
     ).toEqual([
       "edit-channel",
+      "separator",
+      "mute",
+      "notification-settings",
       "separator",
       "move-down",
       "move-to-category",
@@ -172,7 +203,7 @@ describe("categoryMenuActions", () => {
 });
 
 describe("serverMenuActions", () => {
-  const everything = { canInvitePeople: true, canOpenSettings: true, canCreateChannels: true, canLeave: true };
+  const everything = { canInvitePeople: true, canOpenSettings: true, canCreateChannels: true, canLeave: true, isMuted: false };
 
   it("creates channels and categories from the header's menu", () => {
     expect(serverMenuActions(everything, "header")).toEqual([
@@ -180,6 +211,9 @@ describe("serverMenuActions", () => {
       "server-settings",
       "create-channel",
       "create-category",
+      "separator",
+      "mute",
+      "notification-settings",
       "separator",
       "leave-server",
     ]);
@@ -190,22 +224,35 @@ describe("serverMenuActions", () => {
       "invite-people",
       "server-settings",
       "separator",
+      "mute",
+      "notification-settings",
+      "separator",
       "copy-server-id",
       "separator",
       "leave-server",
     ]);
   });
 
-  it("gives a plain member of a server they own nothing but the ID", () => {
-    const owner = { canInvitePeople: false, canOpenSettings: false, canCreateChannels: false, canLeave: false };
-    expect(serverMenuActions(owner, "strip")).toEqual(["copy-server-id"]);
-    expect(serverMenuActions(owner, "header")).toEqual([]);
+  it("gives a plain member of a server they own only notifications and the ID", () => {
+    const owner = { canInvitePeople: false, canOpenSettings: false, canCreateChannels: false, canLeave: false, isMuted: true };
+    expect(serverMenuActions(owner, "strip")).toEqual(["unmute", "notification-settings", "separator", "copy-server-id"]);
+    expect(serverMenuActions(owner, "header")).toEqual(["unmute", "notification-settings"]);
   });
 });
 
 describe("groupMenuActions", () => {
   it("renames, copies the ID, and leaves last", () => {
-    expect(groupMenuActions()).toEqual(["rename-group", "separator", "copy-channel-id", "separator", "leave-group"]);
+    expect(groupMenuActions(false)).toEqual([
+      "rename-group",
+      "separator",
+      "mute",
+      "notification-settings",
+      "separator",
+      "copy-channel-id",
+      "separator",
+      "leave-group",
+    ]);
+    expect(groupMenuActions(true)).toContain("unmute");
   });
 });
 

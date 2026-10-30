@@ -1153,6 +1153,7 @@ export const en = {
     myAccount: "My account",
     profile: "Profile",
     about: "About",
+    notifications: "Notifications",
     closeSettings: "Close settings",
     escapeKey: "Esc",
     signOut: "Sign out",
@@ -1162,6 +1163,65 @@ export const en = {
     sourceCode: "Source code",
     licence: "Mellow is free software under the AGPL-3.0 licence. You can read, change and share its code.",
     sourceCodeOnGitHub: "Source code on GitHub",
+  },
+
+  /** Notifications, mutes and the permission bar (docs/design/web-notifications.md). */
+  notifications: {
+    // In a browser notification.
+    spoiler: "spoiler",
+    sentFiles: (files: number) => (files === 1 ? "Sent a file" : `Sent ${count(files)} files`),
+    titleWithCount: (place: string, messages: number) => `${place}, ${count(messages)} new messages`,
+    newMessageFrom: (author: string) => `New message from ${author}`,
+    channelInServer: (channel: string, server: string) => `#${channel} · ${server}`,
+    // The one-time permission bar.
+    barText: "Get a notification when someone mentions you or writes to you.",
+    turnOn: "Turn on notifications",
+    notNow: "Not now",
+    turnedOn: "Notifications turned on.",
+    refused: "Your browser blocked notifications. You can allow them later in the site settings.",
+    // User settings → Notifications.
+    title: "Notifications",
+    intro: "While your status is Do not disturb, nothing notifies you. These settings stay in this browser.",
+    desktop: "Desktop notifications",
+    desktopAsk: "Your browser will ask you once.",
+    desktopAllowed: "Mentions and direct messages show on your desktop while Mellow is in the background.",
+    desktopBlocked:
+      "Your browser blocks notifications from this site. Allow them in the site settings next to the address, then come back.",
+    desktopUnsupported: "This browser can't show notifications from Mellow.",
+    previews: "Show message previews",
+    previewsDescription: "Show the start of the message. When off, a notification only says who wrote.",
+    sound: "Sound",
+    soundDescription: "Play a soft chime when a mention or a direct message arrives.",
+    // Menus and the per-place dialog.
+    muteMenu: "Mute…",
+    unmute: "Unmute",
+    settingsMenu: "Notification settings…",
+    unmuted: (place: string) => `${place} unmuted.`,
+    dialogTitle: (place: string) => `Notifications for ${place}`,
+    muteLegend: "Mute",
+    muteDescription:
+      "A muted place stays quiet: no unread marks and no notifications, except when someone mentions you.",
+    dontMute: "Don't mute",
+    muteFor: {
+      "15-minutes": "For 15 minutes",
+      "1-hour": "For 1 hour",
+      "8-hours": "For 8 hours",
+      "24-hours": "For 24 hours",
+      "until-turned-back-on": "Until I turn it back on",
+    },
+    mutedUntilTime: (time: string) => `Until ${time}`,
+    mutedNow: "Now",
+    levelLegend: "Notify me about",
+    levels: {
+      all: { label: "All messages", description: "A notification for every message." },
+      mentions: { label: "Only mentions", description: "When someone writes @ and your name." },
+      nothing: { label: "Nothing", description: "No notifications. Mentions still show their red badge." },
+    },
+    sameAsServer: "Same as the server",
+    sameAsServerNow: (level: string) => `Now: ${level}.`,
+    saved: (place: string) => `Notification settings saved for ${place}.`,
+    /** A row's accessible name when muted: "memes, muted". */
+    withMuted: (name: string) => `${name}, muted`,
   },
 
   account: {

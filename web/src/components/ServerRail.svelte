@@ -17,9 +17,11 @@
   import MentionBadge from "./MentionBadge.svelte";
   import { homeMelliState } from "./melli";
   import type { MenuOrigin } from "./menu-placement";
+  import { isMuted, isTargetMuted, notificationMenuHandler } from "./notification-preferences.svelte";
+  import { attentionCount, melliChimeCount } from "./notifier.svelte";
 
   // The server strip of the navigator card (DESIGN.md §5.2, ADR-0022 §1): Home, a separator, the
-  // servers, then "Add a server". Icons morph from circle to squircle on hover, focus and
+  // servers, then "Add a server". A muted server shows no unread pill; its mention badge stays. Icons morph from circle to squircle on hover, focus and
   // selection; the pill at the card's edge says unread (short), hover (medium) or selected (tall).
   interface Props {
     client: MellowClient;
@@ -45,11 +47,19 @@
     if (!guild) {
       return [];
     }
-    return menuEntries(serverMenuActions(serverMenuFactsOf(guild, client.user?.id), "strip"), (action) =>
-      action === "copy-server-id"
-        ? { onselectAndWait: () => copyIdentifier(guild.id, strings.contextMenu.serverIdCopied) }
-        : { onselect: () => onopendialog(action, guild.id) },
-    );
+    const target = { kind: "server", guildId: guild.id } as const;
+    return menuEntries(serverMenuActions(serverMenuFactsOf(guild, client.user?.id, isTargetMuted(target)), "strip"), (action) => {
+      switch (action) {
+        case "copy-server-id":
+          return { onselectAndWait: () => copyIdentifier(guild.id, strings.contextMenu.serverIdCopied) };
+        case "mute":
+        case "unmute":
+        case "notification-settings":
+          return notificationMenuHandler(action, target, guild.name);
+        default:
+          return { onselect: () => onopendialog(action, guild.id) };
+      }
+    });
   });
 
   function openServerMenu(guild: Guild, origin: MenuOrigin, invoker: HTMLElement, source: "pointer" | "keyboard"): boolean {
@@ -82,8 +92,16 @@
   }
 
   const isHomeSelected = $derived(client.selectedGuildId === null);
-  const hasUnreadConversation = $derived(client.conversations.some((conversation) => client.hasUnread(conversation.id)));
-  const conversationsMentionCount = $derived(client.conversationsMentionCount());
+  // A muted conversation raises nothing at Home: every message of a conversation counts there.
+  const audibleConversations = $derived(
+    client.conversations.filter((conversation) => !isMuted({ guildId: null, channelId: conversation.id })),
+  );
+  const hasUnreadConversation = $derived(audibleConversations.some((conversation) => client.hasUnread(conversation.id)));
+  const conversationsMentionCount = $derived(
+    audibleConversations.reduce((sum, conversation) => sum + client.mentionCount(conversation.id), 0),
+  );
+  const isDoNotDisturb = $derived(client.user?.status === "do_not_disturb");
+  const hasSomethingForTheReader = $derived(hasUnreadConversation || attentionCount(client) > 0);
 </script>
 
 {#snippet railItem(label: string, isSelected: boolean, hasUnread: boolean, mentionCount: number, onclick: (event: MouseEvent) => void, content: Snippet, kind: "home" | "server" | "action", guild: Guild | null = null)}
@@ -109,7 +127,7 @@
     <span class="relative">
       <button
         type="button"
-        aria-label={nameWithUnreadState(label, hasUnread, mentionCount)}
+        aria-label={nameWithUnreadState(guild && isTargetMuted({ kind: "server", guildId: guild.id }) ? strings.notifications.withMuted(label) : label, hasUnread, mentionCount)}
         aria-current={isSelected ? "page" : undefined}
         class={[
           "rail-item relative grid size-(--mw-component-rail-item-size) place-items-center overflow-hidden",
@@ -168,7 +186,11 @@
 {#snippet homeMark()}
   <!-- Melli sits on the strip at rest; hover, focus and selection fill the button apricot, which
        morphs like the other icons, and switch Melli's marks to ink (DESIGN.md §2.10). -->
-  <Melli state={homeMelliState(client.status, hasUnreadConversation)} sizeToken="--mw-component-rail-item-size" />
+  <Melli
+    state={homeMelliState(client.status, hasSomethingForTheReader, isDoNotDisturb)}
+    chime={melliChimeCount()}
+    sizeToken="--mw-component-rail-item-size"
+  />
 {/snippet}
 
 {#snippet addIcon()}
@@ -180,7 +202,9 @@
     {@render railItem(strings.rail.directMessages, isHomeSelected, hasUnreadConversation, conversationsMentionCount, () => select(null), homeMark, "home")}
     <li aria-hidden="true" class="h-(--mw-size-rail-separator-height) w-(--mw-size-rail-separator-width) shrink-0 rounded-full bg-(--mw-component-rail-separator-color)"></li>
     {#each client.guilds as guild (guild.id)}
-      {@const hasUnread = guild.channels.some((channel) => client.hasUnread(channel.id))}
+      {@const hasUnread =
+        !isTargetMuted({ kind: "server", guildId: guild.id }) &&
+        guild.channels.some((channel) => !isMuted({ guildId: guild.id, channelId: channel.id }) && client.hasUnread(channel.id))}
       {#snippet serverMark()}
         {#if guild.icon && !failedIconIds.has(guild.icon.id)}
           {@const iconId = guild.icon.id}

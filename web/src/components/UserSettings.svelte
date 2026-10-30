@@ -6,6 +6,7 @@
   import AccountSettings from "./AccountSettings.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import NotificationSettings from "./NotificationSettings.svelte";
   import ProfileSettings from "./ProfileSettings.svelte";
 
   // User settings (DESIGN.md §5.8 layout, §5.9 sections), over the whole window as on desktop: a
@@ -21,10 +22,11 @@
 
   let { client, isWide, onclose }: Props = $props();
 
-  type Section = "account" | "profile" | "about";
+  type Section = "account" | "profile" | "notifications" | "about";
   const SECTION_TITLES: Record<Section, string> = {
     account: strings.settings.myAccount,
     profile: strings.settings.profile,
+    notifications: strings.settings.notifications,
     about: strings.settings.about,
   };
   const SOURCE_CODE_URL = "https://github.com/Paul-Carouge/mellow";
@@ -182,7 +184,7 @@
         >
           {@render navGroup(strings.settings.userSettings, ["account", "profile"])}
           {@render separator()}
-          {@render navGroup(strings.settings.appSettings, ["about"])}
+          {@render navGroup(strings.settings.appSettings, ["notifications", "about"])}
           {@render separator()}
           <button
             type="button"
@@ -241,6 +243,8 @@
               <AccountSettings bind:this={accountSettings} {client} />
             {:else if section === "profile"}
               <ProfileSettings {client} />
+            {:else if section === "notifications"}
+              <NotificationSettings />
             {:else}
               <h2 class="type-heading-lg text-(--mw-component-settings-page-title-text)">{strings.settings.about}</h2>
               <p class="mt-(--mw-component-settings-page-title-gap) type-heading-md text-(--mw-component-settings-app-name-text)">

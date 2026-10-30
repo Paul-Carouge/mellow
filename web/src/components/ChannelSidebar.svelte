@@ -35,6 +35,7 @@
   import { canManageChannel, visibleChannelSections } from "./channel-settings";
   import { contextMenuTrigger } from "./context-menu-trigger";
   import {
+    type MenuItemHandler,
     type ServerMenuAction,
     categoryMenuActions,
     channelMenuActions,
@@ -45,6 +46,7 @@
     serverMenuFactsOf,
   } from "./context-menus";
   import { nameWithUnreadState } from "./format";
+  import { isTargetMuted, notificationMenuHandler } from "./notification-preferences.svelte";
   import GroupAvatar from "./GroupAvatar.svelte";
   import {
     conversationDisplayName,
@@ -420,16 +422,26 @@
   let isMenuOpen = $state(false);
   const serverMenuEntries = $derived(
     guild
-      ? menuEntries(serverMenuActions(serverMenuFactsOf(guild, user?.id), "header"), (action) => serverMenuHandler(action, guild))
+      ? menuEntries(
+          serverMenuActions(serverMenuFactsOf(guild, user?.id, isTargetMuted({ kind: "server", guildId: guild.id })), "header"),
+          (action) => serverMenuHandler(action, guild),
+        )
       : [],
   );
   const hasServerMenu = $derived(serverMenuEntries.length > 0);
 
   /** The header's dialogs and the strip's share their names with the menu's actions. */
-  function serverMenuHandler(action: ServerMenuAction, server: Guild) {
-    return action === "copy-server-id"
-      ? { onselectAndWait: () => copyIdentifier(server.id, strings.contextMenu.serverIdCopied) }
-      : { onselect: () => onopendialog(action, server.id) };
+  function serverMenuHandler(action: ServerMenuAction, server: Guild): MenuItemHandler {
+    switch (action) {
+      case "copy-server-id":
+        return { onselectAndWait: () => copyIdentifier(server.id, strings.contextMenu.serverIdCopied) };
+      case "mute":
+      case "unmute":
+      case "notification-settings":
+        return notificationMenuHandler(action, { kind: "server", guildId: server.id }, server.name);
+      default:
+        return { onselect: () => onopendialog(action, server.id) };
+    }
   }
 
   // The rows' menus: a channel's, a group's, or the person's for a one-to-one conversation.
@@ -458,8 +470,10 @@
     const target = rowMenuTarget;
     if (target?.kind === "channel") {
       const { channel } = target;
+      const notificationTarget = { kind: "channel", guildId: channel.guild_id, channelId: channel.id } as const;
       const facts = {
         canEditChannel: canEditChannel(channel),
+        isMuted: isTargetMuted(notificationTarget),
         canMoveUp: canReorderNow && channelStepDestination(sections, channel.id, -1) !== null,
         canMoveDown: canReorderNow && channelStepDestination(sections, channel.id, 1) !== null,
         canMoveToCategory:
@@ -486,6 +500,10 @@
             return { onselectAndWait: () => copyIdentifier(channel.id, strings.contextMenu.channelIdCopied) };
           case "delete-channel":
             return { onselect: () => (channelDialog = { kind: "delete", channel }) };
+          case "mute":
+          case "unmute":
+          case "notification-settings":
+            return notificationMenuHandler(action, notificationTarget, `#${channel.name}`);
         }
       });
     }
@@ -512,14 +530,27 @@
     }
     if (target?.kind === "group") {
       const { group, invoker } = target;
-      return menuEntries(groupMenuActions(), (action) =>
-        action === "copy-channel-id"
-          ? { onselectAndWait: () => copyIdentifier(group.id, strings.contextMenu.channelIdCopied) }
-          : {
+      const notificationTarget = { kind: "conversation", channelId: group.id } as const;
+      return menuEntries(groupMenuActions(isTargetMuted(notificationTarget)), (action) => {
+        switch (action) {
+          case "copy-channel-id":
+            return { onselectAndWait: () => copyIdentifier(group.id, strings.contextMenu.channelIdCopied) };
+          case "mute":
+          case "unmute":
+          case "notification-settings":
+            return notificationMenuHandler(
+              action,
+              notificationTarget,
+              conversationDisplayName(group, user?.id ?? null),
+            );
+          case "rename-group":
+          case "leave-group":
+            return {
               onselect: () =>
                 (groupDialog = { kind: action === "rename-group" ? "rename" : "leave", group, invoker }),
-            },
-      );
+            };
+        }
+      });
     }
     return [];
   });
@@ -593,16 +624,25 @@
     }
   }
 
-  const rowClasses = (isSelected: boolean, hasUnread: boolean) => [
+  /** A muted row is greyed and never shows unread (DESIGN.md §5.3); its bell-slash says so too. */
+  const rowClasses = (isSelected: boolean, hasUnread: boolean, isMuted = false) => [
     "flex w-full items-center gap-(--mw-component-channel-row-icon-gap) rounded-(--mw-component-channel-row-radius) px-(--mw-component-channel-row-padding-inline) text-start transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-visible:focus-ring-inset",
     isSelected
       ? "bg-(--mw-component-channel-row-background-selected) text-(--mw-component-channel-row-text-selected)"
       : [
-          hasUnread ? "text-(--mw-component-channel-row-text-unread)" : "text-(--mw-component-channel-row-text-read)",
+          isMuted
+            ? "text-(--mw-component-channel-row-text-muted-channel)"
+            : hasUnread
+              ? "text-(--mw-component-channel-row-text-unread)"
+              : "text-(--mw-component-channel-row-text-read)",
           "hover:bg-(--mw-component-channel-row-background-hover) hover:text-(--mw-component-channel-row-text-hover)",
         ],
   ];
 </script>
+
+{#snippet mutedMark()}
+  <Icon name="bell-slash" class="size-(--mw-component-channel-row-muted-icon-size) shrink-0 text-(--mw-component-channel-row-muted-icon)" />
+{/snippet}
 
 {#snippet unreadPill()}
   <span
@@ -734,13 +774,15 @@
         <ul class="mt-xs">
           {#each client.conversations as conversation (conversation.id)}
             {@const isSelected = conversation.id === client.selectedChannelId}
-            {@const hasUnread = !isSelected && client.hasUnread(conversation.id)}
-            {@const mentionCount = isSelected ? 0 : client.mentionCount(conversation.id)}
+            {@const isConversationMuted = isTargetMuted({ kind: "conversation", channelId: conversation.id })}
+            {@const hasUnread = !isSelected && !isConversationMuted && client.hasUnread(conversation.id)}
+            {@const mentionCount = isSelected || isConversationMuted ? 0 : client.mentionCount(conversation.id)}
             {@const others = otherParticipants(conversation, user?.id ?? null)}
             {@const [recipient] = others}
             {@const name = conversationDisplayName(conversation, user?.id ?? null)}
             {@const isGroup = isGroupConversation(conversation)}
             {@const memberCount = participantCount(conversation, user?.id ?? null)}
+            {@const rowName = isGroup ? strings.groups.rowLabel(name, memberCount) : name}
             <li class="relative mt-(--mw-component-member-row-gap) me-(--mw-component-channel-row-margin-inline)">
               {#if hasUnread}{@render unreadPill()}{/if}
               <!-- Right-click, long press or Shift+F10: the person's menu, or the group's. -->
@@ -748,11 +790,11 @@
                 type="button"
                 aria-current={isSelected ? "page" : undefined}
                 aria-label={nameWithUnreadState(
-                  isGroup ? strings.groups.rowLabel(name, memberCount) : name,
+                  isConversationMuted ? strings.notifications.withMuted(rowName) : rowName,
                   hasUnread,
                   mentionCount,
                 )}
-                class={[rowClasses(isSelected, hasUnread), "h-(--mw-component-member-row-height) gap-sm pointer-coarse:h-(--mw-size-hit-web-min)"]}
+                class={[rowClasses(isSelected, hasUnread, isConversationMuted), "h-(--mw-component-member-row-height) gap-sm pointer-coarse:h-(--mw-size-hit-web-min)"]}
                 onclick={() => selectConversation(conversation.id)}
                 {@attach contextMenuTrigger((origin, invoker) => openConversationMenu(conversation, recipient, origin, invoker))}
               >
@@ -779,6 +821,7 @@
                     </span>
                   {/if}
                 </span>
+                {#if isConversationMuted}{@render mutedMark()}{/if}
                 {#if mentionCount > 0}<MentionBadge {mentionCount} />{/if}
               </button>
             </li>
@@ -853,7 +896,8 @@
     <ul class={[isCarriedCategory && "opacity-(--mw-component-channel-drag-source-opacity)"]}>
       {#each section.channels as channel (channel.id)}
         {@const isSelected = channel.id === client.selectedChannelId}
-        {@const hasUnread = !isSelected && client.hasUnread(channel.id)}
+        {@const isChannelMuted = isTargetMuted({ kind: "channel", guildId: guild.id, channelId: channel.id })}
+        {@const hasUnread = !isSelected && !isChannelMuted && client.hasUnread(channel.id)}
         {@const mentionCount = isSelected ? 0 : client.mentionCount(channel.id)}
         {@const canSendMessages = canSendIn(channel.id)}
         {@const canEdit = canEditChannel(channel)}
@@ -878,12 +922,17 @@
               type="button"
               aria-current={isSelected ? "page" : undefined}
               aria-label={nameWithUnreadState(
-                [channel.name, !canSendMessages && strings.common.readOnly].filter(Boolean).join(", "),
+                [
+                  isChannelMuted ? strings.notifications.withMuted(channel.name) : channel.name,
+                  !canSendMessages && strings.common.readOnly,
+                ]
+                  .filter(Boolean)
+                  .join(", "),
                 hasUnread,
                 mentionCount,
               )}
               class={[
-                rowClasses(isSelected, hasUnread),
+                rowClasses(isSelected, hasUnread, isChannelMuted),
                 "h-(--mw-component-channel-row-height) pointer-coarse:h-(--mw-size-hit-web-min)",
                 // Room for the gear, so a long name never runs under it; a badge already keeps it.
                 canEdit &&
@@ -912,6 +961,7 @@
                 <!-- The icon took the lock's place: it moves after the name. -->
                 <Icon name="lock" class="size-(--mw-component-channel-row-trailing-icon-size) shrink-0" />
               {/if}
+              {#if isChannelMuted}{@render mutedMark()}{/if}
               {#if mentionCount > 0}
                 <!-- The gear takes the badge's place while it shows. -->
                 <MentionBadge

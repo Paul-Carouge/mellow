@@ -8,7 +8,8 @@
     idle: "Home button, nothing to report. Also the logo and the favicon.",
     connecting: "Home button while the client connects to the instance.",
     "connection-lost": "Home button while the connection is lost and the client reconnects.",
-    notification: "Home button while a direct message is unread.",
+    notification: "Home button while a conversation or a mention is unread. Each alert also plays the chime once.",
+    "do-not-disturb": "Home button while your status is Do not disturb: nothing notifies you.",
     "incoming-call": "Not wired yet: someone is calling.",
     "in-call": "Not wired yet: you are in a call.",
     "update-available": "Not wired yet: a new version is ready to install.",
@@ -18,6 +19,7 @@
 
   let theme = $state<"system" | "dark" | "light">("system");
   let isStill = $state(false);
+  let chime = $state(0);
 
   $effect(() => {
     if (theme === "system") {
@@ -48,19 +50,26 @@
         <input type="checkbox" bind:checked={isStill} />
         Still poses (as with reduced motion)
       </label>
+      <button
+        type="button"
+        class="min-h-(--mw-size-hit-web-min) rounded-sm bg-accent-fill px-md type-button text-text-on-accent"
+        onclick={() => (chime += 1)}
+      >
+        Play the chime
+      </button>
     </div>
   </header>
 
   <ul class="mx-auto mt-xl grid max-w-6xl gap-lg [grid-template-columns:repeat(auto-fill,minmax(var(--gallery-card-min-width),1fr))]">
     {#each states as state (state)}
       <li class="flex flex-col gap-md rounded-lg bg-surface-sidebar p-md">
-        <Melli {state} {isStill} sizeToken="--gallery-melli-preview-size" />
+        <Melli {state} {isStill} {chime} sizeToken="--gallery-melli-preview-size" />
         <div class="flex items-center gap-md rounded-(--mw-component-rail-icon-radius-active) bg-(--mw-component-rail-background) p-sm">
           <span class="grid size-(--mw-component-rail-item-size) place-items-center">
-            <Melli {state} {isStill} sizeToken="--mw-component-rail-item-size" />
+            <Melli {state} {isStill} {chime} sizeToken="--mw-component-rail-item-size" />
           </span>
           <span class="grid size-(--mw-component-rail-item-size) place-items-center overflow-hidden rounded-(--mw-component-rail-icon-radius-active) bg-(--mw-component-rail-icon-background-active) [--melli-mark:var(--mw-color-mascot-ink)]">
-            <Melli {state} {isStill} sizeToken="--mw-component-rail-item-size" />
+            <Melli {state} {isStill} {chime} sizeToken="--mw-component-rail-item-size" />
           </span>
         </div>
         <div>

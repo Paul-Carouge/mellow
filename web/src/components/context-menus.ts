@@ -34,6 +34,15 @@ function joinSections<Action extends MenuAction>(sections: readonly (readonly (A
   return lines;
 }
 
+// --- Notifications (shared by servers, channels and conversations) ------------------------------
+
+/** "Mute…" or "Unmute", then "Notification settings…" (docs/design/web-notifications.md). */
+export type NotificationMenuAction = "mute" | "unmute" | "notification-settings";
+
+function notificationSection(isMuted: boolean): NotificationMenuAction[] {
+  return [isMuted ? "unmute" : "mute", "notification-settings"];
+}
+
 // --- A message ----------------------------------------------------------------------------------
 
 export type MessageMenuAction =
@@ -92,7 +101,8 @@ export type PersonMenuAction =
   | "copy-user-id"
   | "copy-channel-id"
   | "remove-friend"
-  | "block";
+  | "block"
+  | NotificationMenuAction;
 
 export interface PersonMenuFacts {
   readonly isSelf: boolean;
@@ -101,8 +111,10 @@ export interface PersonMenuFacts {
   readonly canShowProfile: boolean;
   /** Not from the conversation itself, which is already open. */
   readonly canOpenConversation: boolean;
-  /** A one-to-one conversation's row also copies the conversation's ID. */
+  /** A one-to-one conversation's row also copies the conversation's ID and mutes it. */
   readonly conversationChannel: boolean;
+  /** That conversation is muted (read only with `conversationChannel`). */
+  readonly isConversationMuted: boolean;
 }
 
 export function personMenuActions(facts: PersonMenuFacts): MenuLine<PersonMenuAction>[] {
@@ -119,6 +131,7 @@ export function personMenuActions(facts: PersonMenuFacts): MenuLine<PersonMenuAc
           relationship === "outgoing_request" && "cancel-request",
           isBlocked && "unblock",
         ],
+    facts.conversationChannel ? notificationSection(facts.isConversationMuted) : [],
     ["copy-user-id", facts.conversationChannel && "copy-channel-id"],
     [relationship === "friend" && "remove-friend", !isSelf && !isBlocked && "block"],
   ]);
@@ -132,11 +145,14 @@ export type ChannelMenuAction =
   | "move-down"
   | "move-to-category"
   | "copy-channel-id"
-  | "delete-channel";
+  | "delete-channel"
+  | NotificationMenuAction;
 
 export interface ChannelMenuFacts {
   /** The reader sees at least one page of its settings. */
   readonly canEditChannel: boolean;
+  /** Muted itself (a muted server's channels are quiet too, but unmute from the server). */
+  readonly isMuted: boolean;
   /** `MANAGE_CHANNELS` on the server, the row not first or last of its section, no move in flight. */
   readonly canMoveUp: boolean;
   readonly canMoveDown: boolean;
@@ -150,6 +166,7 @@ export interface ChannelMenuFacts {
 export function channelMenuActions(facts: ChannelMenuFacts): MenuLine<ChannelMenuAction>[] {
   return joinSections<ChannelMenuAction>([
     [facts.canEditChannel && "edit-channel"],
+    notificationSection(facts.isMuted),
     [facts.canMoveUp && "move-up", facts.canMoveDown && "move-down", facts.canMoveToCategory && "move-to-category"],
     ["copy-channel-id"],
     [facts.canDelete && "delete-channel"],
@@ -185,7 +202,8 @@ export type ServerMenuAction =
   | "create-channel"
   | "create-category"
   | "copy-server-id"
-  | "leave-server";
+  | "leave-server"
+  | NotificationMenuAction;
 
 export interface ServerMenuFacts {
   readonly canInvitePeople: boolean;
@@ -193,15 +211,17 @@ export interface ServerMenuFacts {
   readonly canCreateChannels: boolean;
   /** Everyone but the owner. */
   readonly canLeave: boolean;
+  readonly isMuted: boolean;
 }
 
 /** What the reader may do with `guild`, from its permission snapshot. */
-export function serverMenuFactsOf(guild: Guild, userId: Snowflake | undefined): ServerMenuFacts {
+export function serverMenuFactsOf(guild: Guild, userId: Snowflake | undefined, isMuted: boolean): ServerMenuFacts {
   return {
     canInvitePeople: hasPermission(guild.my_permissions, Permission.CREATE_INVITE),
     canOpenSettings: canOpenServerSettings(guild, userId),
     canCreateChannels: hasPermission(guild.my_permissions, Permission.MANAGE_CHANNELS),
     canLeave: guild.owner_id !== userId,
+    isMuted,
   };
 }
 
@@ -218,10 +238,12 @@ export function serverMenuActions(facts: ServerMenuFacts, place: "header" | "str
           facts.canCreateChannels && "create-channel",
           facts.canCreateChannels && "create-category",
         ],
+        notificationSection(facts.isMuted),
         [facts.canLeave && "leave-server"],
       ])
     : joinSections<ServerMenuAction>([
         [facts.canInvitePeople && "invite-people", facts.canOpenSettings && "server-settings"],
+        notificationSection(facts.isMuted),
         ["copy-server-id"],
         [facts.canLeave && "leave-server"],
       ]);
@@ -229,11 +251,16 @@ export function serverMenuActions(facts: ServerMenuFacts, place: "header" | "str
 
 // --- A group conversation's row -----------------------------------------------------------------
 
-export type GroupMenuAction = "rename-group" | "copy-channel-id" | "leave-group";
+export type GroupMenuAction = "rename-group" | "copy-channel-id" | "leave-group" | NotificationMenuAction;
 
 /** Anyone in a group may rename it or leave it (ADR-0026). */
-export function groupMenuActions(): MenuLine<GroupMenuAction>[] {
-  return joinSections<GroupMenuAction>([["rename-group"], ["copy-channel-id"], ["leave-group"]]);
+export function groupMenuActions(isMuted: boolean): MenuLine<GroupMenuAction>[] {
+  return joinSections<GroupMenuAction>([
+    ["rename-group"],
+    notificationSection(isMuted),
+    ["copy-channel-id"],
+    ["leave-group"],
+  ]);
 }
 
 // --- How each item reads -------------------------------------------------------------------------
@@ -281,6 +308,9 @@ const LOOKS: Record<MenuAction, MenuItemLook> = {
   "leave-server": { label: strings.sidebar.leaveServer, icon: "sign-out", tone: "danger" },
   "rename-group": { label: strings.groups.rename, icon: "pencil-simple", tone: "normal" },
   "leave-group": { label: strings.groups.leave, icon: "sign-out", tone: "danger" },
+  mute: { label: strings.notifications.muteMenu, icon: "bell-slash", tone: "normal" },
+  unmute: { label: strings.notifications.unmute, icon: "bell", tone: "normal" },
+  "notification-settings": { label: strings.notifications.settingsMenu, icon: "bell", tone: "normal" },
 };
 
 export function menuItemLook(action: MenuAction): MenuItemLook {

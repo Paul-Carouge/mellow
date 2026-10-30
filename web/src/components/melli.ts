@@ -6,18 +6,29 @@ export type MelliState =
   | "connecting"
   | "connection-lost"
   | "notification"
+  | "do-not-disturb"
   | "incoming-call"
   | "in-call"
   | "update-available"
   | "sleeping";
 
-/** The Home button's Melli: connection trouble first, then unread direct messages. */
-export function homeMelliState(status: ConnectionStatus, hasUnreadConversation: boolean): MelliState {
+/**
+ * The Home button's Melli: connection trouble first, then Do not disturb (quiet even with unread
+ * messages), then unread conversations or mentions.
+ */
+export function homeMelliState(
+  status: ConnectionStatus,
+  hasSomethingForTheReader: boolean,
+  isDoNotDisturb: boolean,
+): MelliState {
   if (status === "reconnecting") {
     return "connection-lost";
   }
   if (status === "connecting") {
     return "connecting";
   }
-  return hasUnreadConversation ? "notification" : "idle";
+  if (isDoNotDisturb) {
+    return "do-not-disturb";
+  }
+  return hasSomethingForTheReader ? "notification" : "idle";
 }

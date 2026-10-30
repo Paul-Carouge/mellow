@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { onMount, tick } from "svelte";
   import { MediaQuery, SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
@@ -20,6 +20,14 @@
   import LeaveServerDialog from "./LeaveServerDialog.svelte";
   import MemberList from "./MemberList.svelte";
   import Navigator from "./Navigator.svelte";
+  import {
+    closeNotificationDialog,
+    loadNotificationPreferences,
+    notificationDialogRequest,
+  } from "./notification-preferences.svelte";
+  import NotificationPermissionBar from "./NotificationPermissionBar.svelte";
+  import NotificationSettingsDialog from "./NotificationSettingsDialog.svelte";
+  import { attentionCount, noteChannelSeen, showAttentionCount, startNotifier } from "./notifier.svelte";
   import PeoplePickerDialog from "./PeoplePickerDialog.svelte";
   import QuickSwitcher from "./QuickSwitcher.svelte";
   import ServerSettings from "./ServerSettings.svelte";
@@ -72,6 +80,19 @@
   let channelSettingsChannelId = $state<Snowflake | null>(null);
   /** The category whose "+" opened "Create channel"; null from the server menu. */
   let newChannelCategory = $state<Channel | null>(null);
+
+  // Notifications (docs/design/web-notifications.md): the reader's choices, the alerts, the tab's
+  // count, and the open channel counting as seen while the window has focus.
+  $effect(() => loadNotificationPreferences(client.user?.id ?? null));
+  onMount(() => startNotifier(client));
+  $effect(() => showAttentionCount(attentionCount(client)));
+  $effect(() => {
+    const channelId = client.selectedChannelId;
+    if (channelId !== null && document.visibilityState === "visible" && document.hasFocus()) {
+      noteChannelSeen(channelId);
+    }
+  });
+  const notificationDialog = $derived(notificationDialogRequest());
 
   const guild = $derived(client.selectedGuild);
   const group = $derived(
@@ -227,7 +248,13 @@
 
   /** A dialog, the settings, the navigation drawer or the switcher covers the shell. */
   function isCoveredByModal(): boolean {
-    return openDialog !== null || isUserSettingsOpen || isNavigationDrawerOpen || isQuickSwitcherOpen;
+    return (
+      openDialog !== null ||
+      notificationDialog !== null ||
+      isUserSettingsOpen ||
+      isNavigationDrawerOpen ||
+      isQuickSwitcherOpen
+    );
   }
 </script>
 
@@ -262,6 +289,7 @@
 
 <div class="safe-area-padding flex h-dvh flex-col bg-surface-rail font-sans text-text-normal">
   <ConnectionBanner status={client.status} />
+  <NotificationPermissionBar status={client.status} />
   <!-- As in the reference mockup, the ground shows twice the inset above the cards and after the
        last one (where the mockup keeps a row for its top bar and a column for the side sheet). -->
   <div
@@ -418,6 +446,16 @@
     serverName={dialogGuild.name}
     onclose={() => (openDialog = null)}
     fallbackFocus={focusComposer}
+  />
+{/if}
+
+{#if notificationDialog}
+  <NotificationSettingsDialog
+    target={notificationDialog.target}
+    placeName={notificationDialog.placeName}
+    initialGroup={notificationDialog.initialGroup}
+    onclose={closeNotificationDialog}
+    ondone={(sentence) => (announcement = sentence)}
   />
 {/if}
 

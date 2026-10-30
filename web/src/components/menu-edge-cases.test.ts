@@ -38,8 +38,9 @@ describe("every combination yields a well-formed list", () => {
       for (const isSelf of flags)
         for (const canShowProfile of flags)
           for (const canOpenConversation of flags)
-            for (const conversationChannel of flags) {
-              const facts: PersonMenuFacts = { isSelf, relationship, canShowProfile, canOpenConversation, conversationChannel };
+            for (const conversationChannel of flags)
+              for (const isConversationMuted of flags) {
+              const facts: PersonMenuFacts = { isSelf, relationship, canShowProfile, canOpenConversation, conversationChannel, isConversationMuted };
               const lines = personMenuActions(facts);
               assertWellFormed(lines);
               const actions = lines.filter((line) => line !== "separator");
@@ -53,7 +54,7 @@ describe("every combination yields a well-formed list", () => {
   });
 
   it("yourself as a friend entry still cannot be blocked, but can be removed only if a friend", () => {
-    const lines = personMenuActions({ isSelf: true, relationship: "friend", canShowProfile: true, canOpenConversation: true, conversationChannel: false });
+    const lines = personMenuActions({ isSelf: true, relationship: "friend", canShowProfile: true, canOpenConversation: true, conversationChannel: false, isConversationMuted: false });
     expect(lines).not.toContain("block");
   });
 
@@ -90,38 +91,68 @@ describe("every combination yields a well-formed list", () => {
 
 describe("server menus per role", () => {
   it("the owner without any permission bit may open settings, never leave", () => {
-    const facts = serverMenuFactsOf(guild(0n, "me"), "me");
-    expect(facts).toEqual({ canInvitePeople: false, canOpenSettings: true, canCreateChannels: false, canLeave: false });
-    expect(serverMenuActions(facts, "strip")).toEqual(["server-settings", "separator", "copy-server-id"]);
+    const facts = serverMenuFactsOf(guild(0n, "me"), "me", false);
+    expect(facts).toEqual({ canInvitePeople: false, canOpenSettings: true, canCreateChannels: false, canLeave: false, isMuted: false });
+    expect(serverMenuActions(facts, "strip")).toEqual([
+      "server-settings",
+      "separator",
+      "mute",
+      "notification-settings",
+      "separator",
+      "copy-server-id",
+    ]);
   });
 
-  it("a plain member can leave and copy the ID, nothing else", () => {
-    const facts = serverMenuFactsOf(guild(0n), "me");
-    expect(serverMenuActions(facts, "strip")).toEqual(["copy-server-id", "separator", "leave-server"]);
-    expect(serverMenuActions(facts, "header")).toEqual(["leave-server"]);
+  it("a plain member can mute, leave and copy the ID, nothing else", () => {
+    const facts = serverMenuFactsOf(guild(0n), "me", false);
+    expect(serverMenuActions(facts, "strip")).toEqual([
+      "mute",
+      "notification-settings",
+      "separator",
+      "copy-server-id",
+      "separator",
+      "leave-server",
+    ]);
+    expect(serverMenuActions(facts, "header")).toEqual(["mute", "notification-settings", "separator", "leave-server"]);
   });
 
   it("an administrator may do it all and still leave", () => {
-    const facts = serverMenuFactsOf(guild(Permission.ADMINISTRATOR), "me");
+    const facts = serverMenuFactsOf(guild(Permission.ADMINISTRATOR), "me", true);
     expect(facts.canLeave).toBe(true);
-    expect(serverMenuActions(facts, "header")).toEqual(["invite-people", "server-settings", "create-channel", "create-category", "separator", "leave-server"]);
+    expect(serverMenuActions(facts, "header")).toEqual([
+      "invite-people",
+      "server-settings",
+      "create-channel",
+      "create-category",
+      "separator",
+      "unmute",
+      "notification-settings",
+      "separator",
+      "leave-server",
+    ]);
   });
 
   it("an unknown user id (not signed in yet) is never the owner", () => {
-    expect(serverMenuFactsOf(guild(0n), undefined).canLeave).toBe(true);
+    expect(serverMenuFactsOf(guild(0n), undefined, false).canLeave).toBe(true);
   });
 
   it("create-channel and invite follow their own bits", () => {
-    const facts = serverMenuFactsOf(guild(Permission.CREATE_INVITE | Permission.MANAGE_CHANNELS), "me");
+    const facts = serverMenuFactsOf(guild(Permission.CREATE_INVITE | Permission.MANAGE_CHANNELS), "me", false);
     expect(serverMenuActions(facts, "header")).toContain("invite-people");
     expect(serverMenuActions(facts, "header")).toContain("create-channel");
     expect(serverMenuActions(facts, "strip")).not.toContain("create-channel");
   });
 
   it("group and channel menus are well formed", () => {
-    assertWellFormed(groupMenuActions());
-    assertWellFormed(channelMenuActions({ canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false, canDelete: false }));
-    expect(channelMenuActions({ canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false, canDelete: false })).toEqual(["copy-channel-id"]);
+    for (const isMuted of [false, true]) {
+      assertWellFormed(groupMenuActions(isMuted));
+      assertWellFormed(
+        channelMenuActions({ canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false, canDelete: false, isMuted }),
+      );
+    }
+    expect(
+      channelMenuActions({ canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false, canDelete: false, isMuted: false }),
+    ).toEqual(["mute", "notification-settings", "separator", "copy-channel-id"]);
   });
 });
 

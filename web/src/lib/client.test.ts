@@ -757,6 +757,17 @@ describe("unread state and mention counts", () => {
     expect(client.mentionCount(RULES)).toBe(3);
   });
 
+  it("hand each new message to the notifier once: never a replay Ready counted, never a repeat", async () => {
+    const client = await clientWithUnreadRules();
+    const handed: string[] = [];
+    client.onIncomingMessage = (incoming) => handed.push(incoming.id);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("310") }, 0);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("311") }, 0);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("311") }, 0);
+    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...mentioning("311"), content: "edited" } }, 0);
+    expect(handed).toEqual(["311"]);
+  });
+
   it("keep a saturated count when a counted message goes", async () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(

@@ -12,6 +12,7 @@
   } from "./context-menus";
   import { displayName } from "./format";
   import type { MenuOrigin } from "./menu-placement";
+  import { isTargetMuted, notificationMenuHandler } from "./notification-preferences.svelte";
   import RelationshipConfirmDialog from "./RelationshipConfirmDialog.svelte";
 
   // A person's context menu (DESIGN.md §6.33): a member row, a message's author, a friend row, a
@@ -50,6 +51,8 @@
       canShowProfile: onshowprofile !== undefined,
       canOpenConversation: target.canOpenConversation,
       conversationChannel: conversationChannelId !== null,
+      isConversationMuted:
+        conversationChannelId !== null && isTargetMuted({ kind: "conversation", channelId: conversationChannelId }),
     });
     return menuEntries(lines, (action) => handlerOf(action, user, invoker, conversationChannelId));
   });
@@ -146,6 +149,11 @@
         return { onselect: () => (confirming = { action: "remove", user, invoker }) };
       case "block":
         return { onselect: () => (confirming = { action: "block", user, invoker }) };
+      case "mute":
+      case "unmute":
+      case "notification-settings":
+        // Only on a conversation's row, where `conversationChannelId` is set.
+        return notificationMenuHandler(action, { kind: "conversation", channelId: conversationChannelId ?? "" }, person);
     }
   }
 </script>

@@ -178,6 +178,11 @@ export class MellowClient {
   private gateway: GatewayConnection | null = null;
   /** Before the first `Ready`, no selection exists yet: home then means "not chosen". */
   private hasReceivedReady = $state(false);
+  /**
+   * Called once per message new to this session (not a replay `Ready` already counted, not one
+   * already cached), after the client state took it in: the notifier decides whether to tell.
+   */
+  onIncomingMessage: ((message: Message) => void) | null = null;
   /** Whether this user may create servers (`Ready.may_create_guilds`); `true` with servers that predate it. */
   mayCreateGuilds = $state(true);
 
@@ -472,6 +477,9 @@ export class MellowClient {
         const countedByReady = this.newestCountedByReady.get(message.channel_id);
         if (countedByReady === undefined || compareSnowflakes(message.id, countedByReady) > 0) {
           this.adjustMentionCount(message.channel_id, previous, message);
+          if (previous === undefined) {
+            this.onIncomingMessage?.(message);
+          }
         }
         return;
       }

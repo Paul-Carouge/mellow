@@ -43,6 +43,14 @@ export function messageTimestampLabel(unixMilliseconds: number, now: Date, local
   return sent.toLocaleString(locale, { dateStyle: "short", timeStyle: "short" });
 }
 
+/** A time still to come: "18:40" when it is today, else the short date and time (a mute's end). */
+export function upcomingTimeLabel(unixMilliseconds: number, now: Date, locale: string = formattingLocale): string {
+  const moment = new Date(unixMilliseconds);
+  return isSameLocalDay(moment, now)
+    ? timeOfDayLabel(unixMilliseconds, locale)
+    : moment.toLocaleString(locale, { dateStyle: "short", timeStyle: "short" });
+}
+
 /** Full date and time, for tooltips and screen readers. */
 export function fullTimestampLabel(unixMilliseconds: number, locale: string = wordedFormattingLocale): string {
   return new Date(unixMilliseconds).toLocaleString(locale, { dateStyle: "full", timeStyle: "short" });
