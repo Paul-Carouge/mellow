@@ -8,6 +8,7 @@ import {
   ApiError,
   HISTORY_PAGE_SIZE,
   type IconCrop,
+  type InviteLimits,
   type ProfileImageKind,
   RestClient,
   generateMessageNonce,
@@ -26,6 +27,7 @@ import {
   type Guild,
   type InitialCategory,
   type GatewayEvent,
+  type Invite,
   type Member,
   type Message,
   type PermissionBits,
@@ -1506,8 +1508,8 @@ export class MellowClient {
   }
 
   /** For any server, open or not: the strip's menu invites without opening it. */
-  async createInvite(guildId: Snowflake): Promise<string> {
-    return (await this.rest.createInvite(guildId)).code;
+  async createInvite(guildId: Snowflake, limits?: InviteLimits): Promise<Invite> {
+    return await this.rest.createInvite(guildId, limits);
   }
 
   /** A text channel opens once created; a category does not. */

@@ -17,7 +17,9 @@ pub const MAXIMUM_CHANNEL_NAME_LENGTH: usize = 100;
 pub const MAXIMUM_CHANNEL_TOPIC_LENGTH: usize = 1024;
 pub const MAXIMUM_INVITE_USES: u32 = 10_000;
 pub const MAXIMUM_INVITE_LIFETIME: Duration = Duration::from_hours(30 * 24);
-pub const INVITE_CODE_LENGTH: usize = 10;
+/// Symbols of an invite code, without its dash: two groups of four, as in `AE8C-78A9`.
+pub const INVITE_CODE_SYMBOLS: usize = 8;
+const INVITE_CODE_GROUP_LENGTH: usize = 4;
 /// Quotas, as on Discord, so one account cannot grow the database or a response without bound.
 pub const MAXIMUM_CHANNELS_PER_GUILD: u32 = 500;
 pub const MAXIMUM_OWNED_GUILDS_PER_USER: u32 = 100;
@@ -37,12 +39,9 @@ pub const MAXIMUM_AUDIT_LOG_PAGE_SIZE: u32 = 100;
 pub const MAXIMUM_BANS_LISTED: u32 = 1_000;
 /// shortcut: the member list is capped, not paginated; paginate with the member list UI.
 pub const MAXIMUM_MEMBERS_LISTED: u32 = 1_000;
-const INVITE_CODE_ALPHABET: &[u8; 62] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-/// Largest multiple of 62 below 256: bytes at or above it are redrawn, so every character is
-/// equally likely (no modulo bias).
-const UNBIASED_BYTE_LIMIT: u8 = 248;
-
+/// Crockford's base 32: digits and capitals without I, L, O and U, so a code read aloud or
+/// copied by hand is not mistaken. 256 is a multiple of 32, so `byte % 32` has no bias.
+const INVITE_CODE_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum GuildRuleViolation {
     #[error(
@@ -340,24 +339,46 @@ pub fn normalize_initial_categories(
         .collect()
 }
 
-/// A 10-character code over 62 symbols (about 59 bits): unguessable at our rate limits.
+/// A readable code such as `AE8C-78A9`: 8 symbols of Crockford's base 32 (40 bits), unguessable
+/// at the per-address join rate limit.
 ///
 /// # Errors
 /// Fails only if the operating system cannot provide randomness.
 pub fn generate_invite_code() -> Result<String, getrandom::Error> {
-    let mut code = String::with_capacity(INVITE_CODE_LENGTH);
-    let mut random_bytes = [0u8; INVITE_CODE_LENGTH * 2];
-    while code.len() < INVITE_CODE_LENGTH {
-        getrandom::fill(&mut random_bytes)?;
-        code.extend(
-            random_bytes
-                .iter()
-                .filter(|byte| **byte < UNBIASED_BYTE_LIMIT)
-                .map(|byte| INVITE_CODE_ALPHABET[usize::from(byte % 62)] as char)
-                .take(INVITE_CODE_LENGTH - code.len()),
-        );
+    let mut random_bytes = [0u8; INVITE_CODE_SYMBOLS];
+    getrandom::fill(&mut random_bytes)?;
+    let symbols: String = random_bytes
+        .iter()
+        .map(|byte| char::from(INVITE_CODE_ALPHABET[usize::from(byte % 32)]))
+        .collect();
+    let (first, second) = symbols.split_at(INVITE_CODE_GROUP_LENGTH);
+    Ok(format!("{first}-{second}"))
+}
+
+/// The stored form of a code someone typed: `ae8c 78a9`, `AE8C78A9` or `ae8c-78ao` all find
+/// `AE8C-78A9` (case, spaces and dashes ignored; O read as 0, I and L as 1). Anything else, such
+/// as a 10-character code from before `v0.18.0`, is only trimmed: those are case-sensitive.
+#[must_use]
+pub fn normalize_invite_code(typed: &str) -> String {
+    let symbols: String = typed
+        .chars()
+        .filter(|character| !character.is_whitespace() && *character != '-')
+        .map(|character| match character.to_ascii_uppercase() {
+            'O' => '0',
+            'I' | 'L' => '1',
+            other => other,
+        })
+        .collect();
+    let is_readable_code = symbols.len() == INVITE_CODE_SYMBOLS
+        && symbols
+            .bytes()
+            .all(|byte| INVITE_CODE_ALPHABET.contains(&byte));
+    if is_readable_code {
+        let (first, second) = symbols.split_at(INVITE_CODE_GROUP_LENGTH);
+        format!("{first}-{second}")
+    } else {
+        typed.trim().to_owned()
     }
-    Ok(code)
 }
 
 #[cfg(test)]
@@ -578,11 +599,28 @@ mod tests {
     }
 
     #[test]
-    fn invite_codes_are_ten_alphanumerics_and_distinct() {
+    fn invite_codes_are_two_readable_groups_and_distinct() {
         let first = generate_invite_code().unwrap();
         let second = generate_invite_code().unwrap();
-        assert_eq!(first.len(), INVITE_CODE_LENGTH);
-        assert!(first.bytes().all(|byte| byte.is_ascii_alphanumeric()));
+        let (left, right) = first.split_once('-').unwrap();
+        assert_eq!((left.len(), right.len()), (4, 4));
+        assert!(
+            format!("{left}{right}")
+                .bytes()
+                .all(|byte| INVITE_CODE_ALPHABET.contains(&byte))
+        );
+        assert_eq!(normalize_invite_code(&first), first);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn typed_invite_codes_find_their_readable_form() {
+        for typed in ["AE8C-78A9", "ae8c78a9", " ae8c 78a9 ", "AE8C-78A9\n"] {
+            assert_eq!(normalize_invite_code(typed), "AE8C-78A9", "{typed:?}");
+        }
+        assert_eq!(normalize_invite_code("10ol-iI00"), "1001-1100");
+        // Codes from before v0.18.0 stay as typed, case included.
+        assert_eq!(normalize_invite_code(" aB3dE5gH7k "), "aB3dE5gH7k");
+        assert_eq!(normalize_invite_code("AE8C-78U9"), "AE8C-78U9");
     }
 }

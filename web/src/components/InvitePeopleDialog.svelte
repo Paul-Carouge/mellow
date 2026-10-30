@@ -28,7 +28,7 @@
   onMount(() => {
     client
       .createInvite(guildId)
-      .then((code) => (inviteCode = code))
+      .then((invite) => (inviteCode = invite.code))
       .catch((error: unknown) => (errorMessage = describeError(error, strings.invitePeople.failed)));
     return () => clearTimeout(copiedTimer);
   });

@@ -21,8 +21,9 @@ use crate::domain::guild_rules::{
     MAXIMUM_CHANNELS_PER_GUILD, MAXIMUM_MEMBERS_LISTED, MAXIMUM_OVERWRITES_PER_CHANNEL,
     MAXIMUM_OWNED_GUILDS_PER_USER, MAXIMUM_ROLES_PER_GUILD, audit_log_page_size,
     generate_invite_code, merge_channel_order, normalize_ban_reason, normalize_channel_name,
-    normalize_guild_name, normalize_initial_categories, normalize_role_name, normalize_topic,
-    validate_invite_limits, validate_known_permissions, validate_role_color, validate_role_order,
+    normalize_guild_name, normalize_initial_categories, normalize_invite_code, normalize_role_name,
+    normalize_topic, validate_invite_limits, validate_known_permissions, validate_role_color,
+    validate_role_order,
 };
 use crate::domain::permissions::{
     RoleManager, channel_permissions, guild_permissions, is_visible_to_every_member,
@@ -1353,9 +1354,10 @@ impl Guilds {
         code: &str,
         now_unix_milliseconds: u64,
     ) -> Result<Guild, GuildError> {
+        let code = normalize_invite_code(code);
         let (guild_id, is_new_member) = match guild_storage::join_with_invite(
             &self.database,
-            code,
+            &code,
             user_id,
             now_unix_milliseconds,
         )

@@ -34,6 +34,14 @@ export const HISTORY_PAGE_SIZE = 50;
 export const REACTING_USERS_PAGE_SIZE = 100;
 /** The path segment of `/users/@me/{kind}` (ADR-0021). */
 export type ProfileImageKind = "avatar" | "banner";
+
+/** What `POST /guilds/{id}/invites` accepts: up to 10 000 uses and 30 days, `null` for no limit. */
+export interface InviteLimits {
+  readonly maxUses: number | null;
+  readonly expiresInSeconds: number | null;
+}
+
+export const NO_INVITE_LIMITS: InviteLimits = { maxUses: null, expiresInSeconds: null };
 const DEVICE_NAME = "Web browser";
 /** JSON requests only: uploads may take longer on a slow link. */
 const REQUEST_TIMEOUT_MILLISECONDS = 30_000;
@@ -139,18 +147,21 @@ export class RestClient {
     return this.request("POST", "guilds", { name, initial_categories: initialCategories });
   }
 
-  joinWithInvite(code: string): Promise<Guild> {
+  /** The instance reads `ae8c 78a9` as `AE8C-78A9`; spaces are dropped here, dashes kept. */
+  joinWithInvite(typedCode: string): Promise<Guild> {
+    const code = typedCode.replace(/\s+/g, "");
     // The code becomes a path segment: refuse anything that is not a plain code.
-    if (!/^[A-Za-z0-9]+$/.test(code)) {
+    if (!/^[A-Za-z0-9-]+$/.test(code)) {
       return Promise.reject(new ApiError(404, "INVALID_INVITE"));
     }
     return this.request("POST", `invites/${code}`);
   }
 
-  createInvite(guildId: Snowflake): Promise<Invite> {
+  /** `null` limits mean unlimited uses and an invite that never expires. */
+  createInvite(guildId: Snowflake, limits: InviteLimits = NO_INVITE_LIMITS): Promise<Invite> {
     return this.request("POST", `guilds/${guildId}/invites`, {
-      max_uses: null,
-      expires_in_seconds: null,
+      max_uses: limits.maxUses,
+      expires_in_seconds: limits.expiresInSeconds,
     });
   }
 

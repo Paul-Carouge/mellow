@@ -271,7 +271,11 @@ impl RestClient {
     /// `Api` with `InvalidInvite` for unknown, expired or used-up codes.
     pub async fn join_with_invite(&self, code: &str) -> Result<Guild, ClientError> {
         // The code becomes a path segment: reject anything that is not a plain code.
-        if code.is_empty() || !code.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        if code.is_empty()
+            || !code
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
             return Err(ClientError::Api {
                 status: StatusCode::NOT_FOUND.as_u16(),
                 code: mellow_protocol::ApiErrorCode::InvalidInvite,

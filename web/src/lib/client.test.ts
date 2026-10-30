@@ -1066,7 +1066,7 @@ describe("Group conversations", () => {
     client.applyReady(ready({ guilds: [guild(), other] }));
     expect(client.selectedGuildId).toBe(GUILD);
 
-    expect(await client.createInvite("200")).toBe("code-200");
+    expect((await client.createInvite("200")).code).toBe("code-200");
     expect(invited).toEqual(["200"]);
 
     await client.leaveServer("200");
