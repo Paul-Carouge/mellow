@@ -204,6 +204,7 @@ function inlinesAsText(nodes: readonly InlineNode[]): string {
       switch (node.kind) {
         case "text":
         case "mention":
+        case "match":
           return withCustomEmojiAsNames(node.text);
         case "code":
           return node.text;

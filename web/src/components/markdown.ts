@@ -17,6 +17,8 @@ export type InlineNode =
    * written in the markup is anyone's choice, so it never labels a real picture.
    */
   | { kind: "customEmoji"; emoji: CustomEmoji }
+  /** Words a search matched (`search-highlights.ts`); the parser itself never makes one. */
+  | { kind: "match"; text: string }
   | { kind: "strong" | "emphasis" | "underline" | "strikethrough"; children: InlineNode[] }
   /** `id` is unique within one message, so the renderer can remember which spoilers were revealed. */
   | { kind: "spoiler"; id: number; children: InlineNode[] }
