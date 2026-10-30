@@ -44,7 +44,6 @@
           class="text-(length:--mw-component-custom-emoji-jumbo-size) leading-none">{node.text}</span
         >{:else}{node.text}{/if}{:else if node.kind === "customEmoji"}<CustomEmojiImage
         emoji={node.emoji}
-        name={node.name}
         class={isJumbo ? "size-(--mw-component-custom-emoji-jumbo-size)" : "size-(--mw-component-custom-emoji-inline-size)"}
       />{:else if node.kind === "mention"}<span
         class="rounded-(--mw-component-mention-chip-radius) bg-(--mw-component-mention-chip-background) px-(--mw-component-mention-chip-padding-inline) font-medium text-(--mw-component-mention-chip-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-mention-chip-background-hover) hover:text-(--mw-component-mention-chip-text-hover)"

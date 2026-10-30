@@ -6,20 +6,19 @@
   // still frame under reduced motion, and the name as text if the picture cannot be loaded.
   // Hidden windows cost nothing: browsers neither paint nor advance images they do not show.
   interface Props {
+    /** Labelled with its server's name, never with a name a message's markup gave it. */
     emoji: CustomEmoji;
-    /** As written in the message; the emoji's own name otherwise. */
-    name?: string;
     /** Size utilities from a component's tokens. */
     class: string;
     /** Inside a control that already names it (a reaction chip, a picker cell). */
     isDecorative?: boolean;
   }
 
-  let { emoji, name = emoji.name, class: className, isDecorative = false }: Props = $props();
+  let { emoji, class: className, isDecorative = false }: Props = $props();
 
   const source = $derived(emojiUrl(emoji, !prefersReducedMotion.current));
   let failedSource = $state<string | null>(null);
-  const label = $derived(`:${name}:`);
+  const label = $derived(`:${emoji.name}:`);
 </script>
 
 {#if failedSource === source}

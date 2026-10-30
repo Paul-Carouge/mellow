@@ -12,8 +12,11 @@ export type InlineNode =
   | { kind: "text"; text: string }
   | { kind: "mention"; text: string; user: PublicUser }
   | { kind: "code"; text: string }
-  /** `<:name:id>` of an emoji this client knows; `name` as written, the picture by the emoji's id. */
-  | { kind: "customEmoji"; name: string; emoji: CustomEmoji }
+  /**
+   * `<:name:id>` of an emoji this client knows, labelled with its server's name for it: the name
+   * written in the markup is anyone's choice, so it never labels a real picture.
+   */
+  | { kind: "customEmoji"; emoji: CustomEmoji }
   | { kind: "strong" | "emphasis" | "underline" | "strikethrough"; children: InlineNode[] }
   /** `id` is unique within one message, so the renderer can remember which spoilers were revealed. */
   | { kind: "spoiler"; id: number; children: InlineNode[] }
@@ -255,7 +258,7 @@ function parseFence(source: string, start: number): { block: BlockNode; end: num
 }
 
 /** Inline code spans by start index, found as Markdown reads them: a run of backticks up to the next run of the same length. */
-function findCodeSpans(text: string): Map<number, { end: number; content: string }> {
+export function findCodeSpans(text: string): Map<number, { end: number; content: string }> {
   const spans = new Map<number, { end: number; content: string }>();
   const unclosedRunLengths = new Set<number>();
   const countBacktickRunLength = (from: number) => {
@@ -455,7 +458,7 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
     if (emojiSpan) {
       flushText(position);
       const emoji = context.customEmojis.get(emojiSpan.id);
-      nodes.push(emoji ? { kind: "customEmoji", name: emojiSpan.name, emoji } : { kind: "text", text: `:${emojiSpan.name}:` });
+      nodes.push(emoji ? { kind: "customEmoji", emoji } : { kind: "text", text: `:${emojiSpan.name}:` });
       position = textStart = emojiSpan.end;
       continue;
     }

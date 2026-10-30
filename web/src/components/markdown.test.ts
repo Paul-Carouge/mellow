@@ -300,13 +300,13 @@ describe("custom emoji", () => {
     return block?.kind === "paragraph" ? block.children : [];
   };
 
-  it("show the picture of a known emoji under the name written", () => {
+  it("show a known emoji by its id, whatever name the markup gives it", () => {
     expect(parse("hi <:fiesta:500>!")).toEqual([
       text("hi "),
-      { kind: "customEmoji", name: "fiesta", emoji: party },
+      { kind: "customEmoji", emoji: party },
       text("!"),
     ]);
-    expect(parse("<a:par_rot_:501>")).toEqual([{ kind: "customEmoji", name: "par_rot_", emoji: parrot }]);
+    expect(parse("<a:par_rot_:501>")).toEqual([{ kind: "customEmoji", emoji: parrot }]);
   });
 
   it("read as :name: when this client cannot show them", () => {
@@ -318,10 +318,10 @@ describe("custom emoji", () => {
     expect(parse("`<:party:500>`")).toEqual([{ kind: "code", text: "<:party:500>" }]);
     expect(parse("\\<:party:500>")).toEqual([text("<"), text(":party:500>")]);
     expect(parse("_a <a:par_rot_:501>_")).toEqual([
-      { kind: "emphasis", children: [text("a "), { kind: "customEmoji", name: "par_rot_", emoji: parrot }] },
+      { kind: "emphasis", children: [text("a "), { kind: "customEmoji", emoji: parrot }] },
     ]);
     expect(parse("**<:party:500>**")).toEqual([
-      { kind: "strong", children: [{ kind: "customEmoji", name: "party", emoji: party }] },
+      { kind: "strong", children: [{ kind: "customEmoji", emoji: party }] },
     ]);
     expect(parse("<:x:500> <:party:abc>")).toEqual([text("<:x:500> <:party:abc>")]);
   });
