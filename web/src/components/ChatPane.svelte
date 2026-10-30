@@ -196,6 +196,8 @@
       ? suggestEmoji(suggestionQuery.query, serverEmojis)
       : [],
   );
+  // Within the list as it is now: a gateway update can shorten it under the arrows.
+  const activeSuggestion = $derived(Math.min(activeSuggestionIndex, Math.max(suggestions.length - 1, 0)));
   const suggestionsId = $props.id();
   const isTooLong = $derived(charactersLeft < 0);
   // The instance would refuse it: say why at the first try, until the text fits again.
@@ -511,10 +513,10 @@
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       activeSuggestionIndex =
         event.key === "ArrowDown"
-          ? activeSuggestionIndex >= last ? 0 : activeSuggestionIndex + 1
-          : activeSuggestionIndex <= 0 ? last : activeSuggestionIndex - 1;
+          ? activeSuggestion >= last ? 0 : activeSuggestion + 1
+          : activeSuggestion <= 0 ? last : activeSuggestion - 1;
     } else if ((event.key === "Enter" && !event.shiftKey) || (event.key === "Tab" && !event.shiftKey)) {
-      const chosen = suggestions[activeSuggestionIndex];
+      const chosen = suggestions[activeSuggestion];
       if (chosen) {
         chooseSuggestion(chosen);
       }
@@ -911,7 +913,7 @@
             id={suggestionsId}
             query={suggestionQuery.query}
             {suggestions}
-            activeIndex={activeSuggestionIndex}
+            activeIndex={activeSuggestion}
             onchoose={chooseSuggestion}
             onhover={(index) => (activeSuggestionIndex = index)}
           />
@@ -984,6 +986,9 @@
                 }}
               />
             {/if}
+            <!-- The emoji suggestions are owned as a textbox's list, without role="combobox" (nor
+                 aria-expanded, which needs it): ARIA's combobox is a single-line field, and screen
+                 readers would stop announcing a multi-line text box where Shift+Enter adds lines. -->
             <textarea
               bind:this={composer}
               bind:value={draft}
@@ -999,7 +1004,7 @@
               class="min-h-(--mw-size-dock-height) min-w-0 flex-1 resize-none bg-transparent px-2xs py-[calc((var(--mw-size-dock-height)_-_var(--mw-type-message-font-size)_*_var(--mw-type-message-line-height))/2)] type-message text-(--mw-component-composer-text) outline-none placeholder:text-(--mw-component-composer-placeholder)"
               aria-autocomplete="list"
               aria-controls={suggestions.length > 0 ? `${suggestionsId}-listbox` : undefined}
-              aria-activedescendant={suggestions.length > 0 ? `${suggestionsId}-option-${activeSuggestionIndex}` : undefined}
+              aria-activedescendant={suggestions.length > 0 ? `${suggestionsId}-option-${activeSuggestion}` : undefined}
               onkeydown={handleComposerKeydown}
               onkeyup={(event) => {
                 if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") {
