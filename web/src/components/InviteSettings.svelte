@@ -3,17 +3,20 @@
 
   import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
+  import type { InviteLimits } from "../lib/api";
   import type { Guild, GuildInvite } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
   import { displayName, fullTimestampLabel } from "./format";
-  import Icon from "./Icon.svelte";
+  import InviteLimitsFields from "./InviteLimitsFields.svelte";
+  import { DEFAULT_INVITE_LIMITS, expiryLabel } from "./invites";
   import ModalDialog from "./ModalDialog.svelte";
   import SettingsListStatus from "./SettingsListStatus.svelte";
 
   // Invites (DESIGN.md §5.8): the invites that still work, newest first, with their code, who
-  // created them, their uses and when they expire. Revoking asks first (§8). No gateway event
-  // tells about invites, so the list is read when the page opens and after each change.
+  // created them, their uses and when they expire. "Create invite" asks for the limits first, as
+  // "Invite people" does; revoking asks first (§8). No gateway event tells about invites, so the
+  // list is read when the page opens and after each change.
   interface Props {
     client: MellowClient;
     guild: Guild;
@@ -24,8 +27,12 @@
   const id = $props.id();
   let invites = $state<GuildInvite[] | null>(null);
   let hasFailed = $state(false);
+  let isCreateDialogOpen = $state(false);
+  let limitsToCreate = $state<InviteLimits>(DEFAULT_INVITE_LIMITS);
   let isCreating = $state(false);
-  let errorMessage = $state("");
+  let createError = $state("");
+  /** "Expires in 3 days" is counted from when the list was read. */
+  let listReadAtUnixMilliseconds = $state(Date.now());
   let notice = $state("");
   let revoking = $state<GuildInvite | null>(null);
   let isRevoking = $state(false);
@@ -35,6 +42,7 @@
     hasFailed = false;
     try {
       invites = await client.rest.listInvites(guild.id);
+      listReadAtUnixMilliseconds = Date.now();
     } catch (error) {
       console.warn("loading the invites failed", error);
       invites = null;
@@ -51,13 +59,14 @@
       return;
     }
     isCreating = true;
-    errorMessage = "";
+    createError = "";
     try {
-      const { code } = await client.createInvite(guild.id);
+      const { code } = await client.createInvite(guild.id, limitsToCreate);
+      isCreateDialogOpen = false;
       notice = strings.serverSettings.invites.created(code);
       await load();
     } catch (error) {
-      errorMessage = describeError(error, strings.serverSettings.invites.createFailed);
+      createError = describeError(error, strings.serverSettings.invites.createFailed);
     } finally {
       isCreating = false;
     }
@@ -84,17 +93,17 @@
 
 <div class="flex flex-col gap-(--mw-component-server-settings-toolbar-gap)">
   <div>
-    <Button id="{id}-create" variant="primary" isDisabled={isCreating} onclick={() => void create()}>
-      {isCreating ? strings.serverSettings.invites.creating : strings.serverSettings.invites.createInvite}
+    <Button
+      id="{id}-create"
+      variant="primary"
+      aria-haspopup="dialog"
+      onclick={() => {
+        limitsToCreate = DEFAULT_INVITE_LIMITS;
+        isCreateDialogOpen = true;
+      }}
+    >
+      {strings.serverSettings.invites.createInvite}
     </Button>
-  </div>
-  <div role="alert" class="contents">
-    {#if errorMessage}
-      <p class="flex gap-(--mw-component-settings-error-icon-gap) type-body text-(--mw-component-settings-error-text)">
-        <Icon name="warning-circle" class="size-(--mw-component-settings-error-icon-size) shrink-0" />
-        <span>{errorMessage}</span>
-      </p>
-    {/if}
   </div>
 
   {#if invites === null}
@@ -114,11 +123,19 @@
               {strings.serverSettings.invites.createdBy(displayName(invite.creator))}
             </p>
             <p class="type-body-sm text-(--mw-component-server-settings-secondary-text)">
-              {strings.serverSettings.invites.uses(invite.uses, invite.max_uses)}
+              <!-- Each part stays on one line; a narrow row breaks at the dot. -->
+              <span class="whitespace-nowrap">{strings.serverSettings.invites.uses(invite.uses, invite.max_uses)}</span>
               <span aria-hidden="true">·</span>
-              {invite.expires_at_unix_milliseconds === null
-                ? strings.serverSettings.invites.neverExpires
-                : strings.serverSettings.invites.expires(fullTimestampLabel(invite.expires_at_unix_milliseconds))}
+              {#if invite.expires_at_unix_milliseconds === null}
+                <span class="whitespace-nowrap">{strings.serverSettings.invites.neverExpires}</span>
+              {:else}
+                <time
+                  class="whitespace-nowrap"
+                  datetime={new Date(invite.expires_at_unix_milliseconds).toISOString()}
+                  title={fullTimestampLabel(invite.expires_at_unix_milliseconds)}
+                  >{expiryLabel(invite.expires_at_unix_milliseconds, listReadAtUnixMilliseconds)}</time
+                >
+              {/if}
             </p>
           </div>
           <Button
@@ -134,6 +151,23 @@
   {/if}
   <p role="status" class="sr-only">{notice}</p>
 </div>
+
+{#if isCreateDialogOpen}
+  <ModalDialog
+    title={strings.serverSettings.invites.createTitle}
+    errorMessage={createError}
+    isBusy={isCreating}
+    submitLabel={isCreating ? strings.serverSettings.invites.creating : strings.serverSettings.invites.createSubmit}
+    onclose={() => {
+      isCreateDialogOpen = false;
+      createError = "";
+    }}
+    onsubmit={() => void create()}
+    fallbackFocus={() => document.getElementById(`${id}-create`)?.focus()}
+  >
+    <InviteLimitsFields bind:limits={limitsToCreate} isDisabled={isCreating} />
+  </ModalDialog>
+{/if}
 
 {#if revoking}
   <ModalDialog

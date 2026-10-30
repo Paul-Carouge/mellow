@@ -182,7 +182,11 @@
       id="join-server-invite-code"
       label={strings.addServer.inviteCode}
       helper={strings.addServer.inviteCodeHelper}
+      placeholder={strings.addServer.inviteCodePlaceholder}
+      isMonospace
       autocomplete="off"
+      autocapitalize="off"
+      spellcheck="false"
       readonly={isBusy}
       data-initial-focus=""
       bind:value={inviteCode}

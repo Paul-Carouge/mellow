@@ -436,7 +436,8 @@ export const en = {
     create: "Create",
     creating: "Creating…",
     inviteCode: "Invite code",
-    inviteCodeHelper: "Paste the invite code someone gave you.",
+    inviteCodePlaceholder: "AE8C-78A9-K2QF",
+    inviteCodeHelper: "Paste or type the code someone gave you. Capitals and dashes are optional.",
     serverName: "Server name",
     hasNoInvite: "Don't have an invite?",
     hasInvite: "Have an invite already?",
@@ -508,14 +509,34 @@ export const en = {
 
   invitePeople: {
     title: (server: string) => `Invite friends to ${server}`,
+    subtitle: "Send this code to a friend. They enter it under Add a server, then Join a server.",
     failed: "Couldn't create an invite",
     copyFailed: "Couldn't copy the code. Select it and copy it by hand.",
-    codeLabel: "Send this invite code to a friend",
     creating: "Creating an invite…",
-    copy: "Copy",
+    /** The code for screen readers, spelled out group by group. */
+    codeLabel: (spokenCode: string) => `Invite code: ${spokenCode}`,
+    copy: "Copy code",
     copied: "Copied",
-    neverExpires: "This invite never expires.",
     codeCopied: "Invite code copied",
+    limits: (lifetime: string | null, maximumUses: number | null) =>
+      `This invite ${lifetime === null ? "never expires" : `expires in ${lifetime}`} and ${
+        maximumUses === null
+          ? "has no use limit"
+          : plural(maximumUses, { one: "can be used once", other: `can be used ${count(maximumUses)} times` })
+      }.`,
+    changeLimits: "Change expiry and uses",
+    createNewCode: "Create a new code",
+    creatingNewCode: "Creating…",
+    previousCodeStays: "The current code keeps working until it expires.",
+    newCodeCreated: (spokenCode: string) => `New invite code: ${spokenCode}`,
+  },
+
+  inviteLimits: {
+    expireAfter: "Expire after",
+    maximumUses: "Maximum uses",
+    never: "Never",
+    noLimit: "No limit",
+    uses: (uses: number) => plural(uses, { one: `${count(uses)} use`, other: `${count(uses)} uses` }),
   },
 
   leaveServer: {
@@ -906,9 +927,13 @@ export const en = {
       uses: (uses: number, maximum: number | null) =>
         maximum === null
           ? plural(uses, { one: `${count(uses)} use`, other: `${count(uses)} uses` })
-          : `${count(uses)} of ${count(maximum)} uses`,
-      expires: (date: string) => `Expires ${date}`,
+          : `${count(uses)} / ${count(maximum)} uses`,
+      /** `relativeTime` is "in 3 days", from `Intl.RelativeTimeFormat`. */
+      expiresIn: (relativeTime: string) => `Expires ${relativeTime}`,
+      expired: "Expired",
       neverExpires: "Never expires",
+      createTitle: "Create an invite",
+      createSubmit: "Create invite",
       revoke: "Revoke",
       revokeLabel: (code: string) => `Revoke invite ${code}`,
       revokeTitle: "Revoke this invite?",

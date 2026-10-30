@@ -430,7 +430,8 @@ export const fr: Catalogue = {
     create: "Créer",
     creating: "Création…",
     inviteCode: "Code d’invitation",
-    inviteCodeHelper: "Colle le code d’invitation qu’on t’a donné.",
+    inviteCodePlaceholder: "AE8C-78A9-K2QF",
+    inviteCodeHelper: "Colle ou tape le code qu’on t’a donné. Majuscules et tirets facultatifs.",
     serverName: "Nom du serveur",
     hasNoInvite: `Pas d’invitation${NARROW_NO_BREAK_SPACE}?`,
     hasInvite: `Tu as déjà une invitation${NARROW_NO_BREAK_SPACE}?`,
@@ -503,14 +504,35 @@ export const fr: Catalogue = {
 
   invitePeople: {
     title: (server) => `Inviter des gens sur ${server}`,
+    subtitle: "Envoie ce code à quelqu’un. La personne le saisit dans Ajouter un serveur, puis Rejoindre un serveur.",
     failed: "Impossible de créer une invitation",
     copyFailed: "Impossible de copier le code. Sélectionne-le et copie-le à la main.",
-    codeLabel: "Envoie ce code d’invitation à quelqu’un",
     creating: "Création de l’invitation…",
-    copy: "Copier",
+    codeLabel: (spokenCode) => `Code d’invitation${NARROW_NO_BREAK_SPACE}: ${spokenCode}`,
+    copy: "Copier le code",
     copied: "Copié",
-    neverExpires: "Cette invitation n’expire jamais.",
     codeCopied: "Code d’invitation copié",
+    limits: (lifetime, maximumUses) =>
+      `Cette invitation ${lifetime === null ? "n’expire jamais" : `expire dans ${lifetime}`} et ${
+        maximumUses === null
+          ? "n’a pas de limite d’utilisations"
+          : maximumUses === 1
+            ? "ne peut servir qu’une fois"
+            : `peut servir ${count(maximumUses)}${NO_BREAK_SPACE}fois`
+      }.`,
+    changeLimits: "Modifier la durée et les utilisations",
+    createNewCode: "Créer un nouveau code",
+    creatingNewCode: "Création…",
+    previousCodeStays: "Le code actuel reste valable jusqu’à son expiration.",
+    newCodeCreated: (spokenCode) => `Nouveau code d’invitation${NARROW_NO_BREAK_SPACE}: ${spokenCode}`,
+  },
+
+  inviteLimits: {
+    expireAfter: "Expire après",
+    maximumUses: "Utilisations maximum",
+    never: "Jamais",
+    noLimit: "Sans limite",
+    uses: (uses) => plural(uses, { one: `${count(uses)}${NO_BREAK_SPACE}utilisation`, other: `${count(uses)}${NO_BREAK_SPACE}utilisations` }),
   },
 
   leaveServer: {
@@ -907,9 +929,12 @@ export const fr: Catalogue = {
       uses: (uses, maximum) =>
         maximum === null
           ? plural(uses, { one: `${count(uses)} utilisation`, other: `${count(uses)} utilisations` })
-          : `${count(uses)} utilisations sur ${count(maximum)}`,
-      expires: (date) => `Expire le ${date}`,
+          : `${count(uses)}${NO_BREAK_SPACE}/ ${count(maximum)}${NO_BREAK_SPACE}utilisations`,
+      expiresIn: (relativeTime) => `Expire ${relativeTime}`,
+      expired: "Expirée",
       neverExpires: "N’expire jamais",
+      createTitle: "Créer une invitation",
+      createSubmit: "Créer l’invitation",
       revoke: "Révoquer",
       revokeLabel: (code) => `Révoquer l’invitation ${code}`,
       revokeTitle: `Révoquer cette invitation${NARROW_NO_BREAK_SPACE}?`,
