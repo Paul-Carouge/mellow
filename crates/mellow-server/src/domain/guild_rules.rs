@@ -17,8 +17,8 @@ pub const MAXIMUM_CHANNEL_NAME_LENGTH: usize = 100;
 pub const MAXIMUM_CHANNEL_TOPIC_LENGTH: usize = 1024;
 pub const MAXIMUM_INVITE_USES: u32 = 10_000;
 pub const MAXIMUM_INVITE_LIFETIME: Duration = Duration::from_hours(30 * 24);
-/// Symbols of an invite code, without its dash: two groups of four, as in `AE8C-78A9`.
-pub const INVITE_CODE_SYMBOLS: usize = 8;
+/// Symbols of an invite code, without its dashes: three groups of four, as in `AE8C-78A9-K2QF`.
+pub const INVITE_CODE_SYMBOLS: usize = 12;
 const INVITE_CODE_GROUP_LENGTH: usize = 4;
 /// Quotas, as on Discord, so one account cannot grow the database or a response without bound.
 pub const MAXIMUM_CHANNELS_PER_GUILD: u32 = 500;
@@ -339,24 +339,38 @@ pub fn normalize_initial_categories(
         .collect()
 }
 
-/// A readable code such as `AE8C-78A9`: 8 symbols of Crockford's base 32 (40 bits), unguessable
-/// at the per-address join rate limit.
+/// A readable code such as `AE8C-78A9-K2QF`: 12 symbols of Crockford's base 32 (60 bits), as
+/// strong as the older 10-character codes. Two groups (40 bits) were guessable from the many
+/// addresses of an IPv6 /48, and the audit log keeps a code's first group.
 ///
 /// # Errors
 /// Fails only if the operating system cannot provide randomness.
 pub fn generate_invite_code() -> Result<String, getrandom::Error> {
     let mut random_bytes = [0u8; INVITE_CODE_SYMBOLS];
     getrandom::fill(&mut random_bytes)?;
-    let symbols: String = random_bytes
+    let symbols: Vec<u8> = random_bytes
         .iter()
-        .map(|byte| char::from(INVITE_CODE_ALPHABET[usize::from(byte % 32)]))
+        .map(|byte| INVITE_CODE_ALPHABET[usize::from(byte % 32)])
         .collect();
-    let (first, second) = symbols.split_at(INVITE_CODE_GROUP_LENGTH);
-    Ok(format!("{first}-{second}"))
+    Ok(grouped_invite_code(&symbols))
 }
 
-/// The stored form of a code someone typed: `ae8c 78a9`, `AE8C78A9` or `ae8c-78ao` all find
-/// `AE8C-78A9` (case, spaces and dashes ignored; O read as 0, I and L as 1). Anything else, such
+/// `AE8C78A9K2QF` as `AE8C-78A9-K2QF`; only called with alphabet symbols, which are ASCII.
+fn grouped_invite_code(symbols: &[u8]) -> String {
+    symbols
+        .chunks(INVITE_CODE_GROUP_LENGTH)
+        .map(|group| {
+            group
+                .iter()
+                .map(|byte| char::from(*byte))
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// The stored form of a code someone typed: `ae8c 78a9 k2qf`, `AE8C78A9K2QF` or `ae8c-78ao-k2qf`
+/// all find `AE8C-78A9-K2QF` (case, spaces and dashes ignored; O read as 0, I and L as 1). Anything else, such
 /// as a 10-character code from before `v0.18.0`, is only trimmed: those are case-sensitive.
 #[must_use]
 pub fn normalize_invite_code(typed: &str) -> String {
@@ -374,8 +388,7 @@ pub fn normalize_invite_code(typed: &str) -> String {
             .bytes()
             .all(|byte| INVITE_CODE_ALPHABET.contains(&byte));
     if is_readable_code {
-        let (first, second) = symbols.split_at(INVITE_CODE_GROUP_LENGTH);
-        format!("{first}-{second}")
+        grouped_invite_code(symbols.as_bytes())
     } else {
         typed.trim().to_owned()
     }
@@ -602,10 +615,14 @@ mod tests {
     fn invite_codes_are_two_readable_groups_and_distinct() {
         let first = generate_invite_code().unwrap();
         let second = generate_invite_code().unwrap();
-        let (left, right) = first.split_once('-').unwrap();
-        assert_eq!((left.len(), right.len()), (4, 4));
+        let groups: Vec<&str> = first.split('-').collect();
+        assert_eq!(
+            groups.iter().map(|group| group.len()).collect::<Vec<_>>(),
+            [4, 4, 4]
+        );
         assert!(
-            format!("{left}{right}")
+            groups
+                .concat()
                 .bytes()
                 .all(|byte| INVITE_CODE_ALPHABET.contains(&byte))
         );
@@ -615,12 +632,18 @@ mod tests {
 
     #[test]
     fn typed_invite_codes_find_their_readable_form() {
-        for typed in ["AE8C-78A9", "ae8c78a9", " ae8c 78a9 ", "AE8C-78A9\n"] {
-            assert_eq!(normalize_invite_code(typed), "AE8C-78A9", "{typed:?}");
+        for typed in [
+            "AE8C-78A9-K2QF",
+            "ae8c78a9k2qf",
+            " ae8c 78a9 k2qf ",
+            "AE8C-78A9-K2QF\n",
+        ] {
+            assert_eq!(normalize_invite_code(typed), "AE8C-78A9-K2QF", "{typed:?}");
         }
-        assert_eq!(normalize_invite_code("10ol-iI00"), "1001-1100");
-        // Codes from before v0.18.0 stay as typed, case included.
+        assert_eq!(normalize_invite_code("10ol-iI00-0000"), "1001-1100-0000");
+        // Codes from before v0.18.0 stay as typed, case included; so does anything else.
         assert_eq!(normalize_invite_code(" aB3dE5gH7k "), "aB3dE5gH7k");
-        assert_eq!(normalize_invite_code("AE8C-78U9"), "AE8C-78U9");
+        assert_eq!(normalize_invite_code("AE8C-78U9-K2QF"), "AE8C-78U9-K2QF");
+        assert_eq!(normalize_invite_code("AE8C-78A9"), "AE8C-78A9");
     }
 }

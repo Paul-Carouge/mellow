@@ -19,7 +19,9 @@ use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::http::authentication::AuthenticatedUser;
 use crate::http::client_address::client_address_key;
-use crate::http::rate_limit::{GUILD_WRITES_PER_USER, INVITE_ATTEMPTS_PER_ADDRESS};
+use crate::http::rate_limit::{
+    GUILD_WRITES_PER_USER, INVITE_ATTEMPTS_PER_ADDRESS, INVITE_ATTEMPTS_PER_USER,
+};
 
 fn limit_guild_writes(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
     if state.rate_limiter.record_event(
@@ -167,7 +169,7 @@ pub(crate) async fn delete_invite(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Rate limited per address so invite codes cannot be guessed by brute force.
+/// Rate limited per address and per user so invite codes cannot be guessed by brute force.
 pub(crate) async fn join_with_invite(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -176,11 +178,17 @@ pub(crate) async fn join_with_invite(
     ApiPath(code): ApiPath<String>,
 ) -> Result<Json<Guild>, ApiError> {
     let address = client_address_key(peer, &headers, &state.trusted_proxy_networks);
-    if !state.rate_limiter.record_event(
+    let now = Instant::now();
+    let is_allowed = state.rate_limiter.record_event(
         &format!("invite:{address}"),
         INVITE_ATTEMPTS_PER_ADDRESS,
-        Instant::now(),
-    ) {
+        now,
+    ) && state.rate_limiter.record_event(
+        &format!("invite-user:{}", user.id),
+        INVITE_ATTEMPTS_PER_USER,
+        now,
+    );
+    if !is_allowed {
         return Err(ApiError::rate_limited());
     }
     Ok(Json(

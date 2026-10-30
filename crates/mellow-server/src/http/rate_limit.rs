@@ -71,6 +71,13 @@ pub(crate) const INVITE_ATTEMPTS_PER_ADDRESS: RateLimit = RateLimit {
     window: Duration::from_secs(60),
 };
 
+/// Invite redemptions per user too: addresses are cheap (an IPv6 /48 holds 65 536 /64 keys), an
+/// account on an instance much less so. Joining a few servers in a row stays fine.
+pub(crate) const INVITE_ATTEMPTS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_mins(10),
+};
+
 /// Guild, channel and invite writes per user, so quotas fill slowly and cheaply.
 pub(crate) const GUILD_WRITES_PER_USER: RateLimit = RateLimit {
     maximum_events: 30,
