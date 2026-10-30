@@ -10,7 +10,7 @@ Real content: a mention of `@ana` in `#general` of "Rust Lyon", a message in a o
 
 ## Flows and states
 
-**Who is told (`web/src/lib/notification-rules.ts`, tested).** A message alerts the reader when all of these hold:
+**Who is told (`web/src/components/notifications.ts`, tested).** A message alerts the reader when all of these hold:
 
 - it is new (not a replay that `Ready` already counted, not an edit) and someone else wrote it, and its author is not blocked;
 - the reader's status is not Do not disturb;
@@ -89,9 +89,11 @@ On a wide window the sentence and the button share one line; the bar wraps the b
 
 ## Components
 
+All in `web/src/components/` unless said otherwise.
+
 - `NotificationSettings.svelte` (settings page), `NotificationSettingsDialog.svelte` (per place), `NotificationPermissionBar.svelte` (the one-time bar).
 - `Melli.svelte`: `chime` prop (a counter: each increase plays the arrival once), states `do-not-disturb`; `melli.ts`'s `homeMelliState` takes Do not disturb and attention.
-- Logic: `lib/notification-settings.ts` (types, validation of what storage holds, mute ends), `lib/notification-rules.ts` (who is told, how, the text, coalescing), `lib/notification-preferences.svelte.ts` (the reader's settings as state, the mute timer), `lib/notifier.svelte.ts` (browser notifications, sound, title, favicon), `lib/chime-sound.ts` (Web Audio).
+- Logic: `web/src/lib/notification-settings.ts` (types, validation of what storage holds, mute ends), `notifications.ts` (who is told, how, the text, what the dialog saves), `notification-preferences.svelte.ts` (the reader's settings as state, the mute timer, re-read on another tab's `storage` event and on return after sleep), `notifier.svelte.ts` (browser notifications and their coalescing, sound, title, favicon), `chime-sound.ts` (Web Audio, unlocked on the first `pointerdown`, `pointerup` or `keydown`). Each has its Vitest file beside it.
 
 ## Not done, to validate
 
