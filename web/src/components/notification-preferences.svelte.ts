@@ -8,6 +8,7 @@ import {
   type NotificationSettings,
   isMuteActive,
   nextMuteEnd,
+  notificationSettingsStorageKey,
   readNotificationSettings,
   withPlaceSettings,
   withoutEndedMutes,
@@ -37,6 +38,24 @@ export function loadNotificationPreferences(userId: Snowflake | null): void {
 
 export function notificationSettings(): NotificationSettings {
   return preferences.settings;
+}
+
+/**
+ * Another tab stored this user's choices (the window's `storage` event, `null` when storage was
+ * cleared): they are read again, so this tab's next write does not erase that tab's mute.
+ */
+export function noteStoredNotificationSettingsChanged(storageKey: string | null): void {
+  const userId = preferences.userId;
+  if (userId === null || (storageKey !== null && storageKey !== notificationSettingsStorageKey(userId))) {
+    return;
+  }
+  preferences.settings = readNotificationSettings(browserStorage(), userId);
+  refreshClock();
+}
+
+/** Judges mutes again now: after the computer slept, a timer may have fired late or not yet. */
+export function refreshNotificationPreferences(): void {
+  refreshClock();
 }
 
 /** Applies `change` and stores the result for this user. */

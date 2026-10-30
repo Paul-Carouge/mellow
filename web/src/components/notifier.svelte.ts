@@ -8,7 +8,12 @@ import type { Message, Snowflake } from "../lib/protocol";
 import { playChimeSound, prepareChimeSound } from "./chime-sound";
 import { displayName } from "./format";
 import { conversationDisplayName, isGroupConversation } from "./group-conversations";
-import { isMuted, notificationSettings } from "./notification-preferences.svelte";
+import {
+  isMuted,
+  noteStoredNotificationSettingsChanged,
+  notificationSettings,
+  refreshNotificationPreferences,
+} from "./notification-preferences.svelte";
 import {
   type NotificationPlace,
   alertDeliveryFor,
@@ -25,6 +30,8 @@ export type NotificationSupport = NotificationPermission | "unsupported";
 const APP_NAME = "Mellow";
 const NOTIFICATION_ICON_URL = "/icons/mellow-192.png";
 const FAVICON_URL = "/favicon.svg";
+/** Events that count as a gesture for audio, listened to in the capture phase. */
+const AUDIO_UNLOCKING_GESTURES = ["pointerdown", "pointerup", "keydown"] as const;
 /** A burst rings once: the chime does not play again within this time. */
 const MINIMUM_MILLISECONDS_BETWEEN_SOUNDS = 2_000;
 
@@ -128,7 +135,7 @@ function alertAbout(client: MellowClient, message: Message): void {
     lastSoundAt = now;
     playChimeSound();
   }
-  if (delivery === "browser" && settings.areDesktopNotificationsEnabled && readSupport() === "granted") {
+  if (delivery === "browser" && settings.areDesktopNotificationsEnabled && notifierState.support === "granted") {
     showBrowserNotification(client, message, place);
   }
 }
@@ -172,14 +179,17 @@ function showBrowserNotification(client: MellowClient, message: Message, place: 
 /** Listens to `client`'s new messages until the returned function is called (sign-out, unmount). */
 export function startNotifier(client: MellowClient): () => void {
   client.onIncomingMessage = (message) => alertAbout(client, message);
-  // Audio may only start from a gesture: the first press or key prepares the chime.
+  // Audio may only start from a gesture: the first click, tap or key prepares the chime. A touch's
+  // `pointerdown` is not a user activation, its `pointerup` is.
   const prepareSound = () => {
     if (notificationSettings().isSoundEnabled) {
       void prepareChimeSound();
     }
   };
-  // The permission may change in the browser's own settings; the open channel is seen on return.
+  // The permission may change in the browser's own settings, and mutes may have ended while the
+  // computer slept; the open channel is seen on return.
   const noteReturn = () => {
+    refreshNotificationPreferences();
     if (notifierState.support !== "unsupported") {
       notifierState.support = readSupport();
     }
@@ -188,15 +198,21 @@ export function startNotifier(client: MellowClient): () => void {
       noteChannelSeen(client.selectedChannelId);
     }
   };
-  window.addEventListener("pointerdown", prepareSound, { capture: true });
-  window.addEventListener("keydown", prepareSound, { capture: true });
+  // Another tab changed this user's choices: read them again before this tab writes its own.
+  const noteStorage = (event: StorageEvent) => noteStoredNotificationSettingsChanged(event.key);
+  for (const gesture of AUDIO_UNLOCKING_GESTURES) {
+    window.addEventListener(gesture, prepareSound, { capture: true });
+  }
   window.addEventListener("focus", noteReturn);
+  window.addEventListener("storage", noteStorage);
   document.addEventListener("visibilitychange", noteReturn);
   return () => {
     client.onIncomingMessage = null;
-    window.removeEventListener("pointerdown", prepareSound, { capture: true });
-    window.removeEventListener("keydown", prepareSound, { capture: true });
+    for (const gesture of AUDIO_UNLOCKING_GESTURES) {
+      window.removeEventListener(gesture, prepareSound, { capture: true });
+    }
     window.removeEventListener("focus", noteReturn);
+    window.removeEventListener("storage", noteStorage);
     document.removeEventListener("visibilitychange", noteReturn);
     for (const { notification } of alertsByChannel.values()) {
       notification?.close();
