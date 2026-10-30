@@ -53,6 +53,12 @@ import {
 const MAXIMUM_CACHED_MESSAGES_PER_CHANNEL = 500;
 const TYPING_INDICATOR_LIFETIME_MILLISECONDS = 8_000;
 const TYPING_SEND_INTERVAL_MILLISECONDS = 5_000;
+/** 1 000 messages back: the list renders every cached message, so further means scrolling up. */
+const MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE = 20;
+export const MAXIMUM_MESSAGES_LOADED_TO_REACH_A_MESSAGE = MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE * HISTORY_PAGE_SIZE;
+
+/** How `loadHistoryUntilMessage` ended: `left` when another channel opened meanwhile. */
+export type HistoryReach = "loaded" | "missing" | "too-far" | "failed" | "left";
 
 /** `unreachable`: the instance did not answer at launch, so whether a session exists is unknown. */
 export type ConnectionStatus = "signed-out" | "unreachable" | "connecting" | "connected" | "reconnecting";
@@ -1033,6 +1039,49 @@ export class MellowClient {
     } finally {
       this.isLoadingOlder = false;
     }
+  }
+
+  /**
+   * Loads older pages of the open channel until `messageId` is cached, for a search result or a
+   * pin far back (DESIGN.md 5.12). Pages are inserted next to the oldest cached message only, so
+   * the cache never has a gap; past `MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE` it gives up.
+   */
+  async loadHistoryUntilMessage(channelId: Snowflake, messageId: Snowflake): Promise<HistoryReach> {
+    const generation = this.historyGeneration;
+    for (let pages = 0; pages <= MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE; pages += 1) {
+      if (generation !== this.historyGeneration || channelId !== this.selectedChannelId) {
+        return "left";
+      }
+      const cached = this.messages(channelId);
+      if (cached.some((message) => message.id === messageId)) {
+        return "loaded";
+      }
+      const oldest = cached[0];
+      // The start is cached, or an older message is: the message was deleted since.
+      if (this.reachedStartChannelIds.has(channelId) || (oldest && compareSnowflakes(oldest.id, messageId) < 0)) {
+        return "missing";
+      }
+      if (pages === MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE) {
+        break;
+      }
+      try {
+        const page = await this.rest.listMessages(channelId, oldest?.id);
+        if (generation !== this.historyGeneration || channelId !== this.selectedChannelId) {
+          return "left";
+        }
+        // Only next to the cursor (see loadOlderMessages); a page that landed meanwhile is fine too.
+        if (this.messages(channelId)[0]?.id === oldest?.id) {
+          this.insertMessages(channelId, page);
+          if (page.length < HISTORY_PAGE_SIZE) {
+            this.reachedStartChannelIds.add(channelId);
+          }
+        }
+      } catch (error) {
+        this.reportError(error, "load history around a message");
+        return "failed";
+      }
+    }
+    return "too-far";
   }
 
   private async ensureMembersLoaded(guildId: Snowflake): Promise<void> {

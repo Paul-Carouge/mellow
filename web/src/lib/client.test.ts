@@ -1215,3 +1215,42 @@ describe("Message search", () => {
     ]);
   });
 });
+
+describe("Reaching a message far back", () => {
+  /** A channel of `count` messages with ids 1000 and up, served like the instance: 50 at most, oldest first. */
+  function historyOf(count: number, requests: (string | undefined)[] = []) {
+    const all = Array.from({ length: count }, (_, index) => message(String(1000 + index)));
+    return (_channelId: string, before?: string) => {
+      requests.push(before);
+      const older = before ? all.filter((candidate) => Number(candidate.id) < Number(before)) : all;
+      return Promise.resolve(older.slice(-50));
+    };
+  }
+
+  it("loads older pages until the message is cached, without leaving a gap", async () => {
+    const requests: (string | undefined)[] = [];
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: historyOf(200, requests) }));
+    client.applyReady(ready());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await client.loadHistoryUntilMessage(GENERAL, "1020")).toBe("loaded");
+    const ids = client.messages(GENERAL).map((cached) => Number(cached.id));
+    expect(ids[0]).toBeLessThanOrEqual(1020);
+    expect(ids).toEqual(Array.from({ length: ids.length }, (_, index) => (ids[0] ?? 0) + index));
+    expect(requests).toEqual([undefined, "1150", "1100", "1050"]);
+  });
+
+  it("says the message is missing once an older one or the start is cached", async () => {
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: historyOf(30) }));
+    client.applyReady(ready());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await client.loadHistoryUntilMessage(GENERAL, "999")).toBe("missing");
+  });
+
+  it("gives up 20 pages back, and stops for a channel that is not open", async () => {
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: historyOf(2_000) }));
+    client.applyReady(ready());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await client.loadHistoryUntilMessage(GENERAL, "1000")).toBe("too-far");
+    expect(await client.loadHistoryUntilMessage(RULES, "1000")).toBe("left");
+  });
+});
