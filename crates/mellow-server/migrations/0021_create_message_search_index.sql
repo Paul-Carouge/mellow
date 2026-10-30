@@ -15,7 +15,9 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
 INSERT INTO messages_fts (messages_fts, rank) VALUES ('secure-delete', 1);
 
 -- Kept in step by the write transactions themselves, whatever path writes messages (deleting a
--- channel or a guild deletes its messages by cascade, which fires these too).
+-- channel or a guild deletes its messages by cascade, which fires these too). Never write
+-- `messages` with REPLACE (`INSERT OR REPLACE`, `REPLACE INTO`): the rows it deletes fire no
+-- trigger, and their words would stay in the index.
 CREATE TRIGGER messages_fts_after_insert AFTER INSERT ON messages BEGIN
     INSERT INTO messages_fts (rowid, content) VALUES (new.id, new.content);
 END;

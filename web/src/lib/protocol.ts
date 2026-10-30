@@ -296,7 +296,10 @@ export const MAXIMUM_SEARCH_RESULTS_PER_PAGE = 25;
 export const MAXIMUM_REACHABLE_SEARCH_RESULTS = 1_000;
 /** `total_count` stops here; with `total_count_is_lower_bound`, show "1 000+". Facets count the newest this many. */
 export const MAXIMUM_COUNTED_SEARCH_MATCHES = 1_000;
-/** Longer queries are refused (`VALIDATION_FAILED`), as are more than 16 words and filters. */
+/**
+ * Longer queries are refused (`VALIDATION_FAILED`), as are more than 16 words and filters. Each user
+ * runs one search at a time: a second one before the first answers gets `RATE_LIMITED`.
+ */
 export const MAXIMUM_SEARCH_QUERY_LENGTH = 256;
 export const MAXIMUM_SEARCH_QUERY_PARTS = 16;
 
@@ -304,7 +307,7 @@ export const MAXIMUM_SEARCH_QUERY_PARTS = 16;
 export type MessageSearchSort = "relevance" | "newest";
 
 /**
- * Query of `GET /guilds/{id}/messages/search` and `GET /users/@me/messages/search`. `q` is the
+ * Body of `POST /guilds/{id}/messages/search` and `POST /users/@me/messages/search`. `q` is the
  * query language: words (all must match, each also as a word prefix), `"exact phrase"`,
  * `-excluded`, `prefix*`, and the filters `from:username`, `mentions:username`, `in:channel` (an
  * id, or in a server a name with or without `#`), `has:file|image|link|pinned`, and

@@ -224,7 +224,16 @@ pub(crate) async fn search_message_ids(
     rows.into_iter().map(|(id,)| to_id(id)).collect()
 }
 
-/// Matches per channel and author, among the `maximum_counted` newest matches.
+/// The newest `maximum_counted` matches, counted per channel and author.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct CountedMatches {
+    pub(crate) counts: Vec<MatchCount>,
+    /// More matches exist than were counted.
+    pub(crate) has_more: bool,
+}
+
+/// Counts the `maximum_counted` newest matches per channel and author, and tells whether more
+/// exist; facets built from it never count more than the total says.
 ///
 /// # Errors
 /// Fails on database errors.
@@ -232,57 +241,65 @@ pub(crate) async fn count_matches(
     database: &Database,
     criteria: &SearchCriteria,
     maximum_counted: u32,
-) -> Result<Vec<MatchCount>, MessageStorageError> {
+) -> Result<CountedMatches, MessageStorageError> {
     let bound = BoundCriteria::new(criteria);
-    let rows: Vec<(i64, i64, i64)> = if bound.match_expression.is_some() {
+    // One row more than counted, to tell "exactly the cap" from "more than the cap".
+    let read_limit = i64::from(maximum_counted) + 1;
+    let rows: Vec<(i64, i64)> = if bound.match_expression.is_some() {
         bind_criteria!(
             sqlx::query_as(concat!(
-                "SELECT channel_id, author_id, COUNT(*) FROM \
-                 (SELECT messages.channel_id, messages.author_id ",
+                "SELECT messages.channel_id, messages.author_id ",
                 matching_messages!(),
-                "ORDER BY messages_fts.rowid DESC LIMIT ?12) GROUP BY channel_id, author_id"
+                "ORDER BY messages_fts.rowid DESC LIMIT ?12"
             )),
             bound
         )
-        .bind(i64::from(maximum_counted))
+        .bind(read_limit)
         .fetch_all(database.readers())
         .await?
     } else if bound.author_usernames.is_some() {
         bind_criteria!(
             sqlx::query_as(concat!(
-                "SELECT channel_id, author_id, COUNT(*) FROM \
-                 (SELECT messages.channel_id, messages.author_id ",
+                "SELECT messages.channel_id, messages.author_id ",
                 filtered_messages!(by_author),
-                "ORDER BY messages.id DESC LIMIT ?12) GROUP BY channel_id, author_id"
+                "ORDER BY messages.id DESC LIMIT ?12"
             )),
             bound
         )
-        .bind(i64::from(maximum_counted))
+        .bind(read_limit)
         .fetch_all(database.readers())
         .await?
     } else {
         bind_criteria!(
             sqlx::query_as(concat!(
-                "SELECT channel_id, author_id, COUNT(*) FROM \
-                 (SELECT messages.channel_id, messages.author_id ",
+                "SELECT messages.channel_id, messages.author_id ",
                 filtered_messages!(),
-                "ORDER BY messages.id DESC LIMIT ?12) GROUP BY channel_id, author_id"
+                "ORDER BY messages.id DESC LIMIT ?12"
             )),
             bound
         )
-        .bind(i64::from(maximum_counted))
+        .bind(read_limit)
         .fetch_all(database.readers())
         .await?
     };
-    rows.into_iter()
-        .map(|(channel_id, author_id, count)| {
-            Ok(MatchCount {
-                channel_id: to_id(channel_id)?,
-                author_id: to_id(author_id)?,
-                count: u32::try_from(count).map_err(|_| MessageStorageError::IntegerOutOfRange)?,
-            })
-        })
-        .collect()
+    let counted_rows = usize::try_from(maximum_counted).unwrap_or(usize::MAX);
+    let has_more = rows.len() > counted_rows;
+    let mut counts: Vec<MatchCount> = Vec::new();
+    for (channel_id, author_id) in rows.into_iter().take(counted_rows) {
+        let (channel_id, author_id) = (to_id(channel_id)?, to_id(author_id)?);
+        match counts
+            .iter_mut()
+            .find(|count| count.channel_id == channel_id && count.author_id == author_id)
+        {
+            Some(count) => count.count += 1,
+            None => counts.push(MatchCount {
+                channel_id,
+                author_id,
+                count: 1,
+            }),
+        }
+    }
+    Ok(CountedMatches { counts, has_more })
 }
 
 /// The content of each of `message_ids` with `start_mark` and `end_mark` around every word
@@ -570,7 +587,7 @@ mod tests {
         count_matches(
             database,
             criteria,
-            mellow_protocol::MAXIMUM_COUNTED_SEARCH_MATCHES + 1,
+            mellow_protocol::MAXIMUM_COUNTED_SEARCH_MATCHES,
         )
         .await
         .unwrap();
@@ -738,10 +755,11 @@ mod tests {
                 let matches = count_matches(
                     &database,
                     &criteria,
-                    mellow_protocol::MAXIMUM_COUNTED_SEARCH_MATCHES + 1,
+                    mellow_protocol::MAXIMUM_COUNTED_SEARCH_MATCHES,
                 )
                 .await
                 .unwrap()
+                .counts
                 .iter()
                 .map(|count| count.count)
                 .sum::<u32>();
@@ -767,5 +785,130 @@ mod tests {
             milliseconds(percentile(&all, 0.95))
         );
         database.close().await;
+    }
+
+    fn channel_deletion_audit(channel_id: Snowflake) -> crate::storage::audit_log::NewAuditEntry {
+        crate::storage::audit_log::NewAuditEntry {
+            id: Snowflake::from_raw(1 << 50),
+            guild_id: Snowflake::from_raw(1),
+            actor_id: Snowflake::from_raw(1),
+            action: mellow_protocol::AuditAction::ChannelDelete,
+            target_id: Some(channel_id),
+            context_id: None,
+            channel_id: None,
+            reason: String::new(),
+            changes: Vec::new(),
+        }
+    }
+
+    /// Measures how long the writer is held when deleting a channel holding a fifth of the
+    /// messages and a guild holding a tenth, with the search triggers in place. Run with
+    /// `cargo test --release -p mellow-server --lib measure_deletion -- --ignored --nocapture`;
+    /// `MELLOW_SEARCH_MEASURE_MESSAGES` sets the total (default 1 000 000).
+    #[tokio::test]
+    #[ignore = "measurement, minutes long; run by hand"]
+    #[allow(clippy::print_stdout)]
+    async fn measure_deletion_of_large_channels_and_guilds() {
+        let message_count: usize = std::env::var("MELLOW_SEARCH_MEASURE_MESSAGES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1_000_000);
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(
+            &directory.path().join("mellow.db"),
+            &DatabaseKey::from_bytes([6; 32]),
+        )
+        .await
+        .unwrap();
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let writer = database.writer();
+        sqlx::raw_sql(
+            "DROP TRIGGER messages_fts_after_insert; DROP TRIGGER messages_fts_after_delete; \
+             DROP TRIGGER messages_fts_after_content_update; DROP TABLE messages_fts; \
+             DROP INDEX messages_by_author_id; \
+             INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (1, 'Big', 1, 0), (2, 'Other', 1, 0), (3, 'Rest', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) VALUES \
+             (10, 1, 'text', 'big', 0), (20, 2, 'text', 'a', 0), (21, 2, 'text', 'b', 1), \
+             (30, 3, 'text', 'c', 0), (31, 3, 'text', 'd', 1);",
+        )
+        .execute(writer)
+        .await
+        .unwrap();
+        let in_big_channel = message_count / 5;
+        let in_other_guild = message_count / 10;
+        let mut first_id = 1 << 40;
+        for (count, channels) in [
+            (in_big_channel, &[10][..]),
+            (in_other_guild, &[20, 21][..]),
+            (
+                message_count - in_big_channel - in_other_guild,
+                &[30, 31][..],
+            ),
+        ] {
+            realistic_messages::insert_messages(writer, first_id, count, channels, &[1]).await;
+            first_id += i64::try_from(count).unwrap();
+        }
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0021_create_message_search_index.sql"
+        ))
+        .execute(writer)
+        .await
+        .unwrap();
+
+        // A small write every 50 ms meanwhile: its longest wait is how long others queue.
+        let is_deleting = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let probe = tokio::spawn({
+            let writer = writer.clone();
+            let is_deleting = is_deleting.clone();
+            async move {
+                let mut longest_wait = Duration::ZERO;
+                while is_deleting.load(std::sync::atomic::Ordering::Relaxed) {
+                    let started = Instant::now();
+                    sqlx::query("UPDATE users SET display_name = 'Ada' WHERE id = 1")
+                        .execute(&writer)
+                        .await
+                        .unwrap();
+                    longest_wait = longest_wait.max(started.elapsed());
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                longest_wait
+            }
+        });
+        let audit = channel_deletion_audit(Snowflake::from_raw(10));
+        let started = Instant::now();
+        crate::storage::guilds::delete_channel(&database, Snowflake::from_raw(10), &audit)
+            .await
+            .unwrap();
+        let channel_deletion = started.elapsed();
+        let started = Instant::now();
+        crate::storage::guilds::delete_guild(
+            &database,
+            Snowflake::from_raw(2),
+            Snowflake::from_raw(1),
+        )
+        .await
+        .unwrap();
+        let guild_deletion = started.elapsed();
+        is_deleting.store(false, std::sync::atomic::Ordering::Relaxed);
+        let longest_wait = probe.await.unwrap();
+        let integrity = sqlx::query(
+            "INSERT INTO messages_fts (messages_fts, rank) VALUES ('integrity-check', 1)",
+        )
+        .execute(writer)
+        .await;
+        println!(
+            "in batches: channel of {in_big_channel} messages {:.0} ms; guild of {in_other_guild} \
+             messages {:.0} ms; longest wait of another write {:.0} ms",
+            milliseconds(channel_deletion),
+            milliseconds(guild_deletion),
+            milliseconds(longest_wait)
+        );
+        database.close().await;
+        assert!(integrity.is_ok(), "{integrity:?}");
     }
 }

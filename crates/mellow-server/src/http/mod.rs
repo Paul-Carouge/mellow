@@ -255,11 +255,11 @@ fn message_router(maximum_attachment_bytes: u64) -> Router<AppState> {
         )
         .route(
             "/api/v1/guilds/{guild_id}/messages/search",
-            get(message_routes::search_guild_messages),
+            post(message_routes::search_guild_messages),
         )
         .route(
             "/api/v1/users/@me/messages/search",
-            get(message_routes::search_my_conversation_messages),
+            post(message_routes::search_my_conversation_messages),
         )
         .route(
             "/api/v1/users/@me/read-states",
@@ -3186,39 +3186,59 @@ pub(crate) mod tests {
             ),
         )
         .await;
-        let search = |query: &str| {
+        let search = |body: serde_json::Value| {
             authorized(
-                "GET",
-                &format!("/api/v1/guilds/{guild_id}/messages/search?{query}"),
+                "POST",
+                &format!("/api/v1/guilds/{guild_id}/messages/search"),
                 &owner,
-                None,
+                Some(body),
             )
         };
-        let (status, body) = send(&state, search("q=creme%20-pizza&sort=newest&limit=5")).await;
+        let (status, body) = send(
+            &state,
+            search(serde_json::json!({"q": "creme -pizza", "sort": "newest", "limit": 5})),
+        )
+        .await;
         let found: MessageSearchResults = json(&body);
-        let unknown_parameter = send(&state, search("q=creme&page=2")).await.0;
-        let (_, body) = send(
+        let unknown_field = send(&state, search(serde_json::json!({"q": "creme", "page": 2})))
+            .await
+            .0;
+        let as_get = send(
             &state,
             authorized(
                 "GET",
-                "/api/v1/users/@me/messages/search?q=creme",
+                &format!("/api/v1/guilds/{guild_id}/messages/search?q=creme"),
                 &owner,
                 None,
+            ),
+        )
+        .await
+        .0;
+        let (_, body) = send(
+            &state,
+            authorized(
+                "POST",
+                "/api/v1/users/@me/messages/search",
+                &owner,
+                Some(serde_json::json!({"q": "creme"})),
             ),
         )
         .await;
         let in_conversations: MessageSearchResults = json(&body);
         for _ in 2..rate_limit::MESSAGE_SEARCHES_PER_USER.maximum_events {
-            send(&state, search("q=creme")).await;
+            send(&state, search(serde_json::json!({"q": "creme"}))).await;
         }
-        let limited = send(&state, search("q=creme")).await.0;
+        let limited = send(&state, search(serde_json::json!({"q": "creme"})))
+            .await
+            .0;
         database.close().await;
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(found.total_count, 1);
         assert_eq!(found.hits[0].message.content, "Crème brûlée tonight?");
         assert_eq!(found.hits[0].highlights.len(), 1);
-        assert_eq!(unknown_parameter, StatusCode::BAD_REQUEST);
+        assert_eq!(unknown_field, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(as_get, StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(in_conversations.total_count, 0);
         assert_eq!(limited, StatusCode::TOO_MANY_REQUESTS);
     }

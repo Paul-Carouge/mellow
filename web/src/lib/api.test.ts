@@ -59,14 +59,15 @@ describe("RestClient invites", () => {
 describe("RestClient message search", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("searches a server or the conversations, sending only the given parameters, encoded", async () => {
+  it("searches a server or the conversations with the query in the body, never in the URL", async () => {
     const requests = recordFetches();
     const rest = new RestClient();
-    await rest.searchMessages("100", { q: 'from:ada "café au lait" -x&y', sort: "newest", offset: 25, utc_offset_minutes: -300 });
+    const query = { q: 'from:ada "café au lait"', sort: "newest", offset: 25, utc_offset_minutes: -300 } as const;
+    await rest.searchMessages("100", query);
     await rest.searchMessages(null, { q: "hello" });
-    expect(requests.map((request) => request.url)).toEqual([
-      "/api/v1/guilds/100/messages/search?q=from%3Aada+%22caf%C3%A9+au+lait%22+-x%26y&sort=newest&offset=25&utc_offset_minutes=-300",
-      "/api/v1/users/@me/messages/search?q=hello",
+    expect(requests).toEqual([
+      { url: "/api/v1/guilds/100/messages/search", body: query },
+      { url: "/api/v1/users/@me/messages/search", body: { q: "hello" } },
     ]);
   });
 });

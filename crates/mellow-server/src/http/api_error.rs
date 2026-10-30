@@ -155,6 +155,7 @@ impl From<MessageError> for ApiError {
             },
             MessageError::MessageNotFound => Self::not_found(),
             MessageError::Busy => Self::server_busy(),
+            MessageError::SearchAlreadyRunning => Self::rate_limited(),
             MessageError::QuotaReached => Self {
                 status: StatusCode::CONFLICT,
                 code: ApiErrorCode::LimitReached,

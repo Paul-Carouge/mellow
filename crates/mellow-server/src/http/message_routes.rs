@@ -385,12 +385,13 @@ fn limit_message_searches(state: &AppState, user_id: Snowflake) -> Result<(), Ap
     }
 }
 
-/// `GET /api/v1/guilds/{guild_id}/messages/search` (ADR-0029).
+/// `POST /api/v1/guilds/{guild_id}/messages/search` (ADR-0029): a POST so the query text stays
+/// out of URLs, which reverse proxies log.
 pub(crate) async fn search_guild_messages(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     ApiPath(guild_id): ApiPath<Snowflake>,
-    ApiQuery(query): ApiQuery<MessageSearchQuery>,
+    ApiJson(query): ApiJson<MessageSearchQuery>,
 ) -> Result<Json<MessageSearchResults>, ApiError> {
     limit_message_searches(&state, user.id)?;
     Ok(Json(
@@ -401,11 +402,11 @@ pub(crate) async fn search_guild_messages(
     ))
 }
 
-/// `GET /api/v1/users/@me/messages/search`: the requester's conversations and groups.
+/// `POST /api/v1/users/@me/messages/search`: the requester's conversations and groups.
 pub(crate) async fn search_my_conversation_messages(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-    ApiQuery(query): ApiQuery<MessageSearchQuery>,
+    ApiJson(query): ApiJson<MessageSearchQuery>,
 ) -> Result<Json<MessageSearchResults>, ApiError> {
     limit_message_searches(&state, user.id)?;
     Ok(Json(

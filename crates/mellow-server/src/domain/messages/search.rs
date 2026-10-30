@@ -3,7 +3,8 @@
 //! `direct_message_permissions` (ADR-0007). Channels outside that scope are never queried, so
 //! they cannot show in results, counts or facets.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use mellow_protocol::{
     AuthorSearchFacet, ChannelSearchFacet, MAXIMUM_COUNTED_SEARCH_MATCHES, MAXIMUM_SEARCH_FACETS,
@@ -86,6 +87,12 @@ impl Messages {
         channels: &[SearchableChannel],
         request: &SearchRequest,
     ) -> Result<MessageSearchResults, MessageError> {
+        let _one_search_of_this_user = self.start_search_of(user_id)?;
+        let _reader_permit = self
+            .search_permits
+            .acquire()
+            .await
+            .map_err(|error| MessageError::Internal(Box::new(error)))?;
         let parsed = &request.parsed;
         let channel_ids = channels_named_by(channels, &parsed.channel_references);
         if parsed.is_empty() || channel_ids.is_empty() {
@@ -114,22 +121,21 @@ impl Messages {
             request.limit,
         )
         .await?;
-        // One more than shown, to tell "exactly the cap" from "more than the cap".
-        let counts = search_storage::count_matches(
+        let counted = search_storage::count_matches(
             &self.database,
             &criteria,
-            MAXIMUM_COUNTED_SEARCH_MATCHES + 1,
+            MAXIMUM_COUNTED_SEARCH_MATCHES,
         )
         .await?;
+        let counts = counted.counts;
         let hits = self
             .hits_in_order(user_id, &page_ids, criteria.match_expression.as_deref())
             .await?;
         let author_facets = self.author_facets(&counts).await?;
-        let counted: u32 = counts.iter().map(|count| count.count).sum();
         Ok(MessageSearchResults {
             hits,
-            total_count: counted.min(MAXIMUM_COUNTED_SEARCH_MATCHES),
-            total_count_is_lower_bound: counted > MAXIMUM_COUNTED_SEARCH_MATCHES,
+            total_count: counts.iter().map(|count| count.count).sum(),
+            total_count_is_lower_bound: counted.has_more,
             channel_facets: channel_facets(&counts),
             author_facets,
         })
@@ -205,6 +211,42 @@ impl Messages {
                 Some(AuthorSearchFacet { author, count })
             })
             .collect())
+    }
+}
+
+/// Marks a user's search as running until dropped (`Messages::start_search_of`).
+#[derive(Debug)]
+pub(crate) struct RunningSearch {
+    running: Arc<Mutex<HashSet<Snowflake>>>,
+    user_id: Snowflake,
+}
+
+impl Drop for RunningSearch {
+    fn drop(&mut self) {
+        self.running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.user_id);
+    }
+}
+
+impl Messages {
+    /// One search at a time per user: a second one while the first runs is refused, so a client
+    /// typing fast cannot hold several readers at once (ADR-0029).
+    fn start_search_of(&self, user_id: Snowflake) -> Result<RunningSearch, MessageError> {
+        let is_new = self
+            .running_searches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(user_id);
+        if is_new {
+            Ok(RunningSearch {
+                running: self.running_searches.clone(),
+                user_id,
+            })
+        } else {
+            Err(MessageError::SearchAlreadyRunning)
+        }
     }
 }
 
@@ -773,6 +815,77 @@ mod tests {
         assert_eq!(old_word, []);
         assert_eq!(new_word, [message.id]);
         assert!(index_integrity.is_ok(), "{index_integrity:?}");
+    }
+
+    #[tokio::test]
+    async fn a_user_runs_one_search_at_a_time() {
+        let fixture = fixture().await;
+        let running = fixture.messages.start_search_of(fixture.member).unwrap();
+        let while_running = fixture.search_guild(fixture.member, query("word")).await;
+        let someone_else = fixture.search_guild(fixture.owner, query("word")).await;
+        drop(running);
+        let afterwards = fixture.search_guild(fixture.member, query("word")).await;
+        fixture.database.close().await;
+
+        assert!(
+            matches!(while_running, Err(MessageError::SearchAlreadyRunning)),
+            "{while_running:?}"
+        );
+        assert!(someone_else.is_ok(), "{someone_else:?}");
+        assert!(afterwards.is_ok(), "{afterwards:?}");
+    }
+
+    #[tokio::test]
+    async fn counts_and_facets_never_pass_the_counted_matches() {
+        let fixture = fixture().await;
+        for index in 0..3 {
+            fixture
+                .send_at(fixture.owner, fixture.general, "same words", NOW + index)
+                .await;
+        }
+        let criteria = SearchCriteria {
+            channel_ids: vec![fixture.general],
+            match_expression: Some("\"same\"".into()),
+            ..SearchCriteria::default()
+        };
+        let two_counted = search_storage::count_matches(&fixture.database, &criteria, 2)
+            .await
+            .unwrap();
+        let all_counted = search_storage::count_matches(&fixture.database, &criteria, 3)
+            .await
+            .unwrap();
+        fixture.database.close().await;
+
+        assert_eq!(channel_facets(&two_counted.counts)[0].count, 2);
+        assert!(two_counted.has_more);
+        assert_eq!(channel_facets(&all_counted.counts)[0].count, 3);
+        assert!(!all_counted.has_more);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_guild_takes_its_messages_out_of_the_index() {
+        let fixture = fixture().await;
+        fixture.send(fixture.owner, fixture.general, "walnut").await;
+        fixture
+            .guilds
+            .delete_guild(fixture.owner, fixture.guild_id)
+            .await
+            .unwrap();
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'walnut'",
+        )
+        .fetch_one(fixture.database.readers())
+        .await
+        .unwrap();
+        let integrity = sqlx::query(
+            "INSERT INTO messages_fts (messages_fts, rank) VALUES ('integrity-check', 1)",
+        )
+        .execute(fixture.database.writer())
+        .await;
+        fixture.database.close().await;
+
+        assert_eq!(remaining, 0);
+        assert!(integrity.is_ok(), "{integrity:?}");
     }
 
     #[tokio::test]

@@ -1,5 +1,6 @@
-//! Message search (ADR-0029): `GET /api/v1/guilds/{guild_id}/messages/search` searches the guild
-//! channels the requester can read, `GET /api/v1/users/@me/messages/search` their conversations.
+//! Message search (ADR-0029): `POST /api/v1/guilds/{guild_id}/messages/search` searches the guild
+//! channels the requester can read, `POST /api/v1/users/@me/messages/search` their conversations.
+//! POST with a JSON body, so the query text never appears in URLs and access logs.
 
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +22,7 @@ pub const MAXIMUM_SEARCH_QUERY_PARTS: usize = 16;
 /// Entries in each facet list, the largest counts first.
 pub const MAXIMUM_SEARCH_FACETS: usize = 10;
 
-/// Query of both search routes.
+/// Body of both search routes.
 ///
 /// `q` is the query language: free words (all must match, each also as a word prefix, exact
 /// words ranked first), `"exact phrase"`, `-excluded` (word or phrase), `word*` (explicit prefix),

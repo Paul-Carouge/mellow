@@ -442,15 +442,9 @@ export class RestClient {
 
   /** Searches a server's channels the user can read, or with `guildId` null their conversations. */
   searchMessages(guildId: Snowflake | null, query: MessageSearchQuery): Promise<MessageSearchResults> {
-    const parameters = new URLSearchParams({ q: query.q });
-    for (const key of ["sort", "offset", "limit", "utc_offset_minutes"] as const) {
-      const value = query[key];
-      if (value !== undefined) {
-        parameters.set(key, String(value));
-      }
-    }
+    // A POST, so the query text never shows in URLs and access logs.
     const path = guildId === null ? "users/@me/messages/search" : `guilds/${guildId}/messages/search`;
-    return this.request("GET", `${path}?${parameters}`);
+    return this.request("POST", path, query);
   }
 
   /** The most recently pinned first. */

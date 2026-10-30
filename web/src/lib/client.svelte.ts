@@ -1325,13 +1325,16 @@ export class MellowClient {
   /**
    * Searches a server's channels the user can read, or with `guildId` null their conversations
    * (ADR-0029). Day filters use this browser's time zone. Failures are thrown for the caller to
-   * describe (`RATE_LIMITED` when typed too fast, `VALIDATION_FAILED` for an oversized query).
+   * describe (`RATE_LIMITED` when typed too fast or while this user's previous search still runs:
+   * wait for each answer before sending the next; `VALIDATION_FAILED` for an oversized query).
    */
   searchMessages(
     guildId: Snowflake | null,
     query: Omit<MessageSearchQuery, "utc_offset_minutes">,
   ): Promise<MessageSearchResults> {
     // getTimezoneOffset counts minutes west of UTC; the instance wants minutes east. `|| 0` turns -0 into 0.
+    // shortcut: today's offset applies to every day filter, so a day across a daylight saving change
+    // is off by an hour at its edges; send the offset per date if that ever matters.
     const utcOffsetMinutes = -new Date().getTimezoneOffset() || 0;
     return this.rest.searchMessages(guildId, { ...query, utc_offset_minutes: utcOffsetMinutes });
   }

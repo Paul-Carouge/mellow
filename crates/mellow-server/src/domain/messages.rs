@@ -49,6 +49,9 @@ pub enum MessageError {
     /// Every file transfer slot is taken; the client tries again shortly.
     #[error("too many file transfers at once")]
     Busy,
+    /// The user already has a search running; answered as rate limited.
+    #[error("a search of this user is already running")]
+    SearchAlreadyRunning,
     /// The user's uploads already take their whole storage quota.
     #[error("attachment storage quota reached")]
     QuotaReached,
@@ -286,7 +289,15 @@ pub(crate) struct Messages {
     /// Held from id generation until the `MESSAGE_CREATE` event is published, so messages commit
     /// and reach gateways in id order: an `after` cursor can never skip a message committed late.
     send_order: Arc<tokio::sync::Mutex<()>>,
+    /// Users with a search running (`search::RunningSearch`).
+    running_searches: Arc<std::sync::Mutex<HashSet<Snowflake>>>,
+    /// Searches take at most `MAXIMUM_CONCURRENT_SEARCHES` of the four reader connections, so
+    /// history and other reads keep the rest (ADR-0029).
+    search_permits: Arc<tokio::sync::Semaphore>,
 }
+
+/// Searches running at once on the instance; others wait for a permit.
+const MAXIMUM_CONCURRENT_SEARCHES: usize = 2;
 
 impl Messages {
     pub(crate) fn new(
@@ -299,6 +310,8 @@ impl Messages {
             ids,
             guilds,
             send_order: Arc::default(),
+            running_searches: Arc::default(),
+            search_permits: Arc::new(tokio::sync::Semaphore::new(MAXIMUM_CONCURRENT_SEARCHES)),
         }
     }
 

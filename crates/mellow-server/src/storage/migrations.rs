@@ -1329,6 +1329,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_latest_schema_keeps_the_search_index_in_step() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let triggers: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = 'messages' \
+             AND name LIKE 'messages_fts_%' ORDER BY name",
+        )
+        .fetch_all(database.writer())
+        .await
+        .unwrap();
+        let integrity = sqlx::query(
+            "INSERT INTO messages_fts (messages_fts, rank) VALUES ('integrity-check', 1)",
+        )
+        .execute(database.writer())
+        .await;
+        database.close().await;
+
+        assert_eq!(
+            triggers,
+            [
+                "messages_fts_after_content_update",
+                "messages_fts_after_delete",
+                "messages_fts_after_insert"
+            ]
+        );
+        assert!(integrity.is_ok(), "{integrity:?}");
+    }
+
+    #[tokio::test]
     async fn a_database_from_a_newer_binary_is_refused_even_with_nothing_pending() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
