@@ -5,7 +5,6 @@ import type { PublicUser, Snowflake } from "../lib/protocol";
 import { foldForSearch } from "../lib/search-text";
 import { displayName } from "./format";
 import {
-  SEARCH_DATE_KEYS,
   SEARCH_FILTER_KEYS,
   SEARCH_HAS_VALUES,
   type SearchCaretContext,
@@ -131,9 +130,4 @@ export function suggestionInsertion(suggestion: SearchSuggestion): { text: strin
     case "day":
       return { text: `${suggestion.key}:${suggestion.day}`, endsPart: true };
   }
-}
-
-/** Whether `key` takes a day, for its "a date" description. */
-export function isDateKey(key: SearchFilterKey): boolean {
-  return SEARCH_DATE_KEYS.includes(key);
 }

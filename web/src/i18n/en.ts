@@ -785,7 +785,6 @@ export const en = {
     fieldLabelInConversations: "Search messages in your conversations",
     openSearch: "Search messages",
     clear: "Clear search",
-    suggestionsLabel: "Search suggestions",
     suggestionsCount: (suggestions: number) =>
       `${count(suggestions)} ${plural(suggestions, { one: "suggestion", other: "suggestions" })}. Up and Down to choose, Enter to add.`,
     groups: {

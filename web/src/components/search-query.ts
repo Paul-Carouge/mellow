@@ -9,8 +9,6 @@ export const SEARCH_FILTER_KEYS = ["from", "mentions", "in", "has", "before", "a
 export type SearchFilterKey = (typeof SEARCH_FILTER_KEYS)[number];
 export const SEARCH_HAS_VALUES = ["link", "file", "image", "pinned"] as const;
 export type SearchHasValue = (typeof SEARCH_HAS_VALUES)[number];
-/** Keys whose value is a day, `YYYY-MM-DD` in the searcher's time zone. */
-export const SEARCH_DATE_KEYS: readonly SearchFilterKey[] = ["before", "after", "during"];
 
 const WHITESPACE = /\s/u;
 const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;

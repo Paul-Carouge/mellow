@@ -764,7 +764,6 @@ export const fr: Catalogue = {
     fieldLabelInConversations: "Rechercher des messages dans tes conversations",
     openSearch: "Rechercher des messages",
     clear: "Effacer la recherche",
-    suggestionsLabel: "Suggestions de recherche",
     suggestionsCount: (suggestions) =>
       `${count(suggestions)} ${plural(suggestions, { one: "suggestion", other: "suggestions" })}. Haut et Bas pour choisir, Entrée pour ajouter.`,
     groups: {
