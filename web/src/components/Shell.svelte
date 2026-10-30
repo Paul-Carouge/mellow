@@ -34,6 +34,7 @@
   import { attentionCount, noteChannelSeen, showAttentionCount, startNotifier } from "./notifier.svelte";
   import PeoplePickerDialog from "./PeoplePickerDialog.svelte";
   import QuickSwitcher from "./QuickSwitcher.svelte";
+  import QuickSwitcherTrigger from "./QuickSwitcherTrigger.svelte";
   import ServerSettings from "./ServerSettings.svelte";
   import { minimumWidthQueryForPanes } from "./tokens";
   import UserSettings from "./UserSettings.svelte";
@@ -386,6 +387,9 @@
 />
 
 {#snippet searchControl()}
+  <!-- Both ways around the header, as the owner asked: the quick switcher ("Go to…", Ctrl K) and
+       message search (Ctrl F). -->
+  <QuickSwitcherTrigger isBesideSearchField={hasRoomForSearchSheet.current} onopen={() => (isQuickSwitcherOpen = true)} />
   {#if hasRoomForSearchSheet.current}
     <MessageSearchField {client} search={messageSearch} placement="header" onopenquickswitcher={openQuickSwitcherFromSearch} />
   {:else}

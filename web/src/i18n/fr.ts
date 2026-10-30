@@ -257,6 +257,8 @@ export const fr: Catalogue = {
   chat: {
     chat: "Discussion",
     openNavigation: "Ouvrir les serveurs et les salons",
+    goToLabel: "Aller à un salon, un serveur ou une personne",
+    goTo: "Aller à…",
     memberList: "Liste des membres",
     channelSettings: "Paramètres du salon",
     markAsRead: "Marquer comme lu",

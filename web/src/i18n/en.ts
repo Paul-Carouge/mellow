@@ -259,6 +259,8 @@ export const en = {
   chat: {
     chat: "Chat",
     openNavigation: "Open servers and channels",
+    goToLabel: "Go to a channel, server or person",
+    goTo: "Go to…",
     memberList: "Member list",
     channelSettings: "Channel settings",
     markAsRead: "Mark as read",

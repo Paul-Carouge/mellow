@@ -674,6 +674,11 @@
   --mw-component-quick-switcher-offset-top: 0.12;
   --mw-component-quick-switcher-option-height: 2.5rem;
   --mw-component-quick-switcher-results-max-height: 0.5;
+  --mw-component-quick-switcher-trigger-collapse-width: 40rem;
+  --mw-component-quick-switcher-trigger-icon: #A99FAA;
+  --mw-component-quick-switcher-trigger-icon-hover: #C5BEC6;
+  --mw-component-quick-switcher-trigger-icon-size: 1rem;
+  --mw-component-quick-switcher-trigger-width: 13rem;
   --mw-component-quick-switcher-width: 35.625rem;
   --mw-component-rail-add-background-hover: #23A55A;
   --mw-component-rail-add-icon: #23A55A;
@@ -1494,6 +1499,8 @@
     --mw-component-profile-popover-shadow: 0 0.5rem 1rem 0 #00000029;
     --mw-component-profile-popover-username-text: #695F6B;
     --mw-component-quick-switcher-input-icon: #695F6B;
+    --mw-component-quick-switcher-trigger-icon: #695F6B;
+    --mw-component-quick-switcher-trigger-icon-hover: #594E5B;
     --mw-component-rail-add-background-hover: #1A7F45;
     --mw-component-rail-add-icon: #1A7F45;
     --mw-component-rail-background: #F5F1F6;
@@ -1920,6 +1927,8 @@
   --mw-component-profile-popover-shadow: 0 0.5rem 1rem 0 #00000029;
   --mw-component-profile-popover-username-text: #695F6B;
   --mw-component-quick-switcher-input-icon: #695F6B;
+  --mw-component-quick-switcher-trigger-icon: #695F6B;
+  --mw-component-quick-switcher-trigger-icon-hover: #594E5B;
   --mw-component-rail-add-background-hover: #1A7F45;
   --mw-component-rail-add-icon: #1A7F45;
   --mw-component-rail-background: #F5F1F6;

@@ -20,6 +20,7 @@
     | "chat-circle"
     | "check"
     | "clock"
+    | "compass"
     | "copy"
     | "crown"
     | "dots-three"
