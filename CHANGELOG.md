@@ -4,6 +4,14 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-30
+Interface polish. No database migration.
+
+### Changed
+- Web: "Go to…" looks like a search field with a magnifier, in the same colours; phones get a magnifier button in the chat header, and the search ignores accents ("general" finds "général").
+- Web: clearer permission badges ("Sensitive" as a label with a shield, coloured Deny and Allow choices) and role chips tinted with their role's colour; the owner's chip has a crown.
+- Web: the emoji picker has a category bar that follows the scroll, full keyboard navigation (arrows across categories, Home, End, Page Up, Page Down) and 44 px targets on touch screens.
+
 ## [0.18.0] - 2026-10-30
 Better invites. No database migration.
 
