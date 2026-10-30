@@ -9,6 +9,7 @@
     type CustomEmoji,
     type Guild,
     MAXIMUM_EMOJIS_PER_GUILD_AND_KIND,
+    MAXIMUM_EMOJI_NAME_LENGTH,
     PREVIEWABLE_IMAGE_TYPES,
     type Snowflake,
   } from "../lib/protocol";
@@ -66,6 +67,8 @@
   let isUploading = false;
   let notice = $state("");
   const renameErrors = new SvelteMap<Snowflake, string>();
+  /** The name asked for each emoji, until the gateway's list shows it or the request fails. */
+  const requestedNames = new Map<Snowflake, string>();
   let deleting = $state<CustomEmoji | null>(null);
   let isDeleting = $state(false);
   let deleteError = $state("");
@@ -179,20 +182,31 @@
 
   async function rename(emoji: CustomEmoji, field: HTMLInputElement) {
     const name = field.value.trim();
+    if (requestedNames.get(emoji.id) === emoji.name) {
+      // The gateway's list brought it: nothing is waiting any more.
+      requestedNames.delete(emoji.id);
+    }
     if (name === emoji.name) {
       renameErrors.delete(emoji.id);
       return;
     }
+    // Enter, then leaving the field, would ask twice while the gateway's list is on its way.
+    if (requestedNames.get(emoji.id) === name) {
+      return;
+    }
     const problem = emojiRenameProblem(name, emoji.id, emojis);
     if (problem) {
-      renameErrors.set(emoji.id, problem === "taken" ? strings.serverSettings.emoji.nameTaken : strings.serverSettings.emoji.nameInvalid);
+      const reason = problem === "taken" ? strings.serverSettings.emoji.nameTaken : strings.serverSettings.emoji.nameInvalid;
+      renameErrors.set(emoji.id, reason);
       return;
     }
     renameErrors.delete(emoji.id);
+    requestedNames.set(emoji.id, name);
     try {
       // The field keeps the typed name; the gateway's list brings the same one back.
       await client.renameEmoji(guild.id, emoji.id, name);
     } catch (error) {
+      requestedNames.delete(emoji.id);
       renameErrors.set(emoji.id, describeError(error, strings.serverSettings.emoji.renameFailed));
     }
   }
@@ -365,13 +379,13 @@
                 {@render picture(emoji)}
                 <div class="flex min-w-0 flex-1 flex-col gap-(--mw-component-server-settings-text-gap)">
                   <label
-                    class="flex h-(--mw-component-text-field-height) max-w-(--mw-component-custom-emoji-suggestion-width) items-center rounded-(--mw-component-text-field-radius) border-(length:--mw-component-text-field-border-width) border-transparent px-(--mw-component-text-field-padding-inline) type-body-lg text-(--mw-component-server-settings-code-text) focus-within:focus-ring hover:border-(--mw-component-custom-emoji-settings-name-border-hover) has-[input[aria-invalid=true]]:border-(--mw-component-settings-error-text)"
+                    class="flex h-(--mw-component-text-field-height) max-w-(--mw-component-custom-emoji-settings-name-max-width) items-center rounded-(--mw-component-text-field-radius) border-(length:--mw-component-text-field-border-width) border-transparent px-(--mw-component-text-field-padding-inline) type-body-lg text-(--mw-component-server-settings-code-text) focus-within:focus-ring hover:border-(--mw-component-custom-emoji-settings-name-border-hover) has-[input[aria-invalid=true]]:border-(--mw-component-settings-error-text)"
                   >
                     <span class="sr-only">{strings.serverSettings.emoji.nameLabel(emoji.name)}</span>
                     <input
                       id={nameFieldId(emoji.id)}
                       value={emoji.name}
-                      maxlength="32"
+                      maxlength={MAXIMUM_EMOJI_NAME_LENGTH}
                       autocomplete="off"
                       spellcheck="false"
                       aria-invalid={error ? "true" : undefined}
@@ -382,7 +396,7 @@
                     />
                   </label>
                   {#if error}
-                    <p id="{nameFieldId(emoji.id)}-error" class="type-body-sm text-(--mw-component-settings-error-text)">{error}</p>
+                    <p id="{nameFieldId(emoji.id)}-error" role="alert" class="type-body-sm text-(--mw-component-settings-error-text)">{error}</p>
                   {/if}
                 </div>
                 <IconButton

@@ -2,11 +2,19 @@
 // (ADR-0022 §7). `fr.ts` is typed against it, so a key missing there fails `npm run check`.
 
 import type { ApiError } from "../lib/api";
-import { MAXIMUM_COUNTED_UNREAD_MENTIONS } from "../lib/protocol";
+import {
+  MAXIMUM_COUNTED_UNREAD_MENTIONS,
+  MAXIMUM_EMOJIS_PER_GUILD_AND_KIND,
+  MAXIMUM_EMOJI_NAME_LENGTH,
+  MAXIMUM_EMOJI_UPLOAD_BYTES,
+  MINIMUM_EMOJI_NAME_LENGTH,
+} from "../lib/protocol";
 import { pluralChooser } from "./plural";
 
 const plural = pluralChooser("en");
 const count = (value: number) => value.toLocaleString("en");
+const EMOJI_UPLOAD_KILOBYTES = MAXIMUM_EMOJI_UPLOAD_BYTES / 1024;
+const EMOJI_NAME_LENGTHS = `${MINIMUM_EMOJI_NAME_LENGTH} to ${MAXIMUM_EMOJI_NAME_LENGTH}`;
 
 /** "Ana", "Ana and Bob", "Ana, Bob and Chloé", then "Ana, Bob and 2 others"; "Just you" for nobody. */
 function participantNamesInEnglish(names: readonly string[]): string {
@@ -931,7 +939,7 @@ export const en = {
 
     emoji: {
       intro: "Pictures everyone here can put in messages and reactions by typing :name:.",
-      rules: "PNG, JPEG, GIF or WebP, up to 256 KB; a GIF or WebP that moves becomes an animated emoji. Names use 2 to 32 letters, digits and _.",
+      rules: `PNG, JPEG, GIF or WebP, up to ${EMOJI_UPLOAD_KILOBYTES} KB; a GIF or WebP that moves becomes an animated emoji. Names use ${EMOJI_NAME_LENGTHS} letters, digits and _.`,
       upload: "Upload emoji",
       still: "Still emoji",
       animated: "Animated emoji",
@@ -939,14 +947,14 @@ export const en = {
       count: (used: number, maximum: number) => `${count(used)} / ${count(maximum)}`,
       countLabel: (used: number, maximum: number) => `${count(used)} of ${count(maximum)} used`,
       full: "Full",
-      bothFull: "This server holds 50 still and 50 animated emoji, the most it can. Delete some to add others.",
+      bothFull: `This server holds ${MAXIMUM_EMOJIS_PER_GUILD_AND_KIND} still and ${MAXIMUM_EMOJIS_PER_GUILD_AND_KIND} animated emoji, the most it can. Delete some to add others.`,
       empty: "No emoji yet. Upload a picture and everyone here can use it as :name:.",
       noStill: "No still emoji yet.",
       noAnimated: "No animated emoji yet. A GIF or WebP that moves becomes one.",
       adding: "Adding…",
       added: (name: string) => `:${name}: added`,
       nameLabel: (name: string) => `Name of :${name}:`,
-      nameInvalid: "Use 2 to 32 letters, digits or _.",
+      nameInvalid: `Use ${EMOJI_NAME_LENGTHS} letters, digits or _.`,
       nameTaken: "Another emoji here already has this name.",
       renameFailed: "Couldn't rename the emoji",
       deleteLabel: (name: string) => `Delete :${name}:`,
@@ -959,7 +967,7 @@ export const en = {
       deleted: (name: string) => `:${name}: deleted`,
       addFailed: (fileName: string) => `Couldn't add ${fileName}`,
       notAPicture: "it isn't a PNG, JPEG, GIF or WebP picture.",
-      tooLarge: (size: string) => `it weighs ${size}, and emoji are at most 256 KB.`,
+      tooLarge: (size: string) => `it weighs ${size}, and emoji are at most ${EMOJI_UPLOAD_KILOBYTES} KB.`,
       noRoom: "this server has no room left for this kind of emoji. Delete one first.",
       unusable: "the instance couldn't use this picture. Try another file, or a shorter animation.",
       tooMany: "you added many pictures in a short time. Wait a few minutes, then try again.",

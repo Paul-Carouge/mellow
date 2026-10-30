@@ -1,7 +1,13 @@
 // The French catalogue (DESIGN.md §8 "Français"): tutoiement, sentence case, Discord's French
 // words, and French typography. Typed against the English one, so every key must be here.
 
-import { MAXIMUM_COUNTED_UNREAD_MENTIONS } from "../lib/protocol";
+import {
+  MAXIMUM_COUNTED_UNREAD_MENTIONS,
+  MAXIMUM_EMOJIS_PER_GUILD_AND_KIND,
+  MAXIMUM_EMOJI_NAME_LENGTH,
+  MAXIMUM_EMOJI_UPLOAD_BYTES,
+  MINIMUM_EMOJI_NAME_LENGTH,
+} from "../lib/protocol";
 import type { Catalogue } from "./en";
 import { pluralChooser } from "./plural";
 
@@ -12,6 +18,8 @@ const NO_BREAK_SPACE = " ";
 
 const plural = pluralChooser("fr");
 const count = (value: number) => value.toLocaleString("fr");
+const EMOJI_UPLOAD_KILOBYTES = `${MAXIMUM_EMOJI_UPLOAD_BYTES / 1024}${NO_BREAK_SPACE}Ko`;
+const EMOJI_NAME_LENGTHS = `${MINIMUM_EMOJI_NAME_LENGTH} à ${MAXIMUM_EMOJI_NAME_LENGTH}`;
 const FRENCH_SIZE_UNITS = { KB: "Ko", MB: "Mo", GB: "Go" } as const;
 
 /** « Ana », « Ana et Bob », « Ana, Bob et Chloé », puis « Ana, Bob et 2 autres » ; « Rien que toi ». */
@@ -931,21 +939,21 @@ export const fr: Catalogue = {
 
     emoji: {
       intro: "Des images que tout le monde ici peut mettre dans ses messages et ses réactions en tapant :nom:.",
-      rules: `PNG, JPEG, GIF ou WebP, jusqu’à 256${NO_BREAK_SPACE}Ko${NARROW_NO_BREAK_SPACE}; un GIF ou un WebP qui bouge devient un emoji animé. Les noms font 2 à 32 lettres, chiffres et _.`,
+      rules: `PNG, JPEG, GIF ou WebP, jusqu’à ${EMOJI_UPLOAD_KILOBYTES}${NARROW_NO_BREAK_SPACE}; un GIF ou un WebP qui bouge devient un emoji animé. Les noms font ${EMOJI_NAME_LENGTHS} lettres, chiffres et _.`,
       upload: "Importer des emoji",
       still: "Emoji fixes",
       animated: "Emoji animés",
       count: (used, maximum) => `${count(used)} / ${count(maximum)}`,
       countLabel: (used, maximum) => `${count(used)} sur ${count(maximum)} utilisés`,
       full: "Complet",
-      bothFull: "Ce serveur compte 50 emoji fixes et 50 animés, le maximum. Supprimes-en pour en ajouter d’autres.",
+      bothFull: `Ce serveur compte ${MAXIMUM_EMOJIS_PER_GUILD_AND_KIND} emoji fixes et ${MAXIMUM_EMOJIS_PER_GUILD_AND_KIND} animés, le maximum. Supprimes-en pour en ajouter d’autres.`,
       empty: "Pas encore d’emoji. Importe une image et tout le monde ici pourra l’utiliser avec :nom:.",
       noStill: "Pas encore d’emoji fixe.",
       noAnimated: "Pas encore d’emoji animé. Un GIF ou un WebP qui bouge en devient un.",
       adding: "Ajout…",
       added: (name) => `:${name}: ajouté`,
       nameLabel: (name) => `Nom de :${name}:`,
-      nameInvalid: "Utilise 2 à 32 lettres, chiffres ou _.",
+      nameInvalid: `Utilise ${EMOJI_NAME_LENGTHS} lettres, chiffres ou _.`,
       nameTaken: "Un autre emoji d’ici porte déjà ce nom.",
       renameFailed: "Impossible de renommer l’emoji",
       deleteLabel: (name) => `Supprimer :${name}:`,
@@ -958,7 +966,7 @@ export const fr: Catalogue = {
       deleted: (name) => `:${name}: supprimé`,
       addFailed: (fileName) => `Impossible d’ajouter ${fileName}`,
       notAPicture: "ce n’est pas une image PNG, JPEG, GIF ou WebP.",
-      tooLarge: (size) => `elle pèse ${size}, et un emoji fait au plus 256${NO_BREAK_SPACE}Ko.`,
+      tooLarge: (size) => `elle pèse ${size}, et un emoji fait au plus ${EMOJI_UPLOAD_KILOBYTES}.`,
       noRoom: "ce serveur n’a plus de place pour ce type d’emoji. Supprimes-en un d’abord.",
       unusable: "l’instance n’a pas pu utiliser cette image. Essaie un autre fichier, ou une animation plus courte.",
       tooMany: "tu as ajouté beaucoup d’images en peu de temps. Patiente quelques minutes, puis réessaie.",
