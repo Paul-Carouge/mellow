@@ -11,6 +11,8 @@
     | "airplane-tilt"
     | "arrow-bend-up-left"
     | "at"
+    | "bell"
+    | "bell-slash"
     | "bowl-food"
     | "caret-down"
     | "caret-right"

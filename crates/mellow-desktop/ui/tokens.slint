@@ -193,6 +193,8 @@ export global MellowComponent {
     out property <length> channel-row-icon-size: 20px;
     out property <length> channel-row-image-radius: 4px;
     out property <length> channel-row-margin-inline: 8px;
+    out property <color> channel-row-muted-icon: MellowTheme.is-dark ? #988E9A : #726874;
+    out property <length> channel-row-muted-icon-size: 16px;
     out property <length> channel-row-padding-inline: 8px;
     out property <length> channel-row-radius: 8px;
     out property <length> channel-row-settings-button-size: 24px;
@@ -497,6 +499,7 @@ export global MellowComponent {
     out property <length> jump-bar-radius: 12px;
     out property <color> jump-bar-text: #2B1608;
     out property <duration> melli-blink-duration: 4600ms;
+    out property <duration> melli-chime-duration: 1400ms;
     out property <duration> melli-excited-duration: 1600ms;
     out property <duration> melli-float-duration: 3200ms;
     out property <duration> melli-hop-duration: 2000ms;
@@ -600,6 +603,10 @@ export global MellowComponent {
     out property <length> navigator-strip-width: 72px;
     out property <length> notice-bar-icon-gap: 8px;
     out property <length> notice-bar-icon-size: 20px;
+    out property <color> notice-bar-invite-background: MellowTheme.is-dark ? #37292A : #FDF4EF;
+    out property <color> notice-bar-invite-bar: MellowTheme.is-dark ? #F2A46E : #A84F1A;
+    out property <length> notice-bar-invite-bar-width: 2px;
+    out property <color> notice-bar-invite-text: MellowTheme.is-dark ? #D6D0D7 : #392F3A;
     out property <length> notice-bar-min-height: 36px;
     out property <length> notice-bar-padding-block: 8px;
     out property <length> notice-bar-padding-inline: 16px;

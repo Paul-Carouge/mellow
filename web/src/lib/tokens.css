@@ -179,6 +179,8 @@
   --mw-component-channel-row-icon-size: 1.25rem;
   --mw-component-channel-row-image-radius: 0.25rem;
   --mw-component-channel-row-margin-inline: 0.5rem;
+  --mw-component-channel-row-muted-icon: #988E9A;
+  --mw-component-channel-row-muted-icon-size: 1rem;
   --mw-component-channel-row-padding-inline: 0.5rem;
   --mw-component-channel-row-radius: 0.5rem;
   --mw-component-channel-row-settings-button-size: 1.5rem;
@@ -486,6 +488,7 @@
   --mw-component-jump-bar-radius: 0.75rem;
   --mw-component-jump-bar-text: #2B1608;
   --mw-component-melli-blink-duration: 4600ms;
+  --mw-component-melli-chime-duration: 1400ms;
   --mw-component-melli-excited-duration: 1600ms;
   --mw-component-melli-float-duration: 3200ms;
   --mw-component-melli-hop-duration: 2000ms;
@@ -590,6 +593,10 @@
   --mw-component-navigator-strip-width: 4.5rem;
   --mw-component-notice-bar-icon-gap: 0.5rem;
   --mw-component-notice-bar-icon-size: 1.25rem;
+  --mw-component-notice-bar-invite-background: #37292A;
+  --mw-component-notice-bar-invite-bar: #F2A46E;
+  --mw-component-notice-bar-invite-bar-width: 0.125rem;
+  --mw-component-notice-bar-invite-text: #D6D0D7;
   --mw-component-notice-bar-min-height: 2.25rem;
   --mw-component-notice-bar-padding-block: 0.5rem;
   --mw-component-notice-bar-padding-inline: 1rem;
@@ -1254,6 +1261,7 @@
     --mw-component-channel-drag-target-text: #221B23;
     --mw-component-channel-row-background-hover: #ECE6ED;
     --mw-component-channel-row-background-selected: #DFD8DF;
+    --mw-component-channel-row-muted-icon: #726874;
     --mw-component-channel-row-settings-icon: #695F6B;
     --mw-component-channel-row-settings-icon-hover: #221B23;
     --mw-component-channel-row-text-hover: #392F3A;
@@ -1422,6 +1430,9 @@
     --mw-component-message-spoiler-revealed-background: #ECE6ED;
     --mw-component-message-timestamp-text: #695F6B;
     --mw-component-navigator-background: #FFFFFF;
+    --mw-component-notice-bar-invite-background: #FDF4EF;
+    --mw-component-notice-bar-invite-bar: #A84F1A;
+    --mw-component-notice-bar-invite-text: #392F3A;
     --mw-component-people-picker-checkbox-color: #A84F1A;
     --mw-component-people-picker-chip-background: #DFD8DF;
     --mw-component-people-picker-chip-icon: #594E5B;
@@ -1659,6 +1670,7 @@
   --mw-component-channel-drag-target-text: #221B23;
   --mw-component-channel-row-background-hover: #ECE6ED;
   --mw-component-channel-row-background-selected: #DFD8DF;
+  --mw-component-channel-row-muted-icon: #726874;
   --mw-component-channel-row-settings-icon: #695F6B;
   --mw-component-channel-row-settings-icon-hover: #221B23;
   --mw-component-channel-row-text-hover: #392F3A;
@@ -1827,6 +1839,9 @@
   --mw-component-message-spoiler-revealed-background: #ECE6ED;
   --mw-component-message-timestamp-text: #695F6B;
   --mw-component-navigator-background: #FFFFFF;
+  --mw-component-notice-bar-invite-background: #FDF4EF;
+  --mw-component-notice-bar-invite-bar: #A84F1A;
+  --mw-component-notice-bar-invite-text: #392F3A;
   --mw-component-people-picker-checkbox-color: #A84F1A;
   --mw-component-people-picker-chip-background: #DFD8DF;
   --mw-component-people-picker-chip-icon: #594E5B;
