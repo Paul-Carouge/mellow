@@ -60,6 +60,13 @@ describe("quickSwitcherResults", () => {
     expect(quickSwitcherResults("nothing like it", sources)).toEqual([]);
   });
 
+  it("ignores accents both ways, as French keyboards type them or not", () => {
+    const labels = (query: string) => quickSwitcherResults(query, sources).flatMap((group) => group.items.map((item) => item.label));
+    expect(labels("#GÉNÉ")).toEqual(["general"]);
+    expect(labels("@zoe")).toEqual(["Zoé"]);
+    expect(labels("@ZOÉ")).toEqual(["Zoé"]);
+  });
+
   it("lists groups by name or by anyone in them, and keeps people on their own conversation", () => {
     const zoe = { id: "zoe", username: "zoe", display_name: "Zoé" };
     const ana = { id: "ana", username: "ana", display_name: "Ana" };

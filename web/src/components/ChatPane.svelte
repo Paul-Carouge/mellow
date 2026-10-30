@@ -652,17 +652,33 @@
       <span class="flex-1"></span>
     {/if}
     {#if !hasNavigationDrawer}
-      <!-- The quick switcher, visible: Mellow's fastest way around (ADR-0022 §1). -->
+      <!-- The quick switcher, visible: Mellow's fastest way around (ADR-0022 §1). It reads as a
+           search field (magnifier, placeholder-toned words, the shortcut at its end) but is a
+           button: the field itself lives in the switcher, so typing starts there. -->
       <button
         type="button"
         aria-label={strings.chat.goToLabel}
         aria-keyshortcuts="Control+K"
-        class="flex h-(--mw-component-chat-header-button-size) shrink-0 items-center gap-xs rounded-sm bg-surface-input ps-sm pe-2xs type-body text-text-secondary transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:text-text-heading pointer-coarse:h-(--mw-size-hit-web-min)"
+        class="group flex h-(--mw-component-chat-header-button-size) min-w-max flex-[0_1_var(--mw-component-quick-switcher-trigger-width)] items-center gap-xs rounded-sm bg-surface-input ps-xs pe-2xs type-body text-text-secondary transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:text-text-heading pointer-coarse:h-(--mw-size-hit-web-min)"
         onclick={onopenquickswitcher}
       >
-        {strings.chat.goTo}
+        <Icon
+          name="magnifying-glass"
+          class="size-(--mw-component-quick-switcher-trigger-icon-size) text-(--mw-component-quick-switcher-trigger-icon) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) group-hover:text-(--mw-component-quick-switcher-trigger-icon-hover)"
+        />
+        <span class="me-auto">{strings.chat.goTo}</span>
         <kbd class="rounded-xs border border-border-divider px-2xs font-sans type-body-sm text-text-muted">Ctrl K</kbd>
       </button>
+    {:else}
+      <!-- Phones have no keyboard shortcut: the same switcher behind a magnifier. -->
+      <IconButton
+        icon="magnifying-glass"
+        label={strings.chat.goToLabel}
+        aria-haspopup="dialog"
+        class={headerButtonClass}
+        iconClass="size-(--mw-component-chat-header-icon-size)"
+        onclick={onopenquickswitcher}
+      />
     {/if}
     {#if channel && canEditChannel}
       <IconButton

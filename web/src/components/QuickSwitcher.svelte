@@ -122,22 +122,29 @@
     }
   }}
 >
-  <input
-    bind:this={input}
-    bind:value={query}
-    role="combobox"
-    aria-expanded="true"
-    aria-controls="{id}-results"
-    aria-autocomplete="list"
-    aria-activedescendant={activeItem ? `${id}-option-${activeOptionIndex}` : undefined}
-    aria-label={strings.quickSwitcher.placeholder}
-    placeholder={strings.quickSwitcher.placeholder}
-    autocomplete="off"
-    spellcheck="false"
-    class="h-(--mw-component-quick-switcher-input-height) w-full rounded-md bg-surface-input px-md type-heading-lg text-ellipsis text-text-heading outline-none placeholder:text-text-muted focus-visible:focus-ring"
-    oninput={() => (activeIndex = 0)}
-    onkeydown={handleKeydown}
-  />
+  <!-- The header's search field, grown: the same magnifier leads the typed text. The ring is the
+       box's, so it surrounds the icon too. -->
+  <div
+    class="flex h-(--mw-component-quick-switcher-input-height) items-center gap-(--mw-component-quick-switcher-input-gap) rounded-md bg-surface-input ps-md has-[input:focus-visible]:focus-ring"
+  >
+    <Icon name="magnifying-glass" class="size-(--mw-component-quick-switcher-input-icon-size) text-(--mw-component-quick-switcher-input-icon)" />
+    <input
+      bind:this={input}
+      bind:value={query}
+      role="combobox"
+      aria-expanded="true"
+      aria-controls="{id}-results"
+      aria-autocomplete="list"
+      aria-activedescendant={activeItem ? `${id}-option-${activeOptionIndex}` : undefined}
+      aria-label={strings.quickSwitcher.placeholder}
+      placeholder={strings.quickSwitcher.placeholder}
+      autocomplete="off"
+      spellcheck="false"
+      class="h-full min-w-0 flex-1 bg-transparent pe-md type-heading-lg text-ellipsis text-text-heading outline-none placeholder:text-text-muted"
+      oninput={() => (activeIndex = 0)}
+      onkeydown={handleKeydown}
+    />
+  </div>
   <!-- A listbox of groups of options, each group named by its heading; it scrolls past a share of
        the window height. -->
   <div id="{id}-results" role="listbox" aria-label={strings.quickSwitcher.results} class="mt-sm max-h-[calc(var(--mw-component-quick-switcher-results-max-height)*100dvh)] overflow-y-auto">

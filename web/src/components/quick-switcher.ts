@@ -1,10 +1,11 @@
 // The quick switcher's results (DESIGN.md §5.10, ADR-0022 §1): channels, people and servers whose
-// name contains what was typed; "#", "@" and "*" narrow to one kind, grouped as in the mockup.
+// name contains what was typed, ignoring case and accents; "#", "@" and "*" narrow to one kind, grouped as in the mockup.
 
 import type { IconName } from "./Icon.svelte";
 import type { DirectMessageChannel, Guild, PublicUser, Snowflake } from "../lib/protocol";
 import { strings } from "../i18n";
 import { channelSections } from "../lib/channels";
+import { foldForSearch } from "../lib/search-text";
 import { displayName } from "./format";
 import { conversationDisplayName, isGroupConversation, otherParticipants } from "./group-conversations";
 
@@ -50,8 +51,8 @@ function kindOfPrefix(prefix: string): "channels" | "people" | "servers" | null 
 export function quickSwitcherResults(query: string, sources: QuickSwitcherSources): QuickSwitcherGroup[] {
   const trimmed = query.trim().toLowerCase();
   const kind = kindOfPrefix(trimmed.charAt(0));
-  const term = kind ? trimmed.slice(1).trim() : trimmed;
-  const matches = (name: string) => name.toLowerCase().includes(term);
+  const term = foldForSearch(kind ? trimmed.slice(1).trim() : trimmed);
+  const matches = (name: string) => foldForSearch(name).includes(term);
 
   const channels: QuickSwitcherItem[] = sources.guilds.flatMap((guild) =>
     channelSections(guild)
