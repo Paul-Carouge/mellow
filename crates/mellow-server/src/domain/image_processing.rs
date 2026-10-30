@@ -345,6 +345,15 @@ fn encode_with_still(
     })
 }
 
+/// Whether processing may find several frames, from the header alone: only GIF and WebP are kept
+/// animated (APNG is read as its first frame).
+pub(crate) fn may_be_animated(bytes: &[u8]) -> bool {
+    matches!(
+        image::guess_format(bytes),
+        Ok(ImageFormat::Gif | ImageFormat::WebP)
+    )
+}
+
 /// A guild or channel icon or a custom emoji: the square kept, fitted to its display size and
 /// stored as lossless WebP; a guild's icon and an emoji animated when the source is, with its
 /// first frame as a still.

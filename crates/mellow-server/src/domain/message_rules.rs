@@ -3,7 +3,6 @@
 use mellow_protocol::Snowflake;
 
 use crate::domain::account_rules::is_invisible_format_character;
-use crate::domain::guild_rules::is_valid_emoji_name;
 
 pub const MAXIMUM_MESSAGE_LENGTH: usize = 4_000;
 /// Also bounded in bytes: 4 000 four-byte emoji would otherwise store 16 KB per message.
@@ -49,10 +48,10 @@ pub enum MessageRuleViolation {
     )]
     Picture,
     #[error(
-        "a reaction is exactly one Unicode emoji (at most {MAXIMUM_REACTION_EMOJI_BYTES} bytes), without text or spaces, or a custom emoji as `name:id`"
+        "a reaction is exactly one Unicode emoji (at most {MAXIMUM_REACTION_EMOJI_BYTES} bytes), without text or spaces, or a custom emoji as `:id`"
     )]
     ReactionEmoji,
-    #[error("a custom emoji reacts only to messages of its own server, while it exists")]
+    #[error("a custom emoji is added as a reaction only in its own server, while it exists")]
     CustomReactionEmoji,
     #[error("pages of reacting users hold 1 to {MAXIMUM_REACTING_USERS_PAGE_SIZE} users")]
     ReactingUsersQuery,
@@ -265,17 +264,15 @@ fn is_one_emoji(characters: &[char]) -> bool {
     }
 }
 
-/// The name and id of a custom emoji's reaction key, `name:id` (ADR-0028), the id in its one
-/// decimal spelling; `None` for anything else, Unicode emoji included.
+/// The id of a custom emoji's reaction key, `:id` (ADR-0028), the id in its one decimal
+/// spelling; `None` for anything else, Unicode emoji included (none starts with a colon).
 #[must_use]
-pub fn custom_emoji_of_reaction_key(key: &str) -> Option<(&str, Snowflake)> {
-    let (name, id) = key.split_once(':')?;
-    let id = id.parse().ok()?;
-    is_valid_emoji_name(name).then_some((name, id))
+pub fn custom_emoji_of_reaction_key(key: &str) -> Option<Snowflake> {
+    key.strip_prefix(':')?.parse().ok()
 }
 
-/// The key a reaction is stored and counted under: a custom emoji's `name:id` as sent (at most
-/// 53 bytes), or exactly one Unicode emoji, at most `MAXIMUM_REACTION_EMOJI_BYTES` as sent,
+/// The key a reaction is stored and counted under: a custom emoji's `:id` as sent (at most 21
+/// bytes), or exactly one Unicode emoji, at most `MAXIMUM_REACTION_EMOJI_BYTES` as sent,
 /// without its variation selectors, so `❤️` and `❤` are one reaction.
 ///
 /// # Errors
@@ -337,27 +334,22 @@ mod tests {
     }
 
     #[test]
-    fn custom_emoji_react_as_name_and_canonical_id() {
+    fn custom_emoji_react_as_a_colon_and_their_canonical_id() {
+        assert_eq!(reaction_emoji_key(":123"), Ok(":123".to_owned()));
         assert_eq!(
-            reaction_emoji_key("party_parrot:123"),
-            Ok("party_parrot:123".to_owned())
+            custom_emoji_of_reaction_key(":18446744073709551615"),
+            Some(Snowflake::from_raw(u64::MAX))
         );
-        assert_eq!(
-            custom_emoji_of_reaction_key("ok:18446744073709551615"),
-            Some(("ok", Snowflake::from_raw(u64::MAX)))
-        );
-        assert!(reaction_emoji_key(&format!("{}:1", "a".repeat(32))).is_ok());
         for invalid in [
-            ":123",
-            "a:123",
-            "ok:",
-            "ok:0123",
-            "ok:-1",
-            "ok:18446744073709551616",
-            "two words:1",
-            "ok:1:2",
+            ":",
+            "123",
+            "party:123",
+            ":0123",
+            ":-1",
+            ":18446744073709551616",
+            "::1",
+            ":1 ",
             "<:ok:1>",
-            "ok:1 ",
         ] {
             assert_eq!(custom_emoji_of_reaction_key(invalid), None, "{invalid:?}");
             assert!(reaction_emoji_key(invalid).is_err(), "{invalid:?}");

@@ -87,7 +87,7 @@ pub struct Message {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReactionSummary {
     /// The stored key: a Unicode emoji without variation selectors (`"👍"`, `"❤"`), or a custom
-    /// emoji's `name:id` with its name when that key was first used (ADR-0028).
+    /// emoji's id after a colon (`":501"`, ADR-0028).
     pub emoji: String,
     pub count: u32,
     /// Whether the requesting user is among them.

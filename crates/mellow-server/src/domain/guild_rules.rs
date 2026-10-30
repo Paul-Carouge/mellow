@@ -45,6 +45,8 @@ pub const MINIMUM_EMOJI_NAME_LENGTH: usize = 2;
 pub const MAXIMUM_EMOJI_NAME_LENGTH: usize = 32;
 /// Uploaded emoji pictures larger than this are refused before processing.
 pub const MAXIMUM_EMOJI_UPLOAD_BYTES: usize = 256 * 1024;
+/// A processed emoji larger than this (its still frame included) is refused.
+pub const MAXIMUM_EMOJI_STORED_BYTES: usize = 512 * 1024;
 /// Crockford's base 32: digits and capitals without I, L, O and U, so a code read aloud or
 /// copied by hand is not mistaken. 256 is a multiple of 32, so `byte % 32` has no bias.
 const INVITE_CODE_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -205,7 +207,7 @@ pub fn normalize_ban_reason(reason: &str) -> Result<String, GuildRuleViolation> 
 }
 
 /// Whether `name` may name a custom emoji: ASCII letters, digits and `_` only, so it reads the
-/// same in `:name:`, `<:name:id>` and a reaction's `name:id` key (ADR-0028).
+/// same in `:name:` and `<:name:id>` (ADR-0028).
 #[must_use]
 pub fn is_valid_emoji_name(name: &str) -> bool {
     (MINIMUM_EMOJI_NAME_LENGTH..=MAXIMUM_EMOJI_NAME_LENGTH).contains(&name.len())

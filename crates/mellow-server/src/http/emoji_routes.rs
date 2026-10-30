@@ -12,6 +12,7 @@ use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::http::authentication::AuthenticatedUser;
 use crate::http::guild_routes::limit_guild_writes;
+use crate::http::profile_image_routes::record_picture_write;
 
 /// `GET /api/v1/guilds/{guild_id}/emojis`: members only.
 pub(crate) async fn list_emojis(
@@ -30,7 +31,8 @@ pub(crate) async fn create_emoji(
     ApiQuery(query): ApiQuery<CreateEmojiQuery>,
     body: Body,
 ) -> Result<(StatusCode, Json<CustomEmoji>), ApiError> {
-    limit_guild_writes(&state, user.id)?;
+    // The picture budget, not guild writes: each upload decodes and encodes a picture.
+    record_picture_write(&state, user.id)?;
     let bytes = axum::body::to_bytes(body, MAXIMUM_EMOJI_UPLOAD_BYTES)
         .await
         .map_err(|_| ApiError::payload_too_large())?;

@@ -84,6 +84,28 @@ pub(crate) async fn list_guild_emojis(
     rows.into_iter().map(emoji_from_row).collect()
 }
 
+/// How many still and how many animated emoji the guild holds.
+pub(crate) async fn count_guild_emojis_by_kind(
+    database: &Database,
+    guild_id: Snowflake,
+) -> Result<(u32, u32), GuildStorageError> {
+    let Some(guild_id) = lookup_integer(guild_id) else {
+        return Ok((0, 0));
+    };
+    let (still, animated): (i64, i64) = sqlx::query_as(
+        "SELECT COALESCE(SUM(images.still_id IS NULL), 0), \
+         COALESCE(SUM(images.still_id IS NOT NULL), 0) \
+         FROM guild_emojis AS emojis JOIN guild_images AS images ON images.id = emojis.id \
+         WHERE emojis.guild_id = ?",
+    )
+    .bind(guild_id)
+    .fetch_one(database.readers())
+    .await?;
+    let to_count =
+        |count: i64| u32::try_from(count).map_err(|_| GuildStorageError::IntegerOutOfRange);
+    Ok((to_count(still)?, to_count(animated)?))
+}
+
 pub(crate) async fn find_guild_emoji(
     database: &Database,
     id: Snowflake,
@@ -144,11 +166,11 @@ pub(crate) async fn insert_guild_emoji(
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
         .await?;
-    let is_guild_known: Option<i64> = sqlx::query_scalar("SELECT 1 FROM guilds WHERE id = ?")
+    let guild_row: Option<i64> = sqlx::query_scalar("SELECT 1 FROM guilds WHERE id = ?")
         .bind(guild)
         .fetch_optional(&mut *transaction)
         .await?;
-    if is_guild_known.is_none() {
+    if guild_row.is_none() {
         return Ok(EmojiWriteOutcome::NotFound);
     }
     let same_kind_count: i64 = sqlx::query_scalar(

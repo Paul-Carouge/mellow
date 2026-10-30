@@ -62,19 +62,17 @@ describe("custom emoji", () => {
     expect(emojiUrl(parrot, true)).toBe("/api/v1/icons/501");
   });
 
-  it("write Discord's syntax in messages and react as name:id", () => {
+  it("write Discord's syntax in messages and react as :id", () => {
     expect(customEmojiMarkup(party)).toBe("<:party:500>");
     expect(customEmojiMarkup(parrot)).toBe("<a:parrot:501>");
-    expect(customEmojiReactionKey(parrot)).toBe("parrot:501");
-    expect(reactionsPath("1", "2", customEmojiReactionKey(parrot))).toBe(
-      "channels/1/messages/2/reactions/parrot%3A501",
-    );
+    expect(customEmojiReactionKey(parrot)).toBe(":501");
+    expect(reactionsPath("1", "2", customEmojiReactionKey(parrot))).toBe("channels/1/messages/2/reactions/%3A501");
   });
 
   it("read back from reaction keys, Unicode emoji and malformed keys being none", () => {
-    expect(customEmojiOfReactionKey("parrot:501")).toEqual({ name: "parrot", id: "501" });
-    expect(customEmojiOfReactionKey("ok:18446744073709551615")).toEqual({ name: "ok", id: "18446744073709551615" });
-    for (const key of ["👍", "a:1", "ok:", "ok:012", "two words:1", "ok:1:2", "<:ok:1>"]) {
+    expect(customEmojiOfReactionKey(":501")).toBe("501");
+    expect(customEmojiOfReactionKey(":18446744073709551615")).toBe("18446744073709551615");
+    for (const key of ["👍", ":", "501", "parrot:501", ":012", "::1", ":1 ", "<:ok:1>"]) {
       expect(customEmojiOfReactionKey(key), key).toBeNull();
     }
   });

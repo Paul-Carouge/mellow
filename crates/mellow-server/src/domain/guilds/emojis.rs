@@ -3,12 +3,15 @@
 
 use mellow_protocol::{AuditAction, CustomEmoji, GatewayEvent, Permissions, Snowflake};
 
-use super::icons::{IconUpload, discard, store_icon};
+use super::icons::discard;
 use super::{GuildError, Guilds};
 use crate::domain::guild_rules::{
-    GuildRuleViolation, MAXIMUM_EMOJIS_PER_GUILD_AND_KIND, normalize_emoji_name,
+    GuildRuleViolation, MAXIMUM_EMOJI_STORED_BYTES, MAXIMUM_EMOJIS_PER_GUILD_AND_KIND,
+    normalize_emoji_name,
 };
-use crate::domain::image_processing::IconKind;
+use crate::domain::image_processing::{
+    IconKind, ImageProcessingError, ProcessedProfileImage, may_be_animated, process_icon,
+};
 use crate::domain::messages::MessageError;
 use crate::domain::profile_images::ProfileImages;
 use crate::storage::guild_emojis::{self as storage, EmojiDeleteOutcome, EmojiWriteOutcome};
@@ -41,14 +44,28 @@ impl Guilds {
         // Checked before processing too, so nobody else can spend processing slots.
         self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_EMOJIS)
             .await?;
-        let upload = IconUpload { bytes, crop: None };
-        let new_image =
-            store_icon(images, Some(upload), IconKind::Emoji, now_unix_milliseconds).await?;
-        let Some(image) = new_image else {
-            return Err(GuildError::Internal("an emoji upload stored no picture".into()).into());
-        };
+        // Cheap refusal before processing; the insert's own count stays the one that decides.
+        let (still_count, animated_count) =
+            storage::count_guild_emojis_by_kind(&self.database, guild_id)
+                .await
+                .map_err(GuildError::from)?;
+        let is_quota_full_for_this_upload = still_count >= MAXIMUM_EMOJIS_PER_GUILD_AND_KIND
+            && (animated_count >= MAXIMUM_EMOJIS_PER_GUILD_AND_KIND || !may_be_animated(&bytes));
+        if is_quota_full_for_this_upload {
+            return Err(GuildError::LimitReached(EMOJI_LIMIT_MESSAGE).into());
+        }
+        let image = images
+            .store(
+                bytes,
+                |bytes| {
+                    process_icon(bytes, IconKind::Emoji, None).and_then(within_emoji_stored_size)
+                },
+                now_unix_milliseconds,
+            )
+            .await?;
+        let new_image = Some(image);
         // Processing takes seconds: the permission may have been taken away meanwhile.
-        let checked_again = async {
+        let audit_after_permission_recheck = async {
             self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_EMOJIS)
                 .await?;
             self.audit_entry(
@@ -60,7 +77,7 @@ impl Guilds {
             )
         }
         .await;
-        let audit = match checked_again {
+        let audit = match audit_after_permission_recheck {
             Ok(audit) => audit,
             Err(error) => {
                 discard(images, new_image).await;
@@ -90,7 +107,8 @@ impl Guilds {
         created.ok_or_else(|| GuildError::Internal("a created emoji was not listed".into()).into())
     }
 
-    /// Needs `MANAGE_EMOJIS`. Messages and reactions that used the old name keep it (ADR-0028).
+    /// Needs `MANAGE_EMOJIS`. Messages keep the text they were written with; reactions are keyed
+    /// by id, so they follow the new name (ADR-0028).
     pub(crate) async fn rename_emoji(
         &self,
         user_id: Snowflake,
@@ -154,6 +172,18 @@ impl Guilds {
             &GatewayEvent::GuildEmojisUpdate { guild_id, emojis },
         );
     }
+}
+
+/// Refuses an emoji whose stored files (the picture and its still frame) pass
+/// `MAXIMUM_EMOJI_STORED_BYTES`: every member downloads them, often many at once.
+fn within_emoji_stored_size(
+    processed: ProcessedProfileImage,
+) -> Result<ProcessedProfileImage, ImageProcessingError> {
+    let stored_bytes = processed.picture.bytes.len() + processed.still.as_ref().map_or(0, Vec::len);
+    if stored_bytes > MAXIMUM_EMOJI_STORED_BYTES {
+        return Err(ImageProcessingError::TooLarge);
+    }
+    Ok(processed)
 }
 
 /// The guild's emoji after a write, or why it was refused.
@@ -293,17 +323,19 @@ mod tests {
                 .await
         }
 
-        async fn reaction_keys(&self, channel_id: Snowflake) -> Vec<String> {
+        /// The key and count of each reaction on a message of `general`.
+        async fn reactions(&self, message_id: Snowflake) -> Vec<(String, u32)> {
             let messages = self
                 .state
                 .messages
-                .list_messages(self.owner, channel_id, MessageHistoryQuery::default())
+                .list_messages(self.owner, self.general(), MessageHistoryQuery::default())
                 .await
                 .unwrap();
             messages
                 .into_iter()
+                .filter(|message| message.id == message_id)
                 .flat_map(|message| message.reactions)
-                .map(|reaction| reaction.emoji)
+                .map(|reaction| (reaction.emoji, reaction.count))
                 .collect()
         }
     }
@@ -456,12 +488,47 @@ mod tests {
         }
         let one_still_too_many = insert(false, "still_more".into()).await;
         let first_animated = insert(true, "animated".into()).await;
+        // Refused before processing: a PNG can only be still.
+        let still_upload = club.create(club.owner, "late").await;
+        let animated_upload = club
+            .create_from(club.owner, "parrot", animated_gif(60, 40, 3))
+            .await;
         database.close().await;
 
         assert_eq!(one_still_too_many, EmojiWriteOutcome::LimitReached);
         assert!(
             matches!(first_animated, EmojiWriteOutcome::Written(emojis) if emojis.len() == 51),
             "animated emoji have their own quota"
+        );
+        assert!(matches!(
+            still_upload,
+            Err(MessageError::Guild(GuildError::LimitReached(_)))
+        ));
+        assert!(animated_upload.is_ok_and(|emoji| emoji.is_animated));
+    }
+
+    #[test]
+    fn an_emoji_stored_over_512_kb_still_frame_included_is_refused() {
+        use crate::domain::image_processing::ProcessedImage;
+
+        let processed = |picture_bytes: usize, still_bytes: Option<usize>| ProcessedProfileImage {
+            picture: ProcessedImage {
+                bytes: vec![0; picture_bytes],
+                content_type: "image/webp",
+                is_animated: still_bytes.is_some(),
+            },
+            still: still_bytes.map(|bytes| vec![0; bytes]),
+        };
+        let half = MAXIMUM_EMOJI_STORED_BYTES / 2;
+        assert!(within_emoji_stored_size(processed(MAXIMUM_EMOJI_STORED_BYTES, None)).is_ok());
+        assert!(within_emoji_stored_size(processed(half, Some(half))).is_ok());
+        assert_eq!(
+            within_emoji_stored_size(processed(MAXIMUM_EMOJI_STORED_BYTES + 1, None)),
+            Err(ImageProcessingError::TooLarge)
+        );
+        assert_eq!(
+            within_emoji_stored_size(processed(half, Some(half + 1))),
+            Err(ImageProcessingError::TooLarge)
         );
     }
 
@@ -611,12 +678,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn custom_emoji_react_only_in_their_guild_while_they_exist_keyed_by_current_name() {
+    #[allow(clippy::too_many_lines)] // One scenario: start, rename, join, delete, take back.
+    async fn custom_emoji_start_reactions_only_in_their_guild_and_are_keyed_by_id() {
+        use mellow_protocol::{OverwriteKind, SetPermissionOverwriteRequest};
+
         let (_directory, database) = migrated_database().await;
         let club = club(test_state(database.clone(), RegistrationMode::Open)).await;
         let party = club.create(club.owner, "party").await.unwrap();
+        let party_key = format!(":{}", party.id);
         let general = club.general();
         let message = club.message_in(general).await;
+        let other_message = club.message_in(general).await;
         let other_guild = guild_of(&club.state, club.owner, "Other").await;
         let elsewhere = other_guild.channels[1].id;
         let message_elsewhere = club.message_in(elsewhere).await;
@@ -633,24 +705,44 @@ mod tests {
             .await
             .unwrap();
         let message_in_conversation = club.message_in(conversation.id).await;
-
-        // The client's name does not matter: the key takes the emoji's current name.
-        club.react(general, message, &format!("old_name:{}", party.id))
+        // Members may join reactions here, not start them.
+        club.state
+            .guilds
+            .set_permission_overwrite(
+                club.owner,
+                general,
+                club.guild.id,
+                SetPermissionOverwriteRequest {
+                    kind: OverwriteKind::Role,
+                    allow: Permissions::empty(),
+                    deny: Permissions::ADD_REACTIONS,
+                },
+            )
             .await
             .unwrap();
-        let in_other_guild = club
-            .react(elsewhere, message_elsewhere, &format!("party:{}", party.id))
-            .await;
+
+        club.react(general, message, &party_key).await.unwrap();
+        let in_other_guild = club.react(elsewhere, message_elsewhere, &party_key).await;
         let in_conversation = club
-            .react(
-                conversation.id,
-                message_in_conversation,
-                &format!("party:{}", party.id),
-            )
+            .react(conversation.id, message_in_conversation, &party_key)
             .await;
-        let unknown = club.react(general, message, "ghost:42").await;
-        club.react(general, message, "👍").await.unwrap();
-        let keys_before_deletion = club.reaction_keys(general).await;
+        let unknown = club.react(general, message, ":42").await;
+        let member_starting = club
+            .state
+            .messages
+            .add_reaction(club.member, general, other_message, &party_key)
+            .await;
+        club.state
+            .guilds
+            .rename_emoji(club.owner, club.guild.id, party.id, "fiesta")
+            .await
+            .unwrap();
+        club.state
+            .messages
+            .add_reaction(club.member, general, message, &party_key)
+            .await
+            .unwrap();
+        let after_rename = club.reactions(message).await;
         club.state
             .guilds
             .delete_emoji(
@@ -661,26 +753,21 @@ mod tests {
             )
             .await
             .unwrap();
-        let keys_after_deletion = club.reaction_keys(general).await;
-        let joined_deleted = club
-            .state
-            .messages
-            .add_reaction(
-                club.member,
-                general,
-                message,
-                &format!("party:{}", party.id),
-            )
-            .await;
+        let after_deletion = club.reactions(message).await;
+        let started_after_deletion = club.react(general, other_message, &party_key).await;
         club.state
             .messages
-            .remove_own_reaction(club.owner, general, message, &format!("party:{}", party.id))
+            .remove_own_reaction(club.member, general, message, &party_key)
             .await
             .unwrap();
-        let keys_after_removal = club.reaction_keys(general).await;
+        club.state
+            .messages
+            .add_reaction(club.member, general, message, &party_key)
+            .await
+            .unwrap();
+        let after_taking_back = club.reactions(message).await;
         database.close().await;
 
-        let party_key = format!("party:{}", party.id);
         let refused = |result: &Result<(), MessageError>| {
             matches!(
                 result,
@@ -692,16 +779,24 @@ mod tests {
         assert!(refused(&in_other_guild), "another guild's channel");
         assert!(refused(&in_conversation), "a conversation");
         assert!(refused(&unknown));
-        assert_eq!(keys_before_deletion, [party_key.clone(), "👍".to_owned()]);
+        assert!(matches!(
+            member_starting,
+            Err(MessageError::Guild(GuildError::MissingPermissions))
+        ));
         assert_eq!(
-            keys_after_deletion,
-            [party_key, "👍".to_owned()],
-            "reactions stay"
+            after_rename,
+            [(party_key.clone(), 2)],
+            "one reaction across the rename, joined without ADD_REACTIONS"
         );
+        assert_eq!(after_deletion, [(party_key.clone(), 2)], "reactions stay");
         assert!(
-            refused(&joined_deleted),
-            "a deleted emoji is not added again"
+            refused(&started_after_deletion),
+            "a deleted emoji starts no new reaction"
         );
-        assert_eq!(keys_after_removal, ["👍"], "but it can be taken back");
+        assert_eq!(
+            after_taking_back,
+            [(party_key, 2)],
+            "but it can be taken back and joined again"
+        );
     }
 }

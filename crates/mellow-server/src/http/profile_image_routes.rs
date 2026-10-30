@@ -23,19 +23,27 @@ pub(crate) const MAXIMUM_PROFILE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 /// Each version has its own id and never changes.
 const CACHE_IMMUTABLE: &str = "private, max-age=31536000, immutable";
 
+/// Counts a picture change of `user_id`, whatever it is for (avatars, banners, icons, emoji),
+/// before anything is read or processed.
+pub(crate) fn record_picture_write(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
+    if state.rate_limiter.record_event(
+        &format!("profile-image:{user_id}"),
+        PROFILE_IMAGE_WRITES_PER_USER,
+        Instant::now(),
+    ) {
+        Ok(())
+    } else {
+        Err(ApiError::rate_limited())
+    }
+}
+
 /// Counts a picture change of `user_id`, whatever it is for, and reads the uploaded picture.
 async fn read_upload(
     state: &AppState,
     user_id: Snowflake,
     body: Option<Body>,
 ) -> Result<Option<Vec<u8>>, ApiError> {
-    if !state.rate_limiter.record_event(
-        &format!("profile-image:{user_id}"),
-        PROFILE_IMAGE_WRITES_PER_USER,
-        Instant::now(),
-    ) {
-        return Err(ApiError::rate_limited());
-    }
+    record_picture_write(state, user_id)?;
     let Some(body) = body else {
         return Ok(None);
     };

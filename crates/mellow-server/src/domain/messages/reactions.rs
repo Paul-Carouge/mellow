@@ -73,26 +73,22 @@ impl Messages {
         Ok((channel, permissions))
     }
 
-    /// `key` itself for a Unicode emoji. A custom emoji must still exist and belong to the guild
-    /// of the channel (`may_react_with_custom_emoji`); its key then takes the emoji's current
-    /// name, whatever name the client sent (ADR-0028).
-    async fn reaction_key_to_add(
+    /// Whether `key` may start a new reaction in a channel of `channel_guild_id`: always for a
+    /// Unicode emoji; for a custom one, only while it exists in that guild
+    /// (`may_react_with_custom_emoji`, ADR-0028). Joining an existing reaction needs neither.
+    async fn may_start_reaction_with(
         &self,
-        key: String,
+        key: &str,
         channel_guild_id: Option<Snowflake>,
-    ) -> Result<String, MessageError> {
-        let Some((_, emoji_id)) = custom_emoji_of_reaction_key(&key) else {
-            return Ok(key);
+    ) -> Result<bool, MessageError> {
+        let Some(emoji_id) = custom_emoji_of_reaction_key(key) else {
+            return Ok(true);
         };
         let stored = find_guild_emoji(&self.database, emoji_id)
             .await
             .map_err(GuildError::from)?;
-        match stored {
-            Some(stored) if may_react_with_custom_emoji(stored.guild_id, channel_guild_id) => {
-                Ok(format!("{}:{emoji_id}", stored.emoji.name))
-            }
-            _ => Err(MessageRuleViolation::CustomReactionEmoji.into()),
-        }
+        Ok(stored
+            .is_some_and(|stored| may_react_with_custom_emoji(stored.guild_id, channel_guild_id)))
     }
 
     /// Reacts with `emoji`. Idempotent: reacting again changes nothing and sends no event.
@@ -112,7 +108,9 @@ impl Messages {
                 ReactionAction::JoinExisting,
             )
             .await?;
-        let emoji = self.reaction_key_to_add(emoji, channel.guild_id()).await?;
+        let may_start_with_this_emoji = self
+            .may_start_reaction_with(&emoji, channel.guild_id())
+            .await?;
         // Decided before the write, so publishing after the commit cannot fail (ADR-0015).
         let audience = self.audience(&channel).await?;
         match storage::add_reaction(
@@ -120,11 +118,12 @@ impl Messages {
             message_id,
             user_id,
             &emoji,
-            may_react(
-                permissions,
-                channel.guild_id().is_none(),
-                ReactionAction::AddNew,
-            ),
+            may_start_with_this_emoji
+                && may_react(
+                    permissions,
+                    channel.guild_id().is_none(),
+                    ReactionAction::AddNew,
+                ),
             MAXIMUM_DISTINCT_EMOJI_PER_MESSAGE,
         )
         .await?
@@ -144,6 +143,9 @@ impl Messages {
                 Ok(())
             }
             ReactionAddOutcome::AlreadyThere => Ok(()),
+            ReactionAddOutcome::NewEmojiRefused if !may_start_with_this_emoji => {
+                Err(MessageRuleViolation::CustomReactionEmoji.into())
+            }
             ReactionAddOutcome::NewEmojiRefused => Err(GuildError::MissingPermissions.into()),
             ReactionAddOutcome::LimitReached => {
                 Err(GuildError::LimitReached("distinct emoji per message").into())

@@ -2218,6 +2218,46 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn emoji_uploads_spend_the_picture_budget_before_their_body_is_read() {
+        use crate::domain::image_processing::tests::png;
+        use crate::http::rate_limit::PROFILE_IMAGE_WRITES_PER_USER;
+
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let (_, guest, guild_id, _) = guild_with_guest(&state).await;
+        let path = format!("/api/v1/guilds/{guild_id}/emojis?name=party");
+        let mut answers = Vec::new();
+        for _ in 0..PROFILE_IMAGE_WRITES_PER_USER.maximum_events {
+            answers.push(
+                send(&state, picture_request("POST", &path, &guest, png(8, 8)))
+                    .await
+                    .0,
+            );
+        }
+        let (over_budget, _) =
+            send(&state, picture_request("POST", &path, &guest, png(8, 8))).await;
+        let (avatar_after, _) = send(
+            &state,
+            picture_request("PUT", "/api/v1/users/@me/avatar", &guest, png(8, 8)),
+        )
+        .await;
+        database.close().await;
+
+        assert!(
+            answers
+                .iter()
+                .all(|status| *status == StatusCode::FORBIDDEN),
+            "refused uploads count too"
+        );
+        assert_eq!(over_budget, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            avatar_after,
+            StatusCode::TOO_MANY_REQUESTS,
+            "one budget for every picture"
+        );
+    }
+
+    #[tokio::test]
     #[allow(clippy::too_many_lines)] // One scenario: add, list, serve, react, rename, delete.
     async fn custom_emoji_are_managed_served_to_members_and_reacted_with_over_http() {
         use crate::domain::guild_rules::MAXIMUM_EMOJI_UPLOAD_BYTES;
@@ -2320,7 +2360,7 @@ pub(crate) mod tests {
             authorized(
                 "PUT",
                 &format!(
-                    "/api/v1/channels/{general}/messages/{}/reactions/parrot%3A{}/@me",
+                    "/api/v1/channels/{general}/messages/{}/reactions/%3A{}/@me",
                     message.id, parrot.id
                 ),
                 &guest,
@@ -2401,7 +2441,7 @@ pub(crate) mod tests {
         assert_eq!(image::load_from_memory(&still).unwrap().width(), 128);
         assert_eq!(served_to_stranger, StatusCode::NOT_FOUND, "members only");
         assert_eq!(reacted, StatusCode::NO_CONTENT);
-        assert_eq!(reactions[0].emoji, format!("parrot:{}", parrot.id));
+        assert_eq!(reactions[0].emoji, format!(":{}", parrot.id));
         assert_eq!(by_guest_rename, StatusCode::FORBIDDEN);
         assert_eq!(renamed.name, "fiesta");
         assert_eq!(taken, StatusCode::BAD_REQUEST);

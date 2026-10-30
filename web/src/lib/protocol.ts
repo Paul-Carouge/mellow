@@ -82,7 +82,7 @@ export function iconUrl(image: ProfileImage, isAnimationWanted: boolean): string
 
 /**
  * A guild's custom emoji (ADR-0028). Messages write it `<:name:id>` (`<a:name:id>` when animated),
- * reactions key it `name:id`; members load its picture with `emojiUrl`.
+ * reactions key it `:id`; members load its picture with `emojiUrl`.
  */
 export interface CustomEmoji {
   id: Snowflake;
@@ -95,8 +95,8 @@ export interface CustomEmoji {
 export const MAXIMUM_EMOJIS_PER_GUILD_AND_KIND = 50;
 export const MAXIMUM_EMOJI_UPLOAD_BYTES = 256 * 1024;
 const EMOJI_NAME = /^[A-Za-z0-9_]{2,32}$/;
-/** A reaction key `name:id`; the id without leading zero, as the instance writes it. */
-const CUSTOM_EMOJI_REACTION_KEY = /^([A-Za-z0-9_]{2,32}):(0|[1-9][0-9]{0,19})$/;
+/** A reaction key `:id`; the id without leading zero, as the instance writes it. */
+const CUSTOM_EMOJI_REACTION_KEY = /^:(0|[1-9][0-9]{0,19})$/;
 
 export function isValidEmojiName(name: string): boolean {
   return EMOJI_NAME.test(name);
@@ -109,16 +109,15 @@ export function emojiUrl(emoji: CustomEmoji, isAnimationWanted: boolean): string
 
 /** What `PUT …/reactions/{emoji}/@me` takes to react with a custom emoji. */
 export function customEmojiReactionKey(emoji: CustomEmoji): string {
-  return `${emoji.name}:${emoji.id}`;
+  return `:${emoji.id}`;
 }
 
 /**
- * The name and id of a custom emoji's reaction key, `null` for a Unicode emoji. The name is the
- * emoji's when the first reaction was added: show `:name:` when the guild no longer has the id.
+ * The emoji id of a custom reaction key, `null` for a Unicode emoji. Its name and picture come
+ * from `guild.emojis`; an id the guild no longer has is a deleted emoji (show a generic chip).
  */
-export function customEmojiOfReactionKey(key: string): { name: string; id: Snowflake } | null {
-  const match = CUSTOM_EMOJI_REACTION_KEY.exec(key);
-  return match?.[1] !== undefined && match[2] !== undefined ? { name: match[1], id: match[2] } : null;
+export function customEmojiOfReactionKey(key: string): Snowflake | null {
+  return CUSTOM_EMOJI_REACTION_KEY.exec(key)?.[1] ?? null;
 }
 
 /** How a message's text carries a custom emoji (Discord's syntax). */

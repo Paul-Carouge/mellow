@@ -60,7 +60,7 @@ pub struct Guild {
 
 /// A guild's custom emoji (ADR-0028). Its picture is served like an icon, at
 /// `GET /api/v1/icons/{id}` (and `/icons/{id}/still` when animated), to the guild's members.
-/// Messages write it `<:name:id>` (`<a:name:id>` when animated); reactions key it `name:id`.
+/// Messages write it `<:name:id>` (`<a:name:id>` when animated); reactions key it `:id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomEmoji {
     pub id: Snowflake,
