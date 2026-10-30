@@ -3,9 +3,14 @@
 
 import { strings } from "../i18n";
 import {
+  MUTE_DURATIONS,
+  type MuteEnd,
+  NOTIFY_LEVELS,
   type NotificationSettings,
   type NotifyLevel,
+  type PlaceNotificationSettings,
   isMuteActive,
+  muteEndFor,
 } from "../lib/notification-settings";
 import type { ChosenStatus, Message, Snowflake } from "../lib/protocol";
 import { withCustomEmojiAsNames } from "./custom-emoji";
@@ -46,6 +51,47 @@ export function notifyLevelOf(settings: NotificationSettings, place: Notificatio
     return own;
   }
   return place.guildId === null ? defaultNotifyLevel(null) : serverNotifyLevel(settings, place.guildId);
+}
+
+// --- The dialog's choices --------------------------------------------------------------------
+
+/** The dialog's radio values beside the durations and the levels. */
+export const NOT_MUTED_CHOICE = "off";
+/** The timed mute running now, kept as it is. */
+export const CURRENT_MUTE_CHOICE = "current";
+/** "Same as the server", for a channel. */
+export const SERVER_LEVEL_CHOICE = "server";
+
+export interface NotificationDialogChoices {
+  readonly targetKind: NotificationTarget["kind"];
+  /** `NOT_MUTED_CHOICE`, `CURRENT_MUTE_CHOICE` or a `MuteDuration`. */
+  readonly chosenMute: string;
+  /** `SERVER_LEVEL_CHOICE` or a `NotifyLevel`. */
+  readonly chosenLevel: string;
+  /** The mute running when the dialog opened, if any. */
+  readonly runningMuteEnd: MuteEnd | undefined;
+  /** What applies without a choice of its own: the server's for a channel, else the default. */
+  readonly fallbackLevel: NotifyLevel;
+  readonly now: number;
+}
+
+/**
+ * What Save stores for the place. Keeping a timed mute keeps its end (it does not restart), and
+ * a level equal to the default stays implicit, so a later change of default or of the server's
+ * choice still applies; "Same as the server" stores no level. A channel's explicit level is kept
+ * even when it matches the server's, since the reader chose it over following the server.
+ */
+export function placeSettingsFromDialog(choices: NotificationDialogChoices): PlaceNotificationSettings {
+  const duration = MUTE_DURATIONS.find((candidate) => candidate === choices.chosenMute);
+  const mutedUntil =
+    choices.chosenMute === CURRENT_MUTE_CHOICE
+      ? choices.runningMuteEnd
+      : duration === undefined
+        ? undefined
+        : muteEndFor(duration, choices.now);
+  const pickedLevel = NOTIFY_LEVELS.find((level) => level === choices.chosenLevel);
+  const isChannel = choices.targetKind === "channel";
+  return { mutedUntil, level: isChannel || pickedLevel !== choices.fallbackLevel ? pickedLevel : undefined };
 }
 
 /** Muted itself, or in a muted server. */

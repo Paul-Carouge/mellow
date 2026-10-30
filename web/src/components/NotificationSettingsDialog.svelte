@@ -4,18 +4,25 @@
   import { strings } from "../i18n";
   import {
     MUTE_DURATIONS,
-    type MuteDuration,
     NOTIFY_LEVELS,
     type NotifyLevel,
     isMuteActive,
-    muteEndFor,
     withPlaceSettings,
   } from "../lib/notification-settings";
   import ChoiceOption from "./ChoiceOption.svelte";
   import { upcomingTimeLabel } from "./format";
   import ModalDialog from "./ModalDialog.svelte";
   import { notificationSettings, updateNotificationSettings } from "./notification-preferences.svelte";
-  import { type NotificationTarget, defaultNotifyLevel, notificationTargetId, serverNotifyLevel } from "./notifications";
+  import {
+    CURRENT_MUTE_CHOICE as CURRENT_MUTE,
+    NOT_MUTED_CHOICE as NOT_MUTED,
+    type NotificationTarget,
+    SERVER_LEVEL_CHOICE as SERVER_LEVEL,
+    defaultNotifyLevel,
+    notificationTargetId,
+    placeSettingsFromDialog,
+    serverNotifyLevel,
+  } from "./notifications";
 
   // "Mute…" and "Notification settings…" from a server's, a channel's or a conversation's menu
   // (docs/design/web-notifications.md): how long it stays quiet, and what it tells about. Nothing
@@ -31,11 +38,6 @@
   }
 
   let { target, placeName, initialGroup, onclose, ondone }: Props = $props();
-
-  /** The radio values beside the durations: no mute, the mute running now, the server's level. */
-  const NOT_MUTED = "off";
-  const CURRENT_MUTE = "current";
-  const SERVER_LEVEL = "server";
 
   const id = $props.id();
   const now = Date.now();
@@ -59,21 +61,16 @@
   );
   let chosenLevel = $state<string>(stored.level ?? (isServerChannel ? SERVER_LEVEL : fallbackLevel));
 
-  function isMuteDuration(value: string): value is MuteDuration {
-    return MUTE_DURATIONS.some((duration) => duration === value);
-  }
-
   function save() {
-    const mutedUntil =
-      chosenMute === CURRENT_MUTE
-        ? runningMuteEnd
-        : isMuteDuration(chosenMute)
-          ? muteEndFor(chosenMute, Date.now())
-          : undefined;
-    const pickedLevel = NOTIFY_LEVELS.find((level) => level === chosenLevel);
-    // The default stays implicit, so a later change of default (or of the server's choice) applies.
-    const level = isServerChannel || pickedLevel !== fallbackLevel ? pickedLevel : undefined;
-    updateNotificationSettings((settings) => withPlaceSettings(settings, targetId, { level, mutedUntil }));
+    const place = placeSettingsFromDialog({
+      targetKind: fixedTarget.kind,
+      chosenMute,
+      chosenLevel,
+      runningMuteEnd,
+      fallbackLevel,
+      now: Date.now(),
+    });
+    updateNotificationSettings((settings) => withPlaceSettings(settings, targetId, place));
     ondone(strings.notifications.saved(placeName));
     onclose();
   }

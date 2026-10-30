@@ -7,7 +7,11 @@ import {
   alertDeliveryFor,
   messagePreviewText,
   notificationContent,
+  CURRENT_MUTE_CHOICE,
+  NOT_MUTED_CHOICE,
+  SERVER_LEVEL_CHOICE,
   notifyLevelOf,
+  placeSettingsFromDialog,
   shouldAlertAbout,
   tabTitle,
 } from "./notifications";
@@ -147,5 +151,38 @@ describe("words", () => {
     expect(tabTitle(0, "Mellow")).toBe("Mellow");
     expect(tabTitle(3, "Mellow")).toBe("(3) Mellow");
     expect(tabTitle(250, "Mellow")).toBe("(99+) Mellow");
+  });
+});
+
+describe("what the dialog saves", () => {
+  const base = {
+    targetKind: "server" as const,
+    chosenMute: NOT_MUTED_CHOICE,
+    chosenLevel: "mentions",
+    runningMuteEnd: undefined,
+    fallbackLevel: "mentions" as const,
+    now: NOW,
+  };
+
+  it("keeps a level equal to the default implicit, and stores any other", () => {
+    expect(placeSettingsFromDialog(base)).toEqual({ mutedUntil: undefined, level: undefined });
+    expect(placeSettingsFromDialog({ ...base, chosenLevel: "all" }).level).toBe("all");
+    const conversation = { ...base, targetKind: "conversation" as const, fallbackLevel: "all" as const };
+    expect(placeSettingsFromDialog({ ...conversation, chosenLevel: "all" }).level).toBeUndefined();
+    expect(placeSettingsFromDialog({ ...conversation, chosenLevel: "nothing" }).level).toBe("nothing");
+  });
+
+  it('stores no level for "Same as the server", and a channel\'s own pick even when it matches', () => {
+    const channel = { ...base, targetKind: "channel" as const };
+    expect(placeSettingsFromDialog({ ...channel, chosenLevel: SERVER_LEVEL_CHOICE }).level).toBeUndefined();
+    expect(placeSettingsFromDialog({ ...channel, chosenLevel: "mentions" }).level).toBe("mentions");
+  });
+
+  it("keeps a running timed mute's end instead of restarting it", () => {
+    const running = { ...base, runningMuteEnd: NOW + 600_000, now: NOW + 300_000 };
+    expect(placeSettingsFromDialog({ ...running, chosenMute: CURRENT_MUTE_CHOICE }).mutedUntil).toBe(NOW + 600_000);
+    expect(placeSettingsFromDialog({ ...running, chosenMute: "1-hour" }).mutedUntil).toBe(NOW + 300_000 + 3_600_000);
+    expect(placeSettingsFromDialog({ ...running, chosenMute: NOT_MUTED_CHOICE }).mutedUntil).toBeUndefined();
+    expect(placeSettingsFromDialog({ ...base, chosenMute: "until-turned-back-on" }).mutedUntil).toBe("never");
   });
 });
