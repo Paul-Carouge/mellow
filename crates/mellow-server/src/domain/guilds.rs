@@ -550,8 +550,14 @@ impl Guilds {
         if membership.owner_id != user_id {
             return Err(GuildError::MissingPermissions);
         }
-        let member_ids = guild_storage::delete_guild(&self.database, guild_id, user_id)
-            .await?
+        // Detached, like a channel deletion.
+        let database = self.database.clone();
+        let member_ids =
+            tokio::spawn(
+                async move { guild_storage::delete_guild(&database, guild_id, user_id).await },
+            )
+            .await
+            .map_err(|error| GuildError::Internal(Box::new(error)))??
             .ok_or(GuildError::NotFound)?;
         self.cached_permission_snapshots().remove(&guild_id);
         for member_id in member_ids {
@@ -1005,7 +1011,15 @@ impl Guilds {
             Some(channel.id),
             None,
         )?;
-        guild_storage::delete_channel(&self.database, channel.id, &audit).await?;
+        // Detached: its messages go in batches (ADR-0029), and a client hanging up must not stop
+        // the deletion half way.
+        let database = self.database.clone();
+        let channel_id = channel.id;
+        tokio::spawn(
+            async move { guild_storage::delete_channel(&database, channel_id, &audit).await },
+        )
+        .await
+        .map_err(|error| GuildError::Internal(Box::new(error)))??;
         self.publish_to_audience(
             channel.guild_id,
             &audience,

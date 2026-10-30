@@ -1079,11 +1079,52 @@ pub(crate) async fn update_channel_fields(
 
 /// # Errors
 /// Fails on database errors.
+/// Messages deleted per transaction before a channel or guild goes. Each deletion also takes the
+/// message out of the search index with FTS5's secure-delete, about 0.3 ms per message in a
+/// database of a million (ADR-0029): one cascade of 200 000 messages held the writer for 68 s, a
+/// batch holds it for about a third of a second, so other writes go in between.
+const MESSAGES_DELETED_PER_TRANSACTION: i64 = 1_000;
+
+/// Deletes the messages `statement` selects (?1 the scope, ?2 the batch size), one short
+/// transaction per batch, until none is left.
+async fn delete_messages_in_batches(
+    database: &Database,
+    statement: &'static str,
+    scope_id: i64,
+) -> Result<(), GuildStorageError> {
+    loop {
+        let mut transaction = database
+            .writer()
+            .begin_with(BEGIN_WRITE_TRANSACTION)
+            .await?;
+        let deleted = sqlx::query(statement)
+            .bind(scope_id)
+            .bind(MESSAGES_DELETED_PER_TRANSACTION)
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+        transaction.commit().await?;
+        if deleted < MESSAGES_DELETED_PER_TRANSACTION.unsigned_abs() {
+            return Ok(());
+        }
+    }
+}
+
+/// Deletes the channel's messages in batches first, then the channel and its audit entry in one
+/// transaction (whose cascade takes any message sent meanwhile). Await it to the end, from a
+/// detached task: stopped half way, the channel stays with part of its history gone.
 pub(crate) async fn delete_channel(
     database: &Database,
     channel_id: Snowflake,
     audit: &NewAuditEntry,
 ) -> Result<(), GuildStorageError> {
+    delete_messages_in_batches(
+        database,
+        "DELETE FROM messages WHERE id IN \
+         (SELECT id FROM messages WHERE channel_id = ?1 LIMIT ?2)",
+        to_integer(channel_id.raw())?,
+    )
+    .await?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -1170,6 +1211,23 @@ pub(crate) async fn delete_guild(
     owner_id: Snowflake,
 ) -> Result<Option<Vec<Snowflake>>, GuildStorageError> {
     let guild_id = to_integer(guild_id.raw())?;
+    let owner_id = to_integer(owner_id.raw())?;
+    let is_owned_by_caller: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM guilds WHERE id = ? AND owner_id = ?)")
+            .bind(guild_id)
+            .bind(owner_id)
+            .fetch_one(database.writer())
+            .await?;
+    if !is_owned_by_caller {
+        return Ok(None);
+    }
+    delete_messages_in_batches(
+        database,
+        "DELETE FROM messages WHERE id IN (SELECT id FROM messages \
+         WHERE channel_id IN (SELECT id FROM channels WHERE guild_id = ?1) LIMIT ?2)",
+        guild_id,
+    )
+    .await?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -1186,7 +1244,7 @@ pub(crate) async fn delete_guild(
         .collect::<Result<Vec<_>, _>>()?;
     let deleted = sqlx::query("DELETE FROM guilds WHERE id = ? AND owner_id = ?")
         .bind(guild_id)
-        .bind(to_integer(owner_id.raw())?)
+        .bind(owner_id)
         .execute(&mut *transaction)
         .await?
         .rows_affected();
