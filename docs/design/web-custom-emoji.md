@@ -33,7 +33,7 @@ People: members of small self-hosted communities who already know Discord. The j
 
 **Reading.**
 
-- `<:name:id>` and `<a:name:id>` show the picture (22 px in a line, `alt` and tooltip `:name:` as written) when the reader is in its server; otherwise the text `:name:`. A picture that fails to load falls back to the same text. Previews (reply lines, pinned panel, dialogs) show `:name:`.
+- `<:name:id>` and `<a:name:id>` show the picture (22 px in a line, `alt` and tooltip `:name:` with the name its server gives it, never the name the markup claims) when the reader is in its server; otherwise the text `:name:`. A picture that fails to load falls back to the same text. Previews (reply lines, pinned panel, dialogs) show `:name:`.
 - A message of 1 to 30 emoji (custom or built-in) and spaces, in one paragraph, shows them at 48 px, as on Discord.
 - Animated emoji play, except under reduced motion, where the still frame is served (`/still`). Hidden windows cost nothing: browsers do not paint or advance images in a hidden page, so no visibility listener was added.
 
@@ -41,7 +41,7 @@ People: members of small self-hosted communities who already know Discord. The j
 
 ## Tokens
 
-New `component.custom-emoji.*`: `inline-size` 22 px, `jumbo-size` 48 px, `missing-border` (`text.muted`), `missing-border-width` 1 px, `missing-radius` (`radius.xs`), `suggestion-width` 320 px, `suggestion-max-height` 296 px, `settings-picture-size` 40 px, `settings-picture-background` (`surface.field`), `settings-picture-radius` (`radius.sm`), `settings-picture-padding` (`space.2xs`), `settings-name-border-hover` (`border.strong`), `settings-count-full-text` (`text.danger`). The suggestions reuse the context menu's surface, rows and focus colours, and the picker's emoji size.
+New `component.custom-emoji.*`: `inline-size` 22 px, `jumbo-size` 48 px, `missing-border` (`text.muted`), `missing-border-width` 1 px, `missing-radius` (`radius.xs`), `suggestion-width` 320 px, `suggestion-max-height` 296 px, `settings-picture-size` 40 px, `settings-picture-background` (`surface.field`), `settings-picture-radius` (`radius.sm`), `settings-picture-padding` (`space.2xs`), `settings-name-max-width` 320 px, `settings-name-border-hover` (`border.strong`), `settings-count-full-text` (`text.danger`). The suggestions reuse the context menu's surface, rows and focus colours, and the picker's emoji size.
 
 ## Defaults rejected
 
