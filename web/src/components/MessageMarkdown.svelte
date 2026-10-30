@@ -42,7 +42,8 @@
 <!-- Inline nodes are written without whitespace between tags: paragraphs keep the sender's spaces. -->
 {#snippet inlines(nodes: readonly InlineNode[], areLinksActive: boolean)}{#each nodes as node, index (index)}{#if node.kind === "text"}{#if isJumbo && node.text.trim() !== ""}<span
           class="text-(length:--mw-component-custom-emoji-jumbo-size) leading-none">{node.text}</span
-        >{:else}{node.text}{/if}{:else if node.kind === "customEmoji"}<CustomEmojiImage
+        >{:else}{node.text}{/if}{:else if node.kind === "match"}<mark class="search-match">{node.text}</mark
+      >{:else if node.kind === "customEmoji"}<CustomEmojiImage
         emoji={node.emoji}
         class={isJumbo ? "size-(--mw-component-custom-emoji-jumbo-size)" : "size-(--mw-component-custom-emoji-inline-size)"}
       />{:else if node.kind === "mention"}<span
@@ -107,6 +108,16 @@
 {/if}
 
 <style>
+  /* Words a search matched (DESIGN.md 6.61): the lamp's amber wash, and weight so the match never
+     rests on colour alone. */
+  .search-match {
+    border-radius: var(--mw-component-search-match-radius);
+    background: var(--mw-component-search-match-background);
+    color: var(--mw-component-search-match-text);
+    font-weight: var(--mw-font-weight-semibold);
+    box-decoration-break: clone;
+  }
+
   .inline-code {
     border-radius: var(--mw-radius-xs);
     background: var(--mw-component-message-code-background);

@@ -351,8 +351,11 @@
     lastAnnouncedKey = latest.key;
   }
 
-  /** A pinned message chosen in the pins panel: scrolled into the middle and focused. */
-  export async function revealMessage(messageId: Snowflake): Promise<void> {
+  /**
+   * A pinned message chosen in the pins panel, or a search result: scrolled into the middle and
+   * focused; `shouldHighlight` lights it briefly so the eye finds it (DESIGN.md 5.12).
+   */
+  export async function revealMessage(messageId: Snowflake, shouldHighlight = false): Promise<void> {
     // A message folded with someone you blocked shows its run first, as Show would.
     const run = entries.find((entry) => entry.kind === "blocked-run" && entry.messageIds.includes(messageId));
     if (run?.kind === "blocked-run" && !run.isRevealed) {
@@ -368,6 +371,18 @@
     element.scrollIntoView({ block: "center" });
     element.focus({ preventScroll: true });
     handleScroll();
+    if (shouldHighlight) {
+      highlightBriefly(element);
+    }
+  }
+
+  /** The row takes the match wash, which fades (or, under reduced motion, holds and then goes). */
+  function highlightBriefly(element: HTMLElement) {
+    delete element.dataset.jumpHighlight;
+    // Restarts the fade when the same message is opened twice in a row.
+    void element.offsetWidth;
+    element.dataset.jumpHighlight = "";
+    setTimeout(() => delete element.dataset.jumpHighlight, durationTokenInMilliseconds("motion-delay-jump-highlight"));
   }
 
   export function jumpToPresent() {

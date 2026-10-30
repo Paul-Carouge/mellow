@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, tick } from "svelte";
+  import { type Snippet, onDestroy, tick } from "svelte";
 
   import { strings } from "../i18n";
   import { ApiError } from "../lib/api";
@@ -61,7 +61,8 @@
     /** Below the sidebar breakpoint the header opens the navigation drawer. */
     hasNavigationDrawer: boolean;
     onopennavigation: () => void;
-    onopenquickswitcher: () => void;
+    /** Message search (DESIGN.md 5.12): the field where the results sheet docks, else its magnifier. */
+    searchControl: Snippet;
     isMemberListOpen: boolean;
     ontogglememberlist: () => void;
     /** The header's gear: the open channel's settings. */
@@ -74,7 +75,7 @@
     client,
     hasNavigationDrawer,
     onopennavigation,
-    onopenquickswitcher,
+    searchControl,
     isMemberListOpen,
     ontogglememberlist,
     oneditchannel,
@@ -150,7 +151,10 @@
 
   let pane: HTMLElement;
   let composer = $state<HTMLTextAreaElement | null>(null);
-  let messageList = $state<{ jumpToPresent: () => void; revealMessage: (messageId: Snowflake) => Promise<void> } | null>(null);
+  let messageList = $state<{
+    jumpToPresent: () => void;
+    revealMessage: (messageId: Snowflake, shouldHighlight?: boolean) => Promise<void>;
+  } | null>(null);
   const draftsByChannel = new Map<Snowflake, string>();
   let draft = $state("");
   let replyingTo = $state<Message | null>(null);
@@ -284,6 +288,17 @@
   /** Every path that focuses the composer comes here: a read-only channel has none to focus. */
   export function focusComposer() {
     composer?.focus();
+  }
+
+  /** A search result once its page is loaded: scrolled to, focused and lit (DESIGN.md 5.12). */
+  export async function revealSearchResult(messageId: Snowflake): Promise<void> {
+    await tick();
+    await messageList?.revealMessage(messageId, true);
+  }
+
+  /** Why a search result could not be shown, said where the chat's own errors are. */
+  export function showNotice(text: string) {
+    actionError = text;
   }
 
   function maximumComposerHeight(): number {
@@ -763,35 +778,8 @@
     {:else}
       <span class="flex-1"></span>
     {/if}
-    {#if !hasNavigationDrawer}
-      <!-- The quick switcher, visible: Mellow's fastest way around (ADR-0022 §1). It reads as a
-           search field (magnifier, placeholder-toned words, the shortcut at its end) but is a
-           button: the field itself lives in the switcher, so typing starts there. -->
-      <button
-        type="button"
-        aria-label={strings.chat.goToLabel}
-        aria-keyshortcuts="Control+K"
-        class="group flex h-(--mw-component-chat-header-button-size) min-w-max flex-[0_1_var(--mw-component-quick-switcher-trigger-width)] items-center gap-xs rounded-sm bg-surface-input ps-xs pe-2xs type-body text-text-secondary transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:text-text-heading pointer-coarse:h-(--mw-size-hit-web-min)"
-        onclick={onopenquickswitcher}
-      >
-        <Icon
-          name="magnifying-glass"
-          class="size-(--mw-component-quick-switcher-trigger-icon-size) text-(--mw-component-quick-switcher-trigger-icon) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) group-hover:text-(--mw-component-quick-switcher-trigger-icon-hover)"
-        />
-        <span class="me-auto">{strings.chat.goTo}</span>
-        <kbd class="rounded-xs border border-border-divider px-2xs font-sans type-body-sm text-text-muted">Ctrl K</kbd>
-      </button>
-    {:else}
-      <!-- Phones have no keyboard shortcut: the same switcher behind a magnifier. -->
-      <IconButton
-        icon="magnifying-glass"
-        label={strings.chat.goToLabel}
-        aria-haspopup="dialog"
-        class={headerButtonClass}
-        iconClass="size-(--mw-component-chat-header-icon-size)"
-        onclick={onopenquickswitcher}
-      />
-    {/if}
+    <!-- Where Discord has it; Ctrl+K stays the quick switcher, offered again in its suggestions. -->
+    {@render searchControl()}
     {#if channel && canEditChannel}
       <IconButton
         icon="gear-six"

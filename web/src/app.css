@@ -287,6 +287,23 @@ body {
     transform: translateY(var(--mw-component-channel-switch-offset));
   }
 }
+/* A message opened from a search result (DESIGN.md 5.12): lit with the match wash, fading out.
+   Reduced motion holds the wash still until `motion.delay.jump-highlight` removes it. */
+[data-jump-highlight] {
+  animation: mw-jump-highlight var(--mw-component-message-highlight-duration) var(--mw-motion-easing-exit) both;
+}
+@keyframes mw-jump-highlight {
+  0%,
+  40% {
+    background-color: var(--mw-component-message-highlight-background);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-jump-highlight] {
+    animation: none;
+    background-color: var(--mw-component-message-highlight-background);
+  }
+}
 @keyframes mw-typing-dot {
   0%,
   60%,

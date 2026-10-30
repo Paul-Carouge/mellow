@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { type Snippet, tick } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
@@ -32,10 +32,19 @@
     onaddserver: () => void;
     /** After Message opened the conversation: the composer takes focus. */
     onopenedconversation: () => void;
+    /** Message search in the conversations (DESIGN.md 5.12): the field, or its magnifier on phones. */
+    searchControl: Snippet;
   }
 
-  let { client, tab = $bindable(), hasNavigationDrawer, onopennavigation, onaddserver, onopenedconversation }: Props =
-    $props();
+  let {
+    client,
+    tab = $bindable(),
+    hasNavigationDrawer,
+    onopennavigation,
+    onaddserver,
+    onopenedconversation,
+    searchControl,
+  }: Props = $props();
 
   const id = $props.id();
   const TAB_LABELS: Record<FriendsTab, string> = strings.friends.tabs;
@@ -366,7 +375,10 @@
       <div class="min-w-0 flex-1 p-2xs">
         {@render tabList()}
       </div>
+    {:else}
+      <span class="flex-1"></span>
     {/if}
+    {@render searchControl()}
   </header>
   {#if hasNavigationDrawer}
     <!-- Phones: the tabs get their own rows under the title. -->

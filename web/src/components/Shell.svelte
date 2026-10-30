@@ -3,8 +3,8 @@
   import { MediaQuery, SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
-  import type { MellowClient } from "../lib/client.svelte";
-  import type { Channel, Snowflake } from "../lib/protocol";
+  import { MAXIMUM_MESSAGES_LOADED_TO_REACH_A_MESSAGE, type MellowClient } from "../lib/client.svelte";
+  import type { Channel, MessageSearchHit, Snowflake } from "../lib/protocol";
   import AddServerDialog from "./AddServerDialog.svelte";
   import ChannelSettings from "./ChannelSettings.svelte";
   import type { ServerDialog } from "./ChannelSidebar.svelte";
@@ -16,9 +16,13 @@
   import FriendsPane from "./FriendsPane.svelte";
   import { conversationDisplayName, isGroupConversation } from "./group-conversations";
   import GroupMembersSheet from "./GroupMembersSheet.svelte";
+  import IconButton from "./IconButton.svelte";
   import InvitePeopleDialog from "./InvitePeopleDialog.svelte";
   import LeaveServerDialog from "./LeaveServerDialog.svelte";
   import MemberList from "./MemberList.svelte";
+  import { MessageSearch } from "./message-search.svelte";
+  import MessageSearchField from "./MessageSearchField.svelte";
+  import MessageSearchPanel from "./MessageSearchPanel.svelte";
   import Navigator from "./Navigator.svelte";
   import {
     closeNotificationDialog,
@@ -56,8 +60,17 @@
   const hasRoomForSideSheet = new MediaQuery(
     minimumWidthQueryForPanes([...NAVIGATOR_AND_SHEET, "component-side-sheet-width", "size-sheet-inset"]),
   );
+  // Search results are wider than the members: they dock from 1224 px, and the header then holds
+  // the search field; below, a magnifier opens them over the sheet with their own field.
+  const hasRoomForSearchSheet = new MediaQuery(
+    minimumWidthQueryForPanes([...NAVIGATOR_AND_SHEET, "component-search-panel-width", "size-sheet-inset"]),
+  );
 
-  let chatPane = $state<{ focusComposer: () => void } | null>(null);
+  let chatPane = $state<{
+    focusComposer: () => void;
+    revealSearchResult: (messageId: Snowflake) => Promise<void>;
+    showNotice: (text: string) => void;
+  } | null>(null);
   let friendsPane = $state<{ focusStart: () => void } | null>(null);
   let friendsTab = $state<FriendsTab>("online");
   const collapsedCategoryIds = new SvelteSet<Snowflake>();
@@ -94,6 +107,15 @@
   });
   const notificationDialog = $derived(notificationDialogRequest());
 
+  // Message search (DESIGN.md 5.12): one search per server, or the conversations at Home. Its
+  // results take the side sheet's place; the members come back when it closes.
+  const messageSearch = new MessageSearch((guildId, query) => client.searchMessages(guildId, query));
+  $effect(() => messageSearch.setScope(client.selectedGuildId));
+  const isSearchDocked = $derived(messageSearch.isPanelOpen && hasRoomForSearchSheet.current);
+  const isSearchOverlayOpen = $derived(messageSearch.isPanelOpen && !hasRoomForSearchSheet.current);
+  /** The result being opened, while its page loads. */
+  let openingMessageId = $state<Snowflake | null>(null);
+
   const guild = $derived(client.selectedGuild);
   const group = $derived(
     client.selectedConversation && isGroupConversation(client.selectedConversation) ? client.selectedConversation : null,
@@ -103,6 +125,7 @@
   const hasMemberSheet = $derived(memberSheetPlaceId !== null);
   const isMemberSheetOpen = $derived(
     memberSheetPlaceId !== null &&
+      !messageSearch.isPanelOpen &&
       (hasRoomForSideSheet.current ? placeIdsWithMemberSheet.has(memberSheetPlaceId) : isMemberOverlayOpen),
   );
 
@@ -151,6 +174,13 @@
   function toggleMemberSheet() {
     if (memberSheetPlaceId === null) {
       return;
+    }
+    if (messageSearch.isPanelOpen) {
+      // The members take the side sheet back from the results, which stay for the next search.
+      messageSearch.isPanelOpen = false;
+      if (isMemberSheetOpen) {
+        return;
+      }
     }
     if (!hasRoomForSideSheet.current) {
       isMemberOverlayOpen = !isMemberOverlayOpen;
@@ -203,6 +233,94 @@
     }
   }
 
+  /** Ctrl+F (Cmd+F), as on Discord: the search field, or the results sheet with its own field. */
+  function focusSearchWithShortcut(event: KeyboardEvent) {
+    const isShortcut =
+      (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "f";
+    if (!isShortcut || (isCoveredByModal() && !isSearchOverlayOpen) || isMemberOverlayOpen) {
+      return;
+    }
+    event.preventDefault();
+    if (!messageSearch.focusField()) {
+      void openSearchSheet();
+    }
+  }
+
+  async function openSearchSheet() {
+    messageSearch.isPanelOpen = true;
+    // After the drawer has put focus on itself.
+    await tick();
+    messageSearch.focusField();
+  }
+
+  /** The close button: the search ends and its field empties. */
+  async function closeSearch() {
+    messageSearch.clear();
+    await tick();
+    if (!messageSearch.focusField()) {
+      focusComposer();
+    }
+  }
+
+  /** "Go to a channel, server or person" at the end of the search suggestions. */
+  function openQuickSwitcherFromSearch() {
+    if (!hasRoomForSearchSheet.current) {
+      messageSearch.isPanelOpen = false;
+    }
+    isQuickSwitcherOpen = true;
+  }
+
+  /** Opens the result's channel at the message, loading older pages if needed (DESIGN.md 5.12). */
+  async function openSearchResult(hit: MessageSearchHit) {
+    const message = hit.message;
+    const scopeGuildId = messageSearch.scopeGuildId;
+    openingMessageId = message.id;
+    try {
+      if (client.selectedChannelId !== message.channel_id) {
+        client.selectGuild(scopeGuildId, message.channel_id);
+      }
+      if (client.selectedChannelId !== message.channel_id) {
+        // The conversation left the list, or the channel was hidden since the search.
+        await tick();
+        chatPane?.showNotice(scopeGuildId === null ? strings.search.conversationGone : strings.search.jumpMissing);
+        return;
+      }
+      const reach = await client.loadHistoryUntilMessage(message.channel_id, message.id);
+      if (reach === "left") {
+        return;
+      }
+      if (!hasRoomForSearchSheet.current) {
+        messageSearch.isPanelOpen = false;
+      }
+      await tick();
+      switch (reach) {
+        case "loaded":
+          await chatPane?.revealSearchResult(message.id);
+          break;
+        case "too-far":
+          chatPane?.showNotice(strings.search.jumpTooFar(placeNameOf(message.channel_id), MAXIMUM_MESSAGES_LOADED_TO_REACH_A_MESSAGE));
+          break;
+        case "missing":
+          chatPane?.showNotice(strings.search.jumpMissing);
+          break;
+        case "failed":
+          chatPane?.showNotice(strings.search.jumpFailed);
+          break;
+      }
+    } finally {
+      openingMessageId = null;
+    }
+  }
+
+  function placeNameOf(channelId: Snowflake): string {
+    const channel = client.selectedGuild?.channels.find((candidate) => candidate.id === channelId);
+    if (channel) {
+      return `#${channel.name}`;
+    }
+    const conversation = client.conversations.find((candidate) => candidate.id === channelId);
+    return conversation ? conversationDisplayName(conversation, client.user?.id ?? null) : strings.search.unknownChannel;
+  }
+
   /** After a dialog opened a conversation from the drawer's "+": the drawer goes, the composer focuses. */
   async function focusComposerAfterDialog() {
     isNavigationDrawerOpen = false;
@@ -253,7 +371,8 @@
       notificationDialog !== null ||
       isUserSettingsOpen ||
       isNavigationDrawerOpen ||
-      isQuickSwitcherOpen
+      isQuickSwitcherOpen ||
+      isSearchOverlayOpen
     );
   }
 </script>
@@ -262,8 +381,39 @@
   onkeydown={(event) => {
     toggleMemberSheetWithShortcut(event);
     toggleQuickSwitcherWithShortcut(event);
+    focusSearchWithShortcut(event);
   }}
 />
+
+{#snippet searchControl()}
+  {#if hasRoomForSearchSheet.current}
+    <MessageSearchField {client} search={messageSearch} placement="header" onopenquickswitcher={openQuickSwitcherFromSearch} />
+  {:else}
+    <IconButton
+      icon="magnifying-glass"
+      label={strings.search.openSearch}
+      aria-haspopup="dialog"
+      aria-expanded={messageSearch.isPanelOpen}
+      aria-keyshortcuts="Control+F"
+      class="size-(--mw-component-chat-header-button-size) text-(--mw-component-chat-header-icon) hover:bg-state-hover hover:text-text-normal"
+      iconClass="size-(--mw-component-chat-header-icon-size)"
+      onclick={() => void openSearchSheet()}
+    />
+  {/if}
+{/snippet}
+
+{#snippet searchPanel(isDocked: boolean)}
+  <MessageSearchPanel
+    {client}
+    search={messageSearch}
+    {isDocked}
+    isFullWindow={!isDocked && !hasRoomForNavigator.current}
+    {openingMessageId}
+    onopenresult={(hit) => void openSearchResult(hit)}
+    onclose={() => void closeSearch()}
+    onopenquickswitcher={openQuickSwitcherFromSearch}
+  />
+{/snippet}
 
 {#snippet navigator(isInDrawer: boolean)}
   <Navigator
@@ -297,7 +447,9 @@
       "flex min-h-0 flex-1",
       hasRoomForNavigator.current && [
         "gap-(--mw-size-sheet-inset) ps-(--mw-size-sheet-inset) pt-[calc(2*var(--mw-size-sheet-inset))] pb-(--mw-size-sheet-inset)",
-        isMemberSheetOpen && hasRoomForSideSheet.current ? "pe-(--mw-size-sheet-inset)" : "pe-[calc(2*var(--mw-size-sheet-inset))]",
+        (isMemberSheetOpen && hasRoomForSideSheet.current) || isSearchDocked
+          ? "pe-(--mw-size-sheet-inset)"
+          : "pe-[calc(2*var(--mw-size-sheet-inset))]",
       ],
     ]}
   >
@@ -319,6 +471,7 @@
           onopennavigation={() => (isNavigationDrawerOpen = true)}
           onaddserver={() => (openDialog = "add-server")}
           onopenedconversation={() => void tick().then(focusComposer)}
+          {searchControl}
         />
       {:else}
         <ChatPane
@@ -326,7 +479,7 @@
           {client}
           hasNavigationDrawer={!hasRoomForNavigator.current}
           onopennavigation={() => (isNavigationDrawerOpen = true)}
-          onopenquickswitcher={() => (isQuickSwitcherOpen = true)}
+          {searchControl}
           isMemberListOpen={isMemberSheetOpen}
           ontogglememberlist={toggleMemberSheet}
           oneditchannel={openChannelSettings}
@@ -335,7 +488,18 @@
       {/if}
     </main>
 
-    {#if group && isMemberSheetOpen}
+    {#if isSearchDocked}
+      {@render searchPanel(true)}
+    {:else if isSearchOverlayOpen}
+      <Drawer
+        label={strings.search.results}
+        side="end"
+        isFullWindow={!hasRoomForNavigator.current}
+        onclose={() => (messageSearch.isPanelOpen = false)}
+      >
+        {@render searchPanel(false)}
+      </Drawer>
+    {:else if group && isMemberSheetOpen}
       {#if hasRoomForSideSheet.current}
         {#key group.id}
           <GroupMembersSheet

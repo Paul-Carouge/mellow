@@ -56,6 +56,12 @@ export function fullTimestampLabel(unixMilliseconds: number, locale: string = wo
   return new Date(unixMilliseconds).toLocaleString(locale, { dateStyle: "full", timeStyle: "short" });
 }
 
+/** A `YYYY-MM-DD` day as the reader writes dates: "30 Oct 2026", « 30 oct. 2026 ». */
+export function calendarDayLabel(isoDay: string, locale: string = wordedFormattingLocale): string {
+  const [year = 0, month = 1, day = 1] = isoDay.split("-").map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString(locale, { dateStyle: "medium" });
+}
+
 /** First letter of up to three words, as Discord labels servers without an icon. */
 export function serverInitials(name: string): string {
   return name
