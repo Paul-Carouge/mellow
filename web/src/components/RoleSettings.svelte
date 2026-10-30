@@ -462,8 +462,11 @@
                         <p id="{id}-permission-{permission.key}" class="flex flex-wrap items-center gap-x-(--mw-component-roles-sensitive-gap) type-channel-name text-(--mw-component-roles-permission-label-text)">
                           {words.label}
                           {#if permission.isSensitive}
-                            <span class="inline-flex items-center gap-(--mw-component-roles-sensitive-gap) type-body-sm text-(--mw-component-roles-sensitive-text)">
-                              <Icon name="warning-circle" class="size-(--mw-component-roles-sensitive-icon-size)" />
+                            <!-- A tag, not loose red words: it names a kind of permission, so it reads as one. -->
+                            <span
+                              class="inline-flex h-(--mw-component-permission-badge-height) items-center gap-(--mw-component-permission-badge-gap) rounded-(--mw-component-permission-badge-radius) bg-(--mw-component-permission-badge-background) px-(--mw-component-permission-badge-padding-inline) type-category text-(--mw-component-permission-badge-text)"
+                            >
+                              <Icon name="shield-warning" class="size-(--mw-component-permission-badge-icon-size)" />
                               {strings.serverSettings.roles.sensitive}
                             </span>
                           {/if}

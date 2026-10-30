@@ -44,10 +44,12 @@
   let { client, guild, channel, channelPermissions, attention, onunsavedchange }: Props = $props();
 
   const STATE_ICONS: Record<OverwriteState, IconName> = { deny: "x", inherit: "minus", allow: "check" };
-  const STATE_ICON_COLORS: Record<OverwriteState, string> = {
-    deny: "text-(--mw-component-channel-settings-override-deny-icon)",
-    inherit: "text-(--mw-component-channel-settings-override-inherit-icon)",
-    allow: "text-(--mw-component-channel-settings-override-allow-icon)",
+  // A chosen Deny or Allow takes its meaning's wash, so a column of permissions reads at a glance;
+  // the icon and the word still say it without colour.
+  const CHOSEN_STATE_CLASSES: Record<OverwriteState, string> = {
+    deny: "bg-(--mw-component-channel-settings-override-deny-background-selected) text-(--mw-component-channel-settings-override-deny-text-selected)",
+    inherit: "bg-(--mw-component-channel-settings-override-background-selected) text-(--mw-component-channel-settings-override-text-selected)",
+    allow: "bg-(--mw-component-channel-settings-override-allow-background-selected) text-(--mw-component-channel-settings-override-allow-text-selected)",
   };
   /** Channel words where the server-wide ones would mislead ("View channels" → "View channel"). */
   const CHANNEL_WORDS: Partial<Record<PermissionKey, { label: string; description: string }>> =
@@ -346,9 +348,7 @@
                       <label
                         class={[
                           "flex h-(--mw-component-channel-settings-override-height) items-center gap-(--mw-component-channel-settings-override-icon-gap) px-(--mw-component-channel-settings-override-padding-inline) type-body-sm transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) has-[:focus-visible]:focus-ring-inset pointer-coarse:h-(--mw-size-hit-web-min)",
-                          isChosen
-                            ? "bg-(--mw-component-channel-settings-override-background-selected) font-semibold text-(--mw-component-channel-settings-override-text-selected)"
-                            : "text-(--mw-component-channel-settings-override-text)",
+                          isChosen ? ["font-semibold", CHOSEN_STATE_CLASSES[state]] : "text-(--mw-component-channel-settings-override-text)",
                           !isChosen && !isPermissionLocked && "cursor-pointer hover:bg-(--mw-component-channel-settings-override-background-hover) hover:text-(--mw-component-channel-settings-override-text-hover)",
                         ]}
                       >
@@ -363,7 +363,7 @@
                         />
                         <Icon
                           name={STATE_ICONS[state]}
-                          class={["size-(--mw-component-channel-settings-override-icon-size)", isChosen && STATE_ICON_COLORS[state]].filter(Boolean).join(" ")}
+                          class="size-(--mw-component-channel-settings-override-icon-size)"
                         />
                         {words.states[state]}
                       </label>

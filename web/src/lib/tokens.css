@@ -20,6 +20,7 @@
   --mw-color-border-strong: #8C828D;
   --mw-color-danger-fill: #DA373C;
   --mw-color-danger-fill-hover: #A12829;
+  --mw-color-danger-wash: #44252C;
   --mw-color-focus: #33B8FF;
   --mw-color-mascot-blush: #F5B3A1;
   --mw-color-mascot-body: #FFFAF3;
@@ -38,6 +39,7 @@
   --mw-color-neutral-fill: #554C56;
   --mw-color-neutral-fill-hover: #635A64;
   --mw-color-positive-fill: #23A55A;
+  --mw-color-positive-wash: #22312C;
   --mw-color-scrim: #080409B8;
   --mw-color-state-hover: #221B23;
   --mw-color-state-hover-message: #282129;
@@ -193,16 +195,17 @@
   --mw-component-channel-row-unread-pill-height: 0.5rem;
   --mw-component-channel-row-unread-pill-offset: 0.75rem;
   --mw-component-channel-row-unread-pill-width: 0.5rem;
-  --mw-component-channel-settings-override-allow-icon: #2DC770;
+  --mw-component-channel-settings-override-allow-background-selected: #22312C;
+  --mw-component-channel-settings-override-allow-text-selected: #2DC770;
   --mw-component-channel-settings-override-background-hover: #221B23;
   --mw-component-channel-settings-override-background-selected: #362E37;
   --mw-component-channel-settings-override-border: #8C828D;
   --mw-component-channel-settings-override-border-width: 0.0625rem;
-  --mw-component-channel-settings-override-deny-icon: #FA777C;
+  --mw-component-channel-settings-override-deny-background-selected: #44252C;
+  --mw-component-channel-settings-override-deny-text-selected: #FA777C;
   --mw-component-channel-settings-override-height: 2rem;
   --mw-component-channel-settings-override-icon-gap: 0.25rem;
   --mw-component-channel-settings-override-icon-size: 1rem;
-  --mw-component-channel-settings-override-inherit-icon: #F8F4F8;
   --mw-component-channel-settings-override-padding-inline: 0.5rem;
   --mw-component-channel-settings-override-radius: 0.5rem;
   --mw-component-channel-settings-override-text: #A99FAA;
@@ -591,6 +594,13 @@
   --mw-component-people-picker-row-radius: 0.5rem;
   --mw-component-people-picker-search-min-width: 7.5rem;
   --mw-component-people-picker-username-text: #A99FAA;
+  --mw-component-permission-badge-background: #44252C;
+  --mw-component-permission-badge-gap: 0.125rem;
+  --mw-component-permission-badge-height: 1.375rem;
+  --mw-component-permission-badge-icon-size: 0.875rem;
+  --mw-component-permission-badge-padding-inline: 0.25rem;
+  --mw-component-permission-badge-radius: 0.25rem;
+  --mw-component-permission-badge-text: #FA777C;
   --mw-component-pins-background: #2E272F;
   --mw-component-pins-border: #3C353E;
   --mw-component-pins-border-width: 0.0625rem;
@@ -738,8 +748,11 @@
   --mw-component-server-settings-chip-dot-size: 0.625rem;
   --mw-component-server-settings-chip-gap: 0.25rem;
   --mw-component-server-settings-chip-height: 1.5rem;
+  --mw-component-server-settings-chip-icon-size: 0.875rem;
+  --mw-component-server-settings-chip-owner-icon: #C5BEC6;
   --mw-component-server-settings-chip-padding-inline: 0.5rem;
   --mw-component-server-settings-chip-radius: 0.25rem;
+  --mw-component-server-settings-chip-role-tint: 0.18;
   --mw-component-server-settings-chip-text: #F8F4F8;
   --mw-component-server-settings-code-text: #F8F4F8;
   --mw-component-server-settings-row-divider: #3C353E;
@@ -1140,6 +1153,7 @@
     --mw-color-accent-indicator: #A84F1A;
     --mw-color-border-divider: #E3DDE4;
     --mw-color-border-quote: #CBC5CC;
+    --mw-color-danger-wash: #FBEBEC;
     --mw-color-focus: #005FCC;
     --mw-color-mascot-mark: #3F332D;
     --mw-color-mascot-shadow: #A4633826;
@@ -1150,6 +1164,7 @@
     --mw-color-neutral-fill: #695F6B;
     --mw-color-neutral-fill-hover: #594E5B;
     --mw-color-positive-fill: #1A7F45;
+    --mw-color-positive-wash: #EDF8F2;
     --mw-color-scrim: #1B131C8C;
     --mw-color-state-hover: #ECE6ED;
     --mw-color-state-hover-message: #FBF9FC;
@@ -1225,11 +1240,12 @@
     --mw-component-channel-row-text-selected: #221B23;
     --mw-component-channel-row-text-unread: #221B23;
     --mw-component-channel-row-unread-pill-color: #221B23;
-    --mw-component-channel-settings-override-allow-icon: #1A7F45;
+    --mw-component-channel-settings-override-allow-background-selected: #EDF8F2;
+    --mw-component-channel-settings-override-allow-text-selected: #1A7F45;
     --mw-component-channel-settings-override-background-hover: #ECE6ED;
     --mw-component-channel-settings-override-background-selected: #DFD8DF;
-    --mw-component-channel-settings-override-deny-icon: #C4262B;
-    --mw-component-channel-settings-override-inherit-icon: #221B23;
+    --mw-component-channel-settings-override-deny-background-selected: #FBEBEC;
+    --mw-component-channel-settings-override-deny-text-selected: #C4262B;
     --mw-component-channel-settings-override-text: #695F6B;
     --mw-component-channel-settings-override-text-hover: #392F3A;
     --mw-component-channel-settings-override-text-selected: #221B23;
@@ -1385,6 +1401,8 @@
     --mw-component-people-picker-name-text: #221B23;
     --mw-component-people-picker-row-background-hover: #ECE6ED;
     --mw-component-people-picker-username-text: #695F6B;
+    --mw-component-permission-badge-background: #FBEBEC;
+    --mw-component-permission-badge-text: #C4262B;
     --mw-component-pins-background: #FFFFFF;
     --mw-component-pins-border: #E3DDE4;
     --mw-component-pins-empty-icon: #695F6B;
@@ -1447,6 +1465,7 @@
     --mw-component-server-preview-border: #E3DDE4;
     --mw-component-server-preview-placeholder-text: #695F6B;
     --mw-component-server-settings-chip-background: #DFD8DF;
+    --mw-component-server-settings-chip-owner-icon: #594E5B;
     --mw-component-server-settings-chip-text: #221B23;
     --mw-component-server-settings-code-text: #221B23;
     --mw-component-server-settings-row-divider: #E3DDE4;
@@ -1532,6 +1551,7 @@
   --mw-color-accent-indicator: #A84F1A;
   --mw-color-border-divider: #E3DDE4;
   --mw-color-border-quote: #CBC5CC;
+  --mw-color-danger-wash: #FBEBEC;
   --mw-color-focus: #005FCC;
   --mw-color-mascot-mark: #3F332D;
   --mw-color-mascot-shadow: #A4633826;
@@ -1542,6 +1562,7 @@
   --mw-color-neutral-fill: #695F6B;
   --mw-color-neutral-fill-hover: #594E5B;
   --mw-color-positive-fill: #1A7F45;
+  --mw-color-positive-wash: #EDF8F2;
   --mw-color-scrim: #1B131C8C;
   --mw-color-state-hover: #ECE6ED;
   --mw-color-state-hover-message: #FBF9FC;
@@ -1617,11 +1638,12 @@
   --mw-component-channel-row-text-selected: #221B23;
   --mw-component-channel-row-text-unread: #221B23;
   --mw-component-channel-row-unread-pill-color: #221B23;
-  --mw-component-channel-settings-override-allow-icon: #1A7F45;
+  --mw-component-channel-settings-override-allow-background-selected: #EDF8F2;
+  --mw-component-channel-settings-override-allow-text-selected: #1A7F45;
   --mw-component-channel-settings-override-background-hover: #ECE6ED;
   --mw-component-channel-settings-override-background-selected: #DFD8DF;
-  --mw-component-channel-settings-override-deny-icon: #C4262B;
-  --mw-component-channel-settings-override-inherit-icon: #221B23;
+  --mw-component-channel-settings-override-deny-background-selected: #FBEBEC;
+  --mw-component-channel-settings-override-deny-text-selected: #C4262B;
   --mw-component-channel-settings-override-text: #695F6B;
   --mw-component-channel-settings-override-text-hover: #392F3A;
   --mw-component-channel-settings-override-text-selected: #221B23;
@@ -1777,6 +1799,8 @@
   --mw-component-people-picker-name-text: #221B23;
   --mw-component-people-picker-row-background-hover: #ECE6ED;
   --mw-component-people-picker-username-text: #695F6B;
+  --mw-component-permission-badge-background: #FBEBEC;
+  --mw-component-permission-badge-text: #C4262B;
   --mw-component-pins-background: #FFFFFF;
   --mw-component-pins-border: #E3DDE4;
   --mw-component-pins-empty-icon: #695F6B;
@@ -1839,6 +1863,7 @@
   --mw-component-server-preview-border: #E3DDE4;
   --mw-component-server-preview-placeholder-text: #695F6B;
   --mw-component-server-settings-chip-background: #DFD8DF;
+  --mw-component-server-settings-chip-owner-icon: #594E5B;
   --mw-component-server-settings-chip-text: #221B23;
   --mw-component-server-settings-code-text: #221B23;
   --mw-component-server-settings-row-divider: #E3DDE4;
@@ -1946,6 +1971,7 @@
   --color-border-strong: var(--mw-color-border-strong);
   --color-danger-fill: var(--mw-color-danger-fill);
   --color-danger-fill-hover: var(--mw-color-danger-fill-hover);
+  --color-danger-wash: var(--mw-color-danger-wash);
   --color-focus: var(--mw-color-focus);
   --color-mascot-blush: var(--mw-color-mascot-blush);
   --color-mascot-body: var(--mw-color-mascot-body);
@@ -1964,6 +1990,7 @@
   --color-neutral-fill: var(--mw-color-neutral-fill);
   --color-neutral-fill-hover: var(--mw-color-neutral-fill-hover);
   --color-positive-fill: var(--mw-color-positive-fill);
+  --color-positive-wash: var(--mw-color-positive-wash);
   --color-scrim: var(--mw-color-scrim);
   --color-state-hover: var(--mw-color-state-hover);
   --color-state-hover-message: var(--mw-color-state-hover-message);
