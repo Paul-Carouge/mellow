@@ -1104,7 +1104,8 @@ export class MellowClient {
    */
   private isUnreadMentionOfCurrentUser(message: Message): boolean {
     const userId = this.user?.id;
-    if (!userId || message.author.id === userId) {
+    // The server leaves blocked authors out of its counts too (ADR-0025).
+    if (!userId || message.author.id === userId || this.isBlocked(message.author.id)) {
       return false;
     }
     const lastRead = this.lastReadByChannel.get(message.channel_id);

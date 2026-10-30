@@ -692,6 +692,21 @@ describe("unread state and mention counts", () => {
     expect(client.mentionCount(GENERAL)).toBe(0);
   });
 
+  it("never count a message from a blocked author", async () => {
+    const client = await clientWithUnreadRules();
+    client.applyEvent(
+      {
+        t: "RELATIONSHIP_ADD",
+        data: { user: { id: OTHER, username: "other", display_name: "" }, kind: "blocked", since_unix_milliseconds: 0 },
+      },
+      0,
+    );
+    client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("340") }, 0);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: message("420", CONVERSATION) }, 0);
+    expect(client.mentionCount(RULES)).toBe(3);
+    expect(client.mentionCount(CONVERSATION)).toBe(2);
+  });
+
   it("count every message from someone else in a conversation", async () => {
     const client = await clientWithUnreadRules();
     client.applyEvent({ t: "MESSAGE_CREATE", data: message("410", CONVERSATION) }, 0);
