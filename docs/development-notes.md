@@ -134,4 +134,5 @@ A local hook refuses `git commit` when fmt or clippy fail on the touched crate: 
 - **Vite proxy and ports**: the dev proxy rewrites `Origin` for port 5173 only; on another port every `POST` answers 401 (the server's origin check).
 - **`cargo xtask tokens` in a pipe**: `cargo xtask tokens | head -1` closes the pipe after the contrast line and kills the generator before it writes `tokens.css` and `tokens.slint`, silently; run it without a pipe (or `| tail`), then `cargo xtask tokens --check`.
 - **Headless clipboard**: `navigator.clipboard.writeText` fails with "Document is not focused" in headless Chrome; send `Emulation.setFocusEmulationEnabled` and grant `clipboardReadWrite` with `Browser.grantPermissions` to test Copy buttons.
+- **Coarse pointer in headless Chrome**: `Emulation.setDeviceMetricsOverride` with `mobile: true` does not make `(pointer: coarse)` match, so the 44 px touch sizes never show; send `Emulation.setTouchEmulationEnabled` with `enabled: true` as well.
 - **Drags under CDP**: synthetic pointer drags in headless Chrome must be followed on `window`, not on the dragged row, or `pointermove` stops at the row's edge.
