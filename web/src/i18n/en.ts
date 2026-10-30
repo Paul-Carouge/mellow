@@ -379,7 +379,8 @@ export const en = {
     recent: "Recently used",
     results: "Search results",
     noResults: (query: string) => `No emoji for “${query}”.`,
-    help: "Arrows to move, Enter to choose, Esc to close.",
+    help: "Arrows to move, Page Up and Page Down to change category, Enter to choose, Esc to close.",
+    categoryBar: "Categories",
     categories: {
       people: "People",
       nature: "Nature",

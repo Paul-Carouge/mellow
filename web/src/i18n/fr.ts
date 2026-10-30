@@ -373,7 +373,8 @@ export const fr: Catalogue = {
     recent: "Utilisés récemment",
     results: "Résultats de la recherche",
     noResults: (query) => `Aucun emoji pour «${NO_BREAK_SPACE}${query}${NO_BREAK_SPACE}».`,
-    help: "Flèches pour te déplacer, Entrée pour choisir, Échap pour fermer.",
+    help: "Flèches pour te déplacer, Page précédente et Page suivante pour changer de catégorie, Entrée pour choisir, Échap pour fermer.",
+    categoryBar: "Catégories",
     categories: {
       people: "Personnes",
       nature: "Nature",
