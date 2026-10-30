@@ -18,6 +18,11 @@ const WRITER_CONNECTION_COUNT: u32 = 1;
 /// default of 10, probably because 11 connection threads then compete for 8 cores.
 const READER_CONNECTION_COUNT: u32 = 4;
 const DATABASE_KEY_LENGTH_BYTES: usize = 32;
+/// 32 MiB of page cache per connection (negative: KiB), instead of SQLite's 2 MiB. SQLCipher
+/// decrypts every page read from disk; with the default cache a message search on 100 000
+/// messages took ten times longer re-decrypting the same pages (ADR-0029 measurements). Only
+/// pages actually read take memory.
+const PAGE_CACHE_SIZE_PRAGMA: &str = "-32768";
 /// `SQLITE_NOTADB`: what SQLCipher reports when the key does not decrypt the file.
 const SQLITE_NOT_A_DATABASE_ERROR_CODE: &str = "26";
 
@@ -136,6 +141,7 @@ pub async fn open_encrypted_database(
         // Deleted messages are overwritten on disk instead of lingering in free pages, which the
         // file, backups and anyone holding the key could otherwise recover.
         .pragma("secure_delete", "ON")
+        .pragma("cache_size", PAGE_CACHE_SIZE_PRAGMA)
         .busy_timeout(BUSY_TIMEOUT);
     // The writer opens first, so the file is in WAL mode before any reader connects.
     let writer = SqlitePoolOptions::new()
@@ -262,7 +268,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_connection_uses_wal_secure_delete_and_foreign_keys() {
+    async fn every_connection_uses_wal_secure_delete_foreign_keys_and_a_large_page_cache() {
         let directory = tempfile::tempdir().unwrap();
         let database =
             open_encrypted_database(&directory.path().join("mellow.db"), &key_filled_with(3))
@@ -276,6 +282,10 @@ mod tests {
             assert_eq!(journal_mode, "wal");
             assert_eq!(integer_pragma(pool, "PRAGMA secure_delete").await, 1);
             assert_eq!(integer_pragma(pool, "PRAGMA foreign_keys").await, 1);
+            assert_eq!(
+                integer_pragma(pool, "PRAGMA cache_size").await.to_string(),
+                PAGE_CACHE_SIZE_PRAGMA
+            );
         }
         database.close().await;
     }
