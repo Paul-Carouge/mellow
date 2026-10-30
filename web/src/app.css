@@ -135,6 +135,13 @@ body {
   line-height: var(--mw-type-code-line-height);
   letter-spacing: var(--mw-type-code-letter-spacing);
 }
+@utility type-invite-code {
+  font-family: var(--mw-type-invite-code-font-family);
+  font-size: var(--mw-type-invite-code-font-size);
+  font-weight: var(--mw-type-invite-code-font-weight);
+  line-height: var(--mw-type-invite-code-line-height);
+  letter-spacing: var(--mw-type-invite-code-letter-spacing);
+}
 @utility type-message-subtext {
   font-family: var(--mw-type-message-subtext-font-family);
   font-size: var(--mw-type-message-subtext-font-size);
