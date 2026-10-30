@@ -31,6 +31,8 @@ import {
   type Invite,
   type Member,
   type Message,
+  type MessageSearchQuery,
+  type MessageSearchResults,
   type PermissionBits,
   type PermissionOverwrite,
   type Presence,
@@ -1318,6 +1320,20 @@ export class MellowClient {
   pinnedMessages(channelId: Snowflake): Message[] {
     const pins = this.pinsByChannel.get(channelId);
     return pins?.status === "loaded" ? pins.messages : [];
+  }
+
+  /**
+   * Searches a server's channels the user can read, or with `guildId` null their conversations
+   * (ADR-0029). Day filters use this browser's time zone. Failures are thrown for the caller to
+   * describe (`RATE_LIMITED` when typed too fast, `VALIDATION_FAILED` for an oversized query).
+   */
+  searchMessages(
+    guildId: Snowflake | null,
+    query: Omit<MessageSearchQuery, "utc_offset_minutes">,
+  ): Promise<MessageSearchResults> {
+    // getTimezoneOffset counts minutes west of UTC; the instance wants minutes east. `|| 0` turns -0 into 0.
+    const utcOffsetMinutes = -new Date().getTimezoneOffset() || 0;
+    return this.rest.searchMessages(guildId, { ...query, utc_offset_minutes: utcOffsetMinutes });
   }
 
   /** Asks the instance again unless the pins are loaded or on their way (`force` for Try again). */

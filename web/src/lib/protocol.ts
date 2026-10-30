@@ -290,6 +290,59 @@ export interface ChannelUnread {
 /** The server stops counting here: show "99+" from 100. */
 export const MAXIMUM_COUNTED_UNREAD_MENTIONS = 100;
 
+/** Results per page at most, and by default (ADR-0029). */
+export const MAXIMUM_SEARCH_RESULTS_PER_PAGE = 25;
+/** Pages reach this many results at most (`offset + limit`): past it, refine the query. */
+export const MAXIMUM_REACHABLE_SEARCH_RESULTS = 1_000;
+/** `total_count` stops here; with `total_count_is_lower_bound`, show "1 000+". Facets count the newest this many. */
+export const MAXIMUM_COUNTED_SEARCH_MATCHES = 1_000;
+/** Longer queries are refused (`VALIDATION_FAILED`), as are more than 16 words and filters. */
+export const MAXIMUM_SEARCH_QUERY_LENGTH = 256;
+export const MAXIMUM_SEARCH_QUERY_PARTS = 16;
+
+/** `relevance` (the default) ranks best matches first; `newest` ignores relevance. */
+export type MessageSearchSort = "relevance" | "newest";
+
+/**
+ * Query of `GET /guilds/{id}/messages/search` and `GET /users/@me/messages/search`. `q` is the
+ * query language: words (all must match, each also as a word prefix), `"exact phrase"`,
+ * `-excluded`, `prefix*`, and the filters `from:username`, `mentions:username`, `in:channel` (an
+ * id, or in a server a name with or without `#`), `has:file|image|link|pinned`, and
+ * `before:`/`after:`/`during:YYYY-MM-DD`. Unknown filters are searched as words; case and
+ * accents are ignored.
+ */
+export interface MessageSearchQuery {
+  q: string;
+  sort?: MessageSearchSort;
+  offset?: number;
+  limit?: number;
+  /** Minutes east of UTC, so day filters are the user's days. */
+  utc_offset_minutes?: number;
+}
+
+/** A span of `Message.content` in UTF-16 code units: `content.slice(start, end)`. */
+export interface HighlightRange {
+  start: number;
+  end: number;
+}
+
+export interface MessageSearchHit {
+  /** As in history pages; blocked authors' messages are included, to fold like in the channel. */
+  message: Message;
+  /** Matched words, in order and never overlapping; empty for a query of filters only. */
+  highlights: HighlightRange[];
+}
+
+export interface MessageSearchResults {
+  hits: MessageSearchHit[];
+  total_count: number;
+  total_count_is_lower_bound: boolean;
+  /** Matches per channel or conversation, largest first, at most 10. */
+  channel_facets: { channel_id: Snowflake; count: number }[];
+  /** Matches per author, largest first, at most 10. */
+  author_facets: { author: PublicUser; count: number }[];
+}
+
 export interface DirectMessageChannel {
   id: Snowflake;
   recipients: PublicUser[];

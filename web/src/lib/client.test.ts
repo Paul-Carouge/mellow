@@ -1195,3 +1195,23 @@ describe("Custom emoji", () => {
     expect(client.emojisOf(GUILD)).toEqual([party]);
   });
 });
+
+describe("Message search", () => {
+  it("passes the query on with this browser's offset east of UTC", async () => {
+    const calls: unknown[][] = [];
+    const results = { hits: [], total_count: 0, total_count_is_lower_bound: false, channel_facets: [], author_facets: [] };
+    const client = new MellowClient(
+      fakeRest({
+        searchMessages: (...parameters: unknown[]) => {
+          calls.push(parameters);
+          return Promise.resolve(results);
+        },
+      }),
+    );
+    const answer = await client.searchMessages(GUILD, { q: "pizza", sort: "newest" });
+    expect(answer).toBe(results);
+    expect(calls).toEqual([
+      [GUILD, { q: "pizza", sort: "newest", utc_offset_minutes: -new Date().getTimezoneOffset() || 0 }],
+    ]);
+  });
+});

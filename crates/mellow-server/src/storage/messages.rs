@@ -255,6 +255,24 @@ pub(crate) async fn find_message_in_channel(
     row.map(message_from_row).transpose()
 }
 
+/// The messages of `message_ids` that still exist, in no particular order.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn find_messages_by_ids(
+    database: &Database,
+    message_ids: &[Snowflake],
+) -> Result<Vec<StoredMessage>, MessageStorageError> {
+    let rows: Vec<MessageRow> = sqlx::query_as(concat!(
+        select_message_columns!(),
+        "WHERE messages.id IN (SELECT value FROM json_each(?))"
+    ))
+    .bind(json_array_of_ids(message_ids))
+    .fetch_all(database.readers())
+    .await?;
+    rows.into_iter().map(message_from_row).collect()
+}
+
 /// The message `author_id` already sent to `channel_id` with this nonce, if any.
 ///
 /// # Errors

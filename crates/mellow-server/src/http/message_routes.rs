@@ -8,8 +8,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use mellow_protocol::{
     AcknowledgeRequest, CreateGroupConversationRequest, DirectMessageChannel, EditMessageRequest,
-    Message, MessageHistoryQuery, OpenDirectMessageRequest, PublicUser, ReactionUsersQuery,
-    ReadState, SendMessageRequest, Snowflake, UpdateGroupConversationRequest,
+    Message, MessageHistoryQuery, MessageSearchQuery, MessageSearchResults,
+    OpenDirectMessageRequest, PublicUser, ReactionUsersQuery, ReadState, SendMessageRequest,
+    Snowflake, UpdateGroupConversationRequest,
 };
 
 use crate::domain::clock::now_unix_milliseconds;
@@ -19,9 +20,10 @@ use crate::http::api_error::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::http::authentication::AuthenticatedUser;
 use crate::http::rate_limit::{
     DIRECT_MESSAGE_OPENS_PER_USER, DIRECT_MESSAGE_OPENS_PER_USER_PER_DAY,
-    GROUP_CONVERSATION_WRITES_PER_USER, MESSAGE_WRITES_PER_USER, MESSAGE_WRITES_PER_USER_PER_HOUR,
-    MESSAGES_PER_CHANNEL, REACTION_WRITES_PER_CHANNEL, REACTION_WRITES_PER_USER,
-    REACTION_WRITES_PER_USER_PER_HOUR, READ_STATE_WRITES_PER_USER, TYPING_INDICATORS_PER_USER,
+    GROUP_CONVERSATION_WRITES_PER_USER, MESSAGE_SEARCHES_PER_USER, MESSAGE_WRITES_PER_USER,
+    MESSAGE_WRITES_PER_USER_PER_HOUR, MESSAGES_PER_CHANNEL, REACTION_WRITES_PER_CHANNEL,
+    REACTION_WRITES_PER_USER, REACTION_WRITES_PER_USER_PER_HOUR, READ_STATE_WRITES_PER_USER,
+    TYPING_INDICATORS_PER_USER,
 };
 
 /// Opening a conversation and creating a group share these budgets (burst and daily).
@@ -367,6 +369,49 @@ pub(crate) async fn list_messages(
         state
             .messages
             .list_messages(user.id, channel_id, query)
+            .await?,
+    ))
+}
+
+fn limit_message_searches(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
+    if state.rate_limiter.record_event(
+        &format!("message-search:{user_id}"),
+        MESSAGE_SEARCHES_PER_USER,
+        Instant::now(),
+    ) {
+        Ok(())
+    } else {
+        Err(ApiError::rate_limited())
+    }
+}
+
+/// `GET /api/v1/guilds/{guild_id}/messages/search` (ADR-0029).
+pub(crate) async fn search_guild_messages(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(guild_id): ApiPath<Snowflake>,
+    ApiQuery(query): ApiQuery<MessageSearchQuery>,
+) -> Result<Json<MessageSearchResults>, ApiError> {
+    limit_message_searches(&state, user.id)?;
+    Ok(Json(
+        state
+            .messages
+            .search_guild_messages(user.id, guild_id, &query)
+            .await?,
+    ))
+}
+
+/// `GET /api/v1/users/@me/messages/search`: the requester's conversations and groups.
+pub(crate) async fn search_my_conversation_messages(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiQuery(query): ApiQuery<MessageSearchQuery>,
+) -> Result<Json<MessageSearchResults>, ApiError> {
+    limit_message_searches(&state, user.id)?;
+    Ok(Json(
+        state
+            .messages
+            .search_my_conversation_messages(user.id, &query)
             .await?,
     ))
 }

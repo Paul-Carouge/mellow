@@ -55,6 +55,8 @@ pub enum MessageRuleViolation {
     CustomReactionEmoji,
     #[error("pages of reacting users hold 1 to {MAXIMUM_REACTING_USERS_PAGE_SIZE} users")]
     ReactingUsersQuery,
+    #[error(transparent)]
+    SearchQuery(#[from] crate::domain::search_query::SearchQueryViolation),
 }
 
 pub const MAXIMUM_ATTACHMENTS_PER_MESSAGE: usize = 10;

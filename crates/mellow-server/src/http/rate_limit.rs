@@ -178,6 +178,12 @@ pub(crate) const ATTACHMENT_UPLOADS_PER_USER_PER_HOUR: RateLimit = RateLimit {
     window: Duration::from_hours(1),
 };
 
+/// Message searches per user: each scans the index, so type-ahead must be debounced (ADR-0029).
+pub(crate) const MESSAGE_SEARCHES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 30,
+    window: Duration::from_secs(30),
+};
+
 /// Typing indicators per user; clients send one every few seconds while typing.
 pub(crate) const TYPING_INDICATORS_PER_USER: RateLimit = RateLimit {
     maximum_events: 10,

@@ -20,6 +20,8 @@ import {
   type Invite,
   type Member,
   type Message,
+  type MessageSearchQuery,
+  type MessageSearchResults,
   type PermissionBits,
   type PermissionOverwrite,
   type PublicUser,
@@ -436,6 +438,19 @@ export class RestClient {
   listReactingUsers(channelId: Snowflake, messageId: Snowflake, emoji: string): Promise<PublicUser[]> {
     const query = new URLSearchParams({ limit: String(REACTING_USERS_PAGE_SIZE) });
     return this.request("GET", `${reactionsPath(channelId, messageId, emoji)}?${query}`);
+  }
+
+  /** Searches a server's channels the user can read, or with `guildId` null their conversations. */
+  searchMessages(guildId: Snowflake | null, query: MessageSearchQuery): Promise<MessageSearchResults> {
+    const parameters = new URLSearchParams({ q: query.q });
+    for (const key of ["sort", "offset", "limit", "utc_offset_minutes"] as const) {
+      const value = query[key];
+      if (value !== undefined) {
+        parameters.set(key, String(value));
+      }
+    }
+    const path = guildId === null ? "users/@me/messages/search" : `guilds/${guildId}/messages/search`;
+    return this.request("GET", `${path}?${parameters}`);
   }
 
   /** The most recently pinned first. */

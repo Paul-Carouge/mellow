@@ -6,6 +6,7 @@ mod direct_messages;
 mod group_conversations;
 mod pins;
 mod reactions;
+mod search;
 
 pub(crate) use reactions::ReactionRemoval;
 

@@ -254,6 +254,14 @@ fn message_router(maximum_attachment_bytes: u64) -> Router<AppState> {
             put(message_routes::acknowledge_read_state),
         )
         .route(
+            "/api/v1/guilds/{guild_id}/messages/search",
+            get(message_routes::search_guild_messages),
+        )
+        .route(
+            "/api/v1/users/@me/messages/search",
+            get(message_routes::search_my_conversation_messages),
+        )
+        .route(
             "/api/v1/users/@me/read-states",
             get(message_routes::list_my_read_states),
         )
@@ -3153,6 +3161,66 @@ pub(crate) mod tests {
         assert!(pins[0].pinned);
         assert_eq!(unpinned, StatusCode::NO_CONTENT);
         assert_eq!(pins_after, Vec::new());
+    }
+
+    #[tokio::test]
+    async fn message_search_over_http() {
+        use mellow_protocol::MessageSearchResults;
+
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let (_, body) = send(
+            &state,
+            authorized("GET", "/api/v1/users/@me/guilds", &owner, None),
+        )
+        .await;
+        let guild_id = json::<Vec<mellow_protocol::GuildSummary>>(&body)[0].id;
+        send(
+            &state,
+            authorized(
+                "POST",
+                &format!("/api/v1/channels/{general}/messages"),
+                &owner,
+                Some(serde_json::json!({"content": "Crème brûlée tonight?"})),
+            ),
+        )
+        .await;
+        let search = |query: &str| {
+            authorized(
+                "GET",
+                &format!("/api/v1/guilds/{guild_id}/messages/search?{query}"),
+                &owner,
+                None,
+            )
+        };
+        let (status, body) = send(&state, search("q=creme%20-pizza&sort=newest&limit=5")).await;
+        let found: MessageSearchResults = json(&body);
+        let unknown_parameter = send(&state, search("q=creme&page=2")).await.0;
+        let (_, body) = send(
+            &state,
+            authorized(
+                "GET",
+                "/api/v1/users/@me/messages/search?q=creme",
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        let in_conversations: MessageSearchResults = json(&body);
+        for _ in 2..rate_limit::MESSAGE_SEARCHES_PER_USER.maximum_events {
+            send(&state, search("q=creme")).await;
+        }
+        let limited = send(&state, search("q=creme")).await.0;
+        database.close().await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(found.total_count, 1);
+        assert_eq!(found.hits[0].message.content, "Crème brûlée tonight?");
+        assert_eq!(found.hits[0].highlights.len(), 1);
+        assert_eq!(unknown_parameter, StatusCode::BAD_REQUEST);
+        assert_eq!(in_conversations.total_count, 0);
+        assert_eq!(limited, StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]

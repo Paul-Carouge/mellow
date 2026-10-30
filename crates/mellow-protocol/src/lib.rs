@@ -9,6 +9,7 @@ mod health;
 mod messages;
 mod permissions;
 mod relationships;
+mod search;
 mod snowflake;
 
 pub use accounts::{
@@ -45,6 +46,12 @@ pub use permissions::{
 pub use relationships::{
     MAXIMUM_RELATIONSHIPS_PER_USER, Relationship, RelationshipKind, SendFriendRequest,
     SetRelationshipKind, SetRelationshipRequest,
+};
+pub use search::{
+    AuthorSearchFacet, ChannelSearchFacet, HighlightRange, MAXIMUM_COUNTED_SEARCH_MATCHES,
+    MAXIMUM_REACHABLE_SEARCH_RESULTS, MAXIMUM_SEARCH_FACETS, MAXIMUM_SEARCH_QUERY_LENGTH,
+    MAXIMUM_SEARCH_QUERY_PARTS, MAXIMUM_SEARCH_RESULTS_PER_PAGE, MessageSearchHit,
+    MessageSearchQuery, MessageSearchResults, MessageSearchSort,
 };
 pub use snowflake::{
     MAXIMUM_SEQUENCE, MAXIMUM_TIMESTAMP_MILLISECONDS_SINCE_EPOCH, MELLOW_EPOCH_UNIX_MILLISECONDS,

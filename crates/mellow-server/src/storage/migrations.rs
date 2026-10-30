@@ -1246,6 +1246,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn existing_messages_are_indexed_for_search_and_later_writes_follow() {
+        const LAST_VERSION_WITHOUT_SEARCH: i64 = 20;
+        const REALISTIC_MESSAGE_COUNT: usize = 3_000;
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_SEARCH, database.writer())
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0), (21, 10, 'text', 'random', 1); \
+             INSERT INTO messages (id, channel_id, author_id, content, edited_at_unix_milliseconds, \
+             pinned_at_unix_milliseconds) VALUES (5, 20, 1, 'Crème BRÛLÉE au café', 9, 9);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        crate::storage::search::realistic_messages::insert_messages(
+            database.writer(),
+            100,
+            REALISTIC_MESSAGE_COUNT,
+            &[20, 21],
+            &[1, 2],
+        )
+        .await;
+
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let writer = database.writer();
+        let matches = |expression: &'static str| async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?",
+            )
+            .bind(expression)
+            .fetch_one(writer)
+            .await
+            .unwrap()
+        };
+        let unaccented = matches("creme AND brulee AND cafe").await;
+        let indexed_rare_word = matches("xylophone").await;
+        let stored_rare_word: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM messages WHERE ' ' || content || ' ' LIKE '% xylophone %'",
+        )
+        .fetch_one(writer)
+        .await
+        .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO messages (id, channel_id, author_id, content) VALUES (6, 20, 2, 'zebra'); \
+             UPDATE messages SET content = 'okapi' WHERE id = 5; \
+             UPDATE messages SET pinned_at_unix_milliseconds = NULL WHERE id = 6;",
+        )
+        .execute(writer)
+        .await
+        .unwrap();
+        let after_writes = (
+            matches("zebra").await,
+            matches("okapi").await,
+            matches("creme AND brulee AND cafe").await,
+        );
+        let integrity = sqlx::query(
+            "INSERT INTO messages_fts (messages_fts, rank) VALUES ('integrity-check', 1)",
+        )
+        .execute(writer)
+        .await;
+        database.close().await;
+
+        assert_eq!(unaccented, 1);
+        assert!(indexed_rare_word > 0);
+        assert_eq!(indexed_rare_word, stored_rare_word);
+        assert_eq!(after_writes, (1, 1, 0));
+        assert!(integrity.is_ok(), "{integrity:?}");
+    }
+
+    #[tokio::test]
     async fn a_database_from_a_newer_binary_is_refused_even_with_nothing_pending() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())

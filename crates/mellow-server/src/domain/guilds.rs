@@ -655,6 +655,34 @@ impl Guilds {
         Ok((channel, permissions))
     }
 
+    /// The text channels of the guild where `user_id` may view and read history (overwrites
+    /// applied), for search; `NotFound` for non-members.
+    pub(crate) async fn channels_with_readable_history(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+    ) -> Result<Vec<StoredChannel>, GuildError> {
+        let membership = guild_storage::find_membership(&self.database, guild_id, user_id)
+            .await?
+            .ok_or(GuildError::NotFound)?;
+        let readable = Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY;
+        Ok(guild_storage::list_guild_channels(&self.database, guild_id)
+            .await?
+            .into_iter()
+            .filter(|channel| {
+                channel.kind == ChannelKind::Text
+                    && channel_permissions(
+                        user_id,
+                        membership.owner_id,
+                        guild_id,
+                        &membership.member_roles,
+                        &channel.permission_overwrites,
+                    )
+                    .contains(readable)
+            })
+            .collect())
+    }
+
     /// Who can view `channel` as stored now: its overwrites are read again, so a change committed
     /// since the caller's check is taken into account. Callers compute it before writing, so a
     /// failure here leaves nothing half done (ADR-0015).
