@@ -38,6 +38,7 @@ interface SearchRequest {
   query: string;
   sort: MessageSearchSort;
   offset: number;
+  limit: number;
 }
 
 export class MessageSearch {
@@ -61,6 +62,13 @@ export class MessageSearch {
   isPanelOpen = $state(false);
 
   private generation = 0;
+  /**
+   * Where the next page starts on the instance: every hit received, repeats included, so a
+   * message shown twice (edited between pages) never shifts the pages. Displayed hits drop repeats.
+   */
+  private nextOffset = 0;
+  /** An empty page came back: the instance has nothing more, whatever the total said. */
+  private hasNoMorePages = false;
   private isRequestInFlight = false;
   private waitingRequest: SearchRequest | null = null;
   private typingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -77,13 +85,14 @@ export class MessageSearch {
     return (
       this.status.kind === "loaded" &&
       this.loadMoreError === null &&
-      this.hits.length < Math.min(this.totalCount, MAXIMUM_REACHABLE_SEARCH_RESULTS)
+      !this.hasNoMorePages &&
+      this.nextOffset < Math.min(this.totalCount, MAXIMUM_REACHABLE_SEARCH_RESULTS)
     );
   }
 
   /** Every result reachable is shown, but more matched: refining is the way further. */
   get hasReachedLimit(): boolean {
-    return this.status.kind === "loaded" && this.hits.length >= MAXIMUM_REACHABLE_SEARCH_RESULTS && this.totalCount > this.hits.length;
+    return this.status.kind === "loaded" && this.nextOffset >= MAXIMUM_REACHABLE_SEARCH_RESULTS && this.isTotalLowerBound;
   }
 
   /** Another server (or Home) starts with an empty search. */
@@ -172,7 +181,7 @@ export class MessageSearch {
       return;
     }
     this.isLoadingMore = true;
-    this.send(this.requestFor(this.hits.length));
+    this.send(this.requestFor(this.nextOffset));
   }
 
   /** Try again after a failure: the whole search, or only the page that failed. */
@@ -207,6 +216,8 @@ export class MessageSearch {
     this.authorFacets = [];
     this.isLoadingMore = false;
     this.loadMoreError = null;
+    this.nextOffset = 0;
+    this.hasNoMorePages = false;
   }
 
   private requestFor(offset: number): SearchRequest {
@@ -216,6 +227,8 @@ export class MessageSearch {
       query: this.query,
       sort: this.effectiveSort,
       offset,
+      // Never past the 1 000 the instance reaches (it refuses offset + limit beyond).
+      limit: Math.min(MAXIMUM_SEARCH_RESULTS_PER_PAGE, MAXIMUM_REACHABLE_SEARCH_RESULTS - offset),
     };
   }
 
@@ -237,7 +250,7 @@ export class MessageSearch {
       q: request.query,
       sort: request.sort,
       offset: request.offset,
-      limit: MAXIMUM_SEARCH_RESULTS_PER_PAGE,
+      limit: request.limit,
     })
       .then(
         (results) => this.applyResults(request, results),
@@ -257,6 +270,8 @@ export class MessageSearch {
     if (request.generation !== this.generation) {
       return;
     }
+    this.nextOffset = request.offset + results.hits.length;
+    this.hasNoMorePages = results.hits.length === 0;
     if (request.offset === 0) {
       this.hits = results.hits;
       this.channelFacets = results.channel_facets;

@@ -92,25 +92,40 @@ describe("MessageSearch", () => {
     ]);
   });
 
-  it("loads more pages up to the total, skipping repeats, and stops at 1 000", async () => {
+  it("pages by what the instance sent, showing a repeated message once", async () => {
     const instance = fakeInstance();
     const search = new MessageSearch(instance.searchMessages);
     search.search("pizza");
-    instance.answers[0]?.resolve(results([1, 2], 3));
+    instance.answers[0]?.resolve(results([1, 2], 5));
     await settle();
     expect(search.canLoadMore).toBe(true);
     search.loadMore();
     search.loadMore();
     expect(instance.calls.map((call) => call.query.offset)).toEqual([0, 2]);
-    instance.answers[1]?.resolve(results([2, 3], 3));
+    instance.answers[1]?.resolve(results([2, 3], 5));
     await settle();
     expect(search.hits.map((found) => found.message.id)).toEqual(["1", "2", "3"]);
+    // Four received, three shown: the next page starts after the four.
+    search.loadMore();
+    expect(instance.calls.at(-1)?.query.offset).toBe(4);
+    instance.answers[2]?.resolve(results([], 5));
+    await settle();
     expect(search.canLoadMore).toBe(false);
+  });
 
-    search.hits = Array.from({ length: 1_000 }, (_, index) => hit(index));
-    search.totalCount = 1_000;
-    search.isTotalLowerBound = true;
+  it("never asks past the 1 000 results the instance reaches", async () => {
+    const instance = fakeInstance();
+    const search = new MessageSearch(instance.searchMessages);
+    search.search("pizza");
+    instance.answers[0]?.resolve(results(Array.from({ length: 990 }, (_, index) => index), 1_000, true));
+    await settle();
+    search.loadMore();
+    expect(instance.calls.at(-1)?.query).toMatchObject({ offset: 990, limit: 10 });
+    instance.answers[1]?.resolve(results(Array.from({ length: 10 }, (_, index) => 990 + index), 1_000, true));
+    await settle();
+    expect(search.hits).toHaveLength(1_000);
     expect(search.canLoadMore).toBe(false);
+    expect(search.hasReachedLimit).toBe(true);
   });
 
   it("tells a rate limit, a query too large and a failed page apart", async () => {
