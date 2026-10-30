@@ -30,5 +30,8 @@ CREATE TRIGGER messages_fts_after_content_update AFTER UPDATE OF content ON mess
     INSERT INTO messages_fts (rowid, content) VALUES (new.id, new.content);
 END;
 
+-- `from:` filters walk one author's messages, newest first, instead of a whole server's.
+CREATE INDEX messages_by_author_id ON messages (author_id, id);
+
 -- Indexes every message written before this migration.
 INSERT INTO messages_fts (messages_fts) VALUES ('rebuild');

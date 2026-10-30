@@ -86,10 +86,22 @@ macro_rules! matching_messages {
 }
 
 /// Messages with the shared conditions, minus those matching ?11; ?1 is bound but unused.
+/// `by_author` states the author condition plainly, so SQLite walks `messages_by_author_id`:
+/// inside `?3 IS NULL OR …` it cannot use an index.
 macro_rules! filtered_messages {
     () => {
+        filtered_messages!("1")
+    };
+    (by_author) => {
+        filtered_messages!(
+            "messages.author_id IN (SELECT users.id FROM users \
+             WHERE users.username IN (SELECT value FROM json_each(?3)))"
+        )
+    };
+    ($first_condition:literal) => {
         concat!(
-            "FROM messages WHERE 1",
+            "FROM messages WHERE ",
+            $first_condition,
             search_conditions!(),
             // Correlated, so it runs only with excluded words: an uncorrelated `NOT IN` would be
             // materialized even for a NULL expression, scanning the whole index.
@@ -180,6 +192,20 @@ pub(crate) async fn search_message_ids(
         .bind(i64::from(offset))
         .fetch_all(database.readers())
         .await?
+    } else if bound.author_usernames.is_some() {
+        bind_criteria!(
+            sqlx::query_as(concat!(
+                "SELECT messages.id ",
+                filtered_messages!(by_author),
+                "ORDER BY messages.id DESC LIMIT ?13 OFFSET ?14"
+            )),
+            bound
+        )
+        .bind(ranks_by_relevance)
+        .bind(i64::from(limit))
+        .bind(i64::from(offset))
+        .fetch_all(database.readers())
+        .await?
     } else {
         bind_criteria!(
             sqlx::query_as(concat!(
@@ -215,6 +241,19 @@ pub(crate) async fn count_matches(
                  (SELECT messages.channel_id, messages.author_id ",
                 matching_messages!(),
                 "ORDER BY messages_fts.rowid DESC LIMIT ?12) GROUP BY channel_id, author_id"
+            )),
+            bound
+        )
+        .bind(i64::from(maximum_counted))
+        .fetch_all(database.readers())
+        .await?
+    } else if bound.author_usernames.is_some() {
+        bind_criteria!(
+            sqlx::query_as(concat!(
+                "SELECT channel_id, author_id, COUNT(*) FROM \
+                 (SELECT messages.channel_id, messages.author_id ",
+                filtered_messages!(by_author),
+                "ORDER BY messages.id DESC LIMIT ?12) GROUP BY channel_id, author_id"
             )),
             bound
         )
@@ -574,7 +613,8 @@ mod tests {
         // Back to the schema before migration 0021, to time its backfill alone.
         sqlx::raw_sql(
             "DROP TRIGGER messages_fts_after_insert; DROP TRIGGER messages_fts_after_delete; \
-             DROP TRIGGER messages_fts_after_content_update; DROP TABLE messages_fts;",
+             DROP TRIGGER messages_fts_after_content_update; DROP TABLE messages_fts; \
+             DROP INDEX messages_by_author_id;",
         )
         .execute(writer)
         .await
