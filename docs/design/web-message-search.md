@@ -10,13 +10,22 @@ The owner asked for search "in Elasticsearch mode": ranked results, filters, hig
 - **Job of the screen**: find the message, then read it in its conversation. Search is a way back into the chat, not a place to stay: every result opens its channel at the message.
 - **Real content**: short chat lines in French and English, accents, emoji, links, pictures, mentions, code. Results come from several channels at once.
 
-## 2. One field, two doors (the decision the owner asked for)
+## 2. Two ways around the header (the owner's decision)
 
-Item 12 turned "Go to… Ctrl K" into a search-looking field in the chat header. Adding Discord's message search beside it would put two magnifier fields side by side that do different things, and people would type messages into the switcher and channel names into search.
+Item 12 turned "Go to… Ctrl K" into a search-looking field in the chat header. The first proposal replaced it with message search and kept the switcher behind `Ctrl+K` and a line in the search suggestions. **The owner chose to keep both** (2026-10-31): "Go to… Ctrl K" stays with its item 12 style and tokens, and message search sits beside it. What keeps them apart:
 
-**Chosen: the header field searches messages, where Discord has it; `Ctrl+K` stays the quick switcher, and the switcher keeps a door inside the field.** When the field is empty and focused, its suggestions list the filters and end with "Go to a channel, server or person · Ctrl K", which opens the switcher. So the field always does what it looks like (search), the switcher keeps its shortcut and is one Down-arrow away for people who used the old field, and nobody has to guess between two boxes. The rejected alternative, one field with two modes (switching on a prefix or on what is typed), hides the mode in the text: a channel's name is also a word you may search for.
+- **Words and shortcuts, not only icons.** "Go to… Ctrl K" (« Aller à… ») and "Search Rust Lyon · Ctrl F" (« Rechercher dans Rust Lyon ») each say what they do; the switcher's is a compact button at its content's width, search is the field that grows when used.
+- **Collapse without two magnifiers.** Where the header lacks room, "Go to…" becomes a **compass** button (Phosphor `compass`, Fill; same name, "Go to a channel, server or person"): below `component.quick-switcher.trigger-collapse-width` (640 px of header) beside the search field, or below `size.chat.min-width` (480 px) beside search's magnifier, so on phones. Two identical magnifier buttons side by side would leave people guessing; the compass says "go somewhere", the magnifier keeps "search".
+- **The switcher's door stays in the suggestions.** An empty search field still ends its list with "Go to a channel, server or person · Ctrl K", for people who reach for the field first.
 
-On phones the header's magnifier now opens message search (it used to open the switcher); the switcher stays reachable from the same door in the search sheet, and with `Ctrl+K` on a keyboard.
+| Header width | Quick switcher | Message search |
+|---|---|---|
+| Wide, results dock (window >= 1 224 px) and header >= 640 px | "Go to… Ctrl K", content width | The field, 208 px, 288 px focused or filled |
+| Wide, a sheet docked beside a narrow chat (header < 640 px) | Compass button | The field |
+| 816 to 1 223 px (results open over the chat) | "Go to… Ctrl K", 208 px, giving way to the topic | Magnifier button |
+| Phones (header < 480 px) | Compass button | Magnifier button |
+
+On phones the channel name keeps its room as with item 12 ("gene…" at 320 px; the header's buttons lose their gaps under a coarse pointer).
 
 ## 3. Design plan
 
@@ -34,7 +43,7 @@ On phones the header's magnifier now opens message search (it used to open the s
 | `component.search.facet-*`, `filter-*`, `sort-*` | `surface.input` chips, `state.selected` for applied filters and the chosen sort, 28 px (44 px under a coarse pointer) | Facets narrow, applied filters show what narrows. |
 | `component.message.highlight-background` | now `color.match.background` (was the mention wash) | The message a result opened. A mention row already wears the mention wash, so the old value would have been invisible there. |
 | `motion.delay.jump-highlight` (new) | 2 000 ms | How long the opened message stays lit; kept under reduced motion, where it holds still and then goes. |
-| removed `component.quick-switcher.trigger-*` | | The header no longer has the switcher's trigger. |
+| `component.quick-switcher.trigger-*` (kept), `trigger-collapse-width` (new) | 208 px, 16 px magnifier; 640 px | "Go to… Ctrl K" keeps item 12's look; below 640 px of header beside the search field (480 px beside search's magnifier) it becomes a compass button. |
 
 Type: the existing scale. The count titles the sheet in `type.heading-md` with tabular figures; results use the message styles (`type.message-author`, `type.message-timestamp`, `type.message`), so a result reads like the line it came from. Channel labels are `type.body-sm` semibold in `text.muted`, the facet group labels `type.body-sm` muted, chips `type.body-sm`.
 
@@ -45,7 +54,7 @@ Motion: the sheet slides in like the members sheet (`motion.duration.slow`, ente
 ```
 Wide (>= 1 224 px): field in the header, results docked
 +---------+ +--------------------------------------------+ +--------------------------+
-| strip + | | # general       [(o) pizza from:chloe  (x)]| | 2 results            (x) |
+| strip + | | # general [Go to… Ctrl K][(o) pizza    (x)]| | 2 results            (x) |
 | channels| |                     +--------------------+ | | [Relevance | Newest]     |
 |         | |  messages…          | People             | | | (From Chloé Martin x)    |
 |         | |                     |  (C) Chloé   chloe | | | Narrow to a channel      |
@@ -57,8 +66,8 @@ Wide (>= 1 224 px): field in the header, results docked
 |         | | [composer]                                 | | +----------------------+ |
 +---------+ +--------------------------------------------+ +--------------------------+
 
-816 to 1 223 px: magnifier in the header; the sheet opens over the chat with its own field
-Phones (< 816 px): the same sheet, full window, field at its top
+816 to 1 223 px: "Go to… Ctrl K" and a magnifier in the header; the sheet opens over the chat with its own field
+Phones (< 816 px): compass and magnifier buttons; the same sheet, full window, field at its top
 +------------------------------+
 | 11 results               (x) |
 | [(o) pizza              (x)] |
@@ -126,7 +135,7 @@ Everything is start-aligned. A result's Jump button sits at the slip's top end, 
 - `web/src/components/search-highlights.ts`: ranges normalized (clamped, merged, never cutting a surrogate pair) and applied to the parsed message (`match` nodes).
 - `web/src/components/search-results.ts`: channel runs and facet → query.
 - `web/src/components/message-search.svelte.ts`: the search state (debounce, one request in flight, pages, statuses).
-- `web/src/components/MessageSearchField.svelte`, `MessageSearchPanel.svelte`; `Shell.svelte` docks or overlays the sheet and owns `Ctrl+F`; `ChatPane.svelte` and `FriendsPane.svelte` render the field or magnifier from a snippet; `MessageList.revealMessage` lights the opened message; `MellowClient.loadHistoryUntilMessage`.
+- `web/src/components/MessageSearchField.svelte`, `MessageSearchPanel.svelte`, `QuickSwitcherTrigger.svelte` ("Go to…" or its compass); `Shell.svelte` docks or overlays the sheet and owns `Ctrl+F`; `ChatPane.svelte` and `FriendsPane.svelte` render the field or magnifier from a snippet; `MessageList.revealMessage` lights the opened message; `MellowClient.loadHistoryUntilMessage`.
 - Tests: `search-query.test.ts`, `search-highlights.test.ts`, `message-search.test.ts`, `client.test.ts` ("Reaching a message far back").
 
 ## 7. Not done, and open questions
