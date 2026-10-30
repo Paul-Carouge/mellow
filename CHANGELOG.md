@@ -4,6 +4,14 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-30
+Custom emoji. This version migrates the database (migration 20, with the usual automatic backup); older versions refuse it afterwards.
+
+### Added
+- Custom emoji per server, still or animated (50 of each, 256 KB per picture), managed in server settings → Emoji by members with the new **Manage emoji** permission (owners and administrators have it).
+- Web: type `:name:` in the composer to get suggestions; custom emoji show in messages (large when a message holds only emoji), in the emoji picker and as reactions. With reduced motion, animated emoji stay still.
+- Server: `GET`/`POST /api/v1/guilds/{id}/emojis`, `PATCH`/`DELETE /api/v1/guilds/{id}/emojis/{emoji_id}`, `Guild.emojis` and the `GUILD_EMOJIS_UPDATE` event; custom reactions are keyed `:<emoji id>`.
+
 ## [0.19.0] - 2026-10-30
 Interface polish. No database migration.
 
