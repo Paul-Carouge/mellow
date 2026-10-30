@@ -41,7 +41,6 @@ export interface InviteLimits {
   readonly expiresInSeconds: number | null;
 }
 
-export const NO_INVITE_LIMITS: InviteLimits = { maxUses: null, expiresInSeconds: null };
 const DEVICE_NAME = "Web browser";
 /** JSON requests only: uploads may take longer on a slow link. */
 const REQUEST_TIMEOUT_MILLISECONDS = 30_000;
@@ -158,7 +157,7 @@ export class RestClient {
   }
 
   /** `null` limits mean unlimited uses and an invite that never expires. */
-  createInvite(guildId: Snowflake, limits: InviteLimits = NO_INVITE_LIMITS): Promise<Invite> {
+  createInvite(guildId: Snowflake, limits: InviteLimits): Promise<Invite> {
     return this.request("POST", `guilds/${guildId}/invites`, {
       max_uses: limits.maxUses,
       expires_in_seconds: limits.expiresInSeconds,

@@ -1508,7 +1508,7 @@ export class MellowClient {
   }
 
   /** For any server, open or not: the strip's menu invites without opening it. */
-  async createInvite(guildId: Snowflake, limits?: InviteLimits): Promise<Invite> {
+  async createInvite(guildId: Snowflake, limits: InviteLimits): Promise<Invite> {
     return await this.rest.createInvite(guildId, limits);
   }
 

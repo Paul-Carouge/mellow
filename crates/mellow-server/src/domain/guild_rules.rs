@@ -612,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn invite_codes_are_two_readable_groups_and_distinct() {
+    fn invite_codes_are_three_readable_groups_and_distinct() {
         let first = generate_invite_code().unwrap();
         let second = generate_invite_code().unwrap();
         let groups: Vec<&str> = first.split('-').collect();

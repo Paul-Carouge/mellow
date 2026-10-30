@@ -31,7 +31,7 @@ Rail + ─ Add a server ─ Join a server ─> type "ae8c 78a9 k2qf" or paste "A
 | A new code refused (quota, rate limit) | The current code stays, with the error line; nothing is lost. |
 | Copy refused by the browser | "Couldn't copy the code. Select it and copy it by hand." One click on the code selects all of it. |
 | Reduced motion | "Copied" stays instead of flashing back after 2 s; no other motion was added. |
-| Settings list, an invite expired while the page was open | "Expired" (the list is only re-read after a change). |
+| Settings list, an invite expired while the page was open | "Expired": the labels are counted again every minute (the instance leaves expired invites out at the next read). |
 | Joining | Case, spaces and dashes are ignored and O, I, L read as 0, 1, 1 by the instance; the field does not change what is typed (older 10-character codes are case-sensitive, so the field does not force capitals either). |
 
 ## Design plan

@@ -27,12 +27,13 @@
   const id = $props.id();
   let invites = $state<GuildInvite[] | null>(null);
   let hasFailed = $state(false);
+  const EXPIRY_REFRESH_MILLISECONDS = 60_000;
   let isCreateDialogOpen = $state(false);
   let limitsToCreate = $state<InviteLimits>(DEFAULT_INVITE_LIMITS);
   let isCreating = $state(false);
   let createError = $state("");
-  /** "Expires in 3 days" is counted from when the list was read. */
-  let listReadAtUnixMilliseconds = $state(Date.now());
+  /** "Expires in 3 days" counts from now, refreshed every minute while the page is open. */
+  let nowUnixMilliseconds = $state(Date.now());
   let notice = $state("");
   let revoking = $state<GuildInvite | null>(null);
   let isRevoking = $state(false);
@@ -42,7 +43,7 @@
     hasFailed = false;
     try {
       invites = await client.rest.listInvites(guild.id);
-      listReadAtUnixMilliseconds = Date.now();
+      nowUnixMilliseconds = Date.now();
     } catch (error) {
       console.warn("loading the invites failed", error);
       invites = null;
@@ -52,6 +53,8 @@
 
   onMount(() => {
     void load();
+    const clock = setInterval(() => (nowUnixMilliseconds = Date.now()), EXPIRY_REFRESH_MILLISECONDS);
+    return () => clearInterval(clock);
   });
 
   async function create() {
@@ -133,7 +136,7 @@
                   class="whitespace-nowrap"
                   datetime={new Date(invite.expires_at_unix_milliseconds).toISOString()}
                   title={fullTimestampLabel(invite.expires_at_unix_milliseconds)}
-                  >{expiryLabel(invite.expires_at_unix_milliseconds, listReadAtUnixMilliseconds)}</time
+                  >{expiryLabel(invite.expires_at_unix_milliseconds, nowUnixMilliseconds)}</time
                 >
               {/if}
             </p>
