@@ -1624,12 +1624,12 @@ export class MellowClient {
     return created;
   }
 
+  /**
+   * The new name shows with `GUILD_EMOJIS_UPDATE`, not with the answer: an answer arriving after
+   * a later rename's event would put the older name back.
+   */
   async renameEmoji(guildId: Snowflake, emojiId: Snowflake, name: string): Promise<void> {
-    const renamed = await this.rest.renameEmoji(guildId, emojiId, name);
-    this.applyEmojis(
-      guildId,
-      this.emojisOf(guildId).map((emoji) => (emoji.id === emojiId ? renamed : emoji)),
-    );
+    await this.rest.renameEmoji(guildId, emojiId, name);
   }
 
   async deleteEmoji(guildId: Snowflake, emojiId: Snowflake): Promise<void> {

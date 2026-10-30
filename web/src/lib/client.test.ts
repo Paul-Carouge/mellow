@@ -1105,7 +1105,7 @@ describe("Custom emoji", () => {
     expect(client.emojisOf("999")).toEqual([]);
   });
 
-  it("show the answer at once, whether or not the gateway's list came first", async () => {
+  it("show a creation or deletion at once, and a rename with the gateway's list", async () => {
     const calls: unknown[][] = [];
     const client = new MellowClient(
       fakeRest({
@@ -1134,6 +1134,9 @@ describe("Custom emoji", () => {
     expect(client.emojisOf(GUILD)).toEqual([party, parrot]);
 
     await client.renameEmoji(GUILD, party.id, "fiesta");
+    expect(client.emojisOf(GUILD).map((emoji) => emoji.name)).toEqual(["party", "parrot"]);
+    const renamedParty = { ...party, name: "fiesta" };
+    client.applyEvent({ t: "GUILD_EMOJIS_UPDATE", data: { guild_id: GUILD, emojis: [renamedParty, parrot] } }, 0);
     expect(client.emojisOf(GUILD).map((emoji) => emoji.name)).toEqual(["fiesta", "parrot"]);
     await client.deleteEmoji(GUILD, parrot.id);
     expect(client.emojisOf(GUILD).map((emoji) => emoji.id)).toEqual([party.id]);
