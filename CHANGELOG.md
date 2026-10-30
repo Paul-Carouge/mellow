@@ -4,6 +4,19 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-31
+Message search. This version migrates the database (migration 21, with the usual automatic backup) and builds a search index of every message, which takes a few seconds per million messages; older versions refuse the database afterwards.
+
+### Added
+- Search messages in a server, or in your conversations and groups from Home: results ranked by relevance (or newest first), matching words highlighted, counts per channel and per person you can click to narrow down. Accents and capitals do not matter, and the start of a word is enough.
+- Filters: `from:`, `mentions:`, `in:`, `has:file`, `has:image`, `has:link`, `has:pinned`, `before:`, `after:`, `during:`, `"exact phrase"`, `-excluded` and `word*`, suggested as you type.
+- Web: the search field sits next to "Go to… Ctrl K" in the channel header (Ctrl F, or the magnifier on phones); opening a result jumps to the message, loading older history if needed.
+- Server: `POST /api/v1/guilds/{id}/messages/search` and `POST /api/v1/users/@me/messages/search`.
+
+### Changed
+- Server: deleting a channel or a server deletes its messages in batches, so other people's messages are never held up for long; the request itself can take a while on a very long history.
+- Server: each database connection keeps a 32 MiB page cache (at most about 160 MiB in all).
+
 ## [0.21.0] - 2026-10-30
 Notifications. No database migration.
 
