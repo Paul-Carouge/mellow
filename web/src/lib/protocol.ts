@@ -94,7 +94,9 @@ export interface CustomEmoji {
 /** Mirrors the server's rules (mellow-server domain/guild_rules.rs); the server still decides. */
 export const MAXIMUM_EMOJIS_PER_GUILD_AND_KIND = 50;
 export const MAXIMUM_EMOJI_UPLOAD_BYTES = 256 * 1024;
-const EMOJI_NAME = /^[A-Za-z0-9_]{2,32}$/;
+export const MINIMUM_EMOJI_NAME_LENGTH = 2;
+export const MAXIMUM_EMOJI_NAME_LENGTH = 32;
+const EMOJI_NAME = new RegExp(`^[A-Za-z0-9_]{${MINIMUM_EMOJI_NAME_LENGTH},${MAXIMUM_EMOJI_NAME_LENGTH}}$`);
 /** A reaction key `:id`; the id without leading zero, as the instance writes it. */
 const CUSTOM_EMOJI_REACTION_KEY = /^:(0|[1-9][0-9]{0,19})$/;
 

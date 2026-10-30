@@ -101,6 +101,20 @@ describe("typed names on send", () => {
     expect(withEmojiNamesAsMarkup(":party:", [])).toBe(":party:");
   });
 
+  it("find code as the renderer does, escaped and unclosed backticks being text", () => {
+    // Escaped backticks open no code: the message shows the picture between them.
+    expect(withEmojiNamesAsMarkup("\\`:party:\\`", [party])).toBe("\\`<:party:500>\\`");
+    expect(withEmojiNamesAsMarkup("`unclosed :party:", [party])).toBe("`unclosed <:party:500>");
+    // A run of two backticks is closed only by another run of two.
+    expect(withEmojiNamesAsMarkup("``a ` :party: ``", [party])).toBe("``a ` :party: ``");
+    for (const text of ["\\`:party:\\`", "``a ` :party: ``"]) {
+      const shownAsCode = parseMessageMarkdown(text, new Map(), known).some(
+        (block) => block.kind === "paragraph" && block.children.some((node) => node.kind === "code"),
+      );
+      expect(shownAsCode, text).toBe(withEmojiNamesAsMarkup(text, [party]) === text);
+    }
+  });
+
   it("read back as names in plain text", () => {
     expect(withCustomEmojiAsNames("hi <:party:500> <a:party_parrot:501>")).toBe("hi :party: :party_parrot:");
   });

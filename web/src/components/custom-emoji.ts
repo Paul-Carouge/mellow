@@ -9,7 +9,9 @@ import { searchEmoji } from "../lib/emoji-catalogue";
 import {
   type CustomEmoji,
   MAXIMUM_EMOJIS_PER_GUILD_AND_KIND,
+  MAXIMUM_EMOJI_NAME_LENGTH,
   MAXIMUM_EMOJI_UPLOAD_BYTES,
+  MINIMUM_EMOJI_NAME_LENGTH,
   PREVIEWABLE_IMAGE_TYPES,
   type Snowflake,
   customEmojiMarkup,
@@ -18,11 +20,9 @@ import {
 } from "../lib/protocol";
 import { displayEmoji } from "../lib/reactions";
 import { humanFileSize } from "./format";
-import type { BlockNode } from "./markdown";
+import { type BlockNode, findCodeSpans } from "./markdown";
 
 const EMOJI_NAME_CHARACTER = /[A-Za-z0-9_]/u;
-const MINIMUM_EMOJI_NAME_LENGTH = 2;
-const MAXIMUM_EMOJI_NAME_LENGTH = 32;
 
 // --- Suggestions while typing --------------------------------------------------------------
 
@@ -100,8 +100,8 @@ export function replaceInDraft(
 
 // --- Converting typed names ------------------------------------------------------------------
 
-/** Code spans and blocks, and markup already written: nothing inside them is converted. */
-const UNCONVERTED_PARTS = /(`+)[\s\S]*?\1|<a?:[A-Za-z0-9_]{2,32}:\d{1,20}>/gu;
+/** Markup already written: it stays as it is. */
+const WRITTEN_MARKUP = /<a?:[A-Za-z0-9_]{2,32}:\d{1,20}>/gu;
 const TYPED_EMOJI_NAME = /:([A-Za-z0-9_]{2,32}):/gu;
 
 function isEscapedAt(text: string, position: number): boolean {
@@ -130,9 +130,22 @@ function convertNames(text: string, emojiByFoldedName: ReadonlyMap<string, Custo
   return converted + text.slice(copiedUpTo);
 }
 
+/** `convertNames` around the markup already written in `text` (outside code). */
+function convertNamesOutsideMarkup(text: string, emojiByFoldedName: ReadonlyMap<string, CustomEmoji>): string {
+  let converted = "";
+  let copiedUpTo = 0;
+  WRITTEN_MARKUP.lastIndex = 0;
+  for (let match = WRITTEN_MARKUP.exec(text); match !== null; match = WRITTEN_MARKUP.exec(text)) {
+    converted += convertNames(text.slice(copiedUpTo, match.index), emojiByFoldedName) + match[0];
+    copiedUpTo = WRITTEN_MARKUP.lastIndex;
+  }
+  return converted + convertNames(text.slice(copiedUpTo), emojiByFoldedName);
+}
+
 /**
  * The message as sent: each `:name:` of one of `emojis` (the open server's; names are unique
- * whatever the case) becomes its markup, outside code and unless escaped with a backslash.
+ * whatever the case) becomes its markup, unless escaped with a backslash or in code, found by
+ * the renderer's own scan (`findCodeSpans`), so what stays literal is what shows as code.
  */
 export function withEmojiNamesAsMarkup(text: string, emojis: readonly CustomEmoji[]): string {
   if (emojis.length === 0 || !text.includes(":")) {
@@ -141,12 +154,12 @@ export function withEmojiNamesAsMarkup(text: string, emojis: readonly CustomEmoj
   const emojiByFoldedName = new Map(emojis.map((emoji) => [emoji.name.toLowerCase(), emoji]));
   let converted = "";
   let copiedUpTo = 0;
-  UNCONVERTED_PARTS.lastIndex = 0;
-  for (let match = UNCONVERTED_PARTS.exec(text); match !== null; match = UNCONVERTED_PARTS.exec(text)) {
-    converted += convertNames(text.slice(copiedUpTo, match.index), emojiByFoldedName) + match[0];
-    copiedUpTo = UNCONVERTED_PARTS.lastIndex;
+  // In increasing order of start: the scan runs forward.
+  for (const [start, span] of findCodeSpans(text)) {
+    converted += convertNamesOutsideMarkup(text.slice(copiedUpTo, start), emojiByFoldedName) + text.slice(start, span.end);
+    copiedUpTo = span.end;
   }
-  return converted + convertNames(text.slice(copiedUpTo), emojiByFoldedName);
+  return converted + convertNamesOutsideMarkup(text.slice(copiedUpTo), emojiByFoldedName);
 }
 
 /** A message as plain text (previews, reply lines): each emoji's markup reads `:name:`. */
