@@ -55,6 +55,7 @@ describe("sections", () => {
   it("shows each section only with its permission, in Discord's order", () => {
     expect(visibleSections(guild(Permission.VIEW_CHANNEL))).toEqual([]);
     expect(visibleSections(guild(Permission.KICK_MEMBERS))).toEqual(["members"]);
+    expect(visibleSections(guild(Permission.MANAGE_EMOJIS))).toEqual(["emoji"]);
     expect(visibleSections(guild(Permission.MANAGE_GUILD | Permission.BAN_MEMBERS))).toEqual([
       "overview",
       "invites",
@@ -64,6 +65,7 @@ describe("sections", () => {
     expect(visibleSections(guild(Permission.ADMINISTRATOR))).toEqual([
       "overview",
       "roles",
+      "emoji",
       "invites",
       "members",
       "bans",

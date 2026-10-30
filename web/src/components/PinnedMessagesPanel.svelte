@@ -6,6 +6,7 @@
   import type { Message, Snowflake } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
+  import { withCustomEmojiAsNames } from "./custom-emoji";
   import {
     attachmentCountLabel,
     displayName,
@@ -61,7 +62,9 @@
     if (client.isBlocked(message.author.id)) {
       return strings.messages.blockedReply;
     }
-    return [message.content, attachmentCountLabel(message.attachments?.length ?? 0)].filter(Boolean).join(" ");
+    return [withCustomEmojiAsNames(message.content), attachmentCountLabel(message.attachments?.length ?? 0)]
+      .filter(Boolean)
+      .join(" ");
   }
 </script>
 

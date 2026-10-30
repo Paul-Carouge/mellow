@@ -2,9 +2,10 @@
   import { onDestroy } from "svelte";
 
   import { strings } from "../i18n";
-  import type { PublicUser, ReactionSummary, Snowflake } from "../lib/protocol";
-  import { displayEmoji } from "../lib/reactions";
+  import type { CustomEmoji, PublicUser, ReactionSummary, Snowflake } from "../lib/protocol";
+  import { reactionAppearance } from "./custom-emoji";
   import { displayName } from "./format";
+  import ReactionEmoji from "./ReactionEmoji.svelte";
   import Icon from "./Icon.svelte";
   import { createPopoverToggle } from "./popover-toggle";
   import { durationTokenInMilliseconds, lengthTokenInPixels } from "./tokens";
@@ -14,6 +15,8 @@
   // reacted, asked from the instance only then.
   interface Props {
     reactions: readonly ReactionSummary[];
+    /** Server emoji by id, for their pictures; a custom key missing here is a deleted emoji. */
+    customEmojis: ReadonlyMap<Snowflake, CustomEmoji>;
     currentUserId: Snowflake;
     /** Joining an existing reaction: the user sees the message's history. */
     canJoin: boolean;
@@ -26,7 +29,7 @@
     loadUsers: (emoji: string) => Promise<PublicUser[]>;
   }
 
-  let { reactions, currentUserId, canJoin, canAddNew, isHeld, ontoggle, onopenpicker, loadUsers }: Props = $props();
+  let { reactions, customEmojis, currentUserId, canJoin, canAddNew, isHeld, ontoggle, onopenpicker, loadUsers }: Props = $props();
 
   /** Others named before "and 3 others", as on Discord. */
   const NAMED_PEOPLE = 3;
@@ -67,7 +70,7 @@
     const others = users.filter((user) => user.id !== currentUserId);
     const named = others.slice(0, NAMED_PEOPLE).map(displayName);
     const unnamed = Math.max(reaction.count - (reaction.me ? 1 : 0) - named.length, 0);
-    return strings.reactions.reactedWith(reaction.me, named, unnamed, displayEmoji(reaction.emoji));
+    return strings.reactions.reactedWith(reaction.me, named, unnamed, reactionAppearance(reaction.emoji, customEmojis).label);
   }
 
   function showTooltip(chip: HTMLElement, reaction: ReactionSummary) {
@@ -124,13 +127,15 @@
     class="mt-(--mw-component-reaction-margin-top) flex flex-wrap items-center gap-(--mw-component-reaction-row-gap)"
   >
     {#each reactions as reaction (reaction.emoji)}
+      {@const appearance = reactionAppearance(reaction.emoji, customEmojis)}
+      <!-- A deleted emoji's reaction can still be joined and taken back (ADR-0028). -->
       {@const isUsable = reaction.me || canJoin}
       <li>
         <button
           type="button"
           aria-pressed={reaction.me}
           aria-disabled={!isUsable}
-          aria-label={strings.reactions.chip(displayEmoji(reaction.emoji), reaction.count)}
+          aria-label={strings.reactions.chip(appearance.label, reaction.count)}
           aria-describedby={tooltipEmoji === reaction.emoji ? `${id}-tooltip` : undefined}
           class={[
             "flex h-(--mw-component-reaction-height) items-center gap-(--mw-component-reaction-gap) rounded-(--mw-component-reaction-radius) border-(length:--mw-component-reaction-border-width) px-(--mw-component-reaction-padding-inline) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-visible:focus-ring pointer-coarse:h-(--mw-size-hit-web-min)",
@@ -145,9 +150,7 @@
           onfocus={(event) => showTooltip(event.currentTarget, reaction)}
           onblur={hideTooltip}
         >
-          <span aria-hidden="true" class="text-(length:--mw-component-reaction-emoji-size) leading-none"
-            >{displayEmoji(reaction.emoji)}</span
-          >
+          <ReactionEmoji {appearance} />
           <span aria-hidden="true" class="type-body-sm font-semibold tabular-nums">{reaction.count}</span>
         </button>
       </li>

@@ -5,13 +5,15 @@
 // the answer is reused by later openers, so hostile text (thousands of `*`) stays linear in its
 // length times the nesting cap, with no backtracking regular expression.
 
-import type { PublicUser, Snowflake } from "../lib/protocol";
+import type { CustomEmoji, PublicUser, Snowflake } from "../lib/protocol";
 import { type MentionablePeople, splitMentions } from "./mentions";
 
 export type InlineNode =
   | { kind: "text"; text: string }
   | { kind: "mention"; text: string; user: PublicUser }
   | { kind: "code"; text: string }
+  /** `<:name:id>` of an emoji this client knows; `name` as written, the picture by the emoji's id. */
+  | { kind: "customEmoji"; name: string; emoji: CustomEmoji }
   | { kind: "strong" | "emphasis" | "underline" | "strikethrough"; children: InlineNode[] }
   /** `id` is unique within one message, so the renderer can remember which spoilers were revealed. */
   | { kind: "spoiler"; id: number; children: InlineNode[] }
@@ -33,6 +35,8 @@ const QUOTE_REST_PREFIX = ">>> ";
 const HEADING_LINE = /^(#{1,3}) (.*\S.*)$/u;
 const LIST_ITEM_LINE = /^[-*] (.*\S.*)$/u;
 const FENCE_LANGUAGE = /([a-z0-9_+\-.#]+)\n/iuy;
+/** Discord's custom emoji syntax, `<:name:id>` or `<a:name:id>` (ADR-0028), read at one position. */
+const CUSTOM_EMOJI_MARKUP = /<a?:([A-Za-z0-9_]{2,32}):(\d{1,20})>/uy;
 const AUTOLINK = /https?:\/\/[^\s<>"]+/iuy;
 const HTTP_URL_PREFIX = /^https?:\/\//iu;
 /** Punctuation that usually ends the sentence around a link rather than the link itself. */
@@ -51,12 +55,20 @@ const VISIBLE_CHARACTER = /[^\s\p{Cf}\p{Z}\u2800\u3164\u115F\u1160\uFFA0]/u;
 
 interface ParseContext {
   people: MentionablePeople;
+  customEmojis: ReadonlyMap<Snowflake, CustomEmoji>;
   nextSpoilerId: number;
 }
 
-/** Parses a message body into blocks; `people` are those an `@name` can point at. */
-export function parseMessageMarkdown(content: string, people: MentionablePeople): BlockNode[] {
-  return parseBlocks(content, { people, nextSpoilerId: 0 }, false);
+/**
+ * Parses a message body into blocks; `people` are those an `@name` can point at, `customEmojis`
+ * the emoji whose picture this client may load (any other reads as `:name:`).
+ */
+export function parseMessageMarkdown(
+  content: string,
+  people: MentionablePeople,
+  customEmojis: ReadonlyMap<Snowflake, CustomEmoji> = new Map(),
+): BlockNode[] {
+  return parseBlocks(content, { people, customEmojis, nextSpoilerId: 0 }, false);
 }
 
 /** Whether the parsed message mentions `userId` outside code. */
@@ -289,6 +301,22 @@ function findCodeSpans(text: string): Map<number, { end: number; content: string
   return spans;
 }
 
+/** Custom emoji markup by start index, outside code spans and escapes. */
+function findCustomEmojiSpans(text: string, insideCode: Uint8Array): Map<number, { end: number; name: string; id: Snowflake }> {
+  const spans = new Map<number, { end: number; name: string; id: Snowflake }>();
+  for (let start = text.indexOf("<"); start !== -1; start = text.indexOf("<", start + 1)) {
+    if (insideCode[start] || isEscaped(text, start)) {
+      continue;
+    }
+    CUSTOM_EMOJI_MARKUP.lastIndex = start;
+    const match = CUSTOM_EMOJI_MARKUP.exec(text);
+    if (match?.[1] !== undefined && match[2] !== undefined) {
+      spans.set(start, { end: start + match[0].length, name: match[1], id: match[2] });
+    }
+  }
+  return spans;
+}
+
 type DelimitedKind = "spoiler" | "strong" | "underline" | "strikethrough" | "emphasis";
 
 interface DelimiterRule {
@@ -403,6 +431,11 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
   for (const [start, span] of codeSpans) {
     insideCode.fill(1, start, span.end);
   }
+  const emojiSpans = findCustomEmojiSpans(text, insideCode);
+  // A marker inside an emoji's name ("<:ab_:1>") never closes formatting around it.
+  for (const [start, span] of emojiSpans) {
+    insideCode.fill(1, start, span.end);
+  }
   const findClosers = DELIMITER_RULES.map((rule) => createCachedCloserSearch(text, insideCode, (position) => rule.isCloserAt(text, position)));
   const findClosingBracket = createCachedCloserSearch(text, insideCode, (position) => text[position] === "]");
   let closingParentheses: Map<number, number> | null = null;
@@ -415,6 +448,15 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
       flushText(position);
       nodes.push({ kind: "code", text: codeSpan.content });
       position = textStart = codeSpan.end;
+      continue;
+    }
+
+    const emojiSpan = emojiSpans.get(position);
+    if (emojiSpan) {
+      flushText(position);
+      const emoji = context.customEmojis.get(emojiSpan.id);
+      nodes.push(emoji ? { kind: "customEmoji", name: emojiSpan.name, emoji } : { kind: "text", text: `:${emojiSpan.name}:` });
+      position = textStart = emojiSpan.end;
       continue;
     }
 

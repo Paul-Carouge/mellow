@@ -6,12 +6,14 @@
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import {
     type Channel,
+    type CustomEmoji,
     type Message,
     PREVIEWABLE_IMAGE_TYPES,
     Permission,
     type PublicUser,
     type Snowflake,
     MAXIMUM_MESSAGE_LENGTH,
+    customEmojiReactionKey,
     hasPermission,
     iconUrl,
   } from "../lib/protocol";
@@ -20,8 +22,18 @@
   import Button from "./Button.svelte";
   import { visibleChannelSections } from "./channel-settings";
   import ConfirmMessageDialog from "./ConfirmMessageDialog.svelte";
+  import {
+    type EmojiSuggestion,
+    type EmojiSuggestionQuery,
+    composerTextOf,
+    emojiSuggestionQuery,
+    replaceInDraft,
+    suggestEmoji,
+    withEmojiNamesAsMarkup,
+  } from "./custom-emoji";
   import DeleteMessageDialog from "./DeleteMessageDialog.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
+  import EmojiSuggestions from "./EmojiSuggestions.svelte";
   import { displayName, humanFileSize, typingSegments, unixMillisecondsOfSnowflake } from "./format";
   import GroupAvatar from "./GroupAvatar.svelte";
   import {
@@ -144,7 +156,10 @@
   let replyingTo = $state<Message | null>(null);
   let editingMessageId = $state<Snowflake | null>(null);
   let deletingMessage = $state<Message | null>(null);
-  let picker = $state<{ message: Message; anchor: HTMLElement } | null>(null);
+  /** For a message's reactions, or, without one, for the composer. */
+  let picker = $state<{ message: Message | null; anchor: HTMLElement } | null>(null);
+  let emojiButton = $state<HTMLButtonElement | null>(null);
+  const emojiPickerToggle = createPopoverToggle(() => picker !== null && picker.message === null);
   let pinning = $state<{ message: Message; isPinned: boolean } | null>(null);
   let removingReactionsOf = $state<Message | null>(null);
   let viewingReactionsOfId = $state<Snowflake | null>(null);
@@ -166,7 +181,22 @@
   const uploadedAttachments = $derived(
     trayItems.flatMap((item) => (item.status === "uploaded" && item.attachment ? [item.attachment] : [])),
   );
-  const charactersLeft = $derived(messageCharactersLeft(draft));
+  // Custom emoji are offered only in their own server's channels (ADR-0028).
+  const serverEmojis = $derived(guild && channel ? client.emojisOf(guild.id) : []);
+  const pickerServer = $derived(guild && channel ? { name: guild.name, emojis: serverEmojis } : null);
+  // Counted as sent: a typed ":name:" goes out as its longer markup.
+  const charactersLeft = $derived(messageCharactersLeft(withEmojiNamesAsMarkup(draft, serverEmojis)));
+
+  // The ":na" suggestions (DESIGN.md §5.5): follow the caret; Esc hides them until the word changes.
+  let suggestionQuery = $state<EmojiSuggestionQuery | null>(null);
+  let dismissedSuggestionStart = $state<number | null>(null);
+  let activeSuggestionIndex = $state(0);
+  const suggestions = $derived(
+    suggestionQuery && suggestionQuery.start !== dismissedSuggestionStart
+      ? suggestEmoji(suggestionQuery.query, serverEmojis)
+      : [],
+  );
+  const suggestionsId = $props.id();
   const isTooLong = $derived(charactersLeft < 0);
   // The instance would refuse it: say why at the first try, until the text fits again.
   let hasTriedSendingTooLong = $state(false);
@@ -271,7 +301,12 @@
       return;
     }
     hasTriedSendingTooLong = false;
-    void client.sendMessage(draft.trim(), replyingTo?.id ?? null, $state.snapshot(uploadedAttachments));
+    void client.sendMessage(
+      withEmojiNamesAsMarkup(draft.trim(), serverEmojis),
+      replyingTo?.id ?? null,
+      $state.snapshot(uploadedAttachments),
+    );
+    suggestionQuery = null;
     draft = "";
     replyingTo = null;
     removeAllTrayItems();
@@ -433,8 +468,73 @@
     }
   }
 
+  /** Reads the word before the caret again; called on typing, clicks and caret moves. */
+  function refreshSuggestions() {
+    const caret = composer?.selectionStart ?? null;
+    const isCaretCollapsed = caret !== null && caret === composer?.selectionEnd;
+    // The field's own value: `draft` may not have followed this input event yet.
+    const query = isCaretCollapsed ? emojiSuggestionQuery(composer?.value ?? draft, caret) : null;
+    if (query?.start !== suggestionQuery?.start || query?.query !== suggestionQuery?.query) {
+      activeSuggestionIndex = 0;
+    }
+    if (query?.start !== dismissedSuggestionStart) {
+      dismissedSuggestionStart = null;
+    }
+    suggestionQuery = query;
+  }
+
+  /** Writes `text` and a space at the caret, or in place of the word being completed. */
+  async function insertInComposer(text: string, range: { start: number; end: number } | null) {
+    const start = range?.start ?? composer?.selectionStart ?? draft.length;
+    const end = range?.end ?? composer?.selectionEnd ?? draft.length;
+    const result = replaceInDraft(draft, start, end, text);
+    draft = result.text;
+    suggestionQuery = null;
+    await tick();
+    composer?.focus();
+    composer?.setSelectionRange(result.caret, result.caret);
+  }
+
+  function chooseSuggestion(suggestion: EmojiSuggestion) {
+    if (suggestion.kind === "unicode") {
+      noteEmojiUsed(suggestion.emoji);
+    }
+    void insertInComposer(composerTextOf(suggestion.emoji), suggestionQuery);
+  }
+
+  /** Arrows, Enter and Tab work the suggestions while they show; true when the key was theirs. */
+  function handleSuggestionKeydown(event: KeyboardEvent): boolean {
+    if (suggestions.length === 0) {
+      return false;
+    }
+    const last = suggestions.length - 1;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      activeSuggestionIndex =
+        event.key === "ArrowDown"
+          ? activeSuggestionIndex >= last ? 0 : activeSuggestionIndex + 1
+          : activeSuggestionIndex <= 0 ? last : activeSuggestionIndex - 1;
+    } else if ((event.key === "Enter" && !event.shiftKey) || (event.key === "Tab" && !event.shiftKey)) {
+      const chosen = suggestions[activeSuggestionIndex];
+      if (chosen) {
+        chooseSuggestion(chosen);
+      }
+    } else if (event.key === "Escape") {
+      dismissedSuggestionStart = suggestionQuery?.start ?? null;
+    } else {
+      return false;
+    }
+    event.preventDefault();
+    return true;
+  }
+
   function handleComposerKeydown(event: KeyboardEvent) {
-    if (event.isComposing) {
+    if (event.isComposing || handleSuggestionKeydown(event)) {
+      return;
+    }
+    if (event.key.toLowerCase() === "e" && (event.ctrlKey || event.metaKey) && !event.altKey && emojiButton) {
+      // Discord's shortcut for the emoji picker (DESIGN.md §5.5).
+      event.preventDefault();
+      picker = { message: null, anchor: emojiButton };
       return;
     }
     if (event.key === "Enter" && !event.shiftKey) {
@@ -454,7 +554,7 @@
 
   async function saveEdit(message: Message, text: string) {
     editingMessageId = null;
-    const trimmed = text.trim();
+    const trimmed = withEmojiNamesAsMarkup(text.trim(), serverEmojis);
     // Saving an empty message asks to delete it; an unchanged one is not sent again (DESIGN.md §5.5).
     if (trimmed === "") {
       deletingMessage = message;
@@ -513,12 +613,18 @@
     }
   }
 
-  function pickEmoji(emoji: string) {
-    const target = picker?.message;
-    closePicker(true);
-    if (target) {
+  function pickEmoji(emoji: string | CustomEmoji) {
+    const target = picker?.message ?? null;
+    if (typeof emoji === "string") {
       noteEmojiUsed(emoji);
-      void toggleReaction(target, emoji);
+    }
+    if (target) {
+      closePicker(true);
+      void toggleReaction(target, typeof emoji === "string" ? emoji : customEmojiReactionKey(emoji));
+    } else {
+      // Into the composer, at the caret it had: focus goes there rather than back to the button.
+      closePicker(false);
+      void insertInComposer(composerTextOf(emoji), null);
     }
   }
 
@@ -564,7 +670,7 @@
     canAddReactions,
     canRemoveReactions: channel !== null && canManageMessages && canReadHistory,
     canManagePins: conversation !== null || canManageMessages,
-    heldMessageId: picker?.message.id ?? null,
+    heldMessageId: picker?.message?.id ?? null,
     toggleReaction: (message, emoji) => void toggleReaction(message, emoji),
     openPicker: (message, anchor) => (picker = { message, anchor }),
     loadReactors: (message, emoji) => client.listReactingUsers(message.channel_id, message.id, emoji),
@@ -798,7 +904,20 @@
 
     <!-- The composer zone (ADR-0022 §4): the typing row above, then the composer, whose base row is
          as tall as the user card and as far from the bottom; it grows upward. -->
-    <div class="shrink-0 px-(--mw-component-composer-margin-inline) pb-(--mw-size-dock-margin)">
+    <div class="relative shrink-0 px-(--mw-component-composer-margin-inline) pb-(--mw-size-dock-margin)">
+      {#if canSendMessages && suggestionQuery && suggestions.length > 0}
+        <div class="absolute inset-x-(--mw-component-composer-margin-inline) top-0">
+          <EmojiSuggestions
+            id={suggestionsId}
+            query={suggestionQuery.query}
+            {suggestions}
+            activeIndex={activeSuggestionIndex}
+            onchoose={chooseSuggestion}
+            onhover={(index) => (activeSuggestionIndex = index)}
+          />
+        </div>
+      {/if}
+      <p class="sr-only" aria-live="polite">{suggestions.length > 0 ? strings.chat.emojiSuggestionsCount(suggestions.length) : ""}</p>
       <p
         aria-hidden="true"
         class="flex h-(--mw-component-composer-typing-height) min-w-0 items-center gap-2xs ps-xs type-typing text-(--mw-component-composer-typing-text)"
@@ -878,9 +997,22 @@
                 .join(" ") || undefined}
               placeholder={composerLabel}
               class="min-h-(--mw-size-dock-height) min-w-0 flex-1 resize-none bg-transparent px-2xs py-[calc((var(--mw-size-dock-height)_-_var(--mw-type-message-font-size)_*_var(--mw-type-message-line-height))/2)] type-message text-(--mw-component-composer-text) outline-none placeholder:text-(--mw-component-composer-placeholder)"
+              aria-autocomplete="list"
+              aria-controls={suggestions.length > 0 ? `${suggestionsId}-listbox` : undefined}
+              aria-activedescendant={suggestions.length > 0 ? `${suggestionsId}-option-${activeSuggestionIndex}` : undefined}
               onkeydown={handleComposerKeydown}
+              onkeyup={(event) => {
+                if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") {
+                  refreshSuggestions();
+                }
+              }}
+              onclick={refreshSuggestions}
+              onblur={() => (suggestionQuery = null)}
               onpaste={handleComposerPaste}
-              oninput={() => client.noteTyping()}
+              oninput={() => {
+                client.noteTyping();
+                refreshSuggestions();
+              }}
               {@attach autosize(() => draft, maximumComposerHeight)}
             ></textarea>
             {#if charactersLeft <= MESSAGE_LENGTH_COUNTER_THRESHOLD}
@@ -901,6 +1033,22 @@
                 {strings.chat.replyHint(displayName(replyingTo.author))}
               </span>
             {/if}
+            <IconButton
+              bind:element={emojiButton}
+              icon="smiley"
+              label={strings.chat.chooseEmoji}
+              aria-haspopup="dialog"
+              aria-expanded={picker !== null && picker.message === null}
+              aria-keyshortcuts="Control+E"
+              class={composerButtonClass}
+              iconClass="size-(--mw-component-composer-icon-size)"
+              onpointerdown={emojiPickerToggle.notePress}
+              onclick={(event) => {
+                if (emojiPickerToggle.shouldOpenOnClick()) {
+                  picker = { message: null, anchor: event.currentTarget };
+                }
+              }}
+            />
             <!-- Phones have no Enter-to-send habit: the send button shows in the phone layout and
                  under a coarse pointer (DESIGN.md §4.3). -->
             <span class={hasNavigationDrawer ? "contents" : "hidden pointer-coarse:contents"}>
@@ -975,7 +1123,13 @@
 {/snippet}
 
 {#if picker}
-  <EmojiPicker anchor={picker.anchor} isCompact={hasNavigationDrawer} onpick={pickEmoji} onclose={closePicker} />
+  <EmojiPicker
+    anchor={picker.anchor}
+    isCompact={hasNavigationDrawer}
+    server={pickerServer}
+    onpick={pickEmoji}
+    onclose={closePicker}
+  />
 {/if}
 
 {#if isPinsPanelOpen && channelId && pinsButton}
@@ -1040,6 +1194,7 @@
   {@const message = reactionsBeingViewed.message}
   <ReactionsDialog
     reactions={reactionsBeingViewed.reactions}
+    customEmojis={client.knownCustomEmojis}
     canRemoveOthers={reactionAndPinActions.canRemoveReactions}
     loadUsers={(emoji) => client.listReactingUsers(message.channel_id, message.id, emoji)}
     onremove={(emoji, userId) => client.removeUserReaction(message.channel_id, message.id, emoji, userId)}

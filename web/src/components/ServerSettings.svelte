@@ -6,6 +6,7 @@
   import type { Snowflake } from "../lib/protocol";
   import BanSettings from "./BanSettings.svelte";
   import DeleteServerDialog from "./DeleteServerDialog.svelte";
+  import EmojiSettings from "./EmojiSettings.svelte";
   import InviteSettings from "./InviteSettings.svelte";
   import MemberSettings from "./MemberSettings.svelte";
   import ModerationLogSettings from "./ModerationLogSettings.svelte";
@@ -184,6 +185,8 @@
           {attention}
           onunsavedchange={(hasChanges) => noteUnsavedChanges("roles", hasChanges)}
         />
+      {:else if section === "emoji"}
+        <EmojiSettings {client} {guild} />
       {:else if section === "invites"}
         <InviteSettings {client} {guild} />
       {:else if section === "members"}

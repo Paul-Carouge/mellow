@@ -1604,6 +1604,14 @@ export class MellowClient {
 
   // --- Custom emoji (ADR-0028) --------------------------------------------------------------
 
+  /**
+   * Every custom emoji of the user's guilds by id: the pictures this user may load, so the ones a
+   * message or reaction can show. Others read as their name.
+   */
+  readonly knownCustomEmojis: ReadonlyMap<Snowflake, CustomEmoji> = $derived(
+    new Map(this.guilds.flatMap((guild) => (guild.emojis ?? []).map((emoji) => [emoji.id, emoji] as const))),
+  );
+
   /** The guild's custom emoji, oldest first; none from an older instance. */
   emojisOf(guildId: Snowflake): CustomEmoji[] {
     return this.guilds.find((guild) => guild.id === guildId)?.emojis ?? [];

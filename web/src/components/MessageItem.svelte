@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
 
   import { strings } from "../i18n";
-  import type { Message, PublicUser } from "../lib/protocol";
+  import type { CustomEmoji, Message, PublicUser, Snowflake } from "../lib/protocol";
   import { autosize } from "./autosize";
   import Avatar from "./Avatar.svelte";
   import {
@@ -22,6 +22,7 @@
   import { currentDay } from "./current-day.svelte";
   import { createPopoverToggle } from "./popover-toggle";
   import { noteEmojiUsed, quickReactionEmoji } from "./recent-emoji.svelte";
+  import { isJumboEmojiMessage } from "./custom-emoji";
   import { markdownMentionsUser, parseMessageMarkdown } from "./markdown";
   import type { MentionablePeople } from "./mentions";
   import MessageAttachments from "./MessageAttachments.svelte";
@@ -40,6 +41,8 @@
     authorColor: string | null;
     /** Who "@name" can point at here: the server's members or the conversation's people. */
     mentionablePeople: MentionablePeople;
+    /** The custom emoji whose picture the user may load (`MellowClient.knownCustomEmojis`). */
+    customEmojis: ReadonlyMap<Snowflake, CustomEmoji>;
     /** The server fills `mention_ids` (absent when empty): it decides who a message mentions. */
     doesServerFindMentions: boolean;
     canSendMessages: boolean;
@@ -73,6 +76,7 @@
     replyReference,
     authorColor,
     mentionablePeople,
+    customEmojis,
     doesServerFindMentions,
     canSendMessages,
     canManageMessages,
@@ -102,7 +106,8 @@
   const isOwn = $derived(author.id === currentUser.id);
   const isSending = $derived(row.kind === "pending" && row.pending.status === "sending");
   const isFailed = $derived(row.kind === "pending" && row.pending.status === "failed");
-  const contentBlocks = $derived(parseMessageMarkdown(content, mentionablePeople));
+  const contentBlocks = $derived(parseMessageMarkdown(content, mentionablePeople, customEmojis));
+  const isJumbo = $derived(isJumboEmojiMessage(contentBlocks));
   // The server's ids first; the client's own reading too, for messages written before the server
   // found mentions (migration 16) and for older servers.
   const isMentioningCurrentUser = $derived(
@@ -219,7 +224,11 @@
     ]}
   >
     {#if !row.startsAuthorGroup}<span class="sr-only">{strings.messages.authorSaid(displayName(author), "")}</span>{/if}
-    <MessageMarkdown blocks={contentBlocks} trailing={message?.edited_at_unix_milliseconds ? editedLabel : undefined} />
+    <MessageMarkdown
+      blocks={contentBlocks}
+      isJumbo={isJumbo}
+      trailing={message?.edited_at_unix_milliseconds ? editedLabel : undefined}
+    />
   </div>
 {/snippet}
 
@@ -349,6 +358,7 @@
     {#if message}
       <MessageReactions
         {reactions}
+        {customEmojis}
         currentUserId={currentUser.id}
         canJoin={actions.canJoinReactions}
         canAddNew={actions.canAddReactions}

@@ -269,6 +269,11 @@ export const en = {
     replyHint: (person: string) => `Replying to ${person}. Escape cancels the reply.`,
     cancelReply: "Cancel reply",
     attachFiles: "Attach files",
+    chooseEmoji: "Choose an emoji",
+    /** Above the ":na" suggestions. */
+    emojiSuggestionsTitle: (query: string) => `Emoji matching :${query}`,
+    emojiSuggestionsCount: (suggestions: number) =>
+      `${count(suggestions)} emoji. Up and Down to choose, Enter or Tab to insert.`,
     sendMessage: "Send message",
     cannotSend: "You do not have permission to send messages in this channel.",
     /** The locked composer of a conversation with someone you blocked (ADR-0025). */
@@ -370,6 +375,8 @@ export const en = {
     removeAllSubmit: "Remove all",
     removeAllFailed: "Couldn't remove the reactions",
     noReactions: "No reactions left.",
+    /** A reaction whose server emoji was deleted: its chip and "reacted with …". */
+    deletedEmoji: "a deleted emoji",
   },
 
   emojiPicker: {
@@ -768,6 +775,7 @@ export const en = {
     sections: {
       overview: "Overview",
       roles: "Roles",
+      emoji: "Emoji",
       invites: "Invites",
       members: "Members",
       bans: "Bans",
@@ -919,6 +927,45 @@ export const en = {
       revoking: "Revoking…",
       revokeFailed: (person: string) => `Couldn't revoke the ban of ${person}`,
       revoked: (person: string) => `${person} can join again`,
+    },
+
+    emoji: {
+      intro: "Pictures everyone here can put in messages and reactions by typing :name:.",
+      rules: "PNG, JPEG, GIF or WebP, up to 256 KB; a GIF or WebP that moves becomes an animated emoji. Names use 2 to 32 letters, digits and _.",
+      upload: "Upload emoji",
+      still: "Still emoji",
+      animated: "Animated emoji",
+      /** "12 / 50" beside a kind's heading. */
+      count: (used: number, maximum: number) => `${count(used)} / ${count(maximum)}`,
+      countLabel: (used: number, maximum: number) => `${count(used)} of ${count(maximum)} used`,
+      full: "Full",
+      bothFull: "This server holds 50 still and 50 animated emoji, the most it can. Delete some to add others.",
+      empty: "No emoji yet. Upload a picture and everyone here can use it as :name:.",
+      noStill: "No still emoji yet.",
+      noAnimated: "No animated emoji yet. A GIF or WebP that moves becomes one.",
+      adding: "Adding…",
+      added: (name: string) => `:${name}: added`,
+      nameLabel: (name: string) => `Name of :${name}:`,
+      nameInvalid: "Use 2 to 32 letters, digits or _.",
+      nameTaken: "Another emoji here already has this name.",
+      renameFailed: "Couldn't rename the emoji",
+      deleteLabel: (name: string) => `Delete :${name}:`,
+      deleteTitle: (name: string) => `Delete :${name}:?`,
+      deleteBody:
+        "Messages that use it will show its name instead. Its reactions stay, and people can still take theirs back.",
+      deleteSubmit: "Delete emoji",
+      deleting: "Deleting…",
+      deleteFailed: "Couldn't delete the emoji",
+      deleted: (name: string) => `:${name}: deleted`,
+      addFailed: (fileName: string) => `Couldn't add ${fileName}`,
+      notAPicture: "it isn't a PNG, JPEG, GIF or WebP picture.",
+      tooLarge: (size: string) => `it weighs ${size}, and emoji are at most 256 KB.`,
+      noRoom: "this server has no room left for this kind of emoji. Delete one first.",
+      unusable: "the instance couldn't use this picture. Try another file, or a shorter animation.",
+      tooMany: "you added many pictures in a short time. Wait a few minutes, then try again.",
+      waiting: "Waiting for the others…",
+      dismiss: (fileName: string) => `Dismiss ${fileName}`,
+      retry: (fileName: string) => `Try ${fileName} again`,
     },
 
     invites: {

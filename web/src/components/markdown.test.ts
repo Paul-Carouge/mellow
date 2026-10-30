@@ -290,3 +290,39 @@ describe("hostile text", () => {
     expect(nodes).toEqual([text("_`code`_")]);
   });
 });
+
+describe("custom emoji", () => {
+  const party = { id: "500", name: "party", is_animated: false };
+  const parrot = { id: "501", name: "par_rot_", is_animated: true };
+  const known = new Map([party, parrot].map((emoji) => [emoji.id, emoji]));
+  const parse = (content: string) => {
+    const [block] = parseMessageMarkdown(content, people, known);
+    return block?.kind === "paragraph" ? block.children : [];
+  };
+
+  it("show the picture of a known emoji under the name written", () => {
+    expect(parse("hi <:fiesta:500>!")).toEqual([
+      text("hi "),
+      { kind: "customEmoji", name: "fiesta", emoji: party },
+      text("!"),
+    ]);
+    expect(parse("<a:par_rot_:501>")).toEqual([{ kind: "customEmoji", name: "par_rot_", emoji: parrot }]);
+  });
+
+  it("read as :name: when this client cannot show them", () => {
+    expect(parse("<:gone:999>")).toEqual([text(":gone:")]);
+    expect(parseMessageMarkdown("<:party:500>", people)).toEqual([paragraph(text(":party:"))]);
+  });
+
+  it("stay literal in code and when escaped, and keep formatting around them intact", () => {
+    expect(parse("`<:party:500>`")).toEqual([{ kind: "code", text: "<:party:500>" }]);
+    expect(parse("\\<:party:500>")).toEqual([text("<"), text(":party:500>")]);
+    expect(parse("_a <a:par_rot_:501>_")).toEqual([
+      { kind: "emphasis", children: [text("a "), { kind: "customEmoji", name: "par_rot_", emoji: parrot }] },
+    ]);
+    expect(parse("**<:party:500>**")).toEqual([
+      { kind: "strong", children: [{ kind: "customEmoji", name: "party", emoji: party }] },
+    ]);
+    expect(parse("<:x:500> <:party:abc>")).toEqual([text("<:x:500> <:party:abc>")]);
+  });
+});

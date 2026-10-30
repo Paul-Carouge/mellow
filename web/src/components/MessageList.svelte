@@ -7,6 +7,7 @@
   import Button from "./Button.svelte";
   import { type MenuLine, type MessageMenuAction, menuEntries } from "./context-menus";
   import ContextMenu from "./ContextMenu.svelte";
+  import { withCustomEmojiAsNames } from "./custom-emoji";
   import type { Message, PublicUser, Snowflake } from "../lib/protocol";
   import { attachmentCountLabel, displayName, timeOfDayLabel } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
@@ -387,7 +388,9 @@
 
   /** The text, then "2 attachments" when files came with it (DESIGN.md §7.3). */
   function messageSummary(message: Message): string {
-    return [message.content, attachmentCountLabel(message.attachments?.length ?? 0)].filter(Boolean).join(" ");
+    return [withCustomEmojiAsNames(message.content), attachmentCountLabel(message.attachments?.length ?? 0)]
+      .filter(Boolean)
+      .join(" ");
   }
 
   function replyReferenceOf(message: Message): { author: PublicUser | null; text: string } | null {
@@ -558,6 +561,7 @@
             {row}
             {currentUser}
             mentionablePeople={mentionable}
+            customEmojis={client.knownCustomEmojis}
             doesServerFindMentions={client.doesServerFindMentions}
             authorColor={authorColors.get(row.kind === "sent" ? row.message.author.id : currentUser.id) ?? null}
             replyReference={row.kind === "sent" ? replyReferenceOf(row.message) : null}

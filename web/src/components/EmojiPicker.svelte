@@ -4,20 +4,28 @@
   import { strings } from "../i18n";
   import { EMOJI_CATALOGUE, EMOJI_CATEGORY_IDS, type EmojiCategoryId, searchEmoji } from "../lib/emoji-catalogue";
   import { prefersReducedMotion } from "../lib/motion.svelte";
+  import type { CustomEmoji } from "../lib/protocol";
   import { displayEmoji, reactionKey } from "../lib/reactions";
+  import { foldForSearch } from "../lib/search-text";
+  import CustomEmojiImage from "./CustomEmojiImage.svelte";
   import { nextEmojiCell, sectionAtScrollTop } from "./emoji-grid";
   import Icon, { type IconName } from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import { recentEmoji } from "./recent-emoji.svelte";
 
   // The emoji picker (DESIGN.md §6.52): search first, then a bar of categories, then the recently
-  // used and the built-in set by category. One Tab stop each for the bar and the emoji; arrows move
+  // used, the open server's own emoji (§6.58) and the built-in set by category. One Tab stop each for the bar and the emoji; arrows move
   // within them, Page Up and Page Down jump between categories, Enter picks, Esc closes.
   // A light-dismiss popover beside its button, or a sheet at the bottom of a phone's screen.
   interface Props {
     anchor: HTMLElement;
     isCompact: boolean;
-    onpick: (emoji: string) => void;
+    /**
+     * The open server's own emoji, after the recent ones, titled with its name (DESIGN.md §6.58);
+     * null in a conversation, where custom emoji are not offered (ADR-0028).
+     */
+    server: { name: string; emojis: readonly CustomEmoji[] } | null;
+    onpick: (emoji: string | CustomEmoji) => void;
     /**
      * Closed by Esc or a click outside; the caller puts focus back only if it was in the picker
      * (or nowhere): a click elsewhere keeps the focus it gave.
@@ -25,12 +33,12 @@
     onclose: (shouldReturnFocus: boolean) => void;
   }
 
-  let { anchor, isCompact, onpick, onclose }: Props = $props();
+  let { anchor, isCompact, server, onpick, onclose }: Props = $props();
 
   interface Section {
-    id: "results" | "recent" | EmojiCategoryId;
+    id: "results" | "recent" | "server" | EmojiCategoryId;
     title: string;
-    emoji: readonly string[];
+    emoji: readonly (string | CustomEmoji)[];
   }
 
   const CATEGORY_ICONS: Record<"recent" | EmojiCategoryId, IconName> = {
@@ -64,12 +72,21 @@
   const isBrowsing = $derived(query.trim() === "");
   // Never an empty section: the keys and the bar count on it.
   const sections = $derived.by((): Section[] => {
+    const serverEmojis = server?.emojis ?? [];
     if (!isBrowsing) {
-      const results = searchEmoji(query).map((entry) => entry.emoji);
+      const folded = foldForSearch(query.trim()).replaceAll(" ", "_");
+      const results = [
+        ...serverEmojis.filter((emoji) => emoji.name.toLowerCase().includes(folded)),
+        ...searchEmoji(query).map((entry) => entry.emoji),
+      ];
       return results.length > 0 ? [{ id: "results", title: strings.emojiPicker.results, emoji: results }] : [];
     }
     const recent = recentEmoji().map((emoji) => displayEmoji(reactionKey(emoji)));
-    return [...(recent.length > 0 ? [{ id: "recent" as const, title: strings.emojiPicker.recent, emoji: recent }] : []), ...CATEGORY_SECTIONS];
+    return [
+      ...(recent.length > 0 ? [{ id: "recent" as const, title: strings.emojiPicker.recent, emoji: recent }] : []),
+      ...(server && serverEmojis.length > 0 ? [{ id: "server" as const, title: server.name, emoji: serverEmojis }] : []),
+      ...CATEGORY_SECTIONS,
+    ];
   });
   const sectionLengths = $derived(sections.map((section) => section.emoji.length));
   const sectionStarts = $derived(sectionLengths.map((_, index) => sectionLengths.slice(0, index).reduce((total, length) => total + length, 0)));
@@ -268,21 +285,39 @@
     >
       {#each sections as section, sectionIndex (section.id)}
         {@const isCurrent = sectionIndex === currentSectionIndex}
-        <IconButton
-          icon={section.id === "results" ? "magnifying-glass" : CATEGORY_ICONS[section.id]}
-          label={section.title}
-          data-category
-          aria-current={isCurrent ? "true" : undefined}
-          tabindex={isCurrent ? 0 : -1}
-          class={[
-            "size-(--mw-component-emoji-picker-category-size) rounded-(--mw-component-emoji-picker-category-radius)",
-            isCurrent
-              ? "bg-(--mw-component-emoji-picker-category-background-current) text-(--mw-component-emoji-picker-category-icon-current)"
-              : "text-(--mw-component-emoji-picker-category-icon) hover:text-(--mw-component-emoji-picker-category-icon-hover)",
-          ].join(" ")}
-          iconClass="size-(--mw-component-emoji-picker-category-icon-size)"
-          onclick={() => showSection(sectionIndex)}
-        />
+        {@const categoryClass = [
+          "size-(--mw-component-emoji-picker-category-size) rounded-(--mw-component-emoji-picker-category-radius)",
+          isCurrent
+            ? "bg-(--mw-component-emoji-picker-category-background-current) text-(--mw-component-emoji-picker-category-icon-current)"
+            : "text-(--mw-component-emoji-picker-category-icon) hover:text-(--mw-component-emoji-picker-category-icon-hover)",
+        ].join(" ")}
+        {@const firstEmoji = section.emoji[0]}
+        {#if section.id === "server" && firstEmoji !== undefined && typeof firstEmoji !== "string"}
+          <!-- The server's own emoji: its first one stands for them, as its picture is all they share. -->
+          <button
+            type="button"
+            data-category
+            aria-label={section.title}
+            title={section.title}
+            aria-current={isCurrent ? "true" : undefined}
+            tabindex={isCurrent ? 0 : -1}
+            class="{categoryClass} inline-flex shrink-0 items-center justify-center transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-visible:focus-ring pointer-coarse:size-(--mw-size-hit-web-min)"
+            onclick={() => showSection(sectionIndex)}
+          >
+            <CustomEmojiImage emoji={firstEmoji} class="size-(--mw-component-emoji-picker-category-icon-size)" isDecorative />
+          </button>
+        {:else}
+          <IconButton
+            icon={section.id === "results" || section.id === "server" ? "magnifying-glass" : CATEGORY_ICONS[section.id]}
+            label={section.title}
+            data-category
+            aria-current={isCurrent ? "true" : undefined}
+            tabindex={isCurrent ? 0 : -1}
+            class={categoryClass}
+            iconClass="size-(--mw-component-emoji-picker-category-icon-size)"
+            onclick={() => showSection(sectionIndex)}
+          />
+        {/if}
       {/each}
     </div>
   {/if}
@@ -313,14 +348,21 @@
           data-emoji-grid
           class="grid grid-cols-[repeat(auto-fill,minmax(var(--mw-component-emoji-picker-cell-size),1fr))] pointer-coarse:grid-cols-[repeat(auto-fill,minmax(var(--mw-size-hit-web-min),1fr))]"
         >
-          {#each section.emoji as emoji, index (emoji)}
+          {#each section.emoji as emoji, index (typeof emoji === "string" ? emoji : emoji.id)}
             <button
               type="button"
               data-emoji-cell
               tabindex={offset + index === activeIndex ? 0 : -1}
+              aria-label={typeof emoji === "string" ? undefined : `:${emoji.name}:`}
+              title={typeof emoji === "string" ? undefined : `:${emoji.name}:`}
               class="grid size-(--mw-component-emoji-picker-cell-size) place-items-center rounded-(--mw-component-emoji-picker-cell-radius) text-(length:--mw-component-emoji-picker-emoji-size) leading-none transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-emoji-picker-cell-background-hover) focus-visible:bg-(--mw-component-emoji-picker-cell-background-hover) focus-visible:focus-ring-inset pointer-coarse:size-(--mw-size-hit-web-min) pointer-coarse:text-(length:--mw-component-emoji-picker-emoji-size-coarse)"
               onfocus={() => (activeIndex = offset + index)}
-              onclick={() => onpick(emoji)}>{emoji}</button
+              onclick={() => onpick(emoji)}
+              >{#if typeof emoji === "string"}{emoji}{:else}<CustomEmojiImage
+                  {emoji}
+                  class="size-(--mw-component-emoji-picker-emoji-size) pointer-coarse:size-(--mw-component-emoji-picker-emoji-size-coarse)"
+                  isDecorative
+                />{/if}</button
             >
           {/each}
         </div>

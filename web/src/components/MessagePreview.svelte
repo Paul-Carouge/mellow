@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Message } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
+  import { withCustomEmojiAsNames } from "./custom-emoji";
   import { displayName } from "./format";
 
   // The message a dialog acts on, as a framed preview (DESIGN.md §6.35): author and plain text.
@@ -22,7 +23,7 @@
     <p
       class="max-h-(--mw-component-dialog-preview-body-max-height) overflow-hidden type-message break-words whitespace-pre-wrap text-(--mw-component-message-body-text)"
     >
-      {message.content}
+      {withCustomEmojiAsNames(message.content)}
     </p>
   </div>
 </div>

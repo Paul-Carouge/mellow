@@ -3,6 +3,7 @@
   import { SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
+  import CustomEmojiImage from "./CustomEmojiImage.svelte";
   import type { BlockNode, InlineNode } from "./markdown";
 
   // A message body parsed by `markdown.ts` (DESIGN.md §5.4). Every node becomes an element or a
@@ -11,9 +12,11 @@
     blocks: readonly BlockNode[];
     /** Shown at the end of the last paragraph, as Discord places "(edited)"; on its own line otherwise. */
     trailing?: Snippet;
+    /** Only emoji (`isJumboEmojiMessage`): they show large, as on Discord. */
+    isJumbo?: boolean;
   }
 
-  let { blocks, trailing }: Props = $props();
+  let { blocks, trailing, isJumbo = false }: Props = $props();
 
   const revealedSpoilerIds = new SvelteSet<number>();
   let lastRevealedSpoilerId: number | null = null;
@@ -37,7 +40,13 @@
 </script>
 
 <!-- Inline nodes are written without whitespace between tags: paragraphs keep the sender's spaces. -->
-{#snippet inlines(nodes: readonly InlineNode[], areLinksActive: boolean)}{#each nodes as node, index (index)}{#if node.kind === "text"}{node.text}{:else if node.kind === "mention"}<span
+{#snippet inlines(nodes: readonly InlineNode[], areLinksActive: boolean)}{#each nodes as node, index (index)}{#if node.kind === "text"}{#if isJumbo && node.text.trim() !== ""}<span
+          class="text-(length:--mw-component-custom-emoji-jumbo-size) leading-none">{node.text}</span
+        >{:else}{node.text}{/if}{:else if node.kind === "customEmoji"}<CustomEmojiImage
+        emoji={node.emoji}
+        name={node.name}
+        class={isJumbo ? "size-(--mw-component-custom-emoji-jumbo-size)" : "size-(--mw-component-custom-emoji-inline-size)"}
+      />{:else if node.kind === "mention"}<span
         class="rounded-(--mw-component-mention-chip-radius) bg-(--mw-component-mention-chip-background) px-(--mw-component-mention-chip-padding-inline) font-medium text-(--mw-component-mention-chip-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-mention-chip-background-hover) hover:text-(--mw-component-mention-chip-text-hover)"
         >{node.text}</span
       >{:else if node.kind === "code"}<code class="inline-code">{node.text}</code

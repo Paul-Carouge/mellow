@@ -3,17 +3,19 @@
 
   import { strings } from "../i18n";
   import { describeError } from "../lib/client.svelte";
-  import type { PublicUser, ReactionSummary, Snowflake } from "../lib/protocol";
-  import { displayEmoji } from "../lib/reactions";
+  import type { CustomEmoji, PublicUser, ReactionSummary, Snowflake } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
+  import { reactionAppearance } from "./custom-emoji";
   import { displayName } from "./format";
   import ModalDialog from "./ModalDialog.svelte";
+  import ReactionEmoji from "./ReactionEmoji.svelte";
 
   // Who reacted with what (DESIGN.md §5.4), one emoji at a time as tabs; moderators can remove
   // someone's reaction from here.
   interface Props {
     reactions: readonly ReactionSummary[];
+    customEmojis: ReadonlyMap<Snowflake, CustomEmoji>;
     canRemoveOthers: boolean;
     loadUsers: (emoji: string) => Promise<PublicUser[]>;
     onremove: (emoji: string, userId: Snowflake) => Promise<void>;
@@ -21,7 +23,7 @@
     fallbackFocus: () => void;
   }
 
-  let { reactions, canRemoveOthers, loadUsers, onremove, onclose, fallbackFocus }: Props = $props();
+  let { reactions, customEmojis, canRemoveOthers, loadUsers, onremove, onclose, fallbackFocus }: Props = $props();
 
   const id = $props.id();
   let chosenEmoji = $state<string | null>(null);
@@ -123,13 +125,14 @@
     <div role="tablist" aria-label={strings.reactions.reactions} class="flex flex-wrap gap-(--mw-component-reaction-row-gap)" onkeydown={moveTabFocus}>
       {#each reactions as reaction (reaction.emoji)}
         {@const isSelected = reaction.emoji === selectedEmoji}
+        {@const appearance = reactionAppearance(reaction.emoji, customEmojis)}
         <button
           type="button"
           role="tab"
           id="{id}-tab-{reaction.emoji}"
           aria-selected={isSelected}
           aria-controls="{id}-panel"
-          aria-label={strings.reactions.chip(displayEmoji(reaction.emoji), reaction.count)}
+          aria-label={strings.reactions.chip(appearance.label, reaction.count)}
           tabindex={isSelected ? 0 : -1}
           class={[
             "flex h-(--mw-component-reaction-height) items-center gap-(--mw-component-reaction-gap) rounded-(--mw-component-reaction-radius) border-(length:--mw-component-reaction-border-width) px-(--mw-component-reaction-padding-inline) focus-visible:focus-ring pointer-coarse:h-(--mw-size-hit-web-min)",
@@ -139,7 +142,7 @@
           ]}
           onclick={() => (chosenEmoji = reaction.emoji)}
         >
-          <span aria-hidden="true" class="text-(length:--mw-component-reaction-emoji-size) leading-none">{displayEmoji(reaction.emoji)}</span>
+          <ReactionEmoji {appearance} />
           <span aria-hidden="true" class="type-body-sm font-semibold tabular-nums">{reaction.count}</span>
         </button>
       {/each}

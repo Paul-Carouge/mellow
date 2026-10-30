@@ -16,12 +16,13 @@ import {
 } from "../lib/protocol";
 import { displayName } from "./format";
 
-export type ServerSettingsSection = "overview" | "roles" | "invites" | "members" | "bans" | "moderation-log";
+export type ServerSettingsSection = "overview" | "roles" | "emoji" | "invites" | "members" | "bans" | "moderation-log";
 
 /** Discord's order: the server's own settings, then moderation. */
 const SECTION_PERMISSIONS: readonly [ServerSettingsSection, bigint][] = [
   ["overview", Permission.MANAGE_GUILD],
   ["roles", Permission.MANAGE_ROLES],
+  ["emoji", Permission.MANAGE_EMOJIS],
   ["invites", Permission.MANAGE_GUILD],
   ["members", Permission.KICK_MEMBERS | Permission.BAN_MEMBERS | Permission.MANAGE_ROLES],
   ["bans", Permission.BAN_MEMBERS],
