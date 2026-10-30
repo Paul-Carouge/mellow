@@ -141,7 +141,8 @@ Everything is start-aligned. A result's Jump button sits at the slip's top end, 
 ## 7. Not done, and open questions
 
 - **Filter names in French.** The server understands `from:`, `in:`, `has:`… only; Discord in French shows « de: », « dans: ». The French interface describes each English key. Accepting French keys would be a server change (both spellings parsed).
-- **Matches inside code blocks** are not lit (`shortcut:` in `search-highlights.ts`); inline code and everything else is.
+- **Matches inside code blocks and mention chips** are not lit (`shortcut:` comments in `search-highlights.ts`, the mention case covered by a test): a chip stays whole. Text, formatting, links, lists and every line of a quote are lit.
+- **Performance at the limits**, left for later and to measure first: the sheet renders every loaded result (up to 1 000 slips, each parsed as Markdown), and opening a result up to 1 000 messages back renders all of them in the chat list, which is not virtualised.
 - **The pins panel** could use `loadHistoryUntilMessage` to jump to pins further back; it still offers Jump only for loaded messages.
 - **Recent searches** are not kept.
 - **A date picker**: days come from suggestions or are typed as `YYYY-MM-DD`.
