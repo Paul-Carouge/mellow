@@ -114,7 +114,11 @@
   });
 
   // The next page loads as the end of the list comes into view (and at once when it already is).
+  // A new observer after each page reports the end again if it is still in view, so a short page
+  // that leaves it visible does not stall the loading.
   $effect(() => {
+    void search.hits.length;
+    void search.isLoadingMore;
     if (!sentinel || !list) {
       return;
     }
