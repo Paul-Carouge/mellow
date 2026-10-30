@@ -92,8 +92,12 @@
   );
 
   const context = $derived<SearchCaretContext>(searchCaretContext(search.draft, caret));
+  // Every filter is listed only in an empty field: between words, the first letters of one bring
+  // it, so the list does not cover the chat after each choice.
   const suggestions = $derived(
-    hasFocus && dismissedAt !== `${search.draft}@${caret}`
+    hasFocus &&
+      dismissedAt !== `${search.draft}@${caret}` &&
+      !(context.kind === "between" && search.draft.trim() !== "")
       ? searchSuggestions(context, { people, channels, today: new Date() })
       : [],
   );
@@ -356,11 +360,13 @@
     {:else if suggestion?.kind === "channel"}
       <Icon name={suggestion.isConversation ? "at" : "hash"} class="size-(--mw-component-search-suggestion-icon-size) text-text-muted" />
     {/if}
-    <span class={["min-w-0 flex-1 truncate", suggestion?.kind === "key" && "font-semibold"]}>{main}</span>
+    <!-- A filter's name stays whole and its description takes the rest; a value's name comes first. -->
+    <span class={["truncate", suggestion?.kind === "key" ? "shrink-0 font-semibold" : "min-w-0 flex-1"]}>{main}</span>
     {#if detail}
       <span
         class={[
-          "max-w-1/2 shrink-0 truncate type-body-sm",
+          "truncate type-body-sm",
+          suggestion?.kind === "key" ? "min-w-0 flex-1 text-end" : "max-w-1/2 shrink-0",
           isActive ? "text-(--mw-component-context-menu-item-text-focus)" : "text-(--mw-component-search-suggestion-detail-text)",
           suggestion === null && "rounded-xs border border-border-divider px-2xs pointer-coarse:hidden",
         ]}>{detail}</span

@@ -777,7 +777,7 @@ export const fr: Catalogue = {
       from: "Messages écrits par une personne",
       mentions: "Messages qui mentionnent une personne",
       in: "Messages d’un salon",
-      has: "Messages avec un lien, un fichier, une image ou épinglés",
+      has: "Messages avec lien, fichier, image ou épinglés",
       before: "Messages d’avant un jour",
       after: "Messages d’après un jour",
       during: "Messages d’un jour",

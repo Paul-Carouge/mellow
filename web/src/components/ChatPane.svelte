@@ -171,6 +171,8 @@
   let pinsButton = $state<HTMLButtonElement | null>(null);
   const pinsPanelToggle = createPopoverToggle(() => isPinsPanelOpen);
   let actionError = $state("");
+  /** Information rather than a failure (a search result too far back): quiet, not red. */
+  let notice = $state("");
   let fileInput = $state<HTMLInputElement | null>(null);
   // Each channel keeps its own tray, like its draft: its files were uploaded to that channel.
   const trayItemsByChannel = new Map<Snowflake, AttachmentTrayItem[]>();
@@ -224,6 +226,7 @@
     replyingTo = null;
     editingMessageId = null;
     actionError = "";
+    notice = "";
     picker = null;
     isPinsPanelOpen = false;
   });
@@ -296,9 +299,9 @@
     await messageList?.revealMessage(messageId, true);
   }
 
-  /** Why a search result could not be shown, said where the chat's own errors are. */
+  /** Why a search result could not be shown, said above the composer until the next channel. */
   export function showNotice(text: string) {
-    actionError = text;
+    notice = text;
   }
 
   function maximumComposerHeight(): number {
@@ -879,6 +882,13 @@
       />
     {/key}
 
+    <div role="status" class="contents">
+      {#if notice}
+        <p class="px-(--mw-component-composer-margin-inline) py-(--mw-component-composer-error-padding-block) type-body text-text-secondary">
+          {notice}
+        </p>
+      {/if}
+    </div>
     <div role="alert" class="contents">
       {#if actionError}
         <p class="px-(--mw-component-composer-margin-inline) py-(--mw-component-composer-error-padding-block) type-body text-(--mw-component-composer-error-text)">

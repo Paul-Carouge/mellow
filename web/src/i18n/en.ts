@@ -798,7 +798,7 @@ export const en = {
       from: "Messages a person wrote",
       mentions: "Messages that mention a person",
       in: "Messages in a channel",
-      has: "Messages with a link, a file, a picture or a pin",
+      has: "Messages with a link, file, picture or pin",
       before: "Messages before a day",
       after: "Messages after a day",
       during: "Messages on a day",

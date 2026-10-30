@@ -348,12 +348,12 @@
       {/if}
 
       <ol aria-labelledby="{id}-title" class="mt-sm flex flex-col">
-        {#each rows as row (row.hit.message.id)}
+        {#each rows as row, index (row.hit.message.id)}
           {@const message = row.hit.message}
           {@const place = placeOf(message.channel_id)}
-          <li class="flex flex-col">
+          <li class={["flex flex-col", index > 0 && (row.startsChannelRun ? "mt-md" : "mt-(--mw-component-search-result-gap)")]}>
             {#if row.startsChannelRun}
-              <p class="mt-xs mb-2xs flex min-w-0 items-center gap-2xs ps-2xs type-body-sm font-semibold text-(--mw-component-search-channel-label-text) first:mt-0">
+              <p class="mb-2xs flex min-w-0 items-center gap-2xs ps-2xs type-body-sm font-semibold text-(--mw-component-search-channel-label-text)">
                 <Icon name={place.isConversation ? "at" : "hash"} class="size-(--mw-component-search-field-icon-size) shrink-0" />
                 <span class="truncate">{place.isConversation ? place.name : place.name.slice(1)}</span>
               </p>
@@ -405,7 +405,7 @@
 {#snippet facetGroup(label: string, facets: { key: string; name: string; count: number; onchoose: () => void }[])}
   <div role="group" aria-label={label} class="mt-sm flex flex-col gap-2xs">
     <p aria-hidden="true" class="type-body-sm text-text-muted">{label}</p>
-    <div class="flex flex-wrap gap-2xs">
+    <div class="flex flex-wrap gap-2xs pointer-coarse:flex-nowrap pointer-coarse:overflow-x-auto pointer-coarse:[scrollbar-width:none] [&>*]:shrink-0">
       {#each facets as facet (facet.key)}
         <button
           type="button"
@@ -444,20 +444,38 @@
     <article
       aria-label={strings.messages.authorSaid(displayName(message.author), "")}
       aria-busy={isOpening}
-      class="group/slip relative mt-(--mw-component-search-result-gap) flex cursor-pointer gap-sm rounded-(--mw-component-search-result-radius) bg-(--mw-component-search-result-background) p-(--mw-component-search-result-padding) first:mt-0"
+      class="group/slip relative flex cursor-pointer gap-sm rounded-(--mw-component-search-result-radius) bg-(--mw-component-search-result-background) p-(--mw-component-search-result-padding)"
       onclick={(event) => openFromSlip(event, hit)}
     >
       <Avatar user={message.author} sizeToken="--mw-component-search-result-avatar-size" />
       <div class="flex min-w-0 flex-1 flex-col gap-3xs">
-        <p class="flex flex-wrap items-baseline gap-x-xs pe-[calc(var(--mw-component-search-sort-height)_+_var(--mw-space-xl))]">
-          <span class="type-message-author text-(--mw-component-message-author-text)">{displayName(message.author)}</span>
-          <time
-            datetime={new Date(sentAt).toISOString()}
-            title={fullTimestampLabel(sentAt)}
-            class="type-message-timestamp text-(--mw-component-message-timestamp-text)">{messageTimestampLabel(sentAt, new Date())}</time
+        <div class="flex items-start gap-xs">
+          <p class="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-xs">
+            <span class="type-message-author text-(--mw-component-message-author-text)">{displayName(message.author)}</span>
+            <time
+              datetime={new Date(sentAt).toISOString()}
+              title={fullTimestampLabel(sentAt)}
+              class="type-message-timestamp text-(--mw-component-message-timestamp-text)">{messageTimestampLabel(sentAt, new Date())}</time
+            >
+            <span class="sr-only">{placeName}</span>
+          </p>
+          <!-- The keyboard's way in; the slip itself answers a click. Shown on hover and focus with a
+               mouse, always under a coarse pointer. -->
+          <button
+            type="button"
+            aria-label={isOpening ? strings.search.opening : strings.search.jumpTo(displayName(message.author))}
+            aria-disabled={isOpening || undefined}
+            class={[
+              "-my-2xs flex h-(--mw-component-search-sort-height) shrink-0 items-center rounded-sm bg-(--mw-component-button-secondary-background) px-xs type-body-sm font-semibold text-(--mw-component-button-secondary-text) transition-[opacity,background-color] duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-button-secondary-background-hover) focus-visible:opacity-100 pointer-coarse:h-(--mw-size-hit-web-min) pointer-coarse:opacity-100",
+              isOpening ? "opacity-100" : "opacity-0 group-hover/slip:opacity-100",
+            ]}
+            onclick={() => {
+              if (!isOpening) {
+                onopenresult(hit);
+              }
+            }}>{isOpening ? strings.search.opening : strings.search.jump}</button
           >
-          <span class="sr-only">{placeName}</span>
-        </p>
+        </div>
         {#if message.content}
           <div class="type-message text-(--mw-component-message-body-text)">
             <MessageMarkdown {blocks} />
@@ -467,22 +485,6 @@
           <MessageAttachments attachments={message.attachments ?? []} isPending={false} />
         {/if}
       </div>
-      <!-- The keyboard's way in; the slip itself answers a click. Shown on hover and focus with a
-           mouse, always under a coarse pointer. -->
-      <button
-        type="button"
-        aria-label={isOpening ? strings.search.opening : strings.search.jumpTo(displayName(message.author))}
-        aria-disabled={isOpening || undefined}
-        class={[
-          "absolute end-xs top-xs flex h-(--mw-component-search-sort-height) items-center rounded-sm bg-(--mw-component-button-secondary-background) px-xs type-body-sm font-semibold text-(--mw-component-button-secondary-text) transition-[opacity,background-color] duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-button-secondary-background-hover) focus-visible:opacity-100 pointer-coarse:h-(--mw-size-hit-web-min) pointer-coarse:opacity-100",
-          isOpening ? "opacity-100" : "opacity-0 group-hover/slip:opacity-100",
-        ]}
-        onclick={() => {
-          if (!isOpening) {
-            onopenresult(hit);
-          }
-        }}>{isOpening ? strings.search.opening : strings.search.jump}</button
-      >
     </article>
   {/if}
 {/snippet}
