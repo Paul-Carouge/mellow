@@ -295,6 +295,7 @@
 
   /** A search result once its page is loaded: scrolled to, focused and lit (DESIGN.md 5.12). */
   export async function revealSearchResult(messageId: Snowflake): Promise<void> {
+    notice = "";
     await tick();
     await messageList?.revealMessage(messageId, true);
   }

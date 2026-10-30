@@ -47,6 +47,8 @@
     isFullWindow?: boolean;
     /** The result being opened: its Jump reads "Opening…". */
     openingMessageId: Snowflake | null;
+    /** Why the last result chosen could not open. */
+    notice: string;
     onopenresult: (hit: MessageSearchHit) => void;
     onclose: () => void;
     onopenquickswitcher: () => void;
@@ -58,6 +60,7 @@
     isDocked,
     isFullWindow = false,
     openingMessageId,
+    notice,
     onopenresult,
     onclose,
     onopenquickswitcher,
@@ -243,6 +246,11 @@
   {/if}
 
   <p class="sr-only" aria-live="polite">{announcement}</p>
+  <div role="status" class="contents">
+    {#if notice}
+      <p class="shrink-0 px-md pb-xs type-body text-text-secondary">{notice}</p>
+    {/if}
+  </div>
 
   <div bind:this={list} class="min-h-0 flex-1 overflow-y-auto px-sm pb-md [scrollbar-width:thin]" aria-busy={status.kind === "loading"}>
     {#if status.kind === "idle"}

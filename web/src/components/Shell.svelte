@@ -116,6 +116,14 @@
   const isSearchOverlayOpen = $derived(messageSearch.isPanelOpen && !hasRoomForSearchSheet.current);
   /** The result being opened, while its page loads. */
   let openingMessageId = $state<Snowflake | null>(null);
+  let latestSearchResultRequest = 0;
+  /** Why a result could not open, said in the results themselves. */
+  let searchNotice = $state("");
+  // A new search, or none, says nothing about an older result.
+  $effect(() => {
+    void messageSearch.query;
+    searchNotice = "";
+  });
 
   const guild = $derived(client.selectedGuild);
   const group = $derived(
@@ -275,25 +283,32 @@
   async function openSearchResult(hit: MessageSearchHit) {
     const message = hit.message;
     const scopeGuildId = messageSearch.scopeGuildId;
+    // A later choice wins: an earlier one still loading its pages must not reveal or speak after it.
+    const request = ++latestSearchResultRequest;
+    const isSuperseded = () => request !== latestSearchResultRequest;
     openingMessageId = message.id;
+    searchNotice = "";
     try {
       if (client.selectedChannelId !== message.channel_id) {
         client.selectGuild(scopeGuildId, message.channel_id);
       }
       if (client.selectedChannelId !== message.channel_id) {
-        // The conversation left the list, or the channel was hidden since the search.
-        await tick();
-        chatPane?.showNotice(scopeGuildId === null ? strings.search.conversationGone : strings.search.jumpMissing);
+        // The conversation left the list, or the channel was hidden since the search: said in the
+        // results, which stay open (at Home the Friends space has no chat to say it in).
+        searchNotice = scopeGuildId === null ? strings.search.conversationGone : strings.search.jumpMissing;
         return;
       }
       const reach = await client.loadHistoryUntilMessage(message.channel_id, message.id);
-      if (reach === "left") {
+      if (reach === "left" || isSuperseded()) {
         return;
       }
       if (!hasRoomForSearchSheet.current) {
         messageSearch.isPanelOpen = false;
       }
       await tick();
+      if (isSuperseded()) {
+        return;
+      }
       switch (reach) {
         case "loaded":
           await chatPane?.revealSearchResult(message.id);
@@ -309,7 +324,9 @@
           break;
       }
     } finally {
-      openingMessageId = null;
+      if (openingMessageId === message.id && !isSuperseded()) {
+        openingMessageId = null;
+      }
     }
   }
 
@@ -413,6 +430,7 @@
     {isDocked}
     isFullWindow={!isDocked && !hasRoomForNavigator.current}
     {openingMessageId}
+    notice={searchNotice}
     onopenresult={(hit) => void openSearchResult(hit)}
     onclose={() => void closeSearch()}
     onopenquickswitcher={openQuickSwitcherFromSearch}
