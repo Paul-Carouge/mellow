@@ -12,3 +12,6 @@ android/app/build/
 android/local.properties
 *.iml
 .idea/
+
+# Throwaway spikes have their own Cargo workspace
+spikes/*/target/
