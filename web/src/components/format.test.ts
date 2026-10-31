@@ -278,6 +278,23 @@ describe("channelSections", () => {
     ]);
   });
 
+  it("lists voice channels among the text ones, by position", () => {
+    const channel = (id: string, kind: "text" | "voice" | "category", position: number, parentId: string | null = null) => ({
+      id,
+      guild_id: "g",
+      kind,
+      name: id,
+      topic: "",
+      parent_id: parentId,
+      position,
+      permission_overwrites: [],
+    });
+    const guild = {
+      channels: [channel("10", "category", 0), channel("12", "text", 1, "10"), channel("11", "voice", 0, "10"), channel("13", "voice", 2, "10")],
+    };
+    expect(channelSections(guild).map((section) => section.channels.map((c) => c.id))).toEqual([["11", "12", "13"]]);
+  });
+
   it("lists a channel of a hidden category with the uncategorised ones, keeping its parent", () => {
     const hiddenParent = {
       id: "30",
