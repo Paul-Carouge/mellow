@@ -97,6 +97,7 @@ async fn fixture() -> Fixture {
             public_address: Some("127.0.0.1".into()),
             max_participants: 50,
         },
+        false,
         state.guilds.clone(),
         state.events.clone(),
     );

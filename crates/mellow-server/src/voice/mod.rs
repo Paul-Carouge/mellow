@@ -22,7 +22,7 @@ use crate::domain::guilds::{ChannelAudience, Guilds};
 use crate::domain::voice_rules::{VoiceAccess, has_room_for_one_more, validate_voice_offer};
 use crate::events::{EventHub, SessionKey};
 pub(crate) use address::is_valid_host;
-use address::{announceable_from_browsers, host_from_header, resolve_candidate_address};
+use address::{HostResolutions, announced_address, host_from_header};
 use media::{MediaCommand, MediaEvent, MediaJoin};
 
 /// A `voice_join` frame, with what the gateway knows of its sender.
@@ -98,6 +98,10 @@ struct VoiceShared {
     /// `None` when voice is disabled or its UDP port could not be opened.
     media: Option<MediaHandle>,
     public_address: Option<String>,
+    resolutions: HostResolutions,
+    /// The HTTP listener is on loopback without TLS or proxy: a development instance, where a
+    /// `localhost` candidate is replaced by the machine's network address.
+    is_development_listener: bool,
     max_participants: usize,
     guilds: Arc<Guilds>,
     events: Arc<EventHub>,
@@ -116,14 +120,26 @@ pub(crate) struct VoiceService {
 impl VoiceService {
     /// Opens the UDP port and starts the media thread, unless voice is disabled. A port that
     /// cannot be opened is logged once; text chat goes on and joins get `voice_unavailable`.
-    pub(crate) fn start(config: &VoiceConfig, guilds: Arc<Guilds>, events: Arc<EventHub>) -> Self {
+    /// `is_development_listener`: the HTTP listener is on loopback without TLS or reverse proxy.
+    pub(crate) fn start(
+        config: &VoiceConfig,
+        is_development_listener: bool,
+        guilds: Arc<Guilds>,
+        events: Arc<EventHub>,
+    ) -> Self {
         let started = if config.enabled {
             start_media_loop(config.udp_port)
         } else {
             None
         };
         let (media, media_events) = started.unzip();
-        let service = Self::with_media(config, media, guilds, events.clone());
+        let service = Self::with_media(
+            config,
+            is_development_listener,
+            media,
+            guilds,
+            events.clone(),
+        );
         if let Some(media_events) = media_events {
             tokio::spawn(run_voice_events(
                 Arc::downgrade(&service.shared),
@@ -141,11 +157,12 @@ impl VoiceService {
             enabled: false,
             ..VoiceConfig::default()
         };
-        Self::with_media(&config, None, guilds, events)
+        Self::with_media(&config, false, None, guilds, events)
     }
 
     fn with_media(
         config: &VoiceConfig,
+        is_development_listener: bool,
         media: Option<MediaHandle>,
         guilds: Arc<Guilds>,
         events: Arc<EventHub>,
@@ -154,6 +171,8 @@ impl VoiceService {
             shared: Arc::new(VoiceShared {
                 media,
                 public_address: config.public_address.clone(),
+                resolutions: HostResolutions::default(),
+                is_development_listener,
                 max_participants: usize::try_from(config.max_participants).unwrap_or(usize::MAX),
                 guilds,
                 events,
@@ -213,14 +232,22 @@ impl VoiceService {
                 return Err(VoiceJoinRefusal::VoiceUnavailable);
             }
         }
-        // An address the administrator wrote is announced as is; one taken from the Host the
-        // client used may be `localhost`, which browsers cannot send media to.
+        // An address the administrator wrote is announced as is. One taken from the Host the
+        // client used may be `localhost`: replaced by the machine's network address only on a
+        // development instance, never on an exposed one (it would reveal its network address).
         let candidate_address = match &shared.public_address {
-            Some(public_address) => resolve_candidate_address(public_address, media.udp_port).await,
-            None => match request.host_header.as_deref().and_then(host_from_header) {
-                Some(host) => resolve_candidate_address(host, media.udp_port)
+            Some(public_address) => {
+                shared
+                    .resolutions
+                    .resolve(public_address, media.udp_port)
                     .await
-                    .map(announceable_from_browsers),
+            }
+            None => match request.host_header.as_deref().and_then(host_from_header) {
+                Some(host) => shared
+                    .resolutions
+                    .resolve(host, media.udp_port)
+                    .await
+                    .map(|address| announced_address(address, shared.is_development_listener)),
                 None => None,
             },
         };
