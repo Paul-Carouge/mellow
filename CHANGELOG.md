@@ -4,6 +4,21 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-31
+Voice channels, audio only. This version migrates the database (migration 22, with the usual automatic backup); older versions refuse it afterwards. Voice needs one UDP port (50000 by default) reachable from the internet: forward it on your router and open it in the host firewall; the Docker kit now publishes `50000:50000/udp`.
+
+### Added
+- Voice channels, on by default: create one with "Voice" in "Create channel" (optional user limit, 1 to 25), click it to join, and see who is in it, with a ring around whoever is speaking.
+- Web: a "Voice connected" panel above your user card with the connection quality and a hang-up button; you stay connected while you move around Mellow. The microphone and headset buttons now work (deafening also mutes you), also with Ctrl/Cmd+Shift+M and Ctrl/Cmd+Shift+D, and soft sounds play when people join or leave. Mellow reconnects by itself after a network change, and you can join without a microphone to listen.
+- New permissions **Connect** and **Speak**, per channel, given to everyone by default; without Speak, the server does not relay your voice.
+- Server: an audio relay (SFU) built into the binary (ADR-0030), at most 25 people per channel and 50 per instance, voice states and speaking events on the gateway, and an optional `[voice]` section in `mellow.toml` (`enabled`, `udp_port`, `public_address`, `max_participants`).
+
+### Changed
+- Server: gateway messages may be up to 32 KiB once signed in (4 KiB before), to carry voice offers.
+
+### Notes
+- Desktop builds released so far cannot read servers that contain a voice channel.
+
 ## [0.22.0] - 2026-10-31
 Message search. This version migrates the database (migration 21, with the usual automatic backup) and builds a search index of every message, which takes a few seconds per million messages; older versions refuse the database afterwards.
 
