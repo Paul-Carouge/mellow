@@ -1,6 +1,6 @@
 # 0030. Relay voice through an SFU built into the server binary
 
-- Status: Proposed (the owner validates it before stage 16.2 starts)
+- Status: Accepted (by the owner, 2026-10-31)
 - Date: 2026-10-31
 
 ## Context
