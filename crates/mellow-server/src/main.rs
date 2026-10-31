@@ -21,6 +21,10 @@ use zeroize::Zeroizing;
 
 const DEFAULT_CONFIG_PATH: &str = "mellow.toml";
 const DEFAULT_LOG_FILTER: &str = "info";
+/// The WebRTC stack logs addresses and SDP at debug level: kept at warn whatever `RUST_LOG` says,
+/// since logs never carry IP addresses (ADR-0030).
+const WEBRTC_LOG_DIRECTIVES: [&str; 4] =
+    ["str0m=warn", "str0m_proto=warn", "is=warn", "dimpl=warn"];
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Mellow server: self-hosted chat in one binary")]
@@ -134,8 +138,14 @@ fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER)),
+            WEBRTC_LOG_DIRECTIVES.iter().fold(
+                EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER)),
+                |filter, directive| match directive.parse() {
+                    Ok(directive) => filter.add_directive(directive),
+                    Err(_) => filter,
+                },
+            ),
         )
         .init();
     let runtime = match tokio::runtime::Runtime::new() {

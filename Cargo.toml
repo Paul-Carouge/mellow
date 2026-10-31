@@ -58,6 +58,8 @@ rustls-acme = { version = "0.15.4", features = ["axum"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
+# WebRTC in sans-IO style for the voice SFU (ADR-0030); its crypto is the aws-lc-rs already in the tree.
+str0m = { version = "0.24.1", default-features = false, features = ["aws-lc-rs"] }
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite-bundled", "macros", "migrate"] }
 tempfile = "3.27.0"
 tracing = "0.1.44"

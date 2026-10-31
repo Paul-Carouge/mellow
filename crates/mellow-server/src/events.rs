@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use mellow_protocol::{ChosenStatus, GatewayEvent, Presence, PresenceStatus, Snowflake};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
 use crate::domain::session_token::SessionTokenSha256;
 
@@ -211,6 +211,10 @@ pub(crate) struct TooManySessions;
 #[derive(Debug, Default)]
 pub(crate) struct EventHub {
     state: Mutex<HubState>,
+    /// Guilds where who may view, connect or speak may have changed since the voice service last
+    /// looked (ADR-0030); a set, so a burst of changes costs one re-evaluation per guild.
+    guilds_with_access_changes: Mutex<HashSet<Snowflake>>,
+    guild_access_changed: Notify,
 }
 
 impl EventHub {
@@ -470,6 +474,41 @@ impl EventHub {
             if guild_keys.is_empty() {
                 state.guild_sessions.remove(&guild_id);
             }
+        }
+    }
+
+    /// Delivers `event` to one session only: answers to that session's own voice requests.
+    pub(crate) fn publish_to_session(&self, key: SessionKey, event: &GatewayEvent) {
+        let Some(event) = published(event) else {
+            return;
+        };
+        self.state().send_to([key], &event);
+    }
+
+    /// A permission, role, overwrite, membership or channel change committed in `guild_id` may
+    /// change who may stay in its voice channels; the voice service re-checks them.
+    pub(crate) fn note_guild_access_changed(&self, guild_id: Snowflake) {
+        self.guilds_with_access_changes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(guild_id);
+        // Stores a permit when nobody waits, so a change noted meanwhile is never missed.
+        self.guild_access_changed.notify_one();
+    }
+
+    /// Waits until at least one guild had an access change, and takes them all.
+    pub(crate) async fn next_guild_access_changes(&self) -> HashSet<Snowflake> {
+        loop {
+            let changed = std::mem::take(
+                &mut *self
+                    .guilds_with_access_changes
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+            );
+            if !changed.is_empty() {
+                return changed;
+            }
+            self.guild_access_changed.notified().await;
         }
     }
 

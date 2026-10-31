@@ -27,10 +27,12 @@ use crate::domain::guild_rules::{
     validate_role_order, validate_user_limit,
 };
 use crate::domain::permissions::{
-    RoleManager, channel_permissions, guild_permissions, is_visible_to_every_member,
+    RoleManager, VoiceEntitlement, channel_permissions, guild_permissions,
+    is_visible_to_every_member, voice_entitlement,
 };
 use crate::domain::profile_images::fill_profile_images;
 use crate::domain::snowflake_generator::SnowflakeGenerator;
+use crate::domain::voice_rules::VoiceAccess;
 use crate::events::EventHub;
 use crate::storage::audit_log::{self as audit_log_storage, ChannelEntryFilter, NewAuditEntry};
 use crate::storage::guild_emojis as guild_emojis_storage;
@@ -562,6 +564,7 @@ impl Guilds {
             .map_err(|error| GuildError::Internal(Box::new(error)))??
             .ok_or(GuildError::NotFound)?;
         self.cached_permission_snapshots().remove(&guild_id);
+        self.events.note_guild_access_changed(guild_id);
         for member_id in member_ids {
             self.events.unsubscribe_user_from_guild(member_id, guild_id);
             self.events
@@ -761,6 +764,7 @@ impl Guilds {
     /// hidden or revealed channels for them (ADR-0015). Never fails: the change is committed, so a
     /// member whose snapshot cannot be built is skipped and resynchronises at their next `Ready`.
     async fn resynchronize(&self, guild_id: Snowflake, affected: AffectedMembers) {
+        self.events.note_guild_access_changed(guild_id);
         let online = self.events.online_user_ids_of_guild(guild_id);
         let recipients: Vec<Snowflake> = match affected {
             AffectedMembers::Everyone => online.into_iter().collect(),
@@ -816,6 +820,56 @@ impl Guilds {
                 ))
             })
             .collect())
+    }
+
+    /// What `user_id` may do in the voice channel `channel_id` now (ADR-0030), read fresh from the
+    /// database: the voice service asks on every join and after every change of who sees what.
+    pub(crate) async fn voice_access(
+        &self,
+        user_id: Snowflake,
+        channel_id: Snowflake,
+    ) -> Result<VoiceAccess, GuildError> {
+        let Some(channel) = guild_storage::find_guild_channel(&self.database, channel_id)
+            .await?
+            .filter(|channel| channel.kind == ChannelKind::Voice)
+        else {
+            return Ok(VoiceAccess::ChannelGone);
+        };
+        let Some(membership) =
+            guild_storage::find_membership(&self.database, channel.guild_id, user_id).await?
+        else {
+            return Ok(VoiceAccess::NotMember);
+        };
+        let permissions = channel_permissions(
+            user_id,
+            membership.owner_id,
+            channel.guild_id,
+            &membership.member_roles,
+            &channel.permission_overwrites,
+        );
+        Ok(match voice_entitlement(permissions) {
+            VoiceEntitlement::Refused => VoiceAccess::Denied,
+            entitlement => VoiceAccess::Allowed {
+                guild_id: channel.guild_id,
+                user_limit: channel.user_limit,
+                may_speak: entitlement == VoiceEntitlement::Speak,
+            },
+        })
+    }
+
+    /// Who can view the guild channel `channel_id` now, or `None` once it is gone (its viewers
+    /// were told by `CHANNEL_DELETE`).
+    pub(crate) async fn audience_of_guild_channel(
+        &self,
+        channel_id: Snowflake,
+    ) -> Result<Option<ChannelAudience>, GuildError> {
+        let Some(channel) = guild_storage::find_guild_channel(&self.database, channel_id).await?
+        else {
+            return Ok(None);
+        };
+        self.audience_with_overwrites(channel.guild_id, &channel.permission_overwrites)
+            .await
+            .map(Some)
     }
 
     /// The ids of every channel `user_id` can view, across their guilds.
@@ -1060,6 +1114,7 @@ impl Guilds {
                 id: channel.id,
             },
         );
+        self.events.note_guild_access_changed(channel.guild_id);
         Ok(())
     }
 
@@ -1283,6 +1338,8 @@ impl Guilds {
             .copied()
             .collect();
         let updated_channel = channel_from_stored(updated);
+        // CONNECT or SPEAK may have changed without changing who sees the channel.
+        self.events.note_guild_access_changed(channel.guild_id);
         self.events.publish_to_guild_members(
             channel.guild_id,
             &still_viewing,
@@ -1870,6 +1927,7 @@ impl Guilds {
     /// members see them go.
     fn publish_member_removed(&self, guild_id: Snowflake, user_id: Snowflake) {
         self.events.unsubscribe_user_from_guild(user_id, guild_id);
+        self.events.note_guild_access_changed(guild_id);
         self.events.publish_to_guild(
             guild_id,
             &GatewayEvent::GuildMemberRemove { guild_id, user_id },
