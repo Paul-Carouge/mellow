@@ -477,6 +477,14 @@ impl EventHub {
         }
     }
 
+    /// Whether the session is registered and not cut off: once false, it never turns true again.
+    pub(crate) fn is_session_live(&self, key: SessionKey) -> bool {
+        self.state()
+            .sessions
+            .get(&key)
+            .is_some_and(|entry| entry.sender.is_some())
+    }
+
     /// Delivers `event` to one session only: answers to that session's own voice requests.
     pub(crate) fn publish_to_session(&self, key: SessionKey, event: &GatewayEvent) {
         let Some(event) = published(event) else {
