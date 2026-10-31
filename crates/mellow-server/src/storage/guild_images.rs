@@ -209,7 +209,7 @@ pub(crate) async fn replace_channel_icon(
     .await?;
     let row: ChannelRow = sqlx::query_as(
         "UPDATE channels SET icon_id = ? WHERE id = ? \
-         RETURNING id, guild_id, kind, name, topic, parent_id, position, icon_id",
+         RETURNING id, guild_id, kind, name, topic, parent_id, position, icon_id, user_limit",
     )
     .bind(new_id)
     .bind(channel)

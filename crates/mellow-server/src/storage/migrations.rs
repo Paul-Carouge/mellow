@@ -393,8 +393,12 @@ mod tests {
             outcome.applied_versions.first(),
             Some(&(LAST_VERSION_WITHOUT_MEMBER_ROLES + 1))
         );
-        // Migration 0012 adds ADD_REACTIONS (1 << 16) to every @everyone role.
-        assert_eq!(everyone, ("@everyone".to_owned(), 0x064a | 0x1_0000, 0, 0));
+        // Migrations 0012 and 0022 add ADD_REACTIONS (1 << 16), CONNECT and SPEAK (1 << 18 and
+        // 1 << 19) to every @everyone role.
+        assert_eq!(
+            everyone,
+            ("@everyone".to_owned(), 0x064a | 0x1_0000 | 0xC_0000, 0, 0)
+        );
         assert_eq!(
             assignments_after_leaving, 0,
             "leaving drops the member's roles"
@@ -894,7 +898,8 @@ mod tests {
         );
         assert_eq!(
             permissions,
-            [(10, 0x043e | 0x1_0000), (11, 0)],
+            // Migration 0022 adds CONNECT and SPEAK to @everyone too.
+            [(10, 0x043e | 0x1_0000 | 0xC_0000), (11, 0)],
             "only @everyone gains ADD_REACTIONS"
         );
         assert_eq!(
@@ -1360,6 +1365,96 @@ mod tests {
             ]
         );
         assert!(integrity.is_ok(), "{integrity:?}");
+    }
+
+    #[tokio::test]
+    async fn existing_everyone_roles_may_use_voice_and_channels_keep_no_user_limit() {
+        const LAST_VERSION_WITHOUT_VOICE: i64 = 21;
+        const CONNECT_AND_SPEAK: i64 = (1 << 18) | (1 << 19);
+        // VIEW_CHANNEL, SEND_MESSAGES, READ_MESSAGE_HISTORY, ATTACH_FILES, CREATE_INVITE,
+        // CHANGE_NICKNAME and ADD_REACTIONS: the defaults before voice.
+        const EVERYONE_BEFORE_VOICE: i64 = 0x1_241e;
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_VOICE, database.writer())
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0), (50, 'Locked', 2, 0); \
+             INSERT INTO roles (id, guild_id, name, permissions, position, color) \
+             VALUES (10, 10, '@everyone', 74782, 0, 0), (11, 10, 'Muted', 0, 1, 0), \
+             (50, 50, '@everyone', 0, 0, 0); \
+             INSERT INTO guild_members (guild_id, user_id, joined_at_unix_milliseconds) \
+             VALUES (10, 1, 0), (10, 2, 0), (50, 2, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, topic, position) \
+             VALUES (20, 10, 'text', 'general', 'Hello', 0); \
+             INSERT INTO channels (id, guild_id, kind, name, topic, position) \
+             VALUES (21, 10, 'category', 'Talk', '', 1); \
+             INSERT INTO messages (id, channel_id, author_id, content) \
+             VALUES (30, 20, 1, 'hello');",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let permissions: Vec<(i64, i64)> =
+            sqlx::query_as("SELECT id, permissions FROM roles ORDER BY id")
+                .fetch_all(database.writer())
+                .await
+                .unwrap();
+        let channels: Vec<(i64, String, Option<i64>)> =
+            sqlx::query_as("SELECT id, topic, user_limit FROM channels ORDER BY id")
+                .fetch_all(database.writer())
+                .await
+                .unwrap();
+        let messages: Vec<(i64,)> = sqlx::query_as("SELECT id FROM messages")
+            .fetch_all(database.writer())
+            .await
+            .unwrap();
+        let voice_channel = sqlx::query(
+            "INSERT INTO channels (id, guild_id, kind, name, topic, position, user_limit) \
+             VALUES (22, 10, 'voice', 'Lounge', '', 2, 25)",
+        )
+        .execute(database.writer())
+        .await;
+        let out_of_range = sqlx::query(
+            "INSERT INTO channels (id, guild_id, kind, name, topic, position, user_limit) \
+             VALUES (23, 10, 'voice', 'Crowd', '', 3, 26)",
+        )
+        .execute(database.writer())
+        .await;
+        database.close().await;
+
+        assert_eq!(
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_VOICE + 1))
+        );
+        assert_eq!(
+            permissions,
+            [
+                (10, EVERYONE_BEFORE_VOICE | CONNECT_AND_SPEAK),
+                (11, 0),
+                (50, CONNECT_AND_SPEAK)
+            ],
+            "only @everyone roles gain CONNECT and SPEAK"
+        );
+        assert_eq!(
+            channels,
+            [(20, "Hello".to_owned(), None), (21, String::new(), None)]
+        );
+        assert_eq!(messages, [(30,)]);
+        assert!(voice_channel.is_ok(), "{voice_channel:?}");
+        assert!(out_of_range.is_err(), "user limits stop at 25");
     }
 
     #[tokio::test]

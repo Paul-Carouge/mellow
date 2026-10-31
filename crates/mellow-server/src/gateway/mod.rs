@@ -453,6 +453,7 @@ async fn build_ready(
         may_create_guilds: state
             .guilds
             .may_create_guilds(user.is_instance_administrator),
+        voice_states: Vec::new(),
     })
 }
 
@@ -512,6 +513,8 @@ async fn run_attached(
                         return;
                     }
                 }
+                // shortcut: voice is not served yet; the voice module answers these frames.
+                Some(ClientFrame::VoiceJoin { .. } | ClientFrame::VoiceLeave | ClientFrame::VoiceState { .. }) => {}
                 // A second identify/resume, malformed JSON or a closed socket ends the connection.
                 Some(ClientFrame::Identify { .. } | ClientFrame::Resume { .. }) | None => break,
             },

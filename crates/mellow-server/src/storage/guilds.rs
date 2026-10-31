@@ -6,7 +6,7 @@ use super::Database;
 
 use mellow_protocol::{
     AuditChange, AuditChangeKey, ChannelKind, GuildSummary, OverwriteKind, PermissionOverwrite,
-    Permissions, ProfileImage, Role, Snowflake,
+    Permissions, ProfileImage, Role, Snowflake, UserLimitChange,
 };
 
 use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
@@ -75,6 +75,7 @@ fn channel_kind_to_text(kind: ChannelKind) -> &'static str {
     match kind {
         ChannelKind::Category => "category",
         ChannelKind::Text => "text",
+        ChannelKind::Voice => "voice",
     }
 }
 
@@ -82,6 +83,7 @@ fn channel_kind_from_text(text: &str) -> Result<ChannelKind, GuildStorageError> 
     match text {
         "category" => Ok(ChannelKind::Category),
         "text" => Ok(ChannelKind::Text),
+        "voice" => Ok(ChannelKind::Voice),
         other => Err(GuildStorageError::UnknownChannelKind(other.to_owned())),
     }
 }
@@ -97,6 +99,8 @@ pub(crate) struct StoredChannel {
     pub(crate) position: u32,
     pub(crate) icon: Option<ProfileImage>,
     pub(crate) permission_overwrites: Vec<PermissionOverwrite>,
+    /// Voice channels only (ADR-0030).
+    pub(crate) user_limit: Option<u8>,
 }
 
 pub(crate) type ChannelRow = (
@@ -108,10 +112,11 @@ pub(crate) type ChannelRow = (
     Option<i64>,
     i64,
     Option<i64>,
+    Option<i64>,
 );
 
 pub(crate) fn channel_from_row(row: ChannelRow) -> Result<StoredChannel, GuildStorageError> {
-    let (id, guild_id, kind, name, topic, parent_id, position, icon_id) = row;
+    let (id, guild_id, kind, name, topic, parent_id, position, icon_id, user_limit) = row;
     Ok(StoredChannel {
         id: to_id(id)?,
         guild_id: to_id(guild_id)?,
@@ -130,6 +135,9 @@ pub(crate) fn channel_from_row(row: ChannelRow) -> Result<StoredChannel, GuildSt
             })
             .transpose()?,
         permission_overwrites: Vec::new(),
+        user_limit: user_limit
+            .map(|limit| u8::try_from(limit).map_err(|_| GuildStorageError::IntegerOutOfRange))
+            .transpose()?,
     })
 }
 
@@ -704,7 +712,7 @@ pub(crate) async fn list_guild_channels(
     guild_id: Snowflake,
 ) -> Result<Vec<StoredChannel>, GuildStorageError> {
     let rows: Vec<ChannelRow> = sqlx::query_as(
-        "SELECT id, guild_id, kind, name, topic, parent_id, position, icon_id FROM channels \
+        "SELECT id, guild_id, kind, name, topic, parent_id, position, icon_id, user_limit FROM channels \
          WHERE guild_id = ? ORDER BY position, id",
     )
     .bind(to_integer(guild_id.raw())?)
@@ -728,7 +736,7 @@ pub(crate) async fn find_guild_channel(
         return Ok(None);
     };
     let row: Option<ChannelRow> = sqlx::query_as(
-        "SELECT id, guild_id, kind, name, topic, parent_id, position, icon_id FROM channels \
+        "SELECT id, guild_id, kind, name, topic, parent_id, position, icon_id, user_limit FROM channels \
          WHERE id = ? AND guild_id IS NOT NULL",
     )
     .bind(channel_id)
@@ -955,8 +963,9 @@ pub(crate) async fn insert_channel_last(
         .begin_with(BEGIN_WRITE_TRANSACTION)
         .await?;
     let result: Result<Option<i64>, sqlx::Error> = sqlx::query_scalar(
-        "INSERT INTO channels (id, guild_id, kind, name, topic, parent_id, position) \
-         SELECT ?, ?, ?, ?, ?, ?, COALESCE(MAX(position) + 1, 0) FROM channels WHERE guild_id = ? \
+        "INSERT INTO channels (id, guild_id, kind, name, topic, parent_id, user_limit, position) \
+         SELECT ?, ?, ?, ?, ?, ?, ?, COALESCE(MAX(position) + 1, 0) FROM channels \
+         WHERE guild_id = ? \
          HAVING COUNT(*) < ? \
          RETURNING position",
     )
@@ -971,6 +980,7 @@ pub(crate) async fn insert_channel_last(
             .map(|id| to_integer(id.raw()))
             .transpose()?,
     )
+    .bind(channel.user_limit.map(i64::from))
     .bind(guild_id)
     .bind(to_count(maximum_channels))
     .fetch_optional(&mut *transaction)
@@ -1043,6 +1053,14 @@ pub(crate) async fn reorder_channels(
     Ok(true)
 }
 
+/// The fields of a channel update; `None` keeps a field.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ChannelFieldChanges<'a> {
+    pub(crate) name: Option<&'a str>,
+    pub(crate) topic: Option<&'a str>,
+    pub(crate) user_limit: UserLimitChange,
+}
+
 /// Writes only the given fields, so concurrent edits of different fields do not overwrite each
 /// other. Returns the updated channel, or `None` if it no longer exists.
 ///
@@ -1051,8 +1069,7 @@ pub(crate) async fn reorder_channels(
 pub(crate) async fn update_channel_fields(
     database: &Database,
     channel_id: Snowflake,
-    name: Option<&str>,
-    topic: Option<&str>,
+    changes: ChannelFieldChanges<'_>,
     audit: &NewAuditEntry,
 ) -> Result<Option<StoredChannel>, GuildStorageError> {
     let mut transaction = database
@@ -1060,12 +1077,18 @@ pub(crate) async fn update_channel_fields(
         .begin_with(BEGIN_WRITE_TRANSACTION)
         .await?;
     let row: Option<ChannelRow> = sqlx::query_as(
-        "UPDATE channels SET name = COALESCE(?, name), topic = COALESCE(?, topic) \
+        "UPDATE channels SET name = COALESCE(?, name), topic = COALESCE(?, topic), \
+         user_limit = CASE WHEN ? THEN user_limit ELSE ? END \
          WHERE id = ? AND guild_id IS NOT NULL \
-         RETURNING id, guild_id, kind, name, topic, parent_id, position, icon_id",
+         RETURNING id, guild_id, kind, name, topic, parent_id, position, icon_id, user_limit",
     )
-    .bind(name)
-    .bind(topic)
+    .bind(changes.name)
+    .bind(changes.topic)
+    .bind(changes.user_limit.is_keep())
+    .bind(match changes.user_limit {
+        UserLimitChange::Set(limit) => Some(i64::from(limit)),
+        UserLimitChange::Keep | UserLimitChange::Clear => None,
+    })
     .bind(to_integer(channel_id.raw())?)
     .fetch_optional(&mut *transaction)
     .await?;

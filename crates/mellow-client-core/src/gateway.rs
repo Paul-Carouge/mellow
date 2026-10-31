@@ -379,6 +379,7 @@ mod tests {
                 channel_unreads: Vec::new(),
                 presences: Vec::new(),
                 relationships: Vec::new(),
+                voice_states: Vec::new(),
             }),
         }
     }

@@ -202,6 +202,7 @@ pub(super) fn create_channel(shell: &SharedShell, name: &str) {
                 name,
                 topic: String::new(),
                 parent_id,
+                user_limit: None,
             },
         )
         .await

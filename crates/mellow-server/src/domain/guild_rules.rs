@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use mellow_protocol::{
     ChannelKind, ChannelPlacement, InitialCategory, InitialTextChannel,
-    MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH, MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS, Permissions,
-    Snowflake,
+    MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH, MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
+    MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, Permissions, Snowflake,
 };
 
 use crate::domain::account_rules::is_invisible_format_character;
@@ -121,6 +121,30 @@ pub enum GuildRuleViolation {
     EmojiName,
     #[error("another emoji of this server already has this name")]
     EmojiNameTaken,
+    #[error(
+        "only voice channels have a user limit, from 1 to {MAXIMUM_VOICE_CHANNEL_PARTICIPANTS}"
+    )]
+    UserLimit,
+}
+
+/// The user limit a channel of `kind` may be given: none outside voice channels, 1 to the hard
+/// cap in them (ADR-0030).
+///
+/// # Errors
+/// `UserLimit` for a limit on another kind, or out of range.
+pub fn validate_user_limit(
+    kind: ChannelKind,
+    user_limit: Option<u8>,
+) -> Result<Option<u8>, GuildRuleViolation> {
+    match (kind, user_limit) {
+        (_, None) => Ok(None),
+        (ChannelKind::Voice, Some(limit))
+            if (1..=MAXIMUM_VOICE_CHANNEL_PARTICIPANTS).contains(&limit) =>
+        {
+            Ok(Some(limit))
+        }
+        _ => Err(GuildRuleViolation::UserLimit),
+    }
 }
 
 fn has_hidden_characters(text: &str) -> bool {
@@ -309,7 +333,7 @@ pub fn merge_channel_order(
         let is_parent_valid = match (kind, placement.parent_id) {
             (_, None) => true,
             (ChannelKind::Category, Some(_)) => false,
-            (ChannelKind::Text, Some(parent_id)) => {
+            (ChannelKind::Text | ChannelKind::Voice, Some(parent_id)) => {
                 before.parent_id == Some(parent_id)
                     || viewable
                         .get(&parent_id)
@@ -706,5 +730,31 @@ mod tests {
         assert_eq!(normalize_invite_code(" aB3dE5gH7k "), "aB3dE5gH7k");
         assert_eq!(normalize_invite_code("AE8C-78U9-K2QF"), "AE8C-78U9-K2QF");
         assert_eq!(normalize_invite_code("AE8C-78A9"), "AE8C-78A9");
+    }
+
+    #[test]
+    fn only_voice_channels_take_a_user_limit_within_the_hard_cap() {
+        assert_eq!(validate_user_limit(ChannelKind::Voice, None), Ok(None));
+        assert_eq!(
+            validate_user_limit(ChannelKind::Voice, Some(1)),
+            Ok(Some(1))
+        );
+        assert_eq!(
+            validate_user_limit(ChannelKind::Voice, Some(25)),
+            Ok(Some(25))
+        );
+        for (kind, limit) in [
+            (ChannelKind::Voice, 0),
+            (ChannelKind::Voice, 26),
+            (ChannelKind::Text, 5),
+            (ChannelKind::Category, 5),
+        ] {
+            assert_eq!(
+                validate_user_limit(kind, Some(limit)),
+                Err(GuildRuleViolation::UserLimit),
+                "{kind:?} {limit}"
+            );
+        }
+        assert_eq!(validate_user_limit(ChannelKind::Text, None), Ok(None));
     }
 }

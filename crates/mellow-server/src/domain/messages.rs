@@ -971,6 +971,7 @@ mod tests {
                     name: name.into(),
                     topic: String::new(),
                     parent_id: None,
+                    user_limit: None,
                 },
                 NOW,
             )
@@ -1361,6 +1362,7 @@ mod tests {
                     name: "other".into(),
                     topic: String::new(),
                     parent_id: None,
+                    user_limit: None,
                 },
                 NOW,
             )

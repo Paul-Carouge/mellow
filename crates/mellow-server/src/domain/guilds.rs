@@ -12,7 +12,7 @@ use mellow_protocol::{
     InitialCategory, InitialTextChannel, Invite, Member, OverwriteKind, PermissionOverwrite,
     Permissions, PublicUser, ReorderChannelsRequest, ReorderRolesRequest, Role,
     SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateGuildRequest,
-    UpdateRoleRequest,
+    UpdateRoleRequest, UserLimitChange,
 };
 
 use crate::domain::account_rules::GuildCreationPolicy;
@@ -24,7 +24,7 @@ use crate::domain::guild_rules::{
     generate_invite_code, merge_channel_order, normalize_ban_reason, normalize_channel_name,
     normalize_guild_name, normalize_initial_categories, normalize_invite_code, normalize_role_name,
     normalize_topic, validate_invite_limits, validate_known_permissions, validate_role_color,
-    validate_role_order,
+    validate_role_order, validate_user_limit,
 };
 use crate::domain::permissions::{
     RoleManager, channel_permissions, guild_permissions, is_visible_to_every_member,
@@ -35,8 +35,8 @@ use crate::events::EventHub;
 use crate::storage::audit_log::{self as audit_log_storage, ChannelEntryFilter, NewAuditEntry};
 use crate::storage::guild_emojis as guild_emojis_storage;
 use crate::storage::guilds::{
-    self as guild_storage, GuildRename, GuildStorageError, JoinOutcome, Membership, NewGuild,
-    RoleFieldChanges, StoredChannel, StoredInvite, StoredPermissionSnapshot,
+    self as guild_storage, ChannelFieldChanges, GuildRename, GuildStorageError, JoinOutcome,
+    Membership, NewGuild, RoleFieldChanges, StoredChannel, StoredInvite, StoredPermissionSnapshot,
 };
 
 mod emojis;
@@ -208,6 +208,7 @@ fn channel_from_stored(channel: StoredChannel) -> Channel {
         position: channel.position,
         icon: channel.icon,
         permission_overwrites: channel.permission_overwrites,
+        user_limit: channel.user_limit,
     }
 }
 
@@ -447,6 +448,7 @@ impl Guilds {
                         .map_err(|_| GuildRuleViolation::InitialChannels)?,
                     icon: None,
                     permission_overwrites: Vec::new(),
+                    user_limit: None,
                 });
             }
         }
@@ -580,7 +582,13 @@ impl Guilds {
         self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_CHANNELS)
             .await?;
         let name = normalize_channel_name(&request.name)?;
-        let topic = normalize_topic(&request.topic)?;
+        // Only text channels show a topic.
+        let topic = if request.kind == ChannelKind::Text {
+            normalize_topic(&request.topic)?
+        } else {
+            String::new()
+        };
+        let user_limit = validate_user_limit(request.kind, request.user_limit)?;
         if let Some(parent_id) = request.parent_id {
             // A category the creator cannot view is answered like a missing one.
             let parent = match self
@@ -620,6 +628,7 @@ impl Guilds {
                 position: 0,
                 icon: None,
                 permission_overwrites: Vec::new(),
+                user_limit,
             },
             MAXIMUM_CHANNELS_PER_GUILD,
             &audit,
@@ -842,13 +851,33 @@ impl Guilds {
             .name
             .map(|name| normalize_channel_name(&name))
             .transpose()?;
+        // Only text channels show a topic: it is ignored elsewhere.
         let topic = request
             .topic
+            .filter(|_| channel.kind == ChannelKind::Text)
             .map(|topic| normalize_topic(&topic))
             .transpose()?;
+        let user_limit = match request.user_limit {
+            UserLimitChange::Set(limit) => {
+                validate_user_limit(channel.kind, Some(limit))?;
+                UserLimitChange::Set(limit)
+            }
+            other => other,
+        };
+        let new_user_limit = match user_limit {
+            UserLimitChange::Keep => channel.user_limit,
+            UserLimitChange::Clear => None,
+            UserLimitChange::Set(limit) => Some(limit),
+        };
+        let user_limit_text = |limit: Option<u8>| limit.map(|limit| limit.to_string());
         let changes: Vec<AuditChange> = [
             text_change(AuditChangeKey::Name, &channel.name, name.as_deref()),
             text_change(AuditChangeKey::Topic, &channel.topic, topic.as_deref()),
+            (new_user_limit != channel.user_limit).then(|| AuditChange {
+                key: AuditChangeKey::UserLimit,
+                old_value: user_limit_text(channel.user_limit).unwrap_or_default(),
+                new_value: user_limit_text(new_user_limit).unwrap_or_default(),
+            }),
         ]
         .into_iter()
         .flatten()
@@ -871,8 +900,11 @@ impl Guilds {
         let updated = guild_storage::update_channel_fields(
             &self.database,
             channel.id,
-            name.as_deref(),
-            topic.as_deref(),
+            ChannelFieldChanges {
+                name: name.as_deref(),
+                topic: topic.as_deref(),
+                user_limit,
+            },
             &audit,
         )
         .await?
@@ -2125,6 +2157,7 @@ mod tests {
             name: name.into(),
             topic: String::new(),
             parent_id,
+            user_limit: None,
         }
     }
 
@@ -2237,6 +2270,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn voice_channels_keep_no_topic_and_take_a_user_limit_that_null_clears() {
+        let fixture = fixture().await;
+        let guild = fixture
+            .guilds
+            .create_guild(fixture.owner, false, create_request("Club"), NOW)
+            .await
+            .unwrap();
+        let category_id = guild.channels[0].id;
+        let create = |kind, user_limit| CreateChannelRequest {
+            kind,
+            name: "Lounge".into(),
+            topic: "ignored".into(),
+            parent_id: Some(category_id),
+            user_limit,
+        };
+        let voice = fixture
+            .guilds
+            .create_channel(
+                fixture.owner,
+                guild.id,
+                create(ChannelKind::Voice, Some(5)),
+                NOW,
+            )
+            .await
+            .unwrap();
+        let text_with_limit = fixture
+            .guilds
+            .create_channel(
+                fixture.owner,
+                guild.id,
+                create(ChannelKind::Text, Some(5)),
+                NOW,
+            )
+            .await
+            .map(|_| ());
+        let too_many = fixture
+            .guilds
+            .create_channel(
+                fixture.owner,
+                guild.id,
+                create(ChannelKind::Voice, Some(26)),
+                NOW,
+            )
+            .await
+            .map(|_| ());
+        let update = |user_limit| UpdateChannelRequest {
+            name: None,
+            topic: Some("still ignored".into()),
+            user_limit,
+        };
+        let raised = fixture
+            .guilds
+            .update_channel(fixture.owner, voice.id, update(UserLimitChange::Set(25)))
+            .await
+            .unwrap();
+        let kept = fixture
+            .guilds
+            .update_channel(fixture.owner, voice.id, update(UserLimitChange::Keep))
+            .await
+            .unwrap();
+        let cleared = fixture
+            .guilds
+            .update_channel(fixture.owner, voice.id, update(UserLimitChange::Clear))
+            .await
+            .unwrap();
+        let general_limited = fixture
+            .guilds
+            .update_channel(
+                fixture.owner,
+                guild.channels[1].id,
+                update(UserLimitChange::Set(3)),
+            )
+            .await
+            .map(|_| ());
+        let stored = fixture
+            .guilds
+            .get_guild(fixture.owner, guild.id)
+            .await
+            .unwrap();
+        fixture.database.close().await;
+
+        assert_eq!(voice.kind, ChannelKind::Voice);
+        assert_eq!(voice.topic, "");
+        assert_eq!(voice.user_limit, Some(5));
+        assert_eq!(voice.parent_id, Some(category_id));
+        for refused in [text_with_limit, too_many, general_limited] {
+            assert!(matches!(
+                refused,
+                Err(GuildError::InvalidInput(GuildRuleViolation::UserLimit))
+            ));
+        }
+        assert_eq!((raised.user_limit, raised.topic.as_str()), (Some(25), ""));
+        assert_eq!(kept.user_limit, Some(25));
+        assert_eq!(cleared.user_limit, None);
+        let stored_voice = stored
+            .channels
+            .iter()
+            .find(|channel| channel.id == voice.id);
+        assert_eq!(stored_voice.map(|channel| channel.user_limit), Some(None));
+    }
+
+    #[tokio::test]
     async fn channels_are_created_under_categories_renamed_and_deleted() {
         let fixture = fixture().await;
         let guild = fixture
@@ -2274,6 +2409,7 @@ mod tests {
                 UpdateChannelRequest {
                     name: Some("Random Stuff".into()),
                     topic: Some("Anything goes".into()),
+                    user_limit: mellow_protocol::UserLimitChange::Keep,
                 },
             )
             .await
@@ -2408,6 +2544,7 @@ mod tests {
         let rename = || UpdateChannelRequest {
             name: Some("renamed".into()),
             topic: None,
+            user_limit: mellow_protocol::UserLimitChange::Keep,
         };
         let guilds = &fixture.guilds;
 
@@ -2482,6 +2619,7 @@ mod tests {
                     name: "Nested".into(),
                     topic: String::new(),
                     parent_id: Some(own_category),
+                    user_limit: None,
                 },
                 NOW,
             )
@@ -3417,6 +3555,7 @@ mod tests {
             name: name.into(),
             topic: String::new(),
             parent_id: None,
+            user_limit: None,
         };
         let second = fixture
             .guilds
@@ -3526,6 +3665,7 @@ mod tests {
                     name: "Second".into(),
                     topic: String::new(),
                     parent_id: None,
+                    user_limit: None,
                 },
                 NOW,
             )
@@ -4455,6 +4595,7 @@ mod tests {
         let rename_to_same = UpdateChannelRequest {
             name: Some("general".into()),
             topic: Some(String::new()),
+            user_limit: mellow_protocol::UserLimitChange::Keep,
         };
         guilds
             .update_channel(owner, general, rename_to_same)
@@ -4502,6 +4643,7 @@ mod tests {
                 UpdateChannelRequest {
                     name: Some("lobby".into()),
                     topic: None,
+                    user_limit: mellow_protocol::UserLimitChange::Keep,
                 },
             )
             .await
