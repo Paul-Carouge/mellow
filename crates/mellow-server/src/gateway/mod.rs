@@ -48,10 +48,12 @@ const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bytes buffered towards one socket before writes wait on the network.
 const MAXIMUM_WRITE_BUFFER_BYTES: usize = 256 * 1024;
-/// Client frames are tiny (identify, resume, heartbeat) except `voice_join`, whose SDP offer may
-/// take up to `MAXIMUM_VOICE_OFFER_BYTES`, escaped in JSON (`\r\n` doubles each line ending);
-/// anything bigger is abuse.
-const MAXIMUM_CLIENT_FRAME_BYTES: usize = 96 * 1024;
+/// Before `identify`, a client sends only `identify` or `resume`: anything bigger is abuse.
+const MAXIMUM_FRAME_BYTES_BEFORE_IDENTIFY: usize = 4_096;
+/// Once identified, `voice_join` is the largest frame: its offer of at most
+/// `MAXIMUM_VOICE_OFFER_BYTES` escaped in JSON (each `\r\n` takes four bytes, about 6 % more for a
+/// real offer) plus the envelope. About twice a real Chromium offer (17 kB in JSON).
+const MAXIMUM_CLIENT_FRAME_BYTES: usize = 32 * 1024;
 const MAXIMUM_SESSIONS_PER_USER: usize = 10;
 /// Upper bound on simultaneous `WebSocket` connections, authenticated or not (file descriptors, tasks).
 const MAXIMUM_GATEWAY_CONNECTIONS: usize = 10_000;
@@ -175,11 +177,16 @@ async fn close(mut socket: WebSocket) {
     .await;
 }
 
-/// The next client frame, or `None` on close, error, binary data or malformed JSON.
-async fn next_client_frame(socket: &mut WebSocket) -> Option<ClientFrame> {
+/// The next client frame, or `None` on close, error, binary data, malformed JSON or a text larger
+/// than `maximum_bytes` (the socket itself accepts `MAXIMUM_CLIENT_FRAME_BYTES`).
+async fn next_client_frame(socket: &mut WebSocket, maximum_bytes: usize) -> Option<ClientFrame> {
     loop {
         match socket.recv().await? {
-            Ok(WebSocketMessage::Text(text)) => return serde_json::from_str(&text).ok(),
+            Ok(WebSocketMessage::Text(text)) => {
+                return (text.len() <= maximum_bytes)
+                    .then(|| serde_json::from_str(&text).ok())
+                    .flatten();
+            }
             Ok(WebSocketMessage::Ping(_) | WebSocketMessage::Pong(_)) => {}
             Ok(WebSocketMessage::Binary(_) | WebSocketMessage::Close(_)) | Err(_) => return None,
         }
@@ -212,7 +219,11 @@ async fn run_connection(
     if !send_frame(&mut socket, &hello).await {
         return;
     }
-    let first_frame = tokio::time::timeout(IDENTIFY_TIMEOUT, next_client_frame(&mut socket)).await;
+    let first_frame = tokio::time::timeout(
+        IDENTIFY_TIMEOUT,
+        next_client_frame(&mut socket, MAXIMUM_FRAME_BYTES_BEFORE_IDENTIFY),
+    )
+    .await;
     let (token, user, commands, hub_key, after_sequence, is_resume) = match first_frame {
         Ok(Some(ClientFrame::Identify { token })) => {
             let token = session_token(token);
@@ -603,7 +614,7 @@ async fn run_attached(
     let mut last_revalidated = Instant::now();
     loop {
         tokio::select! {
-            frame = next_client_frame(&mut socket) => match frame {
+            frame = next_client_frame(&mut socket, MAXIMUM_CLIENT_FRAME_BYTES) => match frame {
                 Some(ClientFrame::Heartbeat) => {
                     // Heartbeats revalidate the session (logout, disabled account), at most every
                     // 15 s so a client spamming heartbeats cannot load the database.
@@ -1346,6 +1357,26 @@ pub(crate) mod tests {
             matches!(next, None | Some(Err(_) | Ok(ClientMessage::Close(_)))),
             "{next:?}"
         );
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn frames_before_identify_stay_small_even_though_voice_offers_may_be_larger() {
+        let fixture = fixture().await;
+        let mut socket = connect(fixture.address).await;
+        receive(&mut socket).await;
+        // A valid identify, padded with JSON whitespace: fits the socket's limit (a voice offer),
+        // not the 4 KiB allowed before identify.
+        let padded_identify = format!(
+            r#"{{"op":"identify","d":{{"token":"{}"}}}}{}"#,
+            fixture.owner_token,
+            " ".repeat(MAXIMUM_FRAME_BYTES_BEFORE_IDENTIFY)
+        );
+        socket
+            .send(ClientMessage::Text(padded_identify.into()))
+            .await
+            .unwrap();
+        assert_eq!(receive(&mut socket).await, ServerFrame::InvalidSession);
         fixture.close().await;
     }
 }

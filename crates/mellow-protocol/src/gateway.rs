@@ -54,8 +54,10 @@ pub enum ClientFrame {
 /// The most voices one participant hears at once: receive m-lines of a voice offer (ADR-0030).
 pub const MAXIMUM_VOICE_RECEIVE_SLOTS: usize = 16;
 
-/// The largest SDP offer the server reads, in bytes.
-pub const MAXIMUM_VOICE_OFFER_BYTES: usize = 64 * 1024;
+/// The largest SDP offer the server reads, in bytes. A Chromium offer with 17 audio m-lines
+/// (one send, 16 receive) is about 16 kB with its candidates: this leaves room for longer
+/// codec lists without letting one frame weigh much.
+pub const MAXIMUM_VOICE_OFFER_BYTES: usize = 28 * 1024;
 
 /// The session token is never printed.
 impl std::fmt::Debug for ClientFrame {
