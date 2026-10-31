@@ -466,6 +466,8 @@ export interface Ready {
   may_create_guilds?: boolean;
   /** Who is connected to which voice channel, in every guild the user is in. Absent from older servers. */
   voice_states?: VoiceState[];
+  /** Voice is on and its UDP port is open on this instance; absent (false) on older servers. */
+  voice_enabled?: boolean;
 }
 
 /** One person connected to a voice channel; a user has at most one (ADR-0030). */

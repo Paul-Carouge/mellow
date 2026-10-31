@@ -112,6 +112,7 @@
       voiceState("4", "22", { self_mute: true, self_deaf: true }),
       voiceState("5", "22", { suppressed: true }),
     ],
+    voice_enabled: true,
   });
   client.membersByGuild.set(
     GUILD,

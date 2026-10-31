@@ -494,6 +494,7 @@ export class MellowClient {
     this.pendingMessages = this.pendingMessages.filter((pending) => this.isKnownChannel(pending.channelId));
     this.voiceStatesByUserId.clear();
     this.speakingUserIds.clear();
+    this.voice.isVoiceEnabledOnInstance = ready.voice_enabled ?? false;
     for (const state of ready.voice_states ?? []) {
       if (this.isKnownChannel(state.channel_id)) {
         this.voiceStatesByUserId.set(state.user_id, state);

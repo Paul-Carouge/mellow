@@ -240,6 +240,16 @@ describe("VoiceSession", () => {
     expect(session.problem).toEqual({ kind: "refused", channelId: CHANNEL, reason: "channel_full" });
   });
 
+  it("refuses at once, without asking for the microphone, when the instance has no voice", async () => {
+    const { session, frames, peers } = harness();
+    session.isVoiceEnabledOnInstance = false;
+    await session.join(CHANNEL);
+    expect(frames).toEqual([]);
+    expect(peers).toEqual([]);
+    expect(session.phase).toBe("idle");
+    expect(session.problem).toEqual({ kind: "refused", channelId: CHANNEL, reason: "voice_unavailable" });
+  });
+
   it("does not reconnect when voice moved to another tab or device", async () => {
     const { session, joins, connect } = harness();
     await connect();

@@ -80,6 +80,8 @@ export class VoiceSession {
   toggles = $state.raw<VoiceToggles>(readVoiceToggles(null));
   /** From your own microphone's level, so the ring answers at once. */
   isSelfSpeaking = $state(false);
+  /** From `ready`: false when the instance has no voice, so joining fails at once without asking for the microphone. */
+  isVoiceEnabledOnInstance = $state(true);
   /** Plays the join, leave and toggle sounds; set by the shell. */
   onCue: ((cue: VoiceCue) => void) | null = null;
 
@@ -115,6 +117,10 @@ export class VoiceSession {
   /** From a click: the microphone permission is asked here, never on load. Joining another channel moves. */
   async join(channelId: Snowflake): Promise<void> {
     if (this.channelId === channelId && this.phase !== "idle") {
+      return;
+    }
+    if (!this.isVoiceEnabledOnInstance) {
+      this.problem = { kind: "refused", channelId, reason: "voice_unavailable" };
       return;
     }
     this.problem = null;

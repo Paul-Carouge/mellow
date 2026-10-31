@@ -1312,6 +1312,7 @@ describe("Voice states", () => {
       ready({
         guilds: [guild([channel(GENERAL), voiceChannel(LOUNGE), voiceChannel(STAGE)])],
         voice_states: [voiceState(OTHER, LOUNGE), voiceState("3", "999")],
+        voice_enabled: true,
       }),
     );
     return { client, peer, cues };
@@ -1319,6 +1320,7 @@ describe("Voice states", () => {
 
   it("takes who is where from Ready, leaving out channels this reader cannot see", () => {
     const { client } = voiceClient();
+    expect(client.voice.isVoiceEnabledOnInstance).toBe(true);
     expect(client.voiceParticipants(LOUNGE).map((state) => state.user_id)).toEqual([OTHER]);
     expect(client.voiceStatesByUserId.has("3")).toBe(false);
   });
@@ -1327,6 +1329,8 @@ describe("Voice states", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(ready({ guilds: [guild([{ ...voiceChannel(LOUNGE), position: 0 }, channel(GENERAL)])] }));
     expect(client.selectedChannelId).toBe(GENERAL);
+    // An instance that does not say voice is on (an older one) has none.
+    expect(client.voice.isVoiceEnabledOnInstance).toBe(false);
   });
 
   it("follows moves in join order, and drops speaking with the move", () => {
