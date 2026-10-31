@@ -273,6 +273,13 @@ export const PERMISSION_GROUPS: readonly { group: PermissionGroupKey; permission
     ],
   },
   {
+    group: "voiceChannels",
+    permissions: [
+      { key: "connect", bit: Permission.CONNECT, isSensitive: false },
+      { key: "speak", bit: Permission.SPEAK, isSensitive: false },
+    ],
+  },
+  {
     group: "moderation",
     permissions: [
       { key: "kickMembers", bit: Permission.KICK_MEMBERS, isSensitive: false },

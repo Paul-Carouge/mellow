@@ -140,6 +140,8 @@ export function personMenuActions(facts: PersonMenuFacts): MenuLine<PersonMenuAc
 // --- A channel row ------------------------------------------------------------------------------
 
 export type ChannelMenuAction =
+  | "join-voice"
+  | "leave-voice"
   | "edit-channel"
   | "move-up"
   | "move-down"
@@ -160,13 +162,16 @@ export interface ChannelMenuFacts {
   readonly canMoveToCategory: boolean;
   /** `MANAGE_CHANNELS` in the channel. */
   readonly canDelete: boolean;
+  /** A voice channel: Join, or Leave when you are in it. Voice channels hold no messages to mute. */
+  readonly voice?: "join" | "leave";
 }
 
 /** Move up and Move down are the single-pointer and keyboard path for dragging (WCAG 2.2 2.5.7). */
 export function channelMenuActions(facts: ChannelMenuFacts): MenuLine<ChannelMenuAction>[] {
   return joinSections<ChannelMenuAction>([
+    [facts.voice === "join" && "join-voice", facts.voice === "leave" && "leave-voice"],
     [facts.canEditChannel && "edit-channel"],
-    notificationSection(facts.isMuted),
+    facts.voice === undefined ? notificationSection(facts.isMuted) : [],
     [facts.canMoveUp && "move-up", facts.canMoveDown && "move-down", facts.canMoveToCategory && "move-to-category"],
     ["copy-channel-id"],
     [facts.canDelete && "delete-channel"],
@@ -292,6 +297,8 @@ const LOOKS: Record<MenuAction, MenuItemLook> = {
   "copy-channel-id": { label: strings.contextMenu.copyChannelId, icon: "copy", tone: "normal" },
   "remove-friend": { label: strings.friends.removeFriend, icon: "user-minus", tone: "danger" },
   block: { label: strings.friends.block, icon: "prohibit", tone: "danger" },
+  "join-voice": { label: strings.contextMenu.joinVoice, icon: "speaker-high", tone: "normal" },
+  "leave-voice": { label: strings.contextMenu.leaveVoice, icon: "phone-disconnect", tone: "danger" },
   "edit-channel": { label: strings.contextMenu.editChannel, icon: "gear-six", tone: "normal" },
   "move-up": { label: strings.contextMenu.moveUp, icon: "caret-up", tone: "normal" },
   "move-down": { label: strings.contextMenu.moveDown, icon: "caret-down", tone: "normal" },

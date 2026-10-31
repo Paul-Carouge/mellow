@@ -4,13 +4,16 @@
   import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import { type Channel, type ChannelKind, MAXIMUM_CHANNEL_NAME_LENGTH, MAXIMUM_CHANNEL_TOPIC_LENGTH } from "../lib/protocol";
+  import type { VoiceUserLimitChoice } from "./channel-settings";
   import ChoiceOption from "./ChoiceOption.svelte";
   import ModalDialog from "./ModalDialog.svelte";
   import TextField from "./TextField.svelte";
+  import UserLimitField from "./UserLimitField.svelte";
 
-  // Discord's "Create channel" (DESIGN.md §5.3, §8): a text channel or a category, its name kept as
-  // typed, and an optional topic for a text channel. From a category's "+" the channel goes in it,
-  // so there is no type to choose: a category cannot hold another.
+  // Discord's "Create channel" (DESIGN.md §5.3, §8): a text channel, a voice channel or a
+  // category, its name kept as typed, an optional topic for a text channel and an optional user
+  // limit for a voice channel. From a category's "+" the channel goes in it, so Category is not
+  // offered: a category cannot hold another.
   interface Props {
     client: MellowClient;
     /** From a category's "+": the channel goes in it, and the subtitle says so. */
@@ -27,12 +30,14 @@
   let kind = $state<ChannelKind>(untrack(() => (category ? "text" : initialKind)));
   let name = $state("");
   let topic = $state("");
+  let userLimit = $state<VoiceUserLimitChoice>("unlimited");
   let isBusy = $state(false);
   // Plain: read by the dialog when it closes, after this component stopped updating.
   let hasSucceeded = false;
   let errorMessage = $state("");
 
   const isCategory = $derived(kind === "category");
+  const isVoice = $derived(kind === "voice");
 
   async function submit() {
     const kindToCreate = kind;
@@ -43,7 +48,8 @@
         kindToCreate,
         name.trim(),
         kindToCreate === "text" ? topic.trim() : "",
-        kindToCreate === "text" ? (category?.id ?? null) : null,
+        kindToCreate === "category" ? null : (category?.id ?? null),
+        kindToCreate === "voice" && userLimit !== "unlimited" ? userLimit : null,
       );
       hasSucceeded = true;
       onclose();
@@ -67,19 +73,27 @@
   onsubmit={submit}
   {fallbackFocus}
 >
-  {#if !category}
-    <fieldset class="flex flex-col gap-(--mw-component-choice-list-gap)" disabled={isBusy}>
-      <legend class="mb-(--mw-component-text-field-label-gap) type-category text-(--mw-component-text-field-label-text)">
-        {strings.createChannel.channelType}
-      </legend>
-      <ChoiceOption
-        name="{id}-kind"
-        value="text"
-        bind:group={kind}
-        icon="hash"
-        label={strings.createChannel.textChannel}
-        description={strings.createChannel.textChannelDescription}
-      />
+  <fieldset class="flex flex-col gap-(--mw-component-choice-list-gap)" disabled={isBusy}>
+    <legend class="mb-(--mw-component-text-field-label-gap) type-category text-(--mw-component-text-field-label-text)">
+      {strings.createChannel.channelType}
+    </legend>
+    <ChoiceOption
+      name="{id}-kind"
+      value="text"
+      bind:group={kind}
+      icon="hash"
+      label={strings.createChannel.textChannel}
+      description={strings.createChannel.textChannelDescription}
+    />
+    <ChoiceOption
+      name="{id}-kind"
+      value="voice"
+      bind:group={kind}
+      icon="speaker-high"
+      label={strings.voice.voiceChannel}
+      description={strings.voice.voiceChannelDescription}
+    />
+    {#if !category}
       <ChoiceOption
         name="{id}-kind"
         value="category"
@@ -88,19 +102,21 @@
         label={strings.createChannel.category}
         description={strings.createChannel.categoryDescription}
       />
-    </fieldset>
-  {/if}
+    {/if}
+  </fieldset>
   <TextField
     id="{id}-name"
     label={isCategory ? strings.createChannel.categoryName : strings.createChannel.channelName}
-    leadingIcon={isCategory ? undefined : "hash"}
+    leadingIcon={isCategory ? undefined : isVoice ? "speaker-high" : "hash"}
     maxlength={MAXIMUM_CHANNEL_NAME_LENGTH}
     autocomplete="off"
     readonly={isBusy}
     data-initial-focus=""
     bind:value={name}
   />
-  {#if !isCategory}
+  {#if isVoice}
+    <UserLimitField value={userLimit} onchange={(choice) => (userLimit = choice)} isDisabled={isBusy} />
+  {:else if !isCategory}
     <TextField
       id="{id}-topic"
       label={strings.createChannel.topic}

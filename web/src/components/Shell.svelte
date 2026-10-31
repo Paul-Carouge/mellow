@@ -38,6 +38,8 @@
   import ServerSettings from "./ServerSettings.svelte";
   import { minimumWidthQueryForPanes } from "./tokens";
   import UserSettings from "./UserSettings.svelte";
+  import { prepareChimeSound } from "./chime-sound";
+  import { playVoiceCue } from "./voice-sounds";
 
   // The signed-in shell (ADR-0022 §1): cards on the dusk ground. The navigator card and the
   // conversation sheet sit side by side inside the inset; the members side sheet opens on demand,
@@ -99,6 +101,16 @@
   // count, and the open channel counting as seen while the window has focus.
   $effect(() => loadNotificationPreferences(client.user?.id ?? null));
   onMount(() => startNotifier(client));
+  // Voice (docs/design/web-voice-channels.md): its sounds, and a fresh offer when the network returns.
+  onMount(() => {
+    client.voice.onCue = playVoiceCue;
+    const noteBackOnline = () => client.voice.noteBackOnline();
+    window.addEventListener("online", noteBackOnline);
+    return () => {
+      window.removeEventListener("online", noteBackOnline);
+      client.voice.onCue = null;
+    };
+  });
   $effect(() => showAttentionCount(attentionCount(client)));
   $effect(() => {
     const channelId = client.selectedChannelId;
@@ -223,6 +235,24 @@
       void closeMemberSheet();
     } else {
       toggleMemberSheet();
+    }
+  }
+
+  /** Ctrl+Shift+M and Ctrl+Shift+D, as on Discord, from anywhere: the microphone and the headset. */
+  function toggleVoiceWithShortcut(event: KeyboardEvent) {
+    if (!(event.ctrlKey || event.metaKey) || !event.shiftKey || event.altKey) {
+      return;
+    }
+    const key = event.key.toLowerCase();
+    if (key !== "m" && key !== "d") {
+      return;
+    }
+    event.preventDefault();
+    void prepareChimeSound();
+    if (key === "m") {
+      void client.voice.toggleMicrophone();
+    } else {
+      client.voice.toggleDeafened();
     }
   }
 
@@ -400,6 +430,7 @@
     toggleMemberSheetWithShortcut(event);
     toggleQuickSwitcherWithShortcut(event);
     focusSearchWithShortcut(event);
+    toggleVoiceWithShortcut(event);
   }}
 />
 

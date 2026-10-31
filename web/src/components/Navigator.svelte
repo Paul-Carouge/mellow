@@ -6,9 +6,11 @@
   import ChannelSidebar, { type ServerDialog } from "./ChannelSidebar.svelte";
   import ServerRail from "./ServerRail.svelte";
   import UserCard from "./UserCard.svelte";
+  import VoicePanel from "./VoicePanel.svelte";
 
   // The navigator (ADR-0022 §1): one card holding the server strip, the channel list and, across
-  // its whole width at the foot, the user card. In narrow windows it is the drawer's content.
+  // its whole width at the foot, the voice panel while connected, then the user card. In narrow
+  // windows it is the drawer's content.
   interface Props {
     client: MellowClient;
     collapsedCategoryIds: SvelteSet<Snowflake>;
@@ -41,7 +43,7 @@
 
 <div
   class={[
-    "grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto] bg-(--mw-component-navigator-background)",
+    "grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto_auto] bg-(--mw-component-navigator-background)",
     isInDrawer
       ? // The drawer leaves the sheet's peek visible, so on the narrowest phones the channel list
         // gives up width instead of being cut; the card also keeps clear of notches and the
@@ -52,6 +54,8 @@
 >
   <ServerRail {client} {onaddserver} {onopendialog} {onnavigate} />
   <ChannelSidebar {client} {collapsedCategoryIds} {onnewmessage} {onopendialog} {oncreatechannelin} {oneditchannel} {onnavigate} />
+  <!-- Voice stays connected wherever the reader goes: its panel lives here, above the user card. -->
+  <VoicePanel {client} {onnavigate} />
   {#if client.user}
     <UserCard {client} user={client.user} {onopenusersettings} />
   {/if}

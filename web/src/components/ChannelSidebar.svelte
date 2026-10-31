@@ -13,6 +13,7 @@
     Permission,
     type PublicUser,
     type Snowflake,
+    type VoiceState,
     hasPermission,
     iconUrl,
   } from "../lib/protocol";
@@ -35,6 +36,7 @@
   import { canManageChannel, visibleChannelSections } from "./channel-settings";
   import { contextMenuTrigger } from "./context-menu-trigger";
   import {
+    type ChannelMenuFacts,
     type MenuItemHandler,
     type ServerMenuAction,
     categoryMenuActions,
@@ -66,6 +68,8 @@
   import PersonContextMenu from "./PersonContextMenu.svelte";
   import RenameGroupDialog from "./RenameGroupDialog.svelte";
   import { lengthTokenInPixels } from "./tokens";
+  import { prepareChimeSound } from "./chime-sound";
+  import { displayName } from "./format";
 
   export type ServerDialog =
     | "invite-people"
@@ -102,6 +106,28 @@
   function canSendIn(channelId: Snowflake): boolean {
     const permissions = client.myChannelPermissions(channelId);
     return permissions === null || hasPermission(permissions, Permission.SEND_MESSAGES);
+  }
+  // Without `CONNECT` a voice channel shows a lock, as a read-only text channel does; the instance decides.
+  function canConnectTo(channelId: Snowflake): boolean {
+    const permissions = client.myChannelPermissions(channelId);
+    return permissions === null || hasPermission(permissions, Permission.CONNECT);
+  }
+  function isInVoiceChannel(channelId: Snowflake): boolean {
+    return client.voice.phase !== "idle" && client.voice.channelId === channelId;
+  }
+  /** A click joins (and asks for the microphone then): voice channels never open a chat. */
+  function joinVoiceChannel(channelId: Snowflake) {
+    void prepareChimeSound();
+    void client.voice.join(channelId);
+  }
+  /** The member list's person, or a placeholder while it loads. */
+  function voiceParticipant(guildId: Snowflake, state: VoiceState): PublicUser {
+    return (
+      client.membersByGuild.get(guildId)?.find((member) => member.user.id === state.user_id)?.user ??
+      (state.user_id === user?.id && user
+        ? user
+        : { id: state.user_id, username: state.user_id, display_name: strings.voice.someone })
+    );
   }
   function canEditChannel(channel: Channel): boolean {
     return visibleChannelSections(channel, client.myChannelPermissions(channel.id)).length > 0;
@@ -254,6 +280,7 @@
     readonly id: Snowflake;
     readonly name: string;
     readonly mayChangeCategory: boolean;
+    readonly isVoice: boolean;
     /** Where the pointer grabbed it, from its top. */
     readonly grabOffset: number;
     readonly left: number;
@@ -350,6 +377,7 @@
           id: item.id,
           name: item.name,
           mayChangeCategory: kind === "category" || canManageChannel(client.myChannelPermissions(id)),
+          isVoice: item.kind === "voice",
           grabOffset: y - bounds.top,
           left: bounds.left - listLeft,
           width: bounds.width,
@@ -471,7 +499,9 @@
     if (target?.kind === "channel") {
       const { channel } = target;
       const notificationTarget = { kind: "channel", guildId: channel.guild_id, channelId: channel.id } as const;
+      const voiceAction: ChannelMenuFacts["voice"] = isInVoiceChannel(channel.id) ? "leave" : "join";
       const facts = {
+        voice: channel.kind === "voice" ? voiceAction : undefined,
         canEditChannel: canEditChannel(channel),
         isMuted: isTargetMuted(notificationTarget),
         canMoveUp: canReorderNow && channelStepDestination(sections, channel.id, -1) !== null,
@@ -484,6 +514,10 @@
       };
       return menuEntries(channelMenuActions(facts), (action) => {
         switch (action) {
+          case "join-voice":
+            return { onselect: () => joinVoiceChannel(channel.id) };
+          case "leave-voice":
+            return { onselect: () => client.voice.leave() };
           case "edit-channel":
             return { onselect: () => oneditchannel(channel) };
           case "move-up":
@@ -708,7 +742,9 @@
   <ContextMenu
     bind:this={rowMenu}
     label={rowMenuTarget?.kind === "channel"
-      ? strings.contextMenu.actionsFor(`#${rowMenuTarget.channel.name}`)
+      ? strings.contextMenu.actionsFor(
+          rowMenuTarget.channel.kind === "voice" ? rowMenuTarget.channel.name : `#${rowMenuTarget.channel.name}`,
+        )
       : rowMenuTarget?.kind === "category"
         ? strings.contextMenu.actionsFor(rowMenuTarget.category.name)
         : rowMenuTarget?.kind === "group"
@@ -895,6 +931,9 @@
     {/if}
     <ul class={[isCarriedCategory && "opacity-(--mw-component-channel-drag-source-opacity)"]}>
       {#each section.channels as channel (channel.id)}
+        {#if channel.kind === "voice"}
+          {@render voiceChannelRow(guild, channel, isCollapsed)}
+        {:else}
         {@const isSelected = channel.id === client.selectedChannelId}
         {@const isChannelMuted = isTargetMuted({ kind: "channel", guildId: guild.id, channelId: channel.id })}
         {@const hasUnread = !isSelected && !isChannelMuted && client.hasUnread(channel.id)}
@@ -986,6 +1025,7 @@
             {/if}
           </li>
         {/if}
+        {/if}
       {/each}
     </ul>
   {/each}
@@ -1013,13 +1053,108 @@
       style:height="{carried.height}px"
     >
       {#if carried.kind === "channel"}
-        <Icon name="hash" class="size-(--mw-component-channel-row-icon-size) shrink-0" />
+        <Icon name={carried.isVoice ? "speaker-high" : "hash"} class="size-(--mw-component-channel-row-icon-size) shrink-0" />
         <span class="min-w-0 truncate type-channel-name">{carried.name}</span>
       {:else}
         <Icon name="caret-down" class="size-(--mw-component-category-chevron-size) shrink-0" />
         <span class="min-w-0 truncate type-category">{carried.name}</span>
       {/if}
     </div>
+  {/if}
+{/snippet}
+
+{#snippet voiceChannelRow(guild: Guild, channel: Channel, isCollapsed: boolean)}
+  {@const participants = client.voiceParticipants(channel.id)}
+  {@const isHere = isInVoiceChannel(channel.id)}
+  {@const canConnect = canConnectTo(channel.id)}
+  {@const canEdit = canEditChannel(channel)}
+  {@const limit = channel.user_limit ?? null}
+  <!-- Collapsed categories still show voice channels with people in them, as on Discord. -->
+  {#if !isCollapsed || participants.length > 0 || isHere}
+    <li
+      data-order-kind="channel"
+      data-order-id={channel.id}
+      class={[
+        "mt-(--mw-component-channel-row-gap) me-(--mw-component-channel-row-margin-inline)",
+        carried?.kind === "channel" && carried.id === channel.id && "cursor-grabbing opacity-(--mw-component-channel-drag-source-opacity)",
+      ]}
+      {@attach canCreateChannels && untrack(() => channelDragSource(dragHandlers("channel", channel.id)))}
+    >
+      <!-- Right-click, long press or Shift+F10: the channel's menu, with Join or Leave first. -->
+      <div class="group/row relative" {@attach contextMenuTrigger((origin, invoker) => openChannelMenu(channel, origin, invoker))}>
+        <button
+          type="button"
+          aria-label={strings.voice.rowLabel(channel.name, participants.length, limit, isHere, canConnect)}
+          class={[
+            // Where you are reads bright, without the selected wash: that stays for the open text channel.
+            rowClasses(false, isHere),
+            "h-(--mw-component-channel-row-height) pointer-coarse:h-(--mw-size-hit-web-min)",
+            canEdit &&
+              "pe-[calc(var(--mw-component-channel-row-settings-button-size)+var(--mw-component-channel-row-padding-inline))] pointer-coarse:pe-(--mw-size-hit-web-min)",
+          ]}
+          onclick={() => joinVoiceChannel(channel.id)}
+        >
+          <Icon name={canConnect ? "speaker-high" : "lock"} class="size-(--mw-component-channel-row-icon-size) shrink-0" />
+          <span class="min-w-0 flex-1 truncate type-channel-name">{channel.name}</span>
+          {#if limit !== null}
+            <!-- The gear takes its place while it shows. -->
+            <span
+              aria-hidden="true"
+              class={[
+                "shrink-0 type-body-sm tabular-nums text-(--mw-component-voice-participant-limit-text)",
+                canEdit && "group-focus-within/row:invisible group-hover/row:invisible",
+              ]}>{participants.length}/{limit}</span
+            >
+          {/if}
+        </button>
+        {#if canEdit}
+          <IconButton
+            icon="gear-six"
+            label={strings.sidebar.editChannel(channel.name)}
+            aria-haspopup="dialog"
+            class="absolute inset-y-0 end-2xs my-auto size-(--mw-component-channel-row-settings-button-size) text-(--mw-component-channel-row-settings-icon) hover:text-(--mw-component-channel-row-settings-icon-hover) invisible group-focus-within/row:visible group-hover/row:visible pointer-coarse:end-0 pointer-coarse:visible"
+            iconClass="size-(--mw-component-channel-row-settings-icon-size)"
+            onclick={() => oneditchannel(channel)}
+          />
+        {/if}
+      </div>
+      {#if participants.length > 0}
+        <ul aria-label={strings.voice.participantsIn(channel.name)}>
+          {#each participants as state (state.user_id)}
+            {@const person = voiceParticipant(guild.id, state)}
+            {@const isSpeaking = client.speakingUserIds.has(state.user_id) || (state.user_id === user?.id && client.voice.isSelfSpeaking)}
+            {@const isMicrophoneOff = state.self_mute || state.suppressed}
+            {@const states = [
+              state.self_deaf && strings.voice.soundOff,
+              state.self_mute && !state.self_deaf && strings.voice.microphoneOff,
+              state.suppressed && strings.voice.cannotSpeak,
+            ].filter((label): label is string => typeof label === "string")}
+            <li
+              class="flex h-(--mw-component-voice-participant-row-height) min-w-0 items-center gap-(--mw-component-voice-participant-gap) ps-(--mw-component-voice-participant-indent) pe-(--mw-component-channel-row-padding-inline)"
+            >
+              <!-- Speaking is shown, never announced (it would drown everything else out). -->
+              <span class={["voice-avatar shrink-0 rounded-full", isSpeaking && "is-speaking"]}>
+                <Avatar user={person} sizeToken="--mw-component-voice-participant-avatar-size" />
+              </span>
+              <span
+                class={[
+                  "min-w-0 flex-1 truncate type-body-sm",
+                  isSpeaking ? "text-(--mw-component-voice-participant-name-text-speaking)" : "text-(--mw-component-voice-participant-name-text)",
+                ]}
+              >
+                {displayName(person)}<span class="sr-only">{states.length > 0 ? `, ${states.join(", ")}` : ""}</span>
+              </span>
+              {#if isMicrophoneOff && !state.self_deaf}
+                <Icon name="microphone-slash" class="size-(--mw-component-voice-participant-state-icon-size) shrink-0 text-(--mw-component-voice-participant-state-icon)" />
+              {/if}
+              {#if state.self_deaf}
+                <Icon name="speaker-slash" class="size-(--mw-component-voice-participant-state-icon-size) shrink-0 text-(--mw-component-voice-participant-state-icon)" />
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </li>
   {/if}
 {/snippet}
 
@@ -1071,6 +1206,20 @@
 {/if}
 
 <style>
+  /* Dusk's lamp on whoever is talking: an apricot ring cut from the navigator, fading in and out
+     over motion.duration.fast (instant under reduced motion, where the token is 0). */
+  .voice-avatar {
+    display: inline-flex;
+    box-shadow:
+      0 0 0 var(--mw-component-voice-participant-speaking-ring-gap) transparent,
+      0 0 0 calc(var(--mw-component-voice-participant-speaking-ring-gap) + var(--mw-component-voice-participant-speaking-ring-width)) transparent;
+    transition: box-shadow var(--mw-motion-duration-fast) var(--mw-motion-easing-standard);
+  }
+  .voice-avatar.is-speaking {
+    box-shadow:
+      0 0 0 var(--mw-component-voice-participant-speaking-ring-gap) var(--mw-component-navigator-background),
+      0 0 0 calc(var(--mw-component-voice-participant-speaking-ring-gap) + var(--mw-component-voice-participant-speaking-ring-width)) var(--mw-component-voice-participant-speaking-ring);
+  }
   /* The one motion of a drag: the row lifts (DESIGN.md §5.3); reduced motion zeroes the duration. */
   .channel-drag-ghost {
     transform: scale(var(--mw-component-channel-drag-lift-scale));
