@@ -98,6 +98,8 @@ export class VoiceSession {
   private hasConnectedOnce = false;
   private hasRetriedAfterMediaTimeout = false;
   private isAwaitingGateway = false;
+  /** A `voice_state` could not leave (the gateway was down): sent again once it is back. */
+  private hasUnsentVoiceState = false;
   private lastLoudAt = Number.NEGATIVE_INFINITY;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private iceGraceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -265,7 +267,10 @@ export class VoiceSession {
   /** A resumed session kept its voice if audio still flows; otherwise offer again. */
   noteGatewayResumed(): void {
     if (this.isAwaitingGateway || !this.isMediaConnected()) {
+      // The offer carries the current mute and deafen.
       this.rejoin();
+    } else if (this.hasUnsentVoiceState) {
+      this.sendVoiceState();
     }
   }
 
@@ -295,7 +300,8 @@ export class VoiceSession {
   private async acquireMicrophone(): Promise<void> {
     try {
       const stream = await this.ports.requestMicrophone();
-      if (this.phase === "idle") {
+      // Hung up meanwhile, or a second click got a stream first: this one would never be stopped.
+      if (this.phase === "idle" || this.microphone !== null) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
@@ -375,6 +381,9 @@ export class VoiceSession {
     // The gateway is down: the next `ready` or `resumed` offers again.
     this.isAwaitingGateway = !isSent;
     if (isSent) {
+      this.hasUnsentVoiceState = false;
+    }
+    if (isSent) {
       this.clearTimer("connectTimer");
       this.connectTimer = setTimeout(() => {
         this.connectTimer = null;
@@ -415,6 +424,8 @@ export class VoiceSession {
     }
     this.phase = "connected";
     this.reconnectAttempts = 0;
+    // Audio flows again: a later media timeout deserves its own silent retry.
+    this.hasRetriedAfterMediaTimeout = false;
     if (!this.hasConnectedOnce) {
       this.hasConnectedOnce = true;
       this.onCue?.("self-join");
@@ -449,11 +460,15 @@ export class VoiceSession {
     writeVoiceToggles(this.ports.storage(), toggles);
     this.applyToggles();
     if (this.phase !== "idle") {
-      this.ports.sendFrame({
-        op: "voice_state",
-        d: { self_mute: this.isMicrophoneMuted, self_deaf: toggles.isDeafened },
-      });
+      this.sendVoiceState();
     }
+  }
+
+  private sendVoiceState(): void {
+    this.hasUnsentVoiceState = !this.ports.sendFrame({
+      op: "voice_state",
+      d: { self_mute: this.isMicrophoneMuted, self_deaf: this.toggles.isDeafened },
+    });
   }
 
   /** Muting stops sending at once; the server's `SPEAK` check is the enforcement, not this. */
@@ -524,6 +539,7 @@ export class VoiceSession {
     this.hasMicrophone = false;
     this.microphoneProblem = null;
     this.isAwaitingGateway = false;
+    this.hasUnsentVoiceState = false;
     this.isSelfSpeaking = false;
     this.lastLoudAt = Number.NEGATIVE_INFINITY;
     this.roundTripMilliseconds = null;
