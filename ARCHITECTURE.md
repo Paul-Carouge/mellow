@@ -297,7 +297,7 @@ The client core contains everything that is not drawing pixels, so desktop and A
 
 These are explicitly out of the MVP, listed only so current choices do not block them:
 
-- **Voice/video:** an SFU module (WebRTC in Rust, e.g. `str0m`) inside the same binary.
+- **Voice/video:** an SFU module (`str0m`) inside the same binary, one UDP port, signalling over the gateway (ADR-0030, proposed; ROADMAP item 16).
 - **Search:** SQLite FTS5 on message content.
 - **Object storage:** an S3-compatible attachment backend behind the existing storage trait.
 - **Larger instances:** if a single SQLite writer becomes the bottleneck, measure first; Postgres support would be a new ADR.
