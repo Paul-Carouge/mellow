@@ -390,6 +390,15 @@ impl ServerConfig {
         Ok(())
     }
 
+    /// Plain HTTP on loopback without a reverse proxy: only reachable from this machine, so a
+    /// development instance.
+    #[must_use]
+    pub fn is_development_listener(&self) -> bool {
+        self.listen_address.ip().is_loopback()
+            && self.tls.is_none()
+            && !self.behind_tls_reverse_proxy
+    }
+
     #[must_use]
     pub fn database_path(&self) -> PathBuf {
         self.data_directory.join(DATABASE_FILE_NAME)
@@ -544,6 +553,24 @@ mod tests {
             .unwrap_err();
             assert!(error.to_string().contains(expected), "{error}");
         }
+    }
+
+    #[test]
+    fn only_a_plain_loopback_listener_without_proxy_counts_as_development() {
+        let development = load_text(VALID_CONFIG, &EnvironmentOverrides::default()).unwrap();
+        assert!(development.is_development_listener());
+        let proxied = load_text(
+            &format!("behind_tls_reverse_proxy = true\n{VALID_CONFIG}"),
+            &EnvironmentOverrides::default(),
+        )
+        .unwrap();
+        assert!(!proxied.is_development_listener());
+        let exposed = ServerConfig {
+            listen_address: "0.0.0.0:8080".parse().unwrap(),
+            behind_tls_reverse_proxy: true,
+            ..development
+        };
+        assert!(!exposed.is_development_listener());
     }
 
     #[test]

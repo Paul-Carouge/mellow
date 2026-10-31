@@ -2,8 +2,10 @@
 //! public_address` when set, else the host the client reached the gateway at. Host values come
 //! from clients: they are checked before any lookup and never logged.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::Duration;
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 /// DNS names are at most 253 characters.
 const MAXIMUM_HOST_NAME_LENGTH: usize = 253;
@@ -53,6 +55,79 @@ pub(crate) async fn resolve_candidate_address(host: &str, port: u16) -> Option<S
     addresses.into_iter().find(SocketAddr::is_ipv4)
 }
 
+/// A resolution is reused this long: joins do not each cost a DNS lookup, and a home address
+/// that changes is picked up within a minute.
+const RESOLUTION_LIFETIME: Duration = Duration::from_secs(60);
+/// Host names remembered at once: an instance is reached under one or two names; members
+/// sending other `Host` values cannot grow the cache.
+const MAXIMUM_CACHED_HOSTS: usize = 8;
+
+#[derive(Debug, Clone, Copy)]
+struct CachedResolution {
+    resolved_at: Instant,
+    /// `None` is remembered too: a name that does not resolve is not looked up again at once.
+    address: Option<SocketAddr>,
+}
+
+/// Recent resolutions of candidate hosts, at most `MAXIMUM_CACHED_HOSTS`, each for
+/// `RESOLUTION_LIFETIME`.
+#[derive(Debug, Default)]
+pub(crate) struct HostResolutions {
+    entries: Mutex<HashMap<String, CachedResolution>>,
+}
+
+impl HostResolutions {
+    /// `resolve_candidate_address`, through the cache. The port is the instance's, the same for
+    /// every entry.
+    pub(crate) async fn resolve(&self, host: &str, port: u16) -> Option<SocketAddr> {
+        let key = host.to_ascii_lowercase();
+        if let Some(cached) = self.cached(&key, Instant::now()) {
+            return cached.address;
+        }
+        let address = resolve_candidate_address(&key, port).await;
+        self.store(key, address, Instant::now());
+        address
+    }
+
+    fn entries(&self) -> std::sync::MutexGuard<'_, HashMap<String, CachedResolution>> {
+        // The map holds no invariant a panicking holder could break.
+        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The resolution of `host` if it is less than `RESOLUTION_LIFETIME` old.
+    fn cached(&self, host: &str, now: Instant) -> Option<CachedResolution> {
+        self.entries()
+            .get(host)
+            .filter(|cached| {
+                now.saturating_duration_since(cached.resolved_at) < RESOLUTION_LIFETIME
+            })
+            .copied()
+    }
+
+    fn store(&self, host: String, address: Option<SocketAddr>, now: Instant) {
+        let mut entries = self.entries();
+        entries.retain(|_, cached| {
+            now.saturating_duration_since(cached.resolved_at) < RESOLUTION_LIFETIME
+        });
+        if entries.len() >= MAXIMUM_CACHED_HOSTS && !entries.contains_key(&host) {
+            let oldest = entries
+                .iter()
+                .min_by_key(|(_, cached)| cached.resolved_at)
+                .map(|(name, _)| name.clone());
+            if let Some(oldest) = oldest {
+                entries.remove(&oldest);
+            }
+        }
+        entries.insert(
+            host,
+            CachedResolution {
+                resolved_at: now,
+                address,
+            },
+        );
+    }
+}
+
 /// Browsers do not send media to a loopback candidate from their network interfaces, so an
 /// instance reached as `localhost` announces the machine's own network address instead. No
 /// packet is sent: connecting a UDP socket only picks the outgoing interface. Kept as is when the
@@ -70,6 +145,18 @@ pub(crate) fn announceable_from_browsers(address: SocketAddr) -> SocketAddr {
         .map(|probe_address| probe_address.ip())
         .filter(|ip| !ip.is_loopback() && !ip.is_unspecified());
     local_network_address.map_or(address, |ip| SocketAddr::new(ip, address.port()))
+}
+
+/// The candidate for an address resolved from the client's `Host`: a loopback address becomes
+/// the machine's network address only on a development instance. On an exposed instance it stays
+/// loopback (and media fails), since a member sending `Host: localhost` must not learn the
+/// server's network address.
+pub(crate) fn announced_address(resolved: SocketAddr, is_development_listener: bool) -> SocketAddr {
+    if is_development_listener {
+        announceable_from_browsers(resolved)
+    } else {
+        resolved
+    }
 }
 
 /// A documentation address (RFC 5737): only used to ask the routing table for an interface.
@@ -114,6 +201,49 @@ mod tests {
         assert_eq!(announced.port(), 50000);
         // Offline machines keep loopback; any other answer must be a real interface address.
         assert!(announced.ip() == Ipv4Addr::LOCALHOST || !announced.ip().is_loopback());
+    }
+
+    #[test]
+    fn loopback_is_replaced_on_development_instances_only() {
+        let loopback: SocketAddr = "127.0.0.1:50000".parse().unwrap();
+        assert_eq!(announced_address(loopback, false), loopback);
+        let public: SocketAddr = "192.0.2.10:50000".parse().unwrap();
+        assert_eq!(announced_address(public, true), public);
+        assert_eq!(announced_address(loopback, true).port(), 50000);
+    }
+
+    #[test]
+    fn resolutions_are_kept_a_minute_for_at_most_eight_names() {
+        let resolutions = HostResolutions::default();
+        let start = Instant::now();
+        let address: SocketAddr = "192.0.2.10:50000".parse().unwrap();
+        for index in 0..20 {
+            resolutions.store(
+                format!("host-{index}.example"),
+                Some(address),
+                start + Duration::from_millis(index),
+            );
+        }
+        assert_eq!(resolutions.entries().len(), 8);
+        let address_of =
+            |host: &str, now| resolutions.cached(host, now).map(|cached| cached.address);
+        assert_eq!(address_of("host-0.example", start), None, "evicted");
+        let last_stored = start + Duration::from_millis(19);
+        assert_eq!(
+            address_of("host-19.example", last_stored),
+            Some(Some(address))
+        );
+        assert_eq!(
+            address_of("host-19.example", last_stored + RESOLUTION_LIFETIME),
+            None,
+            "expired"
+        );
+        resolutions.store("nowhere.example".into(), None, start);
+        assert_eq!(
+            address_of("nowhere.example", start),
+            Some(None),
+            "failures are kept"
+        );
     }
 
     #[tokio::test]

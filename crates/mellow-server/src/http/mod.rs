@@ -79,8 +79,12 @@ impl AppState {
             config.guild_creation,
         ));
         let messages = Arc::new(Messages::new(database.clone(), ids.clone(), guilds.clone()));
-        let voice =
-            crate::voice::VoiceService::start(&config.voice, guilds.clone(), events.clone());
+        let voice = crate::voice::VoiceService::start(
+            &config.voice,
+            config.is_development_listener(),
+            guilds.clone(),
+            events.clone(),
+        );
         let attachments = Arc::new(crate::domain::attachments::Attachments::new(
             database.clone(),
             ids.clone(),
