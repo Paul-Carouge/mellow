@@ -50,7 +50,7 @@ Items 6 to 16 include the owner's wish list (the `#roadmap` channel of their ins
     3. **Voice comfort**: push-to-talk, per-person volume, input and output device choice, noise suppression (RNNoise, item 21) and an input level meter.
     4. **Soundboard and join sounds** (owner): sounds per server, played to the channel, and a join sound per member.
     5. **Video**: cameras in voice channels, with a grid and a speaker view.
-    6. **Screen sharing**: the owner's wish to reuse the Vesper engine for quality at low cost, studied in its own ADR first.
+    6. **Screen sharing**: the owner's wish to reuse the engine of **Vesper**, another project of the owner's: a replacement for OBS Studio, highly optimised for capturing and sharing video (high quality at a very low resource cost). Its location and licence are to be confirmed with the owner; studied in its own ADR first.
 Also in the owner's `#roadmap` channel (exported on 2026-10-28 before the instance was reset), not ordered yet; the owner picks:
 17. **Fixes and polish**: animations broken on Firefox; the "You're viewing older messages" bar fitted to the composer, and not shown when a growing composer pushes the list up; more picture formats; resizable columns.
 18. **Messages**: a "/" menu with live formatting while typing (Notion style); long code blocks collapsed with a way to expand them; link previews (Spotify, YouTube Music, Deezer, YouTube, plain pages); a picture and video viewer (download, copy link); a GIF service with favourites; polls, checklists and progress bars, with their permissions.
