@@ -449,13 +449,11 @@ impl VoiceShared {
         }
         if previous.channel_id != participant.channel_id {
             self.publish_move(user_id, &previous, participant).await;
-        } else if previous.session != participant.session
-            && previous.voice_state(user_id) != participant.voice_state(user_id)
-        {
+        } else if previous.voice_state(user_id) != participant.voice_state(user_id) {
             self.publish_state_updated(user_id, participant).await;
         }
-        // The same session joining its own channel again reconnects its media (an ICE restart):
-        // nothing is announced, so the client does not react to its own reconnection.
+        // Joining the same channel again with the same state reconnects the media (an ICE
+        // restart): nothing is announced, so the client does not react to its own reconnection.
     }
 
     fn send_media_command(&self, command: MediaCommand) {
@@ -521,21 +519,19 @@ impl VoiceShared {
                 .audience_of_guild_channel(current.channel_id)
                 .await,
         );
+        // Compared as sets of people, so a move to another guild's channel is covered too.
+        let viewers_of = |audience: ChannelAudience, guild_id: Snowflake| match audience {
+            ChannelAudience::EveryMember => self.events.online_user_ids_of_guild(guild_id),
+            ChannelAudience::Members(viewers) => viewers,
+        };
         let viewers_left_behind: HashSet<Snowflake> = match audiences {
-            (Ok(None), _) | (Ok(Some(_)), Ok(Some(ChannelAudience::EveryMember))) => return,
+            (Ok(None), _) => return,
             (Ok(Some(old)), Ok(new)) => {
-                let old_viewers = match old {
-                    ChannelAudience::EveryMember => {
-                        self.events.online_user_ids_of_guild(previous.guild_id)
-                    }
-                    ChannelAudience::Members(viewers) => viewers,
-                };
-                match new {
-                    Some(ChannelAudience::Members(new_viewers)) => {
-                        old_viewers.difference(&new_viewers).copied().collect()
-                    }
-                    _ => old_viewers,
-                }
+                let old_viewers = viewers_of(old, previous.guild_id);
+                let new_viewers = new
+                    .map(|new| viewers_of(new, current.guild_id))
+                    .unwrap_or_default();
+                old_viewers.difference(&new_viewers).copied().collect()
             }
             (Err(error), _) | (_, Err(error)) => {
                 tracing::warn!(%error, "voice: cannot read who views a channel");
