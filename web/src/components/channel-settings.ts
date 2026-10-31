@@ -7,6 +7,8 @@ import {
   CHANNEL_SCOPED_PERMISSIONS,
   type Channel,
   type Guild,
+  MAXIMUM_VOICE_USER_LIMIT,
+  MINIMUM_VOICE_USER_LIMIT,
   type Member,
   Permission,
   type PermissionBits,
@@ -35,7 +37,7 @@ export function visibleChannelSections(
   channel: Pick<Channel, "kind">,
   channelPermissions: PermissionBits | null,
 ): ChannelSettingsSection[] {
-  if (channel.kind !== "text") {
+  if (channel.kind === "category") {
     return [];
   }
   return [
@@ -58,6 +60,24 @@ export function channelNameAsSaved(name: string): string {
 export interface ChannelOverviewDrafts {
   name: string | null;
   topic: string | null;
+  /** A voice channel's limit as chosen; absent or null when left as stored. */
+  userLimit?: VoiceUserLimitChoice | null;
+}
+
+/** What the user limit select offers: "unlimited", or 1 to 25 people. */
+export type VoiceUserLimitChoice = number | "unlimited";
+
+export const VOICE_USER_LIMIT_CHOICES: readonly VoiceUserLimitChoice[] = [
+  "unlimited",
+  ...Array.from(
+    { length: MAXIMUM_VOICE_USER_LIMIT - MINIMUM_VOICE_USER_LIMIT + 1 },
+    (_, index) => MINIMUM_VOICE_USER_LIMIT + index,
+  ),
+];
+
+/** The choice showing a channel's stored limit. */
+export function userLimitChoiceOf(channel: Pick<Channel, "user_limit">): VoiceUserLimitChoice {
+  return channel.user_limit ?? "unlimited";
 }
 
 /**
@@ -65,14 +85,18 @@ export interface ChannelOverviewDrafts {
  * would store them. A field someone else changed meanwhile is never sent back with its old value.
  */
 export function channelOverviewChanges(
-  stored: Pick<Channel, "name" | "topic">,
+  stored: Pick<Channel, "name" | "topic" | "user_limit">,
   drafts: ChannelOverviewDrafts,
-): { name?: string; topic?: string } {
+): { name?: string; topic?: string; user_limit?: number | null } {
   const name = drafts.name === null ? null : channelNameAsSaved(drafts.name);
   const topic = drafts.topic === null ? null : drafts.topic.trim();
+  const userLimit = drafts.userLimit ?? null;
   return {
     ...(name !== null && name !== stored.name ? { name } : {}),
     ...(topic !== null && topic !== stored.topic ? { topic } : {}),
+    ...(userLimit !== null && userLimit !== userLimitChoiceOf(stored)
+      ? { user_limit: userLimit === "unlimited" ? null : userLimit }
+      : {}),
   };
 }
 
@@ -111,6 +135,12 @@ export const CHANNEL_PERMISSION_GROUPS = PERMISSION_GROUPS.map((group) => ({
   ...group,
   permissions: group.permissions.filter((permission) => (permission.bit & CHANNEL_SCOPED_PERMISSIONS) !== 0n),
 })).filter((group) => group.permissions.length > 0);
+
+/** As on Discord, a channel's editor leaves out the other kind's permissions: no "Speak" in a text channel. */
+export function channelPermissionGroupsFor(kind: Channel["kind"]): typeof CHANNEL_PERMISSION_GROUPS {
+  const otherKindGroup = kind === "voice" ? "textChannels" : "voiceChannels";
+  return CHANNEL_PERMISSION_GROUPS.filter((group) => group.group !== otherKindGroup);
+}
 
 export interface OverwriteTarget {
   kind: PermissionOverwrite["kind"];

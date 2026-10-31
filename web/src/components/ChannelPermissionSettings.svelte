@@ -6,7 +6,7 @@
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
   import {
-    CHANNEL_PERMISSION_GROUPS,
+    channelPermissionGroupsFor,
     OVERWRITE_STATES,
     type OverwriteBits,
     type OverwriteEdit,
@@ -84,8 +84,9 @@
   );
   const shown = $derived(draft ?? stored);
   const isEditable = $derived(selectedTarget !== null && canEditTarget(guild, manager, selectedTarget));
+  const permissionGroups = $derived(channelPermissionGroupsFor(channel.kind));
   const hasLockedPermissions = $derived(
-    CHANNEL_PERMISSION_GROUPS.some((group) =>
+    permissionGroups.some((group) =>
       group.permissions.some((permission) => !canChangeChannelPermission(channelPermissions, permission.bit)),
     ),
   );
@@ -311,7 +312,7 @@
           </p>
         {/if}
 
-        {#each CHANNEL_PERMISSION_GROUPS as group, groupIndex (group.group)}
+        {#each permissionGroups as group, groupIndex (group.group)}
           <section aria-labelledby="{id}-group-{group.group}" class={[groupIndex > 0 && "mt-(--mw-component-roles-permission-group-gap)"]}>
             <h4 id="{id}-group-{group.group}" class="type-category text-(--mw-component-settings-section-label-text)">
               {strings.serverSettings.roles.groups[group.group]}

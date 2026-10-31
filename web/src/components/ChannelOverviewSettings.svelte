@@ -2,14 +2,15 @@
   import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import { type Channel, MAXIMUM_CHANNEL_NAME_LENGTH, MAXIMUM_CHANNEL_TOPIC_LENGTH } from "../lib/protocol";
-  import { type ChannelOverviewDrafts, channelNameAsSaved, channelOverviewChanges } from "./channel-settings";
+  import { type ChannelOverviewDrafts, channelNameAsSaved, channelOverviewChanges, userLimitChoiceOf } from "./channel-settings";
   import Icon from "./Icon.svelte";
   import IconEditor from "./IconEditor.svelte";
   import TextField from "./TextField.svelte";
   import UnsavedChangesBar from "./UnsavedChangesBar.svelte";
+  import UserLimitField from "./UserLimitField.svelte";
 
-  // Channel Overview (DESIGN.md §5.8): the icon, saved at once, then the name and the topic, saved
-  // together through the unsaved-changes bar. A change by someone else to a field not typed in shows
+  // Channel Overview (DESIGN.md §5.8): the icon, saved at once, then the name and the topic (a voice
+  // channel: its user limit), saved together through the unsaved-changes bar. A change by someone else to a field not typed in shows
   // at once; a typed field is kept until saved or reset, and only typed fields are sent.
   interface Props {
     client: MellowClient;
@@ -22,7 +23,7 @@
   let { client, channel, attention, onunsavedchange }: Props = $props();
 
   /** Each field typed and not yet stored, apart: a change by someone else to the other one shows. */
-  let drafts = $state<ChannelOverviewDrafts>({ name: null, topic: null });
+  let drafts = $state<ChannelOverviewDrafts>({ name: null, topic: null, userLimit: null });
   /** Saved, and waiting for the gateway to bring it: not an unsaved change any more. */
   let saved = $state<ChannelOverviewDrafts | null>(null);
   let isSaving = $state(false);
@@ -30,11 +31,16 @@
   let notice = $state("");
 
   const id = $props.id();
-  const shown = $derived({ name: drafts.name ?? channel.name, topic: drafts.topic ?? channel.topic });
+  const shown = $derived({
+    name: drafts.name ?? channel.name,
+    topic: drafts.topic ?? channel.topic,
+    userLimit: drafts.userLimit ?? userLimitChoiceOf(channel),
+  });
   const changes = $derived(channelOverviewChanges(channel, drafts));
 
   const isChanged = $derived(
-    Object.keys(changes).length > 0 && !(saved !== null && saved.name === drafts.name && saved.topic === drafts.topic),
+    Object.keys(changes).length > 0 &&
+      !(saved !== null && saved.name === drafts.name && saved.topic === drafts.topic && saved.userLimit === drafts.userLimit),
   );
 
   $effect(() => {
@@ -51,18 +57,21 @@
     if (drafts.topic !== null && drafts.topic.trim() === channel.topic) {
       drafts.topic = null;
     }
-    if (drafts.name === null && drafts.topic === null) {
+    if (drafts.userLimit != null && drafts.userLimit === userLimitChoiceOf(channel)) {
+      drafts.userLimit = null;
+    }
+    if (drafts.name === null && drafts.topic === null && drafts.userLimit == null) {
       saved = null;
     }
   });
 
-  function edit(field: keyof ChannelOverviewDrafts, value: string) {
+  function edit(field: "name" | "topic", value: string) {
     drafts[field] = value;
     notice = "";
   }
 
   function reset() {
-    drafts = { name: null, topic: null };
+    drafts = { name: null, topic: null, userLimit: null };
     saved = null;
     errorMessage = "";
   }
@@ -111,19 +120,29 @@
       id="{id}-name"
       label={strings.channelSettings.overview.channelName}
       helper={strings.channelSettings.overview.channelNameHelper}
-      leadingIcon="hash"
+      leadingIcon={channel.kind === "voice" ? "speaker-high" : "hash"}
       maxlength={MAXIMUM_CHANNEL_NAME_LENGTH}
       autocomplete="off"
       bind:value={() => shown.name, (name) => edit("name", name)}
     />
-    <TextField
-      id="{id}-topic"
-      label={strings.channelSettings.overview.topic}
-      helper={strings.channelSettings.overview.topicHelper}
-      maxlength={MAXIMUM_CHANNEL_TOPIC_LENGTH}
-      autocomplete="off"
-      bind:value={() => shown.topic, (topic) => edit("topic", topic)}
-    />
+    {#if channel.kind === "voice"}
+      <UserLimitField
+        value={shown.userLimit}
+        onchange={(choice) => {
+          drafts.userLimit = choice;
+          notice = "";
+        }}
+      />
+    {:else}
+      <TextField
+        id="{id}-topic"
+        label={strings.channelSettings.overview.topic}
+        helper={strings.channelSettings.overview.topicHelper}
+        maxlength={MAXIMUM_CHANNEL_TOPIC_LENGTH}
+        autocomplete="off"
+        bind:value={() => shown.topic, (topic) => edit("topic", topic)}
+      />
+    {/if}
   </div>
   {#if notice && !isChanged}
     <p aria-hidden="true" class="mt-(--mw-component-settings-action-gap) flex gap-(--mw-component-settings-error-icon-gap) type-body text-(--mw-component-settings-notice-text)">
