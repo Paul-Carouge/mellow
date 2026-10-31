@@ -128,12 +128,15 @@
     if (state === "refused" || state === "moved" || state === "timeout") {
       await client.voice.join("22");
       if (state === "refused") {
-        dispatch({ t: "VOICE_JOIN_REFUSED", data: { channel_id: "22", reason: "channel_full" } });
+        dispatch({
+          t: "VOICE_JOIN_REFUSED",
+          data: { channel_id: "22", offer_id: client.voice.currentOfferId, reason: "channel_full" },
+        });
       } else if (state === "moved") {
         connectPeer();
         dispatch({ t: "VOICE_DISCONNECTED", data: { channel_id: "22", reason: "moved_elsewhere" } });
       } else {
-        await client.voice.applyAnswer("22", "answer");
+        await client.voice.applyAnswer("22", client.voice.currentOfferId, "answer");
         fakePeer.iceConnectionState = "failed";
         connectPeer = () => {};
         client.voice.disconnectedByServer("22", "media_timeout");

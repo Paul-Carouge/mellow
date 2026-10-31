@@ -192,9 +192,22 @@ export class VoiceSession {
 
   // --- Signalling from the gateway -----------------------------------------------------------
 
-  async applyAnswer(channelId: Snowflake, sdpAnswer: string): Promise<void> {
+  /**
+   * The id of the latest offer: answers and refusals of older offers (sent before a reconnection or
+   * a move) are ignored, since they do not match this peer connection.
+   */
+  get currentOfferId(): number {
+    return this.negotiation;
+  }
+
+  async applyAnswer(channelId: Snowflake, offerId: number, sdpAnswer: string): Promise<void> {
     const peer = this.peer;
-    if (channelId !== this.channelId || peer === null || peer.signalingState !== "have-local-offer") {
+    if (
+      channelId !== this.channelId ||
+      offerId !== this.currentOfferId ||
+      peer === null ||
+      peer.signalingState !== "have-local-offer"
+    ) {
       return;
     }
     const generation = this.negotiation;
@@ -208,8 +221,8 @@ export class VoiceSession {
     }
   }
 
-  refuse(channelId: Snowflake, reason: VoiceJoinRefusal): void {
-    if (channelId !== this.channelId || this.phase === "idle") {
+  refuse(channelId: Snowflake, offerId: number, reason: VoiceJoinRefusal): void {
+    if (channelId !== this.channelId || offerId !== this.currentOfferId || this.phase === "idle") {
       return;
     }
     // A refused move may leave the old connection on the instance: it ends too.
@@ -353,6 +366,7 @@ export class VoiceSession {
       op: "voice_join",
       d: {
         channel_id: channelId,
+        offer_id: generation,
         sdp_offer: offer,
         self_mute: this.isMicrophoneMuted,
         self_deaf: this.toggles.isDeafened,
