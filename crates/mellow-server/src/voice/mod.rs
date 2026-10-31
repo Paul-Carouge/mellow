@@ -596,6 +596,9 @@ impl VoiceShared {
 
     /// Checks again everyone connected in `guild_ids`, after a change of who may view, connect or
     /// speak there: the ones who lost access are disconnected, the others gain or lose `SPEAK`.
+    /// Then everyone still connected there is announced again to their channel's viewers, so a
+    /// member who just joined the guild or started to see a channel learns who is in it
+    /// (`VOICE_STATE_UPDATE` is idempotent for those who knew).
     async fn reevaluate(&self, guild_ids: &HashSet<Snowflake>) {
         let mut participants = self.participants.lock().await;
         let affected: Vec<(Snowflake, Snowflake)> = participants
@@ -603,8 +606,8 @@ impl VoiceShared {
             .filter(|(_, participant)| guild_ids.contains(&participant.guild_id))
             .map(|(user_id, participant)| (*user_id, participant.channel_id))
             .collect();
-        for (user_id, channel_id) in affected {
-            let access = match self.guilds.voice_access(user_id, channel_id).await {
+        for (user_id, channel_id) in &affected {
+            let access = match self.guilds.voice_access(*user_id, *channel_id).await {
                 Ok(access) => access,
                 Err(error) => {
                     tracing::warn!(%error, "voice: cannot check a participant's access again");
@@ -616,21 +619,24 @@ impl VoiceShared {
                 VoiceAccess::NotMember => VoiceDisconnectReason::RemovedFromGuild,
                 VoiceAccess::Denied => VoiceDisconnectReason::PermissionsChanged,
                 VoiceAccess::Allowed { may_speak, .. } => {
-                    let Some(participant) = participants.get_mut(&user_id) else {
-                        continue;
-                    };
-                    if participant.suppressed != may_speak {
-                        continue;
+                    if let Some(participant) = participants
+                        .get_mut(user_id)
+                        .filter(|participant| participant.suppressed == may_speak)
+                    {
+                        participant.suppressed = !may_speak;
+                        let command = participant.forwarding_command(*user_id);
+                        self.send_media_command(command);
                     }
-                    participant.suppressed = !may_speak;
-                    let participant = participant.clone();
-                    self.send_media_command(participant.forwarding_command(user_id));
-                    self.publish_state_updated(user_id, &participant).await;
                     continue;
                 }
             };
-            self.disconnect(&mut participants, user_id, Some(reason))
+            self.disconnect(&mut participants, *user_id, Some(reason))
                 .await;
+        }
+        for (user_id, _) in affected {
+            if let Some(participant) = participants.get(&user_id) {
+                self.publish_state_updated(user_id, participant).await;
+            }
         }
     }
 }
