@@ -22,7 +22,7 @@ use crate::domain::guilds::{ChannelAudience, Guilds};
 use crate::domain::voice_rules::{VoiceAccess, has_room_for_one_more, validate_voice_offer};
 use crate::events::{EventHub, SessionKey};
 pub(crate) use address::is_valid_host;
-use address::{host_from_header, resolve_candidate_address};
+use address::{announceable_from_browsers, host_from_header, resolve_candidate_address};
 use media::{MediaCommand, MediaEvent, MediaJoin};
 
 /// A `voice_join` frame, with what the gateway knows of its sender.
@@ -212,13 +212,16 @@ impl VoiceService {
                 return Err(VoiceJoinRefusal::VoiceUnavailable);
             }
         };
-        let host = match &shared.public_address {
-            Some(public_address) => Some(public_address.as_str()),
-            None => request.host_header.as_deref().and_then(host_from_header),
-        };
-        let candidate_address = match host {
-            Some(host) => resolve_candidate_address(host, media.udp_port).await,
-            None => None,
+        // An address the administrator wrote is announced as is; one taken from the Host the
+        // client used may be `localhost`, which browsers cannot send media to.
+        let candidate_address = match &shared.public_address {
+            Some(public_address) => resolve_candidate_address(public_address, media.udp_port).await,
+            None => match request.host_header.as_deref().and_then(host_from_header) {
+                Some(host) => resolve_candidate_address(host, media.udp_port)
+                    .await
+                    .map(announceable_from_browsers),
+                None => None,
+            },
         };
         let Some(candidate_address) = candidate_address else {
             tracing::warn!("voice join: no IPv4 address to announce; set [voice] public_address");

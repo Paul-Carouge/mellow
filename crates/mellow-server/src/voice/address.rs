@@ -53,6 +53,28 @@ pub(crate) async fn resolve_candidate_address(host: &str, port: u16) -> Option<S
     addresses.into_iter().find(SocketAddr::is_ipv4)
 }
 
+/// Browsers do not send media to a loopback candidate from their network interfaces, so an
+/// instance reached as `localhost` announces the machine's own network address instead. No
+/// packet is sent: connecting a UDP socket only picks the outgoing interface. Kept as is when the
+/// machine has no route (offline), where loopback is all there is.
+pub(crate) fn announceable_from_browsers(address: SocketAddr) -> SocketAddr {
+    if !address.ip().is_loopback() {
+        return address;
+    }
+    let local_network_address = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+        .and_then(|probe| {
+            probe.connect(ROUTE_PROBE_DESTINATION)?;
+            probe.local_addr()
+        })
+        .ok()
+        .map(|probe_address| probe_address.ip())
+        .filter(|ip| !ip.is_loopback() && !ip.is_unspecified());
+    local_network_address.map_or(address, |ip| SocketAddr::new(ip, address.port()))
+}
+
+/// A documentation address (RFC 5737): only used to ask the routing table for an interface.
+const ROUTE_PROBE_DESTINATION: (Ipv4Addr, u16) = (Ipv4Addr::new(192, 0, 2, 1), 9);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,6 +104,16 @@ mod tests {
             assert_eq!(host_from_header(refused), None, "{refused:?}");
         }
         assert!(!is_valid_host(&"a".repeat(254)));
+    }
+
+    #[test]
+    fn loopback_becomes_a_network_address_and_others_are_kept() {
+        let public: SocketAddr = "192.0.2.10:50000".parse().unwrap();
+        assert_eq!(announceable_from_browsers(public), public);
+        let announced = announceable_from_browsers("127.0.0.1:50000".parse().unwrap());
+        assert_eq!(announced.port(), 50000);
+        // Offline machines keep loopback; any other answer must be a real interface address.
+        assert!(announced.ip() == Ipv4Addr::LOCALHOST || !announced.ip().is_loopback());
     }
 
     #[tokio::test]
