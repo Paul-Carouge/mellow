@@ -3,7 +3,7 @@
 //! they are, to the other participants of their channel, and reports speaking edges and dead
 //! connections. It never touches SQLite: permissions arrive already decided, as commands.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -19,6 +19,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::domain::voice_rules::{ReceiveSlots, SpeakingDetector};
 
+/// Addresses remembered per participant: a client changing networks adds one now and then.
+const MAXIMUM_SOURCE_ADDRESSES_PER_PARTICIPANT: usize = 4;
 /// Larger datagrams are not WebRTC audio: dropped unread.
 const MAXIMUM_DATAGRAM_BYTES: usize = 1_500;
 /// Bigger than `MAXIMUM_DATAGRAM_BYTES`, so an oversized datagram is seen whole and dropped.
@@ -224,13 +226,58 @@ fn drain_output(
     }
 }
 
+/// The source addresses each participant sent from, at most
+/// `MAXIMUM_SOURCE_ADDRESSES_PER_PARTICIPANT` each (the oldest is forgotten first): a client
+/// changing networks adds one, and spoofed sources cannot grow the map without bound.
+#[derive(Debug, Default)]
+struct SourceAddresses {
+    participant_by_source: HashMap<SocketAddr, Snowflake>,
+    sources_by_participant: HashMap<Snowflake, VecDeque<SocketAddr>>,
+}
+
+impl SourceAddresses {
+    fn participant_at(&self, source: SocketAddr) -> Option<Snowflake> {
+        self.participant_by_source.get(&source).copied()
+    }
+
+    fn remember(&mut self, source: SocketAddr, user_id: Snowflake) {
+        if let Some(previous_owner) = self.participant_by_source.insert(source, user_id)
+            && let Some(sources) = self.sources_by_participant.get_mut(&previous_owner)
+        {
+            sources.retain(|known| *known != source);
+        }
+        let sources = self.sources_by_participant.entry(user_id).or_default();
+        sources.push_back(source);
+        while sources.len() > MAXIMUM_SOURCE_ADDRESSES_PER_PARTICIPANT {
+            if let Some(oldest) = sources.pop_front() {
+                self.participant_by_source.remove(&oldest);
+            }
+        }
+    }
+
+    fn forget(&mut self, user_id: Snowflake) {
+        for source in self
+            .sources_by_participant
+            .remove(&user_id)
+            .unwrap_or_default()
+        {
+            self.participant_by_source.remove(&source);
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.participant_by_source.len()
+    }
+}
+
 struct MediaLoop<'a> {
     socket: UdpSocket,
     commands: &'a Receiver<MediaCommand>,
     events: &'a UnboundedSender<MediaEvent>,
     participants: HashMap<Snowflake, Participant>,
     /// Who sends from which address: `Rtc::accepts` on everyone would cost O(n) per packet.
-    participant_by_source: HashMap<SocketAddr, Snowflake>,
+    sources: SourceAddresses,
     frames_to_forward: Vec<(Snowflake, MediaData)>,
 }
 
@@ -245,7 +292,7 @@ pub(crate) fn run_media_loop(
         commands,
         events,
         participants: HashMap::new(),
-        participant_by_source: HashMap::new(),
+        sources: SourceAddresses::default(),
         frames_to_forward: Vec::new(),
     };
     let mut buffer = vec![0_u8; RECEIVE_BUFFER_BYTES];
@@ -334,8 +381,7 @@ impl MediaLoop<'_> {
         if self.participants.remove(&user_id).is_none() {
             return;
         }
-        self.participant_by_source
-            .retain(|_, participant_id| *participant_id != user_id);
+        self.sources.forget(user_id);
         for listener in self.participants.values_mut() {
             listener.slots.release(user_id);
         }
@@ -380,15 +426,11 @@ impl MediaLoop<'_> {
             return;
         }
         let now = Instant::now();
-        let known = self
-            .participant_by_source
-            .get(&source)
-            .copied()
-            .filter(|user_id| {
-                self.participants
-                    .get(user_id)
-                    .is_some_and(|participant| Self::accepts(participant, contents, source, now))
-            });
+        let known = self.sources.participant_at(source).filter(|user_id| {
+            self.participants
+                .get(user_id)
+                .is_some_and(|participant| Self::accepts(participant, contents, source, now))
+        });
         let user_id = if let Some(user_id) = known {
             user_id
         } else {
@@ -400,7 +442,6 @@ impl MediaLoop<'_> {
             else {
                 return;
             };
-            self.participant_by_source.insert(source, user_id);
             user_id
         };
         let Some(participant) = self.participants.get_mut(&user_id) else {
@@ -408,6 +449,10 @@ impl MediaLoop<'_> {
         };
         if !participant.is_within_packet_rate(now) {
             return;
+        }
+        // Remembered only once the packet counts, so a flood cannot grow the map.
+        if known.is_none() {
+            self.sources.remember(source, user_id);
         }
         participant.last_received_at = now;
         let Some(input) = Self::input_for(contents, source, participant.candidate_address, now)
@@ -535,6 +580,30 @@ impl MediaLoop<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_participant_keeps_at_most_four_source_addresses() {
+        let mut sources = SourceAddresses::default();
+        let (alice, bob) = (Snowflake::from_raw(1), Snowflake::from_raw(2));
+        let address = |port: u16| SocketAddr::from(([192, 0, 2, 1], port));
+        for port in 1..=100 {
+            sources.remember(address(port), alice);
+        }
+        sources.remember(address(1_000), bob);
+        assert_eq!(sources.len(), 5);
+        assert_eq!(sources.participant_at(address(100)), Some(alice));
+        assert_eq!(
+            sources.participant_at(address(96)),
+            None,
+            "oldest forgotten"
+        );
+        // An address that moves to another participant leaves the first one's list.
+        sources.remember(address(100), bob);
+        assert_eq!(sources.participant_at(address(100)), Some(bob));
+        sources.forget(alice);
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources.participant_at(address(1_000)), Some(bob));
+    }
 
     #[test]
     fn offers_are_answered_with_opus_dtx_and_fec_even_without_a_track_yet() {
