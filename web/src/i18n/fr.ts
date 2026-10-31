@@ -241,6 +241,81 @@ export const fr: Catalogue = {
     statusFailed: "Impossible de changer ton statut",
   },
 
+  voice: {
+    someone: "Quelqu’un",
+    voiceChannel: "Salon vocal",
+    voiceChannelDescription: "Discuter de vive voix.",
+    rowLabel: (channel, people, limit, isHere, canConnect) =>
+      [
+        `${channel}, salon vocal`,
+        people > 0 || limit !== null
+          ? limit !== null
+            ? `${count(people)} sur ${count(limit)}`
+            : `${count(people)} ${plural(people, { one: "personne", other: "personnes" })}`
+          : "",
+        isHere ? "tu es dedans" : "",
+        canConnect ? "" : "tu ne peux pas t’y connecter",
+      ]
+        .filter(Boolean)
+        .join(", "),
+    participantsIn: (channel) => `Dans ${channel}`,
+    microphoneOff: "micro coupé",
+    soundOff: "son coupé",
+    cannotSpeak: "ne peut pas parler ici",
+    participantLabel: (person, states) => [person, ...states].join(", "),
+    peerJoined: (person, channel) => `${person} a rejoint ${channel}.`,
+    peerLeft: (person, channel) => `${person} a quitté ${channel}.`,
+    panel: "Connexion vocale",
+    connecting: "Connexion…",
+    connected: "Voix connectée",
+    reconnecting: "Reconnexion…",
+    connectingTo: (channel) => `Connexion à ${channel}…`,
+    connectedTo: (channel) => `Voix connectée à ${channel}.`,
+    reconnectingTo: (channel) => `Reconnexion de la voix à ${channel}…`,
+    disconnected: "Voix déconnectée.",
+    openServer: (channel, server) => `${channel} dans ${server}. Ouvrir ${server}`,
+    latency: (milliseconds) => `Latence${NO_BREAK_SPACE}: ${count(milliseconds)}${NO_BREAK_SPACE}ms`,
+    latencyMeasuring: "Mesure de la latence…",
+    latencyQuality: { good: "bonne connexion", medium: "connexion moyenne", poor: "mauvaise connexion" },
+    disconnect: "Se déconnecter",
+    join: "Rejoindre",
+    leave: "Quitter",
+    userLimit: "Limite d’utilisateurs",
+    userLimitHelper: "Combien de personnes peuvent être dans le salon en même temps.",
+    unlimited: "Illimitée",
+    userLimitOption: (limit) => `${count(limit)} ${plural(limit, { one: "personne", other: "personnes" })}`,
+    microphoneProblems: {
+      denied: "Ton navigateur bloque le micro. Autorise-le dans les réglages du site, à côté de l’adresse, puis réactive le micro.",
+      missing: `Aucun micro trouvé${NO_BREAK_SPACE}: tu peux écouter. Branches-en un, puis réactive le micro.`,
+      busy: "Une autre application utilise ton micro. Ferme-la, puis réactive le micro.",
+      unavailable: "Cette page ne peut pas utiliser de micro. Ouvre Mellow en HTTPS pour parler.",
+    },
+    couldNotJoin: (channel) => `Impossible de rejoindre ${channel}`,
+    disconnectedFrom: (channel) => `Déconnexion de ${channel}`,
+    movedElsewhere: "Voix déplacée",
+    unsupportedTitle: "La voix n’est pas disponible dans ce navigateur",
+    unsupported: "Utilise une version récente de Firefox, Chrome, Edge ou Safari.",
+    noAnswer: "L’instance n’a pas répondu. Vérifie ta connexion, puis réessaie.",
+    unreachable: `Le son n’a pas pu joindre l’instance. Son port vocal est peut-être fermé${NO_BREAK_SPACE}: préviens son administrateur.`,
+    connectionLost: "La connexion a été perdue et n’est pas revenue.",
+    refusals: {
+      missing_permissions: "Tu n’as pas la permission de te connecter à ce salon.",
+      channel_full: "Le salon est plein. Réessaie quand quelqu’un sera parti.",
+      instance_full: "Cette instance a déjà autant de monde en vocal qu’elle le permet. Réessaie plus tard.",
+      invalid_offer: "L’instance a refusé la configuration audio de ton navigateur. Recharge la page, puis réessaie.",
+      voice_unavailable: "La voix n’est pas activée sur cette instance. Son administrateur peut l’activer.",
+      rate_limited: "Trop de tentatives. Attends quelques secondes, puis réessaie.",
+    },
+    disconnections: {
+      moved_elsewhere: "Tu as rejoint la voix depuis un autre onglet ou appareil.",
+      permissions_changed: "Tes permissions dans ce salon ont changé.",
+      channel_deleted: "Le salon a été supprimé.",
+      removed_from_guild: "Tu ne fais plus partie de ce serveur.",
+      media_timeout: "Ton son n’arrivait plus à l’instance.",
+    },
+    unknownReason: "L’instance a mis fin à la connexion.",
+  },
+
   customStatus: {
     field: "Statut personnalisé",
     placeholder: `Tu fais quoi en ce moment${NARROW_NO_BREAK_SPACE}?`,
@@ -596,6 +671,8 @@ export const fr: Catalogue = {
     categoryIdCopied: "Identifiant de la catégorie copié.",
     serverIdCopied: "Identifiant du serveur copié.",
     copyIdFailed: "Impossible de copier l’identifiant. Autorise l’accès au presse-papiers et réessaie.",
+    joinVoice: "Rejoindre",
+    leaveVoice: "Quitter",
   },
 
   friends: {
@@ -929,6 +1006,7 @@ export const fr: Catalogue = {
         general: "Général",
         membership: "Adhésion",
         textChannels: "Salons textuels",
+        voiceChannels: "Salons vocaux",
         moderation: "Modération",
         advanced: "Avancé",
       },
@@ -968,6 +1046,11 @@ export const fr: Catalogue = {
       manageMessages: {
         label: "Gérer les messages",
         description: "Supprimer les messages envoyés par d’autres membres.",
+      },
+      connect: { label: "Se connecter", description: "Rejoindre les salons vocaux." },
+      speak: {
+        label: "Parler",
+        description: "Se faire entendre dans les salons vocaux. Sans cette permission, on y entre en muet.",
       },
       kickMembers: {
         label: "Expulser des membres",

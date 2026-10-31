@@ -32,21 +32,33 @@ export async function prepareChimeSound(): Promise<void> {
 
 /** Plays the chime if audio was allowed by an earlier gesture; silent otherwise. */
 export function playChimeSound(): void {
+  playNotes(NOTES, NOTE_LENGTH_SECONDS, PEAK_GAIN);
+}
+
+/**
+ * Soft sine notes through the shared context (voice cues use it too): each starts at its offset,
+ * rises without a click and fades over `noteLengthSeconds`. Silent until a gesture allowed audio.
+ */
+export function playNotes(
+  notes: readonly { frequency: number; start: number }[],
+  noteLengthSeconds: number,
+  peakGain: number,
+): void {
   if (context === null || context.state !== "running") {
     return;
   }
   const startsAt = context.currentTime;
-  for (const note of NOTES) {
+  for (const note of notes) {
     const oscillator = context.createOscillator();
     const envelope = context.createGain();
     oscillator.type = "sine";
     oscillator.frequency.value = note.frequency;
     const noteStart = startsAt + note.start;
     envelope.gain.setValueAtTime(SILENT_GAIN, noteStart);
-    envelope.gain.exponentialRampToValueAtTime(PEAK_GAIN, noteStart + ATTACK_SECONDS);
-    envelope.gain.exponentialRampToValueAtTime(SILENT_GAIN, noteStart + NOTE_LENGTH_SECONDS);
+    envelope.gain.exponentialRampToValueAtTime(peakGain, noteStart + ATTACK_SECONDS);
+    envelope.gain.exponentialRampToValueAtTime(SILENT_GAIN, noteStart + noteLengthSeconds);
     oscillator.connect(envelope).connect(context.destination);
     oscillator.start(noteStart);
-    oscillator.stop(noteStart + NOTE_LENGTH_SECONDS);
+    oscillator.stop(noteStart + noteLengthSeconds);
   }
 }

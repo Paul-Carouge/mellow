@@ -243,6 +243,88 @@ export const en = {
     statusFailed: "Couldn't change your status",
   },
 
+  /** Voice channels (DESIGN.md §5.3, docs/design/web-voice-channels.md, ADR-0030). */
+  voice: {
+    someone: "Someone",
+    voiceChannel: "Voice channel",
+    voiceChannelDescription: "Talk together, live.",
+    /** A voice channel row: "lounge, voice channel, 2 of 5 people, you're here". */
+    rowLabel: (channel: string, people: number, limit: number | null, isHere: boolean, canConnect: boolean) =>
+      [
+        `${channel}, voice channel`,
+        people > 0 || limit !== null
+          ? limit !== null
+            ? `${count(people)} of ${count(limit)} people`
+            : `${count(people)} ${plural(people, { one: "person", other: "people" })}`
+          : "",
+        isHere ? "you're here" : "",
+        canConnect ? "" : "you can't connect",
+      ]
+        .filter(Boolean)
+        .join(", "),
+    /** The participants list under a voice channel. */
+    participantsIn: (channel: string) => `In ${channel}`,
+    microphoneOff: "microphone off",
+    soundOff: "sound off",
+    cannotSpeak: "can't speak here",
+    /** "Ana, microphone off". */
+    participantLabel: (person: string, states: readonly string[]) => [person, ...states].join(", "),
+    peerJoined: (person: string, channel: string) => `${person} joined ${channel}.`,
+    peerLeft: (person: string, channel: string) => `${person} left ${channel}.`,
+    panel: "Voice connection",
+    connecting: "Connecting…",
+    connected: "Voice connected",
+    reconnecting: "Reconnecting…",
+    /** Read out as the panel's state changes. */
+    connectingTo: (channel: string) => `Connecting to ${channel}…`,
+    connectedTo: (channel: string) => `Voice connected to ${channel}.`,
+    reconnectingTo: (channel: string) => `Voice reconnecting to ${channel}…`,
+    disconnected: "Voice disconnected.",
+    /** The panel's channel line, a button to the server. */
+    openServer: (channel: string, server: string) => `${channel} in ${server}. Open ${server}`,
+    latency: (milliseconds: number) => `Latency: ${count(milliseconds)} ms`,
+    latencyMeasuring: "Measuring latency…",
+    latencyQuality: { good: "good connection", medium: "fair connection", poor: "poor connection" },
+    disconnect: "Disconnect",
+    join: "Join",
+    leave: "Leave",
+    userLimit: "User limit",
+    userLimitHelper: "How many people can be in the channel at once.",
+    unlimited: "Unlimited",
+    userLimitOption: (limit: number) => `${count(limit)} ${plural(limit, { one: "person", other: "people" })}`,
+    microphoneProblems: {
+      denied: "Your browser blocks the microphone. Allow it in the site settings next to the address, then unmute.",
+      missing: "No microphone found: you can listen. Plug one in, then unmute.",
+      busy: "Another app is using your microphone. Close it, then unmute.",
+      unavailable: "This page can't use a microphone. Open Mellow over HTTPS to speak.",
+    },
+    couldNotJoin: (channel: string) => `Couldn't join ${channel}`,
+    disconnectedFrom: (channel: string) => `Disconnected from ${channel}`,
+    movedElsewhere: "Voice moved",
+    unsupportedTitle: "Voice isn't available in this browser",
+    unsupported: "Use a recent version of Firefox, Chrome, Edge or Safari.",
+    noAnswer: "The instance didn't answer. Check your connection, then try again.",
+    unreachable: "Sound couldn't reach the instance. Its voice port may be closed: tell its administrator.",
+    connectionLost: "The connection was lost and didn't come back.",
+    refusals: {
+      missing_permissions: "You don't have permission to connect to this channel.",
+      channel_full: "The channel is full. Try again when someone leaves.",
+      instance_full: "This instance has as many people in voice as it allows. Try again later.",
+      invalid_offer: "The instance refused your browser's audio setup. Reload the page, then try again.",
+      voice_unavailable: "Voice isn't turned on on this instance. Its administrator can turn it on.",
+      rate_limited: "Too many attempts. Wait a few seconds, then try again.",
+    },
+    disconnections: {
+      moved_elsewhere: "You joined voice from another tab or device.",
+      permissions_changed: "Your permissions in this channel changed.",
+      channel_deleted: "The channel was deleted.",
+      removed_from_guild: "You're no longer a member of this server.",
+      media_timeout: "Your sound stopped reaching the instance.",
+    },
+    /** A reason a newer instance sends that this client does not know. */
+    unknownReason: "The instance ended the connection.",
+  },
+
   customStatus: {
     field: "Custom status",
     placeholder: "What are you up to?",
@@ -606,6 +688,8 @@ export const en = {
     categoryIdCopied: "Category ID copied.",
     serverIdCopied: "Server ID copied.",
     copyIdFailed: "Couldn't copy the ID. Allow clipboard access and try again.",
+    joinVoice: "Join",
+    leaveVoice: "Leave",
   },
 
   /** The Friends space at Home (DESIGN.md §5.6.1, ADR-0025). */
@@ -949,6 +1033,7 @@ export const en = {
         general: "General",
         membership: "Membership",
         textChannels: "Text channels",
+        voiceChannels: "Voice channels",
         moderation: "Moderation",
         advanced: "Advanced",
       },
@@ -980,6 +1065,8 @@ export const en = {
       addReactions: { label: "Add reactions", description: "React to messages with a new emoji." },
       mentionEveryone: { label: "Mention @everyone", description: "Notify everyone in a channel at once." },
       manageMessages: { label: "Manage messages", description: "Delete messages sent by other members." },
+      connect: { label: "Connect", description: "Join voice channels." },
+      speak: { label: "Speak", description: "Be heard in voice channels. Without it, they join muted." },
       kickMembers: { label: "Kick members", description: "Remove people; they can come back with a new invite." },
       banMembers: { label: "Ban members", description: "Remove people and stop them from rejoining." },
       administrator: {

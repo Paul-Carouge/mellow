@@ -79,10 +79,13 @@ export class GatewayConnection {
     this.socket = null;
   }
 
-  private send(frame: ClientFrame): void {
-    if (this.socket?.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify(frame));
+  /** Whether the frame left: nothing is queued while the link is down (voice rejoins after it). */
+  send(frame: ClientFrame): boolean {
+    if (this.socket?.readyState !== WebSocket.OPEN) {
+      return false;
     }
+    this.socket.send(JSON.stringify(frame));
+    return true;
   }
 
   private receive(data: unknown): void {
