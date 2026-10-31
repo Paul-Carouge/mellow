@@ -13,7 +13,7 @@
   import { createPopoverToggle } from "./popover-toggle";
   import StatusIndicator from "./StatusIndicator.svelte";
   import { durationTokenInMilliseconds } from "./tokens";
-  import { UNMUTED_VOICE_TOGGLES, toggleDeafened, toggleMicrophone } from "./voice-toggles";
+  import { prepareChimeSound } from "./chime-sound";
 
   // The user card across the navigator's foot (ADR-0022 §4): as tall as the composer's base row
   // and as far from the bottom of its card, so both line up across the window (size.dock.*).
@@ -26,17 +26,30 @@
 
   let { client, user, onopenusersettings }: Props = $props();
 
-  // Voice does not exist yet: the microphone and headset toggles show in development builds only,
-  // and the card keeps its height so nothing moves when they ship (ADR-0022 §5).
-  const ARE_VOICE_TOGGLES_SHOWN = import.meta.env.DEV;
-
   const CHOSEN_STATUSES: readonly ChosenStatus[] = ["online", "idle", "do_not_disturb", "invisible"];
   const HINT_BY_STATUS: Partial<Record<ChosenStatus, string>> = {
     do_not_disturb: strings.userCard.doNotDisturbHint,
     invisible: strings.userCard.invisibleHint,
   };
 
-  let voice = $state(UNMUTED_VOICE_TOGGLES);
+  // The microphone and headset toggles drive the voice connection (ADR-0030), and hold before
+  // joining too, stored in this browser, as on Discord.
+  const voice = $derived(client.voice);
+  const isMicrophoneMuted = $derived(voice.isMicrophoneMuted);
+  const microphoneProblem = $derived(
+    voice.phase !== "idle" && voice.microphoneProblem ? strings.voice.microphoneProblems[voice.microphoneProblem] : null,
+  );
+
+  /** A click is the gesture that lets the toggle sounds play. */
+  function toggleMicrophoneFromClick() {
+    void prepareChimeSound();
+    void voice.toggleMicrophone();
+  }
+
+  function toggleDeafenedFromClick() {
+    void prepareChimeSound();
+    voice.toggleDeafened();
+  }
 
   const chosenStatus = $derived(user.status ?? "online");
   // Your own card shows your sentence even while invisible; others see none then.
@@ -151,27 +164,28 @@
       {/if}
     </span>
   </button>
-  {#if ARE_VOICE_TOGGLES_SHOWN}
-    <!-- The accessible name stays; the state is aria-pressed, the strike and the colour (never colour alone). -->
-    <IconButton
-      icon="microphone"
-      label={strings.userCard.muteMicrophone}
-      title={voice.isMicrophoneMuted ? strings.userCard.unmuteMicrophone : strings.userCard.muteMicrophone}
-      aria-pressed={voice.isMicrophoneMuted}
-      class="voice-toggle {buttonClass}"
-      {iconClass}
-      onclick={() => (voice = toggleMicrophone(voice))}
-    />
-    <IconButton
-      icon="headphones"
-      label={strings.userCard.deafen}
-      title={voice.isDeafened ? strings.userCard.undeafen : strings.userCard.deafen}
-      aria-pressed={voice.isDeafened}
-      class="voice-toggle {buttonClass}"
-      {iconClass}
-      onclick={() => (voice = toggleDeafened(voice))}
-    />
-  {/if}
+  <!-- The accessible name stays; the state is aria-pressed, the strike and the colour (never colour alone).
+       Connected with no microphone, the tooltip says why it shows muted. -->
+  <IconButton
+    icon="microphone"
+    label={strings.userCard.muteMicrophone}
+    title={microphoneProblem ?? (isMicrophoneMuted ? strings.userCard.unmuteMicrophone : strings.userCard.muteMicrophone)}
+    aria-pressed={isMicrophoneMuted}
+    aria-keyshortcuts="Control+Shift+M"
+    class="voice-toggle {buttonClass}"
+    {iconClass}
+    onclick={toggleMicrophoneFromClick}
+  />
+  <IconButton
+    icon="headphones"
+    label={strings.userCard.deafen}
+    title={voice.toggles.isDeafened ? strings.userCard.undeafen : strings.userCard.deafen}
+    aria-pressed={voice.toggles.isDeafened}
+    aria-keyshortcuts="Control+Shift+D"
+    class="voice-toggle {buttonClass}"
+    {iconClass}
+    onclick={toggleDeafenedFromClick}
+  />
   <!-- Sign out lives in the settings navigation, as on desktop (DESIGN.md §5.9). -->
   <IconButton icon="gear-six" label={strings.userCard.userSettings} class={buttonClass} {iconClass} onclick={onopenusersettings} />
 </div>

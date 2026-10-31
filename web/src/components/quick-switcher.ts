@@ -57,7 +57,8 @@ export function quickSwitcherResults(query: string, sources: QuickSwitcherSource
   const channels: QuickSwitcherItem[] = sources.guilds.flatMap((guild) =>
     channelSections(guild)
       .flatMap((section) => section.channels)
-      .filter((channel) => matches(channel.name))
+      // shortcut: voice channels are left out (joining from here comes later, with 16.3).
+      .filter((channel) => channel.kind === "text" && matches(channel.name))
       .map((channel) => ({
         key: `channel:${channel.id}`,
         label: channel.name,

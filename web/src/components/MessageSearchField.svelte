@@ -82,6 +82,8 @@
     guild
       ? channelSections(guild)
           .flatMap((section) => section.channels)
+          // Voice channels hold no messages.
+          .filter((channel) => channel.kind === "text")
           .map((channel) => ({ id: channel.id, name: channel.name, isConversation: false, value: channelFilterValue(channel) }))
       : client.conversations.map((conversation) => ({
           id: conversation.id,

@@ -136,7 +136,14 @@ export interface SessionCreated {
   user: CurrentUser;
 }
 
-export type ChannelKind = "category" | "text";
+/** A voice channel is joined, never opened: it has no messages (ADR-0030). */
+export type ChannelKind = "category" | "text" | "voice";
+
+/** A voice channel's optional user limit, and the hard cap per channel (ADR-0030). */
+export const MINIMUM_VOICE_USER_LIMIT = 1;
+export const MAXIMUM_VOICE_USER_LIMIT = 25;
+/** Receive m-lines each client offers: the server forwards at most this many voices at once. */
+export const VOICE_RECEIVE_SLOTS = 16;
 
 export interface PermissionOverwrite {
   id: Snowflake;
@@ -156,6 +163,8 @@ export interface Channel {
   /** Never animated. Absent when the channel has none (and from older servers). */
   icon?: ProfileImage | null;
   permission_overwrites: PermissionOverwrite[];
+  /** Voice channels only: at most this many people at once; absent means unlimited. */
+  user_limit?: number | null;
 }
 
 /** Entry of `PUT /guilds/{id}/channels/order`. */
@@ -455,7 +464,40 @@ export interface Ready {
   relationships?: Relationship[];
   /** Whether the user may create servers on this instance; absent from older servers, which let everyone. */
   may_create_guilds?: boolean;
+  /** Who is connected to which voice channel, in every guild the user is in. Absent from older servers. */
+  voice_states?: VoiceState[];
 }
+
+/** One person connected to a voice channel; a user has at most one (ADR-0030). */
+export interface VoiceState {
+  user_id: Snowflake;
+  guild_id: Snowflake;
+  channel_id: Snowflake;
+  self_mute: boolean;
+  self_deaf: boolean;
+  /** Without `SPEAK` in the channel: the server does not forward their voice. */
+  suppressed: boolean;
+}
+
+/** Why the server refused a `voice_join`. A newer server may send another reason. */
+export type VoiceJoinRefusal =
+  | "missing_permissions"
+  | "channel_full"
+  | "instance_full"
+  | "invalid_offer"
+  | "voice_unavailable"
+  | "rate_limited";
+
+/**
+ * Why the server ended this session's voice connection. `moved_elsewhere`: the same user joined
+ * from another tab or device.
+ */
+export type VoiceDisconnectReason =
+  | "moved_elsewhere"
+  | "permissions_changed"
+  | "channel_deleted"
+  | "removed_from_guild"
+  | "media_timeout";
 
 /** `incoming_request`: they asked; `outgoing_request`: you asked; `blocked`: never shown to them. */
 export type RelationshipKind = "friend" | "incoming_request" | "outgoing_request" | "blocked";
@@ -525,7 +567,19 @@ export type GatewayEvent =
   | { t: "DIRECT_MESSAGE_CHANNEL_UPDATE"; data: DirectMessageChannel }
   | { t: "DIRECT_MESSAGE_CHANNEL_DELETE"; data: { id: Snowflake } }
   | { t: "RELATIONSHIP_ADD"; data: Relationship }
-  | { t: "RELATIONSHIP_REMOVE"; data: { user_id: Snowflake } };
+  | { t: "RELATIONSHIP_REMOVE"; data: { user_id: Snowflake } }
+  /** Someone joined, moved, or changed their mute or deafen. */
+  | { t: "VOICE_STATE_UPDATE"; data: { voice_state: VoiceState } }
+  | { t: "VOICE_STATE_DELETE"; data: { guild_id: Snowflake; channel_id: Snowflake; user_id: Snowflake } }
+  /** Only to the session that sent the `voice_join`. */
+  | { t: "VOICE_SESSION_DESCRIPTION"; data: { channel_id: Snowflake; sdp_answer: string } }
+  | { t: "VOICE_JOIN_REFUSED"; data: { channel_id: Snowflake; reason: VoiceJoinRefusal } }
+  | { t: "VOICE_DISCONNECTED"; data: { channel_id: Snowflake; reason: VoiceDisconnectReason } }
+  /** Edges only, never for muted or suppressed people. */
+  | {
+      t: "SPEAKING";
+      data: { guild_id: Snowflake; channel_id: Snowflake; user_id: Snowflake; speaking: boolean };
+    };
 
 export type ServerFrame =
   | { op: "hello"; d: { heartbeat_interval_milliseconds: number } }
@@ -538,7 +592,11 @@ export type ServerFrame =
 export type ClientFrame =
   | { op: "identify"; d: { token: string } }
   | { op: "resume"; d: { token: string; session_id: string; last_sequence: number } }
-  | { op: "heartbeat" };
+  | { op: "heartbeat" }
+  /** Join, move, or reconnect with a fresh offer: the server swaps the media session. */
+  | { op: "voice_join"; d: { channel_id: Snowflake; sdp_offer: string; self_mute: boolean; self_deaf: boolean } }
+  | { op: "voice_leave" }
+  | { op: "voice_state"; d: { self_mute: boolean; self_deaf: boolean } };
 
 /** Bit positions are part of the wire protocol (`Permissions` in mellow-protocol). */
 export const Permission = {
@@ -558,6 +616,10 @@ export const Permission = {
   VIEW_AUDIT_LOG: 1n << 15n,
   ADD_REACTIONS: 1n << 16n,
   MANAGE_EMOJIS: 1n << 17n,
+  /** Join a voice channel (`VIEW_CHANNEL` too). */
+  CONNECT: 1n << 18n,
+  /** Be heard in a voice channel. */
+  SPEAK: 1n << 19n,
 } as const;
 
 /** What a channel overwrite may allow or deny (`Permissions::CHANNEL_SCOPED`). */
@@ -571,7 +633,9 @@ export const CHANNEL_SCOPED_PERMISSIONS =
   Permission.MANAGE_CHANNELS |
   Permission.MANAGE_ROLES |
   Permission.CREATE_INVITE |
-  Permission.ADD_REACTIONS;
+  Permission.ADD_REACTIONS |
+  Permission.CONNECT |
+  Permission.SPEAK;
 
 export function hasPermission(bits: PermissionBits, permission: bigint): boolean {
   const value = BigInt(bits);

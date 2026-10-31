@@ -44,11 +44,15 @@ import {
   type RelationshipKind,
   type Role,
   type Snowflake,
+  type VoiceState,
   DIRECT_MESSAGE_PERMISSIONS,
   MAXIMUM_COUNTED_UNREAD_MENTIONS,
   compareSnowflakes,
   computeChannelPermissions,
 } from "./protocol";
+import { participantChange } from "./voice";
+import { BROWSER_VOICE_PORTS } from "./voice-browser";
+import { type VoicePorts, VoiceSession } from "./voice-session.svelte";
 
 const MAXIMUM_CACHED_MESSAGES_PER_CHANNEL = 500;
 const TYPING_INDICATOR_LIFETIME_MILLISECONDS = 8_000;
@@ -70,6 +74,13 @@ const REFUSED_FOR_GOOD: ReadonlySet<ApiError["code"]> = new Set([
   "MISSING_PERMISSIONS",
   "LIMIT_REACHED",
 ]);
+
+/** What a channel's settings change; `user_limit: null` makes a voice channel unlimited. */
+export interface ChannelChanges {
+  name?: string;
+  topic?: string;
+  user_limit?: number | null;
+}
 
 export interface PendingMessage {
   nonce: string;
@@ -194,8 +205,26 @@ export class MellowClient {
   /** Whether this user may create servers (`Ready.may_create_guilds`); `true` with servers that predate it. */
   mayCreateGuilds = $state(true);
 
-  /** `rest` is injected by tests; settings pages read lists (bans, invites, the log) through it. */
-  constructor(readonly rest: RestClient = new RestClient()) {}
+  /** Who is in which voice channel, by user (one connection each, ADR-0030), in join order. */
+  voiceStatesByUserId = new SvelteMap<Snowflake, VoiceState>();
+  /** People whose voice the instance hears now (`SPEAKING`); your own ring comes from `voice`. */
+  speakingUserIds = new SvelteSet<Snowflake>();
+  /** "Ana joined #general.": read out while you are in that channel. */
+  voiceAnnouncement = $state("");
+  /** This tab's voice connection; it outlives navigation. */
+  readonly voice: VoiceSession;
+
+  /** `rest` and the browser's voice side are injected by tests; settings pages read lists (bans, invites, the log) through `rest`. */
+  constructor(
+    readonly rest: RestClient = new RestClient(),
+    voicePorts: Omit<VoicePorts, "sendFrame"> = BROWSER_VOICE_PORTS,
+  ) {
+    this.voice = new VoiceSession({
+      ...voicePorts,
+      // Only on an identified session: a frame before `ready` or `resumed` would be refused.
+      sendFrame: (frame) => this.status === "connected" && (this.gateway?.send(frame) ?? false),
+    });
+  }
   private lastTypingSentAt = 0;
   private requestedHistory = new Set<Snowflake>();
   private requestedMembers = new Set<Snowflake>();
@@ -344,6 +373,10 @@ export class MellowClient {
   }
 
   private endSession(): void {
+    this.voice.end();
+    this.voiceStatesByUserId.clear();
+    this.speakingUserIds.clear();
+    this.voiceAnnouncement = "";
     this.gateway?.close();
     this.gateway = null;
     this.hasReceivedReady = false;
@@ -383,6 +416,7 @@ export class MellowClient {
       case "ready":
         this.applyReady(update.ready);
         this.status = "connected";
+        this.voice.noteGatewayReady();
         void this.resendFailedMessages();
         break;
       case "event":
@@ -390,6 +424,7 @@ export class MellowClient {
         break;
       case "resumed":
         this.status = "connected";
+        this.voice.noteGatewayResumed();
         this.retryFailedLoads();
         void this.resendFailedMessages();
         break;
@@ -457,6 +492,13 @@ export class MellowClient {
       }
     }
     this.pendingMessages = this.pendingMessages.filter((pending) => this.isKnownChannel(pending.channelId));
+    this.voiceStatesByUserId.clear();
+    this.speakingUserIds.clear();
+    for (const state of ready.voice_states ?? []) {
+      if (this.isKnownChannel(state.channel_id)) {
+        this.voiceStatesByUserId.set(state.user_id, state);
+      }
+    }
     const guildId = this.guilds.some((guild) => guild.id === this.selectedGuildId)
       ? this.selectedGuildId
       : wasHome
@@ -679,6 +721,28 @@ export class MellowClient {
       case "MESSAGE_REACTION_REMOVE_ALL":
         this.updateReactions(event.data.channel_id, event.data.message_id, () => []);
         return;
+      case "VOICE_STATE_UPDATE":
+        this.applyVoiceState(event.data.voice_state);
+        return;
+      case "VOICE_STATE_DELETE":
+        this.dropVoiceState(event.data.user_id, event.data.channel_id);
+        return;
+      case "SPEAKING":
+        if (!event.data.speaking) {
+          this.speakingUserIds.delete(event.data.user_id);
+        } else if (this.voiceStatesByUserId.get(event.data.user_id)?.channel_id === event.data.channel_id) {
+          this.speakingUserIds.add(event.data.user_id);
+        }
+        return;
+      case "VOICE_SESSION_DESCRIPTION":
+        void this.voice.applyAnswer(event.data.channel_id, event.data.sdp_answer);
+        return;
+      case "VOICE_JOIN_REFUSED":
+        this.voice.refuse(event.data.channel_id, event.data.reason);
+        return;
+      case "VOICE_DISCONNECTED":
+        this.voice.disconnectedByServer(event.data.channel_id, event.data.reason);
+        return;
       default: {
         // An event this client does not know yet: skipped, as the native clients do.
         const unknown: never = event;
@@ -780,6 +844,12 @@ export class MellowClient {
     this.requestedHistory.delete(channelId);
     this.failedHistoryChannelIds.delete(channelId);
     this.pendingMessages = this.pendingMessages.filter((pending) => pending.channelId !== channelId);
+    for (const state of [...this.voiceStatesByUserId.values()]) {
+      if (state.channel_id === channelId) {
+        this.voiceStatesByUserId.delete(state.user_id);
+        this.speakingUserIds.delete(state.user_id);
+      }
+    }
     for (const key of this.typingUntil.keys()) {
       if (key.startsWith(`${channelId}:`)) {
         this.typingUntil.delete(key);
@@ -904,7 +974,10 @@ export class MellowClient {
     const guild = this.selectedGuild;
     let channelId: Snowflake | null;
     if (guild) {
-      const textChannels = channelSections(guild).flatMap((section) => section.channels);
+      // Voice channels are joined, never opened.
+      const textChannels = channelSections(guild)
+        .flatMap((section) => section.channels)
+        .filter((channel) => channel.kind === "text");
       channelId =
         textChannels.find((channel) => channel.id === preferredChannelId)?.id ?? textChannels[0]?.id ?? null;
       void this.ensureMembersLoaded(guild.id);
@@ -1593,18 +1666,19 @@ export class MellowClient {
     return await this.rest.createInvite(guildId, limits);
   }
 
-  /** A text channel opens once created; a category does not. */
+  /** A text channel opens once created; a category or a voice channel does not. */
   async createChannel(
     kind: ChannelKind,
     name: string,
     topic = "",
     categoryId: Snowflake | null = null,
+    userLimit: number | null = null,
   ): Promise<void> {
     const guildId = this.selectedGuildId;
     if (!guildId) {
       return;
     }
-    const channel = await this.rest.createChannel(guildId, kind, name, topic, categoryId);
+    const channel = await this.rest.createChannel(guildId, kind, name, topic, categoryId, userLimit);
     this.applyEvent({ t: "CHANNEL_CREATE", data: channel }, Date.now());
     if (kind === "text" && this.selectedGuildId === guildId) {
       this.selectChannel(channel.id);
@@ -1650,7 +1724,7 @@ export class MellowClient {
 
   // --- Channel settings ---------------------------------------------------------------------
 
-  async updateChannel(channelId: Snowflake, changes: { name?: string; topic?: string }): Promise<void> {
+  async updateChannel(channelId: Snowflake, changes: ChannelChanges): Promise<void> {
     await this.rest.updateChannel(channelId, changes);
   }
 
@@ -1868,6 +1942,75 @@ export class MellowClient {
         };
       }
     }
+  }
+
+  // --- Voice ---------------------------------------------------------------------------------
+
+  /** Who is connected to a voice channel, in the order they came. */
+  voiceParticipants(channelId: Snowflake): VoiceState[] {
+    return [...this.voiceStatesByUserId.values()].filter((state) => state.channel_id === channelId);
+  }
+
+  /** The channel `voice` is in or joining, and its server. */
+  get voiceChannel(): { guild: Guild; channel: Channel } | null {
+    const channelId = this.voice.channelId;
+    for (const guild of this.guilds) {
+      const channel = guild.channels.find((candidate) => candidate.id === channelId);
+      if (channel) {
+        return { guild, channel };
+      }
+    }
+    return null;
+  }
+
+  /** The name the server's member list knows, for announcements. */
+  private voiceMemberName(guildId: Snowflake, userId: Snowflake): string {
+    const user = this.membersByGuild.get(guildId)?.find((member) => member.user.id === userId)?.user;
+    return user ? user.display_name.trim() || user.username : strings.voice.someone;
+  }
+
+  private applyVoiceState(state: VoiceState): void {
+    const previous = this.voiceStatesByUserId.get(state.user_id);
+    if (!this.isKnownChannel(state.channel_id)) {
+      // Gone where this reader cannot see: left, as far as they know.
+      if (previous !== undefined) {
+        this.dropVoiceState(state.user_id, previous.channel_id);
+      }
+      return;
+    }
+    if (previous?.channel_id !== state.channel_id) {
+      // Delete first, so a move puts them last in their new channel, in join order.
+      this.voiceStatesByUserId.delete(state.user_id);
+      this.speakingUserIds.delete(state.user_id);
+    }
+    this.voiceStatesByUserId.set(state.user_id, state);
+    this.notePeerChange(state.guild_id, state.user_id, participantChange(previous, state, this.voice.channelId));
+  }
+
+  private dropVoiceState(userId: Snowflake, channelId: Snowflake): void {
+    const previous = this.voiceStatesByUserId.get(userId);
+    // A late delete for a channel they already moved out of changes nothing.
+    if (previous === undefined || previous.channel_id !== channelId) {
+      return;
+    }
+    this.voiceStatesByUserId.delete(userId);
+    this.speakingUserIds.delete(userId);
+    if (userId === this.user?.id) {
+      this.voice.noteOwnStateDropped(channelId);
+    }
+    this.notePeerChange(previous.guild_id, userId, participantChange(previous, undefined, this.voice.channelId));
+  }
+
+  /** Someone else came into or left your channel: a soft sound and an announcement. */
+  private notePeerChange(guildId: Snowflake, userId: Snowflake, change: "joined" | "left" | null): void {
+    const channel = this.voiceChannel?.channel;
+    if (change === null || userId === this.user?.id || this.voice.phase !== "connected" || !channel) {
+      return;
+    }
+    const name = this.voiceMemberName(guildId, userId);
+    this.voiceAnnouncement =
+      change === "joined" ? strings.voice.peerJoined(name, channel.name) : strings.voice.peerLeft(name, channel.name);
+    this.voice.onCue?.(change === "joined" ? "peer-join" : "peer-leave");
   }
 
   private reportError(error: unknown, action: string): void {

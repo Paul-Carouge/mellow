@@ -174,12 +174,14 @@ export class RestClient {
     name: string,
     topic = "",
     categoryId: Snowflake | null = null,
+    userLimit: number | null = null,
   ): Promise<Channel> {
     return this.request("POST", `guilds/${guildId}/channels`, {
       kind,
       name,
       topic,
       parent_id: categoryId,
+      ...(kind === "voice" && userLimit !== null ? { user_limit: userLimit } : {}),
     });
   }
 
@@ -237,7 +239,8 @@ export class RestClient {
   }
 
   /** Absent fields stay unchanged. */
-  updateChannel(channelId: Snowflake, changes: { name?: string; topic?: string }): Promise<Channel> {
+  /** `user_limit: null` clears a voice channel's limit. */
+  updateChannel(channelId: Snowflake, changes: { name?: string; topic?: string; user_limit?: number | null }): Promise<Channel> {
     return this.request("PATCH", `channels/${channelId}`, changes);
   }
 
