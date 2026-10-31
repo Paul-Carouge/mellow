@@ -16,15 +16,37 @@ use mellow_server::config::{
     EnvironmentOverrides, ServerConfig, TlsConfig,
 };
 use mellow_server::domain::account_rules::RegistrationMode;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::{LevelFilter, Targets};
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
+use tracing_subscriber::{EnvFilter, Layer as _};
 use zeroize::Zeroizing;
 
 const DEFAULT_CONFIG_PATH: &str = "mellow.toml";
 const DEFAULT_LOG_FILTER: &str = "info";
-/// The WebRTC stack logs addresses and SDP at debug level: kept at warn whatever `RUST_LOG` says,
+/// The WebRTC stack (str0m and its own crates) logs addresses and SDP at debug level, and warns
+/// once per malformed packet (a flood under attack): capped at error whatever `RUST_LOG` says,
 /// since logs never carry IP addresses (ADR-0030).
-const WEBRTC_LOG_DIRECTIVES: [&str; 4] =
-    ["str0m=warn", "str0m_proto=warn", "is=warn", "dimpl=warn"];
+const WEBRTC_LOG_TARGETS: [&str; 6] = [
+    "str0m",
+    "str0m_proto",
+    "str0m_aws_lc_rs",
+    "is",
+    "dimpl",
+    "sctp_proto",
+];
+
+/// A second, per-layer filter: unlike directives added to the `EnvFilter`, `RUST_LOG` cannot
+/// override it.
+fn webrtc_log_cap() -> Targets {
+    Targets::new()
+        .with_default(LevelFilter::TRACE)
+        .with_targets(
+            WEBRTC_LOG_TARGETS
+                .iter()
+                .map(|target| (*target, LevelFilter::ERROR)),
+        )
+}
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Mellow server: self-hosted chat in one binary")]
@@ -135,17 +157,14 @@ impl From<RegistrationModeArgument> for RegistrationMode {
 
 fn main() -> ExitCode {
     // Logs never contain message content, tokens, passwords or emails (CLAUDE.md).
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(
-            WEBRTC_LOG_DIRECTIVES.iter().fold(
-                EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER)),
-                |filter, directive| match directive.parse() {
-                    Ok(directive) => filter.add_directive(directive),
-                    Err(_) => filter,
-                },
-            ),
+    let requested_levels =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_filter(requested_levels)
+                .with_filter(webrtc_log_cap()),
         )
         .init();
     let runtime = match tokio::runtime::Runtime::new() {
@@ -367,5 +386,26 @@ async fn run_admin_command(command: AdminCommand) -> Result<()> {
             );
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn webrtc_crates_log_errors_only_and_others_are_left_to_rust_log() {
+        let cap = webrtc_log_cap();
+        for target in [
+            "str0m",
+            "str0m::rtp::srtp",
+            "is::agent",
+            "dimpl",
+            "sctp_proto",
+        ] {
+            assert!(!cap.would_enable(target, &tracing::Level::WARN), "{target}");
+            assert!(cap.would_enable(target, &tracing::Level::ERROR), "{target}");
+        }
+        assert!(cap.would_enable("mellow_server::voice", &tracing::Level::TRACE));
     }
 }
