@@ -12,7 +12,10 @@ services:
         MELLOW_VERSION: 0.22.0
     image: local/mellow-server:0.22.0
     restart: unless-stopped
-    # Behind a reverse proxy, join its Docker network instead of publishing a port.
+    # Behind a reverse proxy, join its Docker network instead of publishing the HTTP port.
+    ports:
+      # Voice media (ADR-0030): forward this UDP port on the router and open it in the firewall.
+      - "50000:50000/udp"
     volumes:
       - ./config:/config:ro
       - ./data:/data
