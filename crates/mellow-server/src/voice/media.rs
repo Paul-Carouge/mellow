@@ -344,10 +344,25 @@ impl MediaLoop<'_> {
         match command {
             MediaCommand::Join(join) => {
                 let now = Instant::now();
+                // A reconnection mid-sentence: the new session starts silent, so the old one's
+                // speech ends now, or the viewers' speaking ring would stay on.
+                let was_speaking = self
+                    .participants
+                    .get_mut(&join.user_id)
+                    .and_then(|replaced| replaced.speaking.stop())
+                    .is_some();
                 self.remove(join.user_id);
                 let mut participant = Participant::new(*join, now);
                 drain_output(&mut participant, &self.socket, &mut self.frames_to_forward);
-                self.participants.insert(participant.user_id, participant);
+                let (user_id, connection_id) = (participant.user_id, participant.connection_id);
+                self.participants.insert(user_id, participant);
+                if was_speaking {
+                    self.emit(MediaEvent::Speaking {
+                        user_id,
+                        connection_id,
+                        is_speaking: false,
+                    });
+                }
             }
             MediaCommand::Leave { user_id } => self.remove(user_id),
             MediaCommand::SetForwarding {

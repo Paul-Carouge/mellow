@@ -748,3 +748,90 @@ async fn a_member_joining_the_guild_learns_who_is_in_its_voice_channels() {
     assert!(matches!(first, GatewayEvent::GuildCreate(_)), "{first:?}");
     assert_eq!(seen.channel_id, lounge);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reconnection_mid_sentence_stops_speaking_and_announces_a_changed_state() {
+    let fixture = fixture().await;
+    let (mut owner, _) = identified(fixture.address, fixture.token("owner")).await;
+    let (mut member, _) = identified(fixture.address, fixture.token("member")).await;
+    let owner_id = fixture.user_id("owner");
+    let owner_bot = join_and_start(&mut owner, fixture.lounge, 1).await;
+    receive_dispatch(&mut member, |event| {
+        matches!(event, GatewayEvent::Speaking { user_id, speaking: true, .. } if *user_id == owner_id)
+    })
+    .await;
+    // The same session offers again (a network change), now muted.
+    send(
+        &mut owner,
+        &ClientFrame::VoiceJoin {
+            channel_id: fixture.lounge,
+            offer_id: 2,
+            sdp_offer: pending_bot().offer,
+            self_mute: true,
+            self_deaf: false,
+        },
+    )
+    .await;
+    let (mut has_stopped_speaking, mut muted_state) = (false, None);
+    while !has_stopped_speaking || muted_state.is_none() {
+        match receive_dispatch(&mut member, |_| true).await.1 {
+            GatewayEvent::Speaking {
+                user_id,
+                speaking: false,
+                ..
+            } if user_id == owner_id => has_stopped_speaking = true,
+            GatewayEvent::VoiceStateUpdate { voice_state } if voice_state.user_id == owner_id => {
+                muted_state = Some(voice_state);
+            }
+            _ => {}
+        }
+    }
+    drop(owner_bot);
+    fixture.close().await;
+
+    assert!(muted_state.is_some_and(|state| state.self_mute));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_move_to_another_guilds_channel_removes_the_state_for_the_old_viewers() {
+    let fixture = fixture().await;
+    let owner_id = fixture.user_id("owner");
+    let other_guild = fixture
+        .state
+        .guilds
+        .create_guild(
+            owner_id,
+            false,
+            CreateGuildRequest {
+                name: "Elsewhere".into(),
+                initial_categories: None,
+            },
+            now(),
+        )
+        .await
+        .unwrap();
+    let elsewhere = fixture
+        .state
+        .guilds
+        .create_channel(
+            owner_id,
+            other_guild.id,
+            CreateChannelRequest {
+                kind: ChannelKind::Voice,
+                name: "Elsewhere".into(),
+                topic: String::new(),
+                parent_id: None,
+                user_limit: None,
+            },
+            now(),
+        )
+        .await
+        .unwrap();
+    let (mut owner, _) = identified(fixture.address, fixture.token("owner")).await;
+    let (mut member, _) = identified(fixture.address, fixture.token("member")).await;
+    join(&mut owner, fixture.lounge, &pending_bot().offer).await;
+    next_voice_state_update(&mut member, owner_id).await;
+    join(&mut owner, elsewhere.id, &pending_bot().offer).await;
+    wait_for_voice_state_delete(&mut member, owner_id).await;
+    fixture.close().await;
+}
