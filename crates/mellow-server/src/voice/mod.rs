@@ -40,9 +40,6 @@ pub(crate) struct VoiceJoinRequest {
 
 /// A join checked and answered, waiting for room in the channel.
 struct PreparedJoin {
-    guild_id: Snowflake,
-    user_limit: Option<u8>,
-    may_speak: bool,
     candidate_address: std::net::SocketAddr,
     /// Boxed: a session is about 20 kB, too much to carry across awaits inline.
     rtc: Box<str0m::Rtc>,
@@ -194,16 +191,14 @@ impl VoiceService {
             .as_ref()
             .ok_or(VoiceJoinRefusal::VoiceUnavailable)?;
         validate_voice_offer(&request.sdp_offer).map_err(|_| VoiceJoinRefusal::InvalidOffer)?;
-        let (guild_id, user_limit, may_speak) = match shared
+        // Checked early so a refused join costs no DNS lookup or session; checked again under
+        // the lock by `admit`.
+        match shared
             .guilds
             .voice_access(request.user_id, request.channel_id)
             .await
         {
-            Ok(VoiceAccess::Allowed {
-                guild_id,
-                user_limit,
-                may_speak,
-            }) => (guild_id, user_limit, may_speak),
+            Ok(VoiceAccess::Allowed { .. }) => {}
             Ok(VoiceAccess::ChannelGone | VoiceAccess::NotMember | VoiceAccess::Denied) => {
                 return Err(VoiceJoinRefusal::MissingPermissions);
             }
@@ -211,7 +206,7 @@ impl VoiceService {
                 tracing::warn!(%error, "voice join: cannot read the channel");
                 return Err(VoiceJoinRefusal::VoiceUnavailable);
             }
-        };
+        }
         // An address the administrator wrote is announced as is; one taken from the Host the
         // client used may be `localhost`, which browsers cannot send media to.
         let candidate_address = match &shared.public_address {
@@ -235,9 +230,6 @@ impl VoiceService {
             return Err(VoiceJoinRefusal::InvalidOffer);
         };
         Ok(PreparedJoin {
-            guild_id,
-            user_limit,
-            may_speak,
             candidate_address,
             rtc,
             sdp_answer,
@@ -247,23 +239,50 @@ impl VoiceService {
     /// Joins, moves or reconnects. Answers the session with `VOICE_SESSION_DESCRIPTION` or
     /// `VOICE_JOIN_REFUSED`, then tells the channel's viewers.
     pub(crate) async fn join(&self, request: VoiceJoinRequest) {
+        match self.prepare_join(&request).await {
+            Ok(prepared) => self.admit(request, prepared).await,
+            Err(reason) => self.refuse_join(request.session, request.channel_id, reason),
+        }
+    }
+
+    /// Adds the prepared participant under the participants lock. Access is read again there:
+    /// a permission revoked while the offer was being answered is re-checked only for those
+    /// already inserted, so a join racing it must see it here. A session that ended meanwhile
+    /// (its `end_session` already ran) gets nothing.
+    async fn admit(&self, request: VoiceJoinRequest, prepared: PreparedJoin) {
         let shared = &self.shared;
         let refuse = |reason| self.refuse_join(request.session, request.channel_id, reason);
         let PreparedJoin {
-            guild_id,
-            user_limit,
-            may_speak,
             candidate_address,
             rtc,
             sdp_answer,
-        } = match self.prepare_join(&request).await {
-            Ok(prepared) => prepared,
-            Err(reason) => return refuse(reason),
-        };
+            ..
+        } = prepared;
         let Some(media) = &shared.media else {
             return refuse(VoiceJoinRefusal::VoiceUnavailable);
         };
         let mut participants = shared.participants.lock().await;
+        if !shared.events.is_session_live(request.session) {
+            return;
+        }
+        let (guild_id, user_limit, may_speak) = match shared
+            .guilds
+            .voice_access(request.user_id, request.channel_id)
+            .await
+        {
+            Ok(VoiceAccess::Allowed {
+                guild_id,
+                user_limit,
+                may_speak,
+            }) => (guild_id, user_limit, may_speak),
+            Ok(VoiceAccess::ChannelGone | VoiceAccess::NotMember | VoiceAccess::Denied) => {
+                return refuse(VoiceJoinRefusal::MissingPermissions);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "voice join: cannot read the channel");
+                return refuse(VoiceJoinRefusal::VoiceUnavailable);
+            }
+        };
         let previous = participants.get(&request.user_id).cloned();
         let others_in_channel = participants
             .iter()
@@ -312,34 +331,9 @@ impl VoiceService {
                 sdp_answer,
             },
         );
-        let Some(previous) = previous else {
-            shared
-                .publish_state_updated(request.user_id, &participant)
-                .await;
-            return;
-        };
-        if previous.session != request.session {
-            shared.events.publish_to_session(
-                previous.session,
-                &GatewayEvent::VoiceDisconnected {
-                    channel_id: previous.channel_id,
-                    reason: VoiceDisconnectReason::MovedElsewhere,
-                },
-            );
-        }
-        if previous.channel_id != request.channel_id {
-            shared
-                .publish_move(request.user_id, &previous, &participant)
-                .await;
-        } else if previous.session != request.session
-            && previous.voice_state(request.user_id) != participant.voice_state(request.user_id)
-        {
-            shared
-                .publish_state_updated(request.user_id, &participant)
-                .await;
-        }
-        // The same session joining its own channel again reconnects its media (an ICE restart):
-        // nothing is announced, so the client does not react to its own reconnection.
+        shared
+            .announce_join(request.user_id, previous, &participant)
+            .await;
     }
 
     /// Leaves the voice channel `session` is connected to, if any.
@@ -414,6 +408,37 @@ impl VoiceService {
 }
 
 impl VoiceShared {
+    /// Tells the others what a join changed: the session it replaced, a move, a new state.
+    async fn announce_join(
+        &self,
+        user_id: Snowflake,
+        previous: Option<Participant>,
+        participant: &Participant,
+    ) {
+        let Some(previous) = previous else {
+            self.publish_state_updated(user_id, participant).await;
+            return;
+        };
+        if previous.session != participant.session {
+            self.events.publish_to_session(
+                previous.session,
+                &GatewayEvent::VoiceDisconnected {
+                    channel_id: previous.channel_id,
+                    reason: VoiceDisconnectReason::MovedElsewhere,
+                },
+            );
+        }
+        if previous.channel_id != participant.channel_id {
+            self.publish_move(user_id, &previous, participant).await;
+        } else if previous.session != participant.session
+            && previous.voice_state(user_id) != participant.voice_state(user_id)
+        {
+            self.publish_state_updated(user_id, participant).await;
+        }
+        // The same session joining its own channel again reconnects its media (an ICE restart):
+        // nothing is announced, so the client does not react to its own reconnection.
+    }
+
     fn send_media_command(&self, command: MediaCommand) {
         if let Some(media) = &self.media
             && media.commands.send(command).is_err()

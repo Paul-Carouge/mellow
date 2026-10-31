@@ -514,8 +514,10 @@ fn generate_session_id() -> Option<String> {
 async fn run_session(state: AppState, session_id: String, hub_key: SessionKey, task: SessionTask) {
     let end = task.run().await;
     state.gateway_sessions.sessions().remove(&session_id);
-    state.voice.end_session(hub_key).await;
+    // Unregistered first: a voice join in flight then sees the session gone (`is_session_live`)
+    // instead of inserting a participant after `end_session` looked.
     state.events.unregister_session(hub_key);
+    state.voice.end_session(hub_key).await;
     if end == SessionEnd::CutOff {
         tracing::info!("gateway session cut off (too slow or token revoked)");
     }

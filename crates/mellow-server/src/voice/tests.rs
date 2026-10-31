@@ -638,3 +638,58 @@ async fn a_move_is_one_update_and_rejoining_the_same_channel_announces_nothing()
         }
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_join_racing_a_revocation_or_the_end_of_its_session_is_not_admitted() {
+    let fixture = fixture().await;
+    let voice = fixture.state.voice.clone();
+    let request = |user_id, session| VoiceJoinRequest {
+        user_id,
+        session,
+        channel_id: fixture.lounge,
+        sdp_offer: pending_bot().offer,
+        self_mute: false,
+        self_deaf: false,
+        host_header: None,
+    };
+    let member_id = fixture.user_id("member");
+    let (member_session, mut member_events) = fixture
+        .state
+        .events
+        .register_session(member_id, [1; 32], 10)
+        .unwrap();
+    let prepared = voice
+        .prepare_join(&request(member_id, member_session))
+        .await
+        .unwrap();
+    // CONNECT is taken away while the offer is being answered.
+    fixture.deny_in_lounge("member", Permissions::CONNECT).await;
+    voice
+        .admit(request(member_id, member_session), prepared)
+        .await;
+    let refusal = member_events.try_recv().unwrap().payload_json.to_string();
+
+    let owner_id = fixture.user_id("owner");
+    let (owner_session, _owner_events) = fixture
+        .state
+        .events
+        .register_session(owner_id, [2; 32], 10)
+        .unwrap();
+    let prepared = voice
+        .prepare_join(&request(owner_id, owner_session))
+        .await
+        .unwrap();
+    // The gateway session ends (and `end_session` runs) while the offer is being answered.
+    fixture.state.events.unregister_session(owner_session);
+    voice.end_session(owner_session).await;
+    voice
+        .admit(request(owner_id, owner_session), prepared)
+        .await;
+    let remaining = voice
+        .voice_states_in(&HashSet::from([fixture.lounge]))
+        .await;
+    fixture.close().await;
+
+    assert!(refusal.contains("missing_permissions"), "{refusal}");
+    assert_eq!(remaining, []);
+}
