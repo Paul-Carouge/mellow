@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mellow voice spike</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+  button { font: inherit; padding: .6rem 1rem; margin-right: .5rem; min-height: 44px; }
+  pre { background: #f3f3f3; padding: 1rem; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Mellow voice spike</h1>
+<p>Throwaway page for ADR-0030: joins the spike SFU's single room. Open it in several tabs or devices.</p>
+<p>
+  <button id="tone">Join with a test tone</button>
+  <button id="microphone">Join with the microphone</button>
+</p>
+<pre id="status" aria-live="polite">Not connected.</pre>
+<script>
+  // One send m-line for our voice, the rest are slots for the others: no renegotiation needed.
+  const LISTENING_SLOTS = 15;
+  const statusOutput = document.getElementById("status");
+
+  async function toneTrack() {
+    const context = new AudioContext();
+    const oscillator = context.createOscillator();
+    oscillator.frequency.value = 220 + Math.round(Math.random() * 440);
+    const gain = context.createGain();
+    gain.gain.value = 0.05;
+    const destination = context.createMediaStreamDestination();
+    oscillator.connect(gain).connect(destination);
+    oscillator.start();
+    return destination.stream.getAudioTracks()[0];
+  }
+
+  async function microphoneTrack() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    return stream.getAudioTracks()[0];
+  }
+
+  async function join(trackSource) {
+    document.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    const track = await trackSource();
+    const connection = new RTCPeerConnection();
+    connection.addTransceiver(track, { direction: "sendonly" });
+    for (let i = 0; i < LISTENING_SLOTS; i++) connection.addTransceiver("audio", { direction: "recvonly" });
+    connection.ontrack = (event) => {
+      const audio = new Audio();
+      audio.srcObject = new MediaStream([event.track]);
+      audio.play();
+    };
+    await connection.setLocalDescription(await connection.createOffer());
+    const response = await fetch("/offer", { method: "POST", body: connection.localDescription.sdp });
+    if (!response.ok) throw new Error(await response.text());
+    await connection.setRemoteDescription({ type: "answer", sdp: await response.text() });
+    setInterval(() => showStatistics(connection), 1000);
+  }
+
+  async function showStatistics(connection) {
+    const lines = [`Connection: ${connection.connectionState}`];
+    let receiving = 0;
+    (await connection.getStats()).forEach((report) => {
+      if (report.type === "candidate-pair" && report.nominated && report.currentRoundTripTime !== undefined) {
+        lines.push(`Round trip to the SFU: ${(report.currentRoundTripTime * 1000).toFixed(1)} ms`);
+      }
+      if (report.type === "inbound-rtp" && report.packetsReceived > 0) {
+        receiving++;
+        const jitterBuffer = report.jitterBufferEmittedCount
+          ? (1000 * report.jitterBufferDelay / report.jitterBufferEmittedCount).toFixed(0)
+          : "?";
+        lines.push(`Voice ${receiving}: lost ${report.packetsLost}/${report.packetsReceived}, jitter ${(report.jitter * 1000).toFixed(1)} ms, jitter buffer ${jitterBuffer} ms`);
+      }
+    });
+    lines.push(`Hearing ${receiving} other participant(s).`);
+    statusOutput.textContent = lines.join("\n");
+  }
+
+  const reportFailure = (error) => (statusOutput.textContent = `Failed: ${error}`);
+  document.getElementById("tone").onclick = () => join(toneTrack).catch(reportFailure);
+  document.getElementById("microphone").onclick = () => join(microphoneTrack).catch(reportFailure);
+</script>
+</body>
+</html>

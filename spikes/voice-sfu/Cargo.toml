@@ -1,0 +1,21 @@
+[package]
+name = "mellow-voice-spike"
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "Throwaway spike for ADR-0030: a str0m audio SFU and a load generator measuring CPU and latency."
+
+# Kept out of the Mellow workspace on purpose: it must not add dependencies to the product.
+[workspace]
+
+[dependencies]
+axum = "0.8.9"
+libc = "0.2"
+serde_json = "1.0.154"
+str0m = { version = "0.24.1", default-features = false, features = ["aws-lc-rs"] }
+tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "net"] }
+ureq = { version = "3", default-features = false, features = ["json"] }
+
+[profile.release]
+debug = 1
