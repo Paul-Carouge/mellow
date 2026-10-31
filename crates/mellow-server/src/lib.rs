@@ -8,3 +8,4 @@ pub(crate) mod gateway;
 pub(crate) mod http;
 pub mod storage;
 pub(crate) mod tls;
+pub(crate) mod voice;

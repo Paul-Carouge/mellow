@@ -44,6 +44,7 @@ pub async fn initialize_instance(options: &InitializeOptions) -> Result<ServerCo
         maximum_attachment_bytes: crate::config::DEFAULT_MAXIMUM_ATTACHMENT_BYTES,
         maximum_attachment_storage_bytes_per_user:
             crate::config::DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER,
+        voice: crate::config::VoiceConfig::default(),
         tls: options
             .tls
             .clone()

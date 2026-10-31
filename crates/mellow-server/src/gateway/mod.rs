@@ -13,8 +13,8 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
 use mellow_protocol::{
-    ClientFrame, CurrentUser, GATEWAY_VERSION, Hello, Ready, RelationshipKind, ServerFrame,
-    Snowflake,
+    ChannelKind, ClientFrame, CurrentUser, GATEWAY_VERSION, Guild, Hello, Ready, RelationshipKind,
+    ServerFrame, Snowflake, VoiceJoinRefusal, VoiceState,
 };
 use serde::Deserialize;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
@@ -29,7 +29,10 @@ use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiQuery};
 use crate::http::authentication::{is_from_this_origin, session_cookie};
 use crate::http::client_address::client_address_key;
-use crate::http::rate_limit::GATEWAY_CONNECTIONS_PER_ADDRESS;
+use crate::http::rate_limit::{
+    GATEWAY_CONNECTIONS_PER_ADDRESS, VOICE_JOINS_PER_USER, VOICE_STATE_CHANGES_PER_USER,
+};
+use crate::voice::VoiceJoinRequest;
 use session::{
     FrameText, OUTGOING_QUEUE_FRAMES, SessionCommand, SessionEnd, SessionTask, frame_text,
 };
@@ -45,8 +48,10 @@ const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bytes buffered towards one socket before writes wait on the network.
 const MAXIMUM_WRITE_BUFFER_BYTES: usize = 256 * 1024;
-/// Client frames are tiny (identify, resume, heartbeat); anything bigger is abuse.
-const MAXIMUM_CLIENT_FRAME_BYTES: usize = 4_096;
+/// Client frames are tiny (identify, resume, heartbeat) except `voice_join`, whose SDP offer may
+/// take up to `MAXIMUM_VOICE_OFFER_BYTES`, escaped in JSON (`\r\n` doubles each line ending);
+/// anything bigger is abuse.
+const MAXIMUM_CLIENT_FRAME_BYTES: usize = 96 * 1024;
 const MAXIMUM_SESSIONS_PER_USER: usize = 10;
 /// Upper bound on simultaneous `WebSocket` connections, authenticated or not (file descriptors, tasks).
 const MAXIMUM_GATEWAY_CONNECTIONS: usize = 10_000;
@@ -63,6 +68,7 @@ pub(crate) struct GatewayQuery {
 #[derive(Debug, Clone)]
 struct ResumableSession {
     user_id: Snowflake,
+    hub_key: SessionKey,
     commands: mpsc::Sender<SessionCommand>,
 }
 
@@ -114,6 +120,12 @@ pub(crate) async fn upgrade(
     // The web client identifies with an empty token: its session is this cookie (ADR-0019).
     let cookie_token = session_cookie(&headers).map(|token| Zeroizing::new(token.to_owned()));
     let address = client_address_key(peer, &headers, &state.trusted_proxy_networks);
+    // Where the client reached the instance: the voice candidate when no public address is set.
+    // Checked by the voice service before any use, and never logged.
+    let host_header = headers
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     if !state.gateway_rate_limiter.record_event(
         &format!("gateway:{address}"),
         GATEWAY_CONNECTIONS_PER_ADDRESS,
@@ -133,7 +145,7 @@ pub(crate) async fn upgrade(
         .max_message_size(MAXIMUM_CLIENT_FRAME_BYTES)
         .max_frame_size(MAXIMUM_CLIENT_FRAME_BYTES)
         .max_write_buffer_size(MAXIMUM_WRITE_BUFFER_BYTES)
-        .on_upgrade(move |socket| run_connection(socket, state, permit, cookie_token)))
+        .on_upgrade(move |socket| run_connection(socket, state, permit, cookie_token, host_header)))
 }
 
 /// Every write goes through here: it fails rather than wait on a client that stopped reading.
@@ -185,6 +197,7 @@ async fn run_connection(
     state: AppState,
     _permit: OwnedSemaphorePermit,
     cookie_token: Option<Zeroizing<String>>,
+    host_header: Option<String>,
 ) {
     let session_token = |token: String| match cookie_token.as_ref() {
         Some(cookie_token) if token.is_empty() => cookie_token.clone(),
@@ -200,13 +213,14 @@ async fn run_connection(
         return;
     }
     let first_frame = tokio::time::timeout(IDENTIFY_TIMEOUT, next_client_frame(&mut socket)).await;
-    let (token, user, commands, after_sequence, is_resume) = match first_frame {
+    let (token, user, commands, hub_key, after_sequence, is_resume) = match first_frame {
         Ok(Some(ClientFrame::Identify { token })) => {
             let token = session_token(token);
-            let Some((user, commands)) = identify(&mut socket, &state, &token).await else {
+            let Some((user, commands, hub_key)) = identify(&mut socket, &state, &token).await
+            else {
                 return refuse(socket).await;
             };
-            (token, user, commands, 0, false)
+            (token, user, commands, hub_key, 0, false)
         }
         Ok(Some(ClientFrame::Resume {
             token,
@@ -223,9 +237,14 @@ async fn run_connection(
             };
             let resumable = state.gateway_sessions.sessions().get(&session_id).cloned();
             match resumable {
-                Some(resumable) if resumable.user_id == user.id => {
-                    (token, user, resumable.commands, last_sequence, true)
-                }
+                Some(resumable) if resumable.user_id == user.id => (
+                    token,
+                    user,
+                    resumable.commands,
+                    resumable.hub_key,
+                    last_sequence,
+                    true,
+                ),
                 _ => return refuse(socket).await,
             }
         }
@@ -245,7 +264,13 @@ async fn run_connection(
     if commands.send(attach).await.is_err() || !matches!(answer.await, Ok(Ok(()))) {
         return refuse(socket).await;
     }
-    run_attached(socket, &state, &token, &user, outgoing_frames).await;
+    let attached = AttachedSession {
+        token: &token,
+        user: &user,
+        hub_key,
+        host_header,
+    };
+    run_attached(socket, &state, &attached, outgoing_frames).await;
     let _ = commands
         .send(SessionCommand::Detach { attachment_id })
         .await;
@@ -256,7 +281,7 @@ async fn identify(
     socket: &mut WebSocket,
     state: &AppState,
     token: &str,
-) -> Option<(CurrentUser, mpsc::Sender<SessionCommand>)> {
+) -> Option<(CurrentUser, mpsc::Sender<SessionCommand>, SessionKey)> {
     let user = state
         .accounts
         .authenticate(token, now_unix_milliseconds())
@@ -331,6 +356,7 @@ async fn identify(
         session_id.clone(),
         ResumableSession {
             user_id: user.id,
+            hub_key,
             commands: commands_sender.clone(),
         },
     );
@@ -347,7 +373,7 @@ async fn identify(
         return None;
     };
     if send_frame(socket, &ServerFrame::Ready { d: Box::new(ready) }).await {
-        Some((user, commands_sender))
+        Some((user, commands_sender, hub_key))
     } else {
         state.gateway_sessions.sessions().remove(&session_id);
         None
@@ -425,6 +451,7 @@ async fn build_ready(
             return None;
         }
     };
+    let voice_states = visible_voice_states(state, &guilds).await;
     let relationships = match state.relationships.list(user.id).await {
         Ok(relationships) => relationships,
         Err(error) => {
@@ -453,8 +480,20 @@ async fn build_ready(
         may_create_guilds: state
             .guilds
             .may_create_guilds(user.is_instance_administrator),
-        voice_states: Vec::new(),
+        voice_states,
+        voice_enabled: state.voice.is_available(),
     })
+}
+
+/// Who is connected to the voice channels among `guilds`' channels (those the reader can view).
+async fn visible_voice_states(state: &AppState, guilds: &[Guild]) -> Vec<VoiceState> {
+    let voice_channel_ids: HashSet<Snowflake> = guilds
+        .iter()
+        .flat_map(|guild| guild.channels.iter())
+        .filter(|channel| channel.kind == ChannelKind::Voice)
+        .map(|channel| channel.id)
+        .collect();
+    state.voice.voice_states_in(&voice_channel_ids).await
 }
 
 fn generate_session_id() -> Option<String> {
@@ -475,9 +514,75 @@ fn generate_session_id() -> Option<String> {
 async fn run_session(state: AppState, session_id: String, hub_key: SessionKey, task: SessionTask) {
     let end = task.run().await;
     state.gateway_sessions.sessions().remove(&session_id);
+    state.voice.end_session(hub_key).await;
     state.events.unregister_session(hub_key);
     if end == SessionEnd::CutOff {
         tracing::info!("gateway session cut off (too slow or token revoked)");
+    }
+}
+
+/// What a WebSocket attached to a session acts as.
+struct AttachedSession<'a> {
+    token: &'a str,
+    user: &'a CurrentUser,
+    hub_key: SessionKey,
+    host_header: Option<String>,
+}
+
+/// Voice frames are handled in order, so a leave sent after a join never overtakes it.
+async fn handle_voice_frame(state: &AppState, attached: &AttachedSession<'_>, frame: ClientFrame) {
+    let user_id = attached.user.id;
+    let now = std::time::Instant::now();
+    match frame {
+        ClientFrame::VoiceJoin {
+            channel_id,
+            sdp_offer,
+            self_mute,
+            self_deaf,
+        } => {
+            let key = format!("voice-join:{user_id}");
+            if !state
+                .rate_limiter
+                .record_event(&key, VOICE_JOINS_PER_USER, now)
+            {
+                state.voice.refuse_join(
+                    attached.hub_key,
+                    channel_id,
+                    VoiceJoinRefusal::RateLimited,
+                );
+                return;
+            }
+            state
+                .voice
+                .join(VoiceJoinRequest {
+                    user_id,
+                    session: attached.hub_key,
+                    channel_id,
+                    sdp_offer,
+                    self_mute,
+                    self_deaf,
+                    host_header: attached.host_header.clone(),
+                })
+                .await;
+        }
+        ClientFrame::VoiceLeave => state.voice.leave(user_id, attached.hub_key).await,
+        ClientFrame::VoiceState {
+            self_mute,
+            self_deaf,
+        } => {
+            let key = format!("voice-state:{user_id}");
+            // Over the limit, the change is dropped: the client's next one sets the state anyway.
+            if state
+                .rate_limiter
+                .record_event(&key, VOICE_STATE_CHANGES_PER_USER, now)
+            {
+                state
+                    .voice
+                    .set_self_state(user_id, attached.hub_key, self_mute, self_deaf)
+                    .await;
+            }
+        }
+        ClientFrame::Identify { .. } | ClientFrame::Resume { .. } | ClientFrame::Heartbeat => {}
     }
 }
 
@@ -485,10 +590,10 @@ async fn run_session(state: AppState, session_id: String, hub_key: SessionKey, t
 async fn run_attached(
     mut socket: WebSocket,
     state: &AppState,
-    token: &str,
-    user: &CurrentUser,
+    attached: &AttachedSession<'_>,
     mut outgoing_frames: mpsc::Receiver<FrameText>,
 ) {
+    let (token, user) = (attached.token, attached.user);
     let mut heartbeat_deadline = Instant::now() + HEARTBEAT_DEADLINE;
     let mut last_revalidated = Instant::now();
     loop {
@@ -513,8 +618,11 @@ async fn run_attached(
                         return;
                     }
                 }
-                // shortcut: voice is not served yet; the voice module answers these frames.
-                Some(ClientFrame::VoiceJoin { .. } | ClientFrame::VoiceLeave | ClientFrame::VoiceState { .. }) => {}
+                Some(
+                    frame @ (ClientFrame::VoiceJoin { .. }
+                    | ClientFrame::VoiceLeave
+                    | ClientFrame::VoiceState { .. }),
+                ) => handle_voice_frame(state, attached, frame).await,
                 // A second identify/resume, malformed JSON or a closed socket ends the connection.
                 Some(ClientFrame::Identify { .. } | ClientFrame::Resume { .. }) | None => break,
             },
@@ -534,7 +642,7 @@ async fn run_attached(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::net::SocketAddr;
 
     use futures_util::{SinkExt as _, StreamExt as _};
@@ -549,7 +657,7 @@ mod tests {
     use crate::domain::accounts::tests::{migrated_database, register_request};
     use crate::http::tests::test_state;
 
-    type ClientSocket = tokio_tungstenite::WebSocketStream<
+    pub(crate) type ClientSocket = tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >;
 
@@ -636,14 +744,14 @@ mod tests {
         }
     }
 
-    async fn connect(address: SocketAddr) -> ClientSocket {
+    pub(crate) async fn connect(address: SocketAddr) -> ClientSocket {
         let (socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/gateway?v=1"))
             .await
             .unwrap();
         socket
     }
 
-    async fn send(socket: &mut ClientSocket, frame: &ClientFrame) {
+    pub(crate) async fn send(socket: &mut ClientSocket, frame: &ClientFrame) {
         socket
             .send(ClientMessage::Text(
                 serde_json::to_string(frame).unwrap().into(),
@@ -652,7 +760,7 @@ mod tests {
             .unwrap();
     }
 
-    async fn receive(socket: &mut ClientSocket) -> ServerFrame {
+    pub(crate) async fn receive(socket: &mut ClientSocket) -> ServerFrame {
         loop {
             let message = tokio::time::timeout(RECEIVE_TIMEOUT, socket.next())
                 .await
@@ -666,7 +774,7 @@ mod tests {
     }
 
     /// Skips dispatches until `matches` accepts one; returns its sequence and event.
-    async fn receive_dispatch(
+    pub(crate) async fn receive_dispatch(
         socket: &mut ClientSocket,
         matches: impl Fn(&GatewayEvent) -> bool,
     ) -> (u64, GatewayEvent) {
@@ -682,7 +790,7 @@ mod tests {
         }
     }
 
-    async fn identified(address: SocketAddr, token: &str) -> (ClientSocket, Ready) {
+    pub(crate) async fn identified(address: SocketAddr, token: &str) -> (ClientSocket, Ready) {
         let mut socket = connect(address).await;
         assert!(matches!(
             receive(&mut socket).await,

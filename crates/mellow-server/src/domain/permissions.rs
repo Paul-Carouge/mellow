@@ -42,6 +42,28 @@ pub fn channel_permissions(
     )
 }
 
+/// What a member may do in a voice channel (ADR-0030), from their permissions there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VoiceEntitlement {
+    /// `VIEW_CHANNEL` or `CONNECT` is missing: they may not join, or must leave.
+    Refused,
+    /// Connected but not heard: `SPEAK` is missing, so their audio is not forwarded.
+    ListenOnly,
+    Speak,
+}
+
+/// `channel_permissions` are the member's permissions in the voice channel, overwrites applied.
+#[must_use]
+pub(crate) fn voice_entitlement(channel_permissions: Permissions) -> VoiceEntitlement {
+    if !channel_permissions.contains(Permissions::VIEW_CHANNEL | Permissions::CONNECT) {
+        VoiceEntitlement::Refused
+    } else if channel_permissions.contains(Permissions::SPEAK) {
+        VoiceEntitlement::Speak
+    } else {
+        VoiceEntitlement::ListenOnly
+    }
+}
+
 /// What someone may do in a direct-message conversation: participants view and read it. In a
 /// one-to-one conversation they write only while they may reach the other person (a shared guild
 /// or a friendship, and no block either way, ADR-0025), so a member kicked from the only shared
@@ -248,6 +270,74 @@ mod tests {
 
     fn everyone() -> Role {
         role(GUILD.raw(), 0, Permissions::DEFAULT_EVERYONE)
+    }
+
+    #[test]
+    fn voice_needs_view_and_connect_and_speak_decides_who_is_heard_after_overwrites() {
+        use mellow_protocol::{OverwriteKind, PermissionOverwrite};
+        let listener_role = role(10, 1, Permissions::empty());
+        let overwrite = |id: Snowflake, kind, allow, deny| PermissionOverwrite {
+            id,
+            kind,
+            allow,
+            deny,
+        };
+        let entitlement =
+            |member: Snowflake, roles: &[Role], overwrites: &[PermissionOverwrite]| {
+                voice_entitlement(channel_permissions(member, OWNER, GUILD, roles, overwrites))
+            };
+        let member_roles = [everyone(), listener_role.clone()];
+        assert_eq!(
+            entitlement(MEMBER, &[everyone()], &[]),
+            VoiceEntitlement::Speak,
+            "@everyone connects and speaks by default"
+        );
+        let no_speak_for_role = [overwrite(
+            listener_role.id,
+            OverwriteKind::Role,
+            Permissions::empty(),
+            Permissions::SPEAK,
+        )];
+        assert_eq!(
+            entitlement(MEMBER, &member_roles, &no_speak_for_role),
+            VoiceEntitlement::ListenOnly
+        );
+        let but_the_member_may = [
+            no_speak_for_role[0].clone(),
+            overwrite(
+                MEMBER,
+                OverwriteKind::Member,
+                Permissions::SPEAK,
+                Permissions::empty(),
+            ),
+        ];
+        assert_eq!(
+            entitlement(MEMBER, &member_roles, &but_the_member_may),
+            VoiceEntitlement::Speak
+        );
+        for denied in [Permissions::CONNECT, Permissions::VIEW_CHANNEL] {
+            let closed = [overwrite(
+                GUILD,
+                OverwriteKind::Role,
+                Permissions::empty(),
+                denied,
+            )];
+            assert_eq!(
+                entitlement(MEMBER, &[everyone()], &closed),
+                VoiceEntitlement::Refused,
+                "{denied:?}"
+            );
+            assert_eq!(
+                entitlement(OWNER, &[everyone()], &closed),
+                VoiceEntitlement::Speak,
+                "the owner ignores overwrites"
+            );
+        }
+        assert_eq!(
+            voice_entitlement(Permissions::CONNECT | Permissions::SPEAK),
+            VoiceEntitlement::Refused,
+            "connecting needs viewing"
+        );
     }
 
     #[test]

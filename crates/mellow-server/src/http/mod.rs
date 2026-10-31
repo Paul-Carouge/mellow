@@ -60,6 +60,8 @@ pub(crate) struct AppState {
     pub(crate) gateway_rate_limiter: Arc<RateLimiter>,
     /// Peers whose `X-Forwarded-For` names the client; empty without a reverse proxy.
     pub(crate) trusted_proxy_networks: Arc<[IpNet]>,
+    /// Voice channels (ADR-0030), signalled over the gateway.
+    pub(crate) voice: crate::voice::VoiceService,
 }
 
 impl AppState {
@@ -77,6 +79,8 @@ impl AppState {
             config.guild_creation,
         ));
         let messages = Arc::new(Messages::new(database.clone(), ids.clone(), guilds.clone()));
+        let voice =
+            crate::voice::VoiceService::start(&config.voice, guilds.clone(), events.clone());
         let attachments = Arc::new(crate::domain::attachments::Attachments::new(
             database.clone(),
             ids.clone(),
@@ -117,6 +121,7 @@ impl AppState {
                 &config.trusted_proxy_networks,
             )
             .into(),
+            voice,
         }
     }
 }
@@ -491,6 +496,7 @@ pub(crate) mod tests {
             crate::domain::account_rules::GuildCreationPolicy::Everyone,
         ));
         let messages = Arc::new(Messages::new(database.clone(), ids.clone(), guilds.clone()));
+        let voice = crate::voice::VoiceService::disabled(guilds.clone(), events.clone());
         let files = test_attachment_files();
         let attachments = Arc::new(crate::domain::attachments::Attachments::new(
             database.clone(),
@@ -528,6 +534,7 @@ pub(crate) mod tests {
             unauthenticated_rate_limiter: Arc::default(),
             gateway_rate_limiter: Arc::default(),
             trusted_proxy_networks: Arc::default(),
+            voice,
         }
     }
 

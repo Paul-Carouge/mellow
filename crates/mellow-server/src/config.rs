@@ -80,9 +80,64 @@ pub struct ServerConfig {
     /// What all of one account's uploads may take on disk (ADR-0020).
     #[serde(default = "default_maximum_attachment_storage_bytes_per_user")]
     pub maximum_attachment_storage_bytes_per_user: u64,
+    /// Voice channels (ADR-0030); on by default, so the table is usually absent. Tables come after
+    /// values in TOML.
+    #[serde(default, skip_serializing_if = "VoiceConfig::is_default")]
+    pub voice: VoiceConfig,
     /// Built-in TLS with ACME certificates (ADR-0013). Last field: TOML writes tables after values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
+}
+
+/// UDP port of the voice media, which the router must forward and the firewall must open.
+pub const DEFAULT_VOICE_UDP_PORT: u16 = 50_000;
+/// People connected to voice across the instance; one media thread sustains about this many
+/// (ADR-0030 measurements).
+pub const DEFAULT_MAXIMUM_VOICE_PARTICIPANTS: u32 = 50;
+
+/// The `[voice]` table of `mellow.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct VoiceConfig {
+    pub enabled: bool,
+    /// One UDP port for all voice traffic; 0 picks a free port (tests).
+    pub udp_port: u16,
+    /// The IPv4 address or DNS name clients send voice to. When absent, the name the client
+    /// reached the instance at (its `Host` header) is used, which suits a box forwarding the port.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_address: Option<String>,
+    pub max_participants: u32,
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            udp_port: DEFAULT_VOICE_UDP_PORT,
+            public_address: None,
+            max_participants: DEFAULT_MAXIMUM_VOICE_PARTICIPANTS,
+        }
+    }
+}
+
+impl VoiceConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(address) = &self.public_address
+            && !crate::voice::is_valid_host(address)
+        {
+            return Err(ConfigError::InvalidVoicePublicAddress {
+                address: address.clone(),
+            });
+        }
+        if self.max_participants == 0 {
+            return Err(ConfigError::NoVoiceParticipants);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,6 +221,12 @@ pub enum ConfigError {
         "the master key file must not be inside the data directory ({path}), or backups would carry the key"
     )]
     MasterKeyInsideDataDirectory { path: PathBuf },
+    #[error(
+        "[voice] public_address {address:?} must be an IPv4 address or a DNS name, without port"
+    )]
+    InvalidVoicePublicAddress { address: String },
+    #[error("[voice] max_participants must be at least 1; set enabled = false to turn voice off")]
+    NoVoiceParticipants,
 }
 
 /// Peers are compared in canonical form, so an IPv4-mapped IPv6 network would never match: it is
@@ -282,6 +343,7 @@ impl ServerConfig {
                 path: self.master_key_file.clone(),
             });
         }
+        self.voice.validate()?;
         if !self.trusted_proxy_networks.is_empty() && !self.behind_tls_reverse_proxy {
             return Err(ConfigError::TrustedProxyNetworksWithoutReverseProxy);
         }
@@ -443,6 +505,48 @@ mod tests {
     }
 
     #[test]
+    fn voice_is_on_by_default_and_its_table_is_checked() {
+        let config = load_text(VALID_CONFIG, &EnvironmentOverrides::default()).unwrap();
+        assert_eq!(config.voice, VoiceConfig::default());
+        assert!(config.voice.enabled);
+        assert_eq!(config.voice.udp_port, 50_000);
+        assert!(
+            !config.to_toml().unwrap().contains("[voice]"),
+            "defaults stay implicit"
+        );
+
+        let custom = load_text(
+            &format!(
+                "{VALID_CONFIG}\n[voice]\nudp_port = 40000\npublic_address = \"chat.example.org\"\n"
+            ),
+            &EnvironmentOverrides::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            custom.voice,
+            VoiceConfig {
+                udp_port: 40_000,
+                public_address: Some("chat.example.org".into()),
+                ..VoiceConfig::default()
+            }
+        );
+        let reparsed: ServerConfig = toml::from_str(&custom.to_toml().unwrap()).unwrap();
+        assert_eq!(reparsed, custom);
+        for (table, expected) in [
+            ("public_address = \"192.0.2.1:50000\"", "public_address"),
+            ("max_participants = 0", "max_participants"),
+            ("udp_port = 70000", "udp_port"),
+        ] {
+            let error = load_text(
+                &format!("{VALID_CONFIG}\n[voice]\n{table}\n"),
+                &EnvironmentOverrides::default(),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
     fn environment_overrides_win_over_the_file() {
         let overrides = EnvironmentOverrides {
             data_directory: Some("/srv/mellow".into()),
@@ -517,6 +621,7 @@ mod tests {
             maximum_attachment_bytes: DEFAULT_MAXIMUM_ATTACHMENT_BYTES,
             maximum_attachment_storage_bytes_per_user:
                 DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER,
+            voice: VoiceConfig::default(),
             tls: None,
         };
 

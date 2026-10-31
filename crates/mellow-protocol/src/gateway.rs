@@ -158,6 +158,10 @@ pub struct Ready {
     /// `v0.22.0`: absent from older servers.
     #[serde(default)]
     pub voice_states: Vec<VoiceState>,
+    /// Whether voice works on this instance: enabled, and its UDP port open. Clients hide voice
+    /// actions otherwise. Added after `v0.22.0`: older servers have no voice.
+    #[serde(default)]
+    pub voice_enabled: bool,
 }
 
 /// One person connected to a voice channel, as the channel's viewers see it.
@@ -556,6 +560,7 @@ mod tests {
         assert!(ready.may_create_guilds);
         assert_eq!(ready.user.custom_status, None);
         assert_eq!(ready.voice_states, Vec::new());
+        assert!(!ready.voice_enabled);
     }
 
     #[test]

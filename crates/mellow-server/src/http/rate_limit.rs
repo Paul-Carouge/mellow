@@ -190,6 +190,18 @@ pub(crate) const TYPING_INDICATORS_PER_USER: RateLimit = RateLimit {
     window: Duration::from_secs(10),
 };
 
+/// Voice joins per user (ADR-0030): each builds a WebRTC session and tells the channel's viewers.
+pub(crate) const VOICE_JOINS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_secs(60),
+};
+
+/// Mute and deafen changes per user, each told to the channel's viewers.
+pub(crate) const VOICE_STATE_CHANGES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 20,
+    window: Duration::from_secs(10),
+};
+
 /// Gateway WebSocket openings per client address (each holds a socket for up to 10 s unidentified).
 pub(crate) const GATEWAY_CONNECTIONS_PER_ADDRESS: RateLimit = RateLimit {
     maximum_events: 10,
