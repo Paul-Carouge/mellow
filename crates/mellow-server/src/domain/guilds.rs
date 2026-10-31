@@ -764,7 +764,13 @@ impl Guilds {
     /// hidden or revealed channels for them (ADR-0015). Never fails: the change is committed, so a
     /// member whose snapshot cannot be built is skipped and resynchronises at their next `Ready`.
     async fn resynchronize(&self, guild_id: Snowflake, affected: AffectedMembers) {
+        self.resynchronize_snapshots(guild_id, affected).await;
+        // After the snapshots: the voice service re-checks and re-announces who is connected,
+        // and a member who now sees a voice channel must know it first.
         self.events.note_guild_access_changed(guild_id);
+    }
+
+    async fn resynchronize_snapshots(&self, guild_id: Snowflake, affected: AffectedMembers) {
         let online = self.events.online_user_ids_of_guild(guild_id);
         let recipients: Vec<Snowflake> = match affected {
             AffectedMembers::Everyone => online.into_iter().collect(),
@@ -1542,6 +1548,8 @@ impl Guilds {
             }
             self.events
                 .publish_to_user(user_id, &GatewayEvent::GuildCreate(Box::new(guild.clone())));
+            // The voice service then announces who is connected, the newcomer included.
+            self.events.note_guild_access_changed(guild_id);
         }
         Ok(guild)
     }

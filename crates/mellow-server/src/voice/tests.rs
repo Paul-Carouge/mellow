@@ -102,7 +102,7 @@ async fn fixture() -> Fixture {
     );
     let mut tokens = HashMap::new();
     let mut user_ids = HashMap::new();
-    for name in ["owner", "member", "muted", "outsider"] {
+    for name in ["owner", "member", "muted", "outsider", "newcomer"] {
         let registered = state
             .accounts
             .register(
@@ -692,4 +692,49 @@ async fn a_join_racing_a_revocation_or_the_end_of_its_session_is_not_admitted() 
 
     assert!(refusal.contains("missing_permissions"), "{refusal}");
     assert_eq!(remaining, []);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_joining_the_guild_learns_who_is_in_its_voice_channels() {
+    let fixture = fixture().await;
+    let (mut owner, _) = identified(fixture.address, fixture.token("owner")).await;
+    let (mut newcomer, _) = identified(fixture.address, fixture.token("newcomer")).await;
+    join(&mut owner, fixture.lounge, &pending_bot().offer).await;
+    let owner_id = fixture.user_id("owner");
+    let guild_id = fixture
+        .state
+        .guilds
+        .voice_access(owner_id, fixture.lounge)
+        .await
+        .map(|access| match access {
+            VoiceAccess::Allowed { guild_id, .. } => guild_id,
+            other => panic!("{other:?}"),
+        })
+        .unwrap();
+    let invite = fixture
+        .state
+        .guilds
+        .create_invite(owner_id, guild_id, CreateInviteRequest::default(), now())
+        .await
+        .unwrap();
+    fixture
+        .state
+        .guilds
+        .join_with_invite(fixture.user_id("newcomer"), &invite.code, now())
+        .await
+        .unwrap();
+    let first = receive_dispatch(&mut newcomer, |event| {
+        matches!(
+            event,
+            GatewayEvent::GuildCreate(_) | GatewayEvent::VoiceStateUpdate { .. }
+        )
+    })
+    .await
+    .1;
+    let seen = next_voice_state_update(&mut newcomer, owner_id).await;
+    let lounge = fixture.lounge;
+    fixture.close().await;
+
+    assert!(matches!(first, GatewayEvent::GuildCreate(_)), "{first:?}");
+    assert_eq!(seen.channel_id, lounge);
 }
