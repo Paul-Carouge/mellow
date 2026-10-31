@@ -37,6 +37,14 @@ sudo docker compose up -d
 ```
 Back up `keys` separately from `data`: without the master key the database cannot be decrypted.
 
+Voice channels need UDP port 50000 (published by `compose.yaml`) reachable from the internet:
+forward it on the router to this host and open it in the host firewall (for example
+`sudo ufw allow 50000/udp`). Voice is on by default; the address clients send audio to is the
+domain they reached the instance at. If that name does not resolve to the right IPv4 address
+from inside the container, set it in `config/mellow.toml`:
+`[voice]` then `public_address = "chat.example.org"` (or the public IPv4 address). Without the
+port, text chat works and joining a voice channel reports voice as unavailable.
+
 ## Update
 ```bash
 sudo install -m 0755 mellow-update /usr/local/sbin/mellow-update   # once
