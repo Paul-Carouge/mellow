@@ -574,8 +574,8 @@ export type GatewayEvent =
   | { t: "VOICE_STATE_UPDATE"; data: { voice_state: VoiceState } }
   | { t: "VOICE_STATE_DELETE"; data: { guild_id: Snowflake; channel_id: Snowflake; user_id: Snowflake } }
   /** Only to the session that sent the `voice_join`. */
-  | { t: "VOICE_SESSION_DESCRIPTION"; data: { channel_id: Snowflake; sdp_answer: string } }
-  | { t: "VOICE_JOIN_REFUSED"; data: { channel_id: Snowflake; reason: VoiceJoinRefusal } }
+  | { t: "VOICE_SESSION_DESCRIPTION"; data: { channel_id: Snowflake; offer_id: number; sdp_answer: string } }
+  | { t: "VOICE_JOIN_REFUSED"; data: { channel_id: Snowflake; offer_id: number; reason: VoiceJoinRefusal } }
   | { t: "VOICE_DISCONNECTED"; data: { channel_id: Snowflake; reason: VoiceDisconnectReason } }
   /** Edges only, never for muted or suppressed people. */
   | {
@@ -595,8 +595,14 @@ export type ClientFrame =
   | { op: "identify"; d: { token: string } }
   | { op: "resume"; d: { token: string; session_id: string; last_sequence: number } }
   | { op: "heartbeat" }
-  /** Join, move, or reconnect with a fresh offer: the server swaps the media session. */
-  | { op: "voice_join"; d: { channel_id: Snowflake; sdp_offer: string; self_mute: boolean; self_deaf: boolean } }
+  /**
+   * Join, move, or reconnect with a fresh offer: the server swaps the media session. `offer_id`
+   * (0 to 2^32 - 1, chosen by the client) comes back with the answer or the refusal.
+   */
+  | {
+      op: "voice_join";
+      d: { channel_id: Snowflake; offer_id: number; sdp_offer: string; self_mute: boolean; self_deaf: boolean };
+    }
   | { op: "voice_leave" }
   | { op: "voice_state"; d: { self_mute: boolean; self_deaf: boolean } };
 

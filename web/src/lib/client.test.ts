@@ -1391,7 +1391,13 @@ describe("Voice states", () => {
   it("routes the instance's refusals to the voice connection", async () => {
     const { client } = voiceClient();
     await client.voice.join(LOUNGE);
-    client.applyEvent({ t: "VOICE_JOIN_REFUSED", data: { channel_id: LOUNGE, reason: "missing_permissions" } }, 0);
+    client.applyEvent(
+      {
+        t: "VOICE_JOIN_REFUSED",
+        data: { channel_id: LOUNGE, offer_id: client.voice.currentOfferId, reason: "missing_permissions" },
+      },
+      0,
+    );
     expect(client.voice.problem).toEqual({ kind: "refused", channelId: LOUNGE, reason: "missing_permissions" });
   });
 });

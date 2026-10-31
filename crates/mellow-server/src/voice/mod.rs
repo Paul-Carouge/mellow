@@ -31,6 +31,7 @@ pub(crate) struct VoiceJoinRequest {
     pub(crate) user_id: Snowflake,
     pub(crate) session: SessionKey,
     pub(crate) channel_id: Snowflake,
+    pub(crate) offer_id: u32,
     pub(crate) sdp_offer: String,
     pub(crate) self_mute: bool,
     pub(crate) self_deaf: bool,
@@ -171,11 +172,16 @@ impl VoiceService {
         &self,
         session: SessionKey,
         channel_id: Snowflake,
+        offer_id: u32,
         reason: VoiceJoinRefusal,
     ) {
         self.shared.events.publish_to_session(
             session,
-            &GatewayEvent::VoiceJoinRefused { channel_id, reason },
+            &GatewayEvent::VoiceJoinRefused {
+                channel_id,
+                offer_id,
+                reason,
+            },
         );
     }
 
@@ -241,7 +247,12 @@ impl VoiceService {
     pub(crate) async fn join(&self, request: VoiceJoinRequest) {
         match self.prepare_join(&request).await {
             Ok(prepared) => self.admit(request, prepared).await,
-            Err(reason) => self.refuse_join(request.session, request.channel_id, reason),
+            Err(reason) => self.refuse_join(
+                request.session,
+                request.channel_id,
+                request.offer_id,
+                reason,
+            ),
         }
     }
 
@@ -251,7 +262,14 @@ impl VoiceService {
     /// (its `end_session` already ran) gets nothing.
     async fn admit(&self, request: VoiceJoinRequest, prepared: PreparedJoin) {
         let shared = &self.shared;
-        let refuse = |reason| self.refuse_join(request.session, request.channel_id, reason);
+        let refuse = |reason| {
+            self.refuse_join(
+                request.session,
+                request.channel_id,
+                request.offer_id,
+                reason,
+            );
+        };
         let PreparedJoin {
             candidate_address,
             rtc,
@@ -328,6 +346,7 @@ impl VoiceService {
             request.session,
             &GatewayEvent::VoiceSessionDescription {
                 channel_id: request.channel_id,
+                offer_id: request.offer_id,
                 sdp_answer,
             },
         );

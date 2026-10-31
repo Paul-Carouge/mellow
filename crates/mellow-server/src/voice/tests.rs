@@ -365,6 +365,7 @@ async fn send_join(socket: &mut ClientSocket, channel_id: Snowflake, offer: &str
         socket,
         &ClientFrame::VoiceJoin {
             channel_id,
+            offer_id: 1,
             sdp_offer: offer.to_owned(),
             self_mute: false,
             self_deaf: false,
@@ -385,7 +386,14 @@ async fn join(socket: &mut ClientSocket, channel_id: Snowflake, offer: &str) -> 
     .await
     .1
     {
-        GatewayEvent::VoiceSessionDescription { sdp_answer, .. } => sdp_answer,
+        GatewayEvent::VoiceSessionDescription {
+            sdp_answer,
+            offer_id,
+            ..
+        } => {
+            assert_eq!(offer_id, 1, "the answer names the offer it answers");
+            sdp_answer
+        }
         other => panic!("join refused: {other:?}"),
     }
 }
@@ -567,6 +575,7 @@ async fn full_channels_refuse_and_members_losing_connect_are_disconnected() {
 
     let refusal = |reason| GatewayEvent::VoiceJoinRefused {
         channel_id: Snowflake::from_raw(0),
+        offer_id: 1,
         reason,
     };
     let without_channel = |event: GatewayEvent| match event {
@@ -647,6 +656,7 @@ async fn a_join_racing_a_revocation_or_the_end_of_its_session_is_not_admitted() 
         user_id,
         session,
         channel_id: fixture.lounge,
+        offer_id: 1,
         sdp_offer: pending_bot().offer,
         self_mute: false,
         self_deaf: false,

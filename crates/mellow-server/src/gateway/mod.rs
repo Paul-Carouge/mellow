@@ -538,6 +538,7 @@ async fn handle_voice_frame(state: &AppState, attached: &AttachedSession<'_>, fr
     match frame {
         ClientFrame::VoiceJoin {
             channel_id,
+            offer_id,
             sdp_offer,
             self_mute,
             self_deaf,
@@ -550,6 +551,7 @@ async fn handle_voice_frame(state: &AppState, attached: &AttachedSession<'_>, fr
                 state.voice.refuse_join(
                     attached.hub_key,
                     channel_id,
+                    offer_id,
                     VoiceJoinRefusal::RateLimited,
                 );
                 return;
@@ -560,6 +562,7 @@ async fn handle_voice_frame(state: &AppState, attached: &AttachedSession<'_>, fr
                     user_id,
                     session: attached.hub_key,
                     channel_id,
+                    offer_id,
                     sdp_offer,
                     self_mute,
                     self_deaf,

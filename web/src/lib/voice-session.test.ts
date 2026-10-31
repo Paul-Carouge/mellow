@@ -101,7 +101,7 @@ function harness({ microphoneError }: { microphoneError?: Error } = {}) {
   /** Joins, answers and connects: the usual path. */
   async function connect(channelId = CHANNEL) {
     await session.join(channelId);
-    await session.applyAnswer(channelId, "answer");
+    await session.applyAnswer(channelId, session.currentOfferId, "answer");
     lastPeer().setIce("connected");
   }
   const joins = () => frames.filter((frame) => frame.op === "voice_join");
@@ -126,7 +126,10 @@ describe("VoiceSession", () => {
     expect(peer.transceivers.slice(1)).toHaveLength(VOICE_RECEIVE_SLOTS);
     expect(peer.transceivers.slice(1).every((line) => line.trackOrKind === "audio" && line.direction === "recvonly")).toBe(true);
     expect(joins()).toEqual([
-      { op: "voice_join", d: { channel_id: CHANNEL, sdp_offer: "offer-17", self_mute: false, self_deaf: false } },
+      {
+        op: "voice_join",
+        d: { channel_id: CHANNEL, offer_id: session.currentOfferId, sdp_offer: "offer-17", self_mute: false, self_deaf: false },
+      },
     ]);
     expect(session.phase).toBe("connecting");
   });
@@ -144,11 +147,28 @@ describe("VoiceSession", () => {
   it("ignores an answer for another channel or with no offer waiting", async () => {
     const { session, lastPeer } = harness();
     await session.join(CHANNEL);
-    await session.applyAnswer(OTHER_CHANNEL, "answer");
+    const offerId = session.currentOfferId;
+    await session.applyAnswer(OTHER_CHANNEL, offerId, "answer");
     expect(lastPeer().remoteDescription).toBeNull();
-    await session.applyAnswer(CHANNEL, "answer");
-    await session.applyAnswer(CHANNEL, "second answer");
+    await session.applyAnswer(CHANNEL, offerId, "answer");
+    await session.applyAnswer(CHANNEL, offerId, "second answer");
     expect(lastPeer().remoteDescription?.sdp).toBe("answer");
+  });
+
+  it("applies only the answer to its latest offer, and ignores a refusal of an older one", async () => {
+    const { session, joins, lastPeer, connect } = harness();
+    await connect();
+    lastPeer().setIce("failed");
+    await flush();
+    // A reconnection sent a second offer: the answer to the first one arrives late.
+    const [first, second] = joins().map((frame) => (frame.op === "voice_join" ? frame.d.offer_id : -1));
+    expect(second).not.toBe(first);
+    await session.applyAnswer(CHANNEL, first ?? -1, "stale answer");
+    expect(lastPeer().remoteDescription).toBeNull();
+    session.refuse(CHANNEL, first ?? -1, "rate_limited");
+    expect(session.phase).toBe("reconnecting");
+    await session.applyAnswer(CHANNEL, second ?? -1, "fresh answer");
+    expect(lastPeer().remoteDescription?.sdp).toBe("fresh answer");
   });
 
   it("mutes by stopping the track and telling the instance; deafening also mutes every voice", async () => {
@@ -234,7 +254,7 @@ describe("VoiceSession", () => {
   it("stops on a refusal, says why, and ends any old connection", async () => {
     const { session, frames } = harness();
     await session.join(CHANNEL);
-    session.refuse(CHANNEL, "channel_full");
+    session.refuse(CHANNEL, session.currentOfferId, "channel_full");
     expect(frames.at(-1)).toEqual({ op: "voice_leave" });
     expect(session.phase).toBe("idle");
     expect(session.problem).toEqual({ kind: "refused", channelId: CHANNEL, reason: "channel_full" });
@@ -296,7 +316,7 @@ describe("VoiceSession", () => {
   it("says the voice port may be closed when a first join never gets audio", async () => {
     const { session, frames, lastPeer } = harness();
     await session.join(CHANNEL);
-    await session.applyAnswer(CHANNEL, "answer");
+    await session.applyAnswer(CHANNEL, session.currentOfferId, "answer");
     lastPeer().setIce("failed");
     expect(session.problem).toEqual({ kind: "unreachable", channelId: CHANNEL });
     expect(frames.at(-1)).toEqual({ op: "voice_leave" });
@@ -369,7 +389,7 @@ describe("VoiceSession", () => {
   it("retries the channel of a problem", async () => {
     const { session, joins } = harness();
     await session.join(CHANNEL);
-    session.refuse(CHANNEL, "rate_limited");
+    session.refuse(CHANNEL, session.currentOfferId, "rate_limited");
     session.retry();
     await flush();
     expect(session.problem).toBeNull();

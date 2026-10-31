@@ -38,6 +38,9 @@ pub enum ClientFrame {
     /// `VOICE_SESSION_DESCRIPTION` or `VOICE_JOIN_REFUSED`.
     VoiceJoin {
         channel_id: Snowflake,
+        /// Chosen by the client, opaque to the server and echoed in the answer or refusal, so a
+        /// client that sent several offers applies only the answer to its latest.
+        offer_id: u32,
         sdp_offer: String,
         self_mute: bool,
         self_deaf: bool,
@@ -73,12 +76,14 @@ impl std::fmt::Debug for ClientFrame {
             // The SDP holds addresses and keys: never printed.
             Self::VoiceJoin {
                 channel_id,
+                offer_id,
                 self_mute,
                 self_deaf,
                 ..
             } => formatter
                 .debug_struct("VoiceJoin")
                 .field("channel_id", channel_id)
+                .field("offer_id", offer_id)
                 .field("sdp_offer", &"<redacted>")
                 .field("self_mute", self_mute)
                 .field("self_deaf", self_deaf)
@@ -369,11 +374,15 @@ pub enum GatewayEvent {
     /// The server's SDP answer to this session's `voice_join`. Sent to that session only.
     VoiceSessionDescription {
         channel_id: Snowflake,
+        /// The `offer_id` of the `voice_join` answered.
+        offer_id: u32,
         sdp_answer: String,
     },
     /// The server refused this session's `voice_join`. Sent to that session only.
     VoiceJoinRefused {
         channel_id: Snowflake,
+        /// The `offer_id` of the `voice_join` refused.
+        offer_id: u32,
         reason: VoiceJoinRefusal,
     },
     /// The server ended this session's voice connection. Sent to that session only; the others
@@ -567,13 +576,14 @@ mod tests {
     fn voice_frames_from_clients_keep_their_shape_and_hide_the_offer() {
         let join: ClientFrame = serde_json::from_value(serde_json::json!({
             "op": "voice_join",
-            "d": {"channel_id": "5", "sdp_offer": "v=0 secret", "self_mute": false, "self_deaf": true}
+            "d": {"channel_id": "5", "offer_id": 7, "sdp_offer": "v=0 secret", "self_mute": false, "self_deaf": true}
         }))
         .unwrap();
         assert_eq!(
             join,
             ClientFrame::VoiceJoin {
                 channel_id: Snowflake::from_raw(5),
+                offer_id: 7,
                 sdp_offer: "v=0 secret".into(),
                 self_mute: false,
                 self_deaf: true,
@@ -637,18 +647,20 @@ mod tests {
             (
                 GatewayEvent::VoiceSessionDescription {
                     channel_id: Snowflake::from_raw(2),
+                    offer_id: 7,
                     sdp_answer: "v=0".into(),
                 },
                 serde_json::json!({"t": "VOICE_SESSION_DESCRIPTION",
-                    "data": {"channel_id": "2", "sdp_answer": "v=0"}}),
+                    "data": {"channel_id": "2", "offer_id": 7, "sdp_answer": "v=0"}}),
             ),
             (
                 GatewayEvent::VoiceJoinRefused {
                     channel_id: Snowflake::from_raw(2),
+                    offer_id: 7,
                     reason: VoiceJoinRefusal::ChannelFull,
                 },
                 serde_json::json!({"t": "VOICE_JOIN_REFUSED",
-                    "data": {"channel_id": "2", "reason": "channel_full"}}),
+                    "data": {"channel_id": "2", "offer_id": 7, "reason": "channel_full"}}),
             ),
             (
                 GatewayEvent::VoiceDisconnected {
