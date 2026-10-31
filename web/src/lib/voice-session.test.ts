@@ -292,6 +292,57 @@ describe("VoiceSession", () => {
     expect(session.problem).toMatchObject({ kind: "disconnected", reason: "media_timeout" });
   });
 
+  it("retries once per connection: a media timeout after audio came back retries again", async () => {
+    const { session, joins, lastPeer, connect } = harness();
+    await connect();
+    session.disconnectedByServer(CHANNEL, "media_timeout");
+    await flush();
+    await session.applyAnswer(CHANNEL, session.currentOfferId, "answer");
+    lastPeer().setIce("connected");
+    expect(session.phase).toBe("connected");
+    session.disconnectedByServer(CHANNEL, "media_timeout");
+    await flush();
+    expect(session.phase).toBe("reconnecting");
+    expect(joins()).toHaveLength(3);
+  });
+
+  it("sends a mute made while the gateway was resuming once it is back", async () => {
+    const { session, frames, joins, gateway, connect } = harness();
+    await connect();
+    gateway.isUp = false;
+    await session.toggleMicrophone();
+    expect(frames.some((frame) => frame.op === "voice_state")).toBe(false);
+    gateway.isUp = true;
+    session.noteGatewayResumed();
+    await flush();
+    expect(joins()).toHaveLength(1);
+    expect(frames.at(-1)).toEqual({ op: "voice_state", d: { self_mute: true, self_deaf: false } });
+    session.noteGatewayResumed();
+    expect(frames.filter((frame) => frame.op === "voice_state")).toHaveLength(1);
+  });
+
+  it("stops the second microphone stream of a quick second join", async () => {
+    const pending: ((stream: MediaStream) => void)[] = [];
+    const microphones = [fakeMicrophone(), fakeMicrophone()];
+    const session = new VoiceSession({
+      sendFrame: () => true,
+      createPeerConnection: () => new FakePeer() as unknown as RTCPeerConnection,
+      requestMicrophone: () => new Promise((resolve) => pending.push(resolve)),
+      playTrack: () => ({ setMuted: () => {}, stop: () => {} }),
+      meterLevel: () => null,
+      storage: () => null,
+    });
+    const first = session.join(CHANNEL);
+    const second = session.join(OTHER_CHANNEL);
+    pending[0]?.(microphones[0]?.stream as unknown as MediaStream);
+    await first;
+    pending[1]?.(microphones[1]?.stream as unknown as MediaStream);
+    await second;
+    expect(microphones[0]?.track.isStopped).toBe(false);
+    expect(microphones[1]?.track.isStopped).toBe(true);
+    expect(session.channelId).toBe(OTHER_CHANNEL);
+  });
+
   it("offers again when ICE stays disconnected for 3 seconds, not before", async () => {
     const { session, joins, lastPeer, connect } = harness();
     await connect();
