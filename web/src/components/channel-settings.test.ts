@@ -10,6 +10,7 @@ import {
   canRemoveOverwrite,
   channelNameAsSaved,
   channelOverviewChanges,
+  channelPermissionGroupsFor,
   overwriteStateOf,
   overwriteTargets,
   rebaseOverwriteEdit,
@@ -78,6 +79,10 @@ describe("visibleChannelSections", () => {
     ]);
     expect(visibleChannelSections(text, String(Permission.SEND_MESSAGES))).toEqual([]);
     expect(visibleChannelSections(text, null)).toEqual([]);
+  });
+
+  it("gives voice channels the same pages", () => {
+    expect(visibleChannelSections(channel([], "voice"), String(Permission.ADMINISTRATOR))).toEqual(["overview", "permissions"]);
   });
 
   it("gives administrators both, and categories none yet", () => {
@@ -230,5 +235,30 @@ describe("channelOverviewChanges", () => {
     expect(channelOverviewChanges(stored, { name: " Off Topic ", topic: null })).toEqual({ name: "Off Topic" });
     expect(channelOverviewChanges(stored, { name: "General", topic: null })).toEqual({ name: "General" });
     expect(channelOverviewChanges(stored, { name: "general ", topic: "Hi " })).toEqual({});
+  });
+
+  it("sends a voice channel's new limit, null for unlimited, and nothing when unchanged", () => {
+    const limited = { name: "lounge", topic: "", user_limit: 5 };
+    expect(channelOverviewChanges(limited, { name: null, topic: null, userLimit: "unlimited" })).toEqual({ user_limit: null });
+    expect(channelOverviewChanges(limited, { name: null, topic: null, userLimit: 8 })).toEqual({ user_limit: 8 });
+    expect(channelOverviewChanges(limited, { name: null, topic: null, userLimit: 5 })).toEqual({});
+    const unlimited = { name: "lounge", topic: "" };
+    expect(channelOverviewChanges(unlimited, { name: null, topic: null, userLimit: "unlimited" })).toEqual({});
+    expect(channelOverviewChanges(unlimited, { name: null, topic: null, userLimit: 1 })).toEqual({ user_limit: 1 });
+  });
+});
+
+describe("channelPermissionGroupsFor", () => {
+  const keysOf = (kind: "text" | "voice") =>
+    channelPermissionGroupsFor(kind).flatMap((group) => group.permissions.map((permission) => permission.key));
+
+  it("offers Connect and Speak in a voice channel, and no message permission", () => {
+    expect(keysOf("voice")).toEqual(expect.arrayContaining(["viewChannels", "connect", "speak"]));
+    expect(keysOf("voice")).not.toContain("sendMessages");
+  });
+
+  it("keeps voice permissions out of a text channel", () => {
+    expect(keysOf("text")).toContain("sendMessages");
+    expect(keysOf("text")).not.toContain("speak");
   });
 });

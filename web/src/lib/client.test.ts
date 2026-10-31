@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ApiError, type RestClient } from "./api";
 import { MellowClient, errorReason } from "./client.svelte";
-import type { Channel, DirectMessageChannel, Guild, Message, Ready, Relationship, Role } from "./protocol";
+import type { Channel, DirectMessageChannel, Guild, Message, Ready, Relationship, Role, VoiceState } from "./protocol";
 
 const ME = "1";
 const OTHER = "2";
@@ -1252,5 +1252,142 @@ describe("Reaching a message far back", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(await client.loadHistoryUntilMessage(GENERAL, "1000")).toBe("too-far");
     expect(await client.loadHistoryUntilMessage(RULES, "1000")).toBe("left");
+  });
+});
+
+describe("Voice states", () => {
+  const LOUNGE = "104";
+  const STAGE = "105";
+  const voiceChannel = (id: string): Channel => ({ ...channel(id), kind: "voice" });
+  const voiceState = (userId: string, channelId: string, overrides: Partial<VoiceState> = {}): VoiceState => ({
+    user_id: userId,
+    guild_id: GUILD,
+    channel_id: channelId,
+    self_mute: false,
+    self_deaf: false,
+    suppressed: false,
+    ...overrides,
+  });
+
+  /** A peer connection whose ICE the test turns on, so the session reaches "connected" offline. */
+  function connectablePeer() {
+    let onIceChange = () => {};
+    const peer = {
+      iceGatheringState: "complete",
+      iceConnectionState: "new",
+      signalingState: "stable",
+      localDescription: { sdp: "offer" },
+      addTransceiver: () => ({ sender: { replaceTrack: () => Promise.resolve() } }),
+      createOffer: () => Promise.resolve({ type: "offer", sdp: "offer" }),
+      setLocalDescription: () => Promise.resolve(),
+      addEventListener: (type: string, listener: () => void) => {
+        if (type === "iceconnectionstatechange") {
+          onIceChange = listener;
+        }
+      },
+      removeEventListener: () => {},
+      getStats: () => Promise.resolve(new Map()),
+      close: () => {},
+      connect() {
+        peer.iceConnectionState = "connected";
+        onIceChange();
+      },
+    };
+    return peer;
+  }
+
+  function voiceClient() {
+    const peer = connectablePeer();
+    const cues: string[] = [];
+    // The cast is limited to this fake peer, which implements what the session calls.
+    const client = new MellowClient(fakeRest(QUIET_REST), {
+      createPeerConnection: () => peer as unknown as RTCPeerConnection,
+      requestMicrophone: () => Promise.reject(new TypeError("no microphone in tests")),
+      playTrack: () => ({ setMuted: () => {}, stop: () => {} }),
+      meterLevel: () => null,
+      storage: () => null,
+    });
+    client.voice.onCue = (cue) => cues.push(cue);
+    client.applyReady(
+      ready({
+        guilds: [guild([channel(GENERAL), voiceChannel(LOUNGE), voiceChannel(STAGE)])],
+        voice_states: [voiceState(OTHER, LOUNGE), voiceState("3", "999")],
+      }),
+    );
+    return { client, peer, cues };
+  }
+
+  it("takes who is where from Ready, leaving out channels this reader cannot see", () => {
+    const { client } = voiceClient();
+    expect(client.voiceParticipants(LOUNGE).map((state) => state.user_id)).toEqual([OTHER]);
+    expect(client.voiceStatesByUserId.has("3")).toBe(false);
+  });
+
+  it("never opens a voice channel as the first channel of a server", () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.applyReady(ready({ guilds: [guild([{ ...voiceChannel(LOUNGE), position: 0 }, channel(GENERAL)])] }));
+    expect(client.selectedChannelId).toBe(GENERAL);
+  });
+
+  it("follows moves in join order, and drops speaking with the move", () => {
+    const { client } = voiceClient();
+    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", STAGE) } }, 0);
+    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("4", STAGE) } }, 0);
+    client.applyEvent({ t: "SPEAKING", data: { guild_id: GUILD, channel_id: LOUNGE, user_id: OTHER, speaking: true } }, 0);
+    expect(client.speakingUserIds.has(OTHER)).toBe(true);
+    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(OTHER, STAGE) } }, 0);
+    expect(client.voiceParticipants(LOUNGE)).toEqual([]);
+    expect(client.voiceParticipants(STAGE).map((state) => state.user_id)).toEqual(["3", "4", OTHER]);
+    expect(client.speakingUserIds.has(OTHER)).toBe(false);
+  });
+
+  it("keeps a mute change in place and ignores a late delete for a channel already left", () => {
+    const { client } = voiceClient();
+    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(OTHER, LOUNGE, { self_mute: true }) } }, 0);
+    expect(client.voiceStatesByUserId.get(OTHER)?.self_mute).toBe(true);
+    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(OTHER, STAGE) } }, 0);
+    client.applyEvent({ t: "VOICE_STATE_DELETE", data: { guild_id: GUILD, channel_id: LOUNGE, user_id: OTHER } }, 0);
+    expect(client.voiceParticipants(STAGE).map((state) => state.user_id)).toEqual([OTHER]);
+    client.applyEvent({ t: "VOICE_STATE_DELETE", data: { guild_id: GUILD, channel_id: STAGE, user_id: OTHER } }, 0);
+    expect(client.voiceStatesByUserId.size).toBe(0);
+  });
+
+  it("lights speaking only for someone in that channel", () => {
+    const { client } = voiceClient();
+    client.applyEvent({ t: "SPEAKING", data: { guild_id: GUILD, channel_id: STAGE, user_id: OTHER, speaking: true } }, 0);
+    expect(client.speakingUserIds.size).toBe(0);
+    client.applyEvent({ t: "SPEAKING", data: { guild_id: GUILD, channel_id: LOUNGE, user_id: OTHER, speaking: true } }, 0);
+    client.applyEvent({ t: "SPEAKING", data: { guild_id: GUILD, channel_id: LOUNGE, user_id: OTHER, speaking: false } }, 0);
+    expect(client.speakingUserIds.size).toBe(0);
+  });
+
+  it("forgets the people of a deleted channel, and someone gone where the reader cannot see", () => {
+    const { client } = voiceClient();
+    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", STAGE) } }, 0);
+    client.applyEvent({ t: "CHANNEL_DELETE", data: { guild_id: GUILD, id: LOUNGE } }, 0);
+    expect(client.voiceStatesByUserId.has(OTHER)).toBe(false);
+    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", "999") } }, 0);
+    expect(client.voiceStatesByUserId.has("3")).toBe(false);
+  });
+
+  it("plays a sound and reads out who joins or leaves your channel, only once connected", async () => {
+    const { client, peer, cues } = voiceClient();
+    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", LOUNGE) } }, 0);
+    expect(cues).toEqual([]);
+    await client.voice.join(LOUNGE);
+    peer.connect();
+    expect(client.voice.phase).toBe("connected");
+    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("4", LOUNGE) } }, 0);
+    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", STAGE) } }, 0);
+    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(ME, LOUNGE) } }, 0);
+    expect(cues).toEqual(["self-join", "peer-join", "peer-leave"]);
+    expect(client.voiceAnnouncement).toBe(`Someone left c${LOUNGE}.`);
+  });
+
+  it("routes the instance's refusals to the voice connection", async () => {
+    const { client } = voiceClient();
+    await client.voice.join(LOUNGE);
+    client.applyEvent({ t: "VOICE_JOIN_REFUSED", data: { channel_id: LOUNGE, reason: "missing_permissions" } }, 0);
+    expect(client.voice.problem).toEqual({ kind: "refused", channelId: LOUNGE, reason: "missing_permissions" });
   });
 });

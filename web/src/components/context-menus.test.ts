@@ -162,6 +162,20 @@ describe("channelMenuActions", () => {
     expect(channelMenuActions(reader)).toEqual(["mute", "notification-settings", "separator", "copy-channel-id"]);
   });
 
+  it("puts Join or Leave first on a voice channel, which has no messages to mute", () => {
+    const reader = { canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false, canDelete: false, isMuted: false };
+    expect(channelMenuActions({ ...reader, voice: "join" })).toEqual(["join-voice", "separator", "copy-channel-id"]);
+    expect(channelMenuActions({ ...reader, canEditChannel: true, canDelete: true, voice: "leave" })).toEqual([
+      "leave-voice",
+      "separator",
+      "edit-channel",
+      "separator",
+      "copy-channel-id",
+      "separator",
+      "delete-channel",
+    ]);
+  });
+
   it("offers Unmute on a muted channel", () => {
     const muted = { canEditChannel: false, canMoveUp: false, canMoveDown: false, canMoveToCategory: false, canDelete: false, isMuted: true };
     expect(channelMenuActions(muted)).toEqual(["unmute", "notification-settings", "separator", "copy-channel-id"]);
