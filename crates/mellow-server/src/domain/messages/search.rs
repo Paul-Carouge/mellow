@@ -430,6 +430,7 @@ mod tests {
                         name: name.into(),
                         topic: String::new(),
                         parent_id: None,
+                        user_limit: None,
                     },
                     NOW,
                 )

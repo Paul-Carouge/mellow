@@ -48,7 +48,7 @@ const fn describe(
 }
 
 /// Every permission once, in display order; a group header starts where `group` changes.
-const PERMISSION_DESCRIPTIONS: [PermissionDescription; 18] = [
+const PERMISSION_DESCRIPTIONS: [PermissionDescription; 20] = [
     describe(
         Permissions::VIEW_CHANNEL,
         "General",
@@ -152,6 +152,20 @@ const PERMISSION_DESCRIPTIONS: [PermissionDescription; 18] = [
         "Text channels",
         "Manage messages",
         "Delete messages sent by other members.",
+        false,
+    ),
+    describe(
+        Permissions::CONNECT,
+        "Voice channels",
+        "Connect",
+        "Join voice channels.",
+        false,
+    ),
+    describe(
+        Permissions::SPEAK,
+        "Voice channels",
+        "Speak",
+        "Be heard in voice channels; without it, others hear nothing from you.",
         false,
     ),
     describe(
@@ -609,7 +623,7 @@ mod tests {
             .iter()
             .filter(|row| row.starts_group)
             .count();
-        assert_eq!(group_starts, 5);
+        assert_eq!(group_starts, 6);
     }
 
     #[test]

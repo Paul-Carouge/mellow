@@ -228,6 +228,8 @@ pub enum AuditChangeKey {
     Icon,
     /// Of a channel: its category's id, empty for none.
     Parent,
+    /// Of a voice channel: its user limit, empty for none. Added after `v0.22.0`.
+    UserLimit,
     /// A field added by a newer server.
     #[serde(other)]
     Unknown,
@@ -283,7 +285,13 @@ pub struct GuildSummary {
 pub enum ChannelKind {
     Category,
     Text,
+    /// Audio rooms relayed by the server (ADR-0030). They hold no messages and no topic. Older
+    /// clients cannot parse the kind and skip the guild's payload.
+    Voice,
 }
+
+/// The most people a voice channel may hold, whatever its `user_limit` (ADR-0030).
+pub const MAXIMUM_VOICE_CHANNEL_PARTICIPANTS: u8 = 25;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Channel {
@@ -300,6 +308,10 @@ pub struct Channel {
     pub icon: Option<ProfileImage>,
     /// Applied on top of guild permissions in this channel only (ADR-0007 step 4).
     pub permission_overwrites: Vec<PermissionOverwrite>,
+    /// Voice channels only: how many people may be connected at once, 1 to
+    /// `MAXIMUM_VOICE_CHANNEL_PARTICIPANTS`. Absent means the hard cap alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_limit: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -338,9 +350,13 @@ pub struct SetPermissionOverwriteRequest {
 pub struct CreateChannelRequest {
     pub kind: ChannelKind,
     pub name: String,
+    /// Ignored for voice channels and categories.
     #[serde(default)]
     pub topic: String,
     pub parent_id: Option<Snowflake>,
+    /// Voice channels only, 1 to `MAXIMUM_VOICE_CHANNEL_PARTICIPANTS`; refused on other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_limit: Option<u8>,
 }
 
 /// Body of `PATCH /api/v1/channels/{channel_id}`; absent fields are unchanged.
@@ -348,7 +364,44 @@ pub struct CreateChannelRequest {
 #[serde(deny_unknown_fields)]
 pub struct UpdateChannelRequest {
     pub name: Option<String>,
+    /// Ignored for voice channels.
     pub topic: Option<String>,
+    /// Voice channels only: absent keeps the limit, `null` removes it, a number (1 to
+    /// `MAXIMUM_VOICE_CHANNEL_PARTICIPANTS`) sets it.
+    #[serde(default, skip_serializing_if = "UserLimitChange::is_keep")]
+    pub user_limit: UserLimitChange,
+}
+
+/// The `user_limit` field of a channel update: absent, `null`, or a number on the wire.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum UserLimitChange {
+    #[default]
+    Keep,
+    Clear,
+    Set(u8),
+}
+
+impl UserLimitChange {
+    #[must_use]
+    pub const fn is_keep(&self) -> bool {
+        matches!(self, Self::Keep)
+    }
+}
+
+impl Serialize for UserLimitChange {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Keep | Self::Clear => serializer.serialize_none(),
+            Self::Set(limit) => serializer.serialize_u8(*limit),
+        }
+    }
+}
+
+/// Only reached when the field is present; an absent field is `Keep` through `default`.
+impl<'de> Deserialize<'de> for UserLimitChange {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Option::<u8>::deserialize(deserializer)?.map_or(Self::Clear, Self::Set))
+    }
 }
 
 /// Query of `PUT /api/v1/guilds/{guild_id}/icon` and `PUT /api/v1/channels/{channel_id}/icon`,
@@ -454,8 +507,10 @@ mod tests {
             position: 1,
             icon: None,
             permission_overwrites: Vec::new(),
+            user_limit: None,
         };
         let json = serde_json::to_value(&channel).unwrap();
+        assert!(json.get("user_limit").is_none(), "absent unless set");
         assert_eq!(json["id"], "42");
         assert_eq!(json["kind"], "text");
         assert_eq!(json["parent_id"], serde_json::Value::Null);
@@ -478,9 +533,60 @@ mod tests {
         );
         assert!(
             serde_json::from_str::<CreateChannelRequest>(
-                r#"{"kind":"voice","name":"x","parent_id":null}"#
+                r#"{"kind":"forum","name":"x","parent_id":null}"#
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn voice_channels_carry_their_user_limit() {
+        let channel = Channel {
+            id: Snowflake::from_raw(42),
+            guild_id: Snowflake::from_raw(7),
+            kind: ChannelKind::Voice,
+            name: "Lounge".into(),
+            topic: String::new(),
+            parent_id: None,
+            position: 2,
+            icon: None,
+            permission_overwrites: Vec::new(),
+            user_limit: Some(5),
+        };
+        let json = serde_json::to_value(&channel).unwrap();
+        assert_eq!(json["kind"], "voice");
+        assert_eq!(json["user_limit"], 5);
+        assert_eq!(serde_json::from_value::<Channel>(json).unwrap(), channel);
+
+        let create: CreateChannelRequest = serde_json::from_str(
+            r#"{"kind":"voice","name":"Lounge","parent_id":null,"user_limit":10}"#,
+        )
+        .unwrap();
+        assert_eq!(create.kind, ChannelKind::Voice);
+        assert_eq!(create.user_limit, Some(10));
+        assert!(
+            serde_json::from_str::<CreateChannelRequest>(
+                r#"{"kind":"voice","name":"x","parent_id":null,"user_limit":300}"#
+            )
+            .is_err(),
+            "a limit must fit in a byte"
+        );
+    }
+
+    #[test]
+    fn channel_updates_tell_an_absent_limit_from_a_cleared_one() {
+        let absent: UpdateChannelRequest = serde_json::from_str(r#"{"name":"x"}"#).unwrap();
+        assert_eq!(absent.user_limit, UserLimitChange::Keep);
+        let cleared: UpdateChannelRequest = serde_json::from_str(r#"{"user_limit":null}"#).unwrap();
+        assert_eq!(cleared.user_limit, UserLimitChange::Clear);
+        let set: UpdateChannelRequest = serde_json::from_str(r#"{"user_limit":4}"#).unwrap();
+        assert_eq!(set.user_limit, UserLimitChange::Set(4));
+        for request in [absent, cleared, set] {
+            let json = serde_json::to_string(&request).unwrap();
+            assert_eq!(
+                serde_json::from_str::<UpdateChannelRequest>(&json).unwrap(),
+                request
+            );
+        }
     }
 }

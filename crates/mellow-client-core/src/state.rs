@@ -314,6 +314,14 @@ impl ClientState {
         if channel_id.is_some_and(|channel_id| !self.is_known_channel(channel_id)) {
             return StateChange::Nothing;
         }
+        self.apply_event_of_a_known_channel(event, now_unix_milliseconds)
+    }
+
+    fn apply_event_of_a_known_channel(
+        &mut self,
+        event: GatewayEvent,
+        now_unix_milliseconds: u64,
+    ) -> StateChange {
         match event {
             GatewayEvent::MessageCreate(message) => {
                 let channel_id = message.channel_id;
@@ -393,7 +401,7 @@ impl ClientState {
                 StateChange::Presence
             }
             GatewayEvent::UserUpdate(user) => self.rename_user(&user),
-            // shortcut: friends, groups, reactions, custom emoji are web-only (ADR-0023) until the desktop port.
+            // shortcut: friends, groups, reactions, custom emoji and voice are web-only (ADR-0023) until the desktop port.
             GatewayEvent::RelationshipAdd(_)
             | GatewayEvent::RelationshipRemove { .. }
             | GatewayEvent::DirectMessageChannelUpdate(_)
@@ -402,7 +410,13 @@ impl ClientState {
             | GatewayEvent::MessageReactionRemove(_)
             | GatewayEvent::MessageReactionRemoveAll { .. }
             | GatewayEvent::MessageReactionRemoveEmoji { .. }
-            | GatewayEvent::GuildEmojisUpdate { .. } => StateChange::Nothing,
+            | GatewayEvent::GuildEmojisUpdate { .. }
+            | GatewayEvent::VoiceStateUpdate { .. }
+            | GatewayEvent::VoiceStateDelete { .. }
+            | GatewayEvent::VoiceSessionDescription { .. }
+            | GatewayEvent::VoiceJoinRefused { .. }
+            | GatewayEvent::VoiceDisconnected { .. }
+            | GatewayEvent::Speaking { .. } => StateChange::Nothing,
         }
     }
 
@@ -863,6 +877,7 @@ mod tests {
             parent_id,
             position,
             permission_overwrites: Vec::new(),
+            user_limit: None,
         }
     }
 
@@ -931,6 +946,7 @@ mod tests {
             channel_unreads: Vec::new(),
             presences: Vec::new(),
             relationships: Vec::new(),
+            voice_states: Vec::new(),
         });
         state
     }
@@ -1331,6 +1347,7 @@ mod tests {
                         parent_id: None,
                         position: 0,
                         permission_overwrites: overwrites,
+                        user_limit: None,
                     }],
                 })),
                 NOW,
@@ -1465,6 +1482,7 @@ mod tests {
             channel_unreads: Vec::new(),
             presences: Vec::new(),
             relationships: Vec::new(),
+            voice_states: Vec::new(),
         });
         let statuses: Vec<(&str, PendingMessageStatus)> = state
             .pending_messages(GENERAL)
@@ -1563,6 +1581,7 @@ mod tests {
             channel_unreads: Vec::new(),
             presences: Vec::new(),
             relationships: Vec::new(),
+            voice_states: Vec::new(),
         });
         assert_eq!(state.pending_messages(GENERAL).count(), 0);
     }
@@ -1657,6 +1676,7 @@ mod tests {
             channel_unreads: Vec::new(),
             presences: Vec::new(),
             relationships: Vec::new(),
+            voice_states: Vec::new(),
         });
         assert_eq!(
             state.direct_message_channels(),

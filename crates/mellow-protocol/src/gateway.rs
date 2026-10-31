@@ -31,7 +31,28 @@ pub enum ClientFrame {
     },
     /// Keeps the connection alive; due every `heartbeat_interval_milliseconds`.
     Heartbeat,
+    /// Joins a voice channel, moves to another one, or reconnects the media of the current one
+    /// (an ICE restart after a network change: same channel, no leave or join is announced). The
+    /// offer holds one `sendonly` or `sendrecv` audio m-line, then 1 to
+    /// `MAXIMUM_VOICE_RECEIVE_SLOTS` `recvonly` ones (ADR-0030). Answered on this session only by
+    /// `VOICE_SESSION_DESCRIPTION` or `VOICE_JOIN_REFUSED`.
+    VoiceJoin {
+        channel_id: Snowflake,
+        sdp_offer: String,
+        self_mute: bool,
+        self_deaf: bool,
+    },
+    /// Leaves the voice channel this session is connected to, if any.
+    VoiceLeave,
+    /// Changes the user's own mute and deafen while connected.
+    VoiceState { self_mute: bool, self_deaf: bool },
 }
+
+/// The most voices one participant hears at once: receive m-lines of a voice offer (ADR-0030).
+pub const MAXIMUM_VOICE_RECEIVE_SLOTS: usize = 16;
+
+/// The largest SDP offer the server reads, in bytes.
+pub const MAXIMUM_VOICE_OFFER_BYTES: usize = 64 * 1024;
 
 /// The session token is never printed.
 impl std::fmt::Debug for ClientFrame {
@@ -49,6 +70,28 @@ impl std::fmt::Debug for ClientFrame {
                 .field("last_sequence", last_sequence)
                 .finish(),
             Self::Heartbeat => formatter.write_str("Heartbeat"),
+            // The SDP holds addresses and keys: never printed.
+            Self::VoiceJoin {
+                channel_id,
+                self_mute,
+                self_deaf,
+                ..
+            } => formatter
+                .debug_struct("VoiceJoin")
+                .field("channel_id", channel_id)
+                .field("sdp_offer", &"<redacted>")
+                .field("self_mute", self_mute)
+                .field("self_deaf", self_deaf)
+                .finish(),
+            Self::VoiceLeave => formatter.write_str("VoiceLeave"),
+            Self::VoiceState {
+                self_mute,
+                self_deaf,
+            } => formatter
+                .debug_struct("VoiceState")
+                .field("self_mute", self_mute)
+                .field("self_deaf", self_deaf)
+                .finish(),
         }
     }
 }
@@ -111,6 +154,58 @@ pub struct Ready {
     /// older servers, which let everyone.
     #[serde(default = "may_create_guilds_on_older_servers")]
     pub may_create_guilds: bool,
+    /// Who is connected to the voice channels the user can view (ADR-0030). Added after
+    /// `v0.22.0`: absent from older servers.
+    #[serde(default)]
+    pub voice_states: Vec<VoiceState>,
+}
+
+/// One person connected to a voice channel, as the channel's viewers see it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoiceState {
+    pub user_id: Snowflake,
+    pub guild_id: Snowflake,
+    pub channel_id: Snowflake,
+    /// The person muted their own microphone.
+    pub self_mute: bool,
+    /// The person turned their own sound off (which also mutes them).
+    pub self_deaf: bool,
+    /// The person lacks `SPEAK` here: the server forwards none of their audio.
+    pub suppressed: bool,
+}
+
+/// Why the server refused a `voice_join`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceJoinRefusal {
+    /// `VIEW_CHANNEL` or `CONNECT` is missing, or the channel is not a voice channel the user
+    /// can see.
+    MissingPermissions,
+    /// The channel holds its `user_limit`, or the hard cap of 25.
+    ChannelFull,
+    /// The instance holds its configured number of voice participants.
+    InstanceFull,
+    /// The SDP offer is malformed, too large, or not audio-only with the expected m-lines.
+    InvalidOffer,
+    /// Voice is disabled on this instance, or its UDP port could not be opened.
+    VoiceUnavailable,
+    /// Too many joins in a short time.
+    RateLimited,
+}
+
+/// Why the server ended a session's voice connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceDisconnectReason {
+    /// The same user joined voice from another session.
+    MovedElsewhere,
+    /// The user lost `VIEW_CHANNEL` or `CONNECT` on the channel.
+    PermissionsChanged,
+    ChannelDeleted,
+    /// The user left the guild, or was kicked or banned.
+    RemovedFromGuild,
+    /// The media connection never came up within 15 s, or carried nothing for 30 s.
+    MediaTimeout,
 }
 
 const fn may_create_guilds_on_older_servers() -> bool {
@@ -256,6 +351,42 @@ pub enum GatewayEvent {
     /// A user changed their username or display name. Sent to that user and to every member of a
     /// guild they share.
     UserUpdate(PublicUser),
+    /// Someone joined a voice channel, moved, or changed their mute, deafen or suppression. Sent
+    /// to the members who can view that channel. Added after `v0.22.0`, like every voice event.
+    VoiceStateUpdate {
+        voice_state: VoiceState,
+    },
+    /// Someone left a voice channel, or was disconnected. Sent to the members who can view it.
+    VoiceStateDelete {
+        guild_id: Snowflake,
+        channel_id: Snowflake,
+        user_id: Snowflake,
+    },
+    /// The server's SDP answer to this session's `voice_join`. Sent to that session only.
+    VoiceSessionDescription {
+        channel_id: Snowflake,
+        sdp_answer: String,
+    },
+    /// The server refused this session's `voice_join`. Sent to that session only.
+    VoiceJoinRefused {
+        channel_id: Snowflake,
+        reason: VoiceJoinRefusal,
+    },
+    /// The server ended this session's voice connection. Sent to that session only; the others
+    /// learn it from `VOICE_STATE_DELETE` (or `VOICE_STATE_UPDATE` after a move).
+    VoiceDisconnected {
+        channel_id: Snowflake,
+        reason: VoiceDisconnectReason,
+    },
+    /// Someone started or stopped speaking in a voice channel, as the server hears it from the
+    /// audio level of their packets. Sent to the members who can view the channel; never for a
+    /// muted or suppressed person.
+    Speaking {
+        guild_id: Snowflake,
+        channel_id: Snowflake,
+        user_id: Snowflake,
+        speaking: bool,
+    },
 }
 
 #[cfg(test)]
@@ -424,6 +555,146 @@ mod tests {
         assert_eq!(ready.user.status, crate::ChosenStatus::Online);
         assert!(ready.may_create_guilds);
         assert_eq!(ready.user.custom_status, None);
+        assert_eq!(ready.voice_states, Vec::new());
+    }
+
+    #[test]
+    fn voice_frames_from_clients_keep_their_shape_and_hide_the_offer() {
+        let join: ClientFrame = serde_json::from_value(serde_json::json!({
+            "op": "voice_join",
+            "d": {"channel_id": "5", "sdp_offer": "v=0 secret", "self_mute": false, "self_deaf": true}
+        }))
+        .unwrap();
+        assert_eq!(
+            join,
+            ClientFrame::VoiceJoin {
+                channel_id: Snowflake::from_raw(5),
+                sdp_offer: "v=0 secret".into(),
+                self_mute: false,
+                self_deaf: true,
+            }
+        );
+        assert!(!format!("{join:?}").contains("secret"), "SDP is redacted");
+        let json = serde_json::to_value(&join).unwrap();
+        assert_eq!(serde_json::from_value::<ClientFrame>(json).unwrap(), join);
+
+        let leave: ClientFrame = serde_json::from_str(r#"{"op":"voice_leave"}"#).unwrap();
+        assert_eq!(leave, ClientFrame::VoiceLeave);
+        let state: ClientFrame = serde_json::from_str(
+            r#"{"op":"voice_state","d":{"self_mute":true,"self_deaf":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            state,
+            ClientFrame::VoiceState {
+                self_mute: true,
+                self_deaf: false
+            }
+        );
+        assert!(
+            serde_json::from_str::<ClientFrame>(
+                r#"{"op":"voice_state","d":{"self_mute":true,"self_deaf":false,"x":1}}"#
+            )
+            .is_err(),
+            "unknown fields are refused"
+        );
+    }
+
+    #[test]
+    fn voice_events_carry_string_ids_and_snake_case_reasons() {
+        let voice_state = VoiceState {
+            user_id: Snowflake::from_raw(3),
+            guild_id: Snowflake::from_raw(1),
+            channel_id: Snowflake::from_raw(2),
+            self_mute: true,
+            self_deaf: false,
+            suppressed: false,
+        };
+        let cases = [
+            (
+                GatewayEvent::VoiceStateUpdate {
+                    voice_state: voice_state.clone(),
+                },
+                serde_json::json!({"t": "VOICE_STATE_UPDATE", "data": {"voice_state": {
+                    "user_id": "3", "guild_id": "1", "channel_id": "2",
+                    "self_mute": true, "self_deaf": false, "suppressed": false
+                }}}),
+            ),
+            (
+                GatewayEvent::VoiceStateDelete {
+                    guild_id: Snowflake::from_raw(1),
+                    channel_id: Snowflake::from_raw(2),
+                    user_id: Snowflake::from_raw(3),
+                },
+                serde_json::json!({"t": "VOICE_STATE_DELETE",
+                    "data": {"guild_id": "1", "channel_id": "2", "user_id": "3"}}),
+            ),
+            (
+                GatewayEvent::VoiceSessionDescription {
+                    channel_id: Snowflake::from_raw(2),
+                    sdp_answer: "v=0".into(),
+                },
+                serde_json::json!({"t": "VOICE_SESSION_DESCRIPTION",
+                    "data": {"channel_id": "2", "sdp_answer": "v=0"}}),
+            ),
+            (
+                GatewayEvent::VoiceJoinRefused {
+                    channel_id: Snowflake::from_raw(2),
+                    reason: VoiceJoinRefusal::ChannelFull,
+                },
+                serde_json::json!({"t": "VOICE_JOIN_REFUSED",
+                    "data": {"channel_id": "2", "reason": "channel_full"}}),
+            ),
+            (
+                GatewayEvent::VoiceDisconnected {
+                    channel_id: Snowflake::from_raw(2),
+                    reason: VoiceDisconnectReason::MovedElsewhere,
+                },
+                serde_json::json!({"t": "VOICE_DISCONNECTED",
+                    "data": {"channel_id": "2", "reason": "moved_elsewhere"}}),
+            ),
+            (
+                GatewayEvent::Speaking {
+                    guild_id: Snowflake::from_raw(1),
+                    channel_id: Snowflake::from_raw(2),
+                    user_id: Snowflake::from_raw(3),
+                    speaking: true,
+                },
+                serde_json::json!({"t": "SPEAKING", "data": {
+                    "guild_id": "1", "channel_id": "2", "user_id": "3", "speaking": true
+                }}),
+            ),
+        ];
+        for (event, expected) in cases {
+            let json = serde_json::to_value(&event).unwrap();
+            assert_eq!(json, expected);
+            assert_eq!(serde_json::from_value::<GatewayEvent>(json).unwrap(), event);
+        }
+        for (refusal, wire) in [
+            (VoiceJoinRefusal::MissingPermissions, "missing_permissions"),
+            (VoiceJoinRefusal::ChannelFull, "channel_full"),
+            (VoiceJoinRefusal::InstanceFull, "instance_full"),
+            (VoiceJoinRefusal::InvalidOffer, "invalid_offer"),
+            (VoiceJoinRefusal::VoiceUnavailable, "voice_unavailable"),
+            (VoiceJoinRefusal::RateLimited, "rate_limited"),
+        ] {
+            assert_eq!(serde_json::to_value(refusal).unwrap(), wire);
+        }
+        for (reason, wire) in [
+            (VoiceDisconnectReason::MovedElsewhere, "moved_elsewhere"),
+            (
+                VoiceDisconnectReason::PermissionsChanged,
+                "permissions_changed",
+            ),
+            (VoiceDisconnectReason::ChannelDeleted, "channel_deleted"),
+            (
+                VoiceDisconnectReason::RemovedFromGuild,
+                "removed_from_guild",
+            ),
+            (VoiceDisconnectReason::MediaTimeout, "media_timeout"),
+        ] {
+            assert_eq!(serde_json::to_value(reason).unwrap(), wire);
+        }
     }
 
     #[test]

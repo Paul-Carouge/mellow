@@ -29,6 +29,11 @@ bitflags::bitflags! {
         const ADD_REACTIONS        = 1 << 16;
         /// Adding, renaming and deleting the guild's custom emoji (ADR-0028).
         const MANAGE_EMOJIS        = 1 << 17;
+        /// Joining a voice channel; `VIEW_CHANNEL` is needed too (ADR-0030).
+        const CONNECT              = 1 << 18;
+        /// Being heard in a voice channel: without it the server forwards none of the member's
+        /// audio (ADR-0030).
+        const SPEAK                = 1 << 19;
     }
 }
 
@@ -43,7 +48,9 @@ impl Permissions {
         .union(Self::MANAGE_CHANNELS)
         .union(Self::MANAGE_ROLES)
         .union(Self::CREATE_INVITE)
-        .union(Self::ADD_REACTIONS);
+        .union(Self::ADD_REACTIONS)
+        .union(Self::CONNECT)
+        .union(Self::SPEAK);
 
     /// Permissions granted to `@everyone` in a newly created guild.
     pub const DEFAULT_EVERYONE: Self = Self::VIEW_CHANNEL
@@ -52,7 +59,9 @@ impl Permissions {
         .union(Self::ATTACH_FILES)
         .union(Self::CREATE_INVITE)
         .union(Self::CHANGE_NICKNAME)
-        .union(Self::ADD_REACTIONS);
+        .union(Self::ADD_REACTIONS)
+        .union(Self::CONNECT)
+        .union(Self::SPEAK);
 }
 
 /// A member's permissions in a guild (ADR-0007 steps 1 to 3): the owner and administrators get

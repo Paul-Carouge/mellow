@@ -339,6 +339,7 @@ async fn guild_administration_round_trips_through_the_rest_client() {
                 name: "temporary".into(),
                 topic: String::new(),
                 parent_id: None,
+                user_limit: None,
             },
         )
         .await
@@ -437,6 +438,7 @@ async fn roles_and_overwrites_round_trip(
             &UpdateChannelRequest {
                 name: None,
                 topic: Some("Rules first".into()),
+                user_limit: mellow_protocol::UserLimitChange::Keep,
             },
         )
         .await

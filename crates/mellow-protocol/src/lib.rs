@@ -22,17 +22,19 @@ pub use direct_messages::{
     UpdateGroupConversationRequest,
 };
 pub use gateway::{
-    ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, MessageReaction, Presence, PresenceStatus,
-    Ready, ServerFrame,
+    ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, MAXIMUM_VOICE_OFFER_BYTES,
+    MAXIMUM_VOICE_RECEIVE_SLOTS, MessageReaction, Presence, PresenceStatus, Ready, ServerFrame,
+    VoiceDisconnectReason, VoiceJoinRefusal, VoiceState,
 };
 pub use guilds::{
     AuditAction, AuditChange, AuditChangeKey, AuditLogEntry, AuditLogQuery, Ban, Channel,
     ChannelKind, ChannelPlacement, CreateBanRequest, CreateChannelRequest, CreateEmojiQuery,
     CreateGuildRequest, CreateInviteRequest, CreateRoleRequest, CustomEmoji, Guild, GuildInvite,
-    GuildSummary, IconCropQuery, InitialCategory, InitialTextChannel, Invite, Member,
-    OverwriteKind, PermissionOverwrite, ProfileImage, PublicUser, ReorderChannelsRequest,
-    ReorderRolesRequest, Role, SetPermissionOverwriteRequest, UpdateChannelRequest,
-    UpdateEmojiRequest, UpdateGuildRequest, UpdateRoleRequest,
+    GuildSummary, IconCropQuery, InitialCategory, InitialTextChannel, Invite,
+    MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, Member, OverwriteKind, PermissionOverwrite, ProfileImage,
+    PublicUser, ReorderChannelsRequest, ReorderRolesRequest, Role, SetPermissionOverwriteRequest,
+    UpdateChannelRequest, UpdateEmojiRequest, UpdateGuildRequest, UpdateRoleRequest,
+    UserLimitChange,
 };
 pub use health::{HealthResponse, HealthStatus};
 pub use messages::{
