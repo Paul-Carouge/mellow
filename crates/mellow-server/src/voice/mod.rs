@@ -734,19 +734,28 @@ async fn run_voice_events(
     events: Arc<EventHub>,
 ) {
     loop {
-        tokio::select! {
+        // Each step runs as its own task: a panic in one is logged and the loop goes on, so
+        // permission re-checks never stop silently while the server runs.
+        let step = tokio::select! {
             event = media_events.recv() => {
-                let (Some(event), Some(shared)) = (event, shared.upgrade()) else {
+                let Some(shared) = shared.upgrade() else {
                     return;
                 };
-                shared.apply_media_event(event).await;
+                let Some(event) = event else {
+                    tracing::error!("voice: the media thread stopped; voice channels are unavailable");
+                    return;
+                };
+                tokio::spawn(async move { shared.apply_media_event(event).await })
             }
             guild_ids = events.next_guild_access_changes() => {
                 let Some(shared) = shared.upgrade() else {
                     return;
                 };
-                shared.reevaluate(&guild_ids).await;
+                tokio::spawn(async move { shared.reevaluate(&guild_ids).await })
             }
+        };
+        if let Err(error) = step.await {
+            tracing::error!(%error, "voice: handling a voice event failed");
         }
     }
 }

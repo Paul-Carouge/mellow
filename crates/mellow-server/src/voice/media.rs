@@ -32,8 +32,9 @@ const PACKET_RATE_WINDOW: Duration = Duration::from_secs(1);
 const MAXIMUM_IDLE_WAIT: Duration = Duration::from_millis(50);
 /// A zero read timeout means "block forever" to the OS.
 const MINIMUM_WAIT: Duration = Duration::from_millis(1);
-/// ICE and DTLS must complete within this time after the answer.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// ICE and DTLS must complete within this time after the answer. Short, since a participant who
+/// never connects still holds a place of the instance's `max_participants`.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Browsers send STUN consent checks every few seconds, even in silence: nothing at all for this
 /// long means the client is gone.
 const SILENT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -279,6 +280,8 @@ struct MediaLoop<'a> {
     /// Who sends from which address: `Rtc::accepts` on everyone would cost O(n) per packet.
     sources: SourceAddresses,
     frames_to_forward: Vec<(Snowflake, MediaData)>,
+    /// The participant whose session is being driven, so a panic inside `str0m` drops only them.
+    current_participant: Option<Snowflake>,
 }
 
 /// Runs until the voice service drops its command sender.
@@ -294,6 +297,7 @@ pub(crate) fn run_media_loop(
         participants: HashMap::new(),
         sources: SourceAddresses::default(),
         frames_to_forward: Vec::new(),
+        current_participant: None,
     };
     let mut buffer = vec![0_u8; RECEIVE_BUFFER_BYTES];
     loop {
@@ -312,7 +316,7 @@ pub(crate) fn run_media_loop(
         match media.socket.recv_from(&mut buffer) {
             Ok((length, source)) => {
                 if let Some(contents) = buffer.get(..length) {
-                    media.receive(contents, source);
+                    media.guarded(|media| media.receive(contents, source));
                 }
             }
             // Timeouts, and ICMP errors some systems report on UDP sockets (an unreachable
@@ -321,19 +325,47 @@ pub(crate) fn run_media_loop(
             Err(_) => {}
         }
         let now = Instant::now();
-        media.handle_timeouts(now);
-        media.forward_frames(now);
-        media.tick_speaking(now);
-        media.end_dead_connections(now);
+        media.guarded(|media| media.handle_timeouts(now));
+        media.guarded(|media| media.forward_frames(now));
+        media.guarded(|media| media.tick_speaking(now));
+        media.guarded(|media| media.end_dead_connections(now));
     }
 }
 
 impl MediaLoop<'_> {
+    /// Runs one step of the loop. A panic in a participant's WebRTC session (a bug in `str0m`
+    /// met by some packet) drops that participant alone, as a media timeout, instead of ending
+    /// voice for the whole instance.
+    fn guarded(&mut self, step: impl FnOnce(&mut Self)) {
+        self.current_participant = None;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| step(self)));
+        let culprit = self.current_participant.take();
+        if outcome.is_ok() {
+            return;
+        }
+        self.frames_to_forward.clear();
+        tracing::error!("voice: a media session failed; its participant was disconnected");
+        let Some(user_id) = culprit else {
+            return;
+        };
+        let connection_id = self
+            .participants
+            .get(&user_id)
+            .map(|participant| participant.connection_id);
+        self.remove(user_id);
+        if let Some(connection_id) = connection_id {
+            self.emit(MediaEvent::Ended {
+                user_id,
+                connection_id,
+            });
+        }
+    }
+
     /// `false` once the voice service is gone.
     fn apply_commands(&mut self) -> bool {
         loop {
             match self.commands.try_recv() {
-                Ok(command) => self.apply(command),
+                Ok(command) => self.guarded(|media| media.apply(command)),
                 Err(TryRecvError::Empty) => return true,
                 Err(TryRecvError::Disconnected) => return false,
             }
@@ -353,6 +385,7 @@ impl MediaLoop<'_> {
                     .is_some();
                 self.remove(join.user_id);
                 let mut participant = Participant::new(*join, now);
+                self.current_participant = Some(participant.user_id);
                 drain_output(&mut participant, &self.socket, &mut self.frames_to_forward);
                 let (user_id, connection_id) = (participant.user_id, participant.connection_id);
                 self.participants.insert(user_id, participant);
@@ -465,6 +498,7 @@ impl MediaLoop<'_> {
         if !participant.is_within_packet_rate(now) {
             return;
         }
+        self.current_participant = Some(user_id);
         // Remembered only once the packet counts, so a flood cannot grow the map.
         if known.is_none() {
             self.sources.remember(source, user_id);
@@ -486,6 +520,7 @@ impl MediaLoop<'_> {
             .values_mut()
             .filter(|participant| participant.timeout_at <= now)
         {
+            self.current_participant = Some(participant.user_id);
             if participant.rtc.handle_input(Input::Timeout(now)).is_err() {
                 participant.rtc.disconnect();
             }
@@ -508,6 +543,7 @@ impl MediaLoop<'_> {
         if !speaker.is_forwarded {
             return;
         }
+        self.current_participant = Some(speaker_id);
         let channel_id = speaker.channel_id;
         if let Some(is_speaking) = speaker.speaking.on_packet(frame.ext_vals.audio_level, now) {
             let event = MediaEvent::Speaking {
@@ -525,6 +561,7 @@ impl MediaLoop<'_> {
                 && listener.is_connected
                 && !listener.is_deafened
         }) {
+            self.current_participant = Some(listener.user_id);
             let Some(slot) = listener.slots.slot_for(speaker_id, now) else {
                 continue;
             };
@@ -596,6 +633,64 @@ impl MediaLoop<'_> {
 mod tests {
     use super::*;
 
+    /// A client offer with one send and one receive line.
+    fn client_offer() -> String {
+        let mut client = Rtc::builder()
+            .clear_codecs()
+            .enable_opus(true, false)
+            .build(Instant::now());
+        let mut change = client.sdp_api();
+        change.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
+        change.add_media(MediaKind::Audio, Direction::RecvOnly, None, None, None);
+        change.apply().unwrap().0.to_sdp_string()
+    }
+
+    #[test]
+    fn a_panic_in_a_session_drops_only_that_participant() {
+        str0m::crypto::from_feature_flags().install_process_default();
+        let (_commands, command_receiver) = std::sync::mpsc::channel();
+        let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let mut media = MediaLoop {
+            socket: UdpSocket::bind("127.0.0.1:0").unwrap(),
+            commands: &command_receiver,
+            events: &event_sender,
+            participants: HashMap::new(),
+            sources: SourceAddresses::default(),
+            frames_to_forward: Vec::new(),
+            current_participant: None,
+        };
+        let candidate: SocketAddr = "127.0.0.1:50000".parse().unwrap();
+        for (user_id, connection_id) in [(1, 10), (2, 20)] {
+            let (rtc, _) = answer_offer(&client_offer(), candidate).unwrap();
+            media.apply(MediaCommand::Join(Box::new(MediaJoin {
+                user_id: Snowflake::from_raw(user_id),
+                connection_id,
+                channel_id: Snowflake::from_raw(5),
+                rtc,
+                candidate_address: candidate,
+                is_forwarded: true,
+                is_deafened: false,
+            })));
+        }
+
+        media.guarded(|media| {
+            media.current_participant = Some(Snowflake::from_raw(1));
+            panic!("a bug met while driving participant 1's session");
+        });
+        media.guarded(|_| panic!("a bug outside any participant's session"));
+
+        assert!(!media.participants.contains_key(&Snowflake::from_raw(1)));
+        assert!(media.participants.contains_key(&Snowflake::from_raw(2)));
+        assert_eq!(
+            events.try_recv(),
+            Ok(MediaEvent::Ended {
+                user_id: Snowflake::from_raw(1),
+                connection_id: 10,
+            })
+        );
+        assert!(events.try_recv().is_err(), "nothing else ended");
+    }
+
     #[test]
     fn each_participant_keeps_at_most_four_source_addresses() {
         let mut sources = SourceAddresses::default();
@@ -623,17 +718,8 @@ mod tests {
     #[test]
     fn offers_are_answered_with_opus_dtx_and_fec_even_without_a_track_yet() {
         str0m::crypto::from_feature_flags().install_process_default();
-        let mut client = Rtc::builder()
-            .clear_codecs()
-            .enable_opus(true, false)
-            .build(Instant::now());
-        let mut change = client.sdp_api();
-        change.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
-        change.add_media(MediaKind::Audio, Direction::RecvOnly, None, None, None);
-        let (offer, _pending) = change.apply().unwrap();
         // A browser transceiver with no microphone track yet announces no stream.
-        let without_track: String = offer
-            .to_sdp_string()
+        let without_track: String = client_offer()
             .split_inclusive('\n')
             .filter(|line| !line.starts_with("a=msid") && !line.starts_with("a=ssrc"))
             .collect();
