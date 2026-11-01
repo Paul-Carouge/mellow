@@ -1722,6 +1722,31 @@ describe("Read state sends", () => {
     expect(server.sent).toEqual(["200", "201"]);
   });
 
+  it("drops a position the server refuses for good instead of sending it again", async () => {
+    const sent: string[] = [];
+    let refusal: ApiError | null = null;
+    const rest = {
+      ...QUIET_REST,
+      listMessages: () => Promise.resolve([message("200")]),
+      acknowledge: (channelId: string, messageId: string) => {
+        sent.push(`${channelId}:${messageId}`);
+        return refusal ? Promise.reject(refusal) : Promise.resolve();
+      },
+    };
+    const client = new MellowClient(fakeRest(rest));
+    client.applyReady(ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    // The message read was deleted before the send went out.
+    refusal = new ApiError(404, "NOT_FOUND");
+    client.applyEvent({ t: "MESSAGE_CREATE", data: message("201") }, Date.now());
+    await vi.advanceTimersByTimeAsync(1_000);
+    refusal = null;
+    client.selectChannel(RULES);
+    client.noteTabHidden();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sent.filter((entry) => entry.startsWith(`${GENERAL}:`))).toEqual([`${GENERAL}:200`, `${GENERAL}:201`]);
+  });
+
   it("sends at once when the tab hides, and keeps an unsent read through a Ready", async () => {
     const { server, rest } = readStateServer();
     const client = new MellowClient(fakeRest(rest));
