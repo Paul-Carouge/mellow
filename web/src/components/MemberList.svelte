@@ -3,12 +3,13 @@
 
   import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
-  import type { Guild, Member, PublicUser } from "../lib/protocol";
+  import type { Guild, PublicUser } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
   import { contextMenuTrigger } from "./context-menu-trigger";
   import { displayName } from "./format";
   import IconButton from "./IconButton.svelte";
+  import { membersSortedByDisplayName } from "./member-order";
   import { nameColorsByUserId } from "./name-colors.svelte";
   import PersonContextMenu from "./PersonContextMenu.svelte";
   import ProfileCard from "./ProfileCard.svelte";
@@ -35,14 +36,14 @@
   // Role colours on names, readable on the side sheet in the current theme (DESIGN.md §2.3).
   const nameColors = $derived(nameColorsByUserId(guild, members ?? undefined, "component-side-sheet-background"));
   const isOnline = (userId: string) => client.presenceOf(userId) !== "offline";
-  const groups = $derived.by(() => {
-    const byName = (left: Member, right: Member) => displayName(left.user).localeCompare(displayName(right.user));
-    const all = [...(members ?? [])].sort(byName);
-    return [
-      { label: strings.common.online, isOnline: true, members: all.filter((member) => isOnline(member.user.id)) },
-      { label: strings.common.offline, isOnline: false, members: all.filter((member) => !isOnline(member.user.id)) },
-    ].filter((group) => group.members.length > 0);
-  });
+  // Sorted only when the members change: a presence update just splits the sorted list again.
+  const sortedMembers = $derived(membersSortedByDisplayName(members ?? []));
+  const groups = $derived(
+    [
+      { label: strings.common.online, isOnline: true, members: sortedMembers.filter((member) => isOnline(member.user.id)) },
+      { label: strings.common.offline, isOnline: false, members: sortedMembers.filter((member) => !isOnline(member.user.id)) },
+    ].filter((group) => group.members.length > 0),
+  );
 
   let profileUserId = $state<string | null>(null);
   let personMenu = $state<PersonContextMenu | null>(null);
