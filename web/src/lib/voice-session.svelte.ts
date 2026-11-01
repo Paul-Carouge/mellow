@@ -13,6 +13,7 @@ import {
   isMicrophoneReopenNeeded,
   microphoneChoiceOf,
   microphoneProcessingOf,
+  noiseSuppressorProblemOf,
   processingStagesOf,
 } from "./voice-processing";
 import {
@@ -625,7 +626,7 @@ export class VoiceSession {
       }
       console.warn("couldn't start the noise suppressor", error);
       stream.getTracks().forEach((stoppedTrack) => stoppedTrack.stop());
-      this.noiseSuppressorProblem = "failed";
+      this.noiseSuppressorProblem = noiseSuppressorProblemOf(error);
       return this.openMicrophone();
     }
   }

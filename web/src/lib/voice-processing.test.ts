@@ -5,6 +5,7 @@ import {
   microphoneChoiceOf,
   microphoneConstraintsOf,
   microphoneProcessingOf,
+  noiseSuppressorProblemOf,
   processingStagesOf,
 } from "./voice-processing";
 import { DEFAULT_VOICE_SETTINGS, EQUALIZER_OF_PRESET, type VoiceSettings, withEqualizerBand } from "./voice-settings";
@@ -87,5 +88,14 @@ describe("processing chain", () => {
     expect(isMicrophoneReopenNeeded(base, { ...base, inputDeviceId: "yeti" })).toBe(true);
     expect(isMicrophoneReopenNeeded(base, withEqualizerBand(base, "bass", 4))).toBe(false);
     expect(isMicrophoneReopenNeeded(base, { ...base, inputVolumePercent: 150 })).toBe(false);
+  });
+});
+
+describe("noise suppressor problems", () => {
+  it("counts a refused sample rate as unsupported, anything else as a failure worth retrying", () => {
+    expect(noiseSuppressorProblemOf(new DOMException("rates differ", "NotSupportedError"))).toBe("unsupported");
+    expect(noiseSuppressorProblemOf(new DOMException("aborted", "AbortError"))).toBe("failed");
+    expect(noiseSuppressorProblemOf(new TypeError("network"))).toBe("failed");
+    expect(noiseSuppressorProblemOf("weird")).toBe("failed");
   });
 });

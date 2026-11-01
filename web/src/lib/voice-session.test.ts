@@ -856,6 +856,15 @@ describe("VoiceSession", () => {
       expect(lastPeer().replacedTracks.at(-1)).toBe(processors.at(-1)?.track);
     });
 
+    it("counts a refused sample rate (Firefox) as unsupported, so it is not retried on every microphone", async () => {
+      const { session, connect, microphones, noiseSuppressor } = harness();
+      noiseSuppressor.problem = null;
+      noiseSuppressor.startError = Object.assign(new Error("sample rates differ"), { name: "NotSupportedError" });
+      await connect();
+      expect(session.noiseSuppressorProblem).toBe("unsupported");
+      expect(microphones.map((entry) => entry.choice.isBrowserNoiseSuppressionOn)).toEqual([false, true]);
+    });
+
     it("builds no processing and loads nothing when everything is off", async () => {
       const { session, connect, microphone, noiseSuppressor, processors, lastPeer } = harness();
       session.updateSettings({ ...session.settings, noiseSuppression: "off" });
