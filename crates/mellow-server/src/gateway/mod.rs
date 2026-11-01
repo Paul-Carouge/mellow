@@ -384,7 +384,14 @@ async fn identify(
         },
     ));
 
-    let Some(ready) = build_ready(state, &user, session_id.clone(), &guild_ids).await else {
+    let build_started = Instant::now();
+    let ready = build_ready(state, &user, session_id.clone(), &guild_ids).await;
+    tracing::debug!(
+        guild_reads = guild_ids.len(),
+        elapsed_microseconds = build_started.elapsed().as_micros(),
+        "gateway identify: ready built"
+    );
+    let Some(ready) = ready else {
         // Dropping the registry's sender (and ours) ends the session task at once.
         state.gateway_sessions.sessions().remove(&session_id);
         return None;
@@ -397,6 +404,8 @@ async fn identify(
     }
 }
 
+/// One read per guild, plus a fixed few: the span shows whether that N + 1 starts to matter.
+#[tracing::instrument(level = "debug", skip_all, fields(guild_reads = guild_ids.len()))]
 async fn build_ready(
     state: &AppState,
     user: &CurrentUser,
