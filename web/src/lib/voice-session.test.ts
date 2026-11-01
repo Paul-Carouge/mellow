@@ -928,6 +928,17 @@ describe("VoiceSession", () => {
       expect(outputs[1]?.isStopped).toBe(true);
     });
 
+    it("stops listening during a call when the call ends", async () => {
+      const { session, connect, outputs, microphone } = harness();
+      await connect();
+      session.setMonitoring(true);
+      const monitor = outputs.find((output) => output.track === (microphone.track as unknown as MediaStreamTrack));
+      expect(monitor?.isStopped).toBe(false);
+      session.leave();
+      expect(monitor?.isStopped).toBe(true);
+      expect(session.isMonitoring).toBe(false);
+    });
+
     it("says why the microphone test could not start", async () => {
       const { session } = harness({ microphoneError: Object.assign(new Error("no"), { name: "NotAllowedError" }) });
       await session.startMicrophoneTest();

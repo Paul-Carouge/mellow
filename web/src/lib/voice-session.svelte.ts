@@ -1131,6 +1131,10 @@ export class VoiceSession {
     this.clearTimer("levelTimer");
     this.clearTimer("pushToTalkReleaseTimer");
     this.microphoneSwitch += 1;
+    // Listening to the call's microphone ends with it; the settings' test keeps its own.
+    if (!this.isMicrophoneTestRunning) {
+      this.isMonitoring = false;
+    }
     this.releaseMicrophone();
     this.stopWatchingDevices?.();
     this.stopWatchingDevices = null;
