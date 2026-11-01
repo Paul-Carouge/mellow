@@ -5,6 +5,7 @@
   import { type Attachment, PREVIEWABLE_IMAGE_TYPES, type Snowflake, attachmentUrl } from "../lib/protocol";
   import { attachmentCountLabel, fileNameStartAndEnd, humanFileSize } from "./format";
   import Icon from "./Icon.svelte";
+  import { retryImageOnceThenMarkFailed } from "./image-retry";
 
   // Attachments under a message body (DESIGN.md §5.4 "Attachments"): previewable images inline,
   // anything else as a download card. A message still in the outbox is not readable by others
@@ -17,7 +18,8 @@
   let { attachments, isPending }: Props = $props();
 
   const loadedImageIds = new SvelteSet<Snowflake>();
-  // An image the instance could not serve falls back to its download card.
+  // An image the instance could not serve, even on its retry, falls back to its download card.
+  const retriedImageIds = new SvelteSet<Snowflake>();
   const failedImageIds = new SvelteSet<Snowflake>();
 
   function isShownAsImage(attachment: Attachment): boolean {
@@ -47,19 +49,23 @@
         >
           <!-- Sized as the largest preview until loaded: lazy loading needs a box, and the list
                re-pins to the latest message when it shrinks. -->
-          <img
-            src={attachmentUrl(attachment)}
-            alt={attachment.file_name}
-            loading="lazy"
-            class={[
-              "block",
-              loadedImageIds.has(attachment.id)
-                ? "h-auto max-h-(--mw-component-attachment-image-max-height) w-auto max-w-full"
-                : "h-(--mw-component-attachment-image-max-height) w-(--mw-component-attachment-image-max-width) max-w-full",
-            ]}
-            onload={() => loadedImageIds.add(attachment.id)}
-            onerror={() => failedImageIds.add(attachment.id)}
-          />
+          <!-- A new element once retried: the same src on the old one would not load again. -->
+          {#key retriedImageIds.has(attachment.id)}
+            <img
+              src={attachmentUrl(attachment)}
+              alt={attachment.file_name}
+              loading="lazy"
+              decoding="async"
+              class={[
+                "block",
+                loadedImageIds.has(attachment.id)
+                  ? "h-auto max-h-(--mw-component-attachment-image-max-height) w-auto max-w-full"
+                  : "h-(--mw-component-attachment-image-max-height) w-(--mw-component-attachment-image-max-width) max-w-full",
+              ]}
+              onload={() => loadedImageIds.add(attachment.id)}
+              onerror={() => retryImageOnceThenMarkFailed(attachment.id, retriedImageIds, failedImageIds)}
+            />
+          {/key}
         </a>
       </li>
     {:else}
