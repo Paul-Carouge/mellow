@@ -278,9 +278,14 @@
       return;
     }
     const top = viewport.getBoundingClientRect().top;
-    const firstVisible = [...viewport.querySelectorAll<HTMLElement>("[data-row-key]")].find(
-      (element) => element.getBoundingClientRect().bottom > top,
-    );
+    // Runs before every update while reading older messages: no copy of every loaded row.
+    let firstVisible: HTMLElement | undefined;
+    for (const element of viewport.querySelectorAll<HTMLElement>("[data-row-key]")) {
+      if (element.getBoundingClientRect().bottom > top) {
+        firstVisible = element;
+        break;
+      }
+    }
     const key = firstVisible?.dataset.rowKey;
     anchor =
       firstVisible && key
