@@ -38,7 +38,8 @@
   import ServerSettings from "./ServerSettings.svelte";
   import { minimumWidthQueryForPanes } from "./tokens";
   import UserSettings from "./UserSettings.svelte";
-  import { prepareChimeSound } from "./chime-sound";
+  import { prepareChimeSound, routeChimeSoundTo } from "./chime-sound";
+  import { listenForPushToTalk } from "./push-to-talk-keys";
   import { playVoiceCue } from "./voice-sounds";
 
   // The signed-in shell (ADR-0022 §1): cards on the dusk ground. The navigator card and the
@@ -106,11 +107,14 @@
     client.voice.onCue = playVoiceCue;
     const noteBackOnline = () => client.voice.noteBackOnline();
     window.addEventListener("online", noteBackOnline);
+    const stopPushToTalk = listenForPushToTalk(window, client.voice);
     return () => {
       window.removeEventListener("online", noteBackOnline);
+      stopPushToTalk();
       client.voice.onCue = null;
     };
   });
+  $effect(() => routeChimeSoundTo(client.voice.isOutputDeviceMissing ? null : client.voice.settings.outputDeviceId));
   $effect(() => showAttentionCount(attentionCount(client)));
   $effect(() => {
     const channelId = client.selectedChannelId;

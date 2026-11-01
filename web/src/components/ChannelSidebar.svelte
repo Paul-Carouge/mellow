@@ -589,6 +589,17 @@
     return [];
   });
 
+  /** A participant row's click opens their menu under it, as its keyboard does. */
+  function openParticipantMenu(person: PublicUser, row: HTMLElement) {
+    const bounds = row.getBoundingClientRect();
+    personMenu?.openFor(
+      person,
+      { kind: "anchor", bounds: { top: bounds.top, bottom: bounds.bottom, left: bounds.left, right: bounds.right }, align: "start" },
+      row,
+      { isInVoice: true },
+    );
+  }
+
   function openChannelMenu(channel: Channel, origin: MenuOrigin, invoker: HTMLElement): boolean {
     if (carried) {
       return false;
@@ -1128,10 +1139,18 @@
               state.self_deaf && strings.voice.soundOff,
               state.self_mute && !state.self_deaf && strings.voice.microphoneOff,
               state.suppressed && strings.voice.cannotSpeak,
+              state.user_id !== user?.id && client.voice.personSetting(state.user_id).isLocallyMuted && strings.voice.mutedForYou,
             ].filter((label): label is string => typeof label === "string")}
-            <li
-              class="flex h-(--mw-component-voice-participant-row-height) min-w-0 items-center gap-(--mw-component-voice-participant-gap) ps-(--mw-component-voice-participant-indent) pe-(--mw-component-channel-row-padding-inline)"
-            >
+            {@const isMutedForYou = state.user_id !== user?.id && client.voice.personSetting(state.user_id).isLocallyMuted}
+            <li class="me-(--mw-component-channel-row-margin-inline)">
+              <!-- A click, right-click, long press or Shift+F10: their menu, with volume and "Mute for me" (stage 16.3). -->
+              <button
+                type="button"
+                aria-haspopup="menu"
+                class="flex h-(--mw-component-voice-participant-row-height) w-full min-w-0 items-center gap-(--mw-component-voice-participant-gap) rounded-(--mw-component-channel-row-radius) ps-(--mw-component-voice-participant-indent) pe-(--mw-component-channel-row-padding-inline) text-start hover:bg-(--mw-component-voice-participant-background-hover) focus-visible:focus-ring-inset pointer-coarse:h-(--mw-size-hit-web-min)"
+                onclick={(event) => openParticipantMenu(person, event.currentTarget)}
+                {@attach contextMenuTrigger((origin, invoker) => personMenu?.openFor(person, origin, invoker, { isInVoice: true }) ?? false)}
+              >
               <!-- Speaking is shown, never announced (it would drown everything else out). -->
               <span class={["voice-avatar shrink-0 rounded-full", isSpeaking && "is-speaking"]}>
                 <Avatar user={person} sizeToken="--mw-component-voice-participant-avatar-size" />
@@ -1150,6 +1169,10 @@
               {#if state.self_deaf}
                 <Icon name="speaker-slash" class="size-(--mw-component-voice-participant-state-icon-size) shrink-0 text-(--mw-component-voice-participant-state-icon)" />
               {/if}
+              {#if isMutedForYou}
+                <Icon name="speaker-x" class="size-(--mw-component-voice-participant-state-icon-size) shrink-0 text-(--mw-component-voice-participant-local-mute-icon)" />
+              {/if}
+              </button>
             </li>
           {/each}
         </ul>

@@ -14,13 +14,36 @@ const ATTACK_SECONDS = 0.012;
 const SILENT_GAIN = 0.0001;
 
 let context: AudioContext | null = null;
+/** The voice settings' output, where the browser lets a context choose one (Chromium only today). */
+let outputDeviceId: string | null = null;
+
+type RoutableAudioContext = AudioContext & { setSinkId?: (deviceId: string) => Promise<void> };
+
+function routeContext(): void {
+  // `setSinkId` on AudioContext is not in TypeScript's DOM types yet: feature-detected here.
+  const routable: RoutableAudioContext | null = context;
+  routable?.setSinkId?.(outputDeviceId ?? "").catch((error: unknown) => console.warn("couldn't route sounds to the chosen output", error));
+}
+
+/** Sounds play where voices do, as on Discord; `null` is the system's default output. */
+export function routeChimeSoundTo(deviceId: string | null): void {
+  if (deviceId !== outputDeviceId) {
+    outputDeviceId = deviceId;
+    routeContext();
+  }
+}
 
 /** Called from a gesture: creates (or resumes) the audio context the chime will play through. */
 export async function prepareChimeSound(): Promise<void> {
   if (typeof AudioContext === "undefined") {
     return;
   }
-  context ??= new AudioContext();
+  if (context === null) {
+    context = new AudioContext();
+    if (outputDeviceId !== null) {
+      routeContext();
+    }
+  }
   if (context.state === "suspended") {
     try {
       await context.resume();

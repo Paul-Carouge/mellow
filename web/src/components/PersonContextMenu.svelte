@@ -13,7 +13,10 @@
   import { displayName } from "./format";
   import type { MenuOrigin } from "./menu-placement";
   import { isTargetMuted, notificationMenuHandler } from "./notification-preferences.svelte";
+  import Icon from "./Icon.svelte";
+  import RangeField from "./RangeField.svelte";
   import RelationshipConfirmDialog from "./RelationshipConfirmDialog.svelte";
+  import { MAXIMUM_VOLUME_PERCENT, MINIMUM_VOLUME_PERCENT } from "../lib/voice-settings";
 
   // A person's context menu (DESIGN.md §6.33): a member row, a message's author, a friend row, a
   // one-to-one conversation's row. Friend requests and Unblock wait in the menu; Remove friend and
@@ -36,6 +39,7 @@
     invoker: HTMLElement;
     canOpenConversation: boolean;
     conversationChannelId: Snowflake | null;
+    isInVoice: boolean;
   } | null>(null);
   let confirming = $state<{ action: "remove" | "block"; user: PublicUser; invoker: HTMLElement } | null>(null);
   let announcement = $state("");
@@ -62,13 +66,14 @@
     user: PublicUser,
     origin: MenuOrigin,
     invoker: HTMLElement,
-    options: { canOpenConversation?: boolean; conversationChannelId?: Snowflake } = {},
+    options: { canOpenConversation?: boolean; conversationChannelId?: Snowflake; isInVoice?: boolean } = {},
   ): boolean {
     target = {
       user,
       invoker,
       canOpenConversation: options.canOpenConversation ?? true,
       conversationChannelId: options.conversationChannelId ?? null,
+      isInVoice: options.isInVoice ?? false,
     };
     menu?.open(origin, invoker);
     return true;
@@ -158,10 +163,47 @@
   }
 </script>
 
+{#snippet voiceControls()}
+  <!-- Someone in a voice channel, not you: Discord's user volume and local mute, kept in this browser. -->
+  {#if target?.isInVoice && target.user.id !== client.user?.id}
+    {@const userId = target.user.id}
+    {@const setting = client.voice.personSetting(userId)}
+    <div class="px-(--mw-component-context-menu-item-padding-inline) pt-2xs">
+      <RangeField
+        label={strings.voice.userVolume}
+        value={setting.volumePercent}
+        min={MINIMUM_VOLUME_PERCENT}
+        max={MAXIMUM_VOLUME_PERCENT}
+        valueText={strings.voiceSettings.percent}
+        inputAttributes={{ "data-menu-control": "" }}
+        oninput={(value) => client.voice.setPersonVolume(userId, value)}
+      />
+    </div>
+    <!-- A checkbox item stays open, so the change can be heard and undone at once. -->
+    <button
+      type="button"
+      role="menuitemcheckbox"
+      aria-checked={setting.isLocallyMuted}
+      class="flex min-h-(--mw-component-context-menu-item-height) w-full items-center justify-between gap-xs rounded-(--mw-component-context-menu-item-radius) px-(--mw-component-context-menu-item-padding-inline) py-3xs text-start type-menu-item text-(--mw-component-context-menu-item-text) hover:bg-(--mw-component-context-menu-item-background-focus) hover:text-(--mw-component-context-menu-item-text-focus) focus-visible:bg-(--mw-component-context-menu-item-background-focus) focus-visible:text-(--mw-component-context-menu-item-text-focus) focus-visible:focus-ring-inset pointer-coarse:min-h-(--mw-size-hit-web-min)"
+      onclick={() => client.voice.togglePersonMuted(userId)}
+    >
+      {strings.voice.muteForMe}
+      <!-- A box, ticked when on: a checkbox reads as one, not as another action. -->
+      <span class="grid size-(--mw-component-context-menu-item-icon-size) shrink-0 place-items-center rounded-xs border-2 border-current">
+        {#if setting.isLocallyMuted}<Icon name="check" class="size-full" />{/if}
+      </span>
+    </button>
+    <hr
+      class="mx-(--mw-component-context-menu-separator-margin-inline) my-(--mw-component-context-menu-separator-margin-block) h-(--mw-component-context-menu-separator-height) shrink-0 border-0 bg-(--mw-component-context-menu-separator)"
+    />
+  {/if}
+{/snippet}
+
 <ContextMenu
   bind:this={menu}
   label={target ? strings.contextMenu.actionsFor(displayName(target.user)) : strings.members.profile}
   {entries}
+  header={voiceControls}
   {fallbackFocus}
 />
 

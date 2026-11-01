@@ -59,6 +59,7 @@
     | "soccer-ball"
     | "speaker-high"
     | "speaker-slash"
+    | "speaker-x"
     | "trash"
     | "user-minus"
     | "user-plus"

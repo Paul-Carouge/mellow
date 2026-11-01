@@ -40,6 +40,8 @@
     /** The items, in order; a host with its own item markup (the status menu) passes `children`. */
     entries?: readonly ContextMenuEntry[];
     children?: Snippet;
+    /** Controls before the entries (a voice participant's volume and local mute). */
+    header?: Snippet;
     /** Set by a host that runs its own waiting actions (the status menu); shown at the foot. */
     errorMessage?: string;
     /** Space between the menu and the element it opens from, as a token name; none by default. */
@@ -55,6 +57,7 @@
     id,
     entries = [],
     children,
+    header,
     errorMessage = "",
     gapToken = null,
     isOpen = $bindable(false),
@@ -193,6 +196,7 @@
   {#if children}
     {@render children()}
   {:else}
+    {@render header?.()}
     {#each entries as entry, index (index)}
       {#if entry === "separator"}
         <hr class={separatorClass} />
