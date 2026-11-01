@@ -51,6 +51,15 @@ describe("voice settings", () => {
     });
   });
 
+  it("reads the soundboard volume from 0 to 100 %, the default for settings stored before it", () => {
+    const read = (fields: object) =>
+      readVoiceSettings(storageWith(VOICE_SETTINGS_STORAGE_KEY, JSON.stringify(fields))).soundboardVolumePercent;
+    expect(read({})).toBe(DEFAULT_VOICE_SETTINGS.soundboardVolumePercent);
+    expect(read({ soundboardVolumePercent: 150 })).toBe(100);
+    expect(read({ soundboardVolumePercent: -1 })).toBe(0);
+    expect(read({ soundboardVolumePercent: "loud" })).toBe(DEFAULT_VOICE_SETTINGS.soundboardVolumePercent);
+  });
+
   it("keeps an older noise suppression switch: off stays off, on becomes the advanced default", () => {
     const read = (fields: object) => readVoiceSettings(storageWith(VOICE_SETTINGS_STORAGE_KEY, JSON.stringify(fields))).noiseSuppression;
     expect(read({ isNoiseSuppressionOn: false })).toBe("off");

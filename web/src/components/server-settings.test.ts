@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { type AuditLogEntry, type Guild, type Member, Permission, type Role } from "../lib/protocol";
+import { displayEmoji } from "../lib/reactions";
 import {
   auditChangeLines,
   auditEntrySentence,
@@ -55,7 +56,7 @@ describe("sections", () => {
   it("shows each section only with its permission, in Discord's order", () => {
     expect(visibleSections(guild(Permission.VIEW_CHANNEL))).toEqual([]);
     expect(visibleSections(guild(Permission.KICK_MEMBERS))).toEqual(["members"]);
-    expect(visibleSections(guild(Permission.MANAGE_EMOJIS))).toEqual(["emoji"]);
+    expect(visibleSections(guild(Permission.MANAGE_EXPRESSIONS))).toEqual(["emoji", "soundboard"]);
     expect(visibleSections(guild(Permission.MANAGE_GUILD | Permission.BAN_MEMBERS))).toEqual([
       "overview",
       "invites",
@@ -66,6 +67,7 @@ describe("sections", () => {
       "overview",
       "roles",
       "emoji",
+      "soundboard",
       "invites",
       "members",
       "bans",
@@ -232,7 +234,7 @@ describe("moderation log", () => {
       changes: [{ key: "name", old_value: "Club", new_value: "Book club" }],
     });
     expect(auditEntrySentence(rename, context)).toBe("Ana renamed the server from Club to Book club");
-    expect(auditChangeLines(rename)).toEqual([]);
+    expect(auditChangeLines(rename, context)).toEqual([]);
     const revoked = entry({ action: "invite_delete", changes: [{ key: "code", old_value: "abc", new_value: "" }] });
     expect(auditEntrySentence(revoked, context)).toBe("Ana revoked the invite abc");
     const emojiRename = entry({
@@ -240,7 +242,7 @@ describe("moderation log", () => {
       changes: [{ key: "name", old_value: "party", new_value: "fiesta" }],
     });
     expect(auditEntrySentence(emojiRename, context)).toBe("Ana renamed the emoji :party: to :fiesta:");
-    expect(auditChangeLines(emojiRename)).toEqual([]);
+    expect(auditChangeLines(emojiRename, context)).toEqual([]);
     const emojiAdded = entry({ action: "emoji_create", changes: [{ key: "name", old_value: "", new_value: "party" }] });
     expect(auditEntrySentence(emojiAdded, context)).toBe("Ana added the emoji :party:");
     const emojiDeleted = entry({ action: "emoji_delete", changes: [{ key: "name", old_value: "party", new_value: "" }] });
@@ -248,6 +250,35 @@ describe("moderation log", () => {
     expect(auditEntrySentence(entry({ action: "voice_kick" as AuditLogEntry["action"] }), context)).toBe(
       "Ana made a change this version of Mellow can't show yet",
     );
+  });
+
+  it("tells sound changes, with their emoji as people read them", () => {
+    const soundContext = {
+      ...context,
+      guild: {
+        ...context.guild,
+        emojis: [{ id: "77", name: "parrot", is_animated: false }],
+        sounds: [{ id: "900", name: "horn", duration_milliseconds: 800 }],
+      },
+    };
+    const added = entry({ action: "sound_create", target_id: "900", changes: [{ key: "name", old_value: "", new_value: "horn" }] });
+    expect(auditEntrySentence(added, soundContext)).toBe("Ana added the sound horn");
+    expect(auditChangeLines(added, soundContext)).toEqual([]);
+    const edited = entry({
+      action: "sound_update",
+      target_id: "900",
+      changes: [
+        { key: "name", old_value: "hron", new_value: "horn" },
+        { key: "emoji", old_value: "", new_value: ":77" },
+      ],
+    });
+    expect(auditEntrySentence(edited, soundContext)).toBe("Ana edited the sound horn");
+    expect(auditChangeLines(edited, soundContext)).toEqual(["Name: hron to horn", "Emoji: none to :parrot:"]);
+    const emojiOnly = entry({ action: "sound_update", target_id: "900", changes: [{ key: "emoji", old_value: "🎺", new_value: ":404" }] });
+    expect(auditEntrySentence(emojiOnly, soundContext)).toBe("Ana edited the sound horn");
+    expect(auditChangeLines(emojiOnly, soundContext)).toEqual([`Emoji: ${displayEmoji("🎺")} to a deleted emoji`]);
+    const deleted = entry({ action: "sound_delete", target_id: "900", changes: [{ key: "name", old_value: "horn", new_value: "" }] });
+    expect(auditEntrySentence(deleted, soundContext)).toBe("Ana deleted the sound horn");
   });
 
   it("lists granted and removed permissions by name", () => {
@@ -263,7 +294,7 @@ describe("moderation log", () => {
         { key: "color", old_value: "0", new_value: "255" },
       ],
     });
-    expect(auditChangeLines(update)).toEqual([
+    expect(auditChangeLines(update, context)).toEqual([
       "Granted: Attach files, Kick members",
       "Removed: Ban members",
       "Name: Mods to Moderators",

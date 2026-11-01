@@ -4,6 +4,9 @@
 
   import Navigator from "../components/Navigator.svelte";
   import VoiceSettings from "../components/VoiceSettings.svelte";
+  import AddSoundDialog from "../components/AddSoundDialog.svelte";
+  import EditSoundDialog from "../components/EditSoundDialog.svelte";
+  import SoundSettings from "../components/SoundSettings.svelte";
   import { BROWSER_VOICE_PORTS } from "../lib/voice-browser";
   import { DEFAULT_VOICE_SETTINGS, type VoiceSettings as Settings, withEqualizerBand } from "../lib/voice-settings";
   import type { RestClient } from "../lib/api";
@@ -20,6 +23,10 @@
   // microphone is a wavering oscillator, so the meter moves. Voice processing (ADR-0031) runs for
   // real on it: `&enhance=1` turns the enhanced voice on, `&preset=custom` moves a slider,
   // `&rnnoise=unsupported|failed` shows the fallbacks, `&listen=1` plays it back ("S'écouter").
+  // Soundboard (ADR-0032): `&view=soundboard` opens it from the voice panel, with `&sounds=0`
+  // (none), `&block=cooldown|deafened|permission`, `&manage=0` (no "Add sounds"); Ana's sound shows
+  // by her name. `&view=sound-settings` is Server settings, Soundboard, with `&dialog=add` (a
+  // synthesised 9 s file in the trimmer) or `&dialog=edit`.
   const parameters = new URLSearchParams(location.hash.slice(1));
   const view = parameters.get("view") ?? "navigator";
   const isDevicesHidden = parameters.get("devices") === "hidden";
@@ -148,6 +155,47 @@
     { id: "4", username: "chloe", display_name: "Chloé" },
     { id: "5", username: "dimitri", display_name: "Dimitri Kowalczyk-Lefèvre" },
   ];
+  const gallerySounds = [
+    { id: "901", name: "Klaxon", emoji: "📯", duration_milliseconds: 1_200 },
+    { id: "902", name: "Applaudissements", emoji: "👏", duration_milliseconds: 4_800 },
+    { id: "903", name: "Ta-da", emoji: "🎉", duration_milliseconds: 1_600 },
+    { id: "904", name: "Trombone triste", emoji: "🎺", duration_milliseconds: 3_100 },
+    { id: "905", name: "Bruh", duration_milliseconds: 700 },
+    { id: "906", name: "Cri de chèvre", emoji: "🐐", duration_milliseconds: 2_200 },
+    { id: "907", name: "Ding", emoji: "🔔", duration_milliseconds: 900 },
+    { id: "908", name: "Roulement de tambour très long", emoji: "🥁", duration_milliseconds: 5_200 },
+  ];
+  /**
+   * Nine seconds of a falling tone with a beat, in stereo at 44.1 kHz (so decoding resamples and
+   * the render downmixes, as with a real MP3), written as a plain WAV by hand.
+   */
+  function galleryFile(): File {
+    const rate = 44_100;
+    const frames = rate * 9;
+    const bytes = new DataView(new ArrayBuffer(44 + frames * 4));
+    const text = (offset: number, value: string) => [...value].forEach((character, index) => bytes.setUint8(offset + index, character.charCodeAt(0)));
+    text(0, "RIFF");
+    bytes.setUint32(4, 36 + frames * 4, true);
+    text(8, "WAVEfmt ");
+    bytes.setUint32(16, 16, true);
+    bytes.setUint16(20, 1, true);
+    bytes.setUint16(22, 2, true);
+    bytes.setUint32(24, rate, true);
+    bytes.setUint32(28, rate * 4, true);
+    bytes.setUint16(32, 4, true);
+    bytes.setUint16(34, 16, true);
+    text(36, "data");
+    bytes.setUint32(40, frames * 4, true);
+    for (let frame = 0; frame < frames; frame += 1) {
+      const seconds = frame / rate;
+      const beat = Math.abs(Math.sin(Math.PI * seconds * 1.5));
+      const sample = Math.sin(2 * Math.PI * (440 - 30 * seconds) * seconds) * beat * (0.3 + 0.7 * Math.abs(Math.sin(seconds * 0.7)));
+      bytes.setInt16(44 + frame * 4, Math.round(sample * 0x7fff), true);
+      bytes.setInt16(46 + frame * 4, Math.round(sample * 0.5 * 0x7fff), true);
+    }
+    return new File([bytes.buffer], "klaxon_de_velo-final.wav", { type: "audio/wav" });
+  }
+
   client.applyReady({
     session_id: "gallery",
     user: { ...people[0]!, email: "paul@example.org", is_instance_administrator: true },
@@ -156,9 +204,18 @@
         id: GUILD,
         name: "Rust Lyon",
         owner_id: ME,
-        my_permissions: String(Permission.ADMINISTRATOR),
+        my_permissions: String(
+          parameters.get("block") === "permission"
+            ? Permission.VIEW_CHANNEL | Permission.CONNECT | Permission.SPEAK
+            : parameters.get("manage") === "0"
+              ? Permission.VIEW_CHANNEL | Permission.CONNECT | Permission.SPEAK | Permission.USE_SOUNDBOARD
+              : Permission.ADMINISTRATOR,
+        ),
         my_role_ids: [],
         roles: [],
+        sounds: parameters.get("sounds") === "0" ? [] : gallerySounds,
+        my_join_sound_id: "903",
+        emojis: [],
         channels: [
           channel("10", "category", "Salons textuels", 0, null),
           channel("11", "text", "général", 0, "10"),
@@ -247,6 +304,16 @@
     if (state === "reconnecting") {
       client.voice.disconnectedByServer("21", "media_timeout");
     }
+    if (view === "soundboard") {
+      dispatch({ t: "VOICE_SOUND_PLAYED", data: { channel_id: "21", user_id: "2", sound_id: "904" } });
+      if (parameters.get("block") === "cooldown") {
+        dispatch({ t: "VOICE_SOUND_PLAYED", data: { channel_id: "21", user_id: ME, sound_id: "901" } });
+      } else if (parameters.get("block") === "deafened") {
+        client.voice.toggleDeafened();
+      }
+      await tick();
+      document.querySelector<HTMLButtonElement>("button[aria-haspopup=dialog][aria-expanded]")?.click();
+    }
     if (view === "menu") {
       await tick();
       const ana = [...document.querySelectorAll<HTMLButtonElement>("button[aria-haspopup=menu]")].find((row) =>
@@ -261,7 +328,19 @@
   const isWide = parameters.get("wide") !== "0";
 </script>
 
-{#if view === "settings"}
+{#if view === "sound-settings"}
+  {@const guild = client.guilds[0]!}
+  <div class="min-h-dvh bg-(--mw-component-settings-content-background) font-sans text-text-normal">
+    <div class="mx-auto max-w-(--mw-component-settings-content-max-width) px-(--mw-component-settings-content-padding-inline) pt-(--mw-component-settings-content-padding-top)">
+      <SoundSettings {client} {guild} isCompact={!isWide} />
+    </div>
+  </div>
+  {#if parameters.get("dialog") === "add"}
+    <AddSoundDialog {client} {guild} file={galleryFile()} isCompact={!isWide} onclose={() => {}} onadded={() => {}} />
+  {:else if parameters.get("dialog") === "edit"}
+    <EditSoundDialog {client} {guild} sound={gallerySounds[3]!} isCompact={!isWide} onclose={() => {}} onsaved={() => {}} />
+  {/if}
+{:else if view === "settings"}
   <div class="min-h-dvh bg-(--mw-component-settings-content-background) font-sans text-text-normal">
     <div
       class={[

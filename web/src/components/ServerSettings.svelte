@@ -14,6 +14,7 @@
   import ServerOverviewSettings from "./ServerOverviewSettings.svelte";
   import SettingsNavItem from "./SettingsNavItem.svelte";
   import SettingsSheet from "./SettingsSheet.svelte";
+  import SoundSettings from "./SoundSettings.svelte";
   import { type ServerSettingsSection, isOwner, mustStayOnPage, visibleSections } from "./server-settings";
 
   // Server settings (DESIGN.md §5.8), over the whole window like the user settings, with the same
@@ -25,15 +26,16 @@
     client: MellowClient;
     guildId: Snowflake;
     isWide: boolean;
+    /** Where it opens (the soundboard's "Add sounds"); the first section shown otherwise. */
+    initialSection?: ServerSettingsSection | null;
     onclose: () => void;
   }
 
-  let { client, guildId, isWide, onclose }: Props = $props();
+  let { client, guildId, isWide, initialSection = null, onclose }: Props = $props();
 
   const MODERATION_SECTIONS: readonly ServerSettingsSection[] = ["members", "bans", "moderation-log"];
 
   const id = $props.id();
-  let isSectionShownOnPhone = $state(false);
   let isDeleteDialogOpen = $state(false);
   /** The page holding unsaved changes, if any; see `mustStayOnPage`. */
   let unsavedSection = $state<ServerSettingsSection | null>(null);
@@ -42,7 +44,10 @@
   const guild = $derived(client.guilds.find((candidate) => candidate.id === guildId) ?? null);
   const sections = $derived(guild ? visibleSections(guild) : []);
   const canDeleteServer = $derived(guild !== null && isOwner(guild, client.user?.id));
-  let chosenSection = $state<ServerSettingsSection | null>(null);
+  // svelte-ignore state_referenced_locally
+  let chosenSection = $state<ServerSettingsSection | null>(initialSection);
+  // svelte-ignore state_referenced_locally
+  let isSectionShownOnPhone = $state(initialSection !== null && !isWide);
   // A section whose permission was lost gives way to the first one still shown.
   const section = $derived(
     chosenSection !== null && sections.includes(chosenSection) ? chosenSection : (sections[0] ?? null),
@@ -187,6 +192,8 @@
         />
       {:else if section === "emoji"}
         <EmojiSettings {client} {guild} />
+      {:else if section === "soundboard"}
+        <SoundSettings {client} {guild} isCompact={!isWide} />
       {:else if section === "invites"}
         <InviteSettings {client} {guild} />
       {:else if section === "members"}

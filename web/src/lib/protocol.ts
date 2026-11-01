@@ -127,6 +127,34 @@ export function customEmojiMarkup(emoji: CustomEmoji): string {
   return `<${emoji.is_animated ? "a" : ""}:${emoji.name}:${emoji.id}>`;
 }
 
+/**
+ * A guild's soundboard sound (ADR-0032). Its samples, a canonical PCM WAV (mono, 48 kHz, 16-bit),
+ * are served at `soundUrl` to the guild's members; every client plays it on its own output.
+ */
+export interface SoundboardSound {
+  id: Snowflake;
+  /** 2 to 32 characters once trimmed, not unique. */
+  name: string;
+  /** A reaction key (ADR-0028): a Unicode emoji, or `:id` of one of the guild's custom emoji. */
+  emoji?: string | null;
+  duration_milliseconds: number;
+}
+
+/** Mirrors the server's rules (ADR-0032); the server still decides. */
+export const MAXIMUM_SOUNDS_PER_GUILD = 48;
+export const MINIMUM_SOUND_NAME_LENGTH = 2;
+export const MAXIMUM_SOUND_NAME_LENGTH = 32;
+/** The only format the instance stores: mono 16-bit PCM at this rate, at most this many samples (5.2 s). */
+export const SOUND_SAMPLE_RATE = 48_000;
+export const MAXIMUM_SOUND_SAMPLES = 249_600;
+/** The shortest time between two sounds played by one member (`MINIMUM_MILLISECONDS_BETWEEN_SOUNDS`). */
+export const MINIMUM_MILLISECONDS_BETWEEN_SOUNDS = 2_000;
+
+/** A sound's WAV, for members of its server only. */
+export function soundUrl(soundId: Snowflake): string {
+  return `/api/v1/sounds/${soundId}`;
+}
+
 /** Mirrors the server's rules (mellow-server domain/guild_rules.rs); the server still decides. */
 export const MAXIMUM_CHANNEL_NAME_LENGTH = 100;
 export const MAXIMUM_CHANNEL_TOPIC_LENGTH = 1024;
@@ -200,6 +228,10 @@ export interface Guild {
   channels: Channel[];
   /** Oldest first. Absent from older servers. */
   emojis?: CustomEmoji[];
+  /** Soundboard sounds, oldest first (ADR-0032). Absent from older servers. */
+  sounds?: SoundboardSound[];
+  /** The sound this member plays on joining a voice channel here. Absent when none. */
+  my_join_sound_id?: Snowflake | null;
 }
 
 export interface Member {
@@ -425,10 +457,29 @@ export type AuditAction =
   | "emoji_update"
   /** `target_id` is the emoji; its name is the `name` change's old value. */
   | "emoji_delete"
+  /** `target_id` is the sound; its name is the `name` change's new value. */
+  | "sound_create"
+  /** `name` and `emoji` changes (the emoji's reaction key, empty for none). */
+  | "sound_update"
+  /** `target_id` is the sound; its name is the `name` change's old value. */
+  | "sound_delete"
   | "unknown";
 
 export interface AuditChange {
-  key: "name" | "topic" | "color" | "permissions" | "allow" | "deny" | "code" | "icon" | "parent" | "unknown";
+  key:
+    | "name"
+    | "topic"
+    | "color"
+    | "permissions"
+    | "allow"
+    | "deny"
+    | "code"
+    | "icon"
+    | "parent"
+    | "user_limit"
+    /** A sound's emoji: its reaction key, empty for none. */
+    | "emoji"
+    | "unknown";
   /** Permissions and colours in decimal. */
   old_value: string;
   new_value: string;
@@ -479,6 +530,11 @@ export interface VoiceState {
   self_deaf: boolean;
   /** Without `SPEAK` in the channel: the server does not forward their voice. */
   suppressed: boolean;
+  /**
+   * The sound clients connected here play instead of the join chime when the person joins or moves
+   * in (ADR-0032). Absent when none, and from older servers.
+   */
+  join_sound_id?: Snowflake | null;
 }
 
 /** Why the server refused a `voice_join`. A newer server may send another reason. */
@@ -559,6 +615,10 @@ export type GatewayEvent =
   | { t: "GUILD_ROLES_UPDATE"; data: { guild_id: Snowflake; roles: Role[] } }
   /** The guild's whole emoji list after any was added, renamed or deleted. */
   | { t: "GUILD_EMOJIS_UPDATE"; data: { guild_id: Snowflake; emojis: CustomEmoji[] } }
+  /** The guild's whole sound list after any was added, edited or deleted. */
+  | { t: "GUILD_SOUNDS_UPDATE"; data: { guild_id: Snowflake; sounds: SoundboardSound[] } }
+  /** Only to the user's own sessions: their join sound in that guild changed, or was deleted. */
+  | { t: "MY_JOIN_SOUND_UPDATE"; data: { guild_id: Snowflake; sound_id: Snowflake | null } }
   | {
       t: "TYPING_START";
       data: { guild_id?: Snowflake; channel_id: Snowflake; user_id: Snowflake };
@@ -586,7 +646,9 @@ export type GatewayEvent =
   | {
       t: "SPEAKING";
       data: { guild_id: Snowflake; channel_id: Snowflake; user_id: Snowflake; speaking: boolean };
-    };
+    }
+  /** To every session connected to the channel, the player's own included: each plays it locally. */
+  | { t: "VOICE_SOUND_PLAYED"; data: { channel_id: Snowflake; user_id: Snowflake; sound_id: Snowflake } };
 
 export type ServerFrame =
   | { op: "hello"; d: { heartbeat_interval_milliseconds: number } }
@@ -609,7 +671,9 @@ export type ClientFrame =
       d: { channel_id: Snowflake; offer_id: number; sdp_offer: string; self_mute: boolean; self_deaf: boolean };
     }
   | { op: "voice_leave" }
-  | { op: "voice_state"; d: { self_mute: boolean; self_deaf: boolean } };
+  | { op: "voice_state"; d: { self_mute: boolean; self_deaf: boolean } }
+  /** Ignored by the server unless allowed (ADR-0032): no answer but `VOICE_SOUND_PLAYED`. */
+  | { op: "voice_play_sound"; d: { sound_id: Snowflake } };
 
 /** Bit positions are part of the wire protocol (`Permissions` in mellow-protocol). */
 export const Permission = {
@@ -628,11 +692,14 @@ export const Permission = {
   BAN_MEMBERS: 1n << 12n,
   VIEW_AUDIT_LOG: 1n << 15n,
   ADD_REACTIONS: 1n << 16n,
-  MANAGE_EMOJIS: 1n << 17n,
+  /** Add, edit and delete the server's custom emoji and soundboard sounds (named `MANAGE_EMOJIS` before sounds). */
+  MANAGE_EXPRESSIONS: 1n << 17n,
   /** Join a voice channel (`VIEW_CHANNEL` too). */
   CONNECT: 1n << 18n,
   /** Be heard in a voice channel. */
   SPEAK: 1n << 19n,
+  /** Play the server's sounds in a voice channel, and choose a join sound (ADR-0032). */
+  USE_SOUNDBOARD: 1n << 20n,
 } as const;
 
 /** What a channel overwrite may allow or deny (`Permissions::CHANNEL_SCOPED`). */
@@ -648,7 +715,8 @@ export const CHANNEL_SCOPED_PERMISSIONS =
   Permission.CREATE_INVITE |
   Permission.ADD_REACTIONS |
   Permission.CONNECT |
-  Permission.SPEAK;
+  Permission.SPEAK |
+  Permission.USE_SOUNDBOARD;
 
 export function hasPermission(bits: PermissionBits, permission: bigint): boolean {
   const value = BigInt(bits);

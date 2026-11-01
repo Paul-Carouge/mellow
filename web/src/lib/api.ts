@@ -29,6 +29,7 @@ import {
   type Role,
   type SessionCreated,
   type Snowflake,
+  type SoundboardSound,
   reactionsPath,
 } from "./protocol";
 
@@ -238,6 +239,28 @@ export class RestClient {
     return this.request("DELETE", `guilds/${guildId}/emojis/${emojiId}`);
   }
 
+  // --- Soundboard (ADR-0032) -----------------------------------------------------------------
+
+  /** The canonical WAV as the raw body (`encodeWav`); `emoji` is a reaction key, or `null` for none. */
+  createSound(guildId: Snowflake, name: string, emoji: string | null, wav: Blob): Promise<SoundboardSound> {
+    const query = new URLSearchParams({ name, ...(emoji === null ? {} : { emoji }) });
+    return this.sendFile("POST", `guilds/${guildId}/sounds?${query.toString()}`, wav, { "Content-Type": "audio/wav" });
+  }
+
+  /** Replaces both: `emoji: null` removes the sound's emoji. */
+  updateSound(guildId: Snowflake, soundId: Snowflake, name: string, emoji: string | null): Promise<SoundboardSound> {
+    return this.request("PATCH", `guilds/${guildId}/sounds/${soundId}`, { name, emoji });
+  }
+
+  deleteSound(guildId: Snowflake, soundId: Snowflake): Promise<void> {
+    return this.request("DELETE", `guilds/${guildId}/sounds/${soundId}`);
+  }
+
+  /** `null` clears it; a sound of another server is `NOT_FOUND`. */
+  setJoinSound(guildId: Snowflake, soundId: Snowflake | null): Promise<void> {
+    return this.request("PATCH", `guilds/${guildId}/members/@me/join-sound`, { sound_id: soundId });
+  }
+
   /** Absent fields stay unchanged. */
   /** `user_limit: null` clears a voice channel's limit. */
   updateChannel(channelId: Snowflake, changes: { name?: string; topic?: string; user_limit?: number | null }): Promise<Channel> {
@@ -376,10 +399,11 @@ export class RestClient {
     return this.request("DELETE", `users/@me/${kind}`);
   }
 
+  /** `extraHeaders` may replace the generic `Content-Type`. */
   private async sendFile<T>(
     method: string,
     path: string,
-    file: File,
+    file: Blob,
     extraHeaders: Record<string, string> = {},
   ): Promise<T> {
     let response: Response;

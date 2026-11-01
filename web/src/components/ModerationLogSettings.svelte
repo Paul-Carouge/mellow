@@ -97,7 +97,7 @@
   <ol aria-label={strings.serverSettings.sections["moderation-log"]} aria-busy={isLoadingOlder}>
     {#each entries as entry (entry.id)}
       {@const actor = actorOf(entry)}
-      {@const details = auditChangeLines(entry)}
+      {@const details = auditChangeLines(entry, context)}
       <li
         class="flex min-h-(--mw-component-server-settings-row-min-height) items-start gap-(--mw-component-server-settings-row-gap) border-b border-(--mw-component-server-settings-row-divider) py-(--mw-component-server-settings-row-padding-block)"
       >

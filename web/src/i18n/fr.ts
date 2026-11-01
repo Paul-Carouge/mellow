@@ -6,8 +6,12 @@ import {
   MAXIMUM_EMOJIS_PER_GUILD_AND_KIND,
   MAXIMUM_EMOJI_NAME_LENGTH,
   MAXIMUM_EMOJI_UPLOAD_BYTES,
+  MAXIMUM_SOUNDS_PER_GUILD,
+  MAXIMUM_SOUND_NAME_LENGTH,
   MINIMUM_EMOJI_NAME_LENGTH,
+  MINIMUM_SOUND_NAME_LENGTH,
 } from "../lib/protocol";
+import { MAXIMUM_SOUND_SOURCE_BYTES } from "../lib/soundboard";
 import type { Catalogue } from "./en";
 import { pluralChooser } from "./plural";
 
@@ -20,6 +24,8 @@ const plural = pluralChooser("fr");
 const count = (value: number) => value.toLocaleString("fr");
 const EMOJI_UPLOAD_KILOBYTES = `${MAXIMUM_EMOJI_UPLOAD_BYTES / 1024}${NO_BREAK_SPACE}Ko`;
 const EMOJI_NAME_LENGTHS = `${MINIMUM_EMOJI_NAME_LENGTH} à ${MAXIMUM_EMOJI_NAME_LENGTH}`;
+const SOUND_NAME_LENGTHS = `${MINIMUM_SOUND_NAME_LENGTH} à ${MAXIMUM_SOUND_NAME_LENGTH}`;
+const SOUND_SOURCE_MEGABYTES = MAXIMUM_SOUND_SOURCE_BYTES / (1024 * 1024);
 const FRENCH_SIZE_UNITS = { KB: "Ko", MB: "Mo", GB: "Go" } as const;
 
 /** « Ana », « Ana et Bob », « Ana, Bob et Chloé », puis « Ana, Bob et 2 autres » ; « Rien que toi ». */
@@ -321,6 +327,39 @@ export const fr: Catalogue = {
     outputDeviceMissing: `Ta sortie choisie est débranchée${NO_BREAK_SPACE}: le son passe par celle par défaut en attendant son retour.`,
     userVolume: "Volume de l’utilisateur",
     muteForMe: "Rendre muet pour moi",
+  },
+
+  soundboard: {
+    soundboard: "Soundboard",
+    open: "Ouvrir le soundboard",
+    sounds: (server) => `Sons de ${server}`,
+    help: "Entrée joue le son pour tout le salon. Maj+F10 ouvre ses options.",
+    hint: "Clic droit sur un son pour l’écouter seul ou en faire ton son d’arrivée.",
+    empty: (server) => `${server} n’a pas encore de son.`,
+    emptyCanAdd: "Importes-en un et tout le monde en vocal pourra le jouer.",
+    emptyAsk: "Quelqu’un qui gère les expressions peut en ajouter.",
+    addSounds: "Ajouter des sons",
+    blocks: {
+      "not-connected": "Les sons se jouent une fois connecté.",
+      "no-permission": "Tu n’as pas la permission d’utiliser le soundboard dans ce salon.",
+      "cannot-speak": "Tu ne peux pas parler dans ce salon, tes sons ne seraient donc pas joués.",
+      deafened: "Réactive ton son pour jouer des sons.",
+      "cooling-down": "Patiente un instant entre deux sons.",
+    },
+    soundLabel: (name, isJoinSound) => (isJoinSound ? `${name}, ton son d’arrivée` : name),
+    soundOptions: (name) => `Options de ${name}`,
+    preview: "Écouter pour moi",
+    previewLabel: (name) => `Écouter ${name}, pour toi seul`,
+    setJoinSound: "Définir comme son d’arrivée",
+    clearJoinSound: "Retirer le son d’arrivée",
+    joinSound: "Son d’arrivée",
+    yourJoinSound: (name) => `Ton son d’arrivée ici${NO_BREAK_SPACE}: ${name}`,
+    joinSoundSet: (name) => `${name} sera joué quand tu rejoins un salon vocal ici.`,
+    joinSoundCleared: `Son d’arrivée retiré${NO_BREAK_SPACE}: le carillon habituel revient.`,
+    joinSoundFailed: "Impossible de changer ton son d’arrivée",
+    plays: (name) => (name ? `joue ${name}` : "joue un son"),
+    duration: (milliseconds) =>
+      `${(milliseconds / 1000).toLocaleString("fr", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}${NO_BREAK_SPACE}s`,
   },
 
   customStatus: {
@@ -940,6 +979,7 @@ export const fr: Catalogue = {
       overview: "Vue d’ensemble",
       roles: "Rôles",
       emoji: "Emoji",
+      soundboard: "Soundboard",
       invites: "Invitations",
       members: "Membres",
       bans: "Bannissements",
@@ -1030,9 +1070,9 @@ export const fr: Catalogue = {
         label: "Gérer le serveur",
         description: "Renommer le serveur et gérer ses invitations.",
       },
-      manageEmojis: {
-        label: "Gérer les emoji",
-        description: "Ajouter des emoji personnalisés au serveur, les renommer et les supprimer.",
+      manageExpressions: {
+        label: "Gérer les expressions",
+        description: "Ajouter, modifier et supprimer les emoji personnalisés et les sons du soundboard du serveur.",
       },
       viewModerationLog: {
         label: "Voir le journal de modération",
@@ -1058,6 +1098,10 @@ export const fr: Catalogue = {
       speak: {
         label: "Parler",
         description: "Se faire entendre dans les salons vocaux. Sans cette permission, on y entre en muet.",
+      },
+      useSoundboard: {
+        label: "Utiliser le soundboard",
+        description: "Jouer les sons du serveur dans les salons vocaux et choisir un son d’arrivée.",
       },
       kickMembers: {
         label: "Expulser des membres",
@@ -1157,6 +1201,63 @@ export const fr: Catalogue = {
       retry: (fileName) => `Réessayer ${fileName}`,
     },
 
+    sounds: {
+      intro: "Des sons courts que tout le monde ici peut jouer dans un salon vocal, pour tous ceux qui y sont connectés.",
+      rules: `Tout fichier audio que ton navigateur sait lire (MP3, WAV, Ogg, M4A…)${NARROW_NO_BREAK_SPACE}; tu en gardes jusqu’à 5,2${NO_BREAK_SPACE}secondes. Les noms font ${SOUND_NAME_LENGTHS} caractères.`,
+      upload: "Importer un son",
+      listLabel: "Sons",
+      count: (used, maximum) => `${count(used)} / ${count(maximum)}`,
+      countLabel: (used, maximum) => `${count(used)} sur ${count(maximum)} utilisés`,
+      full: "Complet",
+      fullSentence: `Ce serveur compte ${MAXIMUM_SOUNDS_PER_GUILD} sons, le maximum. Supprimes-en un pour en ajouter un autre.`,
+      empty: "Pas encore de son. Importes-en un et tout le monde en vocal pourra le jouer.",
+      noEmoji: "Aucun emoji",
+      editLabel: (name) => `Modifier ${name}`,
+      deleteLabel: (name) => `Supprimer ${name}`,
+      deleteTitle: (name) => `Supprimer ${name}${NARROW_NO_BREAK_SPACE}?`,
+      deleteBody: "Il disparaît du soundboard de tout le monde et n’est plus le son d’arrivée de ceux qui l’avaient choisi.",
+      deleteSubmit: "Supprimer le son",
+      deleting: "Suppression…",
+      deleteFailed: "Impossible de supprimer le son",
+      deleted: (name) => `${name} supprimé`,
+      addTitle: "Ajouter un son",
+      reading: (fileName) => `Lecture de ${fileName}…`,
+      unreadable: (fileName) => `Ton navigateur ne sait pas lire ${fileName} comme un son. Essaie un fichier MP3, WAV, Ogg ou M4A.`,
+      tooLargeFile: (size) =>
+        `Ce fichier pèse ${size}. Choisis-en un de moins de ${SOUND_SOURCE_MEGABYTES}${NO_BREAK_SPACE}Mo${NARROW_NO_BREAK_SPACE}: seules 5,2${NO_BREAK_SPACE}secondes sont gardées de toute façon.`,
+      chooseAnother: "Choisir un autre fichier",
+      trim: "Partie à garder",
+      waveform: (fileName) => `Forme d’onde de ${fileName}`,
+      trimHelp: `Jusqu’à 5,2${NO_BREAK_SPACE}secondes. Clique ou fais glisser sur la forme d’onde pour déplacer la sélection${NARROW_NO_BREAK_SPACE}; les curseurs règlent son début et sa fin.`,
+      start: "Début",
+      end: "Fin",
+      kept: (seconds) => `${seconds} gardées`,
+      volume: "Volume",
+      previewSelection: "Écouter",
+      stopPreview: "Arrêter",
+      name: "Nom du son",
+      nameHelper: `${SOUND_NAME_LENGTHS} caractères. Tout le monde le voit sur le soundboard.`,
+      nameLength: `Utilise ${SOUND_NAME_LENGTHS} caractères.`,
+      nameControl: "Retire les caractères invisibles du nom.",
+      emoji: "Emoji",
+      emojiHelper: "Facultatif. Il s’affiche sur le soundboard et à côté de qui joue le son.",
+      chooseEmoji: "Choisir un emoji",
+      changeEmoji: (emoji) => `Emoji${NO_BREAK_SPACE}: ${emoji}. Le changer`,
+      change: "Changer",
+      removeEmoji: "Retirer l’emoji",
+      submit: "Ajouter le son",
+      adding: "Ajout…",
+      added: (name) => `${name} ajouté`,
+      addFailed: "Impossible d’ajouter le son",
+      limitReached: `Ce serveur a déjà ${MAXIMUM_SOUNDS_PER_GUILD} sons. Supprimes-en un d’abord.`,
+      tooMany: "Tu as ajouté beaucoup de sons en peu de temps. Patiente quelques minutes, puis réessaie.",
+      refused: "L’instance a refusé ce son. Coupe-le de nouveau ou essaie un autre fichier.",
+      editTitle: (name) => `Modifier ${name}`,
+      save: "Enregistrer les modifications",
+      saveFailed: "Impossible d’enregistrer le son",
+      saved: (name) => `${name} enregistré`,
+    },
+
     invites: {
       empty: "Aucune invitation active.",
       loadFailed: "Impossible de charger les invitations.",
@@ -1220,6 +1321,10 @@ export const fr: Catalogue = {
       emojiCreate: (actor, name) => `${actor} a ajouté l’emoji :${name}:`,
       emojiRename: (actor, before, after) => `${actor} a renommé l’emoji :${before}: en :${after}:`,
       emojiDelete: (actor, name) => `${actor} a supprimé l’emoji :${name}:`,
+      soundCreate: (actor, name) => `${actor} a ajouté le son ${name}`,
+      soundUpdate: (actor, name) => `${actor} a modifié le son ${name}`,
+      soundDelete: (actor, name) => `${actor} a supprimé le son ${name}`,
+      emojiChange: (before, after) => `Emoji${NO_BREAK_SPACE}: ${before || "aucun"}, devenu ${after || "aucun"}`,
       unknown: (actor) => `${actor} a fait un changement que cette version de Mellow ne sait pas encore afficher`,
       nameChange: (before, after) => `Nom${NO_BREAK_SPACE}: ${before}, devenu ${after}`,
       topicChange: (topic) => `Nouveau sujet${NO_BREAK_SPACE}: ${topic}`,
@@ -1368,6 +1473,8 @@ export const fr: Catalogue = {
     outputDeviceMissing: "Cette sortie est débranchée. Mellow utilise celle par défaut en attendant son retour.",
     inputVolume: "Volume du micro",
     outputVolume: "Volume de sortie",
+    soundboardVolume: "Volume du soundboard",
+    soundboardVolumeDescription: "Les sons joués en vocal et les sons d’arrivée.",
     percent: (value) => `${count(value)}${NARROW_NO_BREAK_SPACE}%`,
     milliseconds: (value) => `${count(value)}${NO_BREAK_SPACE}ms`,
     decibels: (value) => `${value < 0 ? "\u2212" : ""}${count(Math.abs(value))}${NO_BREAK_SPACE}dB`,

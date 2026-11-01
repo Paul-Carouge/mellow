@@ -10,7 +10,7 @@ People: members of small self-hosted communities who already know Discord. The j
 
 ## Flows and states
 
-**Managing (Server settings → Emoji, `MANAGE_EMOJIS`).**
+**Managing (Server settings → Emoji, `MANAGE_EMOJIS`, renamed `MANAGE_EXPRESSIONS` in ADR-0032).**
 
 - "Upload emoji" opens the file picker (several files at once, PNG, JPEG, GIF, WebP). Each picture uploads at once, one after another, named after its file (accents dropped, other characters made `_`, `_2` added when the name is taken). Discord does the same: renaming afterwards is cheaper than a form before each upload.
 - While it uploads, its row shows the local preview at half opacity, `:name:` and "Adding…"; the others say "Waiting for the others…".

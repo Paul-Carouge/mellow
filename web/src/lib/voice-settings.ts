@@ -66,11 +66,15 @@ export interface VoiceSettings {
   /** `"custom"` once a slider moved away from the preset's values. */
   readonly voiceEnhancementPreset: VoiceEnhancementPreset | "custom";
   readonly equalizerDecibels: EqualizerDecibels;
+  /** Soundboard and join sounds (ADR-0032), on top of the output volume; 0 silences them. */
+  readonly soundboardVolumePercent: number;
 }
 
 export const MINIMUM_VOLUME_PERCENT = 0;
 export const MAXIMUM_VOLUME_PERCENT = 200;
 export const DEFAULT_VOLUME_PERCENT = 100;
+/** A sound is never played louder than its file: Discord's soundboard slider stops at 100 % too. */
+export const MAXIMUM_SOUNDBOARD_VOLUME_PERCENT = 100;
 export const MAXIMUM_PUSH_TO_TALK_RELEASE_DELAY_MILLISECONDS = 2_000;
 /** Discord's scale: the meter and the threshold run from silence (−100 dB) to full scale (0 dB). */
 export const MINIMUM_DECIBELS = -100;
@@ -95,6 +99,9 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   // What the owner asked for when switching it on: "un son plus streamer".
   voiceEnhancementPreset: "streamer",
   equalizerDecibels: EQUALIZER_OF_PRESET.streamer,
+  // Uploads are not normalised and are often mastered louder than speech: a little under full
+  // keeps a friend's airhorn from drowning the voices.
+  soundboardVolumePercent: 70,
 };
 
 export const VOICE_SETTINGS_STORAGE_KEY = "mellow.voice-settings";
@@ -188,6 +195,12 @@ export function readVoiceSettings(storage: Pick<Storage, "getItem"> | null): Voi
     isVoiceEnhancementOn: storedBoolean("isVoiceEnhancementOn", defaults.isVoiceEnhancementOn),
     voiceEnhancementPreset: preset,
     equalizerDecibels: storedEqualizer(preset, fields["equalizerDecibels"]),
+    soundboardVolumePercent: clampedInteger(
+      fields["soundboardVolumePercent"],
+      MINIMUM_VOLUME_PERCENT,
+      MAXIMUM_SOUNDBOARD_VOLUME_PERCENT,
+      defaults.soundboardVolumePercent,
+    ),
   };
 }
 
