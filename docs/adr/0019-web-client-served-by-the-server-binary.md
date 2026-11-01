@@ -21,6 +21,11 @@ The web client starts after the desktop client reaches parity on text chat, role
 - The server gains a static-asset surface and cookie handling, widening the attack surface.
 - Supersedes the web non-goal of ARCHITECTURE.md §1.
 
+## Extension (2026-11-01): precompressed assets and revalidation
+The embedded client is served compressed without compressing at runtime and without a new crate. The Vite build writes a Brotli (quality 11) and a gzip (level 9) sibling, `name.br` and `name.gz`, next to each JavaScript, CSS, HTML, SVG, JSON, manifest, TTF and WebAssembly file, and keeps a sibling only when it is under 90% of the original. The server picks one by `Accept-Encoding` (quality values honoured, `q=0` refused; Brotli, then gzip, then the original), keeps the original's `Content-Type`, sends `Vary: Accept-Encoding` on every answer, and refuses the siblings by name. The startup path drops from 1,205,814 B to 249,208 B with Brotli, for 1.2 MB more binary (1,104,371 B of siblings; the release binary grew from 29,754,144 B to 30,975,264 B). TTF stays the single font source: Brotli brings it to the size WOFF2 would give.
+
+Files outside `assets/` (`index.html`, also served for page paths, the manifest and icons) carry an ETag naming the crate version, a hash of the embedded build computed by `build.rs`, and the coding; a matching `If-None-Match` gets 304. Files under `assets/` are named after their content and stay immutable without a validator. The JSON API stays uncompressed: compressing it needs a BREACH analysis first.
+
 ## Alternatives considered
 - **Slint compiled to WebAssembly:** reuses the desktop UI, but poor accessibility (no real DOM), large bundles and weak text selection and input handling in browsers.
 - **Leptos/Dioxus (Rust WASM) reusing `mellow-client-core`:** one language, but the core would need a WASM networking port first, and the bundle size and build time are worse than a Svelte SPA. [ADR-0009](0009-admin-ui-server-rendered-htmx.md) made the same call for the admin page.
