@@ -10,6 +10,9 @@ use mellow_protocol::{
 };
 
 use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
+use crate::storage::sqlite_integers::{
+    IntegerOutOfRange, convert_integer, lookup_integer, to_snowflake, to_sqlite_integer,
+};
 
 /// Takes the write lock at once, so a read-then-write transaction waits for `busy_timeout`
 /// instead of failing with `SQLITE_BUSY_SNAPSHOT` when another connection wrote in between.
@@ -17,8 +20,8 @@ pub(crate) const BEGIN_WRITE_TRANSACTION: &str = "BEGIN IMMEDIATE";
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GuildStorageError {
-    #[error("value does not fit SQLite's signed 64-bit integer")]
-    IntegerOutOfRange,
+    #[error(transparent)]
+    IntegerOutOfRange(#[from] IntegerOutOfRange),
     #[error("the channel kind stored in the database is unknown: {0}")]
     UnknownChannelKind(String),
     #[error("the overwrite kind stored in the database is unknown: {0}")]
@@ -37,25 +40,6 @@ pub(crate) enum GuildStorageError {
     ReferenceMissing,
     #[error("database error")]
     Database(#[from] sqlx::Error),
-}
-
-pub(crate) fn to_integer(value: u64) -> Result<i64, GuildStorageError> {
-    i64::try_from(value).map_err(|_| GuildStorageError::IntegerOutOfRange)
-}
-
-/// For lookups: an id SQLite cannot hold cannot exist, so it is simply not found.
-pub(crate) fn lookup_integer(id: Snowflake) -> Option<i64> {
-    i64::try_from(id.raw()).ok()
-}
-
-pub(crate) fn to_id(value: i64) -> Result<Snowflake, GuildStorageError> {
-    u64::try_from(value)
-        .map(Snowflake::from_raw)
-        .map_err(|_| GuildStorageError::IntegerOutOfRange)
-}
-
-fn to_unsigned(value: i64) -> Result<u64, GuildStorageError> {
-    u64::try_from(value).map_err(|_| GuildStorageError::IntegerOutOfRange)
 }
 
 fn to_count(value: u32) -> i64 {
@@ -118,26 +102,24 @@ pub(crate) type ChannelRow = (
 pub(crate) fn channel_from_row(row: ChannelRow) -> Result<StoredChannel, GuildStorageError> {
     let (id, guild_id, kind, name, topic, parent_id, position, icon_id, user_limit) = row;
     Ok(StoredChannel {
-        id: to_id(id)?,
-        guild_id: to_id(guild_id)?,
+        id: to_snowflake(id)?,
+        guild_id: to_snowflake(guild_id)?,
         kind: channel_kind_from_text(&kind)?,
         name,
         topic,
-        parent_id: parent_id.map(to_id).transpose()?,
-        position: u32::try_from(position).map_err(|_| GuildStorageError::IntegerOutOfRange)?,
+        parent_id: parent_id.map(to_snowflake).transpose()?,
+        position: convert_integer::<_, u32>(position)?,
         // Channel icons are never animated.
         icon: icon_id
             .map(|id| {
                 Ok::<_, GuildStorageError>(ProfileImage {
-                    id: to_id(id)?,
+                    id: to_snowflake(id)?,
                     is_animated: false,
                 })
             })
             .transpose()?,
         permission_overwrites: Vec::new(),
-        user_limit: user_limit
-            .map(|limit| u8::try_from(limit).map_err(|_| GuildStorageError::IntegerOutOfRange))
-            .transpose()?,
+        user_limit: user_limit.map(convert_integer::<_, u8>).transpose()?,
     })
 }
 
@@ -161,7 +143,7 @@ type OverwriteRow = (i64, String, i64, i64);
 fn overwrite_from_row(row: OverwriteRow) -> Result<PermissionOverwrite, GuildStorageError> {
     let (target_id, target_kind, allow, deny) = row;
     Ok(PermissionOverwrite {
-        id: to_id(target_id)?,
+        id: to_snowflake(target_id)?,
         kind: overwrite_kind_from_text(&target_kind)?,
         allow: permissions_from_integer(allow),
         deny: permissions_from_integer(deny),
@@ -180,7 +162,7 @@ async fn attach_overwrites_to_guild_channels(
          JOIN channels ON channels.id = channel_permission_overwrites.channel_id \
          WHERE channels.guild_id = ? ORDER BY target_id",
     )
-    .bind(to_integer(guild_id.raw())?)
+    .bind(to_sqlite_integer(guild_id.raw())?)
     .fetch_all(database.readers())
     .await?;
     let mut overwrites_by_channel: HashMap<i64, Vec<PermissionOverwrite>> = HashMap::new();
@@ -191,7 +173,9 @@ async fn attach_overwrites_to_guild_channels(
             .push(overwrite_from_row((target_id, target_kind, allow, deny))?);
     }
     for channel in channels {
-        if let Some(overwrites) = overwrites_by_channel.remove(&to_integer(channel.id.raw())?) {
+        if let Some(overwrites) =
+            overwrites_by_channel.remove(&to_sqlite_integer(channel.id.raw())?)
+        {
             channel.permission_overwrites = overwrites;
         }
     }
@@ -224,9 +208,9 @@ pub(crate) async fn insert_guild(
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
         .await?;
-    let guild_id = to_integer(guild.id.raw())?;
-    let owner_id = to_integer(guild.owner_id.raw())?;
-    let created_at = to_integer(guild.created_at_unix_milliseconds)?;
+    let guild_id = to_sqlite_integer(guild.id.raw())?;
+    let owner_id = to_sqlite_integer(guild.owner_id.raw())?;
+    let created_at = to_sqlite_integer(guild.created_at_unix_milliseconds)?;
     let owned_guilds: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guilds WHERE owner_id = ?")
         .bind(owner_id)
         .fetch_one(&mut *transaction)
@@ -264,7 +248,7 @@ pub(crate) async fn insert_guild(
             "INSERT INTO channels (id, guild_id, kind, name, topic, parent_id, position) \
              VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(to_integer(channel.id.raw())?)
+        .bind(to_sqlite_integer(channel.id.raw())?)
         .bind(guild_id)
         .bind(channel_kind_to_text(channel.kind))
         .bind(&channel.name)
@@ -272,7 +256,7 @@ pub(crate) async fn insert_guild(
         .bind(
             channel
                 .parent_id
-                .map(|id| to_integer(id.raw()))
+                .map(|id| to_sqlite_integer(id.raw()))
                 .transpose()?,
         )
         .bind(i64::from(channel.position))
@@ -311,7 +295,7 @@ fn guild_icon(
     icon_id
         .map(|id| {
             Ok(ProfileImage {
-                id: to_id(id)?,
+                id: to_snowflake(id)?,
                 is_animated: is_animated != 0,
             })
         })
@@ -323,10 +307,10 @@ type RoleRow = (i64, String, i64, i64, i64);
 fn role_from_row(row: RoleRow) -> Result<Role, GuildStorageError> {
     let (id, name, color, position, permissions) = row;
     Ok(Role {
-        id: to_id(id)?,
+        id: to_snowflake(id)?,
         name,
-        color: u32::try_from(color).map_err(|_| GuildStorageError::IntegerOutOfRange)?,
-        position: u32::try_from(position).map_err(|_| GuildStorageError::IntegerOutOfRange)?,
+        color: convert_integer::<_, u32>(color)?,
+        position: convert_integer::<_, u32>(position)?,
         permissions: permissions_from_integer(permissions),
     })
 }
@@ -371,7 +355,7 @@ pub(crate) async fn find_membership(
     Ok(Some(Membership {
         guild_name,
         guild_icon: guild_icon(icon_id, icon_is_animated)?,
-        owner_id: to_id(owner_id)?,
+        owner_id: to_snowflake(owner_id)?,
         member_roles: rows
             .into_iter()
             .map(role_from_row)
@@ -398,7 +382,7 @@ async fn roles_of_guild(
         "SELECT id, name, color, position, permissions FROM roles WHERE guild_id = ? \
          ORDER BY position, id",
     )
-    .bind(to_integer(guild_id.raw())?)
+    .bind(to_sqlite_integer(guild_id.raw())?)
     .fetch_all(executor)
     .await?;
     rows.into_iter().map(role_from_row).collect()
@@ -417,7 +401,7 @@ pub(crate) async fn insert_role_above_everyone(
     maximum_roles: u32,
     audit: &NewAuditEntry,
 ) -> Result<Vec<Role>, GuildStorageError> {
-    let guild_id_integer = to_integer(guild_id.raw())?;
+    let guild_id_integer = to_sqlite_integer(guild_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -436,7 +420,7 @@ pub(crate) async fn insert_role_above_everyone(
     sqlx::query(
         "INSERT INTO roles (id, guild_id, name, color, permissions, position) VALUES (?, ?, ?, ?, ?, 1)",
     )
-    .bind(to_integer(role.id.raw())?)
+    .bind(to_sqlite_integer(role.id.raw())?)
     .bind(guild_id_integer)
     .bind(&role.name)
     .bind(i64::from(role.color))
@@ -515,7 +499,7 @@ pub(crate) async fn reorder_roles(
     new_order: &[Snowflake],
     audit: &NewAuditEntry,
 ) -> Result<Option<Vec<Role>>, GuildStorageError> {
-    let guild_id_integer = to_integer(guild_id.raw())?;
+    let guild_id_integer = to_sqlite_integer(guild_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -528,7 +512,7 @@ pub(crate) async fn reorder_roles(
     .await?;
     let stored_order: Vec<Snowflake> = stored_order
         .into_iter()
-        .map(to_id)
+        .map(to_snowflake)
         .collect::<Result<_, _>>()?;
     if stored_order != expected_order {
         return Ok(None);
@@ -536,7 +520,7 @@ pub(crate) async fn reorder_roles(
     for (position, role_id) in (1_i64..).zip(new_order) {
         sqlx::query("UPDATE roles SET position = ? WHERE id = ? AND guild_id = ?")
             .bind(position)
-            .bind(to_integer(role_id.raw())?)
+            .bind(to_sqlite_integer(role_id.raw())?)
             .bind(guild_id_integer)
             .execute(&mut *transaction)
             .await?;
@@ -698,11 +682,14 @@ pub(crate) async fn member_role_ids(
          WHERE member_roles.guild_id = ? AND member_roles.user_id = ? \
          ORDER BY roles.position, roles.id",
     )
-    .bind(to_integer(guild_id.raw())?)
-    .bind(to_integer(user_id.raw())?)
+    .bind(to_sqlite_integer(guild_id.raw())?)
+    .bind(to_sqlite_integer(user_id.raw())?)
     .fetch_all(database.readers())
     .await?;
-    ids.into_iter().map(to_id).collect()
+    Ok(ids
+        .into_iter()
+        .map(to_snowflake)
+        .collect::<Result<_, _>>()?)
 }
 
 /// # Errors
@@ -715,7 +702,7 @@ pub(crate) async fn list_guild_channels(
         "SELECT id, guild_id, kind, name, topic, parent_id, position, icon_id, user_limit FROM channels \
          WHERE guild_id = ? ORDER BY position, id",
     )
-    .bind(to_integer(guild_id.raw())?)
+    .bind(to_sqlite_integer(guild_id.raw())?)
     .fetch_all(database.readers())
     .await?;
     let mut channels = rows
@@ -756,7 +743,7 @@ pub(crate) async fn attach_overwrites_to_channel(
         "SELECT target_id, target_kind, allow, deny FROM channel_permission_overwrites \
          WHERE channel_id = ? ORDER BY target_id",
     )
-    .bind(to_integer(channel.id.raw())?)
+    .bind(to_sqlite_integer(channel.id.raw())?)
     .fetch_all(executor)
     .await?;
     channel.permission_overwrites = rows
@@ -781,8 +768,8 @@ pub(crate) async fn set_overwrite(
     maximum_overwrites: u32,
     audit: &NewAuditEntry,
 ) -> Result<(), GuildStorageError> {
-    let channel_id_integer = to_integer(channel_id.raw())?;
-    let target_id_integer = to_integer(overwrite.id.raw())?;
+    let channel_id_integer = to_sqlite_integer(channel_id.raw())?;
+    let target_id_integer = to_sqlite_integer(overwrite.id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -875,7 +862,7 @@ pub(crate) async fn permission_version(
 ) -> Result<Option<i64>, GuildStorageError> {
     Ok(
         sqlx::query_scalar("SELECT permission_version FROM guilds WHERE id = ?")
-            .bind(to_integer(guild_id.raw())?)
+            .bind(to_sqlite_integer(guild_id.raw())?)
             .fetch_optional(database.readers())
             .await?,
     )
@@ -891,7 +878,7 @@ pub(crate) async fn everyone_permissions(
 ) -> Result<Option<Permissions>, GuildStorageError> {
     // `@everyone` has the guild's id.
     let permissions: Option<i64> = sqlx::query_scalar("SELECT permissions FROM roles WHERE id = ?")
-        .bind(to_integer(guild_id.raw())?)
+        .bind(to_sqlite_integer(guild_id.raw())?)
         .fetch_optional(database.readers())
         .await?;
     Ok(permissions.map(permissions_from_integer))
@@ -906,7 +893,7 @@ pub(crate) async fn permission_snapshot(
     database: &Database,
     guild_id: Snowflake,
 ) -> Result<Option<StoredPermissionSnapshot>, GuildStorageError> {
-    let guild_id_integer = to_integer(guild_id.raw())?;
+    let guild_id_integer = to_sqlite_integer(guild_id.raw())?;
     let mut transaction = database.readers().begin().await?;
     let Some((version, owner_id)): Option<(i64, i64)> =
         sqlx::query_as("SELECT permission_version, owner_id FROM guilds WHERE id = ?")
@@ -930,17 +917,17 @@ pub(crate) async fn permission_snapshot(
     transaction.commit().await?;
     let mut role_ids_by_member: HashMap<Snowflake, Vec<Snowflake>> = member_ids
         .into_iter()
-        .map(|user_id| Ok((to_id(user_id)?, Vec::new())))
+        .map(|user_id| Ok((to_snowflake(user_id)?, Vec::new())))
         .collect::<Result<_, GuildStorageError>>()?;
     for (user_id, role_id) in assignments {
         // The foreign key to guild_members guarantees the member is in the map.
-        if let Some(role_ids) = role_ids_by_member.get_mut(&to_id(user_id)?) {
-            role_ids.push(to_id(role_id)?);
+        if let Some(role_ids) = role_ids_by_member.get_mut(&to_snowflake(user_id)?) {
+            role_ids.push(to_snowflake(role_id)?);
         }
     }
     Ok(Some(StoredPermissionSnapshot {
         version,
-        owner_id: to_id(owner_id)?,
+        owner_id: to_snowflake(owner_id)?,
         roles,
         role_ids_by_member,
     }))
@@ -957,7 +944,7 @@ pub(crate) async fn insert_channel_last(
     maximum_channels: u32,
     audit: &NewAuditEntry,
 ) -> Result<StoredChannel, GuildStorageError> {
-    let guild_id = to_integer(channel.guild_id.raw())?;
+    let guild_id = to_sqlite_integer(channel.guild_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -969,7 +956,7 @@ pub(crate) async fn insert_channel_last(
          HAVING COUNT(*) < ? \
          RETURNING position",
     )
-    .bind(to_integer(channel.id.raw())?)
+    .bind(to_sqlite_integer(channel.id.raw())?)
     .bind(guild_id)
     .bind(channel_kind_to_text(channel.kind))
     .bind(&channel.name)
@@ -977,7 +964,7 @@ pub(crate) async fn insert_channel_last(
     .bind(
         channel
             .parent_id
-            .map(|id| to_integer(id.raw()))
+            .map(|id| to_sqlite_integer(id.raw()))
             .transpose()?,
     )
     .bind(channel.user_limit.map(i64::from))
@@ -996,7 +983,7 @@ pub(crate) async fn insert_channel_last(
     insert_audit_entry(&mut transaction, audit).await?;
     transaction.commit().await?;
     Ok(StoredChannel {
-        position: u32::try_from(position).map_err(|_| GuildStorageError::IntegerOutOfRange)?,
+        position: convert_integer::<_, u32>(position)?,
         ..channel.clone()
     })
 }
@@ -1014,7 +1001,7 @@ pub(crate) async fn reorder_channels(
     new_order: &[(Snowflake, Option<Snowflake>)],
     audits: &[NewAuditEntry],
 ) -> Result<bool, GuildStorageError> {
-    let guild_id_integer = to_integer(guild_id.raw())?;
+    let guild_id_integer = to_sqlite_integer(guild_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -1027,7 +1014,7 @@ pub(crate) async fn reorder_channels(
     .await?;
     let stored_order: Vec<(Snowflake, Option<Snowflake>)> = stored_order
         .into_iter()
-        .map(|(id, parent_id)| Ok((to_id(id)?, parent_id.map(to_id).transpose()?)))
+        .map(|(id, parent_id)| Ok((to_snowflake(id)?, parent_id.map(to_snowflake).transpose()?)))
         .collect::<Result<_, GuildStorageError>>()?;
     if stored_order != expected_order {
         return Ok(false);
@@ -1038,11 +1025,19 @@ pub(crate) async fn reorder_channels(
              WHERE id = ? AND guild_id = ? AND (position != ? OR parent_id IS NOT ?)",
         )
         .bind(position)
-        .bind(parent_id.map(|id| to_integer(id.raw())).transpose()?)
-        .bind(to_integer(channel_id.raw())?)
+        .bind(
+            parent_id
+                .map(|id| to_sqlite_integer(id.raw()))
+                .transpose()?,
+        )
+        .bind(to_sqlite_integer(channel_id.raw())?)
         .bind(guild_id_integer)
         .bind(position)
-        .bind(parent_id.map(|id| to_integer(id.raw())).transpose()?)
+        .bind(
+            parent_id
+                .map(|id| to_sqlite_integer(id.raw()))
+                .transpose()?,
+        )
         .execute(&mut *transaction)
         .await?;
     }
@@ -1089,7 +1084,7 @@ pub(crate) async fn update_channel_fields(
         UserLimitChange::Set(limit) => Some(i64::from(limit)),
         UserLimitChange::Keep | UserLimitChange::Clear => None,
     })
-    .bind(to_integer(channel_id.raw())?)
+    .bind(to_sqlite_integer(channel_id.raw())?)
     .fetch_optional(&mut *transaction)
     .await?;
     let Some(row) = row else {
@@ -1145,7 +1140,7 @@ pub(crate) async fn delete_channel(
         database,
         "DELETE FROM messages WHERE id IN \
          (SELECT id FROM messages WHERE channel_id = ?1 LIMIT ?2)",
-        to_integer(channel_id.raw())?,
+        to_sqlite_integer(channel_id.raw())?,
     )
     .await?;
     let mut transaction = database
@@ -1153,7 +1148,7 @@ pub(crate) async fn delete_channel(
         .begin_with(BEGIN_WRITE_TRANSACTION)
         .await?;
     let deleted = sqlx::query("DELETE FROM channels WHERE id = ?")
-        .bind(to_integer(channel_id.raw())?)
+        .bind(to_sqlite_integer(channel_id.raw())?)
         .execute(&mut *transaction)
         .await?
         .rows_affected();
@@ -1187,7 +1182,7 @@ pub(crate) async fn update_guild_name(
     name: &str,
     audit: &NewAuditEntry,
 ) -> Result<GuildRename, GuildStorageError> {
-    let guild_id = to_integer(guild_id.raw())?;
+    let guild_id = to_sqlite_integer(guild_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -1233,8 +1228,8 @@ pub(crate) async fn delete_guild(
     guild_id: Snowflake,
     owner_id: Snowflake,
 ) -> Result<Option<Vec<Snowflake>>, GuildStorageError> {
-    let guild_id = to_integer(guild_id.raw())?;
-    let owner_id = to_integer(owner_id.raw())?;
+    let guild_id = to_sqlite_integer(guild_id.raw())?;
+    let owner_id = to_sqlite_integer(owner_id.raw())?;
     let is_owned_by_caller: bool =
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM guilds WHERE id = ? AND owner_id = ?)")
             .bind(guild_id)
@@ -1263,7 +1258,7 @@ pub(crate) async fn delete_guild(
     // Converted before the delete, so nothing can fail once it is committed.
     let member_ids = member_ids
         .into_iter()
-        .map(to_id)
+        .map(to_snowflake)
         .collect::<Result<Vec<_>, _>>()?;
     let deleted = sqlx::query("DELETE FROM guilds WHERE id = ? AND owner_id = ?")
         .bind(guild_id)
@@ -1296,7 +1291,7 @@ pub(crate) async fn find_guild_summary(
             .await?;
     row.map(|(id, name, icon_id, icon_is_animated)| {
         Ok(GuildSummary {
-            id: to_id(id)?,
+            id: to_snowflake(id)?,
             name,
             icon: guild_icon(icon_id, icon_is_animated)?,
         })
@@ -1315,13 +1310,13 @@ pub(crate) async fn list_user_guilds(
          JOIN guilds ON guilds.id = guild_members.guild_id \
          WHERE guild_members.user_id = ? ORDER BY guild_members.joined_at_unix_milliseconds, guilds.id",
     )
-    .bind(to_integer(user_id.raw())?)
+    .bind(to_sqlite_integer(user_id.raw())?)
     .fetch_all(database.readers())
     .await?;
     rows.into_iter()
         .map(|(id, name, icon_id, icon_is_animated)| {
             Ok(GuildSummary {
-                id: to_id(id)?,
+                id: to_snowflake(id)?,
                 name,
                 icon: guild_icon(icon_id, icon_is_animated)?,
             })
@@ -1348,7 +1343,7 @@ pub(crate) async fn list_members(
     guild_id: Snowflake,
     maximum_members: u32,
 ) -> Result<Vec<StoredMember>, GuildStorageError> {
-    let guild_id_integer = to_integer(guild_id.raw())?;
+    let guild_id_integer = to_sqlite_integer(guild_id.raw())?;
     let rows: Vec<(i64, String, String, i64)> = sqlx::query_as(
         "SELECT users.id, users.username, users.display_name, guild_members.joined_at_unix_milliseconds \
          FROM guild_members JOIN users ON users.id = guild_members.user_id \
@@ -1377,16 +1372,16 @@ pub(crate) async fn list_members(
         role_ids_by_user
             .entry(user_id)
             .or_default()
-            .push(to_id(role_id)?);
+            .push(to_snowflake(role_id)?);
     }
     rows.into_iter()
         .map(|(user_id, username, display_name, joined_at)| {
             Ok(StoredMember {
                 role_ids: role_ids_by_user.remove(&user_id).unwrap_or_default(),
-                user_id: to_id(user_id)?,
+                user_id: to_snowflake(user_id)?,
                 username,
                 display_name,
-                joined_at_unix_milliseconds: to_unsigned(joined_at)?,
+                joined_at_unix_milliseconds: convert_integer::<_, u64>(joined_at)?,
             })
         })
         .collect()
@@ -1407,8 +1402,8 @@ pub(crate) async fn delete_member(
         .begin_with(BEGIN_WRITE_TRANSACTION)
         .await?;
     let removed = sqlx::query("DELETE FROM guild_members WHERE guild_id = ? AND user_id = ?")
-        .bind(to_integer(guild_id.raw())?)
-        .bind(to_integer(user_id.raw())?)
+        .bind(to_sqlite_integer(guild_id.raw())?)
+        .bind(to_sqlite_integer(user_id.raw())?)
         .execute(&mut *transaction)
         .await?
         .rows_affected();
@@ -1444,8 +1439,8 @@ pub(crate) async fn insert_invite(
     maximum_active_invites: u32,
     audit: &NewAuditEntry,
 ) -> Result<(), GuildStorageError> {
-    let guild_id = to_integer(invite.guild_id.raw())?;
-    let created_at = to_integer(invite.created_at_unix_milliseconds)?;
+    let guild_id = to_sqlite_integer(invite.guild_id.raw())?;
+    let created_at = to_sqlite_integer(invite.created_at_unix_milliseconds)?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -1460,9 +1455,9 @@ pub(crate) async fn insert_invite(
     )
     .bind(&invite.code)
     .bind(guild_id)
-    .bind(to_integer(invite.creator_id.raw())?)
+    .bind(to_sqlite_integer(invite.creator_id.raw())?)
     .bind(invite.max_uses.map(i64::from))
-    .bind(invite.expires_at_unix_milliseconds.map(to_integer).transpose()?)
+    .bind(invite.expires_at_unix_milliseconds.map(to_sqlite_integer).transpose()?)
     .bind(created_at)
     .bind(guild_id)
     .bind(created_at)
@@ -1498,7 +1493,7 @@ type ListedInviteRow = (
 );
 
 fn to_u32(value: i64) -> Result<u32, GuildStorageError> {
-    u32::try_from(value).map_err(|_| GuildStorageError::IntegerOutOfRange)
+    Ok(convert_integer::<_, u32>(value)?)
 }
 
 /// At most `maximum_invites` invites of the guild that can still be used at `now`, newest first.
@@ -1522,8 +1517,8 @@ pub(crate) async fn list_usable_invites(
               OR invites.expires_at_unix_milliseconds > ?) \
          ORDER BY invites.created_at_unix_milliseconds DESC, invites.code LIMIT ?",
     )
-    .bind(to_integer(guild_id.raw())?)
-    .bind(to_integer(now_unix_milliseconds)?)
+    .bind(to_sqlite_integer(guild_id.raw())?)
+    .bind(to_sqlite_integer(now_unix_milliseconds)?)
     .bind(to_count(maximum_invites))
     .fetch_all(database.readers())
     .await?;
@@ -1534,11 +1529,13 @@ pub(crate) async fn list_usable_invites(
                     invite: StoredInvite {
                         code,
                         guild_id,
-                        creator_id: to_id(creator_id)?,
+                        creator_id: to_snowflake(creator_id)?,
                         max_uses: max_uses.map(to_u32).transpose()?,
                         uses: to_u32(uses)?,
-                        expires_at_unix_milliseconds: expires_at.map(to_unsigned).transpose()?,
-                        created_at_unix_milliseconds: to_unsigned(created_at)?,
+                        expires_at_unix_milliseconds: expires_at
+                            .map(convert_integer::<_, u64>)
+                            .transpose()?,
+                        created_at_unix_milliseconds: convert_integer::<_, u64>(created_at)?,
                     },
                     creator_username: username,
                     creator_display_name: display_name,
@@ -1560,7 +1557,7 @@ pub(crate) async fn find_invite_guild_id(
         .bind(code)
         .fetch_optional(database.readers())
         .await?;
-    guild_id.map(to_id).transpose()
+    Ok(guild_id.map(to_snowflake).transpose()?)
 }
 
 /// Deletes the invite and records `audit`, in one transaction. Returns whether it existed in
@@ -1580,7 +1577,7 @@ pub(crate) async fn delete_invite(
         .await?;
     let deleted = sqlx::query("DELETE FROM invites WHERE code = ? AND guild_id = ?")
         .bind(code)
-        .bind(to_integer(guild_id.raw())?)
+        .bind(to_sqlite_integer(guild_id.raw())?)
         .execute(&mut *transaction)
         .await?
         .rows_affected();
@@ -1617,8 +1614,8 @@ pub(crate) async fn join_with_invite(
     user_id: Snowflake,
     now_unix_milliseconds: u64,
 ) -> Result<JoinOutcome, GuildStorageError> {
-    let user_id = to_integer(user_id.raw())?;
-    let now = to_integer(now_unix_milliseconds)?;
+    let user_id = to_sqlite_integer(user_id.raw())?;
+    let now = to_sqlite_integer(now_unix_milliseconds)?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -1665,7 +1662,7 @@ pub(crate) async fn join_with_invite(
     }
     transaction.commit().await?;
     Ok(JoinOutcome::Joined {
-        guild_id: to_id(guild_id)?,
+        guild_id: to_snowflake(guild_id)?,
         is_new_member: added > 0,
     })
 }
@@ -1682,20 +1679,20 @@ pub(crate) async fn find_member(
          FROM guild_members JOIN users ON users.id = guild_members.user_id \
          WHERE guild_members.guild_id = ? AND guild_members.user_id = ?",
     )
-    .bind(to_integer(guild_id.raw())?)
-    .bind(to_integer(user_id.raw())?)
+    .bind(to_sqlite_integer(guild_id.raw())?)
+    .bind(to_sqlite_integer(user_id.raw())?)
     .fetch_optional(database.readers())
     .await?;
     let Some((user_id, username, display_name, joined_at)) = row else {
         return Ok(None);
     };
-    let user_id = to_id(user_id)?;
+    let user_id = to_snowflake(user_id)?;
     Ok(Some(StoredMember {
         role_ids: member_role_ids(database, guild_id, user_id).await?,
         user_id,
         username,
         display_name,
-        joined_at_unix_milliseconds: to_unsigned(joined_at)?,
+        joined_at_unix_milliseconds: convert_integer::<_, u64>(joined_at)?,
     }))
 }
 
@@ -1722,8 +1719,8 @@ pub(crate) async fn ban_and_remove_member(
     now_unix_milliseconds: u64,
     audit: &NewAuditEntry,
 ) -> Result<bool, GuildStorageError> {
-    let guild_id_integer = to_integer(guild_id.raw())?;
-    let user_id_integer = to_integer(user_id.raw())?;
+    let guild_id_integer = to_sqlite_integer(guild_id.raw())?;
+    let user_id_integer = to_sqlite_integer(user_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -1737,8 +1734,8 @@ pub(crate) async fn ban_and_remove_member(
     .bind(guild_id_integer)
     .bind(user_id_integer)
     .bind(reason)
-    .bind(to_integer(banned_by.raw())?)
-    .bind(to_integer(now_unix_milliseconds)?)
+    .bind(to_sqlite_integer(banned_by.raw())?)
+    .bind(to_sqlite_integer(now_unix_milliseconds)?)
     .execute(&mut *transaction)
     .await?;
     let removed = sqlx::query("DELETE FROM guild_members WHERE guild_id = ? AND user_id = ?")
@@ -1798,18 +1795,18 @@ pub(crate) async fn list_bans(
          bans.created_at_unix_milliseconds FROM bans JOIN users ON users.id = bans.user_id \
          WHERE bans.guild_id = ? ORDER BY bans.created_at_unix_milliseconds DESC, users.id LIMIT ?",
     )
-    .bind(to_integer(guild_id.raw())?)
+    .bind(to_sqlite_integer(guild_id.raw())?)
     .bind(to_count(maximum_bans))
     .fetch_all(database.readers())
     .await?;
     rows.into_iter()
         .map(|(user_id, username, display_name, reason, created_at)| {
             Ok(StoredBan {
-                user_id: to_id(user_id)?,
+                user_id: to_snowflake(user_id)?,
                 username,
                 display_name,
                 reason,
-                created_at_unix_milliseconds: to_unsigned(created_at)?,
+                created_at_unix_milliseconds: convert_integer::<_, u64>(created_at)?,
             })
         })
         .collect()

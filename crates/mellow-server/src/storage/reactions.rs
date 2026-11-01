@@ -7,8 +7,9 @@ use super::Database;
 use mellow_protocol::Snowflake;
 
 use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
-use crate::storage::messages::{
-    MessageStorageError, json_array_of_ids, lookup_integer, to_id, to_integer,
+use crate::storage::messages::{MessageStorageError, json_array_of_ids};
+use crate::storage::sqlite_integers::{
+    convert_integer, lookup_integer, to_snowflake, to_sqlite_integer,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,8 +52,8 @@ pub(crate) async fn add_reaction(
     may_add_new_emoji: bool,
     maximum_emoji_per_message: u32,
 ) -> Result<ReactionAddOutcome, MessageStorageError> {
-    let message_id = to_integer(message_id.raw())?;
-    let user_id = to_integer(user_id.raw())?;
+    let message_id = to_sqlite_integer(message_id.raw())?;
+    let user_id = to_sqlite_integer(user_id.raw())?;
     // Immediate: the distinct-emoji count must not change between the check and the insert.
     let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
     let (message_exists, already_reacted, emoji_exists, distinct_emoji): (bool, bool, bool, i64) =
@@ -109,10 +110,10 @@ pub(crate) async fn remove_reaction(
          AND EXISTS (SELECT 1 FROM messages WHERE messages.id = ? AND messages.channel_id = ?)",
     )
     .bind(message_id)
-    .bind(to_integer(user_id.raw())?)
+    .bind(to_sqlite_integer(user_id.raw())?)
     .bind(emoji)
     .bind(message_id)
-    .bind(to_integer(channel_id.raw())?)
+    .bind(to_sqlite_integer(channel_id.raw())?)
     .execute(database.writer())
     .await?
     .rows_affected();
@@ -138,7 +139,7 @@ pub(crate) async fn remove_reactions_of_message(
     selection: ReactionSelection<'_>,
     audit: Option<&NewAuditEntry>,
 ) -> Result<bool, MessageStorageError> {
-    let message_id = to_integer(message_id.raw())?;
+    let message_id = to_sqlite_integer(message_id.raw())?;
     let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
     let removed =
         match selection {
@@ -146,7 +147,7 @@ pub(crate) async fn remove_reactions_of_message(
                 "DELETE FROM message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
             )
             .bind(message_id)
-            .bind(to_integer(user_id.raw())?)
+            .bind(to_sqlite_integer(user_id.raw())?)
             .bind(emoji)
             .execute(&mut *transaction)
             .await?,
@@ -192,18 +193,18 @@ pub(crate) async fn reactions_of_messages(
          WHERE message_id IN (SELECT value FROM json_each(?)) \
          GROUP BY message_id, emoji ORDER BY message_id, MIN(rowid)",
     )
-    .bind(to_integer(viewer_id.raw())?)
+    .bind(to_sqlite_integer(viewer_id.raw())?)
     .bind(ids)
     .fetch_all(database.readers())
     .await?;
     let mut by_message: HashMap<Snowflake, Vec<StoredReactionSummary>> = HashMap::new();
     for (message_id, emoji, count, includes_viewer) in rows {
         by_message
-            .entry(to_id(message_id)?)
+            .entry(to_snowflake(message_id)?)
             .or_default()
             .push(StoredReactionSummary {
                 emoji,
-                count: u32::try_from(count).map_err(|_| MessageStorageError::IntegerOutOfRange)?,
+                count: convert_integer::<_, u32>(count)?,
                 includes_viewer,
             });
     }
@@ -241,7 +242,7 @@ pub(crate) async fn list_reacting_users(
     rows.into_iter()
         .map(|(id, username, display_name)| {
             Ok(StoredReactingUser {
-                id: to_id(id)?,
+                id: to_snowflake(id)?,
                 username,
                 display_name,
             })

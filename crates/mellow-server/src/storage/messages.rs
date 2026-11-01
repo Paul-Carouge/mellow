@@ -6,11 +6,14 @@ use super::Database;
 
 use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
 use crate::storage::guilds::GuildStorageError;
+use crate::storage::sqlite_integers::{
+    IntegerOutOfRange, convert_integer, lookup_integer, to_snowflake, to_sqlite_integer,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum MessageStorageError {
-    #[error("value does not fit SQLite's signed 64-bit integer")]
-    IntegerOutOfRange,
+    #[error(transparent)]
+    IntegerOutOfRange(#[from] IntegerOutOfRange),
     #[error("database error")]
     Database(#[from] sqlx::Error),
     #[error("cannot record the audit entry")]
@@ -22,26 +25,11 @@ pub(crate) enum MessageStorageError {
     AttachmentUnavailable,
 }
 
-pub(crate) fn to_integer(value: u64) -> Result<i64, MessageStorageError> {
-    i64::try_from(value).map_err(|_| MessageStorageError::IntegerOutOfRange)
-}
-
-/// For lookups: an id SQLite cannot hold cannot exist.
-pub(crate) fn lookup_integer(id: Snowflake) -> Option<i64> {
-    i64::try_from(id.raw()).ok()
-}
-
 /// The ids as a JSON array: one bound value, read by SQLite's `json_each`. An id SQLite cannot
 /// hold becomes a number no INTEGER column equals, so it matches nothing.
 pub(crate) fn json_array_of_ids(ids: &[Snowflake]) -> String {
     let ids: Vec<String> = ids.iter().map(|id| id.raw().to_string()).collect();
     format!("[{}]", ids.join(","))
-}
-
-pub(crate) fn to_id(value: i64) -> Result<Snowflake, MessageStorageError> {
-    u64::try_from(value)
-        .map(Snowflake::from_raw)
-        .map_err(|_| MessageStorageError::IntegerOutOfRange)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,22 +103,20 @@ fn message_from_row(row: MessageRow) -> Result<StoredMessage, MessageStorageErro
         mention_ids_json,
     ) = row;
     Ok(StoredMessage {
-        id: to_id(id)?,
-        channel_id: to_id(channel_id)?,
-        author_id: to_id(author_id)?,
+        id: to_snowflake(id)?,
+        channel_id: to_snowflake(channel_id)?,
+        author_id: to_snowflake(author_id)?,
         author_username: username,
         author_display_name: display_name,
         content,
-        reply_to_id: reply_to_id.map(to_id).transpose()?,
-        edited_at_unix_milliseconds: edited_at
-            .map(|value| u64::try_from(value).map_err(|_| MessageStorageError::IntegerOutOfRange))
-            .transpose()?,
+        reply_to_id: reply_to_id.map(to_snowflake).transpose()?,
+        edited_at_unix_milliseconds: edited_at.map(convert_integer::<_, u64>).transpose()?,
         is_pinned: pinned_at.is_some(),
         mention_ids: sorted_ids(
             serde_json::from_str::<Vec<i64>>(&mention_ids_json)
                 .map_err(|_| MessageStorageError::InvalidMentionList)?
                 .into_iter()
-                .map(to_id)
+                .map(to_snowflake)
                 .collect::<Result<_, _>>()?,
         ),
     })
@@ -162,9 +148,9 @@ async fn insert_mentions(
             "INSERT OR IGNORE INTO message_mentions (user_id, channel_id, message_id) \
              VALUES (?, ?, ?)",
         )
-        .bind(to_integer(user_id.raw())?)
-        .bind(to_integer(channel_id.raw())?)
-        .bind(to_integer(message_id.raw())?)
+        .bind(to_sqlite_integer(user_id.raw())?)
+        .bind(to_sqlite_integer(channel_id.raw())?)
+        .bind(to_sqlite_integer(message_id.raw())?)
         .execute(&mut *connection)
         .await?;
     }
@@ -185,14 +171,14 @@ pub(crate) async fn insert_message(
          VALUES (?, ?, ?, ?, ?, ?) ",
         returning_message_columns!()
     ))
-    .bind(to_integer(message.id.raw())?)
-    .bind(to_integer(message.channel_id.raw())?)
-    .bind(to_integer(message.author_id.raw())?)
+    .bind(to_sqlite_integer(message.id.raw())?)
+    .bind(to_sqlite_integer(message.channel_id.raw())?)
+    .bind(to_sqlite_integer(message.author_id.raw())?)
     .bind(&message.content)
     .bind(
         message
             .reply_to_id
-            .map(|id| to_integer(id.raw()))
+            .map(|id| to_sqlite_integer(id.raw()))
             .transpose()?,
     )
     .bind(&message.nonce)
@@ -203,10 +189,10 @@ pub(crate) async fn insert_message(
             "UPDATE attachments SET message_id = ? \
              WHERE id = ? AND uploader_id = ? AND channel_id = ? AND message_id IS NULL",
         )
-        .bind(to_integer(message.id.raw())?)
+        .bind(to_sqlite_integer(message.id.raw())?)
         .bind(lookup_integer(*attachment_id).ok_or(MessageStorageError::AttachmentUnavailable)?)
-        .bind(to_integer(message.author_id.raw())?)
-        .bind(to_integer(message.channel_id.raw())?)
+        .bind(to_sqlite_integer(message.author_id.raw())?)
+        .bind(to_sqlite_integer(message.channel_id.raw())?)
         .execute(&mut *transaction)
         .await?
         .rows_affected();
@@ -287,8 +273,8 @@ pub(crate) async fn find_message_by_nonce(
         select_message_columns!(),
         "WHERE messages.channel_id = ? AND messages.author_id = ? AND messages.nonce = ?"
     ))
-    .bind(to_integer(channel_id.raw())?)
-    .bind(to_integer(author_id.raw())?)
+    .bind(to_sqlite_integer(channel_id.raw())?)
+    .bind(to_sqlite_integer(author_id.raw())?)
     .bind(nonce)
     .fetch_optional(database.readers())
     .await?;
@@ -313,7 +299,7 @@ pub(crate) async fn list_messages(
     page: HistoryPage,
     limit: u32,
 ) -> Result<Vec<StoredMessage>, MessageStorageError> {
-    let channel_id = to_integer(channel_id.raw())?;
+    let channel_id = to_sqlite_integer(channel_id.raw())?;
     let limit = i64::from(limit);
     // A cursor beyond SQLite's range is past every stored id.
     let saturated_cursor = |cursor: Snowflake| i64::try_from(cursor.raw()).unwrap_or(i64::MAX);
@@ -376,16 +362,16 @@ pub(crate) async fn update_message_content(
         returning_message_columns!()
     ))
     .bind(content)
-    .bind(to_integer(edited_at_unix_milliseconds)?)
-    .bind(to_integer(message_id.raw())?)
-    .bind(to_integer(channel_id.raw())?)
+    .bind(to_sqlite_integer(edited_at_unix_milliseconds)?)
+    .bind(to_sqlite_integer(message_id.raw())?)
+    .bind(to_sqlite_integer(channel_id.raw())?)
     .fetch_optional(&mut *transaction)
     .await?;
     let Some(row) = row else {
         return Ok(None);
     };
     sqlx::query("DELETE FROM message_mentions WHERE message_id = ?")
-        .bind(to_integer(message_id.raw())?)
+        .bind(to_sqlite_integer(message_id.raw())?)
         .execute(&mut *transaction)
         .await?;
     insert_mentions(&mut transaction, channel_id, message_id, mentioned_user_ids).await?;
@@ -409,7 +395,7 @@ pub(crate) async fn delete_message(
 ) -> Result<(), MessageStorageError> {
     let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
     let deleted = sqlx::query("DELETE FROM messages WHERE id = ?")
-        .bind(to_integer(message_id.raw())?)
+        .bind(to_sqlite_integer(message_id.raw())?)
         .execute(&mut *transaction)
         .await?
         .rows_affected();
@@ -446,8 +432,8 @@ pub(crate) async fn pin_message(
     maximum_pins_per_channel: u32,
     audit: Option<&NewAuditEntry>,
 ) -> Result<PinOutcome, MessageStorageError> {
-    let channel_id = to_integer(channel_id.raw())?;
-    let message_id = to_integer(message_id.raw())?;
+    let channel_id = to_sqlite_integer(channel_id.raw())?;
+    let message_id = to_sqlite_integer(message_id.raw())?;
     // Immediate: the count and the update must see the same pins as concurrent pins.
     let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
     let pinned_at: Option<Option<i64>> = sqlx::query_scalar(
@@ -476,7 +462,7 @@ pub(crate) async fn pin_message(
         "UPDATE messages SET pinned_at_unix_milliseconds = ? WHERE id = ? ",
         returning_message_columns!()
     ))
-    .bind(to_integer(pinned_at_unix_milliseconds)?)
+    .bind(to_sqlite_integer(pinned_at_unix_milliseconds)?)
     .bind(message_id)
     .fetch_one(&mut *transaction)
     .await?;
@@ -504,8 +490,8 @@ pub(crate) async fn unpin_message(
          WHERE id = ? AND channel_id = ? AND pinned_at_unix_milliseconds IS NOT NULL ",
         returning_message_columns!()
     ))
-    .bind(to_integer(message_id.raw())?)
-    .bind(to_integer(channel_id.raw())?)
+    .bind(to_sqlite_integer(message_id.raw())?)
+    .bind(to_sqlite_integer(channel_id.raw())?)
     .fetch_optional(&mut *transaction)
     .await?;
     if row.is_some()
@@ -531,7 +517,7 @@ pub(crate) async fn list_pinned_messages(
         "WHERE messages.channel_id = ? AND messages.pinned_at_unix_milliseconds IS NOT NULL \
          ORDER BY messages.pinned_at_unix_milliseconds DESC, messages.id DESC LIMIT ?"
     ))
-    .bind(to_integer(channel_id.raw())?)
+    .bind(to_sqlite_integer(channel_id.raw())?)
     .bind(i64::from(limit))
     .fetch_all(database.readers())
     .await?;
@@ -554,9 +540,9 @@ pub(crate) async fn advance_read_state(
          ON CONFLICT (user_id, channel_id) DO UPDATE \
          SET last_read_message_id = MAX(last_read_message_id, excluded.last_read_message_id)",
     )
-    .bind(to_integer(user_id.raw())?)
-    .bind(to_integer(channel_id.raw())?)
-    .bind(to_integer(last_read_message_id.raw())?)
+    .bind(to_sqlite_integer(user_id.raw())?)
+    .bind(to_sqlite_integer(channel_id.raw())?)
+    .bind(to_sqlite_integer(last_read_message_id.raw())?)
     .execute(database.writer())
     .await?;
     Ok(())
@@ -580,11 +566,11 @@ pub(crate) async fn list_read_states(
                  WHERE direct_message_participants.channel_id = channels.id \
                  AND direct_message_participants.user_id = read_states.user_id))",
     )
-    .bind(to_integer(user_id.raw())?)
+    .bind(to_sqlite_integer(user_id.raw())?)
     .fetch_all(database.readers())
     .await?;
     rows.into_iter()
-        .map(|(channel_id, message_id)| Ok((to_id(channel_id)?, to_id(message_id)?)))
+        .map(|(channel_id, message_id)| Ok((to_snowflake(channel_id)?, to_snowflake(message_id)?)))
         .collect()
 }
 
@@ -607,7 +593,7 @@ pub(crate) async fn last_message_ids(
     .await?;
     rows.into_iter()
         .filter_map(|(channel_id, last)| last.map(|last| (channel_id, last)))
-        .map(|(channel_id, last)| Ok((to_id(channel_id)?, to_id(last)?)))
+        .map(|(channel_id, last)| Ok((to_snowflake(channel_id)?, to_snowflake(last)?)))
         .collect()
 }
 
@@ -630,7 +616,7 @@ pub(crate) async fn unread_mention_counts(
              LIMIT ?3)) \
          FROM json_each(?2) AS channel",
     )
-    .bind(to_integer(user_id.raw())?)
+    .bind(to_sqlite_integer(user_id.raw())?)
     .bind(json_array_of_ids(channel_ids))
     .bind(i64::from(limit))
     .fetch_all(database.readers())
@@ -659,7 +645,7 @@ pub(crate) async fn unread_counts_from_others(
              LIMIT ?3)) \
          FROM json_each(?2) AS channel",
     )
-    .bind(to_integer(user_id.raw())?)
+    .bind(to_sqlite_integer(user_id.raw())?)
     .bind(json_array_of_ids(channel_ids))
     .bind(i64::from(limit))
     .fetch_all(database.readers())
@@ -670,10 +656,7 @@ pub(crate) async fn unread_counts_from_others(
 fn counts_from_rows(rows: Vec<(i64, i64)>) -> Result<Vec<(Snowflake, u32)>, MessageStorageError> {
     rows.into_iter()
         .map(|(channel_id, count)| {
-            Ok((
-                to_id(channel_id)?,
-                u32::try_from(count).map_err(|_| MessageStorageError::IntegerOutOfRange)?,
-            ))
+            Ok((to_snowflake(channel_id)?, convert_integer::<_, u32>(count)?))
         })
         .collect()
 }
@@ -691,11 +674,11 @@ pub(crate) async fn mentionable_members_of_guild(
          JOIN users ON users.id = guild_members.user_id WHERE guild_members.guild_id = ? \
          ORDER BY users.id",
     )
-    .bind(to_integer(guild_id.raw())?)
+    .bind(to_sqlite_integer(guild_id.raw())?)
     .fetch_all(database.readers())
     .await?;
     rows.into_iter()
-        .map(|(id, username, display_name)| Ok((to_id(id)?, username, display_name)))
+        .map(|(id, username, display_name)| Ok((to_snowflake(id)?, username, display_name)))
         .collect()
 }
 
@@ -715,6 +698,6 @@ pub(crate) async fn mentionable_users(
     .fetch_all(database.readers())
     .await?;
     rows.into_iter()
-        .map(|(id, username, display_name)| Ok((to_id(id)?, username, display_name)))
+        .map(|(id, username, display_name)| Ok((to_snowflake(id)?, username, display_name)))
         .collect()
 }

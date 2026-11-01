@@ -8,9 +8,10 @@ use super::Database;
 use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
 use crate::storage::guilds::{
     BEGIN_WRITE_TRANSACTION, ChannelRow, GuildStorageError, StoredChannel,
-    attach_overwrites_to_channel, channel_from_row, lookup_integer, to_id, to_integer,
+    attach_overwrites_to_channel, channel_from_row,
 };
 use crate::storage::profile_images::NewProfileImage;
+use crate::storage::sqlite_integers::{lookup_integer, to_snowflake, to_sqlite_integer};
 
 /// A stored icon version and what it belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,10 +41,10 @@ type GuildImageRow = (i64, i64, Option<i64>, Option<i64>);
 fn guild_image_from_row(row: GuildImageRow) -> Result<StoredGuildImage, GuildStorageError> {
     let (id, guild_id, channel_id, still_id) = row;
     Ok(StoredGuildImage {
-        id: to_id(id)?,
-        guild_id: to_id(guild_id)?,
-        channel_id: channel_id.map(to_id).transpose()?,
-        still_id: still_id.map(to_id).transpose()?,
+        id: to_snowflake(id)?,
+        guild_id: to_snowflake(guild_id)?,
+        channel_id: channel_id.map(to_snowflake).transpose()?,
+        still_id: still_id.map(to_snowflake).transpose()?,
     })
 }
 
@@ -62,7 +63,7 @@ pub(crate) async fn insert_guild_image(
     let Some(image) = new_image else {
         return Ok(None);
     };
-    let id = to_integer(image.id.raw())?;
+    let id = to_sqlite_integer(image.id.raw())?;
     sqlx::query(
         "INSERT INTO guild_images (id, guild_id, channel_id, still_id, size_bytes, \
          created_at_unix_milliseconds) VALUES (?, ?, ?, ?, ?, ?)",
@@ -70,9 +71,14 @@ pub(crate) async fn insert_guild_image(
     .bind(id)
     .bind(guild_id)
     .bind(channel_id)
-    .bind(image.still_id.map(|id| to_integer(id.raw())).transpose()?)
-    .bind(to_integer(image.size_bytes)?)
-    .bind(to_integer(now_unix_milliseconds)?)
+    .bind(
+        image
+            .still_id
+            .map(|id| to_sqlite_integer(id.raw()))
+            .transpose()?,
+    )
+    .bind(to_sqlite_integer(image.size_bytes)?)
+    .bind(to_sqlite_integer(now_unix_milliseconds)?)
     .execute(&mut *connection)
     .await?;
     Ok(Some(id))
@@ -121,7 +127,7 @@ pub(crate) async fn replace_guild_icon(
     audit: &NewAuditEntry,
     now_unix_milliseconds: u64,
 ) -> Result<IconChange<GuildSummary>, GuildStorageError> {
-    let guild = to_integer(guild_id.raw())?;
+    let guild = to_sqlite_integer(guild_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -182,7 +188,7 @@ pub(crate) async fn replace_channel_icon(
     audit: &NewAuditEntry,
     now_unix_milliseconds: u64,
 ) -> Result<IconChange<StoredChannel>, GuildStorageError> {
-    let channel = to_integer(channel_id.raw())?;
+    let channel = to_sqlite_integer(channel_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -249,9 +255,9 @@ pub(crate) async fn all_guild_image_file_ids(
         .await?;
     let mut ids = Vec::with_capacity(rows.len() * 2);
     for (id, still_id) in rows {
-        ids.push(to_id(id)?);
+        ids.push(to_snowflake(id)?);
         if let Some(still_id) = still_id {
-            ids.push(to_id(still_id)?);
+            ids.push(to_snowflake(still_id)?);
         }
     }
     Ok(ids)

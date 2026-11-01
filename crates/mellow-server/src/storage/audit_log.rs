@@ -6,7 +6,8 @@ use sqlx::SqliteConnection;
 
 use super::Database;
 
-use crate::storage::guilds::{GuildStorageError, to_id, to_integer};
+use crate::storage::guilds::GuildStorageError;
+use crate::storage::sqlite_integers::{to_snowflake, to_sqlite_integer};
 
 /// An action about to be committed, as the audit log records it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,7 +103,7 @@ fn action_from_text(text: &str) -> Result<AuditAction, GuildStorageError> {
 }
 
 fn optional_integer(id: Option<Snowflake>) -> Result<Option<i64>, GuildStorageError> {
-    id.map(|id| to_integer(id.raw())).transpose()
+    Ok(id.map(|id| to_sqlite_integer(id.raw())).transpose()?)
 }
 
 /// Records `entry` on `connection`, which must be the transaction of the action it describes.
@@ -119,9 +120,9 @@ pub(crate) async fn insert_audit_entry(
         "INSERT INTO audit_log (id, guild_id, actor_id, action, target_id, context_id, \
          channel_id, reason, changes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(to_integer(entry.id.raw())?)
-    .bind(to_integer(entry.guild_id.raw())?)
-    .bind(to_integer(entry.actor_id.raw())?)
+    .bind(to_sqlite_integer(entry.id.raw())?)
+    .bind(to_sqlite_integer(entry.guild_id.raw())?)
+    .bind(to_sqlite_integer(entry.actor_id.raw())?)
     .bind(action_to_text(entry.action))
     .bind(optional_integer(entry.target_id)?)
     .bind(optional_integer(entry.context_id)?)
@@ -166,7 +167,7 @@ pub(crate) async fn list_audit_entries(
             serde_json::to_string(
                 &channel_ids
                     .iter()
-                    .map(|id| to_integer(id.raw()))
+                    .map(|id| to_sqlite_integer(id.raw()))
                     .collect::<Result<Vec<_>, _>>()?,
             )
             .map_err(|_| GuildStorageError::UnreadableAuditChanges)?,
@@ -177,7 +178,7 @@ pub(crate) async fn list_audit_entries(
          WHERE guild_id = ? AND id < ? AND (? IS NULL OR channel_id IS NULL \
          OR channel_id IN (SELECT value FROM json_each(?))) ORDER BY id DESC LIMIT ?",
     )
-    .bind(to_integer(guild_id.raw())?)
+    .bind(to_sqlite_integer(guild_id.raw())?)
     .bind(before)
     .bind(visible_channel_ids.as_deref())
     .bind(visible_channel_ids.as_deref())
@@ -188,11 +189,11 @@ pub(crate) async fn list_audit_entries(
         .map(
             |(id, actor_id, action, target_id, context_id, reason, changes)| {
                 Ok(AuditLogEntry {
-                    id: to_id(id)?,
-                    actor_id: actor_id.map(to_id).transpose()?,
+                    id: to_snowflake(id)?,
+                    actor_id: actor_id.map(to_snowflake).transpose()?,
                     action: action_from_text(&action)?,
-                    target_id: target_id.map(to_id).transpose()?,
-                    context_id: context_id.map(to_id).transpose()?,
+                    target_id: target_id.map(to_snowflake).transpose()?,
+                    context_id: context_id.map(to_snowflake).transpose()?,
                     reason,
                     changes: serde_json::from_str(&changes)
                         .map_err(|_| GuildStorageError::UnreadableAuditChanges)?,

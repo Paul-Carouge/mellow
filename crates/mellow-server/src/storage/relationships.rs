@@ -5,8 +5,9 @@ use mellow_protocol::{RelationshipKind, Snowflake};
 
 use super::Database;
 
-use crate::storage::guilds::{
-    BEGIN_WRITE_TRANSACTION, GuildStorageError, lookup_integer, to_id, to_integer,
+use crate::storage::guilds::{BEGIN_WRITE_TRANSACTION, GuildStorageError};
+use crate::storage::sqlite_integers::{
+    convert_integer, lookup_integer, to_snowflake, to_sqlite_integer,
 };
 
 fn kind_to_text(kind: RelationshipKind) -> &'static str {
@@ -26,10 +27,6 @@ fn kind_from_text(text: &str) -> Result<RelationshipKind, GuildStorageError> {
         "blocked" => Ok(RelationshipKind::Blocked),
         other => Err(GuildStorageError::UnknownRelationshipKind(other.to_owned())),
     }
-}
-
-fn to_milliseconds(value: i64) -> Result<u64, GuildStorageError> {
-    u64::try_from(value).map_err(|_| GuildStorageError::IntegerOutOfRange)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,17 +53,17 @@ pub(crate) async fn list_relationships(
          WHERE relationships.user_id = ? \
          ORDER BY relationships.since_unix_milliseconds, users.id",
     )
-    .bind(to_integer(user_id.raw())?)
+    .bind(to_sqlite_integer(user_id.raw())?)
     .fetch_all(database.readers())
     .await?;
     rows.into_iter()
         .map(|(id, username, display_name, kind, since)| {
             Ok(StoredRelationship {
-                user_id: to_id(id)?,
+                user_id: to_snowflake(id)?,
                 username,
                 display_name,
                 kind: kind_from_text(&kind)?,
-                since_unix_milliseconds: to_milliseconds(since)?,
+                since_unix_milliseconds: convert_integer(since)?,
             })
         })
         .collect()
@@ -83,10 +80,13 @@ pub(crate) async fn friend_ids(
     let ids: Vec<i64> = sqlx::query_scalar(
         "SELECT other_user_id FROM relationships WHERE user_id = ? AND kind = 'friend'",
     )
-    .bind(to_integer(user_id.raw())?)
+    .bind(to_sqlite_integer(user_id.raw())?)
     .fetch_all(database.readers())
     .await?;
-    ids.into_iter().map(to_id).collect()
+    Ok(ids
+        .into_iter()
+        .map(to_snowflake)
+        .collect::<Result<_, _>>()?)
 }
 
 /// Whether `user_id` and `other_user_id` are friends.
@@ -128,7 +128,7 @@ pub(crate) async fn find_enabled_user_id_by_username(
     .bind(username)
     .fetch_optional(database.readers())
     .await?;
-    id.map(to_id).transpose()
+    Ok(id.map(to_snowflake).transpose()?)
 }
 
 /// Whether two people may open and write direct messages to each other (ADR-0025): they share a
@@ -189,7 +189,7 @@ async fn count_friends_and_outgoing_requests(
     .bind(user_id)
     .fetch_one(&mut *connection)
     .await?;
-    usize::try_from(count).map_err(|_| GuildStorageError::IntegerOutOfRange)
+    Ok(convert_integer::<_, usize>(count)?)
 }
 
 async fn count_incoming_requests(
@@ -202,7 +202,7 @@ async fn count_incoming_requests(
     .bind(user_id)
     .fetch_one(&mut *connection)
     .await?;
-    usize::try_from(count).map_err(|_| GuildStorageError::IntegerOutOfRange)
+    Ok(convert_integer::<_, usize>(count)?)
 }
 
 /// Writes `user_id`'s side; never `REPLACE`, which would bypass the row's other constraints.
@@ -269,10 +269,10 @@ pub(crate) async fn send_friend_request(
     maximum_incoming_requests: usize,
 ) -> Result<FriendRequestOutcome, GuildStorageError> {
     let (sender, recipient) = (
-        to_integer(sender_id.raw())?,
-        to_integer(recipient_id.raw())?,
+        to_sqlite_integer(sender_id.raw())?,
+        to_sqlite_integer(recipient_id.raw())?,
     );
-    let now = to_integer(now_unix_milliseconds)?;
+    let now = to_sqlite_integer(now_unix_milliseconds)?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -364,8 +364,11 @@ pub(crate) async fn accept_friend_request(
     now_unix_milliseconds: u64,
     maximum_friends_and_requests: usize,
 ) -> Result<AcceptOutcome, GuildStorageError> {
-    let (user, other) = (to_integer(user_id.raw())?, to_integer(other_user_id.raw())?);
-    let now = to_integer(now_unix_milliseconds)?;
+    let (user, other) = (
+        to_sqlite_integer(user_id.raw())?,
+        to_sqlite_integer(other_user_id.raw())?,
+    );
+    let now = to_sqlite_integer(now_unix_milliseconds)?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -411,7 +414,7 @@ pub(crate) async fn remove_relationship(
             other_side_removed: None,
         });
     };
-    let user = to_integer(user_id.raw())?;
+    let user = to_sqlite_integer(user_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -443,8 +446,11 @@ pub(crate) async fn block_user(
     other_user_id: Snowflake,
     now_unix_milliseconds: u64,
 ) -> Result<Removal, GuildStorageError> {
-    let (user, other) = (to_integer(user_id.raw())?, to_integer(other_user_id.raw())?);
-    let now = to_integer(now_unix_milliseconds)?;
+    let (user, other) = (
+        to_sqlite_integer(user_id.raw())?,
+        to_sqlite_integer(other_user_id.raw())?,
+    );
+    let now = to_sqlite_integer(now_unix_milliseconds)?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)

@@ -5,7 +5,8 @@
 use mellow_protocol::Snowflake;
 
 use super::Database;
-use crate::storage::messages::{MessageStorageError, json_array_of_ids, lookup_integer, to_id};
+use crate::storage::messages::{MessageStorageError, json_array_of_ids};
+use crate::storage::sqlite_integers::{lookup_integer, to_snowflake};
 
 /// What a message must hold (`has:` filters); each is independent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -221,7 +222,10 @@ pub(crate) async fn search_message_ids(
         .fetch_all(database.readers())
         .await?
     };
-    rows.into_iter().map(|(id,)| to_id(id)).collect()
+    Ok(rows
+        .into_iter()
+        .map(|(id,)| to_snowflake(id))
+        .collect::<Result<_, _>>()?)
 }
 
 /// The newest `maximum_counted` matches, counted per channel and author.
@@ -286,7 +290,7 @@ pub(crate) async fn count_matches(
     let has_more = rows.len() > counted_rows;
     let mut counts: Vec<MatchCount> = Vec::new();
     for (channel_id, author_id) in rows.into_iter().take(counted_rows) {
-        let (channel_id, author_id) = (to_id(channel_id)?, to_id(author_id)?);
+        let (channel_id, author_id) = (to_snowflake(channel_id)?, to_snowflake(author_id)?);
         match counts
             .iter_mut()
             .find(|count| count.channel_id == channel_id && count.author_id == author_id)
@@ -326,7 +330,7 @@ pub(crate) async fn highlighted_contents(
     .fetch_all(database.readers())
     .await?;
     rows.into_iter()
-        .map(|(id, marked)| Ok((to_id(id)?, marked)))
+        .map(|(id, marked)| Ok((to_snowflake(id)?, marked)))
         .collect()
 }
 /// Message histories that look like a real instance's, for migration tests and measurements.
