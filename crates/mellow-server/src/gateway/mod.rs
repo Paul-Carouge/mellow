@@ -545,7 +545,9 @@ async fn run_session(state: AppState, session_id: String, hub_key: SessionKey, t
     state.events.unregister_session(hub_key);
     state.voice.end_session(hub_key).await;
     if end == SessionEnd::CutOff {
-        tracing::info!("gateway session cut off (too slow or token revoked)");
+        tracing::info!(
+            "gateway session cut off (too slow, token revoked, or replaced at the per-user cap)"
+        );
     }
 }
 
