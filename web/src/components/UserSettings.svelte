@@ -32,6 +32,7 @@
     about: strings.settings.about,
   };
   const SOURCE_CODE_URL = "https://github.com/Paul-Carouge/mellow";
+  const THIRD_PARTY_NOTICES_PATH = "/third-party-notices.txt";
 
   const id = $props.id();
   let dialog: HTMLDialogElement;
@@ -267,6 +268,15 @@
                 class="mt-(--mw-component-settings-action-gap) inline-flex min-h-(--mw-size-hit-web-min) items-center type-body-lg text-text-link hover:underline"
               >
                 {strings.settings.sourceCodeOnGitHub}
+              </a>
+              <!-- Served by the instance with the client; the notices bundled code asks to reproduce. -->
+              <a
+                href={THIRD_PARTY_NOTICES_PATH}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="flex min-h-(--mw-size-hit-web-min) w-max items-center type-body text-text-link hover:underline"
+              >
+                {strings.settings.thirdPartyNotices}
               </a>
             {/if}
           </section>

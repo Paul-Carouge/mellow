@@ -1352,6 +1352,7 @@ export const en = {
     sourceCode: "Source code",
     licence: "Mellow is free software under the AGPL-3.0 licence. You can read, change and share its code.",
     sourceCodeOnGitHub: "Source code on GitHub",
+    thirdPartyNotices: "Third-party licences",
   },
 
   /** Settings, Voice (docs/design/web-voice-comfort.md). */
