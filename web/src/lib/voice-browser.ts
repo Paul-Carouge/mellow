@@ -207,11 +207,9 @@ async function processMicrophone(
         processedTrack.stop();
         for (const node of nodes) {
           node.disconnect();
-          if ("destroy" in node && typeof node.destroy === "function") {
-            // RNNoise's node frees its WebAssembly memory in the worklet.
-            node.destroy();
-          }
         }
+        // Closing the context frees RNNoise's WebAssembly memory with its worklet. The node's own
+        // `destroy()` would not: the package's processor never starts its port, so it never hears it.
         context.close().catch((error: unknown) => console.warn("couldn't close the microphone processing", error));
       },
     };
