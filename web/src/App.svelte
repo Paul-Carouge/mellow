@@ -23,6 +23,8 @@
     const noteVisibility = () => {
       if (document.visibilityState === "visible") {
         client.noteTabVisible();
+      } else {
+        client.noteTabHidden();
       }
     };
     document.addEventListener("visibilitychange", noteVisibility);
