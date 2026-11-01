@@ -52,6 +52,11 @@ const LEVEL_SAMPLE_INTERVAL_MILLISECONDS = 20;
 const SPEAKING_LEVEL_THRESHOLD = 0.02;
 /** Short pauses between words keep the ring on. */
 const SPEAKING_HOLD_MILLISECONDS = 300;
+/**
+ * RNNoise's first download and compile (about 155 KB) never holds a join longer than this: past
+ * it, that microphone uses the browser's filter, and the next one waits for RNNoise again.
+ */
+const NOISE_SUPPRESSOR_LOAD_TIMEOUT_MILLISECONDS = 3_000;
 /** The manual sensitivity gate stays open this long after the level falls under the threshold. */
 const SENSITIVITY_GATE_HOLD_MILLISECONDS = 250;
 
@@ -458,6 +463,16 @@ export class VoiceSession {
     this.refreshMonitor();
   }
 
+  /**
+   * Loads RNNoise ahead of the first join (the instance is ready, or Voice settings opened), so
+   * joining does not wait for it. Nothing is remembered: a failure here is retried on joining.
+   */
+  preloadNoiseSuppressor(): void {
+    if (this.settings.noiseSuppression === "advanced" && this.noiseSuppressorProblem === null) {
+      void this.ports.prepareNoiseSuppressor();
+    }
+  }
+
   /** Asks for the microphone only so the browser names the devices; nothing keeps listening. */
   async allowMicrophone(): Promise<MicrophoneProblem | null> {
     try {
@@ -631,12 +646,19 @@ export class VoiceSession {
     }
   }
 
-  /** Whether RNNoise is wanted and can run; loads it the first time. */
+  /** Whether RNNoise is wanted and can run; loads it the first time, waiting a few seconds at most. */
   private async isNoiseSuppressorUsable(): Promise<boolean> {
     if (this.settings.noiseSuppression !== "advanced" || this.noiseSuppressorProblem !== null) {
       return false;
     }
-    const problem = await this.ports.prepareNoiseSuppressor();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timed-out">((resolve) => {
+      timer = setTimeout(() => resolve("timed-out"), NOISE_SUPPRESSOR_LOAD_TIMEOUT_MILLISECONDS);
+    });
+    const problem = await Promise.race([this.ports.prepareNoiseSuppressor(), timeout]).finally(() => clearTimeout(timer));
+    if (problem === "timed-out") {
+      return false;
+    }
     // The choice may have changed while it loaded: a later microphone asks again.
     if (this.settings.noiseSuppression === "advanced") {
       this.noiseSuppressorProblem = problem;

@@ -495,6 +495,9 @@ export class MellowClient {
     this.voiceStatesByUserId.clear();
     this.speakingUserIds.clear();
     this.voice.isVoiceEnabledOnInstance = ready.voice_enabled ?? false;
+    if (this.voice.isVoiceEnabledOnInstance) {
+      this.voice.preloadNoiseSuppressor();
+    }
     for (const state of ready.voice_states ?? []) {
       if (this.isKnownChannel(state.channel_id)) {
         this.voiceStatesByUserId.set(state.user_id, state);

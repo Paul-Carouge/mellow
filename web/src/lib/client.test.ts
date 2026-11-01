@@ -1299,11 +1299,15 @@ describe("Voice states", () => {
   function voiceClient() {
     const peer = connectablePeer();
     const cues: string[] = [];
+    const noiseSuppressorLoads = { count: 0 };
     // The cast is limited to this fake peer, which implements what the session calls.
     const client = new MellowClient(fakeRest(QUIET_REST), {
       createPeerConnection: () => peer as unknown as RTCPeerConnection,
       requestMicrophone: () => Promise.reject(new TypeError("no microphone in tests")),
-      prepareNoiseSuppressor: () => Promise.resolve("unsupported"),
+      prepareNoiseSuppressor: () => {
+        noiseSuppressorLoads.count += 1;
+        return Promise.resolve(null);
+      },
       processMicrophone: () => Promise.resolve(null),
       playTrack: () => ({ setGain: () => {}, setOutputDevice: () => {}, stop: () => {} }),
       meterLevel: () => null,
@@ -1320,12 +1324,14 @@ describe("Voice states", () => {
         voice_enabled: true,
       }),
     );
-    return { client, peer, cues };
+    return { client, peer, cues, noiseSuppressorLoads };
   }
 
   it("takes who is where from Ready, leaving out channels this reader cannot see", () => {
-    const { client } = voiceClient();
+    const { client, noiseSuppressorLoads } = voiceClient();
     expect(client.voice.isVoiceEnabledOnInstance).toBe(true);
+    // The instance has voice: RNNoise loads now, not when joining.
+    expect(noiseSuppressorLoads.count).toBe(1);
     expect(client.voiceParticipants(LOUNGE).map((state) => state.user_id)).toEqual([OTHER]);
     expect(client.voiceStatesByUserId.has("3")).toBe(false);
   });
