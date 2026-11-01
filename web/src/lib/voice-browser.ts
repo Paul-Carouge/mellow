@@ -50,23 +50,48 @@ function routeTo(element: HTMLMediaElement, deviceId: string | null): void {
   element.setSinkId(deviceId ?? "").catch((error: unknown) => console.warn("couldn't route a voice to the chosen output", error));
 }
 
-/** Voices above 100 % go through one shared Web Audio graph, played by one element routed like the others. */
-let amplifiedPlayback: { context: AudioContext; destination: MediaStreamAudioDestinationNode; element: HTMLAudioElement } | null = null;
+/**
+ * Voices above 100 % go through one shared Web Audio graph, played by one element routed like the
+ * others. Counted by the voices using it: the last one to leave closes it, so nothing keeps the
+ * output device after a call.
+ */
+let amplifiedPlayback: {
+  context: AudioContext;
+  destination: MediaStreamAudioDestinationNode;
+  element: HTMLAudioElement;
+  voiceCount: number;
+} | null = null;
 
-function amplifiedPlaybackGraph(deviceId: string | null) {
+function useAmplifiedPlayback(deviceId: string | null) {
   if (amplifiedPlayback === null) {
     const context = new AudioContext();
     const destination = context.createMediaStreamDestination();
     const element = new Audio();
     element.srcObject = destination.stream;
     element.play().catch((error: unknown) => console.warn("couldn't play amplified voices", error));
-    amplifiedPlayback = { context, destination, element };
+    amplifiedPlayback = { context, destination, element, voiceCount: 0 };
   }
+  amplifiedPlayback.voiceCount += 1;
   if (amplifiedPlayback.context.state === "suspended") {
     amplifiedPlayback.context.resume().catch((error: unknown) => console.warn("couldn't start amplified voices", error));
   }
   routeTo(amplifiedPlayback.element, deviceId);
   return amplifiedPlayback;
+}
+
+function leaveAmplifiedPlayback(): void {
+  if (amplifiedPlayback === null) {
+    return;
+  }
+  amplifiedPlayback.voiceCount -= 1;
+  if (amplifiedPlayback.voiceCount > 0) {
+    return;
+  }
+  const { context, element } = amplifiedPlayback;
+  amplifiedPlayback = null;
+  element.pause();
+  element.srcObject = null;
+  context.close().catch((error: unknown) => console.warn("couldn't close the amplified voices", error));
 }
 
 /**
@@ -83,18 +108,24 @@ function playTrack(track: MediaStreamTrack): AudioOutput {
   audio.play().catch((error: unknown) => console.warn("couldn't play a voice", error));
   let deviceId: string | null = null;
   let amplified: { source: MediaStreamAudioSourceNode; gain: GainNode } | null = null;
+  const stopAmplifying = () => {
+    if (amplified !== null) {
+      amplified.source.disconnect();
+      amplified.gain.disconnect();
+      amplified = null;
+      leaveAmplifiedPlayback();
+    }
+  };
   return {
     setGain: (gain) => {
       if (gain <= 1 || typeof AudioContext === "undefined") {
-        amplified?.source.disconnect();
-        amplified?.gain.disconnect();
-        amplified = null;
+        stopAmplifying();
         audio.muted = gain === 0;
         audio.volume = Math.min(1, gain);
         return;
       }
       if (amplified === null) {
-        const graph = amplifiedPlaybackGraph(deviceId);
+        const graph = useAmplifiedPlayback(deviceId);
         const source = graph.context.createMediaStreamSource(stream);
         const gainNode = graph.context.createGain();
         source.connect(gainNode).connect(graph.destination);
@@ -111,9 +142,7 @@ function playTrack(track: MediaStreamTrack): AudioOutput {
       }
     },
     stop: () => {
-      amplified?.source.disconnect();
-      amplified?.gain.disconnect();
-      amplified = null;
+      stopAmplifying();
       audio.pause();
       audio.srcObject = null;
     },
