@@ -2793,8 +2793,29 @@ pub(crate) mod tests {
         )
         .await;
         let sent: mellow_protocol::Message = json(&body);
+        let ((_, _), original_headers) = send_from(
+            &state,
+            TEST_PEER,
+            authorized(
+                "GET",
+                &format!("/api/v1/attachments/{}", uploaded.id),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        let original_entity_tag = original_headers.get(header::ETAG).unwrap().clone();
         // What the background worker runs for this upload.
         state.attachments.optimize(uploaded.id).await.unwrap();
+        let mut revalidation = authorized(
+            "GET",
+            &format!("/api/v1/attachments/{}", uploaded.id),
+            &owner,
+            None,
+        );
+        revalidation
+            .headers_mut()
+            .insert(header::IF_NONE_MATCH, original_entity_tag.clone());
         let ((_, bytes), headers) = send_from(
             &state,
             TEST_PEER,
@@ -2817,8 +2838,15 @@ pub(crate) mod tests {
         )
         .await;
         let history: Vec<mellow_protocol::Message> = json(&body);
+        let (revalidated, _) = send(&state, revalidation).await;
         database.close().await;
 
+        assert_ne!(headers.get(header::ETAG), Some(&original_entity_tag));
+        assert_eq!(
+            revalidated,
+            StatusCode::OK,
+            "a copy of the original is stale"
+        );
         assert_eq!(uploaded.content_type, "image/gif", "answered as received");
         assert_eq!(sent.attachments[0].file_name, "party.gif");
         assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "image/webp");
@@ -2905,6 +2933,93 @@ pub(crate) mod tests {
         )
         .await;
         json::<Vec<mellow_protocol::GuildSummary>>(&body)[0].id
+    }
+
+    #[tokio::test]
+    async fn attachments_revalidate_without_a_slot_and_downloads_wait_for_one() {
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let stranger = registered_token(&state, "stranger").await;
+        let (_, body) = send(
+            &state,
+            upload_request(
+                &format!("/api/v1/channels/{general}/attachments?file_name=a.png"),
+                &owner,
+                PNG,
+            ),
+        )
+        .await;
+        let uploaded: mellow_protocol::Attachment = json(&body);
+        send(
+            &state,
+            authorized(
+                "POST",
+                &format!("/api/v1/channels/{general}/messages"),
+                &owner,
+                Some(
+                    serde_json::json!({"content": "", "attachment_ids": [uploaded.id.to_string()]}),
+                ),
+            ),
+        )
+        .await;
+        let path = format!("/api/v1/attachments/{}", uploaded.id);
+        let get = |token: &str, entity_tag: Option<&HeaderValue>| {
+            let mut request = authorized("GET", &path, token, None);
+            if let Some(entity_tag) = entity_tag {
+                request
+                    .headers_mut()
+                    .insert(header::IF_NONE_MATCH, entity_tag.clone());
+            }
+            request
+        };
+        let ((_, _), first_headers) = send_from(&state, TEST_PEER, get(&owner, None)).await;
+        let entity_tag = first_headers.get(header::ETAG).unwrap().clone();
+
+        // Every slot held by a body not sent yet: revalidating needs none.
+        let mut held = Vec::new();
+        for _ in 0..state.attachments.free_download_slots() {
+            held.push(
+                router(state.clone())
+                    .layer(MockConnectInfo(TEST_PEER.parse::<SocketAddr>().unwrap()))
+                    .oneshot(get(&owner, None))
+                    .await
+                    .unwrap(),
+            );
+        }
+        let ((revalidated, revalidated_body), revalidated_headers) =
+            send_from(&state, TEST_PEER, get(&owner, Some(&entity_tag))).await;
+        let (stranger_revalidated, _) = send(&state, get(&stranger, Some(&entity_tag))).await;
+        let waiting = tokio::spawn({
+            let state = state.clone();
+            let request = get(&owner, None);
+            async move { send(&state, request).await.0 }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let was_waiting = !waiting.is_finished();
+        held.pop();
+        let after_a_slot_freed = waiting.await.unwrap();
+        drop(held);
+        database.close().await;
+
+        assert_eq!(
+            entity_tag,
+            format!("\"{}-{}\"", uploaded.id, PNG.len()).as_str()
+        );
+        assert_eq!(revalidated, StatusCode::NOT_MODIFIED);
+        assert!(revalidated_body.is_empty());
+        assert_eq!(revalidated_headers.get(header::ETAG), Some(&entity_tag));
+        assert_eq!(
+            revalidated_headers.get(header::CACHE_CONTROL).unwrap(),
+            "private, no-cache"
+        );
+        assert_eq!(
+            stranger_revalidated,
+            StatusCode::NOT_FOUND,
+            "a matching tag never skips the permission check"
+        );
+        assert!(was_waiting, "a download waits for a slot, not 503");
+        assert_eq!(after_a_slot_freed, StatusCode::OK);
     }
 
     async fn owner_and_general_channel(state: &AppState) -> (String, Snowflake) {

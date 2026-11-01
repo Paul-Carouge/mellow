@@ -76,11 +76,13 @@ pub(crate) async fn upload(
     Ok((StatusCode::CREATED, Json(attachment)))
 }
 
-/// `GET /api/v1/attachments/{id}`: the stored name only travels in `Content-Disposition`.
+/// `GET /api/v1/attachments/{id}`: the stored name only travels in `Content-Disposition`. A
+/// matching `If-None-Match` gets 304 once the reader is authorised, without reading the file.
 pub(crate) async fn download(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     ApiPath(attachment_id): ApiPath<Snowflake>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     if !state.rate_limiter.record_event(
         &format!("attachment-download:{}", user.id),
@@ -89,7 +91,29 @@ pub(crate) async fn download(
     ) {
         return Err(ApiError::rate_limited());
     }
-    let download = state.attachments.download(user.id, attachment_id).await?;
+    let attachment = state
+        .attachments
+        .find_readable(user.id, attachment_id)
+        .await?;
+    let entity_tag = HeaderValue::from_str(&attachment.entity_tag())
+        .map_err(|error| ApiError::internal("an attachment entity tag", &error))?;
+    // Revalidated on every view: a shared computer keeps no conversation's files usable after
+    // its user signed out.
+    let cache_control = (
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-cache"),
+    );
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .is_some_and(|condition| is_entity_tag_matched(condition, &entity_tag))
+    {
+        return Ok((
+            StatusCode::NOT_MODIFIED,
+            [(header::ETAG, entity_tag), cache_control],
+        )
+            .into_response());
+    }
+    let download = state.attachments.download(attachment).await?;
     let is_previewable = PREVIEWABLE_IMAGE_TYPES.contains(&download.content_type.as_str());
     let disposition = format!(
         "{}; filename*=UTF-8''{}",
@@ -117,12 +141,8 @@ pub(crate) async fn download(
                 header::CONTENT_SECURITY_POLICY,
                 HeaderValue::from_static(ATTACHMENT_CONTENT_SECURITY_POLICY),
             ),
-            // Revalidated on every view: a shared computer keeps no conversation's files usable
-            // after its user signed out.
-            (
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("private, no-cache"),
-            ),
+            (header::ETAG, entity_tag),
+            cache_control,
         ],
         body_keeping_permit(download.bytes, download.permit),
     )
@@ -144,6 +164,18 @@ pub(crate) fn body_keeping_permit(
         chunk
     });
     axum::body::Body::from_stream(chunks)
+}
+
+/// `If-None-Match` (RFC 9110 §13.1.2): `*`, or a list holding the tag; weak comparison, so a
+/// `W/` prefix a proxy added still matches.
+fn is_entity_tag_matched(condition: &HeaderValue, entity_tag: &HeaderValue) -> bool {
+    let Ok(condition) = condition.to_str() else {
+        return false;
+    };
+    let entity_tag = entity_tag.as_bytes();
+    condition.split(',').map(str::trim).any(|candidate| {
+        candidate == "*" || candidate.trim_start_matches("W/").as_bytes() == entity_tag
+    })
 }
 
 /// Slowest upload speed accepted for the largest file, and the least time any upload gets.
@@ -196,6 +228,21 @@ mod tests {
     fn large_uploads_get_time_at_a_slow_speed_and_small_ones_a_floor() {
         assert_eq!(upload_deadline(25 * 1024 * 1024).as_secs(), 400);
         assert_eq!(upload_deadline(1024), MINIMUM_UPLOAD_DEADLINE);
+    }
+
+    #[test]
+    fn if_none_match_matches_the_tag_in_a_list_weakly_or_any() {
+        let tag = HeaderValue::from_static("\"7-42\"");
+        let matches = |condition: &'static str| {
+            is_entity_tag_matched(&HeaderValue::from_static(condition), &tag)
+        };
+        assert!(matches("\"7-42\""));
+        assert!(matches("W/\"7-42\""));
+        assert!(matches("\"1-1\", \"7-42\""));
+        assert!(matches("*"));
+        assert!(!matches("\"7-43\""));
+        assert!(!matches("7-42"));
+        assert!(!matches(""));
     }
 
     #[test]

@@ -22,6 +22,8 @@ const PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_mins(10);
 /// uploads can never stop downloads; a download keeps its slot until its last byte is sent.
 const CONCURRENT_UPLOADS: usize = 4;
 const CONCURRENT_DOWNLOADS: usize = 8;
+/// How long a download waits for a free slot before the instance answers "busy".
+const DOWNLOAD_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Pictures decoded at once (avatars, banners, background compression): each can take a few
 /// hundred MB and a core for seconds.
 const CONCURRENT_IMAGE_PROCESSING: usize = 2;
@@ -97,6 +99,24 @@ pub(crate) const UNSENT_UPLOAD_LIFETIME_MILLISECONDS: u64 = 60 * 60 * 1_000;
 impl From<AttachmentFileError> for MessageError {
     fn from(error: AttachmentFileError) -> Self {
         Self::Internal(Box::new(error))
+    }
+}
+
+/// An attachment the reader may download, its file not read yet.
+#[derive(Debug)]
+pub(crate) struct ReadableAttachment {
+    id: Snowflake,
+    file_name: String,
+    content_type: String,
+    size_bytes: u64,
+}
+
+impl ReadableAttachment {
+    /// A strong HTTP entity tag. The file only changes when `Attachments::optimize` replaces it
+    /// with a strictly smaller one, so its size tells versions apart; a replacement that could
+    /// keep the size would need a stored version counter here instead.
+    pub(crate) fn entity_tag(&self) -> String {
+        format!("\"{}-{}\"", self.id, self.size_bytes)
     }
 }
 
@@ -328,6 +348,10 @@ impl Attachments {
             with_webp_extension(&attachment.file_name)
         };
         let size_bytes = u64::try_from(optimized.bytes.len()).unwrap_or(u64::MAX);
+        // `ReadableAttachment::entity_tag` relies on a replacement never keeping the size.
+        if size_bytes >= attachment.size_bytes {
+            return Ok(());
+        }
         // shortcut: the file is replaced under the same id before its row changes, so a crash in
         // between leaves a WebP described as GIF (served as a download, not inline); a separate
         // file id per version would close it, worth doing if crashes there are ever seen.
@@ -356,12 +380,13 @@ impl Attachments {
     }
 
     /// Needs `VIEW_CHANNEL` and `READ_MESSAGE_HISTORY` in the message's channel. An upload not
-    /// sent yet, or one the reader cannot see, is `MessageNotFound`.
-    pub(crate) async fn download(
+    /// sent yet, or one the reader cannot see, is `MessageNotFound`. Reads no file: a client
+    /// revalidating its copy is answered from this alone.
+    pub(crate) async fn find_readable(
         &self,
         user_id: Snowflake,
         attachment_id: Snowflake,
-    ) -> Result<AttachmentDownload, MessageError> {
+    ) -> Result<ReadableAttachment, MessageError> {
         let attachment = storage::find_attachment(&self.database, attachment_id)
             .await?
             .filter(|attachment| attachment.message_id.is_some())
@@ -373,11 +398,25 @@ impl Attachments {
                 Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY,
             )
             .await?;
-        let permit = self
-            .downloads
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| MessageError::Busy)?;
+        Ok(ReadableAttachment {
+            id: attachment.id,
+            file_name: attachment.file_name,
+            content_type: attachment.content_type,
+            size_bytes: attachment.size_bytes,
+        })
+    }
+
+    /// Reads and decrypts a file `find_readable` allowed, waiting a moment for a transfer slot
+    /// before answering `Busy`: a burst of previews queues rather than failing.
+    pub(crate) async fn download(
+        &self,
+        attachment: ReadableAttachment,
+    ) -> Result<AttachmentDownload, MessageError> {
+        let permit =
+            tokio::time::timeout(DOWNLOAD_SLOT_WAIT, self.downloads.clone().acquire_owned())
+                .await
+                .map_err(|_| MessageError::Busy)?
+                .map_err(|error| MessageError::Internal(Box::new(error)))?;
         let bytes = self.files.read(attachment.id).await?;
         // Checked again on the bytes served, whatever the row says.
         let content_type = if sniff_content_type(&bytes) == attachment.content_type {
