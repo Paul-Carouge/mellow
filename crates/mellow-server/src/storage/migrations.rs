@@ -393,11 +393,16 @@ mod tests {
             outcome.applied_versions.first(),
             Some(&(LAST_VERSION_WITHOUT_MEMBER_ROLES + 1))
         );
-        // Migrations 0012 and 0022 add ADD_REACTIONS (1 << 16), CONNECT and SPEAK (1 << 18 and
-        // 1 << 19) to every @everyone role.
+        // Migrations 0012, 0022 and 0023 add ADD_REACTIONS (1 << 16), CONNECT and SPEAK (1 << 18
+        // and 1 << 19) and USE_SOUNDBOARD (1 << 20) to every @everyone role.
         assert_eq!(
             everyone,
-            ("@everyone".to_owned(), 0x064a | 0x1_0000 | 0xC_0000, 0, 0)
+            (
+                "@everyone".to_owned(),
+                0x064a | 0x1_0000 | 0xC_0000 | 0x10_0000,
+                0,
+                0
+            )
         );
         assert_eq!(
             assignments_after_leaving, 0,
@@ -898,8 +903,8 @@ mod tests {
         );
         assert_eq!(
             permissions,
-            // Migration 0022 adds CONNECT and SPEAK to @everyone too.
-            [(10, 0x043e | 0x1_0000 | 0xC_0000), (11, 0)],
+            // Migrations 0022 and 0023 add CONNECT, SPEAK and USE_SOUNDBOARD to @everyone too.
+            [(10, 0x043e | 0x1_0000 | 0xC_0000 | 0x10_0000), (11, 0)],
             "only @everyone gains ADD_REACTIONS"
         );
         assert_eq!(
@@ -1371,6 +1376,8 @@ mod tests {
     async fn existing_everyone_roles_may_use_voice_and_channels_keep_no_user_limit() {
         const LAST_VERSION_WITHOUT_VOICE: i64 = 21;
         const CONNECT_AND_SPEAK: i64 = (1 << 18) | (1 << 19);
+        // Migration 0023 adds USE_SOUNDBOARD to @everyone too.
+        const USE_SOUNDBOARD: i64 = 1 << 20;
         // VIEW_CHANNEL, SEND_MESSAGES, READ_MESSAGE_HISTORY, ATTACH_FILES, CREATE_INVITE,
         // CHANGE_NICKNAME and ADD_REACTIONS: the defaults before voice.
         const EVERYONE_BEFORE_VOICE: i64 = 0x1_241e;
@@ -1442,9 +1449,12 @@ mod tests {
         assert_eq!(
             permissions,
             [
-                (10, EVERYONE_BEFORE_VOICE | CONNECT_AND_SPEAK),
+                (
+                    10,
+                    EVERYONE_BEFORE_VOICE | CONNECT_AND_SPEAK | USE_SOUNDBOARD
+                ),
                 (11, 0),
-                (50, CONNECT_AND_SPEAK)
+                (50, CONNECT_AND_SPEAK | USE_SOUNDBOARD)
             ],
             "only @everyone roles gain CONNECT and SPEAK"
         );
@@ -1455,6 +1465,85 @@ mod tests {
         assert_eq!(messages, [(30,)]);
         assert!(voice_channel.is_ok(), "{voice_channel:?}");
         assert!(out_of_range.is_err(), "user limits stop at 25");
+    }
+
+    #[tokio::test]
+    async fn existing_everyone_roles_may_use_the_soundboard_and_deleted_sounds_clear_join_sounds() {
+        const LAST_VERSION_WITHOUT_SOUNDS: i64 = 22;
+        const USE_SOUNDBOARD: i64 = 1 << 20;
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_SOUNDS, database.writer())
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO roles (id, guild_id, name, permissions, position, color) \
+             VALUES (10, 10, '@everyone', 860190, 0, 0), (11, 10, 'Muted', 0, 1, 0); \
+             INSERT INTO guild_members (guild_id, user_id, joined_at_unix_milliseconds) \
+             VALUES (10, 1, 5), (10, 2, 6);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let permissions: Vec<(i64, i64)> =
+            sqlx::query_as("SELECT id, permissions FROM roles ORDER BY id")
+                .fetch_all(database.writer())
+                .await
+                .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO guild_sounds (id, guild_id, name, emoji, duration_milliseconds, \
+             size_bytes, created_at_unix_milliseconds) VALUES (40, 10, 'Horn', NULL, 5200, 499244, 0); \
+             UPDATE guild_members SET join_sound_id = 40 WHERE user_id = 2;",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let too_long = sqlx::query(
+            "INSERT INTO guild_sounds (id, guild_id, name, emoji, duration_milliseconds, \
+             size_bytes, created_at_unix_milliseconds) VALUES (41, 10, 'Long', NULL, 5201, 1, 0)",
+        )
+        .execute(database.writer())
+        .await;
+        sqlx::query("DELETE FROM guild_sounds WHERE id = 40")
+            .execute(database.writer())
+            .await
+            .unwrap();
+        let members: Vec<(i64, i64, Option<i64>)> = sqlx::query_as(
+            "SELECT user_id, joined_at_unix_milliseconds, join_sound_id FROM guild_members \
+             ORDER BY user_id",
+        )
+        .fetch_all(database.writer())
+        .await
+        .unwrap();
+        database.close().await;
+
+        assert_eq!(
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_SOUNDS + 1))
+        );
+        assert_eq!(
+            permissions,
+            [(10, 0xD_201E | USE_SOUNDBOARD), (11, 0)],
+            "only @everyone gains USE_SOUNDBOARD"
+        );
+        assert!(too_long.is_err(), "sounds last 5.2 s at most");
+        assert_eq!(
+            members,
+            [(1, 5, None), (2, 6, None)],
+            "members keep their rows and lose a deleted join sound"
+        );
     }
 
     #[tokio::test]

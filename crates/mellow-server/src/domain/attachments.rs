@@ -403,7 +403,7 @@ impl Attachments {
             self.files.delete(id).await?;
             deleted += 1;
         }
-        // Avatars, banners and icons share the file store (ADR-0021).
+        // Avatars, banners, icons and sounds share the file store (ADR-0021, ADR-0032).
         let known_ids: HashSet<Snowflake> = storage::all_attachment_ids(&self.database)
             .await?
             .into_iter()
@@ -412,6 +412,11 @@ impl Attachments {
             )
             .chain(
                 crate::storage::guild_images::all_guild_image_file_ids(&self.database)
+                    .await
+                    .map_err(crate::domain::guilds::GuildError::from)?,
+            )
+            .chain(
+                crate::storage::guild_sounds::all_guild_sound_ids(&self.database)
                     .await
                     .map_err(crate::domain::guilds::GuildError::from)?,
             )

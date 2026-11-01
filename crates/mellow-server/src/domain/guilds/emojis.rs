@@ -29,7 +29,7 @@ impl Guilds {
         Ok(storage::list_guild_emojis(&self.database, guild_id).await?)
     }
 
-    /// Needs `MANAGE_EMOJIS`. The picture's centred square is kept, animated if the picture is.
+    /// Needs `MANAGE_EXPRESSIONS`. The picture's centred square is kept, animated if the picture is.
     /// Every member sees the guild's new list (`GUILD_EMOJIS_UPDATE`).
     pub(crate) async fn create_emoji(
         &self,
@@ -42,7 +42,7 @@ impl Guilds {
     ) -> Result<CustomEmoji, MessageError> {
         let name = normalize_emoji_name(name).map_err(GuildError::from)?;
         // Checked before processing too, so nobody else can spend processing slots.
-        self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_EMOJIS)
+        self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_EXPRESSIONS)
             .await?;
         // Cheap refusal before processing; the insert's own count stays the one that decides.
         let (still_count, animated_count) =
@@ -66,7 +66,7 @@ impl Guilds {
         let new_image = Some(image);
         // Processing takes seconds: the permission may have been taken away meanwhile.
         let audit_after_permission_recheck = async {
-            self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_EMOJIS)
+            self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_EXPRESSIONS)
                 .await?;
             self.audit_entry(
                 guild_id,
@@ -107,7 +107,7 @@ impl Guilds {
         created.ok_or_else(|| GuildError::Internal("a created emoji was not listed".into()).into())
     }
 
-    /// Needs `MANAGE_EMOJIS`. Messages keep the text they were written with; reactions are keyed
+    /// Needs `MANAGE_EXPRESSIONS`. Messages keep the text they were written with; reactions are keyed
     /// by id, so they follow the new name (ADR-0028).
     pub(crate) async fn rename_emoji(
         &self,
@@ -117,7 +117,7 @@ impl Guilds {
         name: &str,
     ) -> Result<CustomEmoji, GuildError> {
         let name = normalize_emoji_name(name)?;
-        self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_EMOJIS)
+        self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_EXPRESSIONS)
             .await?;
         let audit = self.audit_entry(
             guild_id,
@@ -137,7 +137,7 @@ impl Guilds {
         renamed.ok_or(GuildError::NotFound)
     }
 
-    /// Needs `MANAGE_EMOJIS`. Messages keep their `<:name:id>` text and reactions with the emoji
+    /// Needs `MANAGE_EXPRESSIONS`. Messages keep their `<:name:id>` text and reactions with the emoji
     /// stay (ADR-0028); its picture is no longer served.
     pub(crate) async fn delete_emoji(
         &self,
@@ -146,7 +146,7 @@ impl Guilds {
         guild_id: Snowflake,
         emoji_id: Snowflake,
     ) -> Result<(), MessageError> {
-        self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_EMOJIS)
+        self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_EXPRESSIONS)
             .await?;
         let audit = self.audit_entry(
             guild_id,
@@ -359,7 +359,7 @@ mod tests {
         let not_a_picture = club
             .create_from(club.owner, "text", b"hello".to_vec())
             .await;
-        // A role holding MANAGE_EMOJIS is enough; it is a guild permission.
+        // A role holding MANAGE_EXPRESSIONS is enough; it is a guild permission.
         let role = club
             .state
             .guilds
@@ -369,7 +369,7 @@ mod tests {
                 CreateRoleRequest {
                     name: "Emoji keepers".into(),
                     color: 0,
-                    permissions: Permissions::MANAGE_EMOJIS,
+                    permissions: Permissions::MANAGE_EXPRESSIONS,
                 },
                 NOW,
             )

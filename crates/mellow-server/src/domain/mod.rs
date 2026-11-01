@@ -18,4 +18,5 @@ pub(crate) mod relationships;
 pub(crate) mod search_query;
 pub(crate) mod session_token;
 pub mod snowflake_generator;
+pub(crate) mod sound_rules;
 pub(crate) mod voice_rules;

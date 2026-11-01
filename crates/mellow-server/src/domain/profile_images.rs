@@ -240,6 +240,17 @@ impl ProfileImages {
         })
     }
 
+    /// Writes a file that needs no processing (a soundboard sound, ADR-0032) under a new id.
+    pub(crate) async fn store_file(
+        &self,
+        bytes: Vec<u8>,
+        now_unix_milliseconds: u64,
+    ) -> Result<Snowflake, MessageError> {
+        let id = self.ids.next_id(now_unix_milliseconds)?;
+        self.files.write(id, bytes).await?;
+        Ok(id)
+    }
+
     /// Files that no row points at any more; a failure leaves them to the orphan sweep.
     pub(crate) async fn delete_files(&self, id: Snowflake, still_id: Option<Snowflake>) {
         let _ = self.files.delete(id).await;

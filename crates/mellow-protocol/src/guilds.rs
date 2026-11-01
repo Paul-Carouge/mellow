@@ -56,6 +56,14 @@ pub struct Guild {
     /// The guild's custom emoji, oldest first (ADR-0028). Absent from older servers' payloads.
     #[serde(default)]
     pub emojis: Vec<CustomEmoji>,
+    /// The guild's soundboard sounds, oldest first (ADR-0032). Absent from older servers'
+    /// payloads.
+    #[serde(default)]
+    pub sounds: Vec<SoundboardSound>,
+    /// The sound the requesting member chose to play when they join a voice channel here
+    /// (ADR-0032). Absent when none, and from older servers' payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub my_join_sound_id: Option<Snowflake>,
 }
 
 /// A guild's custom emoji (ADR-0028). Its picture is served like an icon, at
@@ -82,6 +90,44 @@ pub struct CreateEmojiQuery {
 #[serde(deny_unknown_fields)]
 pub struct UpdateEmojiRequest {
     pub name: String,
+}
+
+/// A guild's soundboard sound (ADR-0032). Its samples, a canonical PCM WAV (mono, 48 kHz,
+/// 16-bit), are served at `GET /api/v1/sounds/{id}` to the guild's members.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SoundboardSound {
+    pub id: Snowflake,
+    /// 2 to 32 characters, not unique.
+    pub name: String,
+    /// A reaction key (ADR-0028): a Unicode emoji, or `:id` of one of the guild's custom emoji.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<String>,
+    pub duration_milliseconds: u32,
+}
+
+/// Query of `POST /api/v1/guilds/{guild_id}/sounds`, whose body is the WAV file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateSoundQuery {
+    pub name: String,
+    #[serde(default)]
+    pub emoji: Option<String>,
+}
+
+/// Body of `PATCH /api/v1/guilds/{guild_id}/sounds/{sound_id}`: replaces both fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateSoundRequest {
+    pub name: String,
+    #[serde(default)]
+    pub emoji: Option<String>,
+}
+
+/// Body of `PATCH /api/v1/guilds/{guild_id}/members/@me/join-sound`; `null` clears it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetJoinSoundRequest {
+    pub sound_id: Option<Snowflake>,
 }
 
 /// A guild role. Higher `position` ranks higher: a member manages only roles below their highest.
@@ -205,6 +251,12 @@ pub enum AuditAction {
     EmojiUpdate,
     /// `target_id` is the emoji; its name is the `name` change's old value.
     EmojiDelete,
+    /// `target_id` is the sound; its name is the `name` change's new value.
+    SoundCreate,
+    /// `target_id` is the sound: `name` and `emoji` changes (the emoji's key, empty for none).
+    SoundUpdate,
+    /// `target_id` is the sound; its name is the `name` change's old value.
+    SoundDelete,
     /// An action added by a newer server; never written, only read by older clients.
     #[serde(other)]
     Unknown,
@@ -230,6 +282,8 @@ pub enum AuditChangeKey {
     Parent,
     /// Of a voice channel: its user limit, empty for none. Added after `v0.22.0`.
     UserLimit,
+    /// Of a soundboard sound: its emoji's key, empty for none. Added after `v0.25.0`.
+    Emoji,
     /// A field added by a newer server.
     #[serde(other)]
     Unknown,
@@ -525,6 +579,8 @@ mod tests {
             roles: Vec::new(),
             channels: vec![channel],
             emojis: Vec::new(),
+            sounds: Vec::new(),
+            my_join_sound_id: None,
         };
         let json = serde_json::to_value(&guild).unwrap();
         assert_eq!(

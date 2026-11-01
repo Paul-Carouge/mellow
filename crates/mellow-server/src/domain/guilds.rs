@@ -11,8 +11,8 @@ use mellow_protocol::{
     CreateRoleRequest, CustomEmoji, GatewayEvent, Guild, GuildInvite, GuildSummary,
     InitialCategory, InitialTextChannel, Invite, Member, OverwriteKind, PermissionOverwrite,
     Permissions, PublicUser, ReorderChannelsRequest, ReorderRolesRequest, Role,
-    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateGuildRequest,
-    UpdateRoleRequest, UserLimitChange,
+    SetPermissionOverwriteRequest, Snowflake, SoundboardSound, UpdateChannelRequest,
+    UpdateGuildRequest, UpdateRoleRequest, UserLimitChange,
 };
 
 use crate::domain::account_rules::GuildCreationPolicy;
@@ -28,7 +28,7 @@ use crate::domain::guild_rules::{
 };
 use crate::domain::permissions::{
     RoleManager, VoiceEntitlement, channel_permissions, guild_permissions,
-    is_visible_to_every_member, voice_entitlement,
+    is_visible_to_every_member, may_use_soundboard, voice_entitlement,
 };
 use crate::domain::profile_images::fill_profile_images;
 use crate::domain::snowflake_generator::SnowflakeGenerator;
@@ -36,6 +36,7 @@ use crate::domain::voice_rules::VoiceAccess;
 use crate::events::EventHub;
 use crate::storage::audit_log::{self as audit_log_storage, ChannelEntryFilter, NewAuditEntry};
 use crate::storage::guild_emojis as guild_emojis_storage;
+use crate::storage::guild_sounds as guild_sounds_storage;
 use crate::storage::guilds::{
     self as guild_storage, ChannelFieldChanges, GuildRename, GuildStorageError, JoinOutcome,
     Membership, NewGuild, RoleFieldChanges, StoredChannel, StoredInvite, StoredPermissionSnapshot,
@@ -43,6 +44,7 @@ use crate::storage::guilds::{
 
 mod emojis;
 mod icons;
+mod sounds;
 
 pub(crate) use icons::IconUpload;
 
@@ -119,6 +121,25 @@ fn member_from_stored(member: guild_storage::StoredMember) -> Member {
     }
 }
 
+/// What every member of a guild sees the same: its custom emoji and soundboard sounds.
+#[derive(Debug, Clone)]
+struct GuildExpressions {
+    emojis: Vec<CustomEmoji>,
+    sounds: Vec<SoundboardSound>,
+}
+
+impl Guilds {
+    async fn expressions_of_guild(
+        &self,
+        guild_id: Snowflake,
+    ) -> Result<GuildExpressions, GuildError> {
+        Ok(GuildExpressions {
+            emojis: guild_emojis_storage::list_guild_emojis(&self.database, guild_id).await?,
+            sounds: guild_sounds_storage::list_guild_sounds(&self.database, guild_id).await?,
+        })
+    }
+}
+
 /// What `member_id` receives as their guild: channels they cannot view are left out entirely
 /// (ADR-0015). `member_roles` includes `@everyone`; `roles` is every role of the guild.
 fn guild_seen_by_member(
@@ -128,7 +149,7 @@ fn guild_seen_by_member(
     member_roles: &[Role],
     roles: Vec<Role>,
     channels: &[StoredChannel],
-    emojis: Vec<CustomEmoji>,
+    expressions: GuildExpressions,
 ) -> Guild {
     let guild_id = summary.id;
     Guild {
@@ -158,7 +179,10 @@ fn guild_seen_by_member(
             .cloned()
             .map(channel_from_stored)
             .collect(),
-        emojis,
+        emojis: expressions.emojis,
+        sounds: expressions.sounds,
+        // Each member's own: the callers fill it in.
+        my_join_sound_id: None,
     }
 }
 
@@ -495,20 +519,25 @@ impl Guilds {
             .ok_or(GuildError::NotFound)?;
         let channels = guild_storage::list_guild_channels(&self.database, guild_id).await?;
         let roles = guild_storage::list_roles(&self.database, guild_id).await?;
-        let emojis = guild_emojis_storage::list_guild_emojis(&self.database, guild_id).await?;
-        Ok(guild_seen_by_member(
-            user_id,
-            GuildSummary {
-                id: guild_id,
-                name: membership.guild_name,
-                icon: membership.guild_icon,
-            },
-            membership.owner_id,
-            &membership.member_roles,
-            roles,
-            &channels,
-            emojis,
-        ))
+        let expressions = self.expressions_of_guild(guild_id).await?;
+        let my_join_sound_id =
+            guild_sounds_storage::member_join_sound(&self.database, guild_id, user_id).await?;
+        Ok(Guild {
+            my_join_sound_id,
+            ..guild_seen_by_member(
+                user_id,
+                GuildSummary {
+                    id: guild_id,
+                    name: membership.guild_name,
+                    icon: membership.guild_icon,
+                },
+                membership.owner_id,
+                &membership.member_roles,
+                roles,
+                &channels,
+                expressions,
+            )
+        })
     }
 
     /// Needs `MANAGE_GUILD`. Absent fields stay unchanged; an unchanged name records nothing.
@@ -806,7 +835,9 @@ impl Guilds {
             .await?
             .ok_or(GuildError::NotFound)?;
         let channels = guild_storage::list_guild_channels(&self.database, guild_id).await?;
-        let emojis = guild_emojis_storage::list_guild_emojis(&self.database, guild_id).await?;
+        let expressions = self.expressions_of_guild(guild_id).await?;
+        let join_sounds =
+            guild_sounds_storage::join_sounds_of_guild(&self.database, guild_id).await?;
         Ok(user_ids
             .iter()
             .filter_map(|user_id| {
@@ -814,15 +845,18 @@ impl Guilds {
                 let roles_of_member = roles_with_ids_and_everyone(guild_id, &snapshot, role_ids);
                 Some((
                     *user_id,
-                    guild_seen_by_member(
-                        *user_id,
-                        summary.clone(),
-                        snapshot.owner_id,
-                        &roles_of_member,
-                        snapshot.roles.clone(),
-                        &channels,
-                        emojis.clone(),
-                    ),
+                    Guild {
+                        my_join_sound_id: join_sounds.get(user_id).copied(),
+                        ..guild_seen_by_member(
+                            *user_id,
+                            summary.clone(),
+                            snapshot.owner_id,
+                            &roles_of_member,
+                            snapshot.roles.clone(),
+                            &channels,
+                            expressions.clone(),
+                        )
+                    },
                 ))
             })
             .collect())
@@ -859,6 +893,7 @@ impl Guilds {
                 guild_id: channel.guild_id,
                 user_limit: channel.user_limit,
                 may_speak: entitlement == VoiceEntitlement::Speak,
+                may_use_soundboard: may_use_soundboard(permissions),
             },
         })
     }

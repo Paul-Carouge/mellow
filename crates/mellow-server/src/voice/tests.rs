@@ -870,3 +870,74 @@ async fn a_listener_learns_which_of_its_slots_carries_each_voice() {
         "the slot is one of the listener's m-lines"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sounds_reach_the_channel_two_seconds_apart_and_joins_announce_the_join_sound() {
+    let fixture = fixture().await;
+    let (owner_id, member_id) = (fixture.user_id("owner"), fixture.user_id("member"));
+    let guild_id = fixture
+        .state
+        .guilds
+        .voice_access(owner_id, fixture.lounge)
+        .await
+        .map(|access| match access {
+            VoiceAccess::Allowed { guild_id, .. } => guild_id,
+            other => panic!("{other:?}"),
+        })
+        .unwrap();
+    let sound = fixture
+        .state
+        .guilds
+        .create_sound(
+            &fixture.state.profile_images,
+            owner_id,
+            guild_id,
+            "Horn",
+            None,
+            crate::domain::sound_rules::tests::canonical_wav(480),
+            now(),
+        )
+        .await
+        .unwrap();
+    fixture
+        .state
+        .guilds
+        .set_join_sound(member_id, guild_id, Some(sound.id))
+        .await
+        .unwrap();
+    let (mut owner, _) = identified(fixture.address, fixture.token("owner")).await;
+    let (mut member, _) = identified(fixture.address, fixture.token("member")).await;
+    let (mut muted, _) = identified(fixture.address, fixture.token("muted")).await;
+    join(&mut owner, fixture.lounge, &pending_bot().offer).await;
+    join(&mut muted, fixture.lounge, &pending_bot().offer).await;
+    join(&mut member, fixture.lounge, &pending_bot().offer).await;
+    let member_state = next_voice_state_update(&mut owner, member_id).await;
+    let play = ClientFrame::VoicePlaySound { sound_id: sound.id };
+    // Suppressed in the lounge: ignored. The member's second sound comes too soon: ignored.
+    send(&mut muted, &play).await;
+    send(&mut member, &play).await;
+    send(&mut member, &play).await;
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+    send(&mut owner, &play).await;
+    let is_sound = |event: &GatewayEvent| matches!(event, GatewayEvent::VoiceSoundPlayed { .. });
+    let heard_by_owner = [
+        receive_dispatch(&mut owner, is_sound).await.1,
+        receive_dispatch(&mut owner, is_sound).await.1,
+    ];
+    let heard_by_member = receive_dispatch(&mut member, is_sound).await.1;
+    let lounge = fixture.lounge;
+    fixture.close().await;
+
+    assert_eq!(member_state.join_sound_id, Some(sound.id));
+    let played_by = |user_id| GatewayEvent::VoiceSoundPlayed {
+        channel_id: lounge,
+        user_id,
+        sound_id: sound.id,
+    };
+    assert_eq!(heard_by_owner, [played_by(member_id), played_by(owner_id)]);
+    assert_eq!(
+        heard_by_member,
+        played_by(member_id),
+        "the player hears it too"
+    );
+}

@@ -23,18 +23,18 @@ pub use direct_messages::{
 };
 pub use gateway::{
     ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, MAXIMUM_VOICE_OFFER_BYTES,
-    MAXIMUM_VOICE_RECEIVE_SLOTS, MessageReaction, Presence, PresenceStatus, Ready, ServerFrame,
-    VoiceDisconnectReason, VoiceJoinRefusal, VoiceState,
+    MAXIMUM_VOICE_RECEIVE_SLOTS, MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, MessageReaction, Presence,
+    PresenceStatus, Ready, ServerFrame, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState,
 };
 pub use guilds::{
     AuditAction, AuditChange, AuditChangeKey, AuditLogEntry, AuditLogQuery, Ban, Channel,
     ChannelKind, ChannelPlacement, CreateBanRequest, CreateChannelRequest, CreateEmojiQuery,
-    CreateGuildRequest, CreateInviteRequest, CreateRoleRequest, CustomEmoji, Guild, GuildInvite,
-    GuildSummary, IconCropQuery, InitialCategory, InitialTextChannel, Invite,
+    CreateGuildRequest, CreateInviteRequest, CreateRoleRequest, CreateSoundQuery, CustomEmoji,
+    Guild, GuildInvite, GuildSummary, IconCropQuery, InitialCategory, InitialTextChannel, Invite,
     MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, Member, OverwriteKind, PermissionOverwrite, ProfileImage,
-    PublicUser, ReorderChannelsRequest, ReorderRolesRequest, Role, SetPermissionOverwriteRequest,
-    UpdateChannelRequest, UpdateEmojiRequest, UpdateGuildRequest, UpdateRoleRequest,
-    UserLimitChange,
+    PublicUser, ReorderChannelsRequest, ReorderRolesRequest, Role, SetJoinSoundRequest,
+    SetPermissionOverwriteRequest, SoundboardSound, UpdateChannelRequest, UpdateEmojiRequest,
+    UpdateGuildRequest, UpdateRoleRequest, UpdateSoundRequest, UserLimitChange,
 };
 pub use health::{HealthResponse, HealthStatus};
 pub use messages::{
