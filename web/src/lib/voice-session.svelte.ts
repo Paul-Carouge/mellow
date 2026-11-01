@@ -61,8 +61,10 @@ const NOISE_SUPPRESSOR_LOAD_TIMEOUT_MILLISECONDS = 3_000;
 const SENSITIVITY_GATE_HOLD_MILLISECONDS = 250;
 
 /**
- * shortcut: hidden tabs throttle timers, so the manual gate stays open there (Opus DTX and the
- * server's speaking detection handle silence); upgrade when an AudioWorklet is allowed by the CSP.
+ * shortcut: the manual gate reads the level from a main-thread timer, which hidden tabs throttle,
+ * so the gate stays open there (Opus DTX and the server's speaking detection handle silence).
+ * Upgrade by gating in an AudioWorklet of our own (the CSP allows worklets and WebAssembly since
+ * ADR-0031) if people on manual sensitivity hear background noise from a hidden tab.
  */
 function isPageHidden(): boolean {
   return typeof document !== "undefined" && document.visibilityState === "hidden";
