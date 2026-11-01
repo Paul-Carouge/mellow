@@ -235,6 +235,41 @@ describe("MellowClient", () => {
     expect(client.conversations).toBe(conversations);
   });
 
+  describe("member lists on their way", () => {
+    const person = (id: string) => ({ user: { id, username: id, display_name: id }, role_ids: [], joined_at_unix_milliseconds: 0 });
+    /** Each `listMembers` waits until the test answers it, in any order. */
+    function deferredMembers() {
+      const answers: ((members: ReturnType<typeof person>[]) => void)[] = [];
+      const listMembers = () => new Promise<ReturnType<typeof person>[]>((resolve) => answers.push(resolve));
+      return { answers, listMembers };
+    }
+
+    it("asks again when a member joins while the list loads", async () => {
+      const { answers, listMembers } = deferredMembers();
+      const client = new MellowClient(fakeRest({ ...QUIET_REST, listMembers }));
+      client.applyReady(ready());
+      client.applyEvent({ t: "GUILD_MEMBER_ADD", data: { guild_id: GUILD, member: person("7") } }, 0);
+      answers[0]?.([person(OTHER)]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(client.membersByGuild.has(GUILD)).toBe(false);
+      answers[1]?.([person(OTHER), person("7")]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(client.membersByGuild.get(GUILD)?.map((member) => member.user.id)).toEqual([OTHER, "7"]);
+    });
+
+    it("drops a list asked before the last Ready", async () => {
+      const { answers, listMembers } = deferredMembers();
+      const client = new MellowClient(fakeRest({ ...QUIET_REST, listMembers }));
+      client.applyReady(ready());
+      client.applyReady(ready());
+      answers[1]?.([person("8")]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      answers[0]?.([person("stale")]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(client.membersByGuild.get(GUILD)?.map((member) => member.user.id)).toEqual(["8"]);
+    });
+  });
+
   it("keeps the newer edit when an older one comes back late", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(ready());
