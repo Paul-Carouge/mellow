@@ -4,6 +4,18 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-01
+Soundboard and join sounds. This version migrates the database (migration 23, with the usual automatic backup); older versions refuse it afterwards.
+
+### Added
+- Soundboard: each server holds up to 48 sounds of at most 5.2 seconds, with a name and an emoji. Add them in Server settings → Soundboard: pick any audio file your browser can read, trim it, set its volume, and Mellow uploads a small WAV.
+- Web: a soundboard button in the "Voice connected" panel plays a sound to everyone in your voice channel, at most one every 2 seconds; right-click a sound to listen to it alone. Others hear it at their own "Soundboard volume" (Settings → Voice), never while deafened, and never from someone they muted for themselves; the sound's emoji shows by the player's name.
+- Join sounds: choose one of a server's sounds as yours; people in the channel hear it instead of the join chime when you arrive.
+- New permission **Use soundboard**, per channel, given to everyone by default (existing servers included).
+
+### Changed
+- The **Manage emoji** permission is now **Manage expressions** and also covers sounds; roles that had it keep it.
+
 ## [0.25.0] - 2026-11-01
 Cleaner voices. No database migration.
 
