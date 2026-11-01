@@ -22,7 +22,7 @@
   let recordedCode: string | null = null;
   let recordButton = $state<HTMLElement | null>(null);
 
-  const isCharacterKey = $derived(pushToTalkKey !== null && ([...pushToTalkKey.label].length === 1 || pushToTalkKey.code === "Space"));
+  const doesPushToTalkKeyTypeCharacter = $derived(pushToTalkKey !== null && ([...pushToTalkKey.label].length === 1 || pushToTalkKey.code === "Space"));
 
   function startRecording() {
     isRecording = true;
@@ -101,7 +101,7 @@
     </p>
   {/if}
   <p class="type-body text-(--mw-component-text-field-helper-text)">
-    {strings.voiceSettings.focusNote}{#if isCharacterKey}{" "}{strings.voiceSettings.characterKeyNote}{/if}
+    {strings.voiceSettings.focusNote}{#if doesPushToTalkKeyTypeCharacter}{" "}{strings.voiceSettings.characterKeyNote}{/if}
   </p>
   <p class="sr-only" aria-live="polite">{announcement}</p>
 </div>

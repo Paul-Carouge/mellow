@@ -91,7 +91,7 @@ export function readVoiceSettings(storage: Pick<Storage, "getItem"> | null): Voi
     return DEFAULT_VOICE_SETTINGS;
   }
   const defaults = DEFAULT_VOICE_SETTINGS;
-  const boolean = (name: keyof VoiceSettings, fallback: boolean) =>
+  const storedBoolean = (name: keyof VoiceSettings, fallback: boolean) =>
     typeof fields[name] === "boolean" ? (fields[name] as boolean) : fallback;
   return {
     inputDeviceId: storedText(fields["inputDeviceId"]),
@@ -106,15 +106,15 @@ export function readVoiceSettings(storage: Pick<Storage, "getItem"> | null): Voi
       MAXIMUM_PUSH_TO_TALK_RELEASE_DELAY_MILLISECONDS,
       defaults.pushToTalkReleaseDelayMilliseconds,
     ),
-    arePushToTalkSoundsOn: boolean("arePushToTalkSoundsOn", defaults.arePushToTalkSoundsOn),
-    isSensitivityAutomatic: boolean("isSensitivityAutomatic", defaults.isSensitivityAutomatic),
+    arePushToTalkSoundsOn: storedBoolean("arePushToTalkSoundsOn", defaults.arePushToTalkSoundsOn),
+    isSensitivityAutomatic: storedBoolean("isSensitivityAutomatic", defaults.isSensitivityAutomatic),
     sensitivityThresholdDecibels: clampedInteger(
       fields["sensitivityThresholdDecibels"],
       MINIMUM_DECIBELS,
       MAXIMUM_DECIBELS,
       defaults.sensitivityThresholdDecibels,
     ),
-    isNoiseSuppressionOn: boolean("isNoiseSuppressionOn", defaults.isNoiseSuppressionOn),
+    isNoiseSuppressionOn: storedBoolean("isNoiseSuppressionOn", defaults.isNoiseSuppressionOn),
   };
 }
 
