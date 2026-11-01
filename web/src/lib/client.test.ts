@@ -1343,6 +1343,21 @@ describe("Reaching a message far back", () => {
     expect(client.reachedStartChannelIds.has(GENERAL)).toBe(true);
   });
 
+  it("keeps only the newest 500 of the open channel once the reader is back at the latest", async () => {
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: historyOf(700) }));
+    client.applyReady(ready());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await client.loadHistoryUntilMessage(GENERAL, "1000")).toBe("loaded");
+    expect(client.messages(GENERAL)).toHaveLength(700);
+    expect(client.reachedStartChannelIds.has(GENERAL)).toBe(true);
+    client.noteReaderAtLatest(RULES);
+    expect(client.messages(GENERAL)).toHaveLength(700);
+    client.noteReaderAtLatest(GENERAL);
+    expect(client.messages(GENERAL).map((cached) => cached.id)[0]).toBe("1200");
+    expect(client.messages(GENERAL)).toHaveLength(500);
+    expect(client.reachedStartChannelIds.has(GENERAL)).toBe(false);
+  });
+
   it("gives up 1 000 messages back, and stops for a channel that is not open", async () => {
     const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: historyOf(2_000) }));
     client.applyReady(ready());

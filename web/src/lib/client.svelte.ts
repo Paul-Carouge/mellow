@@ -1088,6 +1088,13 @@ export class MellowClient {
     }
   }
 
+  /** Back at the latest message: older pages read meanwhile leave the cache, as on leaving. */
+  noteReaderAtLatest(channelId: Snowflake): void {
+    if (channelId === this.selectedChannelId) {
+      this.trimHistory(channelId);
+    }
+  }
+
   /** A channel left keeps only its newest messages, as `trim_history` does. */
   private trimHistory(channelId: Snowflake): void {
     const messages = this.messagesByChannel.get(channelId);
