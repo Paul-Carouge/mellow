@@ -51,9 +51,17 @@
   const block = $derived(client.soundboardBlock(now));
   const remainingCooldown = $derived(Math.max(0, client.soundCooldownEndsAt - now));
   const joinSound = $derived(sounds.find((sound) => sound.id === guild?.my_join_sound_id) ?? null);
+  /** The instance announces your join sound only where you may use the soundboard and speak. */
+  const isJoinSoundPlayedHere = $derived(block !== "no-permission" && block !== "cannot-speak");
   const canChooseJoinSound = $derived(guild !== null && holds(guild, Permission.USE_SOUNDBOARD));
   const gain = $derived(soundboardGain(client.voice.settings.outputVolumePercent, client.voice.settings.soundboardVolumePercent));
 
+  // A new end (the click, then the instance's echo) is measured from now, so the bar drains on
+  // from where it is instead of jumping back to full.
+  $effect(() => {
+    void client.soundCooldownEndsAt;
+    now = Date.now();
+  });
   $effect(() => {
     if (remainingCooldown <= 0) {
       return;
@@ -73,7 +81,8 @@
   onMount(() => {
     panel.showPopover();
     place();
-    void tick().then(() => (cells()[activeIndex] ?? panel.querySelector<HTMLElement>("[data-initial-focus]"))?.focus());
+    // Without sounds or a way to add some, the dialog itself holds focus, so Esc and Tab still work.
+    void tick().then(() => (cells()[activeIndex] ?? panel.querySelector<HTMLElement>("[data-initial-focus]") ?? panel).focus());
   });
 
   /** Above its button, its leading edge on the button's, inside the window. */
@@ -91,10 +100,7 @@
   }
 
   function play(sound: SoundboardSound) {
-    now = Date.now();
-    if (client.playSound(sound.id, now)) {
-      now = Date.now();
-    }
+    client.playSound(sound.id, Date.now());
   }
 
   async function preview(sound: SoundboardSound) {
@@ -152,6 +158,7 @@
 <div
   bind:this={panel}
   popover="auto"
+  tabindex="-1"
   role="dialog"
   aria-labelledby="{id}-title"
   class={[
@@ -174,7 +181,9 @@
     </h2>
     {#if joinSound}
       <!-- Named here in words; its tile also carries an outline. -->
-      <p class="truncate type-body-sm text-(--mw-component-emoji-picker-empty-text)">{strings.soundboard.yourJoinSound(joinSound.name)}</p>
+      <p class="type-body-sm text-(--mw-component-emoji-picker-empty-text)">
+        {isJoinSoundPlayedHere ? strings.soundboard.yourJoinSound(joinSound.name) : strings.soundboard.yourJoinSoundNotHere(joinSound.name)}
+      </p>
     {/if}
   </div>
 

@@ -1405,8 +1405,8 @@ describe("Voice states", () => {
 
     async function connectedWithSounds(permissions: bigint = (1n << 1n) | (1n << 18n) | (1n << 19n) | (1n << 20n)) {
       const { client, peer, cues } = voiceClient();
-      const played: [string, string | null][] = [];
-      client.onSound = (soundId, fallbackCue) => played.push([soundId, fallbackCue]);
+      const played: [string, string, string | null][] = [];
+      client.onSound = (soundId, playerId, fallbackCue) => played.push([soundId, playerId, fallbackCue]);
       client.applyEvent({ t: "GUILD_SOUNDS_UPDATE", data: { guild_id: GUILD, sounds: [HORN, CLAP] } }, 0);
       client.applyEvent(
         { t: "GUILD_CREATE", data: { ...client.guilds[0]!, my_permissions: String(permissions) } },
@@ -1431,7 +1431,7 @@ describe("Voice states", () => {
       const { client, played } = await connectedWithSounds();
       client.applyEvent({ t: "VOICE_SOUND_PLAYED", data: { channel_id: LOUNGE, user_id: OTHER, sound_id: HORN.id } }, 0);
       client.applyEvent({ t: "VOICE_SOUND_PLAYED", data: { channel_id: STAGE, user_id: "3", sound_id: CLAP.id } }, 0);
-      expect(played).toEqual([[HORN.id, null]]);
+      expect(played).toEqual([[HORN.id, OTHER, null]]);
       expect(client.soundIndicators.get(OTHER)).toEqual({ soundId: HORN.id, guildId: GUILD });
       expect(client.soundIndicators.has("3")).toBe(false);
 
@@ -1440,7 +1440,7 @@ describe("Voice states", () => {
       client.voice.togglePersonMuted(OTHER);
       client.voice.toggleDeafened();
       client.applyEvent({ t: "VOICE_SOUND_PLAYED", data: { channel_id: LOUNGE, user_id: OTHER, sound_id: CLAP.id } }, 0);
-      expect(played).toEqual([[HORN.id, null]]);
+      expect(played).toEqual([[HORN.id, OTHER, null]]);
       // Still shown: who played what is not sound.
       expect(client.soundIndicators.get(OTHER)?.soundId).toBe(CLAP.id);
     });
@@ -1469,16 +1469,42 @@ describe("Voice states", () => {
       const { client, cues, played } = await connectedWithSounds();
       client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", LOUNGE, { join_sound_id: HORN.id }) } }, 0);
       client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("4", LOUNGE, { join_sound_id: "404" }) } }, 0);
-      expect(played).toEqual([[HORN.id, "peer-join"]]);
+      expect(played).toEqual([[HORN.id, "3", "peer-join"]]);
       expect(cues).toEqual(["self-join", "peer-join"]);
       expect(client.soundIndicators.get("3")?.soundId).toBe(HORN.id);
     });
 
+    it("plays a join sound once per arrival, not again when the newcomer mutes", async () => {
+      const { client, cues, played } = await connectedWithSounds();
+      const arrival = voiceState("3", LOUNGE, { join_sound_id: HORN.id });
+      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: arrival } }, 0);
+      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: { ...arrival, self_mute: true } } }, 0);
+      expect(played).toEqual([[HORN.id, "3", "peer-join"]]);
+      expect(cues).toEqual(["self-join"]);
+    });
+
+    it("plays a join sound for a move into your channel, and nothing for an arrival elsewhere", async () => {
+      const { client, cues, played } = await connectedWithSounds();
+      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", STAGE, { join_sound_id: HORN.id }) } }, 0);
+      expect(played).toEqual([]);
+      expect(cues).toEqual(["self-join"]);
+      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", LOUNGE, { join_sound_id: HORN.id }) } }, 0);
+      expect(played).toEqual([[HORN.id, "3", "peer-join"]]);
+    });
+
+    it("plays nothing for someone already there when Ready came", async () => {
+      const { client, cues, played } = await connectedWithSounds();
+      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(OTHER, LOUNGE, { join_sound_id: HORN.id }) } }, 0);
+      expect(played).toEqual([]);
+      expect(cues).toEqual(["self-join"]);
+    });
+
     it("finds your own join sound once your state is in the channel", async () => {
       const { client } = await connectedWithSounds();
-      expect(client.ownJoinSoundId()).toBeNull();
+      expect(client.startOwnJoinSound()).toBeNull();
       client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(ME, LOUNGE, { join_sound_id: CLAP.id }) } }, 0);
-      expect(client.ownJoinSoundId()).toBe(CLAP.id);
+      expect(client.startOwnJoinSound()).toBe(CLAP.id);
+      expect(client.soundIndicators.get(ME)?.soundId).toBe(CLAP.id);
     });
 
     it("adds, edits and deletes sounds, and clears a deleted join sound", async () => {

@@ -227,10 +227,11 @@ export class MellowClient {
   /** Your soundboard waits until then between two sounds (`MINIMUM_MILLISECONDS_BETWEEN_SOUNDS`). */
   soundCooldownEndsAt = $state(0);
   /**
-   * Plays one of a server's sounds on this device (set by the shell); `fallbackCue` plays instead
-   * when the sound cannot load, for a join sound standing in for the chime.
+   * Plays one of a server's sounds on this device (set by the shell), for `playerId` (whose
+   * deafen-free, unmuted sounds they are); `fallbackCue` plays instead when the sound cannot load,
+   * for a join sound standing in for the chime.
    */
-  onSound: ((soundId: Snowflake, fallbackCue: VoiceCue | null) => void) | null = null;
+  onSound: ((soundId: Snowflake, playerId: Snowflake, fallbackCue: VoiceCue | null) => void) | null = null;
 
   /** `rest` and the browser's voice side are injected by tests; settings pages read lists (bans, invites, the log) through `rest`. */
   constructor(
@@ -2063,7 +2064,7 @@ export class MellowClient {
     });
     if (cue.kind === "sound" && this.onSound) {
       this.showSoundIndicator(userId, place.guild.id, cue.sound);
-      this.onSound(cue.sound.id, "peer-join");
+      this.onSound(cue.sound.id, userId, "peer-join");
     } else {
       this.voice.onCue?.("peer-join");
     }
@@ -2071,8 +2072,11 @@ export class MellowClient {
 
   // --- Soundboard (ADR-0032) -----------------------------------------------------------------
 
-  /** Your own join sound in the channel you just connected to, played instead of your join chime. */
-  ownJoinSoundId(): Snowflake | null {
+  /**
+   * Starts your own join sound in the channel you just connected to: shows its emoji by your name
+   * and returns the sound to play instead of your join chime, or `null` for the chime.
+   */
+  startOwnJoinSound(): Snowflake | null {
     const place = this.voiceChannel;
     const own = this.user ? this.voiceStatesByUserId.get(this.user.id) : undefined;
     if (!place || own?.channel_id !== place.channel.id) {
@@ -2129,7 +2133,7 @@ export class MellowClient {
       isPlayerMutedForMe: userId !== this.user?.id && this.voice.personSetting(userId).isLocallyMuted,
     });
     if (isHeard) {
-      this.onSound?.(soundId, null);
+      this.onSound?.(soundId, userId, null);
     }
   }
 
