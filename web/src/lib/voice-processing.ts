@@ -7,6 +7,15 @@ import type { EqualizerBand, EqualizerDecibels, VoiceSettings } from "./voice-se
 /** Why RNNoise is not running: the browser lacks AudioWorklet or WebAssembly, or loading it failed. */
 export type NoiseSuppressorProblem = "unsupported" | "failed";
 
+/**
+ * Why RNNoise could not start. Firefox refuses a 48 kHz graph for a microphone at another rate
+ * (`NotSupportedError`) every time: that is "unsupported", not worth trying again.
+ */
+export function noiseSuppressorProblemOf(error: unknown): NoiseSuppressorProblem {
+  const name = typeof error === "object" && error !== null ? (error as Record<string, unknown>)["name"] : undefined;
+  return name === "NotSupportedError" ? "unsupported" : "failed";
+}
+
 /** Which microphone, and what the browser's own processing does to it. */
 export interface MicrophoneChoice {
   /** `null`: the system's default. */
