@@ -987,22 +987,31 @@ export class MellowClient {
     if (this.user?.id === userId) {
       this.user = updateIfThisUser(this.user);
     }
+    // Only what shows this user changes: every other row keeps its object and is not drawn again.
     for (const [guildId, members] of this.membersByGuild) {
-      this.membersByGuild.set(
-        guildId,
-        members.map((member) => ({ ...member, user: updateIfThisUser(member.user) })),
-      );
+      if (members.some((member) => member.user.id === userId)) {
+        this.membersByGuild.set(
+          guildId,
+          members.map((member) => (member.user.id === userId ? { ...member, user: updateIfThisUser(member.user) } : member)),
+        );
+      }
     }
     for (const [channelId, messages] of this.messagesByChannel) {
-      this.messagesByChannel.set(
-        channelId,
-        messages.map((message) => ({ ...message, author: updateIfThisUser(message.author) })),
+      if (messages.some((message) => message.author.id === userId)) {
+        this.messagesByChannel.set(
+          channelId,
+          messages.map((message) =>
+            message.author.id === userId ? { ...message, author: updateIfThisUser(message.author) } : message,
+          ),
+        );
+      }
+    }
+    const isRecipient = (channel: DirectMessageChannel) => channel.recipients.some((recipient) => recipient.id === userId);
+    if (this.conversations.some(isRecipient)) {
+      this.conversations = this.conversations.map((channel) =>
+        isRecipient(channel) ? { ...channel, recipients: channel.recipients.map(updateIfThisUser) } : channel,
       );
     }
-    this.conversations = this.conversations.map((channel) => ({
-      ...channel,
-      recipients: channel.recipients.map(updateIfThisUser),
-    }));
     const relationship = this.relationshipByUserId.get(userId);
     if (relationship) {
       this.relationshipByUserId.set(userId, { ...relationship, user: updateIfThisUser(relationship.user) });
