@@ -42,6 +42,18 @@ impl ApiError {
         }
     }
 
+    /// Like `internal`, except that a database pool still full after its acquire timeout is load,
+    /// not a bug: the client is told to retry, as for other busy answers.
+    fn internal_or_busy(context: &str, source: &(dyn std::error::Error + 'static)) -> Self {
+        let is_pool_timeout = std::iter::successors(Some(source), |error| error.source())
+            .any(|error| matches!(error.downcast_ref(), Some(sqlx::Error::PoolTimedOut)));
+        if is_pool_timeout {
+            tracing::warn!("database busy while handling {context}");
+            return Self::server_busy();
+        }
+        Self::internal(context, &source)
+    }
+
     pub(crate) fn validation(message: String) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -96,7 +108,9 @@ impl From<AccountError> for ApiError {
             AccountError::AccountDisabled => (StatusCode::FORBIDDEN, ApiErrorCode::AccountDisabled),
             AccountError::Unauthorized => (StatusCode::UNAUTHORIZED, ApiErrorCode::Unauthorized),
             AccountError::ServerBusy => (StatusCode::SERVICE_UNAVAILABLE, ApiErrorCode::ServerBusy),
-            AccountError::Internal(source) => return Self::internal("an account request", source),
+            AccountError::Internal(source) => {
+                return Self::internal_or_busy("an account request", &**source);
+            }
         };
         Self {
             status,
@@ -134,7 +148,9 @@ impl From<GuildError> for ApiError {
             GuildError::Banned => (StatusCode::FORBIDDEN, ApiErrorCode::Banned),
             GuildError::LimitReached(_) => (StatusCode::CONFLICT, ApiErrorCode::LimitReached),
             GuildError::Conflict => (StatusCode::CONFLICT, ApiErrorCode::Conflict),
-            GuildError::Internal(source) => return Self::internal("a guild request", source),
+            GuildError::Internal(source) => {
+                return Self::internal_or_busy("a guild request", &**source);
+            }
         };
         Self {
             status,
@@ -161,7 +177,7 @@ impl From<MessageError> for ApiError {
                 code: ApiErrorCode::LimitReached,
                 message: "Your files take all the storage this instance gives each account.".into(),
             },
-            MessageError::Internal(source) => Self::internal("a message request", &source),
+            MessageError::Internal(source) => Self::internal_or_busy("a message request", &*source),
         }
     }
 }
@@ -208,5 +224,32 @@ impl From<JsonRejection> for ApiError {
             code: ApiErrorCode::ValidationFailed,
             message: rejection.body_text(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::StorageError;
+
+    fn pool_timeout() -> Box<dyn std::error::Error + Send + Sync> {
+        Box::new(StorageError::Database(sqlx::Error::PoolTimedOut))
+    }
+
+    #[test]
+    fn a_full_database_pool_is_busy_and_other_internal_errors_stay_internal() {
+        let busy = [
+            ApiError::from(AccountError::Internal(pool_timeout())),
+            ApiError::from(GuildError::Internal(pool_timeout())),
+            ApiError::from(MessageError::Internal(pool_timeout())),
+        ];
+        for error in busy {
+            assert_eq!(error.status, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(error.code, ApiErrorCode::ServerBusy);
+        }
+        let broken = ApiError::from(GuildError::Internal(Box::new(StorageError::Database(
+            sqlx::Error::RowNotFound,
+        ))));
+        assert_eq!(broken.status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 }
