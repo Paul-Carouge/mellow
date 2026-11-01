@@ -252,6 +252,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_upload_quota_is_summed_from_an_index_and_existing_attachments_keep_their_rows() {
+        const LAST_VERSION_WITHOUT_UPLOADER_INDEX: i64 = 23;
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_UPLOADER_INDEX, database.writer())
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) VALUES (30, 20, 1, 'files'); \
+             INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
+             content_type, size_bytes, created_at_unix_milliseconds) \
+             VALUES (40, 20, 1, 30, 'a.png', 'image/png', 3, 0), \
+             (41, 20, 1, NULL, 'b.txt', 'application/octet-stream', 5, 0), \
+             (42, 20, 2, NULL, 'c.txt', 'application/octet-stream', 7, 0);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        // The quota query of `storage::attachments::stored_bytes_of_uploader`.
+        macro_rules! quota_query {
+            () => {
+                "SELECT COALESCE(SUM(size_bytes), 0) FROM attachments WHERE uploader_id = ?"
+            };
+        }
+        let plan: Vec<(i64, i64, i64, String)> =
+            sqlx::query_as(concat!("EXPLAIN QUERY PLAN ", quota_query!()))
+                .bind(1_i64)
+                .fetch_all(database.writer())
+                .await
+                .unwrap();
+        let (ada_total,): (i64,) = sqlx::query_as(quota_query!())
+            .bind(1_i64)
+            .fetch_one(database.writer())
+            .await
+            .unwrap();
+        database.close().await;
+
+        assert_eq!(
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_UPLOADER_INDEX + 1))
+        );
+        let plan = plan
+            .into_iter()
+            .map(|row| row.3)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            plan.contains("SEARCH") && plan.contains("COVERING INDEX attachments_by_uploader_id"),
+            "{plan}"
+        );
+        assert_eq!(ada_total, 8, "sent and unsent uploads both count");
+    }
+
+    #[tokio::test]
     async fn existing_data_is_backed_up_encrypted_before_migrating() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
