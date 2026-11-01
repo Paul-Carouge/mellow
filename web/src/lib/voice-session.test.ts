@@ -892,13 +892,20 @@ describe("VoiceSession", () => {
       expect(processors[0]?.equalizer).toEqual(custom);
     });
 
-    it("gates and mutes the processed track, never the device's", async () => {
+    it("gates the processed track and keeps the device's on for the meter, but mutes both", async () => {
       const { session, connect, microphone, processors } = harness();
-      session.updateSettings({ ...session.settings, isVoiceEnhancementOn: true });
+      session.updateSettings({ ...session.settings, isVoiceEnhancementOn: true, inputMode: "push-to-talk" });
       await connect();
-      await session.toggleMicrophone();
       expect(processors[0]?.track.enabled).toBe(false);
       expect(microphone.track.enabled).toBe(true);
+      await session.toggleMicrophone();
+      expect(processors[0]?.track.enabled).toBe(false);
+      // Off with it, so the browser's microphone indicator goes out while muted.
+      expect(microphone.track.enabled).toBe(false);
+      await session.toggleMicrophone();
+      expect(microphone.track.enabled).toBe(true);
+      session.toggleDeafened();
+      expect(microphone.track.enabled).toBe(false);
     });
 
     it("plays the processed test microphone back while listening, and stops when the page closes", async () => {
