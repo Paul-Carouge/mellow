@@ -119,8 +119,8 @@ impl ReplayBuffer {
 pub(crate) enum SessionEnd {
     /// No client resumed within `RESUME_WINDOW`, or the control channel closed.
     Expired,
-    /// The hub cut the session off (too slow, or its token was revoked); the client was told to
-    /// identify again.
+    /// The hub cut the session off (too slow, its token was revoked, or a new session replaced it
+    /// at the per-user cap while it waited for a resume); the client was told to identify again.
     CutOff,
 }
 

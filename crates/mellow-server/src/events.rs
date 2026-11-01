@@ -44,7 +44,8 @@ struct SessionEntry {
     user_id: Snowflake,
     token_sha256: SessionTokenSha256,
     guild_ids: HashSet<Snowflake>,
-    /// `None` once the session was cut off (too slow, or its token revoked); the entry stays until
+    /// `None` once the session was cut off (too slow, its token revoked, or replaced at the
+    /// per-user cap while waiting for a resume); the entry stays until
     /// `unregister_session` so presence is computed from live sessions only once.
     sender: Option<mpsc::Sender<SharedEvent>>,
     /// Set by the session task while no socket is attached after one was: such a session is the
