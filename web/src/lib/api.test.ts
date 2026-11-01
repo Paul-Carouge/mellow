@@ -71,3 +71,19 @@ describe("RestClient message search", () => {
     ]);
   });
 });
+
+describe("RestClient read state", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends a read position with keepalive so a closing tab still delivers it, and nothing else", async () => {
+    const keepalives: (boolean | undefined)[] = [];
+    vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
+      keepalives.push(init.keepalive);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+    const rest = new RestClient();
+    await rest.acknowledge("100", "200");
+    await rest.startTyping("100");
+    expect(keepalives).toEqual([true, undefined]);
+  });
+});

@@ -68,7 +68,7 @@ export class ApiError extends Error {
 }
 
 export class RestClient {
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T>(method: string, path: string, body?: unknown, options: { keepalive?: boolean } = {}): Promise<T> {
     const headers: Record<string, string> = { [SESSION_TRANSPORT_HEADER]: "cookie" };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
@@ -83,6 +83,7 @@ export class RestClient {
         // A silently dead connection would otherwise leave a send "Sending…" for minutes, with no
         // way to retry; sends carry a nonce, so retrying after a timeout never duplicates them.
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MILLISECONDS),
+        keepalive: options.keepalive,
       });
     } catch {
       throw new ApiError(0, "NETWORK");
@@ -490,9 +491,8 @@ export class RestClient {
   }
 
   acknowledge(channelId: Snowflake, messageId: Snowflake): Promise<void> {
-    return this.request("PUT", `channels/${channelId}/read-state`, {
-      last_read_message_id: messageId,
-    });
+    // keepalive: the flush on a hiding tab must survive the tab closing right after.
+    return this.request("PUT", `channels/${channelId}/read-state`, { last_read_message_id: messageId }, { keepalive: true });
   }
 
   startTyping(channelId: Snowflake): Promise<void> {
