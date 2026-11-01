@@ -230,7 +230,11 @@
   }
 
   function handleScroll() {
+    const wasPinnedToLatest = isPinnedToLatest;
     isPinnedToLatest = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 1;
+    if (isPinnedToLatest && !wasPinnedToLatest) {
+      client.noteReaderAtLatest(channelId);
+    }
     isViewingOlderMessages = !isPinnedToLatest;
     loadOlderWhenNearTop();
     noteUnreadDividerSeen();
@@ -396,6 +400,7 @@
   }
 
   export function jumpToPresent() {
+    client.noteReaderAtLatest(channelId);
     isPinnedToLatest = true;
     isViewingOlderMessages = false;
     viewport.scrollTop = viewport.scrollHeight;
