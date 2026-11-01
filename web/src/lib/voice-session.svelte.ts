@@ -151,9 +151,13 @@ export interface VoicePorts {
   prepareNoiseSuppressor(): Promise<NoiseSuppressorProblem | null>;
   /**
    * Builds the chain on `track`. `null` where the browser has no Web Audio (the track is sent as
-   * it is); rejects when RNNoise, though prepared, cannot start.
+   * it is); rejects when RNNoise, though prepared, cannot start. `onFailure`: RNNoise died later.
    */
-  processMicrophone(track: MediaStreamTrack, processing: MicrophoneProcessing): Promise<MicrophoneProcessor | null>;
+  processMicrophone(
+    track: MediaStreamTrack,
+    processing: MicrophoneProcessing,
+    onFailure: () => void,
+  ): Promise<MicrophoneProcessor | null>;
   playTrack(track: MediaStreamTrack): AudioOutput;
   meterLevel(track: MediaStreamTrack): LevelMeter | null;
   /** `null` where the browser has no Web Audio: the microphone is then sent at 100 %. */
@@ -633,7 +637,9 @@ export class VoiceSession {
       return { stream, processor: null };
     }
     try {
-      return { stream, processor: await this.ports.processMicrophone(track, processing) };
+      let processor: MicrophoneProcessor | null = null;
+      processor = await this.ports.processMicrophone(track, processing, () => this.noiseSuppressorDied(processor));
+      return { stream, processor };
     } catch (error) {
       if (!processing.isNoiseSuppressorOn) {
         console.warn("couldn't process the microphone, it is sent as it is", error);
@@ -643,6 +649,26 @@ export class VoiceSession {
       stream.getTracks().forEach((stoppedTrack) => stoppedTrack.stop());
       this.noiseSuppressorProblem = noiseSuppressorProblemOf(error);
       return this.openMicrophone();
+    }
+  }
+
+  /**
+   * RNNoise died after starting (its worklet failed, or it gives only silence while the microphone
+   * is heard): the browser's filter takes over, the same way as when it cannot start.
+   */
+  private noiseSuppressorDied(failed: MicrophoneProcessor | null): void {
+    const isLive = failed !== null && failed === this.processor;
+    const isTest = failed !== null && failed === this.testProcessor;
+    if (!isLive && !isTest) {
+      return;
+    }
+    console.warn("the noise suppressor stopped, the browser's filter takes over");
+    this.noiseSuppressorProblem = "failed";
+    if (isLive) {
+      void this.switchMicrophone();
+    }
+    if (isTest) {
+      void this.restartMicrophoneTest();
     }
   }
 

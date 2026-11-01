@@ -32,6 +32,28 @@ export interface MicrophoneProcessing {
   readonly equalizer: EqualizerDecibels | null;
 }
 
+/**
+ * How long RNNoise may give exact silence while the microphone is heard before it counts as dead.
+ * Its worklet outputs zeros when its WebAssembly never loaded, and the package reports nothing.
+ */
+export const NOISE_SUPPRESSOR_SILENCE_LIMIT_MILLISECONDS = 1_000;
+
+/**
+ * The watchdog's count: how long RNNoise's output has been exact zeros while its input was not.
+ * Real processing never gives exact zeros for a heard microphone; a muted one feeds zeros, which
+ * resets the count.
+ */
+export function silentNoiseSuppressorMilliseconds(
+  previousMilliseconds: number,
+  input: Float32Array,
+  output: Float32Array,
+  elapsedMilliseconds: number,
+): number {
+  const isInputHeard = input.some((sample) => sample !== 0);
+  const isOutputSilent = output.every((sample) => sample === 0);
+  return isInputHeard && isOutputSilent ? previousMilliseconds + elapsedMilliseconds : 0;
+}
+
 /** RNNoise works on 10 ms frames at 48 kHz only. */
 export const NOISE_SUPPRESSOR_SAMPLE_RATE_HERTZ = 48_000;
 

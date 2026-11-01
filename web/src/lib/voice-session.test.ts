@@ -120,6 +120,8 @@ function harness({ microphoneError, storage = null }: { microphoneError?: Error;
     track: { enabled: boolean };
     equalizer: EqualizerDecibels | null;
     isStopped: boolean;
+    /** Test side: RNNoise died after starting (its worklet failed, or it only gives silence). */
+    fail: () => void;
   }[] = [];
   // The casts are limited to these fakes, which implement what the session calls.
   const session = new VoiceSession({
@@ -144,11 +146,11 @@ function harness({ microphoneError, storage = null }: { microphoneError?: Error;
       noiseSuppressor.prepareCount += 1;
       return noiseSuppressor.isLoadStuck ? new Promise(() => {}) : Promise.resolve(noiseSuppressor.problem);
     },
-    processMicrophone: (input, processing) => {
+    processMicrophone: (input, processing, onFailure) => {
       if (processing.isNoiseSuppressorOn && noiseSuppressor.startError) {
         return Promise.reject(noiseSuppressor.startError);
       }
-      const processor = { input, processing, track: { enabled: true }, equalizer: processing.equalizer, isStopped: false };
+      const processor = { input, processing, track: { enabled: true }, equalizer: processing.equalizer, isStopped: false, fail: onFailure };
       processors.push(processor);
       return Promise.resolve({
         track: processor.track as unknown as MediaStreamTrack,
@@ -888,6 +890,33 @@ describe("VoiceSession", () => {
       session.updateSettings({ ...session.settings, noiseSuppression: "browser" });
       session.preloadNoiseSuppressor();
       expect(noiseSuppressor.prepareCount).toBe(1);
+    });
+
+    it("falls back to the browser's filter when RNNoise dies during a call", async () => {
+      const { session, connect, microphones, noiseSuppressor, processors, lastPeer, joins } = harness();
+      noiseSuppressor.problem = null;
+      await connect();
+      processors[0]?.fail();
+      await flush();
+      expect(session.noiseSuppressorProblem).toBe("failed");
+      expect(processors[0]?.isStopped).toBe(true);
+      expect(microphones.map((entry) => entry.choice.isBrowserNoiseSuppressionOn)).toEqual([false, true]);
+      expect(lastPeer().replacedTracks.at(-1)).toBe(microphones[1]?.track);
+      expect(joins()).toHaveLength(1);
+    });
+
+    it("reopens the microphone test with the browser's filter when RNNoise dies, and ignores a chain already gone", async () => {
+      const { session, microphones, noiseSuppressor, processors } = harness();
+      noiseSuppressor.problem = null;
+      await session.startMicrophoneTest();
+      processors[0]?.fail();
+      await flush();
+      expect(session.isMicrophoneTestRunning).toBe(true);
+      expect(microphones.map((entry) => entry.choice.isBrowserNoiseSuppressionOn)).toEqual([false, true]);
+      // A late report from the stopped chain changes nothing.
+      processors[0]?.fail();
+      await flush();
+      expect(microphones).toHaveLength(2);
     });
 
     it("builds no processing and loads nothing when everything is off", async () => {
