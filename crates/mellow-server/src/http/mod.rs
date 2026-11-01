@@ -2924,6 +2924,72 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn stalled_picture_and_sound_uploads_are_answered_busy_at_their_deadline() {
+        use futures_util::StreamExt as _;
+
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let owner = registered_token(&state, "owner").await;
+        let (_, body) = send(
+            &state,
+            authorized(
+                "POST",
+                "/api/v1/guilds",
+                &owner,
+                Some(serde_json::json!({"name": "Club"})),
+            ),
+        )
+        .await;
+        let guild_id = json::<mellow_protocol::Guild>(&body).id;
+        let uploads = [
+            ("PUT", "/api/v1/users/@me/avatar".to_owned()),
+            (
+                "POST",
+                format!("/api/v1/guilds/{guild_id}/emojis?name=party"),
+            ),
+            (
+                "POST",
+                format!("/api/v1/guilds/{guild_id}/sounds?name=party"),
+            ),
+        ];
+        for (method, path) in uploads {
+            // One byte, then nothing: the client stalls mid-body.
+            let (started, body_started) = tokio::sync::oneshot::channel::<()>();
+            let trickle = futures_util::stream::once(async move {
+                let _ = started.send(());
+                Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"x"))
+            })
+            .chain(futures_util::stream::pending());
+            let request = Request::builder()
+                .method(method)
+                .uri(&path)
+                .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+                .body(Body::from_stream(trickle))
+                .unwrap();
+            let upload = tokio::spawn({
+                let state = state.clone();
+                async move { send(&state, request).await }
+            });
+            body_started.await.unwrap();
+            // Paused only while the handler waits on the body, so database work runs in real time.
+            tokio::time::pause();
+            tokio::time::advance(std::time::Duration::from_mins(10)).await;
+            let (status, body) = tokio::time::timeout(std::time::Duration::from_secs(1), upload)
+                .await
+                .expect("the handler still waits for the stalled body")
+                .unwrap();
+            tokio::time::resume();
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}");
+            assert_eq!(
+                json::<ApiErrorBody>(&body).code,
+                ApiErrorCode::ServerBusy,
+                "{path}"
+            );
+        }
+        database.close().await;
+    }
+
+    #[tokio::test]
     async fn sending_messages_is_rate_limited_per_user() {
         let (_directory, database) = migrated_database().await;
         let state = test_state(database.clone(), RegistrationMode::Open);
