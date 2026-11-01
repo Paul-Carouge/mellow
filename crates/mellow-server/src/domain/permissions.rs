@@ -64,6 +64,15 @@ pub(crate) fn voice_entitlement(channel_permissions: Permissions) -> VoiceEntitl
     }
 }
 
+/// Whether a member may play soundboard sounds in a voice channel, and be announced there with
+/// their join sound (ADR-0032): they must be heard there (`SPEAK`) and hold `USE_SOUNDBOARD`.
+/// `channel_permissions` are the member's permissions in the voice channel, overwrites applied.
+#[must_use]
+pub(crate) fn may_use_soundboard(channel_permissions: Permissions) -> bool {
+    voice_entitlement(channel_permissions) == VoiceEntitlement::Speak
+        && channel_permissions.contains(Permissions::USE_SOUNDBOARD)
+}
+
 /// What someone may do in a direct-message conversation: participants view and read it. In a
 /// one-to-one conversation they write only while they may reach the other person (a shared guild
 /// or a friendship, and no block either way, ADR-0025), so a member kicked from the only shared
@@ -270,6 +279,23 @@ mod tests {
 
     fn everyone() -> Role {
         role(GUILD.raw(), 0, Permissions::DEFAULT_EVERYONE)
+    }
+
+    #[test]
+    fn the_soundboard_needs_its_bit_and_being_heard_in_the_channel() {
+        assert!(may_use_soundboard(Permissions::DEFAULT_EVERYONE));
+        assert!(may_use_soundboard(Permissions::all()));
+        for missing in [
+            Permissions::USE_SOUNDBOARD,
+            Permissions::SPEAK,
+            Permissions::CONNECT,
+            Permissions::VIEW_CHANNEL,
+        ] {
+            assert!(
+                !may_use_soundboard(Permissions::DEFAULT_EVERYONE - missing),
+                "{missing:?}"
+            );
+        }
     }
 
     #[test]

@@ -196,6 +196,25 @@ pub(crate) const VOICE_JOINS_PER_USER: RateLimit = RateLimit {
     window: Duration::from_secs(60),
 };
 
+/// Soundboard requests per user (ADR-0032), above the 2 s between sounds the voice service
+/// enforces: each request reads the database before that check can pass.
+pub(crate) const VOICE_SOUND_REQUESTS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_secs(10),
+};
+
+/// Soundboard uploads per user (ADR-0032).
+pub(crate) const SOUND_UPLOADS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_mins(10),
+};
+
+/// Sound downloads per user (ADR-0032): up to about 488 KB each, kept by clients once loaded.
+pub(crate) const SOUND_DOWNLOADS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 120,
+    window: Duration::from_mins(1),
+};
+
 /// Mute and deafen changes per user, each told to the channel's viewers.
 pub(crate) const VOICE_STATE_CHANGES_PER_USER: RateLimit = RateLimit {
     maximum_events: 20,

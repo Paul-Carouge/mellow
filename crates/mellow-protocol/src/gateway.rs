@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Channel, ChannelUnread, CurrentUser, CustomEmoji, DirectMessageChannel, Guild, GuildSummary,
-    Member, Message, PublicUser, ReadState, Relationship, Role, Snowflake,
+    Member, Message, PublicUser, ReadState, Relationship, Role, Snowflake, SoundboardSound,
 };
 
 pub const GATEWAY_VERSION: u32 = 1;
@@ -49,7 +49,13 @@ pub enum ClientFrame {
     VoiceLeave,
     /// Changes the user's own mute and deafen while connected.
     VoiceState { self_mute: bool, self_deaf: bool },
+    /// Plays one of the voice channel's server sounds to everyone connected to it (ADR-0032).
+    /// Answered by `VOICE_SOUND_PLAYED` when allowed; ignored otherwise.
+    VoicePlaySound { sound_id: Snowflake },
 }
+
+/// The shortest time between two sounds played by one member (ADR-0032).
+pub const MINIMUM_MILLISECONDS_BETWEEN_SOUNDS: u64 = 2_000;
 
 /// The most voices one participant hears at once: receive m-lines of a voice offer (ADR-0030).
 pub const MAXIMUM_VOICE_RECEIVE_SLOTS: usize = 16;
@@ -98,6 +104,10 @@ impl std::fmt::Debug for ClientFrame {
                 .debug_struct("VoiceState")
                 .field("self_mute", self_mute)
                 .field("self_deaf", self_deaf)
+                .finish(),
+            Self::VoicePlaySound { sound_id } => formatter
+                .debug_struct("VoicePlaySound")
+                .field("sound_id", sound_id)
                 .finish(),
         }
     }
@@ -183,6 +193,10 @@ pub struct VoiceState {
     pub self_deaf: bool,
     /// The person lacks `SPEAK` here: the server forwards none of their audio.
     pub suppressed: bool,
+    /// The sound clients connected to this channel play, instead of the join chime, when the
+    /// person joins or moves in (ADR-0032). Absent when none, and from older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join_sound_id: Option<Snowflake>,
 }
 
 /// Why the server refused a `voice_join`.
@@ -310,6 +324,18 @@ pub enum GatewayEvent {
         guild_id: Snowflake,
         emojis: Vec<CustomEmoji>,
     },
+    /// A soundboard sound was added, edited or deleted: the guild's full list, as in
+    /// `Guild::sounds`. Sent to every member. Added after `v0.25.0`: older clients skip it.
+    GuildSoundsUpdate {
+        guild_id: Snowflake,
+        sounds: Vec<SoundboardSound>,
+    },
+    /// The user chose another join sound in a guild (`Guild::my_join_sound_id`), or it was
+    /// deleted. Sent to that user's sessions only.
+    MyJoinSoundUpdate {
+        guild_id: Snowflake,
+        sound_id: Option<Snowflake>,
+    },
     /// Someone reacted to a message. Sent to the channel's viewers, the reacting user included.
     MessageReactionAdd(MessageReaction),
     /// Someone took their reaction back, or a moderator removed it.
@@ -410,11 +436,51 @@ pub enum GatewayEvent {
         user_id: Snowflake,
         speaking: bool,
     },
+    /// Someone played a soundboard sound in a voice channel (ADR-0032). Sent to every session
+    /// connected to that channel, the player's included; each plays it locally.
+    VoiceSoundPlayed {
+        channel_id: Snowflake,
+        user_id: Snowflake,
+        sound_id: Snowflake,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn soundboard_frames_and_events_keep_their_wire_shape() {
+        let frame: ClientFrame =
+            serde_json::from_str(r#"{"op":"voice_play_sound","d":{"sound_id":"9"}}"#).unwrap();
+        assert_eq!(
+            frame,
+            ClientFrame::VoicePlaySound {
+                sound_id: Snowflake::from_raw(9)
+            }
+        );
+        let played = GatewayEvent::VoiceSoundPlayed {
+            channel_id: Snowflake::from_raw(2),
+            user_id: Snowflake::from_raw(3),
+            sound_id: Snowflake::from_raw(9),
+        };
+        let json = serde_json::json!({"t": "VOICE_SOUND_PLAYED", "data": {
+            "channel_id": "2", "user_id": "3", "sound_id": "9"}});
+        assert_eq!(serde_json::to_value(&played).unwrap(), json);
+        let cleared = GatewayEvent::MyJoinSoundUpdate {
+            guild_id: Snowflake::from_raw(1),
+            sound_id: None,
+        };
+        let json = serde_json::json!({"t": "MY_JOIN_SOUND_UPDATE", "data": {
+            "guild_id": "1", "sound_id": null}});
+        assert_eq!(serde_json::to_value(&cleared).unwrap(), json);
+        let state: VoiceState = serde_json::from_str(
+            r#"{"user_id":"3","guild_id":"1","channel_id":"2","self_mute":false,
+               "self_deaf":false,"suppressed":false,"join_sound_id":"9"}"#,
+        )
+        .unwrap();
+        assert_eq!(state.join_sound_id, Some(Snowflake::from_raw(9)));
+    }
 
     #[test]
     fn frames_use_op_s_d_on_the_wire() {
@@ -647,6 +713,7 @@ mod tests {
             self_mute: true,
             self_deaf: false,
             suppressed: false,
+            join_sound_id: None,
         };
         let cases = [
             (

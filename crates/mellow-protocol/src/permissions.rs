@@ -27,13 +27,17 @@ bitflags::bitflags! {
         const VIEW_AUDIT_LOG       = 1 << 15;
         /// Adding an emoji no one reacted with yet; joining an existing reaction needs none.
         const ADD_REACTIONS        = 1 << 16;
-        /// Adding, renaming and deleting the guild's custom emoji (ADR-0028).
-        const MANAGE_EMOJIS        = 1 << 17;
+        /// Adding, editing and deleting the guild's custom emoji and soundboard sounds
+        /// (ADR-0028, ADR-0032; named `MANAGE_EMOJIS` before sounds existed).
+        const MANAGE_EXPRESSIONS   = 1 << 17;
         /// Joining a voice channel; `VIEW_CHANNEL` is needed too (ADR-0030).
         const CONNECT              = 1 << 18;
         /// Being heard in a voice channel: without it the server forwards none of the member's
         /// audio (ADR-0030).
         const SPEAK                = 1 << 19;
+        /// Playing the guild's soundboard sounds in a voice channel, and choosing a join sound
+        /// (ADR-0032).
+        const USE_SOUNDBOARD       = 1 << 20;
     }
 }
 
@@ -50,7 +54,8 @@ impl Permissions {
         .union(Self::CREATE_INVITE)
         .union(Self::ADD_REACTIONS)
         .union(Self::CONNECT)
-        .union(Self::SPEAK);
+        .union(Self::SPEAK)
+        .union(Self::USE_SOUNDBOARD);
 
     /// Permissions granted to `@everyone` in a newly created guild.
     pub const DEFAULT_EVERYONE: Self = Self::VIEW_CHANNEL
@@ -61,7 +66,8 @@ impl Permissions {
         .union(Self::CHANGE_NICKNAME)
         .union(Self::ADD_REACTIONS)
         .union(Self::CONNECT)
-        .union(Self::SPEAK);
+        .union(Self::SPEAK)
+        .union(Self::USE_SOUNDBOARD);
 }
 
 /// A member's permissions in a guild (ADR-0007 steps 1 to 3): the owner and administrators get

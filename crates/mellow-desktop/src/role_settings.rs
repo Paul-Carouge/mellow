@@ -48,7 +48,7 @@ const fn describe(
 }
 
 /// Every permission once, in display order; a group header starts where `group` changes.
-const PERMISSION_DESCRIPTIONS: [PermissionDescription; 20] = [
+const PERMISSION_DESCRIPTIONS: [PermissionDescription; 21] = [
     describe(
         Permissions::VIEW_CHANNEL,
         "General",
@@ -78,10 +78,10 @@ const PERMISSION_DESCRIPTIONS: [PermissionDescription; 20] = [
         false,
     ),
     describe(
-        Permissions::MANAGE_EMOJIS,
+        Permissions::MANAGE_EXPRESSIONS,
         "General",
-        "Manage emoji",
-        "Add custom emoji to this server, rename and delete them.",
+        "Manage expressions",
+        "Add custom emoji and soundboard sounds to this server, edit and delete them.",
         false,
     ),
     describe(
@@ -166,6 +166,13 @@ const PERMISSION_DESCRIPTIONS: [PermissionDescription; 20] = [
         "Voice channels",
         "Speak",
         "Be heard in voice channels; without it, others hear nothing from you.",
+        false,
+    ),
+    describe(
+        Permissions::USE_SOUNDBOARD,
+        "Voice channels",
+        "Use soundboard",
+        "Play this server's sounds in voice channels, and choose a join sound.",
         false,
     ),
     describe(
@@ -494,6 +501,8 @@ mod tests {
         Guild {
             icon: None,
             emojis: Vec::new(),
+            sounds: Vec::new(),
+            my_join_sound_id: None,
             id: GUILD,
             name: "Club".to_owned(),
             owner_id: OWNER,

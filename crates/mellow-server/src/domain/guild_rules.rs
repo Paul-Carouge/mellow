@@ -10,6 +10,9 @@ use mellow_protocol::{
 };
 
 use crate::domain::account_rules::is_invisible_format_character;
+use crate::domain::sound_rules::{
+    MAXIMUM_SOUND_DURATION_MILLISECONDS, MAXIMUM_SOUND_NAME_LENGTH, MINIMUM_SOUND_NAME_LENGTH,
+};
 
 pub const MINIMUM_GUILD_NAME_LENGTH: usize = 2;
 pub const MAXIMUM_GUILD_NAME_LENGTH: usize = 100;
@@ -125,6 +128,16 @@ pub enum GuildRuleViolation {
         "only voice channels have a user limit, from 1 to {MAXIMUM_VOICE_CHANNEL_PARTICIPANTS}"
     )]
     UserLimit,
+    #[error(
+        "sound names are {MINIMUM_SOUND_NAME_LENGTH} to {MAXIMUM_SOUND_NAME_LENGTH} characters, without hidden ones"
+    )]
+    SoundName,
+    #[error("a sound's emoji is one emoji, or one of this server's custom emoji")]
+    SoundEmoji,
+    #[error(
+        "a sound is a PCM WAV, mono, 48 kHz, 16-bit, with a 44-byte header and at most {MAXIMUM_SOUND_DURATION_MILLISECONDS} ms of samples"
+    )]
+    SoundFile,
 }
 
 /// The user limit a channel of `kind` may be given: none outside voice channels, 1 to the hard
@@ -152,7 +165,7 @@ fn has_hidden_characters(text: &str) -> bool {
         .any(|character| character.is_control() || is_invisible_format_character(character))
 }
 
-fn trimmed_within(text: &str, minimum: usize, maximum: usize) -> Option<&str> {
+pub(crate) fn trimmed_within(text: &str, minimum: usize, maximum: usize) -> Option<&str> {
     let trimmed = text.trim();
     let length = trimmed.chars().count();
     ((minimum..=maximum).contains(&length) && !has_hidden_characters(trimmed)).then_some(trimmed)

@@ -30,7 +30,8 @@ use crate::http::api_error::{ApiError, ApiQuery};
 use crate::http::authentication::{is_from_this_origin, session_cookie};
 use crate::http::client_address::client_address_key;
 use crate::http::rate_limit::{
-    GATEWAY_CONNECTIONS_PER_ADDRESS, VOICE_JOINS_PER_USER, VOICE_STATE_CHANGES_PER_USER,
+    GATEWAY_CONNECTIONS_PER_ADDRESS, VOICE_JOINS_PER_USER, VOICE_SOUND_REQUESTS_PER_USER,
+    VOICE_STATE_CHANGES_PER_USER,
 };
 use crate::voice::VoiceJoinRequest;
 use session::{
@@ -598,6 +599,19 @@ async fn handle_voice_frame(state: &AppState, attached: &AttachedSession<'_>, fr
                     .await;
             }
         }
+        ClientFrame::VoicePlaySound { sound_id } => {
+            let key = format!("voice-sound:{user_id}");
+            // Over the limit, the request is dropped like any refused sound (ADR-0032).
+            if state
+                .rate_limiter
+                .record_event(&key, VOICE_SOUND_REQUESTS_PER_USER, now)
+            {
+                state
+                    .voice
+                    .play_sound(user_id, attached.hub_key, sound_id)
+                    .await;
+            }
+        }
         ClientFrame::Identify { .. } | ClientFrame::Resume { .. } | ClientFrame::Heartbeat => {}
     }
 }
@@ -637,7 +651,8 @@ async fn run_attached(
                 Some(
                     frame @ (ClientFrame::VoiceJoin { .. }
                     | ClientFrame::VoiceLeave
-                    | ClientFrame::VoiceState { .. }),
+                    | ClientFrame::VoiceState { .. }
+                    | ClientFrame::VoicePlaySound { .. }),
                 ) => handle_voice_frame(state, attached, frame).await,
                 // A second identify/resume, malformed JSON or a closed socket ends the connection.
                 Some(ClientFrame::Identify { .. } | ClientFrame::Resume { .. }) | None => break,

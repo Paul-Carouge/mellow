@@ -411,6 +411,9 @@ impl ClientState {
             | GatewayEvent::MessageReactionRemoveAll { .. }
             | GatewayEvent::MessageReactionRemoveEmoji { .. }
             | GatewayEvent::GuildEmojisUpdate { .. }
+            | GatewayEvent::GuildSoundsUpdate { .. }
+            | GatewayEvent::MyJoinSoundUpdate { .. }
+            | GatewayEvent::VoiceSoundPlayed { .. }
             | GatewayEvent::VoiceStateUpdate { .. }
             | GatewayEvent::VoiceStateDelete { .. }
             | GatewayEvent::VoiceSessionDescription { .. }
@@ -927,6 +930,8 @@ mod tests {
             guilds: vec![Guild {
                 icon: None,
                 emojis: Vec::new(),
+                sounds: Vec::new(),
+                my_join_sound_id: None,
                 id: GUILD,
                 name: "Club".into(),
                 owner_id: ME,
@@ -1246,6 +1251,8 @@ mod tests {
             GatewayEvent::GuildCreate(Box::new(Guild {
                 icon: None,
                 emojis: Vec::new(),
+                sounds: Vec::new(),
+                my_join_sound_id: None,
                 id: CLUB,
                 name: "Other's club".into(),
                 owner_id: OTHER,
@@ -1333,6 +1340,8 @@ mod tests {
                 GatewayEvent::GuildCreate(Box::new(Guild {
                     icon: None,
                     emojis: Vec::new(),
+                    sounds: Vec::new(),
+                    my_join_sound_id: None,
                     id: CLUB,
                     name: "Other's club".into(),
                     owner_id: OTHER,

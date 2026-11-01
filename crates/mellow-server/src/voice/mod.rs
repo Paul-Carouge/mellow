@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
+use std::time::Instant;
 
 use mellow_protocol::{
     GatewayEvent, Snowflake, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState,
@@ -19,7 +20,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::config::VoiceConfig;
 use crate::domain::guilds::{ChannelAudience, Guilds};
-use crate::domain::voice_rules::{VoiceAccess, has_room_for_one_more, validate_voice_offer};
+use crate::domain::voice_rules::{
+    VoiceAccess, has_room_for_one_more, may_play_another_sound, validate_voice_offer,
+};
 use crate::events::{EventHub, SessionKey};
 pub(crate) use address::is_valid_host;
 use address::{HostResolutions, announced_address, host_from_header};
@@ -59,6 +62,10 @@ struct Participant {
     self_deaf: bool,
     /// Lacks `SPEAK`: their audio is not forwarded.
     suppressed: bool,
+    /// Announced in their voice state, for the clients in the channel to play (ADR-0032).
+    join_sound_id: Option<Snowflake>,
+    /// When they last played a soundboard sound, for the minimum gap between two.
+    last_sound_played_at: Option<Instant>,
 }
 
 impl Participant {
@@ -70,6 +77,7 @@ impl Participant {
             self_mute: self.self_mute,
             self_deaf: self.self_deaf,
             suppressed: self.suppressed,
+            join_sound_id: self.join_sound_id,
         }
     }
 
@@ -310,7 +318,7 @@ impl VoiceService {
         if !shared.events.is_session_live(request.session) {
             return;
         }
-        let (guild_id, user_limit, may_speak) = match shared
+        let (guild_id, user_limit, may_speak, may_use_soundboard) = match shared
             .guilds
             .voice_access(request.user_id, request.channel_id)
             .await
@@ -319,7 +327,8 @@ impl VoiceService {
                 guild_id,
                 user_limit,
                 may_speak,
-            }) => (guild_id, user_limit, may_speak),
+                may_use_soundboard,
+            }) => (guild_id, user_limit, may_speak, may_use_soundboard),
             Ok(VoiceAccess::ChannelGone | VoiceAccess::NotMember | VoiceAccess::Denied) => {
                 return refuse(VoiceJoinRefusal::MissingPermissions);
             }
@@ -329,19 +338,20 @@ impl VoiceService {
             }
         };
         let previous = participants.get(&request.user_id).cloned();
-        let others_in_channel = participants
-            .iter()
-            .filter(|(user_id, participant)| {
-                **user_id != request.user_id && participant.channel_id == request.channel_id
-            })
-            .count();
-        if !has_room_for_one_more(others_in_channel, user_limit) {
-            return refuse(VoiceJoinRefusal::ChannelFull);
+        if let Some(refusal) =
+            missing_room(&participants, &request, user_limit, shared.max_participants)
+        {
+            return refuse(refusal);
         }
-        let others_on_instance = participants.len() - usize::from(previous.is_some());
-        if others_on_instance >= shared.max_participants {
-            return refuse(VoiceJoinRefusal::InstanceFull);
-        }
+        let join_sound_id = shared
+            .join_sound_announced(
+                request.user_id,
+                request.channel_id,
+                previous.as_ref(),
+                guild_id,
+                may_use_soundboard,
+            )
+            .await;
         let participant = Participant {
             session: request.session,
             connection_id: shared.next_connection_id.fetch_add(1, Ordering::Relaxed),
@@ -350,6 +360,10 @@ impl VoiceService {
             self_mute: request.self_mute,
             self_deaf: request.self_deaf,
             suppressed: !may_speak,
+            join_sound_id,
+            last_sound_played_at: previous
+                .as_ref()
+                .and_then(|previous| previous.last_sound_played_at),
         };
         let join = MediaJoin {
             user_id: request.user_id,
@@ -423,6 +437,71 @@ impl VoiceService {
             .await;
     }
 
+    /// Plays one of the channel's server sounds to everyone connected to the channel `session`
+    /// is connected to, the player included (`VOICE_SOUND_PLAYED`), when the member may
+    /// (ADR-0032); does nothing otherwise.
+    pub(crate) async fn play_sound(
+        &self,
+        user_id: Snowflake,
+        session: SessionKey,
+        sound_id: Snowflake,
+    ) {
+        let shared = &self.shared;
+        let is_playable = |participant: &Participant, now: Instant| {
+            participant.session == session
+                && !participant.self_deaf
+                && !participant.suppressed
+                && may_play_another_sound(participant.last_sound_played_at, now)
+        };
+        // Cheap checks first, so a member over the gap costs no database read.
+        let Some(channel_id) = shared
+            .participants
+            .lock()
+            .await
+            .get(&user_id)
+            .filter(|participant| is_playable(participant, Instant::now()))
+            .map(|participant| participant.channel_id)
+        else {
+            return;
+        };
+        let access = shared.guilds.voice_access(user_id, channel_id).await;
+        let Ok(VoiceAccess::Allowed {
+            guild_id,
+            may_use_soundboard: true,
+            ..
+        }) = access
+        else {
+            return;
+        };
+        match shared.guilds.guild_of_sound(sound_id).await {
+            Ok(Some(sound_guild_id)) if sound_guild_id == guild_id => {}
+            Ok(_) => return,
+            Err(error) => {
+                tracing::warn!(%error, "voice: cannot read a sound");
+                return;
+            }
+        }
+        let mut participants = shared.participants.lock().await;
+        let now = Instant::now();
+        let Some(player) = participants.get_mut(&user_id).filter(|participant| {
+            participant.channel_id == channel_id && is_playable(participant, now)
+        }) else {
+            return;
+        };
+        player.last_sound_played_at = Some(now);
+        let event = GatewayEvent::VoiceSoundPlayed {
+            channel_id,
+            user_id,
+            sound_id,
+        };
+        for listener in participants
+            .values()
+            .filter(|participant| participant.channel_id == channel_id)
+        {
+            shared.events.publish_to_session(listener.session, &event);
+        }
+    }
+
     /// The gateway session ended for good (not a resume): its voice connection ends with it.
     pub(crate) async fn end_session(&self, session: SessionKey) {
         let mut participants = self.shared.participants.lock().await;
@@ -454,6 +533,31 @@ impl VoiceService {
 }
 
 impl VoiceShared {
+    /// The join sound a join announces (ADR-0032): none on a reconnection to the same channel's
+    /// unchanged one, the member's own when they may use the soundboard there.
+    async fn join_sound_announced(
+        &self,
+        user_id: Snowflake,
+        channel_id: Snowflake,
+        previous: Option<&Participant>,
+        guild_id: Snowflake,
+        may_use_soundboard: bool,
+    ) -> Option<Snowflake> {
+        match previous {
+            // A reconnection to the same channel announces nothing new.
+            Some(previous) if previous.channel_id == channel_id => previous.join_sound_id,
+            _ if may_use_soundboard => self
+                .guilds
+                .join_sound_of_member(guild_id, user_id)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "voice join: cannot read the join sound");
+                    None
+                }),
+            _ => None,
+        }
+    }
+
     /// Tells the others what a join changed: the session it replaced, a move, a new state.
     async fn announce_join(
         &self,
@@ -702,6 +806,28 @@ impl VoiceShared {
             }
         }
     }
+}
+
+/// Why there is no room for the user joining with `request`, if there is none: in the channel
+/// (its user limit) or on the instance; the user's own current place does not count.
+fn missing_room(
+    participants: &HashMap<Snowflake, Participant>,
+    request: &VoiceJoinRequest,
+    user_limit: Option<u8>,
+    max_participants: usize,
+) -> Option<VoiceJoinRefusal> {
+    let others_in_channel = participants
+        .iter()
+        .filter(|(user_id, participant)| {
+            **user_id != request.user_id && participant.channel_id == request.channel_id
+        })
+        .count();
+    if !has_room_for_one_more(others_in_channel, user_limit) {
+        return Some(VoiceJoinRefusal::ChannelFull);
+    }
+    let others_on_instance =
+        participants.len() - usize::from(participants.contains_key(&request.user_id));
+    (others_on_instance >= max_participants).then_some(VoiceJoinRefusal::InstanceFull)
 }
 
 /// Binds the voice port on every IPv4 address and starts the media thread.

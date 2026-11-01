@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use mellow_protocol::{
     MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_OFFER_BYTES, MAXIMUM_VOICE_RECEIVE_SLOTS,
-    Snowflake,
+    MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, Snowflake,
 };
 
 /// A receive slot goes to another speaker only once its current one has been silent this long.
@@ -19,6 +19,15 @@ pub(crate) const SPEAKING_AUDIO_LEVEL_THRESHOLD_DBOV: i8 = -50;
 /// Someone stops speaking after this long without a voiced packet, so short pauses between
 /// words do not flicker the indicator.
 pub(crate) const SPEAKING_HANGOVER: Duration = Duration::from_millis(300);
+
+/// Whether a member who last played a sound at `last_played_at` may play another one now
+/// (ADR-0032).
+pub(crate) fn may_play_another_sound(last_played_at: Option<Instant>, now: Instant) -> bool {
+    last_played_at.is_none_or(|last| {
+        now.saturating_duration_since(last)
+            >= Duration::from_millis(MINIMUM_MILLISECONDS_BETWEEN_SOUNDS)
+    })
+}
 
 /// Why an SDP offer is refused (`invalid_offer`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -127,6 +136,8 @@ pub(crate) enum VoiceAccess {
         user_limit: Option<u8>,
         /// Holds `SPEAK`: their audio is forwarded.
         may_speak: bool,
+        /// May play soundboard sounds there (`domain::permissions::may_use_soundboard`).
+        may_use_soundboard: bool,
     },
 }
 
@@ -248,6 +259,21 @@ impl SpeakingDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sounds_are_two_seconds_apart_at_least() {
+        let start = Instant::now();
+        assert!(may_play_another_sound(None, start));
+        assert!(!may_play_another_sound(Some(start), start));
+        assert!(!may_play_another_sound(
+            Some(start),
+            start + Duration::from_millis(1_999)
+        ));
+        assert!(may_play_another_sound(
+            Some(start),
+            start + Duration::from_secs(2)
+        ));
+    }
 
     fn offer(media: &[(&str, &str)]) -> String {
         use std::fmt::Write as _;

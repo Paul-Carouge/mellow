@@ -891,6 +891,8 @@ mod tests {
         Guild {
             icon: None,
             emojis: Vec::new(),
+            sounds: Vec::new(),
+            my_join_sound_id: None,
             id: Snowflake::from_raw(1),
             name: "Board Games Night".into(),
             owner_id: Snowflake::from_raw(9),

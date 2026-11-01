@@ -8,6 +8,7 @@ mod database;
 pub(crate) mod direct_messages;
 pub(crate) mod guild_emojis;
 pub(crate) mod guild_images;
+pub(crate) mod guild_sounds;
 pub(crate) mod guilds;
 mod master_key;
 pub(crate) mod messages;
