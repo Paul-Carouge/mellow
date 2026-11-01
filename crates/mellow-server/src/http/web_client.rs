@@ -19,7 +19,9 @@ const CACHE_REVALIDATE: &str = "no-cache";
 /// images are the composer's previews of files about to be uploaded. The manifest makes the client
 /// installable as an app; there is no service worker (Chrome installs without one), and
 /// `worker-src 'none'` keeps a script served from this origin, such as an upload, from becoming one.
-const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; \
+/// `'wasm-unsafe-eval'` lets the voice noise suppressor compile its WebAssembly (ADR-0031); it
+/// allows no JavaScript `eval`.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
      style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; \
      connect-src 'self'; manifest-src 'self'; worker-src 'none'; object-src 'none'; \
      base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
@@ -135,6 +137,11 @@ mod tests {
         let policy = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
         assert!(policy.contains("manifest-src 'self'"), "{policy}");
         assert!(policy.contains("worker-src 'none'"), "{policy}");
+        assert!(
+            policy.contains("script-src 'self' 'wasm-unsafe-eval';")
+                && !policy.contains("'unsafe-eval'"),
+            "WebAssembly only, never JavaScript eval: {policy}"
+        );
 
         let icon = asset_response("icons/mellow-maskable-512.png", b"");
         assert_eq!(icon.headers()[header::CONTENT_TYPE], "image/png");
