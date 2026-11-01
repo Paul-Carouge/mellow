@@ -34,6 +34,8 @@ import {
 } from "./protocol";
 
 export const HISTORY_PAGE_SIZE = 50;
+/** The largest history page the instance gives (`MAXIMUM_HISTORY_PAGE_SIZE` on the server). */
+export const MAXIMUM_HISTORY_PAGE_SIZE = 100;
 /** One page of "who reacted": the most the instance gives at once. */
 export const REACTING_USERS_PAGE_SIZE = 100;
 /** The path segment of `/users/@me/{kind}` (ADR-0021). */
@@ -359,8 +361,8 @@ export class RestClient {
     return this.request("GET", `guilds/${guildId}/members`);
   }
 
-  listMessages(channelId: Snowflake, before?: Snowflake): Promise<Message[]> {
-    const query = new URLSearchParams({ limit: String(HISTORY_PAGE_SIZE) });
+  listMessages(channelId: Snowflake, before?: Snowflake, limit = HISTORY_PAGE_SIZE): Promise<Message[]> {
+    const query = new URLSearchParams({ limit: String(limit) });
     if (before) {
       query.set("before", before);
     }
