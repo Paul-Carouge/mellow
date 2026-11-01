@@ -1033,6 +1033,11 @@ export class VoiceSession {
     if (this.amplifier) {
       this.amplifier.track.enabled = isOpen;
     }
+    if (this.processor) {
+      // The device's track feeds the chain, so a closed gate or push-to-talk leaves it on for the
+      // meter; muted (or deafened), it goes off too, so the browser's microphone indicator does.
+      this.microphone?.getAudioTracks().forEach((deviceTrack) => (deviceTrack.enabled = !isMuted));
+    }
   }
 
   private setPersonSetting(userId: Snowflake, setting: PersonVoiceSetting): void {
