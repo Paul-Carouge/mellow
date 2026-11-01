@@ -202,6 +202,8 @@ export class MellowClient {
   private reactionsInFlight = new Set<string>();
   /** Channels whose pins changed while their list was loading: asked again once it arrives. */
   private pinsChangedWhileLoading = new Set<Snowflake>();
+  /** Servers whose members changed while their list was loading: asked again once it arrives. */
+  private membersChangedWhileLoading = new Set<Snowflake>();
   /**
    * Messages deleted this session: a history page or a send answer that left before the deletion
    * must not bring them back. Ids are never reused, so they are kept until sign-out.
@@ -663,6 +665,7 @@ export class MellowClient {
         this.removeGuild(event.data.id);
         return;
       case "GUILD_MEMBER_ADD": {
+        this.noteMembersChangedWhileLoading(event.data.guild_id);
         const members = this.membersByGuild.get(event.data.guild_id);
         if (members && !members.some((member) => member.user.id === event.data.member.user.id)) {
           this.membersByGuild.set(event.data.guild_id, [...members, event.data.member]);
@@ -670,6 +673,7 @@ export class MellowClient {
         return;
       }
       case "GUILD_MEMBER_REMOVE": {
+        this.noteMembersChangedWhileLoading(event.data.guild_id);
         const members = this.membersByGuild.get(event.data.guild_id);
         if (members) {
           this.membersByGuild.set(
@@ -680,6 +684,7 @@ export class MellowClient {
         return;
       }
       case "GUILD_MEMBER_UPDATE": {
+        this.noteMembersChangedWhileLoading(event.data.guild_id);
         const members = this.membersByGuild.get(event.data.guild_id);
         if (members) {
           this.membersByGuild.set(
@@ -699,6 +704,7 @@ export class MellowClient {
           roles: event.data.roles,
           my_role_ids: guild.my_role_ids.filter((id) => roleIds.has(id)),
         }));
+        this.noteMembersChangedWhileLoading(event.data.guild_id);
         const members = this.membersByGuild.get(event.data.guild_id);
         if (members?.some((member) => member.role_ids.some((id) => !roleIds.has(id)))) {
           this.membersByGuild.set(
@@ -987,6 +993,9 @@ export class MellowClient {
     if (this.user?.id === userId) {
       this.user = updateIfThisUser(this.user);
     }
+    for (const guildId of this.requestedMembers) {
+      this.noteMembersChangedWhileLoading(guildId);
+    }
     // Only what shows this user changes: every other row keeps its object and is not drawn again.
     for (const [guildId, members] of this.membersByGuild) {
       if (members.some((member) => member.user.id === userId)) {
@@ -1231,12 +1240,38 @@ export class MellowClient {
       return;
     }
     this.requestedMembers.add(guildId);
+    await this.loadMembers(guildId);
+  }
+
+  private async loadMembers(guildId: Snowflake): Promise<void> {
+    const generation = this.historyGeneration;
+    this.membersChangedWhileLoading.delete(guildId);
     try {
-      this.membersByGuild.set(guildId, await this.rest.listMembers(guildId));
+      const members = await this.rest.listMembers(guildId);
+      // A `Ready` or a removal meanwhile: this answer belongs to a session state that is gone.
+      if (generation !== this.historyGeneration || !this.guilds.some((guild) => guild.id === guildId)) {
+        return;
+      }
+      if (this.membersChangedWhileLoading.delete(guildId)) {
+        // The answer may predate a join, a departure or a role change: ask for a fresh one.
+        await this.loadMembers(guildId);
+        return;
+      }
+      this.membersByGuild.set(guildId, members);
     } catch (error) {
+      if (generation !== this.historyGeneration || !this.guilds.some((guild) => guild.id === guildId)) {
+        return;
+      }
       this.requestedMembers.delete(guildId);
       this.failedMemberGuildIds.add(guildId);
       this.reportError(error, "load members");
+    }
+  }
+
+  /** Member events cannot apply to a list still on its way: it is asked again once it arrives. */
+  private noteMembersChangedWhileLoading(guildId: Snowflake): void {
+    if (this.requestedMembers.has(guildId) && !this.membersByGuild.has(guildId)) {
+      this.membersChangedWhileLoading.add(guildId);
     }
   }
 
