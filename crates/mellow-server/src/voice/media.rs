@@ -112,6 +112,13 @@ pub(crate) enum MediaEvent {
         connection_id: u64,
         is_speaking: bool,
     },
+    /// `listener_id`'s receive m-line `mid` now carries `speaker_id`'s voice.
+    SlotAssigned {
+        listener_id: Snowflake,
+        connection_id: u64,
+        mid: Mid,
+        speaker_id: Snowflake,
+    },
     /// The connection never came up, stopped, or carried nothing for too long.
     Ended {
         user_id: Snowflake,
@@ -555,6 +562,7 @@ impl MediaLoop<'_> {
         }
         // A listener only receives media here; frames it sends arrive through its own input.
         let mut frames_from_listeners = Vec::new();
+        let mut slot_assignments = Vec::new();
         for listener in self.participants.values_mut().filter(|listener| {
             listener.user_id != speaker_id
                 && listener.channel_id == channel_id
@@ -562,9 +570,18 @@ impl MediaLoop<'_> {
                 && !listener.is_deafened
         }) {
             self.current_participant = Some(listener.user_id);
+            let is_new_assignment = !listener.slots.has_slot(speaker_id);
             let Some(slot) = listener.slots.slot_for(speaker_id, now) else {
                 continue;
             };
+            if is_new_assignment {
+                slot_assignments.push(MediaEvent::SlotAssigned {
+                    listener_id: listener.user_id,
+                    connection_id: listener.connection_id,
+                    mid: slot,
+                    speaker_id,
+                });
+            }
             let Some(writer) = listener.rtc.writer(slot) else {
                 continue;
             };
@@ -591,6 +608,9 @@ impl MediaLoop<'_> {
                 continue;
             }
             drain_output(listener, &self.socket, &mut frames_from_listeners);
+        }
+        for event in slot_assignments {
+            self.emit(event);
         }
     }
 

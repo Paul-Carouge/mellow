@@ -414,6 +414,7 @@ impl ClientState {
             | GatewayEvent::VoiceStateUpdate { .. }
             | GatewayEvent::VoiceStateDelete { .. }
             | GatewayEvent::VoiceSessionDescription { .. }
+            | GatewayEvent::VoiceSlotAssigned { .. }
             | GatewayEvent::VoiceJoinRefused { .. }
             | GatewayEvent::VoiceDisconnected { .. }
             | GatewayEvent::Speaking { .. } => StateChange::Nothing,

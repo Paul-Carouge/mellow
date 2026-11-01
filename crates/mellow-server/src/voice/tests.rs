@@ -836,3 +836,37 @@ async fn a_move_to_another_guilds_channel_removes_the_state_for_the_old_viewers(
     wait_for_voice_state_delete(&mut member, owner_id).await;
     fixture.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_listener_learns_which_of_its_slots_carries_each_voice() {
+    let fixture = fixture().await;
+    let (mut owner, _) = identified(fixture.address, fixture.token("owner")).await;
+    let (mut member, _) = identified(fixture.address, fixture.token("member")).await;
+
+    let owner_bot = join_and_start(&mut owner, fixture.lounge, 1).await;
+    let member_answer_bot = pending_bot();
+    let member_answer = join(&mut member, fixture.lounge, &member_answer_bot.offer).await;
+    let member_bot = start_bot(member_answer_bot, &member_answer, 2);
+    member_bot.wait_until_hearing(1).await;
+    let owner_id = fixture.user_id("owner");
+    let assigned = receive_dispatch(&mut member, |event| {
+        matches!(event, GatewayEvent::VoiceSlotAssigned { user_id, .. } if *user_id == owner_id)
+    })
+    .await
+    .1;
+    drop((owner_bot, member_bot));
+    let lounge = fixture.lounge;
+    fixture.close().await;
+
+    let GatewayEvent::VoiceSlotAssigned {
+        channel_id, mid, ..
+    } = assigned
+    else {
+        unreachable!("{assigned:?}");
+    };
+    assert_eq!(channel_id, lounge);
+    assert!(
+        member_answer.contains(&format!("a=mid:{mid}\r\n")),
+        "the slot is one of the listener's m-lines"
+    );
+}

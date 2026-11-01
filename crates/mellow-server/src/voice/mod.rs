@@ -613,6 +613,27 @@ impl VoiceShared {
                     .await;
                 }
             }
+            MediaEvent::SlotAssigned {
+                listener_id,
+                connection_id,
+                mid,
+                speaker_id,
+            } => {
+                let Some(listener) = participants
+                    .get(&listener_id)
+                    .filter(|listener| listener.connection_id == connection_id)
+                else {
+                    return;
+                };
+                self.events.publish_to_session(
+                    listener.session,
+                    &GatewayEvent::VoiceSlotAssigned {
+                        channel_id: listener.channel_id,
+                        mid: mid.to_string(),
+                        user_id: speaker_id,
+                    },
+                );
+            }
             MediaEvent::Speaking {
                 user_id,
                 connection_id,
