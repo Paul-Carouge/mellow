@@ -335,8 +335,6 @@ export const MAXIMUM_COUNTED_UNREAD_MENTIONS = 100;
 export const MAXIMUM_SEARCH_RESULTS_PER_PAGE = 25;
 /** Pages reach this many results at most (`offset + limit`): past it, refine the query. */
 export const MAXIMUM_REACHABLE_SEARCH_RESULTS = 1_000;
-/** `total_count` stops here; with `total_count_is_lower_bound`, show "1 000+". Facets count the newest this many. */
-export const MAXIMUM_COUNTED_SEARCH_MATCHES = 1_000;
 /**
  * Longer queries are refused (`VALIDATION_FAILED`), as are more than 16 words and filters. Each user
  * runs one search at a time: a second one before the first answers gets `RATE_LIMITED`.
