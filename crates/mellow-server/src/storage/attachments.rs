@@ -156,16 +156,18 @@ pub(crate) async fn all_attachment_ids(
     rows.into_iter().map(|(id,)| to_id(id)).collect()
 }
 
+/// Shared with the migration test that checks it stays on `attachments_by_uploader_id`.
+pub(crate) const STORED_BYTES_OF_UPLOADER_QUERY: &str =
+    "SELECT COALESCE(SUM(size_bytes), 0) FROM attachments WHERE uploader_id = ?";
+
 /// What a user's uploads take on disk, sent or not, for the per-user quota.
 pub(crate) async fn stored_bytes_of_uploader(
     database: &Database,
     uploader_id: Snowflake,
 ) -> Result<u64, MessageStorageError> {
-    let (total,): (i64,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(size_bytes), 0) FROM attachments WHERE uploader_id = ?",
-    )
-    .bind(to_integer(uploader_id.raw())?)
-    .fetch_one(database.readers())
-    .await?;
+    let (total,): (i64,) = sqlx::query_as(STORED_BYTES_OF_UPLOADER_QUERY)
+        .bind(to_integer(uploader_id.raw())?)
+        .fetch_one(database.readers())
+        .await?;
     u64::try_from(total).map_err(|_| MessageStorageError::IntegerOutOfRange)
 }
