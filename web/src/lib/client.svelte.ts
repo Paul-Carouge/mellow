@@ -66,6 +66,8 @@ import { type VoiceCue, type VoicePorts, VoiceSession } from "./voice-session.sv
 const MAXIMUM_CACHED_MESSAGES_PER_CHANNEL = 500;
 const TYPING_INDICATOR_LIFETIME_MILLISECONDS = 8_000;
 const TYPING_SEND_INTERVAL_MILLISECONDS = 5_000;
+/** A busy channel moves the read position on every message: the server hears the newest once per delay. */
+const READ_STATE_SEND_DELAY_MILLISECONDS = 1_000;
 /** 1 000 messages back: the list renders every cached message, so further means scrolling up. */
 const MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE = 20;
 export const MAXIMUM_MESSAGES_LOADED_TO_REACH_A_MESSAGE = MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE * HISTORY_PAGE_SIZE;
@@ -144,6 +146,11 @@ export class MellowClient {
   /** Friends, requests and blocks by the other person's id (ADR-0025). */
   relationshipByUserId = new SvelteMap<Snowflake, Relationship>();
   lastReadByChannel = new SvelteMap<Snowflake, Snowflake>();
+  /** The read position the server confirmed, per channel; behind `lastReadByChannel` until sent. */
+  private readOnServerByChannel = new Map<Snowflake, Snowflake>();
+  /** Channels read further than the server knows; kept after a failed send so the next one retries. */
+  private unsentReadChannelIds = new Set<Snowflake>();
+  private readStateSendTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * Each channel's newest message as far as this session knows (`Ready.channel_unreads`, then
    * `MESSAGE_CREATE`), so a channel never opened still shows unread. Kept apart from the guild
@@ -417,6 +424,9 @@ export class MellowClient {
     this.presenceByUserId.clear();
     this.relationshipByUserId.clear();
     this.lastReadByChannel.clear();
+    this.readOnServerByChannel.clear();
+    this.unsentReadChannelIds.clear();
+    this.stopReadStateSendTimer();
     this.newestMessageIdByChannel.clear();
     this.mentionCountByChannel.clear();
     this.doesServerFindMentions = false;
@@ -496,9 +506,22 @@ export class MellowClient {
     }
     // Pins may have changed while the link was down; the panel asks again when it opens.
     this.pinsByChannel.clear();
+    // A read not sent yet is newer than `Ready` knows: it stays, and goes out with the next send.
+    const unsentReads = [...this.unsentReadChannelIds].map((channelId) => [channelId, this.lastReadByChannel.get(channelId)] as const);
     this.lastReadByChannel.clear();
+    this.readOnServerByChannel.clear();
+    this.unsentReadChannelIds.clear();
     for (const state of ready.read_states) {
       this.lastReadByChannel.set(state.channel_id, state.last_read_message_id);
+      this.readOnServerByChannel.set(state.channel_id, state.last_read_message_id);
+    }
+    for (const [channelId, unsent] of unsentReads) {
+      const onServer = this.lastReadByChannel.get(channelId);
+      if (unsent && this.isKnownChannel(channelId) && (!onServer || compareSnowflakes(unsent, onServer) > 0)) {
+        this.lastReadByChannel.set(channelId, unsent);
+        this.unsentReadChannelIds.add(channelId);
+        this.scheduleReadStateSend();
+      }
     }
     this.doesServerFindMentions = ready.channel_unreads !== undefined;
     this.newestMessageIdByChannel.clear();
@@ -546,7 +569,7 @@ export class MellowClient {
         this.insertMessages(message.channel_id, [message]);
         if (message.channel_id === this.selectedChannelId) {
           // Moves the read position while the user looks, so the message is not counted below.
-          void this.acknowledgeSelectedChannel();
+          this.acknowledgeSelectedChannel();
         }
         const countedByReady = this.newestCountedByReady.get(message.channel_id);
         if (countedByReady === undefined || compareSnowflakes(message.id, countedByReady) > 0) {
@@ -1029,6 +1052,7 @@ export class MellowClient {
       this.trimHistory(previousChannelId);
       // Leaving a channel ends its visit: the divider does not come back with it.
       this.unreadMarkers.delete(previousChannelId);
+      void this.sendReadStates();
     }
     if (channelId !== previousChannelId) {
       this.isUnreadMarkerPending = true;
@@ -1036,7 +1060,7 @@ export class MellowClient {
     this.selectedChannelId = channelId;
     if (channelId) {
       void this.ensureHistoryLoaded(channelId);
-      void this.acknowledgeSelectedChannel();
+      this.acknowledgeSelectedChannel();
     }
   }
 
@@ -1065,7 +1089,7 @@ export class MellowClient {
         this.reachedStartChannelIds.add(channelId);
       }
       if (channelId === this.selectedChannelId) {
-        void this.acknowledgeSelectedChannel();
+        this.acknowledgeSelectedChannel();
       }
     } catch (error) {
       if (generation !== this.historyGeneration) {
@@ -1217,10 +1241,16 @@ export class MellowClient {
 
   /** Messages that arrived while the tab was hidden are read once it shows again. */
   noteTabVisible(): void {
-    void this.acknowledgeSelectedChannel();
+    this.acknowledgeSelectedChannel();
   }
 
-  private async acknowledgeSelectedChannel(): Promise<void> {
+  /** A hidden tab may be closed or frozen next: what was read goes to the server now. */
+  noteTabHidden(): void {
+    void this.sendReadStates();
+  }
+
+  /** Marks the open channel read here at once; the server hears it with the next send. */
+  private acknowledgeSelectedChannel(): void {
     const channelId = this.selectedChannelId;
     const newest = channelId ? this.messages(channelId).at(-1) : undefined;
     // Unread for the server until someone sees it (tests run without a document).
@@ -1247,11 +1277,49 @@ export class MellowClient {
       return;
     }
     this.lastReadByChannel.set(channelId, newest.id);
-    try {
-      await this.rest.acknowledge(channelId, newest.id);
-    } catch (error) {
-      this.reportError(error, "acknowledge");
+    this.unsentReadChannelIds.add(channelId);
+    this.scheduleReadStateSend();
+  }
+
+  /** At most one send per delay; the triggers in between only move the position it sends. */
+  private scheduleReadStateSend(): void {
+    this.readStateSendTimer ??= setTimeout(() => void this.sendReadStates(), READ_STATE_SEND_DELAY_MILLISECONDS);
+  }
+
+  private stopReadStateSendTimer(): void {
+    if (this.readStateSendTimer !== null) {
+      clearTimeout(this.readStateSendTimer);
+      this.readStateSendTimer = null;
     }
+  }
+
+  /**
+   * Sends each channel's newest read position the server does not have yet. A failure (a 429
+   * too) keeps the channel unsent for the next trigger to retry; the local state never rolls back.
+   */
+  private async sendReadStates(): Promise<void> {
+    this.stopReadStateSendTimer();
+    const channelIds = [...this.unsentReadChannelIds];
+    this.unsentReadChannelIds.clear();
+    await Promise.all(
+      channelIds.map(async (channelId) => {
+        const lastRead = this.lastReadByChannel.get(channelId);
+        const onServer = this.readOnServerByChannel.get(channelId);
+        if (!lastRead || (onServer && compareSnowflakes(lastRead, onServer) <= 0)) {
+          return;
+        }
+        try {
+          await this.rest.acknowledge(channelId, lastRead);
+          // The server keeps the newest position it was sent, whatever the order of the answers.
+          this.readOnServerByChannel.set(channelId, newestOf(this.readOnServerByChannel.get(channelId) ?? null, lastRead) ?? lastRead);
+        } catch (error) {
+          if (this.lastReadByChannel.has(channelId)) {
+            this.unsentReadChannelIds.add(channelId);
+          }
+          this.reportError(error, "acknowledge");
+        }
+      }),
+    );
   }
 
   private cachedMessage(channelId: Snowflake, messageId: Snowflake): Message | undefined {

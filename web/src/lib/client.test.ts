@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError, type RestClient } from "./api";
 import { MellowClient, errorReason } from "./client.svelte";
@@ -342,6 +342,7 @@ describe("MellowClient", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(client.unreadMarkers.get(GENERAL)).toEqual({ lastReadMessageId: "200", newestAtOpenMessageId: "201" });
+    client.noteTabHidden();
     expect(acknowledged).toEqual(["201"]);
     // A message arriving during the visit is read at once and moves no line.
     client.applyEvent({ t: "MESSAGE_CREATE", data: message("202") }, Date.now());
@@ -1549,5 +1550,78 @@ describe("Voice states", () => {
       0,
     );
     expect(client.voice.problem).toEqual({ kind: "refused", channelId: LOUNGE, reason: "missing_permissions" });
+  });
+});
+
+describe("Read state sends", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Read positions as the instance hears them; `refuse` answers the next ones 429. */
+  function readStateServer() {
+    const server = { sent: [] as string[], refuse: false };
+    const rest = {
+      ...QUIET_REST,
+      listMessages: () => Promise.resolve([message("200")]),
+      acknowledge: (_channelId: string, messageId: string) => {
+        if (server.refuse) {
+          return Promise.reject(new ApiError(429, "RATE_LIMITED"));
+        }
+        server.sent.push(messageId);
+        return Promise.resolve();
+      },
+    };
+    return { server, rest };
+  }
+
+  it("sends a busy channel's newest read position once per second at most", async () => {
+    const { server, rest } = readStateServer();
+    const client = new MellowClient(fakeRest(rest));
+    client.applyReady(ready());
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(server.sent).toEqual(["200"]);
+    for (let index = 0; index < 50; index += 1) {
+      client.applyEvent({ t: "MESSAGE_CREATE", data: message(String(300 + index)) }, Date.now());
+      // Read here at once, whatever the server has heard so far.
+      expect(client.lastReadByChannel.get(GENERAL)).toBe(String(300 + index));
+      await vi.advanceTimersByTimeAsync(200);
+    }
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(server.sent.length - 1).toBeLessThanOrEqual(10);
+    expect(server.sent.at(-1)).toBe("349");
+  });
+
+  it("keeps a refused position for the next send and never moves the local one back", async () => {
+    const { server, rest } = readStateServer();
+    const client = new MellowClient(fakeRest(rest));
+    client.applyReady(ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    server.refuse = true;
+    client.applyEvent({ t: "MESSAGE_CREATE", data: message("201") }, Date.now());
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(client.lastReadByChannel.get(GENERAL)).toBe("201");
+    server.refuse = false;
+    // Switching channels sends at once, the refused position included.
+    client.selectChannel(RULES);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(server.sent).toEqual(["200", "201"]);
+  });
+
+  it("sends at once when the tab hides, and keeps an unsent read through a Ready", async () => {
+    const { server, rest } = readStateServer();
+    const client = new MellowClient(fakeRest(rest));
+    client.applyReady(ready());
+    await vi.advanceTimersByTimeAsync(0);
+    client.noteTabHidden();
+    expect(server.sent).toEqual(["200"]);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: message("201") }, Date.now());
+    client.applyReady(ready({ read_states: [{ channel_id: GENERAL, last_read_message_id: "200" }] }));
+    expect(client.lastReadByChannel.get(GENERAL)).toBe("201");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(server.sent).toEqual(["200", "201"]);
   });
 });
