@@ -6,7 +6,9 @@ import {
   attachmentCountLabel,
   avatarInitial,
   avatarTintToken,
+  calendarDayLabel,
   fileNameStartAndEnd,
+  fullTimestampLabel,
   humanFileSize,
   mentionBadgeText,
   messageTimestampLabel,
@@ -16,6 +18,7 @@ import {
   timeOfDayLabel,
   typingLabel,
   unixMillisecondsOfSnowflake,
+  upcomingTimeLabel,
 } from "./format";
 import {
   AUTHOR_GROUP_MAXIMUM_GAP_MILLISECONDS,
@@ -62,6 +65,37 @@ describe("messageTimestampLabel", () => {
 
   it("gives the date for older messages", () => {
     expect(messageTimestampLabel(new Date(2026, 9, 19, 8, 30).getTime(), now, "en-GB")).toBe("19/10/2026, 08:30");
+  });
+});
+
+describe("cached date formatters", () => {
+  const now = new Date(2026, 9, 21, 15, 0);
+  const moments = [new Date(2026, 9, 21, 9, 7), new Date(2026, 9, 18, 23, 59), new Date(2025, 0, 1, 0, 0)].map((date) =>
+    date.getTime(),
+  );
+
+  it.each(["en-GB", "fr-FR"])("match the uncached formatting in %s, call after call", (locale) => {
+    for (const moment of moments) {
+      for (let call = 0; call < 2; call++) {
+        const date = new Date(moment);
+        expect(timeOfDayLabel(moment, locale)).toBe(date.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }));
+        expect(fullTimestampLabel(moment, locale)).toBe(date.toLocaleString(locale, { dateStyle: "full", timeStyle: "short" }));
+        expect(upcomingTimeLabel(moment + 86_400_000, now, locale)).toBe(
+          new Date(moment + 86_400_000).toLocaleString(locale, { dateStyle: "short", timeStyle: "short" }),
+        );
+      }
+    }
+    expect(calendarDayLabel("2026-10-30", locale)).toBe(new Date(2026, 9, 30).toLocaleDateString(locale, { dateStyle: "medium" }));
+  });
+
+  it("keep each locale apart", () => {
+    const moment = new Date(2026, 9, 19, 8, 30).getTime();
+    expect(messageTimestampLabel(moment, now, "en-GB")).toBe("19/10/2026, 08:30");
+    // ICU versions differ on the space before "AM": compare with the uncached call.
+    expect(messageTimestampLabel(moment, now, "en-US")).toBe(
+      new Date(moment).toLocaleString("en-US", { dateStyle: "short", timeStyle: "short" }),
+    );
+    expect(messageTimestampLabel(moment, now, "en-GB")).toBe("19/10/2026, 08:30");
   });
 });
 
