@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { HTMLInputAttributes } from "svelte/elements";
 
-  // A labelled native slider (DESIGN.md §6.5, stage 16.3): the label and the value on one line,
+  // A labelled native slider (DESIGN.md §6.7, stage 16.3): the label and the value on one line,
   // the browser's own range input under them, 44 px tall so it is easy to grab and keyboard
   // arrows, Page Up/Down, Home and End work as everywhere. The value is read as `valueText`.
   interface Props {
