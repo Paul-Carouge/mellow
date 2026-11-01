@@ -784,9 +784,7 @@ impl Guilds {
 
     /// Direct-message events, which have no guild to fan out through.
     pub(crate) fn publish_to_users(&self, user_ids: &[Snowflake], event: &GatewayEvent) {
-        for user_id in user_ids {
-            self.events.publish_to_user(*user_id, event);
-        }
+        self.events.publish_to_users(user_ids, event);
     }
 
     /// Sends each affected online member a fresh snapshot, since a permission change may have

@@ -191,20 +191,6 @@ impl HubState {
         }
         self.send_to(keys, &event);
     }
-
-    fn publish_to_guilds(
-        &mut self,
-        guild_ids: impl IntoIterator<Item = Snowflake>,
-        event: &GatewayEvent,
-    ) {
-        let Some(event) = published(event) else {
-            return;
-        };
-        for guild_id in guild_ids {
-            let keys = self.keys_of_guild(guild_id);
-            self.send_to(keys, &event);
-        }
-    }
 }
 
 /// Registering more sessions than allowed for one user.
@@ -568,8 +554,14 @@ impl EventHub {
         }
     }
 
+    /// Serializes before taking the lock: a large event must not hold up every other publisher.
     pub(crate) fn publish_to_guild(&self, guild_id: Snowflake, event: &GatewayEvent) {
-        self.state().publish_to_guilds([guild_id], event);
+        let Some(event) = published(event) else {
+            return;
+        };
+        let mut state = self.state();
+        let keys = state.keys_of_guild(guild_id);
+        state.send_to(keys, &event);
     }
 
     /// Delivers `event`, serialized once, to the sessions of `guild_id` whose user is in
@@ -652,6 +644,20 @@ impl EventHub {
                     .into_iter()
                     .flat_map(|friend_id| state.keys_of_user(friend_id)),
             )
+            .collect();
+        state.send_to(keys, &event);
+    }
+
+    /// Delivers `event`, serialized once, to every session of `user_ids`: the participants of a
+    /// direct-message conversation, which has no guild to fan out through.
+    pub(crate) fn publish_to_users(&self, user_ids: &[Snowflake], event: &GatewayEvent) {
+        let Some(event) = published(event) else {
+            return;
+        };
+        let mut state = self.state();
+        let keys: HashSet<SessionKey> = user_ids
+            .iter()
+            .flat_map(|user_id| state.keys_of_user(*user_id))
             .collect();
         state.send_to(keys, &event);
     }
@@ -1007,6 +1013,31 @@ mod tests {
             third_events.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
         ));
+    }
+
+    #[test]
+    fn a_direct_message_is_serialized_once_for_every_participant() {
+        let hub = EventHub::default();
+        let mut receivers = [(ALICE, TOKEN_A), (BOB, TOKEN_B), (ALICE, TOKEN_A)]
+            .map(|(user_id, token)| hub.register_session(user_id, token, NO_CAP).unwrap().1);
+
+        hub.publish_to_users(&[ALICE, BOB], &typing());
+        let received: Vec<SharedEvent> = receivers
+            .iter_mut()
+            .map(|events| events.try_recv().unwrap())
+            .collect();
+        assert!(
+            received
+                .iter()
+                .all(|event| Arc::ptr_eq(event, &received[0])),
+            "every session shares the one serialization"
+        );
+        assert!(
+            receivers
+                .iter_mut()
+                .all(|events| events.try_recv().is_err()),
+            "each session receives it once"
+        );
     }
 
     #[test]
