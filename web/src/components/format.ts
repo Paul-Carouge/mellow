@@ -24,9 +24,31 @@ function isSameLocalDay(left: Date, right: Date): boolean {
   );
 }
 
+type DateTimeShape = "time-of-day" | "short-date-and-time" | "full-date-and-time" | "medium-date";
+
+const DATE_TIME_SHAPE_OPTIONS: Record<DateTimeShape, Intl.DateTimeFormatOptions> = {
+  "time-of-day": { hour: "2-digit", minute: "2-digit" },
+  "short-date-and-time": { dateStyle: "short", timeStyle: "short" },
+  "full-date-and-time": { dateStyle: "full", timeStyle: "short" },
+  "medium-date": { dateStyle: "medium" },
+};
+
+/** Building a formatter costs tens of microseconds, and every message row formats up to three dates. */
+const dateTimeFormatsByLocaleAndShape = new Map<string, Intl.DateTimeFormat>();
+
+function dateTimeFormat(locale: string, shape: DateTimeShape): Intl.DateTimeFormat {
+  const key = `${locale}|${shape}`;
+  let format = dateTimeFormatsByLocaleAndShape.get(key);
+  if (format === undefined) {
+    format = new Intl.DateTimeFormat(locale, DATE_TIME_SHAPE_OPTIONS[shape]);
+    dateTimeFormatsByLocaleAndShape.set(key, format);
+  }
+  return format;
+}
+
 /** "14:05" in the reader's locale. */
 export function timeOfDayLabel(unixMilliseconds: number, locale: string = formattingLocale): string {
-  return new Date(unixMilliseconds).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+  return dateTimeFormat(locale, "time-of-day").format(unixMilliseconds);
 }
 
 /** "Today at 14:05", "Yesterday at 09:12", or the date and time for older messages (DESIGN.md §5.4). */
@@ -40,7 +62,7 @@ export function messageTimestampLabel(unixMilliseconds: number, now: Date, local
   if (isSameLocalDay(sent, yesterday)) {
     return strings.time.yesterdayAt(timeOfDay);
   }
-  return sent.toLocaleString(locale, { dateStyle: "short", timeStyle: "short" });
+  return dateTimeFormat(locale, "short-date-and-time").format(sent);
 }
 
 /** A time still to come: "18:40" when it is today, else the short date and time (a mute's end). */
@@ -48,18 +70,18 @@ export function upcomingTimeLabel(unixMilliseconds: number, now: Date, locale: s
   const moment = new Date(unixMilliseconds);
   return isSameLocalDay(moment, now)
     ? timeOfDayLabel(unixMilliseconds, locale)
-    : moment.toLocaleString(locale, { dateStyle: "short", timeStyle: "short" });
+    : dateTimeFormat(locale, "short-date-and-time").format(moment);
 }
 
 /** Full date and time, for tooltips and screen readers. */
 export function fullTimestampLabel(unixMilliseconds: number, locale: string = wordedFormattingLocale): string {
-  return new Date(unixMilliseconds).toLocaleString(locale, { dateStyle: "full", timeStyle: "short" });
+  return dateTimeFormat(locale, "full-date-and-time").format(unixMilliseconds);
 }
 
 /** A `YYYY-MM-DD` day as the reader writes dates: "30 Oct 2026", « 30 oct. 2026 ». */
 export function calendarDayLabel(isoDay: string, locale: string = wordedFormattingLocale): string {
   const [year = 0, month = 1, day = 1] = isoDay.split("-").map(Number);
-  return new Date(year, month - 1, day).toLocaleDateString(locale, { dateStyle: "medium" });
+  return dateTimeFormat(locale, "medium-date").format(new Date(year, month - 1, day));
 }
 
 /** First letter of up to three words, as Discord labels servers without an icon. */
