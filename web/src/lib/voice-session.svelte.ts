@@ -579,13 +579,18 @@ export class VoiceSession {
     this.hasMicrophone = false;
   }
 
-  /** Another device or processing, during a call: a new track replaces the sent one, without renegotiating. */
+  /**
+   * Another device or processing, during a call: a new track replaces the sent one, without
+   * renegotiating. Also brings back a microphone that was unplugged (`missing`) once one is there.
+   * Others are told when this mutes or unmutes you, as a toggle would.
+   */
   private async switchMicrophone(): Promise<void> {
-    if (this.phase === "idle" || this.microphone === null) {
+    if (this.phase === "idle" || (this.microphone === null && this.microphoneProblem !== "missing")) {
       return;
     }
     this.microphoneSwitch += 1;
     const attempt = this.microphoneSwitch;
+    const wasMuted = this.isMicrophoneMuted;
     let stream: MediaStream;
     try {
       stream = await this.openMicrophone();
@@ -594,6 +599,7 @@ export class VoiceSession {
         this.releaseMicrophone();
         this.microphoneProblem = microphoneProblemOf(error);
         await this.sender?.replaceTrack(null);
+        this.sendVoiceStateIfMuteChanged(wasMuted);
       }
       return;
     }
@@ -603,6 +609,13 @@ export class VoiceSession {
     }
     this.installMicrophone(stream);
     await this.sender?.replaceTrack(this.sentTrack() ?? null);
+    this.sendVoiceStateIfMuteChanged(wasMuted);
+  }
+
+  private sendVoiceStateIfMuteChanged(wasMuted: boolean): void {
+    if (this.isActive() && this.isMicrophoneMuted !== wasMuted) {
+      this.sendVoiceState();
+    }
   }
 
   /** The amplifier follows the input volume; true when the sent track changed. */
@@ -649,7 +662,11 @@ export class VoiceSession {
       this.isOutputDeviceMissing = isOutputMissing;
       this.applyOutputDevice();
     }
-    if (this.isInputDeviceMissing && isRememberedDevicePresent(devices, "audioinput", this.settings.inputDeviceId)) {
+    const isUnpluggedMicrophoneBack =
+      this.isInputDeviceMissing && isRememberedDevicePresent(devices, "audioinput", this.settings.inputDeviceId);
+    // The only microphone was unplugged: any device change may be it coming back.
+    const mayMicrophoneBeBack = this.microphone === null && this.microphoneProblem === "missing";
+    if (isUnpluggedMicrophoneBack || mayMicrophoneBeBack) {
       await this.switchMicrophone();
     }
   }

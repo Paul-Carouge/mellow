@@ -708,6 +708,26 @@ describe("VoiceSession", () => {
       expect(lastPeer().replacedTracks.at(-1)).toBe(microphones[2]?.track);
     });
 
+    it("tells the instance when the only microphone is unplugged, and recovers when it is back", async () => {
+      const { session, connect, microphones, microphoneFailure, devices, lastPeer, frames } = harness();
+      await connect();
+      const states = () => frames.filter((frame) => frame.op === "voice_state");
+      microphoneFailure.error = Object.assign(new Error("gone"), { name: "NotFoundError" });
+      microphones[0]?.track.end();
+      await flush();
+      expect(session.isMicrophoneMuted).toBe(true);
+      expect(session.microphoneProblem).toBe("missing");
+      expect(lastPeer().replacedTracks.at(-1)).toBeNull();
+      expect(states().at(-1)).toEqual({ op: "voice_state", d: { self_mute: true, self_deaf: false } });
+      microphoneFailure.error = undefined;
+      devices.onChange?.();
+      await flush();
+      expect(session.isMicrophoneMuted).toBe(false);
+      expect(session.microphoneProblem).toBeNull();
+      expect(lastPeer().replacedTracks.at(-1)).toBe(microphones[1]?.track);
+      expect(states().at(-1)).toEqual({ op: "voice_state", d: { self_mute: false, self_deaf: false } });
+    });
+
     it("tests the microphone outside a call, and reads the live one during a call", async () => {
       const { session, connect, microphones, meter } = harness();
       expect(session.microphoneDecibels()).toBeNull();
