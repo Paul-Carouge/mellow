@@ -1403,8 +1403,33 @@ export const fr: Catalogue = {
     level: "Niveau du micro",
     voiceProcessing: "Traitement de la voix",
     noiseSuppression: "Suppression du bruit",
-    noiseSuppressionDescription:
-      "Ton navigateur filtre les bruits de fond, comme un ventilateur ou le clavier. L’annulation d’écho et le gain automatique restent actifs.",
+    noiseSuppressionModes: {
+      advanced: {
+        label: "Avancée",
+        description: "Un petit réseau neuronal (RNNoise) retire ventilateur, clavier et bruits de la pièce, sur ton appareil.",
+      },
+      browser: { label: "Navigateur", description: "Le filtre de ton navigateur, plus léger, laisse passer davantage de bruit." },
+      off: { label: "Désactivée", description: "Ta voix part telle que ton micro la capte. Pour un bon micro dans une pièce calme." },
+    },
+    noiseSuppressorProblems: {
+      unsupported: `Ton navigateur ne peut pas faire tourner la suppression avancée${NO_BREAK_SPACE}: Mellow utilise celle du navigateur.`,
+      failed: `La suppression avancée n’a pas pu démarrer${NO_BREAK_SPACE}: Mellow utilise celle du navigateur. Choisis-la de nouveau pour réessayer.`,
+    },
+    voiceEnhancement: "Voix améliorée",
+    voiceEnhancementDescription:
+      "Égalise ta voix et lui donne de la présence, pour un son net et régulier comme en stream. Elle remplace le gain automatique du navigateur.",
+    voiceEnhancementStyle: "Style",
+    voiceEnhancementPresets: {
+      natural: { label: "Naturel", description: "Ta voix telle quelle, juste plus régulière." },
+      streamer: { label: "Streamer", description: "Plus de présence, moins de résonance de la pièce." },
+      warm: { label: "Chaleureux", description: "Plus de corps, des aigus adoucis." },
+      clear: { label: "Clair", description: "Moins de graves, plus de netteté, pour les micros qui résonnent." },
+      custom: { label: "Personnalisé", description: "Tes propres réglages. Choisis un style pour repartir de lui." },
+    },
+    equalizerBands: { bass: "Graves", mids: "Médiums", treble: "Aigus" },
+    equalizerDecibels: (value) => `${value > 0 ? "+" : value < 0 ? "\u2212" : ""}${count(Math.abs(value))}${NO_BREAK_SPACE}dB`,
+    hearYourself: "S’écouter",
+    hearYourselfDescription: `Entends ta voix telle que les autres l’entendront. Mets un casque${NO_BREAK_SPACE}: sur des haut-parleurs, le son repasse dans le micro et siffle.`,
     namedKeys: {
       Space: "Espace",
       ControlLeft: "Ctrl gauche",

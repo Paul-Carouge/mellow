@@ -1406,8 +1406,34 @@ export const en = {
     level: "Microphone level",
     voiceProcessing: "Voice processing",
     noiseSuppression: "Noise suppression",
-    noiseSuppressionDescription:
-      "Your browser filters out background noise, such as a fan or typing. Echo cancellation and automatic gain stay on.",
+    noiseSuppressionModes: {
+      advanced: {
+        label: "Advanced",
+        description: "A small neural network (RNNoise) removes fans, typing and room noise, on your device.",
+      },
+      browser: { label: "Browser", description: "Your browser's own filter: lighter, it lets more noise through." },
+      off: { label: "Off", description: "Your voice goes out as your microphone hears it. For a good microphone in a quiet room." },
+    },
+    noiseSuppressorProblems: {
+      unsupported: "Your browser can't run advanced suppression, so Mellow uses the browser's.",
+      failed: "Advanced suppression couldn't start, so Mellow uses the browser's. Choose it again to retry.",
+    },
+    voiceEnhancement: "Enhanced voice",
+    voiceEnhancementDescription:
+      "Evens out your voice and gives it presence for a clean, steady sound, like on a stream. It replaces your browser's automatic gain.",
+    voiceEnhancementStyle: "Style",
+    voiceEnhancementPresets: {
+      natural: { label: "Natural", description: "Your voice as it is, only steadier." },
+      streamer: { label: "Streamer", description: "More presence, less room boom." },
+      warm: { label: "Warm", description: "More body, softer highs." },
+      clear: { label: "Clear", description: "Less low end, more clarity, for boomy microphones." },
+      custom: { label: "Custom", description: "Your own curve. Pick a style to start again from it." },
+    },
+    equalizerBands: { bass: "Bass", mids: "Mids", treble: "Treble" },
+    equalizerDecibels: (value: number) => `${value > 0 ? "+" : value < 0 ? "\u2212" : ""}${count(Math.abs(value))} dB`,
+    hearYourself: "Hear yourself",
+    hearYourselfDescription:
+      "Hear your voice as others will. Wear headphones: on speakers the sound loops back into the microphone and howls.",
     /** Keys whose printed character says nothing; others show what they type. */
     namedKeys: {
       Space: "Space",

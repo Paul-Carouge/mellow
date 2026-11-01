@@ -7,8 +7,18 @@
 import { type ClientFrame, type Snowflake, VOICE_RECEIVE_SLOTS, type VoiceDisconnectReason, type VoiceJoinRefusal } from "./protocol";
 import { type MicrophoneProblem, microphoneProblemOf, roundTripMillisecondsOf, waitForIceGathering } from "./voice";
 import {
+  type MicrophoneChoice,
+  type MicrophoneProcessing,
+  type NoiseSuppressorProblem,
+  isMicrophoneReopenNeeded,
+  microphoneChoiceOf,
+  microphoneProcessingOf,
+  processingStagesOf,
+} from "./voice-processing";
+import {
   type AudioDevice,
   DEFAULT_PERSON_VOICE_SETTING,
+  type EqualizerDecibels,
   type PersonVoiceSetting,
   type VoiceSettings,
   decibelsOfLevel,
@@ -102,11 +112,26 @@ export interface InputAmplifier {
   stop(): void;
 }
 
-/** Which microphone, and how the browser processes it. */
-export interface MicrophoneChoice {
-  /** `null`: the system's default. */
-  readonly deviceId: string | null;
-  readonly isNoiseSuppressionOn: boolean;
+export type { MicrophoneChoice } from "./voice-processing";
+
+/** The microphone through the processing chain (ADR-0031): RNNoise, equaliser, compressor, limiter. */
+export interface MicrophoneProcessor {
+  /** What is metered, gated and sent instead of the microphone's own track. */
+  readonly track: MediaStreamTrack;
+  /** The sliders, live. */
+  setEqualizer(equalizer: EqualizerDecibels): void;
+  stop(): void;
+}
+
+/** A microphone as opened: the browser's stream, and the processing on it when any is on. */
+interface OpenedMicrophone {
+  readonly stream: MediaStream;
+  readonly processor: MicrophoneProcessor | null;
+}
+
+function closeOpenedMicrophone(opened: OpenedMicrophone): void {
+  opened.processor?.stop();
+  opened.stream.getTracks().forEach((track) => track.stop());
 }
 
 /** What the session needs from the browser and the gateway; tests give fakes. */
@@ -116,6 +141,13 @@ export interface VoicePorts {
   /** `null` where the browser has no WebRTC. */
   createPeerConnection(): RTCPeerConnection | null;
   requestMicrophone(choice: MicrophoneChoice): Promise<MediaStream>;
+  /** Loads RNNoise once; `null` when it is ready, else why it cannot run here. */
+  prepareNoiseSuppressor(): Promise<NoiseSuppressorProblem | null>;
+  /**
+   * Builds the chain on `track`. `null` where the browser has no Web Audio (the track is sent as
+   * it is); rejects when RNNoise, though prepared, cannot start.
+   */
+  processMicrophone(track: MediaStreamTrack, processing: MicrophoneProcessing): Promise<MicrophoneProcessor | null>;
   playTrack(track: MediaStreamTrack): AudioOutput;
   meterLevel(track: MediaStreamTrack): LevelMeter | null;
   /** `null` where the browser has no Web Audio: the microphone is then sent at 100 %. */
@@ -148,6 +180,10 @@ export class VoiceSession {
   isOutputDeviceMissing = $state(false);
   isMicrophoneTestRunning = $state(false);
   microphoneTestProblem = $state<MicrophoneProblem | null>(null);
+  /** Why "advanced" noise suppression fell back to the browser's; forgotten when the choice changes. */
+  noiseSuppressorProblem = $state<NoiseSuppressorProblem | null>(null);
+  /** "S'écouter": the processed microphone plays back, from the settings page only. */
+  isMonitoring = $state(false);
   /** Plays the join, leave and toggle sounds; set by the shell. */
   onCue: ((cue: VoiceCue) => void) | null = null;
 
@@ -156,6 +192,7 @@ export class VoiceSession {
   private microphone: MediaStream | null = null;
   /** Mirrors `microphone !== null` for the interface: the stream itself stays out of Svelte's proxies. */
   private hasMicrophone = $state(false);
+  private processor: MicrophoneProcessor | null = null;
   private meter: LevelMeter | null = null;
   private amplifier: InputAmplifier | null = null;
   /** Bumped by each microphone switch: a slower earlier one sees it is stale. */
@@ -170,7 +207,10 @@ export class VoiceSession {
   private lastAboveThresholdAt = Number.NEGATIVE_INFINITY;
   private stopWatchingDevices: (() => void) | null = null;
   private testMicrophone: MediaStream | null = null;
+  private testProcessor: MicrophoneProcessor | null = null;
   private testMeter: LevelMeter | null = null;
+  /** The track "S'écouter" plays, and where. */
+  private monitor: { track: MediaStreamTrack; output: AudioOutput } | null = null;
   /** Bumped by each new offer and by stopping: older async steps see they are stale. */
   private negotiation = 0;
   private reconnectAttempts = 0;
@@ -289,16 +329,24 @@ export class VoiceSession {
     const previous = this.settings;
     this.settings = next;
     writeVoiceSettings(this.ports.storage(), next);
-    const isMicrophoneChanged =
-      next.inputDeviceId !== previous.inputDeviceId || next.isNoiseSuppressionOn !== previous.isNoiseSuppressionOn;
     if (next.inputDeviceId !== previous.inputDeviceId) {
       this.isInputDeviceMissing = false;
     }
-    if (isMicrophoneChanged) {
+    if (next.noiseSuppression !== previous.noiseSuppression) {
+      // Tried again on the next microphone: a failed load may have been a network hiccup.
+      this.noiseSuppressorProblem = null;
+    }
+    if (isMicrophoneReopenNeeded(previous, next)) {
       void this.switchMicrophone();
       void this.restartMicrophoneTest();
-    } else if (next.inputVolumePercent !== previous.inputVolumePercent && this.updateAmplifier()) {
-      void this.sender?.replaceTrack(this.sentTrack() ?? null);
+    } else {
+      if (next.equalizerDecibels !== previous.equalizerDecibels) {
+        this.processor?.setEqualizer(next.equalizerDecibels);
+        this.testProcessor?.setEqualizer(next.equalizerDecibels);
+      }
+      if (next.inputVolumePercent !== previous.inputVolumePercent && this.updateAmplifier()) {
+        void this.sender?.replaceTrack(this.sentTrack() ?? null);
+      }
     }
     if (next.inputMode !== previous.inputMode || next.pushToTalkKey?.code !== previous.pushToTalkKey?.code) {
       this.clearTimer("pushToTalkReleaseTimer");
@@ -311,6 +359,7 @@ export class VoiceSession {
     }
     this.applyTransmission();
     this.applyGains();
+    this.refreshMonitor();
   }
 
   personSetting(userId: Snowflake): PersonVoiceSetting {
@@ -372,14 +421,16 @@ export class VoiceSession {
     this.microphoneTestAttempt += 1;
     const attempt = this.microphoneTestAttempt;
     try {
-      const stream = await this.openMicrophone();
+      const opened = await this.openMicrophone();
       if (attempt !== this.microphoneTestAttempt || !this.isMicrophoneTestRunning) {
-        stream.getTracks().forEach((track) => track.stop());
+        closeOpenedMicrophone(opened);
         return;
       }
-      this.testMicrophone = stream;
-      const track = stream.getAudioTracks()[0];
+      this.testMicrophone = opened.stream;
+      this.testProcessor = opened.processor;
+      const track = this.testTrack();
       this.testMeter = track ? this.ports.meterLevel(track) : null;
+      this.refreshMonitor();
     } catch (error) {
       if (attempt === this.microphoneTestAttempt) {
         this.microphoneTestProblem = microphoneProblemOf(error);
@@ -388,20 +439,28 @@ export class VoiceSession {
     }
   }
 
-  /** Leaving the settings page stops the test and frees the microphone. */
+  /** Leaving the settings page stops the test, frees the microphone and stops listening to yourself. */
   stopMicrophoneTest(): void {
-    this.microphoneTestAttempt += 1;
-    this.isMicrophoneTestRunning = false;
-    this.testMeter?.stop();
-    this.testMeter = null;
-    this.testMicrophone?.getTracks().forEach((track) => track.stop());
-    this.testMicrophone = null;
+    this.isMonitoring = false;
+    this.closeMicrophoneTest();
+  }
+
+  /**
+   * "S'écouter": plays what others would hear, at your input volume and on your output. Outside a
+   * call it starts the microphone test, since this is a click.
+   */
+  setMonitoring(isOn: boolean): void {
+    this.isMonitoring = isOn;
+    if (isOn && !this.isMicrophoneLive && !this.isMicrophoneTestRunning) {
+      void this.startMicrophoneTest();
+    }
+    this.refreshMonitor();
   }
 
   /** Asks for the microphone only so the browser names the devices; nothing keeps listening. */
   async allowMicrophone(): Promise<MicrophoneProblem | null> {
     try {
-      const stream = await this.ports.requestMicrophone({ deviceId: null, isNoiseSuppressionOn: this.settings.isNoiseSuppressionOn });
+      const stream = await this.ports.requestMicrophone(microphoneChoiceOf(this.settings, null, false));
       stream.getTracks().forEach((track) => track.stop());
       return null;
     } catch (error) {
@@ -523,8 +582,13 @@ export class VoiceSession {
     return this.phase !== "idle";
   }
 
+  /** The processed microphone when processing is on, else the browser's track. */
   private microphoneTrack(): MediaStreamTrack | undefined {
-    return this.microphone?.getAudioTracks()[0];
+    return this.processor?.track ?? this.microphone?.getAudioTracks()[0];
+  }
+
+  private testTrack(): MediaStreamTrack | undefined {
+    return this.testProcessor?.track ?? this.testMicrophone?.getAudioTracks()[0];
   }
 
   /** What the send transceiver carries: the amplified microphone, or the microphone itself at 100 %. */
@@ -540,12 +604,51 @@ export class VoiceSession {
     return this.isOutputDeviceMissing ? null : this.settings.outputDeviceId;
   }
 
+  /**
+   * The microphone with its processing. RNNoise that cannot start falls back to the browser's
+   * noise suppression, which has to be asked of `getUserMedia`: the microphone is opened again.
+   */
+  private async openMicrophone(): Promise<OpenedMicrophone> {
+    const isNoiseSuppressorUsable = await this.isNoiseSuppressorUsable();
+    const stream = await this.requestChosenMicrophone(isNoiseSuppressorUsable);
+    const track = stream.getAudioTracks()[0];
+    const processing = microphoneProcessingOf(this.settings, isNoiseSuppressorUsable);
+    if (!track || processingStagesOf(processing).length === 0) {
+      return { stream, processor: null };
+    }
+    try {
+      return { stream, processor: await this.ports.processMicrophone(track, processing) };
+    } catch (error) {
+      if (!processing.isNoiseSuppressorOn) {
+        console.warn("couldn't process the microphone, it is sent as it is", error);
+        return { stream, processor: null };
+      }
+      console.warn("couldn't start the noise suppressor", error);
+      stream.getTracks().forEach((stoppedTrack) => stoppedTrack.stop());
+      this.noiseSuppressorProblem = "failed";
+      return this.openMicrophone();
+    }
+  }
+
+  /** Whether RNNoise is wanted and can run; loads it the first time. */
+  private async isNoiseSuppressorUsable(): Promise<boolean> {
+    if (this.settings.noiseSuppression !== "advanced" || this.noiseSuppressorProblem !== null) {
+      return false;
+    }
+    const problem = await this.ports.prepareNoiseSuppressor();
+    // The choice may have changed while it loaded: a later microphone asks again.
+    if (this.settings.noiseSuppression === "advanced") {
+      this.noiseSuppressorProblem = problem;
+    }
+    return problem === null;
+  }
+
   /** The remembered microphone, or the default one when it is unplugged (said in the panel). */
-  private async openMicrophone(): Promise<MediaStream> {
-    const { inputDeviceId, isNoiseSuppressionOn } = this.settings;
+  private async requestChosenMicrophone(isNoiseSuppressorUsable: boolean): Promise<MediaStream> {
+    const { inputDeviceId } = this.settings;
     if (inputDeviceId !== null) {
       try {
-        const stream = await this.ports.requestMicrophone({ deviceId: inputDeviceId, isNoiseSuppressionOn });
+        const stream = await this.ports.requestMicrophone(microphoneChoiceOf(this.settings, inputDeviceId, isNoiseSuppressorUsable));
         this.isInputDeviceMissing = false;
         return stream;
       } catch (error) {
@@ -555,26 +658,33 @@ export class VoiceSession {
         this.isInputDeviceMissing = true;
       }
     }
-    return this.ports.requestMicrophone({ deviceId: null, isNoiseSuppressionOn });
+    return this.ports.requestMicrophone(microphoneChoiceOf(this.settings, null, isNoiseSuppressorUsable));
   }
 
-  /** Takes `stream` as the microphone, with its meter and amplifier; the previous one stops. */
-  private installMicrophone(stream: MediaStream): void {
+  /** Takes `opened` as the microphone, with its meter and amplifier; the previous one stops. */
+  private installMicrophone(opened: OpenedMicrophone): void {
     this.releaseMicrophone();
+    const { stream } = opened;
     this.microphone = stream;
+    this.processor = opened.processor;
     this.hasMicrophone = true;
     this.microphoneProblem = null;
-    const track = stream.getAudioTracks()[0];
-    // Unplugged mid-call: the track ends, and the default microphone takes over.
-    track?.addEventListener("ended", () => {
+    // Unplugged mid-call: the device's track ends (never the processed one), and the default microphone takes over.
+    stream.getAudioTracks()[0]?.addEventListener("ended", () => {
       if (stream === this.microphone) {
         this.isInputDeviceMissing = this.settings.inputDeviceId !== null;
         void this.switchMicrophone();
       }
     });
+    // A slider may have moved while the chain was being built.
+    if (this.settings.isVoiceEnhancementOn) {
+      this.processor?.setEqualizer(this.settings.equalizerDecibels);
+    }
+    const track = this.microphoneTrack();
     this.meter = track ? this.ports.meterLevel(track) : null;
     this.updateAmplifier();
     this.applyTransmission();
+    this.refreshMonitor();
   }
 
   private releaseMicrophone(): void {
@@ -582,9 +692,12 @@ export class VoiceSession {
     this.meter = null;
     this.amplifier?.stop();
     this.amplifier = null;
+    this.processor?.stop();
+    this.processor = null;
     this.microphone?.getTracks().forEach((track) => track.stop());
     this.microphone = null;
     this.hasMicrophone = false;
+    this.refreshMonitor();
   }
 
   /**
@@ -599,9 +712,9 @@ export class VoiceSession {
     this.microphoneSwitch += 1;
     const attempt = this.microphoneSwitch;
     const wasMuted = this.isMicrophoneMuted;
-    let stream: MediaStream;
+    let opened: OpenedMicrophone;
     try {
-      stream = await this.openMicrophone();
+      opened = await this.openMicrophone();
     } catch (error) {
       if (attempt === this.microphoneSwitch && this.isActive()) {
         this.releaseMicrophone();
@@ -612,10 +725,10 @@ export class VoiceSession {
       return;
     }
     if (attempt !== this.microphoneSwitch || !this.isActive()) {
-      stream.getTracks().forEach((track) => track.stop());
+      closeOpenedMicrophone(opened);
       return;
     }
-    this.installMicrophone(stream);
+    this.installMicrophone(opened);
     await this.sender?.replaceTrack(this.sentTrack() ?? null);
     this.sendVoiceStateIfMuteChanged(wasMuted);
   }
@@ -646,11 +759,47 @@ export class VoiceSession {
     return this.amplifier !== null;
   }
 
+  /** Another microphone or processing: the test reopens, and "S'écouter" follows it. */
   private async restartMicrophoneTest(): Promise<void> {
     if (this.isMicrophoneTestRunning) {
-      this.stopMicrophoneTest();
+      this.closeMicrophoneTest();
       await this.startMicrophoneTest();
     }
+  }
+
+  private closeMicrophoneTest(): void {
+    this.microphoneTestAttempt += 1;
+    this.isMicrophoneTestRunning = false;
+    this.testMeter?.stop();
+    this.testMeter = null;
+    this.testProcessor?.stop();
+    this.testProcessor = null;
+    this.testMicrophone?.getTracks().forEach((track) => track.stop());
+    this.testMicrophone = null;
+    this.refreshMonitor();
+  }
+
+  /** The test's microphone first, as the settings' meter reads it; else the call's. */
+  private monitoredTrack(): MediaStreamTrack | undefined {
+    if (this.testMicrophone !== null) {
+      return this.testTrack();
+    }
+    return this.isMicrophoneLive ? this.microphoneTrack() : undefined;
+  }
+
+  /** Plays the test's or the call's processed microphone while "S'écouter" is on; nothing otherwise. */
+  private refreshMonitor(): void {
+    const track = this.isMonitoring ? this.monitoredTrack() : undefined;
+    if (this.monitor !== null && this.monitor.track !== track) {
+      this.monitor.output.stop();
+      this.monitor = null;
+    }
+    if (track === undefined) {
+      return;
+    }
+    this.monitor ??= { track, output: this.ports.playTrack(track) };
+    this.monitor.output.setGain(this.inputGain());
+    this.monitor.output.setOutputDevice(this.outputDeviceId());
   }
 
   /** A device came or went: the remembered ones are used again when back, the defaults while away. */
@@ -686,13 +835,13 @@ export class VoiceSession {
 
   private async acquireMicrophone(): Promise<void> {
     try {
-      const stream = await this.openMicrophone();
+      const opened = await this.openMicrophone();
       // Hung up meanwhile, or a second click got a stream first: this one would never be stopped.
       if (this.phase === "idle" || this.microphone !== null) {
-        stream.getTracks().forEach((track) => track.stop());
+        closeOpenedMicrophone(opened);
         return;
       }
-      this.installMicrophone(stream);
+      this.installMicrophone(opened);
     } catch (error) {
       this.microphoneProblem = microphoneProblemOf(error);
     }
