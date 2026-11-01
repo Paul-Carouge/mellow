@@ -488,7 +488,13 @@ impl Messages {
                 },
             )
             .await?;
-            let attachments = attachments_of(&database, stored.id).await?;
+            // The new message links exactly the requested uploads: none asked, none to read back
+            // while every other send waits on the lock.
+            let attachments = if request.attachment_ids.is_empty() {
+                Vec::new()
+            } else {
+                attachments_of(&database, stored.id).await?
+            };
             if is_first_direct_message {
                 direct_messages::announce_conversation(&guilds, conversation_views, stored.id);
             }
