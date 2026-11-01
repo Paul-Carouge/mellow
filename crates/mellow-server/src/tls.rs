@@ -73,7 +73,12 @@ const PRODUCTION_CONNECTION_POLICY: ConnectionPolicy = ConnectionPolicy {
 
 /// Plain HTTP only listens on loopback or behind a reverse proxy (config validation), so nearly
 /// every connection comes from the proxy's address: per-address caps would lock everyone out.
+/// The proxy must close idle keep-alive connections first: if Mellow closes one as the proxy
+/// reuses it, a request with a body is not retried and the user gets a 502. The proxy already
+/// reads whole request headers, so the longer header deadline costs no slowloris protection.
 const PROXIED_CONNECTION_POLICY: ConnectionPolicy = ConnectionPolicy {
+    header_read_timeout: Duration::from_secs(150),
+    idle_read_timeout: Duration::from_secs(150),
     maximum_connections_per_client_address: PRODUCTION_CONNECTION_POLICY.maximum_connections,
     maximum_connections_per_ipv6_site: PRODUCTION_CONNECTION_POLICY.maximum_connections,
     ..PRODUCTION_CONNECTION_POLICY
@@ -741,6 +746,21 @@ mod tests {
             .unwrap()
             .unwrap();
         database.close().await;
+    }
+
+    /// Caddy keeps idle upstream connections 2 min, nginx's upstream `keepalive_timeout` is 60 s.
+    const LONGEST_COMMON_PROXY_UPSTREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+    #[test]
+    fn the_reverse_proxy_closes_idle_upstream_connections_before_mellow() {
+        assert!(
+            PROXIED_CONNECTION_POLICY.header_read_timeout
+                > LONGEST_COMMON_PROXY_UPSTREAM_IDLE_TIMEOUT
+        );
+        assert!(
+            PROXIED_CONNECTION_POLICY.idle_read_timeout
+                > LONGEST_COMMON_PROXY_UPSTREAM_IDLE_TIMEOUT
+        );
     }
 
     #[tokio::test]
