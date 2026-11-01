@@ -7,9 +7,8 @@
   import Button from "./Button.svelte";
   import { type MenuLine, type MessageMenuAction, menuEntries } from "./context-menus";
   import ContextMenu from "./ContextMenu.svelte";
-  import { withCustomEmojiAsNames } from "./custom-emoji";
   import type { Message, PublicUser, Snowflake } from "../lib/protocol";
-  import { attachmentCountLabel, displayName, timeOfDayLabel } from "./format";
+  import { displayName, timeOfDayLabel } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
   import type { ReactionAndPinActions } from "./message-actions";
   import type { MenuOrigin } from "./menu-placement";
@@ -25,6 +24,7 @@
   } from "./message-rows";
   import { nameColorsByUserId } from "./name-colors.svelte";
   import PersonContextMenu from "./PersonContextMenu.svelte";
+  import { createReplyReferenceLookup, messageSummary } from "./reply-references";
   import { durationTokenInMilliseconds, lengthTokenInPixels } from "./tokens";
 
   // The message list (DESIGN.md §5.4): history start or skeletons above the oldest message, the
@@ -92,6 +92,8 @@
   ];
 
   const messages = $derived(client.messages(channelId));
+  const messagesById = $derived(new Map(messages.map((message) => [message.id, message])));
+  const replyReferenceOf = createReplyReferenceLookup();
   // Role colours on author names, readable on the sheet in the current theme (DESIGN.md §2.3).
   const authorColors = $derived(
     nameColorsByUserId(
@@ -404,26 +406,6 @@
     }
   }
 
-  /** The text, then "2 attachments" when files came with it (DESIGN.md §7.3). */
-  function messageSummary(message: Message): string {
-    return [withCustomEmojiAsNames(message.content), attachmentCountLabel(message.attachments?.length ?? 0)]
-      .filter(Boolean)
-      .join(" ");
-  }
-
-  function replyReferenceOf(message: Message): { author: PublicUser | null; text: string } | null {
-    if (message.reply_to_id === null) {
-      return null;
-    }
-    const original = messages.find((candidate) => candidate.id === message.reply_to_id);
-    if (original && client.isBlocked(original.author.id)) {
-      return { author: null, text: strings.messages.blockedReply };
-    }
-    return original
-      ? { author: original.author, text: messageSummary(original) }
-      : { author: null, text: strings.messages.originalUnavailable };
-  }
-
   // One Tab stop for the whole list; arrows move between messages, as on Discord (DESIGN.md §7.2).
   function moveFocus(event: KeyboardEvent) {
     const target = event.target as HTMLElement;
@@ -582,7 +564,9 @@
             customEmojis={client.knownCustomEmojis}
             doesServerFindMentions={client.doesServerFindMentions}
             authorColor={authorColors.get(row.kind === "sent" ? row.message.author.id : currentUser.id) ?? null}
-            replyReference={row.kind === "sent" ? replyReferenceOf(row.message) : null}
+            replyReference={row.kind === "sent"
+              ? replyReferenceOf(row.message, messagesById, (userId) => client.isBlocked(userId))
+              : null}
             {canSendMessages}
             {canManageMessages}
             {reactionAndPinActions}
