@@ -111,6 +111,7 @@
   }
 
   onMount(() => {
+    voice.preloadNoiseSuppressor();
     void refreshDevices();
     const stopWatching = watchAudioDevices(() => void refreshDevices());
     let frame = requestAnimationFrame(function readLevel() {

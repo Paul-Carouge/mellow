@@ -107,11 +107,13 @@ function harness({ microphoneError, storage = null }: { microphoneError?: Error;
   const gateway = { isUp: true };
   const microphoneFailure = { error: microphoneError };
   /** RNNoise's fate: unsupported unless a test says otherwise, so most tests send the device's own track. */
-  const noiseSuppressor: { problem: NoiseSuppressorProblem | null; startError: Error | null; prepareCount: number } = {
-    problem: "unsupported",
-    startError: null,
-    prepareCount: 0,
-  };
+  const noiseSuppressor: {
+    problem: NoiseSuppressorProblem | null;
+    /** Loading never ends: a slow network, or a stuck compile. */
+    isLoadStuck: boolean;
+    startError: Error | null;
+    prepareCount: number;
+  } = { problem: "unsupported", isLoadStuck: false, startError: null, prepareCount: 0 };
   const processors: {
     input: MediaStreamTrack;
     processing: MicrophoneProcessing;
@@ -140,7 +142,7 @@ function harness({ microphoneError, storage = null }: { microphoneError?: Error;
     },
     prepareNoiseSuppressor: () => {
       noiseSuppressor.prepareCount += 1;
-      return Promise.resolve(noiseSuppressor.problem);
+      return noiseSuppressor.isLoadStuck ? new Promise(() => {}) : Promise.resolve(noiseSuppressor.problem);
     },
     processMicrophone: (input, processing) => {
       if (processing.isNoiseSuppressorOn && noiseSuppressor.startError) {
@@ -863,6 +865,29 @@ describe("VoiceSession", () => {
       await connect();
       expect(session.noiseSuppressorProblem).toBe("unsupported");
       expect(microphones.map((entry) => entry.choice.isBrowserNoiseSuppressionOn)).toEqual([false, true]);
+    });
+
+    it("joins with the browser's filter when RNNoise takes over 3 seconds to load, without giving up on it", async () => {
+      const { session, microphones, noiseSuppressor } = harness();
+      noiseSuppressor.problem = null;
+      noiseSuppressor.isLoadStuck = true;
+      const joining = session.join(CHANNEL);
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(microphones).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1);
+      await joining;
+      expect(microphones[0]?.choice.isBrowserNoiseSuppressionOn).toBe(true);
+      expect(session.noiseSuppressorProblem).toBeNull();
+    });
+
+    it("loads RNNoise ahead of the first join, only when it is chosen", () => {
+      const { session, noiseSuppressor } = harness();
+      noiseSuppressor.problem = null;
+      session.preloadNoiseSuppressor();
+      expect(noiseSuppressor.prepareCount).toBe(1);
+      session.updateSettings({ ...session.settings, noiseSuppression: "browser" });
+      session.preloadNoiseSuppressor();
+      expect(noiseSuppressor.prepareCount).toBe(1);
     });
 
     it("builds no processing and loads nothing when everything is off", async () => {
