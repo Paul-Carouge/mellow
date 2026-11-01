@@ -184,7 +184,8 @@ async fn write_backup(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{DatabaseKey, open_encrypted_database};
+    use crate::storage::{DatabaseKey, attachments, open_encrypted_database};
+    use mellow_protocol::Snowflake;
 
     const SQLITE_PLAINTEXT_HEADER: &[u8] = b"SQLite format 3\0";
 
@@ -284,21 +285,16 @@ mod tests {
         let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
             .await
             .unwrap();
-        // The quota query of `storage::attachments::stored_bytes_of_uploader`.
-        macro_rules! quota_query {
-            () => {
-                "SELECT COALESCE(SUM(size_bytes), 0) FROM attachments WHERE uploader_id = ?"
-            };
-        }
-        let plan: Vec<(i64, i64, i64, String)> =
-            sqlx::query_as(concat!("EXPLAIN QUERY PLAN ", quota_query!()))
-                .bind(1_i64)
-                .fetch_all(database.writer())
-                .await
-                .unwrap();
-        let (ada_total,): (i64,) = sqlx::query_as(quota_query!())
+        let plan_query = format!(
+            "EXPLAIN QUERY PLAN {}",
+            attachments::STORED_BYTES_OF_UPLOADER_QUERY
+        );
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(plan_query))
             .bind(1_i64)
-            .fetch_one(database.writer())
+            .fetch_all(database.writer())
+            .await
+            .unwrap();
+        let ada_total = attachments::stored_bytes_of_uploader(&database, Snowflake::from_raw(1))
             .await
             .unwrap();
         database.close().await;
