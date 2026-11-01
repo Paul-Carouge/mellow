@@ -4,6 +4,18 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-11-01
+Voice comfort. No database migration.
+
+### Added
+- Web: User settings → Voice: choose your microphone and output device (no output choice in Safari), set input and output volume up to 200 %, pick voice activity or push-to-talk (record your key, set a release delay, optional press sounds), automatic or manual input sensitivity with a live level meter, turn the browser's noise suppression on or off, and test your microphone.
+- Web: changing a device or a setting applies at once during a call; an unplugged microphone falls back to the default one and comes back when plugged in again.
+- Web: click someone in a voice channel to set their volume (0 to 200 %) or mute them for you only; it is remembered in this browser.
+- Server: `VOICE_SLOT_ASSIGNED` tells each listener whose voice arrives on which of its receive slots.
+
+### Notes
+- Push-to-talk works while Mellow's tab has the focus, as in any browser.
+
 ## [0.23.0] - 2026-10-31
 Voice channels, audio only. This version migrates the database (migration 22, with the usual automatic backup); older versions refuse it afterwards. Voice needs one UDP port (50000 by default) reachable from the internet: forward it on your router and open it in the host firewall; the Docker kit now publishes `50000:50000/udp`.
 
