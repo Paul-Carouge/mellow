@@ -12,12 +12,12 @@ use mellow_protocol::{Channel, CurrentUser, Guild, IconCropQuery, Snowflake};
 use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::guilds::IconUpload;
 use crate::domain::image_processing::SquareCrop;
+use crate::domain::profile_images::ProfileImageSlot;
 use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiPath, ApiQuery};
 use crate::http::attachment_routes::read_upload_body;
 use crate::http::authentication::AuthenticatedUser;
 use crate::http::rate_limit::{PROFILE_IMAGE_DOWNLOADS_PER_USER, PROFILE_IMAGE_WRITES_PER_USER};
-use crate::storage::profile_images::ProfileImageSlot;
 
 /// Pictures larger than this are refused before processing (ADR-0021).
 pub(crate) const MAXIMUM_PROFILE_IMAGE_BYTES: usize = 8 * 1024 * 1024;

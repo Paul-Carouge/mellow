@@ -2660,7 +2660,7 @@ pub(crate) mod tests {
             .profile_images
             .replace(
                 request_started_before_banner,
-                crate::storage::profile_images::ProfileImageSlot::Avatar,
+                crate::domain::profile_images::ProfileImageSlot::Avatar,
                 Some(animated_gif(64, 64, 3)),
                 crate::domain::clock::now_unix_milliseconds(),
             )

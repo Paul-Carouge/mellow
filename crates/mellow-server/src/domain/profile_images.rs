@@ -18,7 +18,9 @@ use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::events::EventHub;
 use crate::storage::attachment_files::AttachmentFiles;
 use crate::storage::messages::MessageStorageError;
-use crate::storage::profile_images::{self as storage, NewProfileImage, ProfileImageSlot};
+/// Re-exported so routes name the slot through the domain, never the storage layer.
+pub(crate) use crate::storage::profile_images::ProfileImageSlot;
+use crate::storage::profile_images::{self as storage, NewProfileImage};
 
 /// Past this, the client is told to try again later (decoding included).
 const PROCESSING_TIME_BUDGET: Duration = Duration::from_secs(20);
