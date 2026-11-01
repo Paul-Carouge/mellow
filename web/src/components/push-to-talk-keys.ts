@@ -25,17 +25,11 @@ function isInKeyRecorder(target: unknown): boolean {
 
 function isPushToTalkKey(event: KeyEventLike, voice: PushToTalkVoice): boolean {
   const key = voice.settings.pushToTalkKey;
-  return (
-    voice.settings.inputMode === "push-to-talk" &&
-    key !== null &&
-    voice.phase !== "idle" &&
-    event.code === key.code &&
-    !isInKeyRecorder(event.target)
-  );
+  return voice.settings.inputMode === "push-to-talk" && key !== null && voice.phase !== "idle" && event.code === key.code;
 }
 
 export function pushToTalkKeyDown(event: KeyEventLike, voice: PushToTalkVoice): void {
-  if (!isPushToTalkKey(event, voice)) {
+  if (!isPushToTalkKey(event, voice) || isInKeyRecorder(event.target)) {
     return;
   }
   if (isCharacterKey(event)) {
@@ -44,6 +38,7 @@ export function pushToTalkKeyDown(event: KeyEventLike, voice: PushToTalkVoice): 
   voice.pressPushToTalk();
 }
 
+/** Wherever focus went meanwhile (into the recorder too): a lost release would leave the microphone open. */
 export function pushToTalkKeyUp(event: KeyEventLike, voice: PushToTalkVoice): void {
   if (isPushToTalkKey(event, voice)) {
     voice.releasePushToTalk();

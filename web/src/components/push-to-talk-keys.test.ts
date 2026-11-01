@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_VOICE_SETTINGS } from "../lib/voice-settings";
 import { pushToTalkKeyDown, pushToTalkKeyUp } from "./push-to-talk-keys";
@@ -28,7 +28,7 @@ function keyEvent(code: string, key: string, modifiers: { ctrlKey?: boolean } = 
     ctrlKey: modifiers.ctrlKey ?? false,
     metaKey: false,
     altKey: false,
-    target: null,
+    target: null as unknown,
     isDefaultPrevented: false,
     preventDefault: () => (event.isDefaultPrevented = true),
   };
@@ -43,6 +43,24 @@ describe("push-to-talk keys", () => {
     pushToTalkKeyUp(keyEvent("KeyV", "v"), voice);
     expect(calls).toEqual(["press", "release"]);
     expect(down.isDefaultPrevented).toBe(true);
+  });
+
+  it("releases the key even when it comes up inside the key recorder", () => {
+    const { voice, calls } = fakeVoice();
+    vi.stubGlobal("Element", class {});
+    try {
+      const recorder = { closest: (selector: string) => (selector === "[data-push-to-talk-recorder]" ? {} : null) };
+      Object.setPrototypeOf(recorder, (globalThis as unknown as { Element: { prototype: object } }).Element.prototype);
+      pushToTalkKeyDown(keyEvent("KeyV", "v"), voice);
+      // Held, then the mouse clicked "Change key": focus moved into the recorder before the release.
+      pushToTalkKeyUp({ ...keyEvent("KeyV", "v"), target: recorder }, voice);
+      // A press inside the recorder is the recorder's.
+      pushToTalkKeyDown({ ...keyEvent("KeyV", "v"), target: recorder }, voice);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.stubGlobal("navigator", { languages: ["en-GB"] });
+    }
+    expect(calls).toEqual(["press", "release"]);
   });
 
   it("leaves a modifier key's default alone", () => {
