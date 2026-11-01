@@ -741,6 +741,9 @@ export class MellowClient {
       case "VOICE_JOIN_REFUSED":
         this.voice.refuse(event.data.channel_id, event.data.offer_id, event.data.reason);
         return;
+      case "VOICE_SLOT_ASSIGNED":
+        this.voice.assignSlot(event.data.channel_id, event.data.mid, event.data.user_id);
+        return;
       case "VOICE_DISCONNECTED":
         this.voice.disconnectedByServer(event.data.channel_id, event.data.reason);
         return;

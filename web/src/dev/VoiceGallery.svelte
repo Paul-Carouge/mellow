@@ -63,15 +63,18 @@
       Promise.resolve(new Map([["p", { type: "candidate-pair", id: "p", nominated: true, state: "succeeded", currentRoundTripTime: 0.042 }]])),
     close: () => {},
   };
-  const fakeTrack = { enabled: true, stop: () => {} };
+  const fakeTrack = { enabled: true, stop: () => {}, addEventListener: () => {} };
   const client = new MellowClient(silentRest, {
     createPeerConnection: () => fakePeer as unknown as RTCPeerConnection,
     requestMicrophone: () =>
       state === "no-microphone"
         ? Promise.reject(Object.assign(new Error("none"), { name: "NotFoundError" }))
         : Promise.resolve({ getAudioTracks: () => [fakeTrack], getTracks: () => [fakeTrack] } as unknown as MediaStream),
-    playTrack: () => ({ setMuted: () => {}, stop: () => {} }),
+    playTrack: () => ({ setGain: () => {}, setOutputDevice: () => {}, stop: () => {} }),
     meterLevel: () => null,
+    amplify: () => null,
+    listDevices: () => Promise.resolve([]),
+    watchDevices: () => () => {},
     storage: () => null,
   });
 
