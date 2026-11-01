@@ -1014,6 +1014,43 @@ describe("VoiceSession", () => {
       expect(monitor?.gain).toBe(1);
     });
 
+    it("frees the older microphone and its chain when processed test starts and switches overlap", async () => {
+      const { session, microphones, noiseSuppressor, processors } = harness();
+      noiseSuppressor.problem = null;
+      session.updateSettings({ ...session.settings, isVoiceEnhancementOn: true });
+      const first = session.startMicrophoneTest();
+      session.stopMicrophoneTest();
+      const second = session.startMicrophoneTest();
+      await Promise.all([first, second]);
+      session.updateSettings({ ...session.settings, inputDeviceId: "usb" });
+      session.updateSettings({ ...session.settings, noiseSuppression: "browser" });
+      await flush();
+      expect(processors.length).toBeGreaterThan(1);
+      const running = processors.filter((processor) => !processor.isStopped);
+      const open = microphones.filter((entry) => !entry.track.isStopped);
+      expect(running).toHaveLength(1);
+      expect(open).toHaveLength(1);
+      expect(running[0]?.input).toBe(open[0]?.track);
+      session.stopMicrophoneTest();
+      expect(processors.every((processor) => processor.isStopped)).toBe(true);
+    });
+
+    it("frees the older chain when a call's microphone switches twice quickly", async () => {
+      const { session, connect, noiseSuppressor, processors, lastPeer } = harness();
+      noiseSuppressor.problem = null;
+      session.updateSettings({ ...session.settings, isVoiceEnhancementOn: true });
+      await connect();
+      session.updateSettings({ ...session.settings, inputDeviceId: "usb" });
+      session.updateSettings({ ...session.settings, noiseSuppression: "browser" });
+      await flush();
+      // The faster switch wins whatever the order they finish in; every other chain is stopped.
+      const running = processors.filter((processor) => !processor.isStopped);
+      expect(processors.length).toBe(3);
+      expect(running).toHaveLength(1);
+      expect(running[0]?.processing.isNoiseSuppressorOn).toBe(false);
+      expect(lastPeer().replacedTracks.at(-1)).toBe(running[0]?.track);
+    });
+
     it("says why the microphone test could not start", async () => {
       const { session } = harness({ microphoneError: Object.assign(new Error("no"), { name: "NotAllowedError" }) });
       await session.startMicrophoneTest();
