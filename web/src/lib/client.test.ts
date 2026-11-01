@@ -207,6 +207,34 @@ describe("MellowClient", () => {
     expect(client.user?.email).toBe("me@example.org");
   });
 
+  it("replaces only what shows the user a USER_UPDATE is about", async () => {
+    const third = { id: "3", username: "third", display_name: "Third" };
+    const member = (user: typeof third) => ({ user, role_ids: [], joined_at_unix_milliseconds: 0 });
+    const otherUser = { id: OTHER, username: "other", display_name: "Other" };
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, listMembers: () => Promise.resolve([member(otherUser), member(third)]) }),
+    );
+    client.applyReady(ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    client.applyEvent({ t: "MESSAGE_CREATE", data: message("150") }, 0);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: { ...message("151"), author: third } }, 0);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: message("152", RULES) }, 0);
+    client.upsertConversation({ id: "500", recipients: [otherUser], last_message_id: null });
+    const general = client.messages(GENERAL);
+    const rules = client.messages(RULES);
+    const members = client.membersByGuild.get(GUILD);
+    const conversations = client.conversations;
+
+    client.applyEvent({ t: "USER_UPDATE", data: { ...third, avatar: { id: "71", is_animated: false } } }, 0);
+
+    expect(client.messages(GENERAL)[0]).toBe(general[0]);
+    expect(client.messages(GENERAL)[1]?.author.avatar).toEqual({ id: "71", is_animated: false });
+    expect(client.messages(RULES)).toBe(rules);
+    expect(client.membersByGuild.get(GUILD)?.[0]).toBe(members?.[0]);
+    expect(client.membersByGuild.get(GUILD)?.[1]?.user.avatar).toEqual({ id: "71", is_animated: false });
+    expect(client.conversations).toBe(conversations);
+  });
+
   it("keeps the newer edit when an older one comes back late", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(ready());
