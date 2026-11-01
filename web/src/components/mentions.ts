@@ -49,6 +49,27 @@ export function mentionablePeople(people: readonly PublicUser[]): MentionablePeo
   return byName;
 }
 
+/**
+ * `mentionablePeople` that returns its previous map while the people are the same objects: a
+ * member update (a role change, say) rebuilds the member list around the same users, and a new map
+ * would make every message row parse its text again.
+ */
+export function memoizedMentionablePeople(): (people: readonly PublicUser[]) => MentionablePeople {
+  let previousPeople: readonly PublicUser[] | null = null;
+  let previousMap: MentionablePeople = new Map();
+  return (people) => {
+    const isUnchanged =
+      previousPeople !== null &&
+      people.length === previousPeople.length &&
+      people.every((person, index) => person === previousPeople?.[index]);
+    if (!isUnchanged) {
+      previousPeople = people;
+      previousMap = mentionablePeople(people);
+    }
+    return previousMap;
+  };
+}
+
 function findMentioned(name: string, people: MentionablePeople): { user: PublicUser; length: number } | null {
   // "@paul." at the end of a sentence: the trailing dots are punctuation unless they are the name's.
   // Lengths come from the original text: lowercasing can change a string's length.

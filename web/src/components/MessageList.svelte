@@ -14,7 +14,7 @@
   import type { ReactionAndPinActions } from "./message-actions";
   import type { MenuOrigin } from "./menu-placement";
   import MessageItem from "./MessageItem.svelte";
-  import { mentionablePeople } from "./mentions";
+  import { memoizedMentionablePeople } from "./mentions";
   import {
     type BlockedRun,
     type MessageListRow,
@@ -103,8 +103,11 @@
   // Each new message re-sorts the conversations into new objects; their recipients stay the same
   // array, so reading it alone keeps every row from parsing its text again.
   const conversationRecipients = $derived(client.selectedConversation?.recipients ?? []);
+  // A role change rebuilds the member list around the same users: the same map keeps every row
+  // from parsing its text again.
+  const mentionablePeopleOf = memoizedMentionablePeople();
   const mentionable = $derived(
-    mentionablePeople([
+    mentionablePeopleOf([
       currentUser,
       ...(client.selectedGuild ? (client.membersByGuild.get(client.selectedGuild.id) ?? []).map((member) => member.user) : []),
       ...conversationRecipients,

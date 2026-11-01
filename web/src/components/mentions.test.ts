@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { PublicUser } from "../lib/protocol";
-import { mentionablePeople, splitMentions } from "./mentions";
+import { memoizedMentionablePeople, mentionablePeople, splitMentions } from "./mentions";
 
 const paul: PublicUser = { id: "1", username: "paul", display_name: "Paul Carouge" };
 const zoe: PublicUser = { id: "2", username: "zoe", display_name: "Zoé" };
@@ -49,5 +49,28 @@ describe("splitMentions on hostile text", () => {
     }
     expect(performance.now() - started).toBeLessThan(20);
     expect(splitMentions(`@paul${"x".repeat(40)}`, people)).toEqual([{ kind: "text", text: `@paul${"x".repeat(40)}` }]);
+  });
+});
+
+describe("memoizedMentionablePeople", () => {
+  it("keeps the same map when a role change rebuilds the members around the same users", () => {
+    const mentionable = memoizedMentionablePeople();
+    const members = [{ user: paul, role_ids: [] as string[] }, { user: zoe, role_ids: [] as string[] }];
+    const first = mentionable(members.map((member) => member.user));
+    const afterRoleChange = members.map((member) => (member.user === zoe ? { ...member, role_ids: ["9"] } : member));
+    expect(mentionable(afterRoleChange.map((member) => member.user))).toBe(first);
+  });
+
+  it("builds a new map when someone joins, leaves or changes their name", () => {
+    const mentionable = memoizedMentionablePeople();
+    const first = mentionable([paul, zoe]);
+    const joined = mentionable([paul, zoe, dotted]);
+    expect(joined).not.toBe(first);
+    expect(joined.get("j.doe")).toBe(dotted);
+    const left = mentionable([paul, zoe]);
+    expect(left).not.toBe(joined);
+    expect(left.has("j.doe")).toBe(false);
+    const renamed = { ...zoe, username: "zoe2" };
+    expect(mentionable([paul, renamed]).get("zoe2")).toBe(renamed);
   });
 });
