@@ -7,6 +7,7 @@ import { strings } from "../i18n";
 import {
   ApiError,
   HISTORY_PAGE_SIZE,
+  MAXIMUM_HISTORY_PAGE_SIZE,
   type IconCrop,
   type InviteLimits,
   type ProfileImageKind,
@@ -69,8 +70,8 @@ const TYPING_SEND_INTERVAL_MILLISECONDS = 5_000;
 /** A busy channel moves the read position on every message: the server hears the newest once per delay. */
 const READ_STATE_SEND_DELAY_MILLISECONDS = 1_000;
 /** 1 000 messages back: the list renders every cached message, so further means scrolling up. */
-const MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE = 20;
-export const MAXIMUM_MESSAGES_LOADED_TO_REACH_A_MESSAGE = MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE * HISTORY_PAGE_SIZE;
+const MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE = 10;
+export const MAXIMUM_MESSAGES_LOADED_TO_REACH_A_MESSAGE = MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE * MAXIMUM_HISTORY_PAGE_SIZE;
 
 /** How `loadHistoryUntilMessage` ended: `left` when another channel opened meanwhile. */
 export type HistoryReach = "loaded" | "missing" | "too-far" | "failed" | "left";
@@ -1221,14 +1222,15 @@ export class MellowClient {
         break;
       }
       try {
-        const page = await this.rest.listMessages(channelId, oldest?.id);
+        // The largest pages: a jump far back takes half the round trips of scrolling there.
+        const page = await this.rest.listMessages(channelId, oldest?.id, MAXIMUM_HISTORY_PAGE_SIZE);
         if (generation !== this.historyGeneration || channelId !== this.selectedChannelId) {
           return "left";
         }
         // Only next to the cursor (see loadOlderMessages); a page that landed meanwhile is fine too.
         if (this.messages(channelId)[0]?.id === oldest?.id) {
           this.insertMessages(channelId, page);
-          if (page.length < HISTORY_PAGE_SIZE) {
+          if (page.length < MAXIMUM_HISTORY_PAGE_SIZE) {
             this.reachedStartChannelIds.add(channelId);
           }
         }

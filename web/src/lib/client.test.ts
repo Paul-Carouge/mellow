@@ -1294,13 +1294,13 @@ describe("Message search", () => {
 });
 
 describe("Reaching a message far back", () => {
-  /** A channel of `count` messages with ids 1000 and up, served like the instance: 50 at most, oldest first. */
+  /** A channel of `count` messages with ids 1000 and up, served like the instance: `limit` at most, oldest first. */
   function historyOf(count: number, requests: (string | undefined)[] = []) {
     const all = Array.from({ length: count }, (_, index) => message(String(1000 + index)));
-    return (_channelId: string, before?: string) => {
+    return (_channelId: string, before?: string, limit = 50) => {
       requests.push(before);
       const older = before ? all.filter((candidate) => Number(candidate.id) < Number(before)) : all;
-      return Promise.resolve(older.slice(-50));
+      return Promise.resolve(older.slice(-limit));
     };
   }
 
@@ -1313,7 +1313,8 @@ describe("Reaching a message far back", () => {
     const ids = client.messages(GENERAL).map((cached) => Number(cached.id));
     expect(ids[0]).toBeLessThanOrEqual(1020);
     expect(ids).toEqual(Array.from({ length: ids.length }, (_, index) => (ids[0] ?? 0) + index));
-    expect(requests).toEqual([undefined, "1150", "1100", "1050"]);
+    // The first page is the usual 50; the jump asks for 100 at a time.
+    expect(requests).toEqual([undefined, "1150", "1050"]);
   });
 
   it("says the message is missing once an older one or the start is cached", async () => {
@@ -1323,7 +1324,26 @@ describe("Reaching a message far back", () => {
     expect(await client.loadHistoryUntilMessage(GENERAL, "999")).toBe("missing");
   });
 
-  it("gives up 20 pages back, and stops for a channel that is not open", async () => {
+  it("reaches a message 900 back in 9 requests", async () => {
+    const requests: (string | undefined)[] = [];
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: historyOf(1_000, requests) }));
+    client.applyReady(ready());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    requests.length = 0;
+    expect(await client.loadHistoryUntilMessage(GENERAL, "1050")).toBe("loaded");
+    expect(requests).toHaveLength(9);
+  });
+
+  it("knows the start is cached from a page shorter than the 100 it asked for", async () => {
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: historyOf(230) }));
+    client.applyReady(ready());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // 1180 to 1229 first, then 1080 to 1179, then the last 80.
+    expect(await client.loadHistoryUntilMessage(GENERAL, "1000")).toBe("loaded");
+    expect(client.reachedStartChannelIds.has(GENERAL)).toBe(true);
+  });
+
+  it("gives up 1 000 messages back, and stops for a channel that is not open", async () => {
     const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: historyOf(2_000) }));
     client.applyReady(ready());
     await new Promise((resolve) => setTimeout(resolve, 0));
