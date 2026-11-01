@@ -925,10 +925,24 @@ async fn sounds_reach_the_channel_two_seconds_apart_and_joins_announce_the_join_
         receive_dispatch(&mut owner, is_sound).await.1,
     ];
     let heard_by_member = receive_dispatch(&mut member, is_sound).await.1;
+    send(
+        &mut member,
+        &ClientFrame::VoiceState {
+            self_mute: true,
+            self_deaf: false,
+        },
+    )
+    .await;
+    let muted_state = next_voice_state_update(&mut owner, member_id).await;
     let lounge = fixture.lounge;
     fixture.close().await;
 
     assert_eq!(member_state.join_sound_id, Some(sound.id));
+    assert!(muted_state.self_mute);
+    assert_eq!(
+        muted_state.join_sound_id, None,
+        "only the arrival carries the join sound"
+    );
     let played_by = |user_id| GatewayEvent::VoiceSoundPlayed {
         channel_id: lounge,
         user_id,

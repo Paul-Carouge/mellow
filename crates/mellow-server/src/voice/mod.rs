@@ -48,6 +48,8 @@ struct PreparedJoin {
     /// Boxed: a session is about 20 kB, too much to carry across awaits inline.
     rtc: Box<str0m::Rtc>,
     sdp_answer: String,
+    /// Read before the participants lock; announced only if the join allows it (ADR-0032).
+    member_join_sound_id: Option<Snowflake>,
 }
 
 /// One connected person, as the service knows them.
@@ -62,8 +64,6 @@ struct Participant {
     self_deaf: bool,
     /// Lacks `SPEAK`: their audio is not forwarded.
     suppressed: bool,
-    /// Announced in their voice state, for the clients in the channel to play (ADR-0032).
-    join_sound_id: Option<Snowflake>,
     /// When they last played a soundboard sound, for the minimum gap between two.
     last_sound_played_at: Option<Instant>,
 }
@@ -77,7 +77,9 @@ impl Participant {
             self_mute: self.self_mute,
             self_deaf: self.self_deaf,
             suppressed: self.suppressed,
-            join_sound_id: self.join_sound_id,
+            // Only the arrival announces it (`VoiceShared::announce_join`), so state changes
+            // never replay it (ADR-0032).
+            join_sound_id: None,
         }
     }
 
@@ -226,12 +228,12 @@ impl VoiceService {
         validate_voice_offer(&request.sdp_offer).map_err(|_| VoiceJoinRefusal::InvalidOffer)?;
         // Checked early so a refused join costs no DNS lookup or session; checked again under
         // the lock by `admit`.
-        match shared
+        let guild_id = match shared
             .guilds
             .voice_access(request.user_id, request.channel_id)
             .await
         {
-            Ok(VoiceAccess::Allowed { .. }) => {}
+            Ok(VoiceAccess::Allowed { guild_id, .. }) => guild_id,
             Ok(VoiceAccess::ChannelGone | VoiceAccess::NotMember | VoiceAccess::Denied) => {
                 return Err(VoiceJoinRefusal::MissingPermissions);
             }
@@ -239,7 +241,15 @@ impl VoiceService {
                 tracing::warn!(%error, "voice join: cannot read the channel");
                 return Err(VoiceJoinRefusal::VoiceUnavailable);
             }
-        }
+        };
+        let member_join_sound_id = shared
+            .guilds
+            .join_sound_of_member(guild_id, request.user_id)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "voice join: cannot read the join sound");
+                None
+            });
         // An address the administrator wrote is announced as is. One taken from the Host the
         // client used may be `localhost`: replaced by the machine's network address only on a
         // development instance, never on an exposed one (it would reveal its network address).
@@ -274,6 +284,7 @@ impl VoiceService {
             candidate_address,
             rtc,
             sdp_answer,
+            member_join_sound_id,
         })
     }
 
@@ -309,7 +320,7 @@ impl VoiceService {
             candidate_address,
             rtc,
             sdp_answer,
-            ..
+            member_join_sound_id,
         } = prepared;
         let Some(media) = &shared.media else {
             return refuse(VoiceJoinRefusal::VoiceUnavailable);
@@ -343,15 +354,10 @@ impl VoiceService {
         {
             return refuse(refusal);
         }
-        let join_sound_id = shared
-            .join_sound_announced(
-                request.user_id,
-                request.channel_id,
-                previous.as_ref(),
-                guild_id,
-                may_use_soundboard,
-            )
-            .await;
+        let is_arrival = previous
+            .as_ref()
+            .is_none_or(|previous| previous.channel_id != request.channel_id);
+        let arrival_sound_id = member_join_sound_id.filter(|_| is_arrival && may_use_soundboard);
         let participant = Participant {
             session: request.session,
             connection_id: shared.next_connection_id.fetch_add(1, Ordering::Relaxed),
@@ -360,7 +366,6 @@ impl VoiceService {
             self_mute: request.self_mute,
             self_deaf: request.self_deaf,
             suppressed: !may_speak,
-            join_sound_id,
             last_sound_played_at: previous
                 .as_ref()
                 .and_then(|previous| previous.last_sound_played_at),
@@ -392,7 +397,7 @@ impl VoiceService {
             },
         );
         shared
-            .announce_join(request.user_id, previous, &participant)
+            .announce_join(request.user_id, previous, &participant, arrival_sound_id)
             .await;
     }
 
@@ -533,40 +538,17 @@ impl VoiceService {
 }
 
 impl VoiceShared {
-    /// The join sound a join announces (ADR-0032): none on a reconnection to the same channel's
-    /// unchanged one, the member's own when they may use the soundboard there.
-    async fn join_sound_announced(
-        &self,
-        user_id: Snowflake,
-        channel_id: Snowflake,
-        previous: Option<&Participant>,
-        guild_id: Snowflake,
-        may_use_soundboard: bool,
-    ) -> Option<Snowflake> {
-        match previous {
-            // A reconnection to the same channel announces nothing new.
-            Some(previous) if previous.channel_id == channel_id => previous.join_sound_id,
-            _ if may_use_soundboard => self
-                .guilds
-                .join_sound_of_member(guild_id, user_id)
-                .await
-                .unwrap_or_else(|error| {
-                    tracing::warn!(%error, "voice join: cannot read the join sound");
-                    None
-                }),
-            _ => None,
-        }
-    }
-
     /// Tells the others what a join changed: the session it replaced, a move, a new state.
     async fn announce_join(
         &self,
         user_id: Snowflake,
         previous: Option<Participant>,
         participant: &Participant,
+        arrival_sound_id: Option<Snowflake>,
     ) {
         let Some(previous) = previous else {
-            self.publish_state_updated(user_id, participant).await;
+            self.publish_state(user_id, participant, arrival_sound_id)
+                .await;
             return;
         };
         if previous.session != participant.session {
@@ -579,7 +561,8 @@ impl VoiceShared {
             );
         }
         if previous.channel_id != participant.channel_id {
-            self.publish_move(user_id, &previous, participant).await;
+            self.publish_move(user_id, &previous, participant, arrival_sound_id)
+                .await;
         } else if previous.voice_state(user_id) != participant.voice_state(user_id) {
             self.publish_state_updated(user_id, participant).await;
         }
@@ -640,8 +623,9 @@ impl VoiceShared {
         user_id: Snowflake,
         previous: &Participant,
         current: &Participant,
+        arrival_sound_id: Option<Snowflake>,
     ) {
-        self.publish_state_updated(user_id, current).await;
+        self.publish_state(user_id, current, arrival_sound_id).await;
         let audiences = (
             self.guilds
                 .audience_of_guild_channel(previous.channel_id)
@@ -681,8 +665,21 @@ impl VoiceShared {
     }
 
     async fn publish_state_updated(&self, user_id: Snowflake, participant: &Participant) {
+        self.publish_state(user_id, participant, None).await;
+    }
+
+    /// `VOICE_STATE_UPDATE`, carrying `join_sound_id` only for an arrival (ADR-0032).
+    async fn publish_state(
+        &self,
+        user_id: Snowflake,
+        participant: &Participant,
+        join_sound_id: Option<Snowflake>,
+    ) {
         let event = GatewayEvent::VoiceStateUpdate {
-            voice_state: participant.voice_state(user_id),
+            voice_state: VoiceState {
+                join_sound_id,
+                ..participant.voice_state(user_id)
+            },
         };
         self.publish_to_viewers(participant.guild_id, participant.channel_id, &event)
             .await;
