@@ -47,6 +47,9 @@ struct SessionEntry {
     /// `None` once the session was cut off (too slow, or its token revoked); the entry stays until
     /// `unregister_session` so presence is computed from live sessions only once.
     sender: Option<mpsc::Sender<SharedEvent>>,
+    /// Set by the session task while no socket is attached after one was: such a session is the
+    /// first to go when its user reaches the session cap.
+    is_waiting_for_resume: bool,
 }
 
 #[derive(Debug, Default)]
@@ -225,7 +228,10 @@ impl EventHub {
     }
 
     /// Registers a session (subscribed to no guild yet), if the user has fewer than
-    /// `maximum_sessions_per_user` sessions; the check and the insert are atomic.
+    /// `maximum_sessions_per_user` live sessions; the check and the insert are atomic. At the cap,
+    /// the user's oldest session waiting for a resume is cut off to make room: a reload leaves one
+    /// behind for `RESUME_WINDOW`, and reloads must not lock the user out. Sessions with a socket
+    /// attached (or still identifying) keep the hard cap.
     pub(crate) fn register_session(
         &self,
         user_id: Snowflake,
@@ -233,8 +239,27 @@ impl EventHub {
         maximum_sessions_per_user: usize,
     ) -> Result<(SessionKey, mpsc::Receiver<SharedEvent>), TooManySessions> {
         let mut state = self.state();
-        if state.user_sessions.get(&user_id).map_or(0, HashSet::len) >= maximum_sessions_per_user {
-            return Err(TooManySessions);
+        let live_sessions: Vec<(SessionKey, bool)> = state
+            .keys_of_user(user_id)
+            .into_iter()
+            .filter_map(|key| {
+                let entry = state.sessions.get(&key)?;
+                entry
+                    .sender
+                    .is_some()
+                    .then_some((key, entry.is_waiting_for_resume))
+            })
+            .collect();
+        if live_sessions.len() >= maximum_sessions_per_user {
+            let oldest_waiting_for_resume = live_sessions
+                .iter()
+                .filter(|(_, is_waiting_for_resume)| *is_waiting_for_resume)
+                .map(|(key, _)| *key)
+                .min_by_key(|key| key.0);
+            let Some(evicted) = oldest_waiting_for_resume else {
+                return Err(TooManySessions);
+            };
+            state.cut_off(evicted);
         }
         let (sender, receiver) = mpsc::channel(SESSION_EVENT_QUEUE_CAPACITY);
         let key = SessionKey(state.next_session_key);
@@ -246,6 +271,7 @@ impl EventHub {
                 token_sha256,
                 guild_ids: HashSet::new(),
                 sender: Some(sender),
+                is_waiting_for_resume: false,
             },
         );
         state.user_sessions.entry(user_id).or_default().insert(key);
@@ -475,6 +501,28 @@ impl EventHub {
                 state.guild_sessions.remove(&guild_id);
             }
         }
+    }
+
+    /// Called by the session task when a socket attaches (`false`) or goes away (`true`).
+    pub(crate) fn set_session_waiting_for_resume(
+        &self,
+        key: SessionKey,
+        is_waiting_for_resume: bool,
+    ) {
+        if let Some(entry) = self.state().sessions.get_mut(&key) {
+            entry.is_waiting_for_resume = is_waiting_for_resume;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn count_live_sessions_waiting_for_resume(&self, user_id: Snowflake) -> usize {
+        let state = self.state();
+        state
+            .keys_of_user(user_id)
+            .iter()
+            .filter_map(|key| state.sessions.get(key))
+            .filter(|entry| entry.sender.is_some() && entry.is_waiting_for_resume)
+            .count()
     }
 
     /// Whether the session is registered and not cut off: once false, it never turns true again.
@@ -917,6 +965,46 @@ mod tests {
         ));
         assert!(matches!(
             with_b.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn at_the_cap_the_oldest_session_waiting_for_resume_makes_room_and_attached_ones_never_do() {
+        let hub = EventHub::default();
+        let (first, mut first_events) = hub.register_session(ALICE, TOKEN_A, 3).unwrap();
+        let (second, mut second_events) = hub.register_session(ALICE, TOKEN_A, 3).unwrap();
+        let (_third, mut third_events) = hub.register_session(ALICE, TOKEN_A, 3).unwrap();
+        assert_eq!(
+            hub.register_session(ALICE, TOKEN_A, 3).err(),
+            Some(TooManySessions),
+            "attached or identifying sessions keep the hard cap"
+        );
+
+        hub.set_session_waiting_for_resume(second, true);
+        hub.set_session_waiting_for_resume(first, true);
+        let (_fourth, _) = hub.register_session(ALICE, TOKEN_A, 3).unwrap();
+        assert!(matches!(
+            first_events.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+        assert!(matches!(
+            second_events.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
+        // The evicted session no longer counts, even before its task unregisters it.
+        let (_fifth, _) = hub.register_session(ALICE, TOKEN_A, 3).unwrap();
+        assert!(matches!(
+            second_events.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+        assert_eq!(
+            hub.register_session(ALICE, TOKEN_A, 3).err(),
+            Some(TooManySessions)
+        );
+        assert!(matches!(
+            third_events.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
         ));
     }

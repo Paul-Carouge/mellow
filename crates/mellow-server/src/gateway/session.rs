@@ -9,7 +9,7 @@ use mellow_protocol::ServerFrame;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::events::SharedEvent;
+use crate::events::{EventHub, SessionKey, SharedEvent};
 
 /// How long a disconnected session waits for its client to resume.
 pub(crate) const RESUME_WINDOW: Duration = Duration::from_secs(60);
@@ -64,6 +64,9 @@ pub(crate) struct ResumeRefused;
 pub(crate) struct SessionTask {
     pub(crate) events: mpsc::Receiver<SharedEvent>,
     pub(crate) commands: mpsc::Receiver<SessionCommand>,
+    /// Told when a socket attaches or goes away, for the per-user session cap.
+    pub(crate) hub: Arc<EventHub>,
+    pub(crate) hub_key: SessionKey,
 }
 
 #[derive(Debug)]
@@ -141,6 +144,7 @@ impl SessionTask {
                         // The socket is gone or too slow: keep buffering until it resumes.
                         attachment = None;
                         detached_since = Some(Instant::now());
+                        self.hub.set_session_waiting_for_resume(self.hub_key, true);
                     }
                     replay.push(sequence, event);
                 }
@@ -161,6 +165,7 @@ impl SessionTask {
                         if delivered {
                             attachment = Some(Attachment { id: attachment_id, outgoing });
                             detached_since = None;
+                            self.hub.set_session_waiting_for_resume(self.hub_key, false);
                             let _ = reply.send(Ok(()));
                         } else {
                             let _ = reply.send(Err(ResumeRefused));
@@ -170,6 +175,7 @@ impl SessionTask {
                         if attachment.as_ref().is_some_and(|current| current.id == attachment_id) {
                             attachment = None;
                             detached_since = Some(Instant::now());
+                            self.hub.set_session_waiting_for_resume(self.hub_key, true);
                         }
                     }
                     None => return SessionEnd::Expired,
@@ -254,7 +260,7 @@ mod tests {
 
     #[tokio::test]
     async fn detached_sessions_buffer_and_replay_missed_dispatches_then_resumed() {
-        let hub = EventHub::default();
+        let hub = Arc::new(EventHub::default());
         let (hub_key, events) = hub.register_session(USER, [0; 32], NO_CAP).unwrap();
         hub.set_presence(
             USER,
@@ -266,7 +272,15 @@ mod tests {
         );
         hub.activate_session(hub_key, &[GUILD]);
         let (commands_sender, commands) = mpsc::channel(8);
-        let task = tokio::spawn(SessionTask { events, commands }.run());
+        let task = tokio::spawn(
+            SessionTask {
+                events,
+                commands,
+                hub: hub.clone(),
+                hub_key,
+            }
+            .run(),
+        );
 
         let (attached, mut first_socket) = attach(&commands_sender, 1, 0).await;
         assert_eq!(attached, Ok(()));
@@ -318,10 +332,18 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_unattached_session_expires_after_the_resume_window() {
-        let hub = EventHub::default();
-        let (_hub_key, events) = hub.register_session(USER, [0; 32], NO_CAP).unwrap();
+        let hub = Arc::new(EventHub::default());
+        let (hub_key, events) = hub.register_session(USER, [0; 32], NO_CAP).unwrap();
         let (_commands_sender, commands) = mpsc::channel(8);
-        let task = tokio::spawn(SessionTask { events, commands }.run());
+        let task = tokio::spawn(
+            SessionTask {
+                events,
+                commands,
+                hub,
+                hub_key,
+            }
+            .run(),
+        );
         tokio::time::advance(RESUME_WINDOW + Duration::from_secs(1)).await;
         assert_eq!(task.await.unwrap(), SessionEnd::Expired);
     }
