@@ -639,6 +639,25 @@ describe("VoiceSession", () => {
       expect(microphone.track.enabled).toBe(true);
     });
 
+    it("keeps the manual gate open in a hidden tab, where timers are throttled", async () => {
+      const { session, microphone, connect, meter } = harness();
+      session.updateSettings({ ...session.settings, isSensitivityAutomatic: false, sensitivityThresholdDecibels: -40 });
+      await connect();
+      meter.level = levelAt(-60);
+      await vi.advanceTimersByTimeAsync(40);
+      expect(microphone.track.enabled).toBe(false);
+      vi.stubGlobal("document", { visibilityState: "hidden" });
+      try {
+        await vi.advanceTimersByTimeAsync(20);
+        expect(microphone.track.enabled).toBe(true);
+      } finally {
+        vi.unstubAllGlobals();
+        vi.stubGlobal("navigator", { languages: ["en-GB"] });
+      }
+      await vi.advanceTimersByTimeAsync(20);
+      expect(microphone.track.enabled).toBe(false);
+    });
+
     it("compares the level after the input volume", async () => {
       const { session, connect, meter, amplifiers } = harness();
       session.updateSettings({ ...session.settings, isSensitivityAutomatic: false, sensitivityThresholdDecibels: -40 });

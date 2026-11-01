@@ -44,6 +44,14 @@ const SPEAKING_HOLD_MILLISECONDS = 300;
 /** The manual sensitivity gate stays open this long after the level falls under the threshold. */
 const SENSITIVITY_GATE_HOLD_MILLISECONDS = 250;
 
+/**
+ * shortcut: hidden tabs throttle timers, so the manual gate stays open there (Opus DTX and the
+ * server's speaking detection handle silence); upgrade when an AudioWorklet is allowed by the CSP.
+ */
+function isPageHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
 export type VoicePhase = "idle" | "connecting" | "connected" | "reconnecting";
 
 /** Why voice stopped or could not start; shown in the voice panel until dismissed or retried. */
@@ -856,7 +864,9 @@ export class VoiceSession {
       return this.isPushToTalkOpen;
     }
     return (
-      this.settings.isSensitivityAutomatic || Date.now() - this.lastAboveThresholdAt < SENSITIVITY_GATE_HOLD_MILLISECONDS
+      this.settings.isSensitivityAutomatic ||
+      isPageHidden() ||
+      Date.now() - this.lastAboveThresholdAt < SENSITIVITY_GATE_HOLD_MILLISECONDS
     );
   }
 
