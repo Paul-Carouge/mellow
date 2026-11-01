@@ -270,6 +270,19 @@ describe("MellowClient", () => {
     });
   });
 
+  it("keeps an edit that arrived while an older history page was on its way", async () => {
+    let answer: (page: Message[]) => void = () => undefined;
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, listMessages: () => new Promise<Message[]>((resolve) => (answer = resolve)) }),
+    );
+    client.applyReady(ready());
+    client.applyEvent({ t: "MESSAGE_CREATE", data: message("150") }, 0);
+    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...message("150", GENERAL, 20), content: "edited" } }, 0);
+    answer([message("149"), message("150")]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(client.messages(GENERAL).map((cached) => cached.content)).toEqual(["message 149", "edited"]);
+  });
+
   it("keeps the newer edit when an older one comes back late", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(ready());

@@ -1031,7 +1031,12 @@ export class MellowClient {
   private insertMessages(channelId: Snowflake, incoming: Message[]): void {
     const byId = new Map(this.messages(channelId).map((message) => [message.id, message]));
     for (const message of incoming) {
-      if (!this.deletedMessageIds.has(message.id)) {
+      const cached = byId.get(message.id);
+      // A history page that left before an edit must not put the older text back.
+      const isOlderEdit =
+        cached !== undefined &&
+        (cached.edited_at_unix_milliseconds ?? 0) > (message.edited_at_unix_milliseconds ?? 0);
+      if (!this.deletedMessageIds.has(message.id) && !isOlderEdit) {
         byId.set(message.id, message);
       }
     }
