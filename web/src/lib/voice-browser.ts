@@ -1,11 +1,24 @@
-// The browser side of `VoicePorts`: WebRTC, the microphone, playback, devices and the level meter.
-// Thin on purpose: the rules live in `voice-session.svelte.ts`, tested with fakes. Only built-in
-// Web Audio nodes are used (AnalyserNode, GainNode): an AudioWorklet would need `worker-src`,
-// which the policy keeps at 'none'.
+// The browser side of `VoicePorts`: WebRTC, the microphone, playback, devices, the level meter and
+// the processing chain. Thin on purpose: the rules live in `voice-session.svelte.ts` and
+// `voice-processing.ts`, tested with fakes. RNNoise runs in an AudioWorklet loaded from this origin
+// (`script-src 'self'`, not a worker) and compiles its WebAssembly under `'wasm-unsafe-eval'` (ADR-0031).
+
+import rnnoiseWasmUrl from "@sapphi-red/web-noise-suppressor/rnnoise.wasm?url";
+import rnnoiseSimdWasmUrl from "@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url";
+import rnnoiseWorkletUrl from "@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url";
 
 import { browserStorage } from "./reactions";
-import type { AudioDevice } from "./voice-settings";
-import type { AudioOutput, InputAmplifier, LevelMeter, MicrophoneChoice, VoicePorts } from "./voice-session.svelte";
+import {
+  type MicrophoneChoice,
+  type MicrophoneProcessing,
+  NOISE_SUPPRESSOR_SAMPLE_RATE_HERTZ,
+  type NoiseSuppressorProblem,
+  type ProcessingStage,
+  microphoneConstraintsOf,
+  processingStagesOf,
+} from "./voice-processing";
+import type { AudioDevice, EqualizerBand } from "./voice-settings";
+import type { AudioOutput, InputAmplifier, LevelMeter, MicrophoneProcessor, VoicePorts } from "./voice-session.svelte";
 
 const ANALYSER_FFT_SIZE = 512;
 
@@ -17,26 +30,139 @@ function createPeerConnection(): RTCPeerConnection | null {
   return new RTCPeerConnection({ bundlePolicy: "max-bundle", rtcpMuxPolicy: "require" });
 }
 
-/**
- * What Discord asks for: the browser's echo cancellation and gain always, noise suppression as
- * chosen, one channel. A chosen device is required (`exact`), so its absence fails and the
- * session falls back to the default one, saying so.
- */
 function requestMicrophone(choice: MicrophoneChoice): Promise<MediaStream> {
   // Absent outside a secure context: reported as "unavailable".
   if (!navigator.mediaDevices?.getUserMedia) {
     return Promise.reject(new TypeError("navigator.mediaDevices is unavailable"));
   }
-  return navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: choice.isNoiseSuppressionOn,
-      autoGainControl: true,
-      channelCount: 1,
-      ...(choice.deviceId === null ? {} : { deviceId: { exact: choice.deviceId } }),
-    },
-    video: false,
-  });
+  return navigator.mediaDevices.getUserMedia({ audio: microphoneConstraintsOf(choice), video: false });
+}
+
+/** Where RNNoise can run at all; the settings say so before anything is loaded. */
+export const CAN_SUPPRESS_NOISE_IN_PAGE =
+  typeof AudioWorkletNode !== "undefined" && typeof WebAssembly !== "undefined" && typeof AudioContext !== "undefined";
+
+/** RNNoise's binary, fetched once per page; forgotten on failure so a later microphone tries again. */
+let noiseSuppressorBinary: Promise<ArrayBuffer> | null = null;
+
+async function loadNoiseSuppressorBinary(): Promise<ArrayBuffer> {
+  // Imported here, not at the top: the package defines its node class by extending
+  // `AudioWorkletNode`, which would throw on load in a browser without it.
+  const { loadRnnoise } = await import("@sapphi-red/web-noise-suppressor");
+  const binary = await loadRnnoise({ url: rnnoiseWasmUrl, simdUrl: rnnoiseSimdWasmUrl });
+  // The worklet compiles it under this page's policy; compiling it here first finds a refusal
+  // before the microphone is opened without the browser's own suppression.
+  await WebAssembly.compile(binary);
+  return binary;
+}
+
+async function prepareNoiseSuppressor(): Promise<NoiseSuppressorProblem | null> {
+  if (!CAN_SUPPRESS_NOISE_IN_PAGE) {
+    return "unsupported";
+  }
+  noiseSuppressorBinary ??= loadNoiseSuppressorBinary();
+  try {
+    await noiseSuppressorBinary;
+    return null;
+  } catch (error) {
+    console.warn("couldn't load the noise suppressor", error);
+    noiseSuppressorBinary = null;
+    return "failed";
+  }
+}
+
+async function createStageNode(
+  context: AudioContext,
+  stage: ProcessingStage,
+  bands: Map<EqualizerBand, BiquadFilterNode>,
+): Promise<AudioNode> {
+  switch (stage.kind) {
+    case "noise-suppressor": {
+      if (noiseSuppressorBinary === null) {
+        throw new Error("the noise suppressor was not prepared");
+      }
+      const [{ RnnoiseWorkletNode }, wasmBinary] = await Promise.all([
+        import("@sapphi-red/web-noise-suppressor"),
+        noiseSuppressorBinary,
+        context.audioWorklet.addModule(rnnoiseWorkletUrl),
+      ]);
+      const node = new RnnoiseWorkletNode(context, { wasmBinary, maxChannels: 1 });
+      node.addEventListener("processorerror", (event) => console.warn("the noise suppressor stopped", event));
+      return node;
+    }
+    case "filter": {
+      const filter = context.createBiquadFilter();
+      filter.type = stage.type;
+      filter.frequency.value = stage.frequencyHertz;
+      filter.Q.value = stage.quality;
+      filter.gain.value = stage.gainDecibels;
+      if (stage.band !== "rumble") {
+        bands.set(stage.band, filter);
+      }
+      return filter;
+    }
+    case "dynamics": {
+      const compressor = context.createDynamicsCompressor();
+      compressor.threshold.value = stage.thresholdDecibels;
+      compressor.knee.value = stage.kneeDecibels;
+      compressor.ratio.value = stage.ratio;
+      compressor.attack.value = stage.attackSeconds;
+      compressor.release.value = stage.releaseSeconds;
+      return compressor;
+    }
+  }
+}
+
+/**
+ * The chain in an AudioContext of its own, into a track of its own. RNNoise needs 48 kHz; Firefox
+ * refuses a microphone at another rate, which rejects here and falls back to the browser's filter.
+ */
+async function processMicrophone(track: MediaStreamTrack, processing: MicrophoneProcessing): Promise<MicrophoneProcessor | null> {
+  if (typeof AudioContext === "undefined") {
+    return null;
+  }
+  const context = new AudioContext(processing.isNoiseSuppressorOn ? { sampleRate: NOISE_SUPPRESSOR_SAMPLE_RATE_HERTZ } : {});
+  try {
+    const bands = new Map<EqualizerBand, BiquadFilterNode>();
+    const nodes: AudioNode[] = [context.createMediaStreamSource(new MediaStream([track]))];
+    for (const stage of processingStagesOf(processing)) {
+      nodes.push(await createStageNode(context, stage, bands));
+    }
+    const destination = context.createMediaStreamDestination();
+    destination.channelCount = 1;
+    nodes.push(destination);
+    nodes.reduce((from, to) => from.connect(to));
+    const processedTrack = destination.stream.getAudioTracks()[0];
+    if (!processedTrack) {
+      throw new Error("the processing graph gave no track");
+    }
+    if (context.state === "suspended") {
+      // Not awaited: without the page's activation it would wait for the next click.
+      context.resume().catch((error: unknown) => console.warn("couldn't start the microphone processing", error));
+    }
+    return {
+      track: processedTrack,
+      setEqualizer: (equalizer) => {
+        for (const [band, filter] of bands) {
+          filter.gain.value = equalizer[band];
+        }
+      },
+      stop: () => {
+        processedTrack.stop();
+        for (const node of nodes) {
+          node.disconnect();
+          if ("destroy" in node && typeof node.destroy === "function") {
+            // RNNoise's node frees its WebAssembly memory in the worklet.
+            node.destroy();
+          }
+        }
+        context.close().catch((error: unknown) => console.warn("couldn't close the microphone processing", error));
+      },
+    };
+  } catch (error) {
+    context.close().catch((closeError: unknown) => console.warn("couldn't close the microphone processing", closeError));
+    throw error;
+  }
 }
 
 /** Where the browser lets a page choose its output (not Safari). */
@@ -227,6 +353,8 @@ export function watchAudioDevices(onChange: () => void): () => void {
 export const BROWSER_VOICE_PORTS: Omit<VoicePorts, "sendFrame"> = {
   createPeerConnection,
   requestMicrophone,
+  prepareNoiseSuppressor,
+  processMicrophone,
   playTrack,
   meterLevel,
   amplify,

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type ClientFrame, VOICE_RECEIVE_SLOTS } from "./protocol";
+import type { EqualizerDecibels } from "./voice-settings";
+import type { MicrophoneProcessing, NoiseSuppressorProblem } from "./voice-processing";
 import { type AudioDevice, DEFAULT_VOICE_SETTINGS, PERSON_VOICE_SETTINGS_STORAGE_KEY, VOICE_SETTINGS_STORAGE_KEY } from "./voice-settings";
 import { type MicrophoneChoice, type VoicePorts, type VoiceCue, VoiceSession } from "./voice-session.svelte";
 
@@ -74,6 +76,8 @@ function fakeMicrophone() {
 
 /** What sessions built outside the harness need besides their own ports. */
 const QUIET_PORTS = {
+  prepareNoiseSuppressor: () => Promise.resolve("unsupported" as const),
+  processMicrophone: () => Promise.resolve(null),
   playTrack: () => ({ setGain: () => {}, setOutputDevice: () => {}, stop: () => {} }),
   meterLevel: () => null,
   amplify: () => null,
@@ -91,7 +95,7 @@ function harness({ microphoneError, storage = null }: { microphoneError?: Error;
   const frames: ClientFrame[] = [];
   const peers: FakePeer[] = [];
   const cues: VoiceCue[] = [];
-  const outputs: { gain: number; deviceId: string | null; isStopped: boolean }[] = [];
+  const outputs: { track: MediaStreamTrack; gain: number; deviceId: string | null; isStopped: boolean }[] = [];
   const microphone = fakeMicrophone();
   /** Every microphone handed out, the first one being `microphone`, with what was asked. */
   const microphones: { choice: MicrophoneChoice; track: ReturnType<typeof fakeMicrophone>["track"] }[] = [];
@@ -102,6 +106,19 @@ function harness({ microphoneError, storage = null }: { microphoneError?: Error;
   const amplifiers: { track: { enabled: boolean }; gain: number; isStopped: boolean }[] = [];
   const gateway = { isUp: true };
   const microphoneFailure = { error: microphoneError };
+  /** RNNoise's fate: unsupported unless a test says otherwise, so most tests send the device's own track. */
+  const noiseSuppressor: { problem: NoiseSuppressorProblem | null; startError: Error | null; prepareCount: number } = {
+    problem: "unsupported",
+    startError: null,
+    prepareCount: 0,
+  };
+  const processors: {
+    input: MediaStreamTrack;
+    processing: MicrophoneProcessing;
+    track: { enabled: boolean };
+    equalizer: EqualizerDecibels | null;
+    isStopped: boolean;
+  }[] = [];
   // The casts are limited to these fakes, which implement what the session calls.
   const session = new VoiceSession({
     sendFrame: (frame) => gateway.isUp && frames.push(frame) > 0,
@@ -121,8 +138,24 @@ function harness({ microphoneError, storage = null }: { microphoneError?: Error;
       microphones.push({ choice, track: next.track });
       return Promise.resolve(next.stream as unknown as MediaStream);
     },
-    playTrack: () => {
-      const output = { gain: 1, deviceId: null as string | null, isStopped: false };
+    prepareNoiseSuppressor: () => {
+      noiseSuppressor.prepareCount += 1;
+      return Promise.resolve(noiseSuppressor.problem);
+    },
+    processMicrophone: (input, processing) => {
+      if (processing.isNoiseSuppressorOn && noiseSuppressor.startError) {
+        return Promise.reject(noiseSuppressor.startError);
+      }
+      const processor = { input, processing, track: { enabled: true }, equalizer: processing.equalizer, isStopped: false };
+      processors.push(processor);
+      return Promise.resolve({
+        track: processor.track as unknown as MediaStreamTrack,
+        setEqualizer: (equalizer) => (processor.equalizer = equalizer),
+        stop: () => (processor.isStopped = true),
+      });
+    },
+    playTrack: (track) => {
+      const output = { track, gain: 1, deviceId: null as string | null, isStopped: false };
       outputs.push(output);
       return {
         setGain: (gain) => (output.gain = gain),
@@ -177,6 +210,8 @@ function harness({ microphoneError, storage = null }: { microphoneError?: Error;
     meter,
     amplifiers,
     microphoneFailure,
+    noiseSuppressor,
+    processors,
     gateway,
     connect,
   };
@@ -406,6 +441,8 @@ describe("VoiceSession", () => {
     });
     const first = session.join(CHANNEL);
     const second = session.join(OTHER_CHANNEL);
+    // Both ask once RNNoise's support is known.
+    await flush();
     pending[0]?.(microphones[0]?.stream as unknown as MediaStream);
     await first;
     pending[1]?.(microphones[1]?.stream as unknown as MediaStream);
@@ -693,11 +730,11 @@ describe("VoiceSession", () => {
     it("switches the microphone live when another one or noise suppression is chosen", async () => {
       const { session, connect, lastPeer, microphones, joins } = harness();
       await connect();
-      session.updateSettings({ ...session.settings, inputDeviceId: "usb", isNoiseSuppressionOn: false });
+      session.updateSettings({ ...session.settings, inputDeviceId: "usb", noiseSuppression: "off" });
       await flush();
       expect(microphones.map((entry) => entry.choice)).toEqual([
-        { deviceId: null, isNoiseSuppressionOn: true },
-        { deviceId: "usb", isNoiseSuppressionOn: false },
+        { deviceId: null, isBrowserNoiseSuppressionOn: true, isAutomaticGainOn: true },
+        { deviceId: "usb", isBrowserNoiseSuppressionOn: false, isAutomaticGainOn: true },
       ]);
       expect(microphones[0]?.track.isStopped).toBe(true);
       expect(lastPeer().replacedTracks.at(-1)).toBe(microphones[1]?.track);
@@ -772,12 +809,116 @@ describe("VoiceSession", () => {
       expect(microphones[1]?.track.isStopped).toBe(false);
       // Two quick restarts (another microphone, then noise suppression) keep only the last one.
       session.updateSettings({ ...session.settings, inputDeviceId: "usb" });
-      session.updateSettings({ ...session.settings, isNoiseSuppressionOn: false });
+      session.updateSettings({ ...session.settings, noiseSuppression: "off" });
       await flush();
       expect(microphones.slice(0, -1).every((entry) => entry.track.isStopped)).toBe(true);
       expect(microphones.at(-1)?.track.isStopped).toBe(false);
       session.stopMicrophoneTest();
       expect(microphones.every((entry) => entry.track.isStopped)).toBe(true);
+    });
+
+    it("sends the microphone through RNNoise, with the browser's own suppression off", async () => {
+      const { session, connect, microphones, noiseSuppressor, processors, lastPeer } = harness();
+      noiseSuppressor.problem = null;
+      await connect();
+      expect(microphones[0]?.choice).toEqual({ deviceId: null, isBrowserNoiseSuppressionOn: false, isAutomaticGainOn: true });
+      expect(processors.map((processor) => processor.processing)).toEqual([{ isNoiseSuppressorOn: true, equalizer: null }]);
+      expect(processors[0]?.input).toBe(microphones[0]?.track);
+      expect(lastPeer().transceivers[0]?.trackOrKind).toBe(processors[0]?.track);
+      expect(session.noiseSuppressorProblem).toBeNull();
+    });
+
+    it("falls back to the browser's suppression where RNNoise cannot run, and says why", async () => {
+      const { session, connect, microphone, microphones, processors, lastPeer } = harness();
+      await connect();
+      expect(session.noiseSuppressorProblem).toBe("unsupported");
+      expect(microphones[0]?.choice.isBrowserNoiseSuppressionOn).toBe(true);
+      expect(processors).toHaveLength(0);
+      expect(lastPeer().transceivers[0]?.trackOrKind).toBe(microphone.track);
+    });
+
+    it("opens the microphone again with the browser's suppression when RNNoise fails to start", async () => {
+      const { session, connect, microphones, noiseSuppressor, processors, lastPeer } = harness();
+      noiseSuppressor.problem = null;
+      noiseSuppressor.startError = new Error("worklet refused");
+      await connect();
+      expect(session.noiseSuppressorProblem).toBe("failed");
+      expect(microphones.map((entry) => entry.choice.isBrowserNoiseSuppressionOn)).toEqual([false, true]);
+      expect(microphones[0]?.track.isStopped).toBe(true);
+      expect(processors).toHaveLength(0);
+      expect(lastPeer().transceivers[0]?.trackOrKind).toBe(microphones[1]?.track);
+      // Choosing again tries again.
+      noiseSuppressor.startError = null;
+      session.updateSettings({ ...session.settings, noiseSuppression: "browser" });
+      session.updateSettings({ ...session.settings, noiseSuppression: "advanced" });
+      await flush();
+      expect(session.noiseSuppressorProblem).toBeNull();
+      expect(lastPeer().replacedTracks.at(-1)).toBe(processors.at(-1)?.track);
+    });
+
+    it("builds no processing and loads nothing when everything is off", async () => {
+      const { session, connect, microphone, noiseSuppressor, processors, lastPeer } = harness();
+      session.updateSettings({ ...session.settings, noiseSuppression: "off" });
+      await connect();
+      expect(noiseSuppressor.prepareCount).toBe(0);
+      expect(processors).toHaveLength(0);
+      expect(lastPeer().transceivers[0]?.trackOrKind).toBe(microphone.track);
+    });
+
+    it("turns the voice enhancement on live: gain control off, the chain sent, no renegotiation", async () => {
+      const { session, connect, microphones, processors, lastPeer, joins } = harness();
+      session.updateSettings({ ...session.settings, noiseSuppression: "browser" });
+      await connect();
+      session.updateSettings({ ...session.settings, isVoiceEnhancementOn: true });
+      await flush();
+      expect(microphones.map((entry) => entry.choice.isAutomaticGainOn)).toEqual([true, false]);
+      expect(microphones[1]?.choice.isBrowserNoiseSuppressionOn).toBe(true);
+      expect(microphones[0]?.track.isStopped).toBe(true);
+      expect(processors.map((processor) => processor.processing)).toEqual([
+        { isNoiseSuppressorOn: false, equalizer: DEFAULT_VOICE_SETTINGS.equalizerDecibels },
+      ]);
+      expect(lastPeer().replacedTracks.at(-1)).toBe(processors[0]?.track);
+      expect(joins()).toHaveLength(1);
+    });
+
+    it("applies the sliders to the running chain without opening the microphone again", async () => {
+      const { session, connect, microphones, processors } = harness();
+      session.updateSettings({ ...session.settings, isVoiceEnhancementOn: true });
+      await connect();
+      const custom = { bass: -4, mids: 2, treble: 6 };
+      session.updateSettings({ ...session.settings, voiceEnhancementPreset: "custom", equalizerDecibels: custom });
+      await flush();
+      expect(microphones).toHaveLength(1);
+      expect(processors[0]?.equalizer).toEqual(custom);
+    });
+
+    it("gates and mutes the processed track, never the device's", async () => {
+      const { session, connect, microphone, processors } = harness();
+      session.updateSettings({ ...session.settings, isVoiceEnhancementOn: true });
+      await connect();
+      await session.toggleMicrophone();
+      expect(processors[0]?.track.enabled).toBe(false);
+      expect(microphone.track.enabled).toBe(true);
+    });
+
+    it("plays the processed test microphone back while listening, and stops when the page closes", async () => {
+      const { session, outputs, processors, noiseSuppressor } = harness();
+      noiseSuppressor.problem = null;
+      session.setMonitoring(true);
+      await flush();
+      expect(session.isMicrophoneTestRunning).toBe(true);
+      expect(outputs.map((output) => output.track)).toEqual([processors[0]?.track]);
+      session.updateSettings({ ...session.settings, inputVolumePercent: 150 });
+      expect(outputs[0]?.gain).toBe(1.5);
+      // Another processing reopens the test; listening follows the new track.
+      session.updateSettings({ ...session.settings, noiseSuppression: "browser" });
+      await flush();
+      expect(session.isMonitoring).toBe(true);
+      expect(outputs[0]?.isStopped).toBe(true);
+      expect(outputs).toHaveLength(2);
+      session.stopMicrophoneTest();
+      expect(session.isMonitoring).toBe(false);
+      expect(outputs[1]?.isStopped).toBe(true);
     });
 
     it("says why the microphone test could not start", async () => {

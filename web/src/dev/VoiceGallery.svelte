@@ -5,7 +5,7 @@
   import Navigator from "../components/Navigator.svelte";
   import VoiceSettings from "../components/VoiceSettings.svelte";
   import { BROWSER_VOICE_PORTS } from "../lib/voice-browser";
-  import { DEFAULT_VOICE_SETTINGS, type VoiceSettings as Settings } from "../lib/voice-settings";
+  import { DEFAULT_VOICE_SETTINGS, type VoiceSettings as Settings, withEqualizerBand } from "../lib/voice-settings";
   import type { RestClient } from "../lib/api";
   import { MellowClient } from "../lib/client.svelte";
   import { type Channel, type GatewayEvent, Permission, type VoiceState } from "../lib/protocol";
@@ -17,11 +17,14 @@
   // ptt, `&key=0` (no push-to-talk key), `&devices=hidden` (before the permission),
   // `&output=unsupported` (Safari), `&missing=1` (remembered devices unplugged); `&view=menu`
   // opens Ana's menu with her volume. Headless browsers never answer `getUserMedia`: the
-  // microphone is a wavering oscillator, so the meter moves.
+  // microphone is a wavering oscillator, so the meter moves. Voice processing (ADR-0031) runs for
+  // real on it: `&enhance=1` turns the enhanced voice on, `&preset=custom` moves a slider,
+  // `&rnnoise=unsupported|failed` shows the fallbacks, `&listen=1` plays it back ("S'écouter").
   const parameters = new URLSearchParams(location.hash.slice(1));
   const view = parameters.get("view") ?? "navigator";
   const isDevicesHidden = parameters.get("devices") === "hidden";
   const isRememberedMissing = parameters.get("missing") === "1";
+  const rnnoise = parameters.get("rnnoise");
 
   /** A microphone that hums between quiet and loud, about once a second. */
   function oscillatorMicrophone(): MediaStream {
@@ -122,13 +125,16 @@
   const client = new MellowClient(silentRest, {
     createPeerConnection: () => fakePeer as unknown as RTCPeerConnection,
     meterLevel: view === "settings" ? BROWSER_VOICE_PORTS.meterLevel : () => null,
+    prepareNoiseSuppressor:
+      rnnoise === "unsupported" || rnnoise === "failed" ? () => Promise.resolve(rnnoise) : BROWSER_VOICE_PORTS.prepareNoiseSuppressor,
+    processMicrophone: view === "settings" ? BROWSER_VOICE_PORTS.processMicrophone : () => Promise.resolve(null),
     requestMicrophone: () =>
       view === "settings"
         ? Promise.resolve(oscillatorMicrophone())
         : state === "no-microphone"
         ? Promise.reject(Object.assign(new Error("none"), { name: "NotFoundError" }))
         : Promise.resolve({ getAudioTracks: () => [fakeTrack], getTracks: () => [fakeTrack] } as unknown as MediaStream),
-    playTrack: () => ({ setGain: () => {}, setOutputDevice: () => {}, stop: () => {} }),
+    playTrack: view === "settings" ? BROWSER_VOICE_PORTS.playTrack : () => ({ setGain: () => {}, setOutputDevice: () => {}, stop: () => {} }),
     amplify: () => null,
     listDevices: () => Promise.resolve([]),
     watchDevices: () => () => {},
@@ -191,8 +197,11 @@
     inputDeviceId: isRememberedMissing ? "usb-gone" : "yeti",
     outputDeviceId: isRememberedMissing ? "dock-gone" : "headset",
     inputVolumePercent: 120,
+    isVoiceEnhancementOn: parameters.get("enhance") === "1",
   };
-  client.voice.updateSettings(gallerySettings);
+  client.voice.updateSettings(
+    parameters.get("preset") === "custom" ? withEqualizerBand(gallerySettings, "treble", 7) : gallerySettings,
+  );
   client.voice.setPersonVolume("2", 150);
   client.voice.togglePersonMuted("3");
 
@@ -200,6 +209,9 @@
     if (view === "settings") {
       if (!isDevicesHidden) {
         await client.voice.startMicrophoneTest();
+      }
+      if (parameters.get("listen") === "1") {
+        client.voice.setMonitoring(true);
       }
       return;
     }
@@ -257,7 +269,11 @@
         isWide ? "px-(--mw-component-settings-content-padding-inline) pt-(--mw-component-settings-content-padding-top)" : "px-(--mw-component-settings-content-padding-inline-narrow) pt-xs",
       ]}
     >
-      <VoiceSettings voice={client.voice} canChooseOutputDevice={parameters.get("output") !== "unsupported"} />
+      <VoiceSettings
+        voice={client.voice}
+        canChooseOutputDevice={parameters.get("output") !== "unsupported"}
+        canSuppressNoiseInPage={rnnoise !== "unsupported"}
+      />
     </div>
   </div>
 {:else}

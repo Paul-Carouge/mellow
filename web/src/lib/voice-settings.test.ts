@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_VOICE_SETTINGS,
+  EQUALIZER_OF_PRESET,
   PERSON_VOICE_SETTINGS_STORAGE_KEY,
   VOICE_SETTINGS_STORAGE_KEY,
   decibelsOfLevel,
@@ -14,6 +15,8 @@ import {
   readPersonVoiceSettings,
   readVoiceSettings,
   writePersonVoiceSettings,
+  withEqualizerBand,
+  withVoiceEnhancementPreset,
   writeVoiceSettings,
 } from "./voice-settings";
 
@@ -48,6 +51,37 @@ describe("voice settings", () => {
     });
   });
 
+  it("keeps an older noise suppression switch: off stays off, on becomes the advanced default", () => {
+    const read = (fields: object) => readVoiceSettings(storageWith(VOICE_SETTINGS_STORAGE_KEY, JSON.stringify(fields))).noiseSuppression;
+    expect(read({ isNoiseSuppressionOn: false })).toBe("off");
+    expect(read({ isNoiseSuppressionOn: true })).toBe("advanced");
+    expect(read({ noiseSuppression: "browser", isNoiseSuppressionOn: false })).toBe("browser");
+    expect(read({ noiseSuppression: "krisp" })).toBe("advanced");
+  });
+
+  it("fills a preset's sliders from the preset, and clamps a custom curve", () => {
+    const read = (fields: object) => readVoiceSettings(storageWith(VOICE_SETTINGS_STORAGE_KEY, JSON.stringify(fields)));
+    expect(read({ voiceEnhancementPreset: "warm", equalizerDecibels: { bass: 12, mids: 12, treble: 12 } }).equalizerDecibels).toEqual(
+      EQUALIZER_OF_PRESET.warm,
+    );
+    expect(read({ voiceEnhancementPreset: "custom", equalizerDecibels: { bass: 40, mids: "loud", treble: -6.6 } }).equalizerDecibels).toEqual({
+      bass: 12,
+      mids: 0,
+      treble: -7,
+    });
+    expect(read({ voiceEnhancementPreset: "radio" }).voiceEnhancementPreset).toBe("streamer");
+    expect(read({ voiceEnhancementPreset: "custom", equalizerDecibels: null }).equalizerDecibels).toEqual({ bass: 0, mids: 0, treble: 0 });
+  });
+
+  it("switches to custom when a slider moves, and back to a preset's values when one is chosen", () => {
+    const moved = withEqualizerBand(DEFAULT_VOICE_SETTINGS, "mids", -20);
+    expect(moved.voiceEnhancementPreset).toBe("custom");
+    expect(moved.equalizerDecibels).toEqual({ ...EQUALIZER_OF_PRESET.streamer, mids: -12 });
+    const clear = withVoiceEnhancementPreset(moved, "clear");
+    expect(clear.voiceEnhancementPreset).toBe("clear");
+    expect(clear.equalizerDecibels).toEqual(EQUALIZER_OF_PRESET.clear);
+  });
+
   it("reads back what it wrote", () => {
     const values = new Map<string, string>();
     const settings = {
@@ -55,6 +89,10 @@ describe("voice settings", () => {
       inputMode: "push-to-talk" as const,
       pushToTalkKey: { code: "KeyV", label: "V" },
       isSensitivityAutomatic: false,
+      noiseSuppression: "browser" as const,
+      isVoiceEnhancementOn: true,
+      voiceEnhancementPreset: "custom" as const,
+      equalizerDecibels: { bass: -3, mids: 4, treble: 9 },
     };
     writeVoiceSettings({ setItem: (key, value) => void values.set(key, value) }, settings);
     expect(readVoiceSettings({ getItem: (key) => values.get(key) ?? null })).toEqual(settings);

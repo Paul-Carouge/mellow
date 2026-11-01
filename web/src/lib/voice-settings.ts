@@ -6,6 +6,40 @@ import type { Snowflake } from "./protocol";
 
 export type VoiceInputMode = "voice-activity" | "push-to-talk";
 
+/**
+ * Who removes background noise (ADR-0031): nobody, the browser's own filter, or RNNoise in the
+ * page ("advanced"), which replaces the browser's since both together muffle the voice.
+ */
+export type NoiseSuppressionMode = "off" | "browser" | "advanced";
+
+const NOISE_SUPPRESSION_MODES: readonly NoiseSuppressionMode[] = ["off", "browser", "advanced"];
+
+export type VoiceEnhancementPreset = "natural" | "streamer" | "warm" | "clear";
+
+export const VOICE_ENHANCEMENT_PRESETS: readonly VoiceEnhancementPreset[] = ["natural", "streamer", "warm", "clear"];
+
+export type EqualizerBand = "bass" | "mids" | "treble";
+
+export const EQUALIZER_BANDS: readonly EqualizerBand[] = ["bass", "mids", "treble"];
+
+/** Each band's boost (positive) or cut (negative), in whole decibels. */
+export type EqualizerDecibels = Readonly<Record<EqualizerBand, number>>;
+
+export const MINIMUM_EQUALIZER_DECIBELS = -12;
+export const MAXIMUM_EQUALIZER_DECIBELS = 12;
+
+/**
+ * What each preset fills the sliders with (docs/design/web-voice-enhancement.md). Streamer: a
+ * little body, less boxiness, more presence, the usual broadcast curve. Warm: body without
+ * harshness. Clear: for boomy microphones, less low end and more presence.
+ */
+export const EQUALIZER_OF_PRESET: Readonly<Record<VoiceEnhancementPreset, EqualizerDecibels>> = {
+  natural: { bass: 0, mids: 0, treble: 0 },
+  streamer: { bass: 3, mids: -3, treble: 4 },
+  warm: { bass: 5, mids: -1, treble: -1 },
+  clear: { bass: -2, mids: -2, treble: 5 },
+};
+
 /** A key recorded for push-to-talk: `code` is what is matched, `label` what was printed on it then. */
 export interface PushToTalkKey {
   readonly code: string;
@@ -26,7 +60,12 @@ export interface VoiceSettings {
   /** Automatic: no gate in the client, the browser's processing and Opus DTX handle silence. */
   readonly isSensitivityAutomatic: boolean;
   readonly sensitivityThresholdDecibels: number;
-  readonly isNoiseSuppressionOn: boolean;
+  readonly noiseSuppression: NoiseSuppressionMode;
+  /** The equaliser, compressor and limiter on the microphone (ADR-0031). */
+  readonly isVoiceEnhancementOn: boolean;
+  /** `"custom"` once a slider moved away from the preset's values. */
+  readonly voiceEnhancementPreset: VoiceEnhancementPreset | "custom";
+  readonly equalizerDecibels: EqualizerDecibels;
 }
 
 export const MINIMUM_VOLUME_PERCENT = 0;
@@ -50,7 +89,12 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   isSensitivityAutomatic: true,
   // Above a quiet room's hum, below normal speech.
   sensitivityThresholdDecibels: -50,
-  isNoiseSuppressionOn: true,
+  // Falls back to the browser's filter where RNNoise cannot run, and says so in the settings.
+  noiseSuppression: "advanced",
+  isVoiceEnhancementOn: false,
+  // What the owner asked for when switching it on: "un son plus streamer".
+  voiceEnhancementPreset: "streamer",
+  equalizerDecibels: EQUALIZER_OF_PRESET.streamer,
 };
 
 export const VOICE_SETTINGS_STORAGE_KEY = "mellow.voice-settings";
@@ -85,6 +129,31 @@ function storedObject(storage: Pick<Storage, "getItem"> | null, key: string): Re
   }
 }
 
+/** Before ADR-0031 noise suppression was a switch: off stays off, on gets the new default. */
+function storedNoiseSuppression(fields: Record<string, unknown>): NoiseSuppressionMode {
+  const mode = fields["noiseSuppression"];
+  if (NOISE_SUPPRESSION_MODES.some((known) => known === mode)) {
+    return mode as NoiseSuppressionMode;
+  }
+  return fields["isNoiseSuppressionOn"] === false ? "off" : DEFAULT_VOICE_SETTINGS.noiseSuppression;
+}
+
+function storedPreset(value: unknown): VoiceEnhancementPreset | "custom" {
+  return value === "custom" || VOICE_ENHANCEMENT_PRESETS.some((preset) => preset === value)
+    ? (value as VoiceEnhancementPreset | "custom")
+    : DEFAULT_VOICE_SETTINGS.voiceEnhancementPreset;
+}
+
+/** A preset's values come from the preset, so retuning one in a later version reaches everyone. */
+function storedEqualizer(preset: VoiceEnhancementPreset | "custom", value: unknown): EqualizerDecibels {
+  if (preset !== "custom") {
+    return EQUALIZER_OF_PRESET[preset];
+  }
+  const bands = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  const band = (name: EqualizerBand) => clampedInteger(bands[name], MINIMUM_EQUALIZER_DECIBELS, MAXIMUM_EQUALIZER_DECIBELS, 0);
+  return { bass: band("bass"), mids: band("mids"), treble: band("treble") };
+}
+
 export function readVoiceSettings(storage: Pick<Storage, "getItem"> | null): VoiceSettings {
   const fields = storedObject(storage, VOICE_SETTINGS_STORAGE_KEY);
   if (fields === null) {
@@ -93,6 +162,7 @@ export function readVoiceSettings(storage: Pick<Storage, "getItem"> | null): Voi
   const defaults = DEFAULT_VOICE_SETTINGS;
   const storedBoolean = (name: keyof VoiceSettings, fallback: boolean) =>
     typeof fields[name] === "boolean" ? (fields[name] as boolean) : fallback;
+  const preset = storedPreset(fields["voiceEnhancementPreset"]);
   return {
     inputDeviceId: storedText(fields["inputDeviceId"]),
     outputDeviceId: storedText(fields["outputDeviceId"]),
@@ -114,8 +184,22 @@ export function readVoiceSettings(storage: Pick<Storage, "getItem"> | null): Voi
       MAXIMUM_DECIBELS,
       defaults.sensitivityThresholdDecibels,
     ),
-    isNoiseSuppressionOn: storedBoolean("isNoiseSuppressionOn", defaults.isNoiseSuppressionOn),
+    noiseSuppression: storedNoiseSuppression(fields),
+    isVoiceEnhancementOn: storedBoolean("isVoiceEnhancementOn", defaults.isVoiceEnhancementOn),
+    voiceEnhancementPreset: preset,
+    equalizerDecibels: storedEqualizer(preset, fields["equalizerDecibels"]),
   };
+}
+
+/** A preset fills the three sliders. */
+export function withVoiceEnhancementPreset(settings: VoiceSettings, preset: VoiceEnhancementPreset): VoiceSettings {
+  return { ...settings, voiceEnhancementPreset: preset, equalizerDecibels: EQUALIZER_OF_PRESET[preset] };
+}
+
+/** Moving one slider makes the curve the reader's own. */
+export function withEqualizerBand(settings: VoiceSettings, band: EqualizerBand, decibels: number): VoiceSettings {
+  const clamped = Math.min(MAXIMUM_EQUALIZER_DECIBELS, Math.max(MINIMUM_EQUALIZER_DECIBELS, Math.round(decibels)));
+  return { ...settings, voiceEnhancementPreset: "custom", equalizerDecibels: { ...settings.equalizerDecibels, [band]: clamped } };
 }
 
 /** A full or blocked storage keeps them for this tab only. */

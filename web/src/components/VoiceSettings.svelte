@@ -3,16 +3,23 @@
 
   import { strings } from "../i18n";
   import type { MicrophoneProblem } from "../lib/voice";
-  import { CAN_CHOOSE_OUTPUT_DEVICE, listAudioDevices, watchAudioDevices } from "../lib/voice-browser";
+  import { CAN_CHOOSE_OUTPUT_DEVICE, CAN_SUPPRESS_NOISE_IN_PAGE, listAudioDevices, watchAudioDevices } from "../lib/voice-browser";
   import type { VoiceSession } from "../lib/voice-session.svelte";
   import {
     type AudioDevice,
     type DeviceChoices,
+    EQUALIZER_BANDS,
+    MAXIMUM_EQUALIZER_DECIBELS,
     MAXIMUM_PUSH_TO_TALK_RELEASE_DELAY_MILLISECONDS,
     MAXIMUM_VOLUME_PERCENT,
+    MINIMUM_EQUALIZER_DECIBELS,
     MINIMUM_VOLUME_PERCENT,
+    type NoiseSuppressionMode,
+    VOICE_ENHANCEMENT_PRESETS,
     type VoiceSettings as Settings,
     deviceChoices,
+    withEqualizerBand,
+    withVoiceEnhancementPreset,
   } from "../lib/voice-settings";
   import Button from "./Button.svelte";
   import ChoiceOption from "./ChoiceOption.svelte";
@@ -25,14 +32,19 @@
   // User settings → Voice (docs/design/web-voice-comfort.md): Discord's Voice settings in Mellow's
   // order and words. Every change applies at once, during a call too, and stays in this browser.
   // The meter reads the call's microphone while connected; otherwise "Test the microphone" opens
-  // one from that click, and leaving the page frees it.
+  // one from that click, and leaving the page frees it. Voice processing (ADR-0031,
+  // docs/design/web-voice-enhancement.md) sits just above the test, so "S'écouter" answers it.
   interface Props {
     voice: VoiceSession;
     /** The gallery shows Safari's case in any browser. */
     canChooseOutputDevice?: boolean;
+    /** The gallery shows a browser without AudioWorklet in any browser. */
+    canSuppressNoiseInPage?: boolean;
   }
 
-  let { voice, canChooseOutputDevice = CAN_CHOOSE_OUTPUT_DEVICE }: Props = $props();
+  let { voice, canChooseOutputDevice = CAN_CHOOSE_OUTPUT_DEVICE, canSuppressNoiseInPage = CAN_SUPPRESS_NOISE_IN_PAGE }: Props = $props();
+
+  const NOISE_SUPPRESSION_CHOICES: readonly NoiseSuppressionMode[] = ["advanced", "browser", "off"];
 
   const id = $props.id();
   const RELEASE_DELAY_STEP_MILLISECONDS = 20;
@@ -47,6 +59,10 @@
   const outputs = $derived(deviceChoices(devices, "audiooutput", strings.voiceSettings.unnamedOutput));
   const areDevicesHidden = $derived(inputs.areLabelsHidden);
   const isManualSensitivity = $derived(settings.inputMode === "voice-activity" && !settings.isSensitivityAutomatic);
+  /** Known before any microphone opens where the browser lacks AudioWorklet; after a failed load otherwise. */
+  const noiseSuppressorProblem = $derived(
+    settings.noiseSuppression === "advanced" ? (voice.noiseSuppressorProblem ?? (canSuppressNoiseInPage ? null : "unsupported")) : null,
+  );
 
   function update(change: Partial<Settings>) {
     voice.updateSettings({ ...voice.settings, ...change });
@@ -59,6 +75,15 @@
     },
     set value(mode: string) {
       update({ inputMode: mode === "push-to-talk" ? "push-to-talk" : "voice-activity" });
+    },
+  };
+
+  const noiseSuppression = {
+    get value(): string {
+      return voice.settings.noiseSuppression;
+    },
+    set value(mode: string) {
+      update({ noiseSuppression: NOISE_SUPPRESSION_CHOICES.find((choice) => choice === mode) ?? "advanced" });
     },
   };
 
@@ -281,6 +306,96 @@
   )}
 {/if}
 
+{@render sectionTitle(strings.voiceSettings.voiceProcessing)}
+<fieldset class="flex flex-col gap-(--mw-component-choice-list-gap)">
+  <legend class="mb-(--mw-component-settings-section-label-gap) type-channel-name text-text-heading">
+    {strings.voiceSettings.noiseSuppression}
+  </legend>
+  {#each NOISE_SUPPRESSION_CHOICES as mode (mode)}
+    <ChoiceOption
+      name="{id}-noise"
+      value={mode}
+      bind:group={noiseSuppression.value}
+      label={strings.voiceSettings.noiseSuppressionModes[mode].label}
+      description={strings.voiceSettings.noiseSuppressionModes[mode].description}
+    />
+  {/each}
+</fieldset>
+{#if noiseSuppressorProblem}
+  <p role="status" class="mt-xs flex gap-2xs type-body text-(--mw-component-text-field-helper-text)">
+    <Icon name="warning-circle" class="mt-3xs size-(--mw-component-voice-panel-signal-icon-size) shrink-0" />
+    <span>{strings.voiceSettings.noiseSuppressorProblems[noiseSuppressorProblem]}</span>
+  </p>
+{/if}
+
+<div class="mt-sm">
+  {@render switchRow(
+    "enhancement",
+    strings.voiceSettings.voiceEnhancement,
+    strings.voiceSettings.voiceEnhancementDescription,
+    settings.isVoiceEnhancementOn,
+    (isOn) => update({ isVoiceEnhancementOn: isOn }),
+  )}
+</div>
+{#if settings.isVoiceEnhancementOn}
+  {@const preset = settings.voiceEnhancementPreset}
+  <div class="mt-md flex flex-col gap-md">
+    <div class="flex flex-col gap-(--mw-component-text-field-label-gap)">
+      <p class="flex items-baseline justify-between gap-xs">
+        <span id="{id}-style" class="type-category text-(--mw-component-text-field-label-text)">{strings.voiceSettings.voiceEnhancementStyle}</span>
+        {#if preset === "custom"}
+          <span class="type-body-sm text-(--mw-component-slider-value-text)">{strings.voiceSettings.voiceEnhancementPresets.custom.label}</span>
+        {/if}
+      </p>
+      <!-- Native radios: arrows move between styles, the chosen one is read with the group. -->
+      <div
+        role="radiogroup"
+        aria-labelledby="{id}-style"
+        aria-describedby="{id}-style-description"
+        class="flex w-full flex-wrap gap-3xs rounded-(--mw-component-voice-enhancement-preset-track-radius) bg-(--mw-component-voice-enhancement-preset-track-background) p-(--mw-component-voice-enhancement-preset-track-padding) sm:w-max"
+      >
+        {#each VOICE_ENHANCEMENT_PRESETS as option (option)}
+          {@const isChosen = preset === option}
+          <label
+            class={[
+              "flex h-(--mw-component-voice-enhancement-preset-height) flex-1 cursor-pointer items-center justify-center rounded-(--mw-component-voice-enhancement-preset-radius) px-(--mw-component-voice-enhancement-preset-padding-inline) type-body transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) has-[input:focus-visible]:focus-ring",
+              isChosen
+                ? "bg-(--mw-component-voice-enhancement-preset-background-checked) font-semibold text-(--mw-component-voice-enhancement-preset-text-checked)"
+                : "text-(--mw-component-voice-enhancement-preset-text) hover:text-(--mw-component-voice-enhancement-preset-text-hover)",
+            ]}
+          >
+            <input
+              type="radio"
+              name="{id}-style"
+              value={option}
+              checked={isChosen}
+              class="sr-only"
+              onchange={() => voice.updateSettings(withVoiceEnhancementPreset(voice.settings, option))}
+            />
+            {strings.voiceSettings.voiceEnhancementPresets[option].label}
+          </label>
+        {/each}
+      </div>
+      <p id="{id}-style-description" class="type-body text-(--mw-component-text-field-helper-text)">
+        {strings.voiceSettings.voiceEnhancementPresets[preset].description}
+      </p>
+    </div>
+    <!-- A tick at 0 dB on each slider (Chromium draws it): the bands cut on the left of it, boost on the right. -->
+    <datalist id="{id}-flat"><option value="0"></option></datalist>
+    {#each EQUALIZER_BANDS as band (band)}
+      <RangeField
+        inputAttributes={{ list: `${id}-flat` }}
+        label={strings.voiceSettings.equalizerBands[band]}
+        value={settings.equalizerDecibels[band]}
+        min={MINIMUM_EQUALIZER_DECIBELS}
+        max={MAXIMUM_EQUALIZER_DECIBELS}
+        valueText={strings.voiceSettings.equalizerDecibels}
+        oninput={(value) => voice.updateSettings(withEqualizerBand(voice.settings, band, value))}
+      />
+    {/each}
+  </div>
+{/if}
+
 {@render sectionTitle(strings.voiceSettings.microphoneTest)}
 <p id="{id}-meter-description" class="type-body text-(--mw-component-text-field-helper-text)">
   {voice.isMicrophoneLive ? strings.voiceSettings.liveDescription : strings.voiceSettings.testDescription}
@@ -315,12 +430,12 @@
     <span>{strings.voice.microphoneProblems[voice.microphoneTestProblem]}</span>
   </p>
 {/if}
-
-{@render sectionTitle(strings.voiceSettings.voiceProcessing)}
-{@render switchRow(
-  "noise-suppression",
-  strings.voiceSettings.noiseSuppression,
-  strings.voiceSettings.noiseSuppressionDescription,
-  settings.isNoiseSuppressionOn,
-  (isOn) => update({ isNoiseSuppressionOn: isOn }),
-)}
+<div class="mt-xs">
+  {@render switchRow(
+    "hear-yourself",
+    strings.voiceSettings.hearYourself,
+    strings.voiceSettings.hearYourselfDescription,
+    voice.isMonitoring,
+    (isOn) => voice.setMonitoring(isOn),
+  )}
+</div>
