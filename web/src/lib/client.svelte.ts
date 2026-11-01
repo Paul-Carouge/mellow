@@ -1352,8 +1352,9 @@ export class MellowClient {
   }
 
   /**
-   * Sends each channel's newest read position the server does not have yet. A failure (a 429
-   * too) keeps the channel unsent for the next trigger to retry; the local state never rolls back.
+   * Sends each channel's newest read position the server does not have yet. A failure worth
+   * retrying (network, 429, 5xx) keeps the channel unsent for the next trigger; a refusal drops
+   * it. The local state never rolls back.
    */
   private async sendReadStates(): Promise<void> {
     this.stopReadStateSendTimer();
@@ -1371,7 +1372,10 @@ export class MellowClient {
           // The server keeps the newest position it was sent, whatever the order of the answers.
           this.readOnServerByChannel.set(channelId, newestOf(this.readOnServerByChannel.get(channelId) ?? null, lastRead) ?? lastRead);
         } catch (error) {
-          if (this.lastReadByChannel.has(channelId)) {
+          // A deleted message (404) or a hidden channel (403) would be refused on every retry.
+          const isRetryable =
+            !(error instanceof ApiError) || error.status === 0 || error.status === 429 || error.status >= 500;
+          if (isRetryable && this.lastReadByChannel.has(channelId)) {
             this.unsentReadChannelIds.add(channelId);
           }
           this.reportError(error, "acknowledge");
