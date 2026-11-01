@@ -192,12 +192,12 @@ impl<Slot: Copy, Speaker: Copy + Eq + Hash> ReceiveSlots<Slot, Speaker> {
         Some(slot)
     }
 
-    /// Frees the slot of a speaker who left.
     /// Whether `speaker` already has a slot, so a new assignment can be announced.
     pub(crate) fn has_slot(&self, speaker: Speaker) -> bool {
         self.assigned.contains_key(&speaker)
     }
 
+    /// Frees the slot of a speaker who left.
     pub(crate) fn release(&mut self, speaker: Speaker) {
         if let Some(assigned) = self.assigned.remove(&speaker) {
             self.free.push(assigned.slot);
