@@ -22,12 +22,28 @@ use crate::http::rate_limit::{RateLimit, SOUND_DOWNLOADS_PER_USER, SOUND_UPLOADS
 /// A sound's file never changes: an edit changes its name or emoji only.
 const CACHE_IMMUTABLE: &str = "private, max-age=31536000, immutable";
 
-fn record(state: &AppState, key: &str, limit: RateLimit) -> Result<(), ApiError> {
-    if state.rate_limiter.record_event(key, limit, Instant::now()) {
+fn limit_per_user(
+    state: &AppState,
+    kind: &str,
+    user_id: Snowflake,
+    limit: RateLimit,
+) -> Result<(), ApiError> {
+    if state
+        .rate_limiter
+        .record_event(&format!("{kind}:{user_id}"), limit, Instant::now())
+    {
         Ok(())
     } else {
         Err(ApiError::rate_limited())
     }
+}
+
+fn limit_sound_uploads(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
+    limit_per_user(state, "sound-upload", user_id, SOUND_UPLOADS_PER_USER)
+}
+
+fn limit_sound_downloads(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
+    limit_per_user(state, "sound-download", user_id, SOUND_DOWNLOADS_PER_USER)
 }
 
 /// `GET /api/v1/guilds/{guild_id}/sounds`: members only.
@@ -48,11 +64,7 @@ pub(crate) async fn create_sound(
     body: Body,
 ) -> Result<(StatusCode, Json<SoundboardSound>), ApiError> {
     // Counted before the body is read, so refused uploads count too.
-    record(
-        &state,
-        &format!("sound-upload:{}", user.id),
-        SOUND_UPLOADS_PER_USER,
-    )?;
+    limit_sound_uploads(&state, user.id)?;
     let bytes = axum::body::to_bytes(body, MAXIMUM_SOUND_FILE_BYTES)
         .await
         .map_err(|_| ApiError::payload_too_large())?;
@@ -128,11 +140,7 @@ pub(crate) async fn get_sound(
     AuthenticatedUser(user): AuthenticatedUser,
     ApiPath(id): ApiPath<Snowflake>,
 ) -> Result<Response, ApiError> {
-    record(
-        &state,
-        &format!("sound-download:{}", user.id),
-        SOUND_DOWNLOADS_PER_USER,
-    )?;
+    limit_sound_downloads(&state, user.id)?;
     let file_id = state.guilds.readable_sound_file_id(user.id, id).await?;
     let (bytes, permit) = state.profile_images.read_file(file_id).await?;
     Ok((

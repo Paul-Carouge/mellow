@@ -15,6 +15,9 @@ CREATE INDEX guild_sounds_by_guild_id ON guild_sounds (guild_id);
 
 -- A member's join sound in that guild; cleared when the sound is deleted.
 ALTER TABLE guild_members ADD COLUMN join_sound_id INTEGER REFERENCES guild_sounds (id) ON DELETE SET NULL;
+-- Deleting a sound looks its members up through this index, not a scan of every membership.
+CREATE INDEX guild_members_by_join_sound_id ON guild_members (join_sound_id)
+    WHERE join_sound_id IS NOT NULL;
 
 -- USE_SOUNDBOARD (1 << 20) is new: grant it to every existing @everyone role (the role whose id
 -- is its guild's), as new guilds do.
