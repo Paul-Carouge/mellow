@@ -10,7 +10,7 @@ use tokio::net::TcpListener;
 use crate::config::{ServerConfig, TlsConfig};
 use crate::domain::account_rules::RegistrationMode;
 use crate::domain::accounts::purge_expired_sessions_periodically;
-use crate::http::{AppState, make_service};
+use crate::http::AppState;
 use crate::storage::{
     MasterKey, create_private_directory, migrate_with_backup, open_encrypted_database,
 };
@@ -331,10 +331,7 @@ pub(crate) async fn serve_until_shutdown(
     if let Ok(address) = listener.local_addr() {
         tracing::info!(%address, "listening");
     }
-    axum::serve(listener, make_service(state))
-        .with_graceful_shutdown(shutdown)
-        .await
-        .context("HTTP server stopped with an error")
+    crate::tls::serve_plain_until_shutdown(listener, state, shutdown).await
 }
 
 /// Completes on Ctrl+C, or on SIGTERM (what systemd sends) on Unix.

@@ -2,7 +2,9 @@
 //!
 //! Facing the internet directly, the server must also bound what a client can hold open: every
 //! connection counts against a global and a per-address cap, the TLS handshake and the HTTP
-//! headers have deadlines, and a connection that sends nothing for a while is closed.
+//! headers have deadlines, and a connection that sends nothing for a while is closed. Plain HTTP
+//! (behind a reverse proxy) goes through the same policy, so both modes also stop within
+//! `GRACEFUL_SHUTDOWN_TIMEOUT`.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -17,6 +19,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use axum::http::HeaderMap;
+use axum_server::accept::DefaultAcceptor;
 use futures_util::StreamExt as _;
 use rustls_acme::{AccountCache, AcmeConfig, CertCache, EventError, OrderError};
 use sha2::{Digest as _, Sha256};
@@ -27,7 +30,7 @@ use tokio::time::{Instant, Sleep};
 
 use crate::config::TlsConfig;
 use crate::http::client_address::client_address_key;
-use crate::http::{AppState, make_tls_service};
+use crate::http::{AppState, make_service, make_tls_service};
 use crate::storage::create_private_directory;
 
 const LETS_ENCRYPT_PRODUCTION_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
@@ -42,7 +45,7 @@ const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Deadlines and caps for connections from the internet.
 #[derive(Debug, Clone, Copy)]
 struct ConnectionPolicy {
-    /// From TCP accept to the end of the TLS handshake.
+    /// From TCP accept to the end of the TLS handshake (immediate in plain HTTP).
     handshake_timeout: Duration,
     /// For each request's headers, including the wait on an idle keep-alive connection.
     header_read_timeout: Duration,
@@ -66,6 +69,14 @@ const PRODUCTION_CONNECTION_POLICY: ConnectionPolicy = ConnectionPolicy {
     maximum_connections_per_client_address: 256,
     maximum_connections_per_ipv6_site: 1_024,
     write_stall_timeout: Duration::from_secs(30),
+};
+
+/// Plain HTTP only listens on loopback or behind a reverse proxy (config validation), so nearly
+/// every connection comes from the proxy's address: per-address caps would lock everyone out.
+const PROXIED_CONNECTION_POLICY: ConnectionPolicy = ConnectionPolicy {
+    maximum_connections_per_client_address: PRODUCTION_CONNECTION_POLICY.maximum_connections,
+    maximum_connections_per_ipv6_site: PRODUCTION_CONNECTION_POLICY.maximum_connections,
+    ..PRODUCTION_CONNECTION_POLICY
 };
 
 /// Creates the certificate directory, or checks an existing one: it holds private keys, so it
@@ -163,7 +174,6 @@ async fn serve_tls_with_policy(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     let local_address = listener.local_addr().ok();
-    let server = axum_server::from_tcp(listener.into_std()?)?;
     let mut acme_config = AcmeConfig::new(&tls.domains);
     if let Some(client_tls_config) = certificate_authority.client_tls_config {
         acme_config = acme_config.client_tls_config(client_tls_config);
@@ -179,20 +189,12 @@ async fn serve_tls_with_policy(
         })
         .directory(certificate_authority.directory_url)
         .state();
-    let acceptor = GuardedAcceptor {
-        inner: acme_state.axum_acceptor(acme_state.default_rustls_config()),
-        limiter: Arc::new(ConnectionLimiter::new(policy)),
+    let server = guarded_server(
+        listener,
+        acme_state.axum_acceptor(acme_state.default_rustls_config()),
         policy,
-    };
-    let mut server = server.acceptor(acceptor);
-    // Without a timer hyper silently ignores its header read timeout.
-    server
-        .http_builder()
-        .http1()
-        .timer(hyper_util::rt::TokioTimer::new())
-        .header_read_timeout(policy.header_read_timeout);
-    // No HTTP/2 keep-alive pings: the client's automatic answers would count as activity and
-    // keep an idle connection alive forever. Mellow clients speak HTTP/1.1 anyway.
+        shutdown,
+    )?;
 
     let renewal = tokio::spawn(async move {
         while let Some(event) = acme_state.next().await {
@@ -206,14 +208,6 @@ async fn serve_tls_with_policy(
             }
         }
     });
-    let handle = axum_server::Handle::new();
-    tokio::spawn({
-        let handle = handle.clone();
-        async move {
-            shutdown.await;
-            handle.graceful_shutdown(Some(GRACEFUL_SHUTDOWN_TIMEOUT));
-        }
-    });
     if let Some(address) = local_address {
         tracing::info!(%address, domains = ?tls.domains, "listening with TLS");
         if address.port() != ACME_CHALLENGE_PORT {
@@ -224,12 +218,69 @@ async fn serve_tls_with_policy(
         }
     }
     let result = server
-        .handle(handle)
         .serve(make_tls_service(state))
         .await
         .context("HTTPS server stopped with an error");
     renewal.abort();
     result
+}
+
+/// Serves plain HTTP on `listener` until `shutdown` completes, with the same connection policy as
+/// built-in TLS, so a stalled client can neither hold the server open nor keep it from stopping.
+///
+/// # Errors
+/// Fails if the listener cannot be converted or stops with an I/O error.
+pub(crate) async fn serve_plain_until_shutdown(
+    listener: TcpListener,
+    state: AppState,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    serve_plain_with_policy(listener, state, PROXIED_CONNECTION_POLICY, shutdown).await
+}
+
+async fn serve_plain_with_policy(
+    listener: TcpListener,
+    state: AppState,
+    policy: ConnectionPolicy,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    guarded_server(listener, DefaultAcceptor::new(), policy, shutdown)?
+        .serve(make_service(state))
+        .await
+        .context("HTTP server stopped with an error")
+}
+
+/// A server on `listener` that applies `policy` around `inner` and, once `shutdown` completes,
+/// gives open requests `GRACEFUL_SHUTDOWN_TIMEOUT` before closing every connection.
+fn guarded_server<Inner>(
+    listener: TcpListener,
+    inner: Inner,
+    policy: ConnectionPolicy,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<axum_server::Server<SocketAddr, GuardedAcceptor<Inner>>> {
+    let acceptor = GuardedAcceptor {
+        inner,
+        limiter: Arc::new(ConnectionLimiter::new(policy)),
+        policy,
+    };
+    let mut server = axum_server::from_tcp(listener.into_std()?)?.acceptor(acceptor);
+    // Without a timer hyper silently ignores its header read timeout.
+    server
+        .http_builder()
+        .http1()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(policy.header_read_timeout);
+    // No HTTP/2 keep-alive pings: the client's automatic answers would count as activity and
+    // keep an idle connection alive forever. Mellow clients speak HTTP/1.1 anyway.
+    let handle = axum_server::Handle::new();
+    tokio::spawn({
+        let handle = handle.clone();
+        async move {
+            shutdown.await;
+            handle.graceful_shutdown(Some(GRACEFUL_SHUTDOWN_TIMEOUT));
+        }
+    });
+    Ok(server.handle(handle))
 }
 
 /// Only the kind of failure: the certificate authority's messages can quote the contact email,
@@ -455,7 +506,7 @@ impl Drop for ConnectionSlot {
     }
 }
 
-/// Applies the connection policy around the TLS acceptor.
+/// Applies the connection policy around the TLS (or plain) acceptor.
 #[derive(Clone)]
 struct GuardedAcceptor<Inner> {
     inner: Inner,
@@ -492,9 +543,7 @@ where
         Box::pin(async move {
             let (stream, service) = tokio::time::timeout(policy.handshake_timeout, accepting)
                 .await
-                .map_err(|_| {
-                    io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out")
-                })??;
+                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "handshake timed out"))??;
             Ok((
                 IdleTimeoutStream {
                     inner: stream,
@@ -691,6 +740,53 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
+        database.close().await;
+    }
+
+    #[tokio::test]
+    async fn plain_http_stops_by_the_shutdown_deadline_while_a_client_sends_half_its_headers() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let (_directory, database) = migrated_database().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve_plain_with_policy(
+            listener,
+            test_state(database.clone(), RegistrationMode::Open),
+            PROXIED_CONNECTION_POLICY,
+            async {
+                let _ = stopped.await;
+            },
+        ));
+        let mut half_headers = TcpStream::connect(address).await.unwrap();
+        half_headers
+            .write_all(b"GET /api/v1/health HTTP/1.1\r\nHost: test\r\n")
+            .await
+            .unwrap();
+        // Connections are accepted in order, so an answer on a later one means the first is held.
+        let mut complete = TcpStream::connect(address).await.unwrap();
+        complete
+            .write_all(b"GET /api/v1/health HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut answer = String::new();
+        complete.read_to_string(&mut answer).await.unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+
+        // Paused, the clock jumps to the next timer: the shutdown deadline, well before the 30 s
+        // header timeout would have freed the connection.
+        tokio::time::pause();
+        let started = Instant::now();
+        stop.send(()).unwrap();
+        tokio::time::timeout(GRACEFUL_SHUTDOWN_TIMEOUT * 2, server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(started.elapsed() < PROXIED_CONNECTION_POLICY.header_read_timeout);
+        assert!(is_closed_within(&mut half_headers, Duration::from_secs(1)).await);
+        tokio::time::resume();
         database.close().await;
     }
 
