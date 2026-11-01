@@ -34,6 +34,8 @@ const DATE_TIME_SHAPE_OPTIONS: Record<DateTimeShape, Intl.DateTimeFormatOptions>
 };
 
 /** Building a formatter costs tens of microseconds, and every message row formats up to three dates. */
+// shortcut: a formatter keeps the time zone it was built in, while `isSameLocalDay` follows the
+// current one; after a zone change (travel) labels mix both zones until reload. Key by zone if reported.
 const dateTimeFormatsByLocaleAndShape = new Map<string, Intl.DateTimeFormat>();
 
 function dateTimeFormat(locale: string, shape: DateTimeShape): Intl.DateTimeFormat {
