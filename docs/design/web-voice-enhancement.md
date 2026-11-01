@@ -15,10 +15,12 @@ The job of the section: pick how noise is removed, switch on a good-sounding voi
 **Settings → Voix → Traitement de la voix**, now just above "Test du micro", so the test answers the settings.
 
 - "Suppression du bruit", three 6.55 choice rows: **Avancée** (RNNoise, the default), **Navigateur** (the browser's `noiseSuppression`), **Désactivée**. With Avancée the browser's own suppression is turned off (both together muffle).
-- RNNoise cannot run (no AudioWorklet or WebAssembly; known before any microphone opens): "Avancée" stays chosen, the browser's filter is used, and a `warning-circle` line says so (`role="status"`). Loading or starting it failed (network, policy, Firefox refusing a 48 kHz graph for a microphone at another rate): the same, with "Choisis-la de nouveau pour réessayer"; choosing another mode and back retries. The microphone is reopened with the browser's suppression, so nobody is left with none.
+- RNNoise cannot run (no AudioWorklet or WebAssembly, known before any microphone opens; or Firefox refusing a 48 kHz graph for a microphone at another rate, `NotSupportedError`, which would fail every time): "Avancée" stays chosen, the browser's filter is used, and a `warning-circle` line says so (`role="status"`). Loading or starting it failed (network, policy), or it died after starting (its worklet failed, or a watchdog saw it give exact silence for a second while the microphone was heard): the same, with "Choisis-la de nouveau pour réessayer"; choosing another mode and back retries. The microphone is reopened with the browser's suppression, so nobody is left with none.
+- RNNoise (about 155 KB) loads ahead of the first join, once the instance says it has voice and when Voice settings open; a join waits at most 3 seconds for it, then uses the browser's filter for that microphone without giving up on RNNoise for the next one.
+- Muted or deafened with processing on, the device's track is disabled as well as the processed one, so the browser's microphone indicator goes out; a closed gate or push-to-talk leaves it on to feed the meter.
 - "Voix améliorée" switch, off by default. On: the browser's automatic gain is turned off and the chain runs. Below it, "Style" (Naturel, Streamer, Chaleureux, Clair; Streamer first chosen) as one segmented choice, a sentence for the chosen style, then "Graves", "Médiums", "Aigus" from −12 to +12 dB. A style fills the three sliders; moving a slider makes it "Personnalisé" (shown at the end of the Style line, no style chosen, "Tes propres réglages. Choisis un style pour repartir de lui.").
 - Every change applies live, during a call too: a slider changes the running filters; a mode or the switch opens the microphone again with the right `getUserMedia` processing and `replaceTrack`s it, without renegotiation. Everything off: no Web Audio at all, the device's track is sent as in 16.2.
-- "S'écouter" under the meter, off by default: plays what others would hear (after processing, at the input volume, on the chosen output). The description warns to use headphones. Outside a call it starts the test (it is a click); "Arrêter le test" or leaving the page turns it off.
+- "S'écouter" under the meter, off by default: plays what others would hear on the chosen output; in the test, the processed microphone at the input volume; in a call, the sent track itself, which carries the input volume, push-to-talk and the gate. The description warns to use headphones. Outside a call it starts the test (it is a click); "Arrêter le test", hanging up or leaving the page turns it off.
 
 ## Design plan
 
@@ -77,6 +79,12 @@ Entends ta voix… Mets un casque…                   S'écouter …
 - `web/src/lib/voice-session.svelte.ts`: the processor sits between the device's track and the existing meter, amplifier and gate (which now act on the processed track; the device's track stays enabled to feed it). A RNNoise start failure reopens the microphone with the browser's suppression; `noiseSuppressorProblem`, `isMonitoring`, `setMonitoring` (reusing `playTrack`), the microphone test and its restart keep listening.
 - `web/src/components/VoiceSettings.svelte`, `web/src/i18n/{fr,en}.ts`, `design/tokens.json`.
 - Gallery: `web/dev/voice.html#view=settings&enhance=1&preset=custom&rnnoise=unsupported|failed&listen=1`. Processing runs for real on the gallery's oscillator; RNNoise removes a steady tone as noise, so the meter stays low with "Avancée" (use `rnnoise=unsupported` to see it move).
+
+Licences: the package is MIT, `shiguredo/rnnoise-wasm` Apache-2.0, RNNoise BSD-3-Clause; their notices are in `web/public/third-party-notices.txt`, served with the client and linked from Settings, About ("Licences des composants tiers").
+
+## Follow-ups
+
+- Up to three AudioContexts run in series on the microphone today (the chain, the input amplifier, the meter), each hop through a `MediaStreamTrack`. Merging them into one graph would save CPU and a little latency; for `performance-optimizer`, with measurements before and after.
 
 ## Checked, and left to check
 
