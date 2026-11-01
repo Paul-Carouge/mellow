@@ -55,7 +55,7 @@
   <ServerRail {client} {onaddserver} {onopendialog} {onnavigate} />
   <ChannelSidebar {client} {collapsedCategoryIds} {onnewmessage} {onopendialog} {oncreatechannelin} {oneditchannel} {onnavigate} />
   <!-- Voice stays connected wherever the reader goes: its panel lives here, above the user card. -->
-  <VoicePanel {client} {onnavigate} />
+  <VoicePanel {client} {onnavigate} onaddsounds={(guildId) => onopendialog("server-soundboard", guildId)} />
   {#if client.user}
     <UserCard {client} user={client.user} {onopenusersettings} />
   {/if}

@@ -11,6 +11,7 @@
     EQUALIZER_BANDS,
     MAXIMUM_EQUALIZER_DECIBELS,
     MAXIMUM_PUSH_TO_TALK_RELEASE_DELAY_MILLISECONDS,
+    MAXIMUM_SOUNDBOARD_VOLUME_PERCENT,
     MAXIMUM_VOLUME_PERCENT,
     MINIMUM_EQUALIZER_DECIBELS,
     MINIMUM_VOLUME_PERCENT,
@@ -249,6 +250,19 @@
       valueText={strings.voiceSettings.percent}
       oninput={(value) => update({ outputVolumePercent: value })}
     />
+    <RangeField
+      label={strings.voiceSettings.soundboardVolume}
+      value={settings.soundboardVolumePercent}
+      min={MINIMUM_VOLUME_PERCENT}
+      max={MAXIMUM_SOUNDBOARD_VOLUME_PERCENT}
+      step={VOLUME_STEP_PERCENT}
+      valueText={strings.voiceSettings.percent}
+      describedBy="{id}-soundboard-volume-description"
+      oninput={(value) => update({ soundboardVolumePercent: value })}
+    />
+    <p id="{id}-soundboard-volume-description" class="-mt-xs type-body text-(--mw-component-text-field-helper-text)">
+      {strings.voiceSettings.soundboardVolumeDescription}
+    </p>
   </div>
 </div>
 

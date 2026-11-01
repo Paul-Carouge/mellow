@@ -70,10 +70,13 @@
   import { lengthTokenInPixels } from "./tokens";
   import { prepareChimeSound } from "./chime-sound";
   import { displayName } from "./format";
+  import SoundEmoji from "./SoundEmoji.svelte";
 
   export type ServerDialog =
     | "invite-people"
     | "server-settings"
+    /** Server settings opened at Soundboard (the soundboard's "Add sounds"). */
+    | "server-soundboard"
     | "create-channel"
     | "create-category"
     | "leave-server";
@@ -1142,6 +1145,8 @@
               state.user_id !== user?.id && client.voice.personSetting(state.user_id).isLocallyMuted && strings.voice.mutedForYou,
             ].filter((label): label is string => typeof label === "string")}
             {@const isMutedForYou = state.user_id !== user?.id && client.voice.personSetting(state.user_id).isLocallyMuted}
+            {@const soundIndicator = client.soundIndicators.get(state.user_id)}
+            {@const playedSound = soundIndicator ? guild.sounds?.find((sound) => sound.id === soundIndicator.soundId) : undefined}
             <li class="me-(--mw-component-channel-row-margin-inline)">
               <!-- A click, right-click, long press or Shift+F10: their menu, with volume and "Mute for me" (stage 16.3). -->
               <button
@@ -1163,6 +1168,19 @@
               >
                 {displayName(person)}<span class="sr-only">{states.length > 0 ? `, ${states.join(", ")}` : ""}</span>
               </span>
+              {#if soundIndicator}
+                <!-- The sound they just played, for its length: shown, never announced, like speaking. -->
+                {#key soundIndicator}
+                  <span title={strings.soundboard.plays(playedSound?.name ?? "")} class="inline-flex animate-[mw-drop-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-settle)_both]">
+                    <SoundEmoji
+                      emojiKey={playedSound?.emoji}
+                      customEmojis={client.knownCustomEmojis}
+                      sizeToken="--mw-component-reaction-emoji-size"
+                      glyphClass="text-(--mw-component-voice-participant-name-text-speaking)"
+                    />
+                  </span>
+                {/key}
+              {/if}
               {#if isMicrophoneOff && !state.self_deaf}
                 <Icon name="microphone-slash" class="size-(--mw-component-voice-participant-state-icon-size) shrink-0 text-(--mw-component-voice-participant-state-icon)" />
               {/if}

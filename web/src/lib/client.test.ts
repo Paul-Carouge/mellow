@@ -1399,6 +1399,119 @@ describe("Voice states", () => {
     expect(client.voiceAnnouncement).toBe(`Someone left c${LOUNGE}.`);
   });
 
+  describe("soundboard", () => {
+    const HORN = { id: "900", name: "horn", emoji: "📯", duration_milliseconds: 800 };
+    const CLAP = { id: "901", name: "clap", duration_milliseconds: 300 };
+
+    async function connectedWithSounds(permissions: bigint = (1n << 1n) | (1n << 18n) | (1n << 19n) | (1n << 20n)) {
+      const { client, peer, cues } = voiceClient();
+      const played: [string, string | null][] = [];
+      client.onSound = (soundId, fallbackCue) => played.push([soundId, fallbackCue]);
+      client.applyEvent({ t: "GUILD_SOUNDS_UPDATE", data: { guild_id: GUILD, sounds: [HORN, CLAP] } }, 0);
+      client.applyEvent(
+        { t: "GUILD_CREATE", data: { ...client.guilds[0]!, my_permissions: String(permissions) } },
+        0,
+      );
+      await client.voice.join(LOUNGE);
+      peer.connect();
+      return { client, cues, played };
+    }
+
+    it("keeps the server's list and your join sound from the gateway", () => {
+      const { client } = voiceClient();
+      client.applyEvent({ t: "GUILD_SOUNDS_UPDATE", data: { guild_id: GUILD, sounds: [HORN] } }, 0);
+      client.applyEvent({ t: "MY_JOIN_SOUND_UPDATE", data: { guild_id: GUILD, sound_id: HORN.id } }, 0);
+      expect(client.soundsOf(GUILD)).toEqual([HORN]);
+      expect(client.guilds[0]?.my_join_sound_id).toBe(HORN.id);
+      client.applyEvent({ t: "MY_JOIN_SOUND_UPDATE", data: { guild_id: GUILD, sound_id: null } }, 0);
+      expect(client.guilds[0]?.my_join_sound_id).toBeNull();
+    });
+
+    it("plays sounds of your channel, shows the player's emoji, and skips them deafened or muted for you", async () => {
+      const { client, played } = await connectedWithSounds();
+      client.applyEvent({ t: "VOICE_SOUND_PLAYED", data: { channel_id: LOUNGE, user_id: OTHER, sound_id: HORN.id } }, 0);
+      client.applyEvent({ t: "VOICE_SOUND_PLAYED", data: { channel_id: STAGE, user_id: "3", sound_id: CLAP.id } }, 0);
+      expect(played).toEqual([[HORN.id, null]]);
+      expect(client.soundIndicators.get(OTHER)).toEqual({ soundId: HORN.id, guildId: GUILD });
+      expect(client.soundIndicators.has("3")).toBe(false);
+
+      client.voice.togglePersonMuted(OTHER);
+      client.applyEvent({ t: "VOICE_SOUND_PLAYED", data: { channel_id: LOUNGE, user_id: OTHER, sound_id: CLAP.id } }, 0);
+      client.voice.togglePersonMuted(OTHER);
+      client.voice.toggleDeafened();
+      client.applyEvent({ t: "VOICE_SOUND_PLAYED", data: { channel_id: LOUNGE, user_id: OTHER, sound_id: CLAP.id } }, 0);
+      expect(played).toEqual([[HORN.id, null]]);
+      // Still shown: who played what is not sound.
+      expect(client.soundIndicators.get(OTHER)?.soundId).toBe(CLAP.id);
+    });
+
+    it("waits 2 s after your own sound, from the instance's echo", async () => {
+      const { client } = await connectedWithSounds();
+      expect(client.soundboardBlock(10_000)).toBeNull();
+      client.applyEvent({ t: "VOICE_SOUND_PLAYED", data: { channel_id: LOUNGE, user_id: ME, sound_id: HORN.id } }, 10_000);
+      expect(client.soundboardBlock(11_999)).toBe("cooling-down");
+      expect(client.soundboardBlock(12_000)).toBeNull();
+    });
+
+    it("greys the soundboard without its permission, without Speak, deafened, or not connected", async () => {
+      const { client } = await connectedWithSounds((1n << 1n) | (1n << 18n) | (1n << 19n));
+      expect(client.soundboardBlock(0)).toBe("no-permission");
+      expect(client.playSound(HORN.id, 0)).toBe(false);
+      const speechless = await connectedWithSounds((1n << 1n) | (1n << 18n) | (1n << 20n));
+      expect(speechless.client.soundboardBlock(0)).toBe("cannot-speak");
+      const allowed = await connectedWithSounds();
+      allowed.client.voice.toggleDeafened();
+      expect(allowed.client.soundboardBlock(0)).toBe("deafened");
+      expect(voiceClient().client.soundboardBlock(0)).toBe("not-connected");
+    });
+
+    it("plays a newcomer's join sound instead of the chime, else the chime", async () => {
+      const { client, cues, played } = await connectedWithSounds();
+      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", LOUNGE, { join_sound_id: HORN.id }) } }, 0);
+      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("4", LOUNGE, { join_sound_id: "404" }) } }, 0);
+      expect(played).toEqual([[HORN.id, "peer-join"]]);
+      expect(cues).toEqual(["self-join", "peer-join"]);
+      expect(client.soundIndicators.get("3")?.soundId).toBe(HORN.id);
+    });
+
+    it("finds your own join sound once your state is in the channel", async () => {
+      const { client } = await connectedWithSounds();
+      expect(client.ownJoinSoundId()).toBeNull();
+      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(ME, LOUNGE, { join_sound_id: CLAP.id }) } }, 0);
+      expect(client.ownJoinSoundId()).toBe(CLAP.id);
+    });
+
+    it("adds, edits and deletes sounds, and clears a deleted join sound", async () => {
+      const created = { id: "902", name: "tada", emoji: null, duration_milliseconds: 1_000 };
+      const requests: unknown[][] = [];
+      const client = new MellowClient(
+        fakeRest({
+          ...QUIET_REST,
+          createSound: (...args: unknown[]) => (requests.push(["create", ...args]), Promise.resolve(created)),
+          updateSound: (...args: unknown[]) => (requests.push(["update", ...args]), Promise.resolve({ ...created, name: "ta-da", emoji: "🎉" })),
+          deleteSound: (...args: unknown[]) => (requests.push(["delete", ...args]), Promise.resolve()),
+          setJoinSound: (...args: unknown[]) => (requests.push(["join", ...args]), Promise.resolve()),
+        }),
+      );
+      client.applyReady(ready());
+      const wav = new Blob(["x"]);
+      await client.createSound(GUILD, "tada", null, wav);
+      // The gateway's list arriving first is not doubled.
+      client.applyEvent({ t: "GUILD_SOUNDS_UPDATE", data: { guild_id: GUILD, sounds: [created] } }, 0);
+      await client.createSound(GUILD, "tada", null, wav);
+      expect(client.soundsOf(GUILD)).toEqual([created]);
+      await client.updateSound(GUILD, created.id, "ta-da", "🎉");
+      expect(client.soundsOf(GUILD)[0]?.name).toBe("ta-da");
+      await client.setJoinSound(GUILD, created.id);
+      expect(client.guilds[0]?.my_join_sound_id).toBe(created.id);
+      await client.deleteSound(GUILD, created.id);
+      expect(client.soundsOf(GUILD)).toEqual([]);
+      expect(client.guilds[0]?.my_join_sound_id).toBeNull();
+      expect(requests[0]).toEqual(["create", GUILD, "tada", null, wav]);
+      expect(requests.map((request) => request[0])).toEqual(["create", "create", "update", "join", "delete"]);
+    });
+  });
+
   it("routes the instance's refusals to the voice connection", async () => {
     const { client } = voiceClient();
     await client.voice.join(LOUNGE);

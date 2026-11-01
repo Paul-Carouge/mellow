@@ -7,14 +7,20 @@ import {
   MAXIMUM_EMOJIS_PER_GUILD_AND_KIND,
   MAXIMUM_EMOJI_NAME_LENGTH,
   MAXIMUM_EMOJI_UPLOAD_BYTES,
+  MAXIMUM_SOUNDS_PER_GUILD,
+  MAXIMUM_SOUND_NAME_LENGTH,
   MINIMUM_EMOJI_NAME_LENGTH,
+  MINIMUM_SOUND_NAME_LENGTH,
 } from "../lib/protocol";
+import { MAXIMUM_SOUND_SOURCE_BYTES } from "../lib/soundboard";
 import { pluralChooser } from "./plural";
 
 const plural = pluralChooser("en");
 const count = (value: number) => value.toLocaleString("en");
 const EMOJI_UPLOAD_KILOBYTES = MAXIMUM_EMOJI_UPLOAD_BYTES / 1024;
 const EMOJI_NAME_LENGTHS = `${MINIMUM_EMOJI_NAME_LENGTH} to ${MAXIMUM_EMOJI_NAME_LENGTH}`;
+const SOUND_NAME_LENGTHS = `${MINIMUM_SOUND_NAME_LENGTH} to ${MAXIMUM_SOUND_NAME_LENGTH}`;
+const SOUND_SOURCE_MEGABYTES = MAXIMUM_SOUND_SOURCE_BYTES / (1024 * 1024);
 
 /** "Ana", "Ana and Bob", "Ana, Bob and Chloé", then "Ana, Bob and 2 others"; "Just you" for nobody. */
 function participantNamesInEnglish(names: readonly string[]): string {
@@ -331,6 +337,39 @@ export const en = {
     outputDeviceMissing: "Your chosen output is unplugged: sound plays through the default one until it's back.",
     userVolume: "User volume",
     muteForMe: "Mute for me",
+  },
+
+  soundboard: {
+    soundboard: "Soundboard",
+    open: "Open the soundboard",
+    sounds: (server: string) => `${server}'s sounds`,
+    help: "Enter plays a sound for everyone in the channel. Shift+F10 opens its options.",
+    hint: "Right-click a sound to preview it or make it your join sound.",
+    empty: (server: string) => `${server} has no sounds yet.`,
+    emptyCanAdd: "Upload one and everyone in voice can play it.",
+    emptyAsk: "Someone who manages expressions can add some.",
+    addSounds: "Add sounds",
+    blocks: {
+      "not-connected": "Sounds play once you're connected.",
+      "no-permission": "You don't have permission to use the soundboard in this channel.",
+      "cannot-speak": "You can't speak in this channel, so your sounds wouldn't play.",
+      deafened: "Turn your sound back on to play sounds.",
+      "cooling-down": "Wait a moment between two sounds.",
+    },
+    soundLabel: (name: string, isJoinSound: boolean) => (isJoinSound ? `${name}, your join sound` : name),
+    soundOptions: (name: string) => `Options for ${name}`,
+    preview: "Preview for me",
+    previewLabel: (name: string) => `Preview ${name}, for you only`,
+    setJoinSound: "Make it my join sound",
+    clearJoinSound: "Remove my join sound",
+    joinSound: "Join sound",
+    yourJoinSound: (name: string) => `Your join sound here: ${name}`,
+    joinSoundSet: (name: string) => `${name} now plays when you join a voice channel here.`,
+    joinSoundCleared: "Join sound removed: the usual chime plays again.",
+    joinSoundFailed: "Couldn't change your join sound",
+    plays: (name: string) => (name ? `plays ${name}` : "plays a sound"),
+    duration: (milliseconds: number) =>
+      `${(milliseconds / 1000).toLocaleString("en", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} s`,
   },
 
   customStatus: {
@@ -969,6 +1008,7 @@ export const en = {
       overview: "Overview",
       roles: "Roles",
       emoji: "Emoji",
+      soundboard: "Soundboard",
       invites: "Invites",
       members: "Members",
       bans: "Bans",
@@ -1058,9 +1098,9 @@ export const en = {
         label: "Manage server",
         description: "Rename the server and manage its invites.",
       },
-      manageEmojis: {
-        label: "Manage emoji",
-        description: "Add custom emoji to this server, rename and delete them.",
+      manageExpressions: {
+        label: "Manage expressions",
+        description: "Add, edit and delete this server's custom emoji and soundboard sounds.",
       },
       viewModerationLog: { label: "View moderation log", description: "See who changed what on this server." },
       createInvite: { label: "Create invite", description: "Invite new people to this server." },
@@ -1075,6 +1115,10 @@ export const en = {
       manageMessages: { label: "Manage messages", description: "Delete messages sent by other members." },
       connect: { label: "Connect", description: "Join voice channels." },
       speak: { label: "Speak", description: "Be heard in voice channels. Without it, they join muted." },
+      useSoundboard: {
+        label: "Use soundboard",
+        description: "Play the server's sounds in voice channels, and choose a join sound.",
+      },
       kickMembers: { label: "Kick members", description: "Remove people; they can come back with a new invite." },
       banMembers: { label: "Ban members", description: "Remove people and stop them from rejoining." },
       administrator: {
@@ -1164,6 +1208,62 @@ export const en = {
       retry: (fileName: string) => `Try ${fileName} again`,
     },
 
+    sounds: {
+      intro: "Short sounds anyone here can play in a voice channel, for everyone connected to hear.",
+      rules: `Any audio file your browser can play (MP3, WAV, Ogg, M4A…): you keep up to 5.2 seconds of it. Names are ${SOUND_NAME_LENGTHS} characters.`,
+      upload: "Upload a sound",
+      listLabel: "Sounds",
+      count: (used: number, maximum: number) => `${count(used)} / ${count(maximum)}`,
+      countLabel: (used: number, maximum: number) => `${count(used)} of ${count(maximum)} used`,
+      full: "Full",
+      fullSentence: `This server has ${MAXIMUM_SOUNDS_PER_GUILD} sounds, the most it can hold. Delete one to add another.`,
+      empty: "No sounds yet. Upload one and everyone in voice can play it.",
+      noEmoji: "No emoji",
+      editLabel: (name: string) => `Edit ${name}`,
+      deleteLabel: (name: string) => `Delete ${name}`,
+      deleteTitle: (name: string) => `Delete ${name}?`,
+      deleteBody: "It leaves everyone's soundboard, and stops being the join sound of whoever chose it.",
+      deleteSubmit: "Delete sound",
+      deleting: "Deleting…",
+      deleteFailed: "Couldn't delete the sound",
+      deleted: (name: string) => `${name} deleted`,
+      addTitle: "Add a sound",
+      reading: (fileName: string) => `Reading ${fileName}…`,
+      unreadable: (fileName: string) => `Your browser can't read ${fileName} as audio. Try an MP3, WAV, Ogg or M4A file.`,
+      tooLargeFile: (size: string) => `This file weighs ${size}. Choose one under ${SOUND_SOURCE_MEGABYTES} MB: only 5.2 seconds are kept anyway.`,
+      chooseAnother: "Choose another file",
+      trim: "Part to keep",
+      waveform: (fileName: string) => `Waveform of ${fileName}`,
+      trimHelp: "Up to 5.2 seconds. Click or drag on the waveform to move the selection; the sliders set its start and end.",
+      start: "Start",
+      end: "End",
+      kept: (seconds: string) => `${seconds} kept`,
+      volume: "Volume",
+      previewSelection: "Preview",
+      stopPreview: "Stop",
+      name: "Sound name",
+      nameHelper: `${SOUND_NAME_LENGTHS} characters. Everyone sees it on the soundboard.`,
+      nameLength: `Use ${SOUND_NAME_LENGTHS} characters.`,
+      nameControl: "Remove the invisible characters from the name.",
+      emoji: "Emoji",
+      emojiHelper: "Optional. It shows on the soundboard and by whoever plays the sound.",
+      chooseEmoji: "Choose an emoji",
+      changeEmoji: (emoji: string) => `Emoji: ${emoji}. Change it`,
+      change: "Change",
+      removeEmoji: "Remove the emoji",
+      submit: "Add sound",
+      adding: "Adding…",
+      added: (name: string) => `${name} added`,
+      addFailed: "Couldn't add the sound",
+      limitReached: `This server already has ${MAXIMUM_SOUNDS_PER_GUILD} sounds. Delete one first.`,
+      tooMany: "You added many sounds in a short time. Wait a few minutes, then try again.",
+      refused: "The instance refused this sound. Trim it again or try another file.",
+      editTitle: (name: string) => `Edit ${name}`,
+      save: "Save changes",
+      saveFailed: "Couldn't save the sound",
+      saved: (name: string) => `${name} saved`,
+    },
+
     invites: {
       empty: "No active invites.",
       loadFailed: "Couldn't load the invites.",
@@ -1234,6 +1334,10 @@ export const en = {
       emojiRename: (actor: string, before: string, after: string) =>
         `${actor} renamed the emoji :${before}: to :${after}:`,
       emojiDelete: (actor: string, name: string) => `${actor} deleted the emoji :${name}:`,
+      soundCreate: (actor: string, name: string) => `${actor} added the sound ${name}`,
+      soundUpdate: (actor: string, name: string) => `${actor} edited the sound ${name}`,
+      soundDelete: (actor: string, name: string) => `${actor} deleted the sound ${name}`,
+      emojiChange: (before: string, after: string) => `Emoji: ${before || "none"} to ${after || "none"}`,
       unknown: (actor: string) => `${actor} made a change this version of Mellow can't show yet`,
       nameChange: (before: string, after: string) => `Name: ${before} to ${after}`,
       topicChange: (topic: string) => `New topic: ${topic}`,
@@ -1371,6 +1475,8 @@ export const en = {
     outputDeviceMissing: "This output is unplugged. Mellow uses the default one until it's back.",
     inputVolume: "Microphone volume",
     outputVolume: "Output volume",
+    soundboardVolume: "Soundboard volume",
+    soundboardVolumeDescription: "Sounds people play in voice, and join sounds.",
     percent: (value: number) => `${count(value)}%`,
     milliseconds: (value: number) => `${count(value)} ms`,
     decibels: (value: number) => `${value < 0 ? "\u2212" : ""}${count(Math.abs(value))} dB`,

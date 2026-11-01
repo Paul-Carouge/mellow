@@ -3,6 +3,7 @@
 // (ADR-0007); these rules only hide or lock what it would refuse (ADR-0014).
 
 import { strings } from "../i18n";
+import { displayEmoji } from "../lib/reactions";
 import {
   type AuditChange,
   type AuditLogEntry,
@@ -13,16 +14,26 @@ import {
   type PublicUser,
   type Role,
   type Snowflake,
+  customEmojiOfReactionKey,
 } from "../lib/protocol";
 import { displayName } from "./format";
 
-export type ServerSettingsSection = "overview" | "roles" | "emoji" | "invites" | "members" | "bans" | "moderation-log";
+export type ServerSettingsSection =
+  | "overview"
+  | "roles"
+  | "emoji"
+  | "soundboard"
+  | "invites"
+  | "members"
+  | "bans"
+  | "moderation-log";
 
 /** Discord's order: the server's own settings, then moderation. */
 const SECTION_PERMISSIONS: readonly [ServerSettingsSection, bigint][] = [
   ["overview", Permission.MANAGE_GUILD],
   ["roles", Permission.MANAGE_ROLES],
-  ["emoji", Permission.MANAGE_EMOJIS],
+  ["emoji", Permission.MANAGE_EXPRESSIONS],
+  ["soundboard", Permission.MANAGE_EXPRESSIONS],
   ["invites", Permission.MANAGE_GUILD],
   ["members", Permission.KICK_MEMBERS | Permission.BAN_MEMBERS | Permission.MANAGE_ROLES],
   ["bans", Permission.BAN_MEMBERS],
@@ -253,7 +264,7 @@ export const PERMISSION_GROUPS: readonly { group: PermissionGroupKey; permission
       { key: "manageChannels", bit: Permission.MANAGE_CHANNELS, isSensitive: false },
       { key: "manageRoles", bit: Permission.MANAGE_ROLES, isSensitive: true },
       { key: "manageServer", bit: Permission.MANAGE_GUILD, isSensitive: false },
-      { key: "manageEmojis", bit: Permission.MANAGE_EMOJIS, isSensitive: false },
+      { key: "manageExpressions", bit: Permission.MANAGE_EXPRESSIONS, isSensitive: false },
       { key: "viewModerationLog", bit: Permission.VIEW_AUDIT_LOG, isSensitive: false },
     ],
   },
@@ -277,6 +288,7 @@ export const PERMISSION_GROUPS: readonly { group: PermissionGroupKey; permission
     permissions: [
       { key: "connect", bit: Permission.CONNECT, isSensitive: false },
       { key: "speak", bit: Permission.SPEAK, isSensitive: false },
+      { key: "useSoundboard", bit: Permission.USE_SOUNDBOARD, isSensitive: false },
     ],
   },
   {
@@ -360,6 +372,24 @@ function changeOf(entry: AuditLogEntry, key: AuditChange["key"]): AuditChange | 
   return entry.changes.find((change) => change.key === key);
 }
 
+/** A sound by its name in the change, else as the server lists it now. */
+function soundName(context: AuditContext, soundId: Snowflake | null, changedName: string | undefined): string {
+  return changedName ?? context.guild.sounds?.find((sound) => sound.id === soundId)?.name ?? "";
+}
+
+/** A reaction key as people read it: the emoji itself, or a server emoji's `:name:`. */
+function emojiKeyLabel(context: AuditContext, key: string): string {
+  if (key === "") {
+    return "";
+  }
+  const customEmojiId = customEmojiOfReactionKey(key);
+  if (customEmojiId === null) {
+    return displayEmoji(key);
+  }
+  const emoji = context.guild.emojis?.find((candidate) => candidate.id === customEmojiId);
+  return emoji ? `:${emoji.name}:` : strings.reactions.deletedEmoji;
+}
+
 /** The entry as one sentence in the reader's language: "Ana kicked Paul". */
 export function auditEntrySentence(entry: AuditLogEntry, context: AuditContext): string {
   const log = strings.serverSettings.moderationLog;
@@ -420,6 +450,13 @@ export function auditEntrySentence(entry: AuditLogEntry, context: AuditContext):
     }
     case "emoji_delete":
       return log.emojiDelete(actor, changeOf(entry, "name")?.old_value ?? "");
+    case "sound_create":
+      return log.soundCreate(actor, changeOf(entry, "name")?.new_value ?? "");
+    case "sound_update":
+      // A rename names the sound by its new name; the change lines say what it was.
+      return log.soundUpdate(actor, soundName(context, target, changeOf(entry, "name")?.new_value));
+    case "sound_delete":
+      return log.soundDelete(actor, changeOf(entry, "name")?.old_value ?? "");
     default:
       // "unknown", or an action of a newer server that this client cannot name yet.
       return log.unknown(actor);
@@ -433,15 +470,22 @@ function permissionNames(bits: bigint): string[] {
 }
 
 /** What an update changed, one line per field, empty when the entry carries no changes. */
-export function auditChangeLines(entry: AuditLogEntry): string[] {
+export function auditChangeLines(entry: AuditLogEntry, context: AuditContext): string[] {
   const log = strings.serverSettings.moderationLog;
   return entry.changes.flatMap((change): string[] => {
     switch (change.key) {
       case "name":
-        // These sentences already name both.
-        return entry.action === "guild_update" || entry.action.startsWith("emoji_")
+        // These sentences already name both; a new or deleted sound's sentence names it.
+        return entry.action === "guild_update" ||
+          entry.action.startsWith("emoji_") ||
+          entry.action === "sound_create" ||
+          entry.action === "sound_delete"
           ? []
           : [log.nameChange(change.old_value, change.new_value)];
+      case "emoji":
+        return entry.action === "sound_update"
+          ? [log.emojiChange(emojiKeyLabel(context, change.old_value), emojiKeyLabel(context, change.new_value))]
+          : [];
       case "topic":
         return [change.new_value === "" ? log.topicCleared : log.topicChange(change.new_value)];
       case "color":

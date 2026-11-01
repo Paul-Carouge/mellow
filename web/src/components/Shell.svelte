@@ -36,11 +36,15 @@
   import QuickSwitcher from "./QuickSwitcher.svelte";
   import QuickSwitcherTrigger from "./QuickSwitcherTrigger.svelte";
   import ServerSettings from "./ServerSettings.svelte";
+  import type { ServerSettingsSection } from "./server-settings";
   import { minimumWidthQueryForPanes } from "./tokens";
   import UserSettings from "./UserSettings.svelte";
   import { prepareChimeSound, routeChimeSoundTo } from "./chime-sound";
   import { listenForPushToTalk } from "./push-to-talk-keys";
   import { playVoiceCue } from "./voice-sounds";
+  import { forgetSoundsExcept, playSoundOnThisDevice } from "./soundboard-audio";
+  import { soundboardGain } from "../lib/soundboard";
+  import type { VoiceCue } from "../lib/voice-session.svelte";
 
   // The signed-in shell (ADR-0022 §1): cards on the dusk ground. The navigator card and the
   // conversation sheet sit side by side inside the inset; the members side sheet opens on demand,
@@ -93,6 +97,8 @@
    * (the strip's menu works on any server): a deleted server must not hand its settings to the next. */
   let dialogGuildId = $state<Snowflake | null>(null);
   const dialogGuild = $derived(client.guilds.find((candidate) => candidate.id === dialogGuildId) ?? null);
+  /** The page Server settings opens at; `null` for the first one the reader may see. */
+  let serverSettingsSection = $state<ServerSettingsSection | null>(null);
   /** The channel whose gear opened its settings. */
   let channelSettingsChannelId = $state<Snowflake | null>(null);
   /** The category whose "+" opened "Create channel"; null from the server menu. */
@@ -103,8 +109,28 @@
   $effect(() => loadNotificationPreferences(client.user?.id ?? null));
   onMount(() => startNotifier(client));
   // Voice (docs/design/web-voice-channels.md): its sounds, and a fresh offer when the network returns.
+  // Soundboard (docs/design/web-soundboard.md): sounds and join sounds play here at the output
+  // volume times the soundboard volume; a join sound that cannot load gives way to its chime.
+  function playSound(soundId: Snowflake, fallbackCue: VoiceCue | null) {
+    const { outputVolumePercent, soundboardVolumePercent } = client.voice.settings;
+    void playSoundOnThisDevice(soundId, soundboardGain(outputVolumePercent, soundboardVolumePercent)).then((playing) => {
+      if (playing === null && fallbackCue !== null) {
+        playVoiceCue(fallbackCue);
+      }
+    });
+  }
+  function playCue(cue: VoiceCue) {
+    const ownJoinSoundId = cue === "self-join" ? client.ownJoinSoundId() : null;
+    if (ownJoinSoundId !== null) {
+      playSound(ownJoinSoundId, cue);
+    } else {
+      playVoiceCue(cue);
+    }
+  }
+  $effect(() => forgetSoundsExcept(new Set(client.guilds.flatMap((candidate) => (candidate.sounds ?? []).map((sound) => sound.id)))));
   onMount(() => {
-    client.voice.onCue = playVoiceCue;
+    client.voice.onCue = playCue;
+    client.onSound = playSound;
     const noteBackOnline = () => client.voice.noteBackOnline();
     window.addEventListener("online", noteBackOnline);
     const stopPushToTalk = listenForPushToTalk(window, client.voice);
@@ -112,6 +138,7 @@
       window.removeEventListener("online", noteBackOnline);
       stopPushToTalk();
       client.voice.onCue = null;
+      client.onSound = null;
     };
   });
   $effect(() => routeChimeSoundTo(client.voice.isOutputDeviceMissing ? null : client.voice.settings.outputDeviceId));
@@ -482,7 +509,8 @@
     onopendialog={(dialog, guildId) => {
       newChannelCategory = null;
       dialogGuildId = guildId;
-      openDialog = dialog;
+      serverSettingsSection = dialog === "server-soundboard" ? "soundboard" : null;
+      openDialog = dialog === "server-soundboard" ? "server-settings" : dialog;
     }}
     oncreatechannelin={(category) => {
       newChannelCategory = category;
@@ -650,6 +678,7 @@
   <ServerSettings
     {client}
     guildId={dialogGuildId}
+    initialSection={serverSettingsSection}
     isWide={hasRoomForNavigator.current}
     onclose={() => (openDialog = null)}
   />

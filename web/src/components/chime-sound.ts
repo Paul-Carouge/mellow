@@ -53,6 +53,14 @@ export async function prepareChimeSound(): Promise<void> {
   }
 }
 
+/**
+ * The shared context once a gesture allowed audio, else `null`: soundboard sounds play through it,
+ * so they reach the same output as the chime and the voices.
+ */
+export function runningAudioContext(): AudioContext | null {
+  return context !== null && context.state === "running" ? context : null;
+}
+
 /** Plays the chime if audio was allowed by an earlier gesture; silent otherwise. */
 export function playChimeSound(): void {
   playNotes(NOTES, NOTE_LENGTH_SECONDS, PEAK_GAIN);

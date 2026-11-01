@@ -1,9 +1,16 @@
 <script lang="ts">
+  import { MediaQuery } from "svelte/reactivity";
+
   import { strings } from "../i18n";
   import type { MellowClient } from "../lib/client.svelte";
+  import { Permission, type Snowflake } from "../lib/protocol";
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import { createPopoverToggle } from "./popover-toggle";
+  import { holds } from "./server-settings";
+  import SoundboardPopover from "./SoundboardPopover.svelte";
+  import { minimumWidthQueryForPanes } from "./tokens";
   import { problemLook, signalLook } from "./voice-panel";
 
   // The voice panel (DESIGN.md §5.3, ADR-0030): a card like the user card, directly above it, in
@@ -15,9 +22,20 @@
     client: MellowClient;
     /** After the channel line opened its server (the narrow layout closes its drawer). */
     onnavigate: () => void;
+    /** The soundboard's "Add sounds": Server settings at Soundboard. */
+    onaddsounds: (guildId: Snowflake) => void;
   }
 
-  let { client, onnavigate }: Props = $props();
+  let { client, onnavigate, onaddsounds }: Props = $props();
+
+  // The soundboard sits beside the navigator when the window has room for both, else it rises
+  // from the bottom of the screen like the emoji picker.
+  const hasRoomForSoundboardBeside = new MediaQuery(
+    minimumWidthQueryForPanes(["component-navigator-strip-width", "component-sidebar-width", "component-emoji-picker-width"]),
+  );
+  let soundboardButton = $state<HTMLButtonElement | null>(null);
+  let isSoundboardOpen = $state(false);
+  const soundboardToggle = createPopoverToggle(() => isSoundboardOpen);
 
   const voice = $derived(client.voice);
   const place = $derived(client.voiceChannel);
@@ -29,6 +47,12 @@
     return channel?.name ?? strings.voice.voiceChannel;
   });
   const look = $derived(problem ? problemLook(problem, problemChannelName) : null);
+  // Leaving voice takes the soundboard with it.
+  $effect(() => {
+    if (voice.phase === "idle") {
+      isSoundboardOpen = false;
+    }
+  });
   const statusLabel = $derived(
     voice.phase === "connected" ? strings.voice.connected : voice.phase === "reconnecting" ? strings.voice.reconnecting : strings.voice.connecting,
   );
@@ -113,6 +137,21 @@
           </button>
         </div>
         <IconButton
+          bind:element={soundboardButton}
+          icon="speaker-high"
+          label={strings.soundboard.open}
+          aria-haspopup="dialog"
+          aria-expanded={isSoundboardOpen}
+          class={[buttonClass, isSoundboardOpen && "bg-(--mw-component-user-panel-button-background-hover)"].filter(Boolean).join(" ")}
+          iconClass="size-(--mw-component-user-panel-button-icon-size)"
+          onpointerdown={soundboardToggle.notePress}
+          onclick={() => {
+            if (soundboardToggle.shouldOpenOnClick()) {
+              isSoundboardOpen = true;
+            }
+          }}
+        />
+        <IconButton
           icon="phone-disconnect"
           label={strings.voice.disconnect}
           class="{buttonClass} hover:text-(--mw-component-voice-panel-hang-up-icon-hover)"
@@ -168,6 +207,26 @@
         </div>
       {/if}
     </section>
+  {/if}
+  {#if isSoundboardOpen && soundboardButton && place}
+    {@const guildId = place.guild.id}
+    <SoundboardPopover
+      {client}
+      anchor={soundboardButton}
+      isCompact={!hasRoomForSoundboardBeside.current}
+      onaddsounds={holds(place.guild, Permission.MANAGE_EXPRESSIONS)
+        ? () => {
+            isSoundboardOpen = false;
+            onaddsounds(guildId);
+          }
+        : null}
+      onclose={(shouldReturnFocus) => {
+        isSoundboardOpen = false;
+        if (shouldReturnFocus) {
+          soundboardButton?.focus();
+        }
+      }}
+    />
   {/if}
   <p class="sr-only" aria-live="polite">{phaseSentence}</p>
   <p class="sr-only" aria-live="polite">{client.voiceAnnouncement}</p>

@@ -53,7 +53,7 @@ describe("custom emoji", () => {
   const parrot = { id: "501", name: "parrot", is_animated: true };
 
   it("are managed with bit 17", () => {
-    expect(Permission.MANAGE_EMOJIS).toBe(131072n);
+    expect(Permission.MANAGE_EXPRESSIONS).toBe(131072n);
   });
 
   it("serve their picture like icons, still unless the animation is wanted", () => {
