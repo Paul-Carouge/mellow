@@ -4,6 +4,18 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-11-01
+Cleaner voices. No database migration.
+
+### Added
+- Web: Settings → Voice → Noise suppression: "Advanced" removes fans, keyboards and room noise with RNNoise, running in your browser (the default where supported), "Browser" uses the browser's own filter, or turn it off. If Advanced cannot run or stops working, Mellow falls back to the browser's filter and says why.
+- Web: "Enhanced voice", off by default: Natural, Streamer, Warm or Clear presets, Bass, Mids and Treble sliders, and a compressor and limiter for a steady, clean sound. Others hear your processed voice.
+- Web: "Listen to myself" in the microphone test and during a call (use headphones), and changes apply at once during a call.
+- Web: third-party licence notices, linked from Settings → About.
+
+### Changed
+- Server: the web client's Content Security Policy allows WebAssembly compilation (`'wasm-unsafe-eval'`), and nothing more, for the noise suppressor (ADR-0031).
+
 ## [0.24.0] - 2026-11-01
 Voice comfort. No database migration.
 
