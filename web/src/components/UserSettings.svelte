@@ -8,6 +8,7 @@
   import IconButton from "./IconButton.svelte";
   import NotificationSettings from "./NotificationSettings.svelte";
   import ProfileSettings from "./ProfileSettings.svelte";
+  import VoiceSettings from "./VoiceSettings.svelte";
 
   // User settings (DESIGN.md §5.8 layout, §5.9 sections), over the whole window as on desktop: a
   // native modal <dialog> keeps the shell behind it inert. Esc closes the open form first, then the
@@ -22,10 +23,11 @@
 
   let { client, isWide, onclose }: Props = $props();
 
-  type Section = "account" | "profile" | "notifications" | "about";
+  type Section = "account" | "profile" | "voice" | "notifications" | "about";
   const SECTION_TITLES: Record<Section, string> = {
     account: strings.settings.myAccount,
     profile: strings.settings.profile,
+    voice: strings.settings.voice,
     notifications: strings.settings.notifications,
     about: strings.settings.about,
   };
@@ -184,7 +186,7 @@
         >
           {@render navGroup(strings.settings.userSettings, ["account", "profile"])}
           {@render separator()}
-          {@render navGroup(strings.settings.appSettings, ["notifications", "about"])}
+          {@render navGroup(strings.settings.appSettings, ["voice", "notifications", "about"])}
           {@render separator()}
           <button
             type="button"
@@ -243,6 +245,8 @@
               <AccountSettings bind:this={accountSettings} {client} />
             {:else if section === "profile"}
               <ProfileSettings {client} />
+            {:else if section === "voice"}
+              <VoiceSettings voice={client.voice} />
             {:else if section === "notifications"}
               <NotificationSettings />
             {:else}

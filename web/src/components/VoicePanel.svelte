@@ -41,13 +41,26 @@
       case "connecting":
         return strings.voice.connectingTo(name);
       case "connected":
-        return strings.voice.connectedTo(name);
+        // Push-to-talk said once on connecting: otherwise silence would be a mystery.
+        return voice.settings.inputMode === "push-to-talk"
+          ? `${strings.voice.connectedTo(name)} ${pushToTalkSentence}`
+          : strings.voice.connectedTo(name);
       case "reconnecting":
         return strings.voice.reconnectingTo(name);
       default:
         return "";
     }
   });
+  const pushToTalkKey = $derived(voice.settings.pushToTalkKey);
+  const pushToTalkSentence = $derived(
+    pushToTalkKey ? `${strings.voice.pushToTalkHint(pushToTalkKey.label)}.` : strings.voice.pushToTalkNoKey,
+  );
+  const deviceNotices = $derived(
+    [
+      voice.isInputDeviceMissing && strings.voice.inputDeviceMissing,
+      voice.isOutputDeviceMissing && strings.voice.outputDeviceMissing,
+    ].filter((notice): notice is string => typeof notice === "string"),
+  );
   const signalClass = $derived(
     voice.phase !== "connected" || signal.quality === null
       ? "text-(--mw-component-voice-panel-signal-unknown)"
@@ -113,6 +126,20 @@
           <span class="min-w-0">{strings.voice.microphoneProblems[voice.microphoneProblem]}</span>
         </p>
       {/if}
+      {#if voice.settings.inputMode === "push-to-talk"}
+        <p class="mt-2xs flex gap-2xs type-body-sm text-(--mw-component-voice-panel-hint-text)">
+          {#if !pushToTalkKey}
+            <Icon name="warning-circle" class="mt-3xs size-(--mw-component-voice-panel-signal-icon-size) shrink-0" />
+          {/if}
+          <span class="min-w-0">{pushToTalkKey ? strings.voice.pushToTalkHint(pushToTalkKey.label) : strings.voice.pushToTalkNoKey}</span>
+        </p>
+      {/if}
+      {#each deviceNotices as notice (notice)}
+        <p class="mt-2xs flex gap-2xs type-body-sm text-(--mw-component-voice-panel-hint-text)">
+          <Icon name="warning-circle" class="mt-3xs size-(--mw-component-voice-panel-signal-icon-size) shrink-0" />
+          <span class="min-w-0">{notice}</span>
+        </p>
+      {/each}
     </section>
   {:else if look}
     <section aria-label={strings.voice.panel} class={cardClass}>
@@ -144,4 +171,5 @@
   {/if}
   <p class="sr-only" aria-live="polite">{phaseSentence}</p>
   <p class="sr-only" aria-live="polite">{client.voiceAnnouncement}</p>
+  <p class="sr-only" aria-live="polite">{voice.phase === "idle" ? "" : deviceNotices.join(" ")}</p>
 </div>

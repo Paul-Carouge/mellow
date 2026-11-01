@@ -2,9 +2,13 @@
 // jump to the ends, a letter moves to the next item starting with it; Esc and light dismiss come
 // from the popover itself.
 
-/** The items of a menu, plain or radio, in document order. */
+/**
+ * The items of a menu, plain, radio or checkbox, in document order, with the controls a menu
+ * holds (`data-menu-control`, a volume slider): arrows up and down reach them too, while left and
+ * right stay theirs.
+ */
 export function menuItemsIn(menu: HTMLElement | null): HTMLElement[] {
-  return [...(menu?.querySelectorAll<HTMLElement>("[role^=menuitem]") ?? [])];
+  return [...(menu?.querySelectorAll<HTMLElement>("[role^=menuitem], [data-menu-control]") ?? [])];
 }
 
 /** The index the key moves focus to, or `null` for keys a menu does not handle. */

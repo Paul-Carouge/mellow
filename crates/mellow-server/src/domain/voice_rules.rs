@@ -192,6 +192,11 @@ impl<Slot: Copy, Speaker: Copy + Eq + Hash> ReceiveSlots<Slot, Speaker> {
         Some(slot)
     }
 
+    /// Whether `speaker` already has a slot, so a new assignment can be announced.
+    pub(crate) fn has_slot(&self, speaker: Speaker) -> bool {
+        self.assigned.contains_key(&speaker)
+    }
+
     /// Frees the slot of a speaker who left.
     pub(crate) fn release(&mut self, speaker: Speaker) {
         if let Some(assigned) = self.assigned.remove(&speaker) {
@@ -331,7 +336,9 @@ mod tests {
         slots.add_free_slot(1);
         slots.add_free_slot(2);
 
+        assert!(!slots.has_slot('a'));
         let a = slots.slot_for('a', at(0)).unwrap();
+        assert!(slots.has_slot('a'), "a new assignment is visible");
         let b = slots.slot_for('b', at(10)).unwrap();
         assert_ne!(a, b);
         assert_eq!(slots.slot_for('a', at(20)), Some(a), "a keeps its slot");

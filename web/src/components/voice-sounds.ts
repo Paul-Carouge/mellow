@@ -1,6 +1,7 @@
 // Voice cues (docs/design/web-voice-channels.md): Discord's grammar in Mellow's own sine voice, made
 // with Web Audio like the chime, so there is no sound file. Joining rises, leaving falls; yours
 // span a fifth, others' a softer, higher third; toggles are one short, quiet note, lower when muting.
+// Push-to-talk (off by default) is a tick even shorter and quieter: it plays at every press.
 
 import type { VoiceCue } from "../lib/voice-session.svelte";
 import { playNotes } from "./chime-sound";
@@ -21,6 +22,9 @@ const F4 = 349.23;
 const SECOND_NOTE_OFFSET_SECONDS = 0.09;
 const TOGGLE_LENGTH_SECONDS = 0.1;
 const TOGGLE_GAIN = 0.035;
+const E6 = 1318.51;
+const PUSH_TO_TALK_LENGTH_SECONDS = 0.06;
+const PUSH_TO_TALK_GAIN = 0.02;
 
 const rising = (low: number, high: number) => [
   { frequency: low, start: 0 },
@@ -41,6 +45,8 @@ const CUES: Record<VoiceCue, Cue> = {
   unmute: { notes: single(D5), lengthSeconds: TOGGLE_LENGTH_SECONDS, peakGain: TOGGLE_GAIN },
   deafen: { notes: single(F4), lengthSeconds: TOGGLE_LENGTH_SECONDS, peakGain: TOGGLE_GAIN },
   undeafen: { notes: single(C5), lengthSeconds: TOGGLE_LENGTH_SECONDS, peakGain: TOGGLE_GAIN },
+  "push-to-talk-press": { notes: single(E6), lengthSeconds: PUSH_TO_TALK_LENGTH_SECONDS, peakGain: PUSH_TO_TALK_GAIN },
+  "push-to-talk-release": { notes: single(B5), lengthSeconds: PUSH_TO_TALK_LENGTH_SECONDS, peakGain: PUSH_TO_TALK_GAIN },
 };
 
 export function playVoiceCue(cue: VoiceCue): void {

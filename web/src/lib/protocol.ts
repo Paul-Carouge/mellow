@@ -577,6 +577,11 @@ export type GatewayEvent =
   | { t: "VOICE_SESSION_DESCRIPTION"; data: { channel_id: Snowflake; offer_id: number; sdp_answer: string } }
   | { t: "VOICE_JOIN_REFUSED"; data: { channel_id: Snowflake; offer_id: number; reason: VoiceJoinRefusal } }
   | { t: "VOICE_DISCONNECTED"; data: { channel_id: Snowflake; reason: VoiceDisconnectReason } }
+  /**
+   * Only to the listener's session: the receive slot whose transceiver has `mid` now carries
+   * `user_id`, until another event for the same `mid`. Valid for the current answer only.
+   */
+  | { t: "VOICE_SLOT_ASSIGNED"; data: { channel_id: Snowflake; mid: string; user_id: Snowflake } }
   /** Edges only, never for muted or suppressed people. */
   | {
       t: "SPEAKING";

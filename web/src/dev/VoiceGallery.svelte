@@ -1,7 +1,11 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
 
   import Navigator from "../components/Navigator.svelte";
+  import VoiceSettings from "../components/VoiceSettings.svelte";
+  import { BROWSER_VOICE_PORTS } from "../lib/voice-browser";
+  import { DEFAULT_VOICE_SETTINGS, type VoiceSettings as Settings } from "../lib/voice-settings";
   import type { RestClient } from "../lib/api";
   import { MellowClient } from "../lib/client.svelte";
   import { type Channel, type GatewayEvent, Permission, type VoiceState } from "../lib/protocol";
@@ -9,7 +13,58 @@
   // Development only (web/dev/voice.html): the navigator with voice channels, fed with gateway
   // events by hand, since no instance speaks voice yet. `#state=` connected (default), connecting,
   // reconnecting, no-microphone, refused, moved, timeout, idle; `&theme=light`; `&wide=0` for a phone.
+  // Stage 16.3: `&view=settings` shows Settings, Voice, with `&mode=` auto (default), manual or
+  // ptt, `&key=0` (no push-to-talk key), `&devices=hidden` (before the permission),
+  // `&output=unsupported` (Safari), `&missing=1` (remembered devices unplugged); `&view=menu`
+  // opens Ana's menu with her volume. Headless browsers never answer `getUserMedia`: the
+  // microphone is a wavering oscillator, so the meter moves.
   const parameters = new URLSearchParams(location.hash.slice(1));
+  const view = parameters.get("view") ?? "navigator";
+  const isDevicesHidden = parameters.get("devices") === "hidden";
+  const isRememberedMissing = parameters.get("missing") === "1";
+
+  /** A microphone that hums between quiet and loud, about once a second. */
+  function oscillatorMicrophone(): MediaStream {
+    const context = new AudioContext();
+    const voice = context.createOscillator();
+    voice.frequency.value = 220;
+    const loudness = context.createGain();
+    loudness.gain.value = 0.05;
+    const wobble = context.createOscillator();
+    wobble.frequency.value = 0.8;
+    const wobbleDepth = context.createGain();
+    wobbleDepth.gain.value = 0.05;
+    wobble.connect(wobbleDepth).connect(loudness.gain);
+    const destination = context.createMediaStreamDestination();
+    voice.connect(loudness).connect(destination);
+    voice.start();
+    wobble.start();
+    return destination.stream;
+  }
+  const galleryDevices = isDevicesHidden
+    ? [
+        { kind: "audioinput", deviceId: "", label: "", groupId: "" },
+        { kind: "audiooutput", deviceId: "", label: "", groupId: "" },
+      ]
+    : [
+        { kind: "audioinput", deviceId: "default", label: "Par défaut - Micro MacBook Pro", groupId: "a" },
+        { kind: "audioinput", deviceId: "mac", label: "Micro MacBook Pro", groupId: "a" },
+        { kind: "audioinput", deviceId: "yeti", label: "Yeti Stereo Microphone", groupId: "b" },
+        { kind: "audiooutput", deviceId: "default", label: "Par défaut - Haut-parleurs MacBook Pro", groupId: "c" },
+        { kind: "audiooutput", deviceId: "speakers", label: "Haut-parleurs MacBook Pro", groupId: "c" },
+        { kind: "audiooutput", deviceId: "headset", label: "Casque WH-1000XM4", groupId: "d" },
+      ];
+  if (view === "settings") {
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: () => Promise.resolve(oscillatorMicrophone()),
+        enumerateDevices: () => Promise.resolve(galleryDevices),
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      },
+    });
+  }
   const state = parameters.get("state") ?? "connected";
   const theme = parameters.get("theme");
   if (theme === "light" || theme === "dark") {
@@ -63,15 +118,20 @@
       Promise.resolve(new Map([["p", { type: "candidate-pair", id: "p", nominated: true, state: "succeeded", currentRoundTripTime: 0.042 }]])),
     close: () => {},
   };
-  const fakeTrack = { enabled: true, stop: () => {} };
+  const fakeTrack = { enabled: true, stop: () => {}, addEventListener: () => {} };
   const client = new MellowClient(silentRest, {
     createPeerConnection: () => fakePeer as unknown as RTCPeerConnection,
+    meterLevel: view === "settings" ? BROWSER_VOICE_PORTS.meterLevel : () => null,
     requestMicrophone: () =>
-      state === "no-microphone"
+      view === "settings"
+        ? Promise.resolve(oscillatorMicrophone())
+        : state === "no-microphone"
         ? Promise.reject(Object.assign(new Error("none"), { name: "NotFoundError" }))
         : Promise.resolve({ getAudioTracks: () => [fakeTrack], getTracks: () => [fakeTrack] } as unknown as MediaStream),
-    playTrack: () => ({ setMuted: () => {}, stop: () => {} }),
-    meterLevel: () => null,
+    playTrack: () => ({ setGain: () => {}, setOutputDevice: () => {}, stop: () => {} }),
+    amplify: () => null,
+    listDevices: () => Promise.resolve([]),
+    watchDevices: () => () => {},
     storage: () => null,
   });
 
@@ -121,7 +181,28 @@
   client.status = "connected";
   const dispatch = (event: GatewayEvent) => client.applyEvent(event, Date.now());
 
+  const mode = parameters.get("mode") ?? "auto";
+  const gallerySettings: Settings = {
+    ...DEFAULT_VOICE_SETTINGS,
+    inputMode: mode === "ptt" ? "push-to-talk" : "voice-activity",
+    isSensitivityAutomatic: mode !== "manual",
+    sensitivityThresholdDecibels: -32,
+    pushToTalkKey: parameters.get("key") === "0" ? null : { code: "ControlRight", label: "Ctrl droit" },
+    inputDeviceId: isRememberedMissing ? "usb-gone" : "yeti",
+    outputDeviceId: isRememberedMissing ? "dock-gone" : "headset",
+    inputVolumePercent: 120,
+  };
+  client.voice.updateSettings(gallerySettings);
+  client.voice.setPersonVolume("2", 150);
+  client.voice.togglePersonMuted("3");
+
   async function stage() {
+    if (view === "settings") {
+      if (!isDevicesHidden) {
+        await client.voice.startMicrophoneTest();
+      }
+      return;
+    }
     if (state === "idle") {
       return;
     }
@@ -154,6 +235,13 @@
     if (state === "reconnecting") {
       client.voice.disconnectedByServer("21", "media_timeout");
     }
+    if (view === "menu") {
+      await tick();
+      const ana = [...document.querySelectorAll<HTMLButtonElement>("button[aria-haspopup=menu]")].find((row) =>
+        row.textContent?.includes("Ana"),
+      );
+      ana?.click();
+    }
   }
   void stage();
 
@@ -161,6 +249,18 @@
   const isWide = parameters.get("wide") !== "0";
 </script>
 
+{#if view === "settings"}
+  <div class="min-h-dvh bg-(--mw-component-settings-content-background) font-sans text-text-normal">
+    <div
+      class={[
+        "mx-auto max-w-(--mw-component-settings-content-max-width) pb-(--mw-component-settings-content-padding-bottom)",
+        isWide ? "px-(--mw-component-settings-content-padding-inline) pt-(--mw-component-settings-content-padding-top)" : "px-(--mw-component-settings-content-padding-inline-narrow) pt-xs",
+      ]}
+    >
+      <VoiceSettings voice={client.voice} canChooseOutputDevice={parameters.get("output") !== "unsupported"} />
+    </div>
+  </div>
+{:else}
 <div class="flex h-dvh bg-surface-rail p-(--mw-size-sheet-inset) font-sans text-text-normal">
   <div class={isWide ? "h-full" : "h-full w-full"}>
     <Navigator
@@ -177,3 +277,4 @@
     />
   </div>
 </div>
+{/if}

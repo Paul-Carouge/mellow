@@ -387,6 +387,14 @@ pub enum GatewayEvent {
         offer_id: u32,
         reason: VoiceJoinRefusal,
     },
+    /// The server now relays `user_id`'s voice on this session's receive m-line `mid` (one of its
+    /// `recvonly` transceivers), until another event names the same `mid`. Lets the client set a
+    /// per-person volume. Sent to that session only; forgotten with its media session.
+    VoiceSlotAssigned {
+        channel_id: Snowflake,
+        mid: String,
+        user_id: Snowflake,
+    },
     /// The server ended this session's voice connection. Sent to that session only; the others
     /// learn it from `VOICE_STATE_DELETE` (or `VOICE_STATE_UPDATE` after a move).
     VoiceDisconnected {
@@ -615,6 +623,19 @@ mod tests {
             .is_err(),
             "unknown fields are refused"
         );
+    }
+
+    #[test]
+    fn slot_assignments_name_the_m_line_and_the_speaker() {
+        let event = GatewayEvent::VoiceSlotAssigned {
+            channel_id: Snowflake::from_raw(2),
+            mid: "abc".into(),
+            user_id: Snowflake::from_raw(3),
+        };
+        let json = serde_json::json!({"t": "VOICE_SLOT_ASSIGNED",
+            "data": {"channel_id": "2", "mid": "abc", "user_id": "3"}});
+        assert_eq!(serde_json::to_value(&event).unwrap(), json);
+        assert_eq!(serde_json::from_value::<GatewayEvent>(json).unwrap(), event);
     }
 
     #[test]

@@ -1303,8 +1303,11 @@ describe("Voice states", () => {
     const client = new MellowClient(fakeRest(QUIET_REST), {
       createPeerConnection: () => peer as unknown as RTCPeerConnection,
       requestMicrophone: () => Promise.reject(new TypeError("no microphone in tests")),
-      playTrack: () => ({ setMuted: () => {}, stop: () => {} }),
+      playTrack: () => ({ setGain: () => {}, setOutputDevice: () => {}, stop: () => {} }),
       meterLevel: () => null,
+      amplify: () => null,
+      listDevices: () => Promise.resolve([]),
+      watchDevices: () => () => {},
       storage: () => null,
     });
     client.voice.onCue = (cue) => cues.push(cue);
