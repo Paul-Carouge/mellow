@@ -1350,6 +1350,7 @@ export const fr: Catalogue = {
     sourceCode: "Code source",
     licence: "Mellow est un logiciel libre sous licence AGPL-3.0. Tu peux lire, modifier et partager son code.",
     sourceCodeOnGitHub: "Code source sur GitHub",
+    thirdPartyNotices: "Licences des composants tiers",
   },
 
   voiceSettings: {
