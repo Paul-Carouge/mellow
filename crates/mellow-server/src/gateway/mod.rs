@@ -376,7 +376,12 @@ async fn identify(
         state.clone(),
         session_id.clone(),
         hub_key,
-        SessionTask { events, commands },
+        SessionTask {
+            events,
+            commands,
+            hub: state.events.clone(),
+            hub_key,
+        },
     ));
 
     let Some(ready) = build_ready(state, &user, session_id.clone(), &guild_ids).await else {
@@ -711,7 +716,10 @@ pub(crate) mod tests {
 
     async fn fixture() -> Fixture {
         let (directory, database) = migrated_database().await;
-        let state = test_state(database, RegistrationMode::Open);
+        let mut state = test_state(database, RegistrationMode::Open);
+        // Lets a test stand for several clients (`connect_from`) under the per-address limit.
+        state.trusted_proxy_networks =
+            crate::http::client_address::build_trusted_proxy_networks(true, &[]).into();
         let owner = state
             .accounts
             .register(register_request("owner", "owner@example.org"), now())
@@ -782,6 +790,19 @@ pub(crate) mod tests {
         socket
     }
 
+    /// Connects as `client_address`, forwarded by a reverse proxy on this host.
+    async fn connect_from(address: SocketAddr, client_address: &str) -> ClientSocket {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+        let mut request = format!("ws://{address}/gateway?v=1")
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("x-forwarded-for", client_address.parse().unwrap());
+        let (socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        socket
+    }
+
     pub(crate) async fn send(socket: &mut ClientSocket, frame: &ClientFrame) {
         socket
             .send(ClientMessage::Text(
@@ -822,7 +843,11 @@ pub(crate) mod tests {
     }
 
     pub(crate) async fn identified(address: SocketAddr, token: &str) -> (ClientSocket, Ready) {
-        let mut socket = connect(address).await;
+        let socket = connect(address).await;
+        identified_over(socket, token).await
+    }
+
+    async fn identified_over(mut socket: ClientSocket, token: &str) -> (ClientSocket, Ready) {
         assert!(matches!(
             receive(&mut socket).await,
             ServerFrame::Hello { .. }
@@ -1288,6 +1313,63 @@ pub(crate) mod tests {
             matches!(event, GatewayEvent::GuildMemberRemove { user_id, .. } if *user_id == banned.user.id)
         })
         .await;
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn reloads_never_lock_a_user_out_but_open_sockets_keep_the_session_cap() {
+        let fixture = fixture().await;
+        let member_id = fixture
+            .state
+            .accounts
+            .authenticate(&fixture.member_token, now())
+            .await
+            .unwrap()
+            .id;
+        for cycle in 1..=MAXIMUM_SESSIONS_PER_USER + 2 {
+            let socket = connect_from(fixture.address, &format!("203.0.113.{cycle}")).await;
+            let (mut socket, _ready) = identified_over(socket, &fixture.member_token).await;
+            socket.close(None).await.unwrap();
+            while socket.next().await.is_some() {}
+            // The session task learns of the detach asynchronously; wait for it like a reload
+            // that comes a moment later would.
+            let expected_waiting = cycle.min(MAXIMUM_SESSIONS_PER_USER);
+            tokio::time::timeout(RECEIVE_TIMEOUT, async {
+                while fixture
+                    .state
+                    .events
+                    .count_live_sessions_waiting_for_resume(member_id)
+                    != expected_waiting
+                {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("the closed session waits for a resume");
+        }
+
+        let mut open_sockets = Vec::new();
+        for _ in 0..MAXIMUM_SESSIONS_PER_USER {
+            let socket = connect_from(fixture.address, "203.0.113.100").await;
+            open_sockets.push(identified_over(socket, &fixture.member_token).await.0);
+        }
+        let mut one_too_many = connect_from(fixture.address, "203.0.113.101").await;
+        assert!(matches!(
+            receive(&mut one_too_many).await,
+            ServerFrame::Hello { .. }
+        ));
+        send(
+            &mut one_too_many,
+            &ClientFrame::Identify {
+                token: fixture.member_token.clone(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            receive(&mut one_too_many).await,
+            ServerFrame::InvalidSession
+        ));
+        drop(open_sockets);
         fixture.close().await;
     }
 
