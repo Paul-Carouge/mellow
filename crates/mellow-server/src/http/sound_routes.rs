@@ -15,6 +15,7 @@ use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::sound_rules::MAXIMUM_SOUND_FILE_BYTES;
 use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiJson, ApiPath, ApiQuery};
+use crate::http::attachment_routes::read_upload_body;
 use crate::http::authentication::AuthenticatedUser;
 use crate::http::guild_routes::limit_guild_writes;
 use crate::http::rate_limit::{RateLimit, SOUND_DOWNLOADS_PER_USER, SOUND_UPLOADS_PER_USER};
@@ -65,9 +66,7 @@ pub(crate) async fn create_sound(
 ) -> Result<(StatusCode, Json<SoundboardSound>), ApiError> {
     // Counted before the body is read, so refused uploads count too.
     limit_sound_uploads(&state, user.id)?;
-    let bytes = axum::body::to_bytes(body, MAXIMUM_SOUND_FILE_BYTES)
-        .await
-        .map_err(|_| ApiError::payload_too_large())?;
+    let bytes = read_upload_body(body, MAXIMUM_SOUND_FILE_BYTES).await?;
     let sound = state
         .guilds
         .create_sound(

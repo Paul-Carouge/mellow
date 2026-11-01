@@ -61,11 +61,7 @@ pub(crate) async fn upload(
         .await?;
     let limit = usize::try_from(state.maximum_attachment_bytes).unwrap_or(usize::MAX);
     // The slot is held while the body arrives: a client trickling bytes gets a deadline.
-    let deadline = upload_deadline(state.maximum_attachment_bytes);
-    let bytes = tokio::time::timeout(deadline, axum::body::to_bytes(body, limit))
-        .await
-        .map_err(|_| ApiError::server_busy())?
-        .map_err(|_| ApiError::payload_too_large())?;
+    let bytes = read_upload_body(body, limit).await?;
     if bytes.is_empty() {
         return Err(ApiError::validation("an attachment cannot be empty".into()));
     }
@@ -154,6 +150,19 @@ const MINIMUM_UPLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_s
 fn upload_deadline(maximum_bytes: u64) -> std::time::Duration {
     std::time::Duration::from_secs(maximum_bytes / MINIMUM_UPLOAD_BYTES_PER_SECOND)
         .max(MINIMUM_UPLOAD_DEADLINE)
+}
+
+/// Reads an upload body of at most `maximum_bytes`; a client trickling bytes gets
+/// `server_busy` once the deadline for that size passes, so it cannot hold a request open.
+pub(crate) async fn read_upload_body(
+    body: Body,
+    maximum_bytes: usize,
+) -> Result<axum::body::Bytes, ApiError> {
+    let deadline = upload_deadline(u64::try_from(maximum_bytes).unwrap_or(u64::MAX));
+    tokio::time::timeout(deadline, axum::body::to_bytes(body, maximum_bytes))
+        .await
+        .map_err(|_| ApiError::server_busy())?
+        .map_err(|_| ApiError::payload_too_large())
 }
 
 /// RFC 5987 `filename*`: everything but unreserved ASCII is percent-encoded, so no quote, comma

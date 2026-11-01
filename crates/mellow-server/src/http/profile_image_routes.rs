@@ -14,6 +14,7 @@ use crate::domain::guilds::IconUpload;
 use crate::domain::image_processing::SquareCrop;
 use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiPath, ApiQuery};
+use crate::http::attachment_routes::read_upload_body;
 use crate::http::authentication::AuthenticatedUser;
 use crate::http::rate_limit::{PROFILE_IMAGE_DOWNLOADS_PER_USER, PROFILE_IMAGE_WRITES_PER_USER};
 use crate::storage::profile_images::ProfileImageSlot;
@@ -47,9 +48,7 @@ async fn read_upload(
     let Some(body) = body else {
         return Ok(None);
     };
-    let bytes = axum::body::to_bytes(body, MAXIMUM_PROFILE_IMAGE_BYTES)
-        .await
-        .map_err(|_| ApiError::payload_too_large())?;
+    let bytes = read_upload_body(body, MAXIMUM_PROFILE_IMAGE_BYTES).await?;
     if bytes.is_empty() {
         return Err(ApiError::validation("a picture cannot be empty".into()));
     }

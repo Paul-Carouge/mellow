@@ -10,6 +10,7 @@ use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::guild_rules::MAXIMUM_EMOJI_UPLOAD_BYTES;
 use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiJson, ApiPath, ApiQuery};
+use crate::http::attachment_routes::read_upload_body;
 use crate::http::authentication::AuthenticatedUser;
 use crate::http::guild_routes::limit_guild_writes;
 use crate::http::profile_image_routes::record_picture_write;
@@ -33,9 +34,7 @@ pub(crate) async fn create_emoji(
 ) -> Result<(StatusCode, Json<CustomEmoji>), ApiError> {
     // The picture budget, not guild writes: each upload decodes and encodes a picture.
     record_picture_write(&state, user.id)?;
-    let bytes = axum::body::to_bytes(body, MAXIMUM_EMOJI_UPLOAD_BYTES)
-        .await
-        .map_err(|_| ApiError::payload_too_large())?;
+    let bytes = read_upload_body(body, MAXIMUM_EMOJI_UPLOAD_BYTES).await?;
     if bytes.is_empty() {
         return Err(ApiError::validation("a picture cannot be empty".into()));
     }
