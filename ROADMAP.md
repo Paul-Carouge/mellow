@@ -56,7 +56,7 @@ Also in the owner's `#roadmap` channel (exported on 2026-10-28 before the instan
 18. **Messages**: a "/" menu with live formatting while typing (Notion style); long code blocks collapsed with a way to expand them; link previews (Spotify, YouTube Music, Deezer, YouTube, plain pages); a picture and video viewer (download, copy link); a GIF service with favourites; polls, checklists and progress bars, with their permissions.
 19. **Accounts and profiles**: email verification, two-factor sign-in and QR code sign-in; usernames reworked (unique, capitals allowed, no separate @handle); a richer profile with social links (icons from their favicons, cached); role icons.
 20. **Integrations**: webhooks to post from outside; bots; plugins and themes; a remote AI connection, secured, with tools to run a whole server.
-21. **Voice extras** (after item 16): RNNoise noise suppression, a "streamer" voice preset, screen sharing reusing the Vesper engine, Rich Presence with games.
+21. **Voice extras** (after item 16): RNNoise noise suppression and a "streamer" voice preset pulled forward by the owner on 2026-11-01 and built (ADR-0031, `feat/voice-enhancement`: noise suppression Avancée/Navigateur/Désactivée, "Voix améliorée" with presets and a 3-band equaliser, compressor and limiter, "S'écouter"); still to do: screen sharing reusing the Vesper engine, Rich Presence with games.
 22. **Storage**: an image optimisation and compression engine so attachments do not fill the disk.
 The desktop, Android and the admin web UI wait until the web is finished, then catch up.
 
