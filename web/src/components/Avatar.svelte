@@ -85,6 +85,7 @@
       <img
         src={profileImageUrl(image, isAnimationWanted)}
         alt=""
+        loading="lazy"
         decoding="async"
         draggable="false"
         class={[
