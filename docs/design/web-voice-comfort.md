@@ -1,6 +1,6 @@
 # Voice comfort on the web (ROADMAP stage 16.3)
 
-Status: web client built on `feat/voice-comfort`, DESIGN.md v0.31, on top of stage 16.2 ([web-voice-channels.md](web-voice-channels.md), ADR-0030). The server's `VOICE_SLOT_ASSIGNED` event was added on the same branch for per-person volume. Checked with unit tests and the development gallery; not yet in a real call.
+Status: web client built on `feat/voice-comfort`, DESIGN.md v0.31, on top of stage 16.2 ([web-voice-channels.md](web-voice-channels.md), ADR-0030). The server's `VOICE_SLOT_ASSIGNED` event was added on the same branch for per-person volume. Checked with unit tests and the development gallery; not yet in a real call. Voice processing ("Traitement de la voix") was redone in v0.32: see [web-voice-enhancement.md](web-voice-enhancement.md).
 
 ## Brief
 
@@ -82,7 +82,7 @@ Participant menu (the existing person menu, with a header):
 - **Custom-drawn sliders everywhere.** The browser's range input with an accent colour keeps keyboard, touch, screen readers and forced colours for free; only the threshold mark is drawn, because it sits on the meter.
 - **A default push-to-talk key.** A letter or Space would stop typing while in voice. No default, and both the page and the panel say it is missing.
 - **A separate "devices hidden" state per select.** Without the permission, neither the microphone nor the output has a name; one sentence and one button replace both.
-- **Playing your microphone back during the test (Discord's "Let's check").** On laptop speakers it howls; the meter answers the same question silently. Left for later if people ask.
+- **Playing your microphone back during the test (Discord's "Let's check").** On laptop speakers it howls; the meter answers the same question silently. Left for later if people ask. The owner asked in v0.32: it ships as "S'écouter", opt-in and warned ([web-voice-enhancement.md](web-voice-enhancement.md)).
 - **Icons on the input mode rows.** Neither a microphone nor headphones says "push to talk"; the descriptions do.
 - **Routing every voice through Web Audio.** Chrome's echo cancellation hears what plays through media elements; Web Audio output may escape it, which would bring echo to people on speakers. Up to 100 % each voice stays on its `<audio>` element (16.2's proven path, `volume` for less than 100 %), and a `GainNode` takes over only above 100 %.
 
