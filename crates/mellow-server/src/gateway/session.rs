@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::ws::Utf8Bytes;
 use mellow_protocol::ServerFrame;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -20,8 +21,9 @@ pub(crate) const REPLAY_BUFFER_BYTES: usize = 2 * 1024 * 1024;
 /// Frames queued towards one WebSocket; holds a full replay plus a margin.
 pub(crate) const OUTGOING_QUEUE_FRAMES: usize = REPLAY_BUFFER_FRAMES + 64;
 
-/// A serialized frame, ready for the socket.
-pub(crate) type FrameText = Arc<str>;
+/// A serialized frame, ready for the socket: it takes over the `String` it was built in, and the
+/// WebSocket sends it as is, without copying it again.
+pub(crate) type FrameText = Utf8Bytes;
 
 pub(crate) fn frame_text(frame: &ServerFrame) -> Option<FrameText> {
     match serde_json::to_string(frame) {
@@ -34,11 +36,17 @@ pub(crate) fn frame_text(frame: &ServerFrame) -> Option<FrameText> {
 }
 
 /// Builds the same JSON as `ServerFrame::Dispatch` around an event serialized once by the hub.
+/// `concat` sizes the string exactly once, where `format!` would regrow it for a large event.
 fn dispatch_frame(sequence: u64, event: &SharedEvent) -> FrameText {
-    format!(
-        r#"{{"op":"dispatch","s":{sequence},"d":{}}}"#,
-        event.payload_json
-    )
+    let sequence = sequence.to_string();
+    [
+        r#"{"op":"dispatch","s":"#,
+        &sequence,
+        r#","d":"#,
+        &event.payload_json,
+        "}",
+    ]
+    .concat()
     .into()
 }
 

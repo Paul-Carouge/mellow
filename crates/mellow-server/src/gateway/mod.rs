@@ -152,11 +152,11 @@ pub(crate) async fn upgrade(
 }
 
 /// Every write goes through here: it fails rather than wait on a client that stopped reading.
-async fn send_text(socket: &mut WebSocket, text: &str) -> bool {
+async fn send_text(socket: &mut WebSocket, text: FrameText) -> bool {
     matches!(
         tokio::time::timeout(
             SOCKET_WRITE_TIMEOUT,
-            socket.send(WebSocketMessage::Text(text.into())),
+            socket.send(WebSocketMessage::Text(text))
         )
         .await,
         Ok(Ok(()))
@@ -165,7 +165,7 @@ async fn send_text(socket: &mut WebSocket, text: &str) -> bool {
 
 async fn send_frame(socket: &mut WebSocket, frame: &ServerFrame) -> bool {
     match frame_text(frame) {
-        Some(text) => send_text(socket, &text).await,
+        Some(text) => send_text(socket, text).await,
         None => false,
     }
 }
@@ -664,7 +664,7 @@ async fn run_attached(
             },
             frame = outgoing_frames.recv() => match frame {
                 Some(text) => {
-                    if !send_text(&mut socket, &text).await {
+                    if !send_text(&mut socket, text).await {
                         return;
                     }
                 }
