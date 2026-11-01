@@ -152,6 +152,8 @@ pub async fn open_encrypted_database(
         .await?;
     let readers = match SqlitePoolOptions::new()
         .max_connections(READER_CONNECTION_COUNT)
+        // When every reader is taken, answer busy quickly instead of after sqlx's default 30 s.
+        .acquire_timeout(BUSY_TIMEOUT)
         .connect_with(pool_options.pragma("query_only", "ON"))
         .await
     {
@@ -306,10 +308,12 @@ mod tests {
             .execute(database.readers())
             .await;
         let writer_connection_limit = database.writer().options().get_max_connections();
+        let reader_acquire_timeout = database.readers().options().get_acquire_timeout();
         database.close().await;
 
         assert!(write_on_reader.is_err(), "a reader accepted a write");
         assert_eq!(writer_connection_limit, WRITER_CONNECTION_COUNT);
+        assert_eq!(reader_acquire_timeout, BUSY_TIMEOUT);
     }
 
     #[tokio::test]
