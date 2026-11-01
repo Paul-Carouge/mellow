@@ -9,8 +9,9 @@ use sqlx::SqliteConnection;
 use super::Database;
 
 use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
-use crate::storage::guilds::{
-    BEGIN_WRITE_TRANSACTION, GuildStorageError, lookup_integer, to_id, to_integer,
+use crate::storage::guilds::{BEGIN_WRITE_TRANSACTION, GuildStorageError};
+use crate::storage::sqlite_integers::{
+    convert_integer, lookup_integer, to_snowflake, to_sqlite_integer,
 };
 
 /// A sound to store, its file already written under `id`.
@@ -72,11 +73,10 @@ fn sound_from_row(
     (id, name, emoji, duration_milliseconds): SoundRow,
 ) -> Result<SoundboardSound, GuildStorageError> {
     Ok(SoundboardSound {
-        id: to_id(id)?,
+        id: to_snowflake(id)?,
         name,
         emoji,
-        duration_milliseconds: u32::try_from(duration_milliseconds)
-            .map_err(|_| GuildStorageError::IntegerOutOfRange)?,
+        duration_milliseconds: convert_integer::<_, u32>(duration_milliseconds)?,
     })
 }
 
@@ -120,7 +120,7 @@ pub(crate) async fn count_guild_sounds(
         .bind(guild_id)
         .fetch_one(database.readers())
         .await?;
-    u32::try_from(count).map_err(|_| GuildStorageError::IntegerOutOfRange)
+    Ok(convert_integer::<_, u32>(count)?)
 }
 
 pub(crate) async fn find_guild_sound(
@@ -138,7 +138,7 @@ pub(crate) async fn find_guild_sound(
     .await?;
     row.map(|(guild_id, id, name, emoji, duration)| {
         Ok(StoredGuildSound {
-            guild_id: to_id(guild_id)?,
+            guild_id: to_snowflake(guild_id)?,
             sound: sound_from_row((id, name, emoji, duration))?,
         })
     })
@@ -187,7 +187,7 @@ pub(crate) async fn insert_guild_sound(
     audit: &NewAuditEntry,
     now_unix_milliseconds: u64,
 ) -> Result<SoundWriteOutcome, GuildStorageError> {
-    let guild = to_integer(guild_id.raw())?;
+    let guild = to_sqlite_integer(guild_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -213,13 +213,13 @@ pub(crate) async fn insert_guild_sound(
         "INSERT INTO guild_sounds (id, guild_id, name, emoji, duration_milliseconds, \
          size_bytes, created_at_unix_milliseconds) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(to_integer(sound.id.raw())?)
+    .bind(to_sqlite_integer(sound.id.raw())?)
     .bind(guild)
     .bind(&sound.name)
     .bind(&sound.emoji)
     .bind(i64::from(sound.duration_milliseconds))
-    .bind(to_integer(sound.size_bytes)?)
-    .bind(to_integer(now_unix_milliseconds)?)
+    .bind(to_sqlite_integer(sound.size_bytes)?)
+    .bind(to_sqlite_integer(now_unix_milliseconds)?)
     .execute(&mut *transaction)
     .await?;
     let audit = NewAuditEntry {
@@ -349,7 +349,10 @@ pub(crate) async fn delete_guild_sound(
     };
     insert_audit_entry(&mut transaction, &audit).await?;
     let sounds = sounds_of_guild(&mut transaction, guild).await?;
-    let members_without_join_sound = members.into_iter().map(to_id).collect::<Result<_, _>>()?;
+    let members_without_join_sound = members
+        .into_iter()
+        .map(to_snowflake)
+        .collect::<Result<_, _>>()?;
     transaction.commit().await?;
     Ok(SoundDeleteOutcome::Deleted {
         sounds,
@@ -431,7 +434,7 @@ pub(crate) async fn member_join_sound(
     .bind(user)
     .fetch_optional(database.readers())
     .await?;
-    sound.flatten().map(to_id).transpose()
+    Ok(sound.flatten().map(to_snowflake).transpose()?)
 }
 
 /// Each member's join sound in the guild, for those who chose one.
@@ -450,7 +453,7 @@ pub(crate) async fn join_sounds_of_guild(
     .fetch_all(database.readers())
     .await?;
     rows.into_iter()
-        .map(|(user, sound)| Ok((to_id(user)?, to_id(sound)?)))
+        .map(|(user, sound)| Ok((to_snowflake(user)?, to_snowflake(sound)?)))
         .collect()
 }
 
@@ -461,5 +464,8 @@ pub(crate) async fn all_guild_sound_ids(
     let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM guild_sounds")
         .fetch_all(database.readers())
         .await?;
-    ids.into_iter().map(to_id).collect()
+    Ok(ids
+        .into_iter()
+        .map(to_snowflake)
+        .collect::<Result<_, _>>()?)
 }

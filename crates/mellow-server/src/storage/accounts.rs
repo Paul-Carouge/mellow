@@ -5,6 +5,9 @@ use mellow_protocol::{ChosenStatus, ProfileImage, Snowflake};
 use super::Database;
 
 use crate::domain::session_token::SessionTokenSha256;
+use crate::storage::sqlite_integers::{
+    IntegerOutOfRange, convert_integer, to_snowflake, to_sqlite_integer,
+};
 
 /// `SQLITE_CONSTRAINT_UNIQUE` extended result code.
 const SQLITE_UNIQUE_CONSTRAINT_ERROR_CODE: &str = "2067";
@@ -58,8 +61,8 @@ pub enum AccountStorageError {
     UsernameTaken,
     #[error("this email address is already used")]
     EmailTaken,
-    #[error("value does not fit SQLite's signed 64-bit integer")]
-    IntegerOutOfRange,
+    #[error(transparent)]
+    IntegerOutOfRange(#[from] IntegerOutOfRange),
     #[error("unknown presence status in the database")]
     UnknownPresenceStatus,
     #[error("database error")]
@@ -93,11 +96,6 @@ macro_rules! select_user_columns {
     };
 }
 
-/// SQLite integers are signed; Snowflakes and Unix milliseconds fit until about 2095.
-fn to_sqlite_integer(value: u64) -> Result<i64, AccountStorageError> {
-    i64::try_from(value).map_err(|_| AccountStorageError::IntegerOutOfRange)
-}
-
 fn stored_user_from_row(row: StoredUserRow) -> Result<StoredUser, AccountStorageError> {
     let (
         id,
@@ -117,18 +115,14 @@ fn stored_user_from_row(row: StoredUserRow) -> Result<StoredUser, AccountStorage
     let profile_image = |id: Option<i64>, is_animated: bool| {
         id.map(|id| {
             Ok::<_, AccountStorageError>(ProfileImage {
-                id: Snowflake::from_raw(
-                    u64::try_from(id).map_err(|_| AccountStorageError::IntegerOutOfRange)?,
-                ),
+                id: to_snowflake(id)?,
                 is_animated,
             })
         })
         .transpose()
     };
     Ok(StoredUser {
-        id: Snowflake::from_raw(
-            u64::try_from(id).map_err(|_| AccountStorageError::IntegerOutOfRange)?,
-        ),
+        id: to_snowflake(id)?,
         username,
         display_name,
         email,
@@ -270,9 +264,7 @@ pub async fn update_user_presence(
     .bind(to_sqlite_integer(user_id.raw())?)
     .fetch_optional(database.writer())
     .await?;
-    version
-        .map(|version| u64::try_from(version).map_err(|_| AccountStorageError::IntegerOutOfRange))
-        .transpose()
+    Ok(version.map(convert_integer::<_, u64>).transpose()?)
 }
 
 /// # Errors
@@ -291,7 +283,7 @@ pub async fn find_user_presence(
         Ok(StoredPresence {
             status: chosen_status_from_column(&status)?,
             custom_status,
-            version: u64::try_from(version).map_err(|_| AccountStorageError::IntegerOutOfRange)?,
+            version: convert_integer::<_, u64>(version)?,
         })
     })
     .transpose()
@@ -429,8 +421,7 @@ pub async fn find_session_owner(
         let last_seen: i64 = row.try_get("last_seen_at_unix_milliseconds")?;
         Ok(SessionOwner {
             user: stored_user_from_row(StoredUserRow::from_row(&row)?)?,
-            last_seen_at_unix_milliseconds: u64::try_from(last_seen)
-                .map_err(|_| AccountStorageError::IntegerOutOfRange)?,
+            last_seen_at_unix_milliseconds: convert_integer::<_, u64>(last_seen)?,
         })
     })
     .transpose()

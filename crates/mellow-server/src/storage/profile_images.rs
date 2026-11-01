@@ -7,9 +7,8 @@ use super::Database;
 use mellow_protocol::{ProfileImage, Snowflake};
 
 use crate::storage::guilds::BEGIN_WRITE_TRANSACTION;
-use crate::storage::messages::{
-    MessageStorageError, json_array_of_ids, lookup_integer, to_id, to_integer,
-};
+use crate::storage::messages::{MessageStorageError, json_array_of_ids};
+use crate::storage::sqlite_integers::{lookup_integer, to_snowflake, to_sqlite_integer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProfileImageSlot {
@@ -45,7 +44,7 @@ fn profile_image(
 ) -> Result<Option<ProfileImage>, MessageStorageError> {
     id.map(|id| {
         Ok(ProfileImage {
-            id: to_id(id)?,
+            id: to_snowflake(id)?,
             is_animated: is_animated != 0,
         })
     })
@@ -61,7 +60,7 @@ pub(crate) async fn replace_profile_image(
     new_image: Option<NewProfileImage>,
     now_unix_milliseconds: u64,
 ) -> Result<Option<StoredProfileImage>, MessageStorageError> {
-    let user = to_integer(user_id.raw())?;
+    let user = to_sqlite_integer(user_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -79,15 +78,20 @@ pub(crate) async fn replace_profile_image(
                 "INSERT INTO profile_images (id, user_id, still_id, size_bytes, \
                  created_at_unix_milliseconds) VALUES (?, ?, ?, ?, ?)",
             )
-            .bind(to_integer(image.id.raw())?)
+            .bind(to_sqlite_integer(image.id.raw())?)
             .bind(user)
-            .bind(image.still_id.map(|id| to_integer(id.raw())).transpose()?)
-            .bind(to_integer(image.size_bytes)?)
-            .bind(to_integer(now_unix_milliseconds)?)
+            .bind(
+                image
+                    .still_id
+                    .map(|id| to_sqlite_integer(id.raw()))
+                    .transpose()?,
+            )
+            .bind(to_sqlite_integer(image.size_bytes)?)
+            .bind(to_sqlite_integer(now_unix_milliseconds)?)
             .execute(&mut *transaction)
             .await?;
             (
-                Some(to_integer(image.id.raw())?),
+                Some(to_sqlite_integer(image.id.raw())?),
                 i64::from(image.still_id.is_some()),
             )
         }
@@ -116,9 +120,9 @@ pub(crate) async fn replace_profile_image(
             .await?;
             row.map(|(id, user_id, still_id)| {
                 Ok::<_, MessageStorageError>(StoredProfileImage {
-                    id: to_id(id)?,
-                    user_id: to_id(user_id)?,
-                    still_id: still_id.map(to_id).transpose()?,
+                    id: to_snowflake(id)?,
+                    user_id: to_snowflake(user_id)?,
+                    still_id: still_id.map(to_snowflake).transpose()?,
                 })
             })
             .transpose()?
@@ -143,9 +147,9 @@ pub(crate) async fn find_profile_image(
             .await?;
     row.map(|(id, user_id, still_id)| {
         Ok(StoredProfileImage {
-            id: to_id(id)?,
-            user_id: to_id(user_id)?,
-            still_id: still_id.map(to_id).transpose()?,
+            id: to_snowflake(id)?,
+            user_id: to_snowflake(user_id)?,
+            still_id: still_id.map(to_snowflake).transpose()?,
         })
     })
     .transpose()
@@ -174,7 +178,7 @@ pub(crate) async fn profile_images_of_users(
         .map(
             |(id, avatar_id, avatar_is_animated, banner_id, banner_is_animated)| {
                 Ok((
-                    to_id(id)?,
+                    to_snowflake(id)?,
                     UserProfileImages {
                         avatar: profile_image(avatar_id, avatar_is_animated)?,
                         banner: profile_image(banner_id, banner_is_animated)?,
@@ -194,9 +198,9 @@ pub(crate) async fn all_profile_image_file_ids(
         .await?;
     let mut ids = Vec::with_capacity(rows.len() * 2);
     for (id, still_id) in rows {
-        ids.push(to_id(id)?);
+        ids.push(to_snowflake(id)?);
         if let Some(still_id) = still_id {
-            ids.push(to_id(still_id)?);
+            ids.push(to_snowflake(still_id)?);
         }
     }
     Ok(ids)

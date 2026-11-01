@@ -6,8 +6,9 @@ use super::Database;
 
 use mellow_protocol::Snowflake;
 
-use crate::storage::messages::{
-    MessageStorageError, json_array_of_ids, lookup_integer, to_id, to_integer,
+use crate::storage::messages::{MessageStorageError, json_array_of_ids};
+use crate::storage::sqlite_integers::{
+    convert_integer, lookup_integer, to_snowflake, to_sqlite_integer,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,13 +37,12 @@ type AttachmentRow = (i64, i64, Option<i64>, String, String, i64);
 fn attachment_from_row(row: AttachmentRow) -> Result<StoredAttachment, MessageStorageError> {
     let (id, channel_id, message_id, file_name, content_type, size_bytes) = row;
     Ok(StoredAttachment {
-        id: to_id(id)?,
-        channel_id: to_id(channel_id)?,
-        message_id: message_id.map(to_id).transpose()?,
+        id: to_snowflake(id)?,
+        channel_id: to_snowflake(channel_id)?,
+        message_id: message_id.map(to_snowflake).transpose()?,
         file_name,
         content_type,
-        size_bytes: u64::try_from(size_bytes)
-            .map_err(|_| MessageStorageError::IntegerOutOfRange)?,
+        size_bytes: convert_integer::<_, u64>(size_bytes)?,
     })
 }
 
@@ -55,13 +55,13 @@ pub(crate) async fn insert_attachment(
          content_type, size_bytes, created_at_unix_milliseconds) \
          VALUES (?, ?, ?, NULL, ?, ?, ?, ?)",
     )
-    .bind(to_integer(attachment.id.raw())?)
-    .bind(to_integer(attachment.channel_id.raw())?)
-    .bind(to_integer(attachment.uploader_id.raw())?)
+    .bind(to_sqlite_integer(attachment.id.raw())?)
+    .bind(to_sqlite_integer(attachment.channel_id.raw())?)
+    .bind(to_sqlite_integer(attachment.uploader_id.raw())?)
     .bind(&attachment.file_name)
     .bind(&attachment.content_type)
-    .bind(to_integer(attachment.size_bytes)?)
-    .bind(to_integer(attachment.created_at_unix_milliseconds)?)
+    .bind(to_sqlite_integer(attachment.size_bytes)?)
+    .bind(to_sqlite_integer(attachment.created_at_unix_milliseconds)?)
     .execute(database.writer())
     .await?;
     Ok(())
@@ -80,8 +80,8 @@ pub(crate) async fn update_attachment_file(
     )
     .bind(file_name)
     .bind(content_type)
-    .bind(to_integer(size_bytes)?)
-    .bind(to_integer(attachment_id.raw())?)
+    .bind(to_sqlite_integer(size_bytes)?)
+    .bind(to_sqlite_integer(attachment_id.raw())?)
     .execute(database.writer())
     .await?;
     Ok(updated.rows_affected() > 0)
@@ -140,10 +140,13 @@ pub(crate) async fn delete_unlinked_before(
         "DELETE FROM attachments WHERE message_id IS NULL AND created_at_unix_milliseconds < ? \
          RETURNING id",
     )
-    .bind(to_integer(cutoff_unix_milliseconds)?)
+    .bind(to_sqlite_integer(cutoff_unix_milliseconds)?)
     .fetch_all(database.writer())
     .await?;
-    rows.into_iter().map(|(id,)| to_id(id)).collect()
+    Ok(rows
+        .into_iter()
+        .map(|(id,)| to_snowflake(id))
+        .collect::<Result<_, _>>()?)
 }
 
 /// Every attachment id, for the sweep of files whose row is gone (one query per sweep).
@@ -153,7 +156,10 @@ pub(crate) async fn all_attachment_ids(
     let rows: Vec<(i64,)> = sqlx::query_as("SELECT id FROM attachments")
         .fetch_all(database.readers())
         .await?;
-    rows.into_iter().map(|(id,)| to_id(id)).collect()
+    Ok(rows
+        .into_iter()
+        .map(|(id,)| to_snowflake(id))
+        .collect::<Result<_, _>>()?)
 }
 
 /// Shared with the migration test that checks it stays on `attachments_by_uploader_id`.
@@ -166,8 +172,8 @@ pub(crate) async fn stored_bytes_of_uploader(
     uploader_id: Snowflake,
 ) -> Result<u64, MessageStorageError> {
     let (total,): (i64,) = sqlx::query_as(STORED_BYTES_OF_UPLOADER_QUERY)
-        .bind(to_integer(uploader_id.raw())?)
+        .bind(to_sqlite_integer(uploader_id.raw())?)
         .fetch_one(database.readers())
         .await?;
-    u64::try_from(total).map_err(|_| MessageStorageError::IntegerOutOfRange)
+    Ok(convert_integer::<_, u64>(total)?)
 }

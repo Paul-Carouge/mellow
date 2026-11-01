@@ -4,9 +4,8 @@ use mellow_protocol::Snowflake;
 
 use super::Database;
 
-use crate::storage::guilds::{
-    BEGIN_WRITE_TRANSACTION, GuildStorageError, lookup_integer, to_id, to_integer,
-};
+use crate::storage::guilds::{BEGIN_WRITE_TRANSACTION, GuildStorageError};
+use crate::storage::sqlite_integers::{lookup_integer, to_snowflake, to_sqlite_integer};
 
 const DIRECT_MESSAGE_CHANNEL_KIND: &str = "direct_message";
 
@@ -61,7 +60,7 @@ fn conversations_from_rows(
 ) -> Result<Vec<StoredDirectMessageChannel>, GuildStorageError> {
     let mut conversations: Vec<StoredDirectMessageChannel> = Vec::new();
     for (channel_id, user_id, username, display_name, last_message_id, name, owner_id) in rows {
-        let channel_id = to_id(channel_id)?;
+        let channel_id = to_snowflake(channel_id)?;
         if conversations
             .last()
             .is_none_or(|conversation| conversation.id != channel_id)
@@ -69,8 +68,8 @@ fn conversations_from_rows(
             conversations.push(StoredDirectMessageChannel {
                 id: channel_id,
                 recipients: Vec::new(),
-                last_message_id: last_message_id.map(to_id).transpose()?,
-                owner_id: owner_id.map(to_id).transpose()?,
+                last_message_id: last_message_id.map(to_snowflake).transpose()?,
+                owner_id: owner_id.map(to_snowflake).transpose()?,
                 name,
             });
         }
@@ -78,7 +77,7 @@ fn conversations_from_rows(
             (user_id, username, display_name, conversations.last_mut())
         {
             conversation.recipients.push(StoredRecipient {
-                id: to_id(user_id)?,
+                id: to_snowflake(user_id)?,
                 username,
                 display_name,
             });
@@ -140,7 +139,10 @@ pub(crate) async fn list_participant_ids(
     .bind(channel_id)
     .fetch_all(database.readers())
     .await?;
-    rows.into_iter().map(|(user_id,)| to_id(user_id)).collect()
+    Ok(rows
+        .into_iter()
+        .map(|(user_id,)| to_snowflake(user_id))
+        .collect::<Result<_, _>>()?)
 }
 
 /// The one-to-one conversation of the pair, created with `new_channel_id` when there is none
@@ -156,9 +158,9 @@ pub(crate) async fn find_or_create_one_to_one(
     } else {
         (other_user_id, user_id)
     };
-    let lower = to_integer(lower.raw())?;
-    let higher = to_integer(higher.raw())?;
-    let channel_id = to_integer(new_channel_id.raw())?;
+    let lower = to_sqlite_integer(lower.raw())?;
+    let higher = to_sqlite_integer(higher.raw())?;
+    let channel_id = to_sqlite_integer(new_channel_id.raw())?;
     // The common case, reopening, takes no write lock.
     if let Some(existing) = find_pair(database, lower, higher).await? {
         return Ok((existing, false));
@@ -216,7 +218,9 @@ async fn find_pair(
     .bind(higher)
     .fetch_optional(database.readers())
     .await?;
-    row.map(|(channel_id,)| to_id(channel_id)).transpose()
+    Ok(row
+        .map(|(channel_id,)| to_snowflake(channel_id))
+        .transpose()?)
 }
 
 /// The owner of the group; `None` for a one-to-one conversation or anything else.
@@ -235,7 +239,7 @@ pub(crate) async fn group_owner_id(
             .bind(channel_id)
             .fetch_optional(database.readers())
             .await?;
-    owner_id.map(to_id).transpose()
+    Ok(owner_id.map(to_snowflake).transpose()?)
 }
 
 /// Creates a group of `participant_ids` (the owner included) as `channel_id`; `false`, with
@@ -250,7 +254,7 @@ pub(crate) async fn create_group(
     participant_ids: &[Snowflake],
     name: &str,
 ) -> Result<bool, GuildStorageError> {
-    let channel = to_integer(channel_id.raw())?;
+    let channel = to_sqlite_integer(channel_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -278,13 +282,13 @@ pub(crate) async fn create_group(
     .await?;
     sqlx::query("INSERT INTO group_conversations (channel_id, owner_id) VALUES (?, ?)")
         .bind(channel)
-        .bind(to_integer(owner_id.raw())?)
+        .bind(to_sqlite_integer(owner_id.raw())?)
         .execute(&mut *transaction)
         .await?;
     for participant_id in participant_ids {
         sqlx::query("INSERT INTO direct_message_participants (channel_id, user_id) VALUES (?, ?)")
             .bind(channel)
-            .bind(to_integer(participant_id.raw())?)
+            .bind(to_sqlite_integer(participant_id.raw())?)
             .execute(&mut *transaction)
             .await?;
     }
@@ -317,8 +321,11 @@ pub(crate) async fn add_group_participant(
     user_id: Snowflake,
     maximum: usize,
 ) -> Result<GroupAddOutcome, GuildStorageError> {
-    let (channel, user) = (to_integer(channel_id.raw())?, to_integer(user_id.raw())?);
-    let adder = to_integer(adder_id.raw())?;
+    let (channel, user) = (
+        to_sqlite_integer(channel_id.raw())?,
+        to_sqlite_integer(user_id.raw())?,
+    );
+    let adder = to_sqlite_integer(adder_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -394,8 +401,11 @@ pub(crate) async fn remove_group_participant(
     actor_id: Snowflake,
     user_id: Snowflake,
 ) -> Result<GroupRemoval, GuildStorageError> {
-    let (channel, user) = (to_integer(channel_id.raw())?, to_integer(user_id.raw())?);
-    let actor = to_integer(actor_id.raw())?;
+    let (channel, user) = (
+        to_sqlite_integer(channel_id.raw())?,
+        to_sqlite_integer(user_id.raw())?,
+    );
+    let actor = to_sqlite_integer(actor_id.raw())?;
     let mut transaction = database
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
@@ -476,7 +486,7 @@ pub(crate) async fn rename_group(
          AND EXISTS (SELECT 1 FROM group_conversations WHERE channel_id = channels.id)",
     )
     .bind(name)
-    .bind(to_integer(channel_id.raw())?)
+    .bind(to_sqlite_integer(channel_id.raw())?)
     .execute(database.writer())
     .await?
     .rows_affected();

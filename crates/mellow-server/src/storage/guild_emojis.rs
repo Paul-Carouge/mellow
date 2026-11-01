@@ -7,10 +7,11 @@ use super::Database;
 
 use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
 use crate::storage::guild_images::{StoredGuildImage, delete_guild_image, insert_guild_image};
-use crate::storage::guilds::{
-    BEGIN_WRITE_TRANSACTION, GuildStorageError, lookup_integer, to_id, to_integer,
-};
+use crate::storage::guilds::{BEGIN_WRITE_TRANSACTION, GuildStorageError};
 use crate::storage::profile_images::NewProfileImage;
+use crate::storage::sqlite_integers::{
+    convert_integer, lookup_integer, to_snowflake, to_sqlite_integer,
+};
 
 /// A stored emoji and the guild it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,7 +49,7 @@ type EmojiRow = (i64, String, bool);
 
 fn emoji_from_row((id, name, is_animated): EmojiRow) -> Result<CustomEmoji, GuildStorageError> {
     Ok(CustomEmoji {
-        id: to_id(id)?,
+        id: to_snowflake(id)?,
         name,
         is_animated,
     })
@@ -101,8 +102,7 @@ pub(crate) async fn count_guild_emojis_by_kind(
     .bind(guild_id)
     .fetch_one(database.readers())
     .await?;
-    let to_count =
-        |count: i64| u32::try_from(count).map_err(|_| GuildStorageError::IntegerOutOfRange);
+    let to_count = |count: i64| convert_integer::<_, u32>(count);
     Ok((to_count(still)?, to_count(animated)?))
 }
 
@@ -123,7 +123,7 @@ pub(crate) async fn find_guild_emoji(
     .await?;
     row.map(|(guild_id, id, name, is_animated)| {
         Ok(StoredGuildEmoji {
-            guild_id: to_id(guild_id)?,
+            guild_id: to_snowflake(guild_id)?,
             emoji: emoji_from_row((id, name, is_animated))?,
         })
     })
@@ -160,7 +160,7 @@ pub(crate) async fn insert_guild_emoji(
     audit: &NewAuditEntry,
     now_unix_milliseconds: u64,
 ) -> Result<EmojiWriteOutcome, GuildStorageError> {
-    let guild = to_integer(guild_id.raw())?;
+    let guild = to_sqlite_integer(guild_id.raw())?;
     let is_animated = image.still_id.is_some();
     let mut transaction = database
         .writer()
