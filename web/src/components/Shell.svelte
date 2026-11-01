@@ -42,7 +42,7 @@
   import { prepareChimeSound, routeChimeSoundTo } from "./chime-sound";
   import { listenForPushToTalk } from "./push-to-talk-keys";
   import { playVoiceCue } from "./voice-sounds";
-  import { forgetSoundsExcept, playSoundOnThisDevice } from "./soundboard-audio";
+  import { forgetSoundsExcept, playSoundOnThisDevice, stopPlayingSounds } from "./soundboard-audio";
   import { soundboardGain } from "../lib/soundboard";
   import type { VoiceCue } from "../lib/voice-session.svelte";
 
@@ -111,18 +111,37 @@
   // Voice (docs/design/web-voice-channels.md): its sounds, and a fresh offer when the network returns.
   // Soundboard (docs/design/web-soundboard.md): sounds and join sounds play here at the output
   // volume times the soundboard volume; a join sound that cannot load gives way to its chime.
-  function playSound(soundId: Snowflake, fallbackCue: VoiceCue | null) {
+  // Deafening stops every sound, and muting someone for you stops theirs (ADR-0032), including
+  // one still downloading when you did.
+  function isPlayerHeard(playerId: Snowflake): boolean {
+    return !client.voice.toggles.isDeafened && (playerId === client.user?.id || !client.voice.personSetting(playerId).isLocallyMuted);
+  }
+  function playSound(soundId: Snowflake, playerId: Snowflake, fallbackCue: VoiceCue | null) {
     const { outputVolumePercent, soundboardVolumePercent } = client.voice.settings;
-    void playSoundOnThisDevice(soundId, soundboardGain(outputVolumePercent, soundboardVolumePercent)).then((playing) => {
-      if (playing === null && fallbackCue !== null) {
+    const gain = soundboardGain(outputVolumePercent, soundboardVolumePercent);
+    void playSoundOnThisDevice(soundId, gain, playerId, () => isPlayerHeard(playerId)).then((playing) => {
+      if (playing === "failed" && fallbackCue !== null) {
         playVoiceCue(fallbackCue);
       }
     });
   }
+  $effect(() => {
+    if (client.voice.toggles.isDeafened) {
+      stopPlayingSounds(() => true);
+    }
+  });
+  $effect(() => {
+    const mutedForMe = new Set(
+      [...client.voice.personSettings].filter(([, setting]) => setting.isLocallyMuted).map(([userId]) => userId),
+    );
+    if (mutedForMe.size > 0) {
+      stopPlayingSounds((playerId) => playerId !== null && mutedForMe.has(playerId));
+    }
+  });
   function playCue(cue: VoiceCue) {
-    const ownJoinSoundId = cue === "self-join" ? client.ownJoinSoundId() : null;
-    if (ownJoinSoundId !== null) {
-      playSound(ownJoinSoundId, cue);
+    const ownJoinSoundId = cue === "self-join" ? client.startOwnJoinSound() : null;
+    if (ownJoinSoundId !== null && client.user) {
+      playSound(ownJoinSoundId, client.user.id, cue);
     } else {
       playVoiceCue(cue);
     }

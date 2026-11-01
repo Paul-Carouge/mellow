@@ -95,7 +95,12 @@
     );
   });
 
-  onDestroy(() => playing?.stop());
+  let isPreparingPreview = false;
+  let isDestroyed = false;
+  onDestroy(() => {
+    isDestroyed = true;
+    playing?.stop();
+  });
 
   function isBarKept(index: number): boolean {
     const barStart = (index / WAVEFORM_BARS) * duration;
@@ -132,8 +137,23 @@
       stopPreview();
       return;
     }
-    const samples = await render();
-    const started = samples ? await previewSamples(samples, playbackGain) : null;
+    // A second click while the selection renders would start a second, unstoppable preview.
+    if (isPreparingPreview) {
+      return;
+    }
+    isPreparingPreview = true;
+    let started: PlayingSound | null;
+    try {
+      const samples = await render();
+      started = samples && !isDestroyed ? await previewSamples(samples, playbackGain) : null;
+    } finally {
+      isPreparingPreview = false;
+    }
+    if (isDestroyed) {
+      // The dialog closed while it rendered: nothing may keep playing for it.
+      started?.stop();
+      return;
+    }
     playing = started;
     void started?.ended.then(() => {
       if (playing === started) {

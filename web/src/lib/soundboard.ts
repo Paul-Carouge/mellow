@@ -239,7 +239,10 @@ export function joinCueOf(
   return sound && !facts.isDeafened && !facts.isMutedForMe ? { kind: "sound", sound } : { kind: "chime" };
 }
 
-/** Sounds play at your output volume times your soundboard volume, never louder than the file. */
+/**
+ * Sounds play at your output volume (up to 200 %) times your soundboard volume (up to 100 %): the
+ * soundboard slider alone never makes a sound louder than its file, the output volume can.
+ */
 export function soundboardGain(outputVolumePercent: number, soundboardVolumePercent: number): number {
   return (outputVolumePercent / 100) * (soundboardVolumePercent / 100);
 }
