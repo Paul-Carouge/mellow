@@ -152,6 +152,8 @@ export class VoiceSession {
   private amplifier: InputAmplifier | null = null;
   /** Bumped by each microphone switch: a slower earlier one sees it is stale. */
   private microphoneSwitch = 0;
+  /** Bumped by each test start and stop: a slower earlier start sees it is stale and frees its stream. */
+  private microphoneTestAttempt = 0;
   /** Each receive slot's voice, by the SDP mid of its transceiver. */
   private outputs: { mid: string | null; output: AudioOutput }[] = [];
   /** Who each receive slot carries now (`VOICE_SLOT_ASSIGNED`), for the current media session only. */
@@ -359,9 +361,11 @@ export class VoiceSession {
     }
     this.isMicrophoneTestRunning = true;
     this.microphoneTestProblem = null;
+    this.microphoneTestAttempt += 1;
+    const attempt = this.microphoneTestAttempt;
     try {
       const stream = await this.openMicrophone();
-      if (!this.isMicrophoneTestRunning) {
+      if (attempt !== this.microphoneTestAttempt || !this.isMicrophoneTestRunning) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
@@ -369,13 +373,16 @@ export class VoiceSession {
       const track = stream.getAudioTracks()[0];
       this.testMeter = track ? this.ports.meterLevel(track) : null;
     } catch (error) {
-      this.microphoneTestProblem = microphoneProblemOf(error);
-      this.isMicrophoneTestRunning = false;
+      if (attempt === this.microphoneTestAttempt) {
+        this.microphoneTestProblem = microphoneProblemOf(error);
+        this.isMicrophoneTestRunning = false;
+      }
     }
   }
 
   /** Leaving the settings page stops the test and frees the microphone. */
   stopMicrophoneTest(): void {
+    this.microphoneTestAttempt += 1;
     this.isMicrophoneTestRunning = false;
     this.testMeter?.stop();
     this.testMeter = null;

@@ -722,6 +722,25 @@ describe("VoiceSession", () => {
       expect(session.microphoneDecibels()).toBeCloseTo(-30);
     });
 
+    it("frees the older microphone when test starts overlap", async () => {
+      const { session, microphones } = harness();
+      const first = session.startMicrophoneTest();
+      session.stopMicrophoneTest();
+      const second = session.startMicrophoneTest();
+      await Promise.all([first, second]);
+      expect(microphones).toHaveLength(2);
+      expect(microphones[0]?.track.isStopped).toBe(true);
+      expect(microphones[1]?.track.isStopped).toBe(false);
+      // Two quick restarts (another microphone, then noise suppression) keep only the last one.
+      session.updateSettings({ ...session.settings, inputDeviceId: "usb" });
+      session.updateSettings({ ...session.settings, isNoiseSuppressionOn: false });
+      await flush();
+      expect(microphones.slice(0, -1).every((entry) => entry.track.isStopped)).toBe(true);
+      expect(microphones.at(-1)?.track.isStopped).toBe(false);
+      session.stopMicrophoneTest();
+      expect(microphones.every((entry) => entry.track.isStopped)).toBe(true);
+    });
+
     it("says why the microphone test could not start", async () => {
       const { session } = harness({ microphoneError: Object.assign(new Error("no"), { name: "NotAllowedError" }) });
       await session.startMicrophoneTest();
