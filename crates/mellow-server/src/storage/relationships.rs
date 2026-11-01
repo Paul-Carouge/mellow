@@ -5,10 +5,20 @@ use mellow_protocol::{RelationshipKind, Snowflake};
 
 use super::Database;
 
-use crate::storage::guilds::{BEGIN_WRITE_TRANSACTION, GuildStorageError};
+use crate::storage::guilds::BEGIN_WRITE_TRANSACTION;
 use crate::storage::sqlite_integers::{
-    convert_integer, lookup_integer, to_snowflake, to_sqlite_integer,
+    IntegerOutOfRange, convert_integer, lookup_integer, to_snowflake, to_sqlite_integer,
 };
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RelationshipStorageError {
+    #[error(transparent)]
+    IntegerOutOfRange(#[from] IntegerOutOfRange),
+    #[error("the relationship kind stored in the database is unknown: {0}")]
+    UnknownRelationshipKind(String),
+    #[error("database error")]
+    Database(#[from] sqlx::Error),
+}
 
 fn kind_to_text(kind: RelationshipKind) -> &'static str {
     match kind {
@@ -19,13 +29,15 @@ fn kind_to_text(kind: RelationshipKind) -> &'static str {
     }
 }
 
-fn kind_from_text(text: &str) -> Result<RelationshipKind, GuildStorageError> {
+fn kind_from_text(text: &str) -> Result<RelationshipKind, RelationshipStorageError> {
     match text {
         "friend" => Ok(RelationshipKind::Friend),
         "incoming_request" => Ok(RelationshipKind::IncomingRequest),
         "outgoing_request" => Ok(RelationshipKind::OutgoingRequest),
         "blocked" => Ok(RelationshipKind::Blocked),
-        other => Err(GuildStorageError::UnknownRelationshipKind(other.to_owned())),
+        other => Err(RelationshipStorageError::UnknownRelationshipKind(
+            other.to_owned(),
+        )),
     }
 }
 
@@ -45,7 +57,7 @@ pub(crate) struct StoredRelationship {
 pub(crate) async fn list_relationships(
     database: &Database,
     user_id: Snowflake,
-) -> Result<Vec<StoredRelationship>, GuildStorageError> {
+) -> Result<Vec<StoredRelationship>, RelationshipStorageError> {
     let rows: Vec<(i64, String, String, String, i64)> = sqlx::query_as(
         "SELECT users.id, users.username, users.display_name, relationships.kind, \
          relationships.since_unix_milliseconds FROM relationships \
@@ -76,7 +88,7 @@ pub(crate) async fn list_relationships(
 pub(crate) async fn friend_ids(
     database: &Database,
     user_id: Snowflake,
-) -> Result<Vec<Snowflake>, GuildStorageError> {
+) -> Result<Vec<Snowflake>, RelationshipStorageError> {
     let ids: Vec<i64> = sqlx::query_scalar(
         "SELECT other_user_id FROM relationships WHERE user_id = ? AND kind = 'friend'",
     )
@@ -97,7 +109,7 @@ pub(crate) async fn are_friends(
     database: &Database,
     user_id: Snowflake,
     other_user_id: Snowflake,
-) -> Result<bool, GuildStorageError> {
+) -> Result<bool, RelationshipStorageError> {
     let (Some(user_id), Some(other_user_id)) =
         (lookup_integer(user_id), lookup_integer(other_user_id))
     else {
@@ -120,7 +132,7 @@ pub(crate) async fn are_friends(
 pub(crate) async fn find_enabled_user_id_by_username(
     database: &Database,
     username: &str,
-) -> Result<Option<Snowflake>, GuildStorageError> {
+) -> Result<Option<Snowflake>, RelationshipStorageError> {
     let id: Option<i64> = sqlx::query_scalar(
         "SELECT id FROM users WHERE username = ? COLLATE NOCASE \
          AND disabled_at_unix_milliseconds IS NULL",
@@ -140,7 +152,7 @@ pub(crate) async fn may_reach_each_other(
     database: &Database,
     user_id: Snowflake,
     other_user_id: Snowflake,
-) -> Result<bool, GuildStorageError> {
+) -> Result<bool, RelationshipStorageError> {
     let (Some(user_id), Some(other_user_id)) =
         (lookup_integer(user_id), lookup_integer(other_user_id))
     else {
@@ -166,7 +178,7 @@ async fn kind_between(
     connection: &mut sqlx::SqliteConnection,
     user_id: i64,
     other_user_id: i64,
-) -> Result<Option<RelationshipKind>, GuildStorageError> {
+) -> Result<Option<RelationshipKind>, RelationshipStorageError> {
     let kind: Option<String> = sqlx::query_scalar(
         "SELECT kind FROM relationships WHERE user_id = ? AND other_user_id = ?",
     )
@@ -181,7 +193,7 @@ async fn kind_between(
 async fn count_friends_and_outgoing_requests(
     connection: &mut sqlx::SqliteConnection,
     user_id: i64,
-) -> Result<usize, GuildStorageError> {
+) -> Result<usize, RelationshipStorageError> {
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM relationships \
          WHERE user_id = ? AND kind IN ('friend', 'outgoing_request')",
@@ -195,7 +207,7 @@ async fn count_friends_and_outgoing_requests(
 async fn count_incoming_requests(
     connection: &mut sqlx::SqliteConnection,
     user_id: i64,
-) -> Result<usize, GuildStorageError> {
+) -> Result<usize, RelationshipStorageError> {
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM relationships WHERE user_id = ? AND kind = 'incoming_request'",
     )
@@ -212,7 +224,7 @@ async fn set_kind(
     other_user_id: i64,
     kind: RelationshipKind,
     now: i64,
-) -> Result<(), GuildStorageError> {
+) -> Result<(), RelationshipStorageError> {
     sqlx::query(
         "INSERT INTO relationships (user_id, other_user_id, kind, since_unix_milliseconds) \
          VALUES (?, ?, ?, ?) ON CONFLICT (user_id, other_user_id) \
@@ -231,7 +243,7 @@ async fn delete_side(
     connection: &mut sqlx::SqliteConnection,
     user_id: i64,
     other_user_id: i64,
-) -> Result<(), GuildStorageError> {
+) -> Result<(), RelationshipStorageError> {
     sqlx::query("DELETE FROM relationships WHERE user_id = ? AND other_user_id = ?")
         .bind(user_id)
         .bind(other_user_id)
@@ -267,7 +279,7 @@ pub(crate) async fn send_friend_request(
     now_unix_milliseconds: u64,
     maximum_friends_and_requests: usize,
     maximum_incoming_requests: usize,
-) -> Result<FriendRequestOutcome, GuildStorageError> {
+) -> Result<FriendRequestOutcome, RelationshipStorageError> {
     let (sender, recipient) = (
         to_sqlite_integer(sender_id.raw())?,
         to_sqlite_integer(recipient_id.raw())?,
@@ -363,7 +375,7 @@ pub(crate) async fn accept_friend_request(
     other_user_id: Snowflake,
     now_unix_milliseconds: u64,
     maximum_friends_and_requests: usize,
-) -> Result<AcceptOutcome, GuildStorageError> {
+) -> Result<AcceptOutcome, RelationshipStorageError> {
     let (user, other) = (
         to_sqlite_integer(user_id.raw())?,
         to_sqlite_integer(other_user_id.raw())?,
@@ -406,7 +418,7 @@ pub(crate) async fn remove_relationship(
     database: &Database,
     user_id: Snowflake,
     other_user_id: Snowflake,
-) -> Result<Removal, GuildStorageError> {
+) -> Result<Removal, RelationshipStorageError> {
     // An id no row can hold names no relationship: `NotFound`, not an internal error.
     let Some(other) = lookup_integer(other_user_id) else {
         return Ok(Removal {
@@ -445,7 +457,7 @@ pub(crate) async fn block_user(
     user_id: Snowflake,
     other_user_id: Snowflake,
     now_unix_milliseconds: u64,
-) -> Result<Removal, GuildStorageError> {
+) -> Result<Removal, RelationshipStorageError> {
     let (user, other) = (
         to_sqlite_integer(user_id.raw())?,
         to_sqlite_integer(other_user_id.raw())?,

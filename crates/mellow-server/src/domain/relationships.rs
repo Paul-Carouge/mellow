@@ -28,6 +28,12 @@ fn internal(error: impl std::error::Error + Send + Sync + 'static) -> GuildError
     GuildError::Internal(Box::new(error))
 }
 
+impl From<storage::RelationshipStorageError> for GuildError {
+    fn from(error: storage::RelationshipStorageError) -> Self {
+        internal(error)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Relationships {
     database: Database,
