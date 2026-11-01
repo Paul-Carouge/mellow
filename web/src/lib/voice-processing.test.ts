@@ -5,8 +5,10 @@ import {
   microphoneChoiceOf,
   microphoneConstraintsOf,
   microphoneProcessingOf,
+  NOISE_SUPPRESSOR_SILENCE_LIMIT_MILLISECONDS,
   noiseSuppressorProblemOf,
   processingStagesOf,
+  silentNoiseSuppressorMilliseconds,
 } from "./voice-processing";
 import { DEFAULT_VOICE_SETTINGS, EQUALIZER_OF_PRESET, type VoiceSettings, withEqualizerBand } from "./voice-settings";
 
@@ -97,5 +99,24 @@ describe("noise suppressor problems", () => {
     expect(noiseSuppressorProblemOf(new DOMException("aborted", "AbortError"))).toBe("failed");
     expect(noiseSuppressorProblemOf(new TypeError("network"))).toBe("failed");
     expect(noiseSuppressorProblemOf("weird")).toBe("failed");
+  });
+});
+
+describe("noise suppressor watchdog", () => {
+  const heard = new Float32Array([0.1, -0.2, 0.05]);
+  const silence = new Float32Array(3);
+  const quiet = new Float32Array([0.0003, -0.0001, 0]);
+
+  it("counts exact silence out while the microphone is heard, up to the limit", () => {
+    let silent = 0;
+    for (let look = 0; look < 4; look++) {
+      silent = silentNoiseSuppressorMilliseconds(silent, heard, silence, 250);
+    }
+    expect(silent).toBe(NOISE_SUPPRESSOR_SILENCE_LIMIT_MILLISECONDS);
+  });
+
+  it("starts again from zero when RNNoise gives anything, or the microphone is muted", () => {
+    expect(silentNoiseSuppressorMilliseconds(750, heard, quiet, 250)).toBe(0);
+    expect(silentNoiseSuppressorMilliseconds(750, silence, silence, 250)).toBe(0);
   });
 });

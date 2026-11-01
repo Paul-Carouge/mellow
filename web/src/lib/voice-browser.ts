@@ -12,15 +12,19 @@ import {
   type MicrophoneChoice,
   type MicrophoneProcessing,
   NOISE_SUPPRESSOR_SAMPLE_RATE_HERTZ,
+  NOISE_SUPPRESSOR_SILENCE_LIMIT_MILLISECONDS,
   type NoiseSuppressorProblem,
   type ProcessingStage,
   microphoneConstraintsOf,
   processingStagesOf,
+  silentNoiseSuppressorMilliseconds,
 } from "./voice-processing";
 import type { AudioDevice, EqualizerBand } from "./voice-settings";
 import type { AudioOutput, InputAmplifier, LevelMeter, MicrophoneProcessor, VoicePorts } from "./voice-session.svelte";
 
 const ANALYSER_FFT_SIZE = 512;
+/** Four looks a second: a dead RNNoise is caught within about a second (background tabs: later). */
+const NOISE_SUPPRESSOR_WATCH_INTERVAL_MILLISECONDS = 250;
 
 function createPeerConnection(): RTCPeerConnection | null {
   if (typeof RTCPeerConnection === "undefined") {
@@ -86,9 +90,7 @@ async function createStageNode(
         noiseSuppressorBinary,
         context.audioWorklet.addModule(rnnoiseWorkletUrl),
       ]);
-      const node = new RnnoiseWorkletNode(context, { wasmBinary, maxChannels: 1 });
-      node.addEventListener("processorerror", (event) => console.warn("the noise suppressor stopped", event));
-      return node;
+      return new RnnoiseWorkletNode(context, { wasmBinary, maxChannels: 1 });
     }
     case "filter": {
       const filter = context.createBiquadFilter();
@@ -114,19 +116,72 @@ async function createStageNode(
 }
 
 /**
+ * Calls `onFailure` once if RNNoise's worklet fails, or gives exact silence while `source` is
+ * heard; returns how to stop watching.
+ */
+function watchNoiseSuppressor(source: AudioNode, suppressor: AudioNode, onFailure: () => void): () => void {
+  const input = source.context.createAnalyser();
+  const output = source.context.createAnalyser();
+  source.connect(input);
+  suppressor.connect(output);
+  const inputSamples = new Float32Array(input.fftSize);
+  const outputSamples = new Float32Array(output.fftSize);
+  let silentMilliseconds = 0;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const stop = () => {
+    if (timer !== null) {
+      clearInterval(timer);
+      timer = null;
+    }
+    suppressor.removeEventListener("processorerror", fail);
+    input.disconnect();
+    output.disconnect();
+  };
+  function fail() {
+    stop();
+    onFailure();
+  }
+  timer = setInterval(() => {
+    input.getFloatTimeDomainData(inputSamples);
+    output.getFloatTimeDomainData(outputSamples);
+    silentMilliseconds = silentNoiseSuppressorMilliseconds(
+      silentMilliseconds,
+      inputSamples,
+      outputSamples,
+      NOISE_SUPPRESSOR_WATCH_INTERVAL_MILLISECONDS,
+    );
+    if (silentMilliseconds >= NOISE_SUPPRESSOR_SILENCE_LIMIT_MILLISECONDS) {
+      fail();
+    }
+  }, NOISE_SUPPRESSOR_WATCH_INTERVAL_MILLISECONDS);
+  suppressor.addEventListener("processorerror", fail);
+  return stop;
+}
+
+/**
  * The chain in an AudioContext of its own, into a track of its own. RNNoise needs 48 kHz; Firefox
  * refuses a microphone at another rate, which rejects here and falls back to the browser's filter.
  */
-async function processMicrophone(track: MediaStreamTrack, processing: MicrophoneProcessing): Promise<MicrophoneProcessor | null> {
+async function processMicrophone(
+  track: MediaStreamTrack,
+  processing: MicrophoneProcessing,
+  onFailure: () => void,
+): Promise<MicrophoneProcessor | null> {
   if (typeof AudioContext === "undefined") {
     return null;
   }
   const context = new AudioContext(processing.isNoiseSuppressorOn ? { sampleRate: NOISE_SUPPRESSOR_SAMPLE_RATE_HERTZ } : {});
+  let stopWatching = () => {};
   try {
     const bands = new Map<EqualizerBand, BiquadFilterNode>();
-    const nodes: AudioNode[] = [context.createMediaStreamSource(new MediaStream([track]))];
+    const source = context.createMediaStreamSource(new MediaStream([track]));
+    const nodes: AudioNode[] = [source];
     for (const stage of processingStagesOf(processing)) {
-      nodes.push(await createStageNode(context, stage, bands));
+      const node = await createStageNode(context, stage, bands);
+      if (stage.kind === "noise-suppressor") {
+        stopWatching = watchNoiseSuppressor(source, node, onFailure);
+      }
+      nodes.push(node);
     }
     const destination = context.createMediaStreamDestination();
     destination.channelCount = 1;
@@ -148,6 +203,7 @@ async function processMicrophone(track: MediaStreamTrack, processing: Microphone
         }
       },
       stop: () => {
+        stopWatching();
         processedTrack.stop();
         for (const node of nodes) {
           node.disconnect();
@@ -160,6 +216,7 @@ async function processMicrophone(track: MediaStreamTrack, processing: Microphone
       },
     };
   } catch (error) {
+    stopWatching();
     context.close().catch((closeError: unknown) => console.warn("couldn't close the microphone processing", closeError));
     throw error;
   }
