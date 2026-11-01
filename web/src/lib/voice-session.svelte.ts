@@ -779,26 +779,32 @@ export class VoiceSession {
     this.refreshMonitor();
   }
 
-  /** The test's microphone first, as the settings' meter reads it; else the call's. */
-  private monitoredTrack(): MediaStreamTrack | undefined {
+  /**
+   * The test's microphone first, as the settings' meter reads it, at the input volume. In a call,
+   * what is sent: it already carries the input volume, push-to-talk and the gate, so you hear
+   * exactly what the others hear.
+   */
+  private monitoredTrack(): { track: MediaStreamTrack; gain: number } | null {
     if (this.testMicrophone !== null) {
-      return this.testTrack();
+      const track = this.testTrack();
+      return track ? { track, gain: this.inputGain() } : null;
     }
-    return this.isMicrophoneLive ? this.microphoneTrack() : undefined;
+    const track = this.isMicrophoneLive ? this.sentTrack() : undefined;
+    return track ? { track, gain: 1 } : null;
   }
 
   /** Plays the test's or the call's processed microphone while "S'écouter" is on; nothing otherwise. */
   private refreshMonitor(): void {
-    const track = this.isMonitoring ? this.monitoredTrack() : undefined;
-    if (this.monitor !== null && this.monitor.track !== track) {
+    const monitored = this.isMonitoring ? this.monitoredTrack() : null;
+    if (this.monitor !== null && this.monitor.track !== monitored?.track) {
       this.monitor.output.stop();
       this.monitor = null;
     }
-    if (track === undefined) {
+    if (monitored === null) {
       return;
     }
-    this.monitor ??= { track, output: this.ports.playTrack(track) };
-    this.monitor.output.setGain(this.inputGain());
+    this.monitor ??= { track: monitored.track, output: this.ports.playTrack(monitored.track) };
+    this.monitor.output.setGain(monitored.gain);
     this.monitor.output.setOutputDevice(this.outputDeviceId());
   }
 

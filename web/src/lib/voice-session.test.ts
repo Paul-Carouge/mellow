@@ -939,6 +939,18 @@ describe("VoiceSession", () => {
       expect(session.isMonitoring).toBe(false);
     });
 
+    it("plays what is sent while listening in a call: input volume and push-to-talk included", async () => {
+      const { session, connect, outputs, amplifiers } = harness();
+      session.updateSettings({ ...session.settings, inputVolumePercent: 120, inputMode: "push-to-talk" });
+      await connect();
+      session.setMonitoring(true);
+      const amplified = amplifiers[0]?.track as unknown as MediaStreamTrack;
+      const monitor = outputs.find((output) => output.track === amplified);
+      // The key is up: the sent track is gated, so you hear nothing, like the others.
+      expect(amplifiers[0]?.track.enabled).toBe(false);
+      expect(monitor?.gain).toBe(1);
+    });
+
     it("says why the microphone test could not start", async () => {
       const { session } = harness({ microphoneError: Object.assign(new Error("no"), { name: "NotAllowedError" }) });
       await session.startMicrophoneTest();
