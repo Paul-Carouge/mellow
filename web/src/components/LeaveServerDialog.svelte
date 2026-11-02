@@ -1,6 +1,6 @@
 <script lang="ts">
   import { strings } from "../i18n";
-  import { type MellowClient, describeError } from "../lib/client.svelte";
+  import type { MellowClient } from "../lib/client.svelte";
   import type { Snowflake } from "../lib/protocol";
   import ModalDialog from "./ModalDialog.svelte";
 
@@ -15,23 +15,13 @@
 
   let { client, guildId, serverName, onclose, fallbackFocus }: Props = $props();
 
-  let isBusy = $state(false);
   // Plain: read by the dialog when it closes, after this component stopped updating.
   let hasSucceeded = false;
-  let errorMessage = $state("");
 
   async function leave() {
-    isBusy = true;
-    errorMessage = "";
-    try {
-      await client.leaveServer(guildId);
-      hasSucceeded = true;
-      onclose();
-    } catch (error) {
-      errorMessage = describeError(error, strings.leaveServer.failed);
-    } finally {
-      isBusy = false;
-    }
+    await client.leaveServer(guildId);
+    hasSucceeded = true;
+    onclose();
   }
 </script>
 
@@ -39,9 +29,9 @@
   shouldReturnFocusToOpener={() => !hasSucceeded}
   title={strings.leaveServer.title(serverName)}
   subtitle={strings.leaveServer.subtitle(serverName)}
-  {errorMessage}
-  {isBusy}
-  submitLabel={isBusy ? strings.leaveServer.leaving : strings.leaveServer.submit}
+  submitLabel={strings.leaveServer.submit}
+  busySubmitLabel={strings.leaveServer.leaving}
+  failureSummary={strings.leaveServer.failed}
   isSubmitDanger
   {onclose}
   onsubmit={leave}
