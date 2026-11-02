@@ -1,6 +1,6 @@
 # 0021. Compress images losslessly; animated avatars and banners for everyone
 
-- Status: Accepted
+- Status: Superseded by [ADR-0033](0033-visually-lossless-image-compression.md)
 - Date: 2026-10-21
 
 ## Context
