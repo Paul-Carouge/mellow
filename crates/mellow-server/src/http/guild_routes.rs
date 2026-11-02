@@ -407,3 +407,6 @@ pub(crate) async fn list_audit_log(
             .await?,
     ))
 }
+
+#[cfg(test)]
+mod tests;
