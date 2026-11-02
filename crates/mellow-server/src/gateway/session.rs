@@ -17,6 +17,9 @@ use crate::events::{EventHub, SessionKey, SharedEvent};
 /// most one replay buffer (`REPLAY_BUFFER_FRAMES`, `REPLAY_BUFFER_BYTES`, payloads shared with
 /// every other session), and a user holds at most `MAXIMUM_SESSIONS_PER_USER` sessions, so at
 /// most 20 MiB per user whatever the window; a longer window only keeps it longer.
+/// Visible side effect: presence comes from live sessions, so a user who closes the tab or loses
+/// the network stays online for others for up to this long (voice ends sooner, at the media
+/// `SILENT_CONNECTION_TIMEOUT`).
 pub(crate) const RESUME_WINDOW: Duration = Duration::from_mins(2);
 /// Dispatches kept for replay; a client missing more resynchronises through REST.
 pub(crate) const REPLAY_BUFFER_FRAMES: usize = 1_024;
