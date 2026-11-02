@@ -1,0 +1,20 @@
+# 0037. Screen sharing on the camera's path, before the camera interface
+
+- Status: Accepted (owner, 2026-11-02: "je veux ça d'abord")
+- Date: 2026-11-02
+- Builds on [ADR-0035](0035-video-in-voice-channels.md) (VP8 simulcast relayed by the built-in SFU, `STREAM`, the safeguards) and [ADR-0030](0030-voice-channels-with-an-sfu-in-the-server-binary.md).
+
+## Context
+ROADMAP stage 16.6 adds screen sharing to voice channels. The owner asked for it before the camera interface of stage 16.5: the server relays cameras since `v0.30.0`, but no client turns one on yet. A screen differs from a camera: text must stay readable (a high resolution), most of the picture does not move (a low frame rate is enough), and people usually show one screen at a time to the whole channel. The owner wants Vesper's capture and encoding engine used for it; a web page cannot reach it (ADR-0035, "The Vesper engine"), so the web client shares through the browser.
+
+## Decision
+- **One video source per participant, either their camera or their screen**, carried by the camera's m-line, simulcast layers, slots, layer choice, budgets and caps of ADR-0035. The server forwards it the same way; nothing is added to the media loop. Sharing a screen while the camera is on replaces the camera, as the client swaps the track on the same sender (`RTCRtpSender.replaceTrack`). Camera and screen at once (Discord allows it) needs a second send m-line and comes later, with its own decision.
+- **Protocol (gateway `v1`, additive):** `VoiceState.self_stream: bool` and the same optional field in the `voice_state` frame. `self_stream` true means the participant's video is a screen; `self_video` and `self_stream` are never both true (a frame asking both gets the screen). Turning a screen on is checked and refused exactly as a camera (`STREAM`, 12 per channel, 25 per instance, `video_upload_mbps = 0`, `VOICE_VIDEO_REFUSED`), and the 10 s silence rule turns it off the same way. Switching between camera and screen restarts the watchers at the next keyframe.
+- **Web client:** `getDisplayMedia` with the video at most 1920 × 1080 and 15 frames per second, `contentHint = "detail"`, no audio in this first version. The three layers keep their RIDs and their size limits: `h` at full size up to 2.5 Mbit/s, `l` at half size up to 500 kbit/s, `q` at a quarter up to 150 kbit/s, which fit the per-layer budgets of ADR-0035 (`h` 375 kB/s). Clients able to show video add the camera m-line and 9 video receive m-lines to every offer, with VP8 and Opus only, as ADR-0035 says; a browser without `setCodecPreferences` joins audio only and cannot share or watch.
+- **Watching:** a member sees who shares (a "Live" mark beside them in the channel) and opens the stream to watch it large; the client then lists it in `voice_video_watch` with the `large` size. Nothing is watched unless asked, so a channel where someone shares costs the others nothing until they open it.
+- **Vesper:** the native desktop client (ADR-0036) will capture and encode screens with Vesper's crates and send them over the same path; that is when games at 60 frames per second and full resolution come, once the owner relicenses the crates reused.
+
+## Consequences
+- Screen sharing ships before the camera interface with almost no server work, and the camera interface later reuses the same client pieces (sender, slots, tiles).
+- A participant cannot show their camera and their screen at once; nor can the stream carry the shared tab's sound. Both are follow-ups.
+- 1080p at 15 frames per second through simulcast suits documents, code and slides; fast motion (games) looks choppy until the native client.

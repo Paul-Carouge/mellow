@@ -555,6 +555,8 @@ export interface VoiceState {
   join_sound_id?: Snowflake | null;
   /** Their camera is on and forwarded (ADR-0035). Absent from older servers: off. */
   self_video?: boolean;
+  /** They share a screen, relayed like a camera (ADR-0037); never with `self_video`. Absent from older servers. */
+  self_stream?: boolean;
 }
 
 /** Why the server refused to turn this session's camera on. A newer server may send another reason. */
@@ -708,7 +710,8 @@ export type ClientFrame =
       d: { channel_id: Snowflake; offer_id: number; sdp_offer: string; self_mute: boolean; self_deaf: boolean };
     }
   | { op: "voice_leave" }
-  | { op: "voice_state"; d: { self_mute: boolean; self_deaf: boolean; self_video?: boolean } }
+  /** `self_stream` (a screen, ADR-0037) wins over `self_video`. */
+  | { op: "voice_state"; d: { self_mute: boolean; self_deaf: boolean; self_video?: boolean; self_stream?: boolean } }
   /**
    * The cameras shown and how large, at most `VIDEO_RECEIVE_SLOTS`; replaces the previous list.
    * A `voice_join` forgets it: send it again after `VOICE_SESSION_DESCRIPTION`.

@@ -393,6 +393,7 @@ fn voice_state() -> VoiceState {
         suppressed: false,
         join_sound_id: Some(id(600)),
         self_video: true,
+        self_stream: false,
     }
 }
 
@@ -712,6 +713,7 @@ fn client_frames() -> Vec<ClientFrame> {
             self_mute: true,
             self_deaf: true,
             self_video: true,
+            self_stream: true,
         },
         ClientFrame::VoiceVideoWatch { .. } => ClientFrame::VoiceVideoWatch {
             cameras: vec![
