@@ -18,13 +18,14 @@ use mellow_protocol::{
     InitialTextChannel, Invite, MAXIMUM_COUNTED_UNREAD_MENTIONS,
     MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH, MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
     MAXIMUM_REACHABLE_SEARCH_RESULTS, MAXIMUM_SEARCH_QUERY_LENGTH, MAXIMUM_SEARCH_QUERY_PARTS,
-    MAXIMUM_SEARCH_RESULTS_PER_PAGE, MAXIMUM_VOICE_CHANNEL_PARTICIPANTS,
-    MAXIMUM_VOICE_RECEIVE_SLOTS, MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, Member, Message,
-    MessageReaction, MessageSearchHit, MessageSearchQuery, MessageSearchResults, MessageSearchSort,
-    OverwriteKind, PermissionOverwrite, Permissions, Presence, PresenceStatus, ProfileImage,
-    PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role,
-    ServerFrame, SessionCreated, Snowflake, SoundboardSound, VoiceDisconnectReason,
-    VoiceJoinRefusal, VoiceState,
+    MAXIMUM_SEARCH_RESULTS_PER_PAGE, MAXIMUM_VIDEO_RECEIVE_SLOTS,
+    MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
+    MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, Member, Message, MessageReaction, MessageSearchHit,
+    MessageSearchQuery, MessageSearchResults, MessageSearchSort, OverwriteKind,
+    PermissionOverwrite, Permissions, Presence, PresenceStatus, ProfileImage, PublicUser,
+    ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame,
+    SessionCreated, SimulcastLayer, Snowflake, SoundboardSound, VideoTileSize,
+    VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal, WatchedCamera,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -391,6 +392,7 @@ fn voice_state() -> VoiceState {
         self_deaf: false,
         suppressed: false,
         join_sound_id: Some(id(600)),
+        self_video: true,
     }
 }
 
@@ -641,6 +643,14 @@ fn gateway_events() -> Vec<GatewayEvent> {
             mid: "1".into(),
             user_id: id(10),
         },
+        GatewayEvent::VoiceVideoRefused { .. } => GatewayEvent::VoiceVideoRefused {
+            channel_id: id(30),
+            reason: VoiceVideoRefusal::TooManyCameras,
+        },
+        GatewayEvent::VoiceVideoLayers { .. } => GatewayEvent::VoiceVideoLayers {
+            channel_id: id(30),
+            active: vec![SimulcastLayer::Quarter, SimulcastLayer::High],
+        },
         GatewayEvent::VoiceDisconnected { .. } => GatewayEvent::VoiceDisconnected {
             channel_id: id(30),
             reason: VoiceDisconnectReason::MovedElsewhere,
@@ -701,6 +711,19 @@ fn client_frames() -> Vec<ClientFrame> {
         ClientFrame::VoiceState { .. } => ClientFrame::VoiceState {
             self_mute: true,
             self_deaf: true,
+            self_video: true,
+        },
+        ClientFrame::VoiceVideoWatch { .. } => ClientFrame::VoiceVideoWatch {
+            cameras: vec![
+                WatchedCamera {
+                    user_id: id(10),
+                    size: VideoTileSize::Large,
+                },
+                WatchedCamera {
+                    user_id: id(11),
+                    size: VideoTileSize::Small,
+                },
+            ],
         },
         ClientFrame::VoicePlaySound { .. } => ClientFrame::VoicePlaySound {
             sound_id: id(600),
@@ -910,6 +933,23 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
             ),
         )?,
         sampled(
+            "VoiceVideoRefusal",
+            StringUnion,
+            &every_variant!(VoiceVideoRefusal:
+                MissingPermissions, TooManyCameras, VideoUnavailable,
+            ),
+        )?,
+        sampled(
+            "VideoTileSize",
+            StringUnion,
+            &every_variant!(VideoTileSize: Large, Medium, Small),
+        )?,
+        sampled(
+            "SimulcastLayer",
+            StringUnion,
+            &every_variant!(SimulcastLayer: High, Low, Quarter),
+        )?,
+        sampled(
             "VoiceDisconnectReason",
             StringUnion,
             &every_variant!(VoiceDisconnectReason:
@@ -951,6 +991,7 @@ fn shared_constants() -> Value {
         "MAXIMUM_VOICE_USER_LIMIT": MAXIMUM_VOICE_CHANNEL_PARTICIPANTS,
         "MINIMUM_MILLISECONDS_BETWEEN_SOUNDS": MINIMUM_MILLISECONDS_BETWEEN_SOUNDS,
         "VOICE_RECEIVE_SLOTS": MAXIMUM_VOICE_RECEIVE_SLOTS,
+        "VIDEO_RECEIVE_SLOTS": MAXIMUM_VIDEO_RECEIVE_SLOTS,
     })
 }
 

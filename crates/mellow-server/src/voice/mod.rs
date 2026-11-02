@@ -6,6 +6,8 @@ mod address;
 mod media;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod video_tests;
 
 use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, UdpSocket};
@@ -14,12 +16,14 @@ use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use mellow_protocol::{
-    GatewayEvent, Snowflake, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState,
+    GatewayEvent, MAXIMUM_VIDEO_RECEIVE_SLOTS, Snowflake, VoiceDisconnectReason, VoiceJoinRefusal,
+    VoiceState, VoiceVideoRefusal, WatchedCamera,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::config::VoiceConfig;
 use crate::domain::guilds::{ChannelAudience, Guilds};
+use crate::domain::video_rules::{layer_for_tile, missing_room_for_a_camera};
 use crate::domain::voice_rules::{
     VoiceAccess, has_room_for_one_more, may_play_another_sound, validate_voice_offer,
 };
@@ -42,6 +46,14 @@ pub(crate) struct VoiceJoinRequest {
     pub(crate) host_header: Option<String>,
 }
 
+/// The user's own mute, deafen and camera, as a `voice_state` frame sets them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct SelfVoiceState {
+    pub(crate) self_mute: bool,
+    pub(crate) self_deaf: bool,
+    pub(crate) self_video: bool,
+}
+
 /// A join checked and answered, waiting for room in the channel.
 struct PreparedJoin {
     candidate_address: std::net::SocketAddr,
@@ -50,6 +62,8 @@ struct PreparedJoin {
     sdp_answer: String,
     /// Read before the participants lock; announced only if the join allows it (ADR-0032).
     member_join_sound_id: Option<Snowflake>,
+    /// The offer has video m-lines: the participant may turn a camera on and watch others.
+    has_video: bool,
 }
 
 /// One connected person, as the service knows them.
@@ -60,10 +74,12 @@ struct Participant {
     connection_id: u64,
     guild_id: Snowflake,
     channel_id: Snowflake,
-    self_mute: bool,
-    self_deaf: bool,
+    /// Their own mute and deafen, and their camera, on and forwarded (ADR-0035).
+    self_state: SelfVoiceState,
     /// Lacks `SPEAK`: their audio is not forwarded.
     suppressed: bool,
+    /// Their offer has video m-lines.
+    has_video: bool,
     /// When they last played a soundboard sound, for the minimum gap between two.
     last_sound_played_at: Option<Instant>,
 }
@@ -74,9 +90,10 @@ impl Participant {
             user_id,
             guild_id: self.guild_id,
             channel_id: self.channel_id,
-            self_mute: self.self_mute,
-            self_deaf: self.self_deaf,
+            self_mute: self.self_state.self_mute,
+            self_deaf: self.self_state.self_deaf,
             suppressed: self.suppressed,
+            self_video: self.self_state.self_video,
             // Only the arrival announces it (`VoiceShared::announce_join`), so state changes
             // never replay it (ADR-0032).
             join_sound_id: None,
@@ -85,14 +102,21 @@ impl Participant {
 
     /// Whether others hear them: deafening oneself mutes too, as on Discord.
     const fn is_forwarded(&self) -> bool {
-        !self.suppressed && !self.self_mute && !self.self_deaf
+        !self.suppressed && !self.self_state.self_mute && !self.self_state.self_deaf
     }
 
     fn forwarding_command(&self, user_id: Snowflake) -> MediaCommand {
         MediaCommand::SetForwarding {
             user_id,
             is_forwarded: self.is_forwarded(),
-            is_deafened: self.self_deaf,
+            is_deafened: self.self_state.self_deaf,
+        }
+    }
+
+    const fn camera_command(&self, user_id: Snowflake) -> MediaCommand {
+        MediaCommand::SetCamera {
+            user_id,
+            is_camera_forwarded: self.self_state.self_video,
         }
     }
 }
@@ -225,7 +249,8 @@ impl VoiceService {
             .media
             .as_ref()
             .ok_or(VoiceJoinRefusal::VoiceUnavailable)?;
-        validate_voice_offer(&request.sdp_offer).map_err(|_| VoiceJoinRefusal::InvalidOffer)?;
+        let offer_shape =
+            validate_voice_offer(&request.sdp_offer).map_err(|_| VoiceJoinRefusal::InvalidOffer)?;
         // Checked early so a refused join costs no DNS lookup or session; checked again under
         // the lock by `admit`.
         let guild_id = match shared
@@ -285,6 +310,7 @@ impl VoiceService {
             rtc,
             sdp_answer,
             member_join_sound_id,
+            has_video: offer_shape.video_receive_slots > 0,
         })
     }
 
@@ -321,6 +347,7 @@ impl VoiceService {
             rtc,
             sdp_answer,
             member_join_sound_id,
+            has_video,
         } = prepared;
         let Some(media) = &shared.media else {
             return refuse(VoiceJoinRefusal::VoiceUnavailable);
@@ -339,6 +366,7 @@ impl VoiceService {
                 user_limit,
                 may_speak,
                 may_use_soundboard,
+                ..
             }) => (guild_id, user_limit, may_speak, may_use_soundboard),
             Ok(VoiceAccess::ChannelGone | VoiceAccess::NotMember | VoiceAccess::Denied) => {
                 return refuse(VoiceJoinRefusal::MissingPermissions);
@@ -363,9 +391,14 @@ impl VoiceService {
             connection_id: shared.next_connection_id.fetch_add(1, Ordering::Relaxed),
             guild_id,
             channel_id: request.channel_id,
-            self_mute: request.self_mute,
-            self_deaf: request.self_deaf,
+            // Every join starts with the camera off; the client turns it on again.
+            self_state: SelfVoiceState {
+                self_mute: request.self_mute,
+                self_deaf: request.self_deaf,
+                self_video: false,
+            },
             suppressed: !may_speak,
+            has_video,
             last_sound_played_at: previous
                 .as_ref()
                 .and_then(|previous| previous.last_sound_played_at),
@@ -377,7 +410,7 @@ impl VoiceService {
             rtc,
             candidate_address,
             is_forwarded: participant.is_forwarded(),
-            is_deafened: participant.self_deaf,
+            is_deafened: participant.self_state.self_deaf,
         };
         if media
             .commands
@@ -414,32 +447,87 @@ impl VoiceService {
         }
     }
 
-    /// The user's own mute and deafen, from the session connected to voice.
+    /// The user's own mute, deafen and camera, from the session connected to voice. A camera
+    /// that may not be turned on stays off, and the session is told why (`VOICE_VIDEO_REFUSED`).
     pub(crate) async fn set_self_state(
         &self,
         user_id: Snowflake,
         session: SessionKey,
-        self_mute: bool,
-        self_deaf: bool,
+        requested: SelfVoiceState,
     ) {
-        let mut participants = self.shared.participants.lock().await;
-        let Some(participant) = participants
-            .get_mut(&user_id)
+        let shared = &self.shared;
+        let mut participants = shared.participants.lock().await;
+        let Some(current) = participants
+            .get(&user_id)
             .filter(|participant| participant.session == session)
+            .cloned()
         else {
             return;
         };
-        if (participant.self_mute, participant.self_deaf) == (self_mute, self_deaf) {
+        let mut self_video = requested.self_video;
+        if self_video
+            && !current.self_state.self_video
+            && let Some(reason) = shared
+                .camera_refusal(&participants, user_id, &current)
+                .await
+        {
+            shared.events.publish_to_session(
+                session,
+                &GatewayEvent::VoiceVideoRefused {
+                    channel_id: current.channel_id,
+                    reason,
+                },
+            );
+            self_video = false;
+        }
+        let updated = Participant {
+            self_state: SelfVoiceState {
+                self_video,
+                ..requested
+            },
+            ..current.clone()
+        };
+        if updated == current {
             return;
         }
-        participant.self_mute = self_mute;
-        participant.self_deaf = self_deaf;
-        let participant = participant.clone();
-        self.shared
-            .send_media_command(participant.forwarding_command(user_id));
-        self.shared
-            .publish_state_updated(user_id, &participant)
-            .await;
+        participants.insert(user_id, updated.clone());
+        shared.send_media_command(updated.forwarding_command(user_id));
+        if updated.self_state.self_video != current.self_state.self_video {
+            shared.send_media_command(updated.camera_command(user_id));
+        }
+        shared.publish_state_updated(user_id, &updated).await;
+    }
+
+    /// The cameras the session connected to voice shows, and how large (ADR-0035). A list longer
+    /// than the video receive slots is ignored whole; a camera listed twice counts once.
+    pub(crate) async fn watch_cameras(
+        &self,
+        user_id: Snowflake,
+        session: SessionKey,
+        cameras: &[WatchedCamera],
+    ) {
+        if cameras.len() > MAXIMUM_VIDEO_RECEIVE_SLOTS {
+            return;
+        }
+        let mut layers = Vec::with_capacity(cameras.len());
+        for camera in cameras {
+            if !layers
+                .iter()
+                .any(|(camera_id, _)| *camera_id == camera.user_id)
+            {
+                layers.push((camera.user_id, layer_for_tile(camera.size)));
+            }
+        }
+        let participants = self.shared.participants.lock().await;
+        if participants
+            .get(&user_id)
+            .is_some_and(|participant| participant.session == session && participant.has_video)
+        {
+            self.shared.send_media_command(MediaCommand::WatchCameras {
+                user_id,
+                cameras: layers,
+            });
+        }
     }
 
     /// Plays one of the channel's server sounds to everyone connected to the channel `session`
@@ -454,7 +542,7 @@ impl VoiceService {
         let shared = &self.shared;
         let is_playable = |participant: &Participant, now: Instant| {
             participant.session == session
-                && !participant.self_deaf
+                && !participant.self_state.self_deaf
                 && !participant.suppressed
                 && may_play_another_sound(participant.last_sound_played_at, now)
         };
@@ -538,6 +626,45 @@ impl VoiceService {
 }
 
 impl VoiceShared {
+    /// Why `participant` may not turn their camera on now, if they may not: no video in their
+    /// offer, no `STREAM` in the channel (read fresh), or as many cameras on as allowed.
+    async fn camera_refusal(
+        &self,
+        participants: &HashMap<Snowflake, Participant>,
+        user_id: Snowflake,
+        participant: &Participant,
+    ) -> Option<VoiceVideoRefusal> {
+        if !participant.has_video {
+            return Some(VoiceVideoRefusal::VideoUnavailable);
+        }
+        match self
+            .guilds
+            .voice_access(user_id, participant.channel_id)
+            .await
+        {
+            Ok(VoiceAccess::Allowed {
+                may_send_video: true,
+                ..
+            }) => {}
+            Ok(_) => return Some(VoiceVideoRefusal::MissingPermissions),
+            Err(error) => {
+                tracing::warn!(%error, "voice: cannot read the channel for a camera");
+                return Some(VoiceVideoRefusal::VideoUnavailable);
+            }
+        }
+        let other_cameras = || {
+            participants
+                .iter()
+                .filter(|(other_id, other)| **other_id != user_id && other.self_state.self_video)
+        };
+        missing_room_for_a_camera(
+            other_cameras()
+                .filter(|(_, other)| other.channel_id == participant.channel_id)
+                .count(),
+            other_cameras().count(),
+        )
+    }
+
     /// Tells the others what a join changed: the session it replaced, a move, a new state.
     async fn announce_join(
         &self,
@@ -735,6 +862,25 @@ impl VoiceShared {
                     },
                 );
             }
+            MediaEvent::CameraLayers {
+                user_id,
+                connection_id,
+                active,
+            } => {
+                let Some(camera) = participants
+                    .get(&user_id)
+                    .filter(|camera| camera.connection_id == connection_id)
+                else {
+                    return;
+                };
+                self.events.publish_to_session(
+                    camera.session,
+                    &GatewayEvent::VoiceVideoLayers {
+                        channel_id: camera.channel_id,
+                        active,
+                    },
+                );
+            }
             MediaEvent::Speaking {
                 user_id,
                 connection_id,
@@ -758,8 +904,9 @@ impl VoiceShared {
         }
     }
 
-    /// Checks again everyone connected in `guild_ids`, after a change of who may view, connect or
-    /// speak there: the ones who lost access are disconnected, the others gain or lose `SPEAK`.
+    /// Checks again everyone connected in `guild_ids`, after a change of who may view, connect,
+    /// speak or show their camera there: the ones who lost access are disconnected, the others
+    /// gain or lose `SPEAK`, and a camera whose owner lost `STREAM` is turned off.
     /// Then everyone still connected there is announced again to their channel's viewers, so a
     /// member who just joined the guild or started to see a channel learns who is in it
     /// (`VOICE_STATE_UPDATE` is idempotent for those who knew).
@@ -782,13 +929,22 @@ impl VoiceShared {
                 VoiceAccess::ChannelGone => VoiceDisconnectReason::ChannelDeleted,
                 VoiceAccess::NotMember => VoiceDisconnectReason::RemovedFromGuild,
                 VoiceAccess::Denied => VoiceDisconnectReason::PermissionsChanged,
-                VoiceAccess::Allowed { may_speak, .. } => {
-                    if let Some(participant) = participants
-                        .get_mut(user_id)
-                        .filter(|participant| participant.suppressed == may_speak)
-                    {
+                VoiceAccess::Allowed {
+                    may_speak,
+                    may_send_video,
+                    ..
+                } => {
+                    let Some(participant) = participants.get_mut(user_id) else {
+                        continue;
+                    };
+                    if participant.suppressed == may_speak {
                         participant.suppressed = !may_speak;
                         let command = participant.forwarding_command(*user_id);
+                        self.send_media_command(command);
+                    }
+                    if participant.self_state.self_video && !may_send_video {
+                        participant.self_state.self_video = false;
+                        let command = participant.camera_command(*user_id);
                         self.send_media_command(command);
                     }
                     continue;

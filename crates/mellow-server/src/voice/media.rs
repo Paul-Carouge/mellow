@@ -1,7 +1,8 @@
 //! The media loop (ADR-0030): one OS thread outside the Tokio runtime owns the UDP socket and every
 //! participant's WebRTC session (`str0m`, sans-IO). It forwards each speaker's Opus packets, as
-//! they are, to the other participants of their channel, and reports speaking edges and dead
-//! connections. It never touches SQLite: permissions arrive already decided, as commands.
+//! they are, to the other participants of their channel, and each camera's VP8 frames, one
+//! simulcast layer per watcher (ADR-0035), and reports speaking edges and dead connections. It
+//! never touches SQLite: permissions arrive already decided, as commands.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
@@ -9,24 +10,34 @@ use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use mellow_protocol::Snowflake;
+use mellow_protocol::{SimulcastLayer, Snowflake};
 use str0m::change::SdpOffer;
 use str0m::format::{Codec, FormatParams};
-use str0m::media::{Direction, Frequency, MediaData, MediaKind, Mid, Pt};
+use str0m::media::{Direction, Frequency, KeyframeRequestKind, MediaData, MediaKind, Mid, Pt, Rid};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::domain::video_rules::{FrameForwarding, KeyframeThrottle, LayerSwitch, active_layers};
 use crate::domain::voice_rules::{ReceiveSlots, SpeakingDetector};
 
 /// Addresses remembered per participant: a client changing networks adds one now and then.
 const MAXIMUM_SOURCE_ADDRESSES_PER_PARTICIPANT: usize = 4;
-/// Larger datagrams are not WebRTC audio: dropped unread.
+/// Larger datagrams are not WebRTC media: dropped unread.
 const MAXIMUM_DATAGRAM_BYTES: usize = 1_500;
 /// Bigger than `MAXIMUM_DATAGRAM_BYTES`, so an oversized datagram is seen whole and dropped.
 const RECEIVE_BUFFER_BYTES: usize = 2_048;
 /// Opus sends 50 packets/s; STUN, DTLS and RTCP add a few. More is a flood: dropped.
 const MAXIMUM_PACKETS_PER_SECOND: u32 = 200;
+/// A participant able to watch cameras also sends their RTCP (receiver reports, retransmission
+/// and keyframe requests, congestion feedback) for up to 9 video streams.
+const MAXIMUM_PACKETS_PER_SECOND_WITH_VIDEO: u32 = 400;
+/// A camera sends three layers of about 180 packets/s together, keyframes three times larger and
+/// retransmissions (ADR-0035).
+const MAXIMUM_PACKETS_PER_SECOND_WITH_CAMERA: u32 = 1_500;
+/// 4 Mbit/s averaged over a second: a camera's three layers (2.2 Mbit/s) with keyframes and
+/// retransmissions. Without a camera, the packet budget bounds bytes well below this.
+const MAXIMUM_BYTES_PER_SECOND_WITH_CAMERA: usize = 500_000;
 const PACKET_RATE_WINDOW: Duration = Duration::from_secs(1);
 /// Commands and speaking hangovers are looked at least this often.
 const MAXIMUM_IDLE_WAIT: Duration = Duration::from_millis(50);
@@ -47,13 +58,16 @@ const OPUS_MINIMUM_PACKET_MILLISECONDS: u8 = 10;
 /// runtime: building a session generates its DTLS certificate.
 ///
 /// # Errors
-/// `None` when the offer does not parse or cannot be answered with Opus.
+/// `None` when the offer does not parse or cannot be answered with Opus (and VP8 for video).
 pub(crate) fn answer_offer(
     sdp_offer: &str,
     candidate_address: SocketAddr,
 ) -> Option<(Box<Rtc>, String)> {
     let offer = SdpOffer::from_sdp_string(sdp_offer).ok()?;
     let mut config = Rtc::builder().set_ice_lite(true).clear_codecs();
+    // VP8 with its retransmission stream is the only video codec (ADR-0035): every watcher can
+    // decode every camera, and the server never has to choose.
+    config.codec_config().enable_vp8(true);
     // In-band FEC and DTX in the answer ask the browser to send them (ADR-0030): FEC hides lost
     // packets, DTX sends almost nothing in silence.
     config.codec_config().add_config(
@@ -97,22 +111,35 @@ pub(crate) enum MediaCommand {
         user_id: Snowflake,
     },
     /// `is_forwarded`: their audio reaches others (they hold `SPEAK` and are not muted).
-    /// `is_deafened`: nothing is sent to them.
+    /// `is_deafened`: no voice is sent to them.
     SetForwarding {
         user_id: Snowflake,
         is_forwarded: bool,
         is_deafened: bool,
     },
+    /// `is_camera_forwarded`: their camera reaches those who watch it (they hold `STREAM` and
+    /// turned it on). Every join starts with it off.
+    SetCamera {
+        user_id: Snowflake,
+        is_camera_forwarded: bool,
+    },
+    /// The cameras the participant shows and the layer each tile fits, at most their number of
+    /// video receive slots; replaces the previous list.
+    WatchCameras {
+        user_id: Snowflake,
+        cameras: Vec<(Snowflake, SimulcastLayer)>,
+    },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MediaEvent {
     Speaking {
         user_id: Snowflake,
         connection_id: u64,
         is_speaking: bool,
     },
-    /// `listener_id`'s receive m-line `mid` now carries `speaker_id`'s voice.
+    /// `listener_id`'s receive m-line `mid` now carries `speaker_id`'s voice, or camera for a
+    /// video m-line.
     SlotAssigned {
         listener_id: Snowflake,
         connection_id: u64,
@@ -124,6 +151,66 @@ pub(crate) enum MediaEvent {
         user_id: Snowflake,
         connection_id: u64,
     },
+    /// The layers of `user_id`'s camera that someone watches changed.
+    CameraLayers {
+        user_id: Snowflake,
+        connection_id: u64,
+        active: Vec<SimulcastLayer>,
+    },
+}
+
+/// One camera as one watcher receives it.
+#[derive(Debug)]
+struct WatchedCamera {
+    /// The watcher's video receive m-line carrying it.
+    mid: Mid,
+    switch: LayerSwitch,
+}
+
+/// The simulcast layer a camera's frame belongs to, from the RIDs the web client sends (ADR-0035).
+fn layer_of_rid(rid: Rid) -> Option<SimulcastLayer> {
+    match &*rid {
+        "h" => Some(SimulcastLayer::High),
+        "l" => Some(SimulcastLayer::Low),
+        "q" => Some(SimulcastLayer::Quarter),
+        _ => None,
+    }
+}
+
+fn rid_of_layer(layer: SimulcastLayer) -> Rid {
+    Rid::from(match layer {
+        SimulcastLayer::High => "h",
+        SimulcastLayer::Low => "l",
+        SimulcastLayer::Quarter => "q",
+    })
+}
+
+/// What draining sessions found, handled once the session that produced it is no longer borrowed.
+#[derive(Debug, Default)]
+struct Collected {
+    /// Voice and camera frames, by the participant who sent them.
+    frames: Vec<(Snowflake, MediaData)>,
+    /// A watcher lost packets of the camera on its video receive m-line, or its decoder failed.
+    keyframe_requests: Vec<(Snowflake, Mid)>,
+}
+
+/// A participant's cameras: the one they send and those they watch (ADR-0035).
+#[derive(Debug, Default)]
+struct ParticipantVideo {
+    /// The m-line the participant sends their camera on; `None` when their offer has no video.
+    camera_mid: Option<Mid>,
+    /// Video receive m-lines not given to a camera.
+    free_video_slots: Vec<Mid>,
+    /// The cameras this participant shows, with the layer each tile fits, as last asked.
+    shown_cameras: Vec<(Snowflake, SimulcastLayer)>,
+    /// The cameras this participant watches, by camera: those shown that got a slot.
+    watched_cameras: HashMap<Snowflake, WatchedCamera>,
+    /// Video receive slots appeared since the shown cameras were last given slots: `str0m`
+    /// announces m-lines once the session is up, often after the first list.
+    has_new_video_slots: bool,
+    is_camera_forwarded: bool,
+    /// The layers of this participant's camera last reported as watched.
+    reported_camera_layers: Vec<SimulcastLayer>,
 }
 
 #[derive(Debug)]
@@ -136,6 +223,7 @@ struct Participant {
     /// The m-line the participant sends their voice on.
     voice_mid: Option<Mid>,
     slots: ReceiveSlots<Mid, Snowflake>,
+    video: ParticipantVideo,
     timeout_at: Instant,
     joined_at: Instant,
     last_received_at: Instant,
@@ -145,6 +233,7 @@ struct Participant {
     speaking: SpeakingDetector,
     packet_window_started_at: Instant,
     packets_in_window: u32,
+    bytes_in_window: usize,
 }
 
 impl Participant {
@@ -157,6 +246,7 @@ impl Participant {
             candidate_address: join.candidate_address,
             voice_mid: None,
             slots: ReceiveSlots::default(),
+            video: ParticipantVideo::default(),
             timeout_at: now,
             joined_at: now,
             last_received_at: now,
@@ -166,17 +256,37 @@ impl Participant {
             speaking: SpeakingDetector::default(),
             packet_window_started_at: now,
             packets_in_window: 0,
+            bytes_in_window: 0,
         }
     }
 
-    /// Counts a packet; `false` once the participant sends more than the rate allows.
-    fn is_within_packet_rate(&mut self, now: Instant) -> bool {
+    /// Counts a packet of `bytes`; `false` once the participant sends more than their budget
+    /// allows: larger with video, largest with a camera on (ADR-0035).
+    fn is_within_packet_budget(&mut self, bytes: usize, now: Instant) -> bool {
         if now.saturating_duration_since(self.packet_window_started_at) >= PACKET_RATE_WINDOW {
             self.packet_window_started_at = now;
             self.packets_in_window = 0;
+            self.bytes_in_window = 0;
         }
         self.packets_in_window = self.packets_in_window.saturating_add(1);
-        self.packets_in_window <= MAXIMUM_PACKETS_PER_SECOND
+        self.bytes_in_window = self.bytes_in_window.saturating_add(bytes);
+        if self.video.is_camera_forwarded {
+            self.packets_in_window <= MAXIMUM_PACKETS_PER_SECOND_WITH_CAMERA
+                && self.bytes_in_window <= MAXIMUM_BYTES_PER_SECOND_WITH_CAMERA
+        } else if self.video.camera_mid.is_some() {
+            self.packets_in_window <= MAXIMUM_PACKETS_PER_SECOND_WITH_VIDEO
+        } else {
+            self.packets_in_window <= MAXIMUM_PACKETS_PER_SECOND
+        }
+    }
+
+    /// The watched camera on the video receive m-line `mid`.
+    fn camera_on_slot(&self, mid: Mid) -> Option<(Snowflake, &WatchedCamera)> {
+        self.video
+            .watched_cameras
+            .iter()
+            .find(|(_, watched)| watched.mid == mid)
+            .map(|(camera_id, watched)| (*camera_id, watched))
     }
 
     fn is_dead(&self, now: Instant) -> bool {
@@ -188,13 +298,9 @@ impl Participant {
     }
 }
 
-/// Sends what the session wants sent, notes what it learned, collects the voice frames it
-/// received and records when it next needs time.
-fn drain_output(
-    participant: &mut Participant,
-    socket: &UdpSocket,
-    frames_to_forward: &mut Vec<(Snowflake, MediaData)>,
-) {
+/// Sends what the session wants sent, notes what it learned, collects the frames and keyframe
+/// requests it received and records when it next needs time.
+fn drain_output(participant: &mut Participant, socket: &UdpSocket, collected: &mut Collected) {
     loop {
         if !participant.rtc.is_alive() {
             return;
@@ -220,10 +326,31 @@ fn drain_output(
                     _ => {}
                 }
             }
+            Ok(Output::Event(Event::MediaAdded(added))) if added.kind == MediaKind::Video => {
+                match added.direction {
+                    Direction::RecvOnly | Direction::SendRecv
+                        if participant.video.camera_mid.is_none() =>
+                    {
+                        participant.video.camera_mid = Some(added.mid);
+                    }
+                    Direction::SendOnly => {
+                        participant.video.free_video_slots.push(added.mid);
+                        participant.video.has_new_video_slots = true;
+                    }
+                    _ => {}
+                }
+            }
             Ok(Output::Event(Event::MediaData(frame)))
-                if Some(frame.mid) == participant.voice_mid =>
+                if Some(frame.mid) == participant.voice_mid
+                    || (participant.video.is_camera_forwarded
+                        && Some(frame.mid) == participant.video.camera_mid) =>
             {
-                frames_to_forward.push((participant.user_id, frame));
+                collected.frames.push((participant.user_id, frame));
+            }
+            Ok(Output::Event(Event::KeyframeRequest(request))) => {
+                collected
+                    .keyframe_requests
+                    .push((participant.user_id, request.mid));
             }
             Ok(Output::Event(Event::IceConnectionStateChange(
                 IceConnectionState::Disconnected,
@@ -286,7 +413,8 @@ struct MediaLoop<'a> {
     participants: HashMap<Snowflake, Participant>,
     /// Who sends from which address: `Rtc::accepts` on everyone would cost O(n) per packet.
     sources: SourceAddresses,
-    frames_to_forward: Vec<(Snowflake, MediaData)>,
+    collected: Collected,
+    keyframe_throttle: KeyframeThrottle<Snowflake>,
     /// The participant whose session is being driven, so a panic inside `str0m` drops only them.
     current_participant: Option<Snowflake>,
 }
@@ -303,7 +431,8 @@ pub(crate) fn run_media_loop(
         events,
         participants: HashMap::new(),
         sources: SourceAddresses::default(),
-        frames_to_forward: Vec::new(),
+        collected: Collected::default(),
+        keyframe_throttle: KeyframeThrottle::default(),
         current_participant: None,
     };
     let mut buffer = vec![0_u8; RECEIVE_BUFFER_BYTES];
@@ -334,6 +463,8 @@ pub(crate) fn run_media_loop(
         let now = Instant::now();
         media.guarded(|media| media.handle_timeouts(now));
         media.guarded(|media| media.forward_frames(now));
+        media.guarded(|media| media.pass_keyframe_requests(now));
+        media.guarded(MediaLoop::give_new_video_slots);
         media.guarded(|media| media.tick_speaking(now));
         media.guarded(|media| media.end_dead_connections(now));
     }
@@ -350,7 +481,7 @@ impl MediaLoop<'_> {
         if outcome.is_ok() {
             return;
         }
-        self.frames_to_forward.clear();
+        self.collected = Collected::default();
         tracing::error!("voice: a media session failed; its participant was disconnected");
         let Some(user_id) = culprit else {
             return;
@@ -393,7 +524,7 @@ impl MediaLoop<'_> {
                 self.remove(join.user_id);
                 let mut participant = Participant::new(*join, now);
                 self.current_participant = Some(participant.user_id);
-                drain_output(&mut participant, &self.socket, &mut self.frames_to_forward);
+                drain_output(&mut participant, &self.socket, &mut self.collected);
                 let (user_id, connection_id) = (participant.user_id, participant.connection_id);
                 self.participants.insert(user_id, participant);
                 if was_speaking {
@@ -424,7 +555,148 @@ impl MediaLoop<'_> {
                     self.emit(event);
                 }
             }
+            MediaCommand::SetCamera {
+                user_id,
+                is_camera_forwarded,
+            } => self.set_camera(user_id, is_camera_forwarded),
+            MediaCommand::WatchCameras { user_id, cameras } => {
+                self.watch_cameras(user_id, &cameras);
+            }
         }
+    }
+
+    fn set_camera(&mut self, user_id: Snowflake, is_camera_forwarded: bool) {
+        let Some(camera) = self.participants.get_mut(&user_id) else {
+            return;
+        };
+        camera.video.is_camera_forwarded = is_camera_forwarded;
+        if !camera.video.is_camera_forwarded {
+            // The next stream starts over: watchers wait for its first keyframe.
+            self.restart_watchers_of(user_id);
+        }
+        self.report_camera_layers(user_id);
+    }
+
+    /// Every watcher of `camera_id` waits for a keyframe again, keeping its slot and layer.
+    fn restart_watchers_of(&mut self, camera_id: Snowflake) {
+        for watched in self
+            .participants
+            .values_mut()
+            .filter_map(|watcher| watcher.video.watched_cameras.get_mut(&camera_id))
+        {
+            watched.switch = LayerSwitch::new(watched.switch.wanted());
+        }
+    }
+
+    fn watch_cameras(&mut self, user_id: Snowflake, cameras: &[(Snowflake, SimulcastLayer)]) {
+        let Some(watcher) = self.participants.get_mut(&user_id) else {
+            return;
+        };
+        watcher.video.shown_cameras = cameras.to_vec();
+        self.give_slots_to_shown_cameras(user_id);
+    }
+
+    /// Gives the shown cameras of participants whose video slots just appeared their slots.
+    fn give_new_video_slots(&mut self) {
+        let waiting: Vec<Snowflake> = self
+            .participants
+            .values_mut()
+            .filter_map(|participant| {
+                std::mem::take(&mut participant.video.has_new_video_slots)
+                    .then_some(participant.user_id)
+            })
+            .collect();
+        for user_id in waiting {
+            self.current_participant = Some(user_id);
+            self.give_slots_to_shown_cameras(user_id);
+        }
+    }
+
+    /// Gives each shown camera a video receive slot (keeping those already given) and the layer
+    /// its tile fits, frees the slots of cameras no longer shown, and reports the cameras whose
+    /// watched layers changed.
+    fn give_slots_to_shown_cameras(&mut self, user_id: Snowflake) {
+        let Some(watcher) = self.participants.get_mut(&user_id) else {
+            return;
+        };
+        let cameras = watcher.video.shown_cameras.clone();
+        let mut changed_cameras = Vec::new();
+        let mut slot_assignments = Vec::new();
+        let free_video_slots = &mut watcher.video.free_video_slots;
+        watcher.video.watched_cameras.retain(|camera_id, watched| {
+            let is_still_shown = cameras.iter().any(|(shown, _)| shown == camera_id);
+            if !is_still_shown {
+                free_video_slots.push(watched.mid);
+                changed_cameras.push(*camera_id);
+            }
+            is_still_shown
+        });
+        // A participant's own camera is shown from its local preview, never sent back.
+        for (camera_id, layer) in cameras
+            .iter()
+            .filter(|(camera_id, _)| *camera_id != user_id)
+        {
+            if let Some(watched) = watcher.video.watched_cameras.get_mut(camera_id) {
+                if watched.switch.wanted() != *layer {
+                    watched.switch.want(*layer);
+                    changed_cameras.push(*camera_id);
+                }
+            } else if let Some(mid) = watcher.video.free_video_slots.pop() {
+                watcher.video.watched_cameras.insert(
+                    *camera_id,
+                    WatchedCamera {
+                        mid,
+                        switch: LayerSwitch::new(*layer),
+                    },
+                );
+                changed_cameras.push(*camera_id);
+                slot_assignments.push(MediaEvent::SlotAssigned {
+                    listener_id: user_id,
+                    connection_id: watcher.connection_id,
+                    mid,
+                    speaker_id: *camera_id,
+                });
+            }
+        }
+        for event in slot_assignments {
+            self.emit(event);
+        }
+        for camera_id in changed_cameras {
+            self.report_camera_layers(camera_id);
+        }
+    }
+
+    /// Tells the camera which of its layers its channel watches, when that changed, so it pauses
+    /// the others (ADR-0035). A camera turned off reports nothing.
+    fn report_camera_layers(&mut self, camera_id: Snowflake) {
+        let Some(camera) = self.participants.get(&camera_id) else {
+            return;
+        };
+        let active = if camera.video.is_camera_forwarded {
+            active_layers(
+                self.participants
+                    .values()
+                    .filter(|watcher| {
+                        watcher.user_id != camera_id && watcher.channel_id == camera.channel_id
+                    })
+                    .filter_map(|watcher| watcher.video.watched_cameras.get(&camera_id))
+                    .map(|watched| &watched.switch),
+            )
+        } else {
+            Vec::new()
+        };
+        if active == camera.video.reported_camera_layers {
+            return;
+        }
+        let event = MediaEvent::CameraLayers {
+            user_id: camera_id,
+            connection_id: camera.connection_id,
+            active: active.clone(),
+        };
+        if let Some(camera) = self.participants.get_mut(&camera_id) {
+            camera.video.reported_camera_layers = active;
+        }
+        self.emit(event);
     }
 
     fn emit(&self, event: MediaEvent) {
@@ -433,12 +705,18 @@ impl MediaLoop<'_> {
     }
 
     fn remove(&mut self, user_id: Snowflake) {
-        if self.participants.remove(&user_id).is_none() {
+        let Some(removed) = self.participants.remove(&user_id) else {
             return;
-        }
+        };
         self.sources.forget(user_id);
+        self.keyframe_throttle.forget(user_id);
         for listener in self.participants.values_mut() {
             listener.slots.release(user_id);
+        }
+        // Watchers keep their slot for this camera: a reconnection resumes it at a keyframe.
+        self.restart_watchers_of(user_id);
+        for camera_id in removed.video.watched_cameras.into_keys() {
+            self.report_camera_layers(camera_id);
         }
     }
 
@@ -502,7 +780,7 @@ impl MediaLoop<'_> {
         let Some(participant) = self.participants.get_mut(&user_id) else {
             return;
         };
-        if !participant.is_within_packet_rate(now) {
+        if !participant.is_within_packet_budget(contents.len(), now) {
             return;
         }
         self.current_participant = Some(user_id);
@@ -518,7 +796,7 @@ impl MediaLoop<'_> {
         if participant.rtc.handle_input(input).is_err() {
             participant.rtc.disconnect();
         }
-        drain_output(participant, &self.socket, &mut self.frames_to_forward);
+        drain_output(participant, &self.socket, &mut self.collected);
     }
 
     fn handle_timeouts(&mut self, now: Instant) {
@@ -531,13 +809,122 @@ impl MediaLoop<'_> {
             if participant.rtc.handle_input(Input::Timeout(now)).is_err() {
                 participant.rtc.disconnect();
             }
-            drain_output(participant, &self.socket, &mut self.frames_to_forward);
+            drain_output(participant, &self.socket, &mut self.collected);
         }
     }
 
     fn forward_frames(&mut self, now: Instant) {
-        for (speaker_id, frame) in std::mem::take(&mut self.frames_to_forward) {
-            self.forward(speaker_id, &frame, now);
+        for (sender_id, frame) in std::mem::take(&mut self.collected.frames) {
+            let is_camera_frame = self
+                .participants
+                .get(&sender_id)
+                .is_some_and(|sender| Some(frame.mid) == sender.video.camera_mid);
+            if is_camera_frame {
+                self.forward_camera_frame(sender_id, &frame, now);
+            } else {
+                self.forward(sender_id, &frame, now);
+            }
+        }
+    }
+
+    /// Writes a camera's frame on the slot of every watcher of its channel that receives this
+    /// layer, starting or switching watchers at a keyframe of the layer they want (ADR-0035).
+    fn forward_camera_frame(&mut self, camera_id: Snowflake, frame: &MediaData, now: Instant) {
+        let Some(camera) = self
+            .participants
+            .get(&camera_id)
+            .filter(|camera| camera.video.is_camera_forwarded)
+        else {
+            return;
+        };
+        // shortcut: a camera without the web client's RIDs (no simulcast) is not forwarded; a
+        // native client sending one layer would need a fourth, single-layer path.
+        let Some(layer) = frame.rid.and_then(layer_of_rid) else {
+            return;
+        };
+        let channel_id = camera.channel_id;
+        let is_keyframe = frame.is_keyframe();
+        let mut has_switched = false;
+        let mut is_keyframe_wanted = false;
+        let mut ignored = Collected::default();
+        for watcher in self.participants.values_mut().filter(|watcher| {
+            watcher.user_id != camera_id && watcher.channel_id == channel_id && watcher.is_connected
+        }) {
+            let Some(watched) = watcher.video.watched_cameras.get_mut(&camera_id) else {
+                continue;
+            };
+            match watched.switch.on_frame(layer, is_keyframe) {
+                FrameForwarding::Drop => continue,
+                FrameForwarding::DropAndRequestKeyframe => {
+                    is_keyframe_wanted = true;
+                    continue;
+                }
+                FrameForwarding::Forward { is_switch } => has_switched |= is_switch,
+            }
+            let mid = watched.mid;
+            self.current_participant = Some(watcher.user_id);
+            let Some(writer) = watcher.rtc.writer(mid) else {
+                continue;
+            };
+            let Some(payload_type) = writer.match_params(frame.params) else {
+                continue;
+            };
+            if writer
+                .write(
+                    payload_type,
+                    frame.network_time,
+                    frame.time,
+                    frame.data.clone(),
+                )
+                .is_err()
+            {
+                watcher.rtc.disconnect();
+                continue;
+            }
+            // A watcher only receives media here; what it sends arrives through its own input.
+            drain_output(watcher, &self.socket, &mut ignored);
+        }
+        if is_keyframe_wanted {
+            self.request_keyframe(camera_id, layer, now);
+        }
+        if has_switched {
+            self.report_camera_layers(camera_id);
+        }
+    }
+
+    /// Asks the camera for a keyframe of `layer`, at most once per layer every 300 ms.
+    fn request_keyframe(&mut self, camera_id: Snowflake, layer: SimulcastLayer, now: Instant) {
+        if !self.keyframe_throttle.may_request(camera_id, layer, now) {
+            return;
+        }
+        let Some(camera) = self.participants.get_mut(&camera_id) else {
+            return;
+        };
+        let Some(mid) = camera.video.camera_mid else {
+            return;
+        };
+        self.current_participant = Some(camera_id);
+        // A layer the camera has not sent yet has no stream to ask: its first frame is a keyframe.
+        if let Some(mut writer) = camera.rtc.writer(mid)
+            && writer
+                .request_keyframe(Some(rid_of_layer(layer)), KeyframeRequestKind::Pli)
+                .is_ok()
+        {
+            drain_output(camera, &self.socket, &mut self.collected);
+        }
+    }
+
+    /// A watcher's decoder needs a keyframe (after a loss): passed to the camera on that slot,
+    /// for the layer the watcher receives.
+    fn pass_keyframe_requests(&mut self, now: Instant) {
+        for (watcher_id, mid) in std::mem::take(&mut self.collected.keyframe_requests) {
+            let Some((camera_id, layer)) = self.participants.get(&watcher_id).and_then(|watcher| {
+                let (camera_id, watched) = watcher.camera_on_slot(mid)?;
+                Some((camera_id, watched.switch.forwarded()?))
+            }) else {
+                continue;
+            };
+            self.request_keyframe(camera_id, layer, now);
         }
     }
 
@@ -561,7 +948,7 @@ impl MediaLoop<'_> {
             self.emit(event);
         }
         // A listener only receives media here; frames it sends arrive through its own input.
-        let mut frames_from_listeners = Vec::new();
+        let mut frames_from_listeners = Collected::default();
         let mut slot_assignments = Vec::new();
         for listener in self.participants.values_mut().filter(|listener| {
             listener.user_id != speaker_id
@@ -676,7 +1063,8 @@ mod tests {
             events: &event_sender,
             participants: HashMap::new(),
             sources: SourceAddresses::default(),
-            frames_to_forward: Vec::new(),
+            collected: Collected::default(),
+            keyframe_throttle: KeyframeThrottle::default(),
             current_participant: None,
         };
         let candidate: SocketAddr = "127.0.0.1:50000".parse().unwrap();

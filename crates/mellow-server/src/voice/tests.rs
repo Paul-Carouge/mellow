@@ -34,35 +34,35 @@ const OPUS_SAMPLES_PER_FRAME: u64 = 960;
 const FRAME_BYTES: usize = 40;
 /// RFC 6464 level of the frames the bots send: a voice.
 const VOICE_LEVEL_DBOV: i8 = -20;
-const HEARING_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const HEARING_TIMEOUT: Duration = Duration::from_secs(10);
 const RECEIVE_SLOTS: usize = 4;
 
-struct Fixture {
+pub(super) struct Fixture {
     _directory: tempfile::TempDir,
-    state: AppState,
-    address: SocketAddr,
+    pub(super) state: AppState,
+    pub(super) address: SocketAddr,
     tokens: HashMap<&'static str, String>,
     user_ids: HashMap<&'static str, Snowflake>,
     general: Snowflake,
-    lounge: Snowflake,
+    pub(super) lounge: Snowflake,
     booth: Snowflake,
 }
 
 impl Fixture {
-    fn token(&self, name: &str) -> &str {
+    pub(super) fn token(&self, name: &str) -> &str {
         &self.tokens[name]
     }
 
-    fn user_id(&self, name: &str) -> Snowflake {
+    pub(super) fn user_id(&self, name: &str) -> Snowflake {
         self.user_ids[name]
     }
 
     /// SQLCipher must not be closing connections when the test process exits (ADR-0006).
-    async fn close(self) {
+    pub(super) async fn close(self) {
         self.state.database.close().await;
     }
 
-    async fn deny_in_lounge(&self, name: &str, denied: Permissions) {
+    pub(super) async fn deny_in_lounge(&self, name: &str, denied: Permissions) {
         self.state
             .guilds
             .set_permission_overwrite(
@@ -87,7 +87,7 @@ fn now() -> u64 {
 
 /// The owner, three members (`muted` lacks SPEAK in the lounge, `outsider` cannot view it), a
 /// text channel, the lounge (no limit) and a booth for one person.
-async fn fixture() -> Fixture {
+pub(super) async fn fixture() -> Fixture {
     let (directory, database) = migrated_database().await;
     let mut state = test_state(database, RegistrationMode::Open);
     state.voice = VoiceService::start(
@@ -187,15 +187,15 @@ async fn fixture() -> Fixture {
 }
 
 /// A headless participant's side of the WebRTC session, before the answer.
-struct PendingBot {
+pub(super) struct PendingBot {
     rtc: Rtc,
     pending: SdpPendingOffer,
     voice_mid: Mid,
     socket: UdpSocket,
-    offer: String,
+    pub(super) offer: String,
 }
 
-fn pending_bot() -> PendingBot {
+pub(super) fn pending_bot() -> PendingBot {
     str0m::crypto::from_feature_flags().install_process_default();
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     let mut rtc = Rtc::builder()
@@ -376,7 +376,7 @@ async fn send_join(socket: &mut ClientSocket, channel_id: Snowflake, offer: &str
 }
 
 /// Joins `channel_id` and returns the server's SDP answer.
-async fn join(socket: &mut ClientSocket, channel_id: Snowflake, offer: &str) -> String {
+pub(super) async fn join(socket: &mut ClientSocket, channel_id: Snowflake, offer: &str) -> String {
     send_join(socket, channel_id, offer).await;
     match receive_dispatch(socket, |event| {
         matches!(
@@ -405,7 +405,10 @@ async fn join_and_start(socket: &mut ClientSocket, channel_id: Snowflake, marker
     start_bot(bot, &answer, marker)
 }
 
-async fn next_voice_state_update(socket: &mut ClientSocket, user_id: Snowflake) -> VoiceState {
+pub(super) async fn next_voice_state_update(
+    socket: &mut ClientSocket,
+    user_id: Snowflake,
+) -> VoiceState {
     match receive_dispatch(socket, |event| {
         matches!(event, GatewayEvent::VoiceStateUpdate { voice_state } if voice_state.user_id == user_id)
     })
@@ -945,6 +948,7 @@ async fn sounds_reach_the_channel_only_when_allowed_and_joins_announce_the_join_
     let deafen = |self_deaf| ClientFrame::VoiceState {
         self_mute: false,
         self_deaf,
+        self_video: false,
     };
     // Suppressed in the lounge: ignored. The member's second sound comes too soon: ignored.
     send(&mut muted, &play).await;
@@ -975,6 +979,7 @@ async fn sounds_reach_the_channel_only_when_allowed_and_joins_announce_the_join_
         &ClientFrame::VoiceState {
             self_mute: true,
             self_deaf: false,
+            self_video: false,
         },
     )
     .await;

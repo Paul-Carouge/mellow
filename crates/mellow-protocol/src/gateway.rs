@@ -34,8 +34,11 @@ pub enum ClientFrame {
     /// Joins a voice channel, moves to another one, or reconnects the media of the current one
     /// (an ICE restart after a network change: same channel, no leave or join is announced). The
     /// offer holds one `sendonly` or `sendrecv` audio m-line, then 1 to
-    /// `MAXIMUM_VOICE_RECEIVE_SLOTS` `recvonly` ones (ADR-0030). Answered on this session only by
-    /// `VOICE_SESSION_DESCRIPTION` or `VOICE_JOIN_REFUSED`.
+    /// `MAXIMUM_VOICE_RECEIVE_SLOTS` `recvonly` ones (ADR-0030). A client able to show video adds
+    /// one `sendonly` or `sendrecv` video m-line for its camera (VP8, simulcast with the RIDs `h`,
+    /// `l` and `q`), then 1 to `MAXIMUM_VIDEO_RECEIVE_SLOTS` `recvonly` video ones (ADR-0035).
+    /// Answered on this session only by `VOICE_SESSION_DESCRIPTION` or `VOICE_JOIN_REFUSED`. A
+    /// join always starts with the camera off.
     VoiceJoin {
         channel_id: Snowflake,
         /// Chosen by the client, opaque to the server and echoed in the answer or refusal, so a
@@ -47,8 +50,19 @@ pub enum ClientFrame {
     },
     /// Leaves the voice channel this session is connected to, if any.
     VoiceLeave,
-    /// Changes the user's own mute and deafen while connected.
-    VoiceState { self_mute: bool, self_deaf: bool },
+    /// Changes the user's own mute, deafen and camera while connected. Turning the camera on is
+    /// answered by `VOICE_STATE_UPDATE` when allowed, `VOICE_VIDEO_REFUSED` otherwise.
+    VoiceState {
+        self_mute: bool,
+        self_deaf: bool,
+        /// Absent from older clients, which have no camera: off.
+        #[serde(default)]
+        self_video: bool,
+    },
+    /// The cameras this session shows and how large (ADR-0035), at most
+    /// `MAXIMUM_VIDEO_RECEIVE_SLOTS`: replaces the previous list. The server gives each one a
+    /// video receive slot (`VOICE_SLOT_ASSIGNED`) and the layer that fits its size.
+    VoiceVideoWatch { cameras: Vec<WatchedCamera> },
     /// Plays one of the voice channel's server sounds to everyone connected to it (ADR-0032).
     /// Answered by `VOICE_SOUND_PLAYED` when allowed; ignored otherwise.
     VoicePlaySound { sound_id: Snowflake },
@@ -60,10 +74,48 @@ pub const MINIMUM_MILLISECONDS_BETWEEN_SOUNDS: u64 = 2_000;
 /// The most voices one participant hears at once: receive m-lines of a voice offer (ADR-0030).
 pub const MAXIMUM_VOICE_RECEIVE_SLOTS: usize = 16;
 
-/// The largest SDP offer the server reads, in bytes. A Chromium offer with 17 audio m-lines
-/// (one send, 16 receive) is about 16 kB with its candidates: this leaves room for longer
-/// codec lists without letting one frame weigh much.
-pub const MAXIMUM_VOICE_OFFER_BYTES: usize = 28 * 1024;
+/// The most cameras one participant watches at once: video receive m-lines of an offer
+/// (ADR-0035).
+pub const MAXIMUM_VIDEO_RECEIVE_SLOTS: usize = 9;
+
+/// The largest SDP offer the server reads, in bytes. A Chromium offer with 17 audio m-lines, a
+/// simulcast camera and 9 video receive m-lines is about 34 kB with VP8 and Opus only (ADR-0035):
+/// this leaves room for longer codec lists without letting one frame weigh much.
+pub const MAXIMUM_VOICE_OFFER_BYTES: usize = 48 * 1024;
+
+/// One camera a session shows, in `voice_video_watch`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WatchedCamera {
+    pub user_id: Snowflake,
+    pub size: VideoTileSize,
+}
+
+/// How large a camera's tile is shown, which decides the layer it receives (ADR-0035).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoTileSize {
+    /// 1280 × 720: a grid of one, or the speaker view's large tile.
+    Large,
+    /// 640 × 360: a grid of 2 to 4.
+    Medium,
+    /// 320 × 180: a grid of 5 to 9, or the speaker view's small tiles.
+    Small,
+}
+
+/// A camera's simulcast layer, named by its RID in the SDP (ADR-0035).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum SimulcastLayer {
+    /// 320 × 180, up to 150 kbit/s.
+    #[serde(rename = "q")]
+    Quarter,
+    /// 640 × 360, up to 500 kbit/s.
+    #[serde(rename = "l")]
+    Low,
+    /// 1280 × 720, up to 1.5 Mbit/s.
+    #[serde(rename = "h")]
+    High,
+}
 
 /// The session token is never printed.
 impl std::fmt::Debug for ClientFrame {
@@ -100,10 +152,16 @@ impl std::fmt::Debug for ClientFrame {
             Self::VoiceState {
                 self_mute,
                 self_deaf,
+                self_video,
             } => formatter
                 .debug_struct("VoiceState")
                 .field("self_mute", self_mute)
                 .field("self_deaf", self_deaf)
+                .field("self_video", self_video)
+                .finish(),
+            Self::VoiceVideoWatch { cameras } => formatter
+                .debug_struct("VoiceVideoWatch")
+                .field("cameras", cameras)
                 .finish(),
             Self::VoicePlaySound { sound_id } => formatter
                 .debug_struct("VoicePlaySound")
@@ -182,6 +240,8 @@ pub struct Ready {
 }
 
 /// One person connected to a voice channel, as the channel's viewers see it.
+// The flags are independent wire fields, as on Discord: an enum would change the JSON.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VoiceState {
     pub user_id: Snowflake,
@@ -197,6 +257,21 @@ pub struct VoiceState {
     /// person joins or moves in (ADR-0032). Absent when none, and from older servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join_sound_id: Option<Snowflake>,
+    /// The person's camera is on and forwarded (ADR-0035). Absent from older servers: off.
+    #[serde(default)]
+    pub self_video: bool,
+}
+
+/// Why the server refused to turn a camera on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceVideoRefusal {
+    /// `STREAM` is missing in the channel.
+    MissingPermissions,
+    /// The channel or the instance has as many cameras on as it allows.
+    TooManyCameras,
+    /// The session's offer had no video m-lines, or video is off on this instance.
+    VideoUnavailable,
 }
 
 /// Why the server refused a `voice_join`.
@@ -413,13 +488,27 @@ pub enum GatewayEvent {
         offer_id: u32,
         reason: VoiceJoinRefusal,
     },
-    /// The server now relays `user_id`'s voice on this session's receive m-line `mid` (one of its
-    /// `recvonly` transceivers), until another event names the same `mid`. Lets the client set a
-    /// per-person volume. Sent to that session only; forgotten with its media session.
+    /// The server now relays `user_id`'s voice, or camera for a video m-line (ADR-0035), on this
+    /// session's receive m-line `mid` (one of its `recvonly` transceivers), until another event
+    /// names the same `mid`. Lets the client set a per-person volume and put each camera in its
+    /// tile. Sent to that session only; forgotten with its media session.
     VoiceSlotAssigned {
         channel_id: Snowflake,
         mid: String,
         user_id: Snowflake,
+    },
+    /// The server refused to turn this session's camera on (ADR-0035); it stays off. Sent to that
+    /// session only.
+    VoiceVideoRefused {
+        channel_id: Snowflake,
+        reason: VoiceVideoRefusal,
+    },
+    /// The layers of this session's camera someone watches, lowest first (ADR-0035): the client
+    /// pauses the others. Sent to that session only, when the set changes; empty when nobody
+    /// watches.
+    VoiceVideoLayers {
+        channel_id: Snowflake,
+        active: Vec<SimulcastLayer>,
     },
     /// The server ended this session's voice connection. Sent to that session only; the others
     /// learn it from `VOICE_STATE_DELETE` (or `VOICE_STATE_UPDATE` after a move).
@@ -680,8 +769,47 @@ mod tests {
             state,
             ClientFrame::VoiceState {
                 self_mute: true,
-                self_deaf: false
+                self_deaf: false,
+                self_video: false,
+            },
+            "older clients have no camera"
+        );
+        let camera_on: ClientFrame = serde_json::from_str(
+            r#"{"op":"voice_state","d":{"self_mute":false,"self_deaf":false,"self_video":true}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            camera_on,
+            ClientFrame::VoiceState {
+                self_video: true,
+                ..
             }
+        ));
+        let watch: ClientFrame = serde_json::from_str(
+            r#"{"op":"voice_video_watch","d":{"cameras":[{"user_id":"3","size":"large"},{"user_id":"4","size":"small"}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            watch,
+            ClientFrame::VoiceVideoWatch {
+                cameras: vec![
+                    WatchedCamera {
+                        user_id: Snowflake::from_raw(3),
+                        size: VideoTileSize::Large,
+                    },
+                    WatchedCamera {
+                        user_id: Snowflake::from_raw(4),
+                        size: VideoTileSize::Small,
+                    },
+                ],
+            }
+        );
+        assert!(
+            serde_json::from_str::<ClientFrame>(
+                r#"{"op":"voice_video_watch","d":{"cameras":[{"user_id":"3","size":"huge"}]}}"#
+            )
+            .is_err(),
+            "unknown tile sizes are refused"
         );
         assert!(
             serde_json::from_str::<ClientFrame>(
@@ -706,6 +834,33 @@ mod tests {
     }
 
     #[test]
+    fn camera_events_name_layers_by_their_rid_and_reasons_in_snake_case() {
+        let cases = [
+            (
+                GatewayEvent::VoiceVideoRefused {
+                    channel_id: Snowflake::from_raw(2),
+                    reason: VoiceVideoRefusal::TooManyCameras,
+                },
+                serde_json::json!({"t": "VOICE_VIDEO_REFUSED",
+                    "data": {"channel_id": "2", "reason": "too_many_cameras"}}),
+            ),
+            (
+                GatewayEvent::VoiceVideoLayers {
+                    channel_id: Snowflake::from_raw(2),
+                    active: vec![SimulcastLayer::Quarter, SimulcastLayer::High],
+                },
+                serde_json::json!({"t": "VOICE_VIDEO_LAYERS",
+                    "data": {"channel_id": "2", "active": ["q", "h"]}}),
+            ),
+        ];
+        for (event, expected) in cases {
+            let json = serde_json::to_value(&event).unwrap();
+            assert_eq!(json, expected);
+            assert_eq!(serde_json::from_value::<GatewayEvent>(json).unwrap(), event);
+        }
+    }
+
+    #[test]
     fn voice_events_carry_string_ids_and_snake_case_reasons() {
         let voice_state = VoiceState {
             user_id: Snowflake::from_raw(3),
@@ -715,6 +870,7 @@ mod tests {
             self_deaf: false,
             suppressed: false,
             join_sound_id: None,
+            self_video: true,
         };
         let cases = [
             (
@@ -723,7 +879,8 @@ mod tests {
                 },
                 serde_json::json!({"t": "VOICE_STATE_UPDATE", "data": {"voice_state": {
                     "user_id": "3", "guild_id": "1", "channel_id": "2",
-                    "self_mute": true, "self_deaf": false, "suppressed": false
+                    "self_mute": true, "self_deaf": false, "suppressed": false,
+                    "self_video": true
                 }}}),
             ),
             (

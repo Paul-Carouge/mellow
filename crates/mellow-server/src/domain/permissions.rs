@@ -73,6 +73,16 @@ pub(crate) fn may_use_soundboard(channel_permissions: Permissions) -> bool {
         && channel_permissions.contains(Permissions::USE_SOUNDBOARD)
 }
 
+/// Whether a member may turn their camera on in a voice channel (ADR-0035): they may be connected
+/// there and hold `STREAM`. `SPEAK` is not needed: as on Discord, a member who may not speak may
+/// still show their camera. `channel_permissions` are the member's permissions in the voice
+/// channel, overwrites applied.
+#[must_use]
+pub(crate) fn may_send_video(channel_permissions: Permissions) -> bool {
+    voice_entitlement(channel_permissions) != VoiceEntitlement::Refused
+        && channel_permissions.contains(Permissions::STREAM)
+}
+
 /// What someone may do in a direct-message conversation: participants view and read it. In a
 /// one-to-one conversation they write only while they may reach the other person (a shared guild
 /// or a friendship, and no block either way, ADR-0025), so a member kicked from the only shared
@@ -294,6 +304,26 @@ mod tests {
         ] {
             assert!(
                 !may_use_soundboard(Permissions::DEFAULT_EVERYONE - missing),
+                "{missing:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_camera_needs_stream_and_being_connected_but_not_speak() {
+        assert!(may_send_video(Permissions::DEFAULT_EVERYONE));
+        assert!(may_send_video(Permissions::all()));
+        assert!(
+            may_send_video(Permissions::DEFAULT_EVERYONE - Permissions::SPEAK),
+            "a member who may not speak may still show their camera"
+        );
+        for missing in [
+            Permissions::STREAM,
+            Permissions::CONNECT,
+            Permissions::VIEW_CHANNEL,
+        ] {
+            assert!(
+                !may_send_video(Permissions::DEFAULT_EVERYONE - missing),
                 "{missing:?}"
             );
         }

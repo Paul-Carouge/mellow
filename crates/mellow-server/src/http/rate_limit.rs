@@ -237,6 +237,13 @@ pub(crate) const VOICE_STATE_CHANGES_PER_USER: RateLimit = RateLimit {
     window: Duration::from_secs(10),
 };
 
+/// Camera lists per user (`voice_video_watch`, ADR-0035): clients send one per layout change,
+/// coalesced, so this only stops a flood of slot and layer changes in the media loop.
+pub(crate) const VOICE_VIDEO_WATCH_CHANGES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 30,
+    window: Duration::from_secs(10),
+};
+
 /// Gateway WebSocket openings per client address (each holds a socket for up to 10 s unidentified).
 pub(crate) const GATEWAY_CONNECTIONS_PER_ADDRESS: RateLimit = RateLimit {
     maximum_events: 10,
