@@ -129,6 +129,67 @@ pub(crate) async fn claim_next_icon(
     .transpose()
 }
 
+/// The table a claimed picture is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClaimedPictureKind {
+    Attachment,
+    ProfileImage,
+    Icon,
+}
+
+/// Puts a claimed picture back in the queue after a failure that says nothing about the picture.
+/// A picture already swapped for its new version stays done: the avatar or icon row is gone, and
+/// an attachment points at its new file.
+pub(crate) async fn release_claim(
+    database: &Database,
+    kind: ClaimedPictureKind,
+    id: Snowflake,
+) -> Result<(), MessageStorageError> {
+    let query = match kind {
+        ClaimedPictureKind::Attachment => {
+            "UPDATE attachments SET compression_version = 0 \
+             WHERE id = ? AND compression_version = 1 AND COALESCE(file_id, id) = id"
+        }
+        ClaimedPictureKind::ProfileImage => {
+            "UPDATE profile_images SET compression_version = 0 \
+             WHERE id = ? AND compression_version = 1"
+        }
+        ClaimedPictureKind::Icon => {
+            "UPDATE guild_images SET compression_version = 0 WHERE id = ? AND compression_version = 1"
+        }
+    };
+    sqlx::query(query)
+        .bind(to_sqlite_integer(id.raw())?)
+        .execute(database.writer())
+        .await?;
+    Ok(())
+}
+
+/// SQLite's primary result codes for a database another connection holds.
+const SQLITE_BUSY: i64 = 5;
+const SQLITE_LOCKED: i64 = 6;
+
+/// Whether `error` comes from a database too busy to answer in time (the writer taken past its
+/// wait, a lock held): a later try may well succeed.
+pub(crate) fn is_database_contention(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(error) = error.downcast_ref::<sqlx::Error>() {
+            return match error {
+                sqlx::Error::PoolTimedOut => true,
+                sqlx::Error::Database(error) => error
+                    .code()
+                    .and_then(|code| code.parse::<i64>().ok())
+                    // Extended result codes keep the primary one in their low byte.
+                    .is_some_and(|code| matches!(code & 0xff, SQLITE_BUSY | SQLITE_LOCKED)),
+                _ => false,
+            };
+        }
+        current = error.source();
+    }
+    false
+}
+
 /// Puts `new_image` in the place of `previous` as the user's avatar or banner, in one transaction;
 /// `false`, and nothing written, when `previous` is no longer in that place (replaced meanwhile).
 pub(crate) async fn swap_profile_image(
@@ -285,4 +346,63 @@ pub(crate) async fn clear_recompression_requests(
         .execute(database.writer())
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_released_claim_waits_again_unless_the_attachment_already_has_its_new_file() {
+        let (_directory, database) = crate::domain::accounts::tests::migrated_database().await;
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) VALUES (30, 20, 1, 'files'); \
+             INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
+             content_type, size_bytes, created_at_unix_milliseconds, compression_version) \
+             VALUES (40, 20, 1, 30, 'a.png', 'image/png', 300, 0, 0), \
+             (41, 20, 1, 30, 'b.png', 'image/png', 300, 0, 0); \
+             INSERT INTO profile_images (id, user_id, size_bytes, created_at_unix_milliseconds, \
+             compression_version) VALUES (50, 1, 700, 0, 0);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+
+        let image = claim_next_profile_image(&database).await.unwrap().unwrap();
+        let newest = claim_next_attachment(&database).await.unwrap().unwrap();
+        let oldest = claim_next_attachment(&database).await.unwrap().unwrap();
+        // The newest one was swapped for its new file before the failure.
+        sqlx::raw_sql("UPDATE attachments SET file_id = 99 WHERE id = 41")
+            .execute(database.writer())
+            .await
+            .unwrap();
+        let waiting_while_claimed = pictures_to_recompress(&database).await.unwrap();
+        release_claim(&database, ClaimedPictureKind::ProfileImage, image.id)
+            .await
+            .unwrap();
+        for id in [newest, oldest] {
+            release_claim(&database, ClaimedPictureKind::Attachment, id)
+                .await
+                .unwrap();
+        }
+        let waiting_after_release = pictures_to_recompress(&database).await.unwrap();
+        database.close().await;
+
+        assert_eq!(waiting_while_claimed.count(), 0);
+        assert_eq!(waiting_after_release.profile_images.count, 1);
+        assert_eq!(
+            waiting_after_release.attachments,
+            WaitingPictures {
+                count: 1,
+                stored_bytes: 300
+            },
+            "only the attachment still on its old file"
+        );
+    }
 }
