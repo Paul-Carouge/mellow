@@ -145,7 +145,7 @@ pub(crate) enum AttachmentFileKind {
 /// An attachment file the reader may download, not read yet.
 #[derive(Debug)]
 pub(crate) struct ReadableAttachment {
-    /// The file's own id: a preview's differs from its attachment's.
+    /// The file's own id: a preview's, or a recompressed file's, differs from its attachment's.
     id: Snowflake,
     file_name: String,
     content_type: String,
@@ -153,10 +153,9 @@ pub(crate) struct ReadableAttachment {
 }
 
 impl ReadableAttachment {
-    /// A strong HTTP entity tag. The file only changes when `Attachments::optimize` replaces it
-    /// with a strictly smaller one, so its size tells versions apart; a replacement that could
-    /// keep the size would need a stored version counter here instead. A preview is never
-    /// replaced, and its id differs from the original's, so the two never share a tag.
+    /// A strong HTTP entity tag. Each version of a file has its own id (`Attachments::optimize`
+    /// writes a replacement under a new one), and a preview's id differs from the original's, so
+    /// no two versions share a tag.
     pub(crate) fn entity_tag(&self) -> String {
         format!("\"{}-{}\"", self.id, self.size_bytes)
     }
@@ -456,28 +455,26 @@ impl Attachments {
             .acquire_owned()
             .await
             .map_err(|error| MessageError::Internal(Box::new(error)))?;
-        let original = self.files.read(attachment.id).await?;
+        let original = self.files.read(attachment.file_id).await?;
         let content_type = attachment.content_type.clone();
         let deadline = std::time::Instant::now() + OPTIMIZATION_TIME_BUDGET;
         // Waited for to its end, so this worker runs one job at a time and the other slot stays
         // free for avatars and banners. Both come from the upload, which only this job has: no
         // AV1 decoder reads the stored AVIF back.
-        let (original, optimized, preview) = tokio::task::spawn_blocking(move || {
+        let (optimized, preview) = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let optimized = optimize_attachment(&original, &content_type, deadline);
             let preview_deadline = std::time::Instant::now() + PREVIEW_TIME_BUDGET;
             let preview = attachment_preview(&original, &content_type, preview_deadline);
-            (original, optimized, preview)
+            (optimized, preview)
         })
         .await
         .map_err(|error| MessageError::Internal(Box::new(error)))?;
         let stored_size_bytes = match optimized {
-            Ok(Some(optimized)) => {
-                match self.replace_file(&attachment, optimized, original).await? {
-                    Some(size_bytes) => size_bytes,
-                    None => return Ok(()),
-                }
-            }
+            Ok(Some(optimized)) => match self.replace_file(&attachment, optimized).await? {
+                Some(size_bytes) => size_bytes,
+                None => return Ok(()),
+            },
             // Undecodable or not smaller: the upload stays, and may still get a preview.
             Ok(None) | Err(ImageProcessingError::Unsupported | ImageProcessingError::TooLarge) => {
                 attachment.size_bytes
@@ -506,12 +503,14 @@ impl Attachments {
     }
 
     /// Replaces the file with its smaller form when it is smaller; the size of the file stored
-    /// afterwards, or `None` when the attachment was deleted meanwhile.
+    /// afterwards, or `None` when the attachment was deleted or its file replaced meanwhile. The new
+    /// form is written under a new file id and the row switched to it before the old file goes, so
+    /// a crash at any point leaves a row that matches its file; a file left without its row is
+    /// swept by `purge`.
     async fn replace_file(
         &self,
         attachment: &StoredAttachment,
         optimized: ProcessedImage,
-        original: Vec<u8>,
     ) -> Result<Option<u64>, MessageError> {
         let file_name = if optimized.content_type == attachment.content_type {
             attachment.file_name.clone()
@@ -519,35 +518,30 @@ impl Attachments {
             with_extension_of(&attachment.file_name, optimized.content_type)
         };
         let size_bytes = u64::try_from(optimized.bytes.len()).unwrap_or(u64::MAX);
-        // `ReadableAttachment::entity_tag` relies on a replacement never keeping the size.
         if size_bytes >= attachment.size_bytes {
             return Ok(Some(attachment.size_bytes));
         }
-        // shortcut: the file is replaced under the same id before its row changes, so a crash in
-        // between leaves an AVIF described as PNG (served as a download, not inline); a separate
-        // file id per version would close it, worth doing if crashes there are ever seen.
-        self.files.write(attachment.id, optimized.bytes).await?;
+        let new_file_id = self
+            .ids
+            .next_id(crate::domain::clock::now_unix_milliseconds())?;
+        self.files.write(new_file_id, optimized.bytes).await?;
         let updated = storage::update_attachment_file(
             &self.database,
             attachment.id,
+            attachment.file_id,
+            new_file_id,
             &file_name,
             optimized.content_type,
             size_bytes,
         )
         .await;
-        match updated {
-            Ok(true) => Ok(Some(size_bytes)),
-            // Deleted meanwhile: the file has no row any more.
-            Ok(false) => {
-                let _ = self.files.delete(attachment.id).await;
-                Ok(None)
-            }
-            Err(error) => {
-                // The row still describes the original: put it back so downloads keep matching.
-                self.files.write(attachment.id, original).await?;
-                Err(error.into())
-            }
-        }
+        let (file_to_delete, outcome) = match updated {
+            Ok(true) => (attachment.file_id, Ok(Some(size_bytes))),
+            Ok(false) => (new_file_id, Ok(None)),
+            Err(error) => (new_file_id, Err(error.into())),
+        };
+        let _ = self.files.delete(file_to_delete).await;
+        outcome
     }
 
     /// Writes the preview's sealed file, then points the row at it. A file left without its row
@@ -604,7 +598,7 @@ impl Attachments {
                 size_bytes: preview.size_bytes,
             },
             (AttachmentFileKind::Original | AttachmentFileKind::Preview, _) => ReadableAttachment {
-                id: attachment.id,
+                id: attachment.file_id,
                 file_name: attachment.file_name,
                 content_type: attachment.content_type,
                 size_bytes: attachment.size_bytes,

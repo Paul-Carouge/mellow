@@ -14,6 +14,8 @@ use crate::storage::sqlite_integers::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoredAttachment {
     pub(crate) id: Snowflake,
+    /// The sealed file holding its bytes: the attachment's own id until it is recompressed.
+    pub(crate) file_id: Snowflake,
     pub(crate) channel_id: Snowflake,
     pub(crate) message_id: Option<Snowflake>,
     pub(crate) file_name: String,
@@ -45,7 +47,13 @@ pub(crate) struct NewAttachment {
     pub(crate) created_at_unix_milliseconds: u64,
 }
 
+/// What `attachment_from_row` reads, in its order.
+const ATTACHMENT_COLUMNS: &str = "id, COALESCE(file_id, id), channel_id, message_id, file_name, \
+     content_type, size_bytes, width, height, preview_file_id, preview_content_type, \
+     preview_size_bytes";
+
 type AttachmentRow = (
+    i64,
     i64,
     i64,
     Option<i64>,
@@ -62,6 +70,7 @@ type AttachmentRow = (
 fn attachment_from_row(row: AttachmentRow) -> Result<StoredAttachment, MessageStorageError> {
     let (
         id,
+        file_id,
         channel_id,
         message_id,
         file_name,
@@ -75,6 +84,7 @@ fn attachment_from_row(row: AttachmentRow) -> Result<StoredAttachment, MessageSt
     ) = row;
     Ok(StoredAttachment {
         id: to_snowflake(id)?,
+        file_id: to_snowflake(file_id)?,
         channel_id: to_snowflake(channel_id)?,
         message_id: message_id.map(to_snowflake).transpose()?,
         file_name,
@@ -120,21 +130,27 @@ pub(crate) async fn insert_attachment(
     Ok(())
 }
 
-/// Points the row at its compressed file (ADR-0033); `false` when the attachment is gone.
+/// Points the row at its compressed file, written under `new_file_id` (ADR-0033), if it still
+/// holds `previous_file_id`; `false` when the attachment is gone or its file changed meanwhile.
 pub(crate) async fn update_attachment_file(
     database: &Database,
     attachment_id: Snowflake,
+    previous_file_id: Snowflake,
+    new_file_id: Snowflake,
     file_name: &str,
     content_type: &str,
     size_bytes: u64,
 ) -> Result<bool, MessageStorageError> {
     let updated = sqlx::query(
-        "UPDATE attachments SET file_name = ?, content_type = ?, size_bytes = ? WHERE id = ?",
+        "UPDATE attachments SET file_id = ?, file_name = ?, content_type = ?, size_bytes = ? \
+         WHERE id = ? AND COALESCE(file_id, id) = ?",
     )
+    .bind(to_sqlite_integer(new_file_id.raw())?)
     .bind(file_name)
     .bind(content_type)
     .bind(to_sqlite_integer(size_bytes)?)
     .bind(to_sqlite_integer(attachment_id.raw())?)
+    .bind(to_sqlite_integer(previous_file_id.raw())?)
     .execute(database.writer())
     .await?;
     Ok(updated.rows_affected() > 0)
@@ -203,10 +219,9 @@ pub(crate) async fn find_attachment(
     let Some(attachment_id) = lookup_integer(attachment_id) else {
         return Ok(None);
     };
-    let row: Option<AttachmentRow> = sqlx::query_as(
-        "SELECT id, channel_id, message_id, file_name, content_type, size_bytes, width, height, \
-         preview_file_id, preview_content_type, preview_size_bytes FROM attachments WHERE id = ?",
-    )
+    let row: Option<AttachmentRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {ATTACHMENT_COLUMNS} FROM attachments WHERE id = ?"
+    )))
     .bind(attachment_id)
     .fetch_optional(database.readers())
     .await?;
@@ -223,11 +238,10 @@ pub(crate) async fn attachments_of_messages(
         return Ok(by_message);
     }
     let ids = json_array_of_ids(message_ids);
-    let rows: Vec<AttachmentRow> = sqlx::query_as(
-        "SELECT id, channel_id, message_id, file_name, content_type, size_bytes, width, height, \
-         preview_file_id, preview_content_type, preview_size_bytes FROM attachments \
-         WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY id",
-    )
+    let rows: Vec<AttachmentRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {ATTACHMENT_COLUMNS} FROM attachments \
+         WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY id"
+    )))
     .bind(ids)
     .fetch_all(database.readers())
     .await?;
@@ -248,7 +262,7 @@ pub(crate) async fn delete_unlinked_before(
 ) -> Result<Vec<Snowflake>, MessageStorageError> {
     let rows: Vec<(i64, Option<i64>)> = sqlx::query_as(
         "DELETE FROM attachments WHERE message_id IS NULL AND created_at_unix_milliseconds < ? \
-         RETURNING id, preview_file_id",
+         RETURNING COALESCE(file_id, id), preview_file_id",
     )
     .bind(to_sqlite_integer(cutoff_unix_milliseconds)?)
     .fetch_all(database.writer())
@@ -262,7 +276,7 @@ pub(crate) async fn all_attachment_file_ids(
     database: &Database,
 ) -> Result<Vec<Snowflake>, MessageStorageError> {
     let rows: Vec<(i64, Option<i64>)> =
-        sqlx::query_as("SELECT id, preview_file_id FROM attachments")
+        sqlx::query_as("SELECT COALESCE(file_id, id), preview_file_id FROM attachments")
             .fetch_all(database.readers())
             .await?;
     file_ids_of_rows(rows)
