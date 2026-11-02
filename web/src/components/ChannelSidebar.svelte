@@ -3,11 +3,9 @@
   import { SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
-  import { type ChannelSection, channelSections } from "../lib/channels";
-  import { type MellowClient, describeError } from "../lib/client.svelte";
+  import type { MellowClient } from "../lib/client.svelte";
   import {
     type Channel,
-    type ChannelPlacement,
     type DirectMessageChannel,
     type Guild,
     Permission,
@@ -27,12 +25,8 @@
     categoryStepIndex,
     channelDropAt,
     channelStepDestination,
-    isPendingOrderSettled,
-    placementsOf,
-    sectionsFromPlacements,
-    withCategoryMoved,
-    withChannelMoved,
   } from "./channel-order";
+  import { ChannelReorder } from "./channel-reorder.svelte";
   import { canManageChannel, visibleChannelSections } from "./channel-settings";
   import { contextMenuTrigger } from "./context-menu-trigger";
   import {
@@ -56,7 +50,7 @@
     otherParticipants,
     participantCount,
   } from "./group-conversations";
-  import ContextMenu, { type ContextMenuOutcome } from "./ContextMenu.svelte";
+  import ContextMenu from "./ContextMenu.svelte";
   import GroupConfirmDialog from "./GroupConfirmDialog.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
@@ -138,127 +132,16 @@
 
   // --- Order: a pending move, the drag, the menus' moves (DESIGN.md §5.3) ------------------------
 
-  /**
-   * How long an agreed order waits for the gateway's `GUILD_CREATE` before the instance's order
-   * shows again: a fallback for an echo that never comes (a dropped connection resyncs anyway).
-   */
-  const PENDING_ORDER_ECHO_TIMEOUT_MILLISECONDS = 5_000;
+  const reorder = new ChannelReorder(() => client, (sentence) => (announcement = sentence));
+  const sections = $derived(reorder.sections);
+  const canReorderNow = $derived(canCreateChannels && !reorder.isReordering);
 
-  interface PendingOrder {
-    readonly guildId: Snowflake;
-    readonly placements: readonly ChannelPlacement[];
-    /** The guild's channels when the instance agreed: the next snapshot replaces them. */
-    readonly answeredChannels: readonly Channel[] | null;
-  }
-
-  /** The order sent and not yet echoed, shown meanwhile so a drop does not snap back. */
-  let pendingOrder = $state.raw<PendingOrder | null>(null);
-  let isReordering = $state(false);
-  let reorderError = $state("");
-  const instanceSections = $derived(guild ? channelSections(guild) : []);
-  const sections = $derived.by(() => {
-    const pending = pendingOrder;
-    if (!guild || pending === null || pending.guildId !== guild.id) {
-      return instanceSections;
-    }
-    return sectionsFromPlacements(guild.channels, pending.placements) ?? instanceSections;
-  });
-  const canReorderNow = $derived(canCreateChannels && !isReordering);
-
-  $effect(() => {
-    const pending = pendingOrder;
-    if (pending === null || guild?.id !== pending.guildId) {
-      return;
-    }
-    if (isPendingOrderSettled(pending.placements, pending.answeredChannels, placementsOf(instanceSections), guild.channels)) {
-      pendingOrder = null;
-    }
-  });
-
-  /** Sends the whole new order; resolves to the error to show, or null. */
-  async function applyOrder(guildId: Snowflake, next: readonly ChannelSection[], failureSummary: string): Promise<string | null> {
-    const placements = placementsOf(next);
-    const order: PendingOrder = { guildId, placements, answeredChannels: null };
-    pendingOrder = order;
-    isReordering = true;
-    reorderError = "";
-    try {
-      await client.reorderChannels(guildId, placements);
-      if (pendingOrder === order) {
-        const answered: PendingOrder = {
-          ...order,
-          answeredChannels: client.guilds.find((candidate) => candidate.id === guildId)?.channels ?? null,
-        };
-        pendingOrder = answered;
-        setTimeout(() => {
-          if (pendingOrder === answered) {
-            pendingOrder = null;
-          }
-        }, PENDING_ORDER_ECHO_TIMEOUT_MILLISECONDS);
-      }
-      return null;
-    } catch (error) {
-      if (pendingOrder === order) {
-        pendingOrder = null;
-      }
-      return describeError(error, failureSummary);
-    } finally {
-      isReordering = false;
-    }
-  }
-
-  async function menuOutcome(next: ChannelSection[] | null, failureSummary: string, done: string): Promise<ContextMenuOutcome> {
-    if (!guild || next === null) {
-      return { announcement: "" };
-    }
-    const problem = await applyOrder(guild.id, next, failureSummary);
-    return problem === null ? { announcement: done } : { error: problem };
-  }
-
-  function moveChannelStep(channel: Channel, step: -1 | 1): Promise<ContextMenuOutcome> {
-    const destination = channelStepDestination(sections, channel.id, step);
-    return menuOutcome(
-      destination && withChannelMoved(sections, channel.id, destination),
-      strings.channelOrder.channelMoveFailed,
-      step === -1 ? strings.channelOrder.channelMovedUp(channel.name) : strings.channelOrder.channelMovedDown(channel.name),
-    );
-  }
-
-  function moveCategoryStep(category: Channel, step: -1 | 1): Promise<ContextMenuOutcome> {
-    const index = categoryStepIndex(sections, category.id, step);
-    return menuOutcome(
-      index === null ? null : withCategoryMoved(sections, category.id, index),
-      strings.channelOrder.categoryMoveFailed,
-      step === -1 ? strings.channelOrder.categoryMovedUp(category.name) : strings.channelOrder.categoryMovedDown(category.name),
-    );
-  }
-
-  function channelMovedSentence(channel: Channel, categoryId: Snowflake | null): string {
-    const category = sections.find((section) => section.category?.id === categoryId)?.category;
-    return category ? strings.channelOrder.channelMovedTo(channel.name, category.name) : strings.channelOrder.channelMovedOut(channel.name);
-  }
-
-  /** "Move to category…": to the end of the one chosen. */
-  async function moveChannelTo(channel: Channel, categoryId: Snowflake | null): Promise<string | null> {
-    // Opened, so the moved row is there to take focus back.
+  /** "Move to category…": the category chosen opens, so the moved row is there to take focus back. */
+  function moveChannelTo(channel: Channel, categoryId: Snowflake | null): Promise<string | null> {
     if (categoryId !== null) {
       collapsedCategoryIds.delete(categoryId);
     }
-    const section = sections.find((candidate) => (candidate.category?.id ?? null) === categoryId);
-    const next = withChannelMoved(sections, channel.id, {
-      categoryId,
-      index: section?.channels.length ?? 0,
-      leavesHiddenCategory: true,
-    });
-    if (!guild || next === null) {
-      return null;
-    }
-    const sentence = channelMovedSentence(channel, categoryId);
-    const problem = await applyOrder(guild.id, next, strings.channelOrder.channelMoveFailed);
-    if (problem === null) {
-      announcement = sentence;
-    }
-    return problem;
+    return reorder.moveChannelTo(channel, categoryId);
   }
 
   let movingChannel = $state<Channel | null>(null);
@@ -374,7 +257,7 @@
         const bounds = source.getBoundingClientRect();
         const listLeft = list?.getBoundingClientRect().left ?? 0;
         rowMenu?.close();
-        reorderError = "";
+        reorder.error = "";
         carried = {
           kind,
           id: item.id,
@@ -418,30 +301,13 @@
       cancelAnimationFrame(autoScrollFrame);
       autoScrollFrame = null;
     }
-    if (!isDropped || !item || !guild) {
+    if (!isDropped || !item) {
       return;
     }
-    const guildId = guild.id;
-    let next: ChannelSection[] | null = null;
-    let sentence = "";
-    let failure: string = strings.channelOrder.channelMoveFailed;
     if (item.kind === "channel" && target) {
-      const channel = sections.flatMap((section) => section.channels).find((candidate) => candidate.id === item.id);
-      next = withChannelMoved(sections, item.id, target.destination);
-      sentence = channel ? channelMovedSentence(channel, target.destination.categoryId) : "";
+      await reorder.dropChannel(item.id, target.destination);
     } else if (item.kind === "category" && categoryTarget) {
-      next = withCategoryMoved(sections, item.id, categoryTarget.index);
-      sentence = strings.channelOrder.categoryMoved(item.name);
-      failure = strings.channelOrder.categoryMoveFailed;
-    }
-    if (next === null) {
-      return;
-    }
-    const problem = await applyOrder(guildId, next, failure);
-    if (problem === null) {
-      announcement = sentence;
-    } else {
-      reorderError = problem;
+      await reorder.dropCategory(item, categoryTarget.index);
     }
   }
 
@@ -525,7 +391,7 @@
             return { onselect: () => oneditchannel(channel) };
           case "move-up":
           case "move-down":
-            return { onselectAndWait: () => moveChannelStep(channel, action === "move-up" ? -1 : 1) };
+            return { onselectAndWait: () => reorder.moveChannelStep(channel, action === "move-up" ? -1 : 1) };
           case "move-to-category":
             return {
               onselect: () => {
@@ -557,7 +423,7 @@
             return { onselect: () => (channelDialog = { kind: "rename", channel: category }) };
           case "move-up":
           case "move-down":
-            return { onselectAndWait: () => moveCategoryStep(category, action === "move-up" ? -1 : 1) };
+            return { onselectAndWait: () => reorder.moveCategoryStep(category, action === "move-up" ? -1 : 1) };
           case "copy-category-id":
             return { onselectAndWait: () => copyIdentifier(category.id, strings.contextMenu.categoryIdCopied) };
           case "delete-category":
@@ -771,16 +637,16 @@
   <p class="sr-only" aria-live="polite">{announcement}</p>
   <!-- A refused move: the old order is back, and this says why until closed or the next move. -->
   <div role="alert" class="contents">
-    {#if reorderError}
+    {#if reorder.error}
       <p class="mt-xs me-(--mw-component-channel-row-margin-inline) flex items-start gap-xs ps-(--mw-component-channel-row-padding-inline) type-body-sm text-text-danger">
         <Icon name="warning-circle" class="size-(--mw-component-channel-row-trailing-icon-size) shrink-0" />
-        <span class="min-w-0 flex-1">{reorderError}</span>
+        <span class="min-w-0 flex-1">{reorder.error}</span>
         <IconButton
           icon="x"
           label={strings.common.close}
           class="size-(--mw-component-channel-row-settings-button-size) text-(--mw-component-channel-row-settings-icon) hover:text-(--mw-component-channel-row-settings-icon-hover)"
           iconClass="size-(--mw-component-channel-row-settings-icon-size)"
-          onclick={() => (reorderError = "")}
+          onclick={() => (reorder.error = "")}
         />
       </p>
     {/if}
