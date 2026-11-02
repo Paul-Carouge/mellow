@@ -702,6 +702,9 @@ export const Permission = {
   CREATE_INVITE: 1n << 10n,
   KICK_MEMBERS: 1n << 11n,
   BAN_MEMBERS: 1n << 12n,
+  /** Reserved for nicknames, which no client offers yet; roles may already hold them. */
+  CHANGE_NICKNAME: 1n << 13n,
+  MANAGE_NICKNAMES: 1n << 14n,
   VIEW_AUDIT_LOG: 1n << 15n,
   ADD_REACTIONS: 1n << 16n,
   /** Add, edit and delete the server's custom emoji and soundboard sounds (named `MANAGE_EMOJIS` before sounds). */
