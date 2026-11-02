@@ -23,5 +23,12 @@
   },
   "dependencies": {
     "@sapphi-red/web-noise-suppressor": "0.4.1"
+  },
+  "//": [
+    "allowScripts: fsevents (Vite's optional macOS file watcher) ships its prebuilt fsevents.node, so its install script has nothing to do; denying it explicitly silences npm's install-scripts warning without running unreviewed code.",
+    "npm audit: GHSA-gcqx-w48m-w2h4 (low, deepmerge prototype poisoning, no fixed release) comes through @sveltejs/vite-plugin-svelte, whose latest version (7.3.1) still uses deepmerge 4.3.1. It is accepted: deepmerge only merges this repository's own Svelte options at build time and never reaches the bundle, so no untrusted input gets to it. CI fails the audit from high severity up."
+  ],
+  "allowScripts": {
+    "fsevents": false
   }
 }

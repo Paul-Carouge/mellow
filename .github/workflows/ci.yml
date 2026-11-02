@@ -87,6 +87,7 @@ jobs:
       - name: Type-check, test and build
         working-directory: web
         run: npm ci --ignore-scripts && npm audit signatures && npm run check && npm run test && npm run build
+      # Accepted low advisories are listed, with why, under "//" in web/package.json.
       - name: Dependency audit
         working-directory: web
         run: npm audit --audit-level=high
