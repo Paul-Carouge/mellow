@@ -1,6 +1,9 @@
 //! `cargo xtask tokens [--check]`: generates the web token stylesheet, the app icons and the web app
 //! manifest from `design/tokens.json` and enforces the declared WCAG contrast pairs (DESIGN.md §3.5).
 
+// A command-line program: its messages to the operator go to stderr.
+#![allow(clippy::print_stderr)]
+
 mod app_icons;
 mod css_tokens;
 mod design_tokens;
