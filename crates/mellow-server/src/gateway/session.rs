@@ -12,8 +12,12 @@ use tokio::time::Instant;
 
 use crate::events::{EventHub, SessionKey, SharedEvent};
 
-/// How long a disconnected session waits for its client to resume.
-pub(crate) const RESUME_WINDOW: Duration = Duration::from_secs(60);
+/// How long a disconnected session waits for its client to resume: 2 minutes covers a laptop
+/// lid closed briefly or a train tunnel. Memory does not grow with it: a waiting session holds at
+/// most one replay buffer (`REPLAY_BUFFER_FRAMES`, `REPLAY_BUFFER_BYTES`, payloads shared with
+/// every other session), and a user holds at most `MAXIMUM_SESSIONS_PER_USER` sessions, so at
+/// most 20 MiB per user whatever the window; a longer window only keeps it longer.
+pub(crate) const RESUME_WINDOW: Duration = Duration::from_mins(2);
 /// Dispatches kept for replay; a client missing more resynchronises through REST.
 pub(crate) const REPLAY_BUFFER_FRAMES: usize = 1_024;
 /// Also bounded in bytes, so large messages cannot make one session hold megabytes.
