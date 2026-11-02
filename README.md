@@ -66,6 +66,9 @@ Registration is closed by default (`registration_mode = "open"` in `mellow.toml`
 - Typing: `POST /api/v1/channels/{id}/typing`.
 - Direct messages: `POST /api/v1/users/@me/channels` (`recipient_id`, someone who shares a server), then the messages routes above.
 - Real time: WebSocket `GET /gateway?v=1` — `hello`, then `identify` (or `resume`) with the session token, `ready`, numbered `dispatch` events (messages, channels, members, guilds, typing, presence, user renames, voice states), `heartbeat` every 30 s; `voice_join`, `voice_leave` and `voice_state` for voice channels.
+### Backups
+`mellow-server backup --config /etc/mellow/mellow.toml` copies the database and the attachment files (avatars, icons, emoji and sounds included) into a new `backups/backup-<unix milliseconds>/` directory of the data directory, or under `--output-directory <dir>`, while the server runs. The database copy is a consistent snapshot (`VACUUM INTO`), still encrypted with the instance's key, and the files are copied sealed; the backup checks that every file its database points at was copied, and refuses (leaving nothing) if one was deleted meanwhile, so just run it again. The master key file is not in it: keep a copy of it elsewhere, since neither the instance nor a backup can be decrypted without it. Move the backup to another disk. To restore, stop the server, put the backup's `mellow.db` and `attachments/` in the data directory in place of the current ones (set `mellow.db-wal` and `mellow.db-shm` aside), and start it with the same master key.
+
 ### Production: built-in TLS
 On a server with a public domain, let Mellow get its own Let's Encrypt certificate (no reverse proxy, no certbot):
 ```bash

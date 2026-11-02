@@ -9,7 +9,7 @@ use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKe
 use mellow_protocol::Snowflake;
 use zeroize::Zeroizing;
 
-const SUFFIX_OF_TEMPORARY_FILES: &str = ".partial";
+pub(crate) const SUFFIX_OF_TEMPORARY_FILES: &str = ".partial";
 
 /// Files a sweep deleted, and files it could not delete and left for the next sweep.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

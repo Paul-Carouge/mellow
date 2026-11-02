@@ -8,8 +8,8 @@ use std::process::ExitCode;
 use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use mellow_server::commands::{
-    CreateUserOptions, InitializeOptions, create_user, initialize_instance, serve_instance,
-    set_instance_administrator, shutdown_signal,
+    CreateUserOptions, InitializeOptions, back_up_instance, create_user, initialize_instance,
+    serve_instance, set_instance_administrator, shutdown_signal,
 };
 use mellow_server::config::{
     DEFAULT_CERTIFICATE_DIRECTORY_NAME, DEFAULT_LISTEN_ADDRESS, DEFAULT_TLS_LISTEN_ADDRESS,
@@ -102,6 +102,16 @@ enum Command {
         /// after a migration, restore its pre-migration backup from `backups/` as well.
         #[arg(long)]
         rollback: bool,
+    },
+    /// Copy the database and the attachment files into a new directory while the server runs;
+    /// restoring it needs the master key file too, which is not copied.
+    Backup {
+        #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
+        config: PathBuf,
+        /// Where the backup directory is created; defaults to `backups/` in the data directory.
+        /// Move the backup to another disk afterwards.
+        #[arg(long)]
+        output_directory: Option<PathBuf>,
     },
     /// Instance administration.
     Admin {
@@ -337,6 +347,19 @@ async fn run(cli: Cli) -> Result<()> {
             serve_instance(&load_config(&config)?, shutdown_signal()).await
         }
         Command::Update { check, rollback } => update_executable(check, rollback).await,
+        Command::Backup {
+            config,
+            output_directory,
+        } => {
+            let backup =
+                back_up_instance(&load_config(&config)?, output_directory.as_deref()).await?;
+            eprintln!(
+                "Backed up to {}.\nMove it to another disk, and keep a copy of the master key file \
+                 apart from it: the backup cannot be decrypted without it.",
+                backup.display()
+            );
+            Ok(())
+        }
         Command::Admin { command } => run_admin_command(command).await,
     }
 }

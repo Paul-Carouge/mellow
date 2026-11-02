@@ -4,6 +4,7 @@ pub(crate) mod accounts;
 pub(crate) mod attachment_files;
 pub(crate) mod attachments;
 pub(crate) mod audit_log;
+pub(crate) mod backups;
 mod database;
 pub(crate) mod direct_messages;
 pub(crate) mod guild_emojis;

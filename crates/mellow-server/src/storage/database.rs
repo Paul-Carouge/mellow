@@ -95,6 +95,24 @@ impl Database {
         Ok(())
     }
 
+    /// Writes a consistent copy of the database to `destination` with `VACUUM INTO`, which
+    /// SQLCipher encrypts with the same key. It reads one snapshot of a WAL database, so the server
+    /// keeps writing meanwhile. The path is bound as a parameter, never spliced into the SQL.
+    ///
+    /// # Errors
+    /// Fails if `destination` is not UTF-8 (SQLite needs it), exists already, or cannot be written.
+    pub async fn write_snapshot(&self, destination: &Path) -> Result<(), StorageError> {
+        let destination = destination
+            .to_str()
+            .ok_or(StorageError::NonUtf8Path)?
+            .to_owned();
+        sqlx::query("VACUUM INTO ?")
+            .bind(destination)
+            .execute(&self.writer)
+            .await?;
+        Ok(())
+    }
+
     /// Closes every connection. Await it before the process exits (see `open_encrypted_database`).
     pub async fn close(&self) {
         self.readers.close().await;
@@ -108,6 +126,8 @@ pub enum StorageError {
     CannotDecryptDatabase(#[source] sqlx::Error),
     #[error("the SQLite library is not SQLCipher, refusing to store data unencrypted")]
     SqlcipherUnavailable,
+    #[error("the path is not valid UTF-8, which SQLite cannot use")]
+    NonUtf8Path,
     #[error("database error")]
     Database(#[from] sqlx::Error),
 }

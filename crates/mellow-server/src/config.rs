@@ -38,7 +38,7 @@ const PRIVATE_PROXY_NETWORKS: [&str; 9] = [
 ];
 pub const DATABASE_FILE_NAME: &str = "mellow.db";
 pub const BACKUP_DIRECTORY_NAME: &str = "backups";
-const ATTACHMENT_DIRECTORY_NAME: &str = "attachments";
+pub(crate) const ATTACHMENT_DIRECTORY_NAME: &str = "attachments";
 /// 25 MB, as Discord's default upload limit.
 pub const DEFAULT_MAXIMUM_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 

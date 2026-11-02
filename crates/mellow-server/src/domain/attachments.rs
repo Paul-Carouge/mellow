@@ -125,6 +125,28 @@ pub(crate) async fn purge_attachments_periodically(attachments: Arc<Attachments>
     }
 }
 
+/// The id of every file a row points at: attachments and their previews, avatars, banners, icons
+/// and sounds, which share the file store (ADR-0021, ADR-0032).
+pub(crate) async fn file_ids_in_use(
+    database: &Database,
+) -> Result<HashSet<Snowflake>, MessageError> {
+    Ok(storage::all_attachment_file_ids(database)
+        .await?
+        .into_iter()
+        .chain(crate::storage::profile_images::all_profile_image_file_ids(database).await?)
+        .chain(
+            crate::storage::guild_images::all_guild_image_file_ids(database)
+                .await
+                .map_err(crate::domain::guilds::GuildError::from)?,
+        )
+        .chain(
+            crate::storage::guild_sounds::all_guild_sound_ids(database)
+                .await
+                .map_err(crate::domain::guilds::GuildError::from)?,
+        )
+        .collect())
+}
+
 /// An upload not sent in a message within this long is deleted.
 pub(crate) const UNSENT_UPLOAD_LIFETIME_MILLISECONDS: u64 = 60 * 60 * 1_000;
 
@@ -647,24 +669,7 @@ impl Attachments {
         for id in storage::delete_unlinked_before(&self.database, cutoff).await? {
             self.delete_swept_file(id, &mut swept).await;
         }
-        // Avatars, banners, icons and sounds share the file store (ADR-0021, ADR-0032).
-        let known_ids: HashSet<Snowflake> = storage::all_attachment_file_ids(&self.database)
-            .await?
-            .into_iter()
-            .chain(
-                crate::storage::profile_images::all_profile_image_file_ids(&self.database).await?,
-            )
-            .chain(
-                crate::storage::guild_images::all_guild_image_file_ids(&self.database)
-                    .await
-                    .map_err(crate::domain::guilds::GuildError::from)?,
-            )
-            .chain(
-                crate::storage::guild_sounds::all_guild_sound_ids(&self.database)
-                    .await
-                    .map_err(crate::domain::guilds::GuildError::from)?,
-            )
-            .collect();
+        let known_ids = file_ids_in_use(&self.database).await?;
         for id in self.files.stored_ids().await? {
             if id.unix_milliseconds() < cutoff && !known_ids.contains(&id) {
                 self.delete_swept_file(id, &mut swept).await;

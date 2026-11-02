@@ -319,6 +319,155 @@ pub async fn set_instance_administrator(
     result
 }
 
+/// Opens the instance database for an administration command, migrated, after checking it exists
+/// so a typo in the data directory never creates an empty instance.
+async fn open_instance_database(config: &ServerConfig) -> Result<crate::storage::Database> {
+    let database_path = config.database_path();
+    if !database_path.is_file() {
+        bail!(
+            "no database at {}; run `mellow-server init` first",
+            database_path.display()
+        );
+    }
+    let database_key = MasterKey::read_file(&config.master_key_file)?.derive_database_key();
+    let database = open_encrypted_database(&database_path, &database_key).await?;
+    if let Err(error) = migrate_with_backup(&database, &config.backup_directory()).await {
+        database.close().await;
+        return Err(error.into());
+    }
+    Ok(database)
+}
+
+/// Suffix of a backup being written; renamed away once the backup is complete and checked.
+const SUFFIX_OF_PARTIAL_BACKUPS: &str = ".partial";
+
+/// `mellow-server backup`: a consistent copy of the database and of the attachment files (avatars,
+/// icons and sounds included) in a new directory laid out like the data directory, made while
+/// `serve` runs. The master key is not in it: back it up separately (ADR-0006).
+///
+/// The database is copied first, then the files. A file is never changed in place (every version
+/// has its own id), so a file the copied database points at can only be missing when it was
+/// deleted after the database was copied; the backup is then refused, to be run again.
+///
+/// # Errors
+/// Fails on a missing database or key, an existing destination, any I/O error, or a file the
+/// copied database points at that is not in the copy. Nothing but a complete backup is left.
+pub async fn back_up_instance(
+    config: &ServerConfig,
+    output_directory: Option<&Path>,
+) -> Result<PathBuf> {
+    let database = open_instance_database(config).await?;
+    let result = async {
+        let now_unix_milliseconds = crate::domain::clock::now_unix_milliseconds();
+        let destination = output_directory
+            .map_or_else(|| config.backup_directory(), Path::to_path_buf)
+            .join(format!("backup-{now_unix_milliseconds}"));
+        let partial = PathBuf::from(format!(
+            "{}{SUFFIX_OF_PARTIAL_BACKUPS}",
+            destination.display()
+        ));
+        if destination.exists() || partial.exists() {
+            bail!("{} already exists", destination.display());
+        }
+        create_private_directory(&partial)
+            .with_context(|| format!("cannot create {}", partial.display()))?;
+        let written = write_backup(config, &database, &partial).await;
+        if let Err(error) = written {
+            let _ = std::fs::remove_dir_all(&partial);
+            return Err(error);
+        }
+        std::fs::rename(&partial, &destination)
+            .with_context(|| format!("cannot rename {}", partial.display()))?;
+        crate::storage::backups::record_completed_backup(&database, now_unix_milliseconds).await?;
+        Ok(destination)
+    }
+    .await;
+    database.close().await;
+    result
+}
+
+/// Writes the database copy and the files into `destination`, then checks the copy is whole.
+async fn write_backup(
+    config: &ServerConfig,
+    database: &crate::storage::Database,
+    destination: &Path,
+) -> Result<()> {
+    let database_copy = destination.join(crate::config::DATABASE_FILE_NAME);
+    database
+        .write_snapshot(&database_copy)
+        .await
+        .context("cannot copy the database")?;
+    let attachment_source = config.attachment_directory();
+    let attachment_copy = destination.join(crate::config::ATTACHMENT_DIRECTORY_NAME);
+    let copy_destination = attachment_copy.clone();
+    tokio::task::spawn_blocking(move || {
+        copy_attachment_files(&attachment_source, &copy_destination)
+    })
+    .await??;
+
+    let master_key = MasterKey::read_file(&config.master_key_file)?;
+    let copied_files = crate::storage::attachment_files::AttachmentFiles::new(
+        attachment_copy,
+        &master_key.derive_attachment_key(),
+    )?;
+    let copied_database =
+        open_encrypted_database(&database_copy, &master_key.derive_database_key()).await?;
+    let file_ids = crate::domain::attachments::file_ids_in_use(&copied_database).await;
+    copied_database.close().await;
+    let missing_files = file_ids?
+        .into_iter()
+        .filter(|id| !copied_files.path_of(*id).is_file())
+        .count();
+    if missing_files > 0 {
+        bail!(
+            "{missing_files} files were deleted while they were being copied; run the backup again"
+        );
+    }
+    Ok(())
+}
+
+/// Copies the sealed files as they are (they stay encrypted), without the temporary files of
+/// writes under way. No attachment directory means no file was ever stored.
+fn copy_attachment_files(source: &Path, destination: &Path) -> Result<()> {
+    create_private_directory(destination)
+        .with_context(|| format!("cannot create {}", destination.display()))?;
+    let shards = match std::fs::read_dir(source) {
+        Ok(shards) => shards,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot read {}", source.display()));
+        }
+    };
+    for shard in shards {
+        let shard = shard?;
+        if !shard.file_type()?.is_dir() {
+            continue;
+        }
+        let shard_copy = destination.join(shard.file_name());
+        create_private_directory(&shard_copy)?;
+        for file in std::fs::read_dir(shard.path())? {
+            let file = file?;
+            let is_partial = file
+                .file_name()
+                .to_string_lossy()
+                .ends_with(crate::storage::attachment_files::SUFFIX_OF_TEMPORARY_FILES);
+            // Deleted since it was listed: the check after the copy tells whether it mattered.
+            if !file.file_type()?.is_file() || is_partial {
+                continue;
+            }
+            match std::fs::copy(file.path(), shard_copy.join(file.file_name())) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("cannot copy {}", file.path().display()));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Split from `serve_instance` so tests can bind an ephemeral port and read its address.
 ///
 /// # Errors
@@ -642,5 +791,113 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("no database"), "{error:#}");
+    }
+
+    /// Gives `username` an avatar, its file written only when
+    /// `is_file_written`; answers the file's path.
+    async fn give_legacy_avatar(
+        config: &ServerConfig,
+        username: &str,
+        is_file_written: bool,
+    ) -> PathBuf {
+        let key = MasterKey::read_file(&config.master_key_file).unwrap();
+        let files = crate::storage::attachment_files::AttachmentFiles::new(
+            config.attachment_directory(),
+            &key.derive_attachment_key(),
+        )
+        .unwrap();
+        let id = crate::domain::snowflake_generator::SnowflakeGenerator::default()
+            .next_id(crate::domain::clock::now_unix_milliseconds())
+            .unwrap();
+        if is_file_written {
+            files.write(id, b"lossless webp".to_vec()).await.unwrap();
+        }
+        let database = open_encrypted_database(&config.database_path(), &key.derive_database_key())
+            .await
+            .unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO profile_images (id, user_id, size_bytes, created_at_unix_milliseconds) \
+             SELECT {id}, id, 13, 0 FROM users WHERE username = '{username}'; \
+             UPDATE users SET avatar_id = {id} WHERE username = '{username}';"
+        )))
+        .execute(database.writer())
+        .await
+        .unwrap();
+        database.close().await;
+        files.path_of(id)
+    }
+
+    #[tokio::test]
+    async fn a_backup_copies_the_database_and_the_sealed_files_as_they_are() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = initialize_instance(&options_in(directory.path()))
+            .await
+            .unwrap();
+        create_user(&config, new_user("paul", true)).await.unwrap();
+        let avatar_file = give_legacy_avatar(&config, "paul", true).await;
+        let write_under_way = avatar_file.with_extension("partial");
+        std::fs::write(&write_under_way, b"half a file").unwrap();
+
+        let backup = back_up_instance(&config, None).await.unwrap();
+
+        let key = MasterKey::read_file(&config.master_key_file).unwrap();
+        let copied_database = open_encrypted_database(
+            &backup.join(crate::config::DATABASE_FILE_NAME),
+            &key.derive_database_key(),
+        )
+        .await
+        .unwrap();
+        let copied_users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(copied_database.readers())
+            .await
+            .unwrap();
+        copied_database.close().await;
+        let copy_of = |file: &Path| {
+            backup
+                .join(crate::config::ATTACHMENT_DIRECTORY_NAME)
+                .join(file.strip_prefix(config.attachment_directory()).unwrap())
+        };
+        let copied_header = std::fs::read(backup.join(crate::config::DATABASE_FILE_NAME)).unwrap();
+        let entries_in_backup_directory = std::fs::read_dir(config.backup_directory())
+            .unwrap()
+            .count();
+
+        assert_eq!(backup.parent(), Some(config.backup_directory().as_path()));
+        assert_eq!(entries_in_backup_directory, 1, "only the backup itself");
+        assert_eq!(copied_users, 1);
+        assert!(
+            !copied_header.starts_with(b"SQLite format 3"),
+            "still encrypted"
+        );
+        assert_eq!(
+            std::fs::read(copy_of(&avatar_file)).unwrap(),
+            std::fs::read(&avatar_file).unwrap(),
+            "copied sealed, as it is"
+        );
+        assert!(
+            !copy_of(&write_under_way).exists(),
+            "a write under way is not a file"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_backup_missing_a_file_its_database_points_at_is_refused_and_left_nowhere() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = initialize_instance(&options_in(directory.path()))
+            .await
+            .unwrap();
+        create_user(&config, new_user("paul", true)).await.unwrap();
+        // As if the file had been deleted between the database copy and the file copy.
+        give_legacy_avatar(&config, "paul", false).await;
+        let output = directory.path().join("elsewhere");
+
+        let error = back_up_instance(&config, Some(&output)).await.unwrap_err();
+        let left = std::fs::read_dir(&output).unwrap().count();
+
+        assert!(
+            error.to_string().contains("run the backup again"),
+            "{error:#}"
+        );
+        assert_eq!(left, 0, "no partial backup is left");
     }
 }
