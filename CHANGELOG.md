@@ -4,6 +4,9 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-11-02
+The sound of shared screens (ADR-0037). No database migration; clients of `v0.31.0` keep working and share without sound until reloaded.
+
 ### Added
 - Shared screens carry their sound: tick "Partager l'audio" in the browser's picker (a tab's sound in every Chromium browser, the whole system's on Windows). Only the people watching the screen hear it, at the sharer's volume; someone without the "Parler" permission shares the picture only.
 
