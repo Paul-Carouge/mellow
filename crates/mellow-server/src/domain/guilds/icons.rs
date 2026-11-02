@@ -193,7 +193,7 @@ impl Guilds {
             }
             None => (IconKind::Guild, None),
         };
-        let (bytes, _read_slot) = images.read_file(previous.id).await?;
+        let bytes = images.read_file_for_background_work(previous.id).await?;
         let previous_size_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let permit = images.wait_for_image_processing_permit().await?;
         let now_unix_milliseconds = crate::domain::clock::now_unix_milliseconds();

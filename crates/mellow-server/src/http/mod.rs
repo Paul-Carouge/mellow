@@ -4079,6 +4079,55 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn an_icon_is_recompressed_while_every_read_slot_serves_a_download() {
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let (_owner, general) = owner_and_general_channel(&state).await;
+        let guild_id: i64 = sqlx::query_scalar("SELECT guild_id FROM channels WHERE id = ?")
+            .bind(i64::try_from(general.raw()).unwrap())
+            .fetch_one(database.readers())
+            .await
+            .unwrap();
+        let icon = store_legacy_picture(
+            &state,
+            lossless_webp(256, 256),
+            "guild_images",
+            "guild_id",
+            &guild_id.to_string(),
+        )
+        .await;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "UPDATE guilds SET icon_id = {icon} WHERE id = {guild_id};"
+        )))
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let mut downloads = Vec::new();
+        for _ in 0..crate::domain::profile_images::CONCURRENT_READS {
+            downloads.push(state.profile_images.read_file(icon).await.unwrap().1);
+        }
+
+        let claimed = crate::storage::image_recompression::claim_next_icon(&database)
+            .await
+            .unwrap()
+            .unwrap();
+        let recompressed = state
+            .guilds
+            .recompress_icon(&state.profile_images, claimed)
+            .await;
+        drop(downloads);
+        let new_icon: i64 = sqlx::query_scalar("SELECT icon_id FROM guilds WHERE id = ?")
+            .bind(guild_id)
+            .fetch_one(database.readers())
+            .await
+            .unwrap();
+        database.close().await;
+
+        recompressed.unwrap();
+        assert_ne!(new_icon, i64::try_from(icon.raw()).unwrap());
+    }
+
+    #[tokio::test]
     #[allow(clippy::too_many_lines)] // One scenario: an instance's history, a crash, a restart.
     async fn pictures_stored_before_adr_0033_are_recompressed_one_by_one_and_resume_after_a_restart()
      {

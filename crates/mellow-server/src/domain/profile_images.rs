@@ -26,7 +26,7 @@ use crate::storage::profile_images::{self as storage, NewProfileImage, StoredPro
 const PROCESSING_TIME_BUDGET: Duration = Duration::from_secs(20);
 /// Pictures read and held in memory at once until sent: a member list loads dozens together,
 /// so a short wait for a slot beats an error on an image that never retries.
-const CONCURRENT_READS: usize = 16;
+pub(crate) const CONCURRENT_READS: usize = 16;
 const READ_SLOT_WAIT: Duration = Duration::from_secs(5);
 /// A processed picture larger than this is refused: every viewer downloads it.
 const MAXIMUM_STORED_BYTES: usize = 8 * 1024 * 1024;
@@ -381,5 +381,14 @@ impl ProfileImages {
             .map_err(|_| MessageError::Busy)?
             .map_err(|error| MessageError::Internal(Box::new(error)))?;
         Ok((self.files.read(file_id).await?, permit))
+    }
+
+    /// The bytes of one stored picture file for background work, which takes no read slot: those
+    /// serve downloads, and a busy instance must not make the work give up.
+    pub(crate) async fn read_file_for_background_work(
+        &self,
+        file_id: Snowflake,
+    ) -> Result<Vec<u8>, MessageError> {
+        Ok(self.files.read(file_id).await?)
     }
 }
