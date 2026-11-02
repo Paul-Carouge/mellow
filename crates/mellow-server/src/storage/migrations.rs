@@ -361,6 +361,13 @@ mod tests {
             .fetch_all(database.writer())
             .await
             .unwrap();
+        // Migration 0026: sizes are only learnt at upload; older rows keep the clients' fallback.
+        let (rows_without_dimensions,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM attachments WHERE width IS NULL AND height IS NULL",
+        )
+        .fetch_one(database.writer())
+        .await
+        .unwrap();
         let awaiting_after_migration =
             attachments::newest_attachments_awaiting_optimization(&database, 64)
                 .await
@@ -397,6 +404,7 @@ mod tests {
             Some(&(LAST_VERSION_WITHOUT_OPTIMIZATION_ATTEMPTS + 1))
         );
         assert_eq!(rows_after, rows_before);
+        assert_eq!(rows_without_dimensions, 4);
         assert_eq!(awaiting_after_migration, Vec::<Snowflake>::new());
         assert_eq!(
             awaiting_after_uploads,

@@ -1211,6 +1211,46 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn pictures_carry_their_dimensions_from_upload_to_history() {
+        use mellow_protocol::{Attachment, Message};
+
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let picture = crate::domain::image_processing::tests::png(30, 10).leak();
+        let mut uploaded = Vec::new();
+        for (name, bytes) in [("wide.png", &*picture), ("page.html", HTML)] {
+            let path = format!("/api/v1/channels/{general}/attachments?file_name={name}");
+            let (_, body) = send(&state, upload_request(&path, &owner, bytes)).await;
+            uploaded.push(json::<Attachment>(&body));
+        }
+        let messages_path = format!("/api/v1/channels/{general}/messages");
+        let ids: Vec<String> = uploaded.iter().map(|file| file.id.to_string()).collect();
+        let (status, _) = send(
+            &state,
+            authorized(
+                "POST",
+                &messages_path,
+                &owner,
+                Some(serde_json::json!({"content": "", "attachment_ids": ids})),
+            ),
+        )
+        .await;
+        let (_, body) = send(&state, authorized("GET", &messages_path, &owner, None)).await;
+        database.close().await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        let dimensions = |file: &Attachment| (file.width, file.height);
+        assert_eq!(
+            uploaded.iter().map(dimensions).collect::<Vec<_>>(),
+            [(Some(30), Some(10)), (None, None)]
+        );
+        let history: Vec<Message> = json(&body);
+        let listed = &history.last().unwrap().attachments;
+        assert_eq!(listed, &uploaded);
+    }
+
+    #[tokio::test]
     #[allow(clippy::too_many_lines)] // One scenario: upload, send, list, download, refusals.
     async fn attachments_upload_send_and_download_safely() {
         use mellow_protocol::{Attachment, Message};

@@ -74,6 +74,8 @@ fn attachment_from_stored(attachment: StoredAttachment) -> Attachment {
         file_name: attachment.file_name,
         content_type: attachment.content_type,
         size_bytes: attachment.size_bytes,
+        width: attachment.dimensions.map(|(width, _)| width),
+        height: attachment.dimensions.map(|(_, height)| height),
     }
 }
 

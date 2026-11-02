@@ -246,6 +246,9 @@ export interface Attachment {
   /** One of the four previewable image types, or `application/octet-stream`. */
   content_type: string;
   size_bytes: number;
+  /** As the picture shows (EXIF orientation applied), to hold its place while it loads. Absent for other files, older uploads and older servers. */
+  width?: number;
+  height?: number;
 }
 
 /** Shown inline: the instance serves only these as images (ADR-0020). */

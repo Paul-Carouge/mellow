@@ -51,16 +51,25 @@ pub(crate) async fn optimize_attachments_in_background(attachments: Arc<Attachme
     }
 }
 
-/// A photo without its EXIF, XMP and other metadata (GPS positions), before anyone can download
-/// it: a byte scan, no decoding. A JPEG whose metadata cannot be found is refused rather than
-/// published with it.
-async fn without_jpeg_metadata(bytes: Vec<u8>) -> Result<Vec<u8>, MessageError> {
-    let stripped = tokio::task::spawn_blocking(move || {
-        crate::domain::image_processing::strip_jpeg_metadata(&bytes)
+/// The bytes to store and, for a picture, the size they show at. A photo goes without its EXIF,
+/// XMP and other metadata (GPS positions), before anyone can download it: a byte scan, no
+/// decoding. A JPEG whose metadata cannot be found is refused rather than published with it.
+async fn stored_form_and_dimensions(
+    bytes: Vec<u8>,
+    content_type: String,
+) -> Result<(Vec<u8>, Option<(u32, u32)>), MessageError> {
+    let stored = tokio::task::spawn_blocking(move || {
+        let bytes = if content_type == "image/jpeg" {
+            crate::domain::image_processing::strip_jpeg_metadata(&bytes)?
+        } else {
+            bytes
+        };
+        let dimensions = crate::domain::image_processing::displayed_dimensions(&bytes);
+        Ok::<_, crate::domain::image_processing::ImageProcessingError>((bytes, dimensions))
     })
     .await
     .map_err(|error| MessageError::Internal(Box::new(error)))?;
-    Ok(stripped?)
+    Ok(stored?)
 }
 
 /// `animation.gif` becomes `animation.webp`; a name without that extension gains it.
@@ -269,11 +278,7 @@ impl Attachments {
         now_unix_milliseconds: u64,
     ) -> Result<Attachment, MessageError> {
         let content_type = sniff_content_type(&bytes).to_owned();
-        let bytes = if content_type == "image/jpeg" {
-            without_jpeg_metadata(bytes).await?
-        } else {
-            bytes
-        };
+        let (bytes, dimensions) = stored_form_and_dimensions(bytes, content_type.clone()).await?;
         let size_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         // Read now, not when the upload started: a user's uploads are one at a time, so this
         // total cannot change before the row is inserted.
@@ -292,6 +297,7 @@ impl Attachments {
                 file_name: slot.file_name.clone(),
                 content_type: content_type.clone(),
                 size_bytes,
+                dimensions,
                 created_at_unix_milliseconds: now_unix_milliseconds,
             },
         )
@@ -311,6 +317,8 @@ impl Attachments {
             file_name: slot.file_name,
             content_type,
             size_bytes,
+            width: dimensions.map(|(width, _)| width),
+            height: dimensions.map(|(_, height)| height),
         })
     }
 

@@ -3,6 +3,7 @@
 
   import { strings } from "../i18n";
   import { type Attachment, PREVIEWABLE_IMAGE_TYPES, type Snowflake, attachmentUrl } from "../lib/protocol";
+  import { imagePreviewWidth } from "./attachment-preview";
   import { attachmentCountLabel, fileNameStartAndEnd, humanFileSize } from "./format";
   import Icon from "./Icon.svelte";
   import { retryImageOnceThenMarkFailed } from "./image-retry";
@@ -39,26 +40,33 @@
   {#each attachments as attachment (attachment.id)}
     {@const size = humanFileSize(attachment.size_bytes)}
     {#if isShownAsImage(attachment)}
+      {@const previewWidth = imagePreviewWidth(attachment)}
       <li class="w-full">
         <a
           href={attachmentUrl(attachment)}
           target="_blank"
           rel="noopener noreferrer"
           title={attachment.file_name}
+          style:width={previewWidth}
           class="block w-fit max-w-[min(100%,var(--mw-component-attachment-image-max-width))] overflow-hidden rounded-(--mw-component-attachment-image-radius) bg-(--mw-component-attachment-image-placeholder) focus-visible:focus-ring"
         >
-          <!-- Sized as the largest preview until loaded: lazy loading needs a box, and the list
-               re-pins to the latest message when it shrinks. -->
+          <!-- With its size known, the box is the loaded picture's from the start, so nothing
+               moves. Without it (older uploads), sized as the largest preview until loaded: lazy
+               loading needs a box, and the list re-pins to the latest message when it shrinks. -->
           <!-- A new element once retried: the same src on the old one would not load again. -->
           {#key retriedImageIds.has(attachment.id)}
             <img
               src={attachmentUrl(attachment)}
               alt={attachment.file_name}
+              width={previewWidth === undefined ? undefined : attachment.width}
+              height={previewWidth === undefined ? undefined : attachment.height}
               loading="lazy"
               decoding="async"
               class={[
                 "block",
-                loadedImageIds.has(attachment.id)
+                previewWidth !== undefined
+                  ? "h-auto w-full"
+                  : loadedImageIds.has(attachment.id)
                   ? "h-auto max-h-(--mw-component-attachment-image-max-height) w-auto max-w-full"
                   : "h-(--mw-component-attachment-image-max-height) w-(--mw-component-attachment-image-max-width) max-w-full",
               ]}

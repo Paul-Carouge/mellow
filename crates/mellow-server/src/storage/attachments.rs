@@ -19,6 +19,8 @@ pub(crate) struct StoredAttachment {
     pub(crate) file_name: String,
     pub(crate) content_type: String,
     pub(crate) size_bytes: u64,
+    /// As the picture shows; `None` for anything else and for uploads before migration 0026.
+    pub(crate) dimensions: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -29,13 +31,23 @@ pub(crate) struct NewAttachment {
     pub(crate) file_name: String,
     pub(crate) content_type: String,
     pub(crate) size_bytes: u64,
+    pub(crate) dimensions: Option<(u32, u32)>,
     pub(crate) created_at_unix_milliseconds: u64,
 }
 
-type AttachmentRow = (i64, i64, Option<i64>, String, String, i64);
+type AttachmentRow = (
+    i64,
+    i64,
+    Option<i64>,
+    String,
+    String,
+    i64,
+    Option<i64>,
+    Option<i64>,
+);
 
 fn attachment_from_row(row: AttachmentRow) -> Result<StoredAttachment, MessageStorageError> {
-    let (id, channel_id, message_id, file_name, content_type, size_bytes) = row;
+    let (id, channel_id, message_id, file_name, content_type, size_bytes, width, height) = row;
     Ok(StoredAttachment {
         id: to_snowflake(id)?,
         channel_id: to_snowflake(channel_id)?,
@@ -43,6 +55,12 @@ fn attachment_from_row(row: AttachmentRow) -> Result<StoredAttachment, MessageSt
         file_name,
         content_type,
         size_bytes: convert_integer::<_, u64>(size_bytes)?,
+        dimensions: match (width, height) {
+            (Some(width), Some(height)) => {
+                Some((convert_integer(width)?, convert_integer(height)?))
+            }
+            _ => None,
+        },
     })
 }
 
@@ -52,8 +70,8 @@ pub(crate) async fn insert_attachment(
 ) -> Result<(), MessageStorageError> {
     sqlx::query(
         "INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
-         content_type, size_bytes, created_at_unix_milliseconds) \
-         VALUES (?, ?, ?, NULL, ?, ?, ?, ?)",
+         content_type, size_bytes, width, height, created_at_unix_milliseconds) \
+         VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)",
     )
     .bind(to_sqlite_integer(attachment.id.raw())?)
     .bind(to_sqlite_integer(attachment.channel_id.raw())?)
@@ -61,6 +79,8 @@ pub(crate) async fn insert_attachment(
     .bind(&attachment.file_name)
     .bind(&attachment.content_type)
     .bind(to_sqlite_integer(attachment.size_bytes)?)
+    .bind(attachment.dimensions.map(|(width, _)| i64::from(width)))
+    .bind(attachment.dimensions.map(|(_, height)| i64::from(height)))
     .bind(to_sqlite_integer(attachment.created_at_unix_milliseconds)?)
     .execute(database.writer())
     .await?;
@@ -131,7 +151,7 @@ pub(crate) async fn find_attachment(
         return Ok(None);
     };
     let row: Option<AttachmentRow> = sqlx::query_as(
-        "SELECT id, channel_id, message_id, file_name, content_type, size_bytes \
+        "SELECT id, channel_id, message_id, file_name, content_type, size_bytes, width, height \
          FROM attachments WHERE id = ?",
     )
     .bind(attachment_id)
@@ -151,7 +171,7 @@ pub(crate) async fn attachments_of_messages(
     }
     let ids = json_array_of_ids(message_ids);
     let rows: Vec<AttachmentRow> = sqlx::query_as(
-        "SELECT id, channel_id, message_id, file_name, content_type, size_bytes \
+        "SELECT id, channel_id, message_id, file_name, content_type, size_bytes, width, height \
          FROM attachments WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY id",
     )
     .bind(ids)

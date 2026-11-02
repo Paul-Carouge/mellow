@@ -29,6 +29,13 @@ pub struct Attachment {
     /// clients may preview; `application/octet-stream` for anything else.
     pub content_type: String,
     pub size_bytes: u64,
+    /// The picture's size in pixels as it shows, EXIF orientation applied, so clients can hold
+    /// its place before it loads. Absent for anything else, for uploads made before servers
+    /// recorded it, and from older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
 }
 
 /// Body of `PATCH /api/v1/channels/{channel_id}/messages/{message_id}`.
@@ -185,5 +192,35 @@ mod tests {
         .unwrap();
         assert_eq!(message.reactions, Vec::new());
         assert!(!message.pinned);
+    }
+
+    #[test]
+    fn attachment_dimensions_are_optional_both_ways() {
+        let picture = Attachment {
+            id: Snowflake::from_raw(5),
+            file_name: "photo.jpg".into(),
+            content_type: "image/jpeg".into(),
+            size_bytes: 1_234,
+            width: Some(3_000),
+            height: Some(4_000),
+        };
+        let json = serde_json::to_value(&picture).unwrap();
+        assert_eq!(json["width"], 3_000);
+        assert_eq!(json["height"], 4_000);
+        assert_eq!(serde_json::from_value::<Attachment>(json).unwrap(), picture);
+
+        let file = Attachment {
+            content_type: "application/octet-stream".into(),
+            width: None,
+            height: None,
+            ..picture
+        };
+        let json = serde_json::to_value(&file).unwrap();
+        assert!(json.get("width").is_none() && json.get("height").is_none());
+        let from_older_server: Attachment = serde_json::from_str(
+            r#"{"id":"5","file_name":"photo.jpg","content_type":"application/octet-stream","size_bytes":1234}"#,
+        )
+        .unwrap();
+        assert_eq!(from_older_server, file);
     }
 }

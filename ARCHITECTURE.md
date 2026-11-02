@@ -160,7 +160,7 @@ direct_message_pairs (lower_user_id, higher_user_id, channel_id)
 messages         (id, channel_id, author_id, content, reply_to_id, edited_at, pinned_at, deleted_at)
 messages_fts     (rowid = messages.id, content)                                   -- FTS5 index, external content (ADR-0029)
 message_reactions (message_id, user_id, emoji)
-attachments      (id, message_id, uploader_id, sha256, file_name, mime_type, size_bytes)
+attachments      (id, message_id, uploader_id, sha256, file_name, mime_type, size_bytes, width?, height?)  -- size as shown, pictures uploaded since migration 0026
 read_states      (user_id, channel_id, last_read_message_id)
 invites          (code, guild_id, creator_id, max_uses, uses, expires_at)
 bans             (guild_id, user_id, reason, banned_by, created_at)

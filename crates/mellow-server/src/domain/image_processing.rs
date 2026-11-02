@@ -416,6 +416,45 @@ pub(crate) fn optimize_attachment(
     Ok((optimized.bytes.len() < bytes.len()).then_some(optimized))
 }
 
+/// The size an attachment as stored shows at, from its header alone, so clients can hold its
+/// place: a JPEG's turned by its EXIF orientation, the only one stored attachments keep
+/// (`strip_jpeg_metadata`; oxipng drops a PNG's eXIf). `optimize_attachment` keeps the pixels,
+/// so this stays true after it. `None` for anything that is not a picture this server reads.
+pub(crate) fn displayed_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    let format = image::guess_format(bytes).ok()?;
+    if !matches!(
+        format,
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP
+    ) {
+        return None;
+    }
+    // No side limit: only the header is read, and huge photos still deserve their place held.
+    let mut header_limits = Limits::default();
+    header_limits.max_alloc = Some(HEADER_READ_MAXIMUM_BYTES);
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    reader.limits(header_limits);
+    let mut decoder = reader.into_decoder().ok()?;
+    let (width, height) = decoder.dimensions();
+    let orientation = if format == ImageFormat::Jpeg {
+        decoder.orientation().ok()?
+    } else {
+        image::metadata::Orientation::NoTransforms
+    };
+    // EXIF orientations 5 to 8 turn the picture a quarter.
+    let is_turned_a_quarter = matches!(
+        orientation,
+        image::metadata::Orientation::Rotate90
+            | image::metadata::Orientation::Rotate270
+            | image::metadata::Orientation::Rotate90FlipH
+            | image::metadata::Orientation::Rotate270FlipH
+    );
+    Some(if is_turned_a_quarter {
+        (height, width)
+    } else {
+        (width, height)
+    })
+}
+
 const JPEG_START_OF_IMAGE: [u8; 2] = [0xFF, 0xD8];
 const MARKER_APP0: u8 = 0xE0;
 const MARKER_APP1: u8 = 0xE1;
@@ -931,6 +970,43 @@ pub(crate) mod tests {
         let avatar = process_profile_image(&rotated, ProfileImageKind::Avatar).unwrap();
         let decoded = image::load_from_memory(&avatar.picture.bytes).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (20, 40));
+    }
+
+    #[test]
+    fn displayed_dimensions_follow_the_stored_orientation() {
+        let image = RgbaImage::from_pixel(40, 20, Rgba([10, 20, 30, 255]));
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .write_image(
+                &DynamicImage::ImageRgba8(image).into_rgb8(),
+                40,
+                20,
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+        let turned = |orientation: u16| {
+            let mut bytes = jpeg[..2].to_vec();
+            bytes.extend_from_slice(&orientation_segment(orientation));
+            bytes.extend_from_slice(&jpeg[2..]);
+            strip_jpeg_metadata(&bytes).unwrap()
+        };
+
+        assert_eq!(displayed_dimensions(&jpeg), Some((40, 20)));
+        for orientation in 1..=4 {
+            assert_eq!(displayed_dimensions(&turned(orientation)), Some((40, 20)));
+        }
+        for orientation in 5..=8 {
+            assert_eq!(displayed_dimensions(&turned(orientation)), Some((20, 40)));
+        }
+        assert_eq!(displayed_dimensions(&png(30, 10)), Some((30, 10)));
+        assert_eq!(
+            displayed_dimensions(&animated_gif(12, 34, 2)),
+            Some((12, 34))
+        );
+        let as_webp =
+            encode_webp(&decode_frames(&animated_gif(12, 34, 2), |frame| frame).unwrap()).unwrap();
+        assert_eq!(displayed_dimensions(&as_webp), Some((12, 34)));
+        assert_eq!(displayed_dimensions(b"just text"), None);
     }
 
     #[test]
