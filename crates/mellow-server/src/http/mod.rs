@@ -3,7 +3,7 @@
 
 mod account_routes;
 pub(crate) mod api_error;
-mod attachment_routes;
+pub(crate) mod attachment_routes;
 pub(crate) mod authentication;
 pub(crate) mod client_address;
 mod emoji_routes;
