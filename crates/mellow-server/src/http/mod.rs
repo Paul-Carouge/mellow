@@ -868,7 +868,7 @@ pub(crate) mod tests {
         // Each attempt from another /64 of one /48: without the site limit, every one would add an
         // address key until the table is full (see the rate_limit unit tests). Registration is
         // closed, so the flood costs no password hashing and the test stays quick.
-        let flood_attempts = 3 * rate_limit::AUTHENTICATION_ATTEMPTS_PER_IPV6_SITE.maximum_events;
+        let flood_attempts = 3 * rate_limit::AUTHENTICATING_ADDRESSES_PER_IPV6_SITE.maximum_events;
         let (_directory, database) = migrated_database().await;
         let state = test_state(database.clone(), RegistrationMode::Closed);
         for index in 0..flood_attempts {
@@ -880,7 +880,7 @@ pub(crate) mod tests {
             .await;
         }
         // One site key, then one address key per attempt the site limit let through.
-        let allowed = rate_limit::AUTHENTICATION_ATTEMPTS_PER_IPV6_SITE.maximum_events as usize;
+        let allowed = rate_limit::AUTHENTICATING_ADDRESSES_PER_IPV6_SITE.maximum_events as usize;
         assert_eq!(
             state.unauthenticated_rate_limiter.tracked_key_count(),
             1 + allowed
@@ -895,6 +895,30 @@ pub(crate) mod tests {
         assert_eq!(same_site_status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(other_ipv4_client_status, StatusCode::UNAUTHORIZED);
         assert_eq!(other_ipv6_site_status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn one_ipv6_client_over_its_limit_does_not_lock_its_site_neighbours_out() {
+        // Many households share a carrier's or ISP's /48: one /64 hammering the login route must
+        // only lock itself out, not use up the site's budget.
+        let flood_attempts = 2 * rate_limit::AUTHENTICATING_ADDRESSES_PER_IPV6_SITE.maximum_events;
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Closed);
+        for index in 0..flood_attempts {
+            send_from(
+                &state,
+                "[2001:db8:1:1::1]:1000",
+                post_json("/api/v1/auth/register", &registration(&format!("n{index}"))),
+            )
+            .await;
+        }
+        let ((flooder_status, _), _) =
+            send_from(&state, "[2001:db8:1:1::1]:1000", wrong_login("aurore")).await;
+        let ((neighbour_status, _), _) =
+            send_from(&state, "[2001:db8:1:2::1]:1000", wrong_login("aurore")).await;
+        database.close().await;
+        assert_eq!(flooder_status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(neighbour_status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

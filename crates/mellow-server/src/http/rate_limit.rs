@@ -33,10 +33,11 @@ pub(crate) const AUTHENTICATION_ATTEMPTS_PER_ADDRESS: RateLimit = RateLimit {
     maximum_events: 20,
     window: Duration::from_secs(60),
 };
-/// Registration and login attempts per IPv6 /48, checked before the per-address limit: one /48
-/// holds 65 536 /64 address keys, so without it a single site could fill the limiter's table.
-/// A few times the per-address limit, so the households or offices sharing a /48 still sign in.
-pub(crate) const AUTHENTICATION_ATTEMPTS_PER_IPV6_SITE: RateLimit = RateLimit {
+/// Client addresses (/64s) of one IPv6 /48 that may start an authentication window per minute:
+/// one /48 holds 65 536 /64 address keys, so without it a single site could fill the limiter's
+/// table. It counts new address windows, not attempts, so one /64 over its own limit cannot lock
+/// the other households or offices sharing its /48 out.
+pub(crate) const AUTHENTICATING_ADDRESSES_PER_IPV6_SITE: RateLimit = RateLimit {
     maximum_events: 100,
     window: Duration::from_secs(60),
 };
@@ -289,37 +290,50 @@ impl RateLimiter {
         self.record(key, limit, now, Eviction::Never)
     }
 
-    /// As [`Self::record_event`], for a key made of a client address or site only: when the table
-    /// is full, the oldest such windows are evicted to make room for new keys.
-    pub(crate) fn record_address_event(&self, key: &str, limit: RateLimit, now: Instant) -> bool {
-        self.record(key, limit, now, Eviction::AllowedWhenFull)
+    /// As [`Self::record_event`], for a key made of a client address only: when the table is full,
+    /// the oldest address and site windows are evicted to make room for new keys. An address
+    /// without a live window must first get one event of its site's `site_limit` (when `site_key`
+    /// is given). So the site limit counts the address windows a site opens, not its attempts: one
+    /// address over its own limit cannot use up the site's budget and lock its neighbours out.
+    pub(crate) fn record_address_event_within_site(
+        &self,
+        address_key: &str,
+        address_limit: RateLimit,
+        site_key: Option<&str>,
+        site_limit: RateLimit,
+        now: Instant,
+    ) -> bool {
+        let mut state = self.lock();
+        let has_live_address_window = state
+            .windows
+            .get(address_key)
+            .is_some_and(|window| !window.has_ended(now));
+        if !has_live_address_window
+            && let Some(site_key) = site_key
+            && !state.record(site_key, site_limit, now, Eviction::AllowedWhenFull)
+        {
+            return false;
+        }
+        state.record(address_key, address_limit, now, Eviction::AllowedWhenFull)
     }
 
     fn record(&self, key: &str, limit: RateLimit, now: Instant, eviction: Eviction) -> bool {
-        let mut state = self
-            .state
+        self.lock().record(key, limit, now, eviction)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, LimiterState> {
+        self.state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !state.windows.contains_key(key) && !state.make_room(now) {
-            return false;
-        }
-        let new_window = Window {
-            started_at: now,
-            length: limit.window,
-            events: 0,
-            eviction,
-        };
-        let window = state.windows.entry(key.to_owned()).or_insert(new_window);
-        if window.has_ended(now) {
-            *window = new_window;
-        }
-        window.events = window.events.saturating_add(1);
-        window.events <= limit.maximum_events
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
 #[cfg(test)]
 impl RateLimiter {
+    fn record_address_event(&self, key: &str, limit: RateLimit, now: Instant) -> bool {
+        self.record(key, limit, now, Eviction::AllowedWhenFull)
+    }
+
     pub(crate) fn tracked_key_count(&self) -> usize {
         self.state
             .lock()
@@ -337,6 +351,24 @@ impl RateLimiter {
 }
 
 impl LimiterState {
+    fn record(&mut self, key: &str, limit: RateLimit, now: Instant, eviction: Eviction) -> bool {
+        if !self.windows.contains_key(key) && !self.make_room(now) {
+            return false;
+        }
+        let new_window = Window {
+            started_at: now,
+            length: limit.window,
+            events: 0,
+            eviction,
+        };
+        let window = self.windows.entry(key.to_owned()).or_insert(new_window);
+        if window.has_ended(now) {
+            *window = new_window;
+        }
+        window.events = window.events.saturating_add(1);
+        window.events <= limit.maximum_events
+    }
+
     /// Returns whether a new key may be tracked.
     fn make_room(&mut self, now: Instant) -> bool {
         let may_prune = self

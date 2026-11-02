@@ -24,7 +24,7 @@ use crate::http::authentication::{
 };
 use crate::http::client_address::{client_address_key, client_ipv6_site_key};
 use crate::http::rate_limit::{
-    AUTHENTICATION_ATTEMPTS_PER_ADDRESS, AUTHENTICATION_ATTEMPTS_PER_IPV6_SITE,
+    AUTHENTICATING_ADDRESSES_PER_IPV6_SITE, AUTHENTICATION_ATTEMPTS_PER_ADDRESS,
     LOGIN_ATTEMPTS_PER_ACCOUNT, LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS,
     PASSWORD_CHECKS_PER_SESSION, PASSWORD_CHECKS_PER_USER, PROFILE_WRITES_PER_SESSION,
     PROFILE_WRITES_PER_USER,
@@ -70,32 +70,29 @@ fn session_response(
     Ok(response)
 }
 
-/// Counts a registration or login attempt against the client's IPv6 /48 first, then, only when
-/// that passes, against its address: so one /48 cycling through its 65 536 /64s adds at most a
-/// site's worth of address keys per window. Returns whether both limits still allow it.
+/// Counts a registration or login attempt against the client's address. An address without a live
+/// window first takes one unit of its IPv6 /48's new-address budget: one /48 cycling through its
+/// 65 536 /64s adds at most a site's worth of address keys per window, while a single /64 over its
+/// own limit cannot use that budget up. Returns whether the limits still allow the attempt.
 fn record_authentication_attempt_per_client(
     state: &AppState,
     peer: SocketAddr,
     headers: &HeaderMap,
     now: Instant,
 ) -> bool {
-    let limiter = &state.unauthenticated_rate_limiter;
     let trusted_proxy_networks = &state.trusted_proxy_networks;
-    let is_within_site_limit = client_ipv6_site_key(peer, headers, trusted_proxy_networks)
-        .is_none_or(|site| {
-            limiter.record_address_event(
-                &format!("authentication-site:{site}"),
-                AUTHENTICATION_ATTEMPTS_PER_IPV6_SITE,
-                now,
-            )
-        });
-    is_within_site_limit
-        && limiter.record_address_event(
+    let site_key = client_ipv6_site_key(peer, headers, trusted_proxy_networks)
+        .map(|site| format!("authentication-site:{site}"));
+    state
+        .unauthenticated_rate_limiter
+        .record_address_event_within_site(
             &format!(
                 "authentication:{}",
                 client_address_key(peer, headers, trusted_proxy_networks)
             ),
             AUTHENTICATION_ATTEMPTS_PER_ADDRESS,
+            site_key.as_deref(),
+            AUTHENTICATING_ADDRESSES_PER_IPV6_SITE,
             now,
         )
 }
