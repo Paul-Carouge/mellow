@@ -434,6 +434,24 @@
               </p>
             </fieldset>
 
+            <div class="flex items-center gap-(--mw-component-roles-permission-gap) border-b border-(--mw-component-roles-permission-divider) py-(--mw-component-roles-permission-padding-block)">
+              <div class="min-w-0 flex-1">
+                <p id="{id}-displayed-separately" class="type-channel-name text-(--mw-component-roles-permission-label-text)">
+                  {strings.serverSettings.roles.displayedSeparately}
+                </p>
+                <p id="{id}-displayed-separately-description" class="type-body text-(--mw-component-roles-permission-description-text)">
+                  {strings.serverSettings.roles.displayedSeparatelyDescription}
+                </p>
+              </div>
+              <Switch
+                isOn={shown.isDisplayedSeparately}
+                isLocked={!isEditable}
+                labelledBy="{id}-displayed-separately"
+                describedBy="{id}-displayed-separately-description"
+                onchange={(isOn) => change({ ...shown, isDisplayedSeparately: isOn })}
+              />
+            </div>
+
             {#if isEditable}
               <div>
                 <Button variant="danger" isDisabled={busy !== null} onclick={() => (isDeleteDialogOpen = true)}>

@@ -1040,6 +1040,8 @@ export const fr: Catalogue = {
       noColor: "Aucune couleur",
       colorOption: (hex) => `Couleur ${hex}`,
       colorPreview: "Les noms avec ce rôle",
+      displayedSeparately: "Afficher les membres à part",
+      displayedSeparatelyDescription: "Les membres en ligne qui ont ce rôle sont listés sous son nom, au-dessus des autres.",
       moveUp: "Monter",
       moveDown: "Descendre",
       moveHint: "Ctrl+Maj+Haut et Ctrl+Maj+Bas déplacent aussi le rôle choisi.",
@@ -1334,6 +1336,7 @@ export const fr: Catalogue = {
       topicChange: (topic) => `Nouveau sujet${NO_BREAK_SPACE}: ${topic}`,
       topicCleared: "Sujet retiré",
       colorChange: "Couleur changée",
+      displayedSeparatelyChange: (isOn) => (isOn ? "Membres désormais affichés à part" : "Membres plus affichés à part"),
       permissionsAdded: (key, names) =>
         key === "deny"
           ? `Désormais refusé${NO_BREAK_SPACE}: ${names}`
