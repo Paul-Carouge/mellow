@@ -30,3 +30,13 @@ ADR-0006 promises TLS everywhere with built-in ACME certificates, and ADR-0002 p
 - **`instant-acme` with our own renewal loop:** more code (challenge certificates, renewal scheduling, caching) for the same result.
 - **User-supplied certificate files only:** keeps certbot or a reverse proxy in the setup, which this ADR exists to remove.
 - **`rustls-acme`'s `DirCache`:** default file permissions, and inside the data directory backups would carry the TLS private key.
+
+## Amendment (2026-11-02): HTTP/2 over built-in TLS
+The owner accepted HTTP/2 on built-in TLS (2026-11-01), with a security audit. An avatar-heavy guild page sends dozens of small image requests; over HTTP/1.1 a browser queues them on six connections.
+
+- ALPN offers `h2`, then `http/1.1`. TLS-ALPN-01 challenges are unaffected: rustls-acme's acceptor recognises a client hello offering only `acme-tls/1` and answers it with its own configuration before Mellow's applies.
+- HTTP/2 is bounded explicitly: 100 concurrent streams per connection (the RFC 9113 minimum advice), 20 streams reset before being accepted (Rapid Reset, CVE-2023-44487; hyper also caps locally caused resets at 1 024) and a 16 KiB decoded header list. Keep-alive pings stay off. The same settings apply to HTTP/2 with prior knowledge on the plain HTTP listener, which hyper already accepted before this amendment.
+- hyper has no header deadline for HTTP/2: the 30 s header deadline above covers HTTP/1 only. An HTTP/2 client is bounded by the 75 s idle read timeout, the write stall timeout and the connection caps instead, so a stalled HTTP/2 connection holds no more than a `WebSocket` already can.
+- HTTP/2 names the host in `:authority`, not `Host`. A middleware copies it into `Host`, which the origin check (CSRF, cross-site WebSocket hijacking) reads, and refuses a request whose `Host` names another host.
+- Extended CONNECT (RFC 8441) is not enabled, so browsers keep opening the gateway `WebSocket` over a separate HTTP/1.1 connection.
+- Consequence: one address can now run up to 256 connections × 100 streams of requests at once instead of 256. Request rate limits are unchanged and still apply per address.
