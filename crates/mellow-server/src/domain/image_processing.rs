@@ -338,6 +338,11 @@ fn fit(image: RgbaImage, kind: ProfileImageKind) -> RgbaImage {
             BANNER_HEIGHT_PIXELS,
         ),
     };
+    fit_within(image, maximum_width, maximum_height)
+}
+
+/// Shrunk to fit within the box, its ratio kept; never enlarged. Lanczos keeps edges sharp.
+fn fit_within(image: RgbaImage, maximum_width: u32, maximum_height: u32) -> RgbaImage {
     let (width, height) = image.dimensions();
     if width <= maximum_width && height <= maximum_height {
         return image;
@@ -514,7 +519,9 @@ pub(crate) fn attachment_preview(
     if width <= PREVIEW_WIDTH_PIXELS && height <= PREVIEW_HEIGHT_PIXELS {
         return Ok(None);
     }
-    let picture = decode_picture(bytes, |frame| fitted_preview(&frame).unwrap_or(frame))?;
+    let picture = decode_picture(bytes, |frame| {
+        fit_within(frame, PREVIEW_WIDTH_PIXELS, PREVIEW_HEIGHT_PIXELS)
+    })?;
     let Some((first, _)) = picture.frames.first() else {
         return Err(ImageProcessingError::Unsupported);
     };
@@ -532,35 +539,6 @@ pub(crate) fn attachment_preview(
         content_type: encoded.content_type,
         is_animated,
     }))
-}
-
-/// The picture shrunk to fit the preview size, its ratio kept; `None` when it already fits.
-fn fitted_preview(image: &RgbaImage) -> Option<RgbaImage> {
-    let (width, height) = image.dimensions();
-    if width <= PREVIEW_WIDTH_PIXELS && height <= PREVIEW_HEIGHT_PIXELS {
-        return None;
-    }
-    let (width, height) = (u64::from(width), u64::from(height));
-    let (maximum_width, maximum_height) = (
-        u64::from(PREVIEW_WIDTH_PIXELS),
-        u64::from(PREVIEW_HEIGHT_PIXELS),
-    );
-    // Rounded to the nearest pixel, at least one: both results stay within the preview size.
-    let (fitted_width, fitted_height) = if width * maximum_height >= height * maximum_width {
-        (maximum_width, (height * maximum_width + width / 2) / width)
-    } else {
-        (
-            (width * maximum_height + height / 2) / height,
-            maximum_height,
-        )
-    };
-    let side = |value: u64| u32::try_from(value.max(1)).unwrap_or(1);
-    Some(image::imageops::resize(
-        image,
-        side(fitted_width),
-        side(fitted_height),
-        FilterType::Lanczos3,
-    ))
 }
 
 /// Whether a PNG is animated (APNG), from its header: decoding would keep only its first frame.
