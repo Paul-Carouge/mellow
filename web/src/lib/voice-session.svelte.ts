@@ -4,7 +4,23 @@
 // once ICE gathering is complete. The browser objects (peer, tracks, audio outputs) live in plain
 // fields, out of Svelte's proxies; only what the interface shows is reactive.
 
-import { type ClientFrame, type Snowflake, VOICE_RECEIVE_SLOTS, type VoiceDisconnectReason, type VoiceJoinRefusal } from "./protocol";
+import {
+  type ClientFrame,
+  type SimulcastLayer,
+  type Snowflake,
+  VIDEO_RECEIVE_SLOTS,
+  VOICE_RECEIVE_SLOTS,
+  type VoiceDisconnectReason,
+  type VoiceJoinRefusal,
+  type VoiceVideoRefusal,
+} from "./protocol";
+import {
+  type CodecPreferences,
+  SCREEN_ENCODINGS,
+  type ScreenShareProblem,
+  screenShareProblemOf,
+  withActiveLayers,
+} from "./screen-share";
 import { type MicrophoneProblem, microphoneProblemOf, roundTripMillisecondsOf, waitForIceGathering } from "./voice";
 import {
   type MicrophoneChoice,
@@ -38,6 +54,8 @@ const ICE_GATHERING_TIMEOUT_MILLISECONDS = 1_000;
 const MEDIA_CONNECT_TIMEOUT_MILLISECONDS = 15_000;
 /** ICE `disconnected` often heals by itself; past this it counts as lost. */
 const ICE_DISCONNECTED_GRACE_MILLISECONDS = 3_000;
+/** An empty `VOICE_VIDEO_LAYERS` this soon after a screen started belongs to the share stopped before it. */
+const SCREEN_RESTART_GRACE_MILLISECONDS = 2_000;
 /** Silent attempts in a row before the panel says the connection is lost. */
 const MAXIMUM_RECONNECT_ATTEMPTS = 5;
 /**
@@ -165,6 +183,10 @@ export interface VoicePorts {
   /** `null` where the browser has no Web Audio: the microphone is then sent at 100 %. */
   amplify(track: MediaStreamTrack, gain: number): InputAmplifier | null;
   listDevices(): Promise<readonly AudioDevice[]>;
+  /** The browser's screen picker (ADR-0037); rejects when cancelled or unavailable. */
+  requestScreen(): Promise<MediaStream>;
+  /** Opus and VP8 to keep in offers with video; `null` where the browser cannot restrict codecs: audio only. */
+  codecPreferences(): CodecPreferences | null;
   /** Calls `onChange` when a device is plugged or unplugged; returns how to stop. */
   watchDevices(onChange: () => void): () => void;
   storage(): Pick<Storage, "getItem" | "setItem"> | null;
@@ -198,9 +220,26 @@ export class VoiceSession {
   isMonitoring = $state(false);
   /** Plays the join, leave and toggle sounds; set by the shell. */
   onCue: ((cue: VoiceCue) => void) | null = null;
+  /** Your screen is shared in the call (ADR-0037). */
+  isSharingScreen = $state(false);
+  screenShareProblem = $state<ScreenShareProblem | null>(null);
+  /** The person whose shared screen you watch, if any. */
+  watchedStreamUserId = $state<Snowflake | null>(null);
+  /** The watched screens' video tracks, by person, once their picture arrives. */
+  streamTracks = $state.raw<ReadonlyMap<Snowflake, MediaStreamTrack>>(new Map());
 
   private peer: RTCPeerConnection | null = null;
   private sender: RTCRtpSender | null = null;
+  /** Sends your screen; `null` when the offer has no video. */
+  private videoSender: RTCRtpSender | null = null;
+  private videoReceivers: RTCRtpTransceiver[] = [];
+  /** Received video tracks, by the mid of their transceiver. */
+  private videoTracksByMid = new Map<string, MediaStreamTrack>();
+  /** Who each video receive slot carries now. */
+  private videoSlotUserIds = new Map<string, Snowflake>();
+  private screen: MediaStream | null = null;
+  /** When the screen was last turned on: an empty `VOICE_VIDEO_LAYERS` just after is the previous share's. */
+  private screenStartedAt = Number.NEGATIVE_INFINITY;
   private microphone: MediaStream | null = null;
   /** Mirrors `microphone !== null` for the interface: the stream itself stays out of Svelte's proxies. */
   private hasMicrophone = $state(false);
@@ -520,6 +559,7 @@ export class VoiceSession {
     // A new media session: the slots' speakers of the old one mean nothing any more.
     this.slotUserIds.clear();
     this.applyGains();
+    this.videoSlotUserIds.clear();
     try {
       await peer.setRemoteDescription({ type: "answer", sdp: sdpAnswer });
     } catch (error) {
@@ -527,6 +567,15 @@ export class VoiceSession {
         console.warn("the instance's voice answer was refused", error);
         this.connectionFailed();
       }
+      return;
+    }
+    // A join starts with the video off and forgets what you watched: say both again.
+    if (this.screen !== null) {
+      this.screenStartedAt = Date.now();
+      this.sendVoiceState();
+    }
+    if (this.watchedStreamUserId !== null) {
+      this.sendWatchList();
     }
   }
 
@@ -560,8 +609,111 @@ export class VoiceSession {
     if (channelId !== this.channelId || this.phase === "idle") {
       return;
     }
+    if (this.videoReceivers.some((transceiver) => transceiver.mid === mid)) {
+      this.videoSlotUserIds.set(mid, userId);
+      this.refreshStreamTracks();
+      return;
+    }
     this.slotUserIds.set(mid, userId);
     this.applyGains();
+  }
+
+  /** Whether this browser and this connection can share a screen now. */
+  get canShareScreen(): boolean {
+    return this.phase === "connected" && this.videoSender !== null;
+  }
+
+  /** From a click: opens the browser's screen picker, then shares what was chosen (ADR-0037). */
+  async startScreenShare(): Promise<void> {
+    const sender = this.videoSender;
+    if (!this.canShareScreen || sender === null || this.screen !== null) {
+      return;
+    }
+    this.screenShareProblem = null;
+    let stream: MediaStream;
+    try {
+      stream = await this.ports.requestScreen();
+    } catch (error) {
+      this.screenShareProblem = screenShareProblemOf(error);
+      return;
+    }
+    const track = stream.getVideoTracks()[0];
+    // Hung up or reconnected meanwhile, or a second click won: this stream would never be stopped.
+    if (track === undefined || sender !== this.videoSender || this.screen !== null || this.phase === "idle") {
+      stream.getTracks().forEach((stopped) => stopped.stop());
+      return;
+    }
+    track.contentHint = "detail";
+    // The browser's own "Stop sharing" button.
+    track.addEventListener("ended", () => this.stopScreenShare());
+    this.screen = stream;
+    this.isSharingScreen = true;
+    this.screenStartedAt = Date.now();
+    try {
+      await sender.replaceTrack(track);
+    } catch (error) {
+      console.warn("couldn't send the shared screen", error);
+      this.stopScreenShare();
+      this.screenShareProblem = "unsupported";
+      return;
+    }
+    this.sendVoiceState();
+  }
+
+  stopScreenShare(): void {
+    if (this.screen === null) {
+      return;
+    }
+    this.releaseScreen();
+    if (this.phase !== "idle") {
+      void this.videoSender?.replaceTrack(null).catch(() => {});
+      this.sendVoiceState();
+    }
+  }
+
+  dismissScreenShareProblem(): void {
+    this.screenShareProblem = null;
+  }
+
+  /** Watches `userId`'s shared screen large, or nothing with `null`. */
+  watchStream(userId: Snowflake | null): void {
+    if (userId === this.watchedStreamUserId) {
+      return;
+    }
+    this.watchedStreamUserId = userId;
+    this.refreshStreamTracks();
+    this.sendWatchList();
+  }
+
+  /** The instance refused to relay your screen. */
+  refuseVideo(channelId: Snowflake, reason: VoiceVideoRefusal): void {
+    if (channelId !== this.channelId || this.screen === null) {
+      return;
+    }
+    this.releaseScreen();
+    void this.videoSender?.replaceTrack(null).catch(() => {});
+    this.screenShareProblem = reason;
+  }
+
+  /** The layers of your screen someone watches: the others are paused (ADR-0035). */
+  applyVideoLayers(channelId: Snowflake, active: readonly SimulcastLayer[]): void {
+    const sender = this.videoSender;
+    if (channelId !== this.channelId || sender === null) {
+      return;
+    }
+    if (active.length === 0) {
+      // The instance stopped relaying your screen (permission gone, or nothing sent for 10 s),
+      // unless this is the end of a share stopped just before this one started.
+      if (this.screen !== null && Date.now() - this.screenStartedAt > SCREEN_RESTART_GRACE_MILLISECONDS) {
+        this.releaseScreen();
+        void sender.replaceTrack(null).catch(() => {});
+        this.screenShareProblem = "stopped";
+      }
+      return;
+    }
+    const parameters = sender.getParameters();
+    parameters.encodings = withActiveLayers(parameters.encodings, active);
+    void sender.setParameters(parameters).catch((error: unknown) => console.warn("couldn't pause unwatched layers", error));
   }
 
   /** The instance no longer lists you in the channel you are in: a fresh offer follows. */
@@ -929,19 +1081,30 @@ export class VoiceSession {
     }
     this.peer = peer;
     const track = this.sentTrack() ?? null;
-    this.sender = peer.addTransceiver(track ?? "audio", { direction: "sendonly" }).sender;
+    const voice = peer.addTransceiver(track ?? "audio", { direction: "sendonly" });
+    this.sender = voice.sender;
     this.slotUserIds.clear();
+    const audioTransceivers = [voice];
     for (let slot = 0; slot < VOICE_RECEIVE_SLOTS; slot += 1) {
-      peer.addTransceiver("audio", { direction: "recvonly" });
+      audioTransceivers.push(peer.addTransceiver("audio", { direction: "recvonly" }));
     }
+    this.addVideoTransceivers(peer, audioTransceivers);
     peer.addEventListener("track", (event) => {
-      if (generation === this.negotiation) {
-        const output = this.ports.playTrack(event.track);
-        const mid = event.transceiver.mid;
-        output.setOutputDevice(this.outputDeviceId());
-        output.setGain(this.gainOfSlot(mid));
-        this.outputs.push({ mid, output });
+      if (generation !== this.negotiation) {
+        return;
       }
+      if (event.track.kind === "video") {
+        if (event.transceiver.mid !== null) {
+          this.videoTracksByMid.set(event.transceiver.mid, event.track);
+          this.refreshStreamTracks();
+        }
+        return;
+      }
+      const output = this.ports.playTrack(event.track);
+      const mid = event.transceiver.mid;
+      output.setOutputDevice(this.outputDeviceId());
+      output.setGain(this.gainOfSlot(mid));
+      this.outputs.push({ mid, output });
     });
     peer.addEventListener("iceconnectionstatechange", () => this.iceStateChanged(peer));
     this.applyTransmission();
@@ -1060,8 +1223,72 @@ export class VoiceSession {
   private sendVoiceState(): void {
     this.hasUnsentVoiceState = !this.ports.sendFrame({
       op: "voice_state",
-      d: { self_mute: this.isMicrophoneMuted, self_deaf: this.toggles.isDeafened },
+      // Absent means off, as from clients without video.
+      d: {
+        self_mute: this.isMicrophoneMuted,
+        self_deaf: this.toggles.isDeafened,
+        ...(this.screen === null ? {} : { self_stream: true }),
+      },
     });
+  }
+
+  /**
+   * The camera line (your screen goes on it) and the video receive slots, with Opus and VP8 only so
+   * the offer stays under the instance's limit (ADR-0035). Without codec choice, the offer stays audio only.
+   */
+  private addVideoTransceivers(peer: RTCPeerConnection, audioTransceivers: readonly RTCRtpTransceiver[]): void {
+    this.videoSender = null;
+    this.videoReceivers = [];
+    this.videoTracksByMid.clear();
+    this.videoSlotUserIds.clear();
+    const codecs = this.ports.codecPreferences();
+    if (codecs === null) {
+      return;
+    }
+    try {
+      audioTransceivers.forEach((transceiver) => transceiver.setCodecPreferences(codecs.audio));
+      const camera = peer.addTransceiver(this.screen?.getVideoTracks()[0] ?? "video", {
+        direction: "sendonly",
+        sendEncodings: [...SCREEN_ENCODINGS],
+      });
+      camera.setCodecPreferences(codecs.video);
+      const receivers: RTCRtpTransceiver[] = [];
+      for (let slot = 0; slot < VIDEO_RECEIVE_SLOTS; slot += 1) {
+        const receiver = peer.addTransceiver("video", { direction: "recvonly" });
+        receiver.setCodecPreferences(codecs.video);
+        receivers.push(receiver);
+      }
+      this.videoSender = camera.sender;
+      this.videoReceivers = receivers;
+    } catch (error) {
+      // A browser refusing simulcast or these codecs joins with audio only.
+      console.warn("couldn't add video to the call", error);
+    }
+  }
+
+  private sendWatchList(): void {
+    const userId = this.watchedStreamUserId;
+    this.ports.sendFrame({
+      op: "voice_video_watch",
+      d: { cameras: userId === null ? [] : [{ user_id: userId, size: "large" }] },
+    });
+  }
+
+  private refreshStreamTracks(): void {
+    const tracks = new Map<Snowflake, MediaStreamTrack>();
+    for (const [mid, userId] of this.videoSlotUserIds) {
+      const track = this.videoTracksByMid.get(mid);
+      if (track !== undefined && userId === this.watchedStreamUserId) {
+        tracks.set(userId, track);
+      }
+    }
+    this.streamTracks = tracks;
+  }
+
+  private releaseScreen(): void {
+    this.screen?.getTracks().forEach((track) => track.stop());
+    this.screen = null;
+    this.isSharingScreen = false;
   }
 
   /** Whether the input mode lets sound out now (mute aside). */
@@ -1177,6 +1404,11 @@ export class VoiceSession {
     }
     this.outputs = [];
     this.slotUserIds.clear();
+    this.videoSender = null;
+    this.videoReceivers = [];
+    this.videoTracksByMid.clear();
+    this.videoSlotUserIds.clear();
+    this.streamTracks = new Map();
   }
 
   /** Everything local ends; the toggles stay, as on Discord. */
@@ -1193,6 +1425,8 @@ export class VoiceSession {
       this.isMonitoring = false;
     }
     this.releaseMicrophone();
+    this.releaseScreen();
+    this.watchedStreamUserId = null;
     this.stopWatchingDevices?.();
     this.stopWatchingDevices = null;
     this.microphoneProblem = null;
