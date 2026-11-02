@@ -186,6 +186,14 @@ pub async fn serve_instance(
                 "database migrated"
             );
         }
+        let moved_files = attachment_files.move_files_to_their_shards().await?;
+        if moved_files.moved > 0 || moved_files.failed > 0 {
+            tracing::info!(
+                moved = moved_files.moved,
+                failed = moved_files.failed,
+                "attachment files moved to their shards"
+            );
+        }
         let state = AppState::new(database.clone(), config, attachment_files);
         let session_purge = tokio::spawn(purge_expired_sessions_periodically(database.clone()));
         let attachment_purge = tokio::spawn(
@@ -442,7 +450,7 @@ async fn write_backup(
     copied_database.close().await;
     let missing_files = file_ids?
         .into_iter()
-        .filter(|id| !copied_files.path_of(*id).is_file())
+        .filter(|id| copied_files.existing_path_of(*id).is_none())
         .count();
     if missing_files > 0 {
         bail!(
@@ -1013,6 +1021,43 @@ mod tests {
         assert!(
             !copy_of(&write_under_way).exists(),
             "a write under way is not a file"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_backup_keeps_files_not_yet_moved_to_their_shard() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = initialize_instance(&options_in(directory.path()))
+            .await
+            .unwrap();
+        create_user(&config, new_user("paul", true)).await.unwrap();
+        let avatar_file = give_legacy_avatar(&config, "paul", true).await;
+        let id = mellow_protocol::Snowflake::from_raw(
+            avatar_file
+                .file_name()
+                .and_then(|name| name.to_str()?.parse().ok())
+                .unwrap(),
+        );
+        let key = MasterKey::read_file(&config.master_key_file).unwrap();
+        let files = crate::storage::attachment_files::AttachmentFiles::new(
+            config.attachment_directory(),
+            &key.derive_attachment_key(),
+        )
+        .unwrap();
+        let legacy_file = files.legacy_path_of(id);
+        std::fs::create_dir_all(legacy_file.parent().unwrap()).unwrap();
+        std::fs::rename(&avatar_file, &legacy_file).unwrap();
+
+        let backup = back_up_instance(&config, None).await.unwrap();
+
+        let copied_file = backup.join(crate::config::ATTACHMENT_DIRECTORY_NAME).join(
+            legacy_file
+                .strip_prefix(config.attachment_directory())
+                .unwrap(),
+        );
+        assert_eq!(
+            std::fs::read(copied_file).unwrap(),
+            std::fs::read(&legacy_file).unwrap()
         );
     }
 

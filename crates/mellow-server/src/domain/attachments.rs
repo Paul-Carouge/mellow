@@ -734,9 +734,11 @@ mod tests {
         let ids = SnowflakeGenerator::default();
         let undeletable = ids.next_id(old).unwrap();
         let locked_shard = files.path_of(undeletable).parent().unwrap().to_path_buf();
-        // Generated ids leave their low bits at zero: the next raw id is in another shard
-        // directory, so locking the first one leaves this one deletable.
-        let deletable = Snowflake::from_raw(undeletable.raw() + 1);
+        // In another shard directory, so locking the first one leaves this one deletable.
+        let deletable = (1..256)
+            .map(|offset| Snowflake::from_raw(undeletable.raw() + offset))
+            .find(|id| files.path_of(*id).parent() != Some(locked_shard.as_path()))
+            .unwrap();
         files.write(undeletable, b"orphan".to_vec()).await.unwrap();
         files.write(deletable, b"orphan".to_vec()).await.unwrap();
         std::fs::set_permissions(&locked_shard, std::fs::Permissions::from_mode(0o500)).unwrap();
@@ -759,6 +761,42 @@ mod tests {
             }
         );
         assert_eq!(remaining, vec![undeletable]);
+    }
+
+    #[tokio::test]
+    async fn the_purge_sweeps_orphans_moved_to_their_shard_and_those_left_where_they_were() {
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let files = &state.attachments.files;
+        let now = crate::domain::clock::now_unix_milliseconds();
+        let ids = SnowflakeGenerator::default();
+        let moved = ids
+            .next_id(now - 2 * UNSENT_UPLOAD_LIFETIME_MILLISECONDS)
+            .unwrap();
+        let left_in_place = ids
+            .next_id(now - 2 * UNSENT_UPLOAD_LIFETIME_MILLISECONDS + 1)
+            .unwrap();
+        for id in [moved, left_in_place] {
+            files.write(id, b"orphan".to_vec()).await.unwrap();
+            let legacy = files.legacy_path_of(id);
+            std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+            std::fs::rename(files.path_of(id), legacy).unwrap();
+        }
+        std::fs::create_dir_all(files.path_of(moved).parent().unwrap()).unwrap();
+        std::fs::rename(files.legacy_path_of(moved), files.path_of(moved)).unwrap();
+
+        let swept = state.attachments.purge(now).await;
+        let remaining = files.stored_ids().await.unwrap();
+        database.close().await;
+
+        assert_eq!(
+            swept.unwrap(),
+            SweptFiles {
+                deleted: 2,
+                failed: 0
+            }
+        );
+        assert_eq!(remaining, Vec::new());
     }
 
     /// A sent PNG attachment of 1 000 bytes, its file written; answers its row.

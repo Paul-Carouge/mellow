@@ -1,6 +1,9 @@
 //! Attachment files sealed on disk (ADR-0020): AES-256-GCM under a key derived from the master
 //! key, a random nonce per file, the attachment id as associated data so a file cannot be swapped
-//! for another one's. Layout: `<directory>/<two hex digits>/<id>`, each file `nonce ‖ sealed`.
+//! for another one's. Layout: `<directory>/<shard>/<id>`, each file `nonce ‖ sealed`, the shard
+//! being the two hex digits of the top byte of the id mixed by `SplitMix64`'s finaliser (ADR-0034).
+//! Before it, the shard was the id's low byte, zero for nearly every generated id: such files are
+//! still found where they are, and `move_files_to_their_shards` moves them at startup.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,6 +18,14 @@ pub(crate) const SUFFIX_OF_TEMPORARY_FILES: &str = ".partial";
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SweptFiles {
     pub(crate) deleted: usize,
+    pub(crate) failed: usize,
+}
+
+/// Files a startup move put in their shard, and files it could not move and left where they are,
+/// still found there.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MovedFiles {
+    pub(crate) moved: usize,
     pub(crate) failed: usize,
 }
 
@@ -61,9 +72,21 @@ impl AttachmentFiles {
     }
 
     pub(crate) fn path_of(&self, id: Snowflake) -> PathBuf {
-        let name = id.raw().to_string();
-        let shard = format!("{:02x}", id.raw() % 256);
-        self.directory.join(shard).join(name)
+        self.directory.join(shard_of(id)).join(id.raw().to_string())
+    }
+
+    /// Where the file was stored before ADR-0034, if it was never moved.
+    pub(crate) fn legacy_path_of(&self, id: Snowflake) -> PathBuf {
+        self.directory
+            .join(format!("{:02x}", id.raw() % 256))
+            .join(id.raw().to_string())
+    }
+
+    /// The file's path if it exists, in its shard or where it was stored before ADR-0034.
+    pub(crate) fn existing_path_of(&self, id: Snowflake) -> Option<PathBuf> {
+        [self.path_of(id), self.legacy_path_of(id)]
+            .into_iter()
+            .find(|path| path.is_file())
     }
 
     /// Seals and writes the file, through a temporary name renamed once complete, so a crash never
@@ -105,10 +128,16 @@ impl AttachmentFiles {
     /// The plaintext; `Crypto` if the file was altered or belongs to another id.
     pub(crate) async fn read(&self, id: Snowflake) -> Result<Vec<u8>, AttachmentFileError> {
         let path = self.path_of(id);
+        let legacy_path = self.legacy_path_of(id);
         let key = self.key.clone();
         tokio::task::spawn_blocking(move || {
             // Opened in the buffer read from disk: no second copy of the file in memory.
-            let mut contents = std::fs::read(&path)?;
+            let mut contents = match std::fs::read(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    std::fs::read(&legacy_path)?
+                }
+                read => read?,
+            };
             if contents.len() < NONCE_LEN {
                 return Err(AttachmentFileError::Crypto);
             }
@@ -131,11 +160,63 @@ impl AttachmentFiles {
 
     /// A missing file is not an error: deleting twice is harmless.
     pub(crate) async fn delete(&self, id: Snowflake) -> Result<(), AttachmentFileError> {
-        match tokio::fs::remove_file(self.path_of(id)).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
+        for path in [self.path_of(id), self.legacy_path_of(id)] {
+            match tokio::fs::remove_file(path).await {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(error.into());
+                }
+                _ => {}
+            }
         }
+        Ok(())
+    }
+
+    /// Moves files stored before ADR-0034 to their shard, each with one rename within the
+    /// directory: atomic, so a crash leaves every file in one place or the other, and the next
+    /// start goes on. Temporary files stay where they are, for the sweep. A file that cannot be
+    /// moved is counted and left, still found where it is.
+    pub(crate) async fn move_files_to_their_shards(
+        &self,
+    ) -> Result<MovedFiles, AttachmentFileError> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut moved_files = MovedFiles::default();
+            let Ok(shards) = std::fs::read_dir(&store.directory) else {
+                return Ok(moved_files);
+            };
+            for shard in shards {
+                let shard = shard?;
+                if !shard.file_type()?.is_dir() {
+                    continue;
+                }
+                for file in std::fs::read_dir(shard.path())? {
+                    let file = file?;
+                    let Some(id) = file.file_name().to_str().and_then(|name| name.parse().ok())
+                    else {
+                        continue;
+                    };
+                    let id = Snowflake::from_raw(id);
+                    if shard.file_name().to_str() == Some(shard_of(id).as_str()) {
+                        continue;
+                    }
+                    let destination = store.path_of(id);
+                    let renamed = destination
+                        .parent()
+                        .map_or(Ok(()), crate::storage::create_private_directory)
+                        .and_then(|()| std::fs::rename(file.path(), &destination));
+                    match renamed {
+                        Ok(()) => moved_files.moved += 1,
+                        Err(error) => {
+                            // The file name is an attachment id: left out of the log.
+                            tracing::warn!(%error, "cannot move an attachment file to its shard");
+                            moved_files.failed += 1;
+                        }
+                    }
+                }
+            }
+            Ok(moved_files)
+        })
+        .await?
     }
 
     /// Temporary files left by a crash mid-write, created before the cutoff (from their id). A
@@ -209,6 +290,17 @@ impl AttachmentFiles {
     }
 }
 
+/// The shard directory of a file: generated ids differ mostly in their timestamp bits, so they are
+/// mixed by `SplitMix64`'s finaliser (every input bit flips each output bit half the time) and the
+/// top byte is kept. It places files on disk: never change it without moving them.
+fn shard_of(id: Snowflake) -> String {
+    let mut mixed = id.raw();
+    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    mixed ^= mixed >> 31;
+    format!("{:02x}", mixed >> 56)
+}
+
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(suffix);
@@ -280,5 +372,106 @@ mod tests {
             other_key.read(id).await,
             Err(AttachmentFileError::Crypto)
         ));
+    }
+
+    /// Ids an instance generates: one upload every 37 ms, from the server's generator.
+    fn generated_ids(count: usize) -> Vec<Snowflake> {
+        let generator = crate::domain::snowflake_generator::SnowflakeGenerator::default();
+        (0..count)
+            .map(|index| {
+                let now = mellow_protocol::MELLOW_EPOCH_UNIX_MILLISECONDS
+                    + 86_400_000
+                    + 37 * u64::try_from(index).unwrap();
+                generator.next_id(now).unwrap()
+            })
+            .collect()
+    }
+
+    /// Writes the file where it was stored before ADR-0034.
+    async fn write_in_legacy_place(store: &AttachmentFiles, id: Snowflake) {
+        store
+            .write(id, id.raw().to_le_bytes().to_vec())
+            .await
+            .unwrap();
+        let legacy = store.legacy_path_of(id);
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::rename(store.path_of(id), legacy).unwrap();
+    }
+
+    #[test]
+    fn generated_ids_spread_over_every_shard() {
+        let shard_count = 256;
+        let files_per_shard = 100;
+        let mut counts = std::collections::HashMap::<String, usize>::new();
+        for id in generated_ids(shard_count * files_per_shard) {
+            assert_eq!(id.raw() % 256, 0, "the old rule put them all in 00");
+            *counts.entry(shard_of(id)).or_default() += 1;
+        }
+
+        assert_eq!(counts.len(), shard_count);
+        assert!(
+            counts
+                .values()
+                .all(|count| (files_per_shard / 2..=files_per_shard * 2).contains(count)),
+            "{counts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_stored_before_the_new_shards_is_read_and_deleted_where_it_is() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = files(directory.path());
+        let id = generated_ids(1)[0];
+        write_in_legacy_place(&store, id).await;
+
+        assert_eq!(store.existing_path_of(id), Some(store.legacy_path_of(id)));
+        assert_eq!(store.read(id).await.unwrap(), id.raw().to_le_bytes());
+        assert_eq!(store.stored_ids().await.unwrap(), vec![id]);
+        store.delete(id).await.unwrap();
+        assert_eq!(store.existing_path_of(id), None);
+        assert_eq!(store.stored_ids().await.unwrap(), Vec::new());
+    }
+
+    #[tokio::test]
+    async fn a_move_stopped_halfway_goes_on_at_the_next_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = files(directory.path());
+        let ids = generated_ids(40);
+        for id in &ids {
+            write_in_legacy_place(&store, *id).await;
+        }
+        // As if the process had stopped after moving the first half.
+        for id in &ids[..20] {
+            let path = store.path_of(*id);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::rename(store.legacy_path_of(*id), path).unwrap();
+        }
+        let partial = with_suffix(&store.legacy_path_of(ids[0]), SUFFIX_OF_TEMPORARY_FILES);
+        std::fs::write(&partial, b"half a file").unwrap();
+        // The few whose shard is still the old one have nothing to move.
+        let left_to_move = ids[20..]
+            .iter()
+            .filter(|id| store.path_of(**id) != store.legacy_path_of(**id))
+            .count();
+
+        let resumed = store.move_files_to_their_shards().await.unwrap();
+        let again = store.move_files_to_their_shards().await.unwrap();
+
+        assert_eq!(
+            resumed,
+            MovedFiles {
+                moved: left_to_move,
+                failed: 0
+            }
+        );
+        assert_eq!(again, MovedFiles::default());
+        for id in &ids {
+            assert_eq!(store.existing_path_of(*id), Some(store.path_of(*id)));
+            assert_eq!(store.read(*id).await.unwrap(), id.raw().to_le_bytes());
+        }
+        assert!(partial.exists(), "temporary files are left to the sweep");
+        let mut stored = store.stored_ids().await.unwrap();
+        stored.sort_unstable();
+        assert_eq!(stored, ids);
     }
 }
