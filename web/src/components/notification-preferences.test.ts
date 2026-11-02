@@ -9,24 +9,10 @@ import {
   refreshNotificationPreferences,
   updateNotificationSettings,
 } from "./notification-preferences.svelte";
+import { memoryStorage } from "../test-memory-storage";
 
 const CHANNEL = { kind: "conversation", channelId: "500" } as const;
 const MINUTE = 60_000;
-
-/** The browser's `localStorage`, shared by "tabs" that are just calls here. */
-function memoryStorage(): Storage {
-  const items = new Map<string, string>();
-  return {
-    get length() {
-      return items.size;
-    },
-    clear: () => items.clear(),
-    getItem: (key) => items.get(key) ?? null,
-    key: (index) => [...items.keys()][index] ?? null,
-    removeItem: (key) => void items.delete(key),
-    setItem: (key, value) => void items.set(key, value),
-  };
-}
 
 let userNumber = 0;
 
