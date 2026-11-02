@@ -7,6 +7,7 @@ use std::io::Cursor;
 use image::codecs::gif::GifDecoder;
 use image::codecs::webp::WebPDecoder;
 use image::imageops::FilterType;
+use image::metadata::Orientation;
 use image::{
     AnimationDecoder as _, DynamicImage, ImageDecoder as _, ImageFormat, ImageReader, Limits,
     RgbaImage,
@@ -237,7 +238,7 @@ fn decode_frames(
     let orientation = if matches!(format, ImageFormat::Jpeg | ImageFormat::Png) {
         decoder.orientation().map_err(as_processing_error)?
     } else {
-        image::metadata::Orientation::NoTransforms
+        Orientation::NoTransforms
     };
     let mut image = DynamicImage::from_decoder(decoder).map_err(as_processing_error)?;
     image.apply_orientation(orientation);
@@ -387,7 +388,16 @@ pub(crate) fn optimize_attachment(
             let (width, height) = header_dimensions(bytes, ImageFormat::Png)?;
             check_dimensions(width, height)?;
             let mut options = oxipng::Options::from_preset(PNG_OPTIMIZATION_PRESET);
-            options.strip = oxipng::StripChunks::Safe;
+            options.strip = if png_orientation(bytes)? == Orientation::NoTransforms {
+                oxipng::StripChunks::Safe
+            } else {
+                // Safe also drops eXIf: the picture would show turned or flipped otherwise, and
+                // no longer match its recorded dimensions. Same list as Safe, plus eXIf.
+                oxipng::StripChunks::Keep(oxipng::indexset! {
+                    *b"cICP", *b"iCCP", *b"sRGB", *b"pHYs", *b"acTL", *b"fcTL", *b"fdAT",
+                    *b"eXIf",
+                })
+            };
             // oxipng inflates to the size the header announces: bounded again on its side.
             options.max_decompressed_size =
                 usize::try_from(MAXIMUM_TOTAL_PIXELS * PNG_LARGEST_BYTES_PER_PIXEL).ok();
@@ -416,10 +426,26 @@ pub(crate) fn optimize_attachment(
     Ok((optimized.bytes.len() < bytes.len()).then_some(optimized))
 }
 
+/// The EXIF orientation a PNG declares before its pixels, read from its header alone.
+fn png_orientation(bytes: &[u8]) -> Result<Orientation, ImageProcessingError> {
+    let mut header_limits = limits();
+    header_limits.max_alloc = Some(HEADER_READ_MAXIMUM_BYTES);
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Png);
+    reader.limits(header_limits);
+    let as_processing_error = |error: image::ImageError| match error {
+        image::ImageError::Limits(_) => ImageProcessingError::TooLarge,
+        _ => ImageProcessingError::Unsupported,
+    };
+    reader
+        .into_decoder()
+        .and_then(|mut decoder| decoder.orientation())
+        .map_err(as_processing_error)
+}
+
 /// The size an attachment as stored shows at, from its header alone, so clients can hold its
-/// place: a JPEG's turned by its EXIF orientation, the only one stored attachments keep
-/// (`strip_jpeg_metadata`; oxipng drops a PNG's eXIf). `optimize_attachment` keeps the pixels,
-/// so this stays true after it. `None` for anything that is not a picture this server reads.
+/// place: turned by the EXIF orientation of a JPEG (`strip_jpeg_metadata` keeps it alone) or a
+/// PNG. `optimize_attachment` keeps the pixels and a PNG's orientation, so this stays true after
+/// it. `None` for anything that is not a picture this server reads.
 pub(crate) fn displayed_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     let format = image::guess_format(bytes).ok()?;
     if !matches!(
@@ -435,18 +461,19 @@ pub(crate) fn displayed_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     reader.limits(header_limits);
     let mut decoder = reader.into_decoder().ok()?;
     let (width, height) = decoder.dimensions();
-    let orientation = if format == ImageFormat::Jpeg {
+    // Only where reading EXIF is bounded, as in `decode_frames`.
+    let orientation = if matches!(format, ImageFormat::Jpeg | ImageFormat::Png) {
         decoder.orientation().ok()?
     } else {
-        image::metadata::Orientation::NoTransforms
+        Orientation::NoTransforms
     };
     // EXIF orientations 5 to 8 turn the picture a quarter.
     let is_turned_a_quarter = matches!(
         orientation,
-        image::metadata::Orientation::Rotate90
-            | image::metadata::Orientation::Rotate270
-            | image::metadata::Orientation::Rotate90FlipH
-            | image::metadata::Orientation::Rotate270FlipH
+        Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH
     );
     Some(if is_turned_a_quarter {
         (height, width)
@@ -970,6 +997,46 @@ pub(crate) mod tests {
         let avatar = process_profile_image(&rotated, ProfileImageKind::Avatar).unwrap();
         let decoded = image::load_from_memory(&avatar.picture.bytes).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (20, 40));
+    }
+
+    fn png_with_exif_orientation(width: u32, height: u32, orientation: u16) -> Vec<u8> {
+        let image = RgbaImage::from_pixel(width, height, Rgba([10, 20, 30, 255]));
+        let mut bytes = Vec::new();
+        let mut encoder = image::codecs::png::PngEncoder::new_with_quality(
+            &mut bytes,
+            image::codecs::png::CompressionType::Fast,
+            image::codecs::png::FilterType::NoFilter,
+        );
+        // The segment minus its marker, length and `Exif\0\0`: the TIFF payload eXIf holds.
+        encoder
+            .set_exif_metadata(orientation_segment(orientation)[10..].to_vec())
+            .unwrap();
+        encoder
+            .write_image(
+                image.as_raw(),
+                width,
+                height,
+                image::ExtendedColorType::Rgba8,
+            )
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn a_png_keeps_showing_the_size_its_orientation_says_after_compression() {
+        let has_exif = |bytes: &[u8]| bytes.windows(4).any(|window| window == b"eXIf");
+        for orientation in 1..=8u16 {
+            let original = png_with_exif_orientation(64, 32, orientation);
+            let expected = if orientation >= 5 { (32, 64) } else { (64, 32) };
+            assert_eq!(displayed_dimensions(&original), Some(expected));
+
+            let optimized = optimize_attachment(&original, "image/png")
+                .unwrap()
+                .expect("a flat PNG compresses");
+            assert_eq!(displayed_dimensions(&optimized.bytes), Some(expected));
+            // Orientation 1 shows nothing: its eXIf goes, with any GPS position in it.
+            assert_eq!(has_exif(&optimized.bytes), orientation != 1);
+        }
     }
 
     #[test]
