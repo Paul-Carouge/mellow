@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import type { PublicUser } from "../lib/protocol";
-import { type BlockNode, type InlineNode, markdownMentionsUser, parseMessageMarkdown, safeHttpUrl } from "./markdown";
+import {
+  type BlockNode,
+  type InlineNode,
+  markdownMentionsUser,
+  parseMessageMarkdown,
+  parseMessageMarkdownCountingSteps,
+  safeHttpUrl,
+} from "./markdown";
 import { mentionablePeople } from "./mentions";
 
 const paul: PublicUser = { id: "1", username: "paul", display_name: "Paul Carouge" };
@@ -308,16 +315,21 @@ describe("hostile text", () => {
     ["unclosed masked links", (scale) => "[a](".repeat(15_000 * scale)],
     ["blank lines inside a code block", (scale) => "```\na" + "\n".repeat(50_000 * scale) + "b\n```"],
   ])("parses %s in linear work", (_, contentAtScale) => {
+    // Two measures, as neither sees everything: the parser's own loop steps miss scans inside
+    // built-in searches, and counted searches miss the parser's plain character loops.
     const workPerCharacterAtScale = (scale: number) => {
       const content = contentAtScale(scale);
-      let blocks: BlockNode[] = [];
+      let parsed = { blocks: [] as BlockNode[], steps: 0 };
       const searches = countSearchesDuring(() => {
-        blocks = parseMessageMarkdown(content, people);
+        parsed = parseMessageMarkdownCountingSteps(content, people);
       });
-      expect(blocks.length).toBeGreaterThan(0);
-      return searches / content.length;
+      expect(parsed.blocks.length).toBeGreaterThan(0);
+      return { steps: parsed.steps / content.length, searches: searches / content.length };
     };
-    expect(workPerCharacterAtScale(2)).toBeLessThanOrEqual(workPerCharacterAtScale(1) * MAXIMUM_GROWTH_OF_WORK_PER_CHARACTER);
+    const single = workPerCharacterAtScale(1);
+    const double = workPerCharacterAtScale(2);
+    expect(double.steps).toBeLessThanOrEqual(single.steps * MAXIMUM_GROWTH_OF_WORK_PER_CHARACTER);
+    expect(double.searches).toBeLessThanOrEqual(single.searches * MAXIMUM_GROWTH_OF_WORK_PER_CHARACTER);
   });
 
   it("caps nesting and shows the rest as text", () => {

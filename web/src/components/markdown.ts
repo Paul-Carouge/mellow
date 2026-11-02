@@ -58,6 +58,13 @@ const LINK_TEXT_LOOKING_LIKE_AN_ADDRESS = /:\/\/|(?<![\p{L}\p{N}-])[\p{L}\p{N}-]
 /** Masked link text must show something: blank, zero-width and filler characters do not count. */
 const VISIBLE_CHARACTER = /[^\s\p{Cf}\p{Z}\u2800\u3164\u115F\u1160\uFFA0]/u;
 
+/**
+ * Loop iterations of the last parse, counted so a test can check the parser stays linear on
+ * hostile text without a clock. Scans done inside built-in string methods are not counted here.
+ * Every loop of the parser adds one per iteration: a loop that does not is invisible to that test.
+ */
+let parserStepCount = 0;
+
 interface ParseContext {
   people: MentionablePeople;
   customEmojis: ReadonlyMap<Snowflake, CustomEmoji>;
@@ -73,7 +80,17 @@ export function parseMessageMarkdown(
   people: MentionablePeople,
   customEmojis: ReadonlyMap<Snowflake, CustomEmoji> = new Map(),
 ): BlockNode[] {
+  parserStepCount = 0;
   return parseBlocks(content, { people, customEmojis, nextSpoilerId: 0 }, false);
+}
+
+/** Test entry point: `parseMessageMarkdown` and the loop iterations it took. */
+export function parseMessageMarkdownCountingSteps(
+  content: string,
+  people: MentionablePeople,
+): { blocks: BlockNode[]; steps: number } {
+  const blocks = parseMessageMarkdown(content, people);
+  return { blocks, steps: parserStepCount };
 }
 
 /** Whether the parsed message mentions `userId` outside code. */
@@ -142,6 +159,7 @@ function parseBlocks(source: string, context: ParseContext, isInsideQuote: boole
   };
 
   while (position < source.length) {
+    parserStepCount += 1;
     // A quote or list may have swallowed the fence found earlier.
     if (nextFenceIndex !== -1 && nextFenceIndex < position) {
       nextFenceIndex = source.indexOf(FENCE, position);
@@ -164,6 +182,7 @@ function parseBlocks(source: string, context: ParseContext, isInsideQuote: boole
         const quotedLines: string[] = [];
         let next = position;
         while (next < source.length && source.startsWith(QUOTE_LINE_PREFIX, next)) {
+          parserStepCount += 1;
           const quotedLineEnd = findEndOfLine(source, next);
           quotedLines.push(source.slice(next + QUOTE_LINE_PREFIX.length, quotedLineEnd));
           next = quotedLineEnd + 1;
@@ -190,6 +209,7 @@ function parseBlocks(source: string, context: ParseContext, isInsideQuote: boole
         const items: InlineNode[][] = [];
         let next = position;
         while (next < source.length) {
+          parserStepCount += 1;
           const itemLineEnd = findEndOfLine(source, next);
           const item = LIST_ITEM_LINE.exec(source.slice(next, itemLineEnd));
           if (item?.[1] === undefined) {
@@ -247,9 +267,11 @@ function parseFence(source: string, start: number): { block: BlockNode; end: num
   let textStart = contentStart;
   let textEnd = close;
   while (textStart < textEnd && source[textStart] === "\n") {
+    parserStepCount += 1;
     textStart += 1;
   }
   while (textEnd > textStart && source[textEnd - 1] === "\n") {
+    parserStepCount += 1;
     textEnd -= 1;
   }
   const text = source.slice(textStart, textEnd);
@@ -266,12 +288,14 @@ export function findCodeSpans(text: string): Map<number, { end: number; content:
   const countBacktickRunLength = (from: number) => {
     let end = from;
     while (text[end] === "`") {
+      parserStepCount += 1;
       end += 1;
     }
     return end - from;
   };
   let index = 0;
   while (index < text.length) {
+    parserStepCount += 1;
     if (text[index] === "\\") {
       index += 2;
       continue;
@@ -284,6 +308,7 @@ export function findCodeSpans(text: string): Map<number, { end: number; content:
     let search = index + opening;
     let isCodeSpanClosed = false;
     while (!unclosedRunLengths.has(opening)) {
+      parserStepCount += 1;
       const candidate = text.indexOf("`", search);
       if (candidate === -1) {
         break;
@@ -310,6 +335,7 @@ export function findCodeSpans(text: string): Map<number, { end: number; content:
 function findCustomEmojiSpans(text: string, insideCode: Uint8Array): Map<number, { end: number; name: string; id: Snowflake }> {
   const spans = new Map<number, { end: number; name: string; id: Snowflake }>();
   for (let start = text.indexOf("<"); start !== -1; start = text.indexOf("<", start + 1)) {
+    parserStepCount += 1;
     if (insideCode[start] || isEscaped(text, start)) {
       continue;
     }
@@ -392,6 +418,7 @@ const DELIMITER_RULES: readonly DelimiterRule[] = [
 function isEscaped(text: string, position: number): boolean {
   let backslashes = 0;
   for (let index = position - 1; index >= 0 && text[index] === "\\"; index -= 1) {
+    parserStepCount += 1;
     backslashes += 1;
   }
   return backslashes % 2 === 1;
@@ -409,6 +436,7 @@ function createCachedCloserSearch(text: string, insideCode: Uint8Array, isCloser
     }
     answer = -1;
     for (let position = from; position < text.length; position += 1) {
+      parserStepCount += 1;
       if (!insideCode[position] && isCloser(position) && !isEscaped(text, position)) {
         answer = position;
         break;
@@ -447,6 +475,7 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
 
   let position = 0;
   while (position < text.length) {
+    parserStepCount += 1;
     const character = text[position];
     const codeSpan = codeSpans.get(position);
     if (codeSpan) {
@@ -539,6 +568,7 @@ function findBalancedClosingParentheses(text: string): Map<number, number> {
   const closingByOpening = new Map<number, number>();
   const openings: number[] = [];
   for (let index = 0; index < text.length; index += 1) {
+    parserStepCount += 1;
     const character = text[index];
     if (character === "(") {
       openings.push(index);
@@ -563,9 +593,11 @@ function autolinkAt(text: string, position: number): { text: string; url: string
   let end = match[0].length;
   let unbalancedClosingParentheses = 0;
   for (const character of match[0]) {
+    parserStepCount += 1;
     unbalancedClosingParentheses += character === ")" ? 1 : character === "(" ? -1 : 0;
   }
   while (end > 0 && LINK_TRAILING_PUNCTUATION.includes(match[0][end - 1] ?? "")) {
+    parserStepCount += 1;
     // As on GitHub: a closing parenthesis ends the link only when the link did not open it.
     if (match[0][end - 1] === ")") {
       if (unbalancedClosingParentheses <= 0) {
