@@ -1450,6 +1450,7 @@ export const fr: Catalogue = {
     about: "À propos",
     notifications: "Notifications",
     voice: "Voix",
+    accessibility: "Accessibilité",
     closeSettings: "Fermer les paramètres",
     escapeKey: "Échap",
     signOut: "Se déconnecter",
@@ -1460,6 +1461,18 @@ export const fr: Catalogue = {
     licence: "Mellow est un logiciel libre sous licence AGPL-3.0. Tu peux lire, modifier et partager son code.",
     sourceCodeOnGitHub: "Code source sur GitHub",
     thirdPartyNotices: "Licences des composants tiers",
+  },
+
+  accessibilitySettings: {
+    intro: "Ce réglage reste dans ce navigateur.",
+    animatedPictures: "Images animées",
+    animateOnHover: "Animer au survol",
+    animateOnHoverDescription:
+      "Les avatars et les icônes de serveur s’animent quand tu les survoles ou les sélectionnes. Les emoji personnalisés, les bannières et Melli s’animent tout le temps.",
+    alwaysAnimate: "Toujours animer",
+    alwaysAnimateDescription:
+      "Avatars, icônes de serveur, emoji personnalisés, bannières et Melli s’animent tout le temps, même si ton appareil demande de réduire les animations.",
+    reducedMotionNote: `Ton appareil demande de réduire les animations${NO_BREAK_SPACE}: avec «${NO_BREAK_SPACE}Animer au survol${NO_BREAK_SPACE}», les images et Melli restent fixes.`,
   },
 
   voiceSettings: {

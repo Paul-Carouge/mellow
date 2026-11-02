@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { prefersReducedMotion } from "../lib/motion.svelte";
+  import { isPictureAnimationWanted } from "../lib/motion.svelte";
   import { type CustomEmoji, emojiUrl } from "../lib/protocol";
 
   // A server emoji's picture (DESIGN.md §6.58): `:name:` as its text alternative and tooltip, the
-  // still frame under reduced motion, and the name as text if the picture cannot be loaded.
+  // still frame while reduced motion keeps pictures still, and the name as text if the picture cannot be loaded.
   // Hidden windows cost nothing: browsers neither paint nor advance images they do not show.
   interface Props {
     /** Labelled with its server's name, never with a name a message's markup gave it. */
@@ -16,7 +16,7 @@
 
   let { emoji, class: className, isDecorative = false }: Props = $props();
 
-  const source = $derived(emojiUrl(emoji, !prefersReducedMotion.current));
+  const source = $derived(emojiUrl(emoji, isPictureAnimationWanted(true)));
   let failedSource = $state<string | null>(null);
   const label = $derived(`:${emoji.name}:`);
 </script>

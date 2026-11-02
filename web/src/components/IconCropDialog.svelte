@@ -1,7 +1,7 @@
 <script lang="ts">
   import { strings } from "../i18n";
   import type { IconCrop } from "../lib/api";
-  import { prefersReducedMotion } from "../lib/motion.svelte";
+  import { isPictureAnimationWanted } from "../lib/motion.svelte";
   import Button from "./Button.svelte";
   import {
     type CropSquare,
@@ -53,9 +53,9 @@
   let stage = $state<HTMLElement | null>(null);
   const pointers = new Map<number, { x: number; y: number }>();
 
-  // Channel icons are always stored still, and nothing plays under reduced motion: such pictures
+  // Channel icons are always stored still, and nothing plays while reduced motion keeps pictures still: such pictures
   // are shown from their first frame. The file sent stays the one chosen.
-  const isStillWanted = $derived(kind === "channel" || prefersReducedMotion.current);
+  const isStillWanted = $derived(kind === "channel" || !isPictureAnimationWanted(true));
 
   $effect(() => {
     let url: string | null = null;

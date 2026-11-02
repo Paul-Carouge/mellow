@@ -1452,6 +1452,7 @@ export const en = {
     about: "About",
     notifications: "Notifications",
     voice: "Voice",
+    accessibility: "Accessibility",
     closeSettings: "Close settings",
     escapeKey: "Esc",
     signOut: "Sign out",
@@ -1462,6 +1463,19 @@ export const en = {
     licence: "Mellow is free software under the AGPL-3.0 licence. You can read, change and share its code.",
     sourceCodeOnGitHub: "Source code on GitHub",
     thirdPartyNotices: "Third-party licences",
+  },
+
+  /** Settings, Accessibility (docs/design/web-animation-setting.md). */
+  accessibilitySettings: {
+    intro: "This setting stays in this browser.",
+    animatedPictures: "Animated pictures",
+    animateOnHover: "Animate on hover",
+    animateOnHoverDescription:
+      "Avatars and server icons play while you point at them or focus them. Custom emoji, banners and Melli play all the time.",
+    alwaysAnimate: "Always animate",
+    alwaysAnimateDescription:
+      "Avatars, server icons, custom emoji, banners and Melli play all the time, even when your device asks to reduce motion.",
+    reducedMotionNote: "Your device asks to reduce motion: with “Animate on hover”, pictures and Melli stay still.",
   },
 
   /** Settings, Voice (docs/design/web-voice-comfort.md). */
