@@ -474,6 +474,7 @@ Motion is how Mellow feels alive without being busy. Every animation is a **stat
 | `motion.duration.highlight` | 2000 ms | Fade-out of the highlight on a message you jumped to |
 | `motion.delay.tooltip` / `tooltip-rail` | 500 ms / 0 ms | Tooltip delay; rail tooltips appear immediately |
 | `motion.delay.skeleton` | 300 ms | Before skeletons appear, to avoid flicker |
+| `motion.delay.loading-notice` | 340 ms | Before the notice for a part of the client still downloading appears, so a fast load does not flash it |
 | `motion.delay.pending-label` | 2000 ms | Before a pending message shows "Sending…" |
 | `motion.easing.standard` | cubic-bezier(0.2, 0, 0, 1) | Colour and opacity |
 | `motion.easing.enter` / `exit` | (0, 0, 0, 1) / (0.3, 0, 1, 1) | Appearing / leaving elements |

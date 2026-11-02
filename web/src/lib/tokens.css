@@ -1082,6 +1082,7 @@
   --mw-font-weight-semibold: 600;
   --mw-motion-delay-copied-label: 2000ms;
   --mw-motion-delay-jump-highlight: 2000ms;
+  --mw-motion-delay-loading-notice: 340ms;
   --mw-motion-delay-long-press: 500ms;
   --mw-motion-delay-pending-label: 2000ms;
   --mw-motion-delay-skeleton: 300ms;

@@ -24,7 +24,7 @@
 {#await loading}
   <p
     role="status"
-    class="fixed inset-x-0 top-(--mw-component-dialog-margin) z-50 mx-auto w-fit animate-[mw-fade-in_var(--mw-component-dialog-enter-duration)_var(--mw-component-dialog-enter-duration)_both] rounded-(--mw-component-dialog-radius) bg-(--mw-component-dialog-background) px-(--mw-component-dialog-padding) py-(--mw-component-notice-bar-padding-block) type-body text-(--mw-component-dialog-body-text) shadow-high"
+    class="fixed inset-x-0 top-(--mw-component-dialog-margin) z-50 mx-auto w-fit animate-[mw-fade-in_var(--mw-motion-duration-settle)_var(--mw-motion-delay-loading-notice)_both] rounded-(--mw-component-dialog-radius) bg-(--mw-component-dialog-background) px-(--mw-component-dialog-padding) py-(--mw-component-notice-bar-padding-block) type-body text-(--mw-component-dialog-body-text) shadow-high"
   >
     {strings.app.loadingPart}
   </p>
