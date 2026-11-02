@@ -31,12 +31,12 @@ const LAYER_RIDS: [&str; 3] = ["h", "l", "q"];
 const MARKER_OFFSET: usize = 10;
 const LAYER_OFFSET: usize = 11;
 const FRAME_BYTES: usize = 16;
-/// Long enough for several frames of every layer to arrive if they were still forwarded.
 /// A screen's sound frame: a tag, the sharer's marker, then padding; shorter than a camera frame.
 const SOUND_TAG: u8 = b'S';
 const SOUND_FRAME_BYTES: usize = 8;
 const SOUND_FRAME_INTERVAL: Duration = Duration::from_millis(20);
 const SOUND_CLOCK_TICKS_PER_FRAME: u64 = 960;
+/// Long enough for several frames of every layer to arrive if they were still forwarded.
 const SETTLE_TIME: Duration = Duration::from_millis(300);
 
 /// A frame the VP8 depacketizer accepts: a frame tag (bit 0 clear on keyframes), for keyframes
@@ -688,6 +688,37 @@ async fn a_screen_replaces_the_camera_on_its_path_and_watchers_follow_at_a_keyfr
     );
 }
 
+impl CameraBot {
+    /// Waits until more than `already_heard` sound frames of the screen `marker` arrived.
+    async fn wait_until_hearing(&self, marker: u8, already_heard: u32) {
+        let deadline = Instant::now() + HEARING_TIMEOUT;
+        while self.heard(marker) <= already_heard {
+            assert!(
+                Instant::now() < deadline,
+                "the screen's sound never arrived"
+            );
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    }
+
+    /// Whether the sound of the screen `marker` stopped arriving, once what was in flight landed.
+    async fn has_stopped_hearing(&self, marker: u8) -> bool {
+        tokio::time::sleep(SETTLE_TIME).await;
+        let heard = self.heard(marker);
+        tokio::time::sleep(SETTLE_TIME).await;
+        self.heard(marker) == heard
+    }
+}
+
+fn deafened(self_deaf: bool) -> ClientFrame {
+    ClientFrame::VoiceState {
+        self_mute: false,
+        self_deaf,
+        self_video: false,
+        self_stream: false,
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_shared_screen_is_heard_only_by_its_watchers_and_only_while_shared() {
     let fixture = fixture().await;
@@ -706,35 +737,66 @@ async fn a_shared_screen_is_heard_only_by_its_watchers_and_only_while_shared() {
     send(&mut member, &watch(owner_id, VideoTileSize::Large)).await;
     let video_slot = camera_slot_of(&mut member, owner_id).await;
     let sound_slot = camera_slot_of(&mut member, owner_id).await;
-    let deadline = Instant::now() + HEARING_TIMEOUT;
-    while member_bot.heard(1) == 0 {
-        assert!(
-            Instant::now() < deadline,
-            "the screen's sound never arrived"
-        );
-        tokio::time::sleep(Duration::from_millis(30)).await;
-    }
+    member_bot.wait_until_hearing(1, 0).await;
 
-    send(
-        &mut member,
-        &ClientFrame::VoiceVideoWatch {
-            cameras: Vec::new(),
-        },
-    )
-    .await;
-    tokio::time::sleep(SETTLE_TIME).await;
-    let heard_when_closed = member_bot.heard(1);
-    tokio::time::sleep(SETTLE_TIME).await;
-    let heard_after_closing = member_bot.heard(1);
+    let no_cameras = ClientFrame::VoiceVideoWatch {
+        cameras: Vec::new(),
+    };
+    send(&mut member, &no_cameras).await;
+    let has_stopped_when_closed = member_bot.has_stopped_hearing(1).await;
+
+    // Watching again gives the freed slot back, announced again.
+    send(&mut member, &watch(owner_id, VideoTileSize::Large)).await;
+    let video_slot_again = camera_slot_of(&mut member, owner_id).await;
+    let sound_slot_again = camera_slot_of(&mut member, owner_id).await;
+    member_bot.wait_until_hearing(1, member_bot.heard(1)).await;
+
+    send(&mut member, &deafened(true)).await;
+    let has_stopped_when_deafened = member_bot.has_stopped_hearing(1).await;
+    send(&mut member, &deafened(false)).await;
+    member_bot.wait_until_hearing(1, member_bot.heard(1)).await;
+
+    send(&mut owner, &camera_state(false)).await;
+    let has_stopped_when_unshared = member_bot.has_stopped_hearing(1).await;
     let owner_heard_itself = owner_bot.heard(1);
     drop((owner_bot, member_bot));
     fixture.close().await;
 
     assert_eq!(heard_before_watching, 0, "not watching, not heard");
     assert_ne!(video_slot, sound_slot);
-    assert_eq!(heard_after_closing, heard_when_closed, "closed, not heard");
+    assert!(has_stopped_when_closed, "closed, not heard");
+    assert_eq!(
+        (video_slot_again, sound_slot_again),
+        (video_slot, sound_slot)
+    );
+    assert!(has_stopped_when_deafened, "deafened, not heard");
+    assert!(has_stopped_when_unshared, "no longer shared, not heard");
     assert_eq!(
         owner_heard_itself, 0,
         "a sharer does not hear its own screen back"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_without_speak_shares_their_screen_without_its_sound() {
+    let fixture = fixture().await;
+    let (muted, _) = identified(fixture.address, fixture.token("muted")).await;
+    let (mut member, _) = identified(fixture.address, fixture.token("member")).await;
+    let mut muted = muted;
+    let muted_id = fixture.user_id("muted");
+    let muted_bot = join_with_screen_sound(&mut muted, fixture.lounge, 1).await;
+    let member_bot = join_with_screen_sound(&mut member, fixture.lounge, 2).await;
+    send(&mut muted, &screen_state()).await;
+    while !next_voice_state_update(&mut member, muted_id)
+        .await
+        .self_stream
+    {}
+    send(&mut member, &watch(muted_id, VideoTileSize::Large)).await;
+    member_bot.wait_until_receiving(1, "h").await;
+    tokio::time::sleep(SETTLE_TIME).await;
+    let heard = member_bot.heard(1);
+    drop((muted_bot, member_bot));
+    fixture.close().await;
+
+    assert_eq!(heard, 0, "the picture arrives, the sound does not");
 }

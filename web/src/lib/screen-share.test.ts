@@ -55,7 +55,7 @@ describe("screen share capture", () => {
   it("asks for the shared sound untouched, and never offers the call's own tab", () => {
     const options = screenCaptureOptions("1080p");
     expect(options.video).toEqual(screenCaptureConstraints("1080p"));
-    expect(options.audio).toEqual({ echoCancellation: false, noiseSuppression: false, autoGainControl: false });
+    expect(options.audio).toEqual({ echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true });
     expect(options.systemAudio).toBe("include");
     expect(options.selfBrowserSurface).toBe("exclude");
   });

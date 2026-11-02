@@ -506,9 +506,10 @@ pub enum GatewayEvent {
         offer_id: u32,
         reason: VoiceJoinRefusal,
     },
-    /// The server now relays `user_id`'s voice, or camera for a video m-line (ADR-0035), on this
-    /// session's receive m-line `mid` (one of its `recvonly` transceivers), until another event
-    /// names the same `mid`. Lets the client set a per-person volume and put each camera in its
+    /// The server now relays `user_id`'s voice, or camera for a video m-line (ADR-0035), or the
+    /// sound of their shared screen for an audio m-line after the video ones (ADR-0037: not a
+    /// voice), on this session's receive m-line `mid` (one of its `recvonly` transceivers), until
+    /// another event names the same `mid`. Lets the client set a per-person volume and put each camera in its
     /// tile. Sent to that session only; forgotten with its media session.
     VoiceSlotAssigned {
         channel_id: Snowflake,

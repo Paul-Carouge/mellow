@@ -46,11 +46,13 @@ const MAXIMUM_BYTES_PER_SECOND_WITH_CAMERA: usize = 1_500_000;
 /// 800 kbit/s: Opus at its highest bit rate (510 kbit/s) with RTCP for 9 watched cameras, so a
 /// client with its camera off cannot make the server decrypt full packets for nothing.
 const MAXIMUM_BYTES_PER_SECOND_WITHOUT_CAMERA: usize = 100_000;
-/// Voice and a shared screen's sound count apart from video, so a burst of video keyframes never
-/// silences their sender (ADR-0037): two Opus streams at its highest bit rate (510 kbit/s) in its
-/// smallest packets (10 ms).
-const MAXIMUM_VOICE_PACKETS_PER_SECOND: u32 = 240;
-const MAXIMUM_VOICE_BYTES_PER_SECOND: usize = 140_000;
+/// Voice counts apart from video, so a burst of video keyframes never silences its sender
+/// (ADR-0037): Opus at its highest bit rate (510 kbit/s) in its smallest packets (10 ms).
+const MAXIMUM_VOICE_PACKETS_PER_SECOND: u32 = 120;
+const MAXIMUM_VOICE_BYTES_PER_SECOND: usize = 70_000;
+/// While a screen is shared with its sound, which has the voice's payload types: twice as much.
+const MAXIMUM_VOICE_AND_SCREEN_SOUND_PACKETS_PER_SECOND: u32 = 2 * MAXIMUM_VOICE_PACKETS_PER_SECOND;
+const MAXIMUM_VOICE_AND_SCREEN_SOUND_BYTES_PER_SECOND: usize = 2 * MAXIMUM_VOICE_BYTES_PER_SECOND;
 const PACKET_RATE_WINDOW: Duration = Duration::from_secs(1);
 /// RTP and RTCP datagrams start with a byte in this range (RFC 7983).
 const RTP_OR_RTCP_FIRST_BYTES: std::ops::RangeInclusive<u8> = 128..=191;
@@ -119,6 +121,8 @@ pub(crate) struct MediaJoin {
     pub(crate) candidate_address: SocketAddr,
     pub(crate) is_forwarded: bool,
     pub(crate) is_deafened: bool,
+    /// They hold `SPEAK`: without it, their shared screen's sound is not relayed either.
+    pub(crate) may_speak: bool,
     /// The m-lines for the sound of shared screens, when the offer has them (ADR-0037).
     pub(crate) screen_sound: Option<ScreenSoundMids>,
 }
@@ -143,6 +147,8 @@ pub(crate) enum MediaCommand {
         user_id: Snowflake,
         is_forwarded: bool,
         is_deafened: bool,
+        /// They hold `SPEAK`: their shared screen's sound is relayed (ADR-0037).
+        may_speak: bool,
     },
     /// `is_camera_forwarded`: their camera reaches those who watch it (they hold `STREAM` and
     /// turned it on). Every join starts with it off.
@@ -166,7 +172,7 @@ pub(crate) enum MediaEvent {
         is_speaking: bool,
     },
     /// `listener_id`'s receive m-line `mid` now carries `speaker_id`'s voice, or camera for a
-    /// video m-line.
+    /// video m-line, or shared screen's sound for a screen sound line.
     SlotAssigned {
         listener_id: Snowflake,
         connection_id: u64,
@@ -270,6 +276,8 @@ impl ParticipantVideo {
     }
 }
 
+// Independent facts about one media session (connected, forwarded, deafened, may speak).
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 struct Participant {
     user_id: Snowflake,
@@ -289,6 +297,7 @@ struct Participant {
     is_connected: bool,
     is_forwarded: bool,
     is_deafened: bool,
+    may_speak: bool,
     speaking: SpeakingDetector,
     voice_packets: PacketWindow,
     other_packets: PacketWindow,
@@ -371,6 +380,7 @@ impl Participant {
             is_connected: false,
             is_forwarded: join.is_forwarded,
             is_deafened: join.is_deafened,
+            may_speak: join.may_speak,
             speaking: SpeakingDetector::default(),
             voice_packets: PacketWindow::new(now),
             other_packets: PacketWindow::new(now),
@@ -384,11 +394,23 @@ impl Participant {
         let is_voice = rtp_payload_type_of(datagram)
             .is_some_and(|payload_type| self.voice_payload_types.contains(&payload_type));
         if is_voice {
+            let (maximum_packets, maximum_bytes) =
+                if self.video.is_camera_forwarded && self.video.screen_sound.is_some() {
+                    (
+                        MAXIMUM_VOICE_AND_SCREEN_SOUND_PACKETS_PER_SECOND,
+                        MAXIMUM_VOICE_AND_SCREEN_SOUND_BYTES_PER_SECOND,
+                    )
+                } else {
+                    (
+                        MAXIMUM_VOICE_PACKETS_PER_SECOND,
+                        MAXIMUM_VOICE_BYTES_PER_SECOND,
+                    )
+                };
             return self.voice_packets.counts_within(
                 datagram.len(),
                 now,
-                MAXIMUM_VOICE_PACKETS_PER_SECOND,
-                MAXIMUM_VOICE_BYTES_PER_SECOND,
+                maximum_packets,
+                maximum_bytes,
             );
         }
         let (maximum_packets, maximum_bytes) = if self.video.is_camera_forwarded {
@@ -447,8 +469,20 @@ fn drain_output(participant: &mut Participant, socket: &UdpSocket, collected: &m
             }
             Ok(Output::Event(Event::Connected)) => participant.is_connected = true,
             // Screen sound lines are audio too: their place in the offer, not their kind, tells.
+            // What the sharer sends on theirs counts in the voice budget like their voice.
             Ok(Output::Event(Event::MediaAdded(added)))
-                if participant.video.is_screen_sound_line(added.mid) => {}
+                if participant.video.is_screen_sound_line(added.mid) =>
+            {
+                if participant
+                    .video
+                    .screen_sound
+                    .as_ref()
+                    .is_some_and(|lines| lines.sent == added.mid)
+                {
+                    let payload_types = payload_types_of(&participant.rtc, added.mid);
+                    participant.voice_payload_types.extend(payload_types);
+                }
+            }
             Ok(Output::Event(Event::MediaAdded(added))) if added.kind == MediaKind::Audio => {
                 match added.direction {
                     Direction::RecvOnly | Direction::SendRecv
@@ -480,12 +514,13 @@ fn drain_output(participant: &mut Participant, socket: &UdpSocket, collected: &m
                 if Some(frame.mid) == participant.voice_mid
                     || (participant.video.is_camera_forwarded
                         && (Some(frame.mid) == participant.video.camera_mid
-                            || Some(frame.mid)
-                                == participant
-                                    .video
-                                    .screen_sound
-                                    .as_ref()
-                                    .map(|lines| lines.sent))) =>
+                            || (participant.may_speak
+                                && Some(frame.mid)
+                                    == participant
+                                        .video
+                                        .screen_sound
+                                        .as_ref()
+                                        .map(|lines| lines.sent)))) =>
             {
                 collected.frames.push((participant.user_id, frame));
             }
@@ -694,12 +729,14 @@ impl MediaLoop<'_> {
                 user_id,
                 is_forwarded,
                 is_deafened,
+                may_speak,
             } => {
                 let Some(participant) = self.participants.get_mut(&user_id) else {
                     return;
                 };
                 participant.is_forwarded = is_forwarded;
                 participant.is_deafened = is_deafened;
+                participant.may_speak = may_speak;
                 if !is_forwarded && let Some(is_speaking) = participant.speaking.stop() {
                     let event = MediaEvent::Speaking {
                         user_id,
@@ -1230,9 +1267,14 @@ impl MediaLoop<'_> {
 
     /// Writes a shared screen's sound to the participants of its channel watching that screen
     /// (ADR-0037), on a screen sound slot given at its first frame. It is not a voice: no speaking
-    /// ring, and muting the microphone does not stop it; `STREAM` and deafening do.
+    /// ring, and muting the microphone does not stop it; `STREAM`, `SPEAK` and deafening do.
     fn forward_screen_sound(&mut self, sharer_id: Snowflake, frame: &MediaData) {
-        let Some(sharer) = self.participants.get(&sharer_id) else {
+        // Collected before a `SetCamera` false applied since: it stops here too.
+        let Some(sharer) = self
+            .participants
+            .get(&sharer_id)
+            .filter(|sharer| sharer.video.is_camera_forwarded && sharer.may_speak)
+        else {
             return;
         };
         let channel_id = sharer.channel_id;
@@ -1428,6 +1470,7 @@ mod tests {
             candidate_address: candidate,
             is_forwarded: true,
             is_deafened: false,
+            may_speak: true,
             screen_sound: None,
         })));
         let sharer = media.participants.get_mut(&sharer_id).unwrap();
@@ -1482,6 +1525,7 @@ mod tests {
             candidate_address: candidate,
             is_forwarded: true,
             is_deafened: false,
+            may_speak: true,
             screen_sound: None,
         })));
         media.apply(MediaCommand::SetCamera {
@@ -1541,6 +1585,7 @@ mod tests {
                 candidate_address: candidate,
                 is_forwarded: true,
                 is_deafened: false,
+                may_speak: true,
                 screen_sound: None,
             })));
         }

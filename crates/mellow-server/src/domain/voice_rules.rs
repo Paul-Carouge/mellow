@@ -161,8 +161,17 @@ pub(crate) fn validate_voice_offer(sdp_offer: &str) -> Result<VoiceOfferShape, I
         } else if let Some(mid) = line.strip_prefix("a=mid:")
             && let Some(section) = sections.last_mut()
         {
-            section.mid = Some(mid.trim_end().to_owned());
+            section.mid = Some(mid_as_read_by_the_webrtc_library(mid));
         }
+    }
+    // A line named like another would take its place: a screen sound line named like the voice
+    // line would hide it from the voice budget (ADR-0037).
+    let mids: Vec<&String> = sections
+        .iter()
+        .filter_map(|section| section.mid.as_ref())
+        .collect();
+    if mids.iter().collect::<std::collections::HashSet<_>>().len() != mids.len() {
+        return Err(InvalidVoiceOffer::UnexpectedMediaLines);
     }
     let audio_receive_slots =
         count_send_then_receive_lines(&sections, SectionKind::Audio, MAXIMUM_VOICE_RECEIVE_SLOTS)
@@ -194,6 +203,26 @@ pub(crate) fn validate_voice_offer(sdp_offer: &str) -> Result<VoiceOfferShape, I
         video_receive_slots,
         screen_sound,
     })
+}
+
+/// Longest mid `str0m` keeps.
+const MAXIMUM_MID_CHARACTERS: usize = 16;
+
+/// A mid as `str0m` 0.24 reads it (`Mid::from`): every character but ASCII letters and digits
+/// becomes `_`, nothing is trimmed, and only the first 16 are kept. Mids are compared this way so
+/// two lines the library would confuse are refused here.
+fn mid_as_read_by_the_webrtc_library(raw_mid: &str) -> String {
+    raw_mid
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(MAXIMUM_MID_CHARACTERS)
+        .collect()
 }
 
 /// The screen sound m-lines, which end the offer: one sent, then 1 to
@@ -558,6 +587,32 @@ mod tests {
         assert_eq!(
             validate_voice_offer(&without_mid),
             Err(InvalidVoiceOffer::UnexpectedMediaLines)
+        );
+        // Mids are read as the WebRTC library reads them: a screen sound line named like the voice
+        // line, exactly or once cleaned up ("0 " and "0." are "0_" there), would hide the voice
+        // line from the budget that counts it.
+        let named = |voice_mid: &str, screen_sound_mid: &str| {
+            offer(&lines[..6])
+                .replace("a=mid:0\r\n", &format!("a=mid:{voice_mid}\r\n"))
+                .replace("a=mid:5\r\n", &format!("a=mid:{screen_sound_mid}\r\n"))
+        };
+        for (voice_mid, screen_sound_mid) in [("0", "0"), ("0_", "0 "), ("0_", "0."), ("0 ", "0.")]
+        {
+            assert_eq!(
+                validate_voice_offer(&named(voice_mid, screen_sound_mid)),
+                Err(InvalidVoiceOffer::UnexpectedMediaLines),
+                "{voice_mid:?} and {screen_sound_mid:?}"
+            );
+        }
+        assert!(
+            validate_voice_offer(&named("0", "0 ")).is_ok(),
+            "\"0\" and \"0_\" differ"
+        );
+        let duplicate_video_mid = offer(&lines[..6]).replace("a=mid:3\r\n", "a=mid:1\r\n");
+        assert_eq!(
+            validate_voice_offer(&duplicate_video_mid),
+            Err(InvalidVoiceOffer::UnexpectedMediaLines),
+            "every mid is unique, not only the screen sound ones"
         );
     }
 

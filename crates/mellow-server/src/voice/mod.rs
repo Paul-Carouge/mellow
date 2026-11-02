@@ -90,6 +90,15 @@ struct PreparedJoin {
     screen_sound: Option<ScreenSoundMids>,
 }
 
+/// What a join is allowed, read again under the participants lock.
+#[derive(Debug, Clone, Copy)]
+struct AdmittedVoiceAccess {
+    guild_id: Snowflake,
+    user_limit: Option<u8>,
+    may_speak: bool,
+    may_use_soundboard: bool,
+}
+
 /// One connected person, as the service knows them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Participant {
@@ -135,6 +144,7 @@ impl Participant {
             user_id,
             is_forwarded: self.is_forwarded(),
             is_deafened: self.self_state.self_deaf,
+            may_speak: !self.suppressed,
         }
     }
 
@@ -377,15 +387,11 @@ impl VoiceService {
         }
     }
 
-    /// Adds the prepared participant under the participants lock. Access is read again there:
-    /// a permission revoked while the offer was being answered is re-checked only for those
-    /// already inserted, so a join racing it must see it here. A session that ended meanwhile
-    /// (its `end_session` already ran) gets nothing.
     /// The guild, user limit, `SPEAK` and soundboard rights of a join, read under the lock.
     async fn admitted_access(
         &self,
         request: &VoiceJoinRequest,
-    ) -> Result<(Snowflake, Option<u8>, bool, bool), VoiceJoinRefusal> {
+    ) -> Result<AdmittedVoiceAccess, VoiceJoinRefusal> {
         match self
             .shared
             .guilds
@@ -398,7 +404,12 @@ impl VoiceService {
                 may_speak,
                 may_use_soundboard,
                 ..
-            }) => Ok((guild_id, user_limit, may_speak, may_use_soundboard)),
+            }) => Ok(AdmittedVoiceAccess {
+                guild_id,
+                user_limit,
+                may_speak,
+                may_use_soundboard,
+            }),
             Ok(VoiceAccess::ChannelGone | VoiceAccess::NotMember | VoiceAccess::Denied) => {
                 Err(VoiceJoinRefusal::MissingPermissions)
             }
@@ -409,6 +420,10 @@ impl VoiceService {
         }
     }
 
+    /// Adds the prepared participant under the participants lock. Access is read again there:
+    /// a permission revoked while the offer was being answered is re-checked only for those
+    /// already inserted, so a join racing it must see it here. A session that ended meanwhile
+    /// (its `end_session` already ran) gets nothing.
     async fn admit(&self, request: VoiceJoinRequest, prepared: PreparedJoin) {
         let shared = &self.shared;
         let refuse = |reason| {
@@ -434,11 +449,15 @@ impl VoiceService {
         if !shared.events.is_session_live(request.session) {
             return;
         }
-        let (guild_id, user_limit, may_speak, may_use_soundboard) =
-            match self.admitted_access(&request).await {
-                Ok(access) => access,
-                Err(refusal) => return refuse(refusal),
-            };
+        let AdmittedVoiceAccess {
+            guild_id,
+            user_limit,
+            may_speak,
+            may_use_soundboard,
+        } = match self.admitted_access(&request).await {
+            Ok(access) => access,
+            Err(refusal) => return refuse(refusal),
+        };
         let previous = participants.get(&request.user_id).cloned();
         if let Some(refusal) =
             missing_room(&participants, &request, user_limit, shared.max_participants)
@@ -474,6 +493,7 @@ impl VoiceService {
             candidate_address,
             is_forwarded: participant.is_forwarded(),
             is_deafened: participant.self_state.self_deaf,
+            may_speak: !participant.suppressed,
             screen_sound,
         };
         if media
