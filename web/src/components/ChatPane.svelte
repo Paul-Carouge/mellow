@@ -8,7 +8,6 @@
     type Channel,
     type CustomEmoji,
     type Message,
-    PREVIEWABLE_IMAGE_TYPES,
     Permission,
     type PublicUser,
     type Snowflake,
@@ -21,6 +20,7 @@
   import { autosize } from "./autosize";
   import Button from "./Button.svelte";
   import { visibleChannelSections } from "./channel-settings";
+  import { ComposerDrafts } from "./composer-drafts.svelte";
   import ConfirmMessageDialog from "./ConfirmMessageDialog.svelte";
   import {
     type EmojiSuggestion,
@@ -155,8 +155,7 @@
     jumpToPresent: () => void;
     revealMessage: (messageId: Snowflake, shouldHighlight?: boolean) => Promise<void>;
   } | null>(null);
-  const draftsByChannel = new Map<Snowflake, string>();
-  let draft = $state("");
+  const drafts = new ComposerDrafts();
   let replyingTo = $state<Message | null>(null);
   let editingMessageId = $state<Snowflake | null>(null);
   let deletingMessage = $state<Message | null>(null);
@@ -174,24 +173,20 @@
   /** Information rather than a failure (a search result too far back): quiet, not red. */
   let notice = $state("");
   let fileInput = $state<HTMLInputElement | null>(null);
-  // Each channel keeps its own tray, like its draft: its files were uploaded to that channel.
-  const trayItemsByChannel = new Map<Snowflake, AttachmentTrayItem[]>();
-  let trayItems = $state<AttachmentTrayItem[]>([]);
-  let nextTrayItemKey = 0;
   let uploadAnnouncement = $state("");
   let isDropOverlayShown = $state(false);
   // dragenter and dragleave fire for every child crossed: the overlay hides when this is back to 0.
   let fileDragDepth = 0;
 
-  const isUploading = $derived(trayItems.some((item) => item.status === "uploading"));
+  const isUploading = $derived(drafts.trayItems.some((item) => item.status === "uploading"));
   const uploadedAttachments = $derived(
-    trayItems.flatMap((item) => (item.status === "uploaded" && item.attachment ? [item.attachment] : [])),
+    drafts.trayItems.flatMap((item) => (item.status === "uploaded" && item.attachment ? [item.attachment] : [])),
   );
   // Custom emoji are offered only in their own server's channels (ADR-0028).
   const serverEmojis = $derived(guild && channel ? client.emojisOf(guild.id) : []);
   const pickerServer = $derived(guild && channel ? { name: guild.name, emojis: serverEmojis } : null);
   // Counted as sent: a typed ":name:" goes out as its longer markup.
-  const charactersLeft = $derived(messageCharactersLeft(withEmojiNamesAsMarkup(draft, serverEmojis)));
+  const charactersLeft = $derived(messageCharactersLeft(withEmojiNamesAsMarkup(drafts.text, serverEmojis)));
 
   // The ":na" suggestions (DESIGN.md §5.5): follow the caret; Esc hides them until the word changes.
   let suggestionQuery = $state<EmojiSuggestionQuery | null>(null);
@@ -208,21 +203,13 @@
   const isTooLong = $derived(charactersLeft < 0);
   // The instance would refuse it: say why at the first try, until the text fits again.
   let hasTriedSendingTooLong = $state(false);
-  const canSend = $derived((draft.trim() !== "" || uploadedAttachments.length > 0) && !isUploading && !isTooLong);
+  const canSend = $derived((drafts.text.trim() !== "" || uploadedAttachments.length > 0) && !isUploading && !isTooLong);
 
   // Each channel keeps its own unsent text (DESIGN.md §5.5); replies and edits do not carry over.
-  let shownChannelId: Snowflake | null = null;
   $effect.pre(() => {
-    if (channelId === shownChannelId) {
+    if (!drafts.open(channelId)) {
       return;
     }
-    if (shownChannelId) {
-      draftsByChannel.set(shownChannelId, draft);
-      trayItemsByChannel.set(shownChannelId, trayItems);
-    }
-    shownChannelId = channelId;
-    draft = (channelId && draftsByChannel.get(channelId)) || "";
-    trayItems = (channelId && trayItemsByChannel.get(channelId)) || [];
     replyingTo = null;
     editingMessageId = null;
     actionError = "";
@@ -323,14 +310,14 @@
     }
     hasTriedSendingTooLong = false;
     void client.sendMessage(
-      withEmojiNamesAsMarkup(draft.trim(), serverEmojis),
+      withEmojiNamesAsMarkup(drafts.text.trim(), serverEmojis),
       replyingTo?.id ?? null,
       $state.snapshot(uploadedAttachments),
     );
     suggestionQuery = null;
-    draft = "";
+    drafts.text = "";
     replyingTo = null;
-    removeAllTrayItems();
+    drafts.clearTray();
     if (actionError === UPLOADS_RUNNING_SENTENCE || actionError === TOO_MANY_ATTACHMENTS_SENTENCE) {
       actionError = "";
     }
@@ -342,25 +329,12 @@
     if (!canAttachFiles || files.length === 0) {
       return;
     }
-    const room = Math.max(MAXIMUM_ATTACHMENTS_PER_MESSAGE - trayItems.length, 0);
+    const room = Math.max(MAXIMUM_ATTACHMENTS_PER_MESSAGE - drafts.trayItems.length, 0);
     if (files.length > room) {
       actionError = TOO_MANY_ATTACHMENTS_SENTENCE;
     }
     for (const file of files.slice(0, room)) {
-      const key = nextTrayItemKey++;
-      trayItems.push({
-        key,
-        file,
-        previewUrl: PREVIEWABLE_IMAGE_TYPES.includes(file.type) ? URL.createObjectURL(file) : null,
-        status: "uploading",
-        attachment: null,
-        error: "",
-      });
-      // The reactive copy: updates to it reach the tray, even after a channel switch put it aside.
-      const item = trayItems.find((candidate) => candidate.key === key);
-      if (item) {
-        void upload(item);
-      }
+      void upload(drafts.attach(file));
     }
   }
 
@@ -378,7 +352,7 @@
 
   /** Only for files still in the open channel's tray: removed ones and other channels' stay quiet. */
   function announceUpload(item: AttachmentTrayItem, sentence: string) {
-    if (trayItems.includes(item)) {
+    if (drafts.trayItems.includes(item)) {
       uploadAnnouncement = sentence;
     }
   }
@@ -392,34 +366,12 @@
   }
 
   function removeTrayItem(key: number) {
-    const item = trayItems.find((candidate) => candidate.key === key);
-    if (item?.previewUrl) {
-      URL.revokeObjectURL(item.previewUrl);
-    }
-    trayItems = trayItems.filter((candidate) => candidate.key !== key);
+    drafts.removeTrayItem(key);
     // The Remove button is gone with its item.
     focusComposer();
   }
 
-  function revokePreviews(items: readonly AttachmentTrayItem[]) {
-    for (const item of items) {
-      if (item.previewUrl) {
-        URL.revokeObjectURL(item.previewUrl);
-      }
-    }
-  }
-
-  function removeAllTrayItems() {
-    revokePreviews(trayItems);
-    trayItems = [];
-  }
-
-  onDestroy(() => {
-    revokePreviews(trayItems);
-    for (const items of trayItemsByChannel.values()) {
-      revokePreviews(items);
-    }
-  });
+  onDestroy(() => drafts.dispose());
 
   function handleComposerPaste(event: ClipboardEvent) {
     const files = Array.from(event.clipboardData?.files ?? []);
@@ -493,8 +445,8 @@
   function refreshSuggestions() {
     const caret = composer?.selectionStart ?? null;
     const isCaretCollapsed = caret !== null && caret === composer?.selectionEnd;
-    // The field's own value: `draft` may not have followed this input event yet.
-    const query = isCaretCollapsed ? emojiSuggestionQuery(composer?.value ?? draft, caret) : null;
+    // The field's own value: the draft may not have followed this input event yet.
+    const query = isCaretCollapsed ? emojiSuggestionQuery(composer?.value ?? drafts.text, caret) : null;
     if (query?.start !== suggestionQuery?.start || query?.query !== suggestionQuery?.query) {
       activeSuggestionIndex = 0;
     }
@@ -506,10 +458,10 @@
 
   /** Writes `text` and a space at the caret, or in place of the word being completed. */
   async function insertInComposer(text: string, range: { start: number; end: number } | null) {
-    const start = range?.start ?? composer?.selectionStart ?? draft.length;
-    const end = range?.end ?? composer?.selectionEnd ?? draft.length;
-    const result = replaceInDraft(draft, start, end, text);
-    draft = result.text;
+    const start = range?.start ?? composer?.selectionStart ?? drafts.text.length;
+    const end = range?.end ?? composer?.selectionEnd ?? drafts.text.length;
+    const result = replaceInDraft(drafts.text, start, end, text);
+    drafts.text = result.text;
     suggestionQuery = null;
     await tick();
     composer?.focus();
@@ -567,7 +519,7 @@
     } else if (event.key === "Escape" && unreadBarText !== "") {
       event.preventDefault();
       markAsRead();
-    } else if (event.key === "ArrowUp" && draft === "" && canSendMessages) {
+    } else if (event.key === "ArrowUp" && drafts.text === "" && canSendMessages) {
       event.preventDefault();
       editLastOwnMessage();
     }
@@ -957,8 +909,8 @@
             />
           </div>
         {/if}
-        {#if canSendMessages && trayItems.length > 0}
-          <AttachmentTray items={trayItems} onremove={removeTrayItem} />
+        {#if canSendMessages && drafts.trayItems.length > 0}
+          <AttachmentTray items={drafts.trayItems} onremove={removeTrayItem} />
         {/if}
         <div class="flex items-end gap-2xs px-xs">
           {#if canSendMessages}
@@ -990,7 +942,7 @@
                  readers would stop announcing a multi-line text box where Shift+Enter adds lines. -->
             <textarea
               bind:this={composer}
-              bind:value={draft}
+              bind:value={drafts.text}
               rows="1"
               aria-label={composerLabel}
               aria-describedby={[
@@ -1017,7 +969,7 @@
                 client.noteTyping();
                 refreshSuggestions();
               }}
-              {@attach autosize(() => draft, maximumComposerHeight)}
+              {@attach autosize(() => drafts.text, maximumComposerHeight)}
             ></textarea>
             {#if charactersLeft <= MESSAGE_LENGTH_COUNTER_THRESHOLD}
               <!-- Discord's counter: only near the limit, the number alone on screen. -->
