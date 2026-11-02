@@ -702,7 +702,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::domain::account_rules::RegistrationMode;
     use crate::domain::accounts::tests::{migrated_database, register_request};
-    use crate::http::tests::test_state;
+    use crate::http::test_support::test_state;
 
     pub(crate) type ClientSocket = tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,

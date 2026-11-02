@@ -719,7 +719,7 @@ mod tests {
     use super::*;
     use crate::domain::account_rules::RegistrationMode;
     use crate::domain::accounts::tests::migrated_database;
-    use crate::http::tests::test_state;
+    use crate::http::test_support::test_state;
 
     #[cfg(unix)]
     #[tokio::test]

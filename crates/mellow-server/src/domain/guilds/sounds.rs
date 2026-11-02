@@ -265,7 +265,7 @@ mod tests {
     use crate::domain::image_processing::tests::png;
     use crate::domain::sound_rules::tests::canonical_wav;
     use crate::http::AppState;
-    use crate::http::tests::test_state;
+    use crate::http::test_support::test_state;
 
     /// A guild of `owner` that `member` joined, another guild of the owner's, and `outsider`
     /// who belongs to none.

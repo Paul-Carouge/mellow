@@ -736,7 +736,7 @@ mod tests {
     use super::*;
     use crate::domain::account_rules::RegistrationMode;
     use crate::domain::accounts::tests::migrated_database;
-    use crate::http::tests::test_state;
+    use crate::http::test_support::test_state;
 
     /// Nothing listens there: certificate requests fail at once, without touching the network.
     const UNREACHABLE_DIRECTORY_URL: &str = "https://127.0.0.1:9/directory";
