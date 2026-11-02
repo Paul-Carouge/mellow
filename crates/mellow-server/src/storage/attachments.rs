@@ -87,6 +87,41 @@ pub(crate) async fn update_attachment_file(
     Ok(updated.rows_affected() > 0)
 }
 
+/// Records that the background compression tried this attachment, so it is not queued again.
+pub(crate) async fn record_optimization_attempt(
+    database: &Database,
+    attachment_id: Snowflake,
+    now_unix_milliseconds: u64,
+) -> Result<(), MessageStorageError> {
+    sqlx::query(
+        "UPDATE attachments SET optimization_attempted_at_unix_milliseconds = ? WHERE id = ?",
+    )
+    .bind(to_sqlite_integer(now_unix_milliseconds)?)
+    .bind(to_sqlite_integer(attachment_id.raw())?)
+    .execute(database.writer())
+    .await?;
+    Ok(())
+}
+
+/// The newest PNG and GIF attachments the background compression never tried, at most `limit`.
+/// The condition repeats migration 0025's partial index word for word, so the index answers it.
+pub(crate) async fn newest_attachments_awaiting_optimization(
+    database: &Database,
+    limit: usize,
+) -> Result<Vec<Snowflake>, MessageStorageError> {
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        "SELECT id FROM attachments WHERE optimization_attempted_at_unix_milliseconds IS NULL \
+         AND content_type IN ('image/png', 'image/gif') ORDER BY id DESC LIMIT ?",
+    )
+    .bind(convert_integer::<_, i64>(limit)?)
+    .fetch_all(database.readers())
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id,)| to_snowflake(id))
+        .collect::<Result<_, _>>()?)
+}
+
 pub(crate) async fn find_attachment(
     database: &Database,
     attachment_id: Snowflake,

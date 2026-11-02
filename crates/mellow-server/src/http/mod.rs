@@ -2761,6 +2761,68 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn pictures_whose_compression_was_lost_in_a_restart_are_compressed_after_it() {
+        use crate::domain::image_processing::tests::png;
+
+        const UPLOADS_BEFORE_THE_RESTART: usize = 100;
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let picture = png(64, 40);
+        let mut uploaded = Vec::new();
+        let (_, body) = send(&state, authorized("GET", "/api/v1/users/@me", &owner, None)).await;
+        let owner_id = json::<CurrentUser>(&body).id;
+        // Through the domain: the HTTP route would rate-limit this many uploads. No worker runs:
+        // past the queue's capacity jobs are dropped, and the restart loses the queued ones too.
+        for _ in 0..UPLOADS_BEFORE_THE_RESTART {
+            let slot = state
+                .attachments
+                .start_upload(owner_id, general, "photo.png")
+                .await
+                .unwrap();
+            let attachment = state
+                .attachments
+                .finish_upload(
+                    slot,
+                    picture.clone(),
+                    crate::domain::clock::now_unix_milliseconds(),
+                )
+                .await
+                .unwrap();
+            uploaded.push(attachment.id);
+        }
+
+        state
+            .attachments
+            .restarted()
+            .optimize_every_attachment_awaiting()
+            .await;
+        let mut stored = Vec::new();
+        for id in &uploaded {
+            stored.push(
+                crate::storage::attachments::find_attachment(&database, *id)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        let awaiting =
+            crate::storage::attachments::newest_attachments_awaiting_optimization(&database, 1_000)
+                .await
+                .unwrap();
+        database.close().await;
+
+        assert!(awaiting.is_empty(), "every attempt is recorded");
+        let original_size = u64::try_from(picture.len()).unwrap();
+        assert!(
+            stored
+                .iter()
+                .all(|attachment| attachment.size_bytes < original_size),
+            "every upload was compressed"
+        );
+    }
+
+    #[tokio::test]
     async fn an_animated_gif_attachment_becomes_a_smaller_webp_in_the_background() {
         use crate::domain::image_processing::tests::animated_gif;
         use mellow_protocol::Attachment;

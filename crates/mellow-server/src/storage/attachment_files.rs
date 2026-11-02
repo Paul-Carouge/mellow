@@ -11,6 +11,13 @@ use zeroize::Zeroizing;
 
 const SUFFIX_OF_TEMPORARY_FILES: &str = ".partial";
 
+/// Files a sweep deleted, and files it could not delete and left for the next sweep.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SweptFiles {
+    pub(crate) deleted: usize,
+    pub(crate) failed: usize,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AttachmentFileError {
     #[error("attachment file input/output failed")]
@@ -53,7 +60,7 @@ impl AttachmentFiles {
         })
     }
 
-    fn path_of(&self, id: Snowflake) -> PathBuf {
+    pub(crate) fn path_of(&self, id: Snowflake) -> PathBuf {
         let name = id.raw().to_string();
         let shard = format!("{:02x}", id.raw() % 256);
         self.directory.join(shard).join(name)
@@ -131,16 +138,17 @@ impl AttachmentFiles {
         }
     }
 
-    /// Temporary files left by a crash mid-write, created before the cutoff (from their id).
+    /// Temporary files left by a crash mid-write, created before the cutoff (from their id). A
+    /// file that cannot be deleted is counted and skipped: it must not stop the others.
     pub(crate) async fn remove_partial_files_before(
         &self,
         cutoff_unix_milliseconds: u64,
-    ) -> Result<usize, AttachmentFileError> {
+    ) -> Result<SweptFiles, AttachmentFileError> {
         let directory = self.directory.clone();
         tokio::task::spawn_blocking(move || {
-            let mut removed = 0;
+            let mut swept = SweptFiles::default();
             let Ok(shards) = std::fs::read_dir(&directory) else {
-                return Ok(removed);
+                return Ok(swept);
             };
             for shard in shards {
                 let shard = shard?;
@@ -157,13 +165,20 @@ impl AttachmentFiles {
                         .is_some_and(|id| {
                             Snowflake::from_raw(id).unix_milliseconds() < cutoff_unix_milliseconds
                         });
-                    if is_stale {
-                        std::fs::remove_file(file.path())?;
-                        removed += 1;
+                    if !is_stale {
+                        continue;
+                    }
+                    match std::fs::remove_file(file.path()) {
+                        Ok(()) => swept.deleted += 1,
+                        Err(error) => {
+                            // The file name is an attachment id: left out of the log.
+                            tracing::warn!(%error, "cannot delete a temporary attachment file");
+                            swept.failed += 1;
+                        }
                     }
                 }
             }
-            Ok(removed)
+            Ok(swept)
         })
         .await?
     }

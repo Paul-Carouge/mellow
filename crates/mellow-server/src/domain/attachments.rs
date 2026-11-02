@@ -13,7 +13,7 @@ use crate::domain::image_processing::optimize_attachment;
 use crate::domain::message_rules::{UNKNOWN_CONTENT_TYPE, clean_file_name, sniff_content_type};
 use crate::domain::messages::{MessageError, Messages};
 use crate::domain::snowflake_generator::SnowflakeGenerator;
-use crate::storage::attachment_files::{AttachmentFileError, AttachmentFiles};
+use crate::storage::attachment_files::{AttachmentFileError, AttachmentFiles, SweptFiles};
 use crate::storage::attachments::{self as storage, NewAttachment};
 
 const PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_mins(10);
@@ -36,20 +36,18 @@ const OPTIMIZATION_TIME_BUDGET: std::time::Duration = std::time::Duration::from_
 const OPTIMIZABLE_CONTENT_TYPES: [&str; 2] = ["image/png", "image/gif"];
 
 /// Compresses uploaded pictures one at a time, after they were answered, until the server stops
-/// (ADR-0021): one worker bounds the CPU it takes.
+/// (ADR-0021): one worker bounds the CPU it takes. Whenever it runs out of work, at startup
+/// included, it picks up the pictures never tried: jobs a full queue or a restart dropped.
 pub(crate) async fn optimize_attachments_in_background(attachments: Arc<Attachments>) {
-    let queue = attachments
-        .optimization_receiver
-        .lock()
-        .ok()
-        .and_then(|mut receiver| receiver.take());
-    let Some(mut queue) = queue else {
+    let Some(mut queue) = attachments.take_optimization_queue() else {
         return;
     };
-    while let Some(attachment_id) = queue.recv().await {
-        if let Err(error) = attachments.optimize(attachment_id).await {
-            tracing::warn!(%error, "cannot compress an attachment");
-        }
+    loop {
+        attachments.optimize_until_none_is_left(&mut queue).await;
+        let Some(attachment_id) = queue.recv().await else {
+            return;
+        };
+        attachments.optimize_and_record_attempt(attachment_id).await;
     }
 }
 
@@ -86,8 +84,15 @@ pub(crate) async fn purge_attachments_periodically(attachments: Arc<Attachments>
             .purge(crate::domain::clock::now_unix_milliseconds())
             .await
         {
-            Ok(0) => {}
-            Ok(deleted_files) => tracing::info!(deleted_files, "attachment files purged"),
+            Ok(SweptFiles {
+                deleted: 0,
+                failed: 0,
+            }) => {}
+            Ok(SweptFiles { deleted, failed }) => tracing::info!(
+                deleted_files = deleted,
+                undeletable_files = failed,
+                "attachment files purged"
+            ),
             Err(error) => tracing::warn!(%error, "cannot purge attachment files"),
         }
     }
@@ -297,7 +302,8 @@ impl Attachments {
             return Err(error.into());
         }
         if OPTIMIZABLE_CONTENT_TYPES.contains(&content_type.as_str()) {
-            // A full queue keeps the original: answering the upload never waits on compression.
+            // Answering the upload never waits on compression: a full queue drops the job, and the
+            // worker picks the upload up again once idle (its attempt is not recorded yet).
             let _ = self.optimization_sender.try_send(id);
         }
         Ok(Attachment {
@@ -306,6 +312,89 @@ impl Attachments {
             content_type,
             size_bytes,
         })
+    }
+
+    /// Taken once, by the single worker: `None` afterwards.
+    fn take_optimization_queue(&self) -> Option<mpsc::Receiver<Snowflake>> {
+        self.optimization_receiver
+            .lock()
+            .ok()
+            .and_then(|mut receiver| receiver.take())
+    }
+
+    /// Works through the queue, refilling it with pictures never tried, until none is left.
+    async fn optimize_until_none_is_left(&self, queue: &mut mpsc::Receiver<Snowflake>) {
+        loop {
+            let Ok(attachment_id) = queue.try_recv() else {
+                if self.queue_attachments_awaiting_optimization().await == 0 {
+                    return;
+                }
+                continue;
+            };
+            if !self.optimize_and_record_attempt(attachment_id).await {
+                // Unrecorded, the same pictures would be queued again forever: wait for the next
+                // upload instead.
+                return;
+            }
+        }
+    }
+
+    /// Queues the newest pictures never tried, as many as the queue takes; how many were queued.
+    async fn queue_attachments_awaiting_optimization(&self) -> usize {
+        let awaiting = storage::newest_attachments_awaiting_optimization(
+            &self.database,
+            self.optimization_sender.capacity(),
+        )
+        .await;
+        match awaiting {
+            Ok(attachment_ids) => attachment_ids
+                .into_iter()
+                .take_while(|attachment_id| {
+                    self.optimization_sender.try_send(*attachment_id).is_ok()
+                })
+                .count(),
+            Err(error) => {
+                tracing::warn!(%error, "cannot list the attachments awaiting compression");
+                0
+            }
+        }
+    }
+
+    /// Runs `optimize`, then records the attempt whatever its outcome, so a picture that cannot be
+    /// compressed is not tried again. `false` when the attempt could not be recorded.
+    async fn optimize_and_record_attempt(&self, attachment_id: Snowflake) -> bool {
+        if let Err(error) = self.optimize(attachment_id).await {
+            tracing::warn!(%error, "cannot compress an attachment");
+        }
+        let recorded = storage::record_optimization_attempt(
+            &self.database,
+            attachment_id,
+            crate::domain::clock::now_unix_milliseconds(),
+        )
+        .await;
+        if let Err(error) = &recorded {
+            tracing::warn!(%error, "cannot record an attachment compression attempt");
+        }
+        recorded.is_ok()
+    }
+
+    /// What the worker does after a restart, run to the end: for tests, which cannot wait on it.
+    #[cfg(test)]
+    pub(crate) async fn optimize_every_attachment_awaiting(&self) {
+        let mut queue = self.take_optimization_queue().unwrap();
+        self.optimize_until_none_is_left(&mut queue).await;
+    }
+
+    /// The same instance after a restart: same database and files, a fresh empty queue.
+    #[cfg(test)]
+    pub(crate) fn restarted(&self) -> Self {
+        Self::new(
+            self.database.clone(),
+            self.ids.clone(),
+            self.messages.clone(),
+            self.files.clone(),
+            self.maximum_stored_bytes_per_user,
+        )
     }
 
     /// Replaces the file with its compressed form when smaller. Anything undecodable, too slow or
@@ -435,12 +524,17 @@ impl Attachments {
     /// Deletes uploads never sent, files whose row is gone (their message, channel or guild was
     /// deleted) and temporary files left by a crash. Only files older than an unsent upload's
     /// lifetime are swept: a file written moments ago may not have its row yet.
-    pub(crate) async fn purge(&self, now_unix_milliseconds: u64) -> Result<usize, MessageError> {
+    /// A file that cannot be deleted is counted and skipped, never stopping the others; a
+    /// database error stops the sweep.
+    pub(crate) async fn purge(
+        &self,
+        now_unix_milliseconds: u64,
+    ) -> Result<SweptFiles, MessageError> {
         let cutoff = now_unix_milliseconds.saturating_sub(UNSENT_UPLOAD_LIFETIME_MILLISECONDS);
-        let mut deleted = 0;
+        let mut swept = SweptFiles::default();
+        // A file left behind here has no row any more: the orphan sweep below retries it.
         for id in storage::delete_unlinked_before(&self.database, cutoff).await? {
-            self.files.delete(id).await?;
-            deleted += 1;
+            self.delete_swept_file(id, &mut swept).await;
         }
         // Avatars, banners, icons and sounds share the file store (ADR-0021, ADR-0032).
         let known_ids: HashSet<Snowflake> = storage::all_attachment_ids(&self.database)
@@ -462,18 +556,73 @@ impl Attachments {
             .collect();
         for id in self.files.stored_ids().await? {
             if id.unix_milliseconds() < cutoff && !known_ids.contains(&id) {
-                self.files.delete(id).await?;
-                deleted += 1;
+                self.delete_swept_file(id, &mut swept).await;
             }
         }
-        deleted += self.files.remove_partial_files_before(cutoff).await?;
-        Ok(deleted)
+        let partial = self.files.remove_partial_files_before(cutoff).await?;
+        swept.deleted += partial.deleted;
+        swept.failed += partial.failed;
+        Ok(swept)
+    }
+
+    async fn delete_swept_file(&self, id: Snowflake, swept: &mut SweptFiles) {
+        match self.files.delete(id).await {
+            Ok(()) => swept.deleted += 1,
+            Err(error) => {
+                // No id: it would tie the log to a user's upload.
+                tracing::warn!(%error, "cannot delete an attachment file");
+                swept.failed += 1;
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::with_webp_extension;
+    use super::*;
+    use crate::domain::account_rules::RegistrationMode;
+    use crate::domain::accounts::tests::migrated_database;
+    use crate::http::tests::test_state;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_undeletable_file_does_not_stop_the_purge_of_the_others() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let files = &state.attachments.files;
+        let now = crate::domain::clock::now_unix_milliseconds();
+        let old = now - 2 * UNSENT_UPLOAD_LIFETIME_MILLISECONDS;
+        let ids = SnowflakeGenerator::default();
+        let undeletable = ids.next_id(old).unwrap();
+        let locked_shard = files.path_of(undeletable).parent().unwrap().to_path_buf();
+        // Generated ids leave their low bits at zero: the next raw id is in another shard
+        // directory, so locking the first one leaves this one deletable.
+        let deletable = Snowflake::from_raw(undeletable.raw() + 1);
+        files.write(undeletable, b"orphan".to_vec()).await.unwrap();
+        files.write(deletable, b"orphan".to_vec()).await.unwrap();
+        std::fs::set_permissions(&locked_shard, std::fs::Permissions::from_mode(0o500)).unwrap();
+        // Root deletes through any permission: the scenario cannot be built there.
+        let is_lock_effective = std::fs::write(locked_shard.join("probe"), b"").is_err();
+
+        let swept = state.attachments.purge(now).await;
+        std::fs::set_permissions(&locked_shard, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let remaining = files.stored_ids().await.unwrap();
+        database.close().await;
+
+        if !is_lock_effective {
+            return;
+        }
+        assert_eq!(
+            swept.unwrap(),
+            SweptFiles {
+                deleted: 1,
+                failed: 1
+            }
+        );
+        assert_eq!(remaining, vec![undeletable]);
+    }
 
     #[test]
     fn a_converted_gif_is_named_webp() {
