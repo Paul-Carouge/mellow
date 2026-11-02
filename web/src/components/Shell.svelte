@@ -8,6 +8,15 @@
   import { browserStorage } from "../lib/reactions";
   import type { ServerDialog } from "./ChannelSidebar.svelte";
   import ChatPane from "./ChatPane.svelte";
+  import {
+    type ColumnBounds,
+    fitColumnWidths,
+    largestColumnWidth,
+    readColumnWidths,
+    type ResizableColumn,
+    writeColumnWidths,
+  } from "./column-widths";
+  import ColumnResizeHandle from "./ColumnResizeHandle.svelte";
   import ConnectionBanner from "./ConnectionBanner.svelte";
   import CreateChannelDialog from "./CreateChannelDialog.svelte";
   import Drawer from "./Drawer.svelte";
@@ -36,7 +45,7 @@
   import QuickSwitcher from "./QuickSwitcher.svelte";
   import QuickSwitcherTrigger from "./QuickSwitcherTrigger.svelte";
   import type { ServerSettingsSection } from "./server-settings";
-  import { minimumWidthQueryForPanes } from "./tokens";
+  import { lengthTokenInPixels, minimumWidthQueryForPanes } from "./tokens";
   import { prepareChimeSound } from "./chime-sound";
   import { listenForPushToTalk } from "./push-to-talk-keys";
   import { playVoiceSoundsWhileMounted } from "./voice-sound-playback.svelte";
@@ -153,6 +162,69 @@
       !messageSearch.isPanelOpen &&
       (hasRoomForSideSheet.current ? placeIdsWithMemberSheet.has(memberSheetPlaceId) : isMemberOverlayOpen),
   );
+
+  // Resizable columns (DESIGN.md 4.5): the reader's widths, remembered on this device, and the
+  // widths laid out, fitted to the window so the conversation keeps its minimum. The breakpoints
+  // above are where even the minimum widths no longer fit, so they hold whatever the reader chose.
+  const COLUMN_BOUNDS: Record<ResizableColumn, ColumnBounds> = {
+    channels: {
+      minimum: lengthTokenInPixels("size-sidebar-width-min"),
+      maximum: lengthTokenInPixels("size-sidebar-width-max"),
+      default: lengthTokenInPixels("size-sidebar-width"),
+    },
+    members: {
+      minimum: lengthTokenInPixels("size-member-list-width-min"),
+      maximum: lengthTokenInPixels("size-member-list-width-max"),
+      default: lengthTokenInPixels("size-member-list-width"),
+    },
+    search: {
+      minimum: lengthTokenInPixels("component-search-panel-width"),
+      maximum: lengthTokenInPixels("component-search-panel-width-max"),
+      default: lengthTokenInPixels("component-search-panel-width"),
+    },
+  };
+  /** The strip, a conversation at its minimum and the row's four insets (two ends, two gaps). */
+  const WIDTH_BESIDE_COLUMNS =
+    lengthTokenInPixels("component-navigator-strip-width") +
+    lengthTokenInPixels("size-chat-min-width") +
+    4 * lengthTokenInPixels("size-sheet-inset");
+  const columnWidths = $state(readColumnWidths(browserStorage(), COLUMN_BOUNDS));
+  let rowWidth = $state(window.innerWidth);
+  const columnRoom = $derived(rowWidth - WIDTH_BESIDE_COLUMNS);
+  const dockedSideColumn = $derived<"members" | "search" | null>(
+    isSearchDocked ? "search" : isMemberSheetOpen && hasRoomForSideSheet.current ? "members" : null,
+  );
+  const fittedColumnWidths = $derived(
+    fitColumnWidths(
+      columnRoom,
+      { width: columnWidths.channels, bounds: COLUMN_BOUNDS.channels },
+      dockedSideColumn && { width: columnWidths[dockedSideColumn], bounds: COLUMN_BOUNDS[dockedSideColumn] },
+    ),
+  );
+  /** What each handle may reach now: the docked side sheet keeps its minimum beside the channel list. */
+  const channelsColumnBounds = $derived({
+    ...COLUMN_BOUNDS.channels,
+    maximum: largestColumnWidth(
+      COLUMN_BOUNDS.channels,
+      columnRoom - (dockedSideColumn ? COLUMN_BOUNDS[dockedSideColumn].minimum : 0),
+    ),
+  });
+  const sideColumnBounds = $derived(
+    dockedSideColumn && {
+      ...COLUMN_BOUNDS[dockedSideColumn],
+      maximum: largestColumnWidth(COLUMN_BOUNDS[dockedSideColumn], columnRoom - fittedColumnWidths.channels),
+    },
+  );
+
+  function rememberColumnWidths() {
+    writeColumnWidths(browserStorage(), columnWidths);
+  }
+
+  /** Esc during a drag: storage is written only when a gesture ends, so it still holds the widths
+   * from before it, the reader's own rather than the fitted ones. */
+  function restoreRememberedColumnWidths() {
+    Object.assign(columnWidths, readColumnWidths(browserStorage(), COLUMN_BOUNDS));
+  }
 
   // A drawer or overlay left open while the window widens would come back on the next shrink.
   $effect(() => {
@@ -507,18 +579,32 @@
   <!-- As in the reference mockup, the ground shows twice the inset above the cards and after the
        last one (where the mockup keeps a row for its top bar and a column for the side sheet). -->
   <div
+    bind:clientWidth={rowWidth}
     class={[
       "flex min-h-0 flex-1",
       hasRoomForNavigator.current && [
         "gap-(--mw-size-sheet-inset) ps-(--mw-size-sheet-inset) pt-[calc(2*var(--mw-size-sheet-inset))] pb-(--mw-size-sheet-inset)",
-        (isMemberSheetOpen && hasRoomForSideSheet.current) || isSearchDocked
+        dockedSideColumn !== null
           ? "pe-(--mw-size-sheet-inset)"
           : "pe-[calc(2*var(--mw-size-sheet-inset))]",
       ],
     ]}
   >
     {#if hasRoomForNavigator.current}
-      {@render navigator(false)}
+      <!-- The reader's width overrides the token for the docked navigator only, never the drawer's. -->
+      <div id="navigator-column" class="relative flex" style:--mw-component-sidebar-width="{fittedColumnWidths.channels}px">
+        {@render navigator(false)}
+        <ColumnResizeHandle
+          label={strings.shell.resizeChannels}
+          controls="navigator-column"
+          edge="end"
+          width={fittedColumnWidths.channels}
+          bounds={channelsColumnBounds}
+          onresize={(width) => (columnWidths.channels = width)}
+          onresizeend={rememberColumnWidths}
+          onresizecancel={restoreRememberedColumnWidths}
+        />
+      </div>
     {:else if isNavigationDrawerOpen}
       <Drawer label={strings.shell.serversAndChannels} side="start" onclose={() => (isNavigationDrawerOpen = false)}>
         {@render navigator(true)}
@@ -552,8 +638,46 @@
       {/if}
     </main>
 
-    {#if isSearchDocked}
-      {@render searchPanel(true)}
+    {#if dockedSideColumn && sideColumnBounds && fittedColumnWidths.sideSheet !== null}
+      <!-- Docked results or members at the reader's width; the overlays keep the token's. -->
+      <div
+        id="side-sheet-column"
+        class="relative flex"
+        style:--mw-component-search-panel-width={dockedSideColumn === "search" ? `${fittedColumnWidths.sideSheet}px` : undefined}
+        style:--mw-component-side-sheet-width={dockedSideColumn === "members" ? `${fittedColumnWidths.sideSheet}px` : undefined}
+      >
+        <!-- Members and results each get their own handle: a drag never carries over to the other. -->
+        {#key dockedSideColumn}
+          <ColumnResizeHandle
+            label={dockedSideColumn === "search" ? strings.shell.resizeSearchResults : strings.shell.resizeMembers}
+            controls="side-sheet-column"
+            edge="start"
+            width={fittedColumnWidths.sideSheet}
+            bounds={sideColumnBounds}
+            onresize={(width) => (columnWidths[dockedSideColumn] = width)}
+            onresizeend={rememberColumnWidths}
+            onresizecancel={restoreRememberedColumnWidths}
+          />
+        {/key}
+        {#if isSearchDocked}
+          {@render searchPanel(true)}
+        {:else if group}
+          {#key group.id}
+            <GroupMembersSheet
+              {client}
+              {group}
+              isDocked
+              onclose={() => void closeMemberSheet()}
+              onaddfriends={() => (openDialog = "add-to-group")}
+              focusAfterLeaving={focusComposer}
+            />
+          {/key}
+        {:else if guild}
+          {#key guild.id}
+            <MemberList {client} {guild} isDocked onclose={() => void closeMemberSheet()} onopenedconversation={focusComposer} />
+          {/key}
+        {/if}
+      </div>
     {:else if isSearchOverlayOpen}
       <Drawer
         label={strings.search.results}
@@ -564,62 +688,43 @@
         {@render searchPanel(false)}
       </Drawer>
     {:else if group && isMemberSheetOpen}
-      {#if hasRoomForSideSheet.current}
+      <Drawer
+        label={strings.shell.membersOf(conversationDisplayName(group, client.user?.id ?? null))}
+        side="end"
+        isFullWindow={!hasRoomForNavigator.current}
+        onclose={() => (isMemberOverlayOpen = false)}
+      >
         {#key group.id}
           <GroupMembersSheet
             {client}
             {group}
-            isDocked
-            onclose={() => void closeMemberSheet()}
+            isDocked={false}
+            isFullWindow={!hasRoomForNavigator.current}
+            onclose={() => (isMemberOverlayOpen = false)}
             onaddfriends={() => (openDialog = "add-to-group")}
             focusAfterLeaving={focusComposer}
           />
         {/key}
-      {:else}
-        <Drawer
-          label={strings.shell.membersOf(conversationDisplayName(group, client.user?.id ?? null))}
-          side="end"
-          isFullWindow={!hasRoomForNavigator.current}
-          onclose={() => (isMemberOverlayOpen = false)}
-        >
-          {#key group.id}
-            <GroupMembersSheet
-              {client}
-              {group}
-              isDocked={false}
-              isFullWindow={!hasRoomForNavigator.current}
-              onclose={() => (isMemberOverlayOpen = false)}
-              onaddfriends={() => (openDialog = "add-to-group")}
-              focusAfterLeaving={focusComposer}
-            />
-          {/key}
-        </Drawer>
-      {/if}
+      </Drawer>
     {:else if guild && hasMemberSheet && isMemberSheetOpen}
-      {#if hasRoomForSideSheet.current}
+      <Drawer
+        label={strings.shell.membersOf(guild.name)}
+        side="end"
+        isFullWindow={!hasRoomForNavigator.current}
+        onclose={() => (isMemberOverlayOpen = false)}
+      >
+        <!-- Another server starts on its member list, never on the previous server's profile. -->
         {#key guild.id}
-          <MemberList {client} {guild} isDocked onclose={() => void closeMemberSheet()} onopenedconversation={focusComposer} />
+          <MemberList
+            {client}
+            {guild}
+            isDocked={false}
+            isFullWindow={!hasRoomForNavigator.current}
+            onclose={() => (isMemberOverlayOpen = false)}
+            onopenedconversation={() => void closeMemberSheet()}
+          />
         {/key}
-      {:else}
-        <Drawer
-          label={strings.shell.membersOf(guild.name)}
-          side="end"
-          isFullWindow={!hasRoomForNavigator.current}
-          onclose={() => (isMemberOverlayOpen = false)}
-        >
-          <!-- Another server starts on its member list, never on the previous server's profile. -->
-          {#key guild.id}
-            <MemberList
-              {client}
-              {guild}
-              isDocked={false}
-              isFullWindow={!hasRoomForNavigator.current}
-              onclose={() => (isMemberOverlayOpen = false)}
-              onopenedconversation={() => void closeMemberSheet()}
-            />
-          {/key}
-        </Drawer>
-      {/if}
+      </Drawer>
     {/if}
   </div>
 </div>
