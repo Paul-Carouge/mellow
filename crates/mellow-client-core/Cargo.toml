@@ -1,6 +1,6 @@
 [package]
 name = "mellow-client-core"
-description = "Client logic shared by the Mellow desktop and Android apps: connection, state, sync."
+description = "Client logic for native Mellow clients to come: connection, state, sync."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

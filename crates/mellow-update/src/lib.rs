@@ -1,5 +1,5 @@
 //! Finds, verifies and installs signed Mellow releases (ADR-0003, ADR-0016, ADR-0018). Shared by
-//! `mellow-server update` and the desktop app's updater; no UI and no service management here.
+//! `mellow-server update` (and native clients to come); no UI and no service management here.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -32,14 +32,12 @@ const MAXIMUM_VERSION_BYTES: usize = 32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Program {
     Server,
-    Desktop,
 }
 
 impl Program {
     fn binary_name(self) -> &'static str {
         match self {
             Self::Server => "mellow-server",
-            Self::Desktop => "mellow-desktop",
         }
     }
 }
@@ -321,9 +319,8 @@ pub fn check_install_location(executable: &Path) -> Result<(), UpdateError> {
     Ok(())
 }
 
-/// shortcut: no check on Windows (the server refuses to run there; the desktop app runs from
-/// wherever the user put its executable, and an account able to modify that folder can replace it
-/// without the updater anyway). Check the folder's DACL when the MSI lands (M4).
+/// shortcut: no check on Windows (the server refuses to run there); check the folder's DACL if a
+/// native client is ever installed there.
 ///
 /// # Errors
 /// Never.
@@ -456,8 +453,8 @@ mod tests {
             SIGNED_NAME
         );
         assert_eq!(
-            asset_name(Program::Desktop, &version, "x86_64-pc-windows-msvc"),
-            "mellow-desktop-0.2.0-x86_64-pc-windows-msvc.exe"
+            asset_name(Program::Server, &version, "x86_64-pc-windows-msvc"),
+            "mellow-server-0.2.0-x86_64-pc-windows-msvc.exe"
         );
     }
 

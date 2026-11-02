@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
     "crates/mellow-client-core",
-    "crates/mellow-desktop",
     "crates/mellow-protocol",
     "crates/mellow-server",
     "crates/mellow-update",

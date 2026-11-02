@@ -125,7 +125,7 @@ export default defineConfig({
       },
     },
     // Figtree and the Phosphor icons are bundled with the desktop client; the web client reads the same files.
-    fs: { allow: [".", "../crates/mellow-desktop/fonts", "../crates/mellow-desktop/icons"] },
+    fs: { allow: [".", "../design/fonts", "../design/icons"] },
   },
   build: { target: "es2022", sourcemap: false },
   test: { setupFiles: ["src/test-setup.ts"] },

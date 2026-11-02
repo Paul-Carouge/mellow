@@ -1,7 +1,7 @@
 <script lang="ts" module>
   // The desktop client's Phosphor set (DESIGN.md §2.9). Each file uses `fill="currentColor"`, so
   // the icon takes the text colour of its parent, which comes from the tokens.
-  const ICON_SOURCES = import.meta.glob<string>("../../../crates/mellow-desktop/icons/*.svg", {
+  const ICON_SOURCES = import.meta.glob<string>("../../../design/icons/*.svg", {
     query: "?raw",
     import: "default",
     eager: true,
@@ -70,9 +70,9 @@
     | "x-circle";
 
   function iconSource(name: IconName): string {
-    const source = ICON_SOURCES[`../../../crates/mellow-desktop/icons/${name}.svg`];
+    const source = ICON_SOURCES[`../../../design/icons/${name}.svg`];
     if (source === undefined) {
-      throw new Error(`icon ${name} is missing from crates/mellow-desktop/icons`);
+      throw new Error(`icon ${name} is missing from design/icons`);
     }
     return source;
   }

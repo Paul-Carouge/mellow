@@ -42,8 +42,6 @@ allow = [
     "Unlicense",
     "Zlib",
     "AGPL-3.0-or-later",
-    # Slint (ADR-0010) is used under GPL-3.0-only, which may be combined with AGPL-3.0 (GPLv3 §13).
-    "GPL-3.0-only",
 ]
 # Mozilla's root certificate list, bundled by rustls-acme (server, to reach the certificate
 # authority). A permissive data licence. rustls-platform-verifier bundles it only on wasm32, a
@@ -69,42 +67,16 @@ deny = [
 # base64 and syn, the other) major version. Each entry names the exact version so that a new
 # duplicate still warns; delete an entry once its upstream moves on.
 skip = [
-    # winit 0.30 (Slint's desktop backend) and its Wayland/Android/macOS stack: calloop 0.13,
-    # smithay-client-toolkit 0.19, sctk-adwaita 0.10, ndk 0.9, core-graphics 0.23, accesskit 0.2x.
-    { crate = "bitflags@1.3.2", reason = "core-graphics 0.23 and redox_syscall 0.4, under winit 0.30" },
-    { crate = "block2@0.5.1", reason = "winit 0.30 and objc2-foundation 0.2" },
-    { crate = "core-foundation@0.9.4", reason = "winit 0.30 and core-graphics 0.23" },
-    { crate = "jni-sys@0.3.1", reason = "ndk 0.9, under winit 0.30" },
-    { crate = "linux-raw-sys@0.4.15", reason = "rustix 0.38, under winit 0.30" },
-    { crate = "objc2@0.5.3", reason = "winit 0.30 and accesskit_macos/accesskit_ios" },
-    { crate = "objc2-app-kit@0.2.2", reason = "winit 0.30 and accesskit_macos" },
-    { crate = "objc2-foundation@0.2.2", reason = "winit 0.30 and accesskit_macos/accesskit_ios" },
-    { crate = "rustix@0.38.44", reason = "calloop 0.13 and smithay-client-toolkit 0.19, under winit 0.30" },
-    { crate = "smol_str@0.2.2", reason = "winit 0.30" },
-    { crate = "thiserror@1.0.69", reason = "calloop 0.13, ndk 0.9 and smithay-client-toolkit 0.19, under winit 0.30" },
-    { crate = "thiserror-impl@1.0.69", reason = "thiserror 1, see above" },
-    { crate = "tiny-skia@0.11.4", reason = "sctk-adwaita 0.10, under winit 0.30" },
-    { crate = "tiny-skia-path@0.11.4", reason = "tiny-skia 0.11, see above" },
-    { crate = "windows-sys@0.52.0", reason = "winit 0.30, glutin 0.32, os_pipe 1 and winapi-util 0.1" },
-    { crate = "windows-sys@0.59.0", reason = "rustix 0.38, arboard 3, errno, tempfile and rustls-platform-verifier" },
-    # Slint's own build and renderer dependencies.
-    { crate = "hashbrown@0.14.5", reason = "rowan 0.17, under i-slint-compiler" },
-    { crate = "hashbrown@0.15.5", reason = "petgraph 0.8, under wl-clipboard-rs (arboard)" },
-    { crate = "hashbrown@0.16.1", reason = "accesskit 0.2x, hashlink 0.11 and sqlx-core 0.9" },
-    { crate = "foldhash@0.1.5", reason = "hashbrown 0.15, see above" },
-    { crate = "itertools@0.14.0", reason = "rav1e 0.8 (AVIF encoder, ADR-0033)" },
-    { crate = "pastey@0.1.1", reason = "av-scenechange 0.14, under rav1e 0.8 (ADR-0033)" },
-    { crate = "rustc-hash@1.1.0", reason = "naga/wgpu 30 and rowan 0.17, under Slint" },
-    { crate = "miniz_oxide@0.8.9", reason = "png 0.18 (image, resvg, Slint)" },
+    { crate = "windows-sys@0.52.0", reason = "winapi-util 0.1 (walkdir)" },
+    { crate = "windows-sys@0.59.0", reason = "errno, tempfile and rustls-platform-verifier" },
+    { crate = "hashbrown@0.16.1", reason = "hashlink 0.11 under sqlx-core 0.9" },
+    { crate = "miniz_oxide@0.8.9", reason = "png 0.18 (image, resvg)" },
     { crate = "nom@7.1.3", reason = "x509-parser 0.18 (rustls-acme) and cexpr (bindgen)" },
-    { crate = "syn@2.0.119", reason = "many proc-macro crates (sqlx, axum, tracing, zbus...) not yet on syn 3" },
+    { crate = "syn@2.0.119", reason = "many proc-macro crates (sqlx, axum, tracing...) not yet on syn 3" },
     { crate = "synstructure@0.13.2", reason = "asn1-rs-derive 0.6, under x509-parser" },
     { crate = "getrandom@0.3.4", reason = "rand_core 0.9 (rand 0.9) and ahash 0.8" },
     # The voice SFU (str0m's DTLS crate dimpl) and the axum WebSocket upgrade still use the
     # RustCrypto 0.10 generation, rand 0.9 and tungstenite 0.29; sqlx-core 0.9 uses sha2 0.10.
-    { crate = "aes@0.8.4", reason = "dimpl 0.7, under str0m" },
-    { crate = "cipher@0.4.4", reason = "aes 0.8, ccm and ctr, under dimpl 0.7" },
-    { crate = "inout@0.1.4", reason = "cipher 0.4, see above" },
     { crate = "crypto-common@0.1.6", reason = "cipher 0.4, aead 0.5 and digest 0.10" },
     { crate = "cpufeatures@0.2.17", reason = "aes 0.8, sha1 0.10 and sha2 0.10" },
     { crate = "digest@0.10.7", reason = "sha1 0.10 (axum, tungstenite 0.29) and sha2 0.10 (sqlx-core 0.9)" },

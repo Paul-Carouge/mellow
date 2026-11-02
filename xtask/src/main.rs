@@ -1,11 +1,10 @@
-//! `cargo xtask tokens [--check]`: generates platform token files, app icons and the web app
+//! `cargo xtask tokens [--check]`: generates the web token stylesheet, the app icons and the web app
 //! manifest from `design/tokens.json` and enforces the declared WCAG contrast pairs (DESIGN.md §3.5).
 
 mod app_icons;
 mod css_tokens;
 mod design_tokens;
 mod favicon;
-mod slint_tokens;
 mod web_manifest;
 
 use std::path::{Path, PathBuf};
@@ -17,7 +16,6 @@ use crate::design_tokens::{DesignTokens, Rgba, Theme, contrast_ratio};
 
 const USAGE: &str = "usage: cargo xtask tokens [--check]";
 const TOKENS_SOURCE_PATH: &str = "design/tokens.json";
-const SLINT_TOKENS_OUTPUT_PATH: &str = "crates/mellow-desktop/ui/tokens.slint";
 const CSS_TOKENS_OUTPUT_PATH: &str = "web/src/lib/tokens.css";
 const FAVICON_OUTPUT_PATH: &str = "web/public/favicon.svg";
 const WEB_MANIFEST_OUTPUT_PATH: &str = "web/public/manifest.webmanifest";
@@ -62,10 +60,6 @@ fn generate_tokens(is_check_only: bool) -> Result<()> {
     let favicon_svg = favicon::generate_favicon(&tokens)?;
     let mut outputs = vec![
         (
-            SLINT_TOKENS_OUTPUT_PATH.to_owned(),
-            slint_tokens::generate_slint_tokens(&tokens)?.into_bytes(),
-        ),
-        (
             CSS_TOKENS_OUTPUT_PATH.to_owned(),
             css_tokens::generate_css_tokens(&tokens)?.into_bytes(),
         ),
@@ -86,17 +80,11 @@ fn generate_tokens(is_check_only: bool) -> Result<()> {
         web_manifest::with_theme_color_metas(&index_html, &tokens)?.into_bytes(),
     ));
     let maskable_svg = favicon::generate_maskable_icon(&tokens)?;
-    let icons_by_directory = [
-        (
-            app_icons::ICONS_DIRECTORY,
-            app_icons::generate_app_icons(&favicon_svg)?,
-        ),
-        (
-            app_icons::WEB_ICONS_DIRECTORY,
-            app_icons::generate_web_app_icons(&favicon_svg, &maskable_svg)?,
-        ),
-    ];
-    // (path, file name) of every icon, compared by pixels rather than bytes below.
+    let icons_by_directory = [(
+        app_icons::WEB_ICONS_DIRECTORY,
+        app_icons::generate_web_app_icons(&favicon_svg, &maskable_svg)?,
+    )];
+    // Every icon's path, compared by pixels rather than bytes below.
     let mut icon_paths = Vec::new();
     for (directory, icons) in icons_by_directory {
         if !is_check_only {
@@ -104,7 +92,7 @@ fn generate_tokens(is_check_only: bool) -> Result<()> {
         }
         for (name, generated) in icons {
             let relative_path = format!("{directory}/{name}");
-            icon_paths.push((relative_path.clone(), name));
+            icon_paths.push(relative_path.clone());
             outputs.push((relative_path, generated));
         }
     }
@@ -112,11 +100,10 @@ fn generate_tokens(is_check_only: bool) -> Result<()> {
         let output_path = root.join(&relative_path);
         let current = std::fs::read(&output_path).unwrap_or_default();
         // A rasteriser's rounding differences alone never rewrite an icon (app_icons.rs).
-        let is_up_to_date = match icon_paths.iter().find(|(path, _)| *path == relative_path) {
-            Some((_, icon_file_name)) => {
-                app_icons::is_icon_up_to_date(icon_file_name, &current, &generated)?
-            }
-            None => current == generated,
+        let is_up_to_date = if icon_paths.contains(&relative_path) {
+            app_icons::is_icon_up_to_date(&current, &generated)?
+        } else {
+            current == generated
         };
         if is_up_to_date {
             continue;
