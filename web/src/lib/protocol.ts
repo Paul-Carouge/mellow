@@ -174,6 +174,8 @@ export const MAXIMUM_VOICE_USER_LIMIT = 25;
 export const VOICE_RECEIVE_SLOTS = 16;
 /** Video receive m-lines a client able to show video offers: the most cameras it watches (ADR-0035). */
 export const VIDEO_RECEIVE_SLOTS = 9;
+/** Audio receive m-lines after the video ones: the most shared screens heard at once (ADR-0037). */
+export const SCREEN_SOUND_RECEIVE_SLOTS = 3;
 
 export interface PermissionOverwrite {
   id: Snowflake;

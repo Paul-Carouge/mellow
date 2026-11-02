@@ -46,10 +46,11 @@ const MAXIMUM_BYTES_PER_SECOND_WITH_CAMERA: usize = 1_500_000;
 /// 800 kbit/s: Opus at its highest bit rate (510 kbit/s) with RTCP for 9 watched cameras, so a
 /// client with its camera off cannot make the server decrypt full packets for nothing.
 const MAXIMUM_BYTES_PER_SECOND_WITHOUT_CAMERA: usize = 100_000;
-/// Voice counts apart from video, so a burst of video keyframes never silences its sender
-/// (ADR-0037): Opus at its highest bit rate (510 kbit/s) in its smallest packets (10 ms).
-const MAXIMUM_VOICE_PACKETS_PER_SECOND: u32 = 120;
-const MAXIMUM_VOICE_BYTES_PER_SECOND: usize = 70_000;
+/// Voice and a shared screen's sound count apart from video, so a burst of video keyframes never
+/// silences their sender (ADR-0037): two Opus streams at its highest bit rate (510 kbit/s) in its
+/// smallest packets (10 ms).
+const MAXIMUM_VOICE_PACKETS_PER_SECOND: u32 = 240;
+const MAXIMUM_VOICE_BYTES_PER_SECOND: usize = 140_000;
 const PACKET_RATE_WINDOW: Duration = Duration::from_secs(1);
 /// RTP and RTCP datagrams start with a byte in this range (RFC 7983).
 const RTP_OR_RTCP_FIRST_BYTES: std::ops::RangeInclusive<u8> = 128..=191;
@@ -118,6 +119,15 @@ pub(crate) struct MediaJoin {
     pub(crate) candidate_address: SocketAddr,
     pub(crate) is_forwarded: bool,
     pub(crate) is_deafened: bool,
+    /// The m-lines for the sound of shared screens, when the offer has them (ADR-0037).
+    pub(crate) screen_sound: Option<ScreenSoundMids>,
+}
+
+/// The audio m-lines of a participant's offer that carry shared screens' sound, not voices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScreenSoundMids {
+    pub(crate) sent: Mid,
+    pub(crate) received: Vec<Mid>,
 }
 
 #[derive(Debug)]
@@ -237,6 +247,27 @@ struct ParticipantVideo {
     layer_budgets: HashMap<SimulcastLayer, LayerByteBudget>,
     /// When their camera was turned on or last sent a frame, to turn off one that sends nothing.
     camera_heard_at: Option<Instant>,
+    /// The m-lines for shared screens' sound (ADR-0037); `None` when the offer has none.
+    screen_sound: Option<ScreenSoundMids>,
+    /// Screen sound receive m-lines not given to a watched screen.
+    free_screen_sound_slots: Vec<Mid>,
+    /// The watched screens this participant hears, by sharer.
+    heard_screens: HashMap<Snowflake, Mid>,
+}
+
+impl ParticipantVideo {
+    fn is_screen_sound_line(&self, mid: Mid) -> bool {
+        self.screen_sound
+            .as_ref()
+            .is_some_and(|lines| lines.sent == mid || lines.received.contains(&mid))
+    }
+
+    /// Gives the screen sound slot of `sharer_id` back, once it is no longer watched.
+    fn stop_hearing(&mut self, sharer_id: Snowflake) {
+        if let Some(mid) = self.heard_screens.remove(&sharer_id) {
+            self.free_screen_sound_slots.push(mid);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -315,6 +346,11 @@ fn rtp_payload_type_of(datagram: &[u8]) -> Option<u8> {
 
 impl Participant {
     fn new(join: MediaJoin, now: Instant) -> Self {
+        let free_screen_sound_slots = join
+            .screen_sound
+            .as_ref()
+            .map(|lines| lines.received.clone())
+            .unwrap_or_default();
         Self {
             user_id: join.user_id,
             connection_id: join.connection_id,
@@ -324,7 +360,11 @@ impl Participant {
             voice_mid: None,
             voice_payload_types: Vec::new(),
             slots: ReceiveSlots::default(),
-            video: ParticipantVideo::default(),
+            video: ParticipantVideo {
+                screen_sound: join.screen_sound,
+                free_screen_sound_slots,
+                ..ParticipantVideo::default()
+            },
             timeout_at: now,
             joined_at: now,
             last_received_at: now,
@@ -406,6 +446,9 @@ fn drain_output(participant: &mut Participant, socket: &UdpSocket, collected: &m
                 let _ = socket.send_to(&transmit.contents, transmit.destination);
             }
             Ok(Output::Event(Event::Connected)) => participant.is_connected = true,
+            // Screen sound lines are audio too: their place in the offer, not their kind, tells.
+            Ok(Output::Event(Event::MediaAdded(added)))
+                if participant.video.is_screen_sound_line(added.mid) => {}
             Ok(Output::Event(Event::MediaAdded(added))) if added.kind == MediaKind::Audio => {
                 match added.direction {
                     Direction::RecvOnly | Direction::SendRecv
@@ -436,7 +479,13 @@ fn drain_output(participant: &mut Participant, socket: &UdpSocket, collected: &m
             Ok(Output::Event(Event::MediaData(frame)))
                 if Some(frame.mid) == participant.voice_mid
                     || (participant.video.is_camera_forwarded
-                        && Some(frame.mid) == participant.video.camera_mid) =>
+                        && (Some(frame.mid) == participant.video.camera_mid
+                            || Some(frame.mid)
+                                == participant
+                                    .video
+                                    .screen_sound
+                                    .as_ref()
+                                    .map(|lines| lines.sent))) =>
             {
                 collected.frames.push((participant.user_id, frame));
             }
@@ -761,6 +810,10 @@ impl MediaLoop<'_> {
             }
             is_still_shown
         });
+        // Only cameras no longer shown are in the list yet: their sound stops with them.
+        for camera_id in &changed_cameras {
+            watcher.video.stop_hearing(*camera_id);
+        }
         // A participant's own camera is shown from its local preview, never sent back.
         for (camera_id, layer) in cameras
             .iter()
@@ -849,6 +902,7 @@ impl MediaLoop<'_> {
             .forget(|(watcher_id, camera_id)| *watcher_id == user_id || *camera_id == user_id);
         for listener in self.participants.values_mut() {
             listener.slots.release(user_id);
+            listener.video.stop_hearing(user_id);
         }
         // Watchers keep their slot for this camera: a reconnection resumes it at a keyframe.
         self.restart_watchers_of(user_id);
@@ -952,12 +1006,13 @@ impl MediaLoop<'_> {
 
     fn forward_frames(&mut self, now: Instant) {
         for (sender_id, frame) in std::mem::take(&mut self.collected.frames) {
-            let is_camera_frame = self
-                .participants
-                .get(&sender_id)
-                .is_some_and(|sender| Some(frame.mid) == sender.video.camera_mid);
-            if is_camera_frame {
+            let Some(sender) = self.participants.get(&sender_id) else {
+                continue;
+            };
+            if Some(frame.mid) == sender.video.camera_mid {
                 self.forward_camera_frame(sender_id, &frame, now);
+            } else if sender.video.is_screen_sound_line(frame.mid) {
+                self.forward_screen_sound(sender_id, &frame);
             } else {
                 self.forward(sender_id, &frame, now);
             }
@@ -1173,6 +1228,64 @@ impl MediaLoop<'_> {
         }
     }
 
+    /// Writes a shared screen's sound to the participants of its channel watching that screen
+    /// (ADR-0037), on a screen sound slot given at its first frame. It is not a voice: no speaking
+    /// ring, and muting the microphone does not stop it; `STREAM` and deafening do.
+    fn forward_screen_sound(&mut self, sharer_id: Snowflake, frame: &MediaData) {
+        let Some(sharer) = self.participants.get(&sharer_id) else {
+            return;
+        };
+        let channel_id = sharer.channel_id;
+        let mut ignored = Collected::default();
+        let mut slot_assignments = Vec::new();
+        for watcher in self.participants.values_mut().filter(|watcher| {
+            watcher.user_id != sharer_id
+                && watcher.channel_id == channel_id
+                && watcher.is_connected
+                && !watcher.is_deafened
+                && watcher.video.watched_cameras.contains_key(&sharer_id)
+        }) {
+            self.current_participant = Some(watcher.user_id);
+            let slot = if let Some(slot) = watcher.video.heard_screens.get(&sharer_id) {
+                *slot
+            } else {
+                let Some(slot) = watcher.video.free_screen_sound_slots.pop() else {
+                    continue;
+                };
+                watcher.video.heard_screens.insert(sharer_id, slot);
+                slot_assignments.push(MediaEvent::SlotAssigned {
+                    listener_id: watcher.user_id,
+                    connection_id: watcher.connection_id,
+                    mid: slot,
+                    speaker_id: sharer_id,
+                });
+                slot
+            };
+            let Some(writer) = watcher.rtc.writer(slot) else {
+                continue;
+            };
+            let Some(payload_type) = writer.match_params(frame.params) else {
+                continue;
+            };
+            if writer
+                .write(
+                    payload_type,
+                    frame.network_time,
+                    frame.time,
+                    frame.data.clone(),
+                )
+                .is_err()
+            {
+                watcher.rtc.disconnect();
+                continue;
+            }
+            drain_output(watcher, &self.socket, &mut ignored);
+        }
+        for event in slot_assignments {
+            self.emit(event);
+        }
+    }
+
     fn tick_speaking(&mut self, now: Instant) {
         let stopped: Vec<MediaEvent> = self
             .participants
@@ -1315,6 +1428,7 @@ mod tests {
             candidate_address: candidate,
             is_forwarded: true,
             is_deafened: false,
+            screen_sound: None,
         })));
         let sharer = media.participants.get_mut(&sharer_id).unwrap();
         sharer.voice_payload_types = payload_types_of(&sharer.rtc, voice_mid);
@@ -1368,6 +1482,7 @@ mod tests {
             candidate_address: candidate,
             is_forwarded: true,
             is_deafened: false,
+            screen_sound: None,
         })));
         media.apply(MediaCommand::SetCamera {
             user_id: camera_id,
@@ -1426,6 +1541,7 @@ mod tests {
                 candidate_address: candidate,
                 is_forwarded: true,
                 is_deafened: false,
+                screen_sound: None,
             })));
         }
 
