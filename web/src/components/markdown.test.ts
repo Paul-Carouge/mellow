@@ -250,33 +250,74 @@ describe("blocks", () => {
   });
 });
 
-describe("hostile text", () => {
-  // Generous against a cold or busy runner; the quadratic cases these guard take seconds.
-  const MAXIMUM_PARSE_MILLISECONDS = 250;
+/**
+ * How many string searches and regular expression runs `action` makes: a measure of the parser's
+ * work that a busy machine cannot change, unlike a clock. Backtracking inside one regular
+ * expression is not counted, which is why the parser keeps unbounded runs out of its expressions.
+ */
+function countSearchesDuring(action: () => void): number {
+  let searches = 0;
+  const countedMethods = [
+    [String.prototype, "startsWith"],
+    [String.prototype, "indexOf"],
+    [RegExp.prototype, "exec"],
+    [RegExp.prototype, "test"],
+  ] as const;
+  const originals = countedMethods.map(([owner, name]) => {
+    const original = Reflect.get(owner, name) as (...parameters: unknown[]) => unknown;
+    Reflect.set(owner, name, function (this: unknown, ...parameters: unknown[]) {
+      searches += 1;
+      return original.apply(this, parameters);
+    });
+    return original;
+  });
+  try {
+    action();
+  } finally {
+    countedMethods.forEach(([owner, name], index) => Reflect.set(owner, name, originals[index]));
+  }
+  return searches;
+}
 
-  it.each([
-    ["stars", "*".repeat(4_000)],
-    ["underscores", "_".repeat(4_000)],
-    ["alternating stars", "*a".repeat(2_000)],
-    ["spoiler bars", "|".repeat(4_000)],
-    ["tildes", "~".repeat(4_000)],
-    ["backticks of growing length", Array.from({ length: 80 }, (_, index) => "`".repeat(index + 1)).join("a")],
-    ["brackets", "[".repeat(2_000) + "](".repeat(1_000)],
-    ["backslashes", "\\".repeat(4_000) + "*"],
-    ["fences", "```".repeat(1_300)],
-    ["quote lines", "> ".repeat(2_000)],
-    ["links", "http://a".repeat(500) + ".".repeat(2_000)],
+describe("hostile text", () => {
+  /**
+   * Doubling the text may raise the work per character by at most this factor: linear parsing
+   * keeps it flat, and a quadratic one (the cases below once took seconds) doubles it.
+   */
+  const MAXIMUM_GROWTH_OF_WORK_PER_CHARACTER = 1.25;
+
+  it.each<[string, (scale: number) => string]>([
+    ["stars", (scale) => "*".repeat(4_000 * scale)],
+    ["underscores", (scale) => "_".repeat(4_000 * scale)],
+    ["alternating stars", (scale) => "*a".repeat(2_000 * scale)],
+    ["spoiler bars", (scale) => "|".repeat(4_000 * scale)],
+    ["tildes", (scale) => "~".repeat(4_000 * scale)],
+    [
+      "backticks of growing length",
+      (scale) => Array.from({ length: 80 * scale }, (_, index) => "`".repeat(index + 1)).join("a"),
+    ],
+    ["brackets", (scale) => "[".repeat(2_000 * scale) + "](".repeat(1_000 * scale)],
+    ["backslashes", (scale) => "\\".repeat(4_000 * scale) + "*"],
+    ["fences", (scale) => "```".repeat(1_300 * scale)],
+    ["quote lines", (scale) => "> ".repeat(2_000 * scale)],
+    ["links", (scale) => "http://a".repeat(500 * scale) + ".".repeat(2_000 * scale)],
     // Many openers with no closer: each search must be answered once, not once per opener.
-    ["unclosed stars", "*a ".repeat(15_000)],
-    ["unclosed underscores", "_a ".repeat(15_000)],
-    ["spoilers", "||a ".repeat(15_000)],
-    ["unclosed masked links", "[a](".repeat(15_000)],
-    ["blank lines inside a code block", "```\na" + "\n".repeat(50_000) + "b\n```"],
-  ])("parses %s quickly", (_, content) => {
-    const started = performance.now();
-    const blocks = parseMessageMarkdown(content, people);
-    expect(performance.now() - started).toBeLessThan(MAXIMUM_PARSE_MILLISECONDS);
-    expect(blocks.length).toBeGreaterThan(0);
+    ["unclosed stars", (scale) => "*a ".repeat(15_000 * scale)],
+    ["unclosed underscores", (scale) => "_a ".repeat(15_000 * scale)],
+    ["spoilers", (scale) => "||a ".repeat(15_000 * scale)],
+    ["unclosed masked links", (scale) => "[a](".repeat(15_000 * scale)],
+    ["blank lines inside a code block", (scale) => "```\na" + "\n".repeat(50_000 * scale) + "b\n```"],
+  ])("parses %s in linear work", (_, contentAtScale) => {
+    const workPerCharacterAtScale = (scale: number) => {
+      const content = contentAtScale(scale);
+      let blocks: BlockNode[] = [];
+      const searches = countSearchesDuring(() => {
+        blocks = parseMessageMarkdown(content, people);
+      });
+      expect(blocks.length).toBeGreaterThan(0);
+      return searches / content.length;
+    };
+    expect(workPerCharacterAtScale(2)).toBeLessThanOrEqual(workPerCharacterAtScale(1) * MAXIMUM_GROWTH_OF_WORK_PER_CHARACTER);
   });
 
   it("caps nesting and shows the rest as text", () => {

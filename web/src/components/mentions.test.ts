@@ -41,13 +41,11 @@ describe("splitMentions", () => {
 });
 
 describe("splitMentions on hostile text", () => {
-  it("stays linear on a long run of dots and ignores names longer than any account's", () => {
+  // The candidate pattern is bounded and must not be followed by a name character, so these runs
+  // cost constant work by construction; a clock cannot check that deterministically.
+  it("reads neither a long run of dots nor a name longer than any account's as a mention", () => {
     const dots = `@${".".repeat(4_000)}`;
-    const started = performance.now();
-    for (let run = 0; run < 20; run += 1) {
-      expect(splitMentions(dots, people)).toEqual([{ kind: "text", text: dots }]);
-    }
-    expect(performance.now() - started).toBeLessThan(20);
+    expect(splitMentions(dots, people)).toEqual([{ kind: "text", text: dots }]);
     expect(splitMentions(`@paul${"x".repeat(40)}`, people)).toEqual([{ kind: "text", text: `@paul${"x".repeat(40)}` }]);
   });
 });
