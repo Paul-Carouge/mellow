@@ -139,6 +139,10 @@ pub struct Role {
     pub color: u32,
     pub position: u32,
     pub permissions: Permissions,
+    /// Its members are listed under the role's name, above everyone else, in the member list
+    /// (Discord's "hoist"). Never set on `@everyone`. Added after `v0.28.0`.
+    #[serde(default)]
+    pub is_displayed_separately: bool,
 }
 
 /// Body of `POST /api/v1/guilds/{guild_id}/roles`. The role is created just above `@everyone`.
@@ -150,6 +154,9 @@ pub struct CreateRoleRequest {
     pub color: u32,
     #[serde(default)]
     pub permissions: Permissions,
+    /// Left out when off, so an instance from before it (`deny_unknown_fields`) still accepts it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_displayed_separately: bool,
 }
 
 /// Body of `PATCH /api/v1/guilds/{guild_id}/roles/{role_id}`; absent fields are unchanged.
@@ -160,6 +167,9 @@ pub struct UpdateRoleRequest {
     pub name: Option<String>,
     pub color: Option<u32>,
     pub permissions: Option<Permissions>,
+    /// Left out when unchanged, so an instance from before it still accepts the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_displayed_separately: Option<bool>,
 }
 
 /// Body of `PUT /api/v1/guilds/{guild_id}/roles/order`: every role of the guild except
@@ -284,6 +294,8 @@ pub enum AuditChangeKey {
     UserLimit,
     /// Of a soundboard sound: its emoji's key, empty for none. Added after `v0.25.0`.
     Emoji,
+    /// Of a role: `true` or `false`. Added after `v0.28.0`.
+    DisplayedSeparately,
     /// A field added by a newer server.
     #[serde(other)]
     Unknown,
@@ -536,6 +548,26 @@ pub struct Member {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn role_requests_leave_out_display_separately_unless_set() {
+        let create = CreateRoleRequest {
+            name: "Helpers".into(),
+            color: 0,
+            permissions: Permissions::empty(),
+            is_displayed_separately: false,
+        };
+        let created = serde_json::to_value(&create).unwrap();
+        assert!(created.get("is_displayed_separately").is_none());
+        let unchanged = serde_json::to_value(UpdateRoleRequest::default()).unwrap();
+        assert!(unchanged.get("is_displayed_separately").is_none());
+        let shown = serde_json::to_value(UpdateRoleRequest {
+            is_displayed_separately: Some(true),
+            ..UpdateRoleRequest::default()
+        })
+        .unwrap();
+        assert_eq!(shown["is_displayed_separately"], true);
+    }
 
     #[test]
     fn unknown_audit_actions_and_change_keys_still_parse() {

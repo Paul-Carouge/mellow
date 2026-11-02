@@ -12,7 +12,7 @@ function rgbOf(hex: string): [number, number, number] {
 }
 
 function role(id: string, position: number, color: number): Role {
-  return { id, name: id, color, position, permissions: "0" };
+  return { id, name: id, color, position, permissions: "0", is_displayed_separately: false };
 }
 
 describe("readableRoleColor", () => {

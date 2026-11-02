@@ -23,7 +23,7 @@ const GUILD = "100";
 const CHANNEL = "500";
 
 function role(id: string, position: number, name = `role ${id}`): Role {
-  return { id, name, color: 0, position, permissions: "0" };
+  return { id, name, color: 0, position, permissions: "0", is_displayed_separately: false };
 }
 
 const EVERYONE = role(GUILD, 0, "@everyone");

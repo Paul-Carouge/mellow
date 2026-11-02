@@ -610,6 +610,7 @@ fn role_request(name: &str, permissions: Permissions) -> CreateRoleRequest {
         name: name.into(),
         color: 0,
         permissions,
+        is_displayed_separately: false,
     }
 }
 
@@ -1788,6 +1789,7 @@ async fn a_resynchronized_member_receives_exactly_what_get_guild_answers_them() 
                 name: None,
                 color: None,
                 permissions: Some(Permissions::ADD_REACTIONS),
+                is_displayed_separately: None,
             },
         )
         .await
@@ -2534,6 +2536,7 @@ async fn unchanged_or_refused_actions_record_nothing() {
                 name: Some("First".into()),
                 color: Some(0),
                 permissions: Some(Permissions::empty()),
+                is_displayed_separately: None,
             },
         )
         .await
@@ -2711,7 +2714,7 @@ async fn readers_see_no_entries_about_channels_they_cannot_view() {
 }
 
 #[tokio::test]
-async fn everyone_cannot_be_renamed_deleted_given_or_taken_away() {
+async fn everyone_cannot_be_renamed_displayed_separately_deleted_given_or_taken_away() {
     let fixture = fixture().await;
     let guild = guild_with_member(&fixture).await;
     let (guilds, owner) = (&fixture.guilds, fixture.owner);
@@ -2726,6 +2729,18 @@ async fn everyone_cannot_be_renamed_deleted_given_or_taken_away() {
             },
         )
         .await;
+    // Everyone holds it: listing its members apart would set no one apart.
+    let display_separately = guilds
+        .update_role(
+            owner,
+            guild.id,
+            guild.id,
+            UpdateRoleRequest {
+                is_displayed_separately: Some(true),
+                ..UpdateRoleRequest::default()
+            },
+        )
+        .await;
     let delete = guilds.delete_role(owner, guild.id, guild.id).await;
     let give = guilds
         .add_member_role(owner, guild.id, fixture.other, guild.id)
@@ -2734,7 +2749,13 @@ async fn everyone_cannot_be_renamed_deleted_given_or_taken_away() {
         .remove_member_role(owner, guild.id, fixture.other, guild.id)
         .await;
     fixture.database.close().await;
-    for refused in [rename.map(|_| ()), delete, give, take] {
+    for refused in [
+        rename.map(|_| ()),
+        display_separately.map(|_| ()),
+        delete,
+        give,
+        take,
+    ] {
         assert!(
             matches!(
                 refused,
@@ -3298,4 +3319,100 @@ async fn deleting_a_guild_removes_what_it_holds_and_keeps_conversations() {
     assert_eq!(member_ids, expected);
     assert_eq!(left_in_guild, [0; 10]);
     assert_eq!(kept_in_conversation, [1, 1, 1, 2]);
+}
+
+#[tokio::test]
+async fn a_role_displayed_separately_reaches_members_and_its_change_is_recorded() {
+    let fixture = fixture().await;
+    let guild = guild_with_member(&fixture).await;
+    let guilds = &fixture.guilds;
+    let owner = fixture.owner;
+    let [mut owner_events, mut other_events] = owner_and_other_sessions(&fixture, guild.id);
+    let moderators = guilds
+        .create_role(
+            owner,
+            guild.id,
+            CreateRoleRequest {
+                is_displayed_separately: true,
+                ..role_request("Moderators", Permissions::empty())
+            },
+            NOW,
+        )
+        .await
+        .unwrap();
+    let created_event: serde_json::Value =
+        serde_json::from_str(&other_events.try_recv().unwrap().payload_json).unwrap();
+    let created_types = event_types(&mut other_events);
+    let hidden_again = guilds
+        .update_role(
+            owner,
+            guild.id,
+            moderators.id,
+            UpdateRoleRequest {
+                is_displayed_separately: Some(false),
+                ..UpdateRoleRequest::default()
+            },
+        )
+        .await
+        .unwrap();
+    let hidden_types = event_types(&mut other_events);
+    // A permission change resynchronizes members from the cached snapshot: it must hold the
+    // new value, not the one cached at creation.
+    guilds
+        .update_role(
+            owner,
+            guild.id,
+            guild.id,
+            permissions_update(Permissions::DEFAULT_EVERYONE - Permissions::ADD_REACTIONS),
+        )
+        .await
+        .unwrap();
+    let resynchronized = received_guilds(&mut other_events);
+    event_types(&mut owner_events);
+    let entries = guilds
+        .list_audit_log(owner, guild.id, AuditLogQuery::default())
+        .await
+        .unwrap();
+    fixture.database.close().await;
+
+    let displayed = |guild: &Guild| {
+        guild
+            .roles
+            .iter()
+            .find(|role| role.id == moderators.id)
+            .map(|role| role.is_displayed_separately)
+    };
+    assert!(moderators.is_displayed_separately);
+    assert_eq!(created_event["t"], "GUILD_ROLES_UPDATE");
+    assert_eq!(created_types, Vec::<String>::new());
+    assert!(
+        created_event["data"]["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|role| role["id"] == moderators.id.to_string()
+                && role["is_displayed_separately"] == true)
+    );
+    assert!(!hidden_again.is_displayed_separately);
+    assert_eq!(
+        hidden_types,
+        ["GUILD_ROLES_UPDATE"],
+        "only how members are listed changed: no resynchronization"
+    );
+    assert_eq!(resynchronized.len(), 1);
+    assert_eq!(displayed(&resynchronized[0]), Some(false));
+    let role_update = entries
+        .iter()
+        .find(|entry| {
+            entry.action == AuditAction::RoleUpdate && entry.target_id == Some(moderators.id)
+        })
+        .unwrap();
+    assert_eq!(
+        role_update.changes,
+        [AuditChange {
+            key: AuditChangeKey::DisplayedSeparately,
+            old_value: "true".into(),
+            new_value: "false".into(),
+        }]
+    );
 }

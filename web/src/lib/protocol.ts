@@ -214,6 +214,8 @@ export interface Role {
   color: number;
   position: number;
   permissions: PermissionBits;
+  /** Its members are listed under its name, above everyone else, in the member list. */
+  is_displayed_separately: boolean;
 }
 
 export interface Guild {
@@ -491,6 +493,8 @@ export interface AuditChange {
     | "user_limit"
     /** A sound's emoji: its reaction key, empty for none. */
     | "emoji"
+    /** A role's "display separately": `true` or `false`. */
+    | "displayed_separately"
     | "unknown";
   /** Permissions and colours in decimal. */
   old_value: string;

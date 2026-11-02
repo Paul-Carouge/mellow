@@ -3,6 +3,7 @@
 // (ADR-0007); these rules only hide or lock what it would refuse (ADR-0014).
 
 import { strings } from "../i18n";
+import type { RoleChanges } from "../lib/api";
 import { displayEmoji } from "../lib/reactions";
 import {
   type AuditChange,
@@ -176,10 +177,16 @@ export interface RoleDraft {
   name: string;
   color: number;
   permissions: PermissionBits;
+  isDisplayedSeparately: boolean;
 }
 
 export function draftOf(role: Role): RoleDraft {
-  return { name: role.name, color: role.color, permissions: role.permissions };
+  return {
+    name: role.name,
+    color: role.color,
+    permissions: role.permissions,
+    isDisplayedSeparately: role.is_displayed_separately,
+  };
 }
 
 /** What the user changed, on top of the role as it was when they started changing it. */
@@ -191,7 +198,12 @@ export interface RoleEdit {
 
 /** The instance trims names, so trailing spaces alone are not a change. */
 function isSameAsStored(draft: RoleDraft, stored: RoleDraft): boolean {
-  return draft.name.trim() === stored.name && draft.color === stored.color && draft.permissions === stored.permissions;
+  return (
+    draft.name.trim() === stored.name &&
+    draft.color === stored.color &&
+    draft.permissions === stored.permissions &&
+    draft.isDisplayedSeparately === stored.isDisplayedSeparately
+  );
 }
 
 /**
@@ -206,6 +218,10 @@ export function rebaseRoleEdit(edit: RoleEdit, stored: Role): RoleEdit | null {
   const draft: RoleDraft = {
     name: edit.draft.name === edit.base.name ? base.name : edit.draft.name,
     color: edit.draft.color === edit.base.color ? base.color : edit.draft.color,
+    isDisplayedSeparately:
+      edit.draft.isDisplayedSeparately === edit.base.isDisplayedSeparately
+        ? base.isDisplayedSeparately
+        : edit.draft.isDisplayedSeparately,
     // The toggled bits take the wanted value, so a role that already has it (our own save
     // echoed by the gateway) ends the edit instead of reverting it.
     permissions: String((BigInt(base.permissions) & ~toggled) | (wanted & toggled)),
@@ -231,7 +247,7 @@ export function roleUpdateBody(
   stored: Role,
   draft: RoleDraft,
   isEveryone: boolean,
-): { name?: string; color?: number; permissions?: PermissionBits } | null {
+): RoleChanges | null {
   const name = draft.name.trim();
   if (!isEveryone && name === "") {
     return null;
@@ -239,6 +255,9 @@ export function roleUpdateBody(
   return {
     ...(!isEveryone && name !== stored.name ? { name } : {}),
     ...(!isEveryone && draft.color !== stored.color ? { color: draft.color } : {}),
+    ...(!isEveryone && draft.isDisplayedSeparately !== stored.is_displayed_separately
+      ? { is_displayed_separately: draft.isDisplayedSeparately }
+      : {}),
     ...(draft.permissions !== stored.permissions ? { permissions: draft.permissions } : {}),
   };
 }
@@ -490,6 +509,8 @@ export function auditChangeLines(entry: AuditLogEntry, context: AuditContext): s
         return [change.new_value === "" ? log.topicCleared : log.topicChange(change.new_value)];
       case "color":
         return [log.colorChange];
+      case "displayed_separately":
+        return [log.displayedSeparatelyChange(change.new_value === "true")];
       case "permissions":
       case "allow":
       case "deny": {

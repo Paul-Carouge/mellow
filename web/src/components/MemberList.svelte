@@ -9,7 +9,7 @@
   import { contextMenuTrigger } from "./context-menu-trigger";
   import { displayName } from "./format";
   import IconButton from "./IconButton.svelte";
-  import { membersSortedByDisplayName } from "./member-order";
+  import { memberListGroups, membersSortedByDisplayName } from "./member-order";
   import { nameColorsByUserId } from "./name-colors.svelte";
   import PersonContextMenu from "./PersonContextMenu.svelte";
   import ProfileCard from "./ProfileCard.svelte";
@@ -38,11 +38,15 @@
   const isOnline = (userId: string) => client.presenceOf(userId) !== "offline";
   // Sorted only when the members change: a presence update just splits the sorted list again.
   const sortedMembers = $derived(membersSortedByDisplayName(members ?? []));
+  // Roles displayed separately first, then Online and Offline (DESIGN.md §5.7).
   const groups = $derived(
-    [
-      { label: strings.common.online, isOnline: true, members: sortedMembers.filter((member) => isOnline(member.user.id)) },
-      { label: strings.common.offline, isOnline: false, members: sortedMembers.filter((member) => !isOnline(member.user.id)) },
-    ].filter((group) => group.members.length > 0),
+    memberListGroups(sortedMembers, guild.roles, isOnline).map((group) => ({
+      key: group.kind === "role" ? group.role.id : group.kind,
+      label:
+        group.kind === "role" ? group.role.name : group.kind === "online" ? strings.common.online : strings.common.offline,
+      isOnline: group.kind !== "offline",
+      members: group.members,
+    })),
   );
 
   let profileUserId = $state<string | null>(null);
@@ -242,7 +246,7 @@
       {:else if members === null}
         <p role="status" class="px-md pt-xs type-body text-text-muted">{strings.members.loading}</p>
       {/if}
-      {#each groups as group (group.label)}
+      {#each groups as group (group.key)}
         <!-- Sentence case, the count as its own number (ADR-0022 §3). -->
         <h3
           aria-label={strings.members.groupLabel(group.label, group.members.length)}

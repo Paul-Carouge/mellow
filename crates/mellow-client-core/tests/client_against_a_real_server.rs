@@ -362,6 +362,7 @@ async fn roles_and_overwrites_round_trip(
                 name: "Moderator".into(),
                 color: 0x0000_aaff,
                 permissions: Permissions::KICK_MEMBERS,
+                is_displayed_separately: false,
             },
         )
         .await
@@ -373,6 +374,7 @@ async fn roles_and_overwrites_round_trip(
                 name: "Helper".into(),
                 color: 0,
                 permissions: Permissions::empty(),
+                is_displayed_separately: false,
             },
         )
         .await

@@ -221,6 +221,7 @@ export const roleSamples = [
   {
     "color": 16746496,
     "id": "20",
+    "is_displayed_separately": true,
     "name": "Moderators",
     "permissions": "2112",
     "position": 1
@@ -286,6 +287,7 @@ export const guildSamples = [
       {
         "color": 16746496,
         "id": "20",
+        "is_displayed_separately": true,
         "name": "Moderators",
         "permissions": "2112",
         "position": 1
@@ -776,6 +778,11 @@ export const auditChangeSamples = [
     "old_value": "old"
   },
   {
+    "key": "displayed_separately",
+    "new_value": "new",
+    "old_value": "old"
+  },
+  {
     "key": "unknown",
     "new_value": "new",
     "old_value": "old"
@@ -905,6 +912,7 @@ export const readySamples = [
           {
             "color": 16746496,
             "id": "20",
+            "is_displayed_separately": true,
             "name": "Moderators",
             "permissions": "2112",
             "position": 1
@@ -1365,6 +1373,7 @@ export const gatewayEventSamples = [
         {
           "color": 16746496,
           "id": "20",
+          "is_displayed_separately": true,
           "name": "Moderators",
           "permissions": "2112",
           "position": 1
@@ -1459,6 +1468,7 @@ export const gatewayEventSamples = [
         {
           "color": 16746496,
           "id": "20",
+          "is_displayed_separately": true,
           "name": "Moderators",
           "permissions": "2112",
           "position": 1
@@ -1854,6 +1864,7 @@ export const serverFrameSamples = [
             {
               "color": 16746496,
               "id": "20",
+              "is_displayed_separately": true,
               "name": "Moderators",
               "permissions": "2112",
               "position": 1

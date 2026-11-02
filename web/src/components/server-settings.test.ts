@@ -26,7 +26,7 @@ const ME = "2";
 const OTHER = "3";
 
 function role(id: string, position: number, permissions: bigint = 0n): Role {
-  return { id, name: `role ${id}`, color: 0, position, permissions: String(permissions) };
+  return { id, name: `role ${id}`, color: 0, position, permissions: String(permissions), is_displayed_separately: false };
 }
 
 const EVERYONE = role(GUILD, 0, Permission.VIEW_CHANNEL | Permission.SEND_MESSAGES);
@@ -135,8 +135,13 @@ describe("roles", () => {
     const stored = role("201", 1, Permission.SEND_MESSAGES | Permission.ATTACH_FILES);
     const edit = {
       roleId: stored.id,
-      base: { name: stored.name, color: 0, permissions: stored.permissions },
-      draft: { name: "Helpers", color: 0, permissions: String(Permission.SEND_MESSAGES | Permission.ATTACH_FILES | Permission.KICK_MEMBERS) },
+      base: { name: stored.name, color: 0, permissions: stored.permissions, isDisplayedSeparately: false },
+      draft: {
+        name: "Helpers",
+        color: 0,
+        permissions: String(Permission.SEND_MESSAGES | Permission.ATTACH_FILES | Permission.KICK_MEMBERS),
+        isDisplayedSeparately: true,
+      },
     };
     // Someone else removed ATTACH_FILES and set a colour.
     const changed = { ...stored, color: 0x3498db, permissions: String(Permission.SEND_MESSAGES) };
@@ -144,8 +149,9 @@ describe("roles", () => {
       name: "Helpers",
       color: 0x3498db,
       permissions: String(Permission.SEND_MESSAGES | Permission.KICK_MEMBERS),
+      isDisplayedSeparately: true,
     });
-    const saved = { ...stored, name: "Helpers", permissions: edit.draft.permissions };
+    const saved = { ...stored, name: "Helpers", permissions: edit.draft.permissions, is_displayed_separately: true };
     expect(rebaseRoleEdit(edit, saved)).toBeNull();
     expect(rebaseRoleEdit({ ...edit, draft: { ...edit.base, name: `${stored.name} ` } }, stored)).toBeNull();
   });
@@ -154,8 +160,8 @@ describe("roles", () => {
     const stored = role("201", 1);
     const edit = {
       roleId: stored.id,
-      base: { name: stored.name, color: 0, permissions: "0" },
-      draft: { name: "Helpers", color: 0, permissions: "0" },
+      base: { name: stored.name, color: 0, permissions: "0", isDisplayedSeparately: false },
+      draft: { name: "Helpers", color: 0, permissions: "0", isDisplayedSeparately: false },
     };
     expect(isRoleEditPending(edit, stored)).toBe(true);
     // Our save, echoed by the gateway: nothing left to save, the page drops the edit.
@@ -168,9 +174,15 @@ describe("roles", () => {
 
   it("sends only the changed fields, and only permissions for @everyone", () => {
     const stored = role("201", 1);
-    expect(roleUpdateBody(stored, { name: " Helpers ", color: 0, permissions: "0" }, false)).toEqual({ name: "Helpers" });
-    expect(roleUpdateBody(stored, { name: "  ", color: 0, permissions: "0" }, false)).toBeNull();
-    expect(roleUpdateBody(EVERYONE, { name: "x", color: 5, permissions: "4" }, true)).toEqual({ permissions: "4" });
+    const unchanged = { name: stored.name, color: 0, permissions: "0", isDisplayedSeparately: false };
+    expect(roleUpdateBody(stored, { ...unchanged, name: " Helpers " }, false)).toEqual({ name: "Helpers" });
+    expect(roleUpdateBody(stored, { ...unchanged, name: "  " }, false)).toBeNull();
+    expect(roleUpdateBody(stored, { ...unchanged, isDisplayedSeparately: true }, false)).toEqual({
+      is_displayed_separately: true,
+    });
+    expect(roleUpdateBody(EVERYONE, { name: "x", color: 5, permissions: "4", isDisplayedSeparately: true }, true)).toEqual({
+      permissions: "4",
+    });
   });
 });
 
@@ -226,6 +238,21 @@ describe("moderation log", () => {
     expect(auditEntrySentence(entry({ action: "role_update", target_id: "404" }), context)).toBe(
       "Ana edited the role a deleted role",
     );
+  });
+
+  it("says whether a role's members are displayed separately", () => {
+    const shown = entry({
+      action: "role_update",
+      target_id: "404",
+      changes: [{ key: "displayed_separately", old_value: "false", new_value: "true" }],
+    });
+    const hidden = entry({
+      action: "role_update",
+      target_id: "404",
+      changes: [{ key: "displayed_separately", old_value: "true", new_value: "false" }],
+    });
+    expect(auditChangeLines(shown, context)).toEqual(["Members now displayed separately"]);
+    expect(auditChangeLines(hidden, context)).toEqual(["Members no longer displayed separately"]);
   });
 
   it("tells renames and invites from their changes, and actions of a newer server", () => {

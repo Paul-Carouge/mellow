@@ -1070,6 +1070,8 @@ export const en = {
       noColor: "No colour",
       colorOption: (hex: string) => `Colour ${hex}`,
       colorPreview: "Names with this role",
+      displayedSeparately: "Display members separately",
+      displayedSeparatelyDescription: "Online members with this role are listed under its name, above everyone else.",
       moveUp: "Move up",
       moveDown: "Move down",
       moveHint: "Ctrl+Shift+Up and Ctrl+Shift+Down move the selected role too.",
@@ -1348,6 +1350,7 @@ export const en = {
       topicChange: (topic: string) => `New topic: ${topic}`,
       topicCleared: "Topic removed",
       colorChange: "Colour changed",
+      displayedSeparatelyChange: (isOn: boolean): string => (isOn ? "Members now displayed separately" : "Members no longer displayed separately"),
       permissionsAdded: (key: "permissions" | "allow" | "deny", names: string) =>
         key === "deny" ? `Now denied: ${names}` : key === "allow" ? `Now allowed: ${names}` : `Granted: ${names}`,
       permissionsRemoved: (key: "permissions" | "allow" | "deny", names: string) =>

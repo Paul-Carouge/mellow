@@ -370,6 +370,7 @@ mod tests {
                     name: "Emoji keepers".into(),
                     color: 0,
                     permissions: Permissions::MANAGE_EXPRESSIONS,
+                    is_displayed_separately: false,
                 },
                 NOW,
             )

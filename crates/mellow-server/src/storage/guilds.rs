@@ -203,7 +203,8 @@ pub(crate) async fn find_membership(
         return Ok(None);
     };
     let rows: Vec<RoleRow> = sqlx::query_as(
-        "SELECT id, name, color, position, permissions FROM roles WHERE id = ? OR id IN \
+        "SELECT id, name, color, position, permissions, is_displayed_separately FROM roles \
+         WHERE id = ? OR id IN \
          (SELECT role_id FROM member_roles WHERE guild_id = ? AND user_id = ?) \
          ORDER BY position, id",
     )

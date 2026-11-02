@@ -91,6 +91,7 @@ impl Guilds {
                 color,
                 position: 1,
                 permissions,
+                is_displayed_separately: request.is_displayed_separately,
             },
             MAXIMUM_ROLES_PER_GUILD,
             &audit,
@@ -107,7 +108,7 @@ impl Guilds {
     }
 
     /// Needs `MANAGE_ROLES` over this role (`RoleManager`). `@everyone` changes only its
-    /// permissions.
+    /// permissions: it is never displayed separately, since everyone holds it.
     pub(crate) async fn update_role(
         &self,
         user_id: Snowflake,
@@ -115,7 +116,11 @@ impl Guilds {
         role_id: Snowflake,
         request: UpdateRoleRequest,
     ) -> Result<Role, GuildError> {
-        if role_id == guild_id && (request.name.is_some() || request.color.is_some()) {
+        if role_id == guild_id
+            && (request.name.is_some()
+                || request.color.is_some()
+                || request.is_displayed_separately.is_some())
+        {
             return Err(GuildRuleViolation::EveryoneRole.into());
         }
         let name = request
@@ -152,6 +157,15 @@ impl Guilds {
             effective_permissions.and_then(|permissions| {
                 permissions_change(AuditChangeKey::Permissions, role.permissions, permissions)
             }),
+            request
+                .is_displayed_separately
+                .and_then(|is_displayed_separately| {
+                    text_change(
+                        AuditChangeKey::DisplayedSeparately,
+                        &role.is_displayed_separately.to_string(),
+                        Some(&is_displayed_separately.to_string()),
+                    )
+                }),
         ]
         .into_iter()
         .flatten()
@@ -178,6 +192,7 @@ impl Guilds {
                 name: name.as_deref(),
                 color,
                 permissions,
+                is_displayed_separately: request.is_displayed_separately,
             },
             manager.permissions,
             &audit,
