@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
 
   import { strings } from "../i18n";
-  import { type MellowClient, describeError } from "../lib/client.svelte";
+  import type { MellowClient } from "../lib/client.svelte";
   import { type DirectMessageChannel, MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH } from "../lib/protocol";
   import { participantNamesOf } from "./group-conversations";
   import ModalDialog from "./ModalDialog.svelte";
@@ -24,8 +24,6 @@
   const currentUserId = $derived(client.user?.id ?? null);
   // The name as it was when the dialog opened; someone else renaming meanwhile does not erase typing.
   let name = $state(untrack(() => group.name ?? ""));
-  let isBusy = $state(false);
-  let errorMessage = $state("");
 
   async function save() {
     const trimmed = name.trim();
@@ -33,27 +31,19 @@
       onclose();
       return;
     }
-    isBusy = true;
-    errorMessage = "";
-    try {
-      await client.renameGroupConversation(group.id, trimmed);
-      ondone(trimmed ? strings.groups.renamed(trimmed) : strings.groups.nameCleared);
-      onclose();
-    } catch (error) {
-      errorMessage = describeError(error, strings.groups.renameFailed);
-    } finally {
-      isBusy = false;
-    }
+    await client.renameGroupConversation(group.id, trimmed);
+    ondone(trimmed ? strings.groups.renamed(trimmed) : strings.groups.nameCleared);
+    onclose();
   }
 </script>
 
 <ModalDialog
   title={strings.groups.rename}
-  {errorMessage}
-  {isBusy}
-  submitLabel={isBusy ? strings.common.saving : strings.groups.saveName}
+  submitLabel={strings.groups.saveName}
+  busySubmitLabel={strings.common.saving}
+  failureSummary={strings.groups.renameFailed}
   {onclose}
-  onsubmit={() => void save()}
+  onsubmit={save}
 >
   <TextField
     id="{id}-name"
