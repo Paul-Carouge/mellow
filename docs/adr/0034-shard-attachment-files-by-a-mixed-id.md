@@ -14,8 +14,9 @@ ADR-0020 stores each sealed file at `attachments/<two id hex digits>/<id>`, the 
 - The purge and `backup` list every directory, whatever their name, so they see files in either place; the backup copies the tree as it is and checks each file the database points at in either place.
 
 ## Consequences
-- An instance upgraded to this version reorganises `attachments/` once, at its first start; a backup made before restores fine, its files moved at the next start.
+- An instance upgraded to this version reorganises `attachments/` once, at its first start, listing only the two-hex-digit shard directories (a foreign directory such as `lost+found` is left alone, and one that cannot be listed is counted, never fatal); a backup made before restores fine, its files moved at the next start.
 - The fallback to `id % 256` stays in the code as long as instances from before may exist.
+- The move is forward-only. `mellow-server update --rollback` restores the executable only (ADR-0018), and this change adds no migration, so an older binary starts without complaint but looks for files only at `id % 256`: moved attachments, avatars, banners, icons, emoji, previews and sounds then fail to load, and its deletes miss them. No file is lost; upgrading again serves them all. To stay on the older version, stop the server and move every file back to the directory named by its id modulo 256 (`00/` for generated ids). A marker migration would make the older binary refuse the database instead, but recovering from that refusal means restoring the database backup taken before the migration and losing what was written since, which is worse than files the next upgrade brings back.
 
 ## Alternatives considered
 - **The timestamp's low byte** (`(id >> 22) % 256`): spreads as well for generated ids, but any id built another way (imports, tests) would cluster; the mix costs a few nanoseconds.
