@@ -14,8 +14,8 @@
   import ChoiceOption from "./ChoiceOption.svelte";
   import { humanFileSize, serverInitials } from "./format";
   import Icon from "./Icon.svelte";
-  import { centredSquare, placementInPercent, stillPictureOf } from "./icon-crop";
-  import IconCropDialog from "./IconCropDialog.svelte";
+  import { centredSquare, placementInPercent, stillPictureOf } from "./picture-crop";
+  import PictureCropDialog from "./PictureCropDialog.svelte";
   import ModalDialog from "./ModalDialog.svelte";
   import ServerPreview from "./ServerPreview.svelte";
   import { SERVER_TEMPLATE_IDS, serverTemplates, templateChannelNames } from "./server-templates";
@@ -307,7 +307,7 @@
 
 {#if fileToCrop}
   {@const file = fileToCrop}
-  <IconCropDialog
+  <PictureCropDialog
     {file}
     kind="server"
     name={serverName.trim() || strings.addServer.previewPlaceholder}

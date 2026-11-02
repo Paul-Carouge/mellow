@@ -14,7 +14,7 @@
     placementInPercent,
     stillPictureOf,
     zoomOf,
-  } from "./icon-crop";
+  } from "./picture-crop";
   import ModalDialog from "./ModalDialog.svelte";
 
   // DESIGN.md §6.54: the chosen picture on a stage, the kept square framed and the rest dimmed

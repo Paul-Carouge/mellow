@@ -15,7 +15,7 @@
   import Button from "./Button.svelte";
   import { humanFileSize, serverInitials } from "./format";
   import Icon from "./Icon.svelte";
-  import IconCropDialog from "./IconCropDialog.svelte";
+  import PictureCropDialog from "./PictureCropDialog.svelte";
 
   // A server's or channel's icon on its Overview page (DESIGN.md §6.54): the current one, "Upload
   // icon" opening the crop dialog once a picture is chosen, and "Remove icon". Saved at once, apart
@@ -186,7 +186,7 @@
 </section>
 
 {#if chosenFile}
-  <IconCropDialog
+  <PictureCropDialog
     file={chosenFile}
     {kind}
     {name}

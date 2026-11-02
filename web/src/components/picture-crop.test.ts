@@ -11,7 +11,7 @@ import {
   maximumZoom,
   placementInPercent,
   zoomOf,
-} from "./icon-crop";
+} from "./picture-crop";
 
 const LANDSCAPE = { width: 1200, height: 800 };
 const PORTRAIT = { width: 600, height: 900 };

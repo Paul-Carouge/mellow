@@ -86,7 +86,7 @@ Choose the square (dialog, 440 px wide or the window minus 32 px)
 | Sheet layout (server and channel settings) | `SettingsSheet.svelte`, `SettingsNavItem.svelte` | `component.settings.*` |
 | Channel settings and its sections | `ChannelSettings.svelte`, `ChannelOverviewSettings.svelte`, `ChannelPermissionSettings.svelte`, `AddOverwriteTargetDialog.svelte` | `component.roles.*` (list, rows, permission rows), `component.channel-settings.*` |
 | Rules: sections, tri-state, drafts, locks, addable targets | `channel-settings.ts` (tested) | — |
-| Icon editor and crop dialog | `IconEditor.svelte`, `IconCropDialog.svelte`, `icon-crop.ts` (tested) | `component.icon-picker.*` |
+| Icon editor and crop dialog | `IconEditor.svelte`, `PictureCropDialog.svelte`, `picture-crop.ts` (tested) | `component.icon-picker.*` |
 | Server icon in the strip | `ServerRail.svelte` | `component.rail.*` |
 | Channel icon and gear in the row; icon in the chat header | `ChannelSidebar.svelte`, `ChatPane.svelte` | `component.channel-row.image-radius`, `trailing-icon-size`, `settings-*` |
 | API | `api.ts` (`setGuildIcon`, `setChannelIcon`, `updateChannel`, `setPermissionOverwrite`, …), `protocol.ts` (`iconUrl`, `CHANNEL_SCOPED_PERMISSIONS`) | — |
