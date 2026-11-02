@@ -332,7 +332,11 @@
 
 <!-- The composer zone (ADR-0022 §4): the typing row above, then the composer, whose base row is
      as tall as the user card and as far from the bottom; it grows upward. -->
-<div class="relative shrink-0 px-(--mw-component-composer-margin-inline) pb-(--mw-size-dock-margin)">
+<!-- Clicks go through its empty parts and the typing row to the "viewing older messages" bar,
+     which rests on the composer from under them (MessageList). -->
+<div
+  class="pointer-events-none relative shrink-0 px-(--mw-component-composer-margin-inline) pb-(--mw-size-dock-margin) [&>*:not([data-typing-row])]:pointer-events-auto"
+>
   {#if canSendMessages && suggestionQuery && suggestions.length > 0}
     <div class="absolute inset-x-(--mw-component-composer-margin-inline) top-0">
       <EmojiSuggestions
@@ -348,6 +352,7 @@
   <p class="sr-only" aria-live="polite">{suggestions.length > 0 ? strings.chat.emojiSuggestionsCount(suggestions.length) : ""}</p>
   <p
     aria-hidden="true"
+    data-typing-row
     class="flex h-(--mw-component-composer-typing-height) min-w-0 items-center gap-2xs ps-xs type-typing text-(--mw-component-composer-typing-text)"
   >
     {#if typing.length > 0}

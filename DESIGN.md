@@ -1121,6 +1121,7 @@ Discord lets people drag-select across several messages; Slint cannot (ADR-0010)
 - When opening a channel with unread messages, the list scrolls to the first unread message and shows the divider: a 1 px `unread.line` rule (apricot) with an apricot "New" pill (`type.badge`, `text.on-accent`, fully rounded) at its trailing end. Discord's divider is red; Mellow's is apricot because new messages are "now", and red stays for danger and mention counts (ADR-0022). The accessible name is "New messages since 14:32".
 - A bar pinned to the top of the sheet, in `accent.fill` with `text.on-accent`, `radius.md`, sliding in with the jump-bar transition (2.8): "12 new messages since 14:32" and "Mark as read" (`Esc`). It disappears when the divider has been seen and the user reaches the bottom.
 - When the user scrolls up, a bar appears directly above the composer, in `accent.fill`: "You're viewing older messages" and "Jump to present" (or "Jump to present · 3 new" when new messages arrived). `End` (list focused) or `Esc` (composer focused) jumps. The list never auto-scrolls while the user reads older messages.
+  - On the web it rests on the composer (since item 17, 2026-11-02): over the list (it never moves the rows being read) and the typing row, its foot tucked under the composer's rounded top; the composer zone lets clicks through its empty parts and the typing row, which the bar hides while it shows. A composer growing while the reader is at the latest message keeps the list pinned, so the bar does not appear.
 
 #### Replies
 

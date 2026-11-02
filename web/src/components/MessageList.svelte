@@ -602,10 +602,12 @@
   </div>
 
   {#if isViewingOlderMessages}
-    <!-- Over the list rather than above it: taking height would move the rows being read. -->
+    <!-- Over the list rather than above it: taking height would move the rows being read. It
+         rests on the composer: down over the typing row, its foot tucked under the composer's
+         rounded top, which the composer zone paints over it. -->
     <button
       type="button"
-      class="absolute inset-x-(--mw-component-composer-margin-inline) bottom-0 flex min-h-(--mw-component-jump-bar-height) items-center gap-xs rounded-t-(--mw-component-jump-bar-radius) bg-(--mw-component-jump-bar-background) px-md text-(--mw-component-jump-bar-text) hover:bg-(--mw-component-jump-bar-background-hover) focus-visible:[outline:var(--mw-size-focus-ring-width)_solid_var(--mw-component-jump-bar-text)] focus-visible:[outline-offset:calc(-1*var(--mw-size-focus-ring-width))] py-2xs pointer-coarse:min-h-(--mw-size-hit-web-min)"
+      class="absolute inset-x-(--mw-component-composer-margin-inline) bottom-[calc(-1*(var(--mw-component-composer-typing-height)+var(--mw-component-composer-radius)))] flex min-h-[calc(var(--mw-component-jump-bar-height)+var(--mw-component-composer-radius))] items-center gap-xs rounded-t-(--mw-component-jump-bar-radius) bg-(--mw-component-jump-bar-background) px-md pt-2xs pb-[calc(var(--mw-space-2xs)+var(--mw-component-composer-radius))] text-(--mw-component-jump-bar-text) hover:bg-(--mw-component-jump-bar-background-hover) focus-visible:[outline:var(--mw-size-focus-ring-width)_solid_var(--mw-component-jump-bar-text)] focus-visible:[outline-offset:calc(-1*var(--mw-size-focus-ring-width))] pointer-coarse:min-h-[calc(var(--mw-size-hit-web-min)+var(--mw-component-composer-radius))]"
       onclick={() => {
         noteReaderScrolling();
         jumpToPresent();
