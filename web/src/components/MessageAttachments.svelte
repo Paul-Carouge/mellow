@@ -2,7 +2,7 @@
   import { SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
-  import { type Attachment, PREVIEWABLE_IMAGE_TYPES, type Snowflake, attachmentUrl } from "../lib/protocol";
+  import { type Attachment, PREVIEWABLE_IMAGE_TYPES, type Snowflake, attachmentPreviewUrl, attachmentUrl } from "../lib/protocol";
   import { imagePreviewWidth } from "./attachment-preview";
   import { attachmentCountLabel, fileNameStartAndEnd, humanFileSize } from "./format";
   import Icon from "./Icon.svelte";
@@ -53,10 +53,11 @@
           <!-- With its size known, the box is the loaded picture's from the start, so nothing
                moves. Without it (older uploads), sized as the largest preview until loaded: lazy
                loading needs a box, and the list re-pins to the latest message when it shrinks. -->
-          <!-- A new element once retried: the same src on the old one would not load again. -->
+          <!-- A new element once retried: the same src on the old one would not load again. The
+               list shows the preview; the link opens the full picture. -->
           {#key retriedImageIds.has(attachment.id)}
             <img
-              src={attachmentUrl(attachment)}
+              src={attachmentPreviewUrl(attachment)}
               alt={attachment.file_name}
               width={previewWidth === undefined ? undefined : attachment.width}
               height={previewWidth === undefined ? undefined : attachment.height}

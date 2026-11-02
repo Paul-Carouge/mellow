@@ -273,6 +273,14 @@ export function attachmentUrl(attachment: Attachment): string {
   return `/api/v1/attachments/${attachment.id}`;
 }
 
+/**
+ * The smaller copy of a picture for the message list, sized for its box; the instance answers
+ * with the file itself when the picture needs none.
+ */
+export function attachmentPreviewUrl(attachment: Attachment): string {
+  return `${attachmentUrl(attachment)}/preview`;
+}
+
 export interface Message {
   id: Snowflake;
   channel_id: Snowflake;
