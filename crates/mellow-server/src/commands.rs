@@ -253,17 +253,8 @@ pub async fn create_user(
     config: &ServerConfig,
     options: CreateUserOptions,
 ) -> Result<mellow_protocol::CurrentUser> {
-    let database_path = config.database_path();
-    if !database_path.is_file() {
-        bail!(
-            "no database at {}; run `mellow-server init` first",
-            database_path.display()
-        );
-    }
-    let database_key = MasterKey::read_file(&config.master_key_file)?.derive_database_key();
-    let database = open_encrypted_database(&database_path, &database_key).await?;
+    let database = open_instance_database(config).await?;
     let result = async {
-        migrate_with_backup(&database, &config.backup_directory()).await?;
         Ok(crate::domain::accounts::Accounts::new(
             database.clone(),
             config.registration_mode,
@@ -298,17 +289,8 @@ pub async fn set_instance_administrator(
     username: &str,
     is_instance_administrator: bool,
 ) -> Result<()> {
-    let database_path = config.database_path();
-    if !database_path.is_file() {
-        bail!(
-            "no database at {}; run `mellow-server init` first",
-            database_path.display()
-        );
-    }
-    let database_key = MasterKey::read_file(&config.master_key_file)?.derive_database_key();
-    let database = open_encrypted_database(&database_path, &database_key).await?;
+    let database = open_instance_database(config).await?;
     let result = async {
-        migrate_with_backup(&database, &config.backup_directory()).await?;
         let exists = crate::storage::accounts::set_instance_administrator(
             &database,
             username,
