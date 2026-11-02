@@ -104,6 +104,12 @@ export const en = {
   app: {
     unreachableTitle: "This instance can't be reached right now.",
     unreachableBody: "Check your connection, then try again.",
+    /** While a part of the client loaded on demand (the settings, some dialogs) downloads. */
+    loadingPart: "Loading…",
+    /** That part could not download: usually the instance was updated since this tab opened. */
+    partUnavailableTitle: "Mellow needs to reload",
+    partUnavailableBody: "This part couldn't load, most likely because the instance was updated. Reload the page to continue.",
+    reload: "Reload",
   },
 
   connection: {

@@ -106,6 +106,11 @@ export const fr: Catalogue = {
   app: {
     unreachableTitle: "Impossible de joindre cette instance pour le moment.",
     unreachableBody: "Vérifie ta connexion, puis réessaie.",
+    loadingPart: "Chargement…",
+    partUnavailableTitle: "Mellow doit être rechargé",
+    partUnavailableBody:
+      "Cette partie n’a pas pu se charger, sans doute parce que l’instance a été mise à jour. Recharge la page pour continuer.",
+    reload: "Recharger",
   },
 
   connection: {

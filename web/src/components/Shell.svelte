@@ -5,8 +5,6 @@
   import { strings } from "../i18n";
   import { MAXIMUM_MESSAGES_LOADED_TO_REACH_A_MESSAGE, type MellowClient } from "../lib/client.svelte";
   import type { Channel, MessageSearchHit, Snowflake } from "../lib/protocol";
-  import AddServerDialog from "./AddServerDialog.svelte";
-  import ChannelSettings from "./ChannelSettings.svelte";
   import type { ServerDialog } from "./ChannelSidebar.svelte";
   import ChatPane from "./ChatPane.svelte";
   import ConnectionBanner from "./ConnectionBanner.svelte";
@@ -17,7 +15,7 @@
   import { conversationDisplayName, isGroupConversation } from "./group-conversations";
   import GroupMembersSheet from "./GroupMembersSheet.svelte";
   import IconButton from "./IconButton.svelte";
-  import InvitePeopleDialog from "./InvitePeopleDialog.svelte";
+  import LazyComponent from "./LazyComponent.svelte";
   import LeaveServerDialog from "./LeaveServerDialog.svelte";
   import MemberList from "./MemberList.svelte";
   import { MessageSearch } from "./message-search.svelte";
@@ -30,15 +28,10 @@
     notificationDialogRequest,
   } from "./notification-preferences.svelte";
   import NotificationPermissionBar from "./NotificationPermissionBar.svelte";
-  import NotificationSettingsDialog from "./NotificationSettingsDialog.svelte";
   import { attentionCount, noteChannelSeen, showAttentionCount, startNotifier } from "./notifier.svelte";
-  import PeoplePickerDialog from "./PeoplePickerDialog.svelte";
-  import QuickSwitcher from "./QuickSwitcher.svelte";
   import QuickSwitcherTrigger from "./QuickSwitcherTrigger.svelte";
-  import ServerSettings from "./ServerSettings.svelte";
   import type { ServerSettingsSection } from "./server-settings";
   import { minimumWidthQueryForPanes } from "./tokens";
-  import UserSettings from "./UserSettings.svelte";
   import { prepareChimeSound, routeChimeSoundTo } from "./chime-sound";
   import { listenForPushToTalk } from "./push-to-talk-keys";
   import { playVoiceCue } from "./voice-sounds";
@@ -667,24 +660,36 @@
 <p class="sr-only" aria-live="polite">{announcement}</p>
 
 {#if openDialog === "new-message" || (openDialog === "add-to-group" && group)}
-  <PeoplePickerDialog
-    {client}
-    group={openDialog === "add-to-group" ? group : null}
-    onclose={() => (openDialog = null)}
-    onaddfriend={() => void openAddFriend()}
-    onadded={(names) => (announcement = strings.groups.added(names))}
-    fallbackFocus={() => void focusComposerAfterDialog()}
-  />
+  <LazyComponent load={() => import("./PeoplePickerDialog.svelte")} onclose={() => (openDialog = null)}>
+    {#snippet children({ default: PeoplePickerDialog })}
+      <PeoplePickerDialog
+        {client}
+        group={openDialog === "add-to-group" ? group : null}
+        onclose={() => (openDialog = null)}
+        onaddfriend={() => void openAddFriend()}
+        onadded={(names) => (announcement = strings.groups.added(names))}
+        fallbackFocus={() => void focusComposerAfterDialog()}
+      />
+    {/snippet}
+  </LazyComponent>
 {:else if openDialog === "add-server"}
-  <AddServerDialog {client} onclose={() => (openDialog = null)} fallbackFocus={focusComposer} />
+  <LazyComponent load={() => import("./AddServerDialog.svelte")} onclose={() => (openDialog = null)}>
+    {#snippet children({ default: AddServerDialog })}
+      <AddServerDialog {client} onclose={() => (openDialog = null)} fallbackFocus={focusComposer} />
+    {/snippet}
+  </LazyComponent>
 {:else if openDialog === "invite-people" && dialogGuild}
-  <InvitePeopleDialog
-    {client}
-    guildId={dialogGuild.id}
-    serverName={dialogGuild.name}
-    onclose={() => (openDialog = null)}
-    fallbackFocus={focusComposer}
-  />
+  <LazyComponent load={() => import("./InvitePeopleDialog.svelte")} onclose={() => (openDialog = null)}>
+    {#snippet children({ default: InvitePeopleDialog })}
+      <InvitePeopleDialog
+        {client}
+        guildId={dialogGuild.id}
+        serverName={dialogGuild.name}
+        onclose={() => (openDialog = null)}
+        fallbackFocus={focusComposer}
+      />
+    {/snippet}
+  </LazyComponent>
 {:else if openDialog === "create-channel" || openDialog === "create-category"}
   <CreateChannelDialog
     {client}
@@ -694,20 +699,30 @@
     fallbackFocus={focusComposer}
   />
 {:else if openDialog === "server-settings" && dialogGuildId}
-  <ServerSettings
-    {client}
-    guildId={dialogGuildId}
-    initialSection={serverSettingsSection}
-    isWide={hasRoomForNavigator.current}
-    onclose={() => (openDialog = null)}
-  />
+  {@const guildId = dialogGuildId}
+  <LazyComponent load={() => import("./ServerSettings.svelte")} onclose={() => (openDialog = null)}>
+    {#snippet children({ default: ServerSettings })}
+      <ServerSettings
+        {client}
+        {guildId}
+        initialSection={serverSettingsSection}
+        isWide={hasRoomForNavigator.current}
+        onclose={() => (openDialog = null)}
+      />
+    {/snippet}
+  </LazyComponent>
 {:else if openDialog === "channel-settings" && channelSettingsChannelId}
-  <ChannelSettings
-    {client}
-    channelId={channelSettingsChannelId}
-    isWide={hasRoomForNavigator.current}
-    onclose={() => (openDialog = null)}
-  />
+  {@const channelId = channelSettingsChannelId}
+  <LazyComponent load={() => import("./ChannelSettings.svelte")} onclose={() => (openDialog = null)}>
+    {#snippet children({ default: ChannelSettings })}
+      <ChannelSettings
+        {client}
+        {channelId}
+        isWide={hasRoomForNavigator.current}
+        onclose={() => (openDialog = null)}
+      />
+    {/snippet}
+  </LazyComponent>
 {:else if openDialog === "leave-server" && dialogGuild}
   <LeaveServerDialog
     {client}
@@ -719,19 +734,31 @@
 {/if}
 
 {#if notificationDialog}
-  <NotificationSettingsDialog
-    target={notificationDialog.target}
-    placeName={notificationDialog.placeName}
-    initialGroup={notificationDialog.initialGroup}
-    onclose={closeNotificationDialog}
-    ondone={(sentence) => (announcement = sentence)}
-  />
+  <LazyComponent load={() => import("./NotificationSettingsDialog.svelte")} onclose={closeNotificationDialog}>
+    {#snippet children({ default: NotificationSettingsDialog })}
+      <NotificationSettingsDialog
+        target={notificationDialog.target}
+        placeName={notificationDialog.placeName}
+        initialGroup={notificationDialog.initialGroup}
+        onclose={closeNotificationDialog}
+        ondone={(sentence) => (announcement = sentence)}
+      />
+    {/snippet}
+  </LazyComponent>
 {/if}
 
 {#if isUserSettingsOpen}
-  <UserSettings {client} isWide={hasRoomForNavigator.current} onclose={() => (isUserSettingsOpen = false)} />
+  <LazyComponent load={() => import("./UserSettings.svelte")} onclose={() => (isUserSettingsOpen = false)}>
+    {#snippet children({ default: UserSettings })}
+      <UserSettings {client} isWide={hasRoomForNavigator.current} onclose={() => (isUserSettingsOpen = false)} />
+    {/snippet}
+  </LazyComponent>
 {/if}
 
 {#if isQuickSwitcherOpen}
-  <QuickSwitcher {client} onclose={() => (isQuickSwitcherOpen = false)} onnavigated={focusComposer} />
+  <LazyComponent load={() => import("./QuickSwitcher.svelte")} onclose={() => (isQuickSwitcherOpen = false)}>
+    {#snippet children({ default: QuickSwitcher })}
+      <QuickSwitcher {client} onclose={() => (isQuickSwitcherOpen = false)} onnavigated={focusComposer} />
+    {/snippet}
+  </LazyComponent>
 {/if}
