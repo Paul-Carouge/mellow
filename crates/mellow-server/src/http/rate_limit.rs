@@ -7,10 +7,14 @@ use std::time::{Duration, Instant};
 
 /// Above this many tracked keys, expired windows are pruned.
 const PRUNE_THRESHOLD_KEYS: usize = 10_000;
-/// Hard ceiling: past it (even after pruning) new keys are refused, so memory stays bounded
-/// whatever an attacker sends. Keys are short and fixed-size (see `account_routes`), so this is a
-/// few megabytes at most.
+/// Hard ceiling: at it, the oldest address-keyed windows are evicted to make room, and past it
+/// (with nothing left to evict) new keys are refused, so memory stays bounded whatever an
+/// attacker sends. Keys are short and fixed-size (see `account_routes`), so this is a few
+/// megabytes at most.
 const MAXIMUM_TRACKED_KEYS: usize = 100_000;
+/// Address-keyed windows evicted at once when the table is full, so the O(n) eviction scan runs
+/// once per this many new keys rather than on every one.
+const ADDRESS_WINDOWS_EVICTED_WHEN_FULL: usize = 1_000;
 /// Pruning is O(n) under the lock; doing it at most this often keeps a full table cheap.
 const MINIMUM_INTERVAL_BETWEEN_PRUNES: Duration = Duration::from_secs(1);
 
@@ -23,6 +27,13 @@ pub(crate) struct RateLimit {
 /// Registration and login attempts per client address.
 pub(crate) const AUTHENTICATION_ATTEMPTS_PER_ADDRESS: RateLimit = RateLimit {
     maximum_events: 20,
+    window: Duration::from_secs(60),
+};
+/// Registration and login attempts per IPv6 /48, checked before the per-address limit: one /48
+/// holds 65 536 /64 address keys, so without it a single site could fill the limiter's table.
+/// A few times the per-address limit, so the households or offices sharing a /48 still sign in.
+pub(crate) const AUTHENTICATION_ATTEMPTS_PER_IPV6_SITE: RateLimit = RateLimit {
+    maximum_events: 100,
     window: Duration::from_secs(60),
 };
 /// Login attempts on one account from one address: the brute-force limit.
@@ -238,11 +249,22 @@ struct LimiterState {
     last_pruned_at: Option<Instant>,
 }
 
+/// Whether a full table may evict a window before it ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Eviction {
+    /// Keyed by a client address or site only: addresses are cheap for an attacker, so a flood of
+    /// them must not lock everyone else out. Evicting one only forgives that address its count.
+    AllowedWhenFull,
+    /// Per-account or per-user: evicting one would hand an attacker a fresh brute-force budget.
+    Never,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Window {
     started_at: Instant,
     length: Duration,
     events: u32,
+    eviction: Eviction,
 }
 
 impl Window {
@@ -254,7 +276,18 @@ impl Window {
 impl RateLimiter {
     /// Records one event for `key` and returns whether it is still within `limit`. Counting
     /// happens before the guarded work, so concurrent requests cannot all slip under the limit.
+    /// The window is kept until it ends, whatever floods the table.
     pub(crate) fn record_event(&self, key: &str, limit: RateLimit, now: Instant) -> bool {
+        self.record(key, limit, now, Eviction::Never)
+    }
+
+    /// As [`Self::record_event`], for a key made of a client address or site only: when the table
+    /// is full, the oldest such windows are evicted to make room for new keys.
+    pub(crate) fn record_address_event(&self, key: &str, limit: RateLimit, now: Instant) -> bool {
+        self.record(key, limit, now, Eviction::AllowedWhenFull)
+    }
+
+    fn record(&self, key: &str, limit: RateLimit, now: Instant, eviction: Eviction) -> bool {
         let mut state = self
             .state
             .lock()
@@ -262,17 +295,15 @@ impl RateLimiter {
         if !state.windows.contains_key(key) && !state.make_room(now) {
             return false;
         }
-        let window = state.windows.entry(key.to_owned()).or_insert(Window {
+        let new_window = Window {
             started_at: now,
             length: limit.window,
             events: 0,
-        });
+            eviction,
+        };
+        let window = state.windows.entry(key.to_owned()).or_insert(new_window);
         if window.has_ended(now) {
-            *window = Window {
-                started_at: now,
-                length: limit.window,
-                events: 0,
-            };
+            *window = new_window;
         }
         window.events = window.events.saturating_add(1);
         window.events <= limit.maximum_events
@@ -302,7 +333,31 @@ impl LimiterState {
             self.windows.retain(|_, window| !window.has_ended(now));
             self.last_pruned_at = Some(now);
         }
+        if self.windows.len() >= MAXIMUM_TRACKED_KEYS {
+            self.evict_oldest_address_windows();
+        }
         self.windows.len() < MAXIMUM_TRACKED_KEYS
+    }
+
+    /// Evicts up to [`ADDRESS_WINDOWS_EVICTED_WHEN_FULL`] address-keyed windows, oldest first
+    /// (ended ones are the oldest). Per-account windows are never evicted.
+    fn evict_oldest_address_windows(&mut self) {
+        let mut address_window_starts: Vec<Instant> = self
+            .windows
+            .values()
+            .filter(|window| window.eviction == Eviction::AllowedWhenFull)
+            .map(|window| window.started_at)
+            .collect();
+        let eviction_count = ADDRESS_WINDOWS_EVICTED_WHEN_FULL.min(address_window_starts.len());
+        let Some(last_evicted_index) = eviction_count.checked_sub(1) else {
+            return;
+        };
+        let (_, &mut newest_evicted_start, _) =
+            address_window_starts.select_nth_unstable(last_evicted_index);
+        // Windows started at the same instant as the cut-off go too: a few more than the batch.
+        self.windows.retain(|_, window| {
+            window.eviction == Eviction::Never || window.started_at > newest_evicted_start
+        });
     }
 }
 
@@ -351,16 +406,54 @@ mod tests {
     }
 
     #[test]
-    fn new_keys_are_refused_once_the_table_is_full_of_live_windows() {
+    fn new_keys_are_refused_once_the_table_is_full_of_live_account_windows() {
         let limiter = RateLimiter::default();
         let start = Instant::now();
         for index in 0..MAXIMUM_TRACKED_KEYS {
-            assert!(limiter.record_event(&format!("ip:{index}"), LONG, start));
+            assert!(limiter.record_event(&format!("login:{index}"), LONG, start));
         }
-        assert!(!limiter.record_event("ip:one-too-many", LONG, start));
+        assert!(!limiter.record_event("login:one-too-many", LONG, start));
+        assert!(!limiter.record_address_event("ip:one-too-many", LONG, start));
         assert!(
-            !limiter.record_event("ip:0", LONG, start),
+            !limiter.record_event("login:0", LONG, start),
             "existing keys still count"
+        );
+    }
+
+    #[test]
+    fn a_table_full_of_address_windows_evicts_the_oldest_ones_but_never_account_windows() {
+        let limiter = RateLimiter::default();
+        let start = Instant::now();
+        assert!(limiter.record_event("login:victim", LONG, start));
+        let mut flood_time = start;
+        for index in 1..MAXIMUM_TRACKED_KEYS {
+            flood_time += Duration::from_nanos(1);
+            assert!(limiter.record_address_event(&format!("ip:{index}"), LONG, flood_time));
+        }
+        assert_eq!(limiter.tracked_key_count(), MAXIMUM_TRACKED_KEYS);
+
+        let later = flood_time + Duration::from_secs(1);
+        assert!(
+            limiter.record_event("login:newcomer", LONG, later),
+            "a full table of address windows must not refuse a new account key"
+        );
+        assert!(limiter.record_address_event("ip:newcomer", LONG, later));
+        assert_eq!(
+            limiter.tracked_key_count(),
+            MAXIMUM_TRACKED_KEYS - ADDRESS_WINDOWS_EVICTED_WHEN_FULL + 2
+        );
+        assert!(
+            !limiter.record_event("login:victim", LONG, later),
+            "the oldest window is an account one and keeps its count"
+        );
+        assert!(
+            limiter.record_address_event("ip:1", LONG, later),
+            "the oldest address window was evicted, so its count starts again"
+        );
+        let newest = MAXIMUM_TRACKED_KEYS - 1;
+        assert!(
+            !limiter.record_address_event(&format!("ip:{newest}"), LONG, later),
+            "the newest address window was kept"
         );
     }
 }
