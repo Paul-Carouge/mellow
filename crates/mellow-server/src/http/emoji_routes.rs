@@ -81,3 +81,6 @@ pub(crate) async fn delete_emoji(
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[cfg(test)]
+mod tests;
