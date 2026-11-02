@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
+import { CustomEmojiLibrary } from "./custom-emoji-library.svelte";
 import { reactionKey, withReactionAdded, withReactionRemoved, withoutEmoji } from "./reactions";
 import {
   type Attachment,
@@ -227,6 +228,8 @@ export class MellowClient {
   voiceAnnouncement = $state("");
   /** This tab's voice connection; it outlives navigation. */
   readonly voice: VoiceSession;
+  /** Every custom emoji this user may load, and the servers' list edits (ADR-0028). */
+  readonly customEmojis: CustomEmojiLibrary;
   /** The soundboard's indicators, cooldown and plays (ADR-0032). */
   readonly soundboard: SoundboardSession;
 
@@ -238,6 +241,8 @@ export class MellowClient {
     // Only on an identified session: a frame before `ready` or `resumed` would be refused.
     const sendFrame = (frame: ClientFrame) => this.status === "connected" && (this.gateway?.send(frame) ?? false);
     this.voice = new VoiceSession({ ...voicePorts, sendFrame });
+    const updateGuild = (guildId: Snowflake, change: (guild: Guild) => Guild) => this.updateGuild(guildId, change);
+    this.customEmojis = new CustomEmojiLibrary({ rest, guilds: () => this.guilds, updateGuild });
     this.soundboard = new SoundboardSession({
       rest,
       voice: this.voice,
@@ -247,7 +252,7 @@ export class MellowClient {
       channelPermissions: (channelId) => this.myChannelPermissions(channelId),
       sendFrame,
       guilds: () => this.guilds,
-      updateGuild: (guildId, change) => this.updateGuild(guildId, change),
+      updateGuild,
     });
   }
   private lastTypingSentAt = 0;
@@ -1923,63 +1928,26 @@ export class MellowClient {
     this.removeGuild(guildId);
   }
 
-  // --- Custom emoji (ADR-0028) --------------------------------------------------------------
+  // --- Custom emoji (ADR-0028): `customEmojis`, under the names components already use -------
 
-  /**
-   * Every custom emoji of the user's guilds by id: the pictures this user may load, so the ones a
-   * message or reaction can show. Others read as their name.
-   */
-  readonly knownCustomEmojis: ReadonlyMap<Snowflake, CustomEmoji> = $derived.by(() => {
-    const lists = this.guilds.map((guild) => guild.emojis);
-    // Channel and role events replace the guild but keep its list: the same map then spares every
-    // message row a new parse.
-    const isUnchanged =
-      lists.length === this.knownCustomEmojiLists.length &&
-      lists.every((list, index) => list === this.knownCustomEmojiLists[index]);
-    if (!isUnchanged) {
-      this.knownCustomEmojiLists = lists;
-      this.knownCustomEmojiMap = new Map(lists.flatMap((list) => (list ?? []).map((emoji) => [emoji.id, emoji] as const)));
-    }
-    return this.knownCustomEmojiMap;
-  });
-  /** The lists `knownCustomEmojis` was last built from; never reactive. */
-  private knownCustomEmojiLists: readonly (CustomEmoji[] | undefined)[] = [];
-  private knownCustomEmojiMap: ReadonlyMap<Snowflake, CustomEmoji> = new Map();
+  get knownCustomEmojis(): ReadonlyMap<Snowflake, CustomEmoji> {
+    return this.customEmojis.known;
+  }
 
-  /** The guild's custom emoji, oldest first; none from an older instance. */
   emojisOf(guildId: Snowflake): CustomEmoji[] {
-    return this.guilds.find((guild) => guild.id === guildId)?.emojis ?? [];
+    return this.customEmojis.emojisOf(guildId);
   }
 
-  private applyEmojis(guildId: Snowflake, emojis: CustomEmoji[]): void {
-    this.applyEvent({ t: "GUILD_EMOJIS_UPDATE", data: { guild_id: guildId, emojis } }, Date.now());
+  createEmoji(guildId: Snowflake, name: string, file: File): Promise<CustomEmoji> {
+    return this.customEmojis.createEmoji(guildId, name, file);
   }
 
-  /** Processed by the instance first: an animated GIF takes a second or two. */
-  async createEmoji(guildId: Snowflake, name: string, file: File): Promise<CustomEmoji> {
-    const created = await this.rest.createEmoji(guildId, name, file);
-    const emojis = this.emojisOf(guildId);
-    // The gateway's list may have come first.
-    if (!emojis.some((emoji) => emoji.id === created.id)) {
-      this.applyEmojis(guildId, [...emojis, created]);
-    }
-    return created;
+  renameEmoji(guildId: Snowflake, emojiId: Snowflake, name: string): Promise<void> {
+    return this.customEmojis.renameEmoji(guildId, emojiId, name);
   }
 
-  /**
-   * The new name shows with `GUILD_EMOJIS_UPDATE`, not with the answer: an answer arriving after
-   * a later rename's event would put the older name back.
-   */
-  async renameEmoji(guildId: Snowflake, emojiId: Snowflake, name: string): Promise<void> {
-    await this.rest.renameEmoji(guildId, emojiId, name);
-  }
-
-  async deleteEmoji(guildId: Snowflake, emojiId: Snowflake): Promise<void> {
-    await this.rest.deleteEmoji(guildId, emojiId);
-    this.applyEmojis(
-      guildId,
-      this.emojisOf(guildId).filter((emoji) => emoji.id !== emojiId),
-    );
+  deleteEmoji(guildId: Snowflake, emojiId: Snowflake): Promise<void> {
+    return this.customEmojis.deleteEmoji(guildId, emojiId);
   }
 
   private applyRoles(guildId: Snowflake, roles: Role[]): void {
