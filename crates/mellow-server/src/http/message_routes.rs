@@ -494,3 +494,6 @@ pub(crate) async fn start_typing(
     state.messages.start_typing(user.id, channel_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[cfg(test)]
+mod tests;
