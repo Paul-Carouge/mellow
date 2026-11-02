@@ -4,6 +4,20 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-11-02
+Screen sharing in voice channels (ADR-0037), asked for before the camera interface. No database migration.
+
+### Added
+- Share your screen in a voice channel from "Voix connectée": 720p, 1080p or 1440p at 30 images per second, chosen on each device and changeable while sharing. People sharing show an "EN DIRECT" chip; click it to watch their screen large, in fullscreen if you like. The "Vidéo" permission decides who may share.
+- `[voice] video_upload_mbps` now caps full-quality video: each full-quality stream counts 10 Mbit/s, and beyond the budget watchers get the half-size picture.
+
+### Changed
+- The full-quality video layer may carry 2560 × 1440 at up to 10 Mbit/s, and a participant sending video up to 1.5 MB/s.
+- Losing the "Vidéo" permission while sharing stops the share at once, with a message.
+
+### Known limits
+- No sound from the shared tab or application yet; camera and screen cannot be shown at once.
+
 ## [0.30.0] - 2026-11-02
 First half of video in voice channels (ROADMAP 16.5, ADR-0035): the server can relay cameras, but the web client cannot turn one on yet. This version migrates the database (migration 33, with the usual automatic backup); older versions refuse it afterwards.
 
