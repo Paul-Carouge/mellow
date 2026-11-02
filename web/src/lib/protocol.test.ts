@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import { generateMessageNonce } from "./api";
+import * as protocol from "./protocol";
 import {
+  CHANNEL_SCOPED_PERMISSIONS,
   DIRECT_MESSAGE_PERMISSIONS,
   MAXIMUM_PROFILE_IMAGE_BYTES,
   PREVIEWABLE_IMAGE_TYPES,
@@ -19,6 +21,7 @@ import {
   profileImageFileProblem,
   profileImageUrl,
 } from "./protocol";
+import { permissionBits, sharedConstants } from "./protocol-wire-samples.generated";
 
 describe("snowflakes", () => {
   it("compare by value, beyond JavaScript's safe integers", () => {
@@ -148,5 +151,19 @@ describe("profile images", () => {
     expect(profileImageFileProblem({ size: 10, type: "image/avif" })).toBe("not-a-picture");
     expect(PREVIEWABLE_IMAGE_TYPES).toContain("image/avif");
     expect(profileImageFileProblem({ size: 10, type: "" })).toBeNull();
+  });
+});
+
+describe("wire constants shared with mellow-protocol", () => {
+  it("mirror the instance's limits", () => {
+    const exported: Record<string, unknown> = protocol;
+    const mirrored = Object.fromEntries(Object.keys(sharedConstants).map((name) => [name, exported[name]]));
+    expect(mirrored).toEqual(sharedConstants);
+  });
+
+  it("number every permission bit as the instance does", () => {
+    const named = Object.fromEntries(Object.entries(Permission).map(([name, bit]) => [name, String(bit)]));
+    expect(named).toEqual(permissionBits.named);
+    expect(String(CHANNEL_SCOPED_PERMISSIONS)).toBe(permissionBits.channelScoped);
   });
 });

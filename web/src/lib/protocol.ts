@@ -1,6 +1,6 @@
 // Wire types of `mellow-protocol` (REST `/api/v1`, gateway `/gateway?v=1`).
-// shortcut: written by hand from the Rust crate; generate them from it (ADR-0019) once the web
-// client covers more than chat, before the protocol grows further.
+// Written by hand from the Rust crate; protocol-wire-samples.generated.ts checks them against it
+// (ADR-0019): after changing a wire type, regenerate the samples and fix what `npm run check` reports.
 
 /** 64-bit ids travel as decimal strings: JavaScript numbers lose precision past 2^53. */
 export type Snowflake = string;
