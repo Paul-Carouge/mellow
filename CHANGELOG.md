@@ -20,6 +20,7 @@ Faster, lighter and sturdier. This version migrates the database (migrations 24 
 - The web client reconnects as soon as the network comes back, and retries on its own when the instance was unreachable; a short drop of up to 2 minutes resumes without reloading.
 - Read state is sent at most once a second per channel; the message and member lists redo much less work.
 - Avatars are stored at 256 px and banners at 960 px wide.
+- The database syncs to disk at checkpoints instead of every commit: writes are about 39 times faster on a Linux server. A process crash still loses nothing; a power cut can lose the last few seconds of messages, never the database.
 
 ### Fixed
 - Reloading the page many times no longer locks you out of live updates.
