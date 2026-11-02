@@ -170,6 +170,11 @@ export const en = {
   shell: {
     serversAndChannels: "Servers and channels",
     membersOf: (server: string) => `Members of ${server}`,
+    /** The handles between the columns of the wide layout (DESIGN.md 4.5). */
+    resizeChannels: "Resize the channel list",
+    resizeMembers: "Resize the member list",
+    resizeSearchResults: "Resize the search results",
+    columnWidth: (pixels: number) => `${count(pixels)} pixels wide`,
   },
 
   sidebar: {

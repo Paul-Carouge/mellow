@@ -245,6 +245,13 @@
   --mw-component-choice-padding-block: 0.5rem;
   --mw-component-choice-padding-inline: 0.75rem;
   --mw-component-choice-radius: 0.5rem;
+  --mw-component-column-resize-hit-width: 1.5rem;
+  --mw-component-column-resize-keyboard-step: 1rem;
+  --mw-component-column-resize-line-active: #F2A46E;
+  --mw-component-column-resize-line-focus: #33B8FF;
+  --mw-component-column-resize-line-hover: #8C828D;
+  --mw-component-column-resize-line-inset: 1rem;
+  --mw-component-column-resize-line-width: 0.125rem;
   --mw-component-composer-attach-button-size: 2rem;
   --mw-component-composer-background: #312A32;
   --mw-component-composer-error-padding-block: 0.25rem;
@@ -794,6 +801,7 @@
   --mw-component-search-match-radius: 0.25rem;
   --mw-component-search-match-text: #F8F4F8;
   --mw-component-search-panel-width: 25rem;
+  --mw-component-search-panel-width-max: 35rem;
   --mw-component-search-result-avatar-size: 2rem;
   --mw-component-search-result-background: #221B23;
   --mw-component-search-result-gap: 0.5rem;
@@ -1400,6 +1408,8 @@
     --mw-component-choice-icon: #594E5B;
     --mw-component-choice-indicator: #A84F1A;
     --mw-component-choice-name-text: #221B23;
+    --mw-component-column-resize-line-active: #A84F1A;
+    --mw-component-column-resize-line-focus: #005FCC;
     --mw-component-composer-background: #F5F1F6;
     --mw-component-composer-error-text: #C4262B;
     --mw-component-composer-icon: #594E5B;
@@ -1866,6 +1876,8 @@
   --mw-component-choice-icon: #594E5B;
   --mw-component-choice-indicator: #A84F1A;
   --mw-component-choice-name-text: #221B23;
+  --mw-component-column-resize-line-active: #A84F1A;
+  --mw-component-column-resize-line-focus: #005FCC;
   --mw-component-composer-background: #F5F1F6;
   --mw-component-composer-error-text: #C4262B;
   --mw-component-composer-icon: #594E5B;

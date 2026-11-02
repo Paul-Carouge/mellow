@@ -170,6 +170,10 @@ export const fr: Catalogue = {
   shell: {
     serversAndChannels: "Serveurs et salons",
     membersOf: (server) => `Membres de ${server}`,
+    resizeChannels: "Redimensionner la colonne des salons",
+    resizeMembers: "Redimensionner la colonne des membres",
+    resizeSearchResults: "Redimensionner la colonne des résultats",
+    columnWidth: (pixels) => `${count(pixels)} pixels de large`,
   },
 
   sidebar: {

@@ -258,6 +258,13 @@ export global MellowComponent {
     out property <length> choice-padding-block: 8px;
     out property <length> choice-padding-inline: 12px;
     out property <length> choice-radius: 8px;
+    out property <length> column-resize-hit-width: 24px;
+    out property <length> column-resize-keyboard-step: 16px;
+    out property <color> column-resize-line-active: MellowTheme.is-dark ? #F2A46E : #A84F1A;
+    out property <color> column-resize-line-focus: MellowTheme.is-dark ? #33B8FF : #005FCC;
+    out property <color> column-resize-line-hover: #8C828D;
+    out property <length> column-resize-line-inset: 16px;
+    out property <length> column-resize-line-width: 2px;
     out property <length> composer-attach-button-size: 32px;
     out property <color> composer-background: MellowTheme.is-dark ? #312A32 : #F5F1F6;
     out property <length> composer-error-padding-block: 4px;
@@ -802,6 +809,7 @@ export global MellowComponent {
     out property <length> search-match-radius: 4px;
     out property <color> search-match-text: MellowTheme.is-dark ? #F8F4F8 : #221B23;
     out property <length> search-panel-width: 400px;
+    out property <length> search-panel-width-max: 560px;
     out property <length> search-result-avatar-size: 32px;
     out property <color> search-result-background: MellowTheme.is-dark ? #221B23 : #F5F1F6;
     out property <length> search-result-gap: 8px;
