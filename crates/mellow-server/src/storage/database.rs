@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteConnection, SqliteJournalMode, SqlitePool, SqlitePoolOptions,
+    SqliteSynchronous,
 };
 use sqlx::{ConnectOptions as _, Connection as _};
 
@@ -157,6 +158,9 @@ pub async fn open_encrypted_database(
 
     let pool_options = key_only_options
         .journal_mode(SqliteJournalMode::Wal)
+        // WAL syncs at checkpoints only: a crash loses nothing, a power cut at most the last
+        // commits, never the file. Commits are 39 times faster on the owner's Linux host (ADR-0024).
+        .synchronous(SqliteSynchronous::Normal)
         .foreign_keys(true)
         // Deleted messages are overwritten on disk instead of lingering in free pages, which the
         // file, backups and anyone holding the key could otherwise recover.
@@ -290,7 +294,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_connection_uses_wal_secure_delete_foreign_keys_and_a_large_page_cache() {
+    async fn every_connection_uses_wal_normal_sync_secure_delete_foreign_keys_and_a_large_page_cache()
+     {
         let directory = tempfile::tempdir().unwrap();
         let database =
             open_encrypted_database(&directory.path().join("mellow.db"), &key_filled_with(3))
@@ -302,6 +307,8 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(journal_mode, "wal");
+            // 1 is NORMAL.
+            assert_eq!(integer_pragma(pool, "PRAGMA synchronous").await, 1);
             assert_eq!(integer_pragma(pool, "PRAGMA secure_delete").await, 1);
             assert_eq!(integer_pragma(pool, "PRAGMA foreign_keys").await, 1);
             assert_eq!(
