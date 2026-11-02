@@ -1,6 +1,6 @@
 <script lang="ts">
   import { strings } from "../i18n";
-  import { type MellowClient, describeError } from "../lib/client.svelte";
+  import type { MellowClient } from "../lib/client.svelte";
   import type { Guild } from "../lib/protocol";
   import ModalDialog from "./ModalDialog.svelte";
   import TextField from "./TextField.svelte";
@@ -17,35 +17,22 @@
 
   const id = $props.id();
   let typedName = $state("");
-  let isBusy = $state(false);
-  let errorMessage = $state("");
 
   // Trimmed, as the server stores names: what the owner sees is what they type.
   const isConfirmed = $derived(typedName.trim() === guild.name);
-
-  async function deleteServer() {
-    isBusy = true;
-    errorMessage = "";
-    try {
-      // The settings close with the server; this dialog goes with them.
-      await client.deleteServer(guild.id);
-    } catch (error) {
-      errorMessage = describeError(error, strings.serverSettings.deleteServerDialog.failed);
-      isBusy = false;
-    }
-  }
 </script>
 
+<!-- The settings close with the server once it is deleted; this dialog goes with them. -->
 <ModalDialog
   title={strings.serverSettings.deleteServerDialog.title(guild.name)}
   subtitle={strings.serverSettings.deleteServerDialog.body(guild.name)}
-  {errorMessage}
-  {isBusy}
-  submitLabel={isBusy ? strings.serverSettings.deleteServerDialog.deleting : strings.serverSettings.deleteServerDialog.submit}
+  submitLabel={strings.serverSettings.deleteServerDialog.submit}
+  busySubmitLabel={strings.serverSettings.deleteServerDialog.deleting}
+  failureSummary={strings.serverSettings.deleteServerDialog.failed}
   isSubmitDanger
   isSubmitEnabled={isConfirmed}
   {onclose}
-  onsubmit={() => void deleteServer()}
+  onsubmit={() => client.deleteServer(guild.id)}
 >
   <TextField
     id="{id}-name"
