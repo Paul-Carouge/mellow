@@ -22,6 +22,7 @@ import {
   type Channel,
   type ChannelKind,
   type ChannelPlacement,
+  type ClientFrame,
   type ChosenStatus,
   type CurrentUser,
   type CustomEmoji,
@@ -52,17 +53,11 @@ import {
   compareSnowflakes,
   computeChannelPermissions,
 } from "./protocol";
-import {
-  type SoundboardBlock,
-  cooldownEndAfter,
-  joinCueOf,
-  shouldHearSound,
-  soundIndicatorMilliseconds,
-  soundboardBlock,
-} from "./soundboard";
+import type { SoundboardBlock } from "./soundboard";
+import { type SoundIndicator, SoundboardSession } from "./soundboard-session.svelte";
 import { participantChange } from "./voice";
 import { BROWSER_VOICE_PORTS } from "./voice-browser";
-import { type VoiceCue, type VoicePorts, VoiceSession } from "./voice-session.svelte";
+import { type VoicePorts, VoiceSession } from "./voice-session.svelte";
 
 const MAXIMUM_CACHED_MESSAGES_PER_CHANNEL = 500;
 const TYPING_INDICATOR_LIFETIME_MILLISECONDS = 8_000;
@@ -232,26 +227,27 @@ export class MellowClient {
   voiceAnnouncement = $state("");
   /** This tab's voice connection; it outlives navigation. */
   readonly voice: VoiceSession;
-  /** The sound each person in your channel played last, while its emoji shows by their name. */
-  soundIndicators = new SvelteMap<Snowflake, { soundId: Snowflake; guildId: Snowflake }>();
-  /** Your soundboard waits until then between two sounds (`MINIMUM_MILLISECONDS_BETWEEN_SOUNDS`). */
-  soundCooldownEndsAt = $state(0);
-  /**
-   * Plays one of a server's sounds on this device (set by the shell), for `playerId` (whose
-   * deafen-free, unmuted sounds they are); `fallbackCue` plays instead when the sound cannot load,
-   * for a join sound standing in for the chime.
-   */
-  onSound: ((soundId: Snowflake, playerId: Snowflake, fallbackCue: VoiceCue | null) => void) | null = null;
+  /** The soundboard's indicators, cooldown and plays (ADR-0032). */
+  readonly soundboard: SoundboardSession;
 
   /** `rest` and the browser's voice side are injected by tests; settings pages read lists (bans, invites, the log) through `rest`. */
   constructor(
     readonly rest: RestClient = new RestClient(),
     voicePorts: Omit<VoicePorts, "sendFrame"> = BROWSER_VOICE_PORTS,
   ) {
-    this.voice = new VoiceSession({
-      ...voicePorts,
-      // Only on an identified session: a frame before `ready` or `resumed` would be refused.
-      sendFrame: (frame) => this.status === "connected" && (this.gateway?.send(frame) ?? false),
+    // Only on an identified session: a frame before `ready` or `resumed` would be refused.
+    const sendFrame = (frame: ClientFrame) => this.status === "connected" && (this.gateway?.send(frame) ?? false);
+    this.voice = new VoiceSession({ ...voicePorts, sendFrame });
+    this.soundboard = new SoundboardSession({
+      rest,
+      voice: this.voice,
+      currentUserId: () => this.user?.id ?? null,
+      voiceChannel: () => this.voiceChannel,
+      voiceStateOf: (userId) => this.voiceStatesByUserId.get(userId),
+      channelPermissions: (channelId) => this.myChannelPermissions(channelId),
+      sendFrame,
+      guilds: () => this.guilds,
+      updateGuild: (guildId, change) => this.updateGuild(guildId, change),
     });
   }
   private lastTypingSentAt = 0;
@@ -413,7 +409,7 @@ export class MellowClient {
     this.voice.end();
     this.voiceStatesByUserId.clear();
     this.speakingUserIds.clear();
-    this.soundIndicators.clear();
+    this.soundboard.clearIndicators();
     this.voiceAnnouncement = "";
     this.gateway?.close();
     this.gateway = null;
@@ -815,7 +811,7 @@ export class MellowClient {
         this.voice.disconnectedByServer(event.data.channel_id, event.data.reason);
         return;
       case "VOICE_SOUND_PLAYED":
-        this.applySoundPlayed(event.data.channel_id, event.data.user_id, event.data.sound_id, now);
+        this.soundboard.applySoundPlayed(event.data.channel_id, event.data.user_id, event.data.sound_id, now);
         return;
       default: {
         // An event this client does not know yet: skipped, as the native clients do.
@@ -2196,138 +2192,59 @@ export class MellowClient {
       this.voice.onCue?.("peer-leave");
       return;
     }
-    const cue = joinCueOf(joinSoundId, place.guild.sounds ?? [], {
-      isDeafened: this.voice.toggles.isDeafened,
-      isMutedForMe: this.voice.personSetting(userId).isLocallyMuted,
-    });
-    if (cue.kind === "sound" && this.onSound) {
-      this.showSoundIndicator(userId, place.guild.id, cue.sound);
-      this.onSound(cue.sound.id, userId, "peer-join");
-    } else {
+    if (!this.soundboard.playPeerJoinSound(place.guild, userId, joinSoundId)) {
       this.voice.onCue?.("peer-join");
     }
   }
 
-  // --- Soundboard (ADR-0032) -----------------------------------------------------------------
+  // --- Soundboard (ADR-0032): `soundboard`, under the names components already use -----------
 
-  /**
-   * Starts your own join sound in the channel you just connected to: shows its emoji by your name
-   * and returns the sound to play instead of your join chime, or `null` for the chime.
-   */
+  get soundIndicators(): ReadonlyMap<Snowflake, SoundIndicator> {
+    return this.soundboard.indicators;
+  }
+
+  get soundCooldownEndsAt(): number {
+    return this.soundboard.cooldownEndsAt;
+  }
+
+  get onSound(): SoundboardSession["onSound"] {
+    return this.soundboard.onSound;
+  }
+
+  set onSound(play: SoundboardSession["onSound"]) {
+    this.soundboard.onSound = play;
+  }
+
   startOwnJoinSound(): Snowflake | null {
-    const place = this.voiceChannel;
-    const own = this.user ? this.voiceStatesByUserId.get(this.user.id) : undefined;
-    if (!place || own?.channel_id !== place.channel.id) {
-      return null;
-    }
-    const cue = joinCueOf(own.join_sound_id, place.guild.sounds ?? [], { isDeafened: this.voice.toggles.isDeafened, isMutedForMe: false });
-    if (cue.kind === "chime") {
-      return null;
-    }
-    this.showSoundIndicator(own.user_id, place.guild.id, cue.sound);
-    return cue.sound.id;
+    return this.soundboard.startOwnJoinSound();
   }
 
-  /** Why the soundboard cannot play in your channel now, or `null`. */
   soundboardBlock(now: number): SoundboardBlock | null {
-    const channelId = this.voice.channelId;
-    return soundboardBlock({
-      isConnected: this.voice.phase === "connected" && channelId !== null,
-      channelPermissions: channelId === null ? null : this.myChannelPermissions(channelId),
-      isDeafened: this.voice.toggles.isDeafened,
-      now,
-      cooldownEndsAt: this.soundCooldownEndsAt,
-    });
+    return this.soundboard.block(now);
   }
 
-  /** Asks the instance to play a sound to your channel; it answers with `VOICE_SOUND_PLAYED`. */
   playSound(soundId: Snowflake, now: number): boolean {
-    if (this.soundboardBlock(now) !== null || this.status !== "connected") {
-      return false;
-    }
-    const isSent = this.gateway?.send({ op: "voice_play_sound", d: { sound_id: soundId } }) ?? false;
-    if (isSent) {
-      this.soundCooldownEndsAt = cooldownEndAfter(this.soundCooldownEndsAt, now);
-    }
-    return isSent;
+    return this.soundboard.playSound(soundId, now);
   }
 
-  private applySoundPlayed(channelId: Snowflake, userId: Snowflake, soundId: Snowflake, now: number): void {
-    const place = this.voiceChannel;
-    const isConnected = this.voice.phase === "connected";
-    if (!place || place.channel.id !== channelId || !isConnected) {
-      return;
-    }
-    if (userId === this.user?.id) {
-      this.soundCooldownEndsAt = cooldownEndAfter(this.soundCooldownEndsAt, now);
-    }
-    const sound = place.guild.sounds?.find((candidate) => candidate.id === soundId);
-    this.showSoundIndicator(userId, place.guild.id, sound ?? { id: soundId, name: "", duration_milliseconds: 0 });
-    const isHeard = shouldHearSound({
-      soundChannelId: channelId,
-      myChannelId: place.channel.id,
-      isConnected,
-      isDeafened: this.voice.toggles.isDeafened,
-      isPlayerMutedForMe: userId !== this.user?.id && this.voice.personSetting(userId).isLocallyMuted,
-    });
-    if (isHeard) {
-      this.onSound?.(soundId, userId, null);
-    }
-  }
-
-  /** The sound's emoji by the player's name, for the sound's length (at least 1.5 s). */
-  private showSoundIndicator(userId: Snowflake, guildId: Snowflake, sound: SoundboardSound): void {
-    const indicator = { soundId: sound.id, guildId };
-    this.soundIndicators.set(userId, indicator);
-    setTimeout(() => {
-      if (this.soundIndicators.get(userId) === indicator) {
-        this.soundIndicators.delete(userId);
-      }
-    }, soundIndicatorMilliseconds(sound));
-  }
-
-  /** The server's sounds, oldest first; none from an older instance. */
   soundsOf(guildId: Snowflake): SoundboardSound[] {
-    return this.guilds.find((guild) => guild.id === guildId)?.sounds ?? [];
+    return this.soundboard.soundsOf(guildId);
   }
 
-  private applySounds(guildId: Snowflake, sounds: SoundboardSound[]): void {
-    this.applyEvent({ t: "GUILD_SOUNDS_UPDATE", data: { guild_id: guildId, sounds } }, Date.now());
+  createSound(guildId: Snowflake, name: string, emoji: string | null, wav: Blob): Promise<SoundboardSound> {
+    return this.soundboard.createSound(guildId, name, emoji, wav);
   }
 
-  async createSound(guildId: Snowflake, name: string, emoji: string | null, wav: Blob): Promise<SoundboardSound> {
-    const created = await this.rest.createSound(guildId, name, emoji, wav);
-    const sounds = this.soundsOf(guildId);
-    // The gateway's list may have come first.
-    if (!sounds.some((sound) => sound.id === created.id)) {
-      this.applySounds(guildId, [...sounds, created]);
-    }
-    return created;
+  updateSound(guildId: Snowflake, soundId: Snowflake, name: string, emoji: string | null): Promise<void> {
+    return this.soundboard.updateSound(guildId, soundId, name, emoji);
   }
 
-  /** Edited from a dialog that closes on success, so the answer shows at once. */
-  async updateSound(guildId: Snowflake, soundId: Snowflake, name: string, emoji: string | null): Promise<void> {
-    const updated = await this.rest.updateSound(guildId, soundId, name, emoji);
-    this.applySounds(
-      guildId,
-      this.soundsOf(guildId).map((sound) => (sound.id === updated.id ? updated : sound)),
-    );
+  deleteSound(guildId: Snowflake, soundId: Snowflake): Promise<void> {
+    return this.soundboard.deleteSound(guildId, soundId);
   }
 
-  async deleteSound(guildId: Snowflake, soundId: Snowflake): Promise<void> {
-    await this.rest.deleteSound(guildId, soundId);
-    this.applySounds(
-      guildId,
-      this.soundsOf(guildId).filter((sound) => sound.id !== soundId),
-    );
-    // The instance clears join sounds pointing at it; its event may come later.
-    this.updateGuild(guildId, (guild) => (guild.my_join_sound_id === soundId ? { ...guild, my_join_sound_id: null } : guild));
-  }
-
-  /** `null` removes it. */
-  async setJoinSound(guildId: Snowflake, soundId: Snowflake | null): Promise<void> {
-    await this.rest.setJoinSound(guildId, soundId);
-    this.applyEvent({ t: "MY_JOIN_SOUND_UPDATE", data: { guild_id: guildId, sound_id: soundId } }, Date.now());
+  setJoinSound(guildId: Snowflake, soundId: Snowflake | null): Promise<void> {
+    return this.soundboard.setJoinSound(guildId, soundId);
   }
 
   private reportError(error: unknown, action: string): void {
