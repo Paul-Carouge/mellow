@@ -29,6 +29,9 @@
   } from "./notification-preferences.svelte";
   import NotificationPermissionBar from "./NotificationPermissionBar.svelte";
   import { attentionCount, noteChannelSeen, showAttentionCount, startNotifier } from "./notifier.svelte";
+  // Not lazy: Ctrl+K is followed by typing at once, and keys typed before a chunk arrived would
+  // land in the composer.
+  import QuickSwitcher from "./QuickSwitcher.svelte";
   import QuickSwitcherTrigger from "./QuickSwitcherTrigger.svelte";
   import type { ServerSettingsSection } from "./server-settings";
   import { minimumWidthQueryForPanes } from "./tokens";
@@ -756,9 +759,5 @@
 {/if}
 
 {#if isQuickSwitcherOpen}
-  <LazyComponent load={() => import("./QuickSwitcher.svelte")} onclose={() => (isQuickSwitcherOpen = false)}>
-    {#snippet children({ default: QuickSwitcher })}
-      <QuickSwitcher {client} onclose={() => (isQuickSwitcherOpen = false)} onnavigated={focusComposer} />
-    {/snippet}
-  </LazyComponent>
+  <QuickSwitcher {client} onclose={() => (isQuickSwitcherOpen = false)} onnavigated={focusComposer} />
 {/if}
