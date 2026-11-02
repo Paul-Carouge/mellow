@@ -20,7 +20,7 @@ import {
   silentNoiseSuppressorMilliseconds,
 } from "./voice-processing";
 import type { AudioDevice, EqualizerBand } from "./voice-settings";
-import { type CodecPreferences, preferredCodecs, type ScreenShareQuality, screenCaptureConstraints } from "./screen-share";
+import { type CodecPreferences, preferredCodecs, screenCaptureOptions, type ScreenShareQuality } from "./screen-share";
 import type { AudioOutput, InputAmplifier, LevelMeter, MicrophoneProcessor, VoicePorts } from "./voice-session.svelte";
 
 const ANALYSER_FFT_SIZE = 512;
@@ -39,7 +39,7 @@ function requestScreen(quality: ScreenShareQuality): Promise<MediaStream> {
   if (!navigator.mediaDevices?.getDisplayMedia) {
     return Promise.reject(new TypeError("navigator.mediaDevices.getDisplayMedia is unavailable"));
   }
-  return navigator.mediaDevices.getDisplayMedia({ video: screenCaptureConstraints(quality), audio: false });
+  return navigator.mediaDevices.getDisplayMedia(screenCaptureOptions(quality));
 }
 
 function codecPreferences(): CodecPreferences | null {

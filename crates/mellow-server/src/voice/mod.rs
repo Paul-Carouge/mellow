@@ -32,7 +32,7 @@ use crate::domain::voice_rules::{
 use crate::events::{EventHub, SessionKey};
 pub(crate) use address::is_valid_host;
 use address::{HostResolutions, announced_address, host_from_header};
-use media::{MediaCommand, MediaEvent, MediaJoin};
+use media::{MediaCommand, MediaEvent, MediaJoin, ScreenSoundMids};
 
 /// A `voice_join` frame, with what the gateway knows of its sender.
 #[derive(Debug)]
@@ -87,6 +87,16 @@ struct PreparedJoin {
     member_join_sound_id: Option<Snowflake>,
     /// The offer has video m-lines: the participant may turn a camera on and watch others.
     has_video: bool,
+    screen_sound: Option<ScreenSoundMids>,
+}
+
+/// What a join is allowed, read again under the participants lock.
+#[derive(Debug, Clone, Copy)]
+struct AdmittedVoiceAccess {
+    guild_id: Snowflake,
+    user_limit: Option<u8>,
+    may_speak: bool,
+    may_use_soundboard: bool,
 }
 
 /// One connected person, as the service knows them.
@@ -134,6 +144,7 @@ impl Participant {
             user_id,
             is_forwarded: self.is_forwarded(),
             is_deafened: self.self_state.self_deaf,
+            may_speak: !self.suppressed,
         }
     }
 
@@ -351,6 +362,14 @@ impl VoiceService {
             sdp_answer,
             member_join_sound_id,
             has_video: offer_shape.video_receive_slots > 0,
+            screen_sound: offer_shape.screen_sound.map(|lines| ScreenSoundMids {
+                sent: lines.send_mid.as_str().into(),
+                received: lines
+                    .receive_mids
+                    .iter()
+                    .map(|mid| mid.as_str().into())
+                    .collect(),
+            }),
         })
     }
 
@@ -365,6 +384,39 @@ impl VoiceService {
                 request.offer_id,
                 reason,
             ),
+        }
+    }
+
+    /// The guild, user limit, `SPEAK` and soundboard rights of a join, read under the lock.
+    async fn admitted_access(
+        &self,
+        request: &VoiceJoinRequest,
+    ) -> Result<AdmittedVoiceAccess, VoiceJoinRefusal> {
+        match self
+            .shared
+            .guilds
+            .voice_access(request.user_id, request.channel_id)
+            .await
+        {
+            Ok(VoiceAccess::Allowed {
+                guild_id,
+                user_limit,
+                may_speak,
+                may_use_soundboard,
+                ..
+            }) => Ok(AdmittedVoiceAccess {
+                guild_id,
+                user_limit,
+                may_speak,
+                may_use_soundboard,
+            }),
+            Ok(VoiceAccess::ChannelGone | VoiceAccess::NotMember | VoiceAccess::Denied) => {
+                Err(VoiceJoinRefusal::MissingPermissions)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "voice join: cannot read the channel");
+                Err(VoiceJoinRefusal::VoiceUnavailable)
+            }
         }
     }
 
@@ -388,6 +440,7 @@ impl VoiceService {
             sdp_answer,
             member_join_sound_id,
             has_video,
+            screen_sound,
         } = prepared;
         let Some(media) = &shared.media else {
             return refuse(VoiceJoinRefusal::VoiceUnavailable);
@@ -396,25 +449,14 @@ impl VoiceService {
         if !shared.events.is_session_live(request.session) {
             return;
         }
-        let (guild_id, user_limit, may_speak, may_use_soundboard) = match shared
-            .guilds
-            .voice_access(request.user_id, request.channel_id)
-            .await
-        {
-            Ok(VoiceAccess::Allowed {
-                guild_id,
-                user_limit,
-                may_speak,
-                may_use_soundboard,
-                ..
-            }) => (guild_id, user_limit, may_speak, may_use_soundboard),
-            Ok(VoiceAccess::ChannelGone | VoiceAccess::NotMember | VoiceAccess::Denied) => {
-                return refuse(VoiceJoinRefusal::MissingPermissions);
-            }
-            Err(error) => {
-                tracing::warn!(%error, "voice join: cannot read the channel");
-                return refuse(VoiceJoinRefusal::VoiceUnavailable);
-            }
+        let AdmittedVoiceAccess {
+            guild_id,
+            user_limit,
+            may_speak,
+            may_use_soundboard,
+        } = match self.admitted_access(&request).await {
+            Ok(access) => access,
+            Err(refusal) => return refuse(refusal),
         };
         let previous = participants.get(&request.user_id).cloned();
         if let Some(refusal) =
@@ -451,6 +493,8 @@ impl VoiceService {
             candidate_address,
             is_forwarded: participant.is_forwarded(),
             is_deafened: participant.self_state.self_deaf,
+            may_speak: !participant.suppressed,
+            screen_sound,
         };
         if media
             .commands

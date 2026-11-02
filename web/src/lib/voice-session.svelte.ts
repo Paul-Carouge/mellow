@@ -8,6 +8,7 @@ import {
   type ClientFrame,
   type SimulcastLayer,
   type Snowflake,
+  SCREEN_SOUND_RECEIVE_SLOTS,
   VIDEO_RECEIVE_SLOTS,
   VOICE_RECEIVE_SLOTS,
   type VoiceDisconnectReason,
@@ -241,6 +242,8 @@ export class VoiceSession {
   /** Sends your screen; `null` when the offer has no video. */
   private videoSender: RTCRtpSender | null = null;
   private videoReceivers: RTCRtpTransceiver[] = [];
+  /** Sends your shared screen's sound (ADR-0037); `null` when the offer has no video. */
+  private screenSoundSender: RTCRtpSender | null = null;
   /** Received video tracks, by the mid of their transceiver. */
   private videoTracksByMid = new Map<string, MediaStreamTrack>();
   /** Who each video receive slot carries now. */
@@ -684,6 +687,10 @@ export class VoiceSession {
     if (this.screen !== stream) {
       return;
     }
+    // Absent when the person did not tick the sound in the picker, or the browser cannot share it.
+    void this.screenSoundSender
+      ?.replaceTrack(stream.getAudioTracks()[0] ?? null)
+      .catch((error: unknown) => console.warn("couldn't send the shared screen's sound", error));
     // The quality may have changed since this connection's encodings were set.
     this.applyScreenShareQualityToSender(sender);
     this.sendVoiceState();
@@ -1286,6 +1293,7 @@ export class VoiceSession {
    */
   private addVideoTransceivers(peer: RTCPeerConnection, audioTransceivers: readonly RTCRtpTransceiver[]): void {
     this.videoSender = null;
+    this.screenSoundSender = null;
     this.videoReceivers = [];
     this.videoTracksByMid.clear();
     this.videoSlotUserIds.clear();
@@ -1306,7 +1314,15 @@ export class VoiceSession {
         receiver.setCodecPreferences(codecs.video);
         receivers.push(receiver);
       }
+      // The shared screen's sound, then the watched screens' sound: audio lines after the video
+      // ones, so the instance tells them from voices by their place (ADR-0037).
+      const screenSound = peer.addTransceiver(this.screen?.getAudioTracks()[0] ?? "audio", { direction: "sendonly" });
+      screenSound.setCodecPreferences(codecs.audio);
+      for (let slot = 0; slot < SCREEN_SOUND_RECEIVE_SLOTS; slot += 1) {
+        peer.addTransceiver("audio", { direction: "recvonly" }).setCodecPreferences(codecs.audio);
+      }
       this.videoSender = camera.sender;
+      this.screenSoundSender = screenSound.sender;
       this.videoReceivers = receivers;
     } catch (error) {
       // A browser refusing simulcast or these codecs joins with audio only.
@@ -1337,6 +1353,7 @@ export class VoiceSession {
     this.screen?.getTracks().forEach((track) => track.stop());
     this.screen = null;
     this.isSharingScreen = false;
+    void this.screenSoundSender?.replaceTrack(null).catch(() => {});
   }
 
   /** Whether the input mode lets sound out now (mute aside). */
@@ -1453,6 +1470,7 @@ export class VoiceSession {
     this.outputs = [];
     this.slotUserIds.clear();
     this.videoSender = null;
+    this.screenSoundSender = null;
     this.videoReceivers = [];
     this.videoTracksByMid.clear();
     this.videoSlotUserIds.clear();

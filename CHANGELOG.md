@@ -4,8 +4,11 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Added
+- Shared screens carry their sound: tick "Partager l'audio" in the browser's picker (a tab's sound in every Chromium browser, the whole system's on Windows). Only the people watching the screen hear it, at the sharer's volume; someone without the "Parler" permission shares the picture only.
+
 ### Fixed
-- A burst of 1440p screen keyframes no longer cuts the sharer's voice: voice packets have their own budget (120 packets and 70 kB a second), apart from video's.
+- A burst of 1440p screen keyframes no longer cuts the sharer's voice: voice packets have their own budget (120 packets and 70 kB a second, twice that while sharing a screen's sound), apart from video's.
 
 ## [0.31.0] - 2026-11-02
 Screen sharing in voice channels (ADR-0037), asked for before the camera interface. No database migration.

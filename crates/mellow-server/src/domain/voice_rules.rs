@@ -7,8 +7,9 @@ use std::hash::Hash;
 use std::time::{Duration, Instant};
 
 use mellow_protocol::{
-    MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_OFFER_BYTES,
-    MAXIMUM_VOICE_RECEIVE_SLOTS, MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, Snowflake,
+    MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS, MAXIMUM_VIDEO_RECEIVE_SLOTS,
+    MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_OFFER_BYTES, MAXIMUM_VOICE_RECEIVE_SLOTS,
+    MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, Snowflake,
 };
 
 /// A receive slot goes to another speaker only once its current one has been silent this long.
@@ -37,18 +38,38 @@ pub(crate) enum InvalidVoiceOffer {
     #[error("only audio and video m-lines are accepted")]
     UnexpectedMediaKind,
     #[error(
-        "the offer needs one sendonly or sendrecv audio m-line, then 1 to {MAXIMUM_VOICE_RECEIVE_SLOTS} recvonly ones, then optionally one sendonly or sendrecv video m-line and 1 to {MAXIMUM_VIDEO_RECEIVE_SLOTS} recvonly ones"
+        "the offer needs one sendonly or sendrecv audio m-line, then 1 to {MAXIMUM_VOICE_RECEIVE_SLOTS} recvonly ones, then optionally one sendonly or sendrecv video m-line and 1 to {MAXIMUM_VIDEO_RECEIVE_SLOTS} recvonly ones, then optionally one sendonly or sendrecv audio m-line and 1 to {MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS} recvonly ones, each with its mid"
     )]
     UnexpectedMediaLines,
 }
 
 /// The m-lines of a valid offer: how many voices and cameras the participant can receive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VoiceOfferShape {
     pub(crate) audio_receive_slots: usize,
     /// 0 when the offer has no video m-lines: this participant can neither send nor watch
     /// cameras.
     pub(crate) video_receive_slots: usize,
+    /// The audio m-lines after the video ones, for the sound of shared screens (ADR-0037).
+    pub(crate) screen_sound: Option<ScreenSoundLines>,
+}
+
+/// The mids of the screen sound m-lines: they are audio like the voice ones, so only their place
+/// in the offer tells them apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScreenSoundLines {
+    /// The line the client sends its shared screen's sound on.
+    pub(crate) send_mid: String,
+    /// The lines it hears the screens it watches on.
+    pub(crate) receive_mids: Vec<String>,
+}
+
+/// One media section of an offer: its kind, direction and mid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Section {
+    kind: SectionKind,
+    direction: MediaDirection,
+    mid: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,23 +99,23 @@ fn media_direction(attribute_line: &str) -> Option<MediaDirection> {
 /// How many receive m-lines follow one send m-line of `kind` at the start of `sections`, if
 /// they are within `1..=maximum`; `None` otherwise.
 fn count_send_then_receive_lines(
-    sections: &[(SectionKind, MediaDirection)],
+    sections: &[Section],
     kind: SectionKind,
     maximum: usize,
 ) -> Option<usize> {
-    let ((first_kind, first_direction), rest) = sections.split_first()?;
+    let (first, rest) = sections.split_first()?;
     let is_sent = matches!(
-        first_direction,
+        first.direction,
         MediaDirection::SendOnly | MediaDirection::SendReceive
     );
     let receive_lines = rest
         .iter()
-        .take_while(|(section_kind, _)| *section_kind == kind)
+        .take_while(|section| section.kind == kind)
         .collect::<Vec<_>>();
     let are_received_only = receive_lines
         .iter()
-        .all(|(_, direction)| *direction == MediaDirection::ReceiveOnly);
-    (*first_kind == kind
+        .all(|section| section.direction == MediaDirection::ReceiveOnly);
+    (first.kind == kind
         && is_sent
         && are_received_only
         && (1..=maximum).contains(&receive_lines.len()))
@@ -104,8 +125,10 @@ fn count_send_then_receive_lines(
 /// Checks the offer's media sections before the WebRTC library parses it: one audio m-line the
 /// client sends its voice on, then 1 to `MAXIMUM_VOICE_RECEIVE_SLOTS` audio m-lines it receives
 /// others on (ADR-0030); then, from clients able to show video, one video m-line for its camera
-/// and 1 to `MAXIMUM_VIDEO_RECEIVE_SLOTS` video m-lines it receives cameras on (ADR-0035); and
-/// nothing else (no data channel).
+/// and 1 to `MAXIMUM_VIDEO_RECEIVE_SLOTS` video m-lines it receives cameras on (ADR-0035); then,
+/// optionally, one audio m-line for its shared screen's sound and 1 to
+/// `MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS` it hears watched screens on (ADR-0037); and nothing else
+/// (no data channel).
 ///
 /// # Errors
 /// `InvalidVoiceOffer` names what is wrong.
@@ -115,7 +138,7 @@ pub(crate) fn validate_voice_offer(sdp_offer: &str) -> Result<VoiceOfferShape, I
     }
     // The session-level direction, if any, is the default of every media section (RFC 4566).
     let mut session_direction = MediaDirection::SendReceive;
-    let mut sections: Vec<(SectionKind, MediaDirection)> = Vec::new();
+    let mut sections: Vec<Section> = Vec::new();
     for line in sdp_offer.lines() {
         if let Some(media_line) = line.strip_prefix("m=") {
             let kind = if media_line.starts_with("audio ") {
@@ -125,13 +148,30 @@ pub(crate) fn validate_voice_offer(sdp_offer: &str) -> Result<VoiceOfferShape, I
             } else {
                 return Err(InvalidVoiceOffer::UnexpectedMediaKind);
             };
-            sections.push((kind, session_direction));
+            sections.push(Section {
+                kind,
+                direction: session_direction,
+                mid: None,
+            });
         } else if let Some(direction) = media_direction(line) {
             match sections.last_mut() {
-                Some((_, section_direction)) => *section_direction = direction,
+                Some(section) => section.direction = direction,
                 None => session_direction = direction,
             }
+        } else if let Some(mid) = line.strip_prefix("a=mid:")
+            && let Some(section) = sections.last_mut()
+        {
+            section.mid = Some(mid_as_read_by_the_webrtc_library(mid));
         }
+    }
+    // A line named like another would take its place: a screen sound line named like the voice
+    // line would hide it from the voice budget (ADR-0037).
+    let mids: Vec<&String> = sections
+        .iter()
+        .filter_map(|section| section.mid.as_ref())
+        .collect();
+    if mids.iter().collect::<std::collections::HashSet<_>>().len() != mids.len() {
+        return Err(InvalidVoiceOffer::UnexpectedMediaLines);
     }
     let audio_receive_slots =
         count_send_then_receive_lines(&sections, SectionKind::Audio, MAXIMUM_VOICE_RECEIVE_SLOTS)
@@ -141,6 +181,7 @@ pub(crate) fn validate_voice_offer(sdp_offer: &str) -> Result<VoiceOfferShape, I
         return Ok(VoiceOfferShape {
             audio_receive_slots,
             video_receive_slots: 0,
+            screen_sound: None,
         });
     }
     let video_receive_slots = count_send_then_receive_lines(
@@ -148,11 +189,64 @@ pub(crate) fn validate_voice_offer(sdp_offer: &str) -> Result<VoiceOfferShape, I
         SectionKind::Video,
         MAXIMUM_VIDEO_RECEIVE_SLOTS,
     )
-    .filter(|receive_slots| receive_slots + 1 == video_sections.len())
     .ok_or(InvalidVoiceOffer::UnexpectedMediaLines)?;
+    let screen_sound_sections = video_sections
+        .get(video_receive_slots + 1..)
+        .unwrap_or_default();
+    let screen_sound = if screen_sound_sections.is_empty() {
+        None
+    } else {
+        Some(screen_sound_lines(screen_sound_sections)?)
+    };
     Ok(VoiceOfferShape {
         audio_receive_slots,
         video_receive_slots,
+        screen_sound,
+    })
+}
+
+/// Longest mid `str0m` keeps.
+const MAXIMUM_MID_CHARACTERS: usize = 16;
+
+/// A mid as `str0m` 0.24 reads it (`Mid::from`): every character but ASCII letters and digits
+/// becomes `_`, nothing is trimmed, and only the first 16 are kept. Mids are compared this way so
+/// two lines the library would confuse are refused here.
+fn mid_as_read_by_the_webrtc_library(raw_mid: &str) -> String {
+    raw_mid
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(MAXIMUM_MID_CHARACTERS)
+        .collect()
+}
+
+/// The screen sound m-lines, which end the offer: one sent, then 1 to
+/// `MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS` received, each with a mid.
+fn screen_sound_lines(sections: &[Section]) -> Result<ScreenSoundLines, InvalidVoiceOffer> {
+    let receive_slots = count_send_then_receive_lines(
+        sections,
+        SectionKind::Audio,
+        MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS,
+    )
+    .filter(|receive_slots| receive_slots + 1 == sections.len())
+    .ok_or(InvalidVoiceOffer::UnexpectedMediaLines)?;
+    let mut mids = sections.iter().map(|section| section.mid.clone());
+    let send_mid = mids
+        .next()
+        .flatten()
+        .ok_or(InvalidVoiceOffer::UnexpectedMediaLines)?;
+    let receive_mids = mids
+        .collect::<Option<Vec<_>>>()
+        .ok_or(InvalidVoiceOffer::UnexpectedMediaLines)?;
+    debug_assert_eq!(receive_mids.len(), receive_slots);
+    Ok(ScreenSoundLines {
+        send_mid,
+        receive_mids,
     })
 }
 
@@ -331,10 +425,10 @@ mod tests {
     fn offer(media: &[(&str, &str)]) -> String {
         use std::fmt::Write as _;
         let mut sdp = String::from("v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n");
-        for (kind, direction) in media {
+        for (index, (kind, direction)) in media.iter().enumerate() {
             write!(
                 sdp,
-                "m={kind} 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:x\r\na={direction}\r\n"
+                "m={kind} 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:{index}\r\na={direction}\r\n"
             )
             .unwrap();
         }
@@ -345,6 +439,7 @@ mod tests {
         VoiceOfferShape {
             audio_receive_slots,
             video_receive_slots: 0,
+            screen_sound: None,
         }
     }
 
@@ -398,14 +493,16 @@ mod tests {
             with_video(&camera_and_watched(1)),
             Ok(VoiceOfferShape {
                 audio_receive_slots: 1,
-                video_receive_slots: 1
+                video_receive_slots: 1,
+                screen_sound: None,
             })
         );
         assert_eq!(
             with_video(&camera_and_watched(9)),
             Ok(VoiceOfferShape {
                 audio_receive_slots: 1,
-                video_receive_slots: 9
+                video_receive_slots: 9,
+                screen_sound: None,
             })
         );
         assert_eq!(
@@ -424,6 +521,11 @@ mod tests {
                 ("audio", "recvonly"),
             ],
             vec![("video", "sendonly"), ("audio", "recvonly")],
+            vec![
+                ("video", "sendonly"),
+                ("audio", "sendonly"),
+                ("audio", "recvonly"),
+            ],
         ] {
             assert_eq!(
                 with_video(&refused),
@@ -440,6 +542,77 @@ mod tests {
             ])),
             Err(InvalidVoiceOffer::UnexpectedMediaLines),
             "audio comes first"
+        );
+    }
+
+    #[test]
+    fn screen_sound_lines_end_the_offer_one_sent_then_1_to_3_received() {
+        let mut lines = vec![
+            ("audio", "sendonly"),
+            ("audio", "recvonly"),
+            ("video", "sendonly"),
+            ("video", "recvonly"),
+            ("audio", "sendonly"),
+            ("audio", "recvonly"),
+        ];
+        assert_eq!(
+            validate_voice_offer(&offer(&lines)),
+            Ok(VoiceOfferShape {
+                audio_receive_slots: 1,
+                video_receive_slots: 1,
+                screen_sound: Some(ScreenSoundLines {
+                    send_mid: "4".into(),
+                    receive_mids: vec!["5".into()],
+                }),
+            })
+        );
+        lines.extend([("audio", "recvonly"), ("audio", "recvonly")]);
+        assert_eq!(
+            validate_voice_offer(&offer(&lines))
+                .map(|shape| shape.screen_sound.map(|sound| sound.receive_mids.len())),
+            Ok(Some(3))
+        );
+        for refused in [
+            [&lines[..], &[("audio", "recvonly")]].concat(),
+            [&lines[..], &[("video", "recvonly")]].concat(),
+            lines[..5].to_vec(),
+        ] {
+            assert_eq!(
+                validate_voice_offer(&offer(&refused)),
+                Err(InvalidVoiceOffer::UnexpectedMediaLines),
+                "{refused:?}"
+            );
+        }
+        let without_mid = offer(&lines[..6]).replace("a=mid:4\r\n", "");
+        assert_eq!(
+            validate_voice_offer(&without_mid),
+            Err(InvalidVoiceOffer::UnexpectedMediaLines)
+        );
+        // Mids are read as the WebRTC library reads them: a screen sound line named like the voice
+        // line, exactly or once cleaned up ("0 " and "0." are "0_" there), would hide the voice
+        // line from the budget that counts it.
+        let named = |voice_mid: &str, screen_sound_mid: &str| {
+            offer(&lines[..6])
+                .replace("a=mid:0\r\n", &format!("a=mid:{voice_mid}\r\n"))
+                .replace("a=mid:5\r\n", &format!("a=mid:{screen_sound_mid}\r\n"))
+        };
+        for (voice_mid, screen_sound_mid) in [("0", "0"), ("0_", "0 "), ("0_", "0."), ("0 ", "0.")]
+        {
+            assert_eq!(
+                validate_voice_offer(&named(voice_mid, screen_sound_mid)),
+                Err(InvalidVoiceOffer::UnexpectedMediaLines),
+                "{voice_mid:?} and {screen_sound_mid:?}"
+            );
+        }
+        assert!(
+            validate_voice_offer(&named("0", "0 ")).is_ok(),
+            "\"0\" and \"0_\" differ"
+        );
+        let duplicate_video_mid = offer(&lines[..6]).replace("a=mid:3\r\n", "a=mid:1\r\n");
+        assert_eq!(
+            validate_voice_offer(&duplicate_video_mid),
+            Err(InvalidVoiceOffer::UnexpectedMediaLines),
+            "every mid is unique, not only the screen sound ones"
         );
     }
 

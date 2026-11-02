@@ -31,6 +31,11 @@ const LAYER_RIDS: [&str; 3] = ["h", "l", "q"];
 const MARKER_OFFSET: usize = 10;
 const LAYER_OFFSET: usize = 11;
 const FRAME_BYTES: usize = 16;
+/// A screen's sound frame: a tag, the sharer's marker, then padding; shorter than a camera frame.
+const SOUND_TAG: u8 = b'S';
+const SOUND_FRAME_BYTES: usize = 8;
+const SOUND_FRAME_INTERVAL: Duration = Duration::from_millis(20);
+const SOUND_CLOCK_TICKS_PER_FRAME: u64 = 960;
 /// Long enough for several frames of every layer to arrive if they were still forwarded.
 const SETTLE_TIME: Duration = Duration::from_millis(300);
 
@@ -53,13 +58,15 @@ struct PendingCameraBot {
     rtc: Rtc,
     pending: SdpPendingOffer,
     camera_mid: Mid,
+    screen_sound_mid: Option<Mid>,
     socket: UdpSocket,
     offer: String,
 }
 
 /// An offer as the web client makes it with video: a voice line and one voice slot, then a
-/// simulcast camera and `VIDEO_RECEIVE_SLOTS` camera slots.
-fn pending_camera_bot() -> PendingCameraBot {
+/// simulcast camera and `VIDEO_RECEIVE_SLOTS` camera slots, then if asked a screen sound line and
+/// one screen sound slot.
+fn pending_camera_bot(has_screen_sound: bool) -> PendingCameraBot {
     str0m::crypto::from_feature_flags().install_process_default();
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     let mut rtc = Rtc::builder()
@@ -85,11 +92,17 @@ fn pending_camera_bot() -> PendingCameraBot {
     for _ in 0..VIDEO_RECEIVE_SLOTS {
         change.add_media(MediaKind::Video, Direction::RecvOnly, None, None, None);
     }
+    let screen_sound_mid = has_screen_sound.then(|| {
+        let mid = change.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
+        change.add_media(MediaKind::Audio, Direction::RecvOnly, None, None, None);
+        mid
+    });
     let (offer, pending) = change.apply().unwrap();
     PendingCameraBot {
         rtc,
         pending,
         camera_mid,
+        screen_sound_mid,
         socket,
         offer: offer.to_sdp_string(),
     }
@@ -107,6 +120,16 @@ struct CameraBot {
 }
 
 impl CameraBot {
+    /// Sound frames of the screen shared by the bot with `marker`.
+    fn heard(&self, marker: u8) -> u32 {
+        self.received
+            .lock()
+            .unwrap()
+            .get(&(marker, SOUND_TAG))
+            .copied()
+            .unwrap_or(0)
+    }
+
     fn received(&self, marker: u8, rid: &str) -> u32 {
         self.received
             .lock()
@@ -142,7 +165,16 @@ async fn join_with_camera(
     channel_id: Snowflake,
     marker: u8,
 ) -> CameraBot {
-    join_with_camera_sending(socket, channel_id, marker, FRAME_BYTES).await
+    join_camera_bot(socket, channel_id, marker, FRAME_BYTES, false).await
+}
+
+/// A camera bot whose offer has screen sound lines, sending its sound 50 times a second.
+async fn join_with_screen_sound(
+    socket: &mut ClientSocket,
+    channel_id: Snowflake,
+    marker: u8,
+) -> CameraBot {
+    join_camera_bot(socket, channel_id, marker, FRAME_BYTES, true).await
 }
 
 /// A camera whose `q` frames are `quarter_frame_bytes` long, as a client lying about its layers.
@@ -152,13 +184,24 @@ async fn join_with_camera_sending(
     marker: u8,
     quarter_frame_bytes: usize,
 ) -> CameraBot {
+    join_camera_bot(socket, channel_id, marker, quarter_frame_bytes, false).await
+}
+
+async fn join_camera_bot(
+    socket: &mut ClientSocket,
+    channel_id: Snowflake,
+    marker: u8,
+    quarter_frame_bytes: usize,
+    has_screen_sound: bool,
+) -> CameraBot {
     let PendingCameraBot {
         mut rtc,
         pending,
         camera_mid,
+        screen_sound_mid,
         socket: udp,
         offer,
-    } = pending_camera_bot();
+    } = pending_camera_bot(has_screen_sound);
     let answer = join(socket, channel_id, &offer).await;
     rtc.sdp_api()
         .accept_answer(pending, SdpAnswer::from_sdp_string(&answer).unwrap())
@@ -171,7 +214,7 @@ async fn join_with_camera_sending(
             run_camera_bot(
                 rtc,
                 &udp,
-                (camera_mid, marker, quarter_frame_bytes),
+                (camera_mid, screen_sound_mid, marker, quarter_frame_bytes),
                 &received,
                 &stop,
             );
@@ -187,7 +230,7 @@ async fn join_with_camera_sending(
 fn run_camera_bot(
     mut rtc: Rtc,
     socket: &UdpSocket,
-    (camera_mid, marker, quarter_frame_bytes): (Mid, u8, usize),
+    (camera_mid, screen_sound_mid, marker, quarter_frame_bytes): (Mid, Option<Mid>, u8, usize),
     received: &Mutex<ReceivedFrames>,
     stop: &AtomicBool,
 ) {
@@ -197,6 +240,8 @@ fn run_camera_bot(
     let mut next_frame_at = Instant::now();
     let mut rtp_time: u64 = 0;
     let mut is_keyframe_due = [true; LAYER_RIDS.len()];
+    let mut next_sound_at = Instant::now();
+    let mut sound_time: u64 = 0;
     while !stop.load(Ordering::Relaxed) {
         let timeout = loop {
             match rtc.poll_output().unwrap() {
@@ -214,6 +259,12 @@ fn run_camera_bot(
                         }
                     }
                 }
+                Output::Event(Event::MediaData(frame))
+                    if frame.data.len() == SOUND_FRAME_BYTES && frame.data[0] == SOUND_TAG =>
+                {
+                    let key = (frame.data[1], SOUND_TAG);
+                    *received.lock().unwrap().entry(key).or_default() += 1;
+                }
                 Output::Event(Event::MediaData(frame)) if frame.data.len() >= FRAME_BYTES => {
                     let key = (frame.data[MARKER_OFFSET], frame.data[LAYER_OFFSET]);
                     *received.lock().unwrap().entry(key).or_default() += 1;
@@ -222,42 +273,35 @@ fn run_camera_bot(
             }
         };
         let now = Instant::now();
+        if is_connected
+            && now >= next_sound_at
+            && let Some(mid) = screen_sound_mid
+        {
+            write_screen_sound(&mut rtc, mid, marker, now, sound_time);
+            sound_time += SOUND_CLOCK_TICKS_PER_FRAME;
+            next_sound_at += SOUND_FRAME_INTERVAL;
+            continue;
+        }
         if is_connected && now >= next_frame_at {
-            for (rid, is_due) in LAYER_RIDS.iter().zip(is_keyframe_due.iter_mut()) {
-                let Some(writer) = rtc.writer(camera_mid) else {
-                    break;
-                };
-                let payload_type = writer
-                    .payload_params()
-                    .find(|params| params.spec().codec == Codec::Vp8)
-                    .map(str0m::format::PayloadParams::pt)
-                    .unwrap();
-                writer
-                    .rid(Rid::from(*rid))
-                    .write(
-                        payload_type,
-                        now,
-                        MediaTime::new(rtp_time, Frequency::NINETY_KHZ),
-                        synthetic_vp8_frame(
-                            marker,
-                            rid,
-                            *is_due,
-                            if *rid == "q" {
-                                quarter_frame_bytes
-                            } else {
-                                FRAME_BYTES
-                            },
-                        ),
-                    )
-                    .unwrap();
-                *is_due = false;
-            }
+            write_camera_layers(
+                &mut rtc,
+                (camera_mid, marker, quarter_frame_bytes),
+                &mut is_keyframe_due,
+                now,
+                rtp_time,
+            );
             rtp_time += VIDEO_CLOCK_TICKS_PER_FRAME;
             next_frame_at += VIDEO_FRAME_INTERVAL;
             continue;
         }
         let wake_at = if is_connected {
-            timeout.min(next_frame_at)
+            timeout
+                .min(next_frame_at)
+                .min(if screen_sound_mid.is_some() {
+                    next_sound_at
+                } else {
+                    next_frame_at
+                })
         } else {
             timeout
         };
@@ -282,6 +326,63 @@ fn run_camera_bot(
         };
         rtc.handle_input(input).unwrap();
     }
+}
+
+/// One frame of each of the bot's camera layers, a keyframe where one is due.
+fn write_camera_layers(
+    rtc: &mut Rtc,
+    (camera_mid, marker, quarter_frame_bytes): (Mid, u8, usize),
+    is_keyframe_due: &mut [bool; LAYER_RIDS.len()],
+    now: Instant,
+    rtp_time: u64,
+) {
+    for (rid, is_due) in LAYER_RIDS.iter().zip(is_keyframe_due.iter_mut()) {
+        let Some(writer) = rtc.writer(camera_mid) else {
+            return;
+        };
+        let payload_type = writer
+            .payload_params()
+            .find(|params| params.spec().codec == Codec::Vp8)
+            .map(str0m::format::PayloadParams::pt)
+            .unwrap();
+        let length = if *rid == "q" {
+            quarter_frame_bytes
+        } else {
+            FRAME_BYTES
+        };
+        writer
+            .rid(Rid::from(*rid))
+            .write(
+                payload_type,
+                now,
+                MediaTime::new(rtp_time, Frequency::NINETY_KHZ),
+                synthetic_vp8_frame(marker, rid, *is_due, length),
+            )
+            .unwrap();
+        *is_due = false;
+    }
+}
+
+/// One sound frame of the bot's shared screen: its tag and marker, so watchers can count it.
+fn write_screen_sound(rtc: &mut Rtc, mid: Mid, marker: u8, now: Instant, sound_time: u64) {
+    let Some(writer) = rtc.writer(mid) else {
+        return;
+    };
+    let payload_type = writer
+        .payload_params()
+        .find(|params| params.spec().codec == Codec::Opus)
+        .map(str0m::format::PayloadParams::pt)
+        .unwrap();
+    let mut sound = vec![0_u8; SOUND_FRAME_BYTES];
+    sound[..2].copy_from_slice(&[SOUND_TAG, marker]);
+    writer
+        .write(
+            payload_type,
+            now,
+            MediaTime::new(sound_time, Frequency::FORTY_EIGHT_KHZ),
+            sound,
+        )
+        .unwrap();
 }
 
 fn camera_state(self_video: bool) -> ClientFrame {
@@ -585,4 +686,117 @@ async fn a_screen_replaces_the_camera_on_its_path_and_watchers_follow_at_a_keyfr
         layers_of_the_screen,
         [SimulcastLayer::Quarter, SimulcastLayer::High]
     );
+}
+
+impl CameraBot {
+    /// Waits until more than `already_heard` sound frames of the screen `marker` arrived.
+    async fn wait_until_hearing(&self, marker: u8, already_heard: u32) {
+        let deadline = Instant::now() + HEARING_TIMEOUT;
+        while self.heard(marker) <= already_heard {
+            assert!(
+                Instant::now() < deadline,
+                "the screen's sound never arrived"
+            );
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    }
+
+    /// Whether the sound of the screen `marker` stopped arriving, once what was in flight landed.
+    async fn has_stopped_hearing(&self, marker: u8) -> bool {
+        tokio::time::sleep(SETTLE_TIME).await;
+        let heard = self.heard(marker);
+        tokio::time::sleep(SETTLE_TIME).await;
+        self.heard(marker) == heard
+    }
+}
+
+fn deafened(self_deaf: bool) -> ClientFrame {
+    ClientFrame::VoiceState {
+        self_mute: false,
+        self_deaf,
+        self_video: false,
+        self_stream: false,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shared_screen_is_heard_only_by_its_watchers_and_only_while_shared() {
+    let fixture = fixture().await;
+    let (mut owner, mut member) = identified_pair(&fixture).await;
+    let owner_id = fixture.user_id("owner");
+    let owner_bot = join_with_screen_sound(&mut owner, fixture.lounge, 1).await;
+    let member_bot = join_with_screen_sound(&mut member, fixture.lounge, 2).await;
+    send(&mut owner, &screen_state()).await;
+    while !next_voice_state_update(&mut member, owner_id)
+        .await
+        .self_stream
+    {}
+    tokio::time::sleep(SETTLE_TIME).await;
+    let heard_before_watching = member_bot.heard(1);
+
+    send(&mut member, &watch(owner_id, VideoTileSize::Large)).await;
+    let video_slot = camera_slot_of(&mut member, owner_id).await;
+    let sound_slot = camera_slot_of(&mut member, owner_id).await;
+    member_bot.wait_until_hearing(1, 0).await;
+
+    let no_cameras = ClientFrame::VoiceVideoWatch {
+        cameras: Vec::new(),
+    };
+    send(&mut member, &no_cameras).await;
+    let has_stopped_when_closed = member_bot.has_stopped_hearing(1).await;
+
+    // Watching again gives the freed slot back, announced again.
+    send(&mut member, &watch(owner_id, VideoTileSize::Large)).await;
+    let video_slot_again = camera_slot_of(&mut member, owner_id).await;
+    let sound_slot_again = camera_slot_of(&mut member, owner_id).await;
+    member_bot.wait_until_hearing(1, member_bot.heard(1)).await;
+
+    send(&mut member, &deafened(true)).await;
+    let has_stopped_when_deafened = member_bot.has_stopped_hearing(1).await;
+    send(&mut member, &deafened(false)).await;
+    member_bot.wait_until_hearing(1, member_bot.heard(1)).await;
+
+    send(&mut owner, &camera_state(false)).await;
+    let has_stopped_when_unshared = member_bot.has_stopped_hearing(1).await;
+    let owner_heard_itself = owner_bot.heard(1);
+    drop((owner_bot, member_bot));
+    fixture.close().await;
+
+    assert_eq!(heard_before_watching, 0, "not watching, not heard");
+    assert_ne!(video_slot, sound_slot);
+    assert!(has_stopped_when_closed, "closed, not heard");
+    assert_eq!(
+        (video_slot_again, sound_slot_again),
+        (video_slot, sound_slot)
+    );
+    assert!(has_stopped_when_deafened, "deafened, not heard");
+    assert!(has_stopped_when_unshared, "no longer shared, not heard");
+    assert_eq!(
+        owner_heard_itself, 0,
+        "a sharer does not hear its own screen back"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_without_speak_shares_their_screen_without_its_sound() {
+    let fixture = fixture().await;
+    let (muted, _) = identified(fixture.address, fixture.token("muted")).await;
+    let (mut member, _) = identified(fixture.address, fixture.token("member")).await;
+    let mut muted = muted;
+    let muted_id = fixture.user_id("muted");
+    let muted_bot = join_with_screen_sound(&mut muted, fixture.lounge, 1).await;
+    let member_bot = join_with_screen_sound(&mut member, fixture.lounge, 2).await;
+    send(&mut muted, &screen_state()).await;
+    while !next_voice_state_update(&mut member, muted_id)
+        .await
+        .self_stream
+    {}
+    send(&mut member, &watch(muted_id, VideoTileSize::Large)).await;
+    member_bot.wait_until_receiving(1, "h").await;
+    tokio::time::sleep(SETTLE_TIME).await;
+    let heard = member_bot.heard(1);
+    drop((muted_bot, member_bot));
+    fixture.close().await;
+
+    assert_eq!(heard, 0, "the picture arrives, the sound does not");
 }

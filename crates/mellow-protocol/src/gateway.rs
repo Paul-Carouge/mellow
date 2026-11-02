@@ -36,7 +36,9 @@ pub enum ClientFrame {
     /// offer holds one `sendonly` or `sendrecv` audio m-line, then 1 to
     /// `MAXIMUM_VOICE_RECEIVE_SLOTS` `recvonly` ones (ADR-0030). A client able to show video adds
     /// one `sendonly` or `sendrecv` video m-line for its camera (VP8, simulcast with the RIDs `h`,
-    /// `l` and `q`), then 1 to `MAXIMUM_VIDEO_RECEIVE_SLOTS` `recvonly` video ones (ADR-0035).
+    /// `l` and `q`), then 1 to `MAXIMUM_VIDEO_RECEIVE_SLOTS` `recvonly` video ones (ADR-0035),
+    /// and may then add one `sendonly` or `sendrecv` audio m-line for the sound of its shared
+    /// screen and 1 to `MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS` `recvonly` audio ones (ADR-0037).
     /// Answered on this session only by `VOICE_SESSION_DESCRIPTION` or `VOICE_JOIN_REFUSED`. A
     /// join always starts with the camera off.
     VoiceJoin {
@@ -83,6 +85,10 @@ pub const MAXIMUM_VOICE_RECEIVE_SLOTS: usize = 16;
 /// The most cameras one participant watches at once: video receive m-lines of an offer
 /// (ADR-0035).
 pub const MAXIMUM_VIDEO_RECEIVE_SLOTS: usize = 9;
+
+/// The most shared screens one participant hears at once: the audio receive m-lines after the
+/// video ones (ADR-0037). The server fills them with the sound of the screens it watches.
+pub const MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS: usize = 3;
 
 /// The largest SDP offer the server reads, in bytes. A Chromium offer with 17 audio m-lines, a
 /// simulcast camera and 9 video receive m-lines is about 34 kB with VP8 and Opus only (ADR-0035):
@@ -500,9 +506,10 @@ pub enum GatewayEvent {
         offer_id: u32,
         reason: VoiceJoinRefusal,
     },
-    /// The server now relays `user_id`'s voice, or camera for a video m-line (ADR-0035), on this
-    /// session's receive m-line `mid` (one of its `recvonly` transceivers), until another event
-    /// names the same `mid`. Lets the client set a per-person volume and put each camera in its
+    /// The server now relays `user_id`'s voice, or camera for a video m-line (ADR-0035), or the
+    /// sound of their shared screen for an audio m-line after the video ones (ADR-0037: not a
+    /// voice), on this session's receive m-line `mid` (one of its `recvonly` transceivers), until
+    /// another event names the same `mid`. Lets the client set a per-person volume and put each camera in its
     /// tile. Sent to that session only; forgotten with its media session.
     VoiceSlotAssigned {
         channel_id: Snowflake,

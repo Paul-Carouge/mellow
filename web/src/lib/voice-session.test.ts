@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { type ClientFrame, VIDEO_RECEIVE_SLOTS, VOICE_RECEIVE_SLOTS } from "./protocol";
+import { type ClientFrame, SCREEN_SOUND_RECEIVE_SLOTS, VIDEO_RECEIVE_SLOTS, VOICE_RECEIVE_SLOTS } from "./protocol";
 import type { EqualizerDecibels } from "./voice-settings";
 import type { MicrophoneProcessing, NoiseSuppressorProblem } from "./voice-processing";
 import { type AudioDevice, DEFAULT_VOICE_SETTINGS, PERSON_VOICE_SETTINGS_STORAGE_KEY, VOICE_SETTINGS_STORAGE_KEY } from "./voice-settings";
@@ -22,7 +22,8 @@ class FakePeer {
   codecs = new Map<number, readonly unknown[]>();
   /** The encodings last set on the video sender. */
   videoEncodings: RTCRtpEncodingParameters[] = [];
-  replacedTracks: unknown[] = [];
+  /** Tracks put on each sender, by transceiver index. */
+  replacedTracksByIndex = new Map<number, unknown[]>();
   isClosed = false;
   private listeners = new Map<string, ((event: unknown) => void)[]>();
 
@@ -37,12 +38,21 @@ class FakePeer {
       mid: String(index),
       setCodecPreferences: (codecs: readonly unknown[]) => void this.codecs.set(index, codecs),
       sender: {
-        replaceTrack: (track: unknown) => Promise.resolve(void this.replacedTracks.push(track)),
+        replaceTrack: (track: unknown) => Promise.resolve(void this.replacedTracksAt(index).push(track)),
         getParameters: () => ({ encodings: this.videoEncodings }),
         setParameters: (parameters: { encodings: RTCRtpEncodingParameters[] }) =>
           Promise.resolve(void (this.videoEncodings = parameters.encodings)),
       },
     };
+  }
+  replacedTracksAt(index: number): unknown[] {
+    const tracks = this.replacedTracksByIndex.get(index) ?? [];
+    this.replacedTracksByIndex.set(index, tracks);
+    return tracks;
+  }
+  /** On the camera sender (the one with simulcast encodings), or the voice sender without video. */
+  get replacedTracks(): unknown[] {
+    return this.replacedTracksAt(this.sendEncodings.keys().next().value ?? 0);
   }
   createOffer() {
     return Promise.resolve({ type: "offer", sdp: `offer-${this.transceivers.length}` });
@@ -124,7 +134,8 @@ function fakeScreen() {
     /** Test side: the browser's "Stop sharing" button. */
     end: () => endedListeners.forEach((listener) => listener()),
   };
-  return { track, stream: { getVideoTracks: () => [track], getTracks: () => [track] } };
+  const sound = { isStopped: false, stop: () => (sound.isStopped = true) };
+  return { track, sound, stream: { getVideoTracks: () => [track], getAudioTracks: () => [sound], getTracks: () => [track, sound] } };
 }
 
 const OPUS_AND_VP8 = {
@@ -1126,6 +1137,9 @@ describe("VoiceSession", () => {
   });
 });
 
+/** The shared screen's sound line: after the voice lines, the camera line and its slots. */
+const SCREEN_SOUND_INDEX = 1 + VOICE_RECEIVE_SLOTS + 1 + VIDEO_RECEIVE_SLOTS;
+
 describe("VoiceSession screen sharing (ADR-0037)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -1140,10 +1154,12 @@ describe("VoiceSession screen sharing (ADR-0037)", () => {
     const peer = lastPeer();
     const cameraIndex = 1 + VOICE_RECEIVE_SLOTS;
     const video = peer.transceivers.slice(cameraIndex);
-    expect(peer.transceivers).toHaveLength(cameraIndex + 1 + VIDEO_RECEIVE_SLOTS);
+    expect(peer.transceivers).toHaveLength(cameraIndex + 1 + VIDEO_RECEIVE_SLOTS + 1 + SCREEN_SOUND_RECEIVE_SLOTS);
     expect(video).toEqual([
       { trackOrKind: "video", direction: "sendonly" },
       ...Array.from({ length: VIDEO_RECEIVE_SLOTS }, () => ({ trackOrKind: "video", direction: "recvonly" })),
+      { trackOrKind: "audio", direction: "sendonly" },
+      ...Array.from({ length: SCREEN_SOUND_RECEIVE_SLOTS }, () => ({ trackOrKind: "audio", direction: "recvonly" })),
     ]);
     expect(peer.sendEncodings.get(cameraIndex)?.map((encoding) => encoding.rid)).toEqual(["q", "l", "h"]);
     expect(peer.codecs.size).toBe(peer.transceivers.length);
@@ -1163,12 +1179,15 @@ describe("VoiceSession screen sharing (ADR-0037)", () => {
     expect(session.isSharingScreen).toBe(true);
     expect(screen.track.contentHint).toBe("detail");
     expect(lastPeer().replacedTracks).toEqual([screen.track]);
+    expect(lastPeer().replacedTracksAt(SCREEN_SOUND_INDEX)).toEqual([screen.sound]);
     expect(frames.at(-1)).toEqual({ op: "voice_state", d: { self_mute: false, self_deaf: false, self_stream: true } });
 
     screen.track.end();
     expect(session.isSharingScreen).toBe(false);
     expect(screen.track.isStopped).toBe(true);
+    expect(screen.sound.isStopped).toBe(true);
     expect(lastPeer().replacedTracks.at(-1)).toBeNull();
+    expect(lastPeer().replacedTracksAt(SCREEN_SOUND_INDEX).at(-1)).toBeNull();
     expect(frames.at(-1)).toEqual({ op: "voice_state", d: { self_mute: false, self_deaf: false } });
   });
 
@@ -1220,6 +1239,7 @@ describe("VoiceSession screen sharing (ADR-0037)", () => {
     session.noteGatewayReady();
     await flush();
     expect(lastPeer().transceivers[1 + VOICE_RECEIVE_SLOTS]?.trackOrKind).toBe(screen.track);
+    expect(lastPeer().transceivers[SCREEN_SOUND_INDEX]?.trackOrKind).toBe(screen.sound);
     await session.applyAnswer(CHANNEL, session.currentOfferId, "answer");
     expect(frames.at(-1)).toEqual({ op: "voice_state", d: { self_mute: false, self_deaf: false, self_stream: true } });
     expect(session.isSharingScreen).toBe(true);

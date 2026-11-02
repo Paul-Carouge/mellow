@@ -38,6 +38,33 @@ export function screenCaptureConstraints(quality: ScreenShareQuality): MediaTrac
 }
 
 /**
+ * Chromium's `getDisplayMedia` options beyond TypeScript's DOM types: `systemAudio` offers the
+ * whole system's sound when a screen is shared (Windows, ChromeOS), and excluding the current tab
+ * keeps people from sharing the call into itself.
+ */
+export interface ScreenCaptureOptions extends DisplayMediaStreamOptions {
+  readonly audio?: boolean | (MediaTrackConstraints & { readonly restrictOwnAudio?: boolean });
+  readonly systemAudio?: "include" | "exclude";
+  readonly selfBrowserSurface?: "include" | "exclude";
+}
+
+/**
+ * The picture at the quality's size, and the sound of the tab, window or screen if the person
+ * ticks it in the browser's picker (ADR-0037), untouched: no echo cancellation or noise suppression
+ * meant for a microphone. `restrictOwnAudio` leaves the call's own sound out of a whole system's
+ * sound where the browser supports it (ignored elsewhere), so watchers neither hear themselves nor
+ * someone they muted.
+ */
+export function screenCaptureOptions(quality: ScreenShareQuality): ScreenCaptureOptions {
+  return {
+    video: screenCaptureConstraints(quality),
+    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true },
+    systemAudio: "include",
+    selfBrowserSurface: "exclude",
+  };
+}
+
+/**
  * Lowest first, as browsers list simulcast layers. The half and quarter layers keep the bit rates
  * of the instance's `l` and `q` budgets, whatever the quality; the full one follows the quality.
  */
