@@ -21,6 +21,16 @@ pub(crate) struct StoredAttachment {
     pub(crate) size_bytes: u64,
     /// As the picture shows; `None` for anything else and for uploads before migration 0026.
     pub(crate) dimensions: Option<(u32, u32)>,
+    /// Shown in the message list in its place (migration 0028).
+    pub(crate) preview: Option<StoredPreview>,
+}
+
+/// A picture attachment's smaller copy, in its own sealed file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoredPreview {
+    pub(crate) file_id: Snowflake,
+    pub(crate) content_type: String,
+    pub(crate) size_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -44,10 +54,25 @@ type AttachmentRow = (
     i64,
     Option<i64>,
     Option<i64>,
+    Option<i64>,
+    Option<String>,
+    Option<i64>,
 );
 
 fn attachment_from_row(row: AttachmentRow) -> Result<StoredAttachment, MessageStorageError> {
-    let (id, channel_id, message_id, file_name, content_type, size_bytes, width, height) = row;
+    let (
+        id,
+        channel_id,
+        message_id,
+        file_name,
+        content_type,
+        size_bytes,
+        width,
+        height,
+        preview_file_id,
+        preview_content_type,
+        preview_size_bytes,
+    ) = row;
     Ok(StoredAttachment {
         id: to_snowflake(id)?,
         channel_id: to_snowflake(channel_id)?,
@@ -59,6 +84,14 @@ fn attachment_from_row(row: AttachmentRow) -> Result<StoredAttachment, MessageSt
             (Some(width), Some(height)) => {
                 Some((convert_integer(width)?, convert_integer(height)?))
             }
+            _ => None,
+        },
+        preview: match (preview_file_id, preview_content_type, preview_size_bytes) {
+            (Some(file_id), Some(content_type), Some(size_bytes)) => Some(StoredPreview {
+                file_id: to_snowflake(file_id)?,
+                content_type,
+                size_bytes: convert_integer(size_bytes)?,
+            }),
             _ => None,
         },
     })
@@ -101,6 +134,25 @@ pub(crate) async fn update_attachment_file(
     .bind(file_name)
     .bind(content_type)
     .bind(to_sqlite_integer(size_bytes)?)
+    .bind(to_sqlite_integer(attachment_id.raw())?)
+    .execute(database.writer())
+    .await?;
+    Ok(updated.rows_affected() > 0)
+}
+
+/// Points the row at its preview's file; `false` when the attachment is gone.
+pub(crate) async fn record_attachment_preview(
+    database: &Database,
+    attachment_id: Snowflake,
+    preview: &StoredPreview,
+) -> Result<bool, MessageStorageError> {
+    let updated = sqlx::query(
+        "UPDATE attachments SET preview_file_id = ?, preview_content_type = ?, \
+         preview_size_bytes = ? WHERE id = ?",
+    )
+    .bind(to_sqlite_integer(preview.file_id.raw())?)
+    .bind(&preview.content_type)
+    .bind(to_sqlite_integer(preview.size_bytes)?)
     .bind(to_sqlite_integer(attachment_id.raw())?)
     .execute(database.writer())
     .await?;
@@ -152,8 +204,8 @@ pub(crate) async fn find_attachment(
         return Ok(None);
     };
     let row: Option<AttachmentRow> = sqlx::query_as(
-        "SELECT id, channel_id, message_id, file_name, content_type, size_bytes, width, height \
-         FROM attachments WHERE id = ?",
+        "SELECT id, channel_id, message_id, file_name, content_type, size_bytes, width, height, \
+         preview_file_id, preview_content_type, preview_size_bytes FROM attachments WHERE id = ?",
     )
     .bind(attachment_id)
     .fetch_optional(database.readers())
@@ -172,8 +224,9 @@ pub(crate) async fn attachments_of_messages(
     }
     let ids = json_array_of_ids(message_ids);
     let rows: Vec<AttachmentRow> = sqlx::query_as(
-        "SELECT id, channel_id, message_id, file_name, content_type, size_bytes, width, height \
-         FROM attachments WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY id",
+        "SELECT id, channel_id, message_id, file_name, content_type, size_bytes, width, height, \
+         preview_file_id, preview_content_type, preview_size_bytes FROM attachments \
+         WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY id",
     )
     .bind(ids)
     .fetch_all(database.readers())
@@ -187,35 +240,39 @@ pub(crate) async fn attachments_of_messages(
     Ok(by_message)
 }
 
-/// Uploads never sent in a message: their rows go, and their ids are returned so their files
-/// can go too.
+/// Uploads never sent in a message: their rows go, and the ids of their files (previews
+/// included) are returned so those can go too.
 pub(crate) async fn delete_unlinked_before(
     database: &Database,
     cutoff_unix_milliseconds: u64,
 ) -> Result<Vec<Snowflake>, MessageStorageError> {
-    let rows: Vec<(i64,)> = sqlx::query_as(
+    let rows: Vec<(i64, Option<i64>)> = sqlx::query_as(
         "DELETE FROM attachments WHERE message_id IS NULL AND created_at_unix_milliseconds < ? \
-         RETURNING id",
+         RETURNING id, preview_file_id",
     )
     .bind(to_sqlite_integer(cutoff_unix_milliseconds)?)
     .fetch_all(database.writer())
     .await?;
-    Ok(rows
-        .into_iter()
-        .map(|(id,)| to_snowflake(id))
-        .collect::<Result<_, _>>()?)
+    file_ids_of_rows(rows)
 }
 
-/// Every attachment id, for the sweep of files whose row is gone (one query per sweep).
-pub(crate) async fn all_attachment_ids(
+/// The id of every attachment file, previews included, for the sweep of files whose row is gone
+/// (one query per sweep).
+pub(crate) async fn all_attachment_file_ids(
     database: &Database,
 ) -> Result<Vec<Snowflake>, MessageStorageError> {
-    let rows: Vec<(i64,)> = sqlx::query_as("SELECT id FROM attachments")
-        .fetch_all(database.readers())
-        .await?;
+    let rows: Vec<(i64, Option<i64>)> =
+        sqlx::query_as("SELECT id, preview_file_id FROM attachments")
+            .fetch_all(database.readers())
+            .await?;
+    file_ids_of_rows(rows)
+}
+
+fn file_ids_of_rows(rows: Vec<(i64, Option<i64>)>) -> Result<Vec<Snowflake>, MessageStorageError> {
     Ok(rows
         .into_iter()
-        .map(|(id,)| to_snowflake(id))
+        .flat_map(|(id, preview_file_id)| std::iter::once(id).chain(preview_file_id))
+        .map(to_snowflake)
         .collect::<Result<_, _>>()?)
 }
 

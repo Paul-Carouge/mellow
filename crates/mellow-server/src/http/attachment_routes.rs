@@ -10,6 +10,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use mellow_protocol::{Attachment, Snowflake};
 
+use crate::domain::attachments::AttachmentFileKind;
 use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::message_rules::PREVIEWABLE_IMAGE_TYPES;
 use crate::http::AppState;
@@ -80,8 +81,44 @@ pub(crate) async fn download(
     ApiPath(attachment_id): ApiPath<Snowflake>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    serve(
+        &state,
+        user.id,
+        attachment_id,
+        &headers,
+        AttachmentFileKind::Original,
+    )
+    .await
+}
+
+/// `GET /api/v1/attachments/{id}/preview`: the picture's smaller copy for the message list, or
+/// the attachment itself when it has none (it already fits, or was uploaded before previews).
+/// Same checks, headers and entity tags as `download`.
+pub(crate) async fn download_preview(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath(attachment_id): ApiPath<Snowflake>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    serve(
+        &state,
+        user.id,
+        attachment_id,
+        &headers,
+        AttachmentFileKind::Preview,
+    )
+    .await
+}
+
+async fn serve(
+    state: &AppState,
+    user_id: Snowflake,
+    attachment_id: Snowflake,
+    headers: &HeaderMap,
+    kind: AttachmentFileKind,
+) -> Result<Response, ApiError> {
     if !state.rate_limiter.record_event(
-        &format!("attachment-download:{}", user.id),
+        &format!("attachment-download:{user_id}"),
         ATTACHMENT_DOWNLOADS_PER_USER,
         Instant::now(),
     ) {
@@ -89,7 +126,7 @@ pub(crate) async fn download(
     }
     let attachment = state
         .attachments
-        .find_readable(user.id, attachment_id)
+        .find_readable(user_id, attachment_id, kind)
         .await?;
     let entity_tag = HeaderValue::from_str(&attachment.entity_tag())
         .map_err(|error| ApiError::internal("an attachment entity tag", &error))?;

@@ -8,13 +8,17 @@ use crate::storage::Database;
 use mellow_protocol::{Attachment, Permissions, Snowflake};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
-use crate::domain::image_processing::{OPTIMIZABLE_CONTENT_TYPES, optimize_attachment};
+use crate::domain::image_processing::{
+    OPTIMIZABLE_CONTENT_TYPES, ProcessedImage, attachment_preview, optimize_attachment,
+};
 
 use crate::domain::message_rules::{UNKNOWN_CONTENT_TYPE, clean_file_name, sniff_content_type};
 use crate::domain::messages::{MessageError, Messages};
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::storage::attachment_files::{AttachmentFileError, AttachmentFiles, SweptFiles};
-use crate::storage::attachments::{self as storage, NewAttachment};
+use crate::storage::attachments::{
+    self as storage, NewAttachment, StoredAttachment, StoredPreview,
+};
 
 const PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_mins(10);
 /// Uploads and downloads holding a whole file in memory at once (up to the size limit each):
@@ -35,6 +39,10 @@ const OPTIMIZATION_QUEUE_CAPACITY: usize = 64;
 /// kept. An encode under way runs to its end (rav1e cannot be stopped): one AVIF of a 15 MP photo
 /// takes 20–30 s of one core.
 const OPTIMIZATION_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+/// Budget of the preview search, counted once the stored picture is done, so a large one that
+/// used all of `OPTIMIZATION_TIME_BUDGET` still gets its preview. Its pictures are at most 0.48 MP:
+/// one AVIF encode takes about 0.6 s.
+const PREVIEW_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 /// Extensions a file name may end with that name a picture type, replaced when it is converted.
 const PICTURE_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "jfif", "gif", "webp", "avif"];
 
@@ -125,9 +133,18 @@ impl From<AttachmentFileError> for MessageError {
     }
 }
 
-/// An attachment the reader may download, its file not read yet.
+/// Which of an attachment's files to serve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttachmentFileKind {
+    Original,
+    /// The smaller copy for the message list, or the original when it has none.
+    Preview,
+}
+
+/// An attachment file the reader may download, not read yet.
 #[derive(Debug)]
 pub(crate) struct ReadableAttachment {
+    /// The file's own id: a preview's differs from its attachment's.
     id: Snowflake,
     file_name: String,
     content_type: String,
@@ -137,7 +154,8 @@ pub(crate) struct ReadableAttachment {
 impl ReadableAttachment {
     /// A strong HTTP entity tag. The file only changes when `Attachments::optimize` replaces it
     /// with a strictly smaller one, so its size tells versions apart; a replacement that could
-    /// keep the size would need a stored version counter here instead.
+    /// keep the size would need a stored version counter here instead. A preview is never
+    /// replaced, and its id differs from the original's, so the two never share a tag.
     pub(crate) fn entity_tag(&self) -> String {
         format!("\"{}-{}\"", self.id, self.size_bytes)
     }
@@ -404,6 +422,12 @@ impl Attachments {
         self.optimize_until_none_is_left(&mut queue).await;
     }
 
+    /// Every file in the store, for tests that check what a sweep left.
+    #[cfg(test)]
+    pub(crate) async fn stored_file_ids(&self) -> Vec<Snowflake> {
+        self.files.stored_ids().await.unwrap()
+    }
+
     /// The same instance after a restart: same database and files, a fresh empty queue.
     #[cfg(test)]
     pub(crate) fn restarted(&self) -> Self {
@@ -418,6 +442,7 @@ impl Attachments {
 
     /// Replaces the file with its compressed form when smaller (ADR-0033): no original is kept.
     /// Anything undecodable, failing the quality check or not smaller keeps the file as it is.
+    /// Then stores a preview for the message list when one is smaller than the stored file.
     pub(crate) async fn optimize(&self, attachment_id: Snowflake) -> Result<(), MessageError> {
         let Some(attachment) = storage::find_attachment(&self.database, attachment_id).await?
         else {
@@ -434,26 +459,54 @@ impl Attachments {
         let content_type = attachment.content_type.clone();
         let deadline = std::time::Instant::now() + OPTIMIZATION_TIME_BUDGET;
         // Waited for to its end, so this worker runs one job at a time and the other slot stays
-        // free for avatars and banners.
-        let (original, optimized) = tokio::task::spawn_blocking(move || {
+        // free for avatars and banners. Both come from the upload, which only this job has: no
+        // AV1 decoder reads the stored AVIF back.
+        let (original, optimized, preview) = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let optimized = optimize_attachment(&original, &content_type, deadline);
-            (original, optimized)
+            let preview_deadline = std::time::Instant::now() + PREVIEW_TIME_BUDGET;
+            let preview = attachment_preview(&original, &content_type, preview_deadline);
+            (original, optimized, preview)
         })
         .await
         .map_err(|error| MessageError::Internal(Box::new(error)))?;
-        let Ok(Some(optimized)) = optimized else {
+        let stored_size_bytes = match optimized {
+            Ok(Some(optimized)) => {
+                match self.replace_file(&attachment, optimized, original).await? {
+                    Some(size_bytes) => size_bytes,
+                    None => return Ok(()),
+                }
+            }
+            // Undecodable or not smaller: the upload stays, and may still get a preview.
+            Ok(None) | Err(_) => attachment.size_bytes,
+        };
+        let Ok(Some(preview)) = preview else {
             return Ok(());
         };
+        // Not smaller than the file itself: showing that file costs no more.
+        if u64::try_from(preview.bytes.len()).unwrap_or(u64::MAX) >= stored_size_bytes {
+            return Ok(());
+        }
+        self.store_preview(attachment.id, preview).await
+    }
+
+    /// Replaces the file with its smaller form when it is smaller; the size of the file stored
+    /// afterwards, or `None` when the attachment was deleted meanwhile.
+    async fn replace_file(
+        &self,
+        attachment: &StoredAttachment,
+        optimized: ProcessedImage,
+        original: Vec<u8>,
+    ) -> Result<Option<u64>, MessageError> {
         let file_name = if optimized.content_type == attachment.content_type {
-            attachment.file_name
+            attachment.file_name.clone()
         } else {
             with_extension_of(&attachment.file_name, optimized.content_type)
         };
         let size_bytes = u64::try_from(optimized.bytes.len()).unwrap_or(u64::MAX);
         // `ReadableAttachment::entity_tag` relies on a replacement never keeping the size.
         if size_bytes >= attachment.size_bytes {
-            return Ok(());
+            return Ok(Some(attachment.size_bytes));
         }
         // shortcut: the file is replaced under the same id before its row changes, so a crash in
         // between leaves an AVIF described as PNG (served as a download, not inline); a separate
@@ -468,11 +521,11 @@ impl Attachments {
         )
         .await;
         match updated {
-            Ok(true) => Ok(()),
+            Ok(true) => Ok(Some(size_bytes)),
             // Deleted meanwhile: the file has no row any more.
             Ok(false) => {
                 let _ = self.files.delete(attachment.id).await;
-                Ok(())
+                Ok(None)
             }
             Err(error) => {
                 // The row still describes the original: put it back so downloads keep matching.
@@ -482,6 +535,32 @@ impl Attachments {
         }
     }
 
+    /// Writes the preview's sealed file, then points the row at it. A file left without its row
+    /// (attachment deleted meanwhile, failed delete, crash in between) is swept by `purge`.
+    async fn store_preview(
+        &self,
+        attachment_id: Snowflake,
+        preview: ProcessedImage,
+    ) -> Result<(), MessageError> {
+        let file_id = self
+            .ids
+            .next_id(crate::domain::clock::now_unix_milliseconds())?;
+        let size_bytes = u64::try_from(preview.bytes.len()).unwrap_or(u64::MAX);
+        self.files.write(file_id, preview.bytes).await?;
+        let preview = StoredPreview {
+            file_id,
+            content_type: preview.content_type.to_owned(),
+            size_bytes,
+        };
+        let recorded =
+            storage::record_attachment_preview(&self.database, attachment_id, &preview).await;
+        if !matches!(recorded, Ok(true)) {
+            let _ = self.files.delete(preview.file_id).await;
+        }
+        recorded?;
+        Ok(())
+    }
+
     /// Needs `VIEW_CHANNEL` and `READ_MESSAGE_HISTORY` in the message's channel. An upload not
     /// sent yet, or one the reader cannot see, is `MessageNotFound`. Reads no file: a client
     /// revalidating its copy is answered from this alone.
@@ -489,6 +568,7 @@ impl Attachments {
         &self,
         user_id: Snowflake,
         attachment_id: Snowflake,
+        kind: AttachmentFileKind,
     ) -> Result<ReadableAttachment, MessageError> {
         let attachment = storage::find_attachment(&self.database, attachment_id)
             .await?
@@ -501,11 +581,19 @@ impl Attachments {
                 Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY,
             )
             .await?;
-        Ok(ReadableAttachment {
-            id: attachment.id,
-            file_name: attachment.file_name,
-            content_type: attachment.content_type,
-            size_bytes: attachment.size_bytes,
+        Ok(match (kind, attachment.preview) {
+            (AttachmentFileKind::Preview, Some(preview)) => ReadableAttachment {
+                id: preview.file_id,
+                file_name: with_extension_of(&attachment.file_name, &preview.content_type),
+                content_type: preview.content_type,
+                size_bytes: preview.size_bytes,
+            },
+            (AttachmentFileKind::Original | AttachmentFileKind::Preview, _) => ReadableAttachment {
+                id: attachment.id,
+                file_name: attachment.file_name,
+                content_type: attachment.content_type,
+                size_bytes: attachment.size_bytes,
+            },
         })
     }
 
@@ -551,7 +639,7 @@ impl Attachments {
             self.delete_swept_file(id, &mut swept).await;
         }
         // Avatars, banners, icons and sounds share the file store (ADR-0021, ADR-0032).
-        let known_ids: HashSet<Snowflake> = storage::all_attachment_ids(&self.database)
+        let known_ids: HashSet<Snowflake> = storage::all_attachment_file_ids(&self.database)
             .await?
             .into_iter()
             .chain(

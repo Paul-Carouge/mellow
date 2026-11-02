@@ -305,6 +305,10 @@ fn message_router(maximum_attachment_bytes: u64) -> Router<AppState> {
             "/api/v1/attachments/{attachment_id}",
             get(attachment_routes::download),
         )
+        .route(
+            "/api/v1/attachments/{attachment_id}/preview",
+            get(attachment_routes::download_preview),
+        )
 }
 
 pub(crate) fn router(state: AppState) -> Router {
@@ -3037,6 +3041,131 @@ pub(crate) mod tests {
         assert_eq!(stored.file_name, "party.webp");
         assert_eq!(stored.content_type, "image/webp");
         assert_eq!(stored.size_bytes, bytes.len() as u64);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // One scenario: before and after the worker, refusals, purge.
+    async fn a_large_picture_gets_a_preview_served_like_its_attachment_and_purged_with_it() {
+        use crate::domain::image_processing::tests::{encoded, photo, stored_dimensions};
+        use mellow_protocol::Attachment;
+
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let stranger = registered_token(&state, "stranger").await;
+        // Wide and short: debug builds encode slowly, and only the width needs a preview.
+        let picture = encoded(&photo(1_200, 150), image::ImageFormat::Jpeg, None);
+        let upload = |name: &'static str| {
+            let mut request = picture_request(
+                "POST",
+                &format!("/api/v1/channels/{general}/attachments"),
+                &owner,
+                picture.clone(),
+            );
+            request
+                .headers_mut()
+                .insert("x-mellow-file-name", HeaderValue::from_static(name));
+            request
+        };
+        let (_, body) = send(&state, upload("photo.png")).await;
+        let sent_picture: Attachment = json(&body);
+        let (_, body) = send(&state, upload("draft.png")).await;
+        let unsent_picture: Attachment = json(&body);
+        send(
+            &state,
+            authorized(
+                "POST",
+                &format!("/api/v1/channels/{general}/messages"),
+                &owner,
+                Some(serde_json::json!({
+                    "content": "",
+                    "attachment_ids": [sent_picture.id.to_string()],
+                })),
+            ),
+        )
+        .await;
+        let get = |path: &str, token: &str| authorized("GET", path, token, None);
+        let preview_path = format!("/api/v1/attachments/{}/preview", sent_picture.id);
+        let attachment_path = format!("/api/v1/attachments/{}", sent_picture.id);
+
+        // Before the worker ran, the preview is the attachment itself.
+        let ((_, early_preview), early_headers) =
+            send_from(&state, TEST_PEER, get(&preview_path, &owner)).await;
+        let ((_, _), early_attachment_headers) =
+            send_from(&state, TEST_PEER, get(&attachment_path, &owner)).await;
+        state.attachments.optimize(sent_picture.id).await.unwrap();
+        state.attachments.optimize(unsent_picture.id).await.unwrap();
+        let ((preview_status, preview), headers) =
+            send_from(&state, TEST_PEER, get(&preview_path, &owner)).await;
+        let ((_, attachment), attachment_headers) =
+            send_from(&state, TEST_PEER, get(&attachment_path, &owner)).await;
+        let mut revalidation = get(&preview_path, &owner);
+        revalidation.headers_mut().insert(
+            header::IF_NONE_MATCH,
+            headers.get(header::ETAG).unwrap().clone(),
+        );
+        let (revalidated, _) = send(&state, revalidation).await;
+        let (stranger_status, _) = send(&state, get(&preview_path, &stranger)).await;
+        let preview_of = |id| {
+            let database = database.clone();
+            async move {
+                crate::storage::attachments::find_attachment(&database, id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .preview
+                    .unwrap()
+            }
+        };
+        let unsent_preview = preview_of(unsent_picture.id).await;
+        let kept_preview = preview_of(sent_picture.id).await;
+        state
+            .attachments
+            .purge(
+                crate::domain::clock::now_unix_milliseconds()
+                    + crate::domain::attachments::UNSENT_UPLOAD_LIFETIME_MILLISECONDS * 2,
+            )
+            .await
+            .unwrap();
+        let remaining_files = state.attachments.stored_file_ids().await;
+        database.close().await;
+
+        assert_eq!(early_preview, picture);
+        assert_eq!(
+            early_headers.get(header::ETAG),
+            early_attachment_headers.get(header::ETAG)
+        );
+        assert_eq!(preview_status, StatusCode::OK);
+        assert_eq!(stored_dimensions(&preview), (800, 100));
+        assert!(
+            preview.len() < attachment.len(),
+            "smaller than the stored file"
+        );
+        let preview_type = headers.get(header::CONTENT_TYPE).unwrap();
+        assert!(["image/avif", "image/webp"].contains(&preview_type.to_str().unwrap()));
+        assert_ne!(
+            headers.get(header::ETAG),
+            attachment_headers.get(header::ETAG)
+        );
+        for name in [
+            header::X_CONTENT_TYPE_OPTIONS,
+            header::CONTENT_SECURITY_POLICY,
+            header::CACHE_CONTROL,
+        ] {
+            assert_eq!(headers.get(&name), attachment_headers.get(&name), "{name}");
+        }
+        assert!(
+            headers
+                .get(header::CONTENT_DISPOSITION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("inline")
+        );
+        assert_eq!(revalidated, StatusCode::NOT_MODIFIED);
+        assert_eq!(stranger_status, StatusCode::NOT_FOUND);
+        assert!(!remaining_files.contains(&unsent_preview.file_id), "purged");
+        assert!(remaining_files.contains(&kept_preview.file_id));
     }
 
     #[tokio::test]

@@ -47,6 +47,12 @@ const EMOJI_SIDE_PIXELS: u32 = 128;
 /// and 1.73 GB at 24 MP, the decode limit. 16 MP keeps the 13–15 MP photos of the measured
 /// corpus compressed.
 const MAXIMUM_COMPRESSED_PICTURE_PIXELS: u32 = 16_000_000;
+/// Attachments show in the message list in a box of at most 400 × 300 CSS px
+/// (`--mw-component-attachment-image-max-width` and `-height`); their previews fit twice that, for
+/// high-density screens. Twice rather than three times as for avatars: a preview gives way to the
+/// full picture as soon as it is opened, and three times would weigh about 2.25 times as much.
+const PREVIEW_WIDTH_PIXELS: u32 = 800;
+const PREVIEW_HEIGHT_PIXELS: u32 = 600;
 /// Pictures past this are only ever encoded by the single attachment worker, so two of them never
 /// run at once.
 const LARGE_PICTURE_PIXELS: u32 = 1_000_000;
@@ -489,6 +495,74 @@ pub(crate) fn optimize_attachment(
         }))
 }
 
+/// A smaller copy of an attachment for the message list (ADR-0033): fitted within
+/// `PREVIEW_WIDTH_PIXELS` × `PREVIEW_HEIGHT_PIXELS`, stored in the smallest form that scores as
+/// visually lossless against the fitted picture, animated when the source is; no encode starts
+/// past `deadline`. `None` when the picture already fits, when nothing passes, for an animated
+/// PNG, and when the stored form could not show the same colours.
+pub(crate) fn attachment_preview(
+    bytes: &[u8],
+    content_type: &str,
+    deadline: Instant,
+) -> Result<Option<ProcessedImage>, ImageProcessingError> {
+    if !OPTIMIZABLE_CONTENT_TYPES.contains(&content_type) || is_animated_png(bytes)? {
+        return Ok(None);
+    }
+    let Some((width, height)) = displayed_dimensions(bytes) else {
+        return Err(ImageProcessingError::Unsupported);
+    };
+    if width <= PREVIEW_WIDTH_PIXELS && height <= PREVIEW_HEIGHT_PIXELS {
+        return Ok(None);
+    }
+    let picture = decode_picture(bytes, |frame| fitted_preview(&frame).unwrap_or(frame))?;
+    let Some((first, _)) = picture.frames.first() else {
+        return Err(ImageProcessingError::Unsupported);
+    };
+    if !picture.colour.keeps_colours(first) {
+        return Ok(None);
+    }
+    let is_animated = picture.frames.len() > 1;
+    let encoded = if is_animated {
+        Some(smallest_animation(&picture.frames, deadline)?)
+    } else {
+        smallest_still(first, &picture.colour, !picture.is_photo, deadline)?
+    };
+    Ok(encoded.map(|encoded| ProcessedImage {
+        bytes: encoded.bytes,
+        content_type: encoded.content_type,
+        is_animated,
+    }))
+}
+
+/// The picture shrunk to fit the preview size, its ratio kept; `None` when it already fits.
+fn fitted_preview(image: &RgbaImage) -> Option<RgbaImage> {
+    let (width, height) = image.dimensions();
+    if width <= PREVIEW_WIDTH_PIXELS && height <= PREVIEW_HEIGHT_PIXELS {
+        return None;
+    }
+    let (width, height) = (u64::from(width), u64::from(height));
+    let (maximum_width, maximum_height) = (
+        u64::from(PREVIEW_WIDTH_PIXELS),
+        u64::from(PREVIEW_HEIGHT_PIXELS),
+    );
+    // Rounded to the nearest pixel, at least one: both results stay within the preview size.
+    let (fitted_width, fitted_height) = if width * maximum_height >= height * maximum_width {
+        (maximum_width, (height * maximum_width + width / 2) / width)
+    } else {
+        (
+            (width * maximum_height + height / 2) / height,
+            maximum_height,
+        )
+    };
+    let side = |value: u64| u32::try_from(value.max(1)).unwrap_or(1);
+    Some(image::imageops::resize(
+        image,
+        side(fitted_width),
+        side(fitted_height),
+        FilterType::Lanczos3,
+    ))
+}
+
 /// Whether a PNG is animated (APNG), from its header: decoding would keep only its first frame.
 fn is_animated_png(bytes: &[u8]) -> Result<bool, ImageProcessingError> {
     if image::guess_format(bytes).ok() != Some(ImageFormat::Png) {
@@ -799,7 +873,11 @@ pub(crate) mod tests {
         })
     }
 
-    fn encoded(image: &RgbaImage, format: ImageFormat, icc_profile: Option<Vec<u8>>) -> Vec<u8> {
+    pub(crate) fn encoded(
+        image: &RgbaImage,
+        format: ImageFormat,
+        icc_profile: Option<Vec<u8>>,
+    ) -> Vec<u8> {
         let mut bytes = Vec::new();
         let rgb = DynamicImage::ImageRgba8(image.clone()).into_rgb8();
         let (width, height) = image.dimensions();
@@ -1050,6 +1128,58 @@ pub(crate) mod tests {
             optimize_attachment(b"just text", "application/octet-stream", no_deadline())
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn attachment_previews_fit_the_message_list_at_twice_its_size() {
+        let wide = encoded(&photo(1_600, 120), ImageFormat::Jpeg, None);
+        let preview = attachment_preview(&wide, "image/jpeg", no_deadline())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored_dimensions(&preview.bytes), (800, 60));
+        assert!(preview.bytes.len() < wide.len());
+        assert!(!preview.is_animated);
+
+        let tall = attachment_preview(&png(100, 2_000), "image/png", no_deadline())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored_dimensions(&tall.bytes), (30, 600));
+
+        assert_eq!(
+            attachment_preview(&png(800, 600), "image/png", no_deadline()),
+            Ok(None),
+            "already fits: the attachment is its own preview"
+        );
+        assert_eq!(
+            attachment_preview(b"just text", "application/octet-stream", no_deadline()),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn an_animated_attachment_gets_an_animated_preview() {
+        let gif = animated_gif(1_000, 100, 3);
+        let preview = attachment_preview(&gif, "image/gif", no_deadline())
+            .unwrap()
+            .unwrap();
+        assert_eq!(preview.content_type, "image/webp");
+        assert!(preview.is_animated);
+        let decoder = WebPDecoder::new(Cursor::new(&preview.bytes)).unwrap();
+        assert_eq!(decoder.dimensions(), (800, 80));
+        assert_eq!(decoder.into_frames().count(), 3);
+    }
+
+    #[test]
+    fn an_attachment_whose_colours_would_change_gets_no_preview() {
+        let print_export = encoded(
+            &photo(1_200, 90),
+            ImageFormat::Jpeg,
+            Some(colour::tests::cmyk_icc_bytes()),
+        );
+        assert_eq!(
+            attachment_preview(&print_export, "image/jpeg", no_deadline()),
+            Ok(None)
         );
     }
 
@@ -1611,6 +1741,7 @@ pub(crate) mod tests {
             .collect();
         paths.sort();
         let (mut uploaded, mut stored, mut avatars, mut banners) = (0, 0, 0, 0);
+        let mut shown = 0;
         for path in paths {
             let source = std::fs::read(&path).unwrap();
             let content_type = crate::domain::message_rules::sniff_content_type(&source);
@@ -1628,8 +1759,19 @@ pub(crate) mod tests {
             let kept = optimized
                 .as_ref()
                 .map_or(bytes.len(), |image| image.bytes.len());
+            let preview_started = Instant::now();
+            let preview = attachment_preview(
+                &bytes,
+                content_type,
+                preview_started + Duration::from_secs(20),
+            )
+            .unwrap()
+            .filter(|preview| preview.bytes.len() < kept);
+            let preview_elapsed = preview_started.elapsed();
+            // What the message list loads: the preview, or the stored file when there is none.
+            let shown_bytes = preview.as_ref().map_or(kept, |preview| preview.bytes.len());
             println!(
-                "{}\t{}\t{}\t{}\t{:?}\tavatar {} {}\tbanner {} {}",
+                "{}\t{}\t{}\t{}\t{:?}\tpreview {} {:?}\tavatar {} {}\tbanner {} {}",
                 path.file_name().unwrap().to_string_lossy(),
                 bytes.len(),
                 kept,
@@ -1637,6 +1779,8 @@ pub(crate) mod tests {
                     .as_ref()
                     .map_or("kept", |image| image.content_type),
                 elapsed,
+                shown_bytes,
+                preview_elapsed,
                 avatar.picture.bytes.len(),
                 avatar.picture.content_type,
                 banner.picture.bytes.len(),
@@ -1644,6 +1788,7 @@ pub(crate) mod tests {
             );
             uploaded += bytes.len();
             stored += kept;
+            shown += shown_bytes;
             avatars += avatar.picture.bytes.len();
             banners += banner.picture.bytes.len();
             let Some(output) = &output else {
@@ -1673,7 +1818,7 @@ pub(crate) mod tests {
             }
         }
         println!(
-            "attachments: {uploaded} B uploaded, {stored} B stored; avatars {avatars} B; banners {banners} B"
+            "attachments: {uploaded} B uploaded, {stored} B stored, {shown} B shown in the message list; avatars {avatars} B; banners {banners} B"
         );
     }
 }
