@@ -4,6 +4,18 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-11-02
+First half of video in voice channels (ROADMAP 16.5, ADR-0035): the server can relay cameras, but the web client cannot turn one on yet. This version migrates the database (migration 33, with the usual automatic backup); older versions refuse it afterwards.
+
+### Added
+- A "Vidéo" permission (`STREAM`), granted to `@everyone` in every server, in the role and channel permission editors: it will allow turning a camera on in voice channels.
+- The server relays cameras in voice channels: VP8 simulcast in three qualities, one per watcher from the size of its tile, at most 9 cameras watched per person, 12 cameras per channel and 25 per instance. Each quality has a byte budget, silent cameras are turned off after 10 s, and keyframe requests are throttled.
+- `[voice] video_upload_mbps` in `mellow.toml` (default 100); `0` turns cameras off. Other values take effect with bandwidth allocation, in a later version.
+- The voice UDP socket asks the kernel for 4 MiB buffers each way and logs what it got.
+
+### Changed
+- Gateway frames from identified clients may weigh up to 52 KiB, and voice offers up to 48 KiB, to hold the video lines.
+
 ## [0.29.0] - 2026-11-02
 Fixes and quick wins asked for by the owner (ROADMAP item 17). This version migrates the database (migration 32, with the usual automatic backup); older versions refuse it afterwards.
 
