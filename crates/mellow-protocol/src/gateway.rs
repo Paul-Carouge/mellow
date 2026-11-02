@@ -61,7 +61,9 @@ pub enum ClientFrame {
     },
     /// The cameras this session shows and how large (ADR-0035), at most
     /// `MAXIMUM_VIDEO_RECEIVE_SLOTS`: replaces the previous list. The server gives each one a
-    /// video receive slot (`VOICE_SLOT_ASSIGNED`) and the layer that fits its size.
+    /// video receive slot (`VOICE_SLOT_ASSIGNED`) and the layer that fits its size. A
+    /// `voice_join` (a move or a reconnection) forgets the list: send it again after its
+    /// `VOICE_SESSION_DESCRIPTION`.
     VoiceVideoWatch { cameras: Vec<WatchedCamera> },
     /// Plays one of the voice channel's server sounds to everyone connected to it (ADR-0032).
     /// Answered by `VOICE_SOUND_PLAYED` when allowed; ignored otherwise.
@@ -504,8 +506,8 @@ pub enum GatewayEvent {
         reason: VoiceVideoRefusal,
     },
     /// The layers of this session's camera someone watches, lowest first (ADR-0035): the client
-    /// pauses the others. Sent to that session only, when the set changes; empty when nobody
-    /// watches.
+    /// pauses the others. Sent to that session only, when the set changes. It always holds the
+    /// lowest layer while the camera is on, and is empty once the server turned the camera off.
     VoiceVideoLayers {
         channel_id: Snowflake,
         active: Vec<SimulcastLayer>,

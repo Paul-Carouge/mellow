@@ -668,7 +668,10 @@ export type GatewayEvent =
   | { t: "VOICE_DISCONNECTED"; data: { channel_id: Snowflake; reason: VoiceDisconnectReason } }
   /** Only to that session: its camera stays off (ADR-0035). */
   | { t: "VOICE_VIDEO_REFUSED"; data: { channel_id: Snowflake; reason: VoiceVideoRefusal } }
-  /** Only to the camera's session: the layers someone watches, lowest first; pause the others. */
+  /**
+   * Only to the camera's session: the layers someone watches, lowest first; pause the others.
+   * Always holds "q" while the camera is on; empty once the server turned it off.
+   */
   | { t: "VOICE_VIDEO_LAYERS"; data: { channel_id: Snowflake; active: SimulcastLayer[] } }
   /**
    * Only to the listener's session: the receive slot whose transceiver has `mid` now carries
@@ -706,7 +709,10 @@ export type ClientFrame =
     }
   | { op: "voice_leave" }
   | { op: "voice_state"; d: { self_mute: boolean; self_deaf: boolean; self_video?: boolean } }
-  /** The cameras shown and how large, at most `VIDEO_RECEIVE_SLOTS`; replaces the previous list. */
+  /**
+   * The cameras shown and how large, at most `VIDEO_RECEIVE_SLOTS`; replaces the previous list.
+   * A `voice_join` forgets it: send it again after `VOICE_SESSION_DESCRIPTION`.
+   */
   | { op: "voice_video_watch"; d: { cameras: { user_id: Snowflake; size: VideoTileSize }[] } }
   /** Ignored by the server unless allowed (ADR-0032): no answer but `VOICE_SOUND_PLAYED`. */
   | { op: "voice_play_sound"; d: { sound_id: Snowflake } };

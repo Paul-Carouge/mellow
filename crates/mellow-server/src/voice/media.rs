@@ -36,8 +36,11 @@ const MAXIMUM_PACKETS_PER_SECOND_WITH_VIDEO: u32 = 400;
 /// retransmissions (ADR-0035).
 const MAXIMUM_PACKETS_PER_SECOND_WITH_CAMERA: u32 = 1_500;
 /// 4 Mbit/s averaged over a second: a camera's three layers (2.2 Mbit/s) with keyframes and
-/// retransmissions. Without a camera, the packet budget bounds bytes well below this.
+/// retransmissions.
 const MAXIMUM_BYTES_PER_SECOND_WITH_CAMERA: usize = 500_000;
+/// 800 kbit/s: Opus at its highest bit rate (510 kbit/s) with RTCP for 9 watched cameras, so a
+/// client with its camera off cannot make the server decrypt full packets for nothing.
+const MAXIMUM_BYTES_PER_SECOND_WITHOUT_CAMERA: usize = 100_000;
 const PACKET_RATE_WINDOW: Duration = Duration::from_secs(1);
 /// Commands and speaking hangovers are looked at least this often.
 const MAXIMUM_IDLE_WAIT: Duration = Duration::from_millis(50);
@@ -270,14 +273,23 @@ impl Participant {
         }
         self.packets_in_window = self.packets_in_window.saturating_add(1);
         self.bytes_in_window = self.bytes_in_window.saturating_add(bytes);
-        if self.video.is_camera_forwarded {
-            self.packets_in_window <= MAXIMUM_PACKETS_PER_SECOND_WITH_CAMERA
-                && self.bytes_in_window <= MAXIMUM_BYTES_PER_SECOND_WITH_CAMERA
+        let (maximum_packets, maximum_bytes) = if self.video.is_camera_forwarded {
+            (
+                MAXIMUM_PACKETS_PER_SECOND_WITH_CAMERA,
+                MAXIMUM_BYTES_PER_SECOND_WITH_CAMERA,
+            )
         } else if self.video.camera_mid.is_some() {
-            self.packets_in_window <= MAXIMUM_PACKETS_PER_SECOND_WITH_VIDEO
+            (
+                MAXIMUM_PACKETS_PER_SECOND_WITH_VIDEO,
+                MAXIMUM_BYTES_PER_SECOND_WITHOUT_CAMERA,
+            )
         } else {
-            self.packets_in_window <= MAXIMUM_PACKETS_PER_SECOND
-        }
+            (
+                MAXIMUM_PACKETS_PER_SECOND,
+                MAXIMUM_BYTES_PER_SECOND_WITHOUT_CAMERA,
+            )
+        };
+        self.packets_in_window <= maximum_packets && self.bytes_in_window <= maximum_bytes
     }
 
     /// The watched camera on the video receive m-line `mid`.
@@ -667,7 +679,8 @@ impl MediaLoop<'_> {
     }
 
     /// Tells the camera which of its layers its channel watches, when that changed, so it pauses
-    /// the others (ADR-0035). A camera turned off reports nothing.
+    /// the others (ADR-0035): always the lowest while it is on, and an empty list once it is
+    /// turned off.
     fn report_camera_layers(&mut self, camera_id: Snowflake) {
         let Some(camera) = self.participants.get(&camera_id) else {
             return;
