@@ -98,4 +98,4 @@ Wide (navigator beside the chat)          Phone (drawer)
 - No preloading: a sound someone never played downloads on first play, so its first play may start a little late (ADR-0032 accepts it).
 - The waveform shows the whole file at once: for a long song, the 5.2 s window is a sliver; a zoom would help if people upload long files.
 - Safari: `decodeAudioData` support for Ogg Vorbis/Opus varies; such files get the "can't read" sentence.
-- Icons: the soundboard button and the participant's fallback glyph reuse `speaker-high`, and so does preview ("Écouter pour moi"; it used `headphones` until the owner found it read as "listen to myself" and clashed with Deafen), because the icon set lives in `crates/mellow-desktop/icons`; Phosphor `waveform` (soundboard) and `play` (preview) would read better.
+- Icons: the soundboard button and the participant's fallback glyph reuse `speaker-high`, and so does preview ("Écouter pour moi"; it used `headphones` until the owner found it read as "listen to myself" and clashed with Deafen), because the icon set lives in `design/icons`; Phosphor `waveform` (soundboard) and `play` (preview) would read better.

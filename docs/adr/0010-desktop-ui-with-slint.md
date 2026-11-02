@@ -1,6 +1,6 @@
 # 0010. Build the desktop client with Slint
 
-- Status: Accepted
+- Status: Superseded by [ADR-0036](0036-web-client-only-and-native-clients-later.md)
 - Date: 2026-10-19
 
 ## Context

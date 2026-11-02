@@ -77,7 +77,7 @@ Member profile ── Add friend | Accept friend request | (Friend request sent)
 | Profile actions | `web/src/components/MemberList.svelte` |
 | Words | `friends`, `sidebar.friends*`, `messages.blocked*`, `members.addFriend` and neighbours in `web/src/i18n/en.ts` and `fr.ts` |
 | Tokens | `component.friends.*`, `component.message.blocked-*` in `design/tokens.json` |
-| Icons | `chat-circle`, `prohibit`, `user-minus` (Phosphor 2.1.1 Fill) in `crates/mellow-desktop/icons/` |
+| Icons | `chat-circle`, `prohibit`, `user-minus` (Phosphor 2.1.1 Fill) in `design/icons/` |
 
 ## Checked
 

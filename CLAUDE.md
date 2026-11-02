@@ -3,13 +3,13 @@
 Project-specific instructions. Global rules (`~/.claude/CLAUDE.md`, `~/.claude/rules/`) still apply; this file only adds what is specific to Mellow.
 
 ## What Mellow is
-A self-hostable, open-source (AGPL-3.0) Discord alternative. Rust everywhere except the Android UI (Kotlin + Compose Material 3 Expressive). The defining product promise is **trivial self-hosting**: one binary, one data directory, no Docker, one-command updates. Any change that makes installing, updating or backing up an instance harder needs an ADR.
+A self-hostable, open-source (AGPL-3.0) Discord alternative. Rust on the server and in the client core; the client today is the web client (Svelte), embedded in the server binary. Native clients come later, possibly with GPUI (ADR-0036). The defining product promise is **trivial self-hosting**: one binary, one data directory, no Docker, one-command updates. Any change that makes installing, updating or backing up an instance harder needs an ADR.
 
 Read before working:
 - [ARCHITECTURE.md](ARCHITECTURE.md) — components, layers, data model, protocol, security.
 - [DESIGN.md](DESIGN.md) — visual identity, design tokens, screens, accessibility. The UI follows the Dusk direction (ADR-0022, superseding ADR-0012): Discord's concepts and shortcuts in Mellow's own layout (the Navigator), colour, type, shape and motion; never Discord's blurple, logo or fonts. Reference mockup: `design/mockups/dusk-direction.html`.
 - [docs/adr/](docs/adr/) — why things are the way they are. Do not contradict an accepted ADR silently: propose a new ADR that supersedes it.
-- [ROADMAP.md](ROADMAP.md) — milestones and current scope. **Current focus: the web client only** (owner's decision, 2026-10-22): new work targets `web/` and the server it needs; desktop, Android and other platforms wait until the web is finished, but must keep compiling.
+- [ROADMAP.md](ROADMAP.md) — milestones and current scope. **Current focus: the web client only** (owner's decisions, 2026-10-22 and 2026-11-02, ADR-0036): new work targets `web/` and the server it needs; the Slint desktop app was removed and native clients (desktop, mobile) come back after the web client, with their own ADR.
 - [docs/development-notes.md](docs/development-notes.md) — where the PR stack stands, the workflow, and traps already hit. Update it at the end of each iteration.
 
 ## Repository layout
@@ -17,11 +17,10 @@ Read before working:
 |---|---|
 | `crates/mellow-protocol` | Wire types only (DTOs, gateway events, ids, permission bitflags). No I/O, no workspace dependencies. |
 | `crates/mellow-server` | Server binary. Modules `http`, `gateway`, `admin` → `domain` → `storage`. Never the reverse. |
-| `crates/mellow-client-core` | All client logic (connections, state, cache, outbox). No UI code. |
-| `crates/mellow-ffi` | UniFFI export of client-core for Kotlin. Thin: no logic of its own. |
-| `crates/mellow-desktop` | Slint desktop app. `.slint` = presentation only. |
-| `android/` | Kotlin app: Compose UI → ViewModel → adapter over `mellow-ffi`. No protocol logic in Kotlin. |
-| `design/tokens.json` | Single source of truth for design tokens. Never hard-code colors or sizes in Slint, Compose or admin CSS. |
+| `crates/mellow-client-core` | Client logic for native clients to come (connections, state, cache, outbox). No UI code. |
+| `crates/mellow-update` | Signed self-update of `mellow-server` (`mellow-server update`, the Docker kit). |
+| `web/` | The web client (Svelte 5, Tailwind 4), built into `web/dist` and embedded in the server binary. |
+| `design/tokens.json` | Single source of truth for design tokens. Never hard-code colours or sizes in the web client or admin CSS. Icons in `design/icons`, fonts in `design/fonts`. |
 
 ## Commands
 ```bash
@@ -29,11 +28,11 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check
-cargo xtask tokens          # regenerate ui/tokens.slint after editing design/tokens.json (--check in CI)
-cargo run -p mellow-desktop
+cargo xtask tokens          # regenerate web/src/lib/tokens.css, the favicon and web app icons after editing design/tokens.json (--check in CI)
+cd web && npm ci && npm run check && npm test && npm run build
 ```
-Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (`init`, `serve`, `admin create-user`: REST API and WebSocket gateway), `mellow-client-core` (REST, gateway, state), `mellow-desktop` (Discord-like shell signed in to an instance; `MELLOW_DEMO_WORKSPACE=1` for fake data) and `xtask` (design token generator) exist. Update this section when run commands appear.
-CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux only while the web client is the focus (ADR-0023).
+Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (`init`, `serve`, `update`, `backup`, `admin …`: REST API, WebSocket gateway, voice SFU, embedded web client), `mellow-client-core` (REST, gateway, state), `mellow-update` and `xtask` (design token generator) exist. Update this section when run commands appear.
+CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux only (ADR-0036).
 
 ## Rules specific to this project
 - **Protocol changes** start in `mellow-protocol` and are made in the same commit on server and clients. API is versioned (`/api/v1`, `/gateway?v=1`); never break a released version.
@@ -45,8 +44,8 @@ CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux only w
 - **Migrations** are forward-only, embedded, and tested on realistic data. Never edit a released migration.
 - **Logs** never contain message content, tokens, passwords, emails or attachment names.
 - **IDs** are 64-bit Snowflake-style, serialized as strings in JSON.
-- **Client core API** must stay UniFFI-friendly: owned types, no generics or lifetimes, flat error enums.
-- **UI thread**: nothing blocking on the Slint event loop or the Android main thread.
+- **Client core API** stays plain Rust a native client can use (owned types, flat error enums); its toolkit is decided by the native client's ADR (ADR-0036).
+- **UI thread**: nothing blocking the browser's main thread (long work in workers or chunks).
 - **Dependencies**: prefer what is already in the workspace; any new crate needs a reason in the PR description and must pass `cargo deny`.
 
 ## Quality bar (owner, 2026-11-02)

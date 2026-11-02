@@ -2,4 +2,4 @@
 # (migrations, fixtures, signatures) must not change on a Windows checkout.
 * text=auto eol=lf
 # Kept exactly as published upstream.
-crates/mellow-desktop/icons/LICENSE -text
+design/icons/LICENSE -text

@@ -1,6 +1,6 @@
 # 0023. Release and test only the Linux server while the web client is the focus
 
-- Status: Accepted
+- Status: Superseded by [ADR-0036](0036-web-client-only-and-native-clients-later.md)
 - Date: 2026-10-22
 - Amends: [ADR-0016](0016-sign-releases-in-a-protected-ci-environment.md), [ADR-0017](0017-desktop-app-updates-itself-from-signed-releases.md)
 

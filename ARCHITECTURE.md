@@ -7,32 +7,31 @@ Mellow is a self-hostable, open-source (AGPL-3.0) alternative to Discord, writte
 ### Goals
 - **Trivial self-hosting.** One server binary, one data directory, no container, no external database, no reverse proxy required. Install, update and back up in one command each.
 - **Familiar chat model.** Servers (guilds) with categories and text channels, real-time messages, direct messages, roles and permissions, moderation, attachments.
-- **Native clients.** A desktop app in Rust (Slint) for Linux, macOS and Windows, and an Android app in Kotlin (Jetpack Compose, Material 3 Expressive). Both share one Rust client core.
+- **A web client first.** The web client (Svelte), served by the server binary ([ADR-0019](docs/adr/0019-web-client-served-by-the-server-binary.md)), is the only client while it is being finished. Native desktop and mobile clients come after it, built on the Rust client core, with a toolkit decided then (GPUI is the candidate, [ADR-0036](docs/adr/0036-web-client-only-and-native-clients-later.md)).
 - **Single-node scale.** Up to about 10 000 monthly active users and about 1 000 concurrently connected clients per instance on a small VPS (2 vCPU, 2 GB RAM).
 - **Privacy by default.** TLS everywhere, sensitive data encrypted at rest, no telemetry.
 
 ### Non-goals (MVP)
-- Voice and video. The architecture leaves room for them, but the MVP does not ship them.
 - Federation between instances. A client can connect to several instances, but instances do not talk to each other.
 - End-to-end encryption. The server can read messages, which keeps moderation, search and multi-device sync simple ([ADR-0006](docs/adr/0006-tls-and-encryption-at-rest.md)).
 - Multi-node clustering or horizontal scaling.
-- iOS clients. (A web client, served by the server binary, was added by [ADR-0019](docs/adr/0019-web-client-served-by-the-server-binary.md).)
+- Native clients while the web client is being finished ([ADR-0036](docs/adr/0036-web-client-only-and-native-clients-later.md)).
 
 ## 2. System overview
 
 ```
-┌────────────────────┐   ┌────────────────────┐
-│  Desktop (Slint)   │   │ Android (Compose)  │
-│  mellow-desktop    │   │  android/          │
-└─────────┬──────────┘   └─────────┬──────────┘
-          │ Rust API               │ Kotlin API (UniFFI)
-          │                ┌───────┴──────────┐
-          │                │   mellow-ffi     │
-          │                └───────┬──────────┘
-          └──────────┬─────────────┘
-           ┌─────────┴──────────┐
-           │ mellow-client-core │  state, sync, local cache, multi-instance
-           └─────────┬──────────┘
+┌────────────────────────────────────┐   ┌──────────────────────────────┐
+│  Web client (Svelte, web/)         │   │  Native clients (later,      │
+│  served by mellow-server at /      │   │  ADR-0036)                   │
+└─────────────────┬──────────────────┘   └──────────────┬───────────────┘
+                  │ HTTPS (REST) + WSS (gateway)        │ Rust API
+                  │ types mirrored in web/src/lib/      │
+                  │ protocol.ts, checked against        │
+                  │ mellow-protocol                     │
+                  │                         ┌───────────┴────────┐
+                  │                         │ mellow-client-core │
+                  │                         └───────────┬────────┘
+                  └──┬──────────────────────────────────┘
                      │  HTTPS (REST)  +  WSS (gateway)
                      │  types from mellow-protocol
            ┌─────────┴──────────────────────────────────┐
@@ -53,11 +52,9 @@ Mellow is a self-hostable, open-source (AGPL-3.0) alternative to Discord, writte
               (SQLite)      (files on disk)
 ```
 
-Push notifications for Android leave the instance through UnifiedPush (user's distributor) or Firebase Cloud Messaging ([ADR-0008](docs/adr/0008-android-push-notifications.md)).
-
 ## 3. Repository layout
 
-A single Cargo workspace plus a Gradle project for Android.
+A single Cargo workspace and the web client's npm project.
 
 ```
 mellow/
@@ -65,13 +62,14 @@ mellow/
 ├── crates/
 │   ├── mellow-protocol/        # wire types: REST DTOs, gateway events, ids, permissions bitflags
 │   ├── mellow-server/          # server binary: REST, gateway, admin UI, storage, CLI
-│   ├── mellow-client-core/     # client logic: connection, sync, cache, state, multi-instance
-│   ├── mellow-ffi/             # UniFFI bindings of mellow-client-core for Kotlin
-│   └── mellow-desktop/         # Slint desktop app
-├── android/                    # Gradle project, Kotlin + Compose M3 Expressive, consumes mellow-ffi
-├── xtask/                      # dev tasks (`cargo xtask tokens` generates design tokens per platform)
+│   ├── mellow-client-core/     # client logic for native clients to come: connection, state, cache
+│   └── mellow-update/          # signed self-update of the server binary
+├── web/                        # web client: Svelte 5 + Tailwind 4, embedded in the server binary
+├── xtask/                      # dev tasks (`cargo xtask tokens`: web stylesheet, favicon, app icons)
 ├── design/
-│   └── tokens.json             # design tokens, single source of truth (see DESIGN.md)
+│   ├── tokens.json             # design tokens, single source of truth (see DESIGN.md)
+│   ├── icons/                  # Phosphor icons (SVG)
+│   └── fonts/                  # Figtree
 ├── docs/
 │   └── adr/                    # architecture decision records
 ├── ARCHITECTURE.md
@@ -83,9 +81,8 @@ mellow/
 Dependency rule between crates (arrows mean "depends on"):
 
 ```
-mellow-desktop ──► mellow-client-core ──► mellow-protocol
-mellow-ffi     ──► mellow-client-core
-mellow-server  ──────────────────────────► mellow-protocol
+mellow-client-core ──► mellow-protocol
+mellow-server      ──► mellow-protocol, mellow-update
 ```
 
 `mellow-protocol` depends on nothing in the workspace and has no I/O. The server never depends on client crates and vice versa.
@@ -200,7 +197,7 @@ The computation is a pure function in `mellow-protocol` (`compute_guild_permissi
 - Accounts are local to an instance ([ADR-0005](docs/adr/0005-per-instance-accounts.md)). Passwords are hashed with Argon2id.
 - Login returns an opaque, random 256-bit session token. Only its SHA-256 hash is stored. Tokens are sent as `Authorization: Bearer` on REST and in the gateway `Identify` message.
 - Sessions last 90 days from sign-in, whatever their use. `last_seen_at` is recorded at most once an hour per session (a write per request would queue behind message sends), a failed record never refuses the request. Sessions expired for more than a day are deleted at startup and then every hour (the day keeps a clock that jumped forward from wiping every session).
-- Clients store tokens in the OS keychain (desktop: `keyring`; Android: Keystore-backed encrypted storage).
+- The web client keeps its session in an `HttpOnly`, `Secure`, `__Host-` cookie, never readable by scripts; native clients to come will store tokens in the OS secret store.
 - Registration can be open, invite-only or closed, set by the instance admin.
 - Rate limiting on authentication endpoints and on message writes. Messages (M1.3b): 10 writes (send, edit, delete) per 10 s and 600 per hour per user, 30 messages per 10 s per channel, 30 read-state updates per 10 s per user; content capped at 4 000 characters and 8 000 bytes; bidi overrides, tags and invisible-only messages refused; `secure_delete` overwrites deleted content on disk. Authentication (M1.2): 20 attempts per minute per client address (IPv6 grouped by /64), and at most 100 client addresses starting such a window per minute per IPv6 /48 (so a /64 over its own limit locks only itself out, not its /48 neighbours), 10 logins per 15 minutes per account and address, 100 per 15 minutes per account; attempts are counted before the password check. Account settings: a current-password check (password change, username change) is limited to 10 per 15 minutes per session and 50 per user, counting toward the user's budget only the checks the session's budget allowed, so a stolen session cannot use up the owner's budget; username and display-name changes to 10 per minute per session and 30 per user, counted the same way, so neither a stolen session nor extra sessions multiply the fan-out. A password change replaces the hash and deletes the user's other sessions only if the hash is still the one verified, and a new session is stored only if the password it was verified against is still current. Concurrent Argon2 work is capped to the number of CPU cores.
 - Quotas (M1.3a): 500 channels per guild, 100 owned guilds per user, 1 000 active invites per guild, member lists capped at 1 000 until pagination; guild writes limited to 30 per minute per user and invite redemptions to 30 per minute per address and 10 per 10 minutes per user. Invite codes read like `AE8C-78A9-K2QF`: 12 symbols of Crockford's base 32 (60 bits, as strong as the older 10-character codes; two groups were guessable from an IPv6 /48 and the audit log keeps the first group), and a typed code ignores case, spaces and dashes. Quotas are checked in the same SQL statement or `BEGIN IMMEDIATE` transaction as the insert.
@@ -246,35 +243,20 @@ mellow-server admin ... # CLI administration (create user, set administrator, re
 
 - REST over HTTPS, versioned under `/api/v1`, JSON bodies, errors as `{ "code": "CHANNEL_NOT_FOUND", "message": "..." }` with stable machine-readable codes.
 - WebSocket gateway as described in 4.8, versioned with `/gateway?v=1`.
-- All request, response and event types are defined once in `mellow-protocol` with `serde`, shared by the server and the client core. Kotlin types come from UniFFI, not from hand-written copies.
+- All request, response and event types are defined once in `mellow-protocol` with `serde`, shared by the server and the client core. The web client's TypeScript types (`web/src/lib/protocol.ts`) are checked against wire samples generated from `mellow-protocol`.
 - Pagination by id cursors (`before`, `after`, `limit ≤ 100`).
 - Every input is validated at the server boundary (lengths, formats, allowed values) even though the client validates too.
 
 ## 6. Client core (`mellow-client-core`)
 
-The client core contains everything that is not drawing pixels, so desktop and Android behave the same.
+The client core contains everything that is not drawing pixels, for the native clients to come ([ADR-0036](docs/adr/0036-web-client-only-and-native-clients-later.md)); the web client keeps its own TypeScript equivalent in `web/src/lib/`. It still compiles and is tested against a real server.
 
 - **Connections:** one `InstanceConnection` per configured instance (REST client on `reqwest` with rustls, gateway on `tokio-tungstenite`), with reconnection, resume and exponential backoff with jitter.
 - **State:** an in-memory store of guilds, channels, members, messages, presence and read states, updated by gateway events and REST responses. UIs read immutable snapshots and subscribe to change notifications.
 - **Local cache:** a per-instance SQLite database storing recent messages and metadata, so the app opens instantly and shows content offline. The cache is disposable: it can always be rebuilt from the server.
 - **Outbox:** messages sent while offline or during reconnect are queued with a client-generated nonce, shown as pending, and reconciled with the REST response echoing the nonce; a retry after a lost response reuses the nonce, so the server returns the message it already created instead of a duplicate.
-- **API surface:** async functions and an event stream, designed to be exported by UniFFI without leaking Rust-specific types (no lifetimes, no generics in the exported API).
-- **Built so far (M1.5):** `InstanceAddress` (https only, plain http on loopback), `RestClient`, `run_gateway` (identify, heartbeat, resume, backoff with jitter; reports `Ready`, events, `Disconnected`, `SignedOut`) and `ClientState`, a pure reducer the UI owns. One instance at a time; local cache not built yet. The outbox (`ClientState::queue_message`, `generate_message_nonce`) keeps each unconfirmed send with a random 128-bit nonce, marks it failed when the request fails, and resends it with the same nonce on retry; after each gateway `Ready` or `Resumed`, the desktop sends every failed message again (`ClientState::retry_failed_messages`), one after another in send order, stopping at the first failure the instance does not refuse. It is in memory only. History loads by pages of 50 (`HISTORY_PAGE_SIZE`): the latest when a channel opens, then older ones `before` the oldest cached message as the reader scrolls up; a channel keeps at most 500 messages once the reader leaves it (`ClientState::trim_history`).
-
-### 6.1 Desktop (`mellow-desktop`)
-
-- Slint UI ([ADR-0010](docs/adr/0010-desktop-ui-with-slint.md)). `.slint` files hold only presentation; Rust code adapts client-core snapshots to Slint models.
-- The Slint event loop owns the UI thread and the `ClientState`; network calls run on a separate tokio runtime. Their results and gateway updates come back to the UI thread as futures driven by `slint::spawn_local`, so no lock is shared with the UI. Nothing blocking runs on the UI thread.
-- The session (instance address and token) is stored in the OS secret store through `keyring` (Keychain on macOS, Credential Manager on Windows with local-machine persistence so it never roams with a domain profile, Secret Service on Linux), read back off the UI thread at launch and validated like any input. It is removed when the server rejects the token or the user signs out from the user panel; signing out revokes the token on the server, and the app waits for that request before exiting. If the secret store refuses the write, the session lives in memory only and is revoked on exit. One stored session at a time until multi-instance support (M2).
-- Design tokens are generated from `design/tokens.json` into a Slint `global` (see DESIGN.md).
-- Packaging: AppImage/deb/rpm (Linux), signed `.dmg` (macOS), MSI (Windows).
-
-### 6.2 Android (`android/`)
-
-- Kotlin, Jetpack Compose, Material 3 Expressive, adaptive layouts for phones, tablets and foldables.
-- Uses `mellow-ffi` (UniFFI-generated Kotlin bindings + native libraries for `arm64-v8a` and `x86_64`, built with `cargo-ndk`) ([ADR-0011](docs/adr/0011-shared-client-core-with-uniffi.md)).
-- Architecture: Compose UI → ViewModel (StateFlow) → repository adapter over the FFI client core. No protocol logic in Kotlin.
-- Push: UnifiedPush when a distributor is installed, FCM otherwise ([ADR-0008](docs/adr/0008-android-push-notifications.md)). Push payloads contain only identifiers; the app fetches content through the authenticated connection.
+- **API surface:** async functions and an event stream with owned types, usable from whatever toolkit the native client's ADR picks.
+- **Built so far (M1.5):** `InstanceAddress` (https only, plain http on loopback), `RestClient`, `run_gateway` (identify, heartbeat, resume, backoff with jitter; reports `Ready`, events, `Disconnected`, `SignedOut`) and `ClientState`, a pure reducer the UI owns. One instance at a time; local cache not built yet. The outbox (`ClientState::queue_message`, `generate_message_nonce`) keeps each unconfirmed send with a random 128-bit nonce, marks it failed when the request fails, and resends it with the same nonce on retry; after each gateway `Ready` or `Resumed`, a client sends every failed message again (`ClientState::retry_failed_messages`), one after another in send order, stopping at the first failure the instance does not refuse. It is in memory only. History loads by pages of 50 (`HISTORY_PAGE_SIZE`): the latest when a channel opens, then older ones `before` the oldest cached message as the reader scrolls up; a channel keeps at most 500 messages once the reader leaves it (`ClientState::trim_history`).
 
 ## 7. Security summary
 
@@ -295,9 +277,9 @@ The client core contains everything that is not drawing pixels, so desktop and A
 ## 8. Quality and CI
 
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace`, `cargo deny check`.
-- Android: `./gradlew lint test` and Compose UI tests.
+- Web client: `npm run check` (svelte-check, TypeScript), `npm test` (Vitest), `npm run build`, `npm audit`.
 - Domain logic (permissions, message rules) has exhaustive unit tests; storage has tests against in-memory SQLite; the gateway has integration tests with real WebSocket clients against a server started on an ephemeral port.
-- Release builds are produced by CI for Linux (x86_64, aarch64), macOS (aarch64, x86_64) and Windows (x86_64), then signed.
+- Release builds of `mellow-server` are produced by CI for Linux (x86_64, aarch64), then signed ([ADR-0036](docs/adr/0036-web-client-only-and-native-clients-later.md)).
 
 ## 9. Evolution path
 

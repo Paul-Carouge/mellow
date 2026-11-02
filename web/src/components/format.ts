@@ -1,4 +1,4 @@
-// Text shown in the shell, built the way the desktop client builds it (mellow-desktop live_rows.rs).
+// Text shown in the shell: display names, dates, typing and unread sentences.
 
 import { formattingLocale, strings, wordedFormattingLocale } from "../i18n";
 import { MAXIMUM_COUNTED_UNREAD_MENTIONS, type PublicUser, type Snowflake } from "../lib/protocol";

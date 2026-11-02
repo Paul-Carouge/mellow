@@ -1,11 +1,12 @@
 # Mellow design document
 
-Status: draft v0.37 (2026-11-02), visual direction proposed in ADR-0022. Owner: design. Applies to the Slint desktop client, the web client, the Android client (Jetpack Compose, Material 3 Expressive) and the admin web UI embedded in the server.
+Status: draft v0.38 (2026-11-02), visual direction proposed in ADR-0022. Owner: design. Applies to the web client and the admin web UI embedded in the server. The notes on the Slint desktop client and the Android client (Jetpack Compose, Material 3 Expressive) describe design intent for the native clients to come: the Slint app was removed (ADR-0036), and the native clients' ADR revises those notes for its toolkit (GPUI is the candidate).
 
 This document is the reference for every visual and interaction decision in Mellow. Developers should be able to build any MVP screen from it without inventing a colour, a size or a sentence. When something is missing, add it here first, then implement it. Every value named here exists in `design/tokens.json`.
 
 ## Changelog
 
+- **2026-11-02, v0.38 — Web only for now (ADR-0036):** the Slint desktop app is removed and native clients come back after the web client. Its Slint-specific notes stay as intent for the next native client. Icons now live in `design/icons` and fonts in `design/fonts`; `cargo xtask tokens` writes the web stylesheet, the favicon and the web app icons only.
 - **2026-11-02, v0.37 — Resizable columns on the web (ROADMAP item 17):** in the wide layout the reader drags the gap after the navigator to widen the channel list (240 to 360 px), and the gap before a docked side sheet to widen the members (240 to 320 px) or the search results (400 to 560 px, each remembered apart), as on Discord (4.5). Each gap holds a handle, a focusable window splitter: nothing shows at rest but the resize cursor; a 2 px line along the cards' straight edges shows on hover (`border.strong`), in apricot while dragged ("you, now", as the channel drag line) and in the focus colour on keyboard focus. Arrows move the edge 16 px, Home and End go to the narrowest and widest, a double-click puts the default back, Esc cancels a drag. Widths are remembered on this device and fitted to the window: the conversation keeps its 480 px, the side sheet gives way first, then the channel list, and the breakpoints (816, 1064, 1224 px) stay where even the narrowest columns stop fitting, so the drawers take over exactly as before. New tokens `component.column-resize.*` and `component.search.panel-width-max`, contrast pair `border.strong` on `surface.rail`.
 - **2026-11-02, v0.36 — Framing the avatar and the banner on the web (ROADMAP item 17):** "Change avatar" and "Change banner" open the crop dialog of 6.54 once a picture is chosen, instead of sending it as is. The dialog keeps each one's shape: "Cadre ton avatar" frames a **circle** (avatars only ever show round; the instance keeps the square around it, 256 px), "Cadre ta bannière" the profile card's **5:2 band** (stored at 960 × 384). Same stage, drag, wheel, pinch, arrow keys, + / −, zoom slider and "Recentrer" as icons; it opens on the largest centred part, which is what the instance keeps without a crop. Under the stage, the avatar at 80 px (profile) and 40 px (beside messages), or the banner in the profile card itself, the avatar ring covering its lower left. The file is sent untouched with `crop_x`, `crop_y` and `crop_size` (avatar) or `crop_width` (banner), so animated GIFs stay animated and photos are compressed once, by the instance. The dialog becomes `PictureCropDialog` and its maths `picture-crop.ts`, working on any aspect ratio. See [docs/design/web-crop-avatar-and-banner.md](docs/design/web-crop-avatar-and-banner.md).
 - **2026-11-02, v0.35 — Roles displayed separately on the web (ROADMAP item 17):** the role editor's Display tab gains the switch "Afficher les membres à part" under the colour, and the members side sheet lists online members under the highest role displayed separately that they hold, highest role first, before "En ligne" and "Hors ligne" (5.7). The moderation log reads the change. No new token.
@@ -522,7 +523,7 @@ What never animates: list items on first load or history load (they appear in pl
 
 ### 2.9 Iconography
 
-One icon set everywhere: **Phosphor Icons** (MIT), **Fill** weight, which matches the solid, compact feel of Discord's icons without copying their artwork. Sizes: 20 px in rows and the hover bar, 24 px in headers, the composer, the user panel and on Android. A few open glyphs use the **Bold** weight instead, where Fill would turn them into solid shapes (listed in `crates/mellow-desktop/icons/README.md`); the search magnifier is one of them, since the Fill lens reads as a target. Icons are exported as SVG for Slint and the admin web UI, and converted to `ImageVector` for Compose. Emoji are never used as icons.
+One icon set everywhere: **Phosphor Icons** (MIT), **Fill** weight, which matches the solid, compact feel of Discord's icons without copying their artwork. Sizes: 20 px in rows and the hover bar, 24 px in headers, the composer, the user panel and on Android. A few open glyphs use the **Bold** weight instead, where Fill would turn them into solid shapes (listed in `design/icons/README.md`); the search magnifier is one of them, since the Fill lens reads as a target. Icons are exported as SVG for Slint and the admin web UI, and converted to `ImageVector` for Compose. Emoji are never used as icons.
 
 The **Home button** shows Melli, the Mellow logo (2.10): the cloud fills about 28 px of the 48 px rail icon, straight on the rail at rest and on the apricot fill when hovered, focused or selected.
 
@@ -619,12 +620,10 @@ design/
   fonts/                   # bundled font files (OFL texts included)
   icons/                   # Phosphor SVG subset actually used
 generated (committed, checked in CI):
-  crates/mellow-desktop/ui/tokens.slint
-  android/core/designsystem/src/main/kotlin/.../theme/MellowTokens.kt
-  crates/mellow-server/assets/admin/tokens.css
+  web/src/lib/tokens.css
+  web/public/favicon.svg, web/public/icons/*, web/public/manifest.webmanifest
+  (native clients and the admin UI get their generators when they start, ADR-0036)
 ```
-
-The generated paths are indicative and follow ARCHITECTURE.md. Today `crates/mellow-desktop/ui/tokens.slint` is a hand-copied spike file with the v0.1 warm values; it must be regenerated from this file before M1 UI work.
 
 ### 3.2 Three tiers
 

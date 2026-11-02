@@ -4,10 +4,10 @@ A calm, self-hostable alternative to Discord, written in Rust.
 
 - **Self-hosting in minutes:** one server binary, one data directory, no Docker, no external database, one-command updates.
 - **Feels like Discord:** same layout and habits (servers, channels, DMs, roles, attachments), with Mellow's own brand.
-- **Clients:** a web client served by the instance itself (Svelte), desktop (Linux, macOS, Windows) in Rust with Slint, Android in Kotlin with Material 3 Expressive.
+- **Clients:** a web client served by the instance itself (Svelte), installable as an app from Chrome. Native desktop and mobile clients come after it ([ADR-0036](docs/adr/0036-web-client-only-and-native-clients-later.md)).
 - **Private by default:** TLS everywhere, data encrypted at rest, no telemetry.
 
-> Status: M2 in progress. Servers, channels, invites, roles and permissions, moderation and direct messages work end to end in the desktop app; the web client is being built. See [ROADMAP.md](ROADMAP.md).
+> Status: the web client is the focus. Servers, channels, roles and permissions, moderation, direct messages and groups, friends, reactions, search, custom emoji, notifications and voice channels work end to end in it. See [ROADMAP.md](ROADMAP.md).
 
 ## Documentation
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how the system is built.
@@ -16,7 +16,7 @@ A calm, self-hostable alternative to Discord, written in Rust.
 - [CLAUDE.md](CLAUDE.md) — instructions for AI-assisted development.
 
 ## Development
-Prerequisites: [rustup](https://rustup.rs) (the pinned toolchain in `rust-toolchain.toml` installs itself), a C compiler, `nasm` on x86-64 (the server's AVIF encoder assembles its fast paths with it), and to build the vendored OpenSSL used by SQLCipher: `perl` and `make` on Linux, Visual Studio Build Tools (`nmake`) and Strawberry Perl on Windows. Android (later): JDK 21, Android SDK, NDK, `cargo-ndk`.
+Prerequisites: [rustup](https://rustup.rs) (the pinned toolchain in `rust-toolchain.toml` installs itself), a C compiler, `nasm` on x86-64 (the server's AVIF encoder assembles its fast paths with it), and to build the vendored OpenSSL used by SQLCipher: `perl` and `make` on Linux, Visual Studio Build Tools (`nmake`) and Strawberry Perl on Windows.
 
 ```bash
 cargo test --workspace
@@ -29,19 +29,11 @@ Web client ([`web/`](web/), Svelte 5 + Tailwind 4, Node 24 and npm): `cd web && 
 
 The certificate test against [Pebble](https://github.com/letsencrypt/pebble), the ACME test authority, is ignored by default: `MELLOW_PEBBLE_BINARY=/path/to/pebble cargo test -p mellow-server --lib tls::tests -- --ignored`.
 
-## Install the desktop app
-Linux (x86_64, aarch64; glibc 2.35 or newer) and macOS (Apple Silicon), for the current user, without root:
-```bash
-curl -fsSL https://raw.githubusercontent.com/Paul-Carouge/mellow/main/install.sh | sh
-```
-It downloads the latest release, checks its minisign signature (or, without `minisign` installed, the digest from the signed `SHA256SUMS`), and installs `~/.local/bin/mellow-desktop` with a menu entry on Linux, or `~/Applications/Mellow.app` on macOS. Later versions install from the app: User settings → About. `sh -s -- --uninstall` removes it. On Linux, a Secret Service provider (GNOME Keyring, KWallet) keeps you signed in between launches.
-
 ## Releases
-Each tag `vX.Y.Z` publishes, on the [releases page](https://github.com/Paul-Carouge/mellow/releases), `mellow-server` and `mellow-desktop` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`. Each binary, and the `mellow-X.Y.Z-SHA256SUMS` digest list, has a `.minisig` signature whose trusted comment is the signed file's own name. Linux builds need glibc 2.35 or newer (Debian 12, Ubuntu 22.04); the desktop app also needs fontconfig, xkbcommon and D-Bus at run time. Check a file by hand with the public key in [`release/minisign.pub`](release/minisign.pub), then make sure the printed `Trusted comment:` is exactly that file's name (otherwise the signature belongs to another file):
+Each tag `vX.Y.Z` publishes, on the [releases page](https://github.com/Paul-Carouge/mellow/releases), `mellow-server` for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`. Each binary, and the `mellow-X.Y.Z-SHA256SUMS` digest list, has a `.minisig` signature whose trusted comment is the signed file's own name. Linux builds need glibc 2.35 or newer (Debian 12, Ubuntu 22.04). Check a file by hand with the public key in [`release/minisign.pub`](release/minisign.pub), then make sure the printed `Trusted comment:` is exactly that file's name (otherwise the signature belongs to another file):
 ```bash
 minisign -V -p release/minisign.pub -m mellow-server-0.22.0-x86_64-unknown-linux-gnu
 ```
-The macOS and Windows builds are not signed by Apple or Microsoft yet, so the first launch shows a warning (macOS: right-click → Open).
 Updating an instance is one command: `sudo mellow-server update` installs the latest release in place of the running executable after checking its signature (the replaced one is kept as `mellow-server.previous`), then restart the service; `--check` only compares versions and `--rollback` puts the previous executable back, not the database ([ADR-0018](docs/adr/0018-roll-back-the-executable-only-and-guard-the-install-location.md)). Keep the executable in a root-owned directory such as `/usr/local/bin` (`root:root`, mode 0755) and run the service as a dedicated account: the updater refuses an executable or directory that another account could change. To go back to a version older than a migration, stop the server, set `mellow.db`, `mellow.db-wal` and `mellow.db-shm` aside, and copy `backups/pre-migration-<version>.db` to `mellow.db`. With Docker Compose, use [`deploy/docker`](deploy/docker/README.md) and its `mellow-update` instead.
 
 To publish a release (maintainer): bump `version` in `Cargo.toml`, move the `CHANGELOG.md` entries under the new version, merge, then `git tag vX.Y.Z origin/main && git push origin vX.Y.Z` and approve the `release` environment in the workflow run ([ADR-0016](docs/adr/0016-sign-releases-in-a-protected-ci-environment.md)). Before approving, check that the run's commit is the tip of `main` you meant to release and that `release.yml` did not change unexpectedly: the approved job receives the signing key.
@@ -52,10 +44,9 @@ cargo run -p mellow-server -- init --config dev/mellow.toml --data-directory dev
 cargo run -p mellow-server -- admin create-user --config dev/mellow.toml --username admin --email admin@example.org --administrator
 cargo run -p mellow-server -- serve --config dev/mellow.toml
 curl http://127.0.0.1:8080/api/v1/health
-cargo run -p mellow-desktop
 ```
 An instance needs about 1.5 GB of memory at its peak: compressing a 16 MP picture attachment takes up to 1.25 GB while an avatar or emoji upload is processed beside it (ADR-0033); 2 GB of RAM is the recommended minimum.
-In the desktop app, use `http://127.0.0.1:8080` as the instance address (plain HTTP is accepted only on loopback; any other address must use `https://`). `MELLOW_DEMO_WORKSPACE=1 cargo run -p mellow-desktop` opens the shell on fake data instead, without an instance.
+Build the server with `--features web-client` (after `npm run build` in `web/`) to open the web client at `http://127.0.0.1:8080`, or run `npm run dev` in `web/` against an instance on `127.0.0.1:18080`.
 Registration is closed by default (`registration_mode = "open"` in `mellow.toml` to allow sign-ups). Only instance administrators (accounts made with `admin create-user --administrator`) create servers by default; `guild_creation = "everyone"` lets every account create its own, and `admin set-administrator --username <name>` promotes an existing account (ADR-0027). The API so far (all JSON, `Authorization: Bearer <token>` except register/login):
 - Accounts: `POST /api/v1/auth/register`, `POST /api/v1/auth/login` (with `X-Mellow-Session-Transport: cookie`, the session goes into an `HttpOnly` cookie usable only from the instance's own origin: the web client), `POST /api/v1/auth/logout`, `GET|PATCH /api/v1/users/@me` (display name; username with the current password), `POST /api/v1/users/@me/password` (signs out the other sessions).
 - Guilds: `POST /api/v1/guilds`, `GET /api/v1/users/@me/guilds`, `GET /api/v1/guilds/{id}`, `GET /api/v1/guilds/{id}/members`, `DELETE /api/v1/guilds/{id}/members/@me`.
