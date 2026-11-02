@@ -30,7 +30,7 @@ const MAXIMUM_TOTAL_PIXELS: u64 = 24_000_000;
 const MAXIMUM_FRAMES: usize = 600;
 /// Stored sizes: three times the largest CSS size each is shown at, for high-density screens
 /// (ADR-0033). Avatars show at most at 80 px (profile popover), banners in a 300 × 120 px card
-/// that covers its box, so a taller banner only ever shows its middle band.
+/// that covers its box, so only a 5:2 band of a banner is stored.
 const AVATAR_SIDE_PIXELS: u32 = 256;
 const BANNER_WIDTH_PIXELS: u32 = 960;
 const BANNER_HEIGHT_PIXELS: u32 = 384;
@@ -390,12 +390,13 @@ fn crop_shape_and_shrink(
         }
     };
     let kept_height = height_of(kept_width).min(height - y);
-    let cropped = image::imageops::crop_imm(image, x, y, kept_width, kept_height).to_image();
+    // A view: a large picture is resized straight from its frame, never copied first.
+    let kept = image::imageops::crop_imm(image, x, y, kept_width, kept_height);
     if kept_width <= shape_width {
-        return cropped;
+        return kept.to_image();
     }
     image::imageops::resize(
-        &cropped,
+        &*kept,
         shape_width,
         height_of(shape_width),
         FilterType::Lanczos3,
@@ -1053,7 +1054,7 @@ pub(crate) mod tests {
             &png(600, 400),
             ProfileImageKind::Avatar,
             Some(ProfileImageCrop {
-                x: 300,
+                x: 450,
                 y: 0,
                 width: 400,
             }),
@@ -1061,9 +1062,26 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(
             stored_dimensions(&chosen.picture.bytes),
-            (256, 256),
-            "cut to 300 at the edge, then shrunk"
+            (150, 150),
+            "cut at the edge, never scaled up"
         );
+    }
+
+    #[test]
+    fn the_thinnest_pictures_still_give_a_banner_of_at_least_one_pixel() {
+        let card = (BANNER_WIDTH_PIXELS, BANNER_HEIGHT_PIXELS);
+        let dimensions = |width, height, crop| {
+            crop_shape_and_shrink(&RgbaImage::new(width, height), crop, card).dimensions()
+        };
+        assert_eq!(dimensions(1, 1, None), (1, 1));
+        assert_eq!(dimensions(8, 1, None), (2, 1));
+        assert_eq!(dimensions(1, 8, None), (1, 1));
+        let last_row = Some(ProfileImageCrop {
+            x: 0,
+            y: 99,
+            width: 100,
+        });
+        assert_eq!(dimensions(100, 100, last_row), (2, 1));
     }
 
     #[test]

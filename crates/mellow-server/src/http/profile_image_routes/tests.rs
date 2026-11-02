@@ -868,13 +868,23 @@ async fn avatars_and_banners_keep_the_part_chosen_in_the_crop_dialog() {
     .await;
     let (status, body) = send(
         &state,
-        upload("/api/v1/users/@me/avatar?crop_x=100&crop_y=50&crop_size=600"),
+        upload("/api/v1/users/@me/avatar?crop_x=100&crop_y=50&crop_size=200"),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     let (_, avatar) = send(
         &state,
         authorized("GET", &stored(json(&body), false), &owner, None),
+    )
+    .await;
+    let (hostile_but_readable, _) = send(
+        &state,
+        upload("/api/v1/users/@me/avatar?crop_x=4294967295&crop_y=0&crop_size=4294967295"),
+    )
+    .await;
+    let (past_u32, _) = send(
+        &state,
+        upload("/api/v1/users/@me/avatar?crop_x=4294967296&crop_y=0&crop_size=1"),
     )
     .await;
     let (status, body) = send(
@@ -897,7 +907,13 @@ async fn avatars_and_banners_keep_the_part_chosen_in_the_crop_dialog() {
         StatusCode::BAD_REQUEST,
         "a banner's crop is a width"
     );
-    assert_eq!(stored_dimensions(&avatar), (256, 256));
+    assert_eq!(stored_dimensions(&avatar), (200, 200), "the chosen square");
+    assert_eq!(
+        hostile_but_readable,
+        StatusCode::OK,
+        "a crop outside the picture keeps the centred square"
+    );
+    assert_eq!(past_u32, StatusCode::BAD_REQUEST);
     assert_eq!(
         stored_dimensions(&banner),
         (500, 200),
