@@ -25,8 +25,9 @@ pub struct SendMessageRequest {
 pub struct Attachment {
     pub id: Snowflake,
     pub file_name: String,
-    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp` when the bytes are one, which
-    /// clients may preview; `application/octet-stream` for anything else.
+    /// `image/png`, `image/jpeg`, `image/gif`, `image/webp` or `image/avif` when the bytes are one,
+    /// which clients may preview; `application/octet-stream` for anything else. Servers may
+    /// replace a picture with a smaller AVIF or WebP after upload (ADR-0033).
     pub content_type: String,
     pub size_bytes: u64,
     /// The picture's size in pixels as it shows, EXIF orientation applied, so clients can hold
