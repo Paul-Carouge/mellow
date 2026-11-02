@@ -4,6 +4,30 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-02
+Faster, lighter and sturdier. This version migrates the database (migrations 24 to 31, with the usual automatic backup); older versions refuse it afterwards.
+
+### Added
+- Every picture the server stores (avatars, banners, server and channel icons, attachments, animated GIFs) is compressed with no visible loss: AVIF, or lossless WebP when that is smaller, each checked against a perceptual quality score (ADR-0033). Attachments take about half the space; avatars and banners about a tenth. Display P3 photos keep their colours.
+- Picture attachments show a small preview in the chat and open the full picture on click; they keep their place while loading.
+- `mellow-server backup` writes a consistent copy of the database and stored files while the server runs.
+- `mellow-server admin recompress-images` (`--dry-run`, then `--confirm` after a recent backup) recompresses pictures stored by earlier versions, one at a time in the background.
+- HTTP/2 when Mellow serves TLS itself.
+
+### Changed
+- The web client downloads about 250 KB at startup instead of 1.2 MB (brotli and gzip prepared at build time), and settings and dialogs load when opened.
+- Attachments are revalidated instead of downloaded again, and a busy instance no longer breaks pictures for good.
+- The web client reconnects as soon as the network comes back, and retries on its own when the instance was unreachable; a short drop of up to 2 minutes resumes without reloading.
+- Read state is sent at most once a second per channel; the message and member lists redo much less work.
+- Avatars are stored at 256 px and banners at 960 px wide.
+
+### Fixed
+- Reloading the page many times no longer locks you out of live updates.
+- A flood of sign-in attempts from one network no longer blocks sign-ins for everyone.
+- Behind a reverse proxy, connections now have the same time limits as with built-in TLS, and the server always stops cleanly.
+- Several client races: late answers overwriting newer edits or members, user updates copying every message.
+- Picture uploads stuck on a slow client now time out; one unreadable file no longer stops the cleanup of the others.
+
 ## [0.26.0] - 2026-11-01
 Soundboard and join sounds. This version migrates the database (migration 23, with the usual automatic backup); older versions refuse it afterwards.
 
