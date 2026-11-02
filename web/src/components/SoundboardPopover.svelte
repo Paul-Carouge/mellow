@@ -134,7 +134,7 @@
     }
     const isJoinSound = guild.my_join_sound_id === sound.id;
     const guildId = guild.id;
-    const entries: ContextMenuEntry[] = [{ label: strings.soundboard.preview, icon: "headphones", onselect: () => void preview(sound) }];
+    const entries: ContextMenuEntry[] = [{ label: strings.soundboard.preview, icon: "speaker-high", onselect: () => void preview(sound) }];
     if (canChooseJoinSound) {
       entries.push({
         label: isJoinSound ? strings.soundboard.clearJoinSound : strings.soundboard.setJoinSound,
@@ -238,7 +238,7 @@
           </button>
           <!-- Pointer shortcut to the menu's first item; keyboards reach it through the menu. -->
           <IconButton
-            icon="headphones"
+            icon="speaker-high"
             label={strings.soundboard.previewLabel(sound.name)}
             tabindex={-1}
             class="invisible absolute inset-y-0 end-0 my-auto size-(--mw-size-hit-web-min) rounded-(--mw-component-emoji-picker-cell-radius) text-(--mw-component-emoji-picker-category-icon) group-hover/sound:visible hover:text-(--mw-component-emoji-picker-category-icon-hover) pointer-coarse:visible"
