@@ -224,6 +224,7 @@ async fn animated_avatars_and_banners_are_stored_served_and_shown_with_their_own
             request_started_before_banner,
             crate::domain::profile_images::ProfileImageSlot::Avatar,
             Some(animated_gif(64, 64, 3)),
+            None,
             crate::domain::clock::now_unix_milliseconds(),
         )
         .await
@@ -841,4 +842,65 @@ async fn pictures_stored_before_adr_0033_are_recompressed_one_by_one_and_resume_
             "{id} is announced"
         );
     }
+}
+
+#[tokio::test]
+async fn avatars_and_banners_keep_the_part_chosen_in_the_crop_dialog() {
+    use crate::domain::image_processing::tests::{png, stored_dimensions};
+
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let owner = registered_token(&state, "owner").await;
+    let upload = |path: &str| picture_request("PUT", path, &owner, png(1_200, 800));
+    let stored = |user: CurrentUser, banner: bool| {
+        let image = if banner { user.banner } else { user.avatar };
+        format!("/api/v1/profile-images/{}", image.unwrap().id)
+    };
+
+    let (half_avatar_crop, _) =
+        send(&state, upload("/api/v1/users/@me/avatar?crop_x=0&crop_y=0")).await;
+    let (half_banner_crop, _) =
+        send(&state, upload("/api/v1/users/@me/banner?crop_width=500")).await;
+    let (square_banner_crop, _) = send(
+        &state,
+        upload("/api/v1/users/@me/banner?crop_x=0&crop_y=0&crop_size=500"),
+    )
+    .await;
+    let (status, body) = send(
+        &state,
+        upload("/api/v1/users/@me/avatar?crop_x=100&crop_y=50&crop_size=600"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let (_, avatar) = send(
+        &state,
+        authorized("GET", &stored(json(&body), false), &owner, None),
+    )
+    .await;
+    let (status, body) = send(
+        &state,
+        upload("/api/v1/users/@me/banner?crop_x=0&crop_y=300&crop_width=500"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let (_, banner) = send(
+        &state,
+        authorized("GET", &stored(json(&body), true), &owner, None),
+    )
+    .await;
+    database.close().await;
+
+    assert_eq!(half_avatar_crop, StatusCode::BAD_REQUEST);
+    assert_eq!(half_banner_crop, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        square_banner_crop,
+        StatusCode::BAD_REQUEST,
+        "a banner's crop is a width"
+    );
+    assert_eq!(stored_dimensions(&avatar), (256, 256));
+    assert_eq!(
+        stored_dimensions(&banner),
+        (500, 200),
+        "5:2, never scaled up"
+    );
 }

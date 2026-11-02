@@ -458,8 +458,8 @@ impl<'de> Deserialize<'de> for UserLimitChange {
     }
 }
 
-/// Query of `PUT /api/v1/guilds/{guild_id}/icon` and `PUT /api/v1/channels/{channel_id}/icon`,
-/// whose body is the picture: the square to keep, in pixels of the picture as browsers show it
+/// Query of `PUT /api/v1/guilds/{guild_id}/icon`, `PUT /api/v1/channels/{channel_id}/icon` and
+/// (since after `v0.28.0`) `PUT /api/v1/users/@me/avatar`, whose body is the picture: the square to keep, in pixels of the picture as browsers show it
 /// (EXIF orientation applied). All three or none; none keeps the centred square, a square
 /// reaching past the picture is cut at its edges, and one starting outside it (the picture was
 /// smaller than the client thought) keeps the centred square too.
@@ -469,6 +469,18 @@ pub struct IconCropQuery {
     pub crop_x: Option<u32>,
     pub crop_y: Option<u32>,
     pub crop_size: Option<u32>,
+}
+
+/// Query of `PUT /api/v1/users/@me/banner` (added after `v0.28.0`), whose body is the picture:
+/// the band to keep, `crop_width` wide and as tall as the profile card's 5:2 band, in pixels of
+/// the picture as browsers show it. All three or none, with the same edge rules as
+/// [`IconCropQuery`]; none keeps the largest centred band.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BannerCropQuery {
+    pub crop_x: Option<u32>,
+    pub crop_y: Option<u32>,
+    pub crop_width: Option<u32>,
 }
 
 /// Body of `POST /api/v1/guilds/{guild_id}/invites`.

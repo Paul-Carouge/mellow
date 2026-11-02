@@ -103,6 +103,16 @@ pub(crate) struct SquareCrop {
     pub(crate) size: u32,
 }
 
+/// The part of a picture an avatar or a banner keeps, in pixels of the picture as shown: `width`
+/// wide and as tall as its kind's shape makes it (square for avatars, 5:2 for banners), so a
+/// client cannot store another shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProfileImageCrop {
+    pub(crate) x: u32,
+    pub(crate) y: u32,
+    pub(crate) width: u32,
+}
+
 /// A picture ready to store, with its served type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProcessedImage {
@@ -313,32 +323,12 @@ fn as_processing_error(error: &image::ImageError) -> ImageProcessingError {
     }
 }
 
-/// The middle band of a banner taller than its card, the only part the card shows.
-fn shown_band_of_banner(image: RgbaImage) -> RgbaImage {
-    let (width, height) = image.dimensions();
-    let shown_height = u32::try_from(
-        (u64::from(width) * u64::from(BANNER_HEIGHT_PIXELS))
-            .div_ceil(u64::from(BANNER_WIDTH_PIXELS)),
-    )
-    .unwrap_or(u32::MAX);
-    if height <= shown_height {
-        return image;
+/// The shape and largest stored size of a kind: avatars square, banners the card's 5:2 band.
+fn stored_box(kind: ProfileImageKind) -> (u32, u32) {
+    match kind {
+        ProfileImageKind::Avatar => (AVATAR_SIDE_PIXELS, AVATAR_SIDE_PIXELS),
+        ProfileImageKind::Banner => (BANNER_WIDTH_PIXELS, BANNER_HEIGHT_PIXELS),
     }
-    image::imageops::crop_imm(&image, 0, (height - shown_height) / 2, width, shown_height)
-        .to_image()
-}
-
-/// Down to the display size, never up; Lanczos keeps edges sharp.
-fn fit(image: RgbaImage, kind: ProfileImageKind) -> RgbaImage {
-    let (image, maximum_width, maximum_height) = match kind {
-        ProfileImageKind::Avatar => (image, AVATAR_SIDE_PIXELS, AVATAR_SIDE_PIXELS),
-        ProfileImageKind::Banner => (
-            shown_band_of_banner(image),
-            BANNER_WIDTH_PIXELS,
-            BANNER_HEIGHT_PIXELS,
-        ),
-    };
-    fit_within(image, maximum_width, maximum_height)
 }
 
 /// Shrunk to fit within the box, its ratio kept; never enlarged. Lanczos keeps edges sharp.
@@ -359,31 +349,72 @@ fn crop_square_and_shrink(
     crop: Option<SquareCrop>,
     maximum_side: u32,
 ) -> RgbaImage {
-    let (width, height) = image.dimensions();
-    let (x, y, size) = match crop {
-        Some(crop) if crop.size > 0 && crop.x < width && crop.y < height => {
-            let size = crop.size.min(width - crop.x).min(height - crop.y);
-            (crop.x, crop.y, size)
-        }
-        _ => {
-            let size = width.min(height);
-            ((width - size) / 2, (height - size) / 2, size)
-        }
-    };
-    let cropped = image::imageops::crop_imm(image, x, y, size, size).to_image();
-    if size <= maximum_side {
-        return cropped;
-    }
-    image::imageops::resize(&cropped, maximum_side, maximum_side, FilterType::Lanczos3)
+    let crop = crop.map(|crop| ProfileImageCrop {
+        x: crop.x,
+        y: crop.y,
+        width: crop.size,
+    });
+    crop_shape_and_shrink(image, crop, (maximum_side, maximum_side))
 }
 
-/// An avatar or a banner: fitted to its display size and stored in the smallest form that looks
-/// the same, animated when the source is, with its first frame as a still.
+/// `length` scaled by `numerator / denominator`, rounded down, at least 1.
+fn scaled_length(length: u32, numerator: u32, denominator: u32) -> u32 {
+    let scaled = u64::from(length) * u64::from(numerator) / u64::from(denominator.max(1));
+    u32::try_from(scaled).unwrap_or(u32::MAX).max(1)
+}
+
+/// The `crop` rectangle with the shape of `maximum_box` (width to height), cut at the picture's
+/// edges and keeping that shape, or the largest centred one when there is none or it starts
+/// outside; then down to `maximum_box`, never up.
+fn crop_shape_and_shrink(
+    image: &RgbaImage,
+    crop: Option<ProfileImageCrop>,
+    maximum_box: (u32, u32),
+) -> RgbaImage {
+    let (shape_width, shape_height) = maximum_box;
+    let (width, height) = image.dimensions();
+    let height_of = |kept_width| scaled_length(kept_width, shape_height, shape_width);
+    let (x, y, kept_width) = match crop {
+        Some(crop) if crop.width > 0 && crop.x < width && crop.y < height => {
+            let widest_fitting_below = scaled_length(height - crop.y, shape_width, shape_height);
+            let kept_width = crop.width.min(width - crop.x).min(widest_fitting_below);
+            (crop.x, crop.y, kept_width)
+        }
+        _ => {
+            let kept_width = width.min(scaled_length(height, shape_width, shape_height));
+            (
+                (width - kept_width) / 2,
+                (height - height_of(kept_width).min(height)) / 2,
+                kept_width,
+            )
+        }
+    };
+    let kept_height = height_of(kept_width).min(height - y);
+    let cropped = image::imageops::crop_imm(image, x, y, kept_width, kept_height).to_image();
+    if kept_width <= shape_width {
+        return cropped;
+    }
+    image::imageops::resize(
+        &cropped,
+        shape_width,
+        height_of(shape_width),
+        FilterType::Lanczos3,
+    )
+}
+
+/// An avatar or a banner: the `crop` rectangle of its kind's shape (the largest centred one
+/// without), fitted to its display size and stored in the smallest form that looks the same,
+/// every frame cut the same way and kept animated when the source is, with its first frame as a
+/// still.
 pub(crate) fn process_profile_image(
     bytes: &[u8],
     kind: ProfileImageKind,
+    crop: Option<ProfileImageCrop>,
 ) -> Result<ProcessedProfileImage, ImageProcessingError> {
-    encode_with_still(&decode_picture(bytes, |frame| fit(frame, kind))?)
+    let maximum_box = stored_box(kind);
+    encode_with_still(&decode_picture(bytes, |frame| {
+        crop_shape_and_shrink(&frame, crop, maximum_box)
+    })?)
 }
 
 /// The still that must be stored: the smallest that passes, or the last resort.
@@ -926,7 +957,7 @@ pub(crate) mod tests {
     #[test]
     fn an_animated_gif_avatar_stays_animated_fits_256_and_shrinks() {
         let gif = animated_gif(600, 600, 6);
-        let avatar = process_profile_image(&gif, ProfileImageKind::Avatar).unwrap();
+        let avatar = process_profile_image(&gif, ProfileImageKind::Avatar, None).unwrap();
         assert!(avatar.picture.is_animated);
         assert_eq!(avatar.picture.content_type, "image/webp");
         assert!(
@@ -939,6 +970,100 @@ pub(crate) mod tests {
         assert_eq!(decoder.dimensions(), (256, 256));
         assert_eq!(decoder.into_iter().count(), 6);
         assert_eq!(stored_dimensions(&avatar.still.unwrap()), (256, 256));
+    }
+
+    #[test]
+    fn banners_keep_the_chosen_card_band_cut_at_the_edges() {
+        // Shaded by x and y, so the kept band shows in its first pixel.
+        let photo = RgbaImage::from_fn(400, 300, |x, y| {
+            Rgba([
+                u8::try_from(x % 256).unwrap(),
+                u8::try_from(y % 256).unwrap(),
+                90,
+                255,
+            ])
+        });
+        let card = (BANNER_WIDTH_PIXELS, BANNER_HEIGHT_PIXELS);
+        let centred = crop_shape_and_shrink(&photo, None, card);
+        assert_eq!(
+            centred.dimensions(),
+            (400, 160),
+            "the widest 5:2 band, never scaled up"
+        );
+        assert_eq!(centred.get_pixel(0, 0).0[..2], [0, 70]);
+
+        let chosen = Some(ProfileImageCrop {
+            x: 30,
+            y: 50,
+            width: 200,
+        });
+        let kept = crop_shape_and_shrink(&photo, chosen, card);
+        assert_eq!(kept.dimensions(), (200, 80));
+        assert_eq!(kept.get_pixel(0, 0).0[..2], [30, 50]);
+
+        // Wider than the picture and too tall for what is left below: cut, still 5:2.
+        let past_the_edges = Some(ProfileImageCrop {
+            x: 100,
+            y: 250,
+            width: 1_000,
+        });
+        assert_eq!(
+            crop_shape_and_shrink(&photo, past_the_edges, card).dimensions(),
+            (125, 50)
+        );
+        let outside = Some(ProfileImageCrop {
+            x: 500,
+            y: 0,
+            width: 100,
+        });
+        assert_eq!(crop_shape_and_shrink(&photo, outside, card), centred);
+    }
+
+    #[test]
+    fn an_animated_gif_banner_is_cut_on_every_frame_and_stays_animated() {
+        let gif = animated_gif(2_000, 2_000, 4);
+        let banner = process_profile_image(
+            &gif,
+            ProfileImageKind::Banner,
+            Some(ProfileImageCrop {
+                x: 0,
+                y: 500,
+                width: 1_500,
+            }),
+        )
+        .unwrap();
+        assert!(banner.picture.is_animated);
+        let decoder = webp_animation::Decoder::new(&banner.picture.bytes).unwrap();
+        assert_eq!(
+            decoder.dimensions(),
+            (BANNER_WIDTH_PIXELS, BANNER_HEIGHT_PIXELS)
+        );
+        assert_eq!(decoder.into_iter().count(), 4);
+        assert_eq!(
+            stored_dimensions(&banner.still.unwrap()),
+            (BANNER_WIDTH_PIXELS, BANNER_HEIGHT_PIXELS)
+        );
+    }
+
+    #[test]
+    fn avatars_are_square_whatever_the_picture() {
+        let avatar = process_profile_image(&png(600, 200), ProfileImageKind::Avatar, None).unwrap();
+        assert_eq!(stored_dimensions(&avatar.picture.bytes), (200, 200));
+        let chosen = process_profile_image(
+            &png(600, 400),
+            ProfileImageKind::Avatar,
+            Some(ProfileImageCrop {
+                x: 300,
+                y: 0,
+                width: 400,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            stored_dimensions(&chosen.picture.bytes),
+            (256, 256),
+            "cut to 300 at the edge, then shrunk"
+        );
     }
 
     #[test]
@@ -1012,7 +1137,7 @@ pub(crate) mod tests {
     #[test]
     fn a_flat_graphic_avatar_is_kept_pixel_for_pixel_as_lossless_webp() {
         // One-pixel stripes: lossless is far smaller than any lossy encoding that keeps them.
-        let stripes = RgbaImage::from_fn(64, 40, |x, _| {
+        let stripes = RgbaImage::from_fn(64, 64, |x, _| {
             if x % 2 == 0 {
                 Rgba([250, 250, 250, 255])
             } else {
@@ -1022,6 +1147,7 @@ pub(crate) mod tests {
         let avatar = process_profile_image(
             &encoded(&stripes, ImageFormat::Png, None),
             ProfileImageKind::Avatar,
+            None,
         )
         .unwrap();
         assert!(!avatar.picture.is_animated);
@@ -1092,9 +1218,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn banners_keep_their_ratio_and_attachments_shrink() {
-        let banner = process_profile_image(&png(3_840, 1_080), ProfileImageKind::Banner).unwrap();
-        assert_eq!(stored_dimensions(&banner.picture.bytes), (960, 270));
+    fn wide_banners_keep_their_centred_card_band_and_attachments_shrink() {
+        let banner =
+            process_profile_image(&png(3_840, 1_080), ProfileImageKind::Banner, None).unwrap();
+        assert_eq!(
+            stored_dimensions(&banner.picture.bytes),
+            (BANNER_WIDTH_PIXELS, BANNER_HEIGHT_PIXELS),
+            "the card shows a 5:2 band: the sides it would hide are not stored"
+        );
 
         let source = png(300, 300);
         let optimized = optimize_attachment(&source, "image/png", no_deadline())
@@ -1242,6 +1373,7 @@ pub(crate) mod tests {
         let avatar = process_profile_image(
             &encoded(&stripes, ImageFormat::Png, Some(adobe_rgb)),
             ProfileImageKind::Avatar,
+            None,
         )
         .unwrap();
         assert_eq!(avatar.picture.content_type, "image/avif");
@@ -1255,6 +1387,7 @@ pub(crate) mod tests {
         let tagged_srgb = process_profile_image(
             &encoded(&stripes, ImageFormat::Png, Some(srgb)),
             ProfileImageKind::Avatar,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1335,13 +1468,14 @@ pub(crate) mod tests {
 
     #[test]
     fn a_tall_banner_keeps_the_middle_band_its_card_shows() {
-        let tall = process_profile_image(&png(1_920, 8_000), ProfileImageKind::Banner).unwrap();
+        let tall =
+            process_profile_image(&png(1_920, 8_000), ProfileImageKind::Banner, None).unwrap();
         assert_eq!(
             stored_dimensions(&tall.picture.bytes),
             (BANNER_WIDTH_PIXELS, BANNER_HEIGHT_PIXELS)
         );
         let narrow_and_tall =
-            process_profile_image(&png(300, 2_000), ProfileImageKind::Banner).unwrap();
+            process_profile_image(&png(300, 2_000), ProfileImageKind::Banner, None).unwrap();
         assert_eq!(
             stored_dimensions(&narrow_and_tall.picture.bytes),
             (300, 120)
@@ -1399,19 +1533,19 @@ pub(crate) mod tests {
         let gif = animated_gif(32, 32, 3);
         // Cut inside the last frame's data: its trailer and end are gone.
         let truncated = &gif[..gif.len() - 40];
-        let avatar = process_profile_image(truncated, ProfileImageKind::Avatar).unwrap();
+        let avatar = process_profile_image(truncated, ProfileImageKind::Avatar, None).unwrap();
         assert!(avatar.picture.is_animated, "two whole frames remain");
     }
 
     #[test]
     fn oversized_or_unreadable_pictures_are_left_alone() {
         assert_eq!(
-            process_profile_image(b"<svg/>", ProfileImageKind::Avatar),
+            process_profile_image(b"<svg/>", ProfileImageKind::Avatar, None),
             Err(ImageProcessingError::Unsupported)
         );
         let huge = png(MAXIMUM_SIDE_PIXELS + 1, 1);
         assert_eq!(
-            process_profile_image(&huge, ProfileImageKind::Avatar),
+            process_profile_image(&huge, ProfileImageKind::Avatar, None),
             Err(ImageProcessingError::TooLarge)
         );
     }
@@ -1460,13 +1594,13 @@ pub(crate) mod tests {
             Err(ImageProcessingError::TooLarge)
         );
         assert_eq!(
-            process_profile_image(&bomb, ProfileImageKind::Avatar),
+            process_profile_image(&bomb, ProfileImageKind::Avatar, None),
             Err(ImageProcessingError::TooLarge)
         );
     }
 
     #[test]
-    fn a_rotated_phone_photo_makes_an_upright_avatar() {
+    fn a_rotated_phone_photo_is_cut_upright() {
         let image = RgbaImage::from_fn(40, 20, |x, _| {
             Rgba([u8::try_from(x * 6).unwrap(), 0, 0, 255])
         });
@@ -1484,8 +1618,9 @@ pub(crate) mod tests {
         rotated.extend_from_slice(&orientation_segment(6));
         rotated.extend_from_slice(&jpeg[2..]);
 
-        let avatar = process_profile_image(&rotated, ProfileImageKind::Avatar).unwrap();
-        assert_eq!(stored_dimensions(&avatar.picture.bytes), (20, 40));
+        // Upright it is 20 × 40, so its centred 5:2 band is 20 × 8 (lying, it would be 40 × 16).
+        let banner = process_profile_image(&rotated, ProfileImageKind::Banner, None).unwrap();
+        assert_eq!(stored_dimensions(&banner.picture.bytes), (20, 8));
     }
 
     fn png_with_exif_orientation(width: u32, height: u32, orientation: u16) -> Vec<u8> {
@@ -1572,11 +1707,11 @@ pub(crate) mod tests {
     #[test]
     fn an_animated_webp_avatar_stays_animated() {
         let animated_webp =
-            process_profile_image(&animated_gif(64, 64, 3), ProfileImageKind::Avatar)
+            process_profile_image(&animated_gif(64, 64, 3), ProfileImageKind::Avatar, None)
                 .unwrap()
                 .picture
                 .bytes;
-        let avatar = process_profile_image(&animated_webp, ProfileImageKind::Avatar).unwrap();
+        let avatar = process_profile_image(&animated_webp, ProfileImageKind::Avatar, None).unwrap();
         assert!(avatar.picture.is_animated);
         assert!(avatar.still.is_some());
     }
@@ -1639,7 +1774,7 @@ pub(crate) mod tests {
         forged.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes());
         forged.extend_from_slice(&body);
 
-        let avatar = process_profile_image(&forged, ProfileImageKind::Avatar).unwrap();
+        let avatar = process_profile_image(&forged, ProfileImageKind::Avatar, None).unwrap();
         assert!(!avatar.picture.is_animated);
     }
 
@@ -1649,7 +1784,7 @@ pub(crate) mod tests {
         // Canvas shrunk to 1×1: the 64×64 frames now lie outside it.
         gif[6..10].copy_from_slice(&[1, 0, 1, 0]);
         assert_eq!(
-            process_profile_image(&gif, ProfileImageKind::Avatar),
+            process_profile_image(&gif, ProfileImageKind::Avatar, None),
             Err(ImageProcessingError::TooLarge)
         );
         assert_eq!(
@@ -1683,7 +1818,7 @@ pub(crate) mod tests {
     fn image_processing_timing() {
         let gif = animated_gif(480, 480, 60);
         let started = Instant::now();
-        let avatar = process_profile_image(&gif, ProfileImageKind::Avatar).unwrap();
+        let avatar = process_profile_image(&gif, ProfileImageKind::Avatar, None).unwrap();
         println!(
             "animated avatar: {} KB GIF -> {} KB WebP in {:?}",
             gif.len() / 1024,
@@ -1732,8 +1867,8 @@ pub(crate) mod tests {
             let deadline = Instant::now() + Duration::from_secs(60);
             let optimized = optimize_attachment(&bytes, content_type, deadline).unwrap();
             let elapsed = started.elapsed();
-            let avatar = process_profile_image(&bytes, ProfileImageKind::Avatar).unwrap();
-            let banner = process_profile_image(&bytes, ProfileImageKind::Banner).unwrap();
+            let avatar = process_profile_image(&bytes, ProfileImageKind::Avatar, None).unwrap();
+            let banner = process_profile_image(&bytes, ProfileImageKind::Banner, None).unwrap();
             let kept = optimized
                 .as_ref()
                 .map_or(bytes.len(), |image| image.bytes.len());
