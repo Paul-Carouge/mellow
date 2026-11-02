@@ -47,7 +47,7 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 
 ## Next candidates
 **Current focus: the web client only** (owner's decision, 2026-10-22). New features, UI work and fixes target `web/` and the server and protocol it needs; the desktop app (Slint), Android and other platforms wait, and only have to keep compiling and passing CI.
-ROADMAP items 0 to 15 are released (up to `v0.22.0`), and item 16 (voice channels, stages 16.1 to 16.6, each a PR and a release the owner tries before the next) is done up to 16.4 (soundboard, `v0.26.0`), plus RNNoise and the enhanced voice from item 21 (`v0.25.0`). Next: **stage 16.5, video** (cameras in voice channels, grid and speaker view) and 16.6 screen sharing (Vesper, its own ADR and a relicence first). After item 16: the owner orders items 17 to 22.
+ROADMAP items 0 to 15 and 22 are released, and item 16 (voice) is done up to 16.4 (soundboard, `v0.26.0`), plus RNNoise and the enhanced voice from item 21 (`v0.25.0`). **Next, in the owner's order (2026-11-02): item 17, fixes and quick wins from the owner's "Boîte à idées"** (the permission-change screen bug first, with a failing test), then 16.5 video (its own ADR first), 16.6 screen sharing (Vesper, its own ADR and a relicence first), then 18 to 21. Read the "Quality bar" in CLAUDE.md before starting: it replaces a separate optimisation or robustness pass.
 Still open from earlier items: a native speaker's review of the French copy; the server names a new server's default category and channel in English when a client sends no template.
 Later, when the owner moves back to the desktop: port what the web gained since `v0.7.0`.
 
