@@ -22,11 +22,12 @@ use crate::http::authentication::{
     AuthenticatedUser, expired_session_cookie_header, session_cookie_header, session_token,
     wants_cookie_session,
 };
-use crate::http::client_address::client_address_key;
+use crate::http::client_address::{client_address_key, client_ipv6_site_key};
 use crate::http::rate_limit::{
-    AUTHENTICATION_ATTEMPTS_PER_ADDRESS, LOGIN_ATTEMPTS_PER_ACCOUNT,
-    LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS, PASSWORD_CHECKS_PER_SESSION, PASSWORD_CHECKS_PER_USER,
-    PROFILE_WRITES_PER_SESSION, PROFILE_WRITES_PER_USER,
+    AUTHENTICATION_ATTEMPTS_PER_ADDRESS, AUTHENTICATION_ATTEMPTS_PER_IPV6_SITE,
+    LOGIN_ATTEMPTS_PER_ACCOUNT, LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS,
+    PASSWORD_CHECKS_PER_SESSION, PASSWORD_CHECKS_PER_USER, PROFILE_WRITES_PER_SESSION,
+    PROFILE_WRITES_PER_USER,
 };
 
 /// Enough of SHA-256 to make rate-limit keys unique per login or session while keeping them small.
@@ -69,18 +70,43 @@ fn session_response(
     Ok(response)
 }
 
+/// Counts a registration or login attempt against the client's IPv6 /48 first, then, only when
+/// that passes, against its address: so one /48 cycling through its 65 536 /64s adds at most a
+/// site's worth of address keys per window. Returns whether both limits still allow it.
+fn record_authentication_attempt_per_client(
+    state: &AppState,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+    now: Instant,
+) -> bool {
+    let limiter = &state.unauthenticated_rate_limiter;
+    let trusted_proxy_networks = &state.trusted_proxy_networks;
+    let is_within_site_limit = client_ipv6_site_key(peer, headers, trusted_proxy_networks)
+        .is_none_or(|site| {
+            limiter.record_address_event(
+                &format!("authentication-site:{site}"),
+                AUTHENTICATION_ATTEMPTS_PER_IPV6_SITE,
+                now,
+            )
+        });
+    is_within_site_limit
+        && limiter.record_address_event(
+            &format!(
+                "authentication:{}",
+                client_address_key(peer, headers, trusted_proxy_networks)
+            ),
+            AUTHENTICATION_ATTEMPTS_PER_ADDRESS,
+            now,
+        )
+}
+
 pub(crate) async fn register(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<RegisterRequest>,
 ) -> Result<Response, ApiError> {
-    let address = client_address_key(peer, &headers, &state.trusted_proxy_networks);
-    if !state.unauthenticated_rate_limiter.record_event(
-        &format!("authentication:{address}"),
-        AUTHENTICATION_ATTEMPTS_PER_ADDRESS,
-        Instant::now(),
-    ) {
+    if !record_authentication_attempt_per_client(&state, peer, &headers, Instant::now()) {
         return Err(ApiError::rate_limited());
     }
     let session = state
@@ -101,17 +127,12 @@ pub(crate) async fn login(
     let now = Instant::now();
     // Every attempt is counted before the password check, so concurrent requests cannot all
     // pass under the limit while Argon2 runs. The per-account limits are recorded only for
-    // attempts the address limit lets through: otherwise one address cycling login names would
+    // attempts the site and address limits let through: otherwise one address cycling login names would
     // add two long-lived keys per request until the limiter's table is full.
-    let limiter = &state.unauthenticated_rate_limiter;
-    let within_address_limit = limiter.record_event(
-        &format!("authentication:{address}"),
-        AUTHENTICATION_ATTEMPTS_PER_ADDRESS,
-        now,
-    );
-    if !within_address_limit {
+    if !record_authentication_attempt_per_client(&state, peer, &headers, now) {
         return Err(ApiError::rate_limited());
     }
+    let limiter = &state.unauthenticated_rate_limiter;
     let within_account_and_address_limit = limiter.record_event(
         &format!("login:{account}:{address}"),
         LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS,

@@ -860,6 +860,40 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_flood_from_one_ipv6_site_does_not_lock_other_clients_out() {
+        // Each attempt from another /64 of one /48: without the site limit, every one would add an
+        // address key until the table is full (see the rate_limit unit tests). Registration is
+        // closed, so the flood costs no password hashing and the test stays quick.
+        let flood_attempts = 3 * rate_limit::AUTHENTICATION_ATTEMPTS_PER_IPV6_SITE.maximum_events;
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Closed);
+        for index in 0..flood_attempts {
+            send_from(
+                &state,
+                &format!("[2001:db8:1:{index:x}::1]:1000"),
+                post_json("/api/v1/auth/register", &registration(&format!("n{index}"))),
+            )
+            .await;
+        }
+        // One site key, then one address key per attempt the site limit let through.
+        let allowed = rate_limit::AUTHENTICATION_ATTEMPTS_PER_IPV6_SITE.maximum_events as usize;
+        assert_eq!(
+            state.unauthenticated_rate_limiter.tracked_key_count(),
+            1 + allowed
+        );
+        let ((same_site_status, _), _) =
+            send_from(&state, "[2001:db8:1:ffff::1]:1000", wrong_login("aurore")).await;
+        let ((other_ipv4_client_status, _), _) =
+            send_from(&state, "203.0.113.50:2000", wrong_login("aurore")).await;
+        let ((other_ipv6_site_status, _), _) =
+            send_from(&state, "[2001:db8:2::1]:1000", wrong_login("aurore")).await;
+        database.close().await;
+        assert_eq!(same_site_status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(other_ipv4_client_status, StatusCode::UNAUTHORIZED);
+        assert_eq!(other_ipv6_site_status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn login_attempts_are_limited_per_account_and_address_before_the_password_check() {
         let (_directory, database) = migrated_database().await;
         let state = test_state(database.clone(), RegistrationMode::Open);
