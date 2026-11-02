@@ -33,6 +33,10 @@ use crate::http::client_address::client_address_key;
 use crate::http::{AppState, make_service, make_tls_service};
 use crate::storage::create_private_directory;
 
+mod request_progress;
+
+use request_progress::{RequestProgress, WatchedRequestService};
+
 const LETS_ENCRYPT_PRODUCTION_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
 const LETS_ENCRYPT_STAGING_DIRECTORY: &str =
     "https://acme-staging-v02.api.letsencrypt.org/directory";
@@ -290,8 +294,8 @@ fn guarded_server<Inner>(
         .timer(hyper_util::rt::TokioTimer::new())
         .header_read_timeout(policy.header_read_timeout);
     // No HTTP/2 keep-alive pings: the client's automatic answers would count as activity and
-    // keep an idle connection alive forever. HTTP/2 has no header deadline in hyper; the idle
-    // read timeout and the connection caps bound a stalled HTTP/2 client instead.
+    // keep an idle connection alive forever. HTTP/2 has no header deadline in hyper, and its
+    // flow control stalls a response without blocking the socket: `RequestProgress` bounds both.
     server
         .http_builder()
         .http2()
@@ -548,7 +552,7 @@ where
     Inner::Service: Send + 'static,
 {
     type Stream = IdleTimeoutStream<Inner::Stream>;
-    type Service = Inner::Service;
+    type Service = WatchedRequestService<Inner::Service>;
     type Future = Pin<Box<dyn Future<Output = io::Result<(Self::Stream, Self::Service)>> + Send>>;
 
     fn accept(&self, stream: TcpStream, service: Service) -> Self::Future {
@@ -570,16 +574,17 @@ where
             let (stream, service) = tokio::time::timeout(policy.handshake_timeout, accepting)
                 .await
                 .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "handshake timed out"))??;
+            let request_progress = Arc::new(RequestProgress::new(
+                policy.header_read_timeout,
+                policy.idle_read_timeout,
+                policy.write_stall_timeout,
+            ));
             Ok((
-                IdleTimeoutStream {
-                    inner: stream,
-                    idle_read_timeout: policy.idle_read_timeout,
-                    idle_deadline: Box::pin(tokio::time::sleep(policy.idle_read_timeout)),
-                    write_stall_timeout: policy.write_stall_timeout,
-                    write_stall_deadline: None,
-                    _slot: slot,
+                IdleTimeoutStream::new(stream, policy, request_progress.clone(), slot),
+                WatchedRequestService {
+                    inner: service,
+                    progress: request_progress,
                 },
-                service,
             ))
         })
     }
@@ -587,7 +592,8 @@ where
 
 /// Fails reads once nothing has arrived for `idle_read_timeout` (covers the bytes hyper reads
 /// before its own timers start, and request bodies sent a byte at a time), and writes once the
-/// peer has accepted nothing for `write_stall_timeout` (a client that stops reading).
+/// peer has accepted nothing for `write_stall_timeout` (a client that stops reading). Also fails
+/// reads once `request_progress` says an HTTP/2 request waited too long on the client.
 struct IdleTimeoutStream<Inner> {
     inner: Inner,
     idle_read_timeout: Duration,
@@ -595,10 +601,60 @@ struct IdleTimeoutStream<Inner> {
     write_stall_timeout: Duration,
     /// Armed while a write waits, cleared as soon as one makes progress.
     write_stall_deadline: Option<Pin<Box<Sleep>>>,
+    request_progress: Arc<RequestProgress>,
+    /// Wakes the connection to check `request_progress` again.
+    request_progress_check: Pin<Box<Sleep>>,
     _slot: ConnectionSlot,
 }
 
 impl<Inner> IdleTimeoutStream<Inner> {
+    fn new(
+        inner: Inner,
+        policy: ConnectionPolicy,
+        request_progress: Arc<RequestProgress>,
+        slot: ConnectionSlot,
+    ) -> Self {
+        Self {
+            inner,
+            idle_read_timeout: policy.idle_read_timeout,
+            idle_deadline: Box::pin(tokio::time::sleep(policy.idle_read_timeout)),
+            write_stall_timeout: policy.write_stall_timeout,
+            write_stall_deadline: None,
+            request_progress_check: Box::pin(tokio::time::sleep(
+                request_progress.shortest_timeout(),
+            )),
+            request_progress,
+            _slot: slot,
+        }
+    }
+
+    /// Ready with an error once a request waited too long on the client. Deadlines set between
+    /// two checks are at least `shortest_timeout` ahead, so checking that often misses none.
+    fn poll_request_progress(&mut self, context: &mut Context<'_>) -> Poll<io::Error> {
+        loop {
+            let Some(deadline) = self.request_progress.closing_deadline() else {
+                return Poll::Pending;
+            };
+            let now = Instant::now();
+            if deadline <= now {
+                return Poll::Ready(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "an HTTP/2 request waited too long on the client",
+                ));
+            }
+            let next_check = deadline.min(now + self.request_progress.shortest_timeout());
+            self.request_progress_check.as_mut().reset(next_check);
+            if self
+                .request_progress_check
+                .as_mut()
+                .poll(context)
+                .is_pending()
+            {
+                return Poll::Pending;
+            }
+        }
+    }
+
     fn track_write<Output>(
         &mut self,
         context: &mut Context<'_>,
@@ -640,7 +696,7 @@ impl<Inner: AsyncRead + Unpin> AsyncRead for IdleTimeoutStream<Inner> {
                     io::ErrorKind::TimedOut,
                     "connection idle for too long",
                 ))),
-                Poll::Pending => Poll::Pending,
+                Poll::Pending => this.poll_request_progress(context).map(Err),
             },
         }
     }
@@ -919,14 +975,17 @@ mod tests {
         inner: tokio::io::DuplexStream,
     ) -> IdleTimeoutStream<tokio::io::DuplexStream> {
         let limiter = Arc::new(ConnectionLimiter::new(FAST_POLICY));
-        IdleTimeoutStream {
+        let request_progress = Arc::new(RequestProgress::new(
+            FAST_POLICY.header_read_timeout,
+            FAST_POLICY.idle_read_timeout,
+            FAST_POLICY.write_stall_timeout,
+        ));
+        IdleTimeoutStream::new(
             inner,
-            idle_read_timeout: FAST_POLICY.idle_read_timeout,
-            idle_deadline: Box::pin(tokio::time::sleep(FAST_POLICY.idle_read_timeout)),
-            write_stall_timeout: FAST_POLICY.write_stall_timeout,
-            write_stall_deadline: None,
-            _slot: limiter.try_reserve("192.0.2.1:1".parse().unwrap()).unwrap(),
-        }
+            FAST_POLICY,
+            request_progress,
+            limiter.try_reserve("192.0.2.1:1".parse().unwrap()).unwrap(),
+        )
     }
 
     #[tokio::test(start_paused = true)]
@@ -946,6 +1005,159 @@ mod tests {
         let mut stream = guarded_stream(inner);
         let error = stream.write_all(&[0; 1_024]).await.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    /// Larger than one response chunk, so a download needs more than one grant of flow control.
+    const TEST_DOWNLOAD_BYTES: usize = 256 * 1024;
+    /// Below every deadline of `FAST_POLICY`: the pings alone keep the connection's reads alive.
+    const TEST_PING_INTERVAL: Duration = Duration::from_millis(200);
+    /// Far beyond every deadline of `FAST_POLICY`, on the paused clock.
+    const TEST_CLOSING_LIMIT: Duration = Duration::from_secs(60);
+
+    /// A plain HTTP server with `FAST_POLICY` whose `/download` holds a permit of `downloads`
+    /// while its body is alive, and whose `/upload` reads the whole request body.
+    fn spawn_flow_control_test_server(
+        listener: TcpListener,
+        downloads: Arc<Semaphore>,
+    ) -> tokio::task::JoinHandle<io::Result<()>> {
+        use axum::routing::{get, post};
+
+        let router = axum::Router::new()
+            .route(
+                "/download",
+                get(async move || {
+                    let permit = downloads.clone().try_acquire_owned().unwrap();
+                    crate::http::attachment_routes::body_keeping_permit(
+                        vec![0; TEST_DOWNLOAD_BYTES],
+                        permit,
+                    )
+                }),
+            )
+            .route(
+                "/upload",
+                post(async |body: axum::body::Bytes| body.len().to_string()),
+            );
+        let server = guarded_server(
+            listener,
+            DefaultAcceptor::new(),
+            FAST_POLICY,
+            std::future::pending(),
+        )
+        .unwrap();
+        tokio::spawn(server.serve(router.into_make_service()))
+    }
+
+    /// An HTTP/2 connection (prior knowledge) that pings the server until it closes, so its reads
+    /// alone never let the idle read deadline expire. The returned task ends when the server
+    /// closes the connection.
+    async fn pinging_http2_client(
+        address: SocketAddr,
+        initial_window_bytes: u32,
+    ) -> (
+        h2::client::SendRequest<axum::body::Bytes>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let tcp = TcpStream::connect(address).await.unwrap();
+        let (client, mut connection) = h2::client::Builder::new()
+            .initial_window_size(initial_window_bytes)
+            .handshake(tcp)
+            .await
+            .unwrap();
+        let mut ping_pong = connection.ping_pong().unwrap();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(TEST_PING_INTERVAL).await;
+                if ping_pong.ping(h2::Ping::opaque()).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let connection = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        (client, connection)
+    }
+
+    fn test_request(method: &str, path: &str) -> axum::http::Request<()> {
+        axum::http::Request::builder()
+            .method(method)
+            .uri(format!("http://localhost{path}"))
+            .body(())
+            .unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_http2_client_that_grants_no_flow_control_loses_its_download_and_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let downloads = Arc::new(Semaphore::new(1));
+        let server = spawn_flow_control_test_server(listener, downloads.clone());
+
+        // A client that reads normally gets the whole body, however long the pings go on.
+        let (mut client, _connection) = pinging_http2_client(address, 65_535).await;
+        let (response, _) = client
+            .send_request(test_request("GET", "/download"), true)
+            .unwrap();
+        let mut body = response.await.unwrap().into_body();
+        let mut received_bytes = 0;
+        while let Some(chunk) = body.data().await {
+            let chunk = chunk.unwrap();
+            received_bytes += chunk.len();
+            body.flow_control().release_capacity(chunk.len()).unwrap();
+        }
+        assert_eq!(received_bytes, TEST_DOWNLOAD_BYTES);
+        assert_eq!(downloads.available_permits(), 1);
+
+        // A client that never opens its window holds the permit only until the write deadline.
+        let (mut client, connection) = pinging_http2_client(address, 0).await;
+        let (response, _) = client
+            .send_request(test_request("GET", "/download"), true)
+            .unwrap();
+        let _headers_only = response.await.unwrap();
+        assert_eq!(downloads.available_permits(), 0);
+        tokio::time::timeout(TEST_CLOSING_LIMIT, connection)
+            .await
+            .expect("the stalled HTTP/2 connection was never closed")
+            .unwrap();
+        assert_eq!(downloads.available_permits(), 1);
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_http2_connection_that_only_pings_is_closed() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = spawn_flow_control_test_server(listener, Arc::new(Semaphore::new(1)));
+
+        // Before any request, then again after one: pings are no request.
+        let (_client, connection) = pinging_http2_client(address, 65_535).await;
+        tokio::time::timeout(TEST_CLOSING_LIMIT, connection)
+            .await
+            .expect("an HTTP/2 connection without requests was never closed")
+            .unwrap();
+        let (mut client, connection) = pinging_http2_client(address, 65_535).await;
+        let (response, mut request_body) = client
+            .send_request(test_request("POST", "/upload"), false)
+            .unwrap();
+        request_body
+            .send_data(axum::body::Bytes::from_static(b"abc"), true)
+            .unwrap();
+        assert_eq!(response.await.unwrap().status(), 200);
+        tokio::time::timeout(TEST_CLOSING_LIMIT, connection)
+            .await
+            .expect("an idle HTTP/2 connection was never closed")
+            .unwrap();
+
+        // A request body that never comes does not keep the connection either.
+        let (mut client, connection) = pinging_http2_client(address, 65_535).await;
+        let (_response, _request_body_never_sent) = client
+            .send_request(test_request("POST", "/upload"), false)
+            .unwrap();
+        tokio::time::timeout(TEST_CLOSING_LIMIT, connection)
+            .await
+            .expect("an HTTP/2 upload that sends nothing was never closed")
+            .unwrap();
+        server.abort();
     }
 
     #[test]

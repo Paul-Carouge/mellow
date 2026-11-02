@@ -33,6 +33,10 @@ hkdf = "0.13.0"
 gif = { version = "0.14.2", default-features = false, features = ["std"] }
 image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
+# Already in the tree through axum; wraps request and response bodies to bound HTTP/2 stalls.
+http-body = "1.1.0"
+# Already in the tree through hyper; tests drive HTTP/2 flow control and pings with its client.
+h2 = "0.4.20"
 # Already in the tree through hyper-util; `serde` reads proxy networks from mellow.toml.
 ipnet = { version = "2.12.2", features = ["serde"] }
 mellow-protocol = { path = "crates/mellow-protocol" }
