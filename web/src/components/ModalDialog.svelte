@@ -3,33 +3,42 @@
 
   import { strings } from "../i18n";
   import Button from "./Button.svelte";
+  import { type DialogSubmission, trackDialogSubmission } from "./dialog-submission";
   import Icon from "./Icon.svelte";
 
   // DESIGN.md §6.35: title, optional sentence, the dialog's own controls, an inline error, and a
   // footer with Cancel and one action. A native modal <dialog> keeps the page behind it inert.
   // Esc, Cancel and the scrim close it except while busy; focus goes back where it came from.
+  // An action that returns a promise makes the dialog busy until it settles and shows its failure.
   interface Props {
     title: string;
     subtitle?: string;
     isHeadingCentered?: boolean;
     /** Two columns side by side ("Create a server"), stacked when the window is narrower. */
     isWide?: boolean;
+    /** For a dialog that runs its action itself; an `onsubmit` promise's failure is shown on its own. */
     errorMessage?: string;
+    /** For a dialog that runs its action itself; an `onsubmit` promise makes the dialog busy on its own. */
     isBusy?: boolean;
     cancelLabel?: string;
     /** Empty leaves Cancel alone in the footer. */
     submitLabel?: string;
     isSubmitDanger?: boolean;
     isSubmitEnabled?: boolean;
+    /** The submit button's label while the dialog is busy ("Renaming…"). */
+    busySubmitLabel?: string;
+    /** What could not be done, shown with the reason when an `onsubmit` promise rejects. */
+    failureSummary?: string;
     onclose: () => void;
-    onsubmit?: () => void;
+    onsubmit?: () => void | Promise<void>;
     /** Where focus goes when the element that opened the dialog is gone. */
     fallbackFocus?: () => void;
     /** False once the dialog did its job (a server created, a channel opened): focus then goes to
      * `fallbackFocus`, since the opener (the rail's +, a menu item) would only reopen it. A function,
      * read when the dialog closes: a prop changed right before closing is not seen by then. */
     shouldReturnFocusToOpener?: () => boolean;
-    children?: Snippet;
+    /** Receives whether the dialog is busy, for fields that turn read-only meanwhile. */
+    children?: Snippet<[isBusy: boolean]>;
   }
 
   let {
@@ -43,6 +52,8 @@
     submitLabel = "",
     isSubmitDanger = false,
     isSubmitEnabled = true,
+    busySubmitLabel = "",
+    failureSummary = "",
     onclose,
     onsubmit,
     fallbackFocus,
@@ -52,10 +63,20 @@
 
   const id = $props.id();
   let dialog: HTMLDialogElement;
+  const submission = $state<DialogSubmission>({ isBusy: false, errorMessage: "" });
+  const isDialogBusy = $derived(isBusy || submission.isBusy);
+  const shownErrorMessage = $derived(submission.errorMessage || errorMessage);
 
   function requestClose() {
-    if (!isBusy) {
+    if (!isDialogBusy) {
       onclose();
+    }
+  }
+
+  function submit() {
+    const action = onsubmit?.();
+    if (action instanceof Promise) {
+      void trackDialogSubmission(submission, action, failureSummary);
     }
   }
 
@@ -108,8 +129,8 @@
     class="flex max-h-[calc(100dvh_-_2*var(--mw-component-dialog-margin))] flex-col"
     onsubmit={(event) => {
       event.preventDefault();
-      if (!isBusy && isSubmitEnabled && submitLabel) {
-        onsubmit?.();
+      if (!isDialogBusy && isSubmitEnabled && submitLabel) {
+        submit();
       }
     }}
   >
@@ -121,14 +142,14 @@
         {/if}
       </div>
 
-      {@render children?.()}
+      {@render children?.(isDialogBusy)}
 
       <!-- Kept in the page, so the error is announced as soon as it appears. -->
       <div role="alert" class="contents">
-        {#if errorMessage}
+        {#if shownErrorMessage}
           <p class="flex gap-(--mw-component-dialog-error-gap) type-body text-(--mw-component-dialog-error-text)">
             <Icon name="warning-circle" class="size-(--mw-component-dialog-error-icon-size)" />
-            <span>{errorMessage}</span>
+            <span>{shownErrorMessage}</span>
           </p>
         {/if}
       </div>
@@ -139,13 +160,13 @@
       <!-- Beside an action, Cancel stays quiet; alone, it is the dialog's button. -->
       <Button
         variant={submitLabel ? "ghost" : "secondary"}
-        isDisabled={isBusy}
+        isDisabled={isDialogBusy}
         data-initial-focus={isSubmitDanger || !submitLabel ? "" : undefined}
         onclick={requestClose}>{cancelLabel}</Button
       >
       {#if submitLabel}
-        <Button type="submit" variant={isSubmitDanger ? "danger" : "primary"} isDisabled={!isSubmitEnabled || isBusy}
-          >{submitLabel}</Button
+        <Button type="submit" variant={isSubmitDanger ? "danger" : "primary"} isDisabled={!isSubmitEnabled || isDialogBusy}
+          >{isDialogBusy && busySubmitLabel ? busySubmitLabel : submitLabel}</Button
         >
       {/if}
     </div>
