@@ -870,6 +870,9 @@ impl VoiceShared {
                 };
                 camera.self_state.self_video = false;
                 let camera = camera.clone();
+                // The service stays the authority: the media loop turned the camera off, but an
+                // off and on in between may have turned it on again there.
+                self.send_media_command(camera.camera_command(user_id));
                 self.publish_state_updated(user_id, &camera).await;
             }
             MediaEvent::CameraLayers {

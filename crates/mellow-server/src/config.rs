@@ -110,6 +110,7 @@ pub struct VoiceConfig {
     pub public_address: Option<String>,
     pub max_participants: u32,
     /// What cameras may take of the host's upload, in Mbit/s (ADR-0035); 0 turns cameras off.
+    /// For now only 0 has an effect: the value is used once bandwidth allocation lands.
     pub video_upload_mbps: u32,
 }
 
