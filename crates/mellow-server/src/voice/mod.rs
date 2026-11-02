@@ -652,17 +652,11 @@ impl VoiceShared {
                 return Some(VoiceVideoRefusal::VideoUnavailable);
             }
         }
-        let other_cameras = || {
-            participants
-                .iter()
-                .filter(|(other_id, other)| **other_id != user_id && other.self_state.self_video)
-        };
-        missing_room_for_a_camera(
-            other_cameras()
-                .filter(|(_, other)| other.channel_id == participant.channel_id)
-                .count(),
-            other_cameras().count(),
-        )
+        let cameras_on = participants
+            .iter()
+            .filter(|(_, other)| other.self_state.self_video)
+            .map(|(other_id, other)| (*other_id, other.channel_id));
+        missing_room_for_a_camera(cameras_on, user_id, participant.channel_id)
     }
 
     /// Tells the others what a join changed: the session it replaced, a move, a new state.

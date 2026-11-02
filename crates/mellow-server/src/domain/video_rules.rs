@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::hash::Hash;
 use std::time::{Duration, Instant};
 
-use mellow_protocol::{SimulcastLayer, VideoTileSize, VoiceVideoRefusal};
+use mellow_protocol::{SimulcastLayer, Snowflake, VideoTileSize, VoiceVideoRefusal};
 
 /// Cameras on at once in one voice channel. The owner's server lost frames with 25 cameras and
 /// default socket buffers (ADR-0035): raised once a run with larger buffers shows it holds more.
@@ -28,20 +28,23 @@ pub(crate) const fn layer_for_tile(size: VideoTileSize) -> SimulcastLayer {
     }
 }
 
-/// Why one more camera may not be turned on, if it may not: `cameras_in_channel` and
-/// `cameras_on_instance` are those already on, the asker's not counted.
-#[must_use]
-pub(crate) const fn missing_room_for_a_camera(
-    cameras_in_channel: usize,
-    cameras_on_instance: usize,
+/// Why `user_id` may not turn a camera on in `channel_id`, if they may not. `cameras_on` names
+/// every camera on the instance as (owner, channel); the asker's own is not counted.
+pub(crate) fn missing_room_for_a_camera(
+    cameras_on: impl IntoIterator<Item = (Snowflake, Snowflake)>,
+    user_id: Snowflake,
+    channel_id: Snowflake,
 ) -> Option<VoiceVideoRefusal> {
-    if cameras_in_channel >= MAXIMUM_CAMERAS_PER_VOICE_CHANNEL
-        || cameras_on_instance >= MAXIMUM_CAMERAS_PER_INSTANCE
-    {
-        Some(VoiceVideoRefusal::TooManyCameras)
-    } else {
-        None
+    let (mut cameras_in_channel, mut cameras_on_instance) = (0_usize, 0_usize);
+    for (owner_id, camera_channel_id) in cameras_on {
+        if owner_id != user_id {
+            cameras_on_instance += 1;
+            cameras_in_channel += usize::from(camera_channel_id == channel_id);
+        }
     }
+    (cameras_in_channel >= MAXIMUM_CAMERAS_PER_VOICE_CHANNEL
+        || cameras_on_instance >= MAXIMUM_CAMERAS_PER_INSTANCE)
+        .then_some(VoiceVideoRefusal::TooManyCameras)
 }
 
 /// What to do with a frame of a camera's layer for one watcher.
@@ -179,15 +182,40 @@ mod tests {
     }
 
     #[test]
-    fn twelve_cameras_per_channel_and_twenty_five_per_instance() {
-        assert_eq!(missing_room_for_a_camera(11, 24), None);
+    fn twelve_cameras_per_channel_and_twenty_five_per_instance_the_asker_not_counted() {
+        let (asker, lounge, booth) = (
+            Snowflake::from_raw(1),
+            Snowflake::from_raw(50),
+            Snowflake::from_raw(51),
+        );
+        let cameras = |in_lounge: u64, in_booth: u64| {
+            (100..100 + in_lounge)
+                .map(move |id| (Snowflake::from_raw(id), lounge))
+                .chain((200..200 + in_booth).map(move |id| (Snowflake::from_raw(id), booth)))
+        };
         assert_eq!(
-            missing_room_for_a_camera(12, 12),
+            missing_room_for_a_camera(cameras(11, 13), asker, lounge),
+            None
+        );
+        assert_eq!(
+            missing_room_for_a_camera(cameras(12, 0), asker, lounge),
             Some(VoiceVideoRefusal::TooManyCameras)
         );
         assert_eq!(
-            missing_room_for_a_camera(0, 25),
-            Some(VoiceVideoRefusal::TooManyCameras)
+            missing_room_for_a_camera(cameras(12, 0), asker, booth),
+            None,
+            "the channel cap counts that channel only"
+        );
+        assert_eq!(
+            missing_room_for_a_camera(cameras(0, 25), asker, lounge),
+            Some(VoiceVideoRefusal::TooManyCameras),
+            "the instance cap counts every channel"
+        );
+        let with_own = cameras(11, 0).chain([(asker, lounge)]);
+        assert_eq!(
+            missing_room_for_a_camera(with_own, asker, lounge),
+            None,
+            "the asker's own camera is not counted"
         );
     }
 

@@ -1,7 +1,7 @@
 //! Cameras through the real gateway and UDP port (ADR-0035), with headless `str0m` clients that
 //! send three synthetic VP8 simulcast layers and answer keyframe requests, as in the ADR's spike.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -373,9 +373,12 @@ async fn a_camera_needs_stream_and_video_lines_and_stops_when_stream_is_taken_aw
     wait_for_camera(&mut owner, member_id, true).await;
     send(&mut owner, &watch(member_id, VideoTileSize::Medium)).await;
     owner_bot.wait_until_receiving(2, "l").await;
+    let layers_while_on = next_layers(&mut member).await;
     fixture.deny_in_lounge("member", Permissions::STREAM).await;
     wait_for_camera(&mut owner, member_id, false).await;
-    // The media loop applies the change right after the event: give in-flight frames time.
+    // The media loop turned the camera off when it reports no layers; then only frames already
+    // in flight may still arrive.
+    while !next_layers(&mut member).await.is_empty() {}
     tokio::time::sleep(SETTLE_TIME).await;
     let frames_when_stopped = owner_bot.received(2, "l");
     tokio::time::sleep(SETTLE_TIME).await;
@@ -386,9 +389,53 @@ async fn a_camera_needs_stream_and_video_lines_and_stops_when_stream_is_taken_aw
     fixture.close().await;
 
     assert_eq!(without_video_lines, VoiceVideoRefusal::VideoUnavailable);
+    assert_eq!(layers_while_on, [SimulcastLayer::Quarter]);
     assert_eq!(
         frames_later, frames_when_stopped,
         "nothing flows without STREAM"
     );
     assert_eq!(without_stream, VoiceVideoRefusal::MissingPermissions);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_camera_replacing_another_in_the_tiles_takes_its_slot_and_the_first_stops() {
+    let fixture = fixture().await;
+    let (mut owner, mut member) = identified_pair(&fixture).await;
+    let (mut muted, _) = identified(fixture.address, fixture.token("muted")).await;
+    let (owner_id, member_id) = (fixture.user_id("owner"), fixture.user_id("member"));
+    let owner_bot = join_with_camera(&mut owner, fixture.lounge, 1).await;
+    let member_bot = join_with_camera(&mut member, fixture.lounge, 2).await;
+    let watcher_bot = join_with_camera(&mut muted, fixture.lounge, 3).await;
+    send(&mut owner, &camera_state(true)).await;
+    send(&mut member, &camera_state(true)).await;
+    // Read together: waiting for one camera skips the other's event.
+    let mut cameras_seen_on = HashSet::new();
+    while cameras_seen_on.len() < 2 {
+        if let GatewayEvent::VoiceStateUpdate { voice_state } =
+            receive_dispatch(&mut muted, |event| {
+                matches!(event, GatewayEvent::VoiceStateUpdate { voice_state } if voice_state.self_video)
+            })
+            .await
+            .1
+        {
+            cameras_seen_on.insert(voice_state.user_id);
+        }
+    }
+
+    send(&mut muted, &watch(owner_id, VideoTileSize::Small)).await;
+    let owner_slot = camera_slot_of(&mut muted, owner_id).await;
+    watcher_bot.wait_until_receiving(1, "q").await;
+    send(&mut muted, &watch(member_id, VideoTileSize::Small)).await;
+    let member_slot = camera_slot_of(&mut muted, member_id).await;
+    watcher_bot.wait_until_receiving(2, "q").await;
+    // The owner's camera is no longer watched once the member's frames arrive on its slot.
+    tokio::time::sleep(SETTLE_TIME).await;
+    let owner_frames_after_switch = watcher_bot.received(1, "q");
+    tokio::time::sleep(SETTLE_TIME).await;
+    let owner_frames_later = watcher_bot.received(1, "q");
+    drop((owner_bot, member_bot, watcher_bot));
+    fixture.close().await;
+
+    assert_eq!(member_slot, owner_slot, "the freed slot is given again");
+    assert_eq!(owner_frames_later, owner_frames_after_switch);
 }
