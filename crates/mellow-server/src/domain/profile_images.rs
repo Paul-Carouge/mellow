@@ -11,7 +11,8 @@ use mellow_protocol::{CurrentUser, GatewayEvent, ProfileImage, PublicUser, Snowf
 
 use crate::domain::attachments::Attachments;
 use crate::domain::image_processing::{
-    ImageProcessingError, ProcessedProfileImage, ProfileImageKind, process_profile_image,
+    ImageProcessingError, ProcessedProfileImage, ProfileImageCrop, ProfileImageKind,
+    process_profile_image,
 };
 use crate::domain::messages::MessageError;
 use crate::domain::snowflake_generator::SnowflakeGenerator;
@@ -116,6 +117,7 @@ impl ProfileImages {
         user: CurrentUser,
         slot: ProfileImageSlot,
         bytes: Option<Vec<u8>>,
+        crop: Option<ProfileImageCrop>,
         now_unix_milliseconds: u64,
     ) -> Result<CurrentUser, MessageError> {
         // Read before the change: once it is stored, nothing may fail before it is announced.
@@ -134,7 +136,7 @@ impl ProfileImages {
             Some(bytes) => Some(
                 self.store(
                     bytes,
-                    move |bytes| process_profile_image(bytes, kind),
+                    move |bytes| process_profile_image(bytes, kind, crop),
                     now_unix_milliseconds,
                 )
                 .await?,
@@ -313,7 +315,7 @@ impl ProfileImages {
             .store_with_permit(
                 permit,
                 bytes,
-                move |bytes| process_profile_image(bytes, kind),
+                move |bytes| process_profile_image(bytes, kind, None),
                 None,
                 now_unix_milliseconds,
             )

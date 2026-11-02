@@ -7,11 +7,11 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use mellow_protocol::{Channel, CurrentUser, Guild, IconCropQuery, Snowflake};
+use mellow_protocol::{BannerCropQuery, Channel, CurrentUser, Guild, IconCropQuery, Snowflake};
 
 use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::guilds::IconUpload;
-use crate::domain::image_processing::SquareCrop;
+use crate::domain::image_processing::{ProfileImageCrop, SquareCrop};
 use crate::domain::message_rules::sniff_content_type;
 use crate::domain::profile_images::ProfileImageSlot;
 use crate::http::AppState;
@@ -60,23 +60,30 @@ async fn replace(
     state: &AppState,
     user: CurrentUser,
     slot: ProfileImageSlot,
-    body: Option<Body>,
+    upload: Option<(Body, Option<ProfileImageCrop>)>,
 ) -> Result<Json<CurrentUser>, ApiError> {
+    let (body, crop) = upload.map_or((None, None), |(body, crop)| (Some(body), crop));
     let bytes = read_upload(state, user.id, body).await?;
     let updated = state
         .profile_images
-        .replace(user, slot, bytes, now_unix_milliseconds())
+        .replace(user, slot, bytes, crop, now_unix_milliseconds())
         .await?;
     Ok(Json(updated))
 }
 
-/// `PUT /api/v1/users/@me/avatar`, the picture as the raw body.
+/// `PUT /api/v1/users/@me/avatar`, the picture as the raw body, cropped by the query.
 pub(crate) async fn put_avatar(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
+    ApiQuery(query): ApiQuery<IconCropQuery>,
     body: Body,
 ) -> Result<Json<CurrentUser>, ApiError> {
-    replace(&state, user, ProfileImageSlot::Avatar, Some(body)).await
+    let crop = square_crop_from_query(query)?.map(|crop| ProfileImageCrop {
+        x: crop.x,
+        y: crop.y,
+        width: crop.size,
+    });
+    replace(&state, user, ProfileImageSlot::Avatar, Some((body, crop))).await
 }
 
 pub(crate) async fn delete_avatar(
@@ -86,13 +93,23 @@ pub(crate) async fn delete_avatar(
     replace(&state, user, ProfileImageSlot::Avatar, None).await
 }
 
-/// `PUT /api/v1/users/@me/banner`, the picture as the raw body.
+/// `PUT /api/v1/users/@me/banner`, the picture as the raw body, cropped by the query.
 pub(crate) async fn put_banner(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
+    ApiQuery(query): ApiQuery<BannerCropQuery>,
     body: Body,
 ) -> Result<Json<CurrentUser>, ApiError> {
-    replace(&state, user, ProfileImageSlot::Banner, Some(body)).await
+    let crop = match (query.crop_x, query.crop_y, query.crop_width) {
+        (Some(x), Some(y), Some(width)) if width > 0 => Some(ProfileImageCrop { x, y, width }),
+        (None, None, None) => None,
+        _ => {
+            return Err(ApiError::validation(
+                "crop_x, crop_y and crop_width go together, with a width of at least 1".into(),
+            ));
+        }
+    };
+    replace(&state, user, ProfileImageSlot::Banner, Some((body, crop))).await
 }
 
 pub(crate) async fn delete_banner(
