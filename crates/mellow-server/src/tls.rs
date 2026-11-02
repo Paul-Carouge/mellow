@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::future::Future;
 use std::io;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -29,7 +29,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::{Instant, Sleep};
 
 use crate::config::TlsConfig;
-use crate::http::client_address::client_address_key;
+use crate::http::client_address::{client_address_key, client_ipv6_site_key};
 use crate::http::{AppState, make_service, make_tls_service};
 use crate::storage::create_private_directory;
 
@@ -448,14 +448,8 @@ impl ConnectionLimiter {
             client_address_key(peer, &HeaderMap::new(), &[]),
             self.maximum_per_client_address,
         )];
-        if let IpAddr::V6(address) = peer.ip()
-            && address.to_ipv4_mapped().is_none()
-        {
-            let segments = address.segments();
-            groups.push((
-                format!("{:x}:{:x}:{:x}::/48", segments[0], segments[1], segments[2]),
-                self.maximum_per_ipv6_site,
-            ));
+        if let Some(site) = client_ipv6_site_key(peer, &HeaderMap::new(), &[]) {
+            groups.push((site, self.maximum_per_ipv6_site));
         }
         groups
     }
