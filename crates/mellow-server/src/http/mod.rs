@@ -23,7 +23,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
-use axum::response::Response;
+use axum::response::{IntoResponse as _, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use ipnet::IpNet;
@@ -412,6 +412,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .fallback(web_client::serve)
         .method_not_allowed_fallback(|| async { api_error::ApiError::method_not_allowed() })
         .layer(middleware::from_fn(mark_api_responses_private))
+        .layer(middleware::from_fn(copy_request_authority_into_host))
         .with_state(state)
 }
 
@@ -432,6 +433,32 @@ async fn mark_api_responses_private(request: Request, next: Next) -> Response {
         headers.append(header::VARY, HeaderValue::from_static("Cookie"));
     }
     response
+}
+
+/// HTTP/2 carries the host in `:authority`, which lands in the URI and never in `Host`, yet the
+/// origin check (CSRF, cross-site WebSocket hijacking) and the voice candidate read `Host`. A
+/// request naming two different hosts is refused: which one counts would be ambiguous
+/// (RFC 9113 §8.3.1).
+async fn copy_request_authority_into_host(mut request: Request, next: Next) -> Response {
+    if let Some(authority) = request.uri().authority() {
+        let Ok(authority) = HeaderValue::from_str(authority.as_str()) else {
+            return api_error::ApiError::validation("Invalid request authority.".into())
+                .into_response();
+        };
+        match request.headers().get(header::HOST) {
+            None => {
+                request.headers_mut().insert(header::HOST, authority);
+            }
+            Some(host) if *host == authority => {}
+            Some(_) => {
+                return api_error::ApiError::validation(
+                    "The Host header and the request authority differ.".into(),
+                )
+                .into_response();
+            }
+        }
+    }
+    next.run(request).await
 }
 
 /// With built-in TLS, browsers must never come back over plain HTTP: a network attacker would
@@ -707,6 +734,18 @@ pub(crate) mod tests {
         };
         let (same_origin, _) = send(&state, request_from("https://chat.example.org")).await;
         let (other_origin, _) = send(&state, request_from("https://evil.example")).await;
+        // HTTP/2 names the host in `:authority` (the URI) and sends no `Host` header.
+        let over_http2 = |host: Option<&str>| {
+            let mut request = Request::get("https://chat.example.org/api/v1/users/@me")
+                .header(header::COOKIE, &cookie)
+                .header(header::ORIGIN, "https://chat.example.org");
+            if let Some(host) = host {
+                request = request.header(header::HOST, host);
+            }
+            request.body(Body::empty()).unwrap()
+        };
+        let (same_origin_over_http2, _) = send(&state, over_http2(None)).await;
+        let (two_different_hosts, _) = send(&state, over_http2(Some("evil.example"))).await;
         let logout = Request::post("/api/v1/auth/logout")
             .header(header::COOKIE, &cookie)
             .header(header::HOST, "chat.example.org")
@@ -719,6 +758,8 @@ pub(crate) mod tests {
 
         assert_eq!(same_origin, StatusCode::OK);
         assert_eq!(other_origin, StatusCode::UNAUTHORIZED);
+        assert_eq!(same_origin_over_http2, StatusCode::OK);
+        assert_eq!(two_different_hosts, StatusCode::BAD_REQUEST);
         assert_eq!(logged_out, StatusCode::NO_CONTENT);
         assert!(
             logout_headers
