@@ -4,6 +4,15 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-11-02
+Stored files spread evenly, and cleaner code. No database migration.
+
+### Fixed
+- Stored files (attachments, avatars, icons, emoji, previews and sounds) all landed in one folder. They now spread over 256 folders (ADR-0034). The first start moves existing files once, safely and resumably; a later restart continues where it stopped. Going back to 0.27.0 afterwards needs the files moved back by hand: update forward instead.
+
+### Changed
+- Internal clean-up with no visible change: guild code, HTTP route tests, the web composer, channel sidebar, dialogs and client state split into smaller modules; the web client's protocol types are now checked against the server's at build time.
+
 ## [0.27.0] - 2026-11-02
 Faster, lighter and sturdier. This version migrates the database (migrations 24 to 31, with the usual automatic backup); older versions refuse it afterwards.
 
