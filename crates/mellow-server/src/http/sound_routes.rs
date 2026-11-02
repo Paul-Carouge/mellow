@@ -167,3 +167,6 @@ pub(crate) async fn get_sound(
     )
         .into_response())
 }
+
+#[cfg(test)]
+mod tests;
