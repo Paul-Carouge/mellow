@@ -3,6 +3,7 @@
 // (ADR-0007); these rules only hide or lock what it would refuse (ADR-0014).
 
 import { strings } from "../i18n";
+import type { RoleChanges } from "../lib/api";
 import { displayEmoji } from "../lib/reactions";
 import {
   type AuditChange,
@@ -246,7 +247,7 @@ export function roleUpdateBody(
   stored: Role,
   draft: RoleDraft,
   isEveryone: boolean,
-): { name?: string; color?: number; permissions?: PermissionBits; is_displayed_separately?: boolean } | null {
+): RoleChanges | null {
   const name = draft.name.trim();
   if (!isEveryone && name === "") {
     return null;

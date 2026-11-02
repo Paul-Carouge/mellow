@@ -52,6 +52,14 @@ const DEVICE_NAME = "Web browser";
 const REQUEST_TIMEOUT_MILLISECONDS = 30_000;
 const SESSION_TRANSPORT_HEADER = "X-Mellow-Session-Transport";
 
+/** The fields of a role to change, as `PATCH /guilds/{id}/roles/{id}` takes them. */
+export interface RoleChanges {
+  name?: string;
+  color?: number;
+  permissions?: PermissionBits;
+  is_displayed_separately?: boolean;
+}
+
 /** A refusal from the instance. Its `message` is the instance's own text: never shown as is. */
 export class ApiError extends Error {
   constructor(
@@ -292,11 +300,7 @@ export class RestClient {
   }
 
   /** Absent fields stay unchanged; `@everyone` takes permissions only. */
-  updateRole(
-    guildId: Snowflake,
-    roleId: Snowflake,
-    changes: { name?: string; color?: number; permissions?: PermissionBits; is_displayed_separately?: boolean },
-  ): Promise<Role> {
+  updateRole(guildId: Snowflake, roleId: Snowflake, changes: RoleChanges): Promise<Role> {
     return this.request("PATCH", `guilds/${guildId}/roles/${roleId}`, changes);
   }
 

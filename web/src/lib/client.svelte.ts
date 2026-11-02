@@ -12,6 +12,7 @@ import {
   type InviteLimits,
   type ProfileImageKind,
   RestClient,
+  type RoleChanges,
   generateMessageNonce,
 } from "./api";
 import { GatewayConnection, type GatewayUpdate } from "./gateway";
@@ -1950,7 +1951,7 @@ export class MellowClient {
   async updateRole(
     guildId: Snowflake,
     roleId: Snowflake,
-    changes: { name?: string; color?: number; permissions?: PermissionBits },
+    changes: RoleChanges,
   ): Promise<void> {
     await this.rest.updateRole(guildId, roleId, changes);
   }

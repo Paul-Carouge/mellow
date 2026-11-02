@@ -1336,7 +1336,7 @@ export const fr: Catalogue = {
       topicChange: (topic) => `Nouveau sujet${NO_BREAK_SPACE}: ${topic}`,
       topicCleared: "Sujet retiré",
       colorChange: "Couleur changée",
-      displayedSeparatelyChange: (isOn) => (isOn ? "Membres désormais affichés à part" : "Membres plus affichés à part"),
+      displayedSeparatelyChange: (isOn) => (isOn ? "Membres désormais affichés à part" : "Membres de nouveau affichés avec les autres"),
       permissionsAdded: (key, names) =>
         key === "deny"
           ? `Désormais refusé${NO_BREAK_SPACE}: ${names}`
