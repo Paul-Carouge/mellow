@@ -309,3 +309,6 @@ pub(crate) async fn get_icon_still(
 ) -> Result<Response, ApiError> {
     serve_icon(&state, user.id, id, true).await
 }
+
+#[cfg(test)]
+mod tests;
