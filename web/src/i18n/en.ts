@@ -1133,6 +1133,7 @@ export const en = {
         label: "Use soundboard",
         description: "Play the server's sounds in voice channels, and choose a join sound.",
       },
+      stream: { label: "Video", description: "Turn their camera on in voice channels." },
       kickMembers: { label: "Kick members", description: "Remove people; they can come back with a new invite." },
       banMembers: { label: "Ban members", description: "Remove people and stop them from rejoining." },
       administrator: {

@@ -277,7 +277,7 @@ export const guildSamples = [
     },
     "id": "1",
     "my_join_sound_id": "600",
-    "my_permissions": "2097151",
+    "my_permissions": "4194303",
     "my_role_ids": [
       "20"
     ],
@@ -311,7 +311,7 @@ export const guildSamples = [
     "channels": [],
     "emojis": [],
     "id": "1",
-    "my_permissions": "2097151",
+    "my_permissions": "4194303",
     "my_role_ids": [],
     "name": "Mellow",
     "owner_id": "10",
@@ -902,7 +902,7 @@ export const readySamples = [
         },
         "id": "1",
         "my_join_sound_id": "600",
-        "my_permissions": "2097151",
+        "my_permissions": "4194303",
         "my_role_ids": [
           "20"
         ],
@@ -936,7 +936,7 @@ export const readySamples = [
         "channels": [],
         "emojis": [],
         "id": "1",
-        "my_permissions": "2097151",
+        "my_permissions": "4194303",
         "my_role_ids": [],
         "name": "Mellow",
         "owner_id": "10",
@@ -1363,7 +1363,7 @@ export const gatewayEventSamples = [
       },
       "id": "1",
       "my_join_sound_id": "600",
-      "my_permissions": "2097151",
+      "my_permissions": "4194303",
       "my_role_ids": [
         "20"
       ],
@@ -1854,7 +1854,7 @@ export const serverFrameSamples = [
           },
           "id": "1",
           "my_join_sound_id": "600",
-          "my_permissions": "2097151",
+          "my_permissions": "4194303",
           "my_role_ids": [
             "20"
           ],
@@ -1888,7 +1888,7 @@ export const serverFrameSamples = [
           "channels": [],
           "emojis": [],
           "id": "1",
-          "my_permissions": "2097151",
+          "my_permissions": "4194303",
           "my_role_ids": [],
           "name": "Mellow",
           "owner_id": "10",
@@ -2060,7 +2060,7 @@ export const sharedConstants = {
 } as const;
 
 export const permissionBits = {
-  "channelScoped": "1902078",
+  "channelScoped": "3999230",
   "named": {
     "ADD_REACTIONS": "65536",
     "ADMINISTRATOR": "1",
@@ -2080,6 +2080,7 @@ export const permissionBits = {
     "READ_MESSAGE_HISTORY": "8",
     "SEND_MESSAGES": "4",
     "SPEAK": "524288",
+    "STREAM": "2097152",
     "USE_SOUNDBOARD": "1048576",
     "VIEW_AUDIT_LOG": "32768",
     "VIEW_CHANNEL": "2"

@@ -1115,6 +1115,7 @@ export const fr: Catalogue = {
         label: "Utiliser le soundboard",
         description: "Jouer les sons du serveur dans les salons vocaux et choisir un son d’arrivée.",
       },
+      stream: { label: "Vidéo", description: "Allumer sa caméra dans les salons vocaux." },
       kickMembers: {
         label: "Expulser des membres",
         description: "Retirer des gens du serveur, qui peuvent revenir avec une nouvelle invitation.",
