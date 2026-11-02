@@ -427,7 +427,8 @@ pub(crate) const OPTIMIZABLE_CONTENT_TYPES: [&str; 4] =
 /// An attachment's smallest form that looks the same (ADR-0033): EXIF orientation applied to the
 /// pixels, no metadata left, animations kept animated; no encode starts past `deadline`. `None`
 /// when nothing passed or nothing came out smaller than `bytes` (a JPEG already stripped of its
-/// metadata by `strip_jpeg_metadata` at upload), and for an animated PNG.
+/// metadata by `strip_jpeg_metadata` at upload), for an animated PNG, and when the stored form
+/// could not show the same colours.
 pub(crate) fn optimize_attachment(
     bytes: &[u8],
     content_type: &str,
@@ -437,11 +438,17 @@ pub(crate) fn optimize_attachment(
         return Ok(None);
     }
     let picture = decode_picture(bytes, |frame| frame)?;
+    let Some((first, _)) = picture.frames.first() else {
+        return Err(ImageProcessingError::Unsupported);
+    };
+    if !picture.colour.keeps_colours(first) {
+        return Ok(None);
+    }
     let is_animated = picture.frames.len() > 1;
-    let encoded = match picture.frames.first() {
-        _ if is_animated => Some(smallest_animation(&picture.frames, deadline)?),
-        Some((frame, _)) => smallest_still(frame, &picture.colour, !picture.is_photo, deadline)?,
-        None => return Err(ImageProcessingError::Unsupported),
+    let encoded = if is_animated {
+        Some(smallest_animation(&picture.frames, deadline)?)
+    } else {
+        smallest_still(first, &picture.colour, !picture.is_photo, deadline)?
     };
     Ok(encoded
         .filter(|encoded| encoded.bytes.len() < bytes.len())
@@ -958,7 +965,7 @@ pub(crate) mod tests {
         let decoded = avif::encode(&source, quality, avif::Primaries::Srgb)
             .unwrap()
             .decoded;
-        let score = quality::worst_score(&[(&source, &decoded)]).unwrap();
+        let score = quality::worst_score(&[(&source, &decoded)], avif::Primaries::Srgb).unwrap();
         assert!(score >= quality::MINIMUM_SCORE, "{score} at {quality}");
         assert!(quality < 95, "lossy enough to save space: {quality}");
         let lossless = encoding::lossless_webp(&[(source, 0)]).unwrap();
@@ -1033,7 +1040,7 @@ pub(crate) mod tests {
         assert_eq!(stored.len(), 4);
         let pairs: Vec<(&RgbaImage, &RgbaImage)> =
             source.iter().map(|(frame, _)| frame).zip(&stored).collect();
-        let score = quality::worst_score(&pairs).unwrap();
+        let score = quality::worst_score(&pairs, avif::Primaries::Srgb).unwrap();
         assert!(score >= quality::MINIMUM_SCORE, "{score}");
     }
 
@@ -1115,6 +1122,62 @@ pub(crate) mod tests {
         assert_eq!(
             tagged_srgb.picture.content_type, "image/webp",
             "sRGB stays lossless"
+        );
+    }
+
+    #[test]
+    fn an_attachment_whose_colours_would_change_is_kept_as_uploaded() {
+        use moxcms::ColorProfile;
+
+        // Browsers show a CMYK print export through its profile; the decoder ignores it.
+        let print_export = encoded(
+            &photo(64, 64),
+            ImageFormat::Jpeg,
+            Some(colour::tests::cmyk_icc_bytes()),
+        );
+        assert_eq!(
+            optimize_attachment(&print_export, "image/jpeg", no_deadline()),
+            Ok(None)
+        );
+
+        // The purest Adobe RGB green lies outside Display P3.
+        let green = RgbaImage::from_pixel(64, 64, Rgba([0, 255, 0, 255]));
+        let adobe_rgb = colour::tests::icc_bytes(&ColorProfile::new_adobe_rgb());
+        assert_eq!(
+            optimize_attachment(
+                &encoded(&green, ImageFormat::Png, Some(adobe_rgb)),
+                "image/png",
+                no_deadline()
+            ),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn a_display_p3_screenshot_in_srgb_colours_stays_lossless() {
+        use moxcms::ColorProfile;
+
+        // A window in greys, as macOS tags its screenshots with the display's profile.
+        let window = RgbaImage::from_fn(200, 120, |x, y| {
+            let grey = if y < 20 || x % 50 == 0 { 230 } else { 40 };
+            Rgba([grey, grey, grey, 255])
+        });
+        let display_p3 = colour::tests::icc_bytes(&ColorProfile::new_display_p3());
+        let screenshot = encoded(&window, ImageFormat::Png, Some(display_p3));
+        let optimized = optimize_attachment(&screenshot, "image/png", no_deadline())
+            .unwrap()
+            .unwrap();
+        assert_eq!(optimized.content_type, "image/webp");
+        let decoded = image::load_from_memory(&optimized.bytes)
+            .unwrap()
+            .to_rgba8();
+        assert!(
+            decoded
+                .as_raw()
+                .iter()
+                .zip(window.as_raw())
+                .all(|(stored, source)| stored.abs_diff(*source) <= 2),
+            "the same greys in sRGB"
         );
     }
 
@@ -1528,7 +1591,7 @@ pub(crate) mod tests {
                 continue;
             };
             let picture = decode_picture(&bytes, |frame| frame).unwrap();
-            if picture.frames.len() == 1 && picture.colour.is_srgb() {
+            if picture.frames.len() == 1 && matches!(picture.colour, ColourSpace::Srgb) {
                 let encoded =
                     avif::encode(&picture.frames[0].0, 80, avif::Primaries::Srgb).unwrap();
                 let name = path.file_stem().unwrap().to_string_lossy().into_owned();

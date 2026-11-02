@@ -4,6 +4,8 @@
 use image::{GenericImageView as _, Rgba, RgbaImage};
 use ssimulacra2::{ColorPrimaries, Rgb, TransferCharacteristic, compute_frame_ssimulacra2};
 
+use super::avif::Primaries;
+
 /// The lowest score stored: 90 ("not noticeable in a flicker test") costs about 22 % more space
 /// for attachments and 50 % more for banners, against a difference no one sees in normal use.
 pub(super) const MINIMUM_SCORE: f64 = 85.0;
@@ -42,11 +44,14 @@ fn scored_areas(width: u32, height: u32) -> Vec<(u32, u32, u32, u32)> {
         .collect()
 }
 
-/// An area over `background`, blended in sRGB as browsers do.
+/// An area over `background`, blended in sRGB's transfer as browsers do, read in `primaries`:
+/// scoring Display P3 pixels as sRGB would pull their saturated colours into sRGB's gamut and
+/// weigh their errors too low.
 fn flattened(
     image: &RgbaImage,
     (x, y, width, height): (u32, u32, u32, u32),
     background: [u8; 3],
+    primaries: Primaries,
 ) -> Option<Rgb> {
     let pixels = image::imageops::crop_imm(image, x, y, width, height)
         .pixels()
@@ -67,15 +72,19 @@ fn flattened(
         usize::try_from(width).ok()?,
         usize::try_from(height).ok()?,
         TransferCharacteristic::SRGB,
-        ColorPrimaries::BT709,
+        match primaries {
+            Primaries::Srgb => ColorPrimaries::BT709,
+            Primaries::DisplayP3 => ColorPrimaries::P3Display,
+        },
     )
     .ok()
 }
 
-/// The worst score of each candidate frame against its reference frame, over the scored areas
-/// and, for transparent pictures, both backgrounds. `None` when it cannot be scored (smaller than
-/// 8 pixels a side, sizes that differ): only a lossless result passes then.
-pub(super) fn worst_score(pairs: &[(&RgbaImage, &RgbaImage)]) -> Option<f64> {
+/// The worst score of each candidate frame against its reference frame, both in `primaries`,
+/// over the scored areas and, for transparent pictures, both backgrounds. `None` when it cannot
+/// be scored (smaller than 8 pixels a side, sizes that differ): only a lossless result passes
+/// then.
+pub(super) fn worst_score(pairs: &[(&RgbaImage, &RgbaImage)], primaries: Primaries) -> Option<f64> {
     let mut worst = f64::INFINITY;
     for (reference, candidate) in pairs {
         let (width, height) = reference.dimensions();
@@ -96,8 +105,8 @@ pub(super) fn worst_score(pairs: &[(&RgbaImage, &RgbaImage)]) -> Option<f64> {
         for area in scored_areas(width, height) {
             for background in backgrounds {
                 let score = compute_frame_ssimulacra2(
-                    flattened(reference, area, *background)?,
-                    flattened(candidate, area, *background)?,
+                    flattened(reference, area, *background, primaries)?,
+                    flattened(candidate, area, *background, primaries)?,
                 )
                 .ok()?;
                 worst = worst.min(score);
@@ -107,8 +116,8 @@ pub(super) fn worst_score(pairs: &[(&RgbaImage, &RgbaImage)]) -> Option<f64> {
     worst.is_finite().then_some(worst)
 }
 
-pub(super) fn passes(pairs: &[(&RgbaImage, &RgbaImage)]) -> bool {
-    worst_score(pairs).is_some_and(|score| score >= MINIMUM_SCORE)
+pub(super) fn passes(pairs: &[(&RgbaImage, &RgbaImage)], primaries: Primaries) -> bool {
+    worst_score(pairs, primaries).is_some_and(|score| score >= MINIMUM_SCORE)
 }
 
 #[cfg(test)]
@@ -150,17 +159,40 @@ mod tests {
                 255,
             ])
         });
-        assert!(passes(&[(&picture, &picture)]));
+        assert!(passes(&[(&picture, &picture)], Primaries::Srgb));
         let flat = RgbaImage::from_pixel(64, 64, Rgba([128, 128, 128, 255]));
-        assert!(!passes(&[(&picture, &flat)]));
+        assert!(!passes(&[(&picture, &flat)], Primaries::Srgb));
 
         let transparent = RgbaImage::from_pixel(64, 64, Rgba([0x22, 0x1B, 0x23, 0]));
         let opaque_like_the_sheet = RgbaImage::from_pixel(64, 64, Rgba([0x22, 0x1B, 0x23, 255]));
         assert!(
-            !passes(&[(&transparent, &opaque_like_the_sheet)]),
+            !passes(&[(&transparent, &opaque_like_the_sheet)], Primaries::Srgb),
             "white shows the difference"
         );
         let tiny = RgbaImage::new(4, 4);
-        assert_eq!(worst_score(&[(&tiny, &tiny)]), None);
+        assert_eq!(worst_score(&[(&tiny, &tiny)], Primaries::Srgb), None);
+    }
+
+    #[test]
+    fn display_p3_pixels_are_scored_with_their_own_wider_primaries() {
+        // Saturated reds and greens, as a wide-gamut photo holds, and the same a little duller.
+        let saturated = RgbaImage::from_fn(64, 64, |x, y| {
+            let shade = u8::try_from(160 + (x + y) % 96).unwrap();
+            if (x / 8 + y / 8) % 2 == 0 {
+                Rgba([shade, 0, 0, 255])
+            } else {
+                Rgba([0, shade, 0, 255])
+            }
+        });
+        let duller = RgbaImage::from_fn(64, 64, |x, y| {
+            let Rgba([red, green, blue, alpha]) = *saturated.get_pixel(x, y);
+            Rgba([red.max(24), green.max(24), blue.max(24), alpha])
+        });
+        let as_srgb = worst_score(&[(&saturated, &duller)], Primaries::Srgb).unwrap();
+        let as_display_p3 = worst_score(&[(&saturated, &duller)], Primaries::DisplayP3).unwrap();
+        assert!(
+            as_display_p3 < as_srgb,
+            "Display P3 {as_display_p3} against sRGB {as_srgb}"
+        );
     }
 }

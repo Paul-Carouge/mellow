@@ -158,7 +158,7 @@ fn lossy_webp(frames: &Frames, quality: u8) -> Result<Vec<u8>, ImageProcessingEr
 }
 
 /// The smallest still that passes: AVIF searched, and lossless WebP when `is_lossless_tried` and
-/// the colours are sRGB (WebP is written without a profile). `None` when none passes.
+/// the colours have an sRGB form (WebP is written without a profile). `None` when none passes.
 pub(super) fn smallest_still(
     source: &RgbaImage,
     colour: &ColourSpace,
@@ -166,19 +166,21 @@ pub(super) fn smallest_still(
     deadline: Instant,
 ) -> Result<Option<Encoded>, ImageProcessingError> {
     // Cheap and always valid: first, so a deadline still leaves it.
-    let lossless = (is_lossless_tried && colour.is_srgb())
-        .then(|| lossless_still_webp(source))
-        .transpose()?;
+    let lossless = if is_lossless_tried {
+        colour
+            .srgb_form(source)
+            .map(|pixels| lossless_still_webp(&pixels))
+            .transpose()?
+    } else {
+        None
+    };
     let stored = colour
         .stored(source)
         .ok_or(ImageProcessingError::Encoding)?;
-    let reference = colour.reference(source, &stored);
+    let primaries = colour.primaries();
     let avif = search_quality(AVIF_FIRST_QUALITY, deadline, |quality| {
-        let encoded = avif::encode(&stored, quality, colour.primaries())?;
-        let decoded = colour
-            .comparable(encoded.decoded)
-            .ok_or(ImageProcessingError::Encoding)?;
-        Ok(quality::passes(&[(reference, &decoded)]).then_some(encoded.bytes))
+        let encoded = avif::encode(&stored, quality, primaries)?;
+        Ok(quality::passes(&[(&stored, &encoded.decoded)], primaries).then_some(encoded.bytes))
     })?
     .map(|bytes| Encoded {
         bytes,
@@ -193,8 +195,8 @@ pub(super) fn last_resort_still(
     source: &RgbaImage,
     colour: &ColourSpace,
 ) -> Result<Encoded, ImageProcessingError> {
-    if colour.is_srgb() {
-        return lossless_still_webp(source);
+    if let Some(pixels) = colour.srgb_form(source) {
+        return lossless_still_webp(&pixels);
     }
     let stored = colour
         .stored(source)
@@ -246,7 +248,7 @@ fn animation_passes(frames: &Frames, encoded: &[u8]) -> bool {
             Some((source, &shown.1))
         })
         .collect();
-    pairs.is_some_and(|pairs| quality::passes(&pairs))
+    pairs.is_some_and(|pairs| quality::passes(&pairs, avif::Primaries::Srgb))
 }
 
 /// The smaller of a lossless and a passing lossy animated WebP; pure Rust has no animated AVIF
