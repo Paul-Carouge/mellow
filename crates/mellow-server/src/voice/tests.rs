@@ -27,7 +27,7 @@ use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::session_token::session_token_sha256;
 use crate::gateway::tests::{ClientSocket, identified, receive_dispatch, send};
 use crate::http::AppState;
-use crate::http::tests::test_state;
+use crate::http::test_support::test_state;
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(20);
 const OPUS_SAMPLES_PER_FRAME: u64 = 960;

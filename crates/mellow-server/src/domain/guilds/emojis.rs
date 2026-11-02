@@ -211,7 +211,7 @@ mod tests {
     use crate::domain::image_processing::tests::{animated_gif, png};
     use crate::domain::message_rules::MessageRuleViolation;
     use crate::http::AppState;
-    use crate::http::tests::test_state;
+    use crate::http::test_support::test_state;
     use crate::storage::profile_images::NewProfileImage;
 
     /// A guild of `owner` that `member` joined; `outsider` belongs to none.
