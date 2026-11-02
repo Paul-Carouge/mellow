@@ -1007,12 +1007,21 @@ mod tests {
     const TEST_PING_INTERVAL: Duration = Duration::from_millis(200);
     /// Far beyond every deadline of `FAST_POLICY`, on the paused clock.
     const TEST_CLOSING_LIMIT: Duration = Duration::from_secs(60);
+    /// `FAST_POLICY` with deadlines no jump of the paused clock reaches. The paused clock advances
+    /// whenever the runtime waits on real sockets, so a short write deadline would cut a client
+    /// that does read, as soon as loopback I/O is slower than the clock (seen on Linux CI).
+    const PATIENT_POLICY: ConnectionPolicy = ConnectionPolicy {
+        idle_read_timeout: Duration::from_secs(3_600),
+        write_stall_timeout: Duration::from_secs(3_600),
+        ..FAST_POLICY
+    };
 
-    /// A plain HTTP server with `FAST_POLICY` whose `/download` holds a permit of `downloads`
-    /// while its body is alive, and whose `/upload` reads the whole request body.
+    /// A plain HTTP server with `policy` whose `/download` holds a permit of `downloads` while its
+    /// body is alive, and whose `/upload` reads the whole request body.
     fn spawn_flow_control_test_server(
         listener: TcpListener,
         downloads: Arc<Semaphore>,
+        policy: ConnectionPolicy,
     ) -> tokio::task::JoinHandle<io::Result<()>> {
         use axum::routing::{get, post};
 
@@ -1034,7 +1043,7 @@ mod tests {
         let server = guarded_server(
             listener,
             DefaultAcceptor::new(),
-            FAST_POLICY,
+            policy,
             std::future::pending(),
         )
         .unwrap();
@@ -1082,12 +1091,12 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_http2_client_that_grants_no_flow_control_loses_its_download_and_connection() {
+        // A client that reads normally gets the whole body.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let downloads = Arc::new(Semaphore::new(1));
-        let server = spawn_flow_control_test_server(listener, downloads.clone());
-
-        // A client that reads normally gets the whole body, however long the pings go on.
+        let patient_server =
+            spawn_flow_control_test_server(listener, downloads.clone(), PATIENT_POLICY);
         let (mut client, _connection) = pinging_http2_client(address, 65_535).await;
         let (response, _) = client
             .send_request(test_request("GET", "/download"), true)
@@ -1101,8 +1110,12 @@ mod tests {
         }
         assert_eq!(received_bytes, TEST_DOWNLOAD_BYTES);
         assert_eq!(downloads.available_permits(), 1);
+        patient_server.abort();
 
         // A client that never opens its window holds the permit only until the write deadline.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = spawn_flow_control_test_server(listener, downloads.clone(), FAST_POLICY);
         let (mut client, connection) = pinging_http2_client(address, 0).await;
         let (response, _) = client
             .send_request(test_request("GET", "/download"), true)
@@ -1121,7 +1134,8 @@ mod tests {
     async fn an_http2_connection_that_only_pings_is_closed() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let server = spawn_flow_control_test_server(listener, Arc::new(Semaphore::new(1)));
+        let server =
+            spawn_flow_control_test_server(listener, Arc::new(Semaphore::new(1)), FAST_POLICY);
 
         // Before any request, then again after one: pings are no request.
         let (_client, connection) = pinging_http2_client(address, 65_535).await;
