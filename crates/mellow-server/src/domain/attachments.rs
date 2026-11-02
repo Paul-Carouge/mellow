@@ -761,6 +761,126 @@ mod tests {
         assert_eq!(remaining, vec![undeletable]);
     }
 
+    /// A sent PNG attachment of 1 000 bytes, its file written; answers its row.
+    async fn stored_png_attachment(state: &crate::http::AppState) -> StoredAttachment {
+        let id = SnowflakeGenerator::default()
+            .next_id(crate::domain::clock::now_unix_milliseconds())
+            .unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) VALUES (30, 20, 1, ''); \
+             INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
+             content_type, size_bytes, created_at_unix_milliseconds) \
+             VALUES ({id}, 20, 1, 30, 'photo.png', 'image/png', 1000, 0);"
+        )))
+        .execute(state.attachments.database.writer())
+        .await
+        .unwrap();
+        state
+            .attachments
+            .files
+            .write(id, vec![7; 1_000])
+            .await
+            .unwrap();
+        storage::find_attachment(&state.attachments.database, id)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    fn smaller_avif() -> ProcessedImage {
+        ProcessedImage {
+            bytes: vec![1; 10],
+            content_type: "image/avif",
+            is_animated: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_compressed_attachment_moves_to_a_new_file_and_the_old_one_is_deleted() {
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let before = stored_png_attachment(&state).await;
+
+        let replaced = state
+            .attachments
+            .replace_file(&before, smaller_avif())
+            .await
+            .unwrap();
+        let after = storage::find_attachment(&database, before.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let stored_files = state.attachments.files.stored_ids().await.unwrap();
+        let files_in_use = file_ids_in_use(&database).await.unwrap();
+        database.close().await;
+
+        assert_eq!(replaced, Some(10));
+        assert_eq!(
+            before.file_id, before.id,
+            "an upload starts under its own id"
+        );
+        assert_ne!(after.file_id, before.file_id);
+        assert_eq!(
+            (after.file_name.as_str(), after.content_type.as_str()),
+            ("photo.avif", "image/avif")
+        );
+        assert_eq!(stored_files, vec![after.file_id], "the old file is gone");
+        assert!(files_in_use.contains(&after.file_id));
+        assert!(!files_in_use.contains(&before.file_id));
+    }
+
+    #[tokio::test]
+    async fn a_compressed_attachment_whose_file_changed_meanwhile_keeps_the_file_its_row_names() {
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let read_before_the_swap = stored_png_attachment(&state).await;
+        // Another job replaced the file between the read and the swap.
+        let current_file = SnowflakeGenerator::default()
+            .next_id(crate::domain::clock::now_unix_milliseconds())
+            .unwrap();
+        state
+            .attachments
+            .files
+            .write(current_file, vec![2; 20])
+            .await
+            .unwrap();
+        sqlx::query("UPDATE attachments SET file_id = ? WHERE id = ?")
+            .bind(i64::try_from(current_file.raw()).unwrap())
+            .bind(i64::try_from(read_before_the_swap.id.raw()).unwrap())
+            .execute(database.writer())
+            .await
+            .unwrap();
+
+        let replaced = state
+            .attachments
+            .replace_file(&read_before_the_swap, smaller_avif())
+            .await
+            .unwrap();
+        let after = storage::find_attachment(&database, read_before_the_swap.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut stored_files = state.attachments.files.stored_ids().await.unwrap();
+        stored_files.sort_unstable();
+        database.close().await;
+
+        assert_eq!(replaced, None);
+        assert_eq!(after.file_id, current_file, "the row is left as it is");
+        assert_eq!(after.content_type, "image/png");
+        let mut expected_files = vec![read_before_the_swap.file_id, current_file];
+        expected_files.sort_unstable();
+        assert_eq!(
+            stored_files, expected_files,
+            "the new file is deleted, the one the row names stays"
+        );
+    }
+
     #[test]
     fn a_converted_picture_is_named_after_its_new_type() {
         assert_eq!(with_extension_of("party.gif", "image/webp"), "party.webp");
