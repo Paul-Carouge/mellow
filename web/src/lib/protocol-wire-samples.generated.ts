@@ -3,7 +3,7 @@
 // `npm run check` type-checks every sample against protocol.ts; protocol.test.ts compares
 // the constants and permission bits.
 
-import type { ApiErrorCode, Attachment, AuditAction, AuditChange, AuditLogEntry, Ban, Channel, ChannelKind, ChannelPlacement, ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel, GatewayEvent, Guild, GuildInvite, InitialCategory, Invite, Member, Message, MessageReaction, MessageSearchQuery, MessageSearchResults, MessageSearchSort, PermissionOverwrite, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SoundboardSound, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState } from "./protocol";
+import type { ApiErrorCode, Attachment, AuditAction, AuditChange, AuditLogEntry, Ban, Channel, ChannelKind, ChannelPlacement, ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel, GatewayEvent, Guild, GuildInvite, InitialCategory, Invite, Member, Message, MessageReaction, MessageSearchQuery, MessageSearchResults, MessageSearchSort, PermissionOverwrite, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer, SoundboardSound, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal } from "./protocol";
 
 /** `true` only when every member of `Union` has a sample. */
 type HasEveryMember<Union, Sampled> = [Exclude<Union, Sampled>] extends [never] ? true : false;
@@ -1010,6 +1010,7 @@ export const readySamples = [
         "join_sound_id": "600",
         "self_deaf": false,
         "self_mute": true,
+        "self_video": true,
         "suppressed": false,
         "user_id": "10"
       },
@@ -1018,6 +1019,7 @@ export const readySamples = [
         "guild_id": "1",
         "self_deaf": false,
         "self_mute": true,
+        "self_video": true,
         "suppressed": false,
         "user_id": "10"
       }
@@ -1053,6 +1055,7 @@ export const voiceStateSamples = [
     "join_sound_id": "600",
     "self_deaf": false,
     "self_mute": true,
+    "self_video": true,
     "suppressed": false,
     "user_id": "10"
   },
@@ -1061,6 +1064,7 @@ export const voiceStateSamples = [
     "guild_id": "1",
     "self_deaf": false,
     "self_mute": true,
+    "self_video": true,
     "suppressed": false,
     "user_id": "10"
   }
@@ -1075,6 +1079,27 @@ export const voiceJoinRefusalSamples = [
   "rate_limited"
 ] satisfies VoiceJoinRefusal[];
 export const voiceJoinRefusalSamplesHaveEveryMember: HasEveryMember<VoiceJoinRefusal, (typeof voiceJoinRefusalSamples)[number]> = true;
+
+export const voiceVideoRefusalSamples = [
+  "missing_permissions",
+  "too_many_cameras",
+  "video_unavailable"
+] satisfies VoiceVideoRefusal[];
+export const voiceVideoRefusalSamplesHaveEveryMember: HasEveryMember<VoiceVideoRefusal, (typeof voiceVideoRefusalSamples)[number]> = true;
+
+export const videoTileSizeSamples = [
+  "large",
+  "medium",
+  "small"
+] satisfies VideoTileSize[];
+export const videoTileSizeSamplesHaveEveryMember: HasEveryMember<VideoTileSize, (typeof videoTileSizeSamples)[number]> = true;
+
+export const simulcastLayerSamples = [
+  "h",
+  "l",
+  "q"
+] satisfies SimulcastLayer[];
+export const simulcastLayerSamplesHaveEveryMember: HasEveryMember<SimulcastLayer, (typeof simulcastLayerSamples)[number]> = true;
 
 export const voiceDisconnectReasonSamples = [
   "moved_elsewhere",
@@ -1696,6 +1721,7 @@ export const gatewayEventSamples = [
         "join_sound_id": "600",
         "self_deaf": false,
         "self_mute": true,
+        "self_video": true,
         "suppressed": false,
         "user_id": "10"
       }
@@ -1733,6 +1759,23 @@ export const gatewayEventSamples = [
       "user_id": "10"
     },
     "t": "VOICE_SLOT_ASSIGNED"
+  },
+  {
+    "data": {
+      "channel_id": "30",
+      "reason": "too_many_cameras"
+    },
+    "t": "VOICE_VIDEO_REFUSED"
+  },
+  {
+    "data": {
+      "active": [
+        "q",
+        "h"
+      ],
+      "channel_id": "30"
+    },
+    "t": "VOICE_VIDEO_LAYERS"
   },
   {
     "data": {
@@ -1962,6 +2005,7 @@ export const serverFrameSamples = [
           "join_sound_id": "600",
           "self_deaf": false,
           "self_mute": true,
+          "self_video": true,
           "suppressed": false,
           "user_id": "10"
         },
@@ -1970,6 +2014,7 @@ export const serverFrameSamples = [
           "guild_id": "1",
           "self_deaf": false,
           "self_mute": true,
+          "self_video": true,
           "suppressed": false,
           "user_id": "10"
         }
@@ -2033,9 +2078,25 @@ export const clientFrameSamples = [
   {
     "d": {
       "self_deaf": true,
-      "self_mute": true
+      "self_mute": true,
+      "self_video": true
     },
     "op": "voice_state"
+  },
+  {
+    "d": {
+      "cameras": [
+        {
+          "size": "large",
+          "user_id": "10"
+        },
+        {
+          "size": "small",
+          "user_id": "11"
+        }
+      ]
+    },
+    "op": "voice_video_watch"
   },
   {
     "d": {
@@ -2056,6 +2117,7 @@ export const sharedConstants = {
   "MAXIMUM_SEARCH_RESULTS_PER_PAGE": 25,
   "MAXIMUM_VOICE_USER_LIMIT": 25,
   "MINIMUM_MILLISECONDS_BETWEEN_SOUNDS": 2000,
+  "VIDEO_RECEIVE_SLOTS": 9,
   "VOICE_RECEIVE_SLOTS": 16
 } as const;
 

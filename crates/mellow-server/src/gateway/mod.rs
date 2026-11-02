@@ -31,9 +31,9 @@ use crate::http::authentication::{is_from_this_origin, session_cookie};
 use crate::http::client_address::client_address_key;
 use crate::http::rate_limit::{
     GATEWAY_CONNECTIONS_PER_ADDRESS, VOICE_JOINS_PER_USER, VOICE_SOUND_REQUESTS_PER_USER,
-    VOICE_STATE_CHANGES_PER_USER,
+    VOICE_STATE_CHANGES_PER_USER, VOICE_VIDEO_WATCH_CHANGES_PER_USER,
 };
-use crate::voice::VoiceJoinRequest;
+use crate::voice::{SelfVoiceState, VoiceJoinRequest};
 use session::{
     FrameText, OUTGOING_QUEUE_FRAMES, SessionCommand, SessionEnd, SessionTask, frame_text,
 };
@@ -53,8 +53,9 @@ const MAXIMUM_WRITE_BUFFER_BYTES: usize = 256 * 1024;
 const MAXIMUM_FRAME_BYTES_BEFORE_IDENTIFY: usize = 4_096;
 /// Once identified, `voice_join` is the largest frame: its offer of at most
 /// `MAXIMUM_VOICE_OFFER_BYTES` escaped in JSON (each `\r\n` takes four bytes, about 6 % more for a
-/// real offer) plus the envelope. About twice a real Chromium offer (17 kB in JSON).
-const MAXIMUM_CLIENT_FRAME_BYTES: usize = 32 * 1024;
+/// real offer) plus the envelope. About one and a half times a real Chromium offer with video
+/// (36 kB in JSON, ADR-0035).
+const MAXIMUM_CLIENT_FRAME_BYTES: usize = 52 * 1024;
 const MAXIMUM_SESSIONS_PER_USER: usize = 10;
 /// Upper bound on simultaneous `WebSocket` connections, authenticated or not (file descriptors, tasks).
 const MAXIMUM_GATEWAY_CONNECTIONS: usize = 10_000;
@@ -602,6 +603,7 @@ async fn handle_voice_frame(state: &AppState, attached: &AttachedSession<'_>, fr
         ClientFrame::VoiceState {
             self_mute,
             self_deaf,
+            self_video,
         } => {
             let key = format!("voice-state:{user_id}");
             // Over the limit, the change is dropped: the client's next one sets the state anyway.
@@ -611,7 +613,28 @@ async fn handle_voice_frame(state: &AppState, attached: &AttachedSession<'_>, fr
             {
                 state
                     .voice
-                    .set_self_state(user_id, attached.hub_key, self_mute, self_deaf)
+                    .set_self_state(
+                        user_id,
+                        attached.hub_key,
+                        SelfVoiceState {
+                            self_mute,
+                            self_deaf,
+                            self_video,
+                        },
+                    )
+                    .await;
+            }
+        }
+        ClientFrame::VoiceVideoWatch { cameras } => {
+            let key = format!("voice-watch:{user_id}");
+            // Over the limit, the list is dropped: clients send one per layout change, coalesced.
+            if state
+                .rate_limiter
+                .record_event(&key, VOICE_VIDEO_WATCH_CHANGES_PER_USER, now)
+            {
+                state
+                    .voice
+                    .watch_cameras(user_id, attached.hub_key, &cameras)
                     .await;
             }
         }
@@ -668,6 +691,7 @@ async fn run_attached(
                     frame @ (ClientFrame::VoiceJoin { .. }
                     | ClientFrame::VoiceLeave
                     | ClientFrame::VoiceState { .. }
+                    | ClientFrame::VoiceVideoWatch { .. }
                     | ClientFrame::VoicePlaySound { .. }),
                 ) => handle_voice_frame(state, attached, frame).await,
                 // A second identify/resume, malformed JSON or a closed socket ends the connection.

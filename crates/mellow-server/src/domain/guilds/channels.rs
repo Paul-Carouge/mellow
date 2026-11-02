@@ -15,7 +15,7 @@ use crate::domain::guild_rules::{
     normalize_channel_name, normalize_topic, validate_user_limit,
 };
 use crate::domain::permissions::{
-    VoiceEntitlement, channel_permissions, may_use_soundboard, voice_entitlement,
+    VoiceEntitlement, channel_permissions, may_send_video, may_use_soundboard, voice_entitlement,
 };
 use crate::domain::voice_rules::VoiceAccess;
 use crate::storage::audit_log::NewAuditEntry;
@@ -184,6 +184,7 @@ impl Guilds {
                 user_limit: channel.user_limit,
                 may_speak: entitlement == VoiceEntitlement::Speak,
                 may_use_soundboard: may_use_soundboard(permissions),
+                may_send_video: may_send_video(permissions),
             },
         })
     }

@@ -7,8 +7,8 @@ use std::hash::Hash;
 use std::time::{Duration, Instant};
 
 use mellow_protocol::{
-    MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_OFFER_BYTES, MAXIMUM_VOICE_RECEIVE_SLOTS,
-    MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, Snowflake,
+    MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_OFFER_BYTES,
+    MAXIMUM_VOICE_RECEIVE_SLOTS, MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, Snowflake,
 };
 
 /// A receive slot goes to another speaker only once its current one has been silent this long.
@@ -34,12 +34,21 @@ pub(crate) fn may_play_another_sound(last_played_at: Option<Instant>, now: Insta
 pub(crate) enum InvalidVoiceOffer {
     #[error("the offer is larger than {MAXIMUM_VOICE_OFFER_BYTES} bytes")]
     TooLarge,
-    #[error("only audio m-lines are accepted")]
-    NotAudioOnly,
+    #[error("only audio and video m-lines are accepted")]
+    UnexpectedMediaKind,
     #[error(
-        "the offer needs one sendonly or sendrecv audio m-line, then 1 to {MAXIMUM_VOICE_RECEIVE_SLOTS} recvonly ones"
+        "the offer needs one sendonly or sendrecv audio m-line, then 1 to {MAXIMUM_VOICE_RECEIVE_SLOTS} recvonly ones, then optionally one sendonly or sendrecv video m-line and 1 to {MAXIMUM_VIDEO_RECEIVE_SLOTS} recvonly ones"
     )]
     UnexpectedMediaLines,
+}
+
+/// The m-lines of a valid offer: how many voices and cameras the participant can receive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VoiceOfferShape {
+    pub(crate) audio_receive_slots: usize,
+    /// 0 when the offer has no video m-lines: this participant can neither send nor watch
+    /// cameras.
+    pub(crate) video_receive_slots: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +57,12 @@ enum MediaDirection {
     SendOnly,
     ReceiveOnly,
     Inactive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SectionKind {
+    Audio,
+    Video,
 }
 
 fn media_direction(attribute_line: &str) -> Option<MediaDirection> {
@@ -60,49 +75,85 @@ fn media_direction(attribute_line: &str) -> Option<MediaDirection> {
     }
 }
 
+/// How many receive m-lines follow one send m-line of `kind` at the start of `sections`, if
+/// they are within `1..=maximum`; `None` otherwise.
+fn count_send_then_receive_lines(
+    sections: &[(SectionKind, MediaDirection)],
+    kind: SectionKind,
+    maximum: usize,
+) -> Option<usize> {
+    let ((first_kind, first_direction), rest) = sections.split_first()?;
+    let is_sent = matches!(
+        first_direction,
+        MediaDirection::SendOnly | MediaDirection::SendReceive
+    );
+    let receive_lines = rest
+        .iter()
+        .take_while(|(section_kind, _)| *section_kind == kind)
+        .collect::<Vec<_>>();
+    let are_received_only = receive_lines
+        .iter()
+        .all(|(_, direction)| *direction == MediaDirection::ReceiveOnly);
+    (*first_kind == kind
+        && is_sent
+        && are_received_only
+        && (1..=maximum).contains(&receive_lines.len()))
+    .then_some(receive_lines.len())
+}
+
 /// Checks the offer's media sections before the WebRTC library parses it: one audio m-line the
 /// client sends its voice on, then 1 to `MAXIMUM_VOICE_RECEIVE_SLOTS` audio m-lines it receives
-/// others on, and nothing else (no video, no data channel). Returns the number of receive slots.
+/// others on (ADR-0030); then, from clients able to show video, one video m-line for its camera
+/// and 1 to `MAXIMUM_VIDEO_RECEIVE_SLOTS` video m-lines it receives cameras on (ADR-0035); and
+/// nothing else (no data channel).
 ///
 /// # Errors
 /// `InvalidVoiceOffer` names what is wrong.
-pub(crate) fn validate_voice_offer(sdp_offer: &str) -> Result<usize, InvalidVoiceOffer> {
+pub(crate) fn validate_voice_offer(sdp_offer: &str) -> Result<VoiceOfferShape, InvalidVoiceOffer> {
     if sdp_offer.len() > MAXIMUM_VOICE_OFFER_BYTES {
         return Err(InvalidVoiceOffer::TooLarge);
     }
     // The session-level direction, if any, is the default of every media section (RFC 4566).
     let mut session_direction = MediaDirection::SendReceive;
-    let mut sections: Vec<MediaDirection> = Vec::new();
+    let mut sections: Vec<(SectionKind, MediaDirection)> = Vec::new();
     for line in sdp_offer.lines() {
         if let Some(media_line) = line.strip_prefix("m=") {
-            if !media_line.starts_with("audio ") {
-                return Err(InvalidVoiceOffer::NotAudioOnly);
-            }
-            sections.push(session_direction);
+            let kind = if media_line.starts_with("audio ") {
+                SectionKind::Audio
+            } else if media_line.starts_with("video ") {
+                SectionKind::Video
+            } else {
+                return Err(InvalidVoiceOffer::UnexpectedMediaKind);
+            };
+            sections.push((kind, session_direction));
         } else if let Some(direction) = media_direction(line) {
             match sections.last_mut() {
-                Some(section_direction) => *section_direction = direction,
+                Some((_, section_direction)) => *section_direction = direction,
                 None => session_direction = direction,
             }
         }
     }
-    let Some((voice, receive_slots)) = sections.split_first() else {
-        return Err(InvalidVoiceOffer::UnexpectedMediaLines);
-    };
-    let is_voice_sent = matches!(
-        voice,
-        MediaDirection::SendOnly | MediaDirection::SendReceive
-    );
-    let are_slots_received_only = receive_slots
-        .iter()
-        .all(|direction| *direction == MediaDirection::ReceiveOnly);
-    if !is_voice_sent
-        || !are_slots_received_only
-        || !(1..=MAXIMUM_VOICE_RECEIVE_SLOTS).contains(&receive_slots.len())
-    {
-        return Err(InvalidVoiceOffer::UnexpectedMediaLines);
+    let audio_receive_slots =
+        count_send_then_receive_lines(&sections, SectionKind::Audio, MAXIMUM_VOICE_RECEIVE_SLOTS)
+            .ok_or(InvalidVoiceOffer::UnexpectedMediaLines)?;
+    let video_sections = sections.get(audio_receive_slots + 1..).unwrap_or_default();
+    if video_sections.is_empty() {
+        return Ok(VoiceOfferShape {
+            audio_receive_slots,
+            video_receive_slots: 0,
+        });
     }
-    Ok(receive_slots.len())
+    let video_receive_slots = count_send_then_receive_lines(
+        video_sections,
+        SectionKind::Video,
+        MAXIMUM_VIDEO_RECEIVE_SLOTS,
+    )
+    .filter(|receive_slots| receive_slots + 1 == video_sections.len())
+    .ok_or(InvalidVoiceOffer::UnexpectedMediaLines)?;
+    Ok(VoiceOfferShape {
+        audio_receive_slots,
+        video_receive_slots,
+    })
 }
 
 /// How many people a voice channel holds: its user limit, never above the hard cap.
@@ -138,6 +189,8 @@ pub(crate) enum VoiceAccess {
         may_speak: bool,
         /// May play soundboard sounds there (`domain::permissions::may_use_soundboard`).
         may_use_soundboard: bool,
+        /// May turn their camera on there (`domain::permissions::may_send_video`).
+        may_send_video: bool,
     },
 }
 
@@ -288,13 +341,20 @@ mod tests {
         sdp
     }
 
+    fn audio_only(audio_receive_slots: usize) -> VoiceOfferShape {
+        VoiceOfferShape {
+            audio_receive_slots,
+            video_receive_slots: 0,
+        }
+    }
+
     #[test]
     fn offers_need_one_voice_line_then_1_to_16_receive_lines_of_audio() {
         let mut lines = vec![("audio", "sendonly"), ("audio", "recvonly")];
-        assert_eq!(validate_voice_offer(&offer(&lines)), Ok(1));
+        assert_eq!(validate_voice_offer(&offer(&lines)), Ok(audio_only(1)));
         lines[0].1 = "sendrecv";
         lines.extend(std::iter::repeat_n(("audio", "recvonly"), 15));
-        assert_eq!(validate_voice_offer(&offer(&lines)), Ok(16));
+        assert_eq!(validate_voice_offer(&offer(&lines)), Ok(audio_only(16)));
         lines.push(("audio", "recvonly"));
         assert_eq!(
             validate_voice_offer(&offer(&lines)),
@@ -314,22 +374,80 @@ mod tests {
                 "{refused:?}"
             );
         }
-        for not_audio in [
-            vec![("audio", "sendonly"), ("video", "recvonly")],
-            vec![("audio", "sendonly"), ("application", "recvonly")],
+        assert_eq!(
+            validate_voice_offer(&offer(&[
+                ("audio", "sendonly"),
+                ("application", "recvonly")
+            ])),
+            Err(InvalidVoiceOffer::UnexpectedMediaKind)
+        );
+    }
+
+    #[test]
+    fn video_lines_follow_the_audio_ones_one_camera_then_1_to_9_receive_lines() {
+        let audio = [("audio", "sendonly"), ("audio", "recvonly")];
+        let with_video = |video: &[(&'static str, &'static str)]| {
+            validate_voice_offer(&offer(&[&audio[..], video].concat()))
+        };
+        let camera_and_watched = |watched: usize| {
+            let mut video = vec![("video", "sendonly")];
+            video.extend(std::iter::repeat_n(("video", "recvonly"), watched));
+            video
+        };
+        assert_eq!(
+            with_video(&camera_and_watched(1)),
+            Ok(VoiceOfferShape {
+                audio_receive_slots: 1,
+                video_receive_slots: 1
+            })
+        );
+        assert_eq!(
+            with_video(&camera_and_watched(9)),
+            Ok(VoiceOfferShape {
+                audio_receive_slots: 1,
+                video_receive_slots: 9
+            })
+        );
+        assert_eq!(
+            with_video(&[("video", "sendrecv"), ("video", "recvonly")])
+                .map(|shape| shape.video_receive_slots),
+            Ok(1)
+        );
+        for refused in [
+            camera_and_watched(10),
+            camera_and_watched(0),
+            vec![("video", "recvonly"), ("video", "recvonly")],
+            vec![("video", "sendonly"), ("video", "sendonly")],
+            vec![
+                ("video", "sendonly"),
+                ("video", "recvonly"),
+                ("audio", "recvonly"),
+            ],
+            vec![("video", "sendonly"), ("audio", "recvonly")],
         ] {
             assert_eq!(
-                validate_voice_offer(&offer(&not_audio)),
-                Err(InvalidVoiceOffer::NotAudioOnly)
+                with_video(&refused),
+                Err(InvalidVoiceOffer::UnexpectedMediaLines),
+                "{refused:?}"
             );
         }
+        assert_eq!(
+            validate_voice_offer(&offer(&[
+                ("video", "sendonly"),
+                ("video", "recvonly"),
+                ("audio", "sendonly"),
+                ("audio", "recvonly")
+            ])),
+            Err(InvalidVoiceOffer::UnexpectedMediaLines),
+            "audio comes first"
+        );
     }
 
     #[test]
     fn a_section_without_direction_takes_the_session_default_and_huge_offers_are_refused() {
         let without_direction = "v=0\r\na=recvonly\r\nm=audio 9 RTP 111\r\na=sendonly\r\n\
                                  m=audio 9 RTP 111\r\n";
-        assert_eq!(validate_voice_offer(without_direction), Ok(1));
+        assert_eq!(validate_voice_offer(without_direction), Ok(audio_only(1)));
         let sendrecv_by_default = "v=0\r\nm=audio 9 RTP 111\r\nm=audio 9 RTP 111\r\n";
         assert_eq!(
             validate_voice_offer(sendrecv_by_default),

@@ -172,6 +172,8 @@ export const MINIMUM_VOICE_USER_LIMIT = 1;
 export const MAXIMUM_VOICE_USER_LIMIT = 25;
 /** Receive m-lines each client offers: the server forwards at most this many voices at once. */
 export const VOICE_RECEIVE_SLOTS = 16;
+/** Video receive m-lines a client able to show video offers: the most cameras it watches (ADR-0035). */
+export const VIDEO_RECEIVE_SLOTS = 9;
 
 export interface PermissionOverwrite {
   id: Snowflake;
@@ -551,7 +553,18 @@ export interface VoiceState {
    * in (ADR-0032). Absent when none, and from older servers.
    */
   join_sound_id?: Snowflake | null;
+  /** Their camera is on and forwarded (ADR-0035). Absent from older servers: off. */
+  self_video?: boolean;
 }
+
+/** Why the server refused to turn this session's camera on. A newer server may send another reason. */
+export type VoiceVideoRefusal = "missing_permissions" | "too_many_cameras" | "video_unavailable";
+
+/** How large a camera's tile is shown, which decides the layer it receives (ADR-0035). */
+export type VideoTileSize = "large" | "medium" | "small";
+
+/** A camera's simulcast layer, by its RID: 1280 × 720, 640 × 360, 320 × 180. */
+export type SimulcastLayer = "h" | "l" | "q";
 
 /** Why the server refused a `voice_join`. A newer server may send another reason. */
 export type VoiceJoinRefusal =
@@ -653,9 +666,14 @@ export type GatewayEvent =
   | { t: "VOICE_SESSION_DESCRIPTION"; data: { channel_id: Snowflake; offer_id: number; sdp_answer: string } }
   | { t: "VOICE_JOIN_REFUSED"; data: { channel_id: Snowflake; offer_id: number; reason: VoiceJoinRefusal } }
   | { t: "VOICE_DISCONNECTED"; data: { channel_id: Snowflake; reason: VoiceDisconnectReason } }
+  /** Only to that session: its camera stays off (ADR-0035). */
+  | { t: "VOICE_VIDEO_REFUSED"; data: { channel_id: Snowflake; reason: VoiceVideoRefusal } }
+  /** Only to the camera's session: the layers someone watches, lowest first; pause the others. */
+  | { t: "VOICE_VIDEO_LAYERS"; data: { channel_id: Snowflake; active: SimulcastLayer[] } }
   /**
    * Only to the listener's session: the receive slot whose transceiver has `mid` now carries
-   * `user_id`, until another event for the same `mid`. Valid for the current answer only.
+   * `user_id`'s voice, or camera for a video transceiver, until another event for the same `mid`.
+   * Valid for the current answer only.
    */
   | { t: "VOICE_SLOT_ASSIGNED"; data: { channel_id: Snowflake; mid: string; user_id: Snowflake } }
   /** Edges only, never for muted or suppressed people. */
@@ -687,7 +705,9 @@ export type ClientFrame =
       d: { channel_id: Snowflake; offer_id: number; sdp_offer: string; self_mute: boolean; self_deaf: boolean };
     }
   | { op: "voice_leave" }
-  | { op: "voice_state"; d: { self_mute: boolean; self_deaf: boolean } }
+  | { op: "voice_state"; d: { self_mute: boolean; self_deaf: boolean; self_video?: boolean } }
+  /** The cameras shown and how large, at most `VIDEO_RECEIVE_SLOTS`; replaces the previous list. */
+  | { op: "voice_video_watch"; d: { cameras: { user_id: Snowflake; size: VideoTileSize }[] } }
   /** Ignored by the server unless allowed (ADR-0032): no answer but `VOICE_SOUND_PLAYED`. */
   | { op: "voice_play_sound"; d: { sound_id: Snowflake } };
 

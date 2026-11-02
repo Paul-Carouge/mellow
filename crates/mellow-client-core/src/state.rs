@@ -419,6 +419,8 @@ impl ClientState {
             | GatewayEvent::VoiceSessionDescription { .. }
             | GatewayEvent::VoiceSlotAssigned { .. }
             | GatewayEvent::VoiceJoinRefused { .. }
+            | GatewayEvent::VoiceVideoRefused { .. }
+            | GatewayEvent::VoiceVideoLayers { .. }
             | GatewayEvent::VoiceDisconnected { .. }
             | GatewayEvent::Speaking { .. } => StateChange::Nothing,
         }
