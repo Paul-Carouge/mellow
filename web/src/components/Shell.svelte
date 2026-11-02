@@ -5,6 +5,7 @@
   import { strings } from "../i18n";
   import { MAXIMUM_MESSAGES_LOADED_TO_REACH_A_MESSAGE, type MellowClient } from "../lib/client.svelte";
   import type { Channel, MessageSearchHit, Snowflake } from "../lib/protocol";
+  import { browserStorage } from "../lib/reactions";
   import type { ServerDialog } from "./ChannelSidebar.svelte";
   import ChatPane from "./ChatPane.svelte";
   import ConnectionBanner from "./ConnectionBanner.svelte";
@@ -18,6 +19,7 @@
   import LazyComponent from "./LazyComponent.svelte";
   import LeaveServerDialog from "./LeaveServerDialog.svelte";
   import MemberList from "./MemberList.svelte";
+  import { readMemberSheetPlaceIds, writeMemberSheetPlaceIds } from "./member-sheet-places";
   import { MessageSearch } from "./message-search.svelte";
   import MessageSearchField from "./MessageSearchField.svelte";
   import MessageSearchPanel from "./MessageSearchPanel.svelte";
@@ -75,8 +77,8 @@
   let friendsPane = $state<{ focusStart: () => void } | null>(null);
   let friendsTab = $state<FriendsTab>("online");
   const collapsedCategoryIds = new SvelteSet<Snowflake>();
-  // Closed by default, remembered per server or group while the tab lives (ADR-0022 §1).
-  const placeIdsWithMemberSheet = new SvelteSet<Snowflake>();
+  // Closed by default, remembered per server or group on this device (ADR-0022 §1).
+  const placeIdsWithMemberSheet = new SvelteSet<Snowflake>(readMemberSheetPlaceIds(browserStorage()));
   let isMemberOverlayOpen = $state(false);
   let isNavigationDrawerOpen = $state(false);
   let openDialog = $state<"add-server" | "channel-settings" | "new-message" | "add-to-group" | ServerDialog | null>(
@@ -208,15 +210,21 @@
     if (!hasRoomForSideSheet.current) {
       isMemberOverlayOpen = !isMemberOverlayOpen;
     } else if (placeIdsWithMemberSheet.has(memberSheetPlaceId)) {
-      placeIdsWithMemberSheet.delete(memberSheetPlaceId);
+      forgetMemberSheet(memberSheetPlaceId);
     } else {
       placeIdsWithMemberSheet.add(memberSheetPlaceId);
+      writeMemberSheetPlaceIds(browserStorage(), placeIdsWithMemberSheet);
     }
+  }
+
+  function forgetMemberSheet(placeId: Snowflake) {
+    placeIdsWithMemberSheet.delete(placeId);
+    writeMemberSheetPlaceIds(browserStorage(), placeIdsWithMemberSheet);
   }
 
   async function closeMemberSheet() {
     if (hasRoomForSideSheet.current && memberSheetPlaceId !== null) {
-      placeIdsWithMemberSheet.delete(memberSheetPlaceId);
+      forgetMemberSheet(memberSheetPlaceId);
     }
     isMemberOverlayOpen = false;
     await tick();
