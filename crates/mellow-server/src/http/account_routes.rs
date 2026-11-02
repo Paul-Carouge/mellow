@@ -248,3 +248,6 @@ pub(crate) async fn change_password(
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[cfg(test)]
+mod tests;
