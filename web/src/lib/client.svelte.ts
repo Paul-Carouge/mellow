@@ -343,8 +343,16 @@ export class MellowClient {
 
   // --- Session -------------------------------------------------------------------------------
 
+  /** The resume under way, which a click on "Try again" joins instead of starting another. */
+  private storedSessionResume: Promise<void> | null = null;
+
   /** Resumes the session cookie's session, if the instance still accepts it. */
-  async resumeStoredSession(): Promise<void> {
+  resumeStoredSession(): Promise<void> {
+    this.storedSessionResume ??= this.resumeStoredSessionOnce().finally(() => (this.storedSessionResume = null));
+    return this.storedSessionResume;
+  }
+
+  private async resumeStoredSessionOnce(): Promise<void> {
     try {
       this.user = await this.rest.currentUser();
     } catch (error) {

@@ -6,6 +6,7 @@
   import SignInScreen from "./components/SignInScreen.svelte";
   import { strings } from "./i18n";
   import { MellowClient } from "./lib/client.svelte";
+  import { retryWhenOnlineAndPeriodically } from "./lib/unreachable-retry";
 
   const client = new MellowClient();
   // Until the instance says whether the session cookie is still valid, nothing is shown, so the
@@ -16,6 +17,13 @@
     isResumingSession = true;
     void client.resumeStoredSession().finally(() => (isResumingSession = false));
   }
+
+  // Background retries keep the unreachable notice on screen instead of blanking it each time.
+  $effect(() => {
+    if (client.status === "unreachable" && !isResumingSession) {
+      return retryWhenOnlineAndPeriodically(() => client.resumeStoredSession());
+    }
+  });
 
   onMount(() => {
     resume();

@@ -81,6 +81,25 @@ describe("MellowClient", () => {
     expect(client.selectedChannelId).toBe(GENERAL);
   });
 
+  it("joins a session resume already under way instead of starting another", async () => {
+    let refuseCurrentUser: () => void = () => {};
+    const currentUser = vi.fn(
+      () => new Promise((_resolve, reject) => (refuseCurrentUser = () => reject(new ApiError(0, "NETWORK")))),
+    );
+    const client = new MellowClient(fakeRest({ currentUser }));
+
+    const automatic = client.resumeStoredSession();
+    const clicked = client.resumeStoredSession();
+    refuseCurrentUser();
+    await Promise.all([automatic, clicked]);
+
+    expect(currentUser).toHaveBeenCalledTimes(1);
+    expect(client.status).toBe("unreachable");
+    // Once settled, the next attempt asks the instance again.
+    void client.resumeStoredSession();
+    expect(currentUser).toHaveBeenCalledTimes(2);
+  });
+
   it("resends failed messages in order and stops at a failure that may pass", async () => {
     const sent: string[] = [];
     let isInstanceBusy = true;
