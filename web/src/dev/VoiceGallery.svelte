@@ -146,6 +146,8 @@
     listDevices: () => Promise.resolve([]),
     watchDevices: () => () => {},
     storage: () => null,
+    requestScreen: () => Promise.reject(new TypeError("no screen in the gallery")),
+    codecPreferences: () => null,
   });
 
   const people = [

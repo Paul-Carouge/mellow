@@ -819,8 +819,10 @@ export class MellowClient {
         this.soundboard.applySoundPlayed(event.data.channel_id, event.data.user_id, event.data.sound_id, now);
         return;
       case "VOICE_VIDEO_REFUSED":
+        this.voice.refuseVideo(event.data.channel_id, event.data.reason);
+        return;
       case "VOICE_VIDEO_LAYERS":
-        // Cameras come with the video interface (ADR-0035); this client never turns one on yet.
+        this.voice.applyVideoLayers(event.data.channel_id, event.data.active);
         return;
       default: {
         // An event this client does not know yet: skipped, as the native clients do.

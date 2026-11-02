@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { type ClientFrame, VOICE_RECEIVE_SLOTS } from "./protocol";
+import { type ClientFrame, VIDEO_RECEIVE_SLOTS, VOICE_RECEIVE_SLOTS } from "./protocol";
 import type { EqualizerDecibels } from "./voice-settings";
 import type { MicrophoneProcessing, NoiseSuppressorProblem } from "./voice-processing";
 import { type AudioDevice, DEFAULT_VOICE_SETTINGS, PERSON_VOICE_SETTINGS_STORAGE_KEY, VOICE_SETTINGS_STORAGE_KEY } from "./voice-settings";
@@ -17,13 +17,32 @@ class FakePeer {
   localDescription: { type: string; sdp: string } | null = null;
   remoteDescription: { type: string; sdp?: string } | null = null;
   transceivers: { trackOrKind: unknown; direction: string | undefined }[] = [];
+  /** By transceiver index: the simulcast encodings asked, and the codecs kept. */
+  sendEncodings = new Map<number, RTCRtpEncodingParameters[]>();
+  codecs = new Map<number, readonly unknown[]>();
+  /** The encodings last set on the video sender. */
+  videoEncodings: RTCRtpEncodingParameters[] = [];
   replacedTracks: unknown[] = [];
   isClosed = false;
   private listeners = new Map<string, ((event: unknown) => void)[]>();
 
   addTransceiver(trackOrKind: unknown, init?: RTCRtpTransceiverInit) {
-    this.transceivers.push({ trackOrKind, direction: init?.direction });
-    return { sender: { replaceTrack: (track: unknown) => Promise.resolve(void this.replacedTracks.push(track)) } };
+    const index = this.transceivers.push({ trackOrKind, direction: init?.direction }) - 1;
+    if (init?.sendEncodings) {
+      this.sendEncodings.set(index, init.sendEncodings);
+      this.videoEncodings = [...init.sendEncodings];
+    }
+    return {
+      // Browsers number mids once the offer is made; the index stands for it.
+      mid: String(index),
+      setCodecPreferences: (codecs: readonly unknown[]) => void this.codecs.set(index, codecs),
+      sender: {
+        replaceTrack: (track: unknown) => Promise.resolve(void this.replacedTracks.push(track)),
+        getParameters: () => ({ encodings: this.videoEncodings }),
+        setParameters: (parameters: { encodings: RTCRtpEncodingParameters[] }) =>
+          Promise.resolve(void (this.videoEncodings = parameters.encodings)),
+      },
+    };
   }
   createOffer() {
     return Promise.resolve({ type: "offer", sdp: `offer-${this.transceivers.length}` });
@@ -56,8 +75,8 @@ class FakePeer {
     this.listeners.get("iceconnectionstatechange")?.forEach((listener) => listener({}));
   }
   /** The receive transceivers' mids, as the browser numbers them after the send one. */
-  receiveTrack(mid: string | null = "1") {
-    this.listeners.get("track")?.forEach((listener) => listener({ track: {}, transceiver: { mid } }));
+  receiveTrack(mid: string | null = "1", kind: "audio" | "video" = "audio") {
+    this.listeners.get("track")?.forEach((listener) => listener({ track: { kind }, transceiver: { mid } }));
   }
 }
 
@@ -84,6 +103,8 @@ const QUIET_PORTS = {
   listDevices: () => Promise.resolve([]),
   watchDevices: () => () => {},
   storage: () => null,
+  requestScreen: () => Promise.reject(new TypeError("no screen in tests")),
+  codecPreferences: () => null,
 } satisfies Partial<VoicePorts>;
 
 function memoryStorage(entries: Record<string, string> = {}) {
@@ -91,7 +112,30 @@ function memoryStorage(entries: Record<string, string> = {}) {
   return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => void values.set(key, value), values };
 }
 
-function harness({ microphoneError, storage = null }: { microphoneError?: Error; storage?: ReturnType<typeof memoryStorage> | null } = {}) {
+function fakeScreen() {
+  const endedListeners: (() => void)[] = [];
+  const track = {
+    contentHint: "",
+    isStopped: false,
+    stop: () => (track.isStopped = true),
+    addEventListener: (_type: string, listener: () => void) => endedListeners.push(listener),
+    /** Test side: the browser's "Stop sharing" button. */
+    end: () => endedListeners.forEach((listener) => listener()),
+  };
+  return { track, stream: { getVideoTracks: () => [track], getTracks: () => [track] } };
+}
+
+const OPUS_AND_VP8 = {
+  audio: [{ mimeType: "audio/opus", clockRate: 48_000 }],
+  video: [{ mimeType: "video/VP8", clockRate: 90_000 }],
+};
+
+function harness({
+  microphoneError,
+  storage = null,
+  canShowVideo = false,
+}: { microphoneError?: Error; storage?: ReturnType<typeof memoryStorage> | null; canShowVideo?: boolean } = {}) {
+  const screen = fakeScreen();
   const frames: ClientFrame[] = [];
   const peers: FakePeer[] = [];
   const cues: VoiceCue[] = [];
@@ -183,6 +227,8 @@ function harness({ microphoneError, storage = null }: { microphoneError?: Error;
       return () => (devices.onChange = null);
     },
     storage: () => storage,
+    requestScreen: () => Promise.resolve(screen.stream as unknown as MediaStream),
+    codecPreferences: () => (canShowVideo ? OPUS_AND_VP8 : null),
   });
   session.onCue = (cue) => cues.push(cue);
   const lastPeer = () => {
@@ -218,6 +264,7 @@ function harness({ microphoneError, storage = null }: { microphoneError?: Error;
     processors,
     gateway,
     connect,
+    screen,
   };
 }
 
@@ -1074,5 +1121,91 @@ describe("VoiceSession", () => {
       expect(reloaded.personSetting("7").volumePercent).toBe(40);
       expect(reloaded.personSetting("9").volumePercent).toBe(100);
     });
+  });
+});
+
+describe("VoiceSession screen sharing (ADR-0037)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("offers the camera line and 9 video slots with Opus and VP8 only, where the browser lets it choose", async () => {
+    const { session, lastPeer } = harness({ canShowVideo: true });
+    await session.join(CHANNEL);
+    const peer = lastPeer();
+    const cameraIndex = 1 + VOICE_RECEIVE_SLOTS;
+    const video = peer.transceivers.slice(cameraIndex);
+    expect(peer.transceivers).toHaveLength(cameraIndex + 1 + VIDEO_RECEIVE_SLOTS);
+    expect(video).toEqual([
+      { trackOrKind: "video", direction: "sendonly" },
+      ...Array.from({ length: VIDEO_RECEIVE_SLOTS }, () => ({ trackOrKind: "video", direction: "recvonly" })),
+    ]);
+    expect(peer.sendEncodings.get(cameraIndex)?.map((encoding) => encoding.rid)).toEqual(["q", "l", "h"]);
+    expect(peer.codecs.size).toBe(peer.transceivers.length);
+
+    const audioOnly = harness();
+    await audioOnly.session.join(CHANNEL);
+    expect(audioOnly.lastPeer().transceivers).toHaveLength(1 + VOICE_RECEIVE_SLOTS);
+    expect(audioOnly.session.canShareScreen).toBe(false);
+  });
+
+  it("shares the chosen screen as a detailed picture and stops with the browser's button", async () => {
+    const { session, frames, lastPeer, connect, screen } = harness({ canShowVideo: true });
+    await connect();
+    expect(session.canShareScreen).toBe(true);
+
+    await session.startScreenShare();
+    expect(session.isSharingScreen).toBe(true);
+    expect(screen.track.contentHint).toBe("detail");
+    expect(lastPeer().replacedTracks).toEqual([screen.track]);
+    expect(frames.at(-1)).toEqual({ op: "voice_state", d: { self_mute: false, self_deaf: false, self_stream: true } });
+
+    screen.track.end();
+    expect(session.isSharingScreen).toBe(false);
+    expect(screen.track.isStopped).toBe(true);
+    expect(lastPeer().replacedTracks.at(-1)).toBeNull();
+    expect(frames.at(-1)).toEqual({ op: "voice_state", d: { self_mute: false, self_deaf: false } });
+  });
+
+  it("pauses unwatched layers, and stops when the instance stops relaying the screen", async () => {
+    const { session, lastPeer, connect } = harness({ canShowVideo: true });
+    await connect();
+    await session.startScreenShare();
+
+    session.applyVideoLayers(CHANNEL, ["q"]);
+    await flush();
+    expect(lastPeer().videoEncodings.map((encoding) => encoding.active)).toEqual([true, false, false]);
+    // Right after starting, an empty list is the previous share's end.
+    session.applyVideoLayers(CHANNEL, []);
+    expect(session.isSharingScreen).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    session.applyVideoLayers(CHANNEL, []);
+    expect(session.isSharingScreen).toBe(false);
+    expect(session.screenShareProblem).toBe("stopped");
+  });
+
+  it("shows a watched screen once its slot and picture arrive, and asks for it again after a reconnection", async () => {
+    const { session, frames, lastPeer, connect } = harness({ canShowVideo: true });
+    await connect();
+    const firstVideoSlot = String(1 + VOICE_RECEIVE_SLOTS + 1);
+
+    session.watchStream("42");
+    expect(frames.at(-1)).toEqual({ op: "voice_video_watch", d: { cameras: [{ user_id: "42", size: "large" }] } });
+    lastPeer().receiveTrack(firstVideoSlot, "video");
+    expect(session.streamTracks.size).toBe(0);
+    session.assignSlot(CHANNEL, firstVideoSlot, "42");
+    expect(session.streamTracks.get("42")).toEqual({ kind: "video" });
+
+    session.noteGatewayReady();
+    await flush();
+    await session.applyAnswer(CHANNEL, session.currentOfferId, "answer");
+    expect(frames.at(-1)).toEqual({ op: "voice_video_watch", d: { cameras: [{ user_id: "42", size: "large" }] } });
+    session.watchStream(null);
+    expect(frames.at(-1)).toEqual({ op: "voice_video_watch", d: { cameras: [] } });
+    expect(session.streamTracks.size).toBe(0);
   });
 });

@@ -20,6 +20,13 @@ import {
   silentNoiseSuppressorMilliseconds,
 } from "./voice-processing";
 import type { AudioDevice, EqualizerBand } from "./voice-settings";
+import {
+  type CodecPreferences,
+  preferredCodecs,
+  SCREEN_MAXIMUM_FRAMES_PER_SECOND,
+  SCREEN_MAXIMUM_HEIGHT,
+  SCREEN_MAXIMUM_WIDTH,
+} from "./screen-share";
 import type { AudioOutput, InputAmplifier, LevelMeter, MicrophoneProcessor, VoicePorts } from "./voice-session.svelte";
 
 const ANALYSER_FFT_SIZE = 512;
@@ -32,6 +39,34 @@ function createPeerConnection(): RTCPeerConnection | null {
   }
   // No STUN or TURN: the instance is ICE-lite with its public address, and the browser dials it (ADR-0030).
   return new RTCPeerConnection({ bundlePolicy: "max-bundle", rtcpMuxPolicy: "require" });
+}
+
+function requestScreen(): Promise<MediaStream> {
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    return Promise.reject(new TypeError("navigator.mediaDevices.getDisplayMedia is unavailable"));
+  }
+  return navigator.mediaDevices.getDisplayMedia({
+    video: {
+      width: { max: SCREEN_MAXIMUM_WIDTH },
+      height: { max: SCREEN_MAXIMUM_HEIGHT },
+      frameRate: { max: SCREEN_MAXIMUM_FRAMES_PER_SECOND },
+    },
+    audio: false,
+  });
+}
+
+function codecPreferences(): CodecPreferences | null {
+  const canChooseCodecs =
+    typeof RTCRtpTransceiver !== "undefined" &&
+    "setCodecPreferences" in RTCRtpTransceiver.prototype &&
+    typeof RTCRtpReceiver !== "undefined";
+  if (!canChooseCodecs) {
+    return null;
+  }
+  return preferredCodecs(
+    RTCRtpReceiver.getCapabilities("audio")?.codecs ?? [],
+    RTCRtpReceiver.getCapabilities("video")?.codecs ?? [],
+  );
 }
 
 function requestMicrophone(choice: MicrophoneChoice): Promise<MediaStream> {
@@ -414,6 +449,8 @@ export const BROWSER_VOICE_PORTS: Omit<VoicePorts, "sendFrame"> = {
   meterLevel,
   amplify,
   listDevices: listAudioDevices,
+  requestScreen,
+  codecPreferences,
   watchDevices: watchAudioDevices,
   storage: browserStorage,
 };

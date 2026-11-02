@@ -1446,6 +1446,8 @@ describe("Voice states", () => {
       listDevices: () => Promise.resolve([]),
       watchDevices: () => () => {},
       storage: () => null,
+      requestScreen: () => Promise.reject(new TypeError("no screen in tests")),
+      codecPreferences: () => null,
     });
     client.voice.onCue = (cue) => cues.push(cue);
     client.applyReady(
