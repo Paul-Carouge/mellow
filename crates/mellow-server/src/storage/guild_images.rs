@@ -6,10 +6,10 @@ use sqlx::SqliteConnection;
 use super::Database;
 
 use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
-use crate::storage::guilds::{
-    BEGIN_WRITE_TRANSACTION, ChannelRow, GuildStorageError, StoredChannel,
-    attach_overwrites_to_channel, channel_from_row,
+use crate::storage::guild_channels::{
+    ChannelRow, StoredChannel, attach_overwrites_to_channel, channel_from_row,
 };
+use crate::storage::guilds::{BEGIN_WRITE_TRANSACTION, GuildStorageError};
 use crate::storage::profile_images::NewProfileImage;
 use crate::storage::sqlite_integers::{lookup_integer, to_snowflake, to_sqlite_integer};
 

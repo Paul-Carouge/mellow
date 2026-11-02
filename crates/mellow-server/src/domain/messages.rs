@@ -31,7 +31,7 @@ use crate::domain::profile_images::{fill_profile_images, profile_images_of_user}
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::storage::attachments::{self as attachment_storage, StoredAttachment};
 use crate::storage::direct_messages as direct_message_storage;
-use crate::storage::guilds::StoredChannel;
+use crate::storage::guild_channels::StoredChannel;
 use crate::storage::messages::{
     self as message_storage, HistoryPage, MessageStorageError, NewMessage, StoredMessage,
 };

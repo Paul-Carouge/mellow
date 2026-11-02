@@ -885,7 +885,7 @@ mod tests {
         });
         let audit = channel_deletion_audit(Snowflake::from_raw(10));
         let started = Instant::now();
-        crate::storage::guilds::delete_channel(&database, Snowflake::from_raw(10), &audit)
+        crate::storage::guild_channels::delete_channel(&database, Snowflake::from_raw(10), &audit)
             .await
             .unwrap();
         let channel_deletion = started.elapsed();

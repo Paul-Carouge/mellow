@@ -9,8 +9,8 @@ use crate::domain::guild_rules::GuildRuleViolation;
 use crate::domain::image_processing::{IconKind, SquareCrop, process_icon};
 use crate::domain::messages::MessageError;
 use crate::domain::profile_images::ProfileImages;
+use crate::storage::guild_channels::StoredChannel;
 use crate::storage::guild_images::{self as storage, IconChange, StoredGuildImage};
-use crate::storage::guilds::StoredChannel;
 use crate::storage::profile_images::NewProfileImage;
 
 /// An uploaded picture and the square of it to keep, the centred one when `None`.
@@ -180,7 +180,7 @@ impl Guilds {
         let (kind, audience) = match previous.channel_id {
             Some(channel_id) => {
                 let Some(channel) =
-                    crate::storage::guilds::find_guild_channel(&self.database, channel_id)
+                    crate::storage::guild_channels::find_guild_channel(&self.database, channel_id)
                         .await
                         .map_err(GuildError::from)?
                 else {
@@ -225,7 +225,7 @@ impl Guilds {
         images.delete_files(previous.id, previous.still_id).await;
         let announced = match (previous.channel_id, audience) {
             (Some(channel_id), Some(audience)) => {
-                crate::storage::guilds::find_guild_channel(&self.database, channel_id)
+                crate::storage::guild_channels::find_guild_channel(&self.database, channel_id)
                     .await
                     .map(|channel| {
                         if let Some(channel) = channel {
