@@ -256,7 +256,8 @@
     {/if}
   </div>
 
-  <div bind:this={list} class="min-h-0 flex-1 overflow-y-auto px-sm pb-md [scrollbar-width:thin]" aria-busy={status.kind === "loading"}>
+  <!-- Positioned: the sort radios (`sr-only`) stay inside the scrolling list, or focusing one scrolls the panel. -->
+  <div bind:this={list} class="relative min-h-0 flex-1 overflow-y-auto px-sm pb-md [scrollbar-width:thin]" aria-busy={status.kind === "loading"}>
     {#if status.kind === "idle"}
       <div class="flex flex-col gap-sm pt-xs">
         <p class="type-heading-md text-text-heading">

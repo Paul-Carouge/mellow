@@ -149,7 +149,8 @@
     {#if isPageShown}
       <div
         class={[
-          "flex min-w-0 flex-col overflow-y-auto bg-(--mw-component-settings-content-background)",
+          // Positioned: `sr-only` controls stay inside the scrolling page, or focusing one scrolls the dialog.
+          "relative flex min-w-0 flex-col overflow-y-auto bg-(--mw-component-settings-content-background)",
           isWide
             ? "flex-[2_1_0] rounded-(--mw-component-sheet-radius) ps-(--mw-component-settings-content-padding-inline) pe-lg"
             : "flex-1",
