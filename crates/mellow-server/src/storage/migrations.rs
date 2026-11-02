@@ -424,6 +424,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pictures_stored_before_adr_0033_wait_for_recompression_and_new_ones_do_not() {
+        const LAST_VERSION_BEFORE_RECOMPRESSION: i64 = 28;
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_BEFORE_RECOMPRESSION, database.writer())
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) VALUES (30, 20, 1, 'files'); \
+             INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
+             content_type, size_bytes, created_at_unix_milliseconds) \
+             VALUES (40, 20, 1, 30, 'a.png', 'image/png', 300, 100), \
+             (41, 20, 1, 30, 'notes.txt', 'text/plain', 5, 100); \
+             INSERT INTO profile_images (id, user_id, still_id, size_bytes, \
+             created_at_unix_milliseconds) VALUES (50, 1, NULL, 700, 0); \
+             UPDATE users SET avatar_id = 50 WHERE id = 1; \
+             INSERT INTO guild_images (id, guild_id, channel_id, still_id, size_bytes, \
+             created_at_unix_milliseconds) VALUES (60, 10, NULL, NULL, 90, 0), \
+             (61, 10, NULL, NULL, 7, 0); \
+             INSERT INTO guild_emojis (id, guild_id, name) VALUES (61, 10, 'wave');",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let waiting = crate::storage::image_recompression::pictures_to_recompress(&database)
+            .await
+            .unwrap();
+        let picture = attachments::find_attachment(&database, Snowflake::from_raw(40))
+            .await
+            .unwrap()
+            .unwrap();
+        // Rows written after the update are stored by today's pipeline.
+        sqlx::raw_sql(
+            "INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
+             content_type, size_bytes, created_at_unix_milliseconds) \
+             VALUES (42, 20, 1, 30, 'b.png', 'image/png', 300, 200); \
+             INSERT INTO profile_images (id, user_id, still_id, size_bytes, \
+             created_at_unix_milliseconds) VALUES (51, 1, NULL, 70, 0); \
+             INSERT INTO guild_images (id, guild_id, channel_id, still_id, size_bytes, \
+             created_at_unix_milliseconds) VALUES (62, 10, NULL, NULL, 9, 0);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let waiting_after_uploads =
+            crate::storage::image_recompression::pictures_to_recompress(&database)
+                .await
+                .unwrap();
+        let is_requested =
+            crate::storage::image_recompression::is_recompression_requested(&database)
+                .await
+                .unwrap();
+        let latest_backup = crate::storage::backups::latest_completed_backup(&database)
+            .await
+            .unwrap();
+        database.close().await;
+
+        assert_eq!(
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_BEFORE_RECOMPRESSION + 1))
+        );
+        let pictures = |count, stored_bytes| crate::storage::image_recompression::WaitingPictures {
+            count,
+            stored_bytes,
+        };
+        assert_eq!(waiting.attachments, pictures(1, 300), "pictures only");
+        assert_eq!(waiting.profile_images, pictures(1, 700));
+        assert_eq!(waiting.icons, pictures(1, 90), "custom emoji are left out");
+        assert_eq!(waiting_after_uploads, waiting);
+        assert_eq!(
+            picture.file_id, picture.id,
+            "an existing file keeps its place"
+        );
+        assert!(!is_requested, "an update never starts a recompression");
+        assert_eq!(latest_backup, None);
+    }
+
+    #[tokio::test]
     async fn existing_data_is_backed_up_encrypted_before_migrating() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())

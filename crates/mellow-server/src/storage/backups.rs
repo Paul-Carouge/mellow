@@ -3,7 +3,7 @@
 use super::Database;
 
 use crate::storage::messages::MessageStorageError;
-use crate::storage::sqlite_integers::to_sqlite_integer;
+use crate::storage::sqlite_integers::{convert_integer, to_sqlite_integer};
 
 pub(crate) async fn record_completed_backup(
     database: &Database,
@@ -14,4 +14,15 @@ pub(crate) async fn record_completed_backup(
         .execute(database.writer())
         .await?;
     Ok(())
+}
+
+/// When the last backup of this database finished, if any did.
+pub(crate) async fn latest_completed_backup(
+    database: &Database,
+) -> Result<Option<u64>, MessageStorageError> {
+    let latest: Option<i64> =
+        sqlx::query_scalar("SELECT MAX(completed_at_unix_milliseconds) FROM completed_backups")
+            .fetch_one(database.readers())
+            .await?;
+    Ok(latest.map(convert_integer).transpose()?)
 }

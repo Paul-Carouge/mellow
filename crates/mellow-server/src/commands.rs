@@ -194,6 +194,12 @@ pub async fn serve_instance(
         let attachment_optimizer = tokio::spawn(
             crate::domain::attachments::optimize_attachments_in_background(
                 state.attachments.clone(),
+                crate::domain::image_recompression::ImageRecompression::new(
+                    database.clone(),
+                    state.attachments.clone(),
+                    state.profile_images.clone(),
+                    state.guilds.clone(),
+                ),
             ),
         );
         let served = match &config.tls {
@@ -466,6 +472,101 @@ fn copy_attachment_files(source: &Path, destination: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A backup older than this does not allow a recompression: it must hold what is recompressed.
+const MAXIMUM_BACKUP_AGE_BEFORE_RECOMPRESSION_MILLISECONDS: u64 = 60 * 60 * 1_000;
+/// Share of the bytes recompression saves, measured on ADR-0033's 25-picture corpus against what
+/// the lossless pipeline before it stored: attachments 17.4 MiB instead of 32.9 MiB; photo
+/// avatars a tenth of their 512 px lossless size and banners 2.7 MB down to 160 KB; a 256 px logo
+/// icon 16 KB down to 4 KB. A forecast: the real figure depends on the pictures.
+const EXPECTED_SAVED_PERCENT_OF_ATTACHMENTS: u64 = 47;
+const EXPECTED_SAVED_PERCENT_OF_PROFILE_IMAGES: u64 = 90;
+const EXPECTED_SAVED_PERCENT_OF_ICONS: u64 = 75;
+
+/// One kind of picture stored before ADR-0033, for `admin recompress-images --dry-run`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WaitingPictureKind {
+    pub name: &'static str,
+    pub count: u64,
+    pub stored_bytes: u64,
+    pub expected_saved_bytes: u64,
+}
+
+/// What `admin recompress-images` would take: avatars and banners, guild and channel icons, and
+/// picture attachments stored before ADR-0033. Custom emoji are not recompressed.
+///
+/// # Errors
+/// Fails on a missing database or key, or a database error.
+pub async fn pictures_to_recompress(config: &ServerConfig) -> Result<Vec<WaitingPictureKind>> {
+    let database = open_instance_database(config).await?;
+    let waiting = crate::storage::image_recompression::pictures_to_recompress(&database).await;
+    database.close().await;
+    let waiting = waiting?;
+    let kind = |name, pictures: crate::storage::image_recompression::WaitingPictures, percent| {
+        WaitingPictureKind {
+            name,
+            count: pictures.count,
+            stored_bytes: pictures.stored_bytes,
+            expected_saved_bytes: pictures.stored_bytes / 100 * percent,
+        }
+    };
+    Ok(vec![
+        kind(
+            "avatars and banners",
+            waiting.profile_images,
+            EXPECTED_SAVED_PERCENT_OF_PROFILE_IMAGES,
+        ),
+        kind(
+            "guild and channel icons",
+            waiting.icons,
+            EXPECTED_SAVED_PERCENT_OF_ICONS,
+        ),
+        kind(
+            "picture attachments",
+            waiting.attachments,
+            EXPECTED_SAVED_PERCENT_OF_ATTACHMENTS,
+        ),
+    ])
+}
+
+/// `admin recompress-images --confirm`: asks the server to recompress the pictures stored before
+/// ADR-0033, one at a time in the background (at its next start when it is not running). Answers
+/// how many pictures wait; nothing is asked when none does.
+///
+/// # Errors
+/// Refuses without a backup made by `mellow-server backup` in the last hour; fails on a missing
+/// database or key, or a database error.
+pub async fn request_image_recompression(config: &ServerConfig) -> Result<u64> {
+    let database = open_instance_database(config).await?;
+    let result = async {
+        let now_unix_milliseconds = crate::domain::clock::now_unix_milliseconds();
+        let latest_backup = crate::storage::backups::latest_completed_backup(&database).await?;
+        let has_recent_backup = latest_backup.is_some_and(|completed| {
+            now_unix_milliseconds.saturating_sub(completed)
+                <= MAXIMUM_BACKUP_AGE_BEFORE_RECOMPRESSION_MILLISECONDS
+        });
+        if !has_recent_backup {
+            bail!(
+                "no backup was made in the last hour: run `mellow-server backup` first, \
+                 recompression replaces the stored pictures and keeps no original"
+            );
+        }
+        let waiting = crate::storage::image_recompression::pictures_to_recompress(&database)
+            .await?
+            .count();
+        if waiting > 0 {
+            crate::storage::image_recompression::request_recompression(
+                &database,
+                now_unix_milliseconds,
+            )
+            .await?;
+        }
+        Ok(waiting)
+    }
+    .await;
+    database.close().await;
+    result
 }
 
 /// Split from `serve_instance` so tests can bind an ephemeral port and read its address.
@@ -793,7 +894,7 @@ mod tests {
         assert!(error.to_string().contains("no database"), "{error:#}");
     }
 
-    /// Gives `username` an avatar, its file written only when
+    /// Gives `username` an avatar stored before ADR-0033, its file written only when
     /// `is_file_written`; answers the file's path.
     async fn give_legacy_avatar(
         config: &ServerConfig,
@@ -816,8 +917,8 @@ mod tests {
             .await
             .unwrap();
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "INSERT INTO profile_images (id, user_id, size_bytes, created_at_unix_milliseconds) \
-             SELECT {id}, id, 13, 0 FROM users WHERE username = '{username}'; \
+            "INSERT INTO profile_images (id, user_id, size_bytes, created_at_unix_milliseconds, \
+             compression_version) SELECT {id}, id, 13, 0, 0 FROM users WHERE username = '{username}'; \
              UPDATE users SET avatar_id = {id} WHERE username = '{username}';"
         )))
         .execute(database.writer())
@@ -825,6 +926,21 @@ mod tests {
         .unwrap();
         database.close().await;
         files.path_of(id)
+    }
+
+    async fn is_recompression_requested(config: &ServerConfig) -> bool {
+        let key = MasterKey::read_file(&config.master_key_file)
+            .unwrap()
+            .derive_database_key();
+        let database = open_encrypted_database(&config.database_path(), &key)
+            .await
+            .unwrap();
+        let is_requested =
+            crate::storage::image_recompression::is_recompression_requested(&database)
+                .await
+                .unwrap();
+        database.close().await;
+        is_requested
     }
 
     #[tokio::test]
@@ -878,6 +994,52 @@ mod tests {
             !copy_of(&write_under_way).exists(),
             "a write under way is not a file"
         );
+    }
+
+    #[tokio::test]
+    async fn a_recompression_needs_a_backup_made_in_the_last_hour() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = initialize_instance(&options_in(directory.path()))
+            .await
+            .unwrap();
+        create_user(&config, new_user("paul", true)).await.unwrap();
+        give_legacy_avatar(&config, "paul", true).await;
+
+        let waiting = pictures_to_recompress(&config).await.unwrap();
+        let refused_without_backup = request_image_recompression(&config).await;
+        let is_requested_without_backup = is_recompression_requested(&config).await;
+        back_up_instance(&config, None).await.unwrap();
+        let requested = request_image_recompression(&config).await.unwrap();
+        let is_requested = is_recompression_requested(&config).await;
+        let key = MasterKey::read_file(&config.master_key_file)
+            .unwrap()
+            .derive_database_key();
+        let database = open_encrypted_database(&config.database_path(), &key)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "DELETE FROM image_recompression_requests; \
+             UPDATE completed_backups SET completed_at_unix_milliseconds = 0;",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        database.close().await;
+        let refused_with_an_old_backup = request_image_recompression(&config).await;
+
+        assert_eq!(waiting[0].name, "avatars and banners");
+        assert_eq!((waiting[0].count, waiting[0].stored_bytes), (1, 13));
+        assert!(
+            refused_without_backup
+                .unwrap_err()
+                .to_string()
+                .contains("mellow-server backup")
+        );
+        assert!(!is_requested_without_backup);
+        assert_eq!(requested, 1);
+        assert!(is_requested);
+        assert!(refused_with_an_old_backup.is_err());
+        assert!(!is_recompression_requested(&config).await);
     }
 
     #[tokio::test]

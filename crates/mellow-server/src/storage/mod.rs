@@ -11,6 +11,7 @@ pub(crate) mod guild_emojis;
 pub(crate) mod guild_images;
 pub(crate) mod guild_sounds;
 pub(crate) mod guilds;
+pub(crate) mod image_recompression;
 mod master_key;
 pub(crate) mod messages;
 mod migrations;

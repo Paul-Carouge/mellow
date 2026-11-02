@@ -20,7 +20,7 @@ use crate::storage::attachment_files::AttachmentFiles;
 use crate::storage::messages::MessageStorageError;
 /// Re-exported so routes name the slot through the domain, never the storage layer.
 pub(crate) use crate::storage::profile_images::ProfileImageSlot;
-use crate::storage::profile_images::{self as storage, NewProfileImage};
+use crate::storage::profile_images::{self as storage, NewProfileImage, StoredProfileImage};
 
 /// Past this, the client is told to try again later (decoding included).
 const PROCESSING_TIME_BUDGET: Duration = Duration::from_secs(20);
@@ -199,7 +199,7 @@ impl ProfileImages {
     }
 
     /// Processes the picture with `process` (avatars, banners and icons alike) and writes its
-    /// files.
+    /// files; `Busy` when no processing slot is free.
     pub(crate) async fn store(
         &self,
         bytes: Vec<u8>,
@@ -209,6 +209,20 @@ impl ProfileImages {
         now_unix_milliseconds: u64,
     ) -> Result<NewProfileImage, MessageError> {
         let permit = self.attachments.image_processing_permit()?;
+        self.store_with_permit(permit, bytes, process, now_unix_milliseconds)
+            .await
+    }
+
+    /// `store` once a processing slot is held.
+    pub(crate) async fn store_with_permit(
+        &self,
+        permit: OwnedSemaphorePermit,
+        bytes: Vec<u8>,
+        process: impl FnOnce(&[u8]) -> Result<ProcessedProfileImage, ImageProcessingError>
+        + Send
+        + 'static,
+        now_unix_milliseconds: u64,
+    ) -> Result<NewProfileImage, MessageError> {
         let processing = tokio::task::spawn_blocking(move || {
             // Held until the work really ends, even after the caller stopped waiting.
             let _permit = permit;
@@ -251,6 +265,83 @@ impl ProfileImages {
         let id = self.ids.next_id(now_unix_milliseconds)?;
         self.files.write(id, bytes).await?;
         Ok(id)
+    }
+
+    /// Stores an avatar or banner kept before ADR-0033 again through today's pipeline, under a new
+    /// id since its URL is cached as immutable, and tells the user's sessions and guilds
+    /// (`USER_UPDATE`). A picture that is no longer the user's, or that comes out no smaller, is
+    /// left as it is.
+    pub(crate) async fn recompress(
+        &self,
+        previous: StoredProfileImage,
+    ) -> Result<(), MessageError> {
+        let current = profile_images_of_user(&self.database, previous.user_id).await?;
+        let is_current =
+            |image: Option<ProfileImage>| image.is_some_and(|image| image.id == previous.id);
+        let (slot, kind) = if is_current(current.avatar) {
+            (ProfileImageSlot::Avatar, ProfileImageKind::Avatar)
+        } else if is_current(current.banner) {
+            (ProfileImageSlot::Banner, ProfileImageKind::Banner)
+        } else {
+            return Ok(());
+        };
+        // Read before the change: once it is stored, nothing may fail before it is announced.
+        let guild_ids: Vec<Snowflake> =
+            crate::storage::guilds::list_user_guilds(&self.database, previous.user_id)
+                .await
+                .map_err(crate::domain::guilds::GuildError::from)?
+                .into_iter()
+                .map(|guild| guild.id)
+                .collect();
+        let bytes = self.files.read(previous.id).await?;
+        let previous_size_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let permit = self.attachments.wait_for_image_processing_permit().await?;
+        let now_unix_milliseconds = crate::domain::clock::now_unix_milliseconds();
+        let new_image = self
+            .store_with_permit(
+                permit,
+                bytes,
+                move |bytes| process_profile_image(bytes, kind),
+                now_unix_milliseconds,
+            )
+            .await?;
+        let swapped = if new_image.size_bytes < previous_size_bytes {
+            crate::storage::image_recompression::swap_profile_image(
+                &self.database,
+                &previous,
+                slot,
+                new_image,
+                now_unix_milliseconds,
+            )
+            .await
+        } else {
+            Ok(false)
+        };
+        if !matches!(swapped, Ok(true)) {
+            self.delete_files(new_image.id, new_image.still_id).await;
+            return Ok(swapped.map(|_| ())?);
+        }
+        self.delete_files(previous.id, previous.still_id).await;
+        match crate::storage::accounts::find_user_by_id(&self.database, previous.user_id).await {
+            Ok(Some(stored)) => self.events.publish_to_user_and_guilds(
+                previous.user_id,
+                &guild_ids,
+                &GatewayEvent::UserUpdate(public_user(&crate::domain::accounts::current_user(
+                    stored,
+                ))),
+            ),
+            Ok(None) => {}
+            // Its sessions show the old picture until they reconnect.
+            Err(error) => tracing::warn!(%error, "cannot announce a recompressed picture"),
+        }
+        Ok(())
+    }
+
+    /// A slot to decode a picture, waiting for one: for background work nobody waits on.
+    pub(crate) async fn wait_for_image_processing_permit(
+        &self,
+    ) -> Result<OwnedSemaphorePermit, MessageError> {
+        self.attachments.wait_for_image_processing_permit().await
     }
 
     /// Files that no row points at any more; a failure leaves them to the orphan sweep.

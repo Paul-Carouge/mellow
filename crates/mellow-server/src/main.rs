@@ -9,7 +9,8 @@ use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use mellow_server::commands::{
     CreateUserOptions, InitializeOptions, back_up_instance, create_user, initialize_instance,
-    serve_instance, set_instance_administrator, shutdown_signal,
+    pictures_to_recompress, request_image_recompression, serve_instance,
+    set_instance_administrator, shutdown_signal,
 };
 use mellow_server::config::{
     DEFAULT_CERTIFICATE_DIRECTORY_NAME, DEFAULT_LISTEN_ADDRESS, DEFAULT_TLS_LISTEN_ADDRESS,
@@ -146,6 +147,20 @@ enum AdminCommand {
         username: String,
         #[arg(long)]
         revoke: bool,
+    },
+    /// Store the pictures kept before visually lossless compression (ADR-0033) again, smaller:
+    /// avatars, banners, guild and channel icons and picture attachments. No original is kept.
+    #[command(group = clap::ArgGroup::new("mode").required(true))]
+    RecompressImages {
+        #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
+        config: PathBuf,
+        /// Only count the pictures and estimate the space saved.
+        #[arg(long, group = "mode")]
+        dry_run: bool,
+        /// Ask the server to recompress them, one at a time in the background. Needs a backup
+        /// made with `mellow-server backup` in the last hour.
+        #[arg(long, group = "mode")]
+        confirm: bool,
     },
 }
 
@@ -409,7 +424,56 @@ async fn run_admin_command(command: AdminCommand) -> Result<()> {
             );
             Ok(())
         }
+        AdminCommand::RecompressImages {
+            config,
+            dry_run,
+            confirm: _,
+        } => {
+            let config = load_config(&config)?;
+            if dry_run {
+                print_pictures_to_recompress(&pictures_to_recompress(&config).await?)
+            } else {
+                let waiting = request_image_recompression(&config).await?;
+                if waiting == 0 {
+                    eprintln!("No picture is left to recompress.");
+                } else {
+                    eprintln!(
+                        "Recompression of {waiting} pictures requested. A running server starts \
+                         within a minute, one picture at a time after new uploads; otherwise it \
+                         starts with the server. Follow it with --dry-run."
+                    );
+                }
+                Ok(())
+            }
+        }
     }
+}
+
+const BYTES_PER_MEBIBYTE: f64 = 1_048_576.0;
+
+/// The dry run's answer, on standard output for scripts.
+fn print_pictures_to_recompress(
+    kinds: &[mellow_server::commands::WaitingPictureKind],
+) -> Result<()> {
+    #[allow(clippy::cast_precision_loss)] // Shown with one decimal: the loss is invisible.
+    let mebibytes = |bytes: u64| bytes as f64 / BYTES_PER_MEBIBYTE;
+    let mut output = std::io::stdout().lock();
+    writeln!(output, "pictures stored before ADR-0033:")?;
+    for kind in kinds {
+        writeln!(
+            output,
+            "  {}: {} ({:.1} MiB), about {:.1} MiB saved",
+            kind.name,
+            kind.count,
+            mebibytes(kind.stored_bytes),
+            mebibytes(kind.expected_saved_bytes)
+        )?;
+    }
+    writeln!(
+        output,
+        "Savings are estimated from ADR-0033's measurements; custom emoji are left as they are."
+    )
+    .context("cannot write to standard output")
 }
 
 #[cfg(test)]

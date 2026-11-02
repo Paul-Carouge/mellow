@@ -13,6 +13,7 @@ use crate::domain::image_processing::{
     optimize_attachment,
 };
 
+use crate::domain::image_recompression::ImageRecompression;
 use crate::domain::message_rules::{UNKNOWN_CONTENT_TYPE, clean_file_name, sniff_content_type};
 use crate::domain::messages::{MessageError, Messages};
 use crate::domain::snowflake_generator::SnowflakeGenerator;
@@ -44,19 +45,34 @@ const OPTIMIZATION_TIME_BUDGET: std::time::Duration = std::time::Duration::from_
 /// used all of `OPTIMIZATION_TIME_BUDGET` still gets its preview. Its pictures are at most 0.48 MP:
 /// one AVIF encode takes about 0.6 s.
 const PREVIEW_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+/// How often an idle worker looks for a recompression request.
+const RECOMPRESSION_REQUEST_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_mins(1);
 /// Extensions a file name may end with that name a picture type, replaced when it is converted.
 const PICTURE_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "jfif", "gif", "webp", "avif"];
 
 /// Compresses uploaded pictures one at a time, after they were answered, until the server stops
 /// (ADR-0021, ADR-0033): one worker bounds the CPU it takes. Whenever it runs out of work, at startup
-/// included, it picks up the pictures never tried: jobs a full queue or a restart dropped.
-pub(crate) async fn optimize_attachments_in_background(attachments: Arc<Attachments>) {
+/// included, it picks up the pictures never tried: jobs a full queue or a restart dropped. With
+/// nothing of that left, it recompresses the pictures stored before ADR-0033 one by one, once an
+/// administrator asked for it.
+pub(crate) async fn optimize_attachments_in_background(
+    attachments: Arc<Attachments>,
+    recompression: ImageRecompression,
+) {
     let Some(mut queue) = attachments.take_optimization_queue() else {
         return;
     };
     loop {
         attachments.optimize_until_none_is_left(&mut queue).await;
-        let Some(attachment_id) = queue.recv().await else {
+        if recompression.recompress_next().await {
+            continue;
+        }
+        let received = tokio::select! {
+            received = queue.recv() => received,
+            // The request comes from another process (`mellow-server admin`): look again later.
+            () = tokio::time::sleep(RECOMPRESSION_REQUEST_CHECK_INTERVAL) => continue,
+        };
+        let Some(attachment_id) = received else {
             return;
         };
         attachments.optimize_and_record_attempt(attachment_id).await;
@@ -274,6 +290,17 @@ impl Attachments {
             .map_err(|_| MessageError::Busy)
     }
 
+    /// A slot to decode a picture, waiting for one: for background work nobody waits on.
+    pub(crate) async fn wait_for_image_processing_permit(
+        &self,
+    ) -> Result<OwnedSemaphorePermit, MessageError> {
+        self.image_processing
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|error| MessageError::Internal(Box::new(error)))
+    }
+
     /// Needs `VIEW_CHANNEL` and `ATTACH_FILES`, a valid name, room in the user's quota and a free
     /// transfer slot; then the caller reads the body and calls `finish_upload`.
     pub(crate) async fn start_upload(
@@ -470,13 +497,7 @@ impl Attachments {
         else {
             return Ok(());
         };
-        // Waits for a slot rather than failing: nobody is waiting on this one.
-        let permit = self
-            .image_processing
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|error| MessageError::Internal(Box::new(error)))?;
+        let permit = self.wait_for_image_processing_permit().await?;
         let original = self.files.read(attachment.file_id).await?;
         let content_type = attachment.content_type.clone();
         let deadline = std::time::Instant::now() + OPTIMIZATION_TIME_BUDGET;

@@ -4038,4 +4038,328 @@ pub(crate) mod tests {
             ]
         );
     }
+
+    /// A picture as the lossless pipeline before ADR-0033 stored avatars, banners and icons.
+    fn lossless_webp(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut bytes)
+            .encode(
+                crate::domain::image_processing::tests::photo(width, height).as_raw(),
+                width,
+                height,
+                image::ExtendedColorType::Rgba8,
+            )
+            .unwrap();
+        bytes
+    }
+
+    /// Writes `bytes` as a file stored before ADR-0033, with its row in `table` (`profile_images`
+    /// or `guild_images`, whose columns `owner_columns` and `owner_values` name), and answers its id.
+    async fn store_legacy_picture(
+        state: &AppState,
+        bytes: Vec<u8>,
+        table: &str,
+        owner_columns: &str,
+        owner_values: &str,
+    ) -> Snowflake {
+        let size_bytes = bytes.len();
+        let id = state
+            .profile_images
+            .store_file(bytes, crate::domain::clock::now_unix_milliseconds())
+            .await
+            .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO {table} (id, {owner_columns}, size_bytes, created_at_unix_milliseconds, \
+             compression_version) VALUES ({id}, {owner_values}, {size_bytes}, 0, 0)"
+        )))
+        .execute(state.database.writer())
+        .await
+        .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // One scenario: an instance's history, a crash, a restart.
+    async fn pictures_stored_before_adr_0033_are_recompressed_one_by_one_and_resume_after_a_restart()
+     {
+        use crate::domain::image_processing::tests::{encoded, photo};
+        use crate::domain::image_recompression::ImageRecompression;
+        use crate::storage::image_recompression as recompression;
+
+        /// More than the pictures stored: the loop must end on its own well before.
+        const MAXIMUM_STEPS: usize = 20;
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let (_, body) = send(&state, authorized("GET", "/api/v1/users/@me", &owner, None)).await;
+        let owner_id = json::<CurrentUser>(&body).id;
+        let guild_id: i64 = sqlx::query_scalar("SELECT guild_id FROM channels WHERE id = ?")
+            .bind(i64::try_from(general.raw()).unwrap())
+            .fetch_one(database.readers())
+            .await
+            .unwrap();
+        let guild_id = Snowflake::from_raw(u64::try_from(guild_id).unwrap());
+
+        // What an instance holds after a year of the lossless pipeline: a 512 px avatar, a banner
+        // wider than today's 960 px, a 256 px guild icon, a 96 px channel icon, an emoji and two
+        // pictures sent in a message (the newer one is the job that kills the process).
+        let avatar_bytes = lossless_webp(512, 512);
+        let banner_bytes = lossless_webp(1_200, 480);
+        let avatar = store_legacy_picture(
+            &state,
+            avatar_bytes.clone(),
+            "profile_images",
+            "user_id",
+            &owner_id.to_string(),
+        )
+        .await;
+        let banner = store_legacy_picture(
+            &state,
+            banner_bytes.clone(),
+            "profile_images",
+            "user_id",
+            &owner_id.to_string(),
+        )
+        .await;
+        let guild_icon = store_legacy_picture(
+            &state,
+            lossless_webp(256, 256),
+            "guild_images",
+            "guild_id",
+            &guild_id.to_string(),
+        )
+        .await;
+        let channel_icon = store_legacy_picture(
+            &state,
+            lossless_webp(96, 96),
+            "guild_images",
+            "guild_id, channel_id",
+            &format!("{guild_id}, {general}"),
+        )
+        .await;
+        let emoji = store_legacy_picture(
+            &state,
+            lossless_webp(128, 128),
+            "guild_images",
+            "guild_id",
+            &guild_id.to_string(),
+        )
+        .await;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "UPDATE users SET avatar_id = {avatar}, banner_id = {banner} WHERE id = {owner_id}; \
+             UPDATE guilds SET icon_id = {guild_icon} WHERE id = {guild_id}; \
+             UPDATE channels SET icon_id = {channel_icon} WHERE id = {general}; \
+             INSERT INTO guild_emojis (id, guild_id, name) VALUES ({emoji}, {guild_id}, 'wave');"
+        )))
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let mut attachment_ids = Vec::new();
+        for (name, bytes) in [
+            (
+                "wide.png",
+                encoded(&photo(1_200, 150), image::ImageFormat::Png, None),
+            ),
+            (
+                "photo.jpg",
+                encoded(&photo(600, 400), image::ImageFormat::Jpeg, None),
+            ),
+        ] {
+            let slot = state
+                .attachments
+                .start_upload(owner_id, general, name)
+                .await
+                .unwrap();
+            let uploaded = state
+                .attachments
+                .finish_upload(slot, bytes, crate::domain::clock::now_unix_milliseconds())
+                .await
+                .unwrap();
+            attachment_ids.push(uploaded.id);
+        }
+        let [wide_picture, killing_picture] = attachment_ids[..] else {
+            unreachable!("two uploads")
+        };
+        send(
+            &state,
+            authorized(
+                "POST",
+                &format!("/api/v1/channels/{general}/messages"),
+                &owner,
+                Some(serde_json::json!({
+                    "content": "",
+                    "attachment_ids": [wide_picture.to_string(), killing_picture.to_string()],
+                })),
+            ),
+        )
+        .await;
+        sqlx::raw_sql(
+            "UPDATE attachments SET compression_version = 0, \
+             optimization_attempted_at_unix_milliseconds = created_at_unix_milliseconds",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let stored_before = |id| {
+            let database = database.clone();
+            async move {
+                crate::storage::attachments::find_attachment(&database, id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }
+        };
+        let wide_before = stored_before(wide_picture).await;
+        let killing_before = stored_before(killing_picture).await;
+        let (session, mut events) = state
+            .events
+            .register_session(owner_id, [7; 32], 100)
+            .unwrap();
+        state.events.activate_session(session, &[guild_id]);
+        let waiting_before = recompression::pictures_to_recompress(&database)
+            .await
+            .unwrap();
+
+        let recompression_for = |attachments| {
+            ImageRecompression::new(
+                database.clone(),
+                attachments,
+                state.profile_images.clone(),
+                state.guilds.clone(),
+            )
+        };
+        let unrequested = recompression_for(state.attachments.clone())
+            .recompress_next()
+            .await;
+        recompression::request_recompression(&database, 0)
+            .await
+            .unwrap();
+        // The process dies on the newest attachment, its claim recorded; then it restarts, does
+        // one picture and is stopped again.
+        recompression::claim_next_attachment(&database)
+            .await
+            .unwrap();
+        let did_one = recompression_for(Arc::new(state.attachments.restarted()))
+            .recompress_next()
+            .await;
+        let resumed = recompression_for(Arc::new(state.attachments.restarted()));
+        let mut steps_after_restart = 0;
+        while resumed.recompress_next().await {
+            steps_after_restart += 1;
+            assert!(
+                steps_after_restart < MAXIMUM_STEPS,
+                "the recompression ends"
+            );
+        }
+        let is_still_requested = recompression::is_recompression_requested(&database)
+            .await
+            .unwrap();
+        let waiting_after = recompression::pictures_to_recompress(&database)
+            .await
+            .unwrap();
+        let profile = crate::domain::profile_images::profile_images_of_user(&database, owner_id)
+            .await
+            .unwrap();
+        let (new_avatar, new_banner) = (profile.avatar.unwrap().id, profile.banner.unwrap().id);
+        let (new_avatar_bytes, _) = state.profile_images.read(new_avatar, false).await.unwrap();
+        let (new_banner_bytes, _) = state.profile_images.read(new_banner, false).await.unwrap();
+        let old_avatar_read = state.profile_images.read(avatar, false).await;
+        let new_guild_icon = crate::storage::guilds::find_guild_summary(&database, guild_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .icon
+            .unwrap()
+            .id;
+        let new_channel_icon = crate::storage::guilds::find_guild_channel(&database, general)
+            .await
+            .unwrap()
+            .unwrap()
+            .icon
+            .unwrap()
+            .id;
+        let emojis = crate::storage::guild_emojis::list_guild_emojis(&database, guild_id)
+            .await
+            .unwrap();
+        let wide_after = stored_before(wide_picture).await;
+        let killing_after = stored_before(killing_picture).await;
+        let ((download_status, downloaded), _) = send_from(
+            &state,
+            TEST_PEER,
+            authorized(
+                "GET",
+                &format!("/api/v1/attachments/{wide_picture}"),
+                &owner,
+                None,
+            ),
+        )
+        .await;
+        let stored_files: std::collections::HashSet<Snowflake> = state
+            .attachments
+            .stored_file_ids()
+            .await
+            .into_iter()
+            .collect();
+        let files_in_use = crate::domain::attachments::file_ids_in_use(&database)
+            .await
+            .unwrap();
+        let mut announced = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            announced.push(event.payload_json.to_string());
+        }
+        database.close().await;
+
+        assert!(!unrequested, "nothing happens before an administrator asks");
+        assert_eq!(waiting_before.profile_images.count, 2);
+        assert_eq!(waiting_before.icons.count, 2, "the emoji is left out");
+        assert_eq!(waiting_before.attachments.count, 2);
+        assert!(did_one);
+        assert_eq!(
+            steps_after_restart, 4,
+            "the avatar, both icons and the wide picture"
+        );
+        assert!(!is_still_requested, "the request ends with the work");
+        assert_eq!(waiting_after.count(), 0);
+
+        assert!(![avatar, banner].contains(&new_avatar) && ![avatar, banner].contains(&new_banner));
+        assert!(new_avatar_bytes.len() < avatar_bytes.len());
+        assert!(new_banner_bytes.len() < banner_bytes.len());
+        assert!(old_avatar_read.is_err(), "the old version is gone");
+        assert_ne!(new_guild_icon, guild_icon);
+        assert_ne!(new_channel_icon, channel_icon);
+        assert_eq!(
+            emojis[0].id, emoji,
+            "an emoji keeps the id messages name it by"
+        );
+
+        assert_ne!(
+            wide_after.file_id, wide_before.file_id,
+            "written beside the old one"
+        );
+        assert!(wide_after.size_bytes < wide_before.size_bytes);
+        assert!(["image/avif", "image/webp"].contains(&wide_after.content_type.as_str()));
+        assert!(
+            wide_after.preview.is_some(),
+            "an old picture gets its preview"
+        );
+        assert_eq!(download_status, StatusCode::OK);
+        assert_eq!(downloaded.len() as u64, wide_after.size_bytes);
+        assert_eq!(
+            killing_after, killing_before,
+            "the picture that killed it is kept"
+        );
+
+        assert_eq!(
+            stored_files, files_in_use,
+            "no old file is left, none is missing"
+        );
+        for id in [new_avatar, new_banner, new_guild_icon, new_channel_icon] {
+            assert!(
+                announced
+                    .iter()
+                    .any(|event| event.contains(&id.to_string())),
+                "{id} is announced"
+            );
+        }
+    }
 }

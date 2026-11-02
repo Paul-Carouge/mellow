@@ -9,7 +9,7 @@ use crate::domain::guild_rules::GuildRuleViolation;
 use crate::domain::image_processing::{IconKind, SquareCrop, process_icon};
 use crate::domain::messages::MessageError;
 use crate::domain::profile_images::ProfileImages;
-use crate::storage::guild_images::{self as storage, IconChange};
+use crate::storage::guild_images::{self as storage, IconChange, StoredGuildImage};
 use crate::storage::guilds::StoredChannel;
 use crate::storage::profile_images::NewProfileImage;
 
@@ -162,6 +162,96 @@ impl Guilds {
         } else {
             image.id
         })
+    }
+}
+
+impl Guilds {
+    /// Stores a guild or channel icon kept before ADR-0033 again through today's pipeline, under a
+    /// new id since its URL is cached as immutable, and tells who sees it (`GUILD_UPDATE` or
+    /// `CHANNEL_UPDATE`). An icon replaced meanwhile, or one that comes out no smaller, is left as
+    /// it is. Not an action of anyone's, so nothing goes to the audit log.
+    pub(crate) async fn recompress_icon(
+        &self,
+        images: &ProfileImages,
+        previous: StoredGuildImage,
+    ) -> Result<(), MessageError> {
+        // The audience is decided before writing, so nothing can fail between the write and its
+        // announcement (ADR-0015).
+        let (kind, audience) = match previous.channel_id {
+            Some(channel_id) => {
+                let Some(channel) =
+                    crate::storage::guilds::find_guild_channel(&self.database, channel_id)
+                        .await
+                        .map_err(GuildError::from)?
+                else {
+                    return Ok(());
+                };
+                (
+                    IconKind::Channel,
+                    Some(self.channel_audience(&channel).await?),
+                )
+            }
+            None => (IconKind::Guild, None),
+        };
+        let (bytes, _read_slot) = images.read_file(previous.id).await?;
+        let previous_size_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let permit = images.wait_for_image_processing_permit().await?;
+        let now_unix_milliseconds = crate::domain::clock::now_unix_milliseconds();
+        // The stored icon is already the square that was kept.
+        let new_image = images
+            .store_with_permit(
+                permit,
+                bytes,
+                move |bytes| process_icon(bytes, kind, None),
+                now_unix_milliseconds,
+            )
+            .await?;
+        let swapped = if new_image.size_bytes < previous_size_bytes {
+            crate::storage::image_recompression::swap_icon(
+                &self.database,
+                &previous,
+                new_image,
+                now_unix_milliseconds,
+            )
+            .await
+        } else {
+            Ok(false)
+        };
+        if !matches!(swapped, Ok(true)) {
+            discard(images, Some(new_image)).await;
+            return Ok(swapped.map(|_| ())?);
+        }
+        images.delete_files(previous.id, previous.still_id).await;
+        let announced = match (previous.channel_id, audience) {
+            (Some(channel_id), Some(audience)) => {
+                crate::storage::guilds::find_guild_channel(&self.database, channel_id)
+                    .await
+                    .map(|channel| {
+                        if let Some(channel) = channel {
+                            self.publish_to_audience(
+                                previous.guild_id,
+                                &audience,
+                                &GatewayEvent::ChannelUpdate(channel_from_stored(channel)),
+                            );
+                        }
+                    })
+            }
+            _ => crate::storage::guilds::find_guild_summary(&self.database, previous.guild_id)
+                .await
+                .map(|summary| {
+                    if let Some(summary) = summary {
+                        self.events.publish_to_guild(
+                            previous.guild_id,
+                            &GatewayEvent::GuildUpdate(summary),
+                        );
+                    }
+                }),
+        };
+        if let Err(error) = announced {
+            // Its viewers show the old icon until they reconnect.
+            tracing::warn!(%error, "cannot announce a recompressed icon");
+        }
+        Ok(())
     }
 }
 
