@@ -267,47 +267,4 @@ fn percent_decode(encoded: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn large_uploads_get_time_at_a_slow_speed_and_small_ones_a_floor() {
-        assert_eq!(upload_deadline(25 * 1024 * 1024).as_secs(), 400);
-        assert_eq!(upload_deadline(1024), MINIMUM_UPLOAD_DEADLINE);
-    }
-
-    #[test]
-    fn if_none_match_matches_the_tag_in_a_list_weakly_or_any() {
-        let tag = HeaderValue::from_static("\"7-42\"");
-        let matches = |condition: &'static str| {
-            is_entity_tag_matched(&HeaderValue::from_static(condition), &tag)
-        };
-        assert!(matches("\"7-42\""));
-        assert!(matches("W/\"7-42\""));
-        assert!(matches("\"1-1\", \"7-42\""));
-        assert!(matches("*"));
-        assert!(!matches("\"7-43\""));
-        assert!(!matches("7-42"));
-        assert!(!matches(""));
-    }
-
-    #[test]
-    fn file_names_cannot_break_out_of_the_disposition_header() {
-        assert_eq!(percent_encode_file_name("photo.png"), "photo.png");
-        assert_eq!(
-            percent_encode_file_name("a\"b;c=d é.txt"),
-            "a%22b%3Bc%3Dd%20%C3%A9.txt"
-        );
-    }
-
-    #[test]
-    fn header_file_names_decode_as_encode_uri_component_writes_them() {
-        assert_eq!(
-            percent_decode("vacances%20d%27%C3%A9t%C3%A9.png").as_deref(),
-            Some("vacances d'été.png")
-        );
-        assert_eq!(percent_decode("%ZZ"), None);
-        assert_eq!(percent_decode("%C3"), None, "not UTF-8");
-        assert_eq!(percent_decode("cut%4"), None);
-    }
-}
+mod tests;
