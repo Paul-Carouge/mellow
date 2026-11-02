@@ -4,6 +4,9 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Fixed
+- A burst of 1440p screen keyframes no longer cuts the sharer's voice: voice packets have their own budget (120 packets and 70 kB a second), apart from video's.
+
 ## [0.31.0] - 2026-11-02
 Screen sharing in voice channels (ADR-0037), asked for before the camera interface. No database migration.
 

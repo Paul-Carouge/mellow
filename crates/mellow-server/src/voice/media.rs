@@ -46,7 +46,16 @@ const MAXIMUM_BYTES_PER_SECOND_WITH_CAMERA: usize = 1_500_000;
 /// 800 kbit/s: Opus at its highest bit rate (510 kbit/s) with RTCP for 9 watched cameras, so a
 /// client with its camera off cannot make the server decrypt full packets for nothing.
 const MAXIMUM_BYTES_PER_SECOND_WITHOUT_CAMERA: usize = 100_000;
+/// Voice counts apart from video, so a burst of video keyframes never silences its sender
+/// (ADR-0037): Opus at its highest bit rate (510 kbit/s) in its smallest packets (10 ms).
+const MAXIMUM_VOICE_PACKETS_PER_SECOND: u32 = 120;
+const MAXIMUM_VOICE_BYTES_PER_SECOND: usize = 70_000;
 const PACKET_RATE_WINDOW: Duration = Duration::from_secs(1);
+/// RTP and RTCP datagrams start with a byte in this range (RFC 7983).
+const RTP_OR_RTCP_FIRST_BYTES: std::ops::RangeInclusive<u8> = 128..=191;
+/// An RTCP packet's second byte, its packet type, falls in this range (RFC 5761).
+const RTCP_SECOND_BYTES: std::ops::RangeInclusive<u8> = 192..=223;
+const RTP_PAYLOAD_TYPE_MASK: u8 = 0x7F;
 /// Commands and speaking hangovers are looked at least this often.
 const MAXIMUM_IDLE_WAIT: Duration = Duration::from_millis(50);
 /// A zero read timeout means "block forever" to the OS.
@@ -239,6 +248,8 @@ struct Participant {
     candidate_address: SocketAddr,
     /// The m-line the participant sends their voice on.
     voice_mid: Option<Mid>,
+    /// The payload types of that m-line, read from the clear RTP header to count voice apart.
+    voice_payload_types: Vec<u8>,
     slots: ReceiveSlots<Mid, Snowflake>,
     video: ParticipantVideo,
     timeout_at: Instant,
@@ -248,9 +259,58 @@ struct Participant {
     is_forwarded: bool,
     is_deafened: bool,
     speaking: SpeakingDetector,
-    packet_window_started_at: Instant,
-    packets_in_window: u32,
-    bytes_in_window: usize,
+    voice_packets: PacketWindow,
+    other_packets: PacketWindow,
+}
+
+/// Packets and bytes counted over the current second.
+#[derive(Debug)]
+struct PacketWindow {
+    started_at: Instant,
+    packets: u32,
+    bytes: usize,
+}
+
+impl PacketWindow {
+    fn new(now: Instant) -> Self {
+        Self {
+            started_at: now,
+            packets: 0,
+            bytes: 0,
+        }
+    }
+
+    /// Counts a packet of `bytes`; `false` once this second holds more than either maximum.
+    fn counts_within(
+        &mut self,
+        bytes: usize,
+        now: Instant,
+        maximum_packets: u32,
+        maximum_bytes: usize,
+    ) -> bool {
+        if now.saturating_duration_since(self.started_at) >= PACKET_RATE_WINDOW {
+            *self = Self::new(now);
+        }
+        self.packets = self.packets.saturating_add(1);
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.packets <= maximum_packets && self.bytes <= maximum_bytes
+    }
+}
+
+/// The payload types the remote side agreed to send on the m-line `mid`.
+fn payload_types_of(rtc: &Rtc, mid: Mid) -> Vec<u8> {
+    rtc.media(mid)
+        .map(|media| media.remote_pts().iter().map(|pt| **pt).collect())
+        .unwrap_or_default()
+}
+
+/// The payload type of an RTP datagram, read from its clear header; `None` for STUN, DTLS and RTCP.
+fn rtp_payload_type_of(datagram: &[u8]) -> Option<u8> {
+    let [first, second, ..] = datagram else {
+        return None;
+    };
+    (RTP_OR_RTCP_FIRST_BYTES.contains(first) && !RTCP_SECOND_BYTES.contains(second))
+        .then_some(second & RTP_PAYLOAD_TYPE_MASK)
 }
 
 impl Participant {
@@ -262,6 +322,7 @@ impl Participant {
             rtc: join.rtc,
             candidate_address: join.candidate_address,
             voice_mid: None,
+            voice_payload_types: Vec::new(),
             slots: ReceiveSlots::default(),
             video: ParticipantVideo::default(),
             timeout_at: now,
@@ -271,22 +332,25 @@ impl Participant {
             is_forwarded: join.is_forwarded,
             is_deafened: join.is_deafened,
             speaking: SpeakingDetector::default(),
-            packet_window_started_at: now,
-            packets_in_window: 0,
-            bytes_in_window: 0,
+            voice_packets: PacketWindow::new(now),
+            other_packets: PacketWindow::new(now),
         }
     }
 
-    /// Counts a packet of `bytes`; `false` once the participant sends more than their budget
-    /// allows: larger with video, largest with a camera on (ADR-0035).
-    fn is_within_packet_budget(&mut self, bytes: usize, now: Instant) -> bool {
-        if now.saturating_duration_since(self.packet_window_started_at) >= PACKET_RATE_WINDOW {
-            self.packet_window_started_at = now;
-            self.packets_in_window = 0;
-            self.bytes_in_window = 0;
+    /// Counts a datagram; `false` once the participant sends more than their budget allows:
+    /// voice has its own, the rest a larger one with video, largest with a camera on (ADR-0035).
+    /// A client marking video as voice only reaches the voice budget sooner.
+    fn is_within_packet_budget(&mut self, datagram: &[u8], now: Instant) -> bool {
+        let is_voice = rtp_payload_type_of(datagram)
+            .is_some_and(|payload_type| self.voice_payload_types.contains(&payload_type));
+        if is_voice {
+            return self.voice_packets.counts_within(
+                datagram.len(),
+                now,
+                MAXIMUM_VOICE_PACKETS_PER_SECOND,
+                MAXIMUM_VOICE_BYTES_PER_SECOND,
+            );
         }
-        self.packets_in_window = self.packets_in_window.saturating_add(1);
-        self.bytes_in_window = self.bytes_in_window.saturating_add(bytes);
         let (maximum_packets, maximum_bytes) = if self.video.is_camera_forwarded {
             (
                 MAXIMUM_PACKETS_PER_SECOND_WITH_CAMERA,
@@ -303,7 +367,8 @@ impl Participant {
                 MAXIMUM_BYTES_PER_SECOND_WITHOUT_CAMERA,
             )
         };
-        self.packets_in_window <= maximum_packets && self.bytes_in_window <= maximum_bytes
+        self.other_packets
+            .counts_within(datagram.len(), now, maximum_packets, maximum_bytes)
     }
 
     /// The watched camera on the video receive m-line `mid`.
@@ -347,6 +412,8 @@ fn drain_output(participant: &mut Participant, socket: &UdpSocket, collected: &m
                         if participant.voice_mid.is_none() =>
                     {
                         participant.voice_mid = Some(added.mid);
+                        participant.voice_payload_types =
+                            payload_types_of(&participant.rtc, added.mid);
                     }
                     Direction::SendOnly => participant.slots.add_free_slot(added.mid),
                     _ => {}
@@ -850,7 +917,7 @@ impl MediaLoop<'_> {
         let Some(participant) = self.participants.get_mut(&user_id) else {
             return;
         };
-        if !participant.is_within_packet_budget(contents.len(), now) {
+        if !participant.is_within_packet_budget(contents, now) {
             return;
         }
         self.current_participant = Some(user_id);
@@ -1199,6 +1266,90 @@ mod tests {
             ),
             current_participant: None,
         }
+    }
+
+    #[test]
+    fn rtp_payload_types_are_read_only_from_rtp_datagrams() {
+        let opus_with_marker = [0x80, 0x80 | OPUS_PAYLOAD_TYPE, 0, 1];
+        assert_eq!(
+            rtp_payload_type_of(&opus_with_marker),
+            Some(OPUS_PAYLOAD_TYPE)
+        );
+        assert_eq!(
+            rtp_payload_type_of(&[0x80, 200, 0, 1]),
+            None,
+            "RTCP receiver report"
+        );
+        assert_eq!(
+            rtp_payload_type_of(&[0x00, 0x01, 0, 0]),
+            None,
+            "STUN binding request"
+        );
+        assert_eq!(
+            rtp_payload_type_of(&[22, 0xFE, 0xFD]),
+            None,
+            "DTLS handshake"
+        );
+        assert_eq!(rtp_payload_type_of(&[0x80]), None);
+    }
+
+    #[test]
+    fn a_burst_of_video_does_not_silence_its_sender() {
+        let (_commands, command_receiver) = std::sync::mpsc::channel();
+        let (event_sender, _events) = tokio::sync::mpsc::unbounded_channel();
+        let mut media = media_loop(&command_receiver, &event_sender);
+        let candidate: SocketAddr = "127.0.0.1:50000".parse().unwrap();
+        let (rtc, answer) = answer_offer(&client_offer(), candidate).unwrap();
+        // The client's send line is the offer's first m-line; `str0m` announces it once connected.
+        let voice_mid = answer
+            .lines()
+            .find_map(|line| line.strip_prefix("a=mid:"))
+            .map(Mid::from)
+            .unwrap();
+        let sharer_id = Snowflake::from_raw(1);
+        media.apply(MediaCommand::Join(Box::new(MediaJoin {
+            user_id: sharer_id,
+            connection_id: 10,
+            channel_id: Snowflake::from_raw(5),
+            rtc,
+            candidate_address: candidate,
+            is_forwarded: true,
+            is_deafened: false,
+        })));
+        let sharer = media.participants.get_mut(&sharer_id).unwrap();
+        sharer.voice_payload_types = payload_types_of(&sharer.rtc, voice_mid);
+        assert_eq!(sharer.voice_payload_types, vec![OPUS_PAYLOAD_TYPE]);
+        sharer.video.is_camera_forwarded = true;
+        let now = Instant::now();
+        let mut video = vec![0_u8; MAXIMUM_DATAGRAM_BYTES];
+        video[..2].copy_from_slice(&[0x80, 96]);
+        let voice = [0x80, OPUS_PAYLOAD_TYPE, 0, 1];
+
+        let video_packets_within_budget =
+            std::iter::repeat_with(|| sharer.is_within_packet_budget(&video, now))
+                .take(2_000)
+                .filter(|is_within| *is_within)
+                .count();
+
+        assert_eq!(
+            video_packets_within_budget,
+            MAXIMUM_BYTES_PER_SECOND_WITH_CAMERA / MAXIMUM_DATAGRAM_BYTES
+        );
+        assert!(
+            sharer.is_within_packet_budget(&voice, now),
+            "voice still goes through"
+        );
+        let voice_packets_within_budget =
+            std::iter::repeat_with(|| sharer.is_within_packet_budget(&voice, now))
+                .take(1_000)
+                .filter(|is_within| *is_within)
+                .count();
+        assert_eq!(
+            voice_packets_within_budget,
+            usize::try_from(MAXIMUM_VOICE_PACKETS_PER_SECOND).unwrap() - 1,
+            "voice has a budget of its own, not an exemption"
+        );
+        assert!(sharer.is_within_packet_budget(&voice, now + PACKET_RATE_WINDOW));
     }
 
     #[test]
