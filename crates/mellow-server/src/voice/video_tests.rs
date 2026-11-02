@@ -18,6 +18,7 @@ use str0m::media::{Direction, Frequency, MediaKind, MediaTime, Mid, Rid, Simulca
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, Input, Output, Rtc};
 
+use super::media::MediaEvent;
 use super::tests::{Fixture, HEARING_TIMEOUT, fixture, join, next_voice_state_update, pending_bot};
 use crate::gateway::tests::{ClientSocket, identified, receive_dispatch, send};
 
@@ -473,7 +474,6 @@ async fn a_layer_sent_far_above_its_bit_rate_reaches_watchers_only_up_to_its_bud
     let fixture = fixture().await;
     let (mut owner, mut member) = identified_pair(&fixture).await;
     let owner_id = fixture.user_id("owner");
-    let started = Instant::now();
     let owner_bot = join_with_camera_sending(
         &mut owner,
         fixture.lounge,
@@ -482,6 +482,8 @@ async fn a_layer_sent_far_above_its_bit_rate_reaches_watchers_only_up_to_its_bud
     )
     .await;
     let member_bot = join_with_camera(&mut member, fixture.lounge, 2).await;
+    // The budget starts with the camera's first frame, after this.
+    let started = Instant::now();
     send(&mut owner, &camera_state(true)).await;
     wait_for_camera(&mut member, owner_id, true).await;
     send(&mut member, &watch(owner_id, VideoTileSize::Small)).await;
@@ -497,5 +499,38 @@ async fn a_layer_sent_far_above_its_bit_rate_reaches_watchers_only_up_to_its_bud
     assert!(
         f64::from(received * OVERSIZED_FRAME_BYTES) <= allowed_bytes,
         "{received} frames in {elapsed:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_camera_the_media_loop_found_silent_shows_off_and_is_turned_off_there_too() {
+    let fixture = fixture().await;
+    let (mut owner, mut member) = identified_pair(&fixture).await;
+    let owner_id = fixture.user_id("owner");
+    let owner_bot = join_with_camera(&mut owner, fixture.lounge, 1).await;
+    let member_bot = join_with_camera(&mut member, fixture.lounge, 2).await;
+    send(&mut owner, &camera_state(true)).await;
+    wait_for_camera(&mut member, owner_id, true).await;
+    let shared = &fixture.state.voice.shared;
+    let connection_id = shared.participants.lock().await[&owner_id].connection_id;
+    // As if the camera had turned on again in the media loop meanwhile: the service's answer
+    // must turn it off there too.
+    shared
+        .apply_media_event(MediaEvent::CameraSilent {
+            user_id: owner_id,
+            connection_id,
+        })
+        .await;
+    wait_for_camera(&mut member, owner_id, false).await;
+    while !next_layers(&mut owner).await.is_empty() {}
+    let is_on_for_the_service = shared.participants.lock().await[&owner_id]
+        .self_state
+        .self_video;
+    drop((owner_bot, member_bot));
+    fixture.close().await;
+
+    assert!(
+        !is_on_for_the_service,
+        "and the media loop reported no layers: off there too"
     );
 }

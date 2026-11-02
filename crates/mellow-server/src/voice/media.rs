@@ -22,6 +22,7 @@ use crate::domain::video_rules::{
     FrameForwarding, LayerByteBudget, LayerSwitch, MAXIMUM_SILENCE_OF_A_CAMERA,
     MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS,
     MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER, Throttle, active_layers,
+    is_keyframe_within_layer_size,
 };
 use crate::domain::voice_rules::{ReceiveSlots, SpeakingDetector};
 
@@ -613,6 +614,18 @@ impl MediaLoop<'_> {
         self.report_camera_layers(user_id);
     }
 
+    /// The watchers forwarded `layer` of `camera_id` wait for its next keyframe.
+    fn restart_watchers_on_layer(&mut self, camera_id: Snowflake, layer: SimulcastLayer) {
+        for watched in self
+            .participants
+            .values_mut()
+            .filter_map(|watcher| watcher.video.watched_cameras.get_mut(&camera_id))
+            .filter(|watched| watched.switch.forwarded() == Some(layer))
+        {
+            watched.switch = LayerSwitch::new(watched.switch.wanted());
+        }
+    }
+
     /// Every watcher of `camera_id` waits for a keyframe again, keeping its slot and layer.
     fn restart_watchers_of(&mut self, camera_id: Snowflake) {
         for watched in self
@@ -882,12 +895,11 @@ impl MediaLoop<'_> {
         let Some(layer) = frame.rid.and_then(layer_of_rid) else {
             return;
         };
-        camera.video.camera_heard_at = Some(now);
-        eprintln!(
-            "DEBUG frame {layer:?} len {} key {}",
-            frame.data.len(),
-            frame.is_keyframe()
-        );
+        let is_keyframe = frame.is_keyframe();
+        // A keyframe declaring a picture too large for its layer reaches no one (ADR-0035).
+        if is_keyframe && !is_keyframe_within_layer_size(layer, &frame.data) {
+            return;
+        }
         // Over its layer's budget, the frame reaches no one (ADR-0035): a client cannot send a
         // large picture under the name of a small layer.
         if !camera
@@ -897,13 +909,17 @@ impl MediaLoop<'_> {
             .or_insert_with(|| LayerByteBudget::new(layer, now))
             .has_room_for(frame.data.len(), now)
         {
+            // Watchers on this layer miss a frame its next ones refer to: they wait for a
+            // keyframe instead of decoding a broken picture.
+            self.restart_watchers_on_layer(camera_id, layer);
+            self.request_keyframe(camera_id, layer, now);
             return;
         }
+        camera.video.camera_heard_at = Some(now);
         let channel_id = camera.channel_id;
-        let is_keyframe = frame.is_keyframe();
         let mut has_switched = false;
         let mut is_keyframe_wanted = false;
-        let mut is_forwarded = false;
+        let mut has_reached_a_watcher = false;
         let mut ignored = Collected::default();
         for watcher in self.participants.values_mut().filter(|watcher| {
             watcher.user_id != camera_id && watcher.channel_id == channel_id && watcher.is_connected
@@ -939,11 +955,11 @@ impl MediaLoop<'_> {
                 watcher.rtc.disconnect();
                 continue;
             }
-            is_forwarded = true;
+            has_reached_a_watcher = true;
             // A watcher only receives media here; what it sends arrives through its own input.
             drain_output(watcher, &self.socket, &mut ignored);
         }
-        if is_forwarded
+        if has_reached_a_watcher
             && let Some(budget) = self
                 .participants
                 .get_mut(&camera_id)

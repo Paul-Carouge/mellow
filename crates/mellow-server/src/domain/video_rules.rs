@@ -190,6 +190,30 @@ pub(crate) const fn maximum_bytes_per_second_of(layer: SimulcastLayer) -> u32 {
     }
 }
 
+/// Whether a VP8 keyframe's picture fits its layer: at most twice the layer's size each way
+/// (`q` 640 × 360, `l` 1280 × 720, `h` 1920 × 1080). A camera could otherwise send a tiny
+/// keyframe declaring a huge picture, which every watcher of that layer would have to allocate
+/// and decode. A keyframe without the VP8 start code does not fit.
+#[must_use]
+pub(crate) fn is_keyframe_within_layer_size(layer: SimulcastLayer, keyframe: &[u8]) -> bool {
+    const VP8_START_CODE: [u8; 3] = [0x9d, 0x01, 0x2a];
+    /// The two top bits of each dimension are its upscaling hint, not its size.
+    const DIMENSION_MASK: u16 = 0x3fff;
+    let (Some(start_code), Some(&[width_low, width_high, height_low, height_high])) =
+        (keyframe.get(3..6), keyframe.get(6..10))
+    else {
+        return false;
+    };
+    let width = u16::from_le_bytes([width_low, width_high]) & DIMENSION_MASK;
+    let height = u16::from_le_bytes([height_low, height_high]) & DIMENSION_MASK;
+    let (maximum_width, maximum_height) = match layer {
+        SimulcastLayer::Quarter => (640, 360),
+        SimulcastLayer::Low => (1_280, 720),
+        SimulcastLayer::High => (1_920, 1_080),
+    };
+    start_code == VP8_START_CODE && width <= maximum_width && height <= maximum_height
+}
+
 /// A token bucket of bytes refilled at `maximum_bytes_per_second_of` its layer and holding one
 /// second of them: a frame passes only if the bucket holds its size, and only frames actually
 /// forwarded are taken from it, so frames dropped for watchers waiting for a keyframe never use
@@ -357,6 +381,32 @@ mod tests {
         assert!(throttle.may_pass(('a', High), at(300)));
         throttle.forget(|(camera, _)| *camera == 'a');
         assert!(throttle.may_pass(('a', High), at(301)), "forgotten");
+    }
+
+    #[test]
+    fn keyframes_declare_at_most_twice_their_layer_size() {
+        let keyframe = |width: u16, height: u16| {
+            let mut frame = vec![0x10, 0, 0, 0x9d, 0x01, 0x2a];
+            frame.extend(width.to_le_bytes());
+            frame.extend(height.to_le_bytes());
+            frame
+        };
+        assert!(is_keyframe_within_layer_size(Quarter, &keyframe(320, 180)));
+        assert!(is_keyframe_within_layer_size(Quarter, &keyframe(640, 360)));
+        assert!(!is_keyframe_within_layer_size(Quarter, &keyframe(641, 360)));
+        assert!(!is_keyframe_within_layer_size(
+            Quarter,
+            &keyframe(16_383, 16_383)
+        ));
+        assert!(is_keyframe_within_layer_size(High, &keyframe(1_920, 1_080)));
+        assert!(
+            is_keyframe_within_layer_size(Quarter, &keyframe(0x0140 | 0xc000, 180)),
+            "the scaling bits are not part of the size"
+        );
+        let mut without_start_code = keyframe(320, 180);
+        without_start_code[3] = 0;
+        assert!(!is_keyframe_within_layer_size(Quarter, &without_start_code));
+        assert!(!is_keyframe_within_layer_size(Quarter, &[0x10, 0, 0]));
     }
 
     #[test]
