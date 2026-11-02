@@ -2871,6 +2871,78 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_picture_whose_compression_died_with_the_process_is_not_tried_again() {
+        use crate::domain::image_processing::tests::png;
+
+        /// Queries before giving up on the attempt being recorded; each waits on the database.
+        const MAXIMUM_CHECKS: usize = 10_000;
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let (owner, general) = owner_and_general_channel(&state).await;
+        let (_, body) = send(&state, authorized("GET", "/api/v1/users/@me", &owner, None)).await;
+        let owner_id = json::<CurrentUser>(&body).id;
+        let picture = png(64, 40);
+        let slot = state
+            .attachments
+            .start_upload(owner_id, general, "photo.png")
+            .await
+            .unwrap();
+        let attachment = state
+            .attachments
+            .finish_upload(
+                slot,
+                picture.clone(),
+                crate::domain::clock::now_unix_milliseconds(),
+            )
+            .await
+            .unwrap();
+
+        // Every slot taken: the worker stops inside the job, which is where the process dies.
+        let slots = [
+            state.attachments.image_processing_permit().unwrap(),
+            state.attachments.image_processing_permit().unwrap(),
+        ];
+        let is_attempt_recorded = async {
+            for _ in 0..MAXIMUM_CHECKS {
+                let awaiting =
+                    crate::storage::attachments::newest_attachments_awaiting_optimization(
+                        &database, 1,
+                    )
+                    .await
+                    .unwrap();
+                if awaiting.is_empty() {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+            panic!("the attempt is recorded before the job runs");
+        };
+        let worker = state.attachments.optimize_every_attachment_awaiting();
+        tokio::select! {
+            () = worker => panic!("the job cannot end without a slot"),
+            () = is_attempt_recorded => {}
+        }
+        // The worker is gone mid-job, as in a crash; the restarted instance must not retry it.
+        drop(slots);
+        state
+            .attachments
+            .restarted()
+            .optimize_every_attachment_awaiting()
+            .await;
+        let stored = crate::storage::attachments::find_attachment(&database, attachment.id)
+            .await
+            .unwrap()
+            .unwrap();
+        database.close().await;
+
+        assert_eq!(
+            stored.size_bytes,
+            u64::try_from(picture.len()).unwrap(),
+            "kept as uploaded"
+        );
+    }
+
+    #[tokio::test]
     async fn an_animated_gif_attachment_becomes_a_smaller_webp_in_the_background() {
         use crate::domain::image_processing::tests::animated_gif;
         use mellow_protocol::Attachment;

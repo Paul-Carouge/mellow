@@ -377,12 +377,10 @@ impl Attachments {
         }
     }
 
-    /// Runs `optimize`, then records the attempt whatever its outcome, so a picture that cannot be
-    /// compressed is not tried again. `false` when the attempt could not be recorded.
+    /// Records the attempt, then runs `optimize`: a picture is tried once, whatever the outcome,
+    /// even when it kills the process (out of memory), which would otherwise retry it at every
+    /// start. `false`, and nothing tried, when the attempt could not be recorded.
     async fn optimize_and_record_attempt(&self, attachment_id: Snowflake) -> bool {
-        if let Err(error) = self.optimize(attachment_id).await {
-            tracing::warn!(%error, "cannot compress an attachment");
-        }
         let recorded = storage::record_optimization_attempt(
             &self.database,
             attachment_id,
@@ -391,8 +389,12 @@ impl Attachments {
         .await;
         if let Err(error) = &recorded {
             tracing::warn!(%error, "cannot record an attachment compression attempt");
+            return false;
         }
-        recorded.is_ok()
+        if let Err(error) = self.optimize(attachment_id).await {
+            tracing::warn!(%error, "cannot compress an attachment");
+        }
+        true
     }
 
     /// What the worker does after a restart, run to the end: for tests, which cannot wait on it.
