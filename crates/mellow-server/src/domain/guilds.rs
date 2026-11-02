@@ -35,11 +35,15 @@ use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::domain::voice_rules::VoiceAccess;
 use crate::events::EventHub;
 use crate::storage::audit_log::{self as audit_log_storage, ChannelEntryFilter, NewAuditEntry};
+use crate::storage::guild_channels::{self as channel_storage, ChannelFieldChanges, StoredChannel};
 use crate::storage::guild_emojis as guild_emojis_storage;
+use crate::storage::guild_invites::{self as invite_storage, JoinOutcome, StoredInvite};
+use crate::storage::guild_members as member_storage;
+use crate::storage::guild_roles::{self as role_storage, RoleFieldChanges};
 use crate::storage::guild_sounds as guild_sounds_storage;
 use crate::storage::guilds::{
-    self as guild_storage, ChannelFieldChanges, GuildRename, GuildStorageError, JoinOutcome,
-    Membership, NewGuild, RoleFieldChanges, StoredChannel, StoredInvite, StoredPermissionSnapshot,
+    self as guild_storage, GuildRename, GuildStorageError, Membership, NewGuild,
+    StoredPermissionSnapshot,
 };
 
 mod emojis;
@@ -107,7 +111,7 @@ impl From<getrandom::Error> for GuildError {
     }
 }
 
-fn member_from_stored(member: guild_storage::StoredMember) -> Member {
+fn member_from_stored(member: member_storage::StoredMember) -> Member {
     Member {
         user: PublicUser {
             id: member.user_id,
@@ -517,8 +521,8 @@ impl Guilds {
         let membership = guild_storage::find_membership(&self.database, guild_id, user_id)
             .await?
             .ok_or(GuildError::NotFound)?;
-        let channels = guild_storage::list_guild_channels(&self.database, guild_id).await?;
-        let roles = guild_storage::list_roles(&self.database, guild_id).await?;
+        let channels = channel_storage::list_guild_channels(&self.database, guild_id).await?;
+        let roles = role_storage::list_roles(&self.database, guild_id).await?;
         let expressions = self.expressions_of_guild(guild_id).await?;
         let my_join_sound_id =
             guild_sounds_storage::member_join_sound(&self.database, guild_id, user_id).await?;
@@ -648,7 +652,7 @@ impl Guilds {
             Some(channel_id),
             None,
         )?;
-        let channel = guild_storage::insert_channel_last(
+        let channel = channel_storage::insert_channel_last(
             &self.database,
             &StoredChannel {
                 id: channel_id,
@@ -683,7 +687,7 @@ impl Guilds {
         user_id: Snowflake,
         channel_id: Snowflake,
     ) -> Result<(StoredChannel, Permissions), GuildError> {
-        let channel = guild_storage::find_guild_channel(&self.database, channel_id)
+        let channel = channel_storage::find_guild_channel(&self.database, channel_id)
             .await?
             .ok_or(GuildError::NotFound)?;
         let membership = guild_storage::find_membership(&self.database, channel.guild_id, user_id)
@@ -713,21 +717,23 @@ impl Guilds {
             .await?
             .ok_or(GuildError::NotFound)?;
         let readable = Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY;
-        Ok(guild_storage::list_guild_channels(&self.database, guild_id)
-            .await?
-            .into_iter()
-            .filter(|channel| {
-                channel.kind == ChannelKind::Text
-                    && channel_permissions(
-                        user_id,
-                        membership.owner_id,
-                        guild_id,
-                        &membership.member_roles,
-                        &channel.permission_overwrites,
-                    )
-                    .contains(readable)
-            })
-            .collect())
+        Ok(
+            channel_storage::list_guild_channels(&self.database, guild_id)
+                .await?
+                .into_iter()
+                .filter(|channel| {
+                    channel.kind == ChannelKind::Text
+                        && channel_permissions(
+                            user_id,
+                            membership.owner_id,
+                            guild_id,
+                            &membership.member_roles,
+                            &channel.permission_overwrites,
+                        )
+                        .contains(readable)
+                })
+                .collect(),
+        )
     }
 
     /// Who can view `channel` as stored now: its overwrites are read again, so a change committed
@@ -737,7 +743,7 @@ impl Guilds {
         &self,
         channel: &StoredChannel,
     ) -> Result<ChannelAudience, GuildError> {
-        let overwrites = guild_storage::find_guild_channel(&self.database, channel.id)
+        let overwrites = channel_storage::find_guild_channel(&self.database, channel.id)
             .await?
             .map(|current| current.permission_overwrites)
             .unwrap_or_default();
@@ -832,7 +838,7 @@ impl Guilds {
         let summary = guild_storage::find_guild_summary(&self.database, guild_id)
             .await?
             .ok_or(GuildError::NotFound)?;
-        let channels = guild_storage::list_guild_channels(&self.database, guild_id).await?;
+        let channels = channel_storage::list_guild_channels(&self.database, guild_id).await?;
         let expressions = self.expressions_of_guild(guild_id).await?;
         let join_sounds =
             guild_sounds_storage::join_sounds_of_guild(&self.database, guild_id).await?;
@@ -867,7 +873,7 @@ impl Guilds {
         user_id: Snowflake,
         channel_id: Snowflake,
     ) -> Result<VoiceAccess, GuildError> {
-        let Some(channel) = guild_storage::find_guild_channel(&self.database, channel_id)
+        let Some(channel) = channel_storage::find_guild_channel(&self.database, channel_id)
             .await?
             .filter(|channel| channel.kind == ChannelKind::Voice)
         else {
@@ -902,7 +908,7 @@ impl Guilds {
         &self,
         channel_id: Snowflake,
     ) -> Result<Option<ChannelAudience>, GuildError> {
-        let Some(channel) = guild_storage::find_guild_channel(&self.database, channel_id).await?
+        let Some(channel) = channel_storage::find_guild_channel(&self.database, channel_id).await?
         else {
             return Ok(None);
         };
@@ -990,7 +996,7 @@ impl Guilds {
                 None,
             )?
         };
-        let updated = guild_storage::update_channel_fields(
+        let updated = channel_storage::update_channel_fields(
             &self.database,
             channel.id,
             ChannelFieldChanges {
@@ -1025,7 +1031,7 @@ impl Guilds {
         if !permissions.contains(Permissions::MANAGE_CHANNELS) {
             return Err(GuildError::MissingPermissions);
         }
-        let channels = guild_storage::list_guild_channels(&self.database, guild_id).await?;
+        let channels = channel_storage::list_guild_channels(&self.database, guild_id).await?;
         let permissions_by_channel: HashMap<Snowflake, Permissions> = channels
             .iter()
             .map(|channel| {
@@ -1099,7 +1105,7 @@ impl Guilds {
                 .map(|place| (place.id, place.parent_id))
                 .collect()
         };
-        let is_written = guild_storage::reorder_channels(
+        let is_written = channel_storage::reorder_channels(
             &self.database,
             guild_id,
             &placements(&current),
@@ -1140,9 +1146,9 @@ impl Guilds {
         // the deletion half way.
         let database = self.database.clone();
         let channel_id = channel.id;
-        tokio::spawn(
-            async move { guild_storage::delete_channel(&database, channel_id, &audit).await },
-        )
+        tokio::spawn(async move {
+            channel_storage::delete_channel(&database, channel_id, &audit).await
+        })
         .await
         .map_err(|error| GuildError::Internal(Box::new(error)))??;
         self.publish_to_audience(
@@ -1221,7 +1227,7 @@ impl Guilds {
                 Some(channel.id),
             )?
         };
-        guild_storage::set_overwrite(
+        channel_storage::set_overwrite(
             &self.database,
             channel.id,
             &wanted,
@@ -1253,7 +1259,7 @@ impl Guilds {
             .cloned()
             .ok_or(GuildError::NotFound)?;
         if current.kind == OverwriteKind::Role {
-            let role = guild_storage::list_roles(&self.database, channel.guild_id)
+            let role = role_storage::list_roles(&self.database, channel.guild_id)
                 .await?
                 .into_iter()
                 .find(|role| role.id == target_id);
@@ -1287,7 +1293,7 @@ impl Guilds {
             )?
         };
         // Refused if the overwrite gained a permission the member lacks since it was read.
-        if !guild_storage::delete_overwrite(&self.database, channel.id, target_id, held, &audit)
+        if !channel_storage::delete_overwrite(&self.database, channel.id, target_id, held, &audit)
             .await?
         {
             return Err(GuildError::Conflict);
@@ -1338,7 +1344,7 @@ impl Guilds {
         let guild_id = channel.guild_id;
         match wanted.kind {
             OverwriteKind::Role => {
-                let role = guild_storage::list_roles(&self.database, guild_id)
+                let role = role_storage::list_roles(&self.database, guild_id)
                     .await?
                     .into_iter()
                     .find(|role| role.id == wanted.id)
@@ -1352,7 +1358,7 @@ impl Guilds {
                 }
             }
             OverwriteKind::Member => {
-                guild_storage::find_member(&self.database, guild_id, wanted.id)
+                member_storage::find_member(&self.database, guild_id, wanted.id)
                     .await?
                     .ok_or(GuildError::NotFound)?;
             }
@@ -1367,7 +1373,7 @@ impl Guilds {
         channel: &StoredChannel,
         viewers_before: &HashSet<Snowflake>,
     ) -> Result<Channel, GuildError> {
-        let updated = guild_storage::find_guild_channel(&self.database, channel.id)
+        let updated = channel_storage::find_guild_channel(&self.database, channel.id)
             .await?
             .ok_or(GuildError::NotFound)?;
         let snapshot = self.permission_snapshot(channel.guild_id).await?;
@@ -1441,7 +1447,7 @@ impl Guilds {
             }],
             ..self.audit_entry(guild_id, user_id, AuditAction::InviteCreate, None, None)?
         };
-        guild_storage::insert_invite(
+        invite_storage::insert_invite(
             &self.database,
             &invite,
             MAXIMUM_ACTIVE_INVITES_PER_GUILD,
@@ -1467,7 +1473,7 @@ impl Guilds {
     ) -> Result<Vec<GuildInvite>, GuildError> {
         self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_GUILD)
             .await?;
-        let mut invites: Vec<GuildInvite> = guild_storage::list_usable_invites(
+        let mut invites: Vec<GuildInvite> = invite_storage::list_usable_invites(
             &self.database,
             guild_id,
             now_unix_milliseconds,
@@ -1506,7 +1512,7 @@ impl Guilds {
         user_id: Snowflake,
         code: &str,
     ) -> Result<(), GuildError> {
-        let guild_id = guild_storage::find_invite_guild_id(&self.database, code)
+        let guild_id = invite_storage::find_invite_guild_id(&self.database, code)
             .await?
             .ok_or(GuildError::NotFound)?;
         self.require_member_permissions(guild_id, user_id, Permissions::MANAGE_GUILD)
@@ -1519,7 +1525,7 @@ impl Guilds {
             }],
             ..self.audit_entry(guild_id, user_id, AuditAction::InviteDelete, None, None)?
         };
-        if guild_storage::delete_invite(&self.database, guild_id, code, &audit).await? {
+        if invite_storage::delete_invite(&self.database, guild_id, code, &audit).await? {
             Ok(())
         } else {
             Err(GuildError::NotFound)
@@ -1534,7 +1540,7 @@ impl Guilds {
         now_unix_milliseconds: u64,
     ) -> Result<Guild, GuildError> {
         let code = normalize_invite_code(code);
-        let (guild_id, is_new_member) = match guild_storage::join_with_invite(
+        let (guild_id, is_new_member) = match invite_storage::join_with_invite(
             &self.database,
             &code,
             user_id,
@@ -1565,7 +1571,7 @@ impl Guilds {
         let guild = self.get_guild(user_id, guild_id).await?;
         if is_new_member {
             if let Some(member) =
-                guild_storage::find_member(&self.database, guild_id, user_id).await?
+                member_storage::find_member(&self.database, guild_id, user_id).await?
             {
                 let mut member = member_from_stored(member);
                 // The join is stored: announce it even without the pictures.
@@ -1602,7 +1608,7 @@ impl Guilds {
         if !manager.permissions.contains(Permissions::MANAGE_ROLES) {
             return Err(GuildError::MissingPermissions);
         }
-        let role = guild_storage::list_roles(&self.database, guild_id)
+        let role = role_storage::list_roles(&self.database, guild_id)
             .await?
             .into_iter()
             .find(|role| role.id == role_id)
@@ -1650,7 +1656,7 @@ impl Guilds {
             Some(role_id),
             None,
         )?;
-        let roles = guild_storage::insert_role_above_everyone(
+        let roles = role_storage::insert_role_above_everyone(
             &self.database,
             guild_id,
             &Role {
@@ -1738,7 +1744,7 @@ impl Guilds {
                 None,
             )?
         };
-        let updated = guild_storage::update_role_fields(
+        let updated = role_storage::update_role_fields(
             &self.database,
             guild_id,
             role_id,
@@ -1754,7 +1760,7 @@ impl Guilds {
         .ok_or(GuildError::NotFound)?;
         self.publish_roles(
             guild_id,
-            guild_storage::list_roles(&self.database, guild_id).await?,
+            role_storage::list_roles(&self.database, guild_id).await?,
         );
         if updated.permissions != role.permissions {
             self.resynchronize(guild_id, AffectedMembers::Everyone)
@@ -1774,7 +1780,7 @@ impl Guilds {
         let membership = guild_storage::find_membership(&self.database, guild_id, user_id)
             .await?
             .ok_or(GuildError::NotFound)?;
-        let roles = guild_storage::list_roles(&self.database, guild_id).await?;
+        let roles = role_storage::list_roles(&self.database, guild_id).await?;
         // The manager's rank comes from the same read as the order the storage guard checks, so
         // a reordering committed between the two reads cannot leave them a stale, higher rank.
         let member_role_ids = membership.member_role_ids(guild_id);
@@ -1801,7 +1807,7 @@ impl Guilds {
             return Ok(roles);
         }
         let audit = self.audit_entry(guild_id, user_id, AuditAction::RolesReorder, None, None)?;
-        let roles = guild_storage::reorder_roles(
+        let roles = role_storage::reorder_roles(
             &self.database,
             guild_id,
             &current_order,
@@ -1833,12 +1839,12 @@ impl Guilds {
             Some(role_id),
             None,
         )?;
-        if !guild_storage::delete_role(&self.database, guild_id, role_id, &audit).await? {
+        if !role_storage::delete_role(&self.database, guild_id, role_id, &audit).await? {
             return Err(GuildError::NotFound);
         }
         self.publish_roles(
             guild_id,
-            guild_storage::list_roles(&self.database, guild_id).await?,
+            role_storage::list_roles(&self.database, guild_id).await?,
         );
         self.resynchronize(guild_id, AffectedMembers::Everyone)
             .await;
@@ -1866,7 +1872,7 @@ impl Guilds {
             Some(member_id),
             Some(role_id),
         )?;
-        let role_ids = guild_storage::add_member_role(
+        let role_ids = role_storage::add_member_role(
             &self.database,
             guild_id,
             member_id,
@@ -1903,7 +1909,7 @@ impl Guilds {
             Some(role_id),
         )?;
         let role_ids =
-            guild_storage::remove_member_role(&self.database, guild_id, member_id, role_id, &audit)
+            role_storage::remove_member_role(&self.database, guild_id, member_id, role_id, &audit)
                 .await?
                 .ok_or(GuildError::NotFound)?;
         self.publish_member_roles(guild_id, member_id, role_ids);
@@ -1936,7 +1942,7 @@ impl Guilds {
     ) -> Result<Vec<Member>, GuildError> {
         self.membership_and_permissions(guild_id, user_id).await?;
         let mut members: Vec<Member> =
-            guild_storage::list_members(&self.database, guild_id, MAXIMUM_MEMBERS_LISTED)
+            member_storage::list_members(&self.database, guild_id, MAXIMUM_MEMBERS_LISTED)
                 .await?
                 .into_iter()
                 .map(member_from_stored)
@@ -1959,7 +1965,7 @@ impl Guilds {
         if membership.owner_id == user_id {
             return Err(GuildError::OwnerCannotLeave);
         }
-        guild_storage::delete_member(&self.database, guild_id, user_id, None).await?;
+        member_storage::delete_member(&self.database, guild_id, user_id, None).await?;
         self.publish_member_removed(guild_id, user_id);
         Ok(())
     }
@@ -2047,7 +2053,7 @@ impl Guilds {
             Some(target_id),
             None,
         )?;
-        guild_storage::delete_member(&self.database, guild_id, target_id, Some(&audit)).await?;
+        member_storage::delete_member(&self.database, guild_id, target_id, Some(&audit)).await?;
         self.publish_member_removed(guild_id, target_id);
         Ok(())
     }
@@ -2083,7 +2089,7 @@ impl Guilds {
                 None,
             )?
         };
-        let was_member = guild_storage::ban_and_remove_member(
+        let was_member = member_storage::ban_and_remove_member(
             &self.database,
             guild_id,
             target_id,
@@ -2115,7 +2121,7 @@ impl Guilds {
             Some(target_id),
             None,
         )?;
-        if guild_storage::delete_ban(&self.database, guild_id, target_id, &audit).await? {
+        if member_storage::delete_ban(&self.database, guild_id, target_id, &audit).await? {
             Ok(())
         } else {
             Err(GuildError::NotFound)
@@ -2158,7 +2164,7 @@ impl Guilds {
         self.require_member_permissions(guild_id, user_id, Permissions::BAN_MEMBERS)
             .await?;
         let mut bans: Vec<Ban> =
-            guild_storage::list_bans(&self.database, guild_id, MAXIMUM_BANS_LISTED)
+            member_storage::list_bans(&self.database, guild_id, MAXIMUM_BANS_LISTED)
                 .await?
                 .into_iter()
                 .map(|ban| Ban {
@@ -3278,7 +3284,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let outdated = guild_storage::reorder_roles(
+        let outdated = role_storage::reorder_roles(
             &fixture.database,
             guild.id,
             &seen,
@@ -3287,7 +3293,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let roles = guild_storage::list_roles(&fixture.database, guild.id)
+        let roles = role_storage::list_roles(&fixture.database, guild.id)
             .await
             .unwrap();
         let audit_log = audit_log_storage::list_audit_entries(
@@ -3349,7 +3355,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let channel = guild_storage::find_guild_channel(&fixture.database, general)
+        let channel = channel_storage::find_guild_channel(&fixture.database, general)
             .await
             .unwrap()
             .unwrap();
@@ -3820,7 +3826,7 @@ mod tests {
             )
             .unwrap();
         // Someone else reordered after the check read the original order.
-        let outdated = guild_storage::reorder_channels(
+        let outdated = channel_storage::reorder_channels(
             &fixture.database,
             guild.id,
             &[

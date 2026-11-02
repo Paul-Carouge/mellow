@@ -4424,13 +4424,14 @@ pub(crate) mod tests {
             .icon
             .unwrap()
             .id;
-        let new_channel_icon = crate::storage::guilds::find_guild_channel(&database, general)
-            .await
-            .unwrap()
-            .unwrap()
-            .icon
-            .unwrap()
-            .id;
+        let new_channel_icon =
+            crate::storage::guild_channels::find_guild_channel(&database, general)
+                .await
+                .unwrap()
+                .unwrap()
+                .icon
+                .unwrap()
+                .id;
         let emojis = crate::storage::guild_emojis::list_guild_emojis(&database, guild_id)
             .await
             .unwrap();
