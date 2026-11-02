@@ -11,6 +11,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use mellow_protocol::{SimulcastLayer, Snowflake};
+use str0m::bwe::{Bitrate, BweKind};
 use str0m::change::SdpOffer;
 use str0m::format::{Codec, FormatParams};
 use str0m::media::{Direction, Frequency, KeyframeRequestKind, MediaData, MediaKind, Mid, Pt, Rid};
@@ -19,10 +20,11 @@ use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::domain::video_rules::{
-    FrameForwarding, LayerByteBudget, LayerSwitch, MAXIMUM_SILENCE_OF_A_CAMERA,
+    FrameForwarding, HEADROOM_PERCENT_BEFORE_RAISING, LayerAllocation, LayerByteBudget, LayerCosts,
+    LayerRate, LayerSwitch, MAXIMUM_SILENCE_OF_A_CAMERA,
     MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS,
-    MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER, Throttle, active_layers,
-    is_keyframe_within_layer_size, layer_within_upload,
+    MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER, Throttle, TileDemand, active_layers,
+    fit_tiles, is_keyframe_within_layer_size, nominal_bits_per_second_of, watcher_video_budget,
 };
 use crate::domain::voice_rules::{ReceiveSlots, SpeakingDetector};
 
@@ -73,18 +75,33 @@ const SILENT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 const OPUS_PAYLOAD_TYPE: u8 = 111;
 const OPUS_CHANNELS: u8 = 2;
 const OPUS_MINIMUM_PACKET_MILLISECONDS: u8 = 10;
+/// Where a watcher's bandwidth estimate starts (ADR-0035). `str0m` reports it as the first
+/// estimate, before any measure: high enough for every usual layout, so tiles do not start low and
+/// wait 5 seconds to go up; a slower link shows loss and delay within a second or two and the
+/// tiles go down then.
+const INITIAL_BANDWIDTH_ESTIMATE: Bitrate = Bitrate::mbps(5);
+/// How often every watcher's tiles are fitted again, besides each new estimate: picks up layers
+/// whose measured rate changed, other watchers coming and going, and the wait before going up.
+const REALLOCATION_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Builds the server side of a participant's session and its SDP answer. Called off the async
 /// runtime: building a session generates its DTLS certificate.
+///
+/// `is_watching_video`: the offer has video receive m-lines, so the server estimates the
+/// participant's downlink to fit the cameras they watch into it (ADR-0035).
 ///
 /// # Errors
 /// `None` when the offer does not parse or cannot be answered with Opus (and VP8 for video).
 pub(crate) fn answer_offer(
     sdp_offer: &str,
     candidate_address: SocketAddr,
+    is_watching_video: bool,
 ) -> Option<(Box<Rtc>, String)> {
     let offer = SdpOffer::from_sdp_string(sdp_offer).ok()?;
     let mut config = Rtc::builder().set_ice_lite(true).clear_codecs();
+    if is_watching_video {
+        config = config.enable_bwe(Some(INITIAL_BANDWIDTH_ESTIMATE));
+    }
     // VP8 with its retransmission stream is the only video codec (ADR-0035): every watcher can
     // decode every camera, and the server never has to choose.
     config.codec_config().enable_vp8(true);
@@ -189,6 +206,14 @@ pub(crate) enum MediaEvent {
         user_id: Snowflake,
         connection_id: u64,
     },
+    /// `camera_id`'s tile is paused for `watcher_id`'s connection, too slow for its lowest layer,
+    /// or flows again.
+    TilePaused {
+        watcher_id: Snowflake,
+        connection_id: u64,
+        camera_id: Snowflake,
+        is_paused: bool,
+    },
     /// The layers of `user_id`'s camera that someone watches changed.
     CameraLayers {
         user_id: Snowflake,
@@ -202,7 +227,11 @@ pub(crate) enum MediaEvent {
 struct WatchedCamera {
     /// The watcher's video receive m-line carrying it.
     mid: Mid,
+    /// The layer the tile's size asks for; the switch wants it, or less on a slow link.
+    asked: SimulcastLayer,
     switch: LayerSwitch,
+    /// The fitting paused the tile (a tile waiting for its first layer is not paused).
+    is_paused: bool,
 }
 
 /// The simulcast layer a camera's frame belongs to, from the RIDs the web client sends (ADR-0035).
@@ -255,6 +284,16 @@ struct ParticipantVideo {
     camera_heard_at: Option<Instant>,
     /// The m-lines for shared screens' sound (ADR-0037); `None` when the offer has none.
     screen_sound: Option<ScreenSoundMids>,
+    /// What each layer of their camera sent over the last second, to cost it for watchers.
+    layer_rates: HashMap<SimulcastLayer, LayerRate>,
+    /// The latest estimate of their downlink in bits per second (TWCC), `None` before the first.
+    estimated_bits_per_second: Option<u64>,
+    /// An estimate arrived since their tiles were last fitted.
+    has_new_estimate: bool,
+    /// When their tiles go back up after a slow spell.
+    allocation: LayerAllocation,
+    /// The bit rate the estimator was last told to probe up to.
+    desired_bits_per_second: u64,
     /// Screen sound receive m-lines not given to a watched screen.
     free_screen_sound_slots: Vec<Mid>,
     /// The watched screens this participant hears, by sharer.
@@ -524,6 +563,10 @@ fn drain_output(participant: &mut Participant, socket: &UdpSocket, collected: &m
             {
                 collected.frames.push((participant.user_id, frame));
             }
+            Ok(Output::Event(Event::EgressBitrateEstimate(BweKind::Twcc { estimate, .. }))) => {
+                participant.video.estimated_bits_per_second = Some(estimate.as_u64());
+                participant.video.has_new_estimate = true;
+            }
             Ok(Output::Event(Event::KeyframeRequest(request))) => {
                 collected
                     .keyframe_requests
@@ -591,8 +634,10 @@ struct MediaLoop<'a> {
     /// Who sends from which address: `Rtc::accepts` on everyone would cost O(n) per packet.
     sources: SourceAddresses,
     collected: Collected,
-    /// Full-quality streams forwarded at once on the instance, within its upload budget.
-    maximum_full_layer_streams: usize,
+    /// `[voice] video_upload_mbps` in bits per second, shared among watchers (ADR-0035).
+    video_upload_bits_per_second: u64,
+    /// When every watcher's tiles are next fitted to their bandwidth.
+    next_reallocation_at: Instant,
     /// Keyframe requests to a camera, by (camera, layer).
     keyframe_throttle: Throttle<(Snowflake, SimulcastLayer)>,
     /// Keyframe requests a watcher passes on, by (watcher, camera).
@@ -602,15 +647,16 @@ struct MediaLoop<'a> {
 }
 
 /// Runs until the voice service drops its command sender.
-/// `maximum_full_layer_streams`: from `[voice] video_upload_mbps` (ADR-0037).
+/// `video_upload_bits_per_second`: from `[voice] video_upload_mbps` (ADR-0035).
 pub(crate) fn run_media_loop(
     socket: UdpSocket,
     commands: &Receiver<MediaCommand>,
     events: &UnboundedSender<MediaEvent>,
-    maximum_full_layer_streams: usize,
+    video_upload_bits_per_second: u64,
 ) {
     let mut media = MediaLoop {
-        maximum_full_layer_streams,
+        video_upload_bits_per_second,
+        next_reallocation_at: Instant::now(),
         socket,
         commands,
         events,
@@ -653,6 +699,7 @@ pub(crate) fn run_media_loop(
         media.guarded(|media| media.forward_frames(now));
         media.guarded(|media| media.pass_keyframe_requests(now));
         media.guarded(MediaLoop::give_new_video_slots);
+        media.guarded(|media| media.follow_bandwidth(now));
         media.guarded(|media| media.tick_speaking(now));
         media.guarded(|media| media.turn_off_silent_cameras(now));
         media.guarded(|media| media.end_dead_connections(now));
@@ -820,18 +867,9 @@ impl MediaLoop<'_> {
     }
 
     /// Gives each shown camera a video receive slot (keeping those already given) and the layer
-    /// its tile fits, frees the slots of cameras no longer shown, and reports the cameras whose
-    /// watched layers changed.
+    /// its tile fits within the watcher's bandwidth, frees the slots of cameras no longer shown,
+    /// and reports the cameras whose watched layers changed.
     fn give_slots_to_shown_cameras(&mut self, user_id: Snowflake) {
-        // Full-quality streams other watchers get: what is left of the upload budget is for this one.
-        let mut full_layer_streams = self
-            .participants
-            .values()
-            .filter(|other| other.user_id != user_id)
-            .flat_map(|other| other.video.watched_cameras.values())
-            .filter(|watched| watched.switch.wanted() == SimulcastLayer::High)
-            .count();
-        let maximum_full_layer_streams = self.maximum_full_layer_streams;
         let Some(watcher) = self.participants.get_mut(&user_id) else {
             return;
         };
@@ -851,28 +889,27 @@ impl MediaLoop<'_> {
         for camera_id in &changed_cameras {
             watcher.video.stop_hearing(*camera_id);
         }
+        let mut is_new_layout = !changed_cameras.is_empty();
         // A participant's own camera is shown from its local preview, never sent back.
         for (camera_id, layer) in cameras
             .iter()
             .filter(|(camera_id, _)| *camera_id != user_id)
         {
-            let layer =
-                &layer_within_upload(*layer, full_layer_streams, maximum_full_layer_streams);
-            full_layer_streams += usize::from(*layer == SimulcastLayer::High);
             if let Some(watched) = watcher.video.watched_cameras.get_mut(camera_id) {
-                if watched.switch.wanted() != *layer {
-                    watched.switch.want(*layer);
-                    changed_cameras.push(*camera_id);
-                }
+                is_new_layout |= watched.asked != *layer;
+                watched.asked = *layer;
             } else if let Some(mid) = watcher.video.free_video_slots.pop() {
+                // The layer comes from the fitting below; until then the tile waits.
                 watcher.video.watched_cameras.insert(
                     *camera_id,
                     WatchedCamera {
                         mid,
-                        switch: LayerSwitch::new(*layer),
+                        asked: *layer,
+                        switch: LayerSwitch::new(None),
+                        is_paused: false,
                     },
                 );
-                changed_cameras.push(*camera_id);
+                is_new_layout = true;
                 slot_assignments.push(MediaEvent::SlotAssigned {
                     listener_id: user_id,
                     connection_id: watcher.connection_id,
@@ -881,11 +918,147 @@ impl MediaLoop<'_> {
                 });
             }
         }
+        // The same list again keeps the wait before going up: resending it does not skip it.
+        changed_cameras.extend(self.fit_tiles_of(user_id, Instant::now(), is_new_layout));
         for event in slot_assignments {
             self.emit(event);
         }
         for camera_id in changed_cameras {
             self.report_camera_layers(camera_id);
+        }
+    }
+
+    /// What each layer of `camera_id` costs a watcher: what it sent over the last second, and at
+    /// least its target.
+    fn layer_costs_of(&self, camera_id: Snowflake, now: Instant) -> LayerCosts {
+        let cost = |layer| {
+            let measured = self
+                .participants
+                .get(&camera_id)
+                .and_then(|camera| camera.video.layer_rates.get(&layer))
+                .map_or(0, |rate| rate.bits_per_second(now));
+            measured.max(nominal_bits_per_second_of(layer))
+        };
+        LayerCosts {
+            quarter: cost(SimulcastLayer::Quarter),
+            low: cost(SimulcastLayer::Low),
+            high: cost(SimulcastLayer::High),
+        }
+    }
+
+    /// Fits `watcher_id`'s tiles into their bandwidth (ADR-0035) and returns the cameras whose
+    /// wanted layer changed. `is_new_layout`: the tiles changed, so they get what fits at once;
+    /// otherwise they go back up only after a steady spell (`LayerAllocation`).
+    fn fit_tiles_of(
+        &mut self,
+        watcher_id: Snowflake,
+        now: Instant,
+        is_new_layout: bool,
+    ) -> Vec<Snowflake> {
+        let watchers = self
+            .participants
+            .values()
+            .filter(|participant| !participant.video.watched_cameras.is_empty())
+            .count();
+        let Some(watcher) = self.participants.get(&watcher_id) else {
+            return Vec::new();
+        };
+        // In the order the watcher lists them: among equal tiles, the last listed gives way first.
+        let tiles: Vec<(Snowflake, TileDemand, Option<SimulcastLayer>)> = watcher
+            .video
+            .shown_cameras
+            .iter()
+            .filter_map(|(camera_id, _)| {
+                let tile = watcher.video.watched_cameras.get(camera_id)?;
+                let demand = TileDemand {
+                    asked: tile.asked,
+                    costs: self.layer_costs_of(*camera_id, now),
+                };
+                Some((*camera_id, demand, tile.switch.wanted()))
+            })
+            .collect();
+        let budget = watcher_video_budget(
+            watcher.video.estimated_bits_per_second,
+            self.video_upload_bits_per_second,
+            watchers,
+        );
+        let demands: Vec<TileDemand> = tiles.iter().map(|(_, demand, _)| *demand).collect();
+        let Some(watcher) = self.participants.get_mut(&watcher_id) else {
+            return Vec::new();
+        };
+        let layers = if is_new_layout {
+            watcher.video.allocation = LayerAllocation::default();
+            fit_tiles(&demands, budget)
+        } else {
+            let current: Vec<Option<SimulcastLayer>> =
+                tiles.iter().map(|(_, _, current)| *current).collect();
+            watcher
+                .video
+                .allocation
+                .next_layers(&demands, &current, budget, now)
+        };
+        let mut changed_cameras = Vec::new();
+        let mut pauses = Vec::new();
+        for ((camera_id, _, current), layer) in tiles.iter().zip(layers) {
+            let Some(shown) = watcher.video.watched_cameras.get_mut(camera_id) else {
+                continue;
+            };
+            if *current != layer {
+                shown.switch.want(layer);
+                changed_cameras.push(*camera_id);
+            }
+            if shown.is_paused != layer.is_none() {
+                shown.is_paused = layer.is_none();
+                pauses.push(MediaEvent::TilePaused {
+                    watcher_id,
+                    connection_id: watcher.connection_id,
+                    camera_id: *camera_id,
+                    is_paused: shown.is_paused,
+                });
+            }
+        }
+        // The estimator probes up to what the tiles ask, with the headroom going up needs.
+        let desired_bits_per_second = demands
+            .iter()
+            .map(|demand| demand.costs.of(demand.asked))
+            .sum::<u64>()
+            .saturating_mul(HEADROOM_PERCENT_BEFORE_RAISING)
+            / 100;
+        if desired_bits_per_second != watcher.video.desired_bits_per_second {
+            watcher.video.desired_bits_per_second = desired_bits_per_second;
+            self.current_participant = Some(watcher_id);
+            watcher
+                .rtc
+                .bwe()
+                .set_desired_bitrate(Bitrate::bps(desired_bits_per_second));
+        }
+        for event in pauses {
+            self.emit(event);
+        }
+        changed_cameras
+    }
+
+    /// Fits again the tiles of watchers with a new estimate, and every watcher's once per
+    /// `REALLOCATION_INTERVAL`.
+    fn follow_bandwidth(&mut self, now: Instant) {
+        let is_periodic = now >= self.next_reallocation_at;
+        if is_periodic {
+            self.next_reallocation_at = now + REALLOCATION_INTERVAL;
+        }
+        let due: Vec<Snowflake> = self
+            .participants
+            .values_mut()
+            .filter_map(|participant| {
+                let has_new_estimate = std::mem::take(&mut participant.video.has_new_estimate);
+                ((has_new_estimate || is_periodic) && !participant.video.watched_cameras.is_empty())
+                    .then_some(participant.user_id)
+            })
+            .collect();
+        for watcher_id in due {
+            self.current_participant = Some(watcher_id);
+            for camera_id in self.fit_tiles_of(watcher_id, now, false) {
+                self.report_camera_layers(camera_id);
+            }
         }
     }
 
@@ -1092,6 +1265,12 @@ impl MediaLoop<'_> {
             return;
         }
         camera.video.camera_heard_at = Some(now);
+        camera
+            .video
+            .layer_rates
+            .entry(layer)
+            .or_insert_with(|| LayerRate::new(now))
+            .record(frame.data.len(), now);
         let channel_id = camera.channel_id;
         let mut has_switched = false;
         let mut is_keyframe_wanted = false;
@@ -1408,7 +1587,8 @@ mod tests {
     ) -> MediaLoop<'a> {
         str0m::crypto::from_feature_flags().install_process_default();
         MediaLoop {
-            maximum_full_layer_streams: usize::MAX,
+            video_upload_bits_per_second: u64::MAX,
+            next_reallocation_at: Instant::now(),
             socket: UdpSocket::bind("127.0.0.1:0").unwrap(),
             commands,
             events,
@@ -1454,7 +1634,7 @@ mod tests {
         let (event_sender, _events) = tokio::sync::mpsc::unbounded_channel();
         let mut media = media_loop(&command_receiver, &event_sender);
         let candidate: SocketAddr = "127.0.0.1:50000".parse().unwrap();
-        let (rtc, answer) = answer_offer(&client_offer(), candidate).unwrap();
+        let (rtc, answer) = answer_offer(&client_offer(), candidate, false).unwrap();
         // The client's send line is the offer's first m-line; `str0m` announces it once connected.
         let voice_mid = answer
             .lines()
@@ -1515,7 +1695,7 @@ mod tests {
         let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
         let mut media = media_loop(&command_receiver, &event_sender);
         let candidate: SocketAddr = "127.0.0.1:50000".parse().unwrap();
-        let (rtc, _) = answer_offer(&client_offer(), candidate).unwrap();
+        let (rtc, _) = answer_offer(&client_offer(), candidate, false).unwrap();
         let camera_id = Snowflake::from_raw(1);
         media.apply(MediaCommand::Join(Box::new(MediaJoin {
             user_id: camera_id,
@@ -1576,7 +1756,7 @@ mod tests {
         let mut media = media_loop(&command_receiver, &event_sender);
         let candidate: SocketAddr = "127.0.0.1:50000".parse().unwrap();
         for (user_id, connection_id) in [(1, 10), (2, 20)] {
-            let (rtc, _) = answer_offer(&client_offer(), candidate).unwrap();
+            let (rtc, _) = answer_offer(&client_offer(), candidate, false).unwrap();
             media.apply(MediaCommand::Join(Box::new(MediaJoin {
                 user_id: Snowflake::from_raw(user_id),
                 connection_id,
@@ -1642,13 +1822,13 @@ mod tests {
             .collect();
         let candidate: SocketAddr = "127.0.0.1:50000".parse().unwrap();
 
-        let (_, answer) = answer_offer(&without_track, candidate).unwrap();
+        let (_, answer) = answer_offer(&without_track, candidate, false).unwrap();
 
         assert!(answer.contains("a=ice-lite"), "{answer}");
         assert!(answer.contains("opus/48000/2"), "{answer}");
         assert!(answer.contains("useinbandfec=1"), "{answer}");
         assert!(answer.contains("usedtx=1"), "{answer}");
         assert!(answer.contains("a=candidate:") && answer.contains("127.0.0.1 50000"));
-        assert!(answer_offer("not sdp", candidate).is_none());
+        assert!(answer_offer("not sdp", candidate, false).is_none());
     }
 }

@@ -421,6 +421,7 @@ impl ClientState {
             | GatewayEvent::VoiceJoinRefused { .. }
             | GatewayEvent::VoiceVideoRefused { .. }
             | GatewayEvent::VoiceVideoLayers { .. }
+            | GatewayEvent::VoiceVideoPaused { .. }
             | GatewayEvent::VoiceDisconnected { .. }
             | GatewayEvent::Speaking { .. } => StateChange::Nothing,
         }

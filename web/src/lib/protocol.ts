@@ -678,6 +678,11 @@ export type GatewayEvent =
    */
   | { t: "VOICE_VIDEO_LAYERS"; data: { channel_id: Snowflake; active: SimulcastLayer[] } }
   /**
+   * Only to the watcher's session: `user_id`'s camera is paused for this connection, too slow
+   * for its lowest layer, or flows again (ADR-0035). A tile starts as not paused.
+   */
+  | { t: "VOICE_VIDEO_PAUSED"; data: { channel_id: Snowflake; user_id: Snowflake; is_paused: boolean } }
+  /**
    * Only to the listener's session: the receive slot whose transceiver has `mid` now carries
    * `user_id`'s voice, or camera for a video transceiver, until another event for the same `mid`.
    * Valid for the current answer only.

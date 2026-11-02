@@ -652,6 +652,11 @@ fn gateway_events() -> Vec<GatewayEvent> {
             channel_id: id(30),
             active: vec![SimulcastLayer::Quarter, SimulcastLayer::High],
         },
+        GatewayEvent::VoiceVideoPaused { .. } => GatewayEvent::VoiceVideoPaused {
+            channel_id: id(30),
+            user_id: id(1),
+            is_paused: true,
+        },
         GatewayEvent::VoiceDisconnected { .. } => GatewayEvent::VoiceDisconnected {
             channel_id: id(30),
             reason: VoiceDisconnectReason::MovedElsewhere,

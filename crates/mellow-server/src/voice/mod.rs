@@ -23,9 +23,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::config::VoiceConfig;
 use crate::domain::guilds::{ChannelAudience, Guilds};
-use crate::domain::video_rules::{
-    layer_for_tile, maximum_full_layer_streams, missing_room_for_a_camera,
-};
+use crate::domain::video_rules::{layer_for_tile, missing_room_for_a_camera};
 use crate::domain::voice_rules::{
     VoiceAccess, has_room_for_one_more, may_play_another_sound, validate_voice_offer,
 };
@@ -211,7 +209,7 @@ impl VoiceService {
         let started = if config.enabled {
             start_media_loop(
                 config.udp_port,
-                maximum_full_layer_streams(config.video_upload_mbps),
+                u64::from(config.video_upload_mbps) * BITS_PER_MEGABIT,
             )
         } else {
             None
@@ -350,9 +348,11 @@ impl VoiceService {
             return Err(VoiceJoinRefusal::VoiceUnavailable);
         };
         let sdp_offer = request.sdp_offer.clone();
-        let answered =
-            tokio::task::spawn_blocking(move || media::answer_offer(&sdp_offer, candidate_address))
-                .await;
+        let is_watching_video = offer_shape.video_receive_slots > 0;
+        let answered = tokio::task::spawn_blocking(move || {
+            media::answer_offer(&sdp_offer, candidate_address, is_watching_video)
+        })
+        .await;
         let Ok(Some((rtc, sdp_answer))) = answered else {
             return Err(VoiceJoinRefusal::InvalidOffer);
         };
@@ -903,6 +903,24 @@ impl VoiceShared {
             .await;
     }
 
+    /// Sends the event `for_channel` builds to `user_id`'s session alone, if their media
+    /// connection is still `connection_id`.
+    fn publish_to_connection(
+        &self,
+        participants: &HashMap<Snowflake, Participant>,
+        user_id: Snowflake,
+        connection_id: u64,
+        for_channel: impl FnOnce(Snowflake) -> GatewayEvent,
+    ) {
+        if let Some(participant) = participants
+            .get(&user_id)
+            .filter(|participant| participant.connection_id == connection_id)
+        {
+            self.events
+                .publish_to_session(participant.session, &for_channel(participant.channel_id));
+        }
+    }
+
     async fn apply_media_event(&self, event: MediaEvent) {
         let mut participants = self.participants.lock().await;
         match event {
@@ -927,19 +945,30 @@ impl VoiceShared {
                 connection_id,
                 mid,
                 speaker_id,
+            } => self.publish_to_connection(
+                &participants,
+                listener_id,
+                connection_id,
+                |channel_id| GatewayEvent::VoiceSlotAssigned {
+                    channel_id,
+                    mid: mid.to_string(),
+                    user_id: speaker_id,
+                },
+            ),
+            MediaEvent::TilePaused {
+                watcher_id,
+                connection_id,
+                camera_id,
+                is_paused,
             } => {
-                let Some(listener) = participants
-                    .get(&listener_id)
-                    .filter(|listener| listener.connection_id == connection_id)
-                else {
-                    return;
-                };
-                self.events.publish_to_session(
-                    listener.session,
-                    &GatewayEvent::VoiceSlotAssigned {
-                        channel_id: listener.channel_id,
-                        mid: mid.to_string(),
-                        user_id: speaker_id,
+                self.publish_to_connection(
+                    &participants,
+                    watcher_id,
+                    connection_id,
+                    |channel_id| GatewayEvent::VoiceVideoPaused {
+                        channel_id,
+                        user_id: camera_id,
+                        is_paused,
                     },
                 );
             }
@@ -963,21 +992,9 @@ impl VoiceShared {
                 user_id,
                 connection_id,
                 active,
-            } => {
-                let Some(camera) = participants
-                    .get(&user_id)
-                    .filter(|camera| camera.connection_id == connection_id)
-                else {
-                    return;
-                };
-                self.events.publish_to_session(
-                    camera.session,
-                    &GatewayEvent::VoiceVideoLayers {
-                        channel_id: camera.channel_id,
-                        active,
-                    },
-                );
-            }
+            } => self.publish_to_connection(&participants, user_id, connection_id, |channel_id| {
+                GatewayEvent::VoiceVideoLayers { channel_id, active }
+            }),
             MediaEvent::Speaking {
                 user_id,
                 connection_id,
@@ -1090,6 +1107,8 @@ fn missing_room(
 
 /// Kernel buffer asked for each direction of the voice socket: a keyframe arrives as a burst of
 /// dozens of packets per camera, which Linux's default 208 KiB drops with many cameras (ADR-0035).
+/// `[voice] video_upload_mbps` is in megabits per second; the media loop counts bits.
+const BITS_PER_MEGABIT: u64 = 1_000_000;
 const UDP_SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
 /// Asks the kernel for larger buffers; it may grant less (Linux caps them at `net.core.rmem_max`
@@ -1113,7 +1132,7 @@ fn enlarge_socket_buffers(socket: &UdpSocket) {
 /// Binds the voice port on every IPv4 address and starts the media thread.
 fn start_media_loop(
     udp_port: u16,
-    maximum_full_layer_streams: usize,
+    video_upload_bits_per_second: u64,
 ) -> Option<(MediaHandle, UnboundedReceiver<MediaEvent>)> {
     // Installed once per process; later calls keep the first provider.
     str0m::crypto::from_feature_flags().install_process_default();
@@ -1147,7 +1166,7 @@ fn start_media_loop(
                 socket,
                 &command_receiver,
                 &event_sender,
-                maximum_full_layer_streams,
+                video_upload_bits_per_second,
             );
         });
     if let Err(error) = spawned {

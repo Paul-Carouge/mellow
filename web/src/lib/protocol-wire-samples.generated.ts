@@ -1785,6 +1785,14 @@ export const gatewayEventSamples = [
   {
     "data": {
       "channel_id": "30",
+      "is_paused": true,
+      "user_id": "1"
+    },
+    "t": "VOICE_VIDEO_PAUSED"
+  },
+  {
+    "data": {
+      "channel_id": "30",
       "reason": "moved_elsewhere"
     },
     "t": "VOICE_DISCONNECTED"
