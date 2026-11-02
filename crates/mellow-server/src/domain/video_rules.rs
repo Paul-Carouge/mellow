@@ -175,9 +175,10 @@ impl<Key: Copy + Eq + Hash> Throttle<Key> {
     }
 }
 
-/// The most a camera may send on one layer, in bytes per second: twice the layer's target bit
-/// rate (ADR-0035), so keyframes and an encoder's overshoot pass but a client sending a large
-/// picture under the name of a small layer does not reach every small tile.
+/// The most a camera or screen may send on one layer, in bytes per second: twice the target of
+/// the small layers (ADR-0035), and for the full layer 10 Mbit/s, a 1440p screen at 30 frames per
+/// second with its keyframes (ADR-0037). Keyframes and an encoder's overshoot pass, but a client
+/// sending a large picture under the name of a small layer does not reach every small tile.
 #[must_use]
 pub(crate) const fn maximum_bytes_per_second_of(layer: SimulcastLayer) -> u32 {
     match layer {
@@ -185,13 +186,13 @@ pub(crate) const fn maximum_bytes_per_second_of(layer: SimulcastLayer) -> u32 {
         SimulcastLayer::Quarter => 37_500,
         // 500 kbit/s target.
         SimulcastLayer::Low => 125_000,
-        // 1.5 Mbit/s target.
-        SimulcastLayer::High => 375_000,
+        // 8 Mbit/s for a 1440p screen, 1.5 Mbit/s for a camera.
+        SimulcastLayer::High => 1_250_000,
     }
 }
 
-/// Whether a VP8 keyframe's picture fits its layer: at most twice the layer's size each way
-/// (`q` 640 × 360, `l` 1280 × 720, `h` 1920 × 1080). A camera could otherwise send a tiny
+/// Whether a VP8 keyframe's picture fits its layer: at most twice the camera layer's size each way
+/// for `q` (640 × 360) and `l` (1280 × 720), and a 1440p screen for `h` (2560 × 1440, ADR-0037). A camera could otherwise send a tiny
 /// keyframe declaring a huge picture, which every watcher of that layer would have to allocate
 /// and decode. A keyframe without the VP8 start code does not fit.
 #[must_use]
@@ -209,7 +210,7 @@ pub(crate) fn is_keyframe_within_layer_size(layer: SimulcastLayer, keyframe: &[u
     let (maximum_width, maximum_height) = match layer {
         SimulcastLayer::Quarter => (640, 360),
         SimulcastLayer::Low => (1_280, 720),
-        SimulcastLayer::High => (1_920, 1_080),
+        SimulcastLayer::High => (2_560, 1_440),
     };
     start_code == VP8_START_CODE && width <= maximum_width && height <= maximum_height
 }
@@ -398,7 +399,11 @@ mod tests {
             Quarter,
             &keyframe(16_383, 16_383)
         ));
-        assert!(is_keyframe_within_layer_size(High, &keyframe(1_920, 1_080)));
+        assert!(is_keyframe_within_layer_size(High, &keyframe(2_560, 1_440)));
+        assert!(!is_keyframe_within_layer_size(
+            High,
+            &keyframe(2_561, 1_440)
+        ));
         assert!(
             is_keyframe_within_layer_size(Quarter, &keyframe(0x0140 | 0xc000, 180)),
             "the scaling bits are not part of the size"

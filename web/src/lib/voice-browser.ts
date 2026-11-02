@@ -20,13 +20,7 @@ import {
   silentNoiseSuppressorMilliseconds,
 } from "./voice-processing";
 import type { AudioDevice, EqualizerBand } from "./voice-settings";
-import {
-  type CodecPreferences,
-  preferredCodecs,
-  SCREEN_MAXIMUM_FRAMES_PER_SECOND,
-  SCREEN_MAXIMUM_HEIGHT,
-  SCREEN_MAXIMUM_WIDTH,
-} from "./screen-share";
+import { type CodecPreferences, preferredCodecs, type ScreenShareQuality, screenCaptureConstraints } from "./screen-share";
 import type { AudioOutput, InputAmplifier, LevelMeter, MicrophoneProcessor, VoicePorts } from "./voice-session.svelte";
 
 const ANALYSER_FFT_SIZE = 512;
@@ -41,18 +35,11 @@ function createPeerConnection(): RTCPeerConnection | null {
   return new RTCPeerConnection({ bundlePolicy: "max-bundle", rtcpMuxPolicy: "require" });
 }
 
-function requestScreen(): Promise<MediaStream> {
+function requestScreen(quality: ScreenShareQuality): Promise<MediaStream> {
   if (!navigator.mediaDevices?.getDisplayMedia) {
     return Promise.reject(new TypeError("navigator.mediaDevices.getDisplayMedia is unavailable"));
   }
-  return navigator.mediaDevices.getDisplayMedia({
-    video: {
-      width: { max: SCREEN_MAXIMUM_WIDTH },
-      height: { max: SCREEN_MAXIMUM_HEIGHT },
-      frameRate: { max: SCREEN_MAXIMUM_FRAMES_PER_SECOND },
-    },
-    audio: false,
-  });
+  return navigator.mediaDevices.getDisplayMedia({ video: screenCaptureConstraints(quality), audio: false });
 }
 
 function codecPreferences(): CodecPreferences | null {

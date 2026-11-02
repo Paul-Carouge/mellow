@@ -37,12 +37,12 @@ const MAXIMUM_PACKETS_PER_SECOND: u32 = 200;
 /// A participant able to watch cameras also sends their RTCP (receiver reports, retransmission
 /// and keyframe requests, congestion feedback) for up to 9 video streams.
 const MAXIMUM_PACKETS_PER_SECOND_WITH_VIDEO: u32 = 400;
-/// A camera sends three layers of about 180 packets/s together, keyframes three times larger and
-/// retransmissions (ADR-0035).
-const MAXIMUM_PACKETS_PER_SECOND_WITH_CAMERA: u32 = 1_500;
-/// 4 Mbit/s averaged over a second: a camera's three layers (2.2 Mbit/s) with keyframes and
-/// retransmissions.
-const MAXIMUM_BYTES_PER_SECOND_WITH_CAMERA: usize = 500_000;
+/// A 1440p screen at 30 frames per second sends about 900 packets/s on its three layers, more with
+/// keyframes and retransmissions (ADR-0037); a camera about 180.
+const MAXIMUM_PACKETS_PER_SECOND_WITH_CAMERA: u32 = 3_000;
+/// 12 Mbit/s averaged over a second: a 1440p screen's three layers (8.65 Mbit/s) with keyframes and
+/// retransmissions (ADR-0037).
+const MAXIMUM_BYTES_PER_SECOND_WITH_CAMERA: usize = 1_500_000;
 /// 800 kbit/s: Opus at its highest bit rate (510 kbit/s) with RTCP for 9 watched cameras, so a
 /// client with its camera off cannot make the server decrypt full packets for nothing.
 const MAXIMUM_BYTES_PER_SECOND_WITHOUT_CAMERA: usize = 100_000;
