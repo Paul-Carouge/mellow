@@ -22,7 +22,7 @@ use crate::domain::video_rules::{
     FrameForwarding, LayerByteBudget, LayerSwitch, MAXIMUM_SILENCE_OF_A_CAMERA,
     MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS,
     MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER, Throttle, active_layers,
-    is_keyframe_within_layer_size,
+    is_keyframe_within_layer_size, layer_within_upload,
 };
 use crate::domain::voice_rules::{ReceiveSlots, SpeakingDetector};
 
@@ -440,6 +440,8 @@ struct MediaLoop<'a> {
     /// Who sends from which address: `Rtc::accepts` on everyone would cost O(n) per packet.
     sources: SourceAddresses,
     collected: Collected,
+    /// Full-quality streams forwarded at once on the instance, within its upload budget.
+    maximum_full_layer_streams: usize,
     /// Keyframe requests to a camera, by (camera, layer).
     keyframe_throttle: Throttle<(Snowflake, SimulcastLayer)>,
     /// Keyframe requests a watcher passes on, by (watcher, camera).
@@ -449,12 +451,15 @@ struct MediaLoop<'a> {
 }
 
 /// Runs until the voice service drops its command sender.
+/// `maximum_full_layer_streams`: from `[voice] video_upload_mbps` (ADR-0037).
 pub(crate) fn run_media_loop(
     socket: UdpSocket,
     commands: &Receiver<MediaCommand>,
     events: &UnboundedSender<MediaEvent>,
+    maximum_full_layer_streams: usize,
 ) {
     let mut media = MediaLoop {
+        maximum_full_layer_streams,
         socket,
         commands,
         events,
@@ -665,6 +670,15 @@ impl MediaLoop<'_> {
     /// its tile fits, frees the slots of cameras no longer shown, and reports the cameras whose
     /// watched layers changed.
     fn give_slots_to_shown_cameras(&mut self, user_id: Snowflake) {
+        // Full-quality streams other watchers get: what is left of the upload budget is for this one.
+        let mut full_layer_streams = self
+            .participants
+            .values()
+            .filter(|other| other.user_id != user_id)
+            .flat_map(|other| other.video.watched_cameras.values())
+            .filter(|watched| watched.switch.wanted() == SimulcastLayer::High)
+            .count();
+        let maximum_full_layer_streams = self.maximum_full_layer_streams;
         let Some(watcher) = self.participants.get_mut(&user_id) else {
             return;
         };
@@ -685,6 +699,9 @@ impl MediaLoop<'_> {
             .iter()
             .filter(|(camera_id, _)| *camera_id != user_id)
         {
+            let layer =
+                &layer_within_upload(*layer, full_layer_streams, maximum_full_layer_streams);
+            full_layer_streams += usize::from(*layer == SimulcastLayer::High);
             if let Some(watched) = watcher.video.watched_cameras.get_mut(camera_id) {
                 if watched.switch.wanted() != *layer {
                     watched.switch.want(*layer);
@@ -1169,6 +1186,7 @@ mod tests {
     ) -> MediaLoop<'a> {
         str0m::crypto::from_feature_flags().install_process_default();
         MediaLoop {
+            maximum_full_layer_streams: usize::MAX,
             socket: UdpSocket::bind("127.0.0.1:0").unwrap(),
             commands,
             events,
