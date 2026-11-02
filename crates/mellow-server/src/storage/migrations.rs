@@ -316,6 +316,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn existing_pictures_are_not_compressed_again_and_new_ones_are_queued_from_an_index() {
+        const LAST_VERSION_WITHOUT_OPTIMIZATION_ATTEMPTS: i64 = 24;
+        const ATTACHMENT_ROWS: &str = "SELECT id, content_type, size_bytes FROM attachments \
+             ORDER BY id";
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(
+                LAST_VERSION_WITHOUT_OPTIMIZATION_ATTEMPTS,
+                database.writer(),
+            )
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) VALUES (30, 20, 1, 'files'); \
+             INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
+             content_type, size_bytes, created_at_unix_milliseconds) \
+             VALUES (40, 20, 1, 30, 'a.png', 'image/png', 3, 100), \
+             (41, 20, 1, 30, 'b.gif', 'image/gif', 5, 100), \
+             (42, 20, 1, 30, 'c.jpg', 'image/jpeg', 7, 100), \
+             (43, 20, 1, 30, 'd.webp', 'image/webp', 11, 100);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let rows_before: Vec<(i64, String, i64)> = sqlx::query_as(ATTACHMENT_ROWS)
+            .fetch_all(database.writer())
+            .await
+            .unwrap();
+
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let rows_after: Vec<(i64, String, i64)> = sqlx::query_as(ATTACHMENT_ROWS)
+            .fetch_all(database.writer())
+            .await
+            .unwrap();
+        let awaiting_after_migration =
+            attachments::newest_attachments_awaiting_optimization(&database, 64)
+                .await
+                .unwrap();
+        // Uploads made after the update start untried, as the upload route writes them.
+        sqlx::raw_sql(
+            "INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
+             content_type, size_bytes, created_at_unix_milliseconds) \
+             VALUES (50, 20, 1, 30, 'e.png', 'image/png', 3, 200), \
+             (51, 20, 1, 30, 'f.gif', 'image/gif', 5, 200), \
+             (52, 20, 1, 30, 'g.jpg', 'image/jpeg', 7, 200), \
+             (53, 20, 1, 30, 'h.webp', 'image/webp', 11, 200);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let awaiting_after_uploads =
+            attachments::newest_attachments_awaiting_optimization(&database, 64)
+                .await
+                .unwrap();
+        let plan_query = format!(
+            "EXPLAIN QUERY PLAN {}",
+            attachments::ATTACHMENTS_AWAITING_OPTIMIZATION_QUERY
+        );
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(plan_query))
+            .bind(64_i64)
+            .fetch_all(database.writer())
+            .await
+            .unwrap();
+        database.close().await;
+
+        assert_eq!(
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_OPTIMIZATION_ATTEMPTS + 1))
+        );
+        assert_eq!(rows_after, rows_before);
+        assert_eq!(awaiting_after_migration, Vec::<Snowflake>::new());
+        assert_eq!(
+            awaiting_after_uploads,
+            vec![Snowflake::from_raw(51), Snowflake::from_raw(50)]
+        );
+        let plan = plan
+            .into_iter()
+            .map(|row| row.3)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(plan.contains("attachments_awaiting_optimization"), "{plan}");
+    }
+
+    #[tokio::test]
     async fn existing_data_is_backed_up_encrypted_before_migrating() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())

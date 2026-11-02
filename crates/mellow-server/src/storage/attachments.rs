@@ -103,19 +103,20 @@ pub(crate) async fn record_optimization_attempt(
     Ok(())
 }
 
+/// Shared with the migration test that checks it stays on `attachments_awaiting_optimization`.
+pub(crate) const ATTACHMENTS_AWAITING_OPTIMIZATION_QUERY: &str = "SELECT id FROM attachments WHERE optimization_attempted_at_unix_milliseconds IS NULL \
+     AND content_type IN ('image/png', 'image/gif') ORDER BY id DESC LIMIT ?";
+
 /// The newest PNG and GIF attachments the background compression never tried, at most `limit`.
 /// The condition repeats migration 0025's partial index word for word, so the index answers it.
 pub(crate) async fn newest_attachments_awaiting_optimization(
     database: &Database,
     limit: usize,
 ) -> Result<Vec<Snowflake>, MessageStorageError> {
-    let rows: Vec<(i64,)> = sqlx::query_as(
-        "SELECT id FROM attachments WHERE optimization_attempted_at_unix_milliseconds IS NULL \
-         AND content_type IN ('image/png', 'image/gif') ORDER BY id DESC LIMIT ?",
-    )
-    .bind(convert_integer::<_, i64>(limit)?)
-    .fetch_all(database.readers())
-    .await?;
+    let rows: Vec<(i64,)> = sqlx::query_as(ATTACHMENTS_AWAITING_OPTIMIZATION_QUERY)
+        .bind(convert_integer::<_, i64>(limit)?)
+        .fetch_all(database.readers())
+        .await?;
     Ok(rows
         .into_iter()
         .map(|(id,)| to_snowflake(id))
