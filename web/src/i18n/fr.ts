@@ -1654,7 +1654,7 @@ export const fr: Catalogue = {
 
   profile: {
     formats: (maximumSize) =>
-      `Les images peuvent être en PNG, JPEG, GIF ou WebP, jusqu’à ${maximumSize}. Les GIF animés restent animés.`,
+      `Les images peuvent être en PNG, JPEG, GIF ou WebP, jusqu’à ${maximumSize}. Tu les cadres une fois ouvertes, et les GIF animés restent animés.`,
     tooLarge: (maximumSize) => `l’image dépasse ${maximumSize}. Choisis-en une plus petite.`,
     unreadable: `l’image est illisible, ou dépasse 8${NARROW_NO_BREAK_SPACE}192 pixels de côté ou 600 images d’animation. Choisis-en une autre.`,
     notAPicture: "choisis une image PNG, JPEG, GIF ou WebP.",
@@ -1670,6 +1670,14 @@ export const fr: Catalogue = {
       removing: "Retrait de l’avatar…",
       changeFailed: "Impossible de changer l’avatar",
       removeFailed: "Impossible de retirer l’avatar",
+      crop: {
+        title: "Cadre ton avatar",
+        subtitle:
+          "Fais glisser l’image et zoome jusqu’à ce que le cercle contienne ce que tu veux montrer. Le reste est coupé.",
+        save: "Enregistrer l’avatar",
+        sampleProfile: "Dans ton profil",
+        sampleMessages: "À côté de tes messages",
+      },
     },
     banner: {
       title: "Bannière du profil",
@@ -1682,6 +1690,12 @@ export const fr: Catalogue = {
       removing: "Retrait de la bannière…",
       changeFailed: "Impossible de changer la bannière",
       removeFailed: "Impossible de retirer la bannière",
+      crop: {
+        title: "Cadre ta bannière",
+        subtitle:
+          "Fais glisser l’image et zoome jusqu’à ce que la bande contienne ce que tu veux montrer. Le reste est coupé.",
+        save: "Enregistrer la bannière",
+      },
     },
   },
 };

@@ -17,16 +17,27 @@
     surfaceToken?: string;
     /** Actions under the name, such as "Send message". */
     children?: Snippet;
+    /** Drawn in the banner's place, in a box of its size: the crop dialog's live framing. */
+    bannerPicture?: Snippet;
   }
 
-  let { user, nameElement = "h3", surfaceToken = "--mw-component-profile-popover-background", children }: Props =
-    $props();
+  let {
+    user,
+    nameElement = "h3",
+    surfaceToken = "--mw-component-profile-popover-background",
+    children,
+    bannerPicture,
+  }: Props = $props();
 
   let failedBannerId = $state<string | null>(null);
   const banner = $derived(user.banner && user.banner.id !== failedBannerId ? user.banner : null);
 </script>
 
-{#if banner}
+{#if bannerPicture}
+  <div class="relative h-(--mw-component-profile-popover-banner-image-height) overflow-hidden bg-(--mw-component-profile-popover-banner)">
+    {@render bannerPicture()}
+  </div>
+{:else if banner}
   {@const bannerId = banner.id}
   <img
     src={profileImageUrl(banner, isPictureAnimationWanted(true))}

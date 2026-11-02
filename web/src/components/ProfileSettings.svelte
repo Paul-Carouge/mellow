@@ -2,18 +2,20 @@
   import { tick } from "svelte";
 
   import { strings } from "../i18n";
-  import { ApiError, type ProfileImageKind } from "../lib/api";
+  import { ApiError, type PictureCrop, type ProfileImageKind } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import { MAXIMUM_PROFILE_IMAGE_BYTES, PICTURE_UPLOAD_TYPES, profileImageFileProblem } from "../lib/protocol";
   import Button from "./Button.svelte";
   import { humanFileSize } from "./format";
   import Icon from "./Icon.svelte";
+  import PictureCropDialog from "./PictureCropDialog.svelte";
   import ProfileCard from "./ProfileCard.svelte";
 
   // User settings, Profile (DESIGN.md §5.9, ADR-0021): Discord's Profiles page, the avatar and
-  // banner editors beside a live preview of the profile card (under them on narrow pages). The
-  // instance resizes and compresses a picture before answering, a second or two for a large GIF,
-  // so the button says so meanwhile; one change runs at a time.
+  // banner editors beside a live preview of the profile card (under them on narrow pages). A
+  // chosen picture opens the crop dialog (§6.54): a circle for the avatar, the card's band for the
+  // banner. The instance crops, resizes and compresses before answering, a second or two for a
+  // large GIF, so the buttons say so meanwhile; one change runs at a time.
   interface Props {
     client: MellowClient;
   }
@@ -30,6 +32,8 @@
   let busy = $state<{ kind: ProfileImageKind; action: "upload" | "remove" } | null>(null);
   let errorMessage = $state<{ kind: ProfileImageKind; text: string } | null>(null);
   let notice = $state<{ kind: ProfileImageKind; text: string } | null>(null);
+  let chosen = $state<{ kind: ProfileImageKind; file: File } | null>(null);
+  let dialogError = $state("");
   const fileInputs: Partial<Record<ProfileImageKind, HTMLInputElement>> = $state({});
 
   /** Says what to do about each refusal, in the words of this page rather than the generic ones. */
@@ -80,7 +84,28 @@
       errorMessage = { kind, text: strings.errors.withReason(summary, TOO_LARGE_REASON) };
       return;
     }
-    void run(kind, "upload", () => client.setProfileImage(kind, file), WORDS[kind].saved);
+    errorMessage = null;
+    dialogError = "";
+    chosen = { kind, file };
+  }
+
+  async function uploadCropped(kind: ProfileImageKind, file: File, crop: PictureCrop | null) {
+    if (busy) {
+      return;
+    }
+    busy = { kind, action: "upload" };
+    dialogError = "";
+    notice = null;
+    try {
+      await client.setProfileImage(kind, file, crop);
+      chosen = null;
+      notice = { kind, text: WORDS[kind].saved };
+    } catch (error) {
+      // The dialog stays open with its crop, so trying again needs no new pick.
+      dialogError = describeFailure(error, WORDS[kind].changeFailed);
+    } finally {
+      busy = null;
+    }
   }
 
   async function remove(kind: ProfileImageKind) {
@@ -176,6 +201,22 @@
     </section>
   {/if}
 </div>
+
+{#if chosen}
+  {@const { kind, file } = chosen}
+  <PictureCropDialog
+    {file}
+    {kind}
+    user={user ?? undefined}
+    isBusy={busy?.action === "upload"}
+    errorMessage={dialogError}
+    onclose={() => {
+      chosen = null;
+      dialogError = "";
+    }}
+    onsave={(crop) => void uploadCropped(kind, file, crop)}
+  />
+{/if}
 
 <!-- Exists from the start, so its first change is announced. -->
 <p role="status" class="sr-only">{notice?.text ?? (busy?.action === "upload" ? WORDS[busy.kind].uploading : "")}</p>

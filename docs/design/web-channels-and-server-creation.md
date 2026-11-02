@@ -130,7 +130,7 @@ Alignment: everything starts on the leading edge; the dialog titles keep their e
 | Move to category | `MoveToCategoryDialog.svelte` | — |
 | Delete channel or category | `DeleteChannelDialog.svelte`, also from `ChannelSettings.svelte` | — |
 | Rename category | `RenameCategoryDialog.svelte` | — |
-| Create a server | `AddServerDialog.svelte`, `ServerPreview.svelte`, `server-templates.ts` (tested), `IconCropDialog.svelte` | `component.dialog.width-wide`, `component.server-preview.*` |
+| Create a server | `AddServerDialog.svelte`, `ServerPreview.svelte`, `server-templates.ts` (tested), `PictureCropDialog.svelte` | `component.dialog.width-wide`, `component.server-preview.*` |
 | Name kept as typed | `channel-settings.ts` (`channelNameAsSaved` trims only) | — |
 
 ## Follow-ups

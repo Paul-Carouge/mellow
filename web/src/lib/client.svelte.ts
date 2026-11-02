@@ -8,8 +8,8 @@ import {
   ApiError,
   HISTORY_PAGE_SIZE,
   MAXIMUM_HISTORY_PAGE_SIZE,
-  type IconCrop,
   type InviteLimits,
+  type PictureCrop,
   type ProfileImageKind,
   RestClient,
   type RoleChanges,
@@ -1782,8 +1782,8 @@ export class MellowClient {
   }
 
   /** Resized and compressed by the instance first: a large animated GIF takes a second or two. */
-  async setProfileImage(kind: ProfileImageKind, file: File): Promise<void> {
-    this.applyCurrentUser(await this.rest.setProfileImage(kind, file));
+  async setProfileImage(kind: ProfileImageKind, file: File, crop: PictureCrop | null): Promise<void> {
+    this.applyCurrentUser(await this.rest.setProfileImage(kind, file, crop));
   }
 
   async removeProfileImage(kind: ProfileImageKind): Promise<void> {
@@ -1865,7 +1865,7 @@ export class MellowClient {
   }
 
   /** Cropped and compressed by the instance first: a large animated GIF takes a second or two. */
-  async setServerIcon(guildId: Snowflake, file: File, crop: IconCrop | null): Promise<void> {
+  async setServerIcon(guildId: Snowflake, file: File, crop: PictureCrop | null): Promise<void> {
     await this.rest.setGuildIcon(guildId, file, crop);
   }
 
@@ -1879,7 +1879,7 @@ export class MellowClient {
     await this.rest.updateChannel(channelId, changes);
   }
 
-  async setChannelIcon(channelId: Snowflake, file: File, crop: IconCrop | null): Promise<void> {
+  async setChannelIcon(channelId: Snowflake, file: File, crop: PictureCrop | null): Promise<void> {
     await this.rest.setChannelIcon(channelId, file, crop);
   }
 

@@ -87,3 +87,25 @@ describe("RestClient read state", () => {
     expect(keepalives).toEqual([true, undefined]);
   });
 });
+
+describe("RestClient profile images", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends an avatar's crop as a square and a banner's as a width", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", (url: string) => {
+      urls.push(url);
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+    const rest = new RestClient();
+    const file = new File(["png"], "me.png");
+    await rest.setProfileImage("avatar", file, { x: 10, y: 20, width: 300 });
+    await rest.setProfileImage("banner", file, { x: 0, y: 40, width: 500 });
+    await rest.setProfileImage("avatar", file, null);
+    expect(urls).toEqual([
+      "/api/v1/users/@me/avatar?crop_x=10&crop_y=20&crop_size=300",
+      "/api/v1/users/@me/banner?crop_x=0&crop_y=40&crop_width=500",
+      "/api/v1/users/@me/avatar",
+    ]);
+  });
+});

@@ -2,7 +2,7 @@
   import { tick } from "svelte";
 
   import { strings } from "../i18n";
-  import type { IconCrop } from "../lib/api";
+  import type { PictureCrop } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import {
     MAXIMUM_PROFILE_IMAGE_BYTES,
@@ -14,8 +14,8 @@
   import ChoiceOption from "./ChoiceOption.svelte";
   import { humanFileSize, serverInitials } from "./format";
   import Icon from "./Icon.svelte";
-  import { centredSquare, placementInPercent, stillPictureOf } from "./icon-crop";
-  import IconCropDialog from "./IconCropDialog.svelte";
+  import { SQUARE_ASPECT, largestCentredCrop, placementInPercent, stillPictureOf } from "./picture-crop";
+  import PictureCropDialog from "./PictureCropDialog.svelte";
   import ModalDialog from "./ModalDialog.svelte";
   import ServerPreview from "./ServerPreview.svelte";
   import { SERVER_TEMPLATE_IDS, serverTemplates, templateChannelNames } from "./server-templates";
@@ -59,7 +59,7 @@
   let fileToCrop = $state<File | null>(null);
   let icon = $state.raw<{
     file: File;
-    crop: IconCrop | null;
+    crop: PictureCrop | null;
     preview: { url: string; placement: { left: number; top: number; width: number } };
   } | null>(null);
 
@@ -93,15 +93,12 @@
     fileToCrop = file;
   }
 
-  async function keepCroppedIcon(file: File, crop: IconCrop | null) {
+  async function keepCroppedIcon(file: File, crop: PictureCrop | null) {
     fileToCrop = null;
     try {
       const still = await stillPictureOf(file);
-      icon = {
-        file,
-        crop,
-        preview: { url: still.url, placement: placementInPercent(crop ?? centredSquare(still.picture), still.picture) },
-      };
+      const kept = crop ?? largestCentredCrop(still.picture, SQUARE_ASPECT);
+      icon = { file, crop, preview: { url: still.url, placement: placementInPercent(kept, still.picture, SQUARE_ASPECT) } };
     } catch {
       error = { isJoin: false, text: strings.errors.withReason(strings.iconEditor.changeFailed, strings.profile.unreadable) };
     }
@@ -307,7 +304,7 @@
 
 {#if fileToCrop}
   {@const file = fileToCrop}
-  <IconCropDialog
+  <PictureCropDialog
     {file}
     kind="server"
     name={serverName.trim() || strings.addServer.previewPlaceholder}

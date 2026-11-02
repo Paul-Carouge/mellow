@@ -1667,7 +1667,7 @@ export const en = {
 
   profile: {
     formats: (maximumSize: string) =>
-      `Pictures can be PNG, JPEG, GIF or WebP, up to ${maximumSize}. Animated GIFs stay animated.`,
+      `Pictures can be PNG, JPEG, GIF or WebP, up to ${maximumSize}. You frame them once they're open, and animated GIFs stay animated.`,
     tooLarge: (maximumSize: string) => `the picture is larger than ${maximumSize}. Choose a smaller one.`,
     unreadable: "the picture couldn't be read, or it's over 8192 pixels a side or 600 frames. Choose another one.",
     notAPicture: "choose a PNG, JPEG, GIF or WebP picture.",
@@ -1683,6 +1683,13 @@ export const en = {
       removing: "Removing avatar…",
       changeFailed: "Couldn't change the avatar",
       removeFailed: "Couldn't remove the avatar",
+      crop: {
+        title: "Frame your avatar",
+        subtitle: "Drag the picture and zoom until the circle holds what you want to show. The rest is cut away.",
+        save: "Save avatar",
+        sampleProfile: "In your profile",
+        sampleMessages: "Beside your messages",
+      },
     },
     banner: {
       title: "Profile banner",
@@ -1695,6 +1702,11 @@ export const en = {
       removing: "Removing banner…",
       changeFailed: "Couldn't change the banner",
       removeFailed: "Couldn't remove the banner",
+      crop: {
+        title: "Frame your banner",
+        subtitle: "Drag the picture and zoom until the band holds what you want to show. The rest is cut away.",
+        save: "Save banner",
+      },
     },
   },
 };
