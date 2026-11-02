@@ -203,6 +203,7 @@ impl Guilds {
                 permit,
                 bytes,
                 move |bytes| process_icon(bytes, kind, None),
+                None,
                 now_unix_milliseconds,
             )
             .await?;

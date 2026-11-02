@@ -209,11 +209,19 @@ impl ProfileImages {
         now_unix_milliseconds: u64,
     ) -> Result<NewProfileImage, MessageError> {
         let permit = self.attachments.image_processing_permit()?;
-        self.store_with_permit(permit, bytes, process, now_unix_milliseconds)
-            .await
+        self.store_with_permit(
+            permit,
+            bytes,
+            process,
+            Some(PROCESSING_TIME_BUDGET),
+            now_unix_milliseconds,
+        )
+        .await
     }
 
-    /// `store` once a processing slot is held.
+    /// `store` once a processing slot is held. `processing_time_budget` is for a client waiting on
+    /// the answer; background work passes `None`, since a picture that always runs past a budget
+    /// would otherwise be postponed and tried again forever on a slow host.
     pub(crate) async fn store_with_permit(
         &self,
         permit: OwnedSemaphorePermit,
@@ -221,6 +229,7 @@ impl ProfileImages {
         process: impl FnOnce(&[u8]) -> Result<ProcessedProfileImage, ImageProcessingError>
         + Send
         + 'static,
+        processing_time_budget: Option<Duration>,
         now_unix_milliseconds: u64,
     ) -> Result<NewProfileImage, MessageError> {
         let processing = tokio::task::spawn_blocking(move || {
@@ -228,10 +237,13 @@ impl ProfileImages {
             let _permit = permit;
             process(&bytes)
         });
-        let processed = tokio::time::timeout(PROCESSING_TIME_BUDGET, processing)
-            .await
-            .map_err(|_| MessageError::Busy)?
-            .map_err(|error| MessageError::Internal(Box::new(error)))??;
+        let processed = match processing_time_budget {
+            Some(budget) => tokio::time::timeout(budget, processing)
+                .await
+                .map_err(|_| MessageError::Busy)?,
+            None => processing.await,
+        }
+        .map_err(|error| MessageError::Internal(Box::new(error)))??;
         if processed.picture.bytes.len() > MAXIMUM_STORED_BYTES {
             return Err(ImageProcessingError::TooLarge.into());
         }
@@ -302,6 +314,7 @@ impl ProfileImages {
                 permit,
                 bytes,
                 move |bytes| process_profile_image(bytes, kind),
+                None,
                 now_unix_milliseconds,
             )
             .await?;
