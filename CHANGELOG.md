@@ -4,6 +4,28 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-11-02
+Fixes and quick wins asked for by the owner (ROADMAP item 17). This version migrates the database (migration 32, with the usual automatic backup); older versions refuse it afterwards.
+
+### Added
+- Roles can be displayed separately: online members holding such a role are listed under its name, above everyone else, in the member list (role editor → Display).
+- Avatars and banners are framed before upload: a round frame for the avatar, the profile card's 5:2 band for the banner, animated GIFs included. The server stores only the chosen part (avatars square, banners 5:2); without a choice it keeps the centred part, as clients already showed.
+- User settings → Accessibility: "Always animate" plays avatars, server icons, custom emoji, banners and Melli even when the system asks to reduce motion; "Animate on hover" stays the default.
+- The channel list, the member list and the search results can be resized by dragging or with the keyboard; widths are remembered on each device.
+- The member list remembers, on each device, whether it was open for each server and group.
+- ADR-0035 proposes video in voice channels, backed by a measured spike.
+
+### Changed
+- The soundboard's "Play for me" shows a speaker instead of headphones.
+- The "You're viewing older messages" bar rests on the composer.
+
+### Fixed
+- Choosing Deny, Inherit or Allow on a permission low in the channel settings scrolled the whole settings window up and left the bottom of the screen empty; the same happened with the search results' sort choice.
+- `pulldown-cmark` updated for RUSTSEC-2026-0433.
+
+### Removed
+- The Slint desktop app, its installer and its app icons (ADR-0036). None was released since 0.8.0; installed copies keep working with this server. Native clients come back after the web client.
+
 ## [0.28.0] - 2026-11-02
 Stored files spread evenly, and cleaner code. No database migration.
 
