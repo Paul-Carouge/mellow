@@ -344,12 +344,27 @@ pub async fn back_up_instance(
     config: &ServerConfig,
     output_directory: Option<&Path>,
 ) -> Result<PathBuf> {
+    back_up_instance_with_clock(
+        config,
+        output_directory,
+        crate::domain::clock::now_unix_milliseconds,
+    )
+    .await
+}
+
+/// `back_up_instance`, reading the time from `now_unix_milliseconds`: once to name the backup,
+/// once more when it is complete.
+async fn back_up_instance_with_clock(
+    config: &ServerConfig,
+    output_directory: Option<&Path>,
+    now_unix_milliseconds: impl Fn() -> u64,
+) -> Result<PathBuf> {
     let database = open_instance_database(config).await?;
     let result = async {
-        let now_unix_milliseconds = crate::domain::clock::now_unix_milliseconds();
+        let started_at_unix_milliseconds = now_unix_milliseconds();
         let destination = output_directory
             .map_or_else(|| config.backup_directory(), Path::to_path_buf)
-            .join(format!("backup-{now_unix_milliseconds}"));
+            .join(format!("backup-{started_at_unix_milliseconds}"));
         let partial = PathBuf::from(format!(
             "{}{SUFFIX_OF_PARTIAL_BACKUPS}",
             destination.display()
@@ -366,7 +381,10 @@ pub async fn back_up_instance(
         }
         std::fs::rename(&partial, &destination)
             .with_context(|| format!("cannot rename {}", partial.display()))?;
-        crate::storage::backups::record_completed_backup(&database, now_unix_milliseconds).await?;
+        // The end, not the start: a backup that took hours still holds every picture stored
+        // before ADR-0033, which never change in place.
+        crate::storage::backups::record_completed_backup(&database, now_unix_milliseconds())
+            .await?;
         Ok(destination)
     }
     .await;
@@ -1022,6 +1040,34 @@ mod tests {
         assert!(is_requested);
         assert!(refused_with_an_old_backup.is_err());
         assert!(!is_recompression_requested(&config).await);
+    }
+
+    #[tokio::test]
+    async fn a_backup_that_took_hours_allows_a_recompression_once_it_is_complete() {
+        const TWO_HOURS_IN_MILLISECONDS: u64 = 2 * 60 * 60 * 1_000;
+        let directory = tempfile::tempdir().unwrap();
+        let config = initialize_instance(&options_in(directory.path()))
+            .await
+            .unwrap();
+        create_user(&config, new_user("paul", true)).await.unwrap();
+        give_legacy_avatar(&config, "paul", true).await;
+        let has_started = std::sync::atomic::AtomicBool::new(false);
+        // The first reading names the backup: as if it had started two hours ago.
+        let clock = || {
+            let now = crate::domain::clock::now_unix_milliseconds();
+            if has_started.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                now
+            } else {
+                now - TWO_HOURS_IN_MILLISECONDS
+            }
+        };
+
+        back_up_instance_with_clock(&config, None, clock)
+            .await
+            .unwrap();
+        let requested = request_image_recompression(&config).await;
+
+        assert_eq!(requested.unwrap(), 1);
     }
 
     #[tokio::test]
