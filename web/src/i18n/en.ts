@@ -350,6 +350,39 @@ export const en = {
     muteForMe: "Mute for me",
   },
 
+  // Screen sharing in voice channels (ADR-0037, docs/design/web-screen-sharing.md).
+  screenShare: {
+    share: "Share your screen",
+    stop: "Stop sharing",
+    /** The chip beside someone who shares, as on Discord. */
+    live: "LIVE",
+    youAreSharing: "You're sharing your screen",
+    /** Read after a participant's name. */
+    sharesScreen: "sharing their screen",
+    watch: (person: string) => `Watch ${person}'s screen`,
+    yourShare: "Your screen is shared",
+    joinToWatch: (channel: string) => `Join ${channel} to watch`,
+    cannotWatch: "This browser can't show shared screens.",
+    screenOf: (person: string) => `${person}'s screen`,
+    connecting: "Connecting to the screen…",
+    ended: (person: string) => `${person} stopped sharing their screen.`,
+    close: "Stop watching",
+    fullscreen: "Full screen",
+    exitFullscreen: "Exit full screen",
+    /** The menu beside Share your screen; its button reads the current quality. */
+    qualityMenu: "Screen share quality",
+    qualityButton: (quality: string) => `Screen share quality: ${quality}`,
+    qualityHints: { "720p": "30 fps, the lightest", "1080p": "30 fps, sharp text", "1440p": "30 fps, for large screens" },
+    problems: {
+      denied: "Screen sharing cancelled.",
+      unsupported: "This browser couldn't share your screen. Try a recent Firefox, Chrome or Edge.",
+      stopped: "The instance stopped your screen share, perhaps because your Video permission was removed. Share again to carry on.",
+      missing_permissions: "You need the Video permission in this channel to share your screen. Ask someone who manages the server.",
+      too_many_cameras: "Too many videos are already shared in this channel or on this instance. Try again when one ends.",
+      video_unavailable: "Video is turned off on this instance. Its administrator can turn it on.",
+    },
+  },
+
   soundboard: {
     soundboard: "Soundboard",
     open: "Open the soundboard",
@@ -1133,7 +1166,7 @@ export const en = {
         label: "Use soundboard",
         description: "Play the server's sounds in voice channels, and choose a join sound.",
       },
-      stream: { label: "Video", description: "Turn their camera on in voice channels." },
+      stream: { label: "Video", description: "Turn their camera on or share their screen in voice channels." },
       kickMembers: { label: "Kick members", description: "Remove people; they can come back with a new invite." },
       banMembers: { label: "Ban members", description: "Remove people and stop them from rejoining." },
       administrator: {

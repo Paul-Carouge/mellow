@@ -3,6 +3,7 @@
   import { SvelteSet } from "svelte/reactivity";
 
   import Navigator from "../components/Navigator.svelte";
+  import StreamView from "../components/StreamView.svelte";
   import VoiceSettings from "../components/VoiceSettings.svelte";
   import AddSoundDialog from "../components/AddSoundDialog.svelte";
   import EditSoundDialog from "../components/EditSoundDialog.svelte";
@@ -11,7 +12,8 @@
   import { DEFAULT_VOICE_SETTINGS, type VoiceSettings as Settings, withEqualizerBand } from "../lib/voice-settings";
   import type { RestClient } from "../lib/api";
   import { MellowClient } from "../lib/client.svelte";
-  import { type Channel, type GatewayEvent, Permission, type VoiceState } from "../lib/protocol";
+  import { type Channel, type GatewayEvent, Permission, VIDEO_RECEIVE_SLOTS, type VoiceState } from "../lib/protocol";
+  import type { ScreenShareProblem } from "../lib/screen-share";
 
   // Development only (web/dev/voice.html): the navigator with voice channels, fed with gateway
   // events by hand, since no instance speaks voice yet. `#state=` connected (default), connecting,
@@ -27,11 +29,58 @@
   // (none), `&block=cooldown|deafened|permission`, `&manage=0` (no "Add sounds"); Ana's sound shows
   // by her name. `&view=sound-settings` is Server settings, Soundboard, with `&dialog=add` (a
   // synthesised 9 s file in the trimmer) or `&dialog=edit`.
+  // Screen sharing (ADR-0037): `&stream=share` (you share; Ana shares in Salon, Chloé in Jeux),
+  // `&stream=connecting|live|ended` (you watch Ana: before her picture, with it, then she stops and
+  // the view closes after its reading time), `&problem=denied|unsupported|stopped|
+  // missing_permissions|too_many_cameras|video_unavailable` (the panel's line), `&quality=open`
+  // (the quality menu). The shared screen is a canvas drawn here.
   const parameters = new URLSearchParams(location.hash.slice(1));
   const view = parameters.get("view") ?? "navigator";
   const isDevicesHidden = parameters.get("devices") === "hidden";
   const isRememberedMissing = parameters.get("missing") === "1";
   const rnnoise = parameters.get("rnnoise");
+  const stream = parameters.get("stream");
+  const screenShareProblem = parameters.get("problem") as ScreenShareProblem | null;
+  const hasVideo = stream !== null || screenShareProblem !== null || parameters.get("quality") === "open";
+
+  /** A slide someone shares: a code review, redrawn so the canvas keeps sending frames. */
+  function canvasScreen(): MediaStream {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1920;
+    canvas.height = 1080;
+    const context = canvas.getContext("2d");
+    const draw = () => {
+      if (!context) {
+        return;
+      }
+      context.fillStyle = "#1e1e2a";
+      context.fillRect(0, 0, 1920, 1080);
+      context.fillStyle = "#2a2a3a";
+      context.fillRect(0, 0, 1920, 64);
+      context.fillStyle = "#c8c8d8";
+      context.font = "28px monospace";
+      context.fillText("crates/mellow-server/src/gateway/fan_out.rs", 32, 42);
+      const lines = [
+        "pub async fn fan_out(event: &GatewayEvent, sessions: &Sessions) {",
+        "    // Serialised once, never under the lock.",
+        "    let frame = Arc::<str>::from(serde_json::to_string(event)?);",
+        "    for session in sessions.snapshot().iter() {",
+        "        session.try_send(frame.clone());",
+        "    }",
+        "}",
+      ];
+      context.font = "40px monospace";
+      lines.forEach((line, index) => {
+        context.fillStyle = index === 1 ? "#7f8c6a" : "#e6e1ea";
+        context.fillText(line, 96, 200 + index * 64);
+      });
+      context.fillStyle = "#e8894b";
+      context.fillRect(96, 680 + (Date.now() / 40) % 200, 8, 48);
+    };
+    draw();
+    setInterval(draw, 200);
+    return canvas.captureStream(15);
+  }
 
   /** A microphone that hums between quiet and loud, about once a second. */
   function oscillatorMicrophone(): MediaStream {
@@ -107,15 +156,28 @@
   /** Answers nothing: the gallery has no instance. */
   const silentRest = new Proxy({}, { get: () => () => new Promise(() => {}) }) as unknown as RestClient;
   let connectPeer = () => {};
+  let videoMid = 0;
+  let deliverTrack: (event: { track: MediaStreamTrack; transceiver: { mid: string } }) => void = () => {};
   const fakePeer = {
     iceGatheringState: "complete",
     iceConnectionState: "new",
     signalingState: "stable",
     localDescription: { sdp: "offer" },
-    addTransceiver: () => ({ sender: { replaceTrack: () => Promise.resolve() } }),
+    addTransceiver: () => ({
+      mid: `m${(videoMid += 1)}`,
+      sender: {
+        replaceTrack: () => Promise.resolve(),
+        getParameters: () => ({ encodings: [] }),
+        setParameters: () => Promise.resolve(),
+      },
+      setCodecPreferences: () => {},
+    }),
     createOffer: () => Promise.resolve({ type: "offer", sdp: "offer" }),
     setLocalDescription: () => Promise.resolve(),
     addEventListener: (type: string, listener: () => void) => {
+      if (type === "track") {
+        deliverTrack = listener as unknown as typeof deliverTrack;
+      }
       if (type === "iceconnectionstatechange") {
         connectPeer = () => {
           fakePeer.iceConnectionState = "connected";
@@ -146,8 +208,8 @@
     listDevices: () => Promise.resolve([]),
     watchDevices: () => () => {},
     storage: () => null,
-    requestScreen: () => Promise.reject(new TypeError("no screen in the gallery")),
-    codecPreferences: () => null,
+    requestScreen: () => Promise.resolve(canvasScreen()),
+    codecPreferences: () => (hasVideo ? { audio: [], video: [] } : null),
   });
 
   const people = [
@@ -232,9 +294,9 @@
     read_states: [],
     online_user_ids: people.map((person) => person.id),
     voice_states: [
-      voiceState("2", "21"),
+      voiceState("2", "21", { self_stream: stream !== null }),
       voiceState("3", "21", { self_mute: true }),
-      voiceState("4", "22", { self_mute: true, self_deaf: true }),
+      voiceState("4", "22", { self_mute: true, self_deaf: true, self_stream: stream !== null }),
       voiceState("5", "22", { suppressed: true }),
     ],
     voice_enabled: true,
@@ -306,6 +368,32 @@
     if (state === "reconnecting") {
       client.voice.disconnectedByServer("21", "media_timeout");
     }
+    if (stream === "share") {
+      await client.voice.startScreenShare();
+      dispatch({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(ME, "21", { self_stream: true }) } });
+    }
+    if (screenShareProblem !== null) {
+      client.voice.screenShareProblem = screenShareProblem;
+    }
+    if (parameters.get("quality") === "open") {
+      await tick();
+      document.querySelector<HTMLButtonElement>("button[aria-controls=screen-share-quality-menu]")?.click();
+    }
+    if (stream === "connecting" || stream === "live" || stream === "ended") {
+      client.voice.watchStream("2");
+      if (stream !== "connecting") {
+        // The first video receive slot: after the voice line, its receive slots and the camera line.
+        const mid = `m${videoMid - VIDEO_RECEIVE_SLOTS + 1}`;
+        dispatch({ t: "VOICE_SLOT_ASSIGNED", data: { channel_id: "21", mid, user_id: "2" } });
+        const [screenTrack] = canvasScreen().getVideoTracks();
+        if (screenTrack) {
+          deliverTrack({ track: screenTrack, transceiver: { mid } });
+        }
+      }
+      if (stream === "ended") {
+        setTimeout(() => dispatch({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("2", "21") } }), 1_500);
+      }
+    }
     if (view === "soundboard") {
       dispatch({ t: "VOICE_SOUND_PLAYED", data: { channel_id: "21", user_id: "2", sound_id: "904" } });
       if (parameters.get("block") === "cooldown") {
@@ -358,7 +446,7 @@
     </div>
   </div>
 {:else}
-<div class="flex h-dvh bg-surface-rail p-(--mw-size-sheet-inset) font-sans text-text-normal">
+<div class="flex h-dvh gap-(--mw-size-sheet-inset) bg-surface-rail p-(--mw-size-sheet-inset) font-sans text-text-normal">
   <div class={isWide ? "h-full" : "h-full w-full"}>
     <Navigator
       {client}
@@ -373,5 +461,14 @@
       onopenusersettings={() => {}}
     />
   </div>
+  {#if isWide && stream !== null}
+    <main class="relative flex min-w-0 flex-1 rounded-(--mw-component-sheet-radius) bg-surface-chat">
+      {#if client.voice.watchedStreamUserId !== null}
+        {#key client.voice.watchedStreamUserId}
+          <StreamView {client} userId={client.voice.watchedStreamUserId} hasNavigationDrawer={false} onopennavigation={() => {}} />
+        {/key}
+      {/if}
+    </main>
+  {/if}
 </div>
 {/if}

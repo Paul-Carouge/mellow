@@ -4,7 +4,9 @@
   import { strings } from "../i18n";
   import type { MellowClient } from "../lib/client.svelte";
   import { Permission, type Snowflake } from "../lib/protocol";
+  import { SCREEN_SHARE_QUALITIES, type ScreenShareQuality } from "../lib/screen-share";
   import Button from "./Button.svelte";
+  import ContextMenu from "./ContextMenu.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import { createPopoverToggle } from "./popover-toggle";
@@ -12,6 +14,7 @@
   import SoundboardPopover from "./SoundboardPopover.svelte";
   import { minimumWidthQueryForPanes } from "./tokens";
   import { problemLook, signalLook } from "./voice-panel";
+  import { LIVE_BADGE_CLASS } from "./live-badge";
 
   // The voice panel (DESIGN.md §5.3, ADR-0030): a card like the user card, directly above it, in
   // the connection dock's slot (§4.2). While connected: the state with its signal bars, the channel
@@ -36,6 +39,24 @@
   let soundboardButton = $state<HTMLButtonElement | null>(null);
   let isSoundboardOpen = $state(false);
   const soundboardToggle = createPopoverToggle(() => isSoundboardOpen);
+
+  // Screen sharing (ADR-0037): a split button on its own row, as Discord's panel has its video
+  // buttons: the share half starts or stops, the quality half opens a menu of the three qualities,
+  // which also applies while sharing.
+  let qualityButton = $state<HTMLButtonElement | null>(null);
+  let shareRow = $state<HTMLElement | null>(null);
+  let qualityMenu = $state<ContextMenu | null>(null);
+  let isQualityMenuOpen = $state(false);
+  const qualityToggle = createPopoverToggle(() => isQualityMenuOpen);
+  function openQualityMenu() {
+    if (shareRow) {
+      qualityMenu?.open({ kind: "anchor", bounds: shareRow.getBoundingClientRect(), align: "stretch" }, qualityButton);
+    }
+  }
+  function chooseQuality(quality: ScreenShareQuality) {
+    qualityMenu?.close();
+    voice.setScreenShareQuality(quality);
+  }
 
   const voice = $derived(client.voice);
   const place = $derived(client.voiceChannel);
@@ -104,6 +125,12 @@
 
   const cardClass =
     "mx-(--mw-component-voice-panel-margin) mb-2xs rounded-(--mw-component-voice-panel-radius) bg-(--mw-component-voice-panel-background) px-(--mw-component-voice-panel-padding-inline) py-(--mw-component-voice-panel-padding-block)";
+  const menuItemClass =
+    "group flex min-h-(--mw-component-context-menu-item-height) w-full items-center gap-xs rounded-(--mw-component-context-menu-item-radius) px-(--mw-component-context-menu-item-padding-inline) py-2xs text-start text-(--mw-component-context-menu-item-text) hover:bg-(--mw-component-context-menu-item-background-focus) hover:text-(--mw-component-context-menu-item-text-focus) pointer-coarse:min-h-(--mw-size-hit-web-min)";
+  const menuHintClass =
+    "truncate type-body-sm text-(--mw-component-context-menu-item-hint-text) group-hover:text-(--mw-component-context-menu-item-hint-text-focus)";
+  const shareHalfClass =
+    "flex h-(--mw-component-voice-panel-share-height) min-w-0 items-center gap-2xs rounded-(--mw-component-voice-panel-share-radius) type-button transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) pointer-coarse:h-(--mw-size-hit-web-min)";
   const buttonClass =
     "size-(--mw-component-user-panel-button-size) text-(--mw-component-user-panel-button-icon) hover:bg-(--mw-component-user-panel-button-background-hover)";
 </script>
@@ -159,6 +186,68 @@
           onclick={() => voice.leave()}
         />
       </div>
+      {#if voice.canShareScreen || voice.isSharingScreen}
+        <div bind:this={shareRow} class="mt-xs flex gap-(--mw-component-voice-panel-share-split-gap)">
+          <!-- The label says the action; the apricot wash and the live line below say the state. -->
+          <button
+            type="button"
+            class={[
+              shareHalfClass,
+              "flex-1 px-xs",
+              voice.isSharingScreen
+                ? "bg-(--mw-component-voice-panel-share-background-active) text-(--mw-component-voice-panel-share-text-active) hover:bg-(--mw-component-voice-panel-share-background-active-hover) hover:text-(--mw-component-voice-panel-share-text-active-hover)"
+                : "bg-(--mw-component-voice-panel-share-background) text-(--mw-component-voice-panel-share-text) hover:bg-(--mw-component-voice-panel-share-background-hover) hover:text-(--mw-component-voice-panel-share-text-hover)",
+            ]}
+            onclick={() => (voice.isSharingScreen ? voice.stopScreenShare() : void voice.startScreenShare())}
+          >
+            <Icon name="monitor-arrow-up" class="size-(--mw-component-voice-panel-signal-icon-size) shrink-0" />
+            <span class="truncate">{voice.isSharingScreen ? strings.screenShare.stop : strings.screenShare.share}</span>
+          </button>
+          <button
+            bind:this={qualityButton}
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={isQualityMenuOpen}
+            aria-controls="screen-share-quality-menu"
+            aria-label={strings.screenShare.qualityButton(voice.screenShareQuality)}
+            title={strings.screenShare.qualityMenu}
+            class={[
+              shareHalfClass,
+              "shrink-0 px-2xs tabular-nums pointer-coarse:min-w-(--mw-size-hit-web-min) hover:bg-(--mw-component-voice-panel-share-background-hover) hover:text-(--mw-component-voice-panel-share-text-hover)",
+              isQualityMenuOpen
+                ? "bg-(--mw-component-voice-panel-share-background-hover) text-(--mw-component-voice-panel-share-text-hover)"
+                : "bg-(--mw-component-voice-panel-share-background) text-(--mw-component-voice-panel-share-text)",
+            ]}
+            onpointerdown={qualityToggle.notePress}
+            onclick={() => (qualityToggle.shouldOpenOnClick() ? openQualityMenu() : qualityMenu?.close())}
+          >
+            <span>{voice.screenShareQuality}</span>
+            <Icon name="caret-up" class="size-(--mw-component-voice-panel-signal-icon-size) shrink-0" />
+          </button>
+        </div>
+        {#if voice.isSharingScreen}
+          <p class="mt-2xs flex min-w-0 items-center gap-2xs type-body-sm text-(--mw-component-voice-panel-hint-text)">
+            <span aria-hidden="true" class={LIVE_BADGE_CLASS}>{strings.screenShare.live}</span>
+            <span class="min-w-0 truncate">{strings.screenShare.youAreSharing}</span>
+          </p>
+        {/if}
+      {/if}
+      {#if voice.screenShareProblem}
+        <!-- A cancelled picker is your own doing: no warning sign, just what happened. -->
+        <div class="mt-2xs flex items-start gap-2xs type-body-sm text-(--mw-component-voice-panel-hint-text)">
+          {#if voice.screenShareProblem !== "denied"}
+            <Icon name="warning-circle" class="mt-3xs size-(--mw-component-voice-panel-signal-icon-size) shrink-0 text-(--mw-component-voice-panel-problem-icon)" />
+          {/if}
+          <p class="min-w-0 flex-1 self-center">{strings.screenShare.problems[voice.screenShareProblem]}</p>
+          <IconButton
+            icon="x"
+            label={strings.common.close}
+            class="-me-2xs -my-2xs {buttonClass}"
+            iconClass="size-(--mw-component-voice-panel-signal-icon-size)"
+            onclick={() => voice.dismissScreenShareProblem()}
+          />
+        </div>
+      {/if}
       {#if voice.microphoneProblem}
         <p class="mt-2xs flex gap-2xs type-body-sm text-(--mw-component-voice-panel-microphone-problem-text)">
           <Icon name="microphone-slash" class="mt-3xs size-(--mw-component-voice-panel-signal-icon-size) shrink-0" />
@@ -228,7 +317,30 @@
       }}
     />
   {/if}
+  {#if voice.phase !== "idle"}
+    <ContextMenu
+      bind:this={qualityMenu}
+      bind:isOpen={isQualityMenuOpen}
+      id="screen-share-quality-menu"
+      label={strings.screenShare.qualityMenu}
+      gapToken="space-2xs"
+    >
+      {#each SCREEN_SHARE_QUALITIES as quality (quality)}
+        {@const isChecked = quality === voice.screenShareQuality}
+        <button type="button" role="menuitemradio" aria-checked={isChecked} class={menuItemClass} onclick={() => chooseQuality(quality)}>
+          <span class="flex min-w-0 flex-1 flex-col">
+            <span class="type-menu-item tabular-nums">{quality}</span>
+            <span class={menuHintClass}>{strings.screenShare.qualityHints[quality]}</span>
+          </span>
+          <!-- The check says which one is chosen without relying on colour. -->
+          {#if isChecked}<Icon name="check" class="size-(--mw-component-context-menu-item-icon-size)" />{/if}
+        </button>
+      {/each}
+    </ContextMenu>
+  {/if}
   <p class="sr-only" aria-live="polite">{phaseSentence}</p>
+  <p class="sr-only" aria-live="polite">{voice.isSharingScreen ? strings.screenShare.youAreSharing : ""}</p>
+  <p class="sr-only" aria-live="polite">{voice.phase === "idle" ? "" : (voice.screenShareProblem && strings.screenShare.problems[voice.screenShareProblem]) || ""}</p>
   <p class="sr-only" aria-live="polite">{client.voiceAnnouncement}</p>
   <p class="sr-only" aria-live="polite">{voice.phase === "idle" ? "" : deviceNotices.join(" ")}</p>
 </div>

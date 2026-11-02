@@ -61,6 +61,8 @@
   import { prepareChimeSound } from "./chime-sound";
   import { displayName } from "./format";
   import SoundEmoji from "./SoundEmoji.svelte";
+  import { LIVE_BADGE_CLASS } from "./live-badge";
+  import { liveBadgeOf, type Watcher } from "./screen-share-look";
 
   export type ServerDialog =
     | "invite-people"
@@ -122,6 +124,11 @@
         : { id: state.user_id, username: state.user_id, display_name: strings.voice.someone })
     );
   }
+  // `canShareScreen` is "connected with the video lines", which carry the receive slots too.
+  const watcher = $derived<Watcher>({
+    connectedChannelId: client.voice.phase === "connected" ? client.voice.channelId : null,
+    canWatchStreams: client.voice.canShareScreen,
+  });
   function canEditChannel(channel: Channel): boolean {
     return visibleChannelSections(channel, client.myChannelPermissions(channel.id)).length > 0;
   }
@@ -894,16 +901,22 @@
               state.self_mute && !state.self_deaf && strings.voice.microphoneOff,
               state.suppressed && strings.voice.cannotSpeak,
               state.user_id !== user?.id && client.voice.personSetting(state.user_id).isLocallyMuted && strings.voice.mutedForYou,
+              state.self_stream === true && strings.screenShare.sharesScreen,
             ].filter((label): label is string => typeof label === "string")}
             {@const isMutedForYou = state.user_id !== user?.id && client.voice.personSetting(state.user_id).isLocallyMuted}
+            {@const liveBadge = liveBadgeOf(state, user?.id ?? null, watcher)}
             {@const soundIndicator = client.soundIndicators.get(state.user_id)}
             {@const playedSound = soundIndicator ? guild.sounds?.find((sound) => sound.id === soundIndicator.soundId) : undefined}
-            <li class="me-(--mw-component-channel-row-margin-inline)">
+            <!-- The wash is the row's, so it spans the person and the live chip beside them. -->
+            <li class="me-(--mw-component-channel-row-margin-inline) flex min-w-0 items-stretch rounded-(--mw-component-channel-row-radius) hover:bg-(--mw-component-voice-participant-background-hover)">
               <!-- A click, right-click, long press or Shift+F10: their menu, with volume and "Mute for me" (stage 16.3). -->
               <button
                 type="button"
                 aria-haspopup="menu"
-                class="flex h-(--mw-component-voice-participant-row-height) w-full min-w-0 items-center gap-(--mw-component-voice-participant-gap) rounded-(--mw-component-channel-row-radius) ps-(--mw-component-voice-participant-indent) pe-(--mw-component-channel-row-padding-inline) text-start hover:bg-(--mw-component-voice-participant-background-hover) focus-visible:focus-ring-inset pointer-coarse:h-(--mw-size-hit-web-min)"
+                class={[
+                  "flex h-(--mw-component-voice-participant-row-height) min-w-0 flex-1 items-center gap-(--mw-component-voice-participant-gap) rounded-(--mw-component-channel-row-radius) ps-(--mw-component-voice-participant-indent) text-start focus-visible:focus-ring-inset pointer-coarse:h-(--mw-size-hit-web-min)",
+                  liveBadge !== "watch" && "pe-(--mw-component-channel-row-padding-inline)",
+                ]}
                 onclick={(event) => openParticipantMenu(person, event.currentTarget)}
                 {@attach contextMenuTrigger((origin, invoker) => personMenu?.openFor(person, origin, invoker, { isInVoice: true }) ?? false)}
               >
@@ -941,7 +954,35 @@
               {#if isMutedForYou}
                 <Icon name="speaker-x" class="size-(--mw-component-voice-participant-state-icon-size) shrink-0 text-(--mw-component-voice-participant-local-mute-icon)" />
               {/if}
+              {#if liveBadge !== null && liveBadge !== "watch"}
+                <!-- Shown only: your own share never loops back, and elsewhere you join first. The name says it. -->
+                <span
+                  aria-hidden="true"
+                  title={liveBadge === "own"
+                    ? strings.screenShare.yourShare
+                    : liveBadge === "join-to-watch"
+                      ? strings.screenShare.joinToWatch(channel.name)
+                      : strings.screenShare.cannotWatch}
+                  class={LIVE_BADGE_CLASS}>{strings.screenShare.live}</span
+                >
+              {/if}
               </button>
+              {#if liveBadge === "watch"}
+                {@const watchLabel = strings.screenShare.watch(displayName(person))}
+                <button
+                  type="button"
+                  aria-label={watchLabel}
+                  title={watchLabel}
+                  class="group/live grid shrink-0 place-items-center rounded-(--mw-component-channel-row-radius) ps-(--mw-component-voice-participant-gap) pe-(--mw-component-channel-row-padding-inline) focus-visible:focus-ring-inset pointer-coarse:min-w-(--mw-size-hit-web-min)"
+                  onclick={() => client.voice.watchStream(state.user_id)}
+                >
+                  <span
+                    aria-hidden="true"
+                    class="{LIVE_BADGE_CLASS} transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) group-hover/live:bg-(--mw-component-live-badge-background-hover) group-hover/live:text-(--mw-component-live-badge-text-hover)"
+                    >{strings.screenShare.live}</span
+                  >
+                </button>
+              {/if}
             </li>
           {/each}
         </ul>

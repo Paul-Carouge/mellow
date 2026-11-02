@@ -611,7 +611,10 @@
       </Drawer>
     {/if}
 
-    <main class="flex min-w-0 flex-1">
+    <main class="relative flex min-w-0 flex-1">
+      <!-- A watched screen takes the sheet's place (ADR-0037); the conversation stays underneath,
+           unreachable, so its scroll and draft are there when the screen closes. -->
+      <div class="contents" inert={client.voice.watchedStreamUserId !== null}>
       {#if client.isFriendsSpaceOpen}
         <FriendsPane
           bind:this={friendsPane}
@@ -635,6 +638,22 @@
           oneditchannel={openChannelSettings}
           onaddtogroup={() => (openDialog = "add-to-group")}
         />
+      {/if}
+      </div>
+      {#if client.voice.watchedStreamUserId !== null}
+        {@const watchedUserId = client.voice.watchedStreamUserId}
+        <LazyComponent load={() => import("./StreamView.svelte")} onclose={() => client.voice.watchStream(null)}>
+          {#snippet children({ default: StreamView })}
+            {#key watchedUserId}
+              <StreamView
+                {client}
+                userId={watchedUserId}
+                hasNavigationDrawer={!hasRoomForNavigator.current}
+                onopennavigation={() => (isNavigationDrawerOpen = true)}
+              />
+            {/key}
+          {/snippet}
+        </LazyComponent>
       {/if}
     </main>
 
