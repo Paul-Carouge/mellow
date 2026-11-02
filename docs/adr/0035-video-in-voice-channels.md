@@ -45,6 +45,14 @@ The forces are those of ADR-0030, with two differences of scale:
   - **A video upload budget**, `[voice] video_upload_mbps` in `mellow.toml`, default **100 Mbit/s** (to be confirmed by the owner, see below). The allocation above uses it: each watcher's budget is the smaller of its own estimate and its fair share of the instance's budget, so a home connection is never saturated by video, and voice, the web client and messages keep working. The administrator of an instance with a small upload sets it lower; `0` turns cameras off.
 - **The worst case under these caps** is 50 participants each watching 9 tiles: about 23 000 packets per second out (speaker view) to 27 000 (grid of medium tiles), plus 7 300 in. The Mac forwards that on a third of a core. On the owner's server it is near the 40 000 packets per second ADR-0030 found for one media thread once voice is added; the measurement there decides whether these caps hold or must come down until the media loop is spread over several threads.
 
+### Safeguards added while building (2026-11-02, after the security audit of #186)
+- **A byte budget per camera layer**: twice the layer's target (`q` 37.5 kB/s, `l` 125 kB/s, `h` 375 kB/s) with one second of burst; a frame over it reaches no one, and only frames actually forwarded are counted, so frames dropped while a watcher waits for a keyframe never use up the room that keyframe needs. A client cannot send a large picture under the name of a small layer to every small tile.
+- **A silent camera is turned off** after 10 s without a frame (`self_video` false, as when `STREAM` is lost), so cameras that send nothing do not hold places of the 25 per instance.
+- **One watcher's own keyframe requests** reach a camera at most once a second; the 300 ms throttle per camera layer still applies on top.
+- **Byte caps on every packet budget**: 100 kB/s without a camera.
+- **`[voice] video_upload_mbps = 0`** refuses every camera (`video_unavailable`); any other value turns them on until the allocation below uses it.
+- **UDP buffers**: the server asks for 4 MiB each way and logs what the kernel granted.
+
 ### Permission: `STREAM`
 - A new bit, **`STREAM = 1 << 21`**, the next free one after `USE_SOUNDBOARD` (bit 20). It mirrors Discord's "Video" permission (`STREAM` in Discord's API): turning a camera on in a voice channel, and later sharing a screen (16.6). The interface calls it "Vidéo". It is **channel-scoped** (`CHANNEL_SCOPED`) and in **`DEFAULT_EVERYONE`**.
 - **Migration 0033** grants it to every existing `@everyone` role, as 0022 and 0023 did: `UPDATE roles SET permissions = permissions | 2097152 WHERE id = guild_id;`.

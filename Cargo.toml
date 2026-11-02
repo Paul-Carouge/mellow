@@ -65,6 +65,8 @@ rustls-acme = { version = "0.15.4", features = ["axum"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
+# Already in the tree through Tokio: larger UDP buffers for camera bursts (ADR-0035).
+socket2 = "0.6.5"
 # WebRTC in sans-IO style for the voice SFU (ADR-0030); its crypto is the aws-lc-rs already in the tree.
 str0m = { version = "0.24.1", default-features = false, features = ["aws-lc-rs"] }
 # Perceptual quality of compressed pictures, run on one thread (ADR-0033).

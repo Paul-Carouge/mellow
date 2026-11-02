@@ -35,8 +35,8 @@ const SETTLE_TIME: Duration = Duration::from_millis(300);
 
 /// A frame the VP8 depacketizer accepts: a frame tag (bit 0 clear on keyframes), for keyframes
 /// the start code and a picture size, then the camera's marker and the layer.
-fn synthetic_vp8_frame(marker: u8, rid: &str, is_keyframe: bool) -> Vec<u8> {
-    let mut frame = vec![0_u8; FRAME_BYTES];
+fn synthetic_vp8_frame(marker: u8, rid: &str, is_keyframe: bool, length: usize) -> Vec<u8> {
+    let mut frame = vec![0_u8; length.max(FRAME_BYTES)];
     frame[0] = if is_keyframe { 0x10 } else { 0x11 };
     if is_keyframe {
         frame[3..6].copy_from_slice(&[0x9d, 0x01, 0x2a]);
@@ -141,6 +141,16 @@ async fn join_with_camera(
     channel_id: Snowflake,
     marker: u8,
 ) -> CameraBot {
+    join_with_camera_sending(socket, channel_id, marker, FRAME_BYTES).await
+}
+
+/// A camera whose `q` frames are `quarter_frame_bytes` long, as a client lying about its layers.
+async fn join_with_camera_sending(
+    socket: &mut ClientSocket,
+    channel_id: Snowflake,
+    marker: u8,
+    quarter_frame_bytes: usize,
+) -> CameraBot {
     let PendingCameraBot {
         mut rtc,
         pending,
@@ -156,7 +166,15 @@ async fn join_with_camera(
     let stop = Arc::new(AtomicBool::new(false));
     let thread = {
         let (received, stop) = (received.clone(), stop.clone());
-        std::thread::spawn(move || run_camera_bot(rtc, &udp, camera_mid, marker, &received, &stop))
+        std::thread::spawn(move || {
+            run_camera_bot(
+                rtc,
+                &udp,
+                (camera_mid, marker, quarter_frame_bytes),
+                &received,
+                &stop,
+            );
+        })
     };
     CameraBot {
         received,
@@ -168,8 +186,7 @@ async fn join_with_camera(
 fn run_camera_bot(
     mut rtc: Rtc,
     socket: &UdpSocket,
-    camera_mid: Mid,
-    marker: u8,
+    (camera_mid, marker, quarter_frame_bytes): (Mid, u8, usize),
     received: &Mutex<ReceivedFrames>,
     stop: &AtomicBool,
 ) {
@@ -196,7 +213,7 @@ fn run_camera_bot(
                         }
                     }
                 }
-                Output::Event(Event::MediaData(frame)) if frame.data.len() == FRAME_BYTES => {
+                Output::Event(Event::MediaData(frame)) if frame.data.len() >= FRAME_BYTES => {
                     let key = (frame.data[MARKER_OFFSET], frame.data[LAYER_OFFSET]);
                     *received.lock().unwrap().entry(key).or_default() += 1;
                 }
@@ -220,7 +237,16 @@ fn run_camera_bot(
                         payload_type,
                         now,
                         MediaTime::new(rtp_time, Frequency::NINETY_KHZ),
-                        synthetic_vp8_frame(marker, rid, *is_due),
+                        synthetic_vp8_frame(
+                            marker,
+                            rid,
+                            *is_due,
+                            if *rid == "q" {
+                                quarter_frame_bytes
+                            } else {
+                                FRAME_BYTES
+                            },
+                        ),
                     )
                     .unwrap();
                 *is_due = false;
@@ -438,4 +464,38 @@ async fn a_camera_replacing_another_in_the_tiles_takes_its_slot_and_the_first_st
 
     assert_eq!(member_slot, owner_slot, "the freed slot is given again");
     assert_eq!(owner_frames_later, owner_frames_after_switch);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_layer_sent_far_above_its_bit_rate_reaches_watchers_only_up_to_its_budget() {
+    // Five times the 37 500 bytes per second `q` may send.
+    const OVERSIZED_FRAME_BYTES: u32 = 6_000;
+    let fixture = fixture().await;
+    let (mut owner, mut member) = identified_pair(&fixture).await;
+    let owner_id = fixture.user_id("owner");
+    let started = Instant::now();
+    let owner_bot = join_with_camera_sending(
+        &mut owner,
+        fixture.lounge,
+        1,
+        OVERSIZED_FRAME_BYTES as usize,
+    )
+    .await;
+    let member_bot = join_with_camera(&mut member, fixture.lounge, 2).await;
+    send(&mut owner, &camera_state(true)).await;
+    wait_for_camera(&mut member, owner_id, true).await;
+    send(&mut member, &watch(owner_id, VideoTileSize::Small)).await;
+    member_bot.wait_until_receiving(1, "q").await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let received = member_bot.received(1, "q");
+    let elapsed = started.elapsed();
+    drop((owner_bot, member_bot));
+    fixture.close().await;
+
+    // Never more than a second's worth to start, plus the refill since the camera joined.
+    let allowed_bytes = elapsed.as_secs_f64().mul_add(37_500.0, 37_500.0);
+    assert!(
+        f64::from(received * OVERSIZED_FRAME_BYTES) <= allowed_bytes,
+        "{received} frames in {elapsed:?}"
+    );
 }

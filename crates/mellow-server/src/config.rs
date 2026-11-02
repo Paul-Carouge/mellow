@@ -94,6 +94,8 @@ pub const DEFAULT_VOICE_UDP_PORT: u16 = 50_000;
 /// People connected to voice across the instance; one media thread sustains about this many
 /// (ADR-0030 measurements).
 pub const DEFAULT_MAXIMUM_VOICE_PARTICIPANTS: u32 = 50;
+/// What cameras may take of the host's upload, in Mbit/s (ADR-0035).
+pub const DEFAULT_VIDEO_UPLOAD_MBPS: u32 = 100;
 
 /// The `[voice]` table of `mellow.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +109,8 @@ pub struct VoiceConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_address: Option<String>,
     pub max_participants: u32,
+    /// What cameras may take of the host's upload, in Mbit/s (ADR-0035); 0 turns cameras off.
+    pub video_upload_mbps: u32,
 }
 
 impl Default for VoiceConfig {
@@ -116,6 +120,7 @@ impl Default for VoiceConfig {
             udp_port: DEFAULT_VOICE_UDP_PORT,
             public_address: None,
             max_participants: DEFAULT_MAXIMUM_VOICE_PARTICIPANTS,
+            video_upload_mbps: DEFAULT_VIDEO_UPLOAD_MBPS,
         }
     }
 }
@@ -526,7 +531,7 @@ mod tests {
 
         let custom = load_text(
             &format!(
-                "{VALID_CONFIG}\n[voice]\nudp_port = 40000\npublic_address = \"chat.example.org\"\n"
+                "{VALID_CONFIG}\n[voice]\nudp_port = 40000\npublic_address = \"chat.example.org\"\nvideo_upload_mbps = 0\n"
             ),
             &EnvironmentOverrides::default(),
         )
@@ -536,6 +541,7 @@ mod tests {
             VoiceConfig {
                 udp_port: 40_000,
                 public_address: Some("chat.example.org".into()),
+                video_upload_mbps: 0,
                 ..VoiceConfig::default()
             }
         );
