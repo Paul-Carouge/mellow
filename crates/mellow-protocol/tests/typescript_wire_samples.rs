@@ -752,13 +752,13 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
         sampled(
             "PermissionOverwrite",
             Interface,
-            &[
-                overwrite(),
-                PermissionOverwrite {
-                    kind: OverwriteKind::Member,
+            &every_variant!(OverwriteKind: Role, Member)
+                .into_iter()
+                .map(|kind| PermissionOverwrite {
+                    kind,
                     ..overwrite()
-                },
-            ],
+                })
+                .collect::<Vec<_>>(),
         )?,
         sampled("Channel", Interface, &[channel(), sparse_channel()])?,
         sampled(
