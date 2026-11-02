@@ -31,6 +31,8 @@ export class GatewayConnection {
    * heartbeat ends it, as in the core. */
   private isHeartbeatAcknowledged = true;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Detaches the window's `online` listener once this connection is closed for good. */
+  private onlineListener: AbortController | null = null;
   private reconnectDelay = FIRST_RECONNECT_DELAY_MILLISECONDS;
   private resumable: ResumableSession | null = null;
   private isClosedByUs = false;
@@ -50,6 +52,10 @@ export class GatewayConnection {
 
   open(): void {
     this.isClosedByUs = false;
+    if (!this.onlineListener) {
+      this.onlineListener = new AbortController();
+      window.addEventListener("online", () => this.reconnectNow(), { signal: this.onlineListener.signal });
+    }
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(`${scheme}//${location.host}${GATEWAY_PATH}`);
     const listeners = new AbortController();
@@ -71,6 +77,8 @@ export class GatewayConnection {
     this.isClosedByUs = true;
     this.stopTimers();
     this.socketListeners?.abort();
+    this.onlineListener?.abort();
+    this.onlineListener = null;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -181,8 +189,22 @@ export class GatewayConnection {
    * instance restarts, as the core's `reconnect_delay` does. */
   private scheduleReconnect(): void {
     const delay = this.reconnectDelay * (0.5 + Math.random() / 2);
-    this.reconnectTimer = setTimeout(() => this.open(), delay);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.open();
+    }, delay);
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAXIMUM_RECONNECT_DELAY_MILLISECONDS);
+  }
+
+  /** The network came back: waiting out the backoff (up to 30 s) would only delay the user. */
+  private reconnectNow(): void {
+    if (!this.reconnectTimer) {
+      return;
+    }
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.reconnectDelay = FIRST_RECONNECT_DELAY_MILLISECONDS;
+    this.open();
   }
 
   private startHeartbeat(intervalMilliseconds: number): void {
