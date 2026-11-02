@@ -31,7 +31,7 @@ impl PicturesToRecompress {
     }
 }
 
-async fn waiting(
+async fn count_waiting_pictures_and_their_bytes(
     database: &Database,
     query: &'static str,
 ) -> Result<WaitingPictures, MessageStorageError> {
@@ -47,19 +47,19 @@ pub(crate) async fn pictures_to_recompress(
     database: &Database,
 ) -> Result<PicturesToRecompress, MessageStorageError> {
     Ok(PicturesToRecompress {
-        attachments: waiting(
+        attachments: count_waiting_pictures_and_their_bytes(
             database,
             "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM attachments \
              WHERE compression_version = 0",
         )
         .await?,
-        profile_images: waiting(
+        profile_images: count_waiting_pictures_and_their_bytes(
             database,
             "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM profile_images \
              WHERE compression_version = 0",
         )
         .await?,
-        icons: waiting(
+        icons: count_waiting_pictures_and_their_bytes(
             database,
             "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM guild_images \
              WHERE compression_version = 0 AND id NOT IN (SELECT id FROM guild_emojis)",
