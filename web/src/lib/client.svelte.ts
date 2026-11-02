@@ -18,6 +18,7 @@ import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
 import { CustomEmojiLibrary } from "./custom-emoji-library.svelte";
 import { reactionKey, withReactionAdded, withReactionRemoved, withoutEmoji } from "./reactions";
+import { Relationships } from "./relationships.svelte";
 import {
   type Attachment,
   type Channel,
@@ -140,8 +141,8 @@ export class MellowClient {
   membersByGuild = new SvelteMap<Snowflake, Member[]>();
   /** What others see of each user online now; absent users are offline. */
   presenceByUserId = new SvelteMap<Snowflake, Presence>();
-  /** Friends, requests and blocks by the other person's id (ADR-0025). */
-  relationshipByUserId = new SvelteMap<Snowflake, Relationship>();
+  /** Friends, requests and blocks (ADR-0025). */
+  readonly relationships: Relationships;
   lastReadByChannel = new SvelteMap<Snowflake, Snowflake>();
   /** The read position the server confirmed, per channel; behind `lastReadByChannel` until sent. */
   private readOnServerByChannel = new Map<Snowflake, Snowflake>();
@@ -241,6 +242,7 @@ export class MellowClient {
     // Only on an identified session: a frame before `ready` or `resumed` would be refused.
     const sendFrame = (frame: ClientFrame) => this.status === "connected" && (this.gateway?.send(frame) ?? false);
     this.voice = new VoiceSession({ ...voicePorts, sendFrame });
+    this.relationships = new Relationships(rest);
     const updateGuild = (guildId: Snowflake, change: (guild: Guild) => Guild) => this.updateGuild(guildId, change);
     this.customEmojis = new CustomEmojiLibrary({ rest, guilds: () => this.guilds, updateGuild });
     this.soundboard = new SoundboardSession({
@@ -434,7 +436,7 @@ export class MellowClient {
     this.reachedStartChannelIds.clear();
     this.membersByGuild.clear();
     this.presenceByUserId.clear();
-    this.relationshipByUserId.clear();
+    this.relationships.clear();
     this.lastReadByChannel.clear();
     this.readOnServerByChannel.clear();
     this.unsentReadChannelIds.clear();
@@ -507,10 +509,7 @@ export class MellowClient {
     this.failedHistoryChannelIds.clear();
     this.failedMemberGuildIds.clear();
     this.presenceByUserId.clear();
-    this.relationshipByUserId.clear();
-    for (const relationship of ready.relationships ?? []) {
-      this.relationshipByUserId.set(relationship.user.id, relationship);
-    }
+    this.relationships.replaceAll(ready.relationships);
     const presences =
       ready.presences ?? ready.online_user_ids.map((userId): Presence => ({ user_id: userId, status: "online" }));
     for (const presence of presences) {
@@ -765,10 +764,10 @@ export class MellowClient {
         this.dropConversation(event.data.id);
         return;
       case "RELATIONSHIP_ADD":
-        this.relationshipByUserId.set(event.data.user.id, event.data);
+        this.relationships.apply(event.data);
         return;
       case "RELATIONSHIP_REMOVE":
-        this.relationshipByUserId.delete(event.data.user_id);
+        this.relationships.forget(event.data.user_id);
         return;
       case "MESSAGE_REACTION_ADD": {
         const { channel_id, message_id, emoji, user_id } = event.data;
@@ -1031,10 +1030,7 @@ export class MellowClient {
         isRecipient(channel) ? { ...channel, recipients: channel.recipients.map(updateIfThisUser) } : channel,
       );
     }
-    const relationship = this.relationshipByUserId.get(userId);
-    if (relationship) {
-      this.relationshipByUserId.set(userId, { ...relationship, user: updateIfThisUser(relationship.user) });
-    }
+    this.relationships.updateUser(userId, updateIfThisUser);
   }
 
   /** Merges by id, oldest first; outside the open channel the cache keeps the newest messages. */
@@ -1720,59 +1716,38 @@ export class MellowClient {
         : { ...this.user, status: presence.status, custom_status: presence.custom_status ?? null };
   }
 
-  // --- Friends (ADR-0025) ---------------------------------------------------------------------
+  // --- Friends (ADR-0025): `relationships`, under the names components already use -----------
 
-  /** The relationships of `kind`, by name. */
-  relationshipsOfKind(kind: RelationshipKind): Relationship[] {
-    return [...this.relationshipByUserId.values()]
-      .filter((relationship) => relationship.kind === kind)
-      .sort((a, b) =>
-        (a.user.display_name || a.user.username).localeCompare(b.user.display_name || b.user.username),
-      );
+  get relationshipByUserId(): ReadonlyMap<Snowflake, Relationship> {
+    return this.relationships.byUserId;
   }
 
-  /** Requests waiting for the user's answer: the Friends entry's badge. */
+  relationshipsOfKind(kind: RelationshipKind): Relationship[] {
+    return this.relationships.ofKind(kind);
+  }
+
   incomingRequestCount(): number {
-    return this.relationshipsOfKind("incoming_request").length;
+    return this.relationships.incomingRequestCount();
   }
 
   isBlocked(userId: Snowflake): boolean {
-    return this.relationshipByUserId.get(userId)?.kind === "blocked";
+    return this.relationships.isBlocked(userId);
   }
 
-  /**
-   * Asks `username` to be friends, or accepts their request. The answer is applied at once; the
-   * gateway's `RELATIONSHIP_ADD` brings the same.
-   */
-  async sendFriendRequest(username: string): Promise<Relationship> {
-    const relationship = await this.rest.sendFriendRequest(username.trim());
-    this.relationshipByUserId.set(relationship.user.id, relationship);
-    return relationship;
+  sendFriendRequest(username: string): Promise<Relationship> {
+    return this.relationships.sendFriendRequest(username);
   }
 
-  async acceptFriendRequest(userId: Snowflake): Promise<void> {
-    const relationship = await this.rest.setRelationship(userId, "friend");
-    this.relationshipByUserId.set(relationship.user.id, relationship);
+  acceptFriendRequest(userId: Snowflake): Promise<void> {
+    return this.relationships.acceptFriendRequest(userId);
   }
 
-  async blockUser(userId: Snowflake): Promise<void> {
-    const relationship = await this.rest.setRelationship(userId, "blocked");
-    this.relationshipByUserId.set(relationship.user.id, relationship);
+  blockUser(userId: Snowflake): Promise<void> {
+    return this.relationships.blockUser(userId);
   }
 
-  /**
-   * Removes a friend, refuses or cancels a request, or unblocks. Already gone (the other person
-   * removed it, or another session did) counts as done: the wanted state is reached.
-   */
-  async removeRelationship(userId: Snowflake): Promise<void> {
-    try {
-      await this.rest.removeRelationship(userId);
-    } catch (error) {
-      if (!(error instanceof ApiError && error.code === "NOT_FOUND")) {
-        throw error;
-      }
-    }
-    this.relationshipByUserId.delete(userId);
+  removeRelationship(userId: Snowflake): Promise<void> {
+    return this.relationships.removeRelationship(userId);
   }
 
   /** A blank custom status clears it. */
