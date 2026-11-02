@@ -16,6 +16,7 @@
     iconUrl,
   } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
+  import ConversationList from "./ConversationList.svelte";
   import Button from "./Button.svelte";
   import { channelDragSource } from "./channel-drag";
   import {
@@ -42,14 +43,9 @@
     serverMenuFactsOf,
   } from "./context-menus";
   import { nameWithUnreadState } from "./format";
+  import { mutedMark, sidebarRowClasses, unreadPill } from "./SidebarRowParts.svelte";
   import { isTargetMuted, notificationMenuHandler } from "./notification-preferences.svelte";
-  import GroupAvatar from "./GroupAvatar.svelte";
-  import {
-    conversationDisplayName,
-    isGroupConversation,
-    otherParticipants,
-    participantCount,
-  } from "./group-conversations";
+  import { conversationDisplayName, isGroupConversation } from "./group-conversations";
   import ContextMenu from "./ContextMenu.svelte";
   import GroupConfirmDialog from "./GroupConfirmDialog.svelte";
   import Icon from "./Icon.svelte";
@@ -524,12 +520,6 @@
     onnavigate();
   }
 
-  /** `null` opens the Friends space. */
-  function selectConversation(channelId: Snowflake | null) {
-    client.selectGuild(null, channelId);
-    onnavigate();
-  }
-
   function toggleCategory(categoryId: Snowflake) {
     if (collapsedCategoryIds.has(categoryId)) {
       collapsedCategoryIds.delete(categoryId);
@@ -537,33 +527,7 @@
       collapsedCategoryIds.add(categoryId);
     }
   }
-
-  /** A muted row is greyed and never shows unread (DESIGN.md §5.3); its bell-slash says so too. */
-  const rowClasses = (isSelected: boolean, hasUnread: boolean, isMuted = false) => [
-    "flex w-full items-center gap-(--mw-component-channel-row-icon-gap) rounded-(--mw-component-channel-row-radius) px-(--mw-component-channel-row-padding-inline) text-start transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) focus-visible:focus-ring-inset",
-    isSelected
-      ? "bg-(--mw-component-channel-row-background-selected) text-(--mw-component-channel-row-text-selected)"
-      : [
-          isMuted
-            ? "text-(--mw-component-channel-row-text-muted-channel)"
-            : hasUnread
-              ? "text-(--mw-component-channel-row-text-unread)"
-              : "text-(--mw-component-channel-row-text-read)",
-          "hover:bg-(--mw-component-channel-row-background-hover) hover:text-(--mw-component-channel-row-text-hover)",
-        ],
-  ];
 </script>
-
-{#snippet mutedMark()}
-  <Icon name="bell-slash" class="size-(--mw-component-channel-row-muted-icon-size) shrink-0 text-(--mw-component-channel-row-muted-icon)" />
-{/snippet}
-
-{#snippet unreadPill()}
-  <span
-    aria-hidden="true"
-    class="absolute top-1/2 -left-(--mw-component-channel-row-unread-pill-offset) h-(--mw-component-channel-row-unread-pill-height) w-(--mw-component-channel-row-unread-pill-width) -translate-y-1/2 rounded-full bg-(--mw-component-channel-row-unread-pill-color)"
-  ></span>
-{/snippet}
 
 <div class="flex min-h-0 min-w-0 flex-col">
   <header class="mt-xs me-xs h-(--mw-component-sidebar-header-height) shrink-0">
@@ -664,86 +628,7 @@
     {#if guild}
       {@render guildChannels(guild)}
     {:else}
-      {@const incomingRequests = client.incomingRequestCount()}
-      <!-- Friends sits above the conversations, as on Discord (ADR-0025); its badge counts the
-           requests waiting for an answer. -->
-      <div class="mt-xs me-(--mw-component-channel-row-margin-inline)">
-        <button
-          type="button"
-          aria-current={client.isFriendsSpaceOpen ? "page" : undefined}
-          aria-label={strings.sidebar.friendsWithRequests(incomingRequests)}
-          class={[rowClasses(client.isFriendsSpaceOpen, false), "h-(--mw-component-member-row-height) gap-sm pointer-coarse:h-(--mw-size-hit-web-min)"]}
-          onclick={() => selectConversation(null)}
-        >
-          <span class="grid size-(--mw-component-member-row-avatar-size) shrink-0 place-items-center">
-            <Icon name="users" class="size-(--mw-component-channel-row-icon-size)" />
-          </span>
-          <span class="min-w-0 flex-1 truncate type-channel-name">{strings.sidebar.friends}</span>
-          {#if incomingRequests > 0}<MentionBadge mentionCount={incomingRequests} />{/if}
-        </button>
-      </div>
-      {#if client.conversations.length === 0}
-        <p class="mt-xs me-(--mw-component-channel-row-margin-inline) px-(--mw-component-channel-row-padding-inline) type-body text-text-muted">
-          {strings.sidebar.noConversations}
-        </p>
-      {:else}
-        <ul class="mt-xs">
-          {#each client.conversations as conversation (conversation.id)}
-            {@const isSelected = conversation.id === client.selectedChannelId}
-            {@const isConversationMuted = isTargetMuted({ kind: "conversation", channelId: conversation.id })}
-            {@const hasUnread = !isSelected && !isConversationMuted && client.hasUnread(conversation.id)}
-            {@const mentionCount = isSelected || isConversationMuted ? 0 : client.mentionCount(conversation.id)}
-            {@const others = otherParticipants(conversation, user?.id ?? null)}
-            {@const [recipient] = others}
-            {@const name = conversationDisplayName(conversation, user?.id ?? null)}
-            {@const isGroup = isGroupConversation(conversation)}
-            {@const memberCount = participantCount(conversation, user?.id ?? null)}
-            {@const rowName = isGroup ? strings.groups.rowLabel(name, memberCount) : name}
-            <li class="relative mt-(--mw-component-member-row-gap) me-(--mw-component-channel-row-margin-inline)">
-              {#if hasUnread}{@render unreadPill()}{/if}
-              <!-- Right-click, long press or Shift+F10: the person's menu, or the group's. -->
-              <button
-                type="button"
-                aria-current={isSelected ? "page" : undefined}
-                aria-label={nameWithUnreadState(
-                  isConversationMuted ? strings.notifications.withMuted(rowName) : rowName,
-                  hasUnread,
-                  mentionCount,
-                )}
-                class={[rowClasses(isSelected, hasUnread, isConversationMuted), "h-(--mw-component-member-row-height) gap-sm pointer-coarse:h-(--mw-size-hit-web-min)"]}
-                onclick={() => selectConversation(conversation.id)}
-                {@attach contextMenuTrigger((origin, invoker) => openConversationMenu(conversation, recipient, origin, invoker))}
-              >
-                {#if isGroup}
-                  <!-- No presence on a group: its second line counts its people, as on Discord. -->
-                  <GroupAvatar
-                    people={others}
-                    sizeToken="--mw-component-member-row-avatar-size"
-                    ringColorToken="--mw-component-navigator-background"
-                  />
-                {:else if recipient}
-                  <Avatar
-                    user={recipient}
-                    sizeToken="--mw-component-member-row-avatar-size"
-                    presence={client.presenceOf(recipient.id)}
-                    ringColorToken="--mw-component-navigator-background"
-                  />
-                {/if}
-                <span class="flex min-w-0 flex-1 flex-col">
-                  <span class="truncate type-channel-name">{name}</span>
-                  {#if isGroup}
-                    <span class="truncate type-body-sm text-(--mw-component-group-avatar-member-count-text)">
-                      {strings.groups.memberCount(memberCount)}
-                    </span>
-                  {/if}
-                </span>
-                {#if isConversationMuted}{@render mutedMark()}{/if}
-                {#if mentionCount > 0}<MentionBadge {mentionCount} />{/if}
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
+      <ConversationList {client} onopenmenu={openConversationMenu} {onnavigate} />
     {/if}
   </nav>
 </div>
@@ -851,7 +736,7 @@
                 mentionCount,
               )}
               class={[
-                rowClasses(isSelected, hasUnread, isChannelMuted),
+                sidebarRowClasses(isSelected, hasUnread, isChannelMuted),
                 "h-(--mw-component-channel-row-height) pointer-coarse:h-(--mw-size-hit-web-min)",
                 // Room for the gear, so a long name never runs under it; a badge already keeps it.
                 canEdit &&
@@ -967,7 +852,7 @@
           aria-label={strings.voice.rowLabel(channel.name, participants.length, limit, isHere, canConnect)}
           class={[
             // Where you are reads bright, without the selected wash: that stays for the open text channel.
-            rowClasses(false, isHere),
+            sidebarRowClasses(false, isHere),
             "h-(--mw-component-channel-row-height) pointer-coarse:h-(--mw-size-hit-web-min)",
             canEdit &&
               "pe-[calc(var(--mw-component-channel-row-settings-button-size)+var(--mw-component-channel-row-padding-inline))] pointer-coarse:pe-(--mw-size-hit-web-min)",
