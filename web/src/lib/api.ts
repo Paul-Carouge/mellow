@@ -214,8 +214,8 @@ export class RestClient {
   }
 
   /** The picture as the raw body, never re-encoded here: the instance crops and compresses it (animated GIFs stay animated). */
-  setGuildIcon(guildId: Snowflake, file: File, crop: IconCrop | null): Promise<Guild> {
-    return this.sendFile("PUT", `guilds/${guildId}/icon${iconCropQuery(crop)}`, file);
+  setGuildIcon(guildId: Snowflake, file: File, crop: PictureCrop | null): Promise<Guild> {
+    return this.sendFile("PUT", `guilds/${guildId}/icon${pictureCropQuery(crop, "square")}`, file);
   }
 
   removeGuildIcon(guildId: Snowflake): Promise<Guild> {
@@ -223,8 +223,8 @@ export class RestClient {
   }
 
   /** Text channels only; always stored still. */
-  setChannelIcon(channelId: Snowflake, file: File, crop: IconCrop | null): Promise<Channel> {
-    return this.sendFile("PUT", `channels/${channelId}/icon${iconCropQuery(crop)}`, file);
+  setChannelIcon(channelId: Snowflake, file: File, crop: PictureCrop | null): Promise<Channel> {
+    return this.sendFile("PUT", `channels/${channelId}/icon${pictureCropQuery(crop, "square")}`, file);
   }
 
   removeChannelIcon(channelId: Snowflake): Promise<Channel> {
@@ -398,8 +398,9 @@ export class RestClient {
   }
 
   /** The picture as the raw body; the instance resizes and compresses it before answering (ADR-0021). */
-  setProfileImage(kind: ProfileImageKind, file: File): Promise<CurrentUser> {
-    return this.sendFile("PUT", `users/@me/${kind}`, file);
+  setProfileImage(kind: ProfileImageKind, file: File, crop: PictureCrop | null): Promise<CurrentUser> {
+    const query = pictureCropQuery(crop, kind === "banner" ? "banner" : "square");
+    return this.sendFile("PUT", `users/@me/${kind}${query}`, file);
   }
 
   removeProfileImage(kind: ProfileImageKind): Promise<CurrentUser> {
@@ -547,22 +548,29 @@ export class RestClient {
   }
 }
 
-/** The square kept from an icon, in whole pixels of the picture as the browser shows it. */
-export interface IconCrop {
+/**
+ * The part kept from an icon, an avatar or a banner, in whole pixels of the picture as the browser
+ * shows it: `width` wide, and as tall as its shape makes it (a square, or the banner's band).
+ */
+export interface PictureCrop {
   x: number;
   y: number;
-  size: number;
+  width: number;
 }
 
-/** No crop lets the instance keep the centred square. */
-export function iconCropQuery(crop: IconCrop | null): string {
+/**
+ * The query of an icon or avatar upload (`IconCropQuery`, a square of side `crop_size`) or of a
+ * banner upload (`BannerCropQuery`, `crop_width` wide). No crop lets the instance keep the largest
+ * centred part.
+ */
+export function pictureCropQuery(crop: PictureCrop | null, shape: "square" | "banner"): string {
   if (crop === null) {
     return "";
   }
   const query = new URLSearchParams({
     crop_x: String(crop.x),
     crop_y: String(crop.y),
-    crop_size: String(crop.size),
+    [shape === "square" ? "crop_size" : "crop_width"]: String(crop.width),
   });
   return `?${query}`;
 }

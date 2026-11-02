@@ -2,7 +2,7 @@
   import { tick } from "svelte";
 
   import { strings } from "../i18n";
-  import { ApiError, type IconCrop } from "../lib/api";
+  import { ApiError, type PictureCrop } from "../lib/api";
   import { describeError } from "../lib/client.svelte";
   import { isPictureAnimationWanted } from "../lib/motion.svelte";
   import {
@@ -26,7 +26,7 @@
     icon: ProfileImage | null | undefined;
     /** The server's or channel's name: initials and the dialog's samples. */
     name: string;
-    onupload: (file: File, crop: IconCrop | null) => Promise<void>;
+    onupload: (file: File, crop: PictureCrop | null) => Promise<void>;
     onremove: () => Promise<void>;
   }
 
@@ -77,7 +77,7 @@
     chosenFile = file;
   }
 
-  async function upload(file: File, crop: IconCrop | null) {
+  async function upload(file: File, crop: PictureCrop | null) {
     if (busy) {
       return;
     }

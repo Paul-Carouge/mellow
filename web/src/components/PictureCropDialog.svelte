@@ -1,41 +1,50 @@
 <script lang="ts">
   import { strings } from "../i18n";
-  import type { IconCrop } from "../lib/api";
+  import type { PictureCrop } from "../lib/api";
   import { isPictureAnimationWanted } from "../lib/motion.svelte";
+  import type { PublicUser } from "../lib/protocol";
   import Button from "./Button.svelte";
   import {
-    type CropSquare,
+    BANNER_ASPECT,
+    type CropArea,
     type PictureSize,
-    centredSquare,
+    SQUARE_ASPECT,
+    cropHeight,
     cropMovedBy,
     cropToSend,
     cropZoomedTo,
+    largestCentredCrop,
     maximumZoom,
     placementInPercent,
     stillPictureOf,
     zoomOf,
   } from "./picture-crop";
   import ModalDialog from "./ModalDialog.svelte";
+  import ProfileCard from "./ProfileCard.svelte";
 
-  // DESIGN.md §6.54: the chosen picture on a stage, the kept square framed and the rest dimmed
-  // around it. It opens on the centred square, which is what the instance keeps when nothing is
-  // moved; dragging, the wheel, a pinch, the arrow keys or the zoom slider choose another one.
-  // Under the stage, the result at its real size, where it will live: the server strip or a
-  // channel row. The file is sent as it is (an animated GIF stays animated), with the square.
+  // DESIGN.md §6.54: the chosen picture on a stage, the kept part framed and the rest dimmed around
+  // it: a square for icons, a circle for avatars (they only ever show round), the profile card's
+  // band for banners. It opens on the largest centred part, which is what the instance keeps when
+  // nothing is moved; dragging, the wheel, a pinch, the arrow keys or the zoom slider choose
+  // another one. Under the stage, the result at its real size, where it will live: the server
+  // strip, a channel row, the profile and messages, or the profile card. The file is sent as it is
+  // (an animated GIF stays animated), with the crop.
   interface Props {
     file: File;
-    kind: "server" | "channel";
+    kind: "server" | "channel" | "avatar" | "banner";
     /** The server's or channel's name, for the samples. */
-    name: string;
+    name?: string;
+    /** Whose profile card shows a banner's sample. */
+    user?: Pick<PublicUser, "id" | "display_name" | "username" | "avatar" | "banner">;
     isBusy: boolean;
     errorMessage: string;
     onclose: () => void;
-    onsave: (crop: IconCrop | null) => void;
+    onsave: (crop: PictureCrop | null) => void;
   }
 
-  let { file, kind, name, isBusy, errorMessage, onclose, onsave }: Props = $props();
+  let { file, kind, name = "", user, isBusy, errorMessage, onclose, onsave }: Props = $props();
 
-  /** Each arrow key moves the square by this share of its side; with Shift, by the larger one. */
+  /** Each arrow key moves the crop by this share of its size; with Shift, by the larger one. */
   const KEYBOARD_STEP_SHARE = 0.02;
   const KEYBOARD_LARGE_STEP_SHARE = 0.1;
   const KEYBOARD_ZOOM_FACTOR = 1.1;
@@ -44,11 +53,15 @@
   const ZOOM_SLIDER_STEP = 0.01;
 
   const id = $props.id();
+  const aspect = $derived(kind === "banner" ? BANNER_ASPECT : SQUARE_ASPECT);
+  const words = $derived(
+    kind === "avatar" || kind === "banner" ? strings.profile[kind].crop : strings.iconEditor.crop,
+  );
   let pictureUrl = $state<string | null>(null);
   let picture = $state<PictureSize | null>(null);
   let isUnreadable = $state(false);
-  let crop = $state<CropSquare>({ x: 0, y: 0, size: 1 });
-  let frameSide = $state(0);
+  let crop = $state<CropArea>({ x: 0, y: 0, width: 1 });
+  let frameWidth = $state(0);
   let frame = $state<HTMLElement | null>(null);
   let stage = $state<HTMLElement | null>(null);
   const pointers = new Map<number, { x: number; y: number }>();
@@ -93,7 +106,7 @@
       bitmap.close();
       if (source === file) {
         picture = measured;
-        crop = centredSquare(measured);
+        crop = largestCentredCrop(measured, aspect);
       }
     } catch {
       isUnreadable = true;
@@ -106,21 +119,21 @@
       return;
     }
     event.preventDefault();
-    const zoom = zoomOf(crop, picture) * Math.exp(-event.deltaY * WHEEL_ZOOM_SENSITIVITY);
-    crop = cropZoomedTo(crop, picture, zoom, pointInPicture(event.clientX, event.clientY));
+    const zoom = zoomOf(crop, picture, aspect) * Math.exp(-event.deltaY * WHEEL_ZOOM_SENSITIVITY);
+    crop = cropZoomedTo(crop, picture, aspect, zoom, pointInPicture(event.clientX, event.clientY));
   }
 
   /** CSS pixels per picture pixel inside the frame. */
-  const scale = $derived(frameSide > 0 ? frameSide / crop.size : 1);
+  const scale = $derived(frameWidth > 0 ? frameWidth / crop.width : 1);
 
-  const placement = $derived(picture ? placementInPercent(crop, picture) : null);
-  const zoom = $derived(picture ? zoomOf(crop, picture) : 1);
-  const zoomLimit = $derived(picture ? maximumZoom(picture) : 1);
+  const placement = $derived(picture ? placementInPercent(crop, picture, aspect) : null);
+  const zoom = $derived(picture ? zoomOf(crop, picture, aspect) : 1);
+  const zoomLimit = $derived(picture ? maximumZoom(picture, aspect) : 1);
 
   function pointInPicture(clientX: number, clientY: number): { x: number; y: number } {
     const bounds = frame?.getBoundingClientRect();
     if (!bounds) {
-      return { x: crop.x + crop.size / 2, y: crop.y + crop.size / 2 };
+      return { x: crop.x + crop.width / 2, y: crop.y + cropHeight(crop, aspect) / 2 };
     }
     return { x: crop.x + (clientX - bounds.left) / scale, y: crop.y + (clientY - bounds.top) / scale };
   }
@@ -146,11 +159,12 @@
       const after = Math.hypot(event.clientX - other.x, event.clientY - other.y);
       if (before > 0) {
         const midpoint = pointInPicture((event.clientX + other.x) / 2, (event.clientY + other.y) / 2);
-        crop = cropZoomedTo(crop, picture, zoom * (after / before), midpoint);
+        crop = cropZoomedTo(crop, picture, aspect, zoom * (after / before), midpoint);
       }
     } else {
-      // Dragging the picture right shows more of its left: the square moves the other way.
-      crop = cropMovedBy(crop, picture, -(event.clientX - previous.x) / scale, -(event.clientY - previous.y) / scale);
+      // Dragging the picture right shows more of its left: the crop moves the other way.
+      const deltaX = -(event.clientX - previous.x) / scale;
+      crop = cropMovedBy(crop, picture, aspect, deltaX, -(event.clientY - previous.y) / scale);
     }
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
   }
@@ -163,24 +177,26 @@
     if (!picture) {
       return;
     }
-    const step = crop.size * (event.shiftKey ? KEYBOARD_LARGE_STEP_SHARE : KEYBOARD_STEP_SHARE);
+    const share = event.shiftKey ? KEYBOARD_LARGE_STEP_SHARE : KEYBOARD_STEP_SHARE;
+    const stepX = crop.width * share;
+    const stepY = cropHeight(crop, aspect) * share;
     // The keys move the picture, as dragging does.
     const moves: Record<string, [number, number]> = {
-      ArrowLeft: [step, 0],
-      ArrowRight: [-step, 0],
-      ArrowUp: [0, step],
-      ArrowDown: [0, -step],
+      ArrowLeft: [stepX, 0],
+      ArrowRight: [-stepX, 0],
+      ArrowUp: [0, stepY],
+      ArrowDown: [0, -stepY],
     };
     const move = moves[event.key];
     if (move) {
       event.preventDefault();
-      crop = cropMovedBy(crop, picture, move[0], move[1]);
+      crop = cropMovedBy(crop, picture, aspect, move[0], move[1]);
     } else if (event.key === "+" || event.key === "=") {
       event.preventDefault();
-      crop = cropZoomedTo(crop, picture, zoom * KEYBOARD_ZOOM_FACTOR);
+      crop = cropZoomedTo(crop, picture, aspect, zoom * KEYBOARD_ZOOM_FACTOR);
     } else if (event.key === "-" || event.key === "_") {
       event.preventDefault();
-      crop = cropZoomedTo(crop, picture, zoom / KEYBOARD_ZOOM_FACTOR);
+      crop = cropZoomedTo(crop, picture, aspect, zoom / KEYBOARD_ZOOM_FACTOR);
     }
   }
 </script>
@@ -199,30 +215,36 @@
   {/if}
 {/snippet}
 
-{#snippet sample(label: string, shapeClass: string)}
+{#snippet sample(label: string, boxClass: string)}
   <figure class="flex flex-col items-center gap-2xs">
-    <span
-      class={["relative size-(--mw-component-rail-item-size) overflow-hidden bg-(--mw-component-icon-picker-stage-background)", shapeClass]}
-    >
+    <span class={["relative overflow-hidden bg-(--mw-component-icon-picker-stage-background)", boxClass]}>
       {@render croppedPicture("")}
     </span>
     <figcaption class="type-body-sm text-(--mw-component-icon-picker-sample-label-text)">{label}</figcaption>
   </figure>
 {/snippet}
 
+{#snippet bannerInCard()}
+  <!-- The card's strip is narrower than the band on small screens and covers it, as the card's
+       picture does: the band keeps its shape, centred, and the strip cuts its sides. -->
+  <span class="absolute inset-y-0 left-1/2 h-full -translate-x-1/2" style:aspect-ratio={BANNER_ASPECT}>
+    {@render croppedPicture("")}
+  </span>
+{/snippet}
+
 <ModalDialog
-  title={strings.iconEditor.crop.title}
-  subtitle={strings.iconEditor.crop.subtitle}
+  title={words.title}
+  subtitle={words.subtitle}
   errorMessage={isUnreadable
     ? strings.errors.withReason(strings.iconEditor.changeFailed, strings.profile.unreadable)
     : errorMessage}
   {isBusy}
-  submitLabel={isBusy ? strings.iconEditor.crop.saving : strings.iconEditor.crop.save}
+  submitLabel={isBusy ? strings.iconEditor.crop.saving : words.save}
   isSubmitEnabled={picture !== null}
   {onclose}
   onsubmit={() => {
     if (picture) {
-      onsave(cropToSend(crop, picture));
+      onsave(cropToSend(crop, picture, aspect));
     }
   }}
 >
@@ -238,7 +260,7 @@
       aria-label={strings.iconEditor.crop.stage}
       aria-describedby="{id}-hint"
       class={[
-        "relative aspect-square w-full touch-none overflow-hidden rounded-(--mw-component-icon-picker-stage-radius) bg-(--mw-component-icon-picker-stage-background) focus-visible:focus-ring",
+        "relative w-full touch-none overflow-hidden rounded-(--mw-component-icon-picker-stage-radius) bg-(--mw-component-icon-picker-stage-background) p-(--mw-component-icon-picker-frame-inset) focus-visible:focus-ring",
         picture ? "cursor-grab active:cursor-grabbing" : "",
       ]}
       onpointerdown={startDrag}
@@ -248,14 +270,20 @@
       onkeydown={moveWithKeys}
       onwheel={zoomWithWheel}
     >
-      <div bind:this={frame} bind:clientWidth={frameSide} class="absolute inset-(--mw-component-icon-picker-frame-inset)">
+      <!-- The frame has the kept part's shape; the stage is as wide as the dialog and as tall as
+           the frame needs. -->
+      <div bind:this={frame} bind:clientWidth={frameWidth} class="relative w-full" style:aspect-ratio={aspect}>
         {@render croppedPicture("")}
       </div>
       {#if picture}
-        <!-- The spread shadow dims everything outside the square, whatever the stage's size. -->
+        <!-- The spread shadow dims everything outside the frame, whatever the stage's size; it
+             follows the circle of an avatar. -->
         <div
           aria-hidden="true"
-          class="pointer-events-none absolute inset-(--mw-component-icon-picker-frame-inset) border-(length:--mw-component-icon-picker-frame-border-width) border-(--mw-component-icon-picker-frame-border) shadow-[0_0_0_100vmax_var(--mw-component-icon-picker-outside-scrim)]"
+          class={[
+            "pointer-events-none absolute inset-(--mw-component-icon-picker-frame-inset) border-(length:--mw-component-icon-picker-frame-border-width) border-(--mw-component-icon-picker-frame-border) shadow-[0_0_0_100vmax_var(--mw-component-icon-picker-outside-scrim)]",
+            kind === "avatar" ? "rounded-full" : "",
+          ]}
         ></div>
       {/if}
       {#if pictureUrl}
@@ -293,7 +321,7 @@
         class="h-(--mw-size-hit-web-min) min-w-0 flex-1 accent-text-heading"
         oninput={(event) => {
           if (picture) {
-            crop = cropZoomedTo(crop, picture, Number(event.currentTarget.value));
+            crop = cropZoomedTo(crop, picture, aspect, Number(event.currentTarget.value));
           }
         }}
       />
@@ -302,7 +330,7 @@
         isDisabled={!picture}
         onclick={() => {
           if (picture) {
-            crop = centredSquare(picture);
+            crop = largestCentredCrop(picture, aspect);
           }
         }}
       >
@@ -319,10 +347,32 @@
         {#if kind === "server"}
           <!-- The strip's two shapes: a circle at rest, the squircle when hovered or selected. -->
           <div class="flex gap-(--mw-component-icon-picker-sample-gap)">
-            {@render sample(strings.iconEditor.crop.sampleAtRest, "rounded-(--mw-component-rail-icon-radius-rest)")}
-            {@render sample(strings.iconEditor.crop.sampleSelected, "rounded-(--mw-component-rail-icon-radius-active)")}
+            {@render sample(
+              strings.iconEditor.crop.sampleAtRest,
+              "size-(--mw-component-rail-item-size) rounded-(--mw-component-rail-icon-radius-rest)",
+            )}
+            {@render sample(
+              strings.iconEditor.crop.sampleSelected,
+              "size-(--mw-component-rail-item-size) rounded-(--mw-component-rail-icon-radius-active)",
+            )}
           </div>
-        {:else}
+        {:else if kind === "avatar"}
+          <!-- The largest and the most frequent places an avatar shows. -->
+          <div class="flex items-end gap-(--mw-component-icon-picker-sample-gap)">
+            {@render sample(
+              strings.profile.avatar.crop.sampleProfile,
+              "size-(--mw-component-profile-popover-avatar-size) rounded-full",
+            )}
+            {@render sample(strings.profile.avatar.crop.sampleMessages, "size-(--mw-component-message-avatar-size) rounded-full")}
+          </div>
+        {:else if kind === "banner" && user}
+          <!-- The profile card itself, its avatar covering part of the band. -->
+          <div
+            class="w-full max-w-(--mw-component-profile-popover-width) overflow-hidden rounded-(--mw-component-profile-popover-radius) border-(length:--mw-component-profile-popover-border-width) border-(--mw-component-profile-popover-border) bg-(--mw-component-profile-popover-background)"
+          >
+            <ProfileCard {user} nameElement="p" bannerPicture={bannerInCard} />
+          </div>
+        {:else if kind === "channel"}
           <!-- A channel row on the navigator, read and selected, at the list's own size. -->
           <div class="flex flex-col gap-(--mw-component-channel-row-gap) rounded-(--mw-component-icon-picker-stage-radius) bg-(--mw-component-navigator-background) p-xs">
             {#each [false, true] as isSelected (isSelected)}

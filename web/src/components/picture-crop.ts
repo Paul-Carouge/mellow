@@ -1,111 +1,135 @@
-// The square crop of a server or channel icon (DESIGN.md §6.54): pure maths over the picture's
-// size, in its own pixels, so the crop dialog only draws what these functions return. The instance
-// cuts the same square (`crop_x`, `crop_y`, `crop_size`); without one it keeps the centred square.
+// The crop of an icon, an avatar or a banner (DESIGN.md §6.54): pure maths over the picture's
+// size, in its own pixels, so the crop dialog only draws what these functions return. The kept
+// part has a fixed shape, `aspect` being its width over its height: square for icons and avatars,
+// the profile card's band for banners. The instance cuts the same part (`crop_x`, `crop_y` and
+// `crop_size` or `crop_width`); without one it keeps the largest centred part of that shape.
 
-import type { IconCrop } from "../lib/api";
+import type { PictureCrop } from "../lib/api";
 
 export interface PictureSize {
   width: number;
   height: number;
 }
 
-/** A square in picture pixels; fractional while the user drags, rounded only when sent. */
-export interface CropSquare {
+/** A part of the picture in its pixels, `aspect` times wider than tall; fractional while the
+ * user drags, rounded only when sent. */
+export interface CropArea {
   x: number;
   y: number;
-  size: number;
+  width: number;
 }
 
-/** Zooming in further than this shows a handful of pixels: the icon would be a blur. */
-export const MAXIMUM_ICON_ZOOM = 8;
-/** The smallest square worth keeping, in picture pixels, whatever the zoom allows. */
+/** Icons and avatars keep a square. */
+export const SQUARE_ASPECT = 1;
+/** Banners keep the band the profile card shows, stored at 960 × 384 by the instance (ADR-0033). */
+export const BANNER_ASPECT = 960 / 384;
+/** Zooming in further than this shows a handful of pixels: the picture would be a blur. */
+export const MAXIMUM_CROP_ZOOM = 8;
+/** The smallest short side worth keeping, in picture pixels, whatever the zoom allows. */
 const MINIMUM_CROP_SIDE = 16;
 
-function shortSide(picture: PictureSize): number {
-  return Math.min(picture.width, picture.height);
+export function cropHeight(crop: CropArea, aspect: number): number {
+  return crop.width / aspect;
 }
 
 /** What the instance keeps when no crop is sent, and where the dialog starts. */
-export function centredSquare(picture: PictureSize): CropSquare {
-  const size = shortSide(picture);
-  return { x: (picture.width - size) / 2, y: (picture.height - size) / 2, size };
+export function largestCentredCrop(picture: PictureSize, aspect: number): CropArea {
+  const width = Math.min(picture.width, picture.height * aspect);
+  return { x: (picture.width - width) / 2, y: (picture.height - width / aspect) / 2, width };
 }
 
-/** At least 1 (the centred square); a tiny picture cannot be zoomed into. */
-export function maximumZoom(picture: PictureSize): number {
-  return Math.max(1, Math.min(MAXIMUM_ICON_ZOOM, shortSide(picture) / MINIMUM_CROP_SIDE));
+/** At least 1 (the largest centred part); a tiny picture cannot be zoomed into. */
+export function maximumZoom(picture: PictureSize, aspect: number): number {
+  const largest = largestCentredCrop(picture, aspect);
+  const shortSide = Math.min(largest.width, cropHeight(largest, aspect));
+  return Math.max(1, Math.min(MAXIMUM_CROP_ZOOM, shortSide / MINIMUM_CROP_SIDE));
 }
 
-/** 1 when the square spans the picture's short side. */
-export function zoomOf(crop: CropSquare, picture: PictureSize): number {
-  return shortSide(picture) / crop.size;
+/** 1 when the crop is the largest part of its shape. */
+export function zoomOf(crop: CropArea, picture: PictureSize, aspect: number): number {
+  return largestCentredCrop(picture, aspect).width / crop.width;
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
 }
 
-/** The nearest square that stays inside the picture and within the zoom range. */
-export function clampCrop(crop: CropSquare, picture: PictureSize): CropSquare {
-  const size = clamp(crop.size, shortSide(picture) / maximumZoom(picture), shortSide(picture));
+/** The nearest crop that stays inside the picture and within the zoom range. */
+export function clampCrop(crop: CropArea, picture: PictureSize, aspect: number): CropArea {
+  const largestWidth = largestCentredCrop(picture, aspect).width;
+  const width = clamp(crop.width, largestWidth / maximumZoom(picture, aspect), largestWidth);
   return {
-    x: clamp(crop.x, 0, picture.width - size),
-    y: clamp(crop.y, 0, picture.height - size),
-    size,
+    x: clamp(crop.x, 0, picture.width - width),
+    y: clamp(crop.y, 0, picture.height - width / aspect),
+    width,
   };
 }
 
 /**
- * The square at `zoom`, keeping the picture point `anchor` (the pointer, or the square's centre)
- * where it is in the frame, as maps and photo viewers zoom.
+ * The crop at `zoom`, keeping the picture point `anchor` (the pointer, or the crop's centre) where
+ * it is in the frame, as maps and photo viewers zoom.
  */
 export function cropZoomedTo(
-  crop: CropSquare,
+  crop: CropArea,
   picture: PictureSize,
+  aspect: number,
   zoom: number,
-  anchor: { x: number; y: number } = { x: crop.x + crop.size / 2, y: crop.y + crop.size / 2 },
-): CropSquare {
-  const size = shortSide(picture) / clamp(zoom, 1, maximumZoom(picture));
-  const ratio = size / crop.size;
+  anchor: { x: number; y: number } = { x: crop.x + crop.width / 2, y: crop.y + cropHeight(crop, aspect) / 2 },
+): CropArea {
+  const width = largestCentredCrop(picture, aspect).width / clamp(zoom, 1, maximumZoom(picture, aspect));
+  const ratio = width / crop.width;
   return clampCrop(
-    { x: anchor.x - (anchor.x - crop.x) * ratio, y: anchor.y - (anchor.y - crop.y) * ratio, size },
+    { x: anchor.x - (anchor.x - crop.x) * ratio, y: anchor.y - (anchor.y - crop.y) * ratio, width },
     picture,
+    aspect,
   );
 }
 
-/** Moves the square by a distance in picture pixels; dragging the picture moves it the other way. */
-export function cropMovedBy(crop: CropSquare, picture: PictureSize, deltaX: number, deltaY: number): CropSquare {
-  return clampCrop({ ...crop, x: crop.x + deltaX, y: crop.y + deltaY }, picture);
+/** Moves the crop by a distance in picture pixels; dragging the picture moves it the other way. */
+export function cropMovedBy(
+  crop: CropArea,
+  picture: PictureSize,
+  aspect: number,
+  deltaX: number,
+  deltaY: number,
+): CropArea {
+  return clampCrop({ ...crop, x: crop.x + deltaX, y: crop.y + deltaY }, picture, aspect);
 }
 
 /**
- * Whole pixels for the query, or null for the centred square, so an untouched crop leaves the
- * choice to the instance's own centring.
+ * Whole pixels for the query, or null for the largest centred part, so an untouched crop leaves
+ * the choice to the instance's own centring. The height is rounded up when checking the bottom
+ * edge, so the instance never has to narrow the crop to fit it.
  */
-export function cropToSend(crop: CropSquare, picture: PictureSize): IconCrop | null {
-  const centred = centredSquare(picture);
+export function cropToSend(crop: CropArea, picture: PictureSize, aspect: number): PictureCrop | null {
+  const centred = largestCentredCrop(picture, aspect);
   const isCentred =
-    Math.abs(crop.x - centred.x) < 0.5 && Math.abs(crop.y - centred.y) < 0.5 && Math.abs(crop.size - centred.size) < 0.5;
+    Math.abs(crop.x - centred.x) < 0.5 && Math.abs(crop.y - centred.y) < 0.5 && Math.abs(crop.width - centred.width) < 0.5;
   if (isCentred) {
     return null;
   }
-  const size = clamp(Math.round(crop.size), 1, shortSide(picture));
+  const width = clamp(Math.round(crop.width), 1, Math.floor(centred.width));
   return {
-    x: clamp(Math.round(crop.x), 0, picture.width - size),
-    y: clamp(Math.round(crop.y), 0, picture.height - size),
-    size,
+    x: clamp(Math.round(crop.x), 0, picture.width - width),
+    y: clamp(Math.round(crop.y), 0, picture.height - Math.ceil(width / aspect)),
+    width,
   };
 }
 
 /**
- * Where to draw the picture so that `crop` fills a square box, in percent of the box's side: the
- * stage and the small samples share it, whatever their size.
+ * Where to draw the picture so that `crop` fills a box of its shape, in percent of the box's
+ * width (left, width) and height (top): the stage and the small samples share it, whatever their
+ * size.
  */
-export function placementInPercent(crop: CropSquare, picture: PictureSize): { left: number; top: number; width: number } {
+export function placementInPercent(
+  crop: CropArea,
+  picture: PictureSize,
+  aspect: number,
+): { left: number; top: number; width: number } {
   return {
-    left: (-crop.x / crop.size) * 100,
-    top: (-crop.y / crop.size) * 100,
-    width: (picture.width / crop.size) * 100,
+    left: (-crop.x / crop.width) * 100,
+    top: (-crop.y / cropHeight(crop, aspect)) * 100,
+    width: (picture.width / crop.width) * 100,
   };
 }
 
