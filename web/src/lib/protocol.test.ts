@@ -4,6 +4,7 @@ import { generateMessageNonce } from "./api";
 import {
   DIRECT_MESSAGE_PERMISSIONS,
   MAXIMUM_PROFILE_IMAGE_BYTES,
+  PREVIEWABLE_IMAGE_TYPES,
   Permission,
   compareSnowflakes,
   computeChannelPermissions,
@@ -143,6 +144,9 @@ describe("profile images", () => {
     expect(profileImageFileProblem({ size: MAXIMUM_PROFILE_IMAGE_BYTES, type: "image/gif" })).toBeNull();
     expect(profileImageFileProblem({ size: MAXIMUM_PROFILE_IMAGE_BYTES + 1, type: "image/png" })).toBe("too-large");
     expect(profileImageFileProblem({ size: 10, type: "image/svg+xml" })).toBe("not-a-picture");
+    // The instance stores AVIF and shows it, but cannot read it back as a new picture.
+    expect(profileImageFileProblem({ size: 10, type: "image/avif" })).toBe("not-a-picture");
+    expect(PREVIEWABLE_IMAGE_TYPES).toContain("image/avif");
     expect(profileImageFileProblem({ size: 10, type: "" })).toBeNull();
   });
 });

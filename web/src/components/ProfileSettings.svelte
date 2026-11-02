@@ -4,7 +4,7 @@
   import { strings } from "../i18n";
   import { ApiError, type ProfileImageKind } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
-  import { MAXIMUM_PROFILE_IMAGE_BYTES, PREVIEWABLE_IMAGE_TYPES, profileImageFileProblem } from "../lib/protocol";
+  import { MAXIMUM_PROFILE_IMAGE_BYTES, PICTURE_UPLOAD_TYPES, profileImageFileProblem } from "../lib/protocol";
   import Button from "./Button.svelte";
   import { humanFileSize } from "./format";
   import Icon from "./Icon.svelte";
@@ -109,7 +109,7 @@
     <input
       bind:this={fileInputs[kind]}
       type="file"
-      accept={PREVIEWABLE_IMAGE_TYPES.join(",")}
+      accept={PICTURE_UPLOAD_TYPES.join(",")}
       tabindex="-1"
       aria-hidden="true"
       class="sr-only"

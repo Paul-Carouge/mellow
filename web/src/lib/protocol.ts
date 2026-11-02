@@ -243,7 +243,7 @@ export interface Member {
 export interface Attachment {
   id: Snowflake;
   file_name: string;
-  /** One of the four previewable image types, or `application/octet-stream`. */
+  /** One of the previewable image types, or `application/octet-stream`. */
   content_type: string;
   size_bytes: number;
   /** As the picture shows (EXIF orientation applied), to hold its place while it loads. Absent for other files, older uploads and older servers. */
@@ -251,15 +251,18 @@ export interface Attachment {
   height?: number;
 }
 
-/** Shown inline: the instance serves only these as images (ADR-0020). */
-export const PREVIEWABLE_IMAGE_TYPES: readonly string[] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+/** Pictures the instance reads: avatars, banners, icons and emoji must be one of these. */
+export const PICTURE_UPLOAD_TYPES: readonly string[] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/** Shown inline: the instance serves only these as images (ADR-0020); it stores most compressed pictures as AVIF (ADR-0033). */
+export const PREVIEWABLE_IMAGE_TYPES: readonly string[] = [...PICTURE_UPLOAD_TYPES, "image/avif"];
 
 /**
  * Why a chosen file cannot become an avatar or banner, checked before sending it; null lets the
  * instance decide. An empty type (unknown to the browser) is left to the instance too.
  */
 export function profileImageFileProblem(file: Pick<Blob, "size" | "type">): "not-a-picture" | "too-large" | null {
-  if (file.type !== "" && !PREVIEWABLE_IMAGE_TYPES.includes(file.type)) {
+  if (file.type !== "" && !PICTURE_UPLOAD_TYPES.includes(file.type)) {
     return "not-a-picture";
   }
   return file.size > MAXIMUM_PROFILE_IMAGE_BYTES ? "too-large" : null;

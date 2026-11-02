@@ -10,7 +10,7 @@
     type Guild,
     MAXIMUM_EMOJIS_PER_GUILD_AND_KIND,
     MAXIMUM_EMOJI_NAME_LENGTH,
-    PREVIEWABLE_IMAGE_TYPES,
+    PICTURE_UPLOAD_TYPES,
     type Snowflake,
   } from "../lib/protocol";
   import Button from "./Button.svelte";
@@ -284,7 +284,7 @@
       bind:this={fileInput}
       type="file"
       multiple
-      accept={PREVIEWABLE_IMAGE_TYPES.join(",")}
+      accept={PICTURE_UPLOAD_TYPES.join(",")}
       hidden
       tabindex="-1"
       aria-hidden="true"

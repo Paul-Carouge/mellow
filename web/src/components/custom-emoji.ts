@@ -12,7 +12,7 @@ import {
   MAXIMUM_EMOJI_NAME_LENGTH,
   MAXIMUM_EMOJI_UPLOAD_BYTES,
   MINIMUM_EMOJI_NAME_LENGTH,
-  PREVIEWABLE_IMAGE_TYPES,
+  PICTURE_UPLOAD_TYPES,
   type Snowflake,
   customEmojiMarkup,
   customEmojiOfReactionKey,
@@ -306,7 +306,7 @@ export type EmojiFileProblem = "not-a-picture" | "too-large" | "no-room";
 const ALWAYS_STILL_TYPES: readonly string[] = ["image/png", "image/jpeg"];
 
 export function emojiFileProblem(file: Pick<File, "type" | "size">, counts: EmojiCounts): EmojiFileProblem | null {
-  if (!PREVIEWABLE_IMAGE_TYPES.includes(file.type)) {
+  if (!PICTURE_UPLOAD_TYPES.includes(file.type)) {
     return "not-a-picture";
   }
   if (file.size > MAXIMUM_EMOJI_UPLOAD_BYTES) {

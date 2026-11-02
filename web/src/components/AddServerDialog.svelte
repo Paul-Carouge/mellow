@@ -7,7 +7,7 @@
   import {
     MAXIMUM_PROFILE_IMAGE_BYTES,
     MAXIMUM_SERVER_NAME_LENGTH,
-    PREVIEWABLE_IMAGE_TYPES,
+    PICTURE_UPLOAD_TYPES,
     profileImageFileProblem,
   } from "../lib/protocol";
   import Button from "./Button.svelte";
@@ -241,7 +241,7 @@
           <input
             bind:this={fileInput}
             type="file"
-            accept={PREVIEWABLE_IMAGE_TYPES.join(",")}
+            accept={PICTURE_UPLOAD_TYPES.join(",")}
             tabindex="-1"
             aria-hidden="true"
             class="sr-only"
