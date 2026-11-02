@@ -69,6 +69,9 @@
   // Channel icons are always stored still, and nothing plays while reduced motion keeps pictures still: such pictures
   // are shown from their first frame. The file sent stays the one chosen.
   const isStillWanted = $derived(kind === "channel" || !isPictureAnimationWanted(true));
+  const changeFailed = $derived(
+    kind === "avatar" || kind === "banner" ? strings.profile[kind].changeFailed : strings.iconEditor.changeFailed,
+  );
 
   $effect(() => {
     let url: string | null = null;
@@ -236,7 +239,7 @@
   title={words.title}
   subtitle={words.subtitle}
   errorMessage={isUnreadable
-    ? strings.errors.withReason(strings.iconEditor.changeFailed, strings.profile.unreadable)
+    ? strings.errors.withReason(changeFailed, strings.profile.unreadable)
     : errorMessage}
   {isBusy}
   submitLabel={isBusy ? strings.iconEditor.crop.saving : words.save}
