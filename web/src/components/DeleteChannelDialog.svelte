@@ -1,6 +1,6 @@
 <script lang="ts">
   import { strings } from "../i18n";
-  import { type MellowClient, describeError } from "../lib/client.svelte";
+  import type { MellowClient } from "../lib/client.svelte";
   import type { Channel } from "../lib/protocol";
   import ModalDialog from "./ModalDialog.svelte";
   import TextField from "./TextField.svelte";
@@ -22,8 +22,6 @@
   const id = $props.id();
   const isCategory = $derived(channel.kind === "category");
   let typedName = $state("");
-  let isBusy = $state(false);
-  let errorMessage = $state("");
   // Plain: read by the dialog when it closes, after this component stopped updating.
   let hasSucceeded = false;
 
@@ -36,21 +34,10 @@
     if (guildId === null) {
       return;
     }
-    isBusy = true;
-    errorMessage = "";
-    try {
-      await client.deleteChannel(guildId, channelId);
-      hasSucceeded = true;
-      ondone?.(wasCategory ? strings.channelRemoval.categoryDeleted(name) : strings.channelRemoval.channelDeleted(name));
-      onclose();
-    } catch (error) {
-      errorMessage = describeError(
-        error,
-        wasCategory ? strings.channelRemoval.categoryDeleteFailed : strings.channelRemoval.channelDeleteFailed,
-      );
-    } finally {
-      isBusy = false;
-    }
+    await client.deleteChannel(guildId, channelId);
+    hasSucceeded = true;
+    ondone?.(wasCategory ? strings.channelRemoval.categoryDeleted(name) : strings.channelRemoval.channelDeleted(name));
+    onclose();
   }
 </script>
 
@@ -58,27 +45,25 @@
   shouldReturnFocusToOpener={() => !hasSucceeded}
   title={isCategory ? strings.channelRemoval.categoryTitle(channel.name) : strings.channelRemoval.channelTitle(channel.name)}
   subtitle={isCategory ? strings.channelRemoval.categoryBody : strings.channelRemoval.channelBody}
-  {errorMessage}
-  {isBusy}
-  submitLabel={isBusy
-    ? strings.channelRemoval.deleting
-    : isCategory
-      ? strings.channelRemoval.deleteCategory
-      : strings.channelRemoval.deleteChannel}
+  submitLabel={isCategory ? strings.channelRemoval.deleteCategory : strings.channelRemoval.deleteChannel}
+  busySubmitLabel={strings.channelRemoval.deleting}
+  failureSummary={isCategory ? strings.channelRemoval.categoryDeleteFailed : strings.channelRemoval.channelDeleteFailed}
   isSubmitDanger
   isSubmitEnabled={isConfirmed}
   {onclose}
-  onsubmit={() => void deleteChannel()}
+  onsubmit={deleteChannel}
   {fallbackFocus}
 >
-  {#if !isCategory}
-    <TextField
-      id="{id}-name"
-      label={strings.channelRemoval.confirmLabel(channel.name)}
-      autocomplete="off"
-      spellcheck={false}
-      readonly={isBusy}
-      bind:value={typedName}
-    />
-  {/if}
+  {#snippet children(isBusy)}
+    {#if !isCategory}
+      <TextField
+        id="{id}-name"
+        label={strings.channelRemoval.confirmLabel(channel.name)}
+        autocomplete="off"
+        spellcheck={false}
+        readonly={isBusy}
+        bind:value={typedName}
+      />
+    {/if}
+  {/snippet}
 </ModalDialog>
