@@ -17,6 +17,10 @@ const MAXIMUM_TRACKED_KEYS: usize = 100_000;
 const ADDRESS_WINDOWS_EVICTED_WHEN_FULL: usize = 1_000;
 /// Pruning is O(n) under the lock; doing it at most this often keeps a full table cheap.
 const MINIMUM_INTERVAL_BETWEEN_PRUNES: Duration = Duration::from_secs(1);
+/// The eviction scan is O(n) under the lock too. A scan that frees a whole batch is amortised over
+/// that many new keys; one that frees less (a table nearly full of per-account windows) runs at
+/// most this often, so refusing new keys on such a table stays cheap.
+const MINIMUM_INTERVAL_BETWEEN_SHORT_EVICTIONS: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RateLimit {
@@ -247,6 +251,10 @@ pub(crate) struct RateLimiter {
 struct LimiterState {
     windows: HashMap<String, Window>,
     last_pruned_at: Option<Instant>,
+    /// When the last eviction scan freed less than a full batch.
+    last_short_eviction_at: Option<Instant>,
+    #[cfg(test)]
+    eviction_scans: usize,
 }
 
 /// Whether a full table may evict a window before it ends.
@@ -319,6 +327,13 @@ impl RateLimiter {
             .windows
             .len()
     }
+
+    fn eviction_scan_count(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .eviction_scans
+    }
 }
 
 impl LimiterState {
@@ -333,15 +348,25 @@ impl LimiterState {
             self.windows.retain(|_, window| !window.has_ended(now));
             self.last_pruned_at = Some(now);
         }
-        if self.windows.len() >= MAXIMUM_TRACKED_KEYS {
-            self.evict_oldest_address_windows();
+        let may_evict = self.last_short_eviction_at.is_none_or(|last| {
+            now.duration_since(last) >= MINIMUM_INTERVAL_BETWEEN_SHORT_EVICTIONS
+        });
+        if self.windows.len() >= MAXIMUM_TRACKED_KEYS
+            && may_evict
+            && self.evict_oldest_address_windows() < ADDRESS_WINDOWS_EVICTED_WHEN_FULL
+        {
+            self.last_short_eviction_at = Some(now);
         }
         self.windows.len() < MAXIMUM_TRACKED_KEYS
     }
 
     /// Evicts up to [`ADDRESS_WINDOWS_EVICTED_WHEN_FULL`] address-keyed windows, oldest first
-    /// (ended ones are the oldest). Per-account windows are never evicted.
-    fn evict_oldest_address_windows(&mut self) {
+    /// (ended ones are the oldest), and returns how many went. Per-account windows are never evicted.
+    fn evict_oldest_address_windows(&mut self) -> usize {
+        #[cfg(test)]
+        {
+            self.eviction_scans += 1;
+        }
         let mut address_window_starts: Vec<Instant> = self
             .windows
             .values()
@@ -350,14 +375,16 @@ impl LimiterState {
             .collect();
         let eviction_count = ADDRESS_WINDOWS_EVICTED_WHEN_FULL.min(address_window_starts.len());
         let Some(last_evicted_index) = eviction_count.checked_sub(1) else {
-            return;
+            return 0;
         };
         let (_, &mut newest_evicted_start, _) =
             address_window_starts.select_nth_unstable(last_evicted_index);
         // Windows started at the same instant as the cut-off go too: a few more than the batch.
+        let count_before = self.windows.len();
         self.windows.retain(|_, window| {
             window.eviction == Eviction::Never || window.started_at > newest_evicted_start
         });
+        count_before - self.windows.len()
     }
 }
 
@@ -418,6 +445,28 @@ mod tests {
             !limiter.record_event("login:0", LONG, start),
             "existing keys still count"
         );
+    }
+
+    #[test]
+    fn a_refused_new_key_does_not_rescan_a_full_table_until_the_interval_has_passed() {
+        let limiter = RateLimiter::default();
+        let start = Instant::now();
+        for index in 0..MAXIMUM_TRACKED_KEYS {
+            assert!(limiter.record_event(&format!("login:{index}"), LONG, start));
+        }
+        assert!(!limiter.record_address_event("ip:first", SHORT, start));
+        assert_eq!(limiter.eviction_scan_count(), 1);
+        for index in 0..10 {
+            assert!(!limiter.record_address_event(&format!("ip:{index}"), SHORT, start));
+        }
+        assert_eq!(
+            limiter.eviction_scan_count(),
+            1,
+            "a scan that freed nothing is not repeated within the interval"
+        );
+        let later = start + MINIMUM_INTERVAL_BETWEEN_SHORT_EVICTIONS;
+        assert!(!limiter.record_address_event("ip:later", SHORT, later));
+        assert_eq!(limiter.eviction_scan_count(), 2);
     }
 
     #[test]
