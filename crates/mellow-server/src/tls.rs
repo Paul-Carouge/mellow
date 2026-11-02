@@ -42,6 +42,16 @@ const ACME_CHALLENGE_PORT: u16 = 443;
 /// connections are not tracked by the HTTP server and end with the process.
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Offered in ALPN, preferred first. HTTP/2 carries a page's many small requests (avatars,
+/// emoji, attachments) on one connection instead of queueing them on six.
+const APPLICATION_PROTOCOLS: [&[u8]; 2] = [b"h2", b"http/1.1"];
+/// RFC 9113 §6.5.2 advises at least 100; enough for a page's images at once.
+const MAXIMUM_CONCURRENT_HTTP2_STREAMS: u32 = 100;
+/// Streams a client opened then reset before the server accepted them (Rapid Reset, CVE-2023-44487).
+const MAXIMUM_PENDING_ACCEPT_RESET_HTTP2_STREAMS: usize = 20;
+/// Decoded headers per request, as hyper's default: room for the session cookie, not for abuse.
+const MAXIMUM_HTTP2_HEADER_LIST_BYTES: u32 = 16 * 1024;
+
 /// Deadlines and caps for connections from the internet.
 #[derive(Debug, Clone, Copy)]
 struct ConnectionPolicy {
@@ -194,9 +204,13 @@ async fn serve_tls_with_policy(
         })
         .directory(certificate_authority.directory_url)
         .state();
+    // TLS-ALPN-01 challenges never reach this configuration: the acceptor answers them first,
+    // with rustls-acme's own `acme-tls/1` configuration.
+    let mut rustls_config = Arc::unwrap_or_clone(acme_state.default_rustls_config());
+    rustls_config.alpn_protocols = APPLICATION_PROTOCOLS.map(<[u8]>::to_vec).to_vec();
     let server = guarded_server(
         listener,
-        acme_state.axum_acceptor(acme_state.default_rustls_config()),
+        acme_state.axum_acceptor(Arc::new(rustls_config)),
         policy,
         shutdown,
     )?;
@@ -276,7 +290,14 @@ fn guarded_server<Inner>(
         .timer(hyper_util::rt::TokioTimer::new())
         .header_read_timeout(policy.header_read_timeout);
     // No HTTP/2 keep-alive pings: the client's automatic answers would count as activity and
-    // keep an idle connection alive forever. Mellow clients speak HTTP/1.1 anyway.
+    // keep an idle connection alive forever. HTTP/2 has no header deadline in hyper; the idle
+    // read timeout and the connection caps bound a stalled HTTP/2 client instead.
+    server
+        .http_builder()
+        .http2()
+        .max_concurrent_streams(MAXIMUM_CONCURRENT_HTTP2_STREAMS)
+        .max_pending_accept_reset_streams(MAXIMUM_PENDING_ACCEPT_RESET_HTTP2_STREAMS)
+        .max_header_list_size(MAXIMUM_HTTP2_HEADER_LIST_BYTES);
     let handle = axum_server::Handle::new();
     tokio::spawn({
         let handle = handle.clone();
@@ -742,6 +763,90 @@ mod tests {
         database.close().await;
     }
 
+    const CACHED_CERTIFICATE_SERVING_LIMIT: Duration = Duration::from_secs(10);
+
+    #[tokio::test]
+    async fn https_offers_http2_first_and_still_serves_http1_clients() {
+        let (directory, database) = migrated_database().await;
+        let certificate_directory = directory.path().join("certificates");
+        create_private_directory(&certificate_directory).unwrap();
+        let tls = tls_config(&certificate_directory);
+        // A certificate already in the cache is served without any certificate authority.
+        let identity = rcgen::generate_simple_self_signed(tls.domains.clone()).unwrap();
+        write_private_file_atomically(
+            &certificate_directory,
+            &PrivateDirectoryCache::file_name(
+                "certificate",
+                &tls.domains,
+                UNREACHABLE_DIRECTORY_URL,
+            ),
+            format!(
+                "{}{}",
+                identity.key_pair.serialize_pem(),
+                identity.cert.pem()
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn({
+            let state = test_state(database.clone(), RegistrationMode::Open);
+            let tls = tls.clone();
+            async move {
+                serve_tls_with_policy(
+                    listener,
+                    state,
+                    &tls,
+                    CertificateAuthority {
+                        directory_url: UNREACHABLE_DIRECTORY_URL,
+                        client_tls_config: None,
+                    },
+                    PRODUCTION_CONNECTION_POLICY,
+                    async {
+                        let _ = stopped.await;
+                    },
+                )
+                .await
+            }
+        });
+        let root = reqwest::Certificate::from_der(identity.cert.der()).unwrap();
+        let health_version = async |is_http1_only: bool| {
+            let mut builder = reqwest::Client::builder()
+                .tls_certs_only([root.clone()])
+                .resolve(&tls.domains[0], address);
+            if is_http1_only {
+                builder = builder.http1_only();
+            }
+            let client = builder.build().unwrap();
+            let url = format!(
+                "https://{}:{}/api/v1/health",
+                tls.domains[0],
+                address.port()
+            );
+            let started = Instant::now();
+            loop {
+                match client.get(&url).send().await {
+                    Ok(response) if response.status().is_success() => return response.version(),
+                    outcome => {
+                        assert!(
+                            started.elapsed() < CACHED_CERTIFICATE_SERVING_LIMIT,
+                            "the cached certificate was not served: {outcome:?}"
+                        );
+                        tokio::time::sleep(RETRY_INTERVAL).await;
+                    }
+                }
+            }
+        };
+        assert_eq!(health_version(false).await, reqwest::Version::HTTP_2);
+        assert_eq!(health_version(true).await, reqwest::Version::HTTP_11);
+
+        stop.send(()).unwrap();
+        server.await.unwrap().unwrap();
+        database.close().await;
+    }
+
     /// Caddy keeps idle upstream connections 2 min, nginx's upstream `keepalive_timeout` is 60 s.
     const LONGEST_COMMON_PROXY_UPSTREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -1027,7 +1132,8 @@ mod tests {
         (stop, server)
     }
 
-    /// Health over HTTPS, trusting only `root`, retried until a certificate is served.
+    /// Health over HTTPS, trusting only `root`, retried until a certificate is served. HTTP/2 is
+    /// negotiated, while the authority validated over `acme-tls/1` on the same port.
     async fn wait_for_https_health(port: u16, root: &reqwest::Certificate) {
         let client = reqwest::Client::builder()
             .tls_certs_only([root.clone()])
@@ -1037,7 +1143,10 @@ mod tests {
         let started = Instant::now();
         loop {
             match client.get(&url).send().await {
-                Ok(response) if response.status().is_success() => return,
+                Ok(response) if response.status().is_success() => {
+                    assert_eq!(response.version(), reqwest::Version::HTTP_2);
+                    return;
+                }
                 outcome => {
                     assert!(
                         started.elapsed() < CERTIFICATE_ISSUANCE_LIMIT,
