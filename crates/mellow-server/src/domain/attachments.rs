@@ -878,8 +878,11 @@ mod tests {
         let (_directory, database) = migrated_database().await;
         let state = test_state(database.clone(), RegistrationMode::Open);
         let read_before_the_swap = stored_png_attachment(&state).await;
-        // Another job replaced the file between the read and the swap.
-        let current_file = SnowflakeGenerator::default()
+        // Another job replaced the file between the read and the swap. The instance's generator,
+        // not a second one: two generators give the same id within the same millisecond.
+        let current_file = state
+            .attachments
+            .ids
             .next_id(crate::domain::clock::now_unix_milliseconds())
             .unwrap();
         state
