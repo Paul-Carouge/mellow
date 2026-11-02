@@ -126,7 +126,8 @@
   }
   // `canShareScreen` is "connected with the video lines", which carry the receive slots too.
   const watcher = $derived<Watcher>({
-    connectedChannelId: client.voice.phase === "connected" ? client.voice.channelId : null,
+    // Connecting or reconnecting counts: you are in that channel, its chips need no "join first".
+    connectedChannelId: client.voice.phase === "idle" ? null : client.voice.channelId,
     canWatchStreams: client.voice.canShareScreen,
   });
   function canEditChannel(channel: Channel): boolean {

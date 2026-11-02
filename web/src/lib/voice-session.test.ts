@@ -1187,6 +1187,54 @@ describe("VoiceSession screen sharing (ADR-0037)", () => {
     expect(lastPeer().videoEncodings.at(-1)?.maxBitrate).toBe(8_000_000);
   });
 
+  it("sends at a quality chosen before sharing", async () => {
+    const { session, lastPeer, connect } = harness({ canShowVideo: true });
+    await connect();
+    session.setScreenShareQuality("1440p");
+    await session.startScreenShare();
+    await flush();
+    expect(lastPeer().videoEncodings.at(-1)?.maxBitrate).toBe(8_000_000);
+  });
+
+  it("stops sharing and watching when moving to another channel", async () => {
+    const { session, frames, lastPeer, connect, screen } = harness({ canShowVideo: true });
+    await connect();
+    await session.startScreenShare();
+    session.watchStream("42");
+
+    await session.join(OTHER_CHANNEL);
+    await session.applyAnswer(OTHER_CHANNEL, session.currentOfferId, "answer");
+    expect(session.isSharingScreen).toBe(false);
+    expect(screen.track.isStopped).toBe(true);
+    expect(session.watchedStreamUserId).toBeNull();
+    expect(lastPeer().transceivers[1 + VOICE_RECEIVE_SLOTS]?.trackOrKind).toBe("video");
+    const afterTheMove = frames.slice(frames.map((frame) => frame.op).lastIndexOf("voice_join"));
+    expect(afterTheMove.some((frame) => frame.op === "voice_state" && frame.d.self_stream === true)).toBe(false);
+  });
+
+  it("keeps sharing through a reconnection, on the new connection, and says so again", async () => {
+    const { session, frames, lastPeer, connect, screen } = harness({ canShowVideo: true });
+    await connect();
+    await session.startScreenShare();
+
+    session.noteGatewayReady();
+    await flush();
+    expect(lastPeer().transceivers[1 + VOICE_RECEIVE_SLOTS]?.trackOrKind).toBe(screen.track);
+    await session.applyAnswer(CHANNEL, session.currentOfferId, "answer");
+    expect(frames.at(-1)).toEqual({ op: "voice_state", d: { self_mute: false, self_deaf: false, self_stream: true } });
+    expect(session.isSharingScreen).toBe(true);
+  });
+
+  it("stops and says why when the instance refuses the screen", async () => {
+    const { session, connect, screen } = harness({ canShowVideo: true });
+    await connect();
+    await session.startScreenShare();
+    session.refuseVideo(CHANNEL, "too_many_cameras");
+    expect(session.isSharingScreen).toBe(false);
+    expect(screen.track.isStopped).toBe(true);
+    expect(session.screenShareProblem).toBe("too_many_cameras");
+  });
+
   it("pauses unwatched layers, and stops when the instance stops relaying the screen", async () => {
     const { session, lastPeer, connect } = harness({ canShowVideo: true });
     await connect();

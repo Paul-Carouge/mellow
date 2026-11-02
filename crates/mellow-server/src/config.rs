@@ -109,8 +109,9 @@ pub struct VoiceConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_address: Option<String>,
     pub max_participants: u32,
-    /// What cameras may take of the host's upload, in Mbit/s (ADR-0035); 0 turns cameras off.
-    /// For now only 0 has an effect: the value is used once bandwidth allocation lands.
+    /// What cameras and screens may take of the host's upload, in Mbit/s (ADR-0035, ADR-0037):
+    /// each full-quality stream counts 10 Mbit/s, the next ones get the half-size layer; 0 turns
+    /// video off.
     pub video_upload_mbps: u32,
 }
 

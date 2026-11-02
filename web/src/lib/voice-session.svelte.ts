@@ -246,6 +246,8 @@ export class VoiceSession {
   /** Who each video receive slot carries now. */
   private videoSlotUserIds = new Map<string, Snowflake>();
   private screen: MediaStream | null = null;
+  /** The browser's picker is open: a second click waits for it. */
+  private isRequestingScreen = false;
   /** When the screen was last turned on: an empty `VOICE_VIDEO_LAYERS` just after is the previous share's. */
   private screenStartedAt = Number.NEGATIVE_INFINITY;
   private microphone: MediaStream | null = null;
@@ -315,6 +317,10 @@ export class VoiceSession {
       return;
     }
     this.problem = null;
+    // A share never follows you into another channel, as on Discord: its people did not see it start.
+    this.releaseScreen();
+    this.watchedStreamUserId = null;
+    this.streamTracks = new Map();
     this.channelId = channelId;
     this.phase = "connecting";
     this.reconnectAttempts = 0;
@@ -635,21 +641,26 @@ export class VoiceSession {
 
   /** From a click: opens the browser's screen picker, then shares what was chosen (ADR-0037). */
   async startScreenShare(): Promise<void> {
-    const sender = this.videoSender;
-    if (!this.canShareScreen || sender === null || this.screen !== null) {
+    if (!this.canShareScreen || this.screen !== null || this.isRequestingScreen) {
       return;
     }
     this.screenShareProblem = null;
+    const channelId = this.channelId;
     let stream: MediaStream;
+    this.isRequestingScreen = true;
     try {
       stream = await this.ports.requestScreen(this.screenShareQuality);
     } catch (error) {
       this.screenShareProblem = screenShareProblemOf(error);
       return;
+    } finally {
+      this.isRequestingScreen = false;
     }
     const track = stream.getVideoTracks()[0];
-    // Hung up or reconnected meanwhile, or a second click won: this stream would never be stopped.
-    if (track === undefined || sender !== this.videoSender || this.screen !== null || this.phase === "idle") {
+    // Hung up or moved while the picker was open: this stream would never be stopped. A
+    // reconnection meanwhile is fine: the new connection's sender takes it.
+    const sender = this.videoSender;
+    if (track === undefined || sender === null || this.phase === "idle" || this.channelId !== channelId) {
       stream.getTracks().forEach((stopped) => stopped.stop());
       return;
     }
@@ -662,11 +673,19 @@ export class VoiceSession {
     try {
       await sender.replaceTrack(track);
     } catch (error) {
-      console.warn("couldn't send the shared screen", error);
-      this.stopScreenShare();
-      this.screenShareProblem = "unsupported";
+      if (this.screen === stream) {
+        console.warn("couldn't send the shared screen", error);
+        this.stopScreenShare();
+        this.screenShareProblem = "unsupported";
+      }
       return;
     }
+    // Stopped, hung up or moved during the swap: nothing to announce.
+    if (this.screen !== stream) {
+      return;
+    }
+    // The quality may have changed since this connection's encodings were set.
+    this.applyScreenShareQualityToSender(sender);
     this.sendVoiceState();
   }
 
@@ -685,16 +704,18 @@ export class VoiceSession {
   setScreenShareQuality(quality: ScreenShareQuality): void {
     this.screenShareQuality = quality;
     this.ports.storage()?.setItem(SCREEN_SHARE_QUALITY_STORAGE_KEY, quality);
-    const track = this.screen?.getVideoTracks()[0];
-    const sender = this.videoSender;
-    if (track === undefined || sender === null) {
-      return;
+    if (this.videoSender !== null) {
+      this.applyScreenShareQualityToSender(this.videoSender);
     }
-    void track
-      .applyConstraints(screenCaptureConstraints(quality))
+    void this.screen
+      ?.getVideoTracks()[0]
+      ?.applyConstraints(screenCaptureConstraints(quality))
       .catch((error: unknown) => console.warn("couldn't change the shared screen's size", error));
+  }
+
+  private applyScreenShareQualityToSender(sender: RTCRtpSender): void {
     const parameters = sender.getParameters();
-    parameters.encodings = withQuality(parameters.encodings, quality);
+    parameters.encodings = withQuality(parameters.encodings, this.screenShareQuality);
     void sender.setParameters(parameters).catch((error: unknown) => console.warn("couldn't change the shared screen's bit rate", error));
   }
 

@@ -23,7 +23,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::config::VoiceConfig;
 use crate::domain::guilds::{ChannelAudience, Guilds};
-use crate::domain::video_rules::{layer_for_tile, missing_room_for_a_camera};
+use crate::domain::video_rules::{
+    layer_for_tile, maximum_full_layer_streams, missing_room_for_a_camera,
+};
 use crate::domain::voice_rules::{
     VoiceAccess, has_room_for_one_more, may_play_another_sound, validate_voice_offer,
 };
@@ -196,7 +198,10 @@ impl VoiceService {
         events: Arc<EventHub>,
     ) -> Self {
         let started = if config.enabled {
-            start_media_loop(config.udp_port)
+            start_media_loop(
+                config.udp_port,
+                maximum_full_layer_streams(config.video_upload_mbps),
+            )
         } else {
             None
         };
@@ -994,6 +999,14 @@ impl VoiceShared {
                         participant.self_state.video = None;
                         let command = participant.camera_command(*user_id);
                         self.send_media_command(command);
+                        // Said outright, so the client stops capturing at once.
+                        self.events.publish_to_session(
+                            participant.session,
+                            &GatewayEvent::VoiceVideoRefused {
+                                channel_id: participant.channel_id,
+                                reason: VoiceVideoRefusal::MissingPermissions,
+                            },
+                        );
                     }
                     continue;
                 }
@@ -1054,7 +1067,10 @@ fn enlarge_socket_buffers(socket: &UdpSocket) {
 }
 
 /// Binds the voice port on every IPv4 address and starts the media thread.
-fn start_media_loop(udp_port: u16) -> Option<(MediaHandle, UnboundedReceiver<MediaEvent>)> {
+fn start_media_loop(
+    udp_port: u16,
+    maximum_full_layer_streams: usize,
+) -> Option<(MediaHandle, UnboundedReceiver<MediaEvent>)> {
     // Installed once per process; later calls keep the first provider.
     str0m::crypto::from_feature_flags().install_process_default();
     let socket = match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, udp_port)) {
@@ -1082,7 +1098,14 @@ fn start_media_loop(udp_port: u16) -> Option<(MediaHandle, UnboundedReceiver<Med
     let (event_sender, media_events) = unbounded_channel();
     let spawned = std::thread::Builder::new()
         .name("mellow-voice-media".into())
-        .spawn(move || media::run_media_loop(socket, &command_receiver, &event_sender));
+        .spawn(move || {
+            media::run_media_loop(
+                socket,
+                &command_receiver,
+                &event_sender,
+                maximum_full_layer_streams,
+            );
+        });
     if let Err(error) = spawned {
         tracing::error!(%error, "voice: cannot start the media thread; voice channels are unavailable");
         return None;

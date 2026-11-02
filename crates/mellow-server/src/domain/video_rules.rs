@@ -55,6 +55,31 @@ pub(crate) fn missing_room_for_a_camera(
         .then_some(VoiceVideoRefusal::TooManyCameras)
 }
 
+/// What a full-quality stream (`h`) may cost the host's upload at most: a 1440p screen with its
+/// keyframes (ADR-0037).
+pub(crate) const FULL_LAYER_STREAM_MBPS: u32 = 10;
+
+/// How many full-quality streams the instance forwards at once within `[voice] video_upload_mbps`.
+#[must_use]
+pub(crate) const fn maximum_full_layer_streams(video_upload_mbps: u32) -> usize {
+    (video_upload_mbps / FULL_LAYER_STREAM_MBPS) as usize
+}
+
+/// The layer a tile gets: the one it asks for, except a full-quality one once the instance already
+/// forwards as many as its upload allows, which gets the half-size layer instead.
+#[must_use]
+pub(crate) fn layer_within_upload(
+    wanted: SimulcastLayer,
+    full_layer_streams: usize,
+    maximum_full_layer_streams: usize,
+) -> SimulcastLayer {
+    if wanted == SimulcastLayer::High && full_layer_streams >= maximum_full_layer_streams {
+        SimulcastLayer::Low
+    } else {
+        wanted
+    }
+}
+
 /// What to do with a frame of a camera's layer for one watcher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FrameForwarding {
@@ -264,6 +289,20 @@ const fn bytes_as_f64(bytes: usize) -> f64 {
 mod tests {
     use super::*;
     use SimulcastLayer::{High, Low, Quarter};
+
+    #[test]
+    fn full_quality_streams_stop_at_the_upload_budget_and_tiles_beyond_get_half_size() {
+        assert_eq!(maximum_full_layer_streams(100), 10);
+        assert_eq!(maximum_full_layer_streams(25), 2);
+        assert_eq!(maximum_full_layer_streams(5), 0);
+        assert_eq!(layer_within_upload(High, 9, 10), High);
+        assert_eq!(layer_within_upload(High, 10, 10), Low);
+        assert_eq!(
+            layer_within_upload(Quarter, 10, 10),
+            Quarter,
+            "small tiles are not counted"
+        );
+    }
 
     #[test]
     fn tiles_get_the_layer_of_their_size() {
