@@ -155,6 +155,12 @@ Like stages 16.2 to 16.4, each step below is reviewed before the next, and the s
 5. **A real two-browser check** (two Chromium contexts through a release build, as for voice, plus Firefox if possible).
 6. **A release** the owner tries on their instance, then stage 16.6.
 
+## The Vesper engine (owner, 2026-11-02)
+The owner asked for video to use the engine of Vesper, their own screen recorder ([github.com/Paul-Carouge/vesper](https://github.com/Paul-Carouge/vesper)), and asked whether the web client can.
+- **The web client cannot.** Vesper captures through the Wayland ScreenCast portal and PipeWire with DMA-BUF, a Vulkan layer and an OpenGL preload for games, and encodes on the GPU with VAAPI (AV1, HEVC, H.264), frames never touching system memory. A web page, WebAssembly included, reaches none of these: it gets cameras and screens only through `getUserMedia` and `getDisplayMedia`, and encodes through the browser's WebRTC encoder, which already uses the hardware encoder where the browser has one. Stages 16.5 and 16.6 therefore use the browser's WebRTC on the web.
+- **The native desktop client will.** The GPUI client to come (ADR-0036) can capture and encode with Vesper's crates and send the result over WebRTC (`str0m` on the client side) to the same SFU, which only forwards. What this asks of the SFU now: no assumption that every camera or screen is VP8 beyond this ADR's codec negotiation, so that a later ADR can add the codec Vesper encodes and every browser decodes (H.264 everywhere; AV1 where the browser decodes it).
+- **Before any Vesper code enters Mellow**, the owner relicenses the reused crates under AGPL-3.0 or a compatible licence (Vesper's own licence reserves all rights), and Vesper's Linux-only capture gains Windows and macOS paths or the desktop client falls back to the platform's own capture there.
+
 ## Choices made with the owner (2026-11-02)
 Proposed to the owner as defaults, to be changed if they say so:
 - **Upload budget default**: 100 Mbit/s, adjustable in `mellow.toml`; lowered if the owner's connection uploads less.
