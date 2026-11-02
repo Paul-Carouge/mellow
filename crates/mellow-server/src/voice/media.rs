@@ -18,7 +18,11 @@ use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::domain::video_rules::{FrameForwarding, KeyframeThrottle, LayerSwitch, active_layers};
+use crate::domain::video_rules::{
+    FrameForwarding, LayerByteBudget, LayerSwitch, MAXIMUM_SILENCE_OF_A_CAMERA,
+    MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS,
+    MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER, Throttle, active_layers,
+};
 use crate::domain::voice_rules::{ReceiveSlots, SpeakingDetector};
 
 /// Addresses remembered per participant: a client changing networks adds one now and then.
@@ -154,6 +158,11 @@ pub(crate) enum MediaEvent {
         user_id: Snowflake,
         connection_id: u64,
     },
+    /// `user_id`'s camera sent nothing for `MAXIMUM_SILENCE_OF_A_CAMERA` and was turned off.
+    CameraSilent {
+        user_id: Snowflake,
+        connection_id: u64,
+    },
     /// The layers of `user_id`'s camera that someone watches changed.
     CameraLayers {
         user_id: Snowflake,
@@ -214,6 +223,10 @@ struct ParticipantVideo {
     is_camera_forwarded: bool,
     /// The layers of this participant's camera last reported as watched.
     reported_camera_layers: Vec<SimulcastLayer>,
+    /// What each layer of their camera may still send (at most 3 entries).
+    layer_budgets: HashMap<SimulcastLayer, LayerByteBudget>,
+    /// When their camera was turned on or last sent a frame, to turn off one that sends nothing.
+    camera_heard_at: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -426,7 +439,10 @@ struct MediaLoop<'a> {
     /// Who sends from which address: `Rtc::accepts` on everyone would cost O(n) per packet.
     sources: SourceAddresses,
     collected: Collected,
-    keyframe_throttle: KeyframeThrottle<Snowflake>,
+    /// Keyframe requests to a camera, by (camera, layer).
+    keyframe_throttle: Throttle<(Snowflake, SimulcastLayer)>,
+    /// Keyframe requests a watcher passes on, by (watcher, camera).
+    watcher_keyframe_throttle: Throttle<(Snowflake, Snowflake)>,
     /// The participant whose session is being driven, so a panic inside `str0m` drops only them.
     current_participant: Option<Snowflake>,
 }
@@ -444,7 +460,10 @@ pub(crate) fn run_media_loop(
         participants: HashMap::new(),
         sources: SourceAddresses::default(),
         collected: Collected::default(),
-        keyframe_throttle: KeyframeThrottle::default(),
+        keyframe_throttle: Throttle::new(MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS),
+        watcher_keyframe_throttle: Throttle::new(
+            MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER,
+        ),
         current_participant: None,
     };
     let mut buffer = vec![0_u8; RECEIVE_BUFFER_BYTES];
@@ -478,6 +497,7 @@ pub(crate) fn run_media_loop(
         media.guarded(|media| media.pass_keyframe_requests(now));
         media.guarded(MediaLoop::give_new_video_slots);
         media.guarded(|media| media.tick_speaking(now));
+        media.guarded(|media| media.turn_off_silent_cameras(now));
         media.guarded(|media| media.end_dead_connections(now));
     }
 }
@@ -581,7 +601,11 @@ impl MediaLoop<'_> {
         let Some(camera) = self.participants.get_mut(&user_id) else {
             return;
         };
-        camera.video.is_camera_forwarded = is_camera_forwarded;
+        let was_forwarded =
+            std::mem::replace(&mut camera.video.is_camera_forwarded, is_camera_forwarded);
+        if is_camera_forwarded && !was_forwarded {
+            camera.video.camera_heard_at = Some(Instant::now());
+        }
         if !camera.video.is_camera_forwarded {
             // The next stream starts over: watchers wait for its first keyframe.
             self.restart_watchers_of(user_id);
@@ -722,7 +746,10 @@ impl MediaLoop<'_> {
             return;
         };
         self.sources.forget(user_id);
-        self.keyframe_throttle.forget(user_id);
+        self.keyframe_throttle
+            .forget(|(camera_id, _)| *camera_id == user_id);
+        self.watcher_keyframe_throttle
+            .forget(|(watcher_id, camera_id)| *watcher_id == user_id || *camera_id == user_id);
         for listener in self.participants.values_mut() {
             listener.slots.release(user_id);
         }
@@ -845,7 +872,7 @@ impl MediaLoop<'_> {
     fn forward_camera_frame(&mut self, camera_id: Snowflake, frame: &MediaData, now: Instant) {
         let Some(camera) = self
             .participants
-            .get(&camera_id)
+            .get_mut(&camera_id)
             .filter(|camera| camera.video.is_camera_forwarded)
         else {
             return;
@@ -855,10 +882,28 @@ impl MediaLoop<'_> {
         let Some(layer) = frame.rid.and_then(layer_of_rid) else {
             return;
         };
+        camera.video.camera_heard_at = Some(now);
+        eprintln!(
+            "DEBUG frame {layer:?} len {} key {}",
+            frame.data.len(),
+            frame.is_keyframe()
+        );
+        // Over its layer's budget, the frame reaches no one (ADR-0035): a client cannot send a
+        // large picture under the name of a small layer.
+        if !camera
+            .video
+            .layer_budgets
+            .entry(layer)
+            .or_insert_with(|| LayerByteBudget::new(layer, now))
+            .has_room_for(frame.data.len(), now)
+        {
+            return;
+        }
         let channel_id = camera.channel_id;
         let is_keyframe = frame.is_keyframe();
         let mut has_switched = false;
         let mut is_keyframe_wanted = false;
+        let mut is_forwarded = false;
         let mut ignored = Collected::default();
         for watcher in self.participants.values_mut().filter(|watcher| {
             watcher.user_id != camera_id && watcher.channel_id == channel_id && watcher.is_connected
@@ -894,8 +939,17 @@ impl MediaLoop<'_> {
                 watcher.rtc.disconnect();
                 continue;
             }
+            is_forwarded = true;
             // A watcher only receives media here; what it sends arrives through its own input.
             drain_output(watcher, &self.socket, &mut ignored);
+        }
+        if is_forwarded
+            && let Some(budget) = self
+                .participants
+                .get_mut(&camera_id)
+                .and_then(|camera| camera.video.layer_budgets.get_mut(&layer))
+        {
+            budget.spend(frame.data.len());
         }
         if is_keyframe_wanted {
             self.request_keyframe(camera_id, layer, now);
@@ -907,7 +961,7 @@ impl MediaLoop<'_> {
 
     /// Asks the camera for a keyframe of `layer`, at most once per layer every 300 ms.
     fn request_keyframe(&mut self, camera_id: Snowflake, layer: SimulcastLayer, now: Instant) {
-        if !self.keyframe_throttle.may_request(camera_id, layer, now) {
+        if !self.keyframe_throttle.may_pass((camera_id, layer), now) {
             return;
         }
         let Some(camera) = self.participants.get_mut(&camera_id) else {
@@ -937,7 +991,12 @@ impl MediaLoop<'_> {
             }) else {
                 continue;
             };
-            self.request_keyframe(camera_id, layer, now);
+            if self
+                .watcher_keyframe_throttle
+                .may_pass((watcher_id, camera_id), now)
+            {
+                self.request_keyframe(camera_id, layer, now);
+            }
         }
     }
 
@@ -1032,6 +1091,29 @@ impl MediaLoop<'_> {
         }
     }
 
+    /// Turns off the cameras that sent nothing for `MAXIMUM_SILENCE_OF_A_CAMERA`, and tells the
+    /// voice service, which turns `self_video` off.
+    fn turn_off_silent_cameras(&mut self, now: Instant) {
+        let silent: Vec<(Snowflake, u64)> = self
+            .participants
+            .values()
+            .filter(|camera| {
+                camera.video.is_camera_forwarded
+                    && camera.video.camera_heard_at.is_some_and(|heard_at| {
+                        now.saturating_duration_since(heard_at) >= MAXIMUM_SILENCE_OF_A_CAMERA
+                    })
+            })
+            .map(|camera| (camera.user_id, camera.connection_id))
+            .collect();
+        for (user_id, connection_id) in silent {
+            self.set_camera(user_id, false);
+            self.emit(MediaEvent::CameraSilent {
+                user_id,
+                connection_id,
+            });
+        }
+    }
+
     fn end_dead_connections(&mut self, now: Instant) {
         let dead: Vec<(Snowflake, u64)> = self
             .participants
@@ -1065,21 +1147,89 @@ mod tests {
         change.apply().unwrap().0.to_sdp_string()
     }
 
-    #[test]
-    fn a_panic_in_a_session_drops_only_that_participant() {
+    fn media_loop<'a>(
+        commands: &'a Receiver<MediaCommand>,
+        events: &'a UnboundedSender<MediaEvent>,
+    ) -> MediaLoop<'a> {
         str0m::crypto::from_feature_flags().install_process_default();
-        let (_commands, command_receiver) = std::sync::mpsc::channel();
-        let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
-        let mut media = MediaLoop {
+        MediaLoop {
             socket: UdpSocket::bind("127.0.0.1:0").unwrap(),
-            commands: &command_receiver,
-            events: &event_sender,
+            commands,
+            events,
             participants: HashMap::new(),
             sources: SourceAddresses::default(),
             collected: Collected::default(),
-            keyframe_throttle: KeyframeThrottle::default(),
+            keyframe_throttle: Throttle::new(MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS),
+            watcher_keyframe_throttle: Throttle::new(
+                MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER,
+            ),
             current_participant: None,
-        };
+        }
+    }
+
+    #[test]
+    fn a_camera_that_sends_nothing_is_turned_off_and_reported() {
+        let (_commands, command_receiver) = std::sync::mpsc::channel();
+        let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let mut media = media_loop(&command_receiver, &event_sender);
+        let candidate: SocketAddr = "127.0.0.1:50000".parse().unwrap();
+        let (rtc, _) = answer_offer(&client_offer(), candidate).unwrap();
+        let camera_id = Snowflake::from_raw(1);
+        media.apply(MediaCommand::Join(Box::new(MediaJoin {
+            user_id: camera_id,
+            connection_id: 10,
+            channel_id: Snowflake::from_raw(5),
+            rtc,
+            candidate_address: candidate,
+            is_forwarded: true,
+            is_deafened: false,
+        })));
+        media.apply(MediaCommand::SetCamera {
+            user_id: camera_id,
+            is_camera_forwarded: true,
+        });
+        let turned_on_at = media.participants[&camera_id]
+            .video
+            .camera_heard_at
+            .unwrap();
+        assert_eq!(
+            events.try_recv(),
+            Ok(MediaEvent::CameraLayers {
+                user_id: camera_id,
+                connection_id: 10,
+                active: vec![SimulcastLayer::Quarter],
+            })
+        );
+
+        media.turn_off_silent_cameras(turned_on_at + MAXIMUM_SILENCE_OF_A_CAMERA / 2);
+        assert!(events.try_recv().is_err(), "still starting");
+        media.turn_off_silent_cameras(turned_on_at + MAXIMUM_SILENCE_OF_A_CAMERA);
+
+        assert!(!media.participants[&camera_id].video.is_camera_forwarded);
+        assert_eq!(
+            events.try_recv(),
+            Ok(MediaEvent::CameraLayers {
+                user_id: camera_id,
+                connection_id: 10,
+                active: Vec::new(),
+            })
+        );
+        assert_eq!(
+            events.try_recv(),
+            Ok(MediaEvent::CameraSilent {
+                user_id: camera_id,
+                connection_id: 10,
+            })
+        );
+        media.turn_off_silent_cameras(turned_on_at + MAXIMUM_SILENCE_OF_A_CAMERA * 2);
+        assert!(events.try_recv().is_err(), "reported once");
+    }
+
+    #[test]
+    fn a_panic_in_a_session_drops_only_that_participant() {
+        let (_commands, command_receiver) = std::sync::mpsc::channel();
+        let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let mut media = media_loop(&command_receiver, &event_sender);
         let candidate: SocketAddr = "127.0.0.1:50000".parse().unwrap();
         for (user_id, connection_id) in [(1, 10), (2, 20)] {
             let (rtc, _) = answer_offer(&client_offer(), candidate).unwrap();

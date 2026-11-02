@@ -137,6 +137,8 @@ struct VoiceShared {
     /// `localhost` candidate is replaced by the machine's network address.
     is_development_listener: bool,
     max_participants: usize,
+    /// `[voice] video_upload_mbps` is above 0: cameras may be turned on (ADR-0035).
+    is_video_enabled: bool,
     guilds: Arc<Guilds>,
     events: Arc<EventHub>,
     /// By user: one voice connection per user. An async lock, held across the audience reads,
@@ -208,6 +210,7 @@ impl VoiceService {
                 resolutions: HostResolutions::default(),
                 is_development_listener,
                 max_participants: usize::try_from(config.max_participants).unwrap_or(usize::MAX),
+                is_video_enabled: config.video_upload_mbps > 0,
                 guilds,
                 events,
                 participants: tokio::sync::Mutex::default(),
@@ -634,7 +637,7 @@ impl VoiceShared {
         user_id: Snowflake,
         participant: &Participant,
     ) -> Option<VoiceVideoRefusal> {
-        if !participant.has_video {
+        if !self.is_video_enabled || !participant.has_video {
             return Some(VoiceVideoRefusal::VideoUnavailable);
         }
         match self
@@ -856,6 +859,19 @@ impl VoiceShared {
                     },
                 );
             }
+            MediaEvent::CameraSilent {
+                user_id,
+                connection_id,
+            } => {
+                let Some(camera) = participants.get_mut(&user_id).filter(|camera| {
+                    camera.connection_id == connection_id && camera.self_state.self_video
+                }) else {
+                    return;
+                };
+                camera.self_state.self_video = false;
+                let camera = camera.clone();
+                self.publish_state_updated(user_id, &camera).await;
+            }
             MediaEvent::CameraLayers {
                 user_id,
                 connection_id,
@@ -977,6 +993,28 @@ fn missing_room(
     (others_on_instance >= max_participants).then_some(VoiceJoinRefusal::InstanceFull)
 }
 
+/// Kernel buffer asked for each direction of the voice socket: a keyframe arrives as a burst of
+/// dozens of packets per camera, which Linux's default 208 KiB drops with many cameras (ADR-0035).
+const UDP_SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+
+/// Asks the kernel for larger buffers; it may grant less (Linux caps them at `net.core.rmem_max`
+/// and `wmem_max`), which is logged once, never fatal.
+fn enlarge_socket_buffers(socket: &UdpSocket) {
+    let socket = socket2::SockRef::from(socket);
+    let enlarged = socket
+        .set_recv_buffer_size(UDP_SOCKET_BUFFER_BYTES)
+        .and_then(|()| socket.set_send_buffer_size(UDP_SOCKET_BUFFER_BYTES))
+        .and_then(|()| Ok((socket.recv_buffer_size()?, socket.send_buffer_size()?)));
+    match enlarged {
+        Ok((receive_bytes, send_bytes)) => tracing::info!(
+            receive_bytes,
+            send_bytes,
+            "voice: UDP socket buffers (raise net.core.rmem_max and wmem_max for more)"
+        ),
+        Err(error) => tracing::warn!(%error, "voice: cannot enlarge the UDP socket buffers"),
+    }
+}
+
 /// Binds the voice port on every IPv4 address and starts the media thread.
 fn start_media_loop(udp_port: u16) -> Option<(MediaHandle, UnboundedReceiver<MediaEvent>)> {
     // Installed once per process; later calls keep the first provider.
@@ -992,6 +1030,7 @@ fn start_media_loop(udp_port: u16) -> Option<(MediaHandle, UnboundedReceiver<Med
             return None;
         }
     };
+    enlarge_socket_buffers(&socket);
     let bound_port = match socket.local_addr() {
         Ok(address) => address.port(),
         Err(error) => {

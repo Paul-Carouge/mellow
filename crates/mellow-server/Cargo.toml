@@ -38,6 +38,7 @@ rustls-acme.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+socket2.workspace = true
 ssimulacra2.workspace = true
 sqlx.workspace = true
 str0m.workspace = true

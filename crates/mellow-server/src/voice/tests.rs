@@ -96,6 +96,7 @@ pub(super) async fn fixture() -> Fixture {
             udp_port: 0,
             public_address: Some("127.0.0.1".into()),
             max_participants: 50,
+            video_upload_mbps: 100,
         },
         false,
         state.guilds.clone(),
