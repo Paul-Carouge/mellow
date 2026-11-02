@@ -16,6 +16,8 @@ env:
   CARGO_TERM_COLOR: always
   # Linux desktop build: Slint (fontconfig, xkbcommon), the secret store (D-Bus), the clipboard (xcb).
   LINUX_DESKTOP_PACKAGES: pkg-config libfontconfig1-dev libxkbcommon-dev libdbus-1-dev libxcb1-dev
+  # The server's AVIF encoder (rav1e) assembles its x86-64 code with nasm (ADR-0033).
+  SERVER_BUILD_PACKAGES: nasm
 
 jobs:
   # The web client is built apart from the native binaries, without install scripts: npm code
@@ -72,7 +74,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           # shellcheck disable=SC2086 # the package list is split into words on purpose
-          sudo apt-get update && sudo apt-get install --yes --no-install-recommends ${LINUX_DESKTOP_PACKAGES}
+          sudo apt-get update && sudo apt-get install --yes --no-install-recommends ${LINUX_DESKTOP_PACKAGES} ${SERVER_BUILD_PACKAGES}
       # The server embeds the web client it serves (ADR-0019).
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

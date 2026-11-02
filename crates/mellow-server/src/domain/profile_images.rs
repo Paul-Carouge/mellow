@@ -1,5 +1,5 @@
-//! Avatars and profile banners (ADR-0021): uploaded pictures fitted to their display size and
-//! stored as lossless WebP, animated ones with a still first frame; each version its own id.
+//! Avatars and profile banners (ADR-0021, ADR-0033): uploaded pictures fitted to their display size
+//! and stored as AVIF or WebP, animated ones with a still first frame; each version its own id.
 
 use std::sync::Arc;
 use std::time::Duration;

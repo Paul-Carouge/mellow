@@ -87,7 +87,7 @@ pub(crate) async fn insert_attachment(
     Ok(())
 }
 
-/// Points the row at its compressed file (ADR-0021); `false` when the attachment is gone.
+/// Points the row at its compressed file (ADR-0033); `false` when the attachment is gone.
 pub(crate) async fn update_attachment_file(
     database: &Database,
     attachment_id: Snowflake,
@@ -125,10 +125,11 @@ pub(crate) async fn record_optimization_attempt(
 
 /// Shared with the migration test that checks it stays on `attachments_awaiting_optimization`.
 pub(crate) const ATTACHMENTS_AWAITING_OPTIMIZATION_QUERY: &str = "SELECT id FROM attachments WHERE optimization_attempted_at_unix_milliseconds IS NULL \
-     AND content_type IN ('image/png', 'image/gif') ORDER BY id DESC LIMIT ?";
+     AND content_type IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp') \
+     ORDER BY id DESC LIMIT ?";
 
-/// The newest PNG and GIF attachments the background compression never tried, at most `limit`.
-/// The condition repeats migration 0025's partial index word for word, so the index answers it.
+/// The newest picture attachments the background compression never tried, at most `limit`. The
+/// condition repeats migration 0027's partial index word for word, so the index answers it.
 pub(crate) async fn newest_attachments_awaiting_optimization(
     database: &Database,
     limit: usize,

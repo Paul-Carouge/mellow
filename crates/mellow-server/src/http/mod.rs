@@ -2715,8 +2715,9 @@ pub(crate) mod tests {
             authorized("GET", &image_path, &stranger, None),
         )
         .await;
-        let (_, still) = send(
+        let ((_, still), still_headers) = send_from(
             &state,
+            TEST_PEER,
             authorized("GET", &format!("{image_path}/still"), &stranger, None),
         )
         .await;
@@ -2776,6 +2777,13 @@ pub(crate) mod tests {
         assert_eq!(&animated[..4], b"RIFF");
         assert_eq!(&animated[8..12], b"WEBP");
         assert_ne!(animated, still, "the still is its first frame only");
+        let still_type = crate::domain::message_rules::sniff_content_type(&still);
+        assert!(["image/avif", "image/webp"].contains(&still_type));
+        assert_eq!(
+            still_headers.get(header::CONTENT_TYPE).unwrap(),
+            still_type,
+            "served as the type it is stored in"
+        );
         assert_eq!(
             animated_headers.get(header::CONTENT_TYPE).unwrap(),
             "image/webp"

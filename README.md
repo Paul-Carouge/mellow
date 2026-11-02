@@ -16,7 +16,7 @@ A calm, self-hostable alternative to Discord, written in Rust.
 - [CLAUDE.md](CLAUDE.md) — instructions for AI-assisted development.
 
 ## Development
-Prerequisites: [rustup](https://rustup.rs) (the pinned toolchain in `rust-toolchain.toml` installs itself), a C compiler, and to build the vendored OpenSSL used by SQLCipher: `perl` and `make` on Linux, Visual Studio Build Tools (`nmake`) and Strawberry Perl on Windows. Android (later): JDK 21, Android SDK, NDK, `cargo-ndk`.
+Prerequisites: [rustup](https://rustup.rs) (the pinned toolchain in `rust-toolchain.toml` installs itself), a C compiler, `nasm` on x86-64 (the server's AVIF encoder assembles its fast paths with it), and to build the vendored OpenSSL used by SQLCipher: `perl` and `make` on Linux, Visual Studio Build Tools (`nmake`) and Strawberry Perl on Windows. Android (later): JDK 21, Android SDK, NDK, `cargo-ndk`.
 
 ```bash
 cargo test --workspace

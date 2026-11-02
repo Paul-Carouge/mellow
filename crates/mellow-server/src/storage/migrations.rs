@@ -408,7 +408,12 @@ mod tests {
         assert_eq!(awaiting_after_migration, Vec::<Snowflake>::new());
         assert_eq!(
             awaiting_after_uploads,
-            vec![Snowflake::from_raw(51), Snowflake::from_raw(50)]
+            vec![
+                Snowflake::from_raw(53),
+                Snowflake::from_raw(52),
+                Snowflake::from_raw(51),
+                Snowflake::from_raw(50)
+            ]
         );
         let plan = plan
             .into_iter()

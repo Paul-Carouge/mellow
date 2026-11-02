@@ -1,10 +1,17 @@
-//! Lossless compression of uploaded pictures (ADR-0021). Pure functions over bytes, run on a
-//! blocking thread by the caller: untrusted bytes are decoded in Rust (`image`), within limits
-//! checked first; libwebp only ever encodes decoded pixels.
+//! Compression of uploaded pictures, visually lossless (ADR-0033). Pure functions over bytes, run
+//! on a blocking thread by the caller: untrusted bytes are decoded in Rust (`image`), within limits
+//! checked first; libwebp and rav1e only ever encode decoded pixels.
+
+mod avif;
+mod colour;
+mod encoding;
+mod quality;
 
 use std::io::Cursor;
+use std::time::{Duration, Instant};
 
 use image::codecs::gif::GifDecoder;
+use image::codecs::png::PngDecoder;
 use image::codecs::webp::WebPDecoder;
 use image::imageops::FilterType;
 use image::metadata::Orientation;
@@ -12,16 +19,19 @@ use image::{
     AnimationDecoder as _, DynamicImage, ImageDecoder as _, ImageFormat, ImageReader, Limits,
     RgbaImage,
 };
-use webp_animation::{EncoderOptions, EncodingConfig, EncodingType};
+
+use colour::ColourSpace;
+use encoding::{Encoded, last_resort_still, smallest_animation, smallest_still};
 
 /// Larger pictures are kept as uploaded and never processed (decompression bombs). Checked from
 /// the header, before any pixel is allocated; the total bounds the memory of one job.
 const MAXIMUM_SIDE_PIXELS: u32 = 8_192;
 const MAXIMUM_TOTAL_PIXELS: u64 = 24_000_000;
 const MAXIMUM_FRAMES: usize = 600;
-/// Largest display sizes: nothing is ever shown bigger (ADR-0021).
-const AVATAR_SIDE_PIXELS: u32 = 512;
-const BANNER_WIDTH_PIXELS: u32 = 1_920;
+/// Stored sizes: three times the largest CSS size each is shown at, for high-density screens
+/// (ADR-0033). Avatars show at most at 80 px (profile popover), banners in a 300 px wide card.
+const AVATAR_SIDE_PIXELS: u32 = 256;
+const BANNER_WIDTH_PIXELS: u32 = 960;
 /// Icons are shown small (server rail, channel row), so they are stored small: three times their
 /// largest display size, for high-density screens.
 const GUILD_ICON_SIDE_PIXELS: u32 = 256;
@@ -29,19 +39,20 @@ const CHANNEL_ICON_SIDE_PIXELS: u32 = 96;
 /// Custom emoji show at most at 48 px (jumbo, alone in a message), so they are stored at 128 px,
 /// as on Discord (ADR-0028).
 const EMOJI_SIDE_PIXELS: u32 = 128;
-/// libwebp's effort for lossless encoding: 0 (fast) to 100 (smallest); the pixels are the same
-/// whatever the effort. Measured in release on a 480 × 480, 60-frame GIF: 2.4 s at 60/4, 2.2 s at
-/// 25/1, 1.5 s at 10/0, decoding included; it runs after the upload is answered.
-const LOSSLESS_EFFORT: f32 = 25.0;
-const LOSSLESS_METHOD: usize = 1;
-/// oxipng's preset: 2 is its fast default, most of the gain of the slow ones.
-const PNG_OPTIMIZATION_PRESET: u8 = 2;
-/// oxipng stops trying better compressions past this and keeps its best so far.
-const PNG_OPTIMIZATION_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+/// Pictures past this are only ever encoded by the single attachment worker, so two of them never
+/// run at once and peak memory stays near 1 GB (an AVIF of 15 MP takes about 720 MB).
+const LARGE_PICTURE_PIXELS: u64 = 8_000_000;
+// Every avatar, banner and icon is under it once fitted, so processing them while uploading
+// never adds a second large job.
+const _: () = assert!(
+    BANNER_WIDTH_PIXELS as u64 * MAXIMUM_SIDE_PIXELS as u64 <= LARGE_PICTURE_PIXELS
+        && GUILD_ICON_SIDE_PIXELS as u64 * GUILD_ICON_SIDE_PIXELS as u64 <= LARGE_PICTURE_PIXELS
+);
+/// Searching qualities stops starting encodes past this, for pictures processed while uploading:
+/// the upload itself gives up after 20 s.
+const UPLOAD_SEARCH_TIME_BUDGET: Duration = Duration::from_secs(10);
 /// Memory allowed to read a picture's header and its metadata, before any pixel.
 const HEADER_READ_MAXIMUM_BYTES: u64 = 16 * 1024 * 1024;
-/// Bytes per pixel of the widest PNG layout (RGBA, 16 bits a channel).
-const PNG_LARGEST_BYTES_PER_PIXEL: u64 = 8;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum ImageProcessingError {
@@ -86,10 +97,20 @@ pub(crate) struct ProcessedImage {
 }
 
 /// An avatar or banner to store: the picture, and its first frame alone when it is animated.
+/// Each file's type is read back from its bytes when served.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProcessedProfileImage {
     pub(crate) picture: ProcessedImage,
     pub(crate) still: Option<Vec<u8>>,
+}
+
+/// A decoded upload: its frames with their duration in milliseconds, already fitted.
+#[derive(Debug)]
+struct DecodedPicture {
+    frames: Vec<(RgbaImage, u32)>,
+    colour: ColourSpace,
+    /// A JPEG: lossless WebP is never smaller for a photo, so it is not tried.
+    is_photo: bool,
 }
 
 fn limits() -> Limits {
@@ -194,11 +215,17 @@ fn check_gif_frames(bytes: &[u8]) -> Result<(), ImageProcessingError> {
 /// The frames of a picture with their duration in milliseconds; one frame for still pictures,
 /// turned the way its EXIF orientation says. Each frame goes through `shrink` as soon as it is
 /// decoded, so only small frames are kept. Animated PNG (APNG) is read as its first frame.
-fn decode_frames(
+fn decode_picture(
     bytes: &[u8],
     shrink: impl Fn(RgbaImage) -> RgbaImage,
-) -> Result<Vec<(RgbaImage, u32)>, ImageProcessingError> {
+) -> Result<DecodedPicture, ImageProcessingError> {
     let format = image::guess_format(bytes).map_err(|_| ImageProcessingError::Unsupported)?;
+    let animation = |frames| DecodedPicture {
+        frames,
+        // GIF has no colour profile; an animated WebP's is not read (see below).
+        colour: ColourSpace::Srgb,
+        is_photo: false,
+    };
     match format {
         ImageFormat::Gif => {
             check_gif_frames(bytes)?;
@@ -208,7 +235,11 @@ fn decode_frames(
                 .set_limits(limits())
                 .map_err(|_| ImageProcessingError::TooLarge)?;
             let dimensions = decoder.dimensions();
-            return collect_frames(decoder.into_frames(), dimensions, shrink);
+            return Ok(animation(collect_frames(
+                decoder.into_frames(),
+                dimensions,
+                shrink,
+            )?));
         }
         ImageFormat::WebP => {
             let mut decoder = WebPDecoder::new(Cursor::new(bytes))
@@ -218,7 +249,11 @@ fn decode_frames(
                     .set_limits(limits())
                     .map_err(|_| ImageProcessingError::TooLarge)?;
                 let dimensions = decoder.dimensions();
-                return collect_frames(decoder.into_frames(), dimensions, shrink);
+                return Ok(animation(collect_frames(
+                    decoder.into_frames(),
+                    dimensions,
+                    shrink,
+                )?));
             }
         }
         ImageFormat::Png | ImageFormat::Jpeg => {}
@@ -226,23 +261,41 @@ fn decode_frames(
     }
     let (width, height) = header_dimensions(bytes, format)?;
     check_dimensions(width, height)?;
-    let as_processing_error = |error: image::ImageError| match error {
-        image::ImageError::Limits(_) => ImageProcessingError::TooLarge,
-        _ => ImageProcessingError::Unsupported,
-    };
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     reader.limits(limits());
-    let mut decoder = reader.into_decoder().map_err(as_processing_error)?;
-    // Only where reading EXIF is bounded: the WebP decoder sizes its EXIF buffer from the declared
-    // chunk length, without any limit.
-    let orientation = if matches!(format, ImageFormat::Jpeg | ImageFormat::Png) {
-        decoder.orientation().map_err(as_processing_error)?
+    let mut decoder = reader
+        .into_decoder()
+        .map_err(|error| as_processing_error(&error))?;
+    // Only where reading metadata is bounded: the WebP decoder sizes its EXIF and ICC buffers from
+    // the declared chunk length, without any limit.
+    // shortcut: a still WebP's colour profile is ignored; read it once image-webp bounds it.
+    let (orientation, icc_profile) = if matches!(format, ImageFormat::Jpeg | ImageFormat::Png) {
+        (
+            decoder
+                .orientation()
+                .map_err(|error| as_processing_error(&error))?,
+            decoder
+                .icc_profile()
+                .map_err(|error| as_processing_error(&error))?,
+        )
     } else {
-        Orientation::NoTransforms
+        (Orientation::NoTransforms, None)
     };
-    let mut image = DynamicImage::from_decoder(decoder).map_err(as_processing_error)?;
+    let mut image =
+        DynamicImage::from_decoder(decoder).map_err(|error| as_processing_error(&error))?;
     image.apply_orientation(orientation);
-    Ok(vec![(shrink(image.into_rgba8()), 0)])
+    Ok(DecodedPicture {
+        frames: vec![(shrink(image.into_rgba8()), 0)],
+        colour: colour::colour_space_of(icc_profile.as_deref()),
+        is_photo: format == ImageFormat::Jpeg,
+    })
+}
+
+fn as_processing_error(error: &image::ImageError) -> ImageProcessingError {
+    match error {
+        image::ImageError::Limits(_) => ImageProcessingError::TooLarge,
+        _ => ImageProcessingError::Unsupported,
+    }
 }
 
 /// Down to the display size, never up; Lanczos keeps edges sharp.
@@ -285,64 +338,54 @@ fn crop_square_and_shrink(
     image::imageops::resize(&cropped, maximum_side, maximum_side, FilterType::Lanczos3)
 }
 
-fn lossless_options() -> EncoderOptions {
-    EncoderOptions {
-        encoding_config: Some(EncodingConfig {
-            encoding_type: EncodingType::Lossless,
-            quality: LOSSLESS_EFFORT,
-            method: LOSSLESS_METHOD,
-        }),
-        ..EncoderOptions::default()
-    }
-}
-
-/// One still or animated lossless WebP from frames of the same size.
-fn encode_webp(frames: &[(RgbaImage, u32)]) -> Result<Vec<u8>, ImageProcessingError> {
-    let Some((first, _)) = frames.first() else {
-        return Err(ImageProcessingError::Encoding);
-    };
-    let dimensions = first.dimensions();
-    let mut encoder = webp_animation::Encoder::new_with_options(dimensions, lossless_options())
-        .map_err(|_| ImageProcessingError::Encoding)?;
-    let mut timestamp: i32 = 0;
-    for (frame, delay) in frames {
-        encoder
-            .add_frame(frame.as_raw(), timestamp)
-            .map_err(|_| ImageProcessingError::Encoding)?;
-        timestamp = timestamp.saturating_add(i32::try_from((*delay).max(1)).unwrap_or(i32::MAX));
-    }
-    let data = encoder
-        .finalize(timestamp)
-        .map_err(|_| ImageProcessingError::Encoding)?;
-    Ok(data.to_vec())
-}
-
-/// An avatar or a banner: fitted to its display size and stored as lossless WebP, animated
-/// when the source is, with its first frame as a still.
+/// An avatar or a banner: fitted to its display size and stored in the smallest form that looks
+/// the same, animated when the source is, with its first frame as a still.
 pub(crate) fn process_profile_image(
     bytes: &[u8],
     kind: ProfileImageKind,
 ) -> Result<ProcessedProfileImage, ImageProcessingError> {
-    encode_with_still(&decode_frames(bytes, |frame| fit(frame, kind))?)
+    encode_with_still(&decode_picture(bytes, |frame| fit(frame, kind))?)
 }
 
-/// The frames as one WebP, and their first alone when there are several.
+/// The still that must be stored: the smallest that passes, or the last resort.
+fn required_still(
+    frame: &RgbaImage,
+    picture: &DecodedPicture,
+    deadline: Instant,
+) -> Result<Encoded, ImageProcessingError> {
+    match smallest_still(frame, &picture.colour, !picture.is_photo, deadline)? {
+        Some(encoded) => Ok(encoded),
+        None => last_resort_still(frame, &picture.colour),
+    }
+}
+
+/// The frames as one picture, and their first alone when there are several.
 fn encode_with_still(
-    frames: &[(RgbaImage, u32)],
+    picture: &DecodedPicture,
 ) -> Result<ProcessedProfileImage, ImageProcessingError> {
-    let is_animated = frames.len() > 1;
-    let still = if is_animated {
-        Some(encode_webp(&frames[..1])?)
-    } else {
-        None
+    let deadline = Instant::now() + UPLOAD_SEARCH_TIME_BUDGET;
+    let Some((first, _)) = picture.frames.first() else {
+        return Err(ImageProcessingError::Unsupported);
     };
+    let still = required_still(first, picture, deadline)?;
+    if picture.frames.len() < 2 {
+        return Ok(ProcessedProfileImage {
+            picture: ProcessedImage {
+                bytes: still.bytes,
+                content_type: still.content_type,
+                is_animated: false,
+            },
+            still: None,
+        });
+    }
+    let animation = smallest_animation(&picture.frames, deadline)?;
     Ok(ProcessedProfileImage {
         picture: ProcessedImage {
-            bytes: encode_webp(frames)?,
-            content_type: "image/webp",
-            is_animated,
+            bytes: animation.bytes,
+            content_type: animation.content_type,
+            is_animated: true,
         },
-        still,
+        still: Some(still.bytes),
     })
 }
 
@@ -356,8 +399,8 @@ pub(crate) fn may_be_animated(bytes: &[u8]) -> bool {
 }
 
 /// A guild or channel icon or a custom emoji: the square kept, fitted to its display size and
-/// stored as lossless WebP; a guild's icon and an emoji animated when the source is, with its
-/// first frame as a still.
+/// stored in the smallest form that looks the same; a guild's icon and an emoji animated when the
+/// source is, with its first frame as a still.
 pub(crate) fn process_icon(
     bytes: &[u8],
     kind: IconKind,
@@ -368,84 +411,64 @@ pub(crate) fn process_icon(
         IconKind::Channel => CHANNEL_ICON_SIDE_PIXELS,
         IconKind::Emoji => EMOJI_SIDE_PIXELS,
     };
-    let mut frames = decode_frames(bytes, |frame| crop_square_and_shrink(&frame, crop, side))?;
+    let mut picture = decode_picture(bytes, |frame| crop_square_and_shrink(&frame, crop, side))?;
     if kind == IconKind::Channel {
         // shortcut: every frame is decoded and shrunk before the first is kept; stop decoding
         // after it if long GIFs as channel icons hit the processing time budget.
-        frames.truncate(1);
+        picture.frames.truncate(1);
     }
-    encode_with_still(&frames)
+    encode_with_still(&picture)
 }
 
-/// An attachment's smaller form, same pixels: PNG recompressed, animated GIF as animated WebP.
-/// `None` when nothing smaller came out. JPEG goes through `strip_jpeg_metadata` at upload.
+/// The content types `optimize_attachment` may make smaller.
+pub(crate) const OPTIMIZABLE_CONTENT_TYPES: [&str; 4] =
+    ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/// An attachment's smallest form that looks the same (ADR-0033): EXIF orientation applied to the
+/// pixels, no metadata left, animations kept animated; no encode starts past `deadline`. `None`
+/// when nothing passed or nothing came out smaller than `bytes` (a JPEG already stripped of its
+/// metadata by `strip_jpeg_metadata` at upload), and for an animated PNG.
 pub(crate) fn optimize_attachment(
     bytes: &[u8],
     content_type: &str,
+    deadline: Instant,
 ) -> Result<Option<ProcessedImage>, ImageProcessingError> {
-    let optimized = match content_type {
-        "image/png" => {
-            let (width, height) = header_dimensions(bytes, ImageFormat::Png)?;
-            check_dimensions(width, height)?;
-            let mut options = oxipng::Options::from_preset(PNG_OPTIMIZATION_PRESET);
-            options.strip = if png_orientation(bytes)? == Orientation::NoTransforms {
-                oxipng::StripChunks::Safe
-            } else {
-                // Safe also drops eXIf: the picture would show turned or flipped otherwise, and
-                // no longer match its recorded dimensions. Same list as Safe, plus eXIf.
-                oxipng::StripChunks::Keep(oxipng::indexset! {
-                    *b"cICP", *b"iCCP", *b"sRGB", *b"pHYs", *b"acTL", *b"fcTL", *b"fdAT",
-                    *b"eXIf",
-                })
-            };
-            // oxipng inflates to the size the header announces: bounded again on its side.
-            options.max_decompressed_size =
-                usize::try_from(MAXIMUM_TOTAL_PIXELS * PNG_LARGEST_BYTES_PER_PIXEL).ok();
-            options.timeout = Some(PNG_OPTIMIZATION_TIME_BUDGET);
-            let bytes = oxipng::optimize_from_memory(bytes, &options)
-                .map_err(|_| ImageProcessingError::Encoding)?;
-            ProcessedImage {
-                bytes,
-                content_type: "image/png",
-                is_animated: false,
-            }
-        }
-        "image/gif" => {
-            let frames = decode_frames(bytes, |frame| frame)?;
-            if frames.len() < 2 {
-                return Ok(None);
-            }
-            ProcessedImage {
-                bytes: encode_webp(&frames)?,
-                content_type: "image/webp",
-                is_animated: true,
-            }
-        }
-        _ => return Ok(None),
+    if !OPTIMIZABLE_CONTENT_TYPES.contains(&content_type) || is_animated_png(bytes)? {
+        return Ok(None);
+    }
+    let picture = decode_picture(bytes, |frame| frame)?;
+    let is_animated = picture.frames.len() > 1;
+    let encoded = match picture.frames.first() {
+        _ if is_animated => Some(smallest_animation(&picture.frames, deadline)?),
+        Some((frame, _)) => smallest_still(frame, &picture.colour, !picture.is_photo, deadline)?,
+        None => return Err(ImageProcessingError::Unsupported),
     };
-    Ok((optimized.bytes.len() < bytes.len()).then_some(optimized))
+    Ok(encoded
+        .filter(|encoded| encoded.bytes.len() < bytes.len())
+        .map(|encoded| ProcessedImage {
+            bytes: encoded.bytes,
+            content_type: encoded.content_type,
+            is_animated,
+        }))
 }
 
-/// The EXIF orientation a PNG declares before its pixels, read from its header alone.
-fn png_orientation(bytes: &[u8]) -> Result<Orientation, ImageProcessingError> {
+/// Whether a PNG is animated (APNG), from its header: decoding would keep only its first frame.
+fn is_animated_png(bytes: &[u8]) -> Result<bool, ImageProcessingError> {
+    if image::guess_format(bytes).ok() != Some(ImageFormat::Png) {
+        return Ok(false);
+    }
     let mut header_limits = limits();
     header_limits.max_alloc = Some(HEADER_READ_MAXIMUM_BYTES);
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Png);
-    reader.limits(header_limits);
-    let as_processing_error = |error: image::ImageError| match error {
-        image::ImageError::Limits(_) => ImageProcessingError::TooLarge,
-        _ => ImageProcessingError::Unsupported,
-    };
-    reader
-        .into_decoder()
-        .and_then(|mut decoder| decoder.orientation())
-        .map_err(as_processing_error)
+    let decoder = PngDecoder::with_limits(Cursor::new(bytes), header_limits)
+        .map_err(|error| as_processing_error(&error))?;
+    decoder
+        .is_apng()
+        .map_err(|error| as_processing_error(&error))
 }
-
 /// The size an attachment as stored shows at, from its header alone, so clients can hold its
 /// place: turned by the EXIF orientation of a JPEG (`strip_jpeg_metadata` keeps it alone) or a
-/// PNG. `optimize_attachment` keeps the pixels and a PNG's orientation, so this stays true after
-/// it. `None` for anything that is not a picture this server reads.
+/// PNG. `optimize_attachment` turns the pixels the same way, so this stays true after it. `None`
+/// for anything that is not a picture this server reads.
 pub(crate) fn displayed_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     let format = image::guess_format(bytes).ok()?;
     if !matches!(
@@ -461,7 +484,7 @@ pub(crate) fn displayed_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     reader.limits(header_limits);
     let mut decoder = reader.into_decoder().ok()?;
     let (width, height) = decoder.dimensions();
-    // Only where reading EXIF is bounded, as in `decode_frames`.
+    // Only where reading EXIF is bounded, as in `decode_picture`.
     let orientation = if matches!(format, ImageFormat::Jpeg | ImageFormat::Png) {
         decoder.orientation().ok()?
     } else {
@@ -693,6 +716,81 @@ pub(crate) mod tests {
 
     use super::*;
 
+    /// Far enough that no test search is cut short.
+    fn no_deadline() -> Instant {
+        Instant::now() + Duration::from_secs(3_600)
+    }
+
+    /// A stored picture's size: AVIF from its `ispe` box (no AV1 decoder here), others decoded.
+    pub(crate) fn stored_dimensions(bytes: &[u8]) -> (u32, u32) {
+        if bytes.get(4..12) == Some(b"ftypavif") {
+            let at = bytes
+                .windows(4)
+                .position(|window| window == b"ispe")
+                .unwrap();
+            let read = |offset: usize| {
+                u32::from_be_bytes(bytes[at + offset..at + offset + 4].try_into().unwrap())
+            };
+            // Box type, then version and flags, then width and height.
+            return (read(8), read(12));
+        }
+        let decoded = image::load_from_memory(bytes).unwrap();
+        (decoded.width(), decoded.height())
+    }
+
+    /// The colour primaries an AVIF announces in its `nclx` box.
+    fn avif_primaries(bytes: &[u8]) -> u16 {
+        let at = bytes
+            .windows(4)
+            .position(|window| window == b"nclx")
+            .unwrap();
+        u16::from_be_bytes([bytes[at + 4], bytes[at + 5]])
+    }
+
+    /// A photo-like picture: smooth gradients under fine, seeded noise.
+    pub(crate) fn photo(width: u32, height: u32) -> RgbaImage {
+        RgbaImage::from_fn(width, height, |x, y| {
+            let noise =
+                (x.wrapping_mul(2_654_435_761) ^ y.wrapping_mul(40_503)).rotate_left(7) % 24;
+            let shade = |value: u32| u8::try_from(value.min(255)).unwrap();
+            Rgba([
+                shade(x * 200 / width + noise),
+                shade(y * 200 / height + noise),
+                shade((x + y) * 100 / (width + height) + 60 + noise),
+                255,
+            ])
+        })
+    }
+
+    fn encoded(image: &RgbaImage, format: ImageFormat, icc_profile: Option<Vec<u8>>) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let rgb = DynamicImage::ImageRgba8(image.clone()).into_rgb8();
+        let (width, height) = image.dimensions();
+        if format == ImageFormat::Jpeg {
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 95);
+            if let Some(profile) = icc_profile {
+                encoder.set_icc_profile(profile).unwrap();
+            }
+            encoder
+                .write_image(&rgb, width, height, image::ExtendedColorType::Rgb8)
+                .unwrap();
+        } else {
+            let mut encoder = image::codecs::png::PngEncoder::new(&mut bytes);
+            if let Some(profile) = icc_profile {
+                encoder.set_icc_profile(profile).unwrap();
+            }
+            encoder
+                .write_image(
+                    image.as_raw(),
+                    width,
+                    height,
+                    image::ExtendedColorType::Rgba8,
+                )
+                .unwrap();
+        }
+        bytes
+    }
+
     pub(crate) fn animated_gif(width: u32, height: u32, frames: u8) -> Vec<u8> {
         let mut bytes = Vec::new();
         {
@@ -733,7 +831,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_animated_gif_avatar_stays_animated_fits_512_and_shrinks() {
+    fn an_animated_gif_avatar_stays_animated_fits_256_and_shrinks() {
         let gif = animated_gif(600, 600, 6);
         let avatar = process_profile_image(&gif, ProfileImageKind::Avatar).unwrap();
         assert!(avatar.picture.is_animated);
@@ -745,8 +843,9 @@ pub(crate) mod tests {
             gif.len()
         );
         let decoder = webp_animation::Decoder::new(&avatar.picture.bytes).unwrap();
-        assert_eq!(decoder.dimensions(), (512, 512));
+        assert_eq!(decoder.dimensions(), (256, 256));
         assert_eq!(decoder.into_iter().count(), 6);
+        assert_eq!(stored_dimensions(&avatar.still.unwrap()), (256, 256));
     }
 
     #[test]
@@ -808,11 +907,7 @@ pub(crate) mod tests {
         let channel = process_icon(&gif, IconKind::Channel, None).unwrap();
         assert!(!channel.picture.is_animated);
         assert!(channel.still.is_none());
-        let channel_picture = image::load_from_memory(&channel.picture.bytes).unwrap();
-        assert_eq!(
-            (channel_picture.width(), channel_picture.height()),
-            (96, 96)
-        );
+        assert_eq!(stored_dimensions(&channel.picture.bytes), (96, 96));
 
         let emoji = process_icon(&gif, IconKind::Emoji, None).unwrap();
         assert!(emoji.picture.is_animated);
@@ -822,39 +917,204 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_small_still_avatar_is_kept_pixel_for_pixel() {
-        let source = png(64, 40);
-        let avatar = process_profile_image(&source, ProfileImageKind::Avatar).unwrap();
+    fn a_flat_graphic_avatar_is_kept_pixel_for_pixel_as_lossless_webp() {
+        // One-pixel stripes: lossless is far smaller than any lossy encoding that keeps them.
+        let stripes = RgbaImage::from_fn(64, 40, |x, _| {
+            if x % 2 == 0 {
+                Rgba([250, 250, 250, 255])
+            } else {
+                Rgba([20, 30, 200, 255])
+            }
+        });
+        let avatar = process_profile_image(
+            &encoded(&stripes, ImageFormat::Png, None),
+            ProfileImageKind::Avatar,
+        )
+        .unwrap();
         assert!(!avatar.picture.is_animated);
-        let original = image::load_from_memory(&source).unwrap().to_rgba8();
-        let encoded = image::load_from_memory(&avatar.picture.bytes)
+        assert_eq!(avatar.picture.content_type, "image/webp");
+        let decoded = image::load_from_memory(&avatar.picture.bytes)
             .unwrap()
             .to_rgba8();
-        assert_eq!(original, encoded, "lossless");
+        assert_eq!(decoded, stripes, "lossless");
     }
 
     #[test]
-    fn banners_keep_their_ratio_and_attachments_keep_their_pixels() {
+    fn a_photo_is_stored_as_avif_at_a_searched_quality_that_keeps_the_score() {
+        let source = photo(96, 96);
+        let found = smallest_still(&source, &ColourSpace::Srgb, true, no_deadline())
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.content_type, "image/avif");
+        // The encoder is deterministic: find the quality the search kept, and score it again.
+        let quality = (60..=95)
+            .find(|quality| {
+                avif::encode(&source, *quality, avif::Primaries::Srgb)
+                    .unwrap()
+                    .bytes
+                    == found.bytes
+            })
+            .expect("a searched quality");
+        let decoded = avif::encode(&source, quality, avif::Primaries::Srgb)
+            .unwrap()
+            .decoded;
+        let score = quality::worst_score(&[(&source, &decoded)]).unwrap();
+        assert!(score >= quality::MINIMUM_SCORE, "{score} at {quality}");
+        assert!(quality < 95, "lossy enough to save space: {quality}");
+        let lossless = encoding::lossless_webp(&[(source, 0)]).unwrap();
+        assert!(found.bytes.len() < lossless.len());
+    }
+
+    #[test]
+    fn a_transparent_emoji_keeps_its_transparency() {
+        // A soft disc on a transparent square.
+        let disc = RgbaImage::from_fn(160, 160, |x, y| {
+            let distance = (x.abs_diff(80).pow(2) + y.abs_diff(80).pow(2)).isqrt();
+            let alpha = u8::try_from(70u32.saturating_sub(distance).min(10) * 25).unwrap();
+            Rgba([255, u8::try_from(x).unwrap(), 40, alpha])
+        });
+        let emoji = process_icon(
+            &encoded(&disc, ImageFormat::Png, None),
+            IconKind::Emoji,
+            None,
+        )
+        .unwrap();
+        assert_eq!(stored_dimensions(&emoji.picture.bytes), (128, 128));
+        if emoji.picture.content_type == "image/avif" {
+            // An alpha plane is an auxiliary image of the AVIF.
+            let alpha_urn = b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha";
+            assert!(
+                emoji
+                    .picture
+                    .bytes
+                    .windows(alpha_urn.len())
+                    .any(|window| window == alpha_urn)
+            );
+        } else {
+            let decoded = image::load_from_memory(&emoji.picture.bytes)
+                .unwrap()
+                .to_rgba8();
+            assert_eq!(decoded.get_pixel(0, 0)[3], 0);
+        }
+    }
+
+    #[test]
+    fn banners_keep_their_ratio_and_attachments_shrink() {
         let banner = process_profile_image(&png(3_840, 1_080), ProfileImageKind::Banner).unwrap();
-        let decoded = image::load_from_memory(&banner.picture.bytes).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (1_920, 540));
+        assert_eq!(stored_dimensions(&banner.picture.bytes), (960, 270));
 
         let source = png(300, 300);
-        if let Some(optimized) = optimize_attachment(&source, "image/png").unwrap() {
-            assert_eq!(
-                image::load_from_memory(&optimized.bytes)
-                    .unwrap()
-                    .to_rgba8(),
-                image::load_from_memory(&source).unwrap().to_rgba8()
-            );
-        }
-        let gif = animated_gif(120, 80, 4);
-        let as_webp = optimize_attachment(&gif, "image/gif").unwrap().unwrap();
-        assert_eq!(as_webp.content_type, "image/webp");
+        let optimized = optimize_attachment(&source, "image/png", no_deadline())
+            .unwrap()
+            .unwrap();
+        assert!(optimized.bytes.len() < source.len());
+        assert_eq!(stored_dimensions(&optimized.bytes), (300, 300));
         assert!(
-            optimize_attachment(b"just text", "application/octet-stream")
+            optimize_attachment(b"just text", "application/octet-stream", no_deadline())
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn an_animated_gif_attachment_stays_animated_and_keeps_the_score() {
+        let gif = animated_gif(120, 80, 4);
+        let as_webp = optimize_attachment(&gif, "image/gif", no_deadline())
+            .unwrap()
+            .unwrap();
+        assert_eq!(as_webp.content_type, "image/webp");
+        assert!(as_webp.is_animated);
+        let source = decode_picture(&gif, |frame| frame).unwrap().frames;
+        let decoder = WebPDecoder::new(Cursor::new(&as_webp.bytes)).unwrap();
+        let stored: Vec<RgbaImage> = decoder
+            .into_frames()
+            .map(|frame| frame.unwrap().into_buffer())
+            .collect();
+        assert_eq!(stored.len(), 4);
+        let pairs: Vec<(&RgbaImage, &RgbaImage)> =
+            source.iter().map(|(frame, _)| frame).zip(&stored).collect();
+        let score = quality::worst_score(&pairs).unwrap();
+        assert!(score >= quality::MINIMUM_SCORE, "{score}");
+    }
+
+    #[test]
+    fn an_animated_png_attachment_is_left_alone() {
+        let mut apng = png(16, 16);
+        // An `acTL` chunk before the image data marks an animated PNG (one frame, played once).
+        let insert_at = apng
+            .windows(4)
+            .position(|window| window == b"IDAT")
+            .unwrap()
+            - 4;
+        let mut animation_control = 1u32.to_be_bytes().to_vec();
+        animation_control.extend_from_slice(&0u32.to_be_bytes());
+        let chunk = png_chunk(*b"acTL", &animation_control);
+        apng.splice(insert_at..insert_at, chunk);
+        assert_eq!(
+            optimize_attachment(&apng, "image/png", no_deadline()),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn a_turned_phone_photo_attachment_is_stored_upright_without_its_metadata() {
+        let jpeg = encoded(&photo(128, 64), ImageFormat::Jpeg, None);
+        let mut turned = jpeg[..2].to_vec();
+        turned.extend_from_slice(&orientation_segment(6));
+        turned.extend_from_slice(&jpeg[2..]);
+        let stripped = strip_jpeg_metadata(&turned).unwrap();
+        assert_eq!(displayed_dimensions(&stripped), Some((64, 128)));
+
+        let optimized = optimize_attachment(&stripped, "image/jpeg", no_deadline())
+            .unwrap()
+            .expect("AVIF beats a quality 95 JPEG");
+        assert_eq!(optimized.content_type, "image/avif");
+        assert_eq!(stored_dimensions(&optimized.bytes), (64, 128));
+        assert!(!optimized.bytes.windows(4).any(|window| window == b"Exif"));
+    }
+
+    #[test]
+    fn wide_gamut_pictures_are_stored_in_display_p3_and_never_as_untagged_webp() {
+        use moxcms::ColorProfile;
+
+        let display_p3 = colour::tests::icc_bytes(&ColorProfile::new_display_p3());
+        let iphone_photo = encoded(&photo(128, 96), ImageFormat::Jpeg, Some(display_p3));
+        let optimized = optimize_attachment(&iphone_photo, "image/jpeg", no_deadline())
+            .unwrap()
+            .expect("AVIF beats a quality 95 JPEG");
+        assert_eq!(optimized.content_type, "image/avif");
+        assert_eq!(avif_primaries(&optimized.bytes), 12, "Display P3");
+
+        // Flat stripes would be lossless WebP in sRGB, which cannot carry Adobe RGB colours.
+        let stripes = RgbaImage::from_fn(64, 64, |x, _| {
+            if x % 2 == 0 {
+                Rgba([0, 200, 60, 255])
+            } else {
+                Rgba([240, 240, 240, 255])
+            }
+        });
+        let adobe_rgb = colour::tests::icc_bytes(&ColorProfile::new_adobe_rgb());
+        let avatar = process_profile_image(
+            &encoded(&stripes, ImageFormat::Png, Some(adobe_rgb)),
+            ProfileImageKind::Avatar,
+        )
+        .unwrap();
+        assert_eq!(avatar.picture.content_type, "image/avif");
+        assert_eq!(
+            avif_primaries(&avatar.picture.bytes),
+            12,
+            "converted to Display P3"
+        );
+
+        let srgb = colour::tests::icc_bytes(&ColorProfile::new_srgb());
+        let tagged_srgb = process_profile_image(
+            &encoded(&stripes, ImageFormat::Png, Some(srgb)),
+            ProfileImageKind::Avatar,
+        )
+        .unwrap();
+        assert_eq!(
+            tagged_srgb.picture.content_type, "image/webp",
+            "sRGB stays lossless"
         );
     }
 
@@ -966,7 +1226,7 @@ pub(crate) mod tests {
         bomb.extend_from_slice(&png_chunk(*b"IEND", &[]));
 
         assert_eq!(
-            optimize_attachment(&bomb, "image/png"),
+            optimize_attachment(&bomb, "image/png", no_deadline()),
             Err(ImageProcessingError::TooLarge)
         );
         assert_eq!(
@@ -995,8 +1255,7 @@ pub(crate) mod tests {
         rotated.extend_from_slice(&jpeg[2..]);
 
         let avatar = process_profile_image(&rotated, ProfileImageKind::Avatar).unwrap();
-        let decoded = image::load_from_memory(&avatar.picture.bytes).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (20, 40));
+        assert_eq!(stored_dimensions(&avatar.picture.bytes), (20, 40));
     }
 
     fn png_with_exif_orientation(width: u32, height: u32, orientation: u16) -> Vec<u8> {
@@ -1030,12 +1289,12 @@ pub(crate) mod tests {
             let expected = if orientation >= 5 { (32, 64) } else { (64, 32) };
             assert_eq!(displayed_dimensions(&original), Some(expected));
 
-            let optimized = optimize_attachment(&original, "image/png")
+            let optimized = optimize_attachment(&original, "image/png", no_deadline())
                 .unwrap()
                 .expect("a flat PNG compresses");
-            assert_eq!(displayed_dimensions(&optimized.bytes), Some(expected));
-            // Orientation 1 shows nothing: its eXIf goes, with any GPS position in it.
-            assert_eq!(has_exif(&optimized.bytes), orientation != 1);
+            // Turned in its pixels, and no EXIF left (nor any GPS position in it).
+            assert_eq!(stored_dimensions(&optimized.bytes), expected);
+            assert!(!has_exif(&optimized.bytes));
         }
     }
 
@@ -1070,8 +1329,12 @@ pub(crate) mod tests {
             displayed_dimensions(&animated_gif(12, 34, 2)),
             Some((12, 34))
         );
-        let as_webp =
-            encode_webp(&decode_frames(&animated_gif(12, 34, 2), |frame| frame).unwrap()).unwrap();
+        let as_webp = encoding::lossless_webp(
+            &decode_picture(&animated_gif(12, 34, 2), |frame| frame)
+                .unwrap()
+                .frames,
+        )
+        .unwrap();
         assert_eq!(displayed_dimensions(&as_webp), Some((12, 34)));
         assert_eq!(displayed_dimensions(b"just text"), None);
     }
@@ -1131,7 +1394,8 @@ pub(crate) mod tests {
         // A real 1×1 lossless WebP, rewrapped as VP8X with an EXIF chunk announcing ~4 GiB that
         // is not there: reading it would allocate the announced size.
         let simple =
-            encode_webp(&[(RgbaImage::from_pixel(1, 1, Rgba([1, 2, 3, 255])), 0)]).unwrap();
+            encoding::lossless_webp(&[(RgbaImage::from_pixel(1, 1, Rgba([1, 2, 3, 255])), 0)])
+                .unwrap();
         let lossless_chunk = &simple[12..];
         let mut extended_header = b"VP8X".to_vec();
         extended_header.extend_from_slice(&10u32.to_le_bytes());
@@ -1159,7 +1423,7 @@ pub(crate) mod tests {
             Err(ImageProcessingError::TooLarge)
         );
         assert_eq!(
-            optimize_attachment(&gif, "image/gif"),
+            optimize_attachment(&gif, "image/gif", no_deadline()),
             Err(ImageProcessingError::TooLarge)
         );
     }
@@ -1188,7 +1452,7 @@ pub(crate) mod tests {
     #[allow(clippy::print_stdout)]
     fn image_processing_timing() {
         let gif = animated_gif(480, 480, 60);
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let avatar = process_profile_image(&gif, ProfileImageKind::Avatar).unwrap();
         println!(
             "animated avatar: {} KB GIF -> {} KB WebP in {:?}",
@@ -1196,14 +1460,98 @@ pub(crate) mod tests {
             avatar.picture.bytes.len() / 1024,
             started.elapsed()
         );
-        let source = png(1_600, 1_200);
-        let started = std::time::Instant::now();
-        let optimized = optimize_attachment(&source, "image/png").unwrap();
+        let source = encoded(&photo(1_600, 1_200), ImageFormat::Jpeg, None);
+        let started = Instant::now();
+        let optimized = optimize_attachment(&source, "image/jpeg", no_deadline()).unwrap();
         println!(
-            "png attachment: {} KB -> {:?} KB in {:?}",
+            "photo attachment: {} KB -> {:?} KB in {:?}",
             source.len() / 1024,
             optimized.map(|image| image.bytes.len() / 1024),
             started.elapsed()
+        );
+    }
+
+    /// Sizes over a folder of pictures, as attachments, avatars and banners:
+    /// `MELLOW_IMAGE_CORPUS=/path cargo test --release -p mellow-server image_corpus_sizes -- --ignored --nocapture`.
+    /// With `MELLOW_IMAGE_CORPUS_OUTPUT=/path`, each sRGB still's AVIF at quality 80 and its
+    /// reconstruction (PNG) are written there, to compare with another decoder.
+    #[test]
+    #[ignore = "measurement, not a check"]
+    #[allow(clippy::print_stdout)]
+    fn image_corpus_sizes() {
+        let Ok(corpus) = std::env::var("MELLOW_IMAGE_CORPUS") else {
+            return;
+        };
+        let output = std::env::var("MELLOW_IMAGE_CORPUS_OUTPUT").ok();
+        let mut paths: Vec<_> = std::fs::read_dir(corpus)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        paths.sort();
+        let (mut uploaded, mut stored, mut avatars, mut banners) = (0, 0, 0, 0);
+        for path in paths {
+            let source = std::fs::read(&path).unwrap();
+            let content_type = crate::domain::message_rules::sniff_content_type(&source);
+            let bytes = if content_type == "image/jpeg" {
+                strip_jpeg_metadata(&source).unwrap()
+            } else {
+                source
+            };
+            let started = Instant::now();
+            let deadline = Instant::now() + Duration::from_secs(60);
+            let optimized = optimize_attachment(&bytes, content_type, deadline).unwrap();
+            let elapsed = started.elapsed();
+            let avatar = process_profile_image(&bytes, ProfileImageKind::Avatar).unwrap();
+            let banner = process_profile_image(&bytes, ProfileImageKind::Banner).unwrap();
+            let kept = optimized
+                .as_ref()
+                .map_or(bytes.len(), |image| image.bytes.len());
+            println!(
+                "{}\t{}\t{}\t{}\t{:?}\tavatar {} {}\tbanner {} {}",
+                path.file_name().unwrap().to_string_lossy(),
+                bytes.len(),
+                kept,
+                optimized
+                    .as_ref()
+                    .map_or("kept", |image| image.content_type),
+                elapsed,
+                avatar.picture.bytes.len(),
+                avatar.picture.content_type,
+                banner.picture.bytes.len(),
+                banner.picture.content_type,
+            );
+            uploaded += bytes.len();
+            stored += kept;
+            avatars += avatar.picture.bytes.len();
+            banners += banner.picture.bytes.len();
+            let Some(output) = &output else {
+                continue;
+            };
+            let picture = decode_picture(&bytes, |frame| frame).unwrap();
+            if picture.frames.len() == 1 && picture.colour.is_srgb() {
+                let encoded =
+                    avif::encode(&picture.frames[0].0, 80, avif::Primaries::Srgb).unwrap();
+                let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+                let folder = std::path::Path::new(output);
+                std::fs::write(folder.join(format!("{name}.avif")), encoded.bytes).unwrap();
+                let mut reconstruction = Vec::new();
+                image::codecs::png::PngEncoder::new(&mut reconstruction)
+                    .write_image(
+                        encoded.decoded.as_raw(),
+                        encoded.decoded.width(),
+                        encoded.decoded.height(),
+                        image::ExtendedColorType::Rgba8,
+                    )
+                    .unwrap();
+                std::fs::write(
+                    folder.join(format!("{name}.reconstruction.png")),
+                    reconstruction,
+                )
+                .unwrap();
+            }
+        }
+        println!(
+            "attachments: {uploaded} B uploaded, {stored} B stored; avatars {avatars} B; banners {banners} B"
         );
     }
 }

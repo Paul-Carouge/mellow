@@ -2,6 +2,18 @@
 
 [graph]
 all-features = false
+# Only the platforms Mellow builds for are checked. `cfg(fuzzing)`-only dependencies (rav1e's
+# libfuzzer-sys, under the NCSA licence) are never compiled into them, so they leave the graph.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "x86_64-linux-android",
+]
 
 [advisories]
 version = 2
@@ -33,10 +45,10 @@ allow = [
     # Slint (ADR-0010) is used under GPL-3.0-only, which may be combined with AGPL-3.0 (GPLv3 §13).
     "GPL-3.0-only",
 ]
-# Mozilla's root certificate list, bundled by rustls-platform-verifier (client) and rustls-acme
-# (server, to reach the certificate authority). A permissive data licence.
+# Mozilla's root certificate list, bundled by rustls-acme (server, to reach the certificate
+# authority). A permissive data licence. rustls-platform-verifier bundles it only on wasm32, a
+# target outside the graph.
 exceptions = [
-    { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
     { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
 ]
 

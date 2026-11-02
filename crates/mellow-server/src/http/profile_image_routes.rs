@@ -12,6 +12,7 @@ use mellow_protocol::{Channel, CurrentUser, Guild, IconCropQuery, Snowflake};
 use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::guilds::IconUpload;
 use crate::domain::image_processing::SquareCrop;
+use crate::domain::message_rules::sniff_content_type;
 use crate::domain::profile_images::ProfileImageSlot;
 use crate::http::AppState;
 use crate::http::api_error::{ApiError, ApiPath, ApiQuery};
@@ -128,7 +129,11 @@ fn picture_response(bytes: Vec<u8>, permit: tokio::sync::OwnedSemaphorePermit) -
     (
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, HeaderValue::from_static("image/webp")),
+            // Read from the bytes: the server wrote them, as AVIF or WebP (ADR-0033).
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(sniff_content_type(&bytes)),
+            ),
             (
                 header::CONTENT_DISPOSITION,
                 HeaderValue::from_static("inline"),

@@ -61,9 +61,15 @@ pub enum MessageRuleViolation {
 
 pub const MAXIMUM_ATTACHMENTS_PER_MESSAGE: usize = 10;
 pub const MAXIMUM_FILE_NAME_BYTES: usize = 255;
-/// Shown as `inline` previews: only raster images whose bytes say so (ADR-0020).
-pub const PREVIEWABLE_IMAGE_TYPES: [&str; 4] =
-    ["image/png", "image/jpeg", "image/gif", "image/webp"];
+/// Shown as `inline` previews: only raster images whose bytes say so (ADR-0020); AVIF is what
+/// compressed pictures are mostly stored as (ADR-0033).
+pub const PREVIEWABLE_IMAGE_TYPES: [&str; 5] = [
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+];
 pub const UNKNOWN_CONTENT_TYPE: &str = "application/octet-stream";
 
 /// The file name kept for an upload: its last path segment, trimmed. Refused when empty, too long,
@@ -87,7 +93,7 @@ pub fn clean_file_name(raw: &str) -> Result<String, MessageRuleViolation> {
 }
 
 /// The content type an upload is served with, from its first bytes only: what a client claims is
-/// never trusted. Anything but the four raster formats is `application/octet-stream`.
+/// never trusted. Anything but the five raster formats is `application/octet-stream`.
 #[must_use]
 pub fn sniff_content_type(bytes: &[u8]) -> &'static str {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -98,6 +104,9 @@ pub fn sniff_content_type(bytes: &[u8]) -> &'static str {
         "image/gif"
     } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         "image/webp"
+    } else if bytes.get(4..12) == Some(b"ftypavif") || bytes.get(4..12) == Some(b"ftypavis") {
+        // An ISO-BMFF file whose major brand is AVIF, still or sequence.
+        "image/avif"
     } else {
         UNKNOWN_CONTENT_TYPE
     }
@@ -475,6 +484,12 @@ mod tests {
         assert_eq!(sniff_content_type(&[0xFF, 0xD8, 0xFF, 0xE0]), "image/jpeg");
         assert_eq!(sniff_content_type(b"GIF89a.."), "image/gif");
         assert_eq!(sniff_content_type(b"RIFF\0\0\0\0WEBPVP8 "), "image/webp");
+        assert_eq!(sniff_content_type(b"\0\0\0\x1cftypavif\0\0"), "image/avif");
+        assert_eq!(
+            sniff_content_type(b"\0\0\0\x1cftypisom\0\0"),
+            UNKNOWN_CONTENT_TYPE,
+            "a video"
+        );
         assert_eq!(sniff_content_type(b"<svg xmlns="), UNKNOWN_CONTENT_TYPE);
         assert_eq!(sniff_content_type(b"<html><script>"), UNKNOWN_CONTENT_TYPE);
         assert_eq!(sniff_content_type(b""), UNKNOWN_CONTENT_TYPE);

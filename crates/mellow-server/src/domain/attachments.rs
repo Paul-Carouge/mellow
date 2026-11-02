@@ -8,7 +8,7 @@ use crate::storage::Database;
 use mellow_protocol::{Attachment, Permissions, Snowflake};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
-use crate::domain::image_processing::optimize_attachment;
+use crate::domain::image_processing::{OPTIMIZABLE_CONTENT_TYPES, optimize_attachment};
 
 use crate::domain::message_rules::{UNKNOWN_CONTENT_TYPE, clean_file_name, sniff_content_type};
 use crate::domain::messages::{MessageError, Messages};
@@ -25,18 +25,21 @@ const CONCURRENT_DOWNLOADS: usize = 8;
 /// How long a download waits for a free slot before the instance answers "busy".
 const DOWNLOAD_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Pictures decoded at once (avatars, banners, background compression): each can take a few
-/// hundred MB and a core for seconds.
+/// hundred MB and a core for seconds. Only the one background worker handles pictures over 8 MP,
+/// so at most one such job runs at a time (ADR-0033).
 const CONCURRENT_IMAGE_PROCESSING: usize = 2;
 
 /// Uploads waiting for compression; past this, new ones keep their original file.
 const OPTIMIZATION_QUEUE_CAPACITY: usize = 64;
-/// Past this, the original file is kept (decoding included).
-const OPTIMIZATION_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
-/// The types `optimize_attachment` can make smaller.
-const OPTIMIZABLE_CONTENT_TYPES: [&str; 2] = ["image/png", "image/gif"];
+/// No encode starts past this, counted from the job's start; the best result found so far is
+/// kept. An encode under way runs to its end (rav1e cannot be stopped): one AVIF of a 15 MP photo
+/// takes 20–30 s of one core.
+const OPTIMIZATION_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+/// Extensions a file name may end with that name a picture type, replaced when it is converted.
+const PICTURE_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "jfif", "gif", "webp", "avif"];
 
 /// Compresses uploaded pictures one at a time, after they were answered, until the server stops
-/// (ADR-0021): one worker bounds the CPU it takes. Whenever it runs out of work, at startup
+/// (ADR-0021, ADR-0033): one worker bounds the CPU it takes. Whenever it runs out of work, at startup
 /// included, it picks up the pictures never tried: jobs a full queue or a restart dropped.
 pub(crate) async fn optimize_attachments_in_background(attachments: Arc<Attachments>) {
     let Some(mut queue) = attachments.take_optimization_queue() else {
@@ -72,15 +75,21 @@ async fn stored_form_and_dimensions(
     Ok(stored?)
 }
 
-/// `animation.gif` becomes `animation.webp`; a name without that extension gains it.
-fn with_webp_extension(file_name: &str) -> String {
+/// `photo.jpg` stored as AVIF becomes `photo.avif`; a name without a picture extension gains one.
+fn with_extension_of(file_name: &str, content_type: &str) -> String {
+    let extension = content_type.strip_prefix("image/").unwrap_or("bin");
     let stem = match file_name.rsplit_once('.') {
-        Some((stem, extension)) if !stem.is_empty() && extension.eq_ignore_ascii_case("gif") => {
+        Some((stem, current))
+            if !stem.is_empty()
+                && PICTURE_EXTENSIONS
+                    .iter()
+                    .any(|known| current.eq_ignore_ascii_case(known)) =>
+        {
             stem
         }
         _ => file_name,
     };
-    format!("{stem}.webp")
+    format!("{stem}.{extension}")
 }
 
 /// Runs `Attachments::purge` every few minutes until the server stops.
@@ -405,8 +414,8 @@ impl Attachments {
         )
     }
 
-    /// Replaces the file with its compressed form when smaller. Anything undecodable, too slow or
-    /// not smaller keeps the original.
+    /// Replaces the file with its compressed form when smaller (ADR-0033): no original is kept.
+    /// Anything undecodable, failing the quality check or not smaller keeps the file as it is.
     pub(crate) async fn optimize(&self, attachment_id: Snowflake) -> Result<(), MessageError> {
         let Some(attachment) = storage::find_attachment(&self.database, attachment_id).await?
         else {
@@ -421,28 +430,23 @@ impl Attachments {
             .map_err(|error| MessageError::Internal(Box::new(error)))?;
         let original = self.files.read(attachment.id).await?;
         let content_type = attachment.content_type.clone();
-        let mut processing = tokio::task::spawn_blocking(move || {
-            // Held until the work really ends: a timed-out job still bounds the next ones.
+        let deadline = std::time::Instant::now() + OPTIMIZATION_TIME_BUDGET;
+        // Waited for to its end, so this worker runs one job at a time and the other slot stays
+        // free for avatars and banners.
+        let (original, optimized) = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let optimized = optimize_attachment(&original, &content_type);
+            let optimized = optimize_attachment(&original, &content_type, deadline);
             (original, optimized)
-        });
-        let Ok(joined) = tokio::time::timeout(OPTIMIZATION_TIME_BUDGET, &mut processing).await
-        else {
-            // Too slow: the original stays. Waiting for the work to end keeps this worker to one
-            // job at a time, leaving the other slot to avatars and banners.
-            let _ = processing.await;
-            return Ok(());
-        };
-        let (original, optimized) =
-            joined.map_err(|error| MessageError::Internal(Box::new(error)))?;
+        })
+        .await
+        .map_err(|error| MessageError::Internal(Box::new(error)))?;
         let Ok(Some(optimized)) = optimized else {
             return Ok(());
         };
         let file_name = if optimized.content_type == attachment.content_type {
             attachment.file_name
         } else {
-            with_webp_extension(&attachment.file_name)
+            with_extension_of(&attachment.file_name, optimized.content_type)
         };
         let size_bytes = u64::try_from(optimized.bytes.len()).unwrap_or(u64::MAX);
         // `ReadableAttachment::entity_tag` relies on a replacement never keeping the size.
@@ -450,7 +454,7 @@ impl Attachments {
             return Ok(());
         }
         // shortcut: the file is replaced under the same id before its row changes, so a crash in
-        // between leaves a WebP described as GIF (served as a download, not inline); a separate
+        // between leaves an AVIF described as PNG (served as a download, not inline); a separate
         // file id per version would close it, worth doing if crashes there are ever seen.
         self.files.write(attachment.id, optimized.bytes).await?;
         let updated = storage::update_attachment_file(
@@ -633,11 +637,23 @@ mod tests {
     }
 
     #[test]
-    fn a_converted_gif_is_named_webp() {
-        assert_eq!(with_webp_extension("party.gif"), "party.webp");
-        assert_eq!(with_webp_extension("PARTY.GIF"), "PARTY.webp");
-        assert_eq!(with_webp_extension("archive.tar.gif"), "archive.tar.webp");
-        assert_eq!(with_webp_extension("no-extension"), "no-extension.webp");
-        assert_eq!(with_webp_extension(".gif"), ".gif.webp");
+    fn a_converted_picture_is_named_after_its_new_type() {
+        assert_eq!(with_extension_of("party.gif", "image/webp"), "party.webp");
+        assert_eq!(with_extension_of("PARTY.GIF", "image/webp"), "PARTY.webp");
+        assert_eq!(with_extension_of("photo.JPG", "image/avif"), "photo.avif");
+        assert_eq!(with_extension_of("shot.jpeg", "image/avif"), "shot.avif");
+        assert_eq!(
+            with_extension_of("archive.tar.png", "image/avif"),
+            "archive.tar.avif"
+        );
+        assert_eq!(
+            with_extension_of("notes.txt", "image/webp"),
+            "notes.txt.webp"
+        );
+        assert_eq!(
+            with_extension_of("no-extension", "image/avif"),
+            "no-extension.avif"
+        );
+        assert_eq!(with_extension_of(".gif", "image/webp"), ".gif.webp");
     }
 }

@@ -32,18 +32,22 @@ hkdf = "0.13.0"
 # Decodes uploaded pictures in pure Rust, four formats only (ADR-0021).
 gif = { version = "0.14.2", default-features = false, features = ["std"] }
 image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+# AVIF container around rav1e's AV1 bitstream (ADR-0033).
+avif-serialize = "0.8.9"
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 # Already in the tree through hyper-util; `serde` reads proxy networks from mellow.toml.
 ipnet = { version = "2.12.2", features = ["serde"] }
 mellow-protocol = { path = "crates/mellow-protocol" }
 mellow-client-core = { path = "crates/mellow-client-core" }
 mellow-update = { path = "crates/mellow-update" }
-# Lossless PNG recompression, without its binary, thread pool or zopfli (ADR-0021).
-oxipng = { version = "10.2.1", default-features = false }
+# Already in the tree through `image`; colour profiles of uploaded pictures (ADR-0033).
+moxcms = "0.8.1"
 # Ed25519 minisign verification only, no dependencies of its own (ADR-0016).
 minisign-verify = "0.3.0"
 # Already in the tree through the workspace's dependencies; compares release versions.
 semver = "1.0.28"
+# Pure Rust AV1 encoder for AVIF pictures, one thread per job, with its assembly (ADR-0033).
+rav1e = { version = "0.8.1", default-features = false, features = ["asm"] }
 # Already in the tree through rustls-acme; tests sign the local ACME test authority's HTTPS certificate with it.
 rcgen = { version = "0.13.2", default-features = false, features = ["pem", "aws_lc_rs"] }
 bitflags = "2.13.2"
@@ -60,6 +64,8 @@ serde_json = "1.0.154"
 sha2 = "0.11.1"
 # WebRTC in sans-IO style for the voice SFU (ADR-0030); its crypto is the aws-lc-rs already in the tree.
 str0m = { version = "0.24.1", default-features = false, features = ["aws-lc-rs"] }
+# Perceptual quality of compressed pictures, run on one thread (ADR-0033).
+ssimulacra2 = { version = "0.5.1", default-features = false }
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite-bundled", "macros", "migrate"] }
 tempfile = "3.27.0"
 tracing = "0.1.44"
@@ -88,3 +94,13 @@ panic = "warn"
 dbg_macro = "warn"
 todo = "warn"
 print_stdout = "warn"
+
+# Tests encode real pictures: unoptimised, rav1e and SSIMULACRA2 are tens of times slower.
+[profile.dev.package.rav1e]
+opt-level = 3
+
+[profile.dev.package.ssimulacra2]
+opt-level = 3
+
+[profile.dev.package.yuvxyb]
+opt-level = 3
