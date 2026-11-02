@@ -49,6 +49,16 @@ CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux only w
 - **UI thread**: nothing blocking on the Slint event loop or the Android main thread.
 - **Dependencies**: prefer what is already in the workspace; any new crate needs a reason in the PR description and must pass `cargo deny`.
 
+## Quality bar (owner, 2026-11-02)
+Every change meets this before its PR, so no separate optimisation or robustness pass is needed (the pass of `v0.27.0` and `v0.28.0` set it):
+- **Zero warnings and errors**: the commands above plus `npm ci`, `npm run check` (svelte-check and `tsc -p tsconfig.node.json`), `npm test` (no Node warning), `npm run build` (no chunk-size warning) and `npm audit` (only the documented deepmerge advisory). Fix causes; an exemption names its upstream cause (`deny.toml` skips carry a reason).
+- **Tests are deterministic**: no wall-clock thresholds (count work instead), no `start_paused` clock with real sockets where a deadline must not fire, a bug fix starts with a failing test.
+- **Server hot paths**: serialise a gateway event once per fan-out, never under a lock; no N+1 queries (check `EXPLAIN QUERY PLAN`, add an index with a migration); short write transactions (ADR-0024, `synchronous = NORMAL`); bounded queues, maps and buffers; timeouts on every read of a client body; time budgets only where a client waits, never in background work.
+- **Network and loading**: heavy UI loads lazily (`LazyComponent`), static assets stay hashed and precompressed (ADR-0019); new routes serving files get an ETag or immutable cache headers and the same permission check as their sibling; debounce or coalesce chatty requests (read states); reconnects back off with jitter and react to `online`.
+- **Pictures** go through the visually lossless pipeline (ADR-0033) and the sharded file store (ADR-0034); never store or serve an unprocessed upload; strip metadata (GPS).
+- **Web client state**: guard async answers against stale ones (generation or `edited_at` checks), keep object identity for unchanged rows, memoise per-row derived values, `loading="lazy"` and explicit sizes on images.
+- **Measure** before and after for anything sold as faster, and write the numbers in the PR.
+
 ## Agents
 Use the agent team as defined in the global rules. For Mellow in particular:
 - `security-auditor` for anything touching auth, sessions, permissions, uploads, the gateway, the updater, push or crypto.
