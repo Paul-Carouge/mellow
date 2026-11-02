@@ -338,6 +338,37 @@ export const fr: Catalogue = {
     muteForMe: "Rendre muet pour moi",
   },
 
+  screenShare: {
+    share: "Partager l’écran",
+    stop: "Arrêter le partage",
+    live: "EN DIRECT",
+    youAreSharing: "Tu partages ton écran",
+    sharesScreen: "partage son écran",
+    watch: (person) => `Regarder l’écran de ${person}`,
+    yourShare: "Ton écran est partagé",
+    joinToWatch: (channel) => `Rejoins ${channel} pour regarder`,
+    cannotWatch: "Ce navigateur ne peut pas afficher les écrans partagés.",
+    screenOf: (person) => `Écran de ${person}`,
+    connecting: "Connexion à l’écran…",
+    ended: (person) => `${person} a arrêté de partager son écran.`,
+    close: "Arrêter de regarder",
+    fullscreen: "Plein écran",
+    exitFullscreen: "Quitter le plein écran",
+    qualityMenu: "Qualité du partage",
+    qualityButton: (quality) => `Qualité du partage${NO_BREAK_SPACE}: ${quality}`,
+    qualityHints: { "720p": "30 i/s, le plus léger", "1080p": "30 i/s, un texte net", "1440p": "30 i/s, pour les grands écrans" },
+    problems: {
+      denied: "Partage d’écran annulé.",
+      unsupported: "Ton navigateur n’a pas pu partager ton écran. Essaie avec une version récente de Firefox, Chrome ou Edge.",
+      stopped:
+        "L’instance a arrêté ton partage d’écran, peut-être parce que ta permission Vidéo a été retirée. Relance-le pour continuer.",
+      missing_permissions:
+        "Il te faut la permission Vidéo dans ce salon pour partager ton écran. Demande-la à quelqu’un qui gère le serveur.",
+      too_many_cameras: "Trop de vidéos sont déjà partagées dans ce salon ou sur l’instance. Réessaie quand l’une d’elles s’arrête.",
+      video_unavailable: "La vidéo est désactivée sur cette instance. Son administrateur peut l’activer.",
+    },
+  },
+
   soundboard: {
     soundboard: "Soundboard",
     open: "Ouvrir le soundboard",
@@ -1115,7 +1146,7 @@ export const fr: Catalogue = {
         label: "Utiliser le soundboard",
         description: "Jouer les sons du serveur dans les salons vocaux et choisir un son d’arrivée.",
       },
-      stream: { label: "Vidéo", description: "Allumer sa caméra dans les salons vocaux." },
+      stream: { label: "Vidéo", description: "Allumer sa caméra ou partager son écran dans les salons vocaux." },
       kickMembers: {
         label: "Expulser des membres",
         description: "Retirer des gens du serveur, qui peuvent revenir avec une nouvelle invitation.",
