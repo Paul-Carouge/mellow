@@ -25,7 +25,7 @@ const CONCURRENT_DOWNLOADS: usize = 8;
 /// How long a download waits for a free slot before the instance answers "busy".
 const DOWNLOAD_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Pictures decoded at once (avatars, banners, background compression): each can take a few
-/// hundred MB and a core for seconds. Only the one background worker handles pictures over 8 MP,
+/// hundred MB and a core for seconds. Only the one background worker handles pictures over 1 MP,
 /// so at most one such job runs at a time (ADR-0033).
 const CONCURRENT_IMAGE_PROCESSING: usize = 2;
 

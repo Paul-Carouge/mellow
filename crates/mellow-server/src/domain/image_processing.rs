@@ -29,9 +29,11 @@ const MAXIMUM_SIDE_PIXELS: u32 = 8_192;
 const MAXIMUM_TOTAL_PIXELS: u64 = 24_000_000;
 const MAXIMUM_FRAMES: usize = 600;
 /// Stored sizes: three times the largest CSS size each is shown at, for high-density screens
-/// (ADR-0033). Avatars show at most at 80 px (profile popover), banners in a 300 px wide card.
+/// (ADR-0033). Avatars show at most at 80 px (profile popover), banners in a 300 × 120 px card
+/// that covers its box, so a taller banner only ever shows its middle band.
 const AVATAR_SIDE_PIXELS: u32 = 256;
 const BANNER_WIDTH_PIXELS: u32 = 960;
+const BANNER_HEIGHT_PIXELS: u32 = 384;
 /// Icons are shown small (server rail, channel row), so they are stored small: three times their
 /// largest display size, for high-density screens.
 const GUILD_ICON_SIDE_PIXELS: u32 = 256;
@@ -39,14 +41,21 @@ const CHANNEL_ICON_SIDE_PIXELS: u32 = 96;
 /// Custom emoji show at most at 48 px (jumbo, alone in a message), so they are stored at 128 px,
 /// as on Discord (ADR-0028).
 const EMOJI_SIDE_PIXELS: u32 = 128;
+/// Larger attachments are kept as uploaded (a JPEG stripped of its metadata), so one job stays
+/// near 1 GB. Peak memory of one job, measured in release: 0.67 GB for a 12.2 MP JPEG photo,
+/// 0.99 GB for it as PNG (lossless WebP is tried too), 0.84 GB at 16 MP as JPEG, 1.23 GB as PNG,
+/// and 1.73 GB at 24 MP, the decode limit. 16 MP keeps the 13–15 MP photos of the measured
+/// corpus compressed.
+const MAXIMUM_COMPRESSED_PICTURE_PIXELS: u32 = 16_000_000;
 /// Pictures past this are only ever encoded by the single attachment worker, so two of them never
-/// run at once and peak memory stays near 1 GB (an AVIF of 15 MP takes about 720 MB).
-const LARGE_PICTURE_PIXELS: u64 = 8_000_000;
+/// run at once.
+const LARGE_PICTURE_PIXELS: u32 = 1_000_000;
 // Every avatar, banner and icon is under it once fitted, so processing them while uploading
-// never adds a second large job.
+// never adds a second large job, nor takes long.
 const _: () = assert!(
-    BANNER_WIDTH_PIXELS as u64 * MAXIMUM_SIDE_PIXELS as u64 <= LARGE_PICTURE_PIXELS
-        && GUILD_ICON_SIDE_PIXELS as u64 * GUILD_ICON_SIDE_PIXELS as u64 <= LARGE_PICTURE_PIXELS
+    BANNER_WIDTH_PIXELS * BANNER_HEIGHT_PIXELS <= LARGE_PICTURE_PIXELS
+        && GUILD_ICON_SIDE_PIXELS * GUILD_ICON_SIDE_PIXELS <= LARGE_PICTURE_PIXELS
+        && LARGE_PICTURE_PIXELS < MAXIMUM_COMPRESSED_PICTURE_PIXELS
 );
 /// Searching qualities stops starting encodes past this, for pictures processed while uploading:
 /// the upload itself gives up after 20 s.
@@ -298,13 +307,32 @@ fn as_processing_error(error: &image::ImageError) -> ImageProcessingError {
     }
 }
 
+/// The middle band of a banner taller than its card, the only part the card shows.
+fn shown_band_of_banner(image: RgbaImage) -> RgbaImage {
+    let (width, height) = image.dimensions();
+    let shown_height = u32::try_from(
+        (u64::from(width) * u64::from(BANNER_HEIGHT_PIXELS))
+            .div_ceil(u64::from(BANNER_WIDTH_PIXELS)),
+    )
+    .unwrap_or(u32::MAX);
+    if height <= shown_height {
+        return image;
+    }
+    image::imageops::crop_imm(&image, 0, (height - shown_height) / 2, width, shown_height)
+        .to_image()
+}
+
 /// Down to the display size, never up; Lanczos keeps edges sharp.
 fn fit(image: RgbaImage, kind: ProfileImageKind) -> RgbaImage {
-    let (width, height) = image.dimensions();
-    let (maximum_width, maximum_height) = match kind {
-        ProfileImageKind::Avatar => (AVATAR_SIDE_PIXELS, AVATAR_SIDE_PIXELS),
-        ProfileImageKind::Banner => (BANNER_WIDTH_PIXELS, u32::MAX),
+    let (image, maximum_width, maximum_height) = match kind {
+        ProfileImageKind::Avatar => (image, AVATAR_SIDE_PIXELS, AVATAR_SIDE_PIXELS),
+        ProfileImageKind::Banner => (
+            shown_band_of_banner(image),
+            BANNER_WIDTH_PIXELS,
+            BANNER_HEIGHT_PIXELS,
+        ),
     };
+    let (width, height) = image.dimensions();
     if width <= maximum_width && height <= maximum_height {
         return image;
     }
@@ -427,8 +455,8 @@ pub(crate) const OPTIMIZABLE_CONTENT_TYPES: [&str; 4] =
 /// An attachment's smallest form that looks the same (ADR-0033): EXIF orientation applied to the
 /// pixels, no metadata left, animations kept animated; no encode starts past `deadline`. `None`
 /// when nothing passed or nothing came out smaller than `bytes` (a JPEG already stripped of its
-/// metadata by `strip_jpeg_metadata` at upload), for an animated PNG, and when the stored form
-/// could not show the same colours.
+/// metadata by `strip_jpeg_metadata` at upload), for an animated PNG, for frames over
+/// `MAXIMUM_COMPRESSED_PICTURE_PIXELS`, and when the stored form could not show the same colours.
 pub(crate) fn optimize_attachment(
     bytes: &[u8],
     content_type: &str,
@@ -441,7 +469,9 @@ pub(crate) fn optimize_attachment(
     let Some((first, _)) = picture.frames.first() else {
         return Err(ImageProcessingError::Unsupported);
     };
-    if !picture.colour.keeps_colours(first) {
+    if first.width().saturating_mul(first.height()) > MAXIMUM_COMPRESSED_PICTURE_PIXELS
+        || !picture.colour.keeps_colours(first)
+    {
         return Ok(None);
     }
     let is_animated = picture.frames.len() > 1;
@@ -1178,6 +1208,35 @@ pub(crate) mod tests {
                 .zip(window.as_raw())
                 .all(|(stored, source)| stored.abs_diff(*source) <= 2),
             "the same greys in sRGB"
+        );
+    }
+
+    #[test]
+    fn an_attachment_past_the_compression_size_is_kept_as_uploaded() {
+        let side = 4_001;
+        let huge = encoded(
+            &RgbaImage::from_pixel(side, side, Rgba([30, 60, 90, 255])),
+            ImageFormat::Png,
+            None,
+        );
+        assert_eq!(
+            optimize_attachment(&huge, "image/png", no_deadline()),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn a_tall_banner_keeps_the_middle_band_its_card_shows() {
+        let tall = process_profile_image(&png(1_920, 8_000), ProfileImageKind::Banner).unwrap();
+        assert_eq!(
+            stored_dimensions(&tall.picture.bytes),
+            (BANNER_WIDTH_PIXELS, BANNER_HEIGHT_PIXELS)
+        );
+        let narrow_and_tall =
+            process_profile_image(&png(300, 2_000), ProfileImageKind::Banner).unwrap();
+        assert_eq!(
+            stored_dimensions(&narrow_and_tall.picture.bytes),
+            (300, 120)
         );
     }
 
