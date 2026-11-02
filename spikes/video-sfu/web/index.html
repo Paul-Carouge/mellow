@@ -1,0 +1,82 @@
+<!doctype html>
+<!-- Spike page for ADR-0035: sends a camera (or a moving canvas) with three simulcast layers to the
+     spike SFU and shows the cameras it receives. Open it in two tabs or two browsers. -->
+<html lang="en">
+<meta charset="utf-8">
+<title>Video SFU spike</title>
+<style>
+  body { font: 14px system-ui; margin: 1rem; }
+  video { width: 320px; height: 180px; background: #222; margin: 4px; }
+  pre { font-size: 12px; }
+</style>
+<button id="start">Start camera</button>
+<button id="canvas">Start synthetic camera</button>
+<label><input id="simulcast" type="checkbox" checked> simulcast</label>
+<div id="videos"></div>
+<pre id="stats"></pre>
+<script>
+const RECEIVE_SLOTS = 4;
+const statsElement = document.getElementById("stats");
+
+function syntheticCamera() {
+  const canvas = Object.assign(document.createElement("canvas"), { width: 1280, height: 720 });
+  const context = canvas.getContext("2d");
+  let frame = 0;
+  setInterval(() => {
+    frame += 1;
+    context.fillStyle = `hsl(${frame % 360} 60% 40%)`;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "white";
+    context.font = "120px system-ui";
+    context.fillText(String(frame), 80 + (frame * 7) % 900, 400);
+  }, 1000 / 30);
+  return canvas.captureStream(30);
+}
+
+async function join(stream) {
+  const connection = new RTCPeerConnection();
+  const [track] = stream.getVideoTracks();
+  const sendEncodings = document.getElementById("simulcast").checked
+    ? [
+        { rid: "q", scaleResolutionDownBy: 4, maxBitrate: 150_000 },
+        { rid: "l", scaleResolutionDownBy: 2, maxBitrate: 500_000 },
+        { rid: "h", maxBitrate: 1_500_000 },
+      ]
+    : [{ maxBitrate: 1_500_000 }];
+  connection.addTransceiver(track, { direction: "sendonly", sendEncodings });
+  for (let slot = 0; slot < RECEIVE_SLOTS; slot += 1) {
+    connection.addTransceiver("video", { direction: "recvonly" });
+  }
+  connection.ontrack = ({ track: received }) => {
+    const video = Object.assign(document.createElement("video"), { autoplay: true, muted: true });
+    video.srcObject = new MediaStream([received]);
+    document.getElementById("videos").append(video);
+  };
+  await connection.setLocalDescription();
+  // Non-trickle ICE: the server is ICE-lite and only needs the offer's host candidates.
+  await new Promise((resolve) => {
+    if (connection.iceGatheringState === "complete") return resolve();
+    connection.onicegatheringstatechange = () =>
+      connection.iceGatheringState === "complete" && resolve();
+  });
+  const answer = await fetch("/offer", { method: "POST", body: connection.localDescription.sdp });
+  await connection.setRemoteDescription({ type: "answer", sdp: await answer.text() });
+  setInterval(async () => {
+    const lines = [];
+    (await connection.getStats()).forEach((report) => {
+      if (report.type === "outbound-rtp" && report.kind === "video") {
+        lines.push(`out ${report.rid ?? "-"} ${report.frameWidth}x${report.frameHeight} ${report.framesPerSecond ?? 0} fps, ${report.qualityLimitationReason}`);
+      }
+      if (report.type === "inbound-rtp" && report.kind === "video") {
+        lines.push(`in ${report.trackIdentifier.slice(0, 8)} ${report.frameWidth}x${report.frameHeight} ${report.framesPerSecond ?? 0} fps, decoded ${report.framesDecoded}, lost ${report.packetsLost}, PLI ${report.pliCount}`);
+      }
+    });
+    statsElement.textContent = lines.join("\n");
+  }, 1000);
+}
+
+document.getElementById("start").onclick = async () =>
+  join(await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } }));
+document.getElementById("canvas").onclick = () => join(syntheticCamera());
+</script>
+</html>
