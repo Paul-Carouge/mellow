@@ -220,6 +220,12 @@
     writeColumnWidths(browserStorage(), columnWidths);
   }
 
+  /** Esc during a drag: storage is written only when a gesture ends, so it still holds the widths
+   * from before it, the reader's own rather than the fitted ones. */
+  function restoreRememberedColumnWidths() {
+    Object.assign(columnWidths, readColumnWidths(browserStorage(), COLUMN_BOUNDS));
+  }
+
   // A drawer or overlay left open while the window widens would come back on the next shrink.
   $effect(() => {
     if (hasRoomForNavigator.current) {
@@ -578,7 +584,7 @@
       "flex min-h-0 flex-1",
       hasRoomForNavigator.current && [
         "gap-(--mw-size-sheet-inset) ps-(--mw-size-sheet-inset) pt-[calc(2*var(--mw-size-sheet-inset))] pb-(--mw-size-sheet-inset)",
-        (isMemberSheetOpen && hasRoomForSideSheet.current) || isSearchDocked
+        dockedSideColumn !== null
           ? "pe-(--mw-size-sheet-inset)"
           : "pe-[calc(2*var(--mw-size-sheet-inset))]",
       ],
@@ -596,6 +602,7 @@
           bounds={channelsColumnBounds}
           onresize={(width) => (columnWidths.channels = width)}
           onresizeend={rememberColumnWidths}
+          onresizecancel={restoreRememberedColumnWidths}
         />
       </div>
     {:else if isNavigationDrawerOpen}
@@ -639,15 +646,19 @@
         style:--mw-component-search-panel-width={dockedSideColumn === "search" ? `${fittedColumnWidths.sideSheet}px` : undefined}
         style:--mw-component-side-sheet-width={dockedSideColumn === "members" ? `${fittedColumnWidths.sideSheet}px` : undefined}
       >
-        <ColumnResizeHandle
-          label={dockedSideColumn === "search" ? strings.shell.resizeSearchResults : strings.shell.resizeMembers}
-          controls="side-sheet-column"
-          edge="start"
-          width={fittedColumnWidths.sideSheet}
-          bounds={sideColumnBounds}
-          onresize={(width) => (columnWidths[dockedSideColumn] = width)}
-          onresizeend={rememberColumnWidths}
-        />
+        <!-- Members and results each get their own handle: a drag never carries over to the other. -->
+        {#key dockedSideColumn}
+          <ColumnResizeHandle
+            label={dockedSideColumn === "search" ? strings.shell.resizeSearchResults : strings.shell.resizeMembers}
+            controls="side-sheet-column"
+            edge="start"
+            width={fittedColumnWidths.sideSheet}
+            bounds={sideColumnBounds}
+            onresize={(width) => (columnWidths[dockedSideColumn] = width)}
+            onresizeend={rememberColumnWidths}
+            onresizecancel={restoreRememberedColumnWidths}
+          />
+        {/key}
         {#if isSearchDocked}
           {@render searchPanel(true)}
         {:else if group}
