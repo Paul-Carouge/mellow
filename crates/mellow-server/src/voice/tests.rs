@@ -950,6 +950,7 @@ async fn sounds_reach_the_channel_only_when_allowed_and_joins_announce_the_join_
         self_mute: false,
         self_deaf,
         self_video: false,
+        self_stream: false,
     };
     // Suppressed in the lounge: ignored. The member's second sound comes too soon: ignored.
     send(&mut muted, &play).await;
@@ -981,6 +982,7 @@ async fn sounds_reach_the_channel_only_when_allowed_and_joins_announce_the_join_
             self_mute: true,
             self_deaf: false,
             self_video: false,
+            self_stream: false,
         },
     )
     .await;

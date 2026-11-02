@@ -289,6 +289,16 @@ fn camera_state(self_video: bool) -> ClientFrame {
         self_mute: false,
         self_deaf: false,
         self_video,
+        self_stream: false,
+    }
+}
+
+fn screen_state() -> ClientFrame {
+    ClientFrame::VoiceState {
+        self_mute: false,
+        self_deaf: false,
+        self_video: true,
+        self_stream: true,
     }
 }
 
@@ -525,12 +535,54 @@ async fn a_camera_the_media_loop_found_silent_shows_off_and_is_turned_off_there_
     while !next_layers(&mut owner).await.is_empty() {}
     let is_on_for_the_service = shared.participants.lock().await[&owner_id]
         .self_state
-        .self_video;
+        .video
+        .is_some();
     drop((owner_bot, member_bot));
     fixture.close().await;
 
     assert!(
         !is_on_for_the_service,
         "and the media loop reported no layers: off there too"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_screen_replaces_the_camera_on_its_path_and_watchers_follow_at_a_keyframe() {
+    let fixture = fixture().await;
+    let (mut owner, mut member) = identified_pair(&fixture).await;
+    let owner_id = fixture.user_id("owner");
+    let owner_bot = join_with_camera(&mut owner, fixture.lounge, 1).await;
+    let member_bot = join_with_camera(&mut member, fixture.lounge, 2).await;
+    send(&mut owner, &camera_state(true)).await;
+    wait_for_camera(&mut member, owner_id, true).await;
+    send(&mut member, &watch(owner_id, VideoTileSize::Large)).await;
+    member_bot.wait_until_receiving(1, "h").await;
+
+    send(&mut owner, &screen_state()).await;
+    let sharing = loop {
+        let state = next_voice_state_update(&mut member, owner_id).await;
+        if state.self_stream {
+            break state;
+        }
+    };
+    // Off, then on again with the screen: watchers wait for its first keyframe.
+    while !next_layers(&mut owner).await.is_empty() {}
+    let layers_of_the_screen = next_layers(&mut owner).await;
+    let frames_before_the_screen = member_bot.received(1, "h");
+    let deadline = Instant::now() + HEARING_TIMEOUT;
+    while member_bot.received(1, "h") == frames_before_the_screen {
+        assert!(
+            Instant::now() < deadline,
+            "the screen never reached the watcher"
+        );
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    drop((owner_bot, member_bot));
+    fixture.close().await;
+
+    assert!(!sharing.self_video, "a screen is not a camera: {sharing:?}");
+    assert_eq!(
+        layers_of_the_screen,
+        [SimulcastLayer::Quarter, SimulcastLayer::High]
     );
 }

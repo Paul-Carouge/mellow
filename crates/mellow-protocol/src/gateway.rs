@@ -58,6 +58,10 @@ pub enum ClientFrame {
         /// Absent from older clients, which have no camera: off.
         #[serde(default)]
         self_video: bool,
+        /// Share a screen instead of the camera (ADR-0037); wins over `self_video`. Absent from
+        /// older clients: off.
+        #[serde(default)]
+        self_stream: bool,
     },
     /// The cameras this session shows and how large (ADR-0035), at most
     /// `MAXIMUM_VIDEO_RECEIVE_SLOTS`: replaces the previous list. The server gives each one a
@@ -155,11 +159,13 @@ impl std::fmt::Debug for ClientFrame {
                 self_mute,
                 self_deaf,
                 self_video,
+                self_stream,
             } => formatter
                 .debug_struct("VoiceState")
                 .field("self_mute", self_mute)
                 .field("self_deaf", self_deaf)
                 .field("self_video", self_video)
+                .field("self_stream", self_stream)
                 .finish(),
             Self::VoiceVideoWatch { cameras } => formatter
                 .debug_struct("VoiceVideoWatch")
@@ -262,6 +268,10 @@ pub struct VoiceState {
     /// The person's camera is on and forwarded (ADR-0035). Absent from older servers: off.
     #[serde(default)]
     pub self_video: bool,
+    /// The person shares a screen, forwarded like a camera (ADR-0037); never with `self_video`.
+    /// Absent from older servers: off.
+    #[serde(default)]
+    pub self_stream: bool,
 }
 
 /// Why the server refused to turn a camera on.
@@ -773,6 +783,7 @@ mod tests {
                 self_mute: true,
                 self_deaf: false,
                 self_video: false,
+                self_stream: false,
             },
             "older clients have no camera"
         );
@@ -873,6 +884,7 @@ mod tests {
             suppressed: false,
             join_sound_id: None,
             self_video: true,
+            self_stream: false,
         };
         let cases = [
             (
@@ -882,7 +894,7 @@ mod tests {
                 serde_json::json!({"t": "VOICE_STATE_UPDATE", "data": {"voice_state": {
                     "user_id": "3", "guild_id": "1", "channel_id": "2",
                     "self_mute": true, "self_deaf": false, "suppressed": false,
-                    "self_video": true
+                    "self_video": true, "self_stream": false
                 }}}),
             ),
             (

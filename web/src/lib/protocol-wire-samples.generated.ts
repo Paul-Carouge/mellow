@@ -1010,6 +1010,7 @@ export const readySamples = [
         "join_sound_id": "600",
         "self_deaf": false,
         "self_mute": true,
+        "self_stream": false,
         "self_video": true,
         "suppressed": false,
         "user_id": "10"
@@ -1019,6 +1020,7 @@ export const readySamples = [
         "guild_id": "1",
         "self_deaf": false,
         "self_mute": true,
+        "self_stream": false,
         "self_video": true,
         "suppressed": false,
         "user_id": "10"
@@ -1055,6 +1057,7 @@ export const voiceStateSamples = [
     "join_sound_id": "600",
     "self_deaf": false,
     "self_mute": true,
+    "self_stream": false,
     "self_video": true,
     "suppressed": false,
     "user_id": "10"
@@ -1064,6 +1067,7 @@ export const voiceStateSamples = [
     "guild_id": "1",
     "self_deaf": false,
     "self_mute": true,
+    "self_stream": false,
     "self_video": true,
     "suppressed": false,
     "user_id": "10"
@@ -1721,6 +1725,7 @@ export const gatewayEventSamples = [
         "join_sound_id": "600",
         "self_deaf": false,
         "self_mute": true,
+        "self_stream": false,
         "self_video": true,
         "suppressed": false,
         "user_id": "10"
@@ -2005,6 +2010,7 @@ export const serverFrameSamples = [
           "join_sound_id": "600",
           "self_deaf": false,
           "self_mute": true,
+          "self_stream": false,
           "self_video": true,
           "suppressed": false,
           "user_id": "10"
@@ -2014,6 +2020,7 @@ export const serverFrameSamples = [
           "guild_id": "1",
           "self_deaf": false,
           "self_mute": true,
+          "self_stream": false,
           "self_video": true,
           "suppressed": false,
           "user_id": "10"
@@ -2079,6 +2086,7 @@ export const clientFrameSamples = [
     "d": {
       "self_deaf": true,
       "self_mute": true,
+      "self_stream": true,
       "self_video": true
     },
     "op": "voice_state"

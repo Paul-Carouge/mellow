@@ -46,12 +46,33 @@ pub(crate) struct VoiceJoinRequest {
     pub(crate) host_header: Option<String>,
 }
 
-/// The user's own mute, deafen and camera, as a `voice_state` frame sets them.
+/// What a participant's video shows (ADR-0037): both go through the camera's m-line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VideoSource {
+    Camera,
+    Screen,
+}
+
+impl VideoSource {
+    /// From a `voice_state` frame: a screen wins over the camera.
+    pub(crate) const fn requested(self_video: bool, self_stream: bool) -> Option<Self> {
+        if self_stream {
+            Some(Self::Screen)
+        } else if self_video {
+            Some(Self::Camera)
+        } else {
+            None
+        }
+    }
+}
+
+/// The user's own mute, deafen and video, as a `voice_state` frame sets them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct SelfVoiceState {
     pub(crate) self_mute: bool,
     pub(crate) self_deaf: bool,
-    pub(crate) self_video: bool,
+    /// Their camera or screen, on and forwarded (ADR-0035, ADR-0037).
+    pub(crate) video: Option<VideoSource>,
 }
 
 /// A join checked and answered, waiting for room in the channel.
@@ -93,7 +114,8 @@ impl Participant {
             self_mute: self.self_state.self_mute,
             self_deaf: self.self_state.self_deaf,
             suppressed: self.suppressed,
-            self_video: self.self_state.self_video,
+            self_video: self.self_state.video == Some(VideoSource::Camera),
+            self_stream: self.self_state.video == Some(VideoSource::Screen),
             // Only the arrival announces it (`VoiceShared::announce_join`), so state changes
             // never replay it (ADR-0032).
             join_sound_id: None,
@@ -113,10 +135,20 @@ impl Participant {
         }
     }
 
+    fn without_video(&self) -> Self {
+        Self {
+            self_state: SelfVoiceState {
+                video: None,
+                ..self.self_state
+            },
+            ..self.clone()
+        }
+    }
+
     const fn camera_command(&self, user_id: Snowflake) -> MediaCommand {
         MediaCommand::SetCamera {
             user_id,
-            is_camera_forwarded: self.self_state.self_video,
+            is_camera_forwarded: self.self_state.video.is_some(),
         }
     }
 }
@@ -398,7 +430,7 @@ impl VoiceService {
             self_state: SelfVoiceState {
                 self_mute: request.self_mute,
                 self_deaf: request.self_deaf,
-                self_video: false,
+                video: None,
             },
             suppressed: !may_speak,
             has_video,
@@ -467,9 +499,9 @@ impl VoiceService {
         else {
             return;
         };
-        let mut self_video = requested.self_video;
-        if self_video
-            && !current.self_state.self_video
+        let mut video = requested.video;
+        if video.is_some()
+            && current.self_state.video.is_none()
             && let Some(reason) = shared
                 .camera_refusal(&participants, user_id, &current)
                 .await
@@ -481,13 +513,10 @@ impl VoiceService {
                     reason,
                 },
             );
-            self_video = false;
+            video = None;
         }
         let updated = Participant {
-            self_state: SelfVoiceState {
-                self_video,
-                ..requested
-            },
+            self_state: SelfVoiceState { video, ..requested },
             ..current.clone()
         };
         if updated == current {
@@ -495,8 +524,14 @@ impl VoiceService {
         }
         participants.insert(user_id, updated.clone());
         shared.send_media_command(updated.forwarding_command(user_id));
-        if updated.self_state.self_video != current.self_state.self_video {
-            shared.send_media_command(updated.camera_command(user_id));
+        match (current.self_state.video, updated.self_state.video) {
+            (before, after) if before == after => {}
+            // Camera to screen or back: watchers start over at the new picture's first keyframe.
+            (Some(_), Some(_)) => {
+                shared.send_media_command(current.without_video().camera_command(user_id));
+                shared.send_media_command(updated.camera_command(user_id));
+            }
+            _ => shared.send_media_command(updated.camera_command(user_id)),
         }
         shared.publish_state_updated(user_id, &updated).await;
     }
@@ -657,7 +692,7 @@ impl VoiceShared {
         }
         let cameras_on = participants
             .iter()
-            .filter(|(_, other)| other.self_state.self_video)
+            .filter(|(_, other)| other.self_state.video.is_some())
             .map(|(other_id, other)| (*other_id, other.channel_id));
         missing_room_for_a_camera(cameras_on, user_id, participant.channel_id)
     }
@@ -864,11 +899,11 @@ impl VoiceShared {
                 connection_id,
             } => {
                 let Some(camera) = participants.get_mut(&user_id).filter(|camera| {
-                    camera.connection_id == connection_id && camera.self_state.self_video
+                    camera.connection_id == connection_id && camera.self_state.video.is_some()
                 }) else {
                     return;
                 };
-                camera.self_state.self_video = false;
+                camera.self_state.video = None;
                 let camera = camera.clone();
                 // The service stays the authority: the media loop turned the camera off, but an
                 // off and on in between may have turned it on again there.
@@ -955,8 +990,8 @@ impl VoiceShared {
                         let command = participant.forwarding_command(*user_id);
                         self.send_media_command(command);
                     }
-                    if participant.self_state.self_video && !may_send_video {
-                        participant.self_state.self_video = false;
+                    if participant.self_state.video.is_some() && !may_send_video {
+                        participant.self_state.video = None;
                         let command = participant.camera_command(*user_id);
                         self.send_media_command(command);
                     }

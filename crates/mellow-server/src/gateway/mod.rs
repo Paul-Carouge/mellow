@@ -33,7 +33,7 @@ use crate::http::rate_limit::{
     GATEWAY_CONNECTIONS_PER_ADDRESS, VOICE_JOINS_PER_USER, VOICE_SOUND_REQUESTS_PER_USER,
     VOICE_STATE_CHANGES_PER_USER, VOICE_VIDEO_WATCH_CHANGES_PER_USER,
 };
-use crate::voice::{SelfVoiceState, VoiceJoinRequest};
+use crate::voice::{SelfVoiceState, VideoSource, VoiceJoinRequest};
 use session::{
     FrameText, OUTGOING_QUEUE_FRAMES, SessionCommand, SessionEnd, SessionTask, frame_text,
 };
@@ -604,6 +604,7 @@ async fn handle_voice_frame(state: &AppState, attached: &AttachedSession<'_>, fr
             self_mute,
             self_deaf,
             self_video,
+            self_stream,
         } => {
             let key = format!("voice-state:{user_id}");
             // Over the limit, the change is dropped: the client's next one sets the state anyway.
@@ -619,7 +620,7 @@ async fn handle_voice_frame(state: &AppState, attached: &AttachedSession<'_>, fr
                         SelfVoiceState {
                             self_mute,
                             self_deaf,
-                            self_video,
+                            video: VideoSource::requested(self_video, self_stream),
                         },
                     )
                     .await;
