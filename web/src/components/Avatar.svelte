@@ -1,6 +1,6 @@
 <script lang="ts">
   import { strings } from "../i18n";
-  import { prefersReducedMotion } from "../lib/motion.svelte";
+  import { isPictureAnimationWanted } from "../lib/motion.svelte";
   import { type PublicUser, profileImageUrl } from "../lib/protocol";
   import { avatarInitial, avatarTintToken } from "./format";
   import StatusIndicator, { type ShownStatus } from "./StatusIndicator.svelte";
@@ -38,9 +38,7 @@
   let failedImageId = $state<string | null>(null);
 
   const image = $derived(user.avatar && user.avatar.id !== failedImageId ? user.avatar : null);
-  const isAnimationWanted = $derived(
-    !prefersReducedMotion.current && (animation === "always" || isHoverAreaActive),
-  );
+  const isAnimationWanted = $derived(isPictureAnimationWanted(animation === "always" || isHoverAreaActive));
   const isPictureShown = $derived(image !== null && loadedImageId === image.id);
 
   $effect(() => {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
 
-  import { prefersReducedMotion } from "../lib/motion.svelte";
+  import { isPictureAnimationWanted } from "../lib/motion.svelte";
   import type { MelliState } from "./melli";
 
   // Melli, the Mellow mascot and logo (DESIGN.md §2.10). One named part per element: a state only
@@ -12,7 +12,7 @@
     state?: MelliState;
     /** A `--mw-*` length token, for example "--mw-component-rail-item-size". */
     sizeToken: string;
-    /** The still pose of the state even when motion is allowed (the gallery); reduced motion always gets it. */
+    /** The still pose of the state even when motion is allowed (the gallery); reduced motion gets it unless the reader chose "Always animate". */
     isStill?: boolean;
     /**
      * Something for the reader arrived: each increase plays the chime once (a hop and a swinging
@@ -24,7 +24,7 @@
   // Renamed: a binding called `state` would shadow the `$state` rune.
   let { state: shownState = "idle", sizeToken, isStill = false, chime = 0 }: Props = $props();
 
-  const isStillPose = $derived(isStill || prefersReducedMotion.current);
+  const isStillPose = $derived(isStill || !isPictureAnimationWanted(true));
   let isChiming = $state(false);
   // Plain: only an increase after mounting plays, never the count Melli was created with.
   let chimesSeen = untrack(() => chime);

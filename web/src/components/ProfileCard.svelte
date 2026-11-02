@@ -2,13 +2,13 @@
   import type { Snippet } from "svelte";
 
   import { type PublicUser, profileImageUrl } from "../lib/protocol";
-  import { prefersReducedMotion } from "../lib/motion.svelte";
+  import { isPictureAnimationWanted } from "../lib/motion.svelte";
   import Avatar from "./Avatar.svelte";
   import { avatarTintToken, displayName } from "./format";
 
   // A member's profile (DESIGN.md §5.7, ADR-0022 §1), in the side sheet and as the live preview in
   // Profile settings (§5.9): the banner picture, or the plain strip, with the avatar overlapping
-  // it; both play animated, as in Discord's popout, except under reduced motion.
+  // it; both play animated, as in Discord's popout, unless reduced motion keeps pictures still.
   interface Props {
     user: Pick<PublicUser, "id" | "display_name" | "username" | "avatar" | "banner">;
     /** A heading in the side sheet; plain text in the settings preview, under its own heading. */
@@ -29,7 +29,7 @@
 {#if banner}
   {@const bannerId = banner.id}
   <img
-    src={profileImageUrl(banner, !prefersReducedMotion.current)}
+    src={profileImageUrl(banner, isPictureAnimationWanted(true))}
     alt=""
     decoding="async"
     draggable="false"

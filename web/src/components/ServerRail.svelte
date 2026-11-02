@@ -5,7 +5,7 @@
   import { SvelteSet } from "svelte/reactivity";
 
   import type { MellowClient } from "../lib/client.svelte";
-  import { prefersReducedMotion } from "../lib/motion.svelte";
+  import { isPictureAnimationWanted } from "../lib/motion.svelte";
   import { type Guild, type Snowflake, iconUrl } from "../lib/protocol";
   import type { ServerDialog } from "./ChannelSidebar.svelte";
   import { contextMenuTrigger } from "./context-menu-trigger";
@@ -74,7 +74,7 @@
 
   // The strip scrolls, which would clip a tooltip drawn inside it: it is fixed to the viewport.
   let tooltip = $state<{ text: string; top: number; left: number } | null>(null);
-  /** The server whose animated icon plays: hovered or focused, as avatars do, never under reduced motion. */
+  /** The server whose animated icon plays: hovered or focused, as avatars do (every one with "Always animate"). */
   let animatedGuildId = $state<Snowflake | null>(null);
   /** Icons that failed to load show the initials instead. */
   const failedIconIds = new SvelteSet<Snowflake>();
@@ -209,7 +209,7 @@
         {#if guild.icon && !failedIconIds.has(guild.icon.id)}
           {@const iconId = guild.icon.id}
           <img
-            src={iconUrl(guild.icon, !prefersReducedMotion.current && animatedGuildId === guild.id)}
+            src={iconUrl(guild.icon, isPictureAnimationWanted(animatedGuildId === guild.id))}
             alt=""
             draggable="false"
             class="absolute inset-0 size-full object-cover select-none"

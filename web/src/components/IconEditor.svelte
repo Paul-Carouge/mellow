@@ -4,7 +4,7 @@
   import { strings } from "../i18n";
   import { ApiError, type IconCrop } from "../lib/api";
   import { describeError } from "../lib/client.svelte";
-  import { prefersReducedMotion } from "../lib/motion.svelte";
+  import { isPictureAnimationWanted } from "../lib/motion.svelte";
   import {
     MAXIMUM_PROFILE_IMAGE_BYTES,
     PICTURE_UPLOAD_TYPES,
@@ -126,9 +126,9 @@
   >
     {#if shownIcon}
       {@const iconId = shownIcon.id}
-      <!-- The preview plays an animated icon, as the profile card does, except under reduced motion. -->
+      <!-- The preview plays an animated icon, as the profile card does, unless reduced motion keeps pictures still. -->
       <img
-        src={iconUrl(shownIcon, !prefersReducedMotion.current)}
+        src={iconUrl(shownIcon, isPictureAnimationWanted(true))}
         alt=""
         decoding="async"
         class="size-full object-cover"

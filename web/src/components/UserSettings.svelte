@@ -3,6 +3,7 @@
 
   import { strings } from "../i18n";
   import type { MellowClient } from "../lib/client.svelte";
+  import AccessibilitySettings from "./AccessibilitySettings.svelte";
   import AccountSettings from "./AccountSettings.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
@@ -23,10 +24,11 @@
 
   let { client, isWide, onclose }: Props = $props();
 
-  type Section = "account" | "profile" | "voice" | "notifications" | "about";
+  type Section = "account" | "profile" | "accessibility" | "voice" | "notifications" | "about";
   const SECTION_TITLES: Record<Section, string> = {
     account: strings.settings.myAccount,
     profile: strings.settings.profile,
+    accessibility: strings.settings.accessibility,
     voice: strings.settings.voice,
     notifications: strings.settings.notifications,
     about: strings.settings.about,
@@ -187,7 +189,7 @@
         >
           {@render navGroup(strings.settings.userSettings, ["account", "profile"])}
           {@render separator()}
-          {@render navGroup(strings.settings.appSettings, ["voice", "notifications", "about"])}
+          {@render navGroup(strings.settings.appSettings, ["accessibility", "voice", "notifications", "about"])}
           {@render separator()}
           <button
             type="button"
@@ -246,6 +248,8 @@
               <AccountSettings bind:this={accountSettings} {client} />
             {:else if section === "profile"}
               <ProfileSettings {client} />
+            {:else if section === "accessibility"}
+              <AccessibilitySettings />
             {:else if section === "voice"}
               <VoiceSettings voice={client.voice} />
             {:else if section === "notifications"}
