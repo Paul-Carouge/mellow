@@ -1,6 +1,6 @@
 <script lang="ts">
   import { strings } from "../i18n";
-  import { type MellowClient, describeError } from "../lib/client.svelte";
+  import type { MellowClient } from "../lib/client.svelte";
   import type { DirectMessageChannel, PublicUser } from "../lib/protocol";
   import { displayName } from "./format";
   import { conversationDisplayName, nextOwnerAfterLeaving, otherParticipants } from "./group-conversations";
@@ -32,32 +32,19 @@
     const nextOwner = nextOwnerAfterLeaving(group, currentUserId);
     return nextOwner ? strings.groups.leaveBodyAsOwner(displayName(nextOwner)) : strings.groups.leaveBody;
   });
-  let isBusy = $state(false);
   // Plain: read by the dialog when it closes, after this component stopped updating.
   let hasSucceeded = false;
-  let errorMessage = $state("");
 
   async function confirm() {
-    isBusy = true;
-    errorMessage = "";
-    try {
-      if (person) {
-        await client.removeGroupParticipant(group.id, person.id);
-        ondone(strings.groups.removed(personName));
-      } else {
-        // The client drops the group and goes back to Friends; the shell announces it.
-        await client.leaveGroupConversation(group.id);
-      }
-      hasSucceeded = true;
-      onclose();
-    } catch (error) {
-      errorMessage = describeError(
-        error,
-        person ? strings.groups.removeFailed(personName) : strings.groups.leaveFailed,
-      );
-    } finally {
-      isBusy = false;
+    if (person) {
+      await client.removeGroupParticipant(group.id, person.id);
+      ondone(strings.groups.removed(personName));
+    } else {
+      // The client drops the group and goes back to Friends; the shell announces it.
+      await client.leaveGroupConversation(group.id);
     }
+    hasSucceeded = true;
+    onclose();
   }
 </script>
 
@@ -65,15 +52,9 @@
   shouldReturnFocusToOpener={() => !hasSucceeded}
   title={person ? strings.groups.removeTitle(personName) : strings.groups.leaveTitle(groupName)}
   subtitle={person ? strings.groups.removeBody(personName) : leaveBody}
-  {errorMessage}
-  {isBusy}
-  submitLabel={isBusy
-    ? person
-      ? strings.groups.removing
-      : strings.groups.leaving
-    : person
-      ? strings.groups.removeSubmit(personName)
-      : strings.groups.leave}
+  submitLabel={person ? strings.groups.removeSubmit(personName) : strings.groups.leave}
+  busySubmitLabel={person ? strings.groups.removing : strings.groups.leaving}
+  failureSummary={person ? strings.groups.removeFailed(personName) : strings.groups.leaveFailed}
   isSubmitDanger
   {onclose}
   onsubmit={confirm}
