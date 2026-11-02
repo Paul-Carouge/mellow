@@ -539,6 +539,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pictures_stored_once_an_earlier_release_ran_migration_0027_do_not_wait() {
+        const ADR_0033_MIGRATION: i64 = 27;
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(ADR_0033_MIGRATION - 1, database.writer())
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) VALUES (30, 20, 1, 'files'); \
+             INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
+             content_type, size_bytes, created_at_unix_milliseconds) \
+             VALUES (40, 20, 1, 30, 'old.png', 'image/png', 300, 1767225599000); \
+             INSERT INTO profile_images (id, user_id, still_id, size_bytes, \
+             created_at_unix_milliseconds) VALUES (50, 1, NULL, 700, 1767225599000); \
+             INSERT INTO guild_images (id, guild_id, channel_id, still_id, size_bytes, \
+             created_at_unix_milliseconds) VALUES (60, 10, NULL, NULL, 90, 1767225599000);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        MIGRATOR
+            .run_to(ADR_0033_MIGRATION, database.writer())
+            .await
+            .unwrap();
+        // Released on its own on 2026-01-01; pictures stored afterwards went through ADR-0033.
+        sqlx::raw_sql(
+            "UPDATE _sqlx_migrations SET installed_on = '2026-01-01 00:00:00' WHERE version = 27; \
+             INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
+             content_type, size_bytes, created_at_unix_milliseconds) \
+             VALUES (41, 20, 1, 30, 'new.avif', 'image/avif', 30, 1767225600000), \
+             (42, 20, 1, 30, 'new.jpg', 'image/jpeg', 40, 1767225601000); \
+             INSERT INTO profile_images (id, user_id, still_id, size_bytes, \
+             created_at_unix_milliseconds) VALUES (51, 1, NULL, 70, 1767225601000); \
+             INSERT INTO guild_images (id, guild_id, channel_id, still_id, size_bytes, \
+             created_at_unix_milliseconds) VALUES (61, 10, NULL, NULL, 9, 1767225601000);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let waiting = crate::storage::image_recompression::pictures_to_recompress(&database)
+            .await
+            .unwrap();
+        database.close().await;
+
+        let pictures = |count, stored_bytes| crate::storage::image_recompression::WaitingPictures {
+            count,
+            stored_bytes,
+        };
+        assert_eq!(waiting.attachments, pictures(1, 300));
+        assert_eq!(waiting.profile_images, pictures(1, 700));
+        assert_eq!(waiting.icons, pictures(1, 90));
+    }
+
+    #[tokio::test]
     async fn existing_data_is_backed_up_encrypted_before_migrating() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
