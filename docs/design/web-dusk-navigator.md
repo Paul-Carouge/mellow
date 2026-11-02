@@ -20,7 +20,7 @@ wide (>= 1064 px, members docked)                      phone (< 816 px)
 
 - **Navigator card** (`Navigator.svelte`): a grid of `component.navigator.strip-width` and `component.sidebar-width`, with `UserCard` spanning both columns at the foot.
 - **Sheet** (`ChatPane.svelte`): radius `component.sheet.radius`; square and full-bleed below 816 px, where messages keep `space.md` trailing padding instead of `component.message.padding-trailing`.
-- **Side sheet** (`MemberList.svelte`): members, then a member's profile with "Send message". Closed by default, remembered per server for the tab's life, toggled by the header button or `Ctrl+U`, closed by Esc. Docked from 1064 px; between 816 and 1064 px it floats over the sheet in a modal `Drawer` (top `3 × inset`, trailing and bottom `2 × inset`, as in the mockup); below 816 px it covers the window.
+- **Side sheet** (`MemberList.svelte`): members, then a member's profile with "Send message". Closed by default, remembered per server and group on this device across visits (`member-sheet-places.ts`), toggled by the header button or `Ctrl+U`, closed by Esc. Docked from 1064 px; between 816 and 1064 px it floats over the sheet in a modal `Drawer` (top `3 × inset`, trailing and bottom `2 × inset`, as in the mockup); below 816 px it covers the window.
 - **Breakpoints** come from the tokens in `Shell.svelte`: inset + strip + list + inset + `size.chat.min-width` + inset = 816 px, plus side sheet + inset = 1064 px.
 - **Ground spacing**: the mockup keeps an empty row for its "Palette" top bar and an empty column for the side sheet, so its cards sit 16 px from the top and, while the side sheet is closed, 16 px from the trailing edge. The web client reproduces those values on purpose.
 
