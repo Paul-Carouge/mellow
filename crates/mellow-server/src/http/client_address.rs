@@ -8,6 +8,8 @@ use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 const FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
 /// An IPv6 end site gets at least a /64, so one client controls every address inside it.
 const IPV6_CLIENT_PREFIX_BITS: u32 = 64;
+/// The largest common end-site allocation: a free tunnel-broker /48 holds 65 536 /64s.
+const IPV6_SITE_PREFIX_BITS: u32 = 48;
 
 /// The rate-limiting key for a request's client.
 ///
@@ -20,26 +22,49 @@ pub(crate) fn client_address_key(
     headers: &HeaderMap,
     trusted_proxy_networks: &[IpNet],
 ) -> String {
+    match client_address(peer, headers, trusted_proxy_networks) {
+        IpAddr::V4(address) => address.to_string(),
+        IpAddr::V6(address) => address.to_ipv4_mapped().map_or_else(
+            || ipv6_prefix_key(address, IPV6_CLIENT_PREFIX_BITS),
+            |mapped| mapped.to_string(),
+        ),
+    }
+}
+
+/// The rate-limiting key for the IPv6 /48 a request's client sits in, the client found as in
+/// [`client_address_key`]; `None` for IPv4 clients, whose address key already is their site.
+pub(crate) fn client_ipv6_site_key(
+    peer: SocketAddr,
+    headers: &HeaderMap,
+    trusted_proxy_networks: &[IpNet],
+) -> Option<String> {
+    match client_address(peer, headers, trusted_proxy_networks) {
+        IpAddr::V6(address) if address.to_ipv4_mapped().is_none() => {
+            Some(ipv6_prefix_key(address, IPV6_SITE_PREFIX_BITS))
+        }
+        IpAddr::V4(_) | IpAddr::V6(_) => None,
+    }
+}
+
+fn ipv6_prefix_key(address: Ipv6Addr, prefix_bits: u32) -> String {
+    let prefix_mask = u128::MAX << (128 - prefix_bits);
+    let prefix = Ipv6Addr::from(address.to_bits() & prefix_mask);
+    format!("{prefix}/{prefix_bits}")
+}
+
+fn client_address(
+    peer: SocketAddr,
+    headers: &HeaderMap,
+    trusted_proxy_networks: &[IpNet],
+) -> IpAddr {
     let peer_address = peer.ip().to_canonical();
     let is_peer_trusted_proxy = trusted_proxy_networks
         .iter()
         .any(|network| network.contains(&peer_address));
-    let address = if is_peer_trusted_proxy {
+    if is_peer_trusted_proxy {
         last_forwarded_hop(headers).unwrap_or(peer.ip())
     } else {
         peer.ip()
-    };
-    match address {
-        IpAddr::V4(address) => address.to_string(),
-        IpAddr::V6(address) => {
-            if let Some(mapped) = address.to_ipv4_mapped() {
-                mapped.to_string()
-            } else {
-                let prefix_mask = u128::MAX << (128 - IPV6_CLIENT_PREFIX_BITS);
-                let prefix = Ipv6Addr::from(address.to_bits() & prefix_mask);
-                format!("{prefix}/{IPV6_CLIENT_PREFIX_BITS}")
-            }
-        }
     }
 }
 
@@ -153,5 +178,24 @@ mod tests {
             client_address_key(other_site, &none, &[])
         );
         assert_eq!(client_address_key(mapped, &none, &[]), "192.0.2.1");
+    }
+
+    #[test]
+    fn ipv6_clients_also_have_a_48_bit_site_key_and_ipv4_clients_none() {
+        let first: SocketAddr = "[2001:db8:1:2:aaaa::1]:443".parse().unwrap();
+        let same_site: SocketAddr = "[2001:db8:1:ffff::9]:443".parse().unwrap();
+        let mapped: SocketAddr = "[::ffff:192.0.2.1]:443".parse().unwrap();
+        let ipv4: SocketAddr = "192.0.2.1:443".parse().unwrap();
+        let none = HeaderMap::new();
+        assert_eq!(
+            client_ipv6_site_key(first, &none, &[]).as_deref(),
+            Some("2001:db8:1::/48")
+        );
+        assert_eq!(
+            client_ipv6_site_key(first, &none, &[]),
+            client_ipv6_site_key(same_site, &none, &[])
+        );
+        assert_eq!(client_ipv6_site_key(mapped, &none, &[]), None);
+        assert_eq!(client_ipv6_site_key(ipv4, &none, &[]), None);
     }
 }
