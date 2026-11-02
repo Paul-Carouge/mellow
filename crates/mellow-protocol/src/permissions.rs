@@ -38,6 +38,9 @@ bitflags::bitflags! {
         /// Playing the guild's soundboard sounds in a voice channel, and choosing a join sound
         /// (ADR-0032).
         const USE_SOUNDBOARD       = 1 << 20;
+        /// Turning a camera on in a voice channel, and later sharing a screen; the interface
+        /// calls it "Video" (ADR-0035, Discord's `STREAM`).
+        const STREAM               = 1 << 21;
     }
 }
 
@@ -55,7 +58,8 @@ impl Permissions {
         .union(Self::ADD_REACTIONS)
         .union(Self::CONNECT)
         .union(Self::SPEAK)
-        .union(Self::USE_SOUNDBOARD);
+        .union(Self::USE_SOUNDBOARD)
+        .union(Self::STREAM);
 
     /// Permissions granted to `@everyone` in a newly created guild.
     pub const DEFAULT_EVERYONE: Self = Self::VIEW_CHANNEL
@@ -67,7 +71,8 @@ impl Permissions {
         .union(Self::ADD_REACTIONS)
         .union(Self::CONNECT)
         .union(Self::SPEAK)
-        .union(Self::USE_SOUNDBOARD);
+        .union(Self::USE_SOUNDBOARD)
+        .union(Self::STREAM);
 }
 
 /// A member's permissions in a guild (ADR-0007 steps 1 to 3): the owner and administrators get

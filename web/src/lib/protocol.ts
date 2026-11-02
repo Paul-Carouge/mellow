@@ -719,6 +719,8 @@ export const Permission = {
   SPEAK: 1n << 19n,
   /** Play the server's sounds in a voice channel, and choose a join sound (ADR-0032). */
   USE_SOUNDBOARD: 1n << 20n,
+  /** Turn a camera on in a voice channel, later share a screen; "Video" in the interface (ADR-0035). */
+  STREAM: 1n << 21n,
 } as const;
 
 /** What a channel overwrite may allow or deny (`Permissions::CHANNEL_SCOPED`). */
@@ -735,7 +737,8 @@ export const CHANNEL_SCOPED_PERMISSIONS =
   Permission.ADD_REACTIONS |
   Permission.CONNECT |
   Permission.SPEAK |
-  Permission.USE_SOUNDBOARD;
+  Permission.USE_SOUNDBOARD |
+  Permission.STREAM;
 
 export function hasPermission(bits: PermissionBits, permission: bigint): boolean {
   const value = BigInt(bits);

@@ -308,6 +308,7 @@ export const PERMISSION_GROUPS: readonly { group: PermissionGroupKey; permission
       { key: "connect", bit: Permission.CONNECT, isSensitive: false },
       { key: "speak", bit: Permission.SPEAK, isSensitive: false },
       { key: "useSoundboard", bit: Permission.USE_SOUNDBOARD, isSensitive: false },
+      { key: "stream", bit: Permission.STREAM, isSensitive: false },
     ],
   },
   {
