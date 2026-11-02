@@ -7,10 +7,9 @@ use mellow_protocol::{CurrentUser, SessionCreated, Snowflake};
 use serde::de::DeserializeOwned;
 use tower::ServiceExt as _;
 
+use super::*;
 use crate::domain::account_rules::RegistrationMode;
 use crate::domain::accounts::tests::PASSWORD;
-
-use super::*;
 
 pub(crate) const TEST_PEER: &str = "192.0.2.10:40000";
 
