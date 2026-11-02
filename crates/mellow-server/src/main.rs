@@ -1,5 +1,8 @@
 //! `mellow-server`: one binary to initialise, administer and run a Mellow instance.
 
+// A command-line program: its messages to the operator go to stderr.
+#![allow(clippy::print_stderr)]
+
 use std::io::{BufRead as _, IsTerminal as _, Write as _};
 use std::net::SocketAddr;
 use std::path::PathBuf;

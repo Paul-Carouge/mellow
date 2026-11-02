@@ -99,6 +99,8 @@ panic = "warn"
 dbg_macro = "warn"
 todo = "warn"
 print_stdout = "warn"
+# Logs go through `tracing`; only the command-line binaries talk to the operator on stderr.
+print_stderr = "warn"
 
 # Tests encode real pictures: unoptimised, rav1e and SSIMULACRA2 are tens of times slower.
 [profile.dev.package.rav1e]
