@@ -307,9 +307,34 @@ pub async fn set_instance_administrator(
     result
 }
 
-/// Opens the instance database for an administration command, migrated, after checking it exists
-/// so a typo in the data directory never creates an empty instance.
+/// Opens the instance database for an administration command that writes, migrated, after
+/// checking it exists so a typo in the data directory never creates an empty instance.
 async fn open_instance_database(config: &ServerConfig) -> Result<crate::storage::Database> {
+    let database = open_existing_instance_database(config).await?;
+    if let Err(error) = migrate_with_backup(&database, &config.backup_directory()).await {
+        database.close().await;
+        return Err(error.into());
+    }
+    Ok(database)
+}
+
+/// As `open_instance_database`, for a command that only reads or copies (`backup`, a dry run):
+/// refuses a database this binary would migrate rather than migrating it under a server that may
+/// still run the previous version.
+async fn open_unmigrated_instance_database(
+    config: &ServerConfig,
+) -> Result<crate::storage::Database> {
+    let database = open_existing_instance_database(config).await?;
+    if let Err(error) = crate::storage::ensure_no_pending_migration(&database).await {
+        database.close().await;
+        return Err(error.into());
+    }
+    Ok(database)
+}
+
+async fn open_existing_instance_database(
+    config: &ServerConfig,
+) -> Result<crate::storage::Database> {
     let database_path = config.database_path();
     if !database_path.is_file() {
         bail!(
@@ -318,12 +343,7 @@ async fn open_instance_database(config: &ServerConfig) -> Result<crate::storage:
         );
     }
     let database_key = MasterKey::read_file(&config.master_key_file)?.derive_database_key();
-    let database = open_encrypted_database(&database_path, &database_key).await?;
-    if let Err(error) = migrate_with_backup(&database, &config.backup_directory()).await {
-        database.close().await;
-        return Err(error.into());
-    }
-    Ok(database)
+    Ok(open_encrypted_database(&database_path, &database_key).await?)
 }
 
 /// Suffix of a backup being written; renamed away once the backup is complete and checked.
@@ -359,7 +379,7 @@ async fn back_up_instance_with_clock(
     output_directory: Option<&Path>,
     now_unix_milliseconds: impl Fn() -> u64,
 ) -> Result<PathBuf> {
-    let database = open_instance_database(config).await?;
+    let database = open_unmigrated_instance_database(config).await?;
     let result = async {
         let started_at_unix_milliseconds = now_unix_milliseconds();
         let destination = output_directory
@@ -499,7 +519,7 @@ pub struct WaitingPictureKind {
 /// # Errors
 /// Fails on a missing database or key, or a database error.
 pub async fn pictures_to_recompress(config: &ServerConfig) -> Result<Vec<WaitingPictureKind>> {
-    let database = open_instance_database(config).await?;
+    let database = open_unmigrated_instance_database(config).await?;
     let waiting = crate::storage::image_recompression::pictures_to_recompress(&database).await;
     database.close().await;
     let waiting = waiting?;
@@ -1068,6 +1088,55 @@ mod tests {
         let requested = request_image_recompression(&config).await;
 
         assert_eq!(requested.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_backup_and_a_dry_run_refuse_a_database_they_would_migrate_and_leave_it_as_is() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = initialize_instance(&options_in(directory.path()))
+            .await
+            .unwrap();
+        let key = MasterKey::read_file(&config.master_key_file)
+            .unwrap()
+            .derive_database_key();
+        let applied_migrations = |database: crate::storage::Database| async move {
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+                .fetch_one(database.writer())
+                .await
+                .unwrap();
+            database.close().await;
+            count
+        };
+        // As if the binary had just been updated: its last migration is not applied yet.
+        let database = open_encrypted_database(&config.database_path(), &key)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "DELETE FROM _sqlx_migrations \
+             WHERE version = (SELECT MAX(version) FROM _sqlx_migrations)",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let applied_before = applied_migrations(database).await;
+
+        let backup = back_up_instance(&config, None).await;
+        let dry_run = pictures_to_recompress(&config).await;
+        let applied_after = applied_migrations(
+            open_encrypted_database(&config.database_path(), &key)
+                .await
+                .unwrap(),
+        )
+        .await;
+
+        for error in [backup.unwrap_err(), dry_run.unwrap_err()] {
+            assert!(
+                error.to_string().contains("restart the server"),
+                "{error:#}"
+            );
+        }
+        assert_eq!(applied_after, applied_before, "nothing was migrated");
+        assert!(!config.backup_directory().exists(), "no backup was written");
     }
 
     #[tokio::test]

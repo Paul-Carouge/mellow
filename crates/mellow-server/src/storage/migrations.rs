@@ -33,6 +33,11 @@ pub enum MigrationError {
     Database(#[from] sqlx::Error),
     #[error("migration failed")]
     Migration(#[from] sqlx::migrate::MigrateError),
+    #[error(
+        "the database is older than this binary ({count} migrations pending): restart the server \
+         first, it migrates the database"
+    )]
+    Pending { count: usize },
 }
 
 /// What happened, for the startup log line.
@@ -55,18 +60,7 @@ pub async fn migrate_with_backup(
     backup_directory: &Path,
 ) -> Result<MigrationOutcome, MigrationError> {
     let pool = database.writer();
-    let applied_versions = applied_migration_versions(pool).await?;
-    reject_unknown_or_failed_migrations(&applied_versions)?;
-    let applied_version_numbers: BTreeSet<i64> = applied_versions
-        .iter()
-        .map(|applied| applied.version)
-        .collect();
-    let pending_versions: Vec<i64> = MIGRATOR
-        .iter()
-        .map(|migration| migration.version)
-        .filter(|version| !applied_version_numbers.contains(version))
-        .collect();
-
+    let pending_versions = pending_migration_versions(pool).await?;
     if !pending_versions.is_empty() {
         // Warn level, so it shows even with quiet logs: an older server refuses the database
         // from here on, and whoever updates must know before a failure (ADR-0018).
@@ -83,6 +77,36 @@ pub async fn migrate_with_backup(
         applied_versions: pending_versions,
         backup_path,
     })
+}
+
+/// Checks the database is at this binary's schema, changing nothing: for commands that run beside
+/// the server, which alone migrates (an older server still running would otherwise serve a schema
+/// it does not know).
+///
+/// # Errors
+/// `Pending` when migrations wait, and every refusal `migrate_with_backup` makes.
+pub async fn ensure_no_pending_migration(database: &Database) -> Result<(), MigrationError> {
+    let count = pending_migration_versions(database.writer()).await?.len();
+    if count > 0 {
+        return Err(MigrationError::Pending { count });
+    }
+    Ok(())
+}
+
+/// The versions this binary would apply, after refusing a database that a newer binary or an
+/// edited migration wrote.
+async fn pending_migration_versions(pool: &SqlitePool) -> Result<Vec<i64>, MigrationError> {
+    let applied_versions = applied_migration_versions(pool).await?;
+    reject_unknown_or_failed_migrations(&applied_versions)?;
+    let applied_version_numbers: BTreeSet<i64> = applied_versions
+        .iter()
+        .map(|applied| applied.version)
+        .collect();
+    Ok(MIGRATOR
+        .iter()
+        .map(|migration| migration.version)
+        .filter(|version| !applied_version_numbers.contains(version))
+        .collect())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

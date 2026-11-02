@@ -23,7 +23,9 @@ mod sqlite_integers;
 
 pub use database::{Database, DatabaseKey, StorageError, open_encrypted_database};
 pub use master_key::{MasterKey, MasterKeyError};
-pub use migrations::{MigrationError, MigrationOutcome, migrate_with_backup};
+pub use migrations::{
+    MigrationError, MigrationOutcome, ensure_no_pending_migration, migrate_with_backup,
+};
 
 /// Owner only: other local users must not even copy the encrypted database or key (least privilege).
 #[cfg(unix)]
