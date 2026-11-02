@@ -9,7 +9,8 @@ use mellow_protocol::{Attachment, Permissions, Snowflake};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
 use crate::domain::image_processing::{
-    OPTIMIZABLE_CONTENT_TYPES, ProcessedImage, attachment_preview, optimize_attachment,
+    ImageProcessingError, OPTIMIZABLE_CONTENT_TYPES, ProcessedImage, attachment_preview,
+    optimize_attachment,
 };
 
 use crate::domain::message_rules::{UNKNOWN_CONTENT_TYPE, clean_file_name, sniff_content_type};
@@ -478,10 +479,24 @@ impl Attachments {
                 }
             }
             // Undecodable or not smaller: the upload stays, and may still get a preview.
-            Ok(None) | Err(_) => attachment.size_bytes,
+            Ok(None) | Err(ImageProcessingError::Unsupported | ImageProcessingError::TooLarge) => {
+                attachment.size_bytes
+            }
+            // A failing encoder is a server fault, not a property of the picture: say so.
+            Err(error) => {
+                tracing::warn!(%error, "cannot compress an attachment");
+                attachment.size_bytes
+            }
         };
-        let Ok(Some(preview)) = preview else {
-            return Ok(());
+        let preview = match preview {
+            Ok(Some(preview)) => preview,
+            Ok(None) | Err(ImageProcessingError::Unsupported | ImageProcessingError::TooLarge) => {
+                return Ok(());
+            }
+            Err(error) => {
+                tracing::warn!(%error, "cannot make an attachment preview");
+                return Ok(());
+            }
         };
         // Not smaller than the file itself: showing that file costs no more.
         if u64::try_from(preview.bytes.len()).unwrap_or(u64::MAX) >= stored_size_bytes {
