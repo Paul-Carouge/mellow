@@ -1209,6 +1209,7 @@ pub(crate) mod tests {
                     name: "Moderator".into(),
                     color: 0,
                     permissions: mellow_protocol::Permissions::KICK_MEMBERS,
+                    is_displayed_separately: false,
                 },
                 now(),
             )
@@ -1236,6 +1237,7 @@ pub(crate) mod tests {
                     name: "Helper".into(),
                     color: 0,
                     permissions: mellow_protocol::Permissions::empty(),
+                    is_displayed_separately: false,
                 },
                 now(),
             )

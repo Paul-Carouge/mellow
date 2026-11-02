@@ -139,6 +139,10 @@ pub struct Role {
     pub color: u32,
     pub position: u32,
     pub permissions: Permissions,
+    /// Its members are listed under the role's name, above everyone else, in the member list
+    /// (Discord's "hoist"). Never set on `@everyone`. Added after `v0.28.0`.
+    #[serde(default)]
+    pub is_displayed_separately: bool,
 }
 
 /// Body of `POST /api/v1/guilds/{guild_id}/roles`. The role is created just above `@everyone`.
@@ -150,6 +154,8 @@ pub struct CreateRoleRequest {
     pub color: u32,
     #[serde(default)]
     pub permissions: Permissions,
+    #[serde(default)]
+    pub is_displayed_separately: bool,
 }
 
 /// Body of `PATCH /api/v1/guilds/{guild_id}/roles/{role_id}`; absent fields are unchanged.
@@ -160,6 +166,7 @@ pub struct UpdateRoleRequest {
     pub name: Option<String>,
     pub color: Option<u32>,
     pub permissions: Option<Permissions>,
+    pub is_displayed_separately: Option<bool>,
 }
 
 /// Body of `PUT /api/v1/guilds/{guild_id}/roles/order`: every role of the guild except
@@ -284,6 +291,8 @@ pub enum AuditChangeKey {
     UserLimit,
     /// Of a soundboard sound: its emoji's key, empty for none. Added after `v0.25.0`.
     Emoji,
+    /// Of a role: `true` or `false`. Added after `v0.28.0`.
+    DisplayedSeparately,
     /// A field added by a newer server.
     #[serde(other)]
     Unknown,

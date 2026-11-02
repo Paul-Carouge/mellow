@@ -1244,6 +1244,7 @@ mod tests {
             color: 0,
             position,
             permissions,
+            is_displayed_separately: false,
         };
         let everyone = role(CLUB, 0, Permissions::DEFAULT_EVERYONE);
         let mut state = ready_state();

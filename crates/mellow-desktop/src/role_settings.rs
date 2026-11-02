@@ -409,6 +409,7 @@ pub fn update_role_request(
         name: (is_named_field_editable && name != stored.name).then(|| name.to_owned()),
         color: (is_named_field_editable && draft.color != stored.color).then_some(draft.color),
         permissions: (draft.permissions != stored.permissions).then_some(draft.permissions),
+        is_displayed_separately: None,
     })
 }
 
@@ -417,6 +418,7 @@ pub fn new_role_request() -> CreateRoleRequest {
         name: NEW_ROLE_NAME.to_owned(),
         color: NO_ROLE_COLOR,
         permissions: Permissions::empty(),
+        is_displayed_separately: false,
     }
 }
 
@@ -492,6 +494,7 @@ mod tests {
             color: NO_ROLE_COLOR,
             position,
             permissions,
+            is_displayed_separately: false,
         }
     }
 
@@ -651,6 +654,7 @@ mod tests {
                 name: Some("Guides".to_owned()),
                 color: Some(0x3498DB),
                 permissions: None,
+                is_displayed_separately: None,
             })
         );
         draft.name = "   ".to_owned();

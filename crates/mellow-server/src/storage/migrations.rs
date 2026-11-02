@@ -1901,6 +1901,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn existing_roles_are_not_displayed_separately_and_only_booleans_are_kept() {
+        const LAST_VERSION_WITHOUT_DISPLAYED_ROLES: i64 = 31;
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_DISPLAYED_ROLES, database.writer())
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO roles (id, guild_id, name, permissions, position, color) \
+             VALUES (10, 10, '@everyone', 6, 0, 0), (11, 10, 'Moderators', 8, 1, 255);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let version_before: i64 =
+            sqlx::query_scalar("SELECT permission_version FROM guilds WHERE id = 10")
+                .fetch_one(database.writer())
+                .await
+                .unwrap();
+
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let roles: Vec<(i64, String, i64, i64, i64, i64)> = sqlx::query_as(
+            "SELECT id, name, permissions, position, color, is_displayed_separately FROM roles \
+             ORDER BY id",
+        )
+        .fetch_all(database.writer())
+        .await
+        .unwrap();
+        let not_a_boolean =
+            sqlx::query("UPDATE roles SET is_displayed_separately = 2 WHERE id = 11")
+                .execute(database.writer())
+                .await;
+        sqlx::query("UPDATE roles SET is_displayed_separately = 1 WHERE id = 11")
+            .execute(database.writer())
+            .await
+            .unwrap();
+        let version_after: i64 =
+            sqlx::query_scalar("SELECT permission_version FROM guilds WHERE id = 10")
+                .fetch_one(database.writer())
+                .await
+                .unwrap();
+        database.close().await;
+
+        assert_eq!(
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_DISPLAYED_ROLES + 1))
+        );
+        assert_eq!(
+            roles,
+            [
+                (10, "@everyone".to_owned(), 6, 0, 0, 0),
+                (11, "Moderators".to_owned(), 8, 1, 255, 0)
+            ],
+            "roles keep every field and start not displayed separately"
+        );
+        assert!(not_a_boolean.is_err(), "only 0 and 1 are stored");
+        assert!(
+            version_after > version_before,
+            "displaying a role separately refreshes cached permission snapshots"
+        );
+    }
+
+    #[tokio::test]
     async fn a_database_from_a_newer_binary_is_refused_even_with_nothing_pending() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())

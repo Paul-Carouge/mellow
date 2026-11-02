@@ -191,6 +191,7 @@ mod tests {
             color: 0,
             position,
             permissions,
+            is_displayed_separately: false,
         }
     }
 

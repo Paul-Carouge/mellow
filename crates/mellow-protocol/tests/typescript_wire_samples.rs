@@ -223,6 +223,7 @@ fn role() -> Role {
         color: 0x00ff_8800,
         position: 1,
         permissions: Permissions::MANAGE_MESSAGES | Permissions::KICK_MEMBERS,
+        is_displayed_separately: true,
     }
 }
 
@@ -879,7 +880,7 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
             Interface,
             &every_variant!(AuditChangeKey:
                 Name, Topic, Color, Permissions, Allow, Deny, Code, Icon, Parent, UserLimit,
-                Emoji, Unknown,
+                Emoji, DisplayedSeparately, Unknown,
             )
             .into_iter()
             .map(|key| AuditChange {

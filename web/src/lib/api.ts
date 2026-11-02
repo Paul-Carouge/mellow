@@ -295,7 +295,7 @@ export class RestClient {
   updateRole(
     guildId: Snowflake,
     roleId: Snowflake,
-    changes: { name?: string; color?: number; permissions?: PermissionBits },
+    changes: { name?: string; color?: number; permissions?: PermissionBits; is_displayed_separately?: boolean },
   ): Promise<Role> {
     return this.request("PATCH", `guilds/${guildId}/roles/${roleId}`, changes);
   }

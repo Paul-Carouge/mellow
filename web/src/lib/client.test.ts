@@ -468,8 +468,8 @@ describe("MellowClient", () => {
   });
 
   it("drops a deleted role from members and from the user's own roles", async () => {
-    const helper: Role = { id: "201", name: "Helper", color: 0, position: 1, permissions: "0" };
-    const everyone: Role = { id: GUILD, name: "@everyone", color: 0, position: 0, permissions: "6" };
+    const helper: Role = { id: "201", name: "Helper", color: 0, position: 1, permissions: "0", is_displayed_separately: false };
+    const everyone: Role = { id: GUILD, name: "@everyone", color: 0, position: 0, permissions: "6", is_displayed_separately: false };
     const member = { user: { id: OTHER, username: "other", display_name: "Other" }, role_ids: [helper.id], joined_at_unix_milliseconds: 0 };
     const client = new MellowClient(fakeRest({ ...QUIET_REST, listMembers: () => Promise.resolve([member]) }));
     client.applyReady(ready({ guilds: [{ ...guild(), roles: [everyone, helper], my_role_ids: [helper.id] }] }));
@@ -480,9 +480,9 @@ describe("MellowClient", () => {
   });
 
   it("puts a created role above @everyone at once, and once only when the gateway came first", async () => {
-    const everyone: Role = { id: GUILD, name: "@everyone", color: 0, position: 0, permissions: "6" };
-    const helper: Role = { id: "201", name: "Helper", color: 0, position: 1, permissions: "0" };
-    const created: Role = { id: "202", name: "new role", color: 0, position: 1, permissions: "0" };
+    const everyone: Role = { id: GUILD, name: "@everyone", color: 0, position: 0, permissions: "6", is_displayed_separately: false };
+    const helper: Role = { id: "201", name: "Helper", color: 0, position: 1, permissions: "0", is_displayed_separately: false };
+    const created: Role = { id: "202", name: "new role", color: 0, position: 1, permissions: "0", is_displayed_separately: false };
     const client = new MellowClient(fakeRest({ ...QUIET_REST, createRole: () => Promise.resolve(created) }));
     client.applyReady(ready({ guilds: [{ ...guild(), roles: [everyone, helper] }] }));
     await client.createRole(GUILD, "new role");
@@ -497,8 +497,8 @@ describe("MellowClient", () => {
   });
 
   it("never lets a late settings answer undo newer state from the gateway", async () => {
-    const helper: Role = { id: "201", name: "Helper", color: 0, position: 1, permissions: "0" };
-    const everyone: Role = { id: GUILD, name: "@everyone", color: 0, position: 0, permissions: "6" };
+    const helper: Role = { id: "201", name: "Helper", color: 0, position: 1, permissions: "0", is_displayed_separately: false };
+    const everyone: Role = { id: GUILD, name: "@everyone", color: 0, position: 0, permissions: "6", is_displayed_separately: false };
     const member = { user: { id: OTHER, username: "other", display_name: "Other" }, role_ids: [], joined_at_unix_milliseconds: 0 };
     const answers: (() => void)[] = [];
     const late = <T>(value: T) => new Promise<T>((resolve) => answers.push(() => resolve(value)));

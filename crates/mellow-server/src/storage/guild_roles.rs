@@ -12,16 +12,17 @@ use crate::storage::sqlite_integers::{
     convert_integer, lookup_integer, to_snowflake, to_sqlite_integer,
 };
 
-pub(super) type RoleRow = (i64, String, i64, i64, i64);
+pub(super) type RoleRow = (i64, String, i64, i64, i64, bool);
 
 pub(super) fn role_from_row(row: RoleRow) -> Result<Role, GuildStorageError> {
-    let (id, name, color, position, permissions) = row;
+    let (id, name, color, position, permissions, is_displayed_separately) = row;
     Ok(Role {
         id: to_snowflake(id)?,
         name,
         color: convert_integer::<_, u32>(color)?,
         position: convert_integer::<_, u32>(position)?,
         permissions: permissions_from_integer(permissions),
+        is_displayed_separately,
     })
 }
 
@@ -41,7 +42,8 @@ pub(super) async fn roles_of_guild(
     guild_id: Snowflake,
 ) -> Result<Vec<Role>, GuildStorageError> {
     let rows: Vec<RoleRow> = sqlx::query_as(
-        "SELECT id, name, color, position, permissions FROM roles WHERE guild_id = ? \
+        "SELECT id, name, color, position, permissions, is_displayed_separately FROM roles \
+         WHERE guild_id = ? \
          ORDER BY position, id",
     )
     .bind(to_sqlite_integer(guild_id.raw())?)
@@ -80,13 +82,15 @@ pub(crate) async fn insert_role_above_everyone(
         .execute(&mut *transaction)
         .await?;
     sqlx::query(
-        "INSERT INTO roles (id, guild_id, name, color, permissions, position) VALUES (?, ?, ?, ?, ?, 1)",
+        "INSERT INTO roles (id, guild_id, name, color, permissions, is_displayed_separately, \
+         position) VALUES (?, ?, ?, ?, ?, ?, 1)",
     )
     .bind(to_sqlite_integer(role.id.raw())?)
     .bind(guild_id_integer)
     .bind(&role.name)
     .bind(i64::from(role.color))
     .bind(permissions_to_integer(role.permissions))
+    .bind(role.is_displayed_separately)
     .execute(&mut *transaction)
     .await?;
     insert_audit_entry(&mut transaction, audit).await?;
@@ -100,6 +104,7 @@ pub(crate) struct RoleFieldChanges<'a> {
     pub(crate) name: Option<&'a str>,
     pub(crate) color: Option<u32>,
     pub(crate) permissions: Option<Permissions>,
+    pub(crate) is_displayed_separately: Option<bool>,
 }
 
 /// Writes only the given fields of a role of `guild_id`. Only the `changeable_permissions` bits
@@ -127,15 +132,17 @@ pub(crate) async fn update_role_fields(
         .await?;
     let row: Option<RoleRow> = sqlx::query_as(
         "UPDATE roles SET name = COALESCE(?, name), color = COALESCE(?, color), \
-         permissions = COALESCE((permissions & ~?) | (? & ?), permissions) \
+         permissions = COALESCE((permissions & ~?) | (? & ?), permissions), \
+         is_displayed_separately = COALESCE(?, is_displayed_separately) \
          WHERE id = ? AND guild_id = ? \
-         RETURNING id, name, color, position, permissions",
+         RETURNING id, name, color, position, permissions, is_displayed_separately",
     )
     .bind(changes.name)
     .bind(changes.color.map(i64::from))
     .bind(permissions_to_integer(changeable_permissions))
     .bind(changes.permissions.map(permissions_to_integer))
     .bind(permissions_to_integer(changeable_permissions))
+    .bind(changes.is_displayed_separately)
     .bind(role_id)
     .bind(guild_id)
     .fetch_optional(&mut *transaction)
