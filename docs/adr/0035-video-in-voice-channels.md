@@ -1,6 +1,6 @@
 # 0035. Video in voice channels: VP8 simulcast forwarded by the built-in SFU
 
-- Status: Proposed (2026-11-02, awaiting the owner's decision and the measurement on the owner's server)
+- Status: Proposed (2026-11-02). Measured on the owner's server the same day; the defaults below follow the recommendations given to the owner, who may still change them before stage 16.5 ships.
 - Date: 2026-11-02
 - Builds on [ADR-0030](0030-voice-channels-with-an-sfu-in-the-server-binary.md), which decided and measured audio only. What it decided still holds: `str0m` 0.24 inside the server binary, one UDP port, ICE-lite, no TURN, signalling over the gateway, one media thread, the server never decodes media.
 
@@ -36,7 +36,7 @@ The forces are those of ADR-0030, with two differences of scale:
 - **Cost.** The spike measured bandwidth estimation at about 11 points of a core in a room of 25 with 10 cameras (18 % without, 29 % with). It is worth it: without it, a watcher on a slow link receives more than it can take, loses packets and keeps asking for keyframes, which costs every other watcher of that camera too.
 
 ### Limits
-- **Cameras per channel: anyone connected**, so up to 25, the channel cap of ADR-0030 (Discord also allows video in channels of up to 25 people).
+- **Cameras per channel: anyone connected, up to 12 sending at once** at first: the owner's server lost frames with 25 cameras sending at once and default socket buffers (see Measurements). The cap rises toward the channel cap of 25 (Discord also allows video in channels of up to 25 people) once larger buffers and paused layers are measured there.
 - **Cameras watched at once: at most 9 per person.** Each participant's offer carries 9 video receive m-lines, assigned by the server like the 16 audio receive slots of ADR-0030, so cameras turning on and off need no renegotiation. Like the 16 voices, this bound keeps the cost per participant flat however many cameras are on: the spike's 25 cameras watched 9 at a time cost the same as 10 cameras.
 - **Views.** The **grid** is the default, as on Discord: up to 9 tiles at once (3 × 3), the others shown as avatars on a further page or row. The **speaker view** shows one large tile, the person speaking or the one picked, and up to 8 small ones. With the tile sizes of a 1080p window, a grid of 1 tile receives `h`, 2 to 4 tiles `l`, and 5 to 9 tiles `q`; the speaker view receives `h` for the large tile and `q` for the others.
 - **Resolution and frame rate:** at most 1280 × 720 at 30 frames per second per camera, enforced by the client's capture constraints and encodings, and on the server by a packet and byte budget per participant: the 200 packets per second of the voice-only media loop become 1 500 packets and 4 Mbit/s averaged over a second for a participant sending a camera (three layers, keyframes three times larger, retransmissions), and stay 200 otherwise. Larger datagrams are still dropped unread.
@@ -93,8 +93,26 @@ What the figures say:
 5. **Keyframes on demand are cheap and quick.** A layer switch or a new watcher waits one or two frames plus a round trip, and the keyframe requests stay at about one per second per room thanks to the throttle.
 6. **Bandwidth estimation costs about 60 % more CPU** in the room measured (18 % to 29 % of a core); it stays well within budget and is what makes slow watchers possible at all.
 
-**Not measured yet**, and to be done before the ADR is accepted or during stage 16.5:
-- **The owner's server (Intel i7-8700T)**, as ADR-0030 required: the same series, run on the host itself (see below). This ADR does not claim any figure for it.
+**Measured on the owner's server (Intel i7-8700T, 12 threads, Linux, 2026-11-02)**, as ADR-0030 required: the same series in a throwaway `rust:1` container on the host network, SFU on UDP 50100 beside the production instance (calls possible meanwhile), the kernel's default socket buffers (`net.core.rmem_max` 212 992 bytes; raising them needs root), 20 s per run, two SFU readings per run:
+
+| Room (people : cameras) | Setup | SFU CPU (one core) | Mbit/s out | Frames lost | Latency p99 |
+|---|---|---|---|---|---|
+| 2 : 2 | one 720p layer | 4 % | 3 | 0 | 24 ms |
+| 10 : 5 | one 720p layer | 30–31 % | 70 | 0 | 26 ms |
+| 25 : 10 | one 720p layer, no simulcast | 58–59 % | 375 | 0 | 44 ms |
+| 10 : 5 | simulcast, speaker view | 19 % | 22 | 0 | 25 ms |
+| 25 : 10 | simulcast, speaker view | 48–49 % | 75 | 0 | 33 ms |
+| 50 : 10 | simulcast, speaker view | 61–64 % | 152 | 0 | 46 ms |
+| 10 : 5 | simulcast, grid of 360p tiles | 18–19 % | 24 | 0 | 25 ms |
+| 25 : 10 | simulcast, grid of 360p tiles | 50–51 % | 126 | 0 | 38 ms |
+| 25 : 10 | simulcast, speaker view, bandwidth estimation | 49–52 % | 75 | 0 | 41 ms |
+| 25 : 25 | 9 cameras watched each | 46–47 % | 30–37 | **5 %** | **1 099 ms** |
+
+- The i7 needs about 1.7 to 2 times the Mac's CPU, as the voice ratio predicted; every room up to the instance cap (50 people, 10 cameras) stays under two thirds of one core, so CPU is not the limit there either. Upload is.
+- **25 cameras sending at once overload this host**: 5 % of frames lost and about a second of latency inside the SFU, with the CPU at 47 %, so the time goes to queues, not to work. The likely cause is the 212 KB default receive buffer facing 55 Mbit/s of incoming bursts from 25 senders (the Mac's larger default buffer showed no loss). Stage 16.5 must therefore (1) enlarge the UDP socket buffers from the server itself (`SO_RCVBUF`/`SO_SNDBUF` up to what the kernel allows, the `socket2` change proposed above), (2) pause unwatched layers (`VOICE_VIDEO_LAYERS`), which removes most of that incoming traffic, and (3) cap cameras sending at once at **12 per channel** until a rerun with both changes shows 25 without loss; the cap is then raised to what that run supports.
+
+**Not measured yet**, and to be done during stage 16.5:
+- The 25-camera room on the owner's server again, with larger socket buffers and paused layers (the sysctl line below needs root on the host; the server-side buffer change does not).
 - A watcher on a slow link: the Mac cannot shape traffic without administrator rights. Stage 16.5 tests the allocation with bots that drop part of what they receive.
 - Firefox and Safari, and real cameras (synthetic frames have no motion-dependent sizes; real keyframes vary more).
 
@@ -137,8 +155,9 @@ Like stages 16.2 to 16.4, each step below is reviewed before the next, and the s
 5. **A real two-browser check** (two Chromium contexts through a release build, as for voice, plus Firefox if possible).
 6. **A release** the owner tries on their instance, then stage 16.6.
 
-## Open questions for the owner
-- **The upload budget's default.** 100 Mbit/s suits most fibre connections; a VDSL or 4G host needs far less. What is the upload of the owner's connection, and should the default be lower, or derived by `init` from a question?
-- **The default view.** Grid by default as on Discord, or the speaker view?
-- **Cameras for `@everyone`.** Migration 0033 grants `STREAM` to every existing `@everyone`, as Discord's default does. Keep it, or let guild owners grant it?
-- **Pausing unwatched layers** (`VOICE_VIDEO_LAYERS`) in stage 16.5, or as a follow-up once cameras work?
+## Choices made with the owner (2026-11-02)
+Proposed to the owner as defaults, to be changed if they say so:
+- **Upload budget default**: 100 Mbit/s, adjustable in `mellow.toml`; lowered if the owner's connection uploads less.
+- **Default view**: the grid, as on Discord.
+- **Cameras for `@everyone`**: granted by migration 0033, as Discord's default does; guild owners restrict it per role or channel.
+- **Pausing unwatched layers** (`VOICE_VIDEO_LAYERS`): in stage 16.5, since the owner's server needs it to carry many cameras.
