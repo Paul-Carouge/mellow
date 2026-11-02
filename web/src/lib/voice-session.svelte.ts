@@ -16,10 +16,16 @@ import {
 } from "./protocol";
 import {
   type CodecPreferences,
-  SCREEN_ENCODINGS,
+  DEFAULT_SCREEN_SHARE_QUALITY,
+  isScreenShareQuality,
+  SCREEN_SHARE_QUALITY_STORAGE_KEY,
   type ScreenShareProblem,
+  type ScreenShareQuality,
+  screenCaptureConstraints,
+  screenEncodings,
   screenShareProblemOf,
   withActiveLayers,
+  withQuality,
 } from "./screen-share";
 import { type MicrophoneProblem, microphoneProblemOf, roundTripMillisecondsOf, waitForIceGathering } from "./voice";
 import {
@@ -184,7 +190,7 @@ export interface VoicePorts {
   amplify(track: MediaStreamTrack, gain: number): InputAmplifier | null;
   listDevices(): Promise<readonly AudioDevice[]>;
   /** The browser's screen picker (ADR-0037); rejects when cancelled or unavailable. */
-  requestScreen(): Promise<MediaStream>;
+  requestScreen(quality: ScreenShareQuality): Promise<MediaStream>;
   /** Opus and VP8 to keep in offers with video; `null` where the browser cannot restrict codecs: audio only. */
   codecPreferences(): CodecPreferences | null;
   /** Calls `onChange` when a device is plugged or unplugged; returns how to stop. */
@@ -223,6 +229,8 @@ export class VoiceSession {
   /** Your screen is shared in the call (ADR-0037). */
   isSharingScreen = $state(false);
   screenShareProblem = $state<ScreenShareProblem | null>(null);
+  /** 720p, 1080p or 1440p, at 30 frames per second; remembered on this device. */
+  screenShareQuality = $state<ScreenShareQuality>(DEFAULT_SCREEN_SHARE_QUALITY);
   /** The person whose shared screen you watch, if any. */
   watchedStreamUserId = $state<Snowflake | null>(null);
   /** The watched screens' video tracks, by person, once their picture arrives. */
@@ -283,6 +291,8 @@ export class VoiceSession {
     this.toggles = readVoiceToggles(storage);
     this.settings = readVoiceSettings(storage);
     this.personSettings = readPersonVoiceSettings(storage);
+    const quality = storage?.getItem(SCREEN_SHARE_QUALITY_STORAGE_KEY) ?? null;
+    this.screenShareQuality = isScreenShareQuality(quality) ? quality : DEFAULT_SCREEN_SHARE_QUALITY;
   }
 
   /** Muted by choice, or connected with no microphone. */
@@ -632,7 +642,7 @@ export class VoiceSession {
     this.screenShareProblem = null;
     let stream: MediaStream;
     try {
-      stream = await this.ports.requestScreen();
+      stream = await this.ports.requestScreen(this.screenShareQuality);
     } catch (error) {
       this.screenShareProblem = screenShareProblemOf(error);
       return;
@@ -669,6 +679,23 @@ export class VoiceSession {
       void this.videoSender?.replaceTrack(null).catch(() => {});
       this.sendVoiceState();
     }
+  }
+
+  /** Remembered for the next share, and applied at once to the current one. */
+  setScreenShareQuality(quality: ScreenShareQuality): void {
+    this.screenShareQuality = quality;
+    this.ports.storage()?.setItem(SCREEN_SHARE_QUALITY_STORAGE_KEY, quality);
+    const track = this.screen?.getVideoTracks()[0];
+    const sender = this.videoSender;
+    if (track === undefined || sender === null) {
+      return;
+    }
+    void track
+      .applyConstraints(screenCaptureConstraints(quality))
+      .catch((error: unknown) => console.warn("couldn't change the shared screen's size", error));
+    const parameters = sender.getParameters();
+    parameters.encodings = withQuality(parameters.encodings, quality);
+    void sender.setParameters(parameters).catch((error: unknown) => console.warn("couldn't change the shared screen's bit rate", error));
   }
 
   dismissScreenShareProblem(): void {
@@ -1249,7 +1276,7 @@ export class VoiceSession {
       audioTransceivers.forEach((transceiver) => transceiver.setCodecPreferences(codecs.audio));
       const camera = peer.addTransceiver(this.screen?.getVideoTracks()[0] ?? "video", {
         direction: "sendonly",
-        sendEncodings: [...SCREEN_ENCODINGS],
+        sendEncodings: screenEncodings(this.screenShareQuality),
       });
       camera.setCodecPreferences(codecs.video);
       const receivers: RTCRtpTransceiver[] = [];

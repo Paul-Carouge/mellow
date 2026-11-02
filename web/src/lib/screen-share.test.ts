@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { preferredCodecs, SCREEN_ENCODINGS, screenShareProblemOf, withActiveLayers } from "./screen-share";
+import {
+  isScreenShareQuality,
+  preferredCodecs,
+  screenCaptureConstraints,
+  screenEncodings,
+  screenShareProblemOf,
+  withActiveLayers,
+  withQuality,
+} from "./screen-share";
+
+const SCREEN_ENCODINGS = screenEncodings("1080p");
 
 describe("screen share layers", () => {
   it("keeps only the watched layers on, and leaves them be when the list is empty", () => {
@@ -15,8 +25,28 @@ describe("screen share layers", () => {
 
   it("sends the RIDs the instance knows, within its per-layer budgets", () => {
     expect(SCREEN_ENCODINGS.map((encoding) => encoding.rid)).toEqual(["q", "l", "h"]);
-    // The instance's budgets are twice these (ADR-0035): 37.5, 125 and 375 kB/s.
-    expect(SCREEN_ENCODINGS.map((encoding) => encoding.maxBitrate)).toEqual([150_000, 500_000, 2_500_000]);
+    // The instance allows 37.5 kB/s on q, 125 kB/s on l and 1.25 MB/s on h (ADR-0035, ADR-0037).
+    expect(SCREEN_ENCODINGS.map((encoding) => encoding.maxBitrate)).toEqual([150_000, 500_000, 5_000_000]);
+    expect(SCREEN_ENCODINGS.every((encoding) => encoding.maxFramerate === 30)).toBe(true);
+  });
+
+  it("captures and sends each quality at 30 frames per second, and changes it live keeping paused layers", () => {
+    expect(screenCaptureConstraints("720p")).toEqual({
+      width: { max: 1_280 },
+      height: { max: 720 },
+      frameRate: { ideal: 30, max: 30 },
+    });
+    expect(screenCaptureConstraints("1440p").width).toEqual({ max: 2_560 });
+    expect(screenEncodings("1440p").at(-1)?.maxBitrate).toBe(8_000_000);
+    const paused = withActiveLayers(screenEncodings("720p"), ["q"]);
+    const upgraded = withQuality(paused, "1440p");
+    expect(upgraded.map((encoding) => [encoding.active, encoding.maxBitrate])).toEqual([
+      [true, 150_000],
+      [false, 500_000],
+      [false, 8_000_000],
+    ]);
+    expect(isScreenShareQuality("1440p")).toBe(true);
+    expect(isScreenShareQuality("4k")).toBe(false);
   });
 });
 

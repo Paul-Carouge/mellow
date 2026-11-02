@@ -3,17 +3,64 @@
 
 import type { SimulcastLayer, VoiceVideoRefusal } from "./protocol";
 
-/** The capture asked of the browser: text stays readable, and still screens cost little. */
-export const SCREEN_MAXIMUM_WIDTH = 1920;
-export const SCREEN_MAXIMUM_HEIGHT = 1080;
-export const SCREEN_MAXIMUM_FRAMES_PER_SECOND = 15;
+/** The qualities a screen can be shared at (owner, 2026-11-02), all at 30 frames per second. */
+export type ScreenShareQuality = "720p" | "1080p" | "1440p";
+export const SCREEN_SHARE_QUALITIES: readonly ScreenShareQuality[] = ["720p", "1080p", "1440p"];
+export const DEFAULT_SCREEN_SHARE_QUALITY: ScreenShareQuality = "1080p";
+export const SCREEN_SHARE_QUALITY_STORAGE_KEY = "mellow.screen-share-quality";
+export const SCREEN_FRAMES_PER_SECOND = 30;
 
-/** Lowest first, as browsers list simulcast layers. */
-export const SCREEN_ENCODINGS: readonly RTCRtpEncodingParameters[] = [
-  { rid: "q", scaleResolutionDownBy: 4, maxBitrate: 150_000, maxFramerate: SCREEN_MAXIMUM_FRAMES_PER_SECOND },
-  { rid: "l", scaleResolutionDownBy: 2, maxBitrate: 500_000, maxFramerate: SCREEN_MAXIMUM_FRAMES_PER_SECOND },
-  { rid: "h", scaleResolutionDownBy: 1, maxBitrate: 2_500_000, maxFramerate: SCREEN_MAXIMUM_FRAMES_PER_SECOND },
-];
+interface ScreenShareProfile {
+  readonly width: number;
+  readonly height: number;
+  /** The full-size layer's bit rate; the instance allows 10 Mbit/s on it (ADR-0037). */
+  readonly topBitrate: number;
+}
+
+const SCREEN_SHARE_PROFILES: Readonly<Record<ScreenShareQuality, ScreenShareProfile>> = {
+  "720p": { width: 1_280, height: 720, topBitrate: 2_500_000 },
+  "1080p": { width: 1_920, height: 1_080, topBitrate: 5_000_000 },
+  "1440p": { width: 2_560, height: 1_440, topBitrate: 8_000_000 },
+};
+
+export function isScreenShareQuality(value: string | null): value is ScreenShareQuality {
+  return SCREEN_SHARE_QUALITIES.some((quality) => quality === value);
+}
+
+/** What the browser captures: at most the quality's size, at 30 frames per second. */
+export function screenCaptureConstraints(quality: ScreenShareQuality): MediaTrackConstraints {
+  const profile = SCREEN_SHARE_PROFILES[quality];
+  return {
+    width: { max: profile.width },
+    height: { max: profile.height },
+    frameRate: { ideal: SCREEN_FRAMES_PER_SECOND, max: SCREEN_FRAMES_PER_SECOND },
+  };
+}
+
+/**
+ * Lowest first, as browsers list simulcast layers. The half and quarter layers keep the bit rates
+ * of the instance's `l` and `q` budgets, whatever the quality; the full one follows the quality.
+ */
+export function screenEncodings(quality: ScreenShareQuality): RTCRtpEncodingParameters[] {
+  const frames = SCREEN_FRAMES_PER_SECOND;
+  return [
+    { rid: "q", scaleResolutionDownBy: 4, maxBitrate: 150_000, maxFramerate: frames },
+    { rid: "l", scaleResolutionDownBy: 2, maxBitrate: 500_000, maxFramerate: frames },
+    { rid: "h", scaleResolutionDownBy: 1, maxBitrate: SCREEN_SHARE_PROFILES[quality].topBitrate, maxFramerate: frames },
+  ];
+}
+
+/** The live encodings with the bit rates of `quality`, keeping which layers are paused. */
+export function withQuality(
+  encodings: readonly RTCRtpEncodingParameters[],
+  quality: ScreenShareQuality,
+): RTCRtpEncodingParameters[] {
+  const wanted = screenEncodings(quality);
+  return encodings.map((encoding) => {
+    const target = wanted.find((candidate) => candidate.rid === encoding.rid);
+    return target === undefined ? encoding : { ...encoding, maxBitrate: target.maxBitrate, maxFramerate: target.maxFramerate };
+  });
+}
 
 /**
  * The encodings with only the layers someone watches left on (`VOICE_VIDEO_LAYERS`); an empty

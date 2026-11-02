@@ -117,6 +117,8 @@ function fakeScreen() {
   const track = {
     contentHint: "",
     isStopped: false,
+    constraints: null as MediaTrackConstraints | null,
+    applyConstraints: (constraints: MediaTrackConstraints) => Promise.resolve(void (track.constraints = constraints)),
     stop: () => (track.isStopped = true),
     addEventListener: (_type: string, listener: () => void) => endedListeners.push(listener),
     /** Test side: the browser's "Stop sharing" button. */
@@ -1168,6 +1170,21 @@ describe("VoiceSession screen sharing (ADR-0037)", () => {
     expect(screen.track.isStopped).toBe(true);
     expect(lastPeer().replacedTracks.at(-1)).toBeNull();
     expect(frames.at(-1)).toEqual({ op: "voice_state", d: { self_mute: false, self_deaf: false } });
+  });
+
+  it("shares at the chosen quality, remembered, and changes it live", async () => {
+    const storage = memoryStorage({ "mellow.screen-share-quality": "720p" });
+    const { session, lastPeer, connect, screen } = harness({ canShowVideo: true, storage });
+    expect(session.screenShareQuality).toBe("720p");
+    await connect();
+    expect(lastPeer().videoEncodings.at(-1)?.maxBitrate).toBe(2_500_000);
+    await session.startScreenShare();
+
+    session.setScreenShareQuality("1440p");
+    await flush();
+    expect(storage.values.get("mellow.screen-share-quality")).toBe("1440p");
+    expect(screen.track.constraints?.width).toEqual({ max: 2_560 });
+    expect(lastPeer().videoEncodings.at(-1)?.maxBitrate).toBe(8_000_000);
   });
 
   it("pauses unwatched layers, and stops when the instance stops relaying the screen", async () => {
