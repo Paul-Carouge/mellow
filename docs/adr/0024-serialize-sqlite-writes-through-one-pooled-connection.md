@@ -28,6 +28,13 @@ An ad hoc `performance-optimizer` harness (ignored tests driving the real domain
 
 The queue trades a slightly higher median under contention for a tail bounded by the queue length: no request waits behind a writer sleeping in SQLite's busy handler. With sqlx's default of 10 readers, history reads under write load were 26 % slower than before and throughput 11 to 22 % lower; 4 readers fixed both (2 and 32 were worse). The reader count was measured on one 8-core machine only.
 
+### Note (2026-11-02): `synchronous = FULL` kept, pending a Linux measurement
+The writer runs with sqlx's default `synchronous = FULL`: in WAL mode, every commit syncs the WAL. `NORMAL` syncs only at checkpoints: a process crash still loses nothing, but a power loss can drop the last commits since the previous checkpoint, without corrupting the file. The owner decided on 2026-11-01 to switch to `NORMAL` only if a Linux measurement shows a clear gain (at least 20 % on commit latency).
+
+Measured so far on macOS only: 1 000 sequential writer commits, each inserting one 200-byte message-like row in its own transaction, release build, SQLCipher, Apple M3, 5 alternating runs per setting (ad hoc ignored test, not committed). Mean commit latency, median of the 5 runs: **118 µs with `FULL`, 91 µs with `NORMAL` (−23 %)**; p50 103 µs against 79 µs. This does not settle the question: on macOS, SQLite's `fsync` does not flush the drive cache (`PRAGMA fullfsync` is off), so it is far cheaper than an `fsync` on Linux ext4, and the gain on a real Linux disk or an SD card is expected to be larger but is unmeasured. The fsync count was not taken either (no `strace` on macOS).
+
+No Linux machine was available for the measurement (no Docker on the development Mac; the owner's instance host is outward-facing and was not used without asking). To decide: on Linux, time the same loop under `strace -f -c -e trace=fsync,fdatasync` with each setting, on ext4 and ideally on an SD card, then set `.synchronous(SqliteSynchronous::Normal)` in `open_encrypted_database` and amend this ADR only if the gain reaches 20 %.
+
 ## Consequences
 - No more lock polling between the server's own connections; writes run one after another in arrival order.
 - A transaction holds the only writer until it ends: it must never await another write (it would wait for itself until the timeout), nor do slow work such as I/O, hashing or fan-out.
