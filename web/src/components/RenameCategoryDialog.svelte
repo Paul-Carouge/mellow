@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
 
   import { strings } from "../i18n";
-  import { type MellowClient, describeError } from "../lib/client.svelte";
+  import type { MellowClient } from "../lib/client.svelte";
   import { type Channel, MAXIMUM_CHANNEL_NAME_LENGTH } from "../lib/protocol";
   import ModalDialog from "./ModalDialog.svelte";
   import TextField from "./TextField.svelte";
@@ -22,8 +22,6 @@
   const id = $props.id();
   // The name as it was when the dialog opened; someone else renaming meanwhile does not erase typing.
   let name = $state(untrack(() => category.name));
-  let isBusy = $state(false);
-  let errorMessage = $state("");
 
   async function rename() {
     const trimmed = name.trim();
@@ -31,36 +29,30 @@
       onclose();
       return;
     }
-    isBusy = true;
-    errorMessage = "";
-    try {
-      await client.updateChannel(category.id, { name: trimmed });
-      ondone(strings.channelRemoval.categoryRenamed(trimmed));
-      onclose();
-    } catch (error) {
-      errorMessage = describeError(error, strings.channelRemoval.renameFailed);
-    } finally {
-      isBusy = false;
-    }
+    await client.updateChannel(category.id, { name: trimmed });
+    ondone(strings.channelRemoval.categoryRenamed(trimmed));
+    onclose();
   }
 </script>
 
 <ModalDialog
   title={strings.channelRemoval.renameCategory}
-  {errorMessage}
-  {isBusy}
-  submitLabel={isBusy ? strings.channelRemoval.renaming : strings.channelRemoval.renameCategory}
+  submitLabel={strings.channelRemoval.renameCategory}
+  busySubmitLabel={strings.channelRemoval.renaming}
+  failureSummary={strings.channelRemoval.renameFailed}
   isSubmitEnabled={name.trim() !== ""}
   {onclose}
-  onsubmit={() => void rename()}
+  onsubmit={rename}
 >
-  <TextField
-    id="{id}-name"
-    label={strings.createChannel.categoryName}
-    maxlength={MAXIMUM_CHANNEL_NAME_LENGTH}
-    autocomplete="off"
-    readonly={isBusy}
-    data-initial-focus=""
-    bind:value={name}
-  />
+  {#snippet children(isBusy)}
+    <TextField
+      id="{id}-name"
+      label={strings.createChannel.categoryName}
+      maxlength={MAXIMUM_CHANNEL_NAME_LENGTH}
+      autocomplete="off"
+      readonly={isBusy}
+      data-initial-focus=""
+      bind:value={name}
+    />
+  {/snippet}
 </ModalDialog>
