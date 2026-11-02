@@ -173,8 +173,9 @@ impl AttachmentFiles {
 
     /// Moves files stored before ADR-0034 to their shard, each with one rename within the
     /// directory: atomic, so a crash leaves every file in one place or the other, and the next
-    /// start goes on. Temporary files stay where they are, for the sweep. A file that cannot be
-    /// moved is counted and left, still found where it is.
+    /// start goes on. Temporary files stay where they are, for the sweep. Only shard directories
+    /// are listed. A file or a directory that cannot be moved or listed is counted and left, still
+    /// found where it is: reads fall back to the old place, so this never stops the start.
     pub(crate) async fn move_files_to_their_shards(
         &self,
     ) -> Result<MovedFiles, AttachmentFileError> {
@@ -185,18 +186,39 @@ impl AttachmentFiles {
                 return Ok(moved_files);
             };
             for shard in shards {
-                let shard = shard?;
-                if !shard.file_type()?.is_dir() {
-                    continue;
-                }
-                for file in std::fs::read_dir(shard.path())? {
-                    let file = file?;
+                let listed_files = shard.and_then(|shard| {
+                    let is_shard = shard.file_type()?.is_dir()
+                        && shard.file_name().to_str().is_some_and(is_shard_name);
+                    Ok(if is_shard {
+                        Some((shard.file_name(), std::fs::read_dir(shard.path())?))
+                    } else {
+                        None
+                    })
+                });
+                let (shard_name, files) = match listed_files {
+                    Ok(Some(listed)) => listed,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        tracing::warn!(%error, "cannot list an attachment shard directory");
+                        moved_files.failed += 1;
+                        continue;
+                    }
+                };
+                for file in files {
+                    let file = match file {
+                        Ok(file) => file,
+                        Err(error) => {
+                            tracing::warn!(%error, "cannot list an attachment shard directory");
+                            moved_files.failed += 1;
+                            continue;
+                        }
+                    };
                     let Some(id) = file.file_name().to_str().and_then(|name| name.parse().ok())
                     else {
                         continue;
                     };
                     let id = Snowflake::from_raw(id);
-                    if shard.file_name().to_str() == Some(shard_of(id).as_str()) {
+                    if shard_name.to_str() == Some(shard_of(id).as_str()) {
                         continue;
                     }
                     let destination = store.path_of(id);
@@ -299,6 +321,14 @@ fn shard_of(id: Snowflake) -> String {
     mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     mixed ^= mixed >> 31;
     format!("{:02x}", mixed >> 56)
+}
+
+/// A name `shard_of` or the rule before ADR-0034 can give: two lowercase hexadecimal digits.
+fn is_shard_name(name: &str) -> bool {
+    name.len() == 2
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -473,5 +503,37 @@ mod tests {
         let mut stored = store.stored_ids().await.unwrap();
         stored.sort_unstable();
         assert_eq!(stored, ids);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unreadable_directory_does_not_stop_the_move() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let store = files(directory.path());
+        let id = generated_ids(1)[0];
+        write_in_legacy_place(&store, id).await;
+        // As `lost+found` when `attachments/` is its own mount point: skipped, never listed.
+        let foreign = directory.path().join("lost+found");
+        // A shard the service account cannot list: counted, the others still moved.
+        let locked_shard = directory.path().join("ab");
+        for locked in [&foreign, &locked_shard] {
+            std::fs::create_dir(locked).unwrap();
+            std::fs::set_permissions(locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+
+        let moved = store.move_files_to_their_shards().await;
+        for locked in [&foreign, &locked_shard] {
+            std::fs::set_permissions(locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+
+        assert_eq!(
+            moved.unwrap(),
+            MovedFiles {
+                moved: 1,
+                failed: 1
+            }
+        );
+        assert_eq!(store.existing_path_of(id), Some(store.path_of(id)));
     }
 }
