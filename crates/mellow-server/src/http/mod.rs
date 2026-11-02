@@ -311,14 +311,8 @@ fn message_router(maximum_attachment_bytes: u64) -> Router<AppState> {
         )
 }
 
-pub(crate) fn router(state: AppState) -> Router {
+fn relationship_router() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/health", get(health))
-        .merge(account_router())
-        .route(
-            "/api/v1/users/@me/guilds",
-            get(guild_routes::list_my_guilds),
-        )
         .route(
             "/api/v1/users/@me/relationships",
             get(relationship_routes::list_relationships)
@@ -329,6 +323,17 @@ pub(crate) fn router(state: AppState) -> Router {
             put(relationship_routes::set_relationship)
                 .delete(relationship_routes::remove_relationship),
         )
+}
+
+pub(crate) fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/api/v1/health", get(health))
+        .merge(account_router())
+        .route(
+            "/api/v1/users/@me/guilds",
+            get(guild_routes::list_my_guilds),
+        )
+        .merge(relationship_router())
         .merge(group_conversation_router())
         .route(
             "/api/v1/users/@me/channels",
