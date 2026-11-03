@@ -242,28 +242,43 @@ pub(crate) struct LayerAllocation {
 }
 
 impl LayerAllocation {
-    /// The layers the tiles get now, given the `current` ones (as many as `tiles`).
+    /// The layers the tiles get now, given the `current` ones (as many as `tiles`) and what they
+    /// deliver to the watcher now, in bits per second.
+    ///
+    /// Tiles go down only when the budget is below what they already deliver: a congested link.
+    /// An estimate merely following a light stream (a still screen sends little, and the estimator
+    /// tracks what is acknowledged) shows nothing about the link, and must not blur a sharp picture.
     pub(crate) fn next_layers(
         &mut self,
         tiles: &[TileDemand],
         current: &[Option<SimulcastLayer>],
         budget: u64,
+        delivered_bits_per_second: u64,
         now: Instant,
     ) -> Vec<Option<SimulcastLayer>> {
+        let is_congested = delivered_bits_per_second > budget;
         let fitting = fit_tiles(tiles, budget);
         if !raises_any(&fitting, current) {
             self.raise_possible_since = None;
-            return fitting;
+            return if is_congested {
+                fitting
+            } else {
+                current.to_vec()
+            };
         }
         let with_headroom = fit_tiles(
             tiles,
             budget.saturating_mul(100) / HEADROOM_PERCENT_BEFORE_RAISING,
         );
-        let kept: Vec<Option<SimulcastLayer>> = current
-            .iter()
-            .zip(&fitting)
-            .map(|(current, fitting)| (*current).min(*fitting))
-            .collect();
+        let kept: Vec<Option<SimulcastLayer>> = if is_congested {
+            current
+                .iter()
+                .zip(&fitting)
+                .map(|(current, fitting)| (*current).min(*fitting))
+                .collect()
+        } else {
+            current.to_vec()
+        };
         if !raises_any(&with_headroom, current) {
             self.raise_possible_since = None;
             return kept;
@@ -304,7 +319,9 @@ impl LayerRate {
     pub(crate) fn record(&mut self, bytes: usize, now: Instant) {
         let elapsed = now.saturating_duration_since(self.window_started_at);
         if elapsed >= Self::WINDOW {
-            if self.bytes_in_window > 0 {
+            // Only a window the layer kept sending after is whole: the one in which it stopped
+            // holds a fraction of a second, which would make the layer look cheap.
+            if elapsed < 2 * Self::WINDOW && self.bytes_in_window > 0 {
                 self.bytes_in_last_window = self.bytes_in_window;
             }
             self.bytes_in_window = 0;
@@ -319,18 +336,18 @@ impl LayerRate {
             .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
     }
 
-    /// The bits per second of the last whole second in which the layer sent anything; 0 before
-    /// its first whole second.
+    /// The bits per second of the layer's last whole second of sending, or of the second just
+    /// ended when more: a layer is costed high rather than low until a whole second says otherwise.
+    /// 0 before its first second.
     #[must_use]
     pub(crate) fn bits_per_second(&self, now: Instant) -> u64 {
-        let is_window_complete =
-            now.saturating_duration_since(self.window_started_at) >= Self::WINDOW;
-        let bytes = if is_window_complete && self.bytes_in_window > 0 {
+        let elapsed = now.saturating_duration_since(self.window_started_at);
+        let just_ended = if elapsed >= Self::WINDOW && elapsed < 2 * Self::WINDOW {
             self.bytes_in_window
         } else {
-            self.bytes_in_last_window
+            0
         };
-        bytes.saturating_mul(8)
+        self.bytes_in_last_window.max(just_ended).saturating_mul(8)
     }
 }
 
@@ -665,31 +682,48 @@ mod tests {
         let tiles = [tile(High)];
         let mut allocation = LayerAllocation::default();
         assert_eq!(
-            allocation.next_layers(&tiles, &[Some(High)], 1_000_000, at(0)),
+            allocation.next_layers(&tiles, &[Some(High)], 1_000_000, 1_500_000, at(0)),
             [Some(Low)],
             "down at once"
         );
         assert_eq!(
-            allocation.next_layers(&tiles, &[Some(Low)], 1_600_000, at(1)),
+            allocation.next_layers(&tiles, &[Some(Low)], 1_600_000, 500_000, at(1)),
             [Some(Low)],
             "enough for High, but not with 20 % to spare"
         );
         assert_eq!(
-            allocation.next_layers(&tiles, &[Some(Low)], 1_800_000, at(2)),
+            allocation.next_layers(&tiles, &[Some(Low)], 1_800_000, 500_000, at(2)),
             [Some(Low)]
         );
         assert_eq!(
-            allocation.next_layers(&tiles, &[Some(Low)], 1_800_000, at(6)),
+            allocation.next_layers(&tiles, &[Some(Low)], 1_800_000, 500_000, at(6)),
             [Some(Low)],
             "4 seconds only"
         );
         assert_eq!(
-            allocation.next_layers(&tiles, &[Some(Low)], 1_800_000, at(7)),
+            allocation.next_layers(&tiles, &[Some(Low)], 1_800_000, 500_000, at(7)),
             [Some(High)]
         );
         assert_eq!(
-            allocation.next_layers(&tiles, &[Some(High)], 1_800_000, at(8)),
+            allocation.next_layers(&tiles, &[Some(High)], 1_800_000, 1_500_000, at(8)),
             [Some(High)]
+        );
+    }
+
+    #[test]
+    fn a_low_estimate_following_a_light_stream_lowers_nothing() {
+        let now = Instant::now();
+        let tiles = [tile(High)];
+        let mut allocation = LayerAllocation::default();
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(High)], 600_000, 400_000, now),
+            [Some(High)],
+            "a still screen sends 400 kbit/s and the estimate follows it: the link is not the limit"
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(High)], 600_000, 2_000_000, now),
+            [Some(Low)],
+            "below what flows: congestion"
         );
     }
 
@@ -700,20 +734,20 @@ mod tests {
         let tiles = [tile(Quarter)];
         let mut allocation = LayerAllocation::default();
         assert_eq!(
-            allocation.next_layers(&tiles, &[None], 200_000, at(0)),
+            allocation.next_layers(&tiles, &[None], 200_000, 0, at(0)),
             [None]
         );
         assert_eq!(
-            allocation.next_layers(&tiles, &[None], 160_000, at(3)),
+            allocation.next_layers(&tiles, &[None], 160_000, 0, at(3)),
             [None],
             "the wait starts again"
         );
         assert_eq!(
-            allocation.next_layers(&tiles, &[None], 200_000, at(4)),
+            allocation.next_layers(&tiles, &[None], 200_000, 0, at(4)),
             [None]
         );
         assert_eq!(
-            allocation.next_layers(&tiles, &[None], 200_000, at(9)),
+            allocation.next_layers(&tiles, &[None], 200_000, 0, at(9)),
             [Some(Quarter)]
         );
     }
@@ -729,18 +763,27 @@ mod tests {
         assert_eq!(rate.bits_per_second(at(1_100)), 16_000);
         rate.record(500, at(1_100));
         assert_eq!(rate.bits_per_second(at(1_200)), 16_000);
-        assert_eq!(rate.bits_per_second(at(2_100)), 4_000);
+        assert_eq!(
+            rate.bits_per_second(at(2_100)),
+            16_000,
+            "a lighter second just ended does not lower the cost yet"
+        );
         assert_eq!(
             rate.bits_per_second(at(9_000)),
-            4_000,
-            "a paused layer keeps its last measure"
+            16_000,
+            "a paused layer keeps its last whole second"
         );
         rate.record(100, at(9_000));
-        assert_eq!(rate.bits_per_second(at(9_500)), 4_000);
         assert_eq!(
-            rate.bits_per_second(at(10_100)),
+            rate.bits_per_second(at(9_500)),
+            16_000,
+            "the second it stopped in was partial: forgotten"
+        );
+        rate.record(100, at(10_100));
+        assert_eq!(
+            rate.bits_per_second(at(10_200)),
             800,
-            "until it sends again"
+            "a whole second again"
         );
     }
 

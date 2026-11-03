@@ -45,6 +45,28 @@ const SLOW_LINK_KEEPS_ONE_DATAGRAM_IN: u32 = 4;
 /// Long enough for the server's estimate of a lossy link to fall below a single small tile.
 const SLOW_LINK_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a bot's frames are, by layer.
+#[derive(Debug, Clone, Copy)]
+struct FrameBytes {
+    quarter: usize,
+    low: usize,
+    high: usize,
+}
+
+/// Synthetic frames: a few bytes, far below any layer's target.
+const TINY_FRAMES: FrameBytes = FrameBytes {
+    quarter: FRAME_BYTES,
+    low: FRAME_BYTES,
+    high: FRAME_BYTES,
+};
+/// About a real camera's rates at 30 frames per second: `q` 144 kbit/s, `l` 480 kbit/s and `h`
+/// 1.44 Mbit/s.
+const CAMERA_LIKE_FRAMES: FrameBytes = FrameBytes {
+    quarter: 600,
+    low: 2_000,
+    high: 6_000,
+};
+
 /// How a bot's link behaves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BotLink {
@@ -194,7 +216,7 @@ async fn join_with_camera(
         socket,
         channel_id,
         marker,
-        FRAME_BYTES,
+        TINY_FRAMES,
         false,
         BotLink::Steady,
     )
@@ -211,7 +233,7 @@ async fn join_with_screen_sound(
         socket,
         channel_id,
         marker,
-        FRAME_BYTES,
+        TINY_FRAMES,
         true,
         BotLink::Steady,
     )
@@ -229,7 +251,10 @@ async fn join_with_camera_sending(
         socket,
         channel_id,
         marker,
-        quarter_frame_bytes,
+        FrameBytes {
+            quarter: quarter_frame_bytes,
+            ..TINY_FRAMES
+        },
         false,
         BotLink::Steady,
     )
@@ -240,7 +265,7 @@ async fn join_camera_bot(
     socket: &mut ClientSocket,
     channel_id: Snowflake,
     marker: u8,
-    quarter_frame_bytes: usize,
+    frame_bytes: FrameBytes,
     has_screen_sound: bool,
     link: BotLink,
 ) -> CameraBot {
@@ -268,7 +293,7 @@ async fn join_camera_bot(
             run_camera_bot(
                 rtc,
                 &udp,
-                (camera_mid, screen_sound_mid, marker, quarter_frame_bytes),
+                (camera_mid, screen_sound_mid, marker, frame_bytes),
                 link,
                 &received,
                 &stop,
@@ -285,7 +310,7 @@ async fn join_camera_bot(
 fn run_camera_bot(
     mut rtc: Rtc,
     socket: &UdpSocket,
-    (camera_mid, screen_sound_mid, marker, quarter_frame_bytes): (Mid, Option<Mid>, u8, usize),
+    (camera_mid, screen_sound_mid, marker, frame_bytes): (Mid, Option<Mid>, u8, FrameBytes),
     link: BotLink,
     received: &Mutex<ReceivedFrames>,
     stop: &AtomicBool,
@@ -342,7 +367,7 @@ fn run_camera_bot(
         if is_connected && now >= next_frame_at {
             write_camera_layers(
                 &mut rtc,
-                (camera_mid, marker, quarter_frame_bytes),
+                (camera_mid, marker, frame_bytes),
                 &mut is_keyframe_due,
                 now,
                 rtp_time,
@@ -403,7 +428,7 @@ fn is_lost(link: BotLink, is_connected: bool, first_byte: u8, media_datagrams: &
 /// One frame of each of the bot's camera layers, a keyframe where one is due.
 fn write_camera_layers(
     rtc: &mut Rtc,
-    (camera_mid, marker, quarter_frame_bytes): (Mid, u8, usize),
+    (camera_mid, marker, frame_bytes): (Mid, u8, FrameBytes),
     is_keyframe_due: &mut [bool; LAYER_RIDS.len()],
     now: Instant,
     rtp_time: u64,
@@ -417,10 +442,10 @@ fn write_camera_layers(
             .find(|params| params.spec().codec == Codec::Vp8)
             .map(str0m::format::PayloadParams::pt)
             .unwrap();
-        let length = if *rid == "q" {
-            quarter_frame_bytes
-        } else {
-            FRAME_BYTES
+        let length = match *rid {
+            "q" => frame_bytes.quarter,
+            "l" => frame_bytes.low,
+            _ => frame_bytes.high,
         };
         writer
             .rid(Rid::from(*rid))
@@ -609,12 +634,21 @@ async fn a_watcher_on_a_slow_link_is_moved_down_then_its_tile_paused() {
     let fixture = fixture().await;
     let (mut owner, mut member) = identified_pair(&fixture).await;
     let owner_id = fixture.user_id("owner");
-    let _owner_bot = join_with_camera(&mut owner, fixture.lounge, 1).await;
+    // Frames of a real camera's size: a congested link shows below what its tiles receive.
+    let _owner_bot = join_camera_bot(
+        &mut owner,
+        fixture.lounge,
+        1,
+        CAMERA_LIKE_FRAMES,
+        false,
+        BotLink::Steady,
+    )
+    .await;
     let _member_bot = join_camera_bot(
         &mut member,
         fixture.lounge,
         2,
-        FRAME_BYTES,
+        TINY_FRAMES,
         false,
         BotLink::Slow,
     )

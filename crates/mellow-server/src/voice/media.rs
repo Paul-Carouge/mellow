@@ -247,6 +247,8 @@ struct FittedTile {
     allocated: Option<SimulcastLayer>,
     /// The layers its camera stopped sending.
     gone_layers: Vec<SimulcastLayer>,
+    /// What the layer it receives sent over its last second, in bits per second.
+    delivered_bits_per_second: u64,
 }
 
 /// The simulcast layer a camera's frame belongs to, from the RIDs the web client sends (ADR-0035).
@@ -971,16 +973,27 @@ impl MediaLoop<'_> {
         }
     }
 
+    /// What `layer` of `camera_id` delivered over its last second of sending, in bits per second.
+    fn measured_bits_per_second_of(
+        &self,
+        camera_id: Snowflake,
+        layer: SimulcastLayer,
+        now: Instant,
+    ) -> u64 {
+        self.participants
+            .get(&camera_id)
+            .and_then(|camera| camera.video.layer_rates.get(&layer))
+            .map_or(0, |rate| rate.bits_per_second(now))
+    }
+
     /// What each layer of `camera_id` costs a watcher: what it sent over the last second, and at
     /// least its target.
     fn layer_costs_of(&self, camera_id: Snowflake, now: Instant) -> LayerCosts {
         let cost = |layer| {
-            let measured = self
-                .participants
-                .get(&camera_id)
-                .and_then(|camera| camera.video.layer_rates.get(&layer))
-                .map_or(0, |rate| rate.bits_per_second(now));
-            layer_cost(layer, measured)
+            layer_cost(
+                layer,
+                self.measured_bits_per_second_of(camera_id, layer, now),
+            )
         };
         LayerCosts {
             quarter: cost(SimulcastLayer::Quarter),
@@ -1030,6 +1043,9 @@ impl MediaLoop<'_> {
                     },
                     allocated: tile.allocated,
                     gone_layers: self.gone_layers_of(*camera_id, now),
+                    delivered_bits_per_second: tile.switch.wanted().map_or(0, |layer| {
+                        self.measured_bits_per_second_of(*camera_id, layer, now)
+                    }),
                 })
             })
             .collect();
@@ -1049,10 +1065,17 @@ impl MediaLoop<'_> {
         } else {
             let current: Vec<Option<SimulcastLayer>> =
                 tiles.iter().map(|tile| tile.allocated).collect();
-            watcher
-                .video
-                .allocation
-                .next_layers(&demands, &current, budget, now)
+            let delivered_bits_per_second = tiles
+                .iter()
+                .map(|tile| tile.delivered_bits_per_second)
+                .sum();
+            watcher.video.allocation.next_layers(
+                &demands,
+                &current,
+                budget,
+                delivered_bits_per_second,
+                now,
+            )
         };
         let mut changed_cameras = Vec::new();
         let mut pauses = Vec::new();
@@ -1928,27 +1951,40 @@ mod tests {
         assert_eq!(pauses(&mut events), [false; 0]);
 
         let start = Instant::now();
+        // What each layer of the camera delivered over a whole second: 160 kbit/s, 500 kbit/s and
+        // 2 Mbit/s, so a budget below the layer received shows congestion.
+        let camera = media.participants.get_mut(&camera_id).unwrap();
+        for (layer, bytes) in [
+            (SimulcastLayer::Quarter, 20_000),
+            (SimulcastLayer::Low, 62_500),
+            (SimulcastLayer::High, 250_000),
+        ] {
+            let mut rate = LayerRate::new(start);
+            rate.record(bytes, start);
+            rate.record(1, start + Duration::from_secs(1));
+            camera.video.layer_rates.insert(layer, rate);
+        }
         let estimate = |media: &mut MediaLoop<'_>, bits_per_second, seconds| {
             let watcher = media.participants.get_mut(&watcher_id).unwrap();
             watcher.video.estimated_bits_per_second = Some(bits_per_second);
             watcher.video.has_new_estimate = true;
             media.follow_bandwidth(start + Duration::from_secs(seconds));
         };
-        estimate(&mut media, 1_000_000, 0);
+        estimate(&mut media, 1_000_000, 1);
         assert_eq!(wanted(&media), Some(SimulcastLayer::Low));
-        estimate(&mut media, 100_000, 1);
+        estimate(&mut media, 100_000, 2);
         assert_eq!(wanted(&media), None);
         assert_eq!(pauses(&mut events), [true]);
 
-        estimate(&mut media, 10_000_000, 2);
+        estimate(&mut media, 10_000_000, 3);
         media.watch_cameras(watcher_id, &large_tile);
-        estimate(&mut media, 10_000_000, 6);
+        estimate(&mut media, 10_000_000, 7);
         assert_eq!(
             wanted(&media),
             None,
             "the same tiles again do not skip the wait"
         );
-        estimate(&mut media, 10_000_000, 7);
+        estimate(&mut media, 10_000_000, 8);
         assert_eq!(wanted(&media), Some(SimulcastLayer::High));
         assert_eq!(pauses(&mut events), [false]);
     }
