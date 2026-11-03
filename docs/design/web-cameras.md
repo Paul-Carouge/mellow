@@ -1,6 +1,6 @@
 # Cameras on the web (ROADMAP stage 16.5, ADR-0035)
 
-Status: web client built on `feat/web-camera-interface`, DESIGN.md v0.41, on the voice session's camera logic (`client.voice`: `canUseCamera`, `isCameraOn`, `isCameraStarting`, `cameraTrack`, `cameraProblem`, `startCamera`, `stopCamera`, `setCameraDevice`, `cameraDevices`, the settings preview, `watchCameras`, `videoTracks`, `pausedVideoUserIds`, and `isCallViewOpen` with `openCallView` / `closeCallView`). Checked with unit tests (`call-view.test.ts`, `voice-session.test.ts`), the development gallery (`npm run dev`, then `/dev/voice.html#call=grid`, see below) and Playwright on the gallery in French, light and dark, at 1280 px and 390 px and with text at 200 %; never with a real camera between two browsers yet.
+Status: web client built on `feat/web-camera-interface`, DESIGN.md v0.41, on the voice session's camera logic (`client.voice`: `canUseCamera`, `isCameraOn`, `isCameraStarting`, `cameraTrack`, `cameraProblem`, `startCamera`, `stopCamera`, `setCameraDevice`, `cameraDevices`, the settings preview, `watchCameras`, `videoTracks`, `pausedVideoUserIds`, and `isCallViewOpen` with `openCallView` / `closeCallView`). Checked with unit tests (`call-view.test.ts`, `voice-session.test.ts`), the development gallery (`npm run dev`, then `/dev/voice.html#call=grid`, see below) and Playwright on the gallery in French, light and dark, at 1280 px and 390 px and with text at 200 %; and two headless Chromes through a release build (see Not done).
 
 ## Brief
 
@@ -98,4 +98,4 @@ Speaker view                           Panel (240 px navigator)
 - The layout (grid or speaker) is not remembered between openings, and there is no "hide people without a camera" filter (Discord has one); both wait for the owner's use.
 - A tile's fullscreen and picture-in-picture: a camera can be put forward, a screen watched in fullscreen from the stream view.
 - The settings preview says nothing while the browser asks for the camera (the button stays "Tester la caméra" until it opens).
-- A real two-browser check (permission prompt, frames arriving, pausing on a throttled link, mirrored self-view, Firefox and Safari) remains to do on the test instance, with ADR-0035 plan item 5.
+- Two-browser check (2026-11-03, two headless Chromes through a local release build, the camera replaced by a moving 1280 × 720 canvas): Ana's camera reaches Bob's call view at 640 × 360 and 30 fps (two tiles, so medium, `l`), the sidebar's camera icon opens it, clicking a text channel closes it, coming back shows the camera again, and turning it off removes the icon. Not yet tried: a real camera and its permission prompt, pausing on a throttled link, Firefox and Safari.
