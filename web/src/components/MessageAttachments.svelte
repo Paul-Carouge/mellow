@@ -7,8 +7,8 @@
   import { attachmentCountLabel, fileNameStartAndEnd, humanFileSize } from "./format";
   import Icon from "./Icon.svelte";
   import { retryImageOnceThenMarkFailed } from "./image-retry";
-  import LazyComponent from "./LazyComponent.svelte";
   import { isPlainPrimaryClick, viewablePictures } from "./picture-viewer";
+  import { openPictureViewer } from "./picture-viewer-request.svelte";
 
   // Attachments under a message body (DESIGN.md §5.4 "Attachments"): previewable images inline,
   // anything else as a download card. A message still in the outbox is not readable by others
@@ -25,7 +25,6 @@
   let { attachments, isPending, authorName, sentAtUnixMilliseconds }: Props = $props();
 
   const viewerPictures = $derived(viewablePictures(attachments));
-  let viewer = $state<{ index: number; opener: HTMLElement } | null>(null);
 
   function openViewer(event: MouseEvent, attachment: Attachment) {
     const index = viewerPictures.findIndex((picture) => picture.id === attachment.id);
@@ -34,7 +33,7 @@
       return;
     }
     event.preventDefault();
-    viewer = { index, opener: event.currentTarget };
+    openPictureViewer({ pictures: viewerPictures, index, authorName, sentAtUnixMilliseconds, opener: event.currentTarget });
   }
 
   const loadedImageIds = new SvelteSet<Snowflake>();
@@ -139,18 +138,3 @@
     {/if}
   {/each}
 </ul>
-
-{#if viewer && sentAtUnixMilliseconds !== null}
-  <LazyComponent load={() => import("./PictureViewer.svelte")} onclose={() => (viewer = null)}>
-    {#snippet children({ default: PictureViewer })}
-      <PictureViewer
-        pictures={viewerPictures}
-        initialIndex={viewer?.index ?? 0}
-        {authorName}
-        {sentAtUnixMilliseconds}
-        opener={viewer?.opener ?? null}
-        onclose={() => (viewer = null)}
-      />
-    {/snippet}
-  </LazyComponent>
-{/if}
