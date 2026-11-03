@@ -132,11 +132,12 @@ pub(crate) fn loss_percent_of(fraction: f32) -> u32 {
     (fraction.clamp(0.0, 1.0) * 100.0).round() as u32
 }
 
-/// A watcher's last second: the share of packets sent to it that were lost (from its congestion
-/// feedback, 0 without any) and what its tiles received.
+/// A watcher's last second: the share of packets sent to it that were lost, from its congestion
+/// feedback (`None` when no feedback covers the second: none negotiated, nothing sent, or
+/// feedback late behind a deep queue), and what its tiles received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LinkReport {
-    pub(crate) loss_percent: u32,
+    pub(crate) loss_percent: Option<u32>,
     pub(crate) delivered_bits_per_second: u64,
 }
 
@@ -305,7 +306,18 @@ impl LayerAllocation {
         let elapsed_since = |at: Instant| now.saturating_duration_since(at);
         // More watchers leave each one a smaller share.
         let current = lower_of_each(current, &fit_tiles(tiles, fair_share));
-        if report.loss_percent >= LOSS_PERCENT_TO_GO_DOWN {
+        let loss_percent = match report.loss_percent {
+            Some(loss_percent) => loss_percent,
+            // Video flowed but no feedback covers it: late behind a deep queue, a sign of
+            // congestion rather than a clear link. Nothing to raise on.
+            None if report.delivered_bits_per_second > 0 => {
+                self.clear_since = None;
+                return current;
+            }
+            // Nothing flowed (tiles paused, no feedback negotiated): no sign against going up.
+            None => 0,
+        };
+        if loss_percent >= LOSS_PERCENT_TO_GO_DOWN {
             self.clear_since = None;
             if self
                 .raised_at
@@ -315,7 +327,13 @@ impl LayerAllocation {
                 self.wait_before_raising =
                     (self.wait_before_raising * 2).min(LONGEST_WAIT_BEFORE_RAISING);
             }
-            let kept_percent = u64::from(100 - report.loss_percent.min(100));
+            // What flowed says what the link carries only when the tiles sent about what they
+            // cost: a still screen sends little, and a tile just switched has sent nothing yet.
+            // Then one step down at a time.
+            if report.delivered_bits_per_second < cost_of(tiles, &current) / 2 {
+                return lowered_once(tiles, &current).unwrap_or(current);
+            }
+            let kept_percent = u64::from(100 - loss_percent.min(100));
             let gets_through = report
                 .delivered_bits_per_second
                 .saturating_mul(kept_percent)
@@ -324,7 +342,7 @@ impl LayerAllocation {
                 / 100;
             return lower_of_each(&current, &fit_tiles(tiles, gets_through));
         }
-        if report.loss_percent >= LOSS_PERCENT_OF_A_CLEAR_LINK {
+        if loss_percent >= LOSS_PERCENT_OF_A_CLEAR_LINK {
             self.clear_since = None;
             return current;
         }
@@ -712,7 +730,7 @@ mod tests {
 
     fn report(loss_percent: u32, delivered_bits_per_second: u64) -> LinkReport {
         LinkReport {
-            loss_percent,
+            loss_percent: Some(loss_percent),
             delivered_bits_per_second,
         }
     }
@@ -817,6 +835,112 @@ mod tests {
         assert_eq!(
             allocation.next_layers(&tiles, &[Some(Quarter)], report(0, 150_000), share, at(23)),
             [Some(Low)]
+        );
+    }
+
+    #[test]
+    fn no_feedback_while_video_flows_holds_and_none_while_nothing_flows_may_go_up() {
+        let start = Instant::now();
+        let at = |seconds| start + Duration::from_secs(seconds);
+        let tiles = [tile(High)];
+        let late = |delivered| LinkReport {
+            loss_percent: None,
+            delivered_bits_per_second: delivered,
+        };
+        let mut allocation = LayerAllocation::default();
+        for second in 0..20 {
+            assert_eq!(
+                allocation.next_layers(
+                    &tiles,
+                    &[Some(Low)],
+                    late(500_000),
+                    100_000_000,
+                    at(second)
+                ),
+                [Some(Low)],
+                "feedback late behind a queue: no step up"
+            );
+        }
+        let mut paused = LayerAllocation::default();
+        assert_eq!(
+            paused.next_layers(&tiles, &[None], late(0), 100_000_000, at(0)),
+            [None]
+        );
+        assert_eq!(
+            paused.next_layers(&tiles, &[None], late(0), 100_000_000, at(5)),
+            [Some(Quarter)]
+        );
+    }
+
+    #[test]
+    fn loss_on_a_light_or_new_stream_lowers_one_step_only() {
+        let now = Instant::now();
+        let screen = TileDemand {
+            asked: High,
+            costs: LayerCosts {
+                high: 8_000_000,
+                ..NOMINAL
+            },
+        };
+        let mut allocation = LayerAllocation::default();
+        assert_eq!(
+            allocation.next_layers(
+                &[screen],
+                &[Some(High)],
+                report(10, 300_000),
+                100_000_000,
+                now
+            ),
+            [Some(Low)],
+            "a still screen sends 300 kbit/s: one step, not down to what 300 kbit/s fits"
+        );
+        assert_eq!(
+            allocation.next_layers(&[screen], &[Some(High)], report(30, 0), 100_000_000, now),
+            [Some(Low)],
+            "a tile just switched has sent nothing yet"
+        );
+    }
+
+    #[test]
+    fn the_wait_doubles_up_to_a_minute_and_resets_after_a_step_held_half_a_minute() {
+        let start = Instant::now();
+        let at = |seconds| start + Duration::from_secs(seconds);
+        let tiles = [tile(High), tile(High), tile(High), tile(High), tile(High)];
+        let share = 100_000_000;
+        let mut allocation = LayerAllocation::default();
+        let current = vec![None; 5];
+        let mut now = 0;
+        // Each step up meets loss 1 s later: the waits are 5, 10, 20, 40, 60, 60 s.
+        for wait in [5, 10, 20, 40, 60, 60] {
+            assert_eq!(
+                allocation.next_layers(&tiles, &current, report(0, 0), share, at(now)),
+                current
+            );
+            let raised =
+                allocation.next_layers(&tiles, &current, report(0, 0), share, at(now + wait));
+            assert_ne!(raised, current, "raised after {wait} s");
+            let lowered =
+                allocation.next_layers(&tiles, &raised, report(50, 0), share, at(now + wait + 1));
+            assert_eq!(lowered, current);
+            now += wait + 1;
+        }
+        // A step up that holds 30 s brings the wait back to 5 s: the link stayed clear all along,
+        // so the next step comes at once rather than after 60 s.
+        assert_eq!(
+            allocation.next_layers(&tiles, &current, report(0, 0), share, at(now)),
+            current
+        );
+        let raised = allocation.next_layers(&tiles, &current, report(0, 0), share, at(now + 60));
+        assert_ne!(raised, current);
+        assert_eq!(
+            allocation.next_layers(&tiles, &raised, report(0, 0), share, at(now + 89)),
+            raised,
+            "not held 30 s yet: the wait is still 60 s"
+        );
+        assert_ne!(
+            allocation.next_layers(&tiles, &raised, report(0, 0), share, at(now + 90)),
+            raised,
+            "held 30 s: the wait is 5 s again, already passed"
         );
     }
 

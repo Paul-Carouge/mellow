@@ -77,7 +77,7 @@ const OPUS_MINIMUM_PACKET_MILLISECONDS: u8 = 10;
 /// How often a watcher's session reports the loss its congestion feedback shows (ADR-0035): its
 /// tiles follow it.
 const LINK_REPORT_INTERVAL: Duration = Duration::from_secs(1);
-/// How often every watcher's tiles are fitted again, besides each new estimate: picks up layers
+/// How often every watcher's tiles are fitted again, besides each new loss report: picks up layers
 /// whose measured rate changed or that a camera stopped sending, other watchers coming and going,
 /// and the wait before going up. Half the silence of a lost layer, so a watcher falls back within
 /// a second and a half of the last frame.
@@ -86,8 +86,8 @@ const REALLOCATION_INTERVAL: Duration = Duration::from_millis(500);
 /// Builds the server side of a participant's session and its SDP answer. Called off the async
 /// runtime: building a session generates its DTLS certificate.
 ///
-/// `is_watching_video`: the offer has video receive m-lines, so the server estimates the
-/// participant's downlink to fit the cameras they watch into it (ADR-0035).
+/// `is_watching_video`: the offer has video receive m-lines, so the session reports the loss of
+/// the participant's downlink each second, which the cameras they watch follow (ADR-0035).
 ///
 /// # Errors
 /// `None` when the offer does not parse or cannot be answered with Opus (and VP8 for video).
@@ -230,7 +230,7 @@ struct WatchedCamera {
     mid: Mid,
     /// The layer the tile's size asks for.
     asked: SimulcastLayer,
-    /// What the watcher's bandwidth allows of it (`None`: paused). Kept asked of the camera
+    /// What the watcher's link allows of it (`None`: paused). Kept asked of the camera
     /// even while gone, so its browser sends it again once its uplink allows.
     allocated: Option<SimulcastLayer>,
     /// Wants the allocated layer, or the highest lower one still arriving.
@@ -309,8 +309,8 @@ struct ParticipantVideo {
     /// When each layer of their camera last sent a frame, to tell layers its browser dropped.
     layer_heard_at: HashMap<SimulcastLayer, Instant>,
     /// The share of packets sent to them lost over the last second, from their congestion
-    /// feedback (0 without any).
-    loss_percent: u32,
+    /// feedback; `None` when no feedback covers it.
+    loss_percent: Option<u32>,
     /// A loss report arrived since their tiles were last fitted.
     has_new_report: bool,
     /// When their tiles go back up after a slow spell.
@@ -587,8 +587,7 @@ fn drain_output(participant: &mut Participant, socket: &UdpSocket, collected: &m
                 collected.frames.push((participant.user_id, frame));
             }
             Ok(Output::Event(Event::PeerStats(stats))) => {
-                participant.video.loss_percent =
-                    stats.egress_loss_fraction.map_or(0, loss_percent_of);
+                participant.video.loss_percent = stats.egress_loss_fraction.map(loss_percent_of);
                 participant.video.has_new_report = true;
             }
             Ok(Output::Event(Event::KeyframeRequest(request))) => {
@@ -1935,7 +1934,7 @@ mod tests {
             .get_mut(&watcher_id)
             .unwrap()
             .video
-            .loss_percent = 50;
+            .loss_percent = Some(50);
         media.watch_cameras(watcher_id, &[(camera_id, SimulcastLayer::High)]);
         assert_eq!(
             media.participants[&watcher_id].video.watched_cameras[&camera_id]
@@ -1998,7 +1997,7 @@ mod tests {
             let second_before = start + Duration::from_secs(seconds - 1);
             tile.delivered = RecentRate::new(second_before);
             tile.delivered.record(received_bytes, second_before);
-            watcher.video.loss_percent = loss_percent;
+            watcher.video.loss_percent = Some(loss_percent);
             watcher.video.has_new_report = true;
             media.follow_bandwidth(start + Duration::from_secs(seconds));
         };
