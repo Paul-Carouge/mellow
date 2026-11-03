@@ -4,6 +4,9 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.33.1] - 2026-11-03
+One fix for Firefox. No database migration.
+
 ### Fixed
 - In Firefox, a simple right-click opened Mellow's menu and closed it at once (Firefox fires the event as the button goes down, and its release dismissed the menu): the menu now opens as the button is released.
 
