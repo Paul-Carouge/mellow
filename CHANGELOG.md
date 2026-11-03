@@ -4,6 +4,12 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-11-03
+Pictures open inside Mellow. No database migration and no protocol change.
+
+### Added
+- Clicking a picture in a message or in the search results opens it large over the app instead of a new browser tab: the message's other pictures with the arrows (← and → too), actual size for big pictures (click the picture), download, copy link and open the original. Ctrl-click or a middle click still open it in a new tab.
+
 ## [0.35.0] - 2026-11-03
 Mentions suggested as you type. No database migration and no protocol change.
 
