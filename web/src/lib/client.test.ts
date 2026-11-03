@@ -1447,6 +1447,8 @@ describe("Voice states", () => {
       watchDevices: () => () => {},
       storage: () => null,
       requestScreen: () => Promise.reject(new TypeError("no screen in tests")),
+      requestCamera: () => Promise.reject(new TypeError("no camera in tests")),
+      listCameras: () => Promise.resolve([]),
       requestSoundSource: () => Promise.reject(new TypeError("no sound source in tests")),
       codecPreferences: () => null,
     });

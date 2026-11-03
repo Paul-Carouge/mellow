@@ -8,6 +8,7 @@ import {
   type ClientFrame,
   type SimulcastLayer,
   type Snowflake,
+  type VideoTileSize,
   SCREEN_SOUND_RECEIVE_SLOTS,
   VIDEO_RECEIVE_SLOTS,
   VOICE_RECEIVE_SLOTS,
@@ -38,6 +39,15 @@ import {
   withActiveLayers,
   withQuality,
 } from "./screen-share";
+import {
+  CAMERA_DEVICE_STORAGE_KEY,
+  type CameraDevice,
+  type CameraProblem,
+  cameraEncodings,
+  cameraProblemOf,
+  readCameraDeviceId,
+  withTargetsOf,
+} from "./camera";
 import { type MicrophoneProblem, microphoneProblemOf, roundTripMillisecondsOf, waitForIceGathering } from "./voice";
 import {
   type MicrophoneChoice,
@@ -71,8 +81,8 @@ const ICE_GATHERING_TIMEOUT_MILLISECONDS = 1_000;
 const MEDIA_CONNECT_TIMEOUT_MILLISECONDS = 15_000;
 /** ICE `disconnected` often heals by itself; past this it counts as lost. */
 const ICE_DISCONNECTED_GRACE_MILLISECONDS = 3_000;
-/** An empty `VOICE_VIDEO_LAYERS` this soon after a screen started belongs to the share stopped before it. */
-const SCREEN_RESTART_GRACE_MILLISECONDS = 2_000;
+/** An empty `VOICE_VIDEO_LAYERS` this soon after a camera or screen started belongs to the video stopped before it. */
+const VIDEO_RESTART_GRACE_MILLISECONDS = 2_000;
 /** Silent attempts in a row before the panel says the connection is lost. */
 const MAXIMUM_RECONNECT_ATTEMPTS = 5;
 /**
@@ -106,6 +116,12 @@ function isPageHidden(): boolean {
 }
 
 export type VoicePhase = "idle" | "connecting" | "connected" | "reconnecting";
+
+/** A camera shown in your call view, and how large its tile is (ADR-0035). */
+export interface WatchedCamera {
+  readonly userId: Snowflake;
+  readonly size: VideoTileSize;
+}
 
 /** Why voice stopped or could not start; shown in the voice panel until dismissed or retried. */
 export type VoiceProblem =
@@ -202,6 +218,10 @@ export interface VoicePorts {
   listDevices(): Promise<readonly AudioDevice[]>;
   /** The browser's screen picker (ADR-0037); rejects when cancelled or unavailable. */
   requestScreen(quality: ScreenShareQuality): Promise<MediaStream>;
+  /** A camera at 720p (ADR-0035), the remembered one if plugged in; rejects when it cannot open. */
+  requestCamera(deviceId: string | null): Promise<MediaStream>;
+  /** The cameras the browser names (empty before one was allowed). */
+  listCameras(): Promise<readonly CameraDevice[]>;
   /** An audio input sent as a shared screen's sound, untouched; rejects when it cannot open. */
   requestSoundSource(deviceId: string): Promise<MediaStream>;
   /** Opus and VP8 to keep in offers with video; `null` where the browser cannot restrict codecs: audio only. */
@@ -246,10 +266,12 @@ export class VoiceSession {
   screenShareQuality = $state<ScreenShareQuality>(DEFAULT_SCREEN_SHARE_QUALITY);
   /** The person whose shared screen you watch, if any. */
   watchedStreamUserId = $state<Snowflake | null>(null);
-  /** The watched screens' video tracks, by person, once their picture arrives. */
-  streamTracks = $state.raw<ReadonlyMap<Snowflake, MediaStreamTrack>>(new Map());
-  /** Sharers whose picture the instance paused for this connection, too slow for it (`VOICE_VIDEO_PAUSED`). */
-  pausedStreamUserIds = $state.raw<ReadonlySet<Snowflake>>(new Set());
+  /** The cameras you show and how large (`watchCameras`), the watched screen aside. */
+  watchedCameras = $state.raw<readonly WatchedCamera[]>([]);
+  /** The watched screen's and cameras' video tracks, by person, once their picture arrives. */
+  videoTracks = $state.raw<ReadonlyMap<Snowflake, MediaStreamTrack>>(new Map());
+  /** People whose picture the instance paused for this connection, too slow for it (`VOICE_VIDEO_PAUSED`). */
+  pausedVideoUserIds = $state.raw<ReadonlySet<Snowflake>>(new Set());
   /** Whether the watched screen carries sound, sampled twice a second. */
   watchedStreamSound = $state<StreamSoundStatus>("listening");
   /** Each sharer's sound volume and mute, for you only, apart from their voice. */
@@ -263,6 +285,18 @@ export class VoiceSession {
   screenSoundDevices = $state.raw<readonly ScreenSoundDevice[]>([]);
   /** Said once in the panel about your share's sound, until dismissed or the share ends. */
   screenSoundNotice = $state<ScreenSoundNotice | null>(null);
+  /** Your camera is on in the call (ADR-0035); it and your screen replace each other (ADR-0037). */
+  isCameraOn = $state(false);
+  cameraProblem = $state<CameraProblem | null>(null);
+  /** Your camera's picture while it is on, for your own tile. */
+  cameraTrack = $state.raw<MediaStreamTrack | null>(null);
+  /** The settings' preview, opened only while your camera is off (else `cameraTrack` shows it). */
+  cameraPreviewTrack = $state.raw<MediaStreamTrack | null>(null);
+  cameraPreviewProblem = $state<CameraProblem | null>(null);
+  /** The chosen camera, `null` for the browser's default; remembered on this device. */
+  cameraDeviceId = $state<string | null>(null);
+  /** The cameras the browser names, listed on demand. */
+  cameraDevices = $state.raw<readonly CameraDevice[]>([]);
   /** What your share sends as sound now: the screen's own, the chosen input, or nothing; `null` while not sharing. */
   sharedSound = $state<"screen" | "input" | "none" | null>(null);
 
@@ -294,8 +328,13 @@ export class VoiceSession {
   private streamSoundTimer: ReturnType<typeof setInterval> | null = null;
   /** The browser's picker is open: a second click waits for it. */
   private isRequestingScreen = false;
-  /** When the screen was last turned on: an empty `VOICE_VIDEO_LAYERS` just after is the previous share's. */
-  private screenStartedAt = Number.NEGATIVE_INFINITY;
+  private camera: MediaStream | null = null;
+  private cameraPreview: MediaStream | null = null;
+  /** Bumped by each camera start, stop and switch: a slower earlier opening sees it is stale and frees its camera. */
+  private cameraSwitch = 0;
+  private cameraPreviewSwitch = 0;
+  /** When the camera or screen was last turned on: an empty `VOICE_VIDEO_LAYERS` just after is the previous video's. */
+  private videoStartedAt = Number.NEGATIVE_INFINITY;
   private microphone: MediaStream | null = null;
   /** Mirrors `microphone !== null` for the interface: the stream itself stays out of Svelte's proxies. */
   private hasMicrophone = $state(false);
@@ -343,6 +382,7 @@ export class VoiceSession {
     this.screenShareQuality = isScreenShareQuality(quality) ? quality : DEFAULT_SCREEN_SHARE_QUALITY;
     this.screenSoundDeviceId = readScreenSoundDeviceId(storage);
     this.streamSoundSettings = readPersonVoiceSettings(storage, STREAM_SOUND_SETTINGS_STORAGE_KEY);
+    this.cameraDeviceId = readCameraDeviceId(storage);
   }
 
   /** Muted by choice, or connected with no microphone. */
@@ -365,11 +405,13 @@ export class VoiceSession {
       return;
     }
     this.problem = null;
-    // A share never follows you into another channel, as on Discord: its people did not see it start.
+    // Video never follows you into another channel, as on Discord: its people did not see it start.
     this.releaseScreen();
+    this.releaseCamera();
     this.watchedStreamUserId = null;
+    this.watchedCameras = [];
     this.stopStreamSoundSampling();
-    this.streamTracks = new Map();
+    this.videoTracks = new Map();
     this.channelId = channelId;
     this.phase = "connecting";
     this.reconnectAttempts = 0;
@@ -626,7 +668,7 @@ export class VoiceSession {
     this.applyGains();
     this.videoSlotUserIds.clear();
     // A picture starts as not paused in each media session.
-    this.pausedStreamUserIds = new Set();
+    this.pausedVideoUserIds = new Set();
     try {
       await peer.setRemoteDescription({ type: "answer", sdp: sdpAnswer });
     } catch (error) {
@@ -637,11 +679,11 @@ export class VoiceSession {
       return;
     }
     // A join starts with the video off and forgets what you watched: say both again.
-    if (this.screen !== null) {
-      this.screenStartedAt = Date.now();
+    if (this.screen !== null || this.camera !== null) {
+      this.videoStartedAt = Date.now();
       this.sendVoiceState();
     }
-    if (this.watchedStreamUserId !== null) {
+    if (this.watchedStreamUserId !== null || this.watchedCameras.length > 0) {
       this.sendWatchList();
     }
   }
@@ -678,7 +720,7 @@ export class VoiceSession {
     }
     if (this.videoReceivers.some((transceiver) => transceiver.mid === mid)) {
       this.videoSlotUserIds.set(mid, userId);
-      this.refreshStreamTracks();
+      this.refreshVideoTracks();
       return;
     }
     this.slotUserIds.set(mid, userId);
@@ -718,9 +760,11 @@ export class VoiceSession {
     track.contentHint = "detail";
     // The browser's own "Stop sharing" button.
     track.addEventListener("ended", () => this.stopScreenShare());
+    // One video per person (ADR-0037): the screen takes the camera's place on the same sender.
+    this.releaseCamera();
     this.screen = stream;
     this.isSharingScreen = true;
-    this.screenStartedAt = Date.now();
+    this.videoStartedAt = Date.now();
     try {
       await sender.replaceTrack(track);
     } catch (error) {
@@ -791,7 +835,7 @@ export class VoiceSession {
   setScreenShareQuality(quality: ScreenShareQuality): void {
     this.screenShareQuality = quality;
     this.ports.storage()?.setItem(SCREEN_SHARE_QUALITY_STORAGE_KEY, quality);
-    if (this.videoSender !== null) {
+    if (this.videoSender !== null && this.camera === null) {
       this.applyScreenShareQualityToSender(this.videoSender);
     }
     void this.screen
@@ -810,13 +854,163 @@ export class VoiceSession {
     this.screenShareProblem = null;
   }
 
+  /** Same as screen sharing: connected, with the video lines. */
+  get canUseCamera(): boolean {
+    return this.canShareScreen;
+  }
+
+  /** From a click: turns your camera on in the call, in place of your screen if you share one. */
+  async startCamera(): Promise<void> {
+    if (!this.canUseCamera || this.camera !== null) {
+      return;
+    }
+    this.cameraProblem = null;
+    const attempt = ++this.cameraSwitch;
+    const channelId = this.channelId;
+    let stream: MediaStream;
+    try {
+      stream = await this.ports.requestCamera(this.cameraDeviceId);
+    } catch (error) {
+      if (attempt === this.cameraSwitch) {
+        this.cameraProblem = cameraProblemOf(error);
+      }
+      return;
+    }
+    const track = stream.getVideoTracks()[0];
+    const sender = this.videoSender;
+    // Stopped, hung up or moved while the camera opened: this stream would never be stopped.
+    if (track === undefined || sender === null || attempt !== this.cameraSwitch || this.phase === "idle" || this.channelId !== channelId) {
+      stream.getTracks().forEach((stopped) => stopped.stop());
+      return;
+    }
+    if (this.screen !== null) {
+      this.releaseScreen();
+    }
+    await this.sendCamera(stream, sender);
+    if (this.camera === stream) {
+      this.sendVoiceState();
+      void this.refreshCameraDevices();
+    }
+  }
+
+  stopCamera(): void {
+    // Also cancels a camera still opening.
+    const wasOn = this.camera !== null;
+    this.releaseCamera();
+    if (wasOn && this.phase !== "idle") {
+      void this.videoSender?.replaceTrack(null).catch(() => {});
+      this.sendVoiceState();
+    }
+  }
+
+  async toggleCamera(): Promise<void> {
+    if (this.camera === null) {
+      await this.startCamera();
+    } else {
+      this.stopCamera();
+    }
+  }
+
+  dismissCameraProblem(): void {
+    this.cameraProblem = null;
+  }
+
+  /** Remembered for the next time, and applied at once to the camera on and to the preview. */
+  async setCameraDevice(deviceId: string | null): Promise<void> {
+    this.cameraDeviceId = deviceId;
+    // Empty reads back as the default.
+    this.ports.storage()?.setItem(CAMERA_DEVICE_STORAGE_KEY, deviceId ?? "");
+    if (this.cameraPreview !== null) {
+      this.releaseCameraPreview();
+      await this.startCameraPreview();
+    }
+    const sender = this.videoSender;
+    if (this.camera === null || sender === null) {
+      return;
+    }
+    const attempt = ++this.cameraSwitch;
+    let stream: MediaStream;
+    try {
+      stream = await this.ports.requestCamera(deviceId);
+    } catch (error) {
+      // The camera on stays as it was.
+      if (attempt === this.cameraSwitch) {
+        this.cameraProblem = cameraProblemOf(error);
+      }
+      return;
+    }
+    if (attempt !== this.cameraSwitch || this.camera === null) {
+      stream.getTracks().forEach((stopped) => stopped.stop());
+      return;
+    }
+    this.camera.getTracks().forEach((stopped) => stopped.stop());
+    await this.sendCamera(stream, sender);
+  }
+
+  /** Lists the cameras when the settings or the camera's menu open. */
+  async refreshCameraDevices(): Promise<void> {
+    try {
+      this.cameraDevices = await this.ports.listCameras();
+    } catch (error) {
+      console.warn("couldn't list the cameras", error);
+    }
+  }
+
+  /** The settings' preview; while your camera is on, `cameraTrack` already shows it. */
+  async startCameraPreview(): Promise<void> {
+    if (this.cameraPreview !== null || this.camera !== null) {
+      return;
+    }
+    this.cameraPreviewProblem = null;
+    const attempt = ++this.cameraPreviewSwitch;
+    let stream: MediaStream;
+    try {
+      stream = await this.ports.requestCamera(this.cameraDeviceId);
+    } catch (error) {
+      if (attempt === this.cameraPreviewSwitch) {
+        this.cameraPreviewProblem = cameraProblemOf(error);
+      }
+      return;
+    }
+    if (attempt !== this.cameraPreviewSwitch) {
+      stream.getTracks().forEach((stopped) => stopped.stop());
+      return;
+    }
+    this.cameraPreview = stream;
+    this.cameraPreviewTrack = stream.getVideoTracks()[0] ?? null;
+    await this.refreshCameraDevices();
+  }
+
+  stopCameraPreview(): void {
+    this.releaseCameraPreview();
+    this.cameraPreviewProblem = null;
+  }
+
+  /**
+   * Shows these cameras in your call view, replacing the previous list; the same list again sends
+   * nothing, so a layout may call it on every change.
+   */
+  watchCameras(cameras: readonly WatchedCamera[]): void {
+    const isSame =
+      cameras.length === this.watchedCameras.length &&
+      cameras.every((camera, index) => camera.userId === this.watchedCameras[index]?.userId && camera.size === this.watchedCameras[index]?.size);
+    if (isSame) {
+      return;
+    }
+    this.watchedCameras = [...cameras];
+    this.refreshVideoTracks();
+    if (this.phase !== "idle") {
+      this.sendWatchList();
+    }
+  }
+
   /** Watches `userId`'s shared screen large, or nothing with `null`. */
   watchStream(userId: Snowflake | null): void {
     if (userId === this.watchedStreamUserId) {
       return;
     }
     this.watchedStreamUserId = userId;
-    this.refreshStreamTracks();
+    this.refreshVideoTracks();
     this.sendWatchList();
     this.stopStreamSoundSampling();
     if (userId !== null) {
@@ -839,26 +1033,33 @@ export class VoiceSession {
 
   /** The instance paused `userId`'s picture for this connection (too slow for it), or resumed it. */
   noteVideoPaused(channelId: Snowflake, userId: Snowflake, isPaused: boolean): void {
-    if (channelId !== this.channelId || this.phase === "idle" || this.pausedStreamUserIds.has(userId) === isPaused) {
+    if (channelId !== this.channelId || this.phase === "idle" || this.pausedVideoUserIds.has(userId) === isPaused) {
       return;
     }
-    const next = new Set(this.pausedStreamUserIds);
+    const next = new Set(this.pausedVideoUserIds);
     if (isPaused) {
       next.add(userId);
     } else {
       next.delete(userId);
     }
-    this.pausedStreamUserIds = next;
+    this.pausedVideoUserIds = next;
   }
 
-  /** The instance refused to relay your screen. */
+  /** The instance refused to relay your camera or screen. */
   refuseVideo(channelId: Snowflake, reason: VoiceVideoRefusal): void {
-    if (channelId !== this.channelId || this.screen === null) {
+    if (channelId !== this.channelId) {
       return;
     }
-    this.releaseScreen();
+    if (this.screen !== null) {
+      this.releaseScreen();
+      this.screenShareProblem = reason;
+    } else if (this.camera !== null) {
+      this.releaseCamera();
+      this.cameraProblem = reason;
+    } else {
+      return;
+    }
     void this.videoSender?.replaceTrack(null).catch(() => {});
-    this.screenShareProblem = reason;
   }
 
   /** The layers of your screen someone watches: the others are paused (ADR-0035). */
@@ -868,13 +1069,21 @@ export class VoiceSession {
       return;
     }
     if (active.length === 0) {
-      // The instance stopped relaying your screen (permission gone, or nothing sent for 10 s),
-      // unless this is the end of a share stopped just before this one started.
-      if (this.screen !== null && Date.now() - this.screenStartedAt > SCREEN_RESTART_GRACE_MILLISECONDS) {
-        this.releaseScreen();
-        void sender.replaceTrack(null).catch(() => {});
-        this.screenShareProblem = "stopped";
+      // The instance stopped relaying your video (permission gone, or nothing sent for 10 s),
+      // unless this is the end of a video stopped just before this one started.
+      if (Date.now() - this.videoStartedAt <= VIDEO_RESTART_GRACE_MILLISECONDS) {
+        return;
       }
+      if (this.screen !== null) {
+        this.releaseScreen();
+        this.screenShareProblem = "stopped";
+      } else if (this.camera !== null) {
+        this.releaseCamera();
+        this.cameraProblem = "stopped";
+      } else {
+        return;
+      }
+      void sender.replaceTrack(null).catch(() => {});
       return;
     }
     const parameters = sender.getParameters();
@@ -1262,7 +1471,7 @@ export class VoiceSession {
       if (event.track.kind === "video") {
         if (event.transceiver.mid !== null) {
           this.videoTracksByMid.set(event.transceiver.mid, event.track);
-          this.refreshStreamTracks();
+          this.refreshVideoTracks();
         }
         return;
       }
@@ -1394,12 +1603,13 @@ export class VoiceSession {
         self_mute: this.isMicrophoneMuted,
         self_deaf: this.toggles.isDeafened,
         ...(this.screen === null ? {} : { self_stream: true }),
+        ...(this.camera === null ? {} : { self_video: true }),
       },
     });
   }
 
   /**
-   * The camera line (your screen goes on it) and the video receive slots, with Opus and VP8 only so
+   * The camera line (your camera or screen) and the video receive slots, with Opus and VP8 only so
    * the offer stays under the instance's limit (ADR-0035). Without codec choice, the offer stays audio only.
    */
   private addVideoTransceivers(peer: RTCPeerConnection, audioTransceivers: readonly RTCRtpTransceiver[]): void {
@@ -1415,9 +1625,9 @@ export class VoiceSession {
     }
     try {
       audioTransceivers.forEach((transceiver) => transceiver.setCodecPreferences(codecs.audio));
-      const camera = peer.addTransceiver(this.screen?.getVideoTracks()[0] ?? "video", {
+      const camera = peer.addTransceiver(this.sentVideoTrack() ?? "video", {
         direction: "sendonly",
-        sendEncodings: screenEncodings(this.screenShareQuality),
+        sendEncodings: this.camera === null ? screenEncodings(this.screenShareQuality) : cameraEncodings(),
       });
       camera.setCodecPreferences(codecs.video);
       const receivers: RTCRtpTransceiver[] = [];
@@ -1446,23 +1656,87 @@ export class VoiceSession {
     }
   }
 
+  /** The watched screen large first, then the cameras shown, 9 at most (ADR-0035). */
   private sendWatchList(): void {
-    const userId = this.watchedStreamUserId;
+    const streamUserId = this.watchedStreamUserId;
+    const watched = [
+      ...(streamUserId === null ? [] : [{ userId: streamUserId, size: "large" as const }]),
+      ...this.watchedCameras.filter((camera) => camera.userId !== streamUserId),
+    ].slice(0, VIDEO_RECEIVE_SLOTS);
     this.ports.sendFrame({
       op: "voice_video_watch",
-      d: { cameras: userId === null ? [] : [{ user_id: userId, size: "large" }] },
+      d: { cameras: watched.map((camera) => ({ user_id: camera.userId, size: camera.size })) },
     });
   }
 
-  private refreshStreamTracks(): void {
+  private refreshVideoTracks(): void {
     const tracks = new Map<Snowflake, MediaStreamTrack>();
     for (const [mid, userId] of this.videoSlotUserIds) {
       const track = this.videoTracksByMid.get(mid);
-      if (track !== undefined && userId === this.watchedStreamUserId) {
+      if (track !== undefined && this.isWatching(userId)) {
         tracks.set(userId, track);
       }
     }
-    this.streamTracks = tracks;
+    this.videoTracks = tracks;
+  }
+
+  private isWatching(userId: Snowflake): boolean {
+    return userId === this.watchedStreamUserId || this.watchedCameras.some((camera) => camera.userId === userId);
+  }
+
+  private sentVideoTrack(): MediaStreamTrack | null {
+    return (this.screen ?? this.camera)?.getVideoTracks()[0] ?? null;
+  }
+
+  /** Puts `stream` on the video sender at the camera's bit rates; on failure the camera turns off. */
+  private async sendCamera(stream: MediaStream, sender: RTCRtpSender): Promise<void> {
+    const track = stream.getVideoTracks()[0];
+    if (track === undefined) {
+      return;
+    }
+    track.contentHint = "motion";
+    // Unplugged, or taken by the system.
+    track.addEventListener("ended", () => {
+      if (this.camera === stream) {
+        this.stopCamera();
+        this.cameraProblem = "ended";
+      }
+    });
+    this.camera = stream;
+    this.cameraTrack = track;
+    this.isCameraOn = true;
+    this.videoStartedAt = Date.now();
+    try {
+      await sender.replaceTrack(track);
+    } catch (error) {
+      if (this.camera === stream) {
+        console.warn("couldn't send the camera", error);
+        this.stopCamera();
+        this.cameraProblem = "unsupported";
+      }
+      return;
+    }
+    if (this.camera !== stream) {
+      return;
+    }
+    const parameters = sender.getParameters();
+    parameters.encodings = withTargetsOf(parameters.encodings, cameraEncodings());
+    void sender.setParameters(parameters).catch((error: unknown) => console.warn("couldn't set the camera's bit rate", error));
+  }
+
+  private releaseCamera(): void {
+    this.cameraSwitch += 1;
+    this.camera?.getTracks().forEach((track) => track.stop());
+    this.camera = null;
+    this.cameraTrack = null;
+    this.isCameraOn = false;
+  }
+
+  private releaseCameraPreview(): void {
+    this.cameraPreviewSwitch += 1;
+    this.cameraPreview?.getTracks().forEach((track) => track.stop());
+    this.cameraPreview = null;
+    this.cameraPreviewTrack = null;
   }
 
   private releaseScreen(): void {
@@ -1593,7 +1867,7 @@ export class VoiceSession {
       return;
     }
     const now = Date.now();
-    const isPictureShown = this.streamTracks.has(userId) && !this.pausedStreamUserIds.has(userId) && !this.toggles.isDeafened;
+    const isPictureShown = this.videoTracks.has(userId) && !this.pausedVideoUserIds.has(userId) && !this.toggles.isDeafened;
     this.streamPictureSince = isPictureShown ? (this.streamPictureSince ?? now) : null;
     const track = this.streamSoundTrackOf(userId);
     if (this.streamSoundMeter?.track !== track) {
@@ -1742,7 +2016,7 @@ export class VoiceSession {
     this.screenSoundReceivers = [];
     this.videoTracksByMid.clear();
     this.videoSlotUserIds.clear();
-    this.streamTracks = new Map();
+    this.videoTracks = new Map();
   }
 
   /** Everything local ends; the toggles stay, as on Discord. */
@@ -1760,9 +2034,11 @@ export class VoiceSession {
     }
     this.releaseMicrophone();
     this.releaseScreen();
+    this.releaseCamera();
     this.watchedStreamUserId = null;
+    this.watchedCameras = [];
     this.stopStreamSoundSampling();
-    this.pausedStreamUserIds = new Set();
+    this.pausedVideoUserIds = new Set();
     this.stopWatchingDevices?.();
     this.stopWatchingDevices = null;
     this.microphoneProblem = null;

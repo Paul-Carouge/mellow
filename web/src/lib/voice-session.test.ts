@@ -119,6 +119,8 @@ const QUIET_PORTS = {
   watchDevices: () => () => {},
   storage: () => null,
   requestScreen: () => Promise.reject(new TypeError("no screen in tests")),
+  requestCamera: () => Promise.reject(new TypeError("no camera in tests")),
+  listCameras: () => Promise.resolve([]),
   requestSoundSource: () => Promise.reject(new TypeError("no sound source in tests")),
   codecPreferences: () => null,
 } satisfies Partial<VoicePorts>;
@@ -163,6 +165,11 @@ function harness({
   screenHasSound?: boolean;
 } = {}) {
   const screen = fakeScreen(screenHasSound);
+  /** Every camera opened, with the device asked. */
+  const cameras: { deviceId: string | null; track: ReturnType<typeof fakeScreen>["track"] }[] = [];
+  const cameraFailure: { error: Error | null } = { error: null };
+  /** While held, cameras being opened wait for `release`. */
+  const cameraGate = { isHeld: false, release: () => {} };
   /** Every audio input opened as a share's sound, with its id. */
   const soundSources: { deviceId: string; track: ReturnType<typeof fakeMicrophone>["track"] }[] = [];
   const frames: ClientFrame[] = [];
@@ -271,6 +278,16 @@ function harness({
     },
     storage: () => storage,
     requestScreen: () => Promise.resolve(screen.stream as unknown as MediaStream),
+    requestCamera: (deviceId) => {
+      if (cameraFailure.error) {
+        return Promise.reject(cameraFailure.error);
+      }
+      const opened = fakeScreen(false);
+      cameras.push({ deviceId, track: opened.track });
+      const stream = opened.stream as unknown as MediaStream;
+      return cameraGate.isHeld ? new Promise<MediaStream>((resolve) => (cameraGate.release = () => resolve(stream))) : Promise.resolve(stream);
+    },
+    listCameras: () => Promise.resolve([{ deviceId: "cam-1", label: "FaceTime HD Camera" }]),
     requestSoundSource: (deviceId) => {
       if (unpluggedDeviceIds.has(deviceId)) {
         return Promise.reject(Object.assign(new Error("unplugged"), { name: "OverconstrainedError" }));
@@ -322,6 +339,9 @@ function harness({
     connect,
     screen,
     soundSources,
+    cameras,
+    cameraFailure,
+    cameraGate,
   };
 }
 
@@ -1325,9 +1345,9 @@ describe("VoiceSession screen sharing (ADR-0037)", () => {
     session.watchStream("42");
     expect(frames.at(-1)).toEqual({ op: "voice_video_watch", d: { cameras: [{ user_id: "42", size: "large" }] } });
     lastPeer().receiveTrack(firstVideoSlot, "video");
-    expect(session.streamTracks.size).toBe(0);
+    expect(session.videoTracks.size).toBe(0);
     session.assignSlot(CHANNEL, firstVideoSlot, "42");
-    expect(session.streamTracks.get("42")).toEqual({ kind: "video" });
+    expect(session.videoTracks.get("42")).toEqual({ kind: "video" });
 
     session.noteGatewayReady();
     await flush();
@@ -1335,24 +1355,217 @@ describe("VoiceSession screen sharing (ADR-0037)", () => {
     expect(frames.at(-1)).toEqual({ op: "voice_video_watch", d: { cameras: [{ user_id: "42", size: "large" }] } });
     session.watchStream(null);
     expect(frames.at(-1)).toEqual({ op: "voice_video_watch", d: { cameras: [] } });
-    expect(session.streamTracks.size).toBe(0);
+    expect(session.videoTracks.size).toBe(0);
   });
 
   it("notes a watched picture the instance paused, until it resumes or a new media session starts", async () => {
     const { session, connect } = harness({ canShowVideo: true });
     await connect();
     session.noteVideoPaused(OTHER_CHANNEL, "42", true);
-    expect(session.pausedStreamUserIds.has("42")).toBe(false);
+    expect(session.pausedVideoUserIds.has("42")).toBe(false);
     session.noteVideoPaused(CHANNEL, "42", true);
-    expect(session.pausedStreamUserIds.has("42")).toBe(true);
+    expect(session.pausedVideoUserIds.has("42")).toBe(true);
     session.noteVideoPaused(CHANNEL, "42", false);
-    expect(session.pausedStreamUserIds.has("42")).toBe(false);
+    expect(session.pausedVideoUserIds.has("42")).toBe(false);
 
     session.noteVideoPaused(CHANNEL, "42", true);
     session.noteGatewayReady();
     await flush();
     await session.applyAnswer(CHANNEL, session.currentOfferId, "answer");
-    expect(session.pausedStreamUserIds.size).toBe(0);
+    expect(session.pausedVideoUserIds.size).toBe(0);
+  });
+});
+
+describe("VoiceSession cameras (ADR-0035)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("turns the camera on at the camera's bit rates, says so, and off again", async () => {
+    const { session, frames, lastPeer, connect, cameras } = harness({ canShowVideo: true });
+    await connect();
+    expect(session.canUseCamera).toBe(true);
+
+    await session.startCamera();
+    await flush();
+    const camera = cameras[0];
+    expect(session.isCameraOn).toBe(true);
+    expect(camera?.track.contentHint).toBe("motion");
+    expect(session.cameraTrack).toBe(camera?.track);
+    expect(lastPeer().replacedTracks).toEqual([camera?.track]);
+    expect(lastPeer().videoEncodings.map((encoding) => encoding.maxBitrate)).toEqual([150_000, 500_000, 1_500_000]);
+    expect(frames.at(-1)).toEqual({ op: "voice_state", d: { self_mute: false, self_deaf: false, self_video: true } });
+
+    session.stopCamera();
+    expect(session.isCameraOn).toBe(false);
+    expect(camera?.track.isStopped).toBe(true);
+    expect(session.cameraTrack).toBeNull();
+    expect(lastPeer().replacedTracks.at(-1)).toBeNull();
+    expect(frames.at(-1)).toEqual({ op: "voice_state", d: { self_mute: false, self_deaf: false } });
+  });
+
+  it("says why a camera could not open", async () => {
+    const { session, connect, cameraFailure } = harness({ canShowVideo: true });
+    await connect();
+    cameraFailure.error = Object.assign(new Error("busy"), { name: "NotReadableError" });
+    await session.startCamera();
+    expect(session.isCameraOn).toBe(false);
+    expect(session.cameraProblem).toBe("in-use");
+  });
+
+  it("frees a camera that opened after it was turned off, or after hanging up", async () => {
+    const { session, connect, cameras, cameraGate } = harness({ canShowVideo: true });
+    await connect();
+    cameraGate.isHeld = true;
+    const opening = session.startCamera();
+    session.stopCamera();
+    cameraGate.release();
+    await opening;
+    expect(session.isCameraOn).toBe(false);
+    expect(cameras[0]?.track.isStopped).toBe(true);
+
+    const secondOpening = session.startCamera();
+    session.leave();
+    cameraGate.release();
+    await secondOpening;
+    expect(cameras[1]?.track.isStopped).toBe(true);
+  });
+
+  it("replaces the screen with the camera and the camera with the screen, on the same sender", async () => {
+    const { session, frames, lastPeer, connect, cameras, screen } = harness({ canShowVideo: true });
+    await connect();
+    await session.startScreenShare();
+    await session.startCamera();
+    await flush();
+    expect(session.isSharingScreen).toBe(false);
+    expect(screen.track.isStopped).toBe(true);
+    expect(lastPeer().replacedTracks.at(-1)).toBe(cameras[0]?.track);
+    expect(lastPeer().videoEncodings.at(-1)?.maxBitrate).toBe(1_500_000);
+    expect(frames.at(-1)).toEqual({ op: "voice_state", d: { self_mute: false, self_deaf: false, self_video: true } });
+
+    await session.startScreenShare();
+    await flush();
+    expect(session.isCameraOn).toBe(false);
+    expect(cameras[0]?.track.isStopped).toBe(true);
+    expect(lastPeer().replacedTracks.at(-1)).toBe(screen.track);
+    expect(lastPeer().videoEncodings.at(-1)?.maxBitrate).toBe(5_000_000);
+    expect(frames.at(-1)).toEqual({ op: "voice_state", d: { self_mute: false, self_deaf: false, self_stream: true } });
+  });
+
+  it("keeps the camera's bit rates when the screen's quality changes", async () => {
+    const { session, lastPeer, connect } = harness({ canShowVideo: true });
+    await connect();
+    await session.startCamera();
+    await flush();
+    session.setScreenShareQuality("1440p");
+    await flush();
+    expect(lastPeer().videoEncodings.at(-1)?.maxBitrate).toBe(1_500_000);
+  });
+
+  it("keeps the camera through a reconnection and says so again; drops it when moving", async () => {
+    const { session, frames, lastPeer, connect, cameras } = harness({ canShowVideo: true });
+    await connect();
+    await session.startCamera();
+    session.noteGatewayReady();
+    await flush();
+    const cameraIndex = 1 + VOICE_RECEIVE_SLOTS;
+    expect(lastPeer().transceivers[cameraIndex]?.trackOrKind).toBe(cameras[0]?.track);
+    expect(lastPeer().sendEncodings.get(cameraIndex)?.at(-1)?.maxBitrate).toBe(1_500_000);
+    await session.applyAnswer(CHANNEL, session.currentOfferId, "answer");
+    expect(frames.at(-1)).toEqual({ op: "voice_state", d: { self_mute: false, self_deaf: false, self_video: true } });
+
+    await session.join(OTHER_CHANNEL);
+    expect(session.isCameraOn).toBe(false);
+    expect(cameras[0]?.track.isStopped).toBe(true);
+  });
+
+  it("turns off and says why when the instance refuses or stops relaying the camera, or it is unplugged", async () => {
+    const { session, connect, cameras } = harness({ canShowVideo: true });
+    await connect();
+    await session.startCamera();
+    session.refuseVideo(CHANNEL, "missing_permissions");
+    expect(session.isCameraOn).toBe(false);
+    expect(session.cameraProblem).toBe("missing_permissions");
+
+    await session.startCamera();
+    session.applyVideoLayers(CHANNEL, []);
+    expect(session.isCameraOn).toBe(true);
+    await vi.advanceTimersByTimeAsync(3_000);
+    session.applyVideoLayers(CHANNEL, []);
+    expect(session.cameraProblem).toBe("stopped");
+
+    await session.startCamera();
+    cameras.at(-1)?.track.end();
+    expect(session.isCameraOn).toBe(false);
+    expect(session.cameraProblem).toBe("ended");
+  });
+
+  it("remembers the chosen camera and switches the one on to it", async () => {
+    const storage = memoryStorage({ "mellow.camera-device": "cam-0" });
+    const { session, lastPeer, connect, cameras } = harness({ canShowVideo: true, storage });
+    expect(session.cameraDeviceId).toBe("cam-0");
+    await connect();
+    await session.startCamera();
+    expect(cameras[0]?.deviceId).toBe("cam-0");
+
+    await session.setCameraDevice("cam-1");
+    await flush();
+    expect(storage.values.get("mellow.camera-device")).toBe("cam-1");
+    expect(cameras[1]?.deviceId).toBe("cam-1");
+    expect(cameras[0]?.track.isStopped).toBe(true);
+    expect(session.cameraTrack).toBe(cameras[1]?.track);
+    expect(lastPeer().replacedTracks.at(-1)).toBe(cameras[1]?.track);
+    expect(session.cameraDevices).toEqual([{ deviceId: "cam-1", label: "FaceTime HD Camera" }]);
+
+    await session.setCameraDevice(null);
+    expect(storage.values.get("mellow.camera-device")).toBe("");
+    expect(harness({ storage }).session.cameraDeviceId).toBeNull();
+  });
+
+  it("previews the camera outside a call, follows the chosen camera, and frees it", async () => {
+    const { session, cameras } = harness({ canShowVideo: true });
+    await session.startCameraPreview();
+    expect(session.cameraPreviewTrack).toBe(cameras[0]?.track);
+    await session.setCameraDevice("cam-1");
+    expect(cameras[0]?.track.isStopped).toBe(true);
+    expect(session.cameraPreviewTrack).toBe(cameras[1]?.track);
+    session.stopCameraPreview();
+    expect(cameras[1]?.track.isStopped).toBe(true);
+    expect(session.cameraPreviewTrack).toBeNull();
+  });
+
+  it("watches the screen large first, then the cameras shown, and sends a list only when it changes", async () => {
+    const { session, frames, lastPeer, connect } = harness({ canShowVideo: true });
+    await connect();
+    session.watchCameras([
+      { userId: "42", size: "medium" },
+      { userId: "43", size: "medium" },
+    ]);
+    expect(frames.at(-1)).toEqual({
+      op: "voice_video_watch",
+      d: { cameras: [{ user_id: "42", size: "medium" }, { user_id: "43", size: "medium" }] },
+    });
+    const sent = frames.length;
+    session.watchCameras([
+      { userId: "42", size: "medium" },
+      { userId: "43", size: "medium" },
+    ]);
+    expect(frames).toHaveLength(sent);
+
+    session.watchStream("43");
+    expect(frames.at(-1)).toEqual({
+      op: "voice_video_watch",
+      d: { cameras: [{ user_id: "43", size: "large" }, { user_id: "42", size: "medium" }] },
+    });
+
+    lastPeer().receiveTrack(FIRST_VIDEO_SLOT, "video");
+    session.assignSlot(CHANNEL, FIRST_VIDEO_SLOT, "42");
+    expect(session.videoTracks.get("42")).toEqual({ kind: "video" });
+    session.watchCameras([]);
+    expect(session.videoTracks.size).toBe(0);
   });
 });
 

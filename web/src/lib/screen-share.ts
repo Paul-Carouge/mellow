@@ -3,6 +3,7 @@
 
 import type { SimulcastLayer, VoiceVideoRefusal } from "./protocol";
 import type { AudioDevice } from "./voice-settings";
+import { withTargetsOf } from "./camera";
 
 /** The qualities a screen can be shared at (owner, 2026-11-02), all at 30 frames per second. */
 export type ScreenShareQuality = "720p" | "1080p" | "1440p";
@@ -83,11 +84,7 @@ export function withQuality(
   encodings: readonly RTCRtpEncodingParameters[],
   quality: ScreenShareQuality,
 ): RTCRtpEncodingParameters[] {
-  const wanted = screenEncodings(quality);
-  return encodings.map((encoding) => {
-    const target = wanted.find((candidate) => candidate.rid === encoding.rid);
-    return target === undefined ? encoding : { ...encoding, maxBitrate: target.maxBitrate, maxFramerate: target.maxFramerate };
-  });
+  return withTargetsOf(encodings, screenEncodings(quality));
 }
 
 /**

@@ -7,6 +7,7 @@ import rnnoiseWasmUrl from "@sapphi-red/web-noise-suppressor/rnnoise.wasm?url";
 import rnnoiseSimdWasmUrl from "@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url";
 import rnnoiseWorkletUrl from "@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url";
 
+import { type CameraDevice, cameraConstraints, camerasOf } from "./camera";
 import { browserStorage } from "./reactions";
 import {
   type MicrophoneChoice,
@@ -47,6 +48,20 @@ function requestScreen(quality: ScreenShareQuality): Promise<MediaStream> {
     return Promise.reject(new TypeError("navigator.mediaDevices.getDisplayMedia is unavailable"));
   }
   return navigator.mediaDevices.getDisplayMedia(screenCaptureOptions(quality));
+}
+
+function requestCamera(deviceId: string | null): Promise<MediaStream> {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return Promise.reject(new TypeError("navigator.mediaDevices is unavailable"));
+  }
+  return navigator.mediaDevices.getUserMedia(cameraConstraints(deviceId));
+}
+
+async function listCameras(): Promise<readonly CameraDevice[]> {
+  if (!navigator.mediaDevices?.enumerateDevices) {
+    return [];
+  }
+  return camerasOf(await navigator.mediaDevices.enumerateDevices());
 }
 
 function requestSoundSource(deviceId: string): Promise<MediaStream> {
@@ -469,6 +484,8 @@ export const BROWSER_VOICE_PORTS: Omit<VoicePorts, "sendFrame"> = {
   amplify,
   listDevices: listAudioDevices,
   requestScreen,
+  requestCamera,
+  listCameras,
   requestSoundSource,
   codecPreferences,
   watchDevices: watchAudioDevices,
