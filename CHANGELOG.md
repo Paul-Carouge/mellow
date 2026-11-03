@@ -4,6 +4,9 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.33.2] - 2026-11-03
+Sharp shared screens. No database migration.
+
 ### Fixed
 - Watching a shared screen was pixelated and nearly unreadable: the server lowered and slowed it on links that carried it easily, following a bandwidth estimate that lagged behind a 1440p screen. Pictures now go down only when packets are actually lost, and a 1440p screen reaches its watchers at full size and 30 images per second.
 
