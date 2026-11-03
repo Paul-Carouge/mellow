@@ -65,7 +65,14 @@
 
   const soundSetting = $derived(voice.streamSoundSetting(userId));
   const isSoundMuted = $derived(soundSetting.isLocallyMuted);
+  // Nothing is said about sound while no picture shows: the session counts from the track's
+  // arrival, the view knows when its first frame is drawn.
+  const isSoundStatusShown = $derived(status !== "ended" && !isWaitingForPicture && !isPaused);
+  const isSilent = $derived(isSoundStatusShown && voice.watchedStreamSound === "silent" && !voice.toggles.isDeafened);
   const soundStatus = $derived.by((): { icon: "speaker-slash" | "headphones" | null; label: string } | null => {
+    if (!isSoundStatusShown) {
+      return null;
+    }
     if (voice.toggles.isDeafened) {
       return { icon: "headphones", label: strings.screenShare.deafened };
     }
@@ -76,6 +83,20 @@
         return { icon: "speaker-slash", label: strings.screenShare.noSound };
       default:
         return null;
+    }
+  });
+
+  // "Sans son" is read out once per watched stream: later changes are visible, not repeated.
+  let silenceAnnouncement = $state("");
+  let hasAnnouncedSilence = false;
+  $effect(() => {
+    if (!isSilent) {
+      silenceAnnouncement = "";
+      return;
+    }
+    if (!hasAnnouncedSilence) {
+      hasAnnouncedSilence = true;
+      silenceAnnouncement = strings.screenShare.noSoundDetail(name);
     }
   });
 
@@ -255,7 +276,7 @@
       {#if soundStatus}
         <p
           class="flex shrink-0 items-center gap-2xs type-body-sm text-(--mw-component-stream-view-sound-status-text)"
-          title={voice.watchedStreamSound === "silent" && !voice.toggles.isDeafened ? strings.screenShare.noSoundDetail(name) : undefined}
+          title={isSilent ? strings.screenShare.noSoundDetail(name) : undefined}
         >
           {#if soundStatus.icon}<Icon name={soundStatus.icon} class="size-(--mw-component-voice-panel-signal-icon-size) shrink-0" />{/if}
           <span class="truncate">{soundStatus.label}</span>
@@ -265,7 +286,5 @@
   </div>
   <!-- Exist from the start, so "connecting" then "stopped" are read out as they come. -->
   <p class="sr-only" aria-live="polite">{stageSentence}</p>
-  <p class="sr-only" aria-live="polite">
-    {status !== "ended" && voice.watchedStreamSound === "silent" && !voice.toggles.isDeafened ? strings.screenShare.noSoundDetail(name) : ""}
-  </p>
+  <p class="sr-only" aria-live="polite">{silenceAnnouncement}</p>
 </section>

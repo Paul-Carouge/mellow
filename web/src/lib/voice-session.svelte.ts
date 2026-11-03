@@ -282,12 +282,15 @@ export class VoiceSession {
   private screenSoundSource: MediaStream | null = null;
   /** Bumped by each change of your share's sound: a slower earlier one sees it is stale and frees its input. */
   private screenSoundSwitch = 0;
+  /** The browser named its audio inputs: a remembered one missing from the list is unplugged, not hidden. */
+  private areScreenSoundDevicesListed = false;
   /** The receive lines of watched screens' sound, after your own screen's sound line (ADR-0037). */
   private screenSoundReceivers: RTCRtpTransceiver[] = [];
   /** Reads the watched screen's sound level, from a copy of its track. */
   private streamSoundMeter: { track: MediaStreamTrack; meter: LevelMeter | null } | null = null;
   private streamPictureSince: number | null = null;
-  private streamSoundHeardAt = Number.NEGATIVE_INFINITY;
+  /** The level rose on the current sound slot's track at least once. */
+  private hasStreamSoundBeenHeard = false;
   private streamSoundTimer: ReturnType<typeof setInterval> | null = null;
   /** The browser's picker is open: a second click waits for it. */
   private isRequestingScreen = false;
@@ -735,31 +738,38 @@ export class VoiceSession {
     // The quality may have changed since this connection's encodings were set.
     this.applyScreenShareQualityToSender(sender);
     this.sendVoiceState();
-    // The panel names the chosen input under the live line.
-    void this.refreshScreenSoundDevices();
+    // The panel names the chosen input under the live line, and an unplugged one is not tried.
+    await this.refreshScreenSoundDevices();
     await this.applyScreenSound(true);
   }
 
   /** Remembered for the next share, and applied at once to the current one. `null`: the screen's own sound. */
   setScreenSoundDevice(deviceId: string | null): void {
-    this.screenSoundDeviceId = deviceId;
-    try {
-      this.ports.storage()?.setItem(SCREEN_SOUND_DEVICE_STORAGE_KEY, deviceId ?? "");
-    } catch (error) {
-      console.warn("couldn't remember the share's sound", error);
-    }
+    this.rememberScreenSoundDevice(deviceId);
     if (this.screen !== null) {
       void this.applyScreenSound(false);
     }
   }
 
-  /** Lists the audio inputs that can be your share's sound, when its options open. */
+  /**
+   * Lists the audio inputs that can be your share's sound, when its options open and when a share
+   * starts; the microphone your voice uses is left out.
+   */
   async refreshScreenSoundDevices(): Promise<void> {
     try {
-      this.screenSoundDevices = screenSoundDevicesOf(await this.ports.listDevices());
+      const devices = await this.ports.listDevices();
+      const voiceInputDeviceId = this.isInputDeviceMissing ? null : this.settings.inputDeviceId;
+      this.screenSoundDevices = screenSoundDevicesOf(devices, voiceInputDeviceId);
+      this.areScreenSoundDevicesListed = devices.some((device) => device.kind === "audioinput" && device.label !== "");
     } catch (error) {
       console.warn("couldn't list the sound sources", error);
     }
+  }
+
+  /** Your share's sound is an input that is not system sound, while your microphone is muted: still heard. */
+  get isMutedMicrophoneHeardInShare(): boolean {
+    const source = this.screenSoundDevices.find((device) => device.deviceId === this.screenSoundDeviceId);
+    return this.sharedSound === "input" && source !== undefined && !source.isSystemSound && this.isMicrophoneMuted;
   }
 
   dismissScreenSoundNotice(): void {
@@ -1488,7 +1498,15 @@ export class VoiceSession {
     }
     this.screenSoundSwitch += 1;
     const attempt = this.screenSoundSwitch;
-    const deviceId = this.screenSoundDeviceId;
+    let deviceId = this.screenSoundDeviceId;
+    // Unplugged since it was chosen (or now your voice's microphone): the picker's sound instead,
+    // without a warning at every share, and the choice is forgotten.
+    const isUnlisted =
+      deviceId !== null && this.areScreenSoundDevicesListed && !this.screenSoundDevices.some((device) => device.deviceId === deviceId);
+    if (isShareStart && isUnlisted) {
+      this.rememberScreenSoundDevice(null);
+      deviceId = null;
+    }
     let source: MediaStream | null = null;
     let isSourceUnavailable = false;
     if (deviceId !== null) {
@@ -1525,6 +1543,24 @@ export class VoiceSession {
       await this.screenSoundSender?.replaceTrack(track);
     } catch (error) {
       console.warn("couldn't send the shared screen's sound", error);
+      if (attempt !== this.screenSoundSwitch || this.screen !== screen) {
+        return;
+      }
+      // Nothing goes out: the panel must not claim the input, nor keep it open.
+      if (source !== null) {
+        this.releaseScreenSoundSource();
+        this.screenSoundNotice = "source-unavailable";
+      }
+      this.sharedSound = "none";
+    }
+  }
+
+  private rememberScreenSoundDevice(deviceId: string | null): void {
+    this.screenSoundDeviceId = deviceId;
+    try {
+      this.ports.storage()?.setItem(SCREEN_SOUND_DEVICE_STORAGE_KEY, deviceId ?? "");
+    } catch (error) {
+      console.warn("couldn't remember the share's sound", error);
     }
   }
 
@@ -1546,8 +1582,10 @@ export class VoiceSession {
   }
 
   /**
-   * Whether the watched screen has sound: one look at its level every 500 ms, on a copy of its
-   * track, so your own volume and mute do not change the answer.
+   * Whether the watched screen has sound (`streamSoundStatus`): a sound slot for the sharer, and
+   * one look at its level every 500 ms on a copy of its track (so your own volume and mute do not
+   * change the answer) to confirm it. Deafened, the instance relays no sound to you, so the
+   * picture counts as not shown and the wait starts again when you hear again.
    */
   private sampleStreamSound(): void {
     const userId = this.watchedStreamUserId;
@@ -1555,16 +1593,18 @@ export class VoiceSession {
       return;
     }
     const now = Date.now();
-    this.streamPictureSince = this.streamTracks.has(userId) && !this.pausedStreamUserIds.has(userId) ? (this.streamPictureSince ?? now) : null;
+    const isPictureShown = this.streamTracks.has(userId) && !this.pausedStreamUserIds.has(userId) && !this.toggles.isDeafened;
+    this.streamPictureSince = isPictureShown ? (this.streamPictureSince ?? now) : null;
     const track = this.streamSoundTrackOf(userId);
     if (this.streamSoundMeter?.track !== track) {
       this.streamSoundMeter?.meter?.stop();
       this.streamSoundMeter = track === undefined ? null : { track, meter: this.ports.meterLevel(track) };
+      this.hasStreamSoundBeenHeard = false;
     }
     if ((this.streamSoundMeter?.meter?.level() ?? 0) >= STREAM_SOUND_LEVEL_THRESHOLD) {
-      this.streamSoundHeardAt = now;
+      this.hasStreamSoundBeenHeard = true;
     }
-    const status = streamSoundStatus(this.streamPictureSince, this.streamSoundHeardAt, now);
+    const status = streamSoundStatus(this.streamPictureSince, track !== undefined, this.hasStreamSoundBeenHeard, now);
     if (status !== this.watchedStreamSound) {
       this.watchedStreamSound = status;
     }
@@ -1575,7 +1615,7 @@ export class VoiceSession {
     this.streamSoundMeter?.meter?.stop();
     this.streamSoundMeter = null;
     this.streamPictureSince = null;
-    this.streamSoundHeardAt = Number.NEGATIVE_INFINITY;
+    this.hasStreamSoundBeenHeard = false;
     this.watchedStreamSound = "listening";
   }
 

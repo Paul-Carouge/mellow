@@ -19,17 +19,19 @@ import {
 } from "./screen-share";
 
 describe("the share's sound", () => {
+  const chromeInputs = [
+    { kind: "audioinput", deviceId: "default", label: "Default - Built-in Microphone" },
+    { kind: "audioinput", deviceId: "communications", label: "Communications - Headset" },
+    { kind: "audioinput", deviceId: "mic", label: "Built-in Microphone" },
+    { kind: "audioinput", deviceId: "monitor", label: "Monitor of Built-in Audio Analog Stereo" },
+    { kind: "audioinput", deviceId: "share", label: "Moniteur de Partage-Mellow" },
+    { kind: "audioinput", deviceId: "mix", label: "Mixage stéréo (Realtek(R) Audio)" },
+    { kind: "audioinput", deviceId: "monitoring-mic", label: "Monitoring Headset" },
+    { kind: "audiooutput", deviceId: "speakers", label: "Speakers" },
+  ] as const;
+
   it("lists audio inputs with names, monitors and stereo mixes first, without the system's duplicates", () => {
-    const devices = screenSoundDevicesOf([
-      { kind: "audioinput", deviceId: "default", label: "Default - Built-in Microphone" },
-      { kind: "audioinput", deviceId: "communications", label: "Communications - Headset" },
-      { kind: "audioinput", deviceId: "mic", label: "Built-in Microphone" },
-      { kind: "audioinput", deviceId: "monitor", label: "Monitor of Built-in Audio Analog Stereo" },
-      { kind: "audioinput", deviceId: "share", label: "Moniteur de Partage-Mellow" },
-      { kind: "audioinput", deviceId: "mix", label: "Mixage stéréo (Realtek(R) Audio)" },
-      { kind: "audioinput", deviceId: "monitoring-mic", label: "Monitoring Headset" },
-      { kind: "audiooutput", deviceId: "speakers", label: "Speakers" },
-    ]);
+    const devices = screenSoundDevicesOf(chromeInputs, "usb-voice");
     expect(devices.map((device) => [device.deviceId, device.isSystemSound])).toEqual([
       ["monitor", true],
       ["share", true],
@@ -39,8 +41,23 @@ describe("the share's sound", () => {
     ]);
   });
 
+  it("leaves out the microphone the voice uses, chosen or the default", () => {
+    const ids = (voiceInputDeviceId: string | null, devices: Parameters<typeof screenSoundDevicesOf>[0] = chromeInputs) =>
+      screenSoundDevicesOf(devices, voiceInputDeviceId).map((device) => device.deviceId);
+    expect(ids("monitoring-mic")).toEqual(["monitor", "share", "mix", "mic"]);
+    // Chrome names the default in its "Default - …" entry.
+    expect(ids(null)).toEqual(["monitor", "share", "mix", "monitoring-mic"]);
+    // Firefox lists the default first, without such an entry; a monitor listed first is not a voice.
+    const firefoxInputs = [
+      { kind: "audioinput", deviceId: "a", label: "Built-in Microphone" },
+      { kind: "audioinput", deviceId: "b", label: "Monitor of Built-in Audio" },
+    ] as const;
+    expect(ids(null, firefoxInputs)).toEqual(["b"]);
+    expect(ids(null, [...firefoxInputs].reverse())).toEqual(["b", "a"]);
+  });
+
   it("lists nothing while the browser hides the inputs' names", () => {
-    expect(screenSoundDevicesOf([{ kind: "audioinput", deviceId: "", label: "" }])).toEqual([]);
+    expect(screenSoundDevicesOf([{ kind: "audioinput", deviceId: "", label: "" }], null)).toEqual([]);
   });
 
   it("reads the remembered input, ignoring empty or implausible values", () => {
@@ -84,16 +101,16 @@ describe("the share's sound", () => {
 });
 
 describe("streamSoundStatus", () => {
-  it("is unknown until the picture has been there a moment, then silent without any sound", () => {
-    expect(streamSoundStatus(null, Number.NEGATIVE_INFINITY, 10_000)).toBe("listening");
-    expect(streamSoundStatus(8_000, Number.NEGATIVE_INFINITY, 10_000)).toBe("listening");
-    expect(streamSoundStatus(5_000, Number.NEGATIVE_INFINITY, 10_000)).toBe("silent");
+  it("is unknown until the picture has shown for 5 s, then silent without a sound slot", () => {
+    expect(streamSoundStatus(null, false, false, 10_000)).toBe("listening");
+    expect(streamSoundStatus(5_001, false, false, 10_000)).toBe("listening");
+    expect(streamSoundStatus(5_000, false, false, 10_000)).toBe("silent");
   });
 
-  it("has sound while heard within the last 5 s, before the picture too", () => {
-    expect(streamSoundStatus(null, 9_000, 10_000)).toBe("sound");
-    expect(streamSoundStatus(0, 5_001, 10_000)).toBe("sound");
-    expect(streamSoundStatus(0, 5_000, 10_000)).toBe("silent");
+  it("is never silent with a sound slot, quiet passages included; the level only confirms sound", () => {
+    expect(streamSoundStatus(0, true, false, 60_000)).toBe("listening");
+    expect(streamSoundStatus(0, true, true, 60_000)).toBe("sound");
+    expect(streamSoundStatus(null, true, true, 60_000)).toBe("sound");
   });
 });
 

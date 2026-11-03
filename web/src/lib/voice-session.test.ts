@@ -25,6 +25,8 @@ class FakePeer {
   /** Tracks put on each sender, by transceiver index. */
   replacedTracksByIndex = new Map<number, unknown[]>();
   isClosed = false;
+  /** Senders, by transceiver index, whose `replaceTrack` rejects. */
+  failingSenderIndexes = new Set<number>();
   private listeners = new Map<string, ((event: unknown) => void)[]>();
 
   addTransceiver(trackOrKind: unknown, init?: RTCRtpTransceiverInit) {
@@ -38,7 +40,10 @@ class FakePeer {
       mid: String(index),
       setCodecPreferences: (codecs: readonly unknown[]) => void this.codecs.set(index, codecs),
       sender: {
-        replaceTrack: (track: unknown) => Promise.resolve(void this.replacedTracksAt(index).push(track)),
+        replaceTrack: (track: unknown) =>
+          this.failingSenderIndexes.has(index)
+            ? Promise.reject(new Error("replaceTrack failed"))
+            : Promise.resolve(void this.replacedTracksAt(index).push(track)),
         getParameters: () => ({ encodings: this.videoEncodings }),
         setParameters: (parameters: { encodings: RTCRtpEncodingParameters[] }) =>
           Promise.resolve(void (this.videoEncodings = parameters.encodings)),
@@ -171,6 +176,10 @@ function harness({
   const unpluggedDeviceIds = new Set<string>();
   const devices: { list: AudioDevice[]; onChange: (() => void) | null } = { list: [], onChange: null };
   const meter = { level: 0, isStopped: false };
+  /** Every meter made, by the track it reads; they all read `meter.level`. */
+  const meters: { track: MediaStreamTrack; isStopped: boolean }[] = [];
+  /** While held, audio inputs asked as a share's sound wait for `release`. */
+  const soundSourceGate = { isHeld: false, release: () => {} };
   const amplifiers: { track: { enabled: boolean }; gain: number; isStopped: boolean }[] = [];
   const gateway = { isUp: true };
   const microphoneFailure = { error: microphoneError };
@@ -235,7 +244,17 @@ function harness({
         stop: () => (output.isStopped = true),
       };
     },
-    meterLevel: () => ({ level: () => meter.level, stop: () => (meter.isStopped = true) }),
+    meterLevel: (track) => {
+      const made = { track, isStopped: false };
+      meters.push(made);
+      return {
+        level: () => meter.level,
+        stop: () => {
+          meter.isStopped = true;
+          made.isStopped = true;
+        },
+      };
+    },
     amplify: (_track, gain) => {
       const amplifier = { track: { enabled: true }, gain, isStopped: false };
       amplifiers.push(amplifier);
@@ -258,7 +277,10 @@ function harness({
       }
       const source = fakeMicrophone();
       soundSources.push({ deviceId, track: source.track });
-      return Promise.resolve(source.stream as unknown as MediaStream);
+      const opened = source.stream as unknown as MediaStream;
+      return soundSourceGate.isHeld
+        ? new Promise<MediaStream>((resolve) => (soundSourceGate.release = () => resolve(opened)))
+        : Promise.resolve(opened);
     },
     codecPreferences: () => (canShowVideo ? OPUS_AND_VP8 : null),
   });
@@ -290,6 +312,8 @@ function harness({
     unpluggedDeviceIds,
     devices,
     meter,
+    meters,
+    soundSourceGate,
     amplifiers,
     microphoneFailure,
     noiseSuppressor,
@@ -1479,8 +1503,8 @@ describe("VoiceSession, the share's sound (docs/design/web-stream-watching.md)",
     session.watchStream(null);
   });
 
-  it("says whether the watched screen has sound, from one look at its level every 500 ms", async () => {
-    const { session, lastPeer, connect, meter } = harness({ canShowVideo: true });
+  it("says whether the watched screen has sound: no sound slot means none, quiet passages do not", async () => {
+    const { session, lastPeer, connect, meter, meters } = harness({ canShowVideo: true });
     await connect();
     session.watchStream("42");
     lastPeer().receiveTrack(FIRST_VIDEO_SLOT, "video");
@@ -1493,15 +1517,136 @@ describe("VoiceSession, the share's sound (docs/design/web-stream-watching.md)",
 
     lastPeer().receiveTrack(FIRST_STREAM_SOUND_SLOT, "audio");
     session.assignSlot(CHANNEL, FIRST_STREAM_SOUND_SLOT, "42");
+    await vi.advanceTimersByTimeAsync(500);
+    // A slot proves a sound track: not silent, though nothing was heard yet.
+    expect(session.watchedStreamSound).toBe("listening");
     meter.level = 0.2;
     await vi.advanceTimersByTimeAsync(500);
     expect(session.watchedStreamSound).toBe("sound");
+    // A silent scene keeps it.
     meter.level = 0;
-    await vi.advanceTimersByTimeAsync(5_500);
-    expect(session.watchedStreamSound).toBe("silent");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(session.watchedStreamSound).toBe("sound");
 
+    const streamMeter = meters.at(-1);
     session.watchStream(null);
-    expect(meter.isStopped).toBe(true);
+    expect(streamMeter?.isStopped).toBe(true);
     expect(session.watchedStreamSound).toBe("listening");
+  });
+
+  it("starts waiting again after deafen, when the instance relayed no sound", async () => {
+    const { session, lastPeer, connect } = harness({ canShowVideo: true });
+    await connect();
+    session.watchStream("42");
+    lastPeer().receiveTrack(FIRST_VIDEO_SLOT, "video");
+    session.assignSlot(CHANNEL, FIRST_VIDEO_SLOT, "42");
+    session.toggleDeafened();
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(session.watchedStreamSound).toBe("listening");
+    session.toggleDeafened();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(session.watchedStreamSound).toBe("listening");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(session.watchedStreamSound).toBe("silent");
+  });
+
+  it("stops the stream's meter when leaving the call or moving to another channel", async () => {
+    for (const ending of ["leave", "move"] as const) {
+      const { session, lastPeer, connect, meters } = harness({ canShowVideo: true });
+      await connect();
+      session.watchStream("42");
+      lastPeer().receiveTrack(FIRST_STREAM_SOUND_SLOT, "audio");
+      session.assignSlot(CHANNEL, FIRST_STREAM_SOUND_SLOT, "42");
+      await vi.advanceTimersByTimeAsync(500);
+      const streamMeter = meters.at(-1);
+      expect(streamMeter?.isStopped).toBe(false);
+      if (ending === "leave") {
+        session.leave();
+      } else {
+        await session.join(OTHER_CHANNEL);
+      }
+      expect(streamMeter?.isStopped).toBe(true);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(meters.at(-1)).toBe(streamMeter);
+    }
+  });
+
+  it("never changes a voice's gain with a stream volume", async () => {
+    const { session, lastPeer, connect, outputs } = harness({ canShowVideo: true });
+    await connect();
+    lastPeer().receiveTrack("1", "audio");
+    session.assignSlot(CHANNEL, "1", "42");
+    const voice = outputs.at(-1);
+    session.setStreamVolume("42", 30);
+    session.toggleStreamMuted("42");
+    expect(voice?.gain).toBe(1);
+  });
+
+  it("frees an input that opens after the share stopped, without sending it", async () => {
+    const { session, lastPeer, connect, soundSources, soundSourceGate } = harness({ canShowVideo: true });
+    await connect();
+    await session.startScreenShare();
+    soundSourceGate.isHeld = true;
+    session.setScreenSoundDevice("monitor");
+    await flush();
+    const sentBefore = lastPeer().replacedTracksAt(SCREEN_SOUND_INDEX).length;
+    session.stopScreenShare();
+    const sentAfterStop = lastPeer().replacedTracksAt(SCREEN_SOUND_INDEX).length;
+    soundSourceGate.release();
+    await flush();
+    expect(soundSources[0]?.track.isStopped).toBe(true);
+    expect(sentAfterStop).toBe(sentBefore + 1);
+    expect(lastPeer().replacedTracksAt(SCREEN_SOUND_INDEX)).toHaveLength(sentAfterStop);
+    expect(lastPeer().replacedTracksAt(SCREEN_SOUND_INDEX).at(-1)).toBeNull();
+  });
+
+  it("does not claim an input it could not send", async () => {
+    const { session, lastPeer, connect, soundSources } = harness({ canShowVideo: true });
+    await connect();
+    await session.startScreenShare();
+    lastPeer().failingSenderIndexes.add(SCREEN_SOUND_INDEX);
+    session.setScreenSoundDevice("monitor");
+    await flush();
+    expect(soundSources[0]?.track.isStopped).toBe(true);
+    expect(session.sharedSound).toBe("none");
+    expect(session.screenSoundNotice).toBe("source-unavailable");
+  });
+
+  it("forgets a remembered input that is unplugged, and shares the picker's sound without a warning", async () => {
+    const storage = memoryStorage({ "mellow.screen-share-sound": "usb-gone" });
+    const { session, connect, devices, soundSources, lastPeer, screen } = harness({ canShowVideo: true, storage });
+    devices.list = [
+      { kind: "audioinput", deviceId: "mic", label: "Built-in Microphone" },
+      { kind: "audioinput", deviceId: "monitor", label: "Monitor of Built-in Audio" },
+    ];
+    await connect();
+    await session.startScreenShare();
+    expect(soundSources).toHaveLength(0);
+    expect(session.screenSoundNotice).toBeNull();
+    expect(session.sharedSound).toBe("screen");
+    expect(lastPeer().replacedTracksAt(SCREEN_SOUND_INDEX).at(-1)).toBe(screen.sound);
+    expect(session.screenSoundDeviceId).toBeNull();
+    expect(storage.values.get("mellow.screen-share-sound")).toBe("");
+  });
+
+  it("leaves the voice's microphone out, and says when a muted microphone is still heard in the share", async () => {
+    const { session, connect, devices } = harness({ canShowVideo: true });
+    devices.list = [
+      { kind: "audioinput", deviceId: "mic", label: "Built-in Microphone" },
+      { kind: "audioinput", deviceId: "interface", label: "USB Audio Interface" },
+      { kind: "audioinput", deviceId: "monitor", label: "Monitor of Built-in Audio" },
+    ];
+    await connect();
+    await session.refreshScreenSoundDevices();
+    expect(session.screenSoundDevices.map((device) => device.deviceId)).toEqual(["monitor", "interface"]);
+
+    session.setScreenSoundDevice("interface");
+    await session.startScreenShare();
+    expect(session.isMutedMicrophoneHeardInShare).toBe(false);
+    await session.toggleMicrophone();
+    expect(session.isMutedMicrophoneHeardInShare).toBe(true);
+    session.setScreenSoundDevice("monitor");
+    await flush();
+    expect(session.isMutedMicrophoneHeardInShare).toBe(false);
   });
 });

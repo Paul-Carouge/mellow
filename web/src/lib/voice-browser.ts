@@ -388,6 +388,9 @@ function meterLevel(track: MediaStreamTrack): LevelMeter | null {
   }
   const copy = track.clone();
   const context = new AudioContext();
+  // Made from a timer, not a click: the page's earlier clicks usually let it start. A context that
+  // stays suspended reads silence, which callers take as "not known", never as "no sound".
+  context.resume().catch((error: unknown) => console.warn("couldn't start the level meter", error));
   const analyser = context.createAnalyser();
   analyser.fftSize = ANALYSER_FFT_SIZE;
   context.createMediaStreamSource(new MediaStream([copy])).connect(analyser);

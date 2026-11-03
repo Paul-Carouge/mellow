@@ -387,6 +387,9 @@ export const en = {
     soundFromScreen: "Shared screen",
     soundFromScreenHint: "If you tick “Share audio”",
     systemSoundHint: "Everything your computer plays",
+    /** Under a microphone or other input: the share's sound is not a voice, so muting does not stop it. */
+    heardWhenMutedHint: "Heard even with your mic muted",
+    mutedMicrophoneHeard: "Your muted mic can still be heard in your share",
     audioInputHint: "An audio input",
     /** What your share sends as sound, under the live line. */
     sharedSound: { screen: "Sound: shared screen", input: (source: string) => `Sound: ${source}`, none: "No sound" },
