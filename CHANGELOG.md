@@ -4,7 +4,12 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-11-03
+Screen sharing that keeps its sound and its picture: a sound source of your choice, a stream view with its own volume, and video that follows each watcher's connection (ADR-0035, ADR-0037). No database migration; the gateway gains one additive event, and clients of `v0.32.0` keep working until reloaded.
+
 ### Added
+- Choose your share's sound in "Options du partage": the sound the browser's picker gives (a tab's, or the whole system's on Windows), or any sound input, such as "Monitor of …" on Linux for everything the computer plays. A help explains how to share one application's sound on Linux. Mellow tells you when a share has no sound and what to do in your browser, and warns when a microphone picked as the share's sound is heard while your voice is muted.
+- Watching a shared screen: a volume for the stream (0 to 200 %, per person, apart from their voice) with mute, and whether it carries sound ("Avec son" / "Sans son"); "Ta connexion est trop lente" when the picture is paused for your connection.
 - Video follows each watcher's connection: the server measures how much it can send to each person (transport-wide congestion control) and fits the cameras and screens they watch into 90 % of it and into their fair share of `[voice] video_upload_mbps`. Smaller tiles go down to a lower picture first, then pause, the large tile last, and only on a congested link: a still screen keeps its sharp picture; pictures go back up after 5 seconds with 20 % to spare. A paused tile is announced to its watcher (`VOICE_VIDEO_PAUSED`, additive), for the camera interface to come.
 - When a camera or screen stops sending its larger picture (its sender's upload is short), its watchers fall back to the next smaller picture still arriving within about a second and a half, and go back up as soon as it returns.
 
