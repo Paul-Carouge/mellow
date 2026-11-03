@@ -70,7 +70,32 @@ pub const PREVIEWABLE_IMAGE_TYPES: [&str; 5] = [
     "image/webp",
     "image/avif",
 ];
+/// Played `inline` by the clients' media players (ADR-0038): only containers whose bytes say so.
+pub const PLAYABLE_MEDIA_TYPES: [&str; 9] = [
+    "video/mp4",
+    "video/quicktime",
+    "video/webm",
+    "audio/mpeg",
+    "audio/aac",
+    "audio/mp4",
+    "audio/ogg",
+    "audio/wav",
+    "audio/flac",
+];
 pub const UNKNOWN_CONTENT_TYPE: &str = "application/octet-stream";
+
+/// ISO-BMFF major brands of ordinary video files (MP4, M4V, phone recordings).
+const MP4_VIDEO_BRANDS: [&[u8; 4]; 11] = [
+    b"isom", b"iso2", b"iso4", b"iso5", b"iso6", b"mp41", b"mp42", b"avc1", b"M4V ", b"dash",
+    b"mmp4",
+];
+/// ISO-BMFF major brands of audio-only files (iTunes AAC and audiobooks).
+const MP4_AUDIO_BRANDS: [&[u8; 4]; 2] = [b"M4A ", b"M4B "];
+/// The EBML magic number Matroska and `WebM` files start with.
+const EBML_MAGIC: [u8; 4] = [0x1A, 0x45, 0xDF, 0xA3];
+/// How far into an EBML header its `DocType` is looked for: real headers hold it in the first
+/// few dozen bytes.
+const EBML_DOCTYPE_SEARCH_BYTES: usize = 64;
 
 /// The file name kept for an upload: its last path segment, trimmed. Refused when empty, too long,
 /// a dot name, or holding control or bidirectional characters (a name is shown and downloaded).
@@ -93,7 +118,8 @@ pub fn clean_file_name(raw: &str) -> Result<String, MessageRuleViolation> {
 }
 
 /// The content type an upload is served with, from its first bytes only: what a client claims is
-/// never trusted. Anything but the five raster formats is `application/octet-stream`.
+/// never trusted. Anything but the five raster formats and the playable media containers is
+/// `application/octet-stream`.
 #[must_use]
 pub fn sniff_content_type(bytes: &[u8]) -> &'static str {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -108,8 +134,62 @@ pub fn sniff_content_type(bytes: &[u8]) -> &'static str {
         // An ISO-BMFF file whose major brand is AVIF, still or sequence.
         "image/avif"
     } else {
-        UNKNOWN_CONTENT_TYPE
+        sniff_media_type(bytes).unwrap_or(UNKNOWN_CONTENT_TYPE)
     }
+}
+
+/// The playable audio or video container these bytes start with (ADR-0038), if any. Checked
+/// after the pictures: a JPEG also starts with `0xFF`, as MPEG audio frames do.
+fn sniff_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.get(4..8) == Some(b"ftyp") {
+        let brand = bytes.get(8..12)?;
+        return if MP4_VIDEO_BRANDS
+            .iter()
+            .any(|known| known.as_slice() == brand)
+        {
+            Some("video/mp4")
+        } else if MP4_AUDIO_BRANDS
+            .iter()
+            .any(|known| known.as_slice() == brand)
+        {
+            Some("audio/mp4")
+        } else if brand == b"qt  " {
+            Some("video/quicktime")
+        } else {
+            None
+        };
+    }
+    if bytes.starts_with(&EBML_MAGIC) {
+        let header = &bytes[..bytes.len().min(EBML_DOCTYPE_SEARCH_BYTES)];
+        // The DocType element (0x4282), one-byte size 0x84, then "webm"; Matroska stays a download.
+        let is_webm = header
+            .windows(7)
+            .any(|window| window == b"\x42\x82\x84webm");
+        return is_webm.then_some("video/webm");
+    }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        Some("audio/wav")
+    } else if bytes.starts_with(b"fLaC") {
+        Some("audio/flac")
+    } else if bytes.starts_with(b"OggS") {
+        Some("audio/ogg")
+    } else if bytes.starts_with(b"ID3") || is_mpeg_layer_three_frame(bytes) {
+        Some("audio/mpeg")
+    } else if is_adts_frame(bytes) {
+        Some("audio/aac")
+    } else {
+        None
+    }
+}
+
+/// An MPEG audio frame header: 11 sync bits, any version, layer III (`01`).
+fn is_mpeg_layer_three_frame(bytes: &[u8]) -> bool {
+    matches!(bytes, [0xFF, second, ..] if second & 0xE0 == 0xE0 && second & 0x06 == 0x02)
+}
+
+/// An AAC ADTS frame header: 12 sync bits, then layer `00`.
+fn is_adts_frame(bytes: &[u8]) -> bool {
+    matches!(bytes, [0xFF, second, ..] if second & 0xF6 == 0xF0)
 }
 
 /// Windows clients send `\r\n`; messages store `\n` only.
@@ -486,12 +566,50 @@ mod tests {
         assert_eq!(sniff_content_type(b"RIFF\0\0\0\0WEBPVP8 "), "image/webp");
         assert_eq!(sniff_content_type(b"\0\0\0\x1cftypavif\0\0"), "image/avif");
         assert_eq!(
-            sniff_content_type(b"\0\0\0\x1cftypisom\0\0"),
-            UNKNOWN_CONTENT_TYPE,
-            "a video"
+            sniff_content_type(b"\0\0\0\x1cftypheic\0\0"),
+            UNKNOWN_CONTENT_TYPE
         );
         assert_eq!(sniff_content_type(b"<svg xmlns="), UNKNOWN_CONTENT_TYPE);
         assert_eq!(sniff_content_type(b"<html><script>"), UNKNOWN_CONTENT_TYPE);
         assert_eq!(sniff_content_type(b""), UNKNOWN_CONTENT_TYPE);
+    }
+
+    #[test]
+    fn common_audio_and_video_containers_get_a_playable_type() {
+        let cases: [(&[u8], &str); 12] = [
+            (b"\0\0\0\x20ftypisom\0\0\x02\0", "video/mp4"),
+            (b"\0\0\0\x18ftypmp42\0\0\0\0", "video/mp4"),
+            (b"\0\0\0\x14ftypqt  \0\0\0\0", "video/quicktime"),
+            (b"\0\0\0\x20ftypM4A \0\0\0\0", "audio/mp4"),
+            (
+                b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01\x42\x82\x84webm\x42\x87",
+                "video/webm",
+            ),
+            (b"RIFF\0\0\0\0WAVEfmt ", "audio/wav"),
+            (b"fLaC\0\0\0\x22", "audio/flac"),
+            (b"OggS\0\x02\0\0", "audio/ogg"),
+            (b"ID3\x04\0\0\0\0", "audio/mpeg"),
+            (&[0xFF, 0xFB, 0x90, 0x64], "audio/mpeg"),
+            (&[0xFF, 0xF3, 0x90, 0x64], "audio/mpeg"),
+            (&[0xFF, 0xF1, 0x50, 0x80], "audio/aac"),
+        ];
+        for (bytes, expected) in cases {
+            assert_eq!(sniff_content_type(bytes), expected, "{bytes:?}");
+            assert!(PLAYABLE_MEDIA_TYPES.contains(&expected), "{expected}");
+        }
+    }
+
+    #[test]
+    fn lookalike_media_headers_stay_downloads() {
+        let refused: [&[u8]; 5] = [
+            b"\x1a\x45\xdf\xa3\x9f\x42\x82\x88matroska",
+            b"\0\0\0\x08ftyp",
+            &[0xFF, 0xFD, 0x90, 0x64],
+            b"RIFF\0\0\0\0AVI LIST",
+            b"Ogg",
+        ];
+        for bytes in refused {
+            assert_eq!(sniff_content_type(bytes), UNKNOWN_CONTENT_TYPE, "{bytes:?}");
+        }
     }
 }
