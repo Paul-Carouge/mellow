@@ -122,8 +122,8 @@ The notice (`status-*` tokens): an opaque `media.tile` chip, `radius.sm`, `space
 
 | Moment | What moves | Duration and curve | Reduced motion |
 |---|---|---|---|
-| Open | The room fades in; the picture fades in and grows from `enter-scale` (96 %) | `enter-duration` (`base`, 200 ms), `motion.easing.enter`: no settle overshoot, a photo should not bounce | Appears at once (the tokens are 0 ms) |
-| Close | Room and picture fade out | `exit-duration` (`fast`), exit | Instant |
+| Open | The room fades in; the picture fades in and grows from `enter-scale` (96 %) | `motion.duration.base` (200 ms), `motion.easing.enter`: no settle overshoot, a photo should not bounce | Appears at once (the motion token is 0 ms; component duration aliases keep their value, so they are not used) |
+| Close | Instant (an exit fade needs the dialog kept mounted while it plays; not in this slice) | | |
 | Control hover | Background to `control-background-hover` | `motion.duration.fast`, standard | Colour kept (0 ms) |
 | Previous / next, fit / actual size, preview to full | Nothing: an instant swap | | |
 
@@ -207,7 +207,6 @@ New contrast pairs: `media.text-secondary` on `media.stage` (4.5) and on `media.
 | `status-delay` | `motion.delay.loading-notice` (340 ms) | Before "Chargement de l’image…" |
 | `copied-label-duration` | `motion.delay.copied-label` (2 s) | "Lien copié" |
 | `enter-scale` | `component.dialog.enter-scale` (0.96) | Picture growth on open |
-| `enter-duration` / `exit-duration` | `motion.duration.base` / `fast` | Open / close |
 
 Icons: `caret-left` (new, Fill, the twin of `caret-right`), `caret-right`, `download-simple`, `copy`, `check`, `arrow-square-out` (new, Fill), `x`, `warning-circle`. `Icon.svelte`'s `IconName` union needs the two new names.
 

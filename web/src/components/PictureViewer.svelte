@@ -14,6 +14,7 @@
     isPictureLargerThanBox,
     wrappedPictureIndex,
   } from "./picture-viewer";
+  import { IMAGE_RETRY_DELAY_MILLISECONDS } from "./image-retry";
   import { durationTokenInMilliseconds, lengthTokenInPixels } from "./tokens";
 
   // docs/design/web-picture-viewer.md: a message's pictures large over the app, on the opaque
@@ -48,18 +49,26 @@
   let hasFullRetried = $state(false);
   let isFullFailed = $state(false);
   let isPreviewFailed = $state(false);
+  // Bumped for every new attempt: a load or error from an older <img> (the browser keeps
+  // downloading a removed one) must not touch the picture shown now.
   let loadGeneration = $state(0);
+  let isLoadingNoticeDue = $state(false);
+  let loadingNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
   let announcement = $state("");
   let isCopied = $state(false);
   let isCopyFailed = $state(false);
+  let isPressStartedOnStage = false;
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 
   const stagePadding = lengthTokenInPixels("component-picture-viewer-stage-padding");
   const naturalSize = $derived(picture ? (attachmentPixelSize(picture) ?? loadedSize) : null);
   const box = $derived({ width: Math.max(1, stageWidth - 2 * stagePadding), height: Math.max(1, stageHeight - 2 * stagePadding) });
-  const shownSize = $derived(naturalSize === null ? null : isActualSize ? naturalSize : fittedPictureSize(naturalSize, box));
   const isZoomable = $derived(naturalSize !== null && isPictureLargerThanBox(naturalSize, box));
+  // A window grown until the picture fits leaves actual size by itself.
+  const isShownAtActualSize = $derived(isActualSize && isZoomable);
+  const shownSize = $derived(naturalSize === null ? null : isShownAtActualSize ? naturalSize : fittedPictureSize(naturalSize, box));
   const caption = $derived(
     picture
       ? strings.pictureViewer.caption(authorName, messageTimestampLabel(sentAtUnixMilliseconds, new Date()), humanFileSize(picture.size_bytes))
@@ -70,6 +79,8 @@
   async function showPicture(nextIndex: number) {
     index = nextIndex;
     isActualSize = false;
+    clearTimeout(copiedTimer);
+    isCopied = false;
     resetLoading();
     const shown = pictures[index];
     if (shown) {
@@ -100,6 +111,18 @@
     isPreviewFailed = false;
     isCopyFailed = false;
     loadGeneration += 1;
+    clearTimeout(retryTimer);
+    scheduleLoadingNotice();
+  }
+
+  /** The notice (and its announcement) only for a slow picture: a cached one never shows it. */
+  function scheduleLoadingNotice() {
+    isLoadingNoticeDue = false;
+    clearTimeout(loadingNoticeTimer);
+    loadingNoticeTimer = setTimeout(
+      () => (isLoadingNoticeDue = true),
+      durationTokenInMilliseconds("component-picture-viewer-status-delay"),
+    );
   }
 
   function naturalSizeOf(image: EventTarget): PixelSize | null {
@@ -110,13 +133,21 @@
     void showPicture(wrappedPictureIndex(index, direction, pictures.length));
   }
 
-  function onFullError() {
-    // One automatic retry with a new element (the same src on the old one would not load again).
+  function onFullError(generation: number) {
+    if (generation !== loadGeneration) {
+      return;
+    }
+    // One retry with a new element (the same src on the old one would not load again), after the
+    // pause a busy instance needs, as the message list does.
     if (hasFullRetried) {
       isFullFailed = true;
     } else {
       hasFullRetried = true;
-      loadGeneration += 1;
+      retryTimer = setTimeout(() => {
+        if (generation === loadGeneration) {
+          loadGeneration += 1;
+        }
+      }, IMAGE_RETRY_DELAY_MILLISECONDS);
     }
   }
 
@@ -132,7 +163,7 @@
     const ratioY = isPointer ? (event.clientY - pictureBox.top) / pictureBox.height : 0.5;
     const pointerX = isPointer ? event.clientX - stageBox.left : stage.clientWidth / 2;
     const pointerY = isPointer ? event.clientY - stageBox.top : stage.clientHeight / 2;
-    isActualSize = !isActualSize;
+    isActualSize = !isShownAtActualSize;
     if (isActualSize) {
       await tick();
       stage.scrollTo({
@@ -160,16 +191,12 @@
     await tick();
     announcement = strings.pictureViewer.linkCopied;
     clearTimeout(copiedTimer);
-    // Reduced motion sets the token to 0 ms; "Lien copié" then stays rather than flashing away.
-    const copiedLabelDuration = durationTokenInMilliseconds("component-picture-viewer-copied-label-duration");
-    if (copiedLabelDuration > 0) {
-      copiedTimer = setTimeout(() => (isCopied = false), copiedLabelDuration);
-    }
+    copiedTimer = setTimeout(() => (isCopied = false), durationTokenInMilliseconds("component-picture-viewer-copied-label-duration"));
   }
 
   function onkeydown(event: KeyboardEvent) {
     // At actual size the arrows pan the stage, as the browser does by itself.
-    if (isActualSize || pictures.length < 2 || event.altKey || event.ctrlKey || event.metaKey) {
+    if (isShownAtActualSize || pictures.length < 2 || event.altKey || event.ctrlKey || event.metaKey) {
       return;
     }
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
@@ -181,8 +208,11 @@
   onMount(() => {
     dialog.showModal();
     closeButton?.focus();
+    scheduleLoadingNotice();
     return () => {
       clearTimeout(copiedTimer);
+      clearTimeout(loadingNoticeTimer);
+      clearTimeout(retryTimer);
       dialog.close();
       if (opener?.isConnected) {
         opener.focus();
@@ -218,9 +248,14 @@
       bind:this={stage}
       bind:clientWidth={stageWidth}
       bind:clientHeight={stageHeight}
-      class={["relative grid min-w-0 flex-1 p-(--mw-component-picture-viewer-stage-padding)", isActualSize ? "overflow-auto" : "overflow-hidden"]}
+      class={[
+        "stage relative grid min-w-0 flex-1 p-(--mw-component-picture-viewer-stage-padding)",
+        isShownAtActualSize ? "overflow-auto" : "overflow-hidden",
+      ]}
+      onpointerdown={(event) => (isPressStartedOnStage = event.target === stage)}
       onclick={(event) => {
-        if (event.target === stage) {
+        // A drag that started on the picture and ended beside it is not a click on the room.
+        if (event.target === stage && isPressStartedOnStage) {
           onclose();
         }
       }}
@@ -230,17 +265,18 @@
           this={isZoomable ? "button" : "div"}
           type={isZoomable ? "button" : undefined}
           aria-label={isZoomable ? strings.pictureViewer.actualSize : undefined}
-          aria-pressed={isZoomable ? isActualSize : undefined}
+          aria-pressed={isZoomable ? isShownAtActualSize : undefined}
           style:width={shownSize ? `${shownSize.width}px` : undefined}
           style:height={shownSize ? `${shownSize.height}px` : undefined}
           class={[
             "picture relative m-auto block overflow-hidden rounded-(--mw-component-picture-viewer-picture-radius) p-0",
-            isZoomable && (isActualSize ? "cursor-zoom-out" : "cursor-zoom-in"),
+            isZoomable && (isShownAtActualSize ? "cursor-zoom-out" : "cursor-zoom-in"),
             isZoomable && "focus-visible:focus-ring",
           ]}
           onclick={isZoomable ? toggleActualSize : undefined}
         >
           {#key `${picture.id}:${loadGeneration}`}
+            {@const shownGeneration = loadGeneration}
             <!-- The list's preview, already in the cache, holds the place until the full file arrives. -->
             {#if !isFullLoaded && !isPreviewFailed}
               <img
@@ -248,9 +284,15 @@
                 alt={picture.file_name}
                 class={["block", shownSize ? "absolute inset-0 size-full" : "max-h-full max-w-full"]}
                 onload={(event) => {
-                  loadedSize ??= naturalSizeOf(event.currentTarget);
+                  if (shownGeneration === loadGeneration) {
+                    loadedSize ??= naturalSizeOf(event.currentTarget);
+                  }
                 }}
-                onerror={() => (isPreviewFailed = true)}
+                onerror={() => {
+                  if (shownGeneration === loadGeneration) {
+                    isPreviewFailed = true;
+                  }
+                }}
               />
             {/if}
             {#if !isFullFailed}
@@ -260,10 +302,12 @@
                 decoding="async"
                 class={["block", shownSize ? "absolute inset-0 size-full" : "max-h-full max-w-full", !isFullLoaded && "invisible"]}
                 onload={(event) => {
-                  loadedSize = naturalSizeOf(event.currentTarget) ?? loadedSize;
-                  isFullLoaded = true;
+                  if (shownGeneration === loadGeneration) {
+                    loadedSize = naturalSizeOf(event.currentTarget) ?? loadedSize;
+                    isFullLoaded = true;
+                  }
                 }}
-                onerror={onFullError}
+                onerror={() => onFullError(shownGeneration)}
               />
             {/if}
           {/key}
@@ -291,10 +335,10 @@
               >
             {/if}
           </p>
-        {:else if picture && !isFullLoaded}
+        {:else if picture && !isFullLoaded && isLoadingNoticeDue}
           <!-- Shown only when the full file is slow: a cached picture never flashes it. -->
           <p
-            class="animate-[mw-fade-in_var(--mw-motion-duration-base)_var(--mw-component-picture-viewer-status-delay)_both] rounded-(--mw-component-picture-viewer-status-radius) bg-(--mw-component-picture-viewer-status-background) p-(--mw-component-picture-viewer-status-padding) type-body text-(--mw-component-picture-viewer-status-text)"
+            class="animate-[mw-fade-in_var(--mw-motion-duration-base)_var(--mw-motion-easing-standard)_both] rounded-(--mw-component-picture-viewer-status-radius) bg-(--mw-component-picture-viewer-status-background) p-(--mw-component-picture-viewer-status-padding) type-body text-(--mw-component-picture-viewer-status-text)"
           >
             {strings.pictureViewer.loading}
           </p>
@@ -393,12 +437,14 @@
     outline: var(--mw-size-focus-ring-width) solid var(--mw-color-focus);
     outline-offset: var(--mw-size-focus-ring-offset);
   }
-  /* The room fades in and the picture grows a little (no settle overshoot). Reduced motion: at once. */
+  /* The room fades in and the picture grows a little (no settle overshoot). Reduced motion: at
+     once, through the motion token (component aliases keep their value). On the stage, which is
+     never recreated, so changing pictures never replays it. */
   .picture-viewer[open] {
-    animation: mw-fade-in var(--mw-component-picture-viewer-enter-duration) var(--mw-motion-easing-enter) both;
+    animation: mw-fade-in var(--mw-motion-duration-base) var(--mw-motion-easing-enter) both;
   }
-  .picture-viewer[open] .picture {
-    animation: picture-viewer-in var(--mw-component-picture-viewer-enter-duration) var(--mw-motion-easing-enter) both;
+  .picture-viewer[open] .stage {
+    animation: picture-viewer-in var(--mw-motion-duration-base) var(--mw-motion-easing-enter) both;
   }
   @keyframes picture-viewer-in {
     from {

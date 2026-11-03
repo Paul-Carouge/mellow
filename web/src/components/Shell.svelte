@@ -26,6 +26,7 @@
   import GroupMembersSheet from "./GroupMembersSheet.svelte";
   import IconButton from "./IconButton.svelte";
   import LazyComponent from "./LazyComponent.svelte";
+  import { closePictureViewer, pictureViewerRequest } from "./picture-viewer-request.svelte";
   import LeaveServerDialog from "./LeaveServerDialog.svelte";
   import MemberList from "./MemberList.svelte";
   import { readMemberSheetPlaceIds, writeMemberSheetPlaceIds } from "./member-sheet-places";
@@ -860,6 +861,24 @@
   <LazyComponent load={() => import("./UserSettings.svelte")} onclose={() => (isUserSettingsOpen = false)}>
     {#snippet children({ default: UserSettings })}
       <UserSettings {client} isWide={hasRoomForNavigator.current} onclose={() => (isUserSettingsOpen = false)} />
+    {/snippet}
+  </LazyComponent>
+{/if}
+
+{#if pictureViewerRequest()}
+  {@const request = pictureViewerRequest()}
+  <LazyComponent load={() => import("./PictureViewer.svelte")} onclose={closePictureViewer}>
+    {#snippet children({ default: PictureViewer })}
+      {#if request}
+        <PictureViewer
+          pictures={request.pictures}
+          initialIndex={request.index}
+          authorName={request.authorName}
+          sentAtUnixMilliseconds={request.sentAtUnixMilliseconds}
+          opener={request.opener}
+          onclose={closePictureViewer}
+        />
+      {/if}
     {/snippet}
   </LazyComponent>
 {/if}
