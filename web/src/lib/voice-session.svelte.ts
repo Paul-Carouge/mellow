@@ -289,6 +289,8 @@ export class VoiceSession {
   screenSoundNotice = $state<ScreenSoundNotice | null>(null);
   /** Your camera is on in the call (ADR-0035); it and your screen replace each other (ADR-0037). */
   isCameraOn = $state(false);
+  /** Between the click and the camera's picture: the browser may be asking for the permission. */
+  isCameraStarting = $state(false);
   cameraProblem = $state<CameraProblem | null>(null);
   /** Your camera's picture while it is on, for your own tile. */
   cameraTrack = $state.raw<MediaStreamTrack | null>(null);
@@ -869,12 +871,14 @@ export class VoiceSession {
     this.cameraProblem = null;
     const attempt = ++this.cameraSwitch;
     const channelId = this.channelId;
+    this.isCameraStarting = true;
     let stream: MediaStream;
     try {
       stream = await this.ports.requestCamera(this.cameraDeviceId);
     } catch (error) {
       if (attempt === this.cameraSwitch) {
         this.cameraProblem = cameraProblemOf(error);
+        this.isCameraStarting = false;
       }
       return;
     }
@@ -883,11 +887,15 @@ export class VoiceSession {
     // Stopped, hung up or moved while the camera opened: this stream would never be stopped.
     if (track === undefined || sender === null || attempt !== this.cameraSwitch || this.phase === "idle" || this.channelId !== channelId) {
       stream.getTracks().forEach((stopped) => stopped.stop());
+      if (attempt === this.cameraSwitch) {
+        this.isCameraStarting = false;
+      }
       return;
     }
     if (this.screen !== null) {
       this.releaseScreen();
     }
+    this.isCameraStarting = false;
     await this.sendCamera(stream, sender);
     if (this.camera === stream) {
       this.sendVoiceState();
@@ -1737,6 +1745,7 @@ export class VoiceSession {
 
   private releaseCamera(): void {
     this.cameraSwitch += 1;
+    this.isCameraStarting = false;
     this.camera?.getTracks().forEach((track) => track.stop());
     this.camera = null;
     this.cameraTrack = null;
