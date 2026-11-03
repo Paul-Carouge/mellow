@@ -6,6 +6,7 @@
   import {
     type Channel,
     type CustomEmoji,
+    type ForwardOrigin,
     type Message,
     Permission,
     type PublicUser,
@@ -22,6 +23,7 @@
   import DeleteMessageDialog from "./DeleteMessageDialog.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import { displayName, typingSegments, unixMillisecondsOfSnowflake } from "./format";
+  import { forwardOriginPlace } from "./forward-messages";
   import GroupAvatar from "./GroupAvatar.svelte";
   import {
     blockedRecipientOf,
@@ -34,6 +36,7 @@
   import { unreadBarLabel, unreadSummary } from "./message-rows";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import LazyComponent from "./LazyComponent.svelte";
   import type { ReactionAndPinActions } from "./message-actions";
   import MessageList from "./MessageList.svelte";
   import PinnedMessagesPanel from "./PinnedMessagesPanel.svelte";
@@ -55,6 +58,8 @@
     oneditchannel: (channel: Channel) => void;
     /** The header's "Add friends to the group" in a group conversation (ADR-0026). */
     onaddtogroup: () => void;
+    /** A forward's footer: its original, opened in its own channel (ADR-0039). */
+    onopenforwardorigin: (origin: ForwardOrigin) => void;
   }
 
   let {
@@ -66,6 +71,7 @@
     ontogglememberlist,
     oneditchannel,
     onaddtogroup,
+    onopenforwardorigin,
   }: Props = $props();
 
   /** The composer grows with its text up to half of the pane (DESIGN.md §4.2). */
@@ -126,6 +132,7 @@
   let replyingTo = $state<Message | null>(null);
   let editingMessageId = $state<Snowflake | null>(null);
   let deletingMessage = $state<Message | null>(null);
+  let forwardingMessage = $state<Message | null>(null);
   /** For a message's reactions, or, without one, for the composer. */
   let picker = $state<{ message: Message | null; anchor: HTMLElement } | null>(null);
   let pinning = $state<{ message: Message; isPinned: boolean } | null>(null);
@@ -297,7 +304,10 @@
 
   function editLastOwnMessage() {
     const lastOwn = channelId
-      ? [...client.messages(channelId)].reverse().find((message) => message.author.id === user?.id)
+      ? [...client.messages(channelId)]
+          .reverse()
+          // A forward cannot be edited (ADR-0039): Up goes to the last message you wrote.
+          .find((message) => message.author.id === user?.id && message.forwarded_from === undefined)
       : undefined;
     if (lastOwn) {
       editingMessageId = lastOwn.id;
@@ -597,6 +607,10 @@
         {editingMessageId}
         maximumEditorHeight={maximumComposerHeight}
         onreply={startReply}
+        onforward={(message) => (forwardingMessage = message)}
+        forwardOriginPlaceOf={(originChannelId) =>
+          forwardOriginPlace(originChannelId, client.guilds, client.conversations, user.id)?.label ?? null}
+        {onopenforwardorigin}
         onstartedit={(message) => (editingMessageId = message.id)}
         onsaveedit={saveEdit}
         oncanceledit={() => {
@@ -633,7 +647,11 @@
       onopenemojipicker={(anchor) => (picker = { message: null, anchor })}
       onmarkasread={markAsRead}
       oneditlastmessage={editLastOwnMessage}
-      onsent={() => messageList?.jumpToPresent()}
+      onsent={() => {
+        // Writing again moves on from what the notice said (a forward sent, a result not found).
+        notice = "";
+        messageList?.jumpToPresent();
+      }}
     />
   {:else}
     {@render emptyState()}
@@ -754,6 +772,22 @@
     onclose={() => (viewingReactionsOfId = null)}
     fallbackFocus={focusComposer}
   />
+{/if}
+
+{#if forwardingMessage}
+  {@const message = forwardingMessage}
+  <LazyComponent load={() => import("./ForwardMessageDialog.svelte")} onclose={() => (forwardingMessage = null)}>
+    {#snippet children({ default: ForwardMessageDialog })}
+      <ForwardMessageDialog
+        {client}
+        {message}
+        canFocusComposer={canSendMessages}
+        onclose={() => (forwardingMessage = null)}
+        onforwarded={(sentence) => (notice = sentence)}
+        fallbackFocus={focusComposer}
+      />
+    {/snippet}
+  </LazyComponent>
 {/if}
 
 {#if deletingMessage}

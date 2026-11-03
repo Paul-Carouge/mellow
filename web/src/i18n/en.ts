@@ -22,6 +22,11 @@ const EMOJI_NAME_LENGTHS = `${MINIMUM_EMOJI_NAME_LENGTH} to ${MAXIMUM_EMOJI_NAME
 const SOUND_NAME_LENGTHS = `${MINIMUM_SOUND_NAME_LENGTH} to ${MAXIMUM_SOUND_NAME_LENGTH}`;
 const SOUND_SOURCE_MEGABYTES = MAXIMUM_SOUND_SOURCE_BYTES / (1024 * 1024);
 
+/** "#general", "#general and Ana", "#general, Ana and #news": a forward's places (at most five). */
+function placesInEnglish(places: readonly string[]): string {
+  return places.length <= 1 ? (places[0] ?? "") : `${places.slice(0, -1).join(", ")} and ${places.at(-1) ?? ""}`;
+}
+
 /** "Ana", "Ana and Bob", "Ana, Bob and Chloé", then "Ana, Bob and 2 others"; "Just you" for nobody. */
 function participantNamesInEnglish(names: readonly string[]): string {
   const [first, second, third] = names;
@@ -705,6 +710,39 @@ export const en = {
       symbols: "Symbols",
       flags: "Flags",
     },
+  },
+
+  /** Forwarding a message (DESIGN.md §5.4, ADR-0039). */
+  forward: {
+    forward: "Forward",
+    /** The mark at the top of a forward, beside its arrow. */
+    forwarded: "Forwarded",
+    title: "Forward message",
+    subtitle: (maximum: number) => `Pick up to ${count(maximum)} places to send it to.`,
+    search: "Search channels and conversations",
+    searchPlaceholder: "Channel, server or person",
+    places: "Places",
+    roomLeft: (room: number) =>
+      room === 0
+        ? "That's as many places as one forward can reach."
+        : `You can pick ${count(room)} more ${plural(room, { one: "place", other: "places" })}.`,
+    noPlaces:
+      "There's nowhere you can send this message yet. Join a server or start a conversation, then forward it.",
+    noMatch: (query: string) => `No channel or conversation matches “${query}”.`,
+    preview: "Message to forward",
+    note: "Add a message (optional)",
+    noteHelper: "Sent in each place right after the forwarded message.",
+    submit: "Forward",
+    submitting: "Forwarding…",
+    /** Said once every place got the forward, and before the failures when only some did. */
+    sent: (places: readonly string[]) => `Forwarded to ${placesInEnglish(places)}.`,
+    forwardFailed: (place: string) => `Couldn't forward to ${place}`,
+    noteFailed: (place: string) => `The message was forwarded to ${place}, but your own message couldn't be sent`,
+    originGone: "the original was deleted, or you can no longer read it.",
+    cannotSendThere: "you can't send messages or files there anymore.",
+    /** A forward's footer, as a link: the place and the original's date. */
+    goToOriginal: (place: string, date: string) => `Go to the original message in ${place}, ${date}`,
+    originalFrom: (date: string) => `Original message from ${date}`,
   },
 
   pins: {

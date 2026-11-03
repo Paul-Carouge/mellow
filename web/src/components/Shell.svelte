@@ -4,7 +4,7 @@
 
   import { strings } from "../i18n";
   import { MAXIMUM_MESSAGES_LOADED_TO_REACH_A_MESSAGE, type MellowClient } from "../lib/client.svelte";
-  import type { Channel, MessageSearchHit, Snowflake } from "../lib/protocol";
+  import type { Channel, ForwardOrigin, MessageSearchHit, Snowflake } from "../lib/protocol";
   import { browserStorage } from "../lib/reactions";
   import type { ServerDialog } from "./ChannelSidebar.svelte";
   import ChatPane from "./ChatPane.svelte";
@@ -21,6 +21,7 @@
   import CreateChannelDialog from "./CreateChannelDialog.svelte";
   import Drawer from "./Drawer.svelte";
   import type { FriendsTab } from "./friends";
+  import { forwardOriginPlace } from "./forward-messages";
   import FriendsPane from "./FriendsPane.svelte";
   import { conversationDisplayName, isGroupConversation } from "./group-conversations";
   import GroupMembersSheet from "./GroupMembersSheet.svelte";
@@ -142,7 +143,7 @@
   const isSearchOverlayOpen = $derived(messageSearch.isPanelOpen && !hasRoomForSearchSheet.current);
   /** The result being opened, while its page loads. */
   let openingMessageId = $state<Snowflake | null>(null);
-  let latestSearchResultRequest = 0;
+  let latestMessageOpenRequest = 0;
   /** Why a result could not open, said in the results themselves. */
   let searchNotice = $state("");
   // A new search, or none, says nothing about an older result.
@@ -405,40 +406,67 @@
 
   /** Opens the result's channel at the message, loading older pages if needed (DESIGN.md 5.12). */
   async function openSearchResult(hit: MessageSearchHit) {
-    const message = hit.message;
     const scopeGuildId = messageSearch.scopeGuildId;
-    // A later choice wins: an earlier one still loading its pages must not reveal or speak after it.
-    const request = ++latestSearchResultRequest;
-    const isSuperseded = () => request !== latestSearchResultRequest;
-    openingMessageId = message.id;
     searchNotice = "";
+    await openMessageInItsChannel(hit.message.channel_id, hit.message.id, scopeGuildId, {
+      // The conversation left the list, or the channel was hidden since the search: said in the
+      // results, which stay open (at Home the Friends space has no chat to say it in).
+      onchannelunavailable: () =>
+        (searchNotice = scopeGuildId === null ? strings.search.conversationGone : strings.search.jumpMissing),
+      beforereveal: () => {
+        if (!hasRoomForSearchSheet.current) {
+          messageSearch.isPanelOpen = false;
+        }
+      },
+    });
+  }
+
+  /** A forward's footer (ADR-0039): its original, opened as a search result is. */
+  async function openForwardOrigin(origin: ForwardOrigin) {
+    const place = forwardOriginPlace(origin.channel_id, client.guilds, client.conversations, client.user?.id ?? null);
+    if (place === null) {
+      chatPane?.showNotice(strings.search.jumpMissing);
+      return;
+    }
+    await openMessageInItsChannel(origin.channel_id, origin.message_id, place.guildId, {
+      onchannelunavailable: () => chatPane?.showNotice(strings.search.jumpMissing),
+    });
+  }
+
+  /** Opens `channelId` at the message, older pages loading until it is there; a later call wins. */
+  async function openMessageInItsChannel(
+    channelId: Snowflake,
+    messageId: Snowflake,
+    guildId: Snowflake | null,
+    steps: { onchannelunavailable: () => void; beforereveal?: () => void },
+  ) {
+    // A later choice wins: an earlier one still loading its pages must not reveal or speak after it.
+    const request = ++latestMessageOpenRequest;
+    const isSuperseded = () => request !== latestMessageOpenRequest;
+    openingMessageId = messageId;
     try {
-      if (client.selectedChannelId !== message.channel_id) {
-        client.selectGuild(scopeGuildId, message.channel_id);
+      if (client.selectedChannelId !== channelId) {
+        client.selectGuild(guildId, channelId);
       }
-      if (client.selectedChannelId !== message.channel_id) {
-        // The conversation left the list, or the channel was hidden since the search: said in the
-        // results, which stay open (at Home the Friends space has no chat to say it in).
-        searchNotice = scopeGuildId === null ? strings.search.conversationGone : strings.search.jumpMissing;
+      if (client.selectedChannelId !== channelId) {
+        steps.onchannelunavailable();
         return;
       }
-      const reach = await client.loadHistoryUntilMessage(message.channel_id, message.id);
+      const reach = await client.loadHistoryUntilMessage(channelId, messageId);
       if (reach === "left" || isSuperseded()) {
         return;
       }
-      if (!hasRoomForSearchSheet.current) {
-        messageSearch.isPanelOpen = false;
-      }
+      steps.beforereveal?.();
       await tick();
       if (isSuperseded()) {
         return;
       }
       switch (reach) {
         case "loaded":
-          await chatPane?.revealSearchResult(message.id);
+          await chatPane?.revealSearchResult(messageId);
           break;
         case "too-far":
-          chatPane?.showNotice(strings.search.jumpTooFar(placeNameOf(message.channel_id), MAXIMUM_MESSAGES_LOADED_TO_REACH_A_MESSAGE));
+          chatPane?.showNotice(strings.search.jumpTooFar(placeNameOf(channelId), MAXIMUM_MESSAGES_LOADED_TO_REACH_A_MESSAGE));
           break;
         case "missing":
           chatPane?.showNotice(strings.search.jumpMissing);
@@ -448,7 +476,7 @@
           break;
       }
     } finally {
-      if (openingMessageId === message.id && !isSuperseded()) {
+      if (openingMessageId === messageId && !isSuperseded()) {
         openingMessageId = null;
       }
     }
@@ -649,6 +677,7 @@
           ontogglememberlist={toggleMemberSheet}
           oneditchannel={openChannelSettings}
           onaddtogroup={() => (openDialog = "add-to-group")}
+          onopenforwardorigin={(origin) => void openForwardOrigin(origin)}
         />
       {/if}
       </div>

@@ -109,3 +109,18 @@ describe("RestClient profile images", () => {
     ]);
   });
 });
+
+describe("RestClient forwarding", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts a forward with empty content and its origin only, and a plain message without forward fields", async () => {
+    const requests = recordFetches();
+    const rest = new RestClient();
+    await rest.forwardMessage("40", { channel_id: "30", message_id: "800" }, "nonce-1");
+    await rest.sendMessage("40", "Regarde ça", "nonce-2");
+    expect(requests).toEqual([
+      { url: "/api/v1/channels/40/messages", body: { content: "", forwarded_from: { channel_id: "30", message_id: "800" }, nonce: "nonce-1" } },
+      { url: "/api/v1/channels/40/messages", body: { content: "Regarde ça", reply_to_id: null, nonce: "nonce-2" } },
+    ]);
+  });
+});

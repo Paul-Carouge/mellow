@@ -59,33 +59,34 @@ describe("every combination yields a well-formed list", () => {
   });
 
   it("message menus over all 2^10 fact combinations", () => {
-    const keys = ["isOwn", "hasText", "hasReactions", "isPinned", "canSendMessages", "canManageMessages", "canAddReactions", "canJoinReactions", "canRemoveReactions", "canManagePins"] as const;
+    const keys = ["isOwn", "isForward", "hasText", "hasReactions", "isPinned", "canSendMessages", "canManageMessages", "canAddReactions", "canJoinReactions", "canRemoveReactions", "canManagePins"] as const;
     for (let mask = 0; mask < 1 << keys.length; mask += 1) {
       const facts = Object.fromEntries(keys.map((key, i) => [key, (mask & (1 << i)) !== 0])) as unknown as MessageMenuFacts;
       const lines = messageMenuActions(facts);
       assertWellFormed(lines);
       const actions = lines.filter((line) => line !== "separator");
       expect(actions.includes("delete")).toBe(facts.isOwn || facts.canManageMessages);
-      expect(actions.includes("edit")).toBe(facts.isOwn && facts.canSendMessages);
+      expect(actions.includes("edit")).toBe(facts.isOwn && !facts.isForward && facts.canSendMessages);
+      expect(actions.includes("forward")).toBe(true);
       expect(actions.includes("pin") || actions.includes("unpin")).toBe(facts.canManagePins);
       expect(actions.includes("pin") && actions.includes("unpin")).toBe(false);
       if (actions.includes("delete")) expect(actions.at(-1)).toBe("delete");
     }
   });
 
-  it("a message with no permission and no text has no menu at all", () => {
+  it("a message with no permission and no text still forwards, and nothing else", () => {
     const none = Object.fromEntries(
-      ["isOwn", "hasText", "hasReactions", "isPinned", "canSendMessages", "canManageMessages", "canAddReactions", "canJoinReactions", "canRemoveReactions", "canManagePins"].map((k) => [k, false]),
+      ["isOwn", "isForward", "hasText", "hasReactions", "isPinned", "canSendMessages", "canManageMessages", "canAddReactions", "canJoinReactions", "canRemoveReactions", "canManagePins"].map((k) => [k, false]),
     ) as unknown as MessageMenuFacts;
-    expect(messageMenuActions(none)).toEqual([]);
+    expect(messageMenuActions(none)).toEqual(["forward"]);
   });
 
   it("view-reactions needs reactions and the right to join them", () => {
     const base = Object.fromEntries(
-      ["isOwn", "hasText", "isPinned", "canSendMessages", "canManageMessages", "canAddReactions", "canRemoveReactions", "canManagePins"].map((k) => [k, false]),
+      ["isOwn", "isForward", "hasText", "isPinned", "canSendMessages", "canManageMessages", "canAddReactions", "canRemoveReactions", "canManagePins"].map((k) => [k, false]),
     );
-    expect(messageMenuActions({ ...base, hasReactions: true, canJoinReactions: false } as unknown as MessageMenuFacts)).toEqual([]);
-    expect(messageMenuActions({ ...base, hasReactions: false, canJoinReactions: true } as unknown as MessageMenuFacts)).toEqual([]);
+    expect(messageMenuActions({ ...base, hasReactions: true, canJoinReactions: false } as unknown as MessageMenuFacts)).toEqual(["forward"]);
+    expect(messageMenuActions({ ...base, hasReactions: false, canJoinReactions: true } as unknown as MessageMenuFacts)).toEqual(["forward"]);
   });
 });
 

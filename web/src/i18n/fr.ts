@@ -47,6 +47,11 @@ function participantNamesInFrench(names: readonly string[]): string {
   return `${first}, ${second} et ${count(others)} ${plural(others, { one: "autre", other: "autres" })}`;
 }
 
+/** « #général », « #général et Ana », « #général, Ana et #annonces » : les endroits d’un transfert (cinq au plus). */
+function placesInFrench(places: readonly string[]): string {
+  return places.length <= 1 ? (places[0] ?? "") : `${places.slice(0, -1).join(", ")} et ${places.at(-1) ?? ""}`;
+}
+
 function memberCountInFrench(members: number): string {
   return `${count(members)} ${plural(members, { one: "membre", other: "membres" })}`;
 }
@@ -679,6 +684,35 @@ export const fr: Catalogue = {
       symbols: "Symboles",
       flags: "Drapeaux",
     },
+  },
+
+  forward: {
+    forward: "Transférer",
+    forwarded: "Transféré",
+    title: "Transférer le message",
+    subtitle: (maximum) => `Choisis jusqu’à ${count(maximum)} endroits où l’envoyer.`,
+    search: "Chercher un salon ou une conversation",
+    searchPlaceholder: "Salon, serveur ou personne",
+    places: "Destinations",
+    roomLeft: (room) =>
+      room === 0
+        ? "C’est le maximum d’endroits pour un transfert."
+        : `Tu peux encore en choisir ${count(room)}.`,
+    noPlaces:
+      "Tu n’as encore aucun endroit où envoyer ce message. Rejoins un serveur ou commence une conversation, puis transfère-le.",
+    noMatch: (query) => `Aucun salon ni aucune conversation ne correspond à «${NO_BREAK_SPACE}${query}${NO_BREAK_SPACE}».`,
+    preview: "Message à transférer",
+    note: "Ajouter un message (facultatif)",
+    noteHelper: "Envoyé à chaque endroit juste après le message transféré.",
+    submit: "Transférer",
+    submitting: "Transfert…",
+    sent: (places) => `Message transféré dans ${placesInFrench(places)}.`,
+    forwardFailed: (place) => `Impossible de transférer dans ${place}`,
+    noteFailed: (place) => `Le message a été transféré dans ${place}, mais le tien n’a pas pu être envoyé`,
+    originGone: "le message d’origine a été supprimé, ou tu ne peux plus le lire.",
+    cannotSendThere: "tu ne peux plus y envoyer de messages ou de fichiers.",
+    goToOriginal: (place, date) => `Aller au message d’origine dans ${place}, ${date}`,
+    originalFrom: (date) => `Message d’origine du ${date}`,
   },
 
   pins: {

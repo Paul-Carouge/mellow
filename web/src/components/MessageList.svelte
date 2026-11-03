@@ -7,7 +7,7 @@
   import Button from "./Button.svelte";
   import { type MenuLine, type MessageMenuAction, menuEntries } from "./context-menus";
   import ContextMenu from "./ContextMenu.svelte";
-  import type { Message, PublicUser, Snowflake } from "../lib/protocol";
+  import type { ForwardOrigin, Message, PublicUser, Snowflake } from "../lib/protocol";
   import { displayName, timeOfDayLabel } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
   import type { ReactionAndPinActions } from "./message-actions";
@@ -46,6 +46,9 @@
     editingMessageId: Snowflake | null;
     maximumEditorHeight: () => number;
     onreply: (message: Message) => void;
+    onforward: (message: Message) => void;
+    forwardOriginPlaceOf: (channelId: Snowflake) => string | null;
+    onopenforwardorigin: (origin: ForwardOrigin) => void;
     onstartedit: (message: Message) => void;
     onsaveedit: (message: Message, text: string) => void;
     oncanceledit: () => void;
@@ -71,6 +74,9 @@
     editingMessageId,
     maximumEditorHeight,
     onreply,
+    onforward,
+    forwardOriginPlaceOf,
+    onopenforwardorigin,
     onstartedit,
     onsaveedit,
     oncanceledit,
@@ -179,6 +185,8 @@
           return { onselect: () => actions.openPicker(message, invoker) };
         case "reply":
           return { onselect: () => onreply(message) };
+        case "forward":
+          return { onselect: () => onforward(message) };
         case "edit":
           return { onselect: () => onstartedit(message) };
         case "copy-text":
@@ -587,6 +595,9 @@
             onopenauthormenu={(author, origin, invoker) => personMenu?.openFor(author, origin, invoker) ?? false}
             {maximumEditorHeight}
             {onreply}
+            {onforward}
+            {forwardOriginPlaceOf}
+            {onopenforwardorigin}
             {onstartedit}
             {onsaveedit}
             {oncanceledit}
