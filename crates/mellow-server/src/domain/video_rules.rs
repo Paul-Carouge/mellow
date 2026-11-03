@@ -112,6 +112,36 @@ pub(crate) const fn nominal_bits_per_second_of(layer: SimulcastLayer) -> u64 {
 pub(crate) const VIDEO_PERCENT_OF_ESTIMATE: u64 = 90;
 /// Tiles go back up only once the budget exceeds what the higher layers need by this much...
 pub(crate) const HEADROOM_PERCENT_BEFORE_RAISING: u64 = 120;
+/// A link counts as congested once its budget falls below this share of what its tiles deliver:
+/// `str0m` backs its estimate off to 0.85 of the acknowledged rate at any delay spike, which with
+/// the 90 % video share leaves a budget of about 0.77 of what flows, and must not count.
+pub(crate) const CONGESTION_PERCENT_OF_DELIVERED: u64 = 75;
+
+/// Whether a watcher's link is congested: its `budget` below what its tiles deliver, beyond one
+/// ordinary back-off of the estimator. An estimate merely following a light stream (a still
+/// screen sends little, and the estimator tracks what is acknowledged) shows nothing.
+#[must_use]
+pub(crate) const fn is_congested(delivered_bits_per_second: u64, budget: u64) -> bool {
+    delivered_bits_per_second.saturating_mul(CONGESTION_PERCENT_OF_DELIVERED) / 100 > budget
+}
+
+/// The budget new tiles are fitted into: the estimate's when the link is congested, otherwise
+/// the watcher's `fair_share`, since an estimate that followed the previous, lighter stream says
+/// nothing about the next one. A slow link shows congestion within a second or two and the tiles
+/// go down then.
+#[must_use]
+pub(crate) const fn layout_budget(
+    budget: u64,
+    fair_share: u64,
+    delivered_bits_per_second: u64,
+) -> u64 {
+    if is_congested(delivered_bits_per_second, budget) {
+        budget
+    } else {
+        fair_share
+    }
+}
+
 /// ...and has done so for this long, so a link at the edge does not flap (ADR-0035).
 pub(crate) const STEADY_TIME_BEFORE_RAISING: Duration = Duration::from_secs(5);
 
@@ -245,9 +275,8 @@ impl LayerAllocation {
     /// The layers the tiles get now, given the `current` ones (as many as `tiles`) and what they
     /// deliver to the watcher now, in bits per second.
     ///
-    /// Tiles go down only when the budget is below what they already deliver: a congested link.
-    /// An estimate merely following a light stream (a still screen sends little, and the estimator
-    /// tracks what is acknowledged) shows nothing about the link, and must not blur a sharp picture.
+    /// Tiles go down only on a congested link (`is_congested`): an estimate merely following a
+    /// light stream must not blur a sharp picture.
     pub(crate) fn next_layers(
         &mut self,
         tiles: &[TileDemand],
@@ -256,7 +285,7 @@ impl LayerAllocation {
         delivered_bits_per_second: u64,
         now: Instant,
     ) -> Vec<Option<SimulcastLayer>> {
-        let is_congested = delivered_bits_per_second > budget;
+        let is_congested = is_congested(delivered_bits_per_second, budget);
         let fitting = fit_tiles(tiles, budget);
         if !raises_any(&fitting, current) {
             self.raise_possible_since = None;
@@ -289,6 +318,58 @@ impl LayerAllocation {
         }
         self.raise_possible_since = None;
         with_headroom
+    }
+}
+
+/// What a watcher received of one tile over the last second, with no memory: 0 once nothing has
+/// flowed for a second, unlike `LayerRate`, so a congestion check sees what flows now.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RecentRate {
+    window_started_at: Instant,
+    bytes_in_window: u64,
+    bytes_in_previous_window: u64,
+}
+
+impl RecentRate {
+    const WINDOW: Duration = Duration::from_secs(1);
+
+    #[must_use]
+    pub(crate) const fn new(now: Instant) -> Self {
+        Self {
+            window_started_at: now,
+            bytes_in_window: 0,
+            bytes_in_previous_window: 0,
+        }
+    }
+
+    pub(crate) fn record(&mut self, bytes: usize, now: Instant) {
+        let elapsed = now.saturating_duration_since(self.window_started_at);
+        if elapsed >= 2 * Self::WINDOW {
+            self.bytes_in_previous_window = 0;
+            self.bytes_in_window = 0;
+            self.window_started_at = now;
+        } else if elapsed >= Self::WINDOW {
+            self.bytes_in_previous_window = self.bytes_in_window;
+            self.bytes_in_window = 0;
+            self.window_started_at += Self::WINDOW;
+        }
+        self.bytes_in_window = self
+            .bytes_in_window
+            .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+    }
+
+    /// The bits per second of the last whole second; 0 once nothing flowed for a second.
+    #[must_use]
+    pub(crate) fn bits_per_second(&self, now: Instant) -> u64 {
+        let elapsed = now.saturating_duration_since(self.window_started_at);
+        let bytes = if elapsed < Self::WINDOW {
+            self.bytes_in_previous_window
+        } else if elapsed < 2 * Self::WINDOW {
+            self.bytes_in_window
+        } else {
+            0
+        };
+        bytes.saturating_mul(8)
     }
 }
 
@@ -724,6 +805,48 @@ mod tests {
             allocation.next_layers(&tiles, &[Some(High)], 600_000, 2_000_000, now),
             [Some(Low)],
             "below what flows: congestion"
+        );
+    }
+
+    #[test]
+    fn one_back_off_of_the_estimator_is_not_congestion() {
+        let now = Instant::now();
+        let tiles = [tile(High)];
+        let mut allocation = LayerAllocation::default();
+        // A still screen delivers 400 kbit/s; one back-off: 0.85 of it, 90 % for video.
+        let backed_off = 400_000 * 85 / 100 * 90 / 100;
+        assert!(!is_congested(400_000, backed_off));
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(High)], backed_off, 400_000, now),
+            [Some(High)]
+        );
+        assert!(is_congested(400_000, 290_000));
+    }
+
+    #[test]
+    fn new_tiles_start_within_the_fair_share_unless_the_link_is_congested() {
+        assert_eq!(layout_budget(500_000, 25_000_000, 0), 25_000_000);
+        assert_eq!(layout_budget(500_000, 25_000_000, 600_000), 25_000_000);
+        assert_eq!(layout_budget(500_000, 25_000_000, 2_000_000), 500_000);
+    }
+
+    #[test]
+    fn a_recent_rate_forgets_a_stream_that_stopped() {
+        let start = Instant::now();
+        let at = |milliseconds| start + Duration::from_millis(milliseconds);
+        let mut rate = RecentRate::new(start);
+        rate.record(1_000, at(0));
+        assert_eq!(rate.bits_per_second(at(500)), 0);
+        assert_eq!(rate.bits_per_second(at(1_100)), 8_000);
+        rate.record(500, at(1_200));
+        assert_eq!(rate.bits_per_second(at(1_500)), 8_000);
+        assert_eq!(rate.bits_per_second(at(2_500)), 4_000);
+        assert_eq!(rate.bits_per_second(at(3_100)), 0, "nothing for a second");
+        rate.record(100, at(9_000));
+        assert_eq!(
+            rate.bits_per_second(at(9_500)),
+            0,
+            "the old seconds are gone"
         );
     }
 
