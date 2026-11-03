@@ -88,6 +88,15 @@ describe("mentionSuggestionQuery", () => {
     expect(mentionSuggestionQuery("@j.do and more", 5)).toEqual({ start: 0, end: 5, query: "j.do" });
   });
 
+  it("opens after a formatting mark, as the server reads mentions", () => {
+    expect(mentionSuggestionQuery("**@pa", 5)).toEqual({ start: 2, end: 5, query: "pa" });
+    expect(mentionSuggestionQuery("||@pa", 5)).toEqual({ start: 2, end: 5, query: "pa" });
+  });
+
+  it("replaces the whole name when the caret is inside it", () => {
+    expect(mentionSuggestionQuery("hi @paul how", 6)).toEqual({ start: 3, end: 8, query: "pa" });
+  });
+
   it("ignores an @ inside a word, after the caret moved past a space, or after a long name", () => {
     expect(mentionSuggestionQuery("mail@pa", 7)).toBeNull();
     expect(mentionSuggestionQuery("@pa ", 4)).toBeNull();
@@ -120,5 +129,19 @@ describe("suggestMentions", () => {
       display_name: "",
     }));
     expect(suggestMentions("user", crowd, "0")).toHaveLength(MAXIMUM_MENTION_SUGGESTIONS);
+  });
+
+  it("keeps the best ones in order, whatever order the people come in", () => {
+    const crowd = Array.from({ length: 25 }, (_, index): PublicUser => ({
+      id: String(200 + index),
+      username: `member${String(24 - index).padStart(2, "0")}`,
+      display_name: "",
+    }));
+    const startingWithQuery: PublicUser = { id: "300", username: "zz", display_name: "Membre Zed" };
+    expect(suggestMentions("membe", [...crowd, startingWithQuery], "0").map((person) => person.username)).toEqual([
+      "member00", "member01", "member02", "member03", "member04",
+      "member05", "member06", "member07", "member08", "member09",
+    ]);
+    expect(suggestMentions("zed", [...crowd, startingWithQuery], "0")).toEqual([startingWithQuery]);
   });
 });
