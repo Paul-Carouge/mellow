@@ -117,8 +117,10 @@ export interface MentionSuggestionQuery {
 const NAME_CHARACTER = /[\p{Alphabetic}\p{N}_.]/u;
 
 /**
- * The "@na" ending at `caret`: an "@" at the start or after a space, then up to a name's length of
- * name characters; a lone "@" asks for everyone, as on Discord.
+ * The "@na" ending at `caret`: an "@" where a mention may start (the start, a space, or a
+ * formatting mark as in "**@na", as the server reads them), then up to a name's length of name
+ * characters; a lone "@" asks for everyone, as on Discord. The replaced range runs to the end of
+ * the name, so choosing with the caret inside "@pa|ul" leaves no "ul" behind.
  */
 export function mentionSuggestionQuery(text: string, caret: number): MentionSuggestionQuery | null {
   let start = caret;
@@ -129,25 +131,49 @@ export function mentionSuggestionQuery(text: string, caret: number): MentionSugg
   if (text[at] !== "@" || caret - start > MAXIMUM_NAME_LENGTH) {
     return null;
   }
-  if (at > 0 && !/\s/u.test(text[at - 1] ?? "")) {
+  if (at > 0 && !/[\s*_~|]/u.test(text[at - 1] ?? "")) {
     return null;
   }
-  return { start: at, end: caret, query: text.slice(start, caret) };
+  let end = caret;
+  while (end < text.length && NAME_CHARACTER.test(text[end] ?? "")) {
+    end += 1;
+  }
+  return { start: at, end, query: text.slice(start, caret) };
 }
 
 export const MAXIMUM_MENTION_SUGGESTIONS = 10;
+
+interface FoldedNames {
+  username: string;
+  shownName: string;
+  shownNameWords: readonly string[];
+}
+
+// Members keep their object while unchanged, so their folded names are worked out once, not on
+// every keystroke.
+const foldedNamesByPerson = new WeakMap<PublicUser, FoldedNames>();
+const shownNameCollator = new Intl.Collator();
+
+function foldedNamesOf(person: PublicUser): FoldedNames {
+  let names = foldedNamesByPerson.get(person);
+  if (!names) {
+    const shownName = foldForSearch(person.display_name.trim());
+    names = { username: foldForSearch(person.username), shownName, shownNameWords: shownName.split(/\s+/u) };
+    foldedNamesByPerson.set(person, names);
+  }
+  return names;
+}
 
 /**
  * How well `person` matches the folded query, lower first: a name starting with it, then a word
  * of the display name starting with it, then a name holding it; null for no match.
  */
 function mentionMatchRank(person: PublicUser, foldedQuery: string): number | null {
-  const username = foldForSearch(person.username);
-  const shownName = foldForSearch(person.display_name.trim());
+  const { username, shownName, shownNameWords } = foldedNamesOf(person);
   if (username.startsWith(foldedQuery) || shownName.startsWith(foldedQuery)) {
     return 0;
   }
-  if (shownName.split(/\s+/u).some((word) => word.startsWith(foldedQuery))) {
+  if (shownNameWords.some((word) => word.startsWith(foldedQuery))) {
     return 1;
   }
   return username.includes(foldedQuery) || shownName.includes(foldedQuery) ? 2 : null;
@@ -165,17 +191,28 @@ export function suggestMentions(
 ): PublicUser[] {
   const foldedQuery = foldForSearch(query);
   const seen = new Set<Snowflake>([excludedUserId]);
-  const ranked: { person: PublicUser; rank: number; name: string }[] = [];
+  // Only the best few are kept as people are read: a lone "@" in a big server matches everyone,
+  // and sorting them all on every keystroke would cost more than reading them.
+  const best: { person: PublicUser; rank: number; name: string }[] = [];
+  const isBefore = (left: (typeof best)[number], right: (typeof best)[number]) =>
+    left.rank - right.rank || shownNameCollator.compare(left.name, right.name);
   for (const person of people) {
     if (seen.has(person.id)) {
       continue;
     }
     seen.add(person.id);
     const rank = mentionMatchRank(person, foldedQuery);
-    if (rank !== null) {
-      ranked.push({ person, rank, name: displayName(person) });
+    if (rank === null) {
+      continue;
     }
+    const entry = { person, rank, name: displayName(person) };
+    const last = best[best.length - 1];
+    if (best.length === MAXIMUM_MENTION_SUGGESTIONS && last && isBefore(last, entry) <= 0) {
+      continue;
+    }
+    const index = best.findIndex((kept) => isBefore(entry, kept) < 0);
+    best.splice(index === -1 ? best.length : index, 0, entry);
+    best.length = Math.min(best.length, MAXIMUM_MENTION_SUGGESTIONS);
   }
-  ranked.sort((left, right) => left.rank - right.rank || left.name.localeCompare(right.name));
-  return ranked.slice(0, MAXIMUM_MENTION_SUGGESTIONS).map((entry) => entry.person);
+  return best.map((entry) => entry.person);
 }

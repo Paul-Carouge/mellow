@@ -355,7 +355,7 @@
 
 {#snippet suggestionRow(suggestion: ComposerSuggestion)}
   {#if suggestion.kind === "person"}
-    <Avatar user={suggestion.person} sizeToken="--mw-component-custom-emoji-suggestion-avatar-size" />
+    <Avatar user={suggestion.person} sizeToken="--mw-component-composer-suggestions-avatar-size" />
     <span class="min-w-0 truncate">{displayName(suggestion.person)}</span>
     <span class="min-w-0 flex-1 truncate text-text-secondary">@{suggestion.person.username}</span>
   {:else}
