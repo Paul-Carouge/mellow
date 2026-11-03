@@ -622,6 +622,11 @@ export const en = {
     copyText: "Copy text",
     more: "More",
     download: (fileName: string) => `Download ${fileName}`,
+    /** The inline players' names (ADR-0038); the file name follows. */
+    videoPlayer: (fileName: string) => `Video ${fileName}`,
+    audioPlayer: (fileName: string) => `Audio ${fileName}`,
+    /** Under a video or sound this browser could not play: its codec, or the instance did not serve it. */
+    cannotPlay: "Couldn't play this file here. Download it to open it in another app.",
   },
 
   pictureViewer: {

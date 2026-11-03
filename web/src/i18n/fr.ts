@@ -598,6 +598,9 @@ export const fr: Catalogue = {
     copyText: "Copier le texte",
     more: "Plus",
     download: (fileName) => `Télécharger ${fileName}`,
+    videoPlayer: (fileName) => `Vidéo ${fileName}`,
+    audioPlayer: (fileName) => `Audio ${fileName}`,
+    cannotPlay: "Impossible de lire ce fichier ici. Télécharge-le pour l’ouvrir dans une autre application.",
   },
 
   pictureViewer: {

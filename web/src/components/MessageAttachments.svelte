@@ -1,9 +1,10 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
-  import { type Attachment, PREVIEWABLE_IMAGE_TYPES, type Snowflake, attachmentPreviewUrl, attachmentUrl } from "../lib/protocol";
-  import { imagePreviewWidth } from "./attachment-preview";
+  import { type Attachment, PLAYABLE_AUDIO_TYPES, type Snowflake, attachmentPreviewUrl, attachmentUrl } from "../lib/protocol";
+  import { attachmentDisplay, imagePreviewWidth, pauseOtherMediaWhenOneStarts, videoBoxSize } from "./attachment-preview";
   import { attachmentCountLabel, fileNameStartAndEnd, humanFileSize } from "./format";
   import Icon from "./Icon.svelte";
   import { retryImageOnceThenMarkFailed } from "./image-retry";
@@ -11,7 +12,7 @@
   import { openPictureViewer } from "./picture-viewer-request.svelte";
 
   // Attachments under a message body (DESIGN.md §5.4 "Attachments"): previewable images inline,
-  // anything else as a download card. A message still in the outbox is not readable by others
+  // videos and sounds as players (ADR-0038), anything else as a download card. A message still in the outbox is not readable by others
   // yet, so its files show as cards without links.
   interface Props {
     attachments: readonly Attachment[];
@@ -24,6 +25,7 @@
 
   let { attachments, isPending, authorName, sentAtUnixMilliseconds }: Props = $props();
 
+  const id = $props.id();
   const viewerPictures = $derived(viewablePictures(attachments));
 
   function openViewer(event: MouseEvent, attachment: Attachment) {
@@ -41,8 +43,21 @@
   const retriedImageIds = new SvelteSet<Snowflake>();
   const failedImageIds = new SvelteSet<Snowflake>();
 
-  function isShownAsImage(attachment: Attachment): boolean {
-    return !isPending && PREVIEWABLE_IMAGE_TYPES.includes(attachment.content_type) && !failedImageIds.has(attachment.id);
+  // A video or sound this browser cannot play (its codec, or the instance did not serve it) becomes
+  // its download card with a note; nothing retries, since each try decrypts the whole file.
+  const failedMediaIds = new SvelteSet<Snowflake>();
+
+  function showDownloadCardAfterPlaybackFailed(event: Event, attachment: Attachment) {
+    const hadFocus = event.currentTarget === document.activeElement;
+    failedMediaIds.add(attachment.id);
+    // The player that held the focus is gone: hand it to the card's download link.
+    if (hadFocus) {
+      void tick().then(() => document.getElementById(downloadLinkId(attachment))?.focus());
+    }
+  }
+
+  function downloadLinkId(attachment: Attachment): string {
+    return `${id}-download-${attachment.id}`;
   }
 </script>
 
@@ -57,7 +72,8 @@
 <ul aria-label={attachmentCountLabel(attachments.length)} class="flex flex-col items-start gap-(--mw-component-attachment-gap) pt-(--mw-component-attachment-gap)">
   {#each attachments as attachment (attachment.id)}
     {@const size = humanFileSize(attachment.size_bytes)}
-    {#if isShownAsImage(attachment)}
+    {@const display = attachmentDisplay(attachment, isPending, failedImageIds.has(attachment.id) || failedMediaIds.has(attachment.id))}
+    {#if display === "image"}
       {@const previewWidth = imagePreviewWidth(attachment)}
       <li class="w-full">
         <a
@@ -96,43 +112,114 @@
           {/key}
         </a>
       </li>
-    {:else}
-      <li
-        class="flex w-full max-w-(--mw-component-attachment-file-max-width) items-center gap-(--mw-component-attachment-file-gap) rounded-(--mw-component-attachment-file-radius) border-(length:--mw-component-attachment-file-border-width) border-(--mw-component-attachment-file-border) bg-(--mw-component-attachment-file-background) p-(--mw-component-attachment-file-padding)"
-      >
-        <Icon name="file" class="size-(--mw-component-attachment-file-icon-size) text-(--mw-component-attachment-file-icon)" />
-        <div class="min-w-0 flex-1">
-          {#if isPending}
-            <p title={attachment.file_name} class="flex type-body-lg text-(--mw-component-message-pending-text)">
-              {@render fileName(attachment.file_name)}
-              <span class="sr-only">{attachment.file_name}</span>
-            </p>
-          {:else}
+    {:else if display === "video"}
+      {@const box = videoBoxSize(attachment)}
+      <!-- A small screen of the media stage: the picture letterboxed, then a band under it, never
+           over it (docs/design/web-inline-media.md). Nothing loads until it plays. -->
+      <li class="w-full">
+        <figure
+          style:width={box.width}
+          class="max-w-full overflow-hidden rounded-(--mw-component-attachment-image-radius) bg-(--mw-component-attachment-video-background) [--mw-color-focus:var(--mw-component-attachment-video-focus-ring)]"
+        >
+          <!-- svelte-ignore a11y_media_has_caption (uploads come without caption tracks) -->
+          <video
+            src={attachmentUrl(attachment)}
+            controls
+            preload="none"
+            playsinline
+            aria-label={strings.messages.videoPlayer(attachment.file_name)}
+            style:aspect-ratio={box.aspectRatio}
+            class="block w-full object-contain focus-visible:focus-ring-inset"
+            onplay={(event) => pauseOtherMediaWhenOneStarts(event.currentTarget)}
+            onerror={(event) => showDownloadCardAfterPlaybackFailed(event, attachment)}
+          ></video>
+          <figcaption
+            class="flex items-center gap-(--mw-component-attachment-file-gap) px-(--mw-component-attachment-video-band-padding-inline) py-(--mw-component-attachment-video-band-padding-block)"
+          >
             <a
               href={attachmentUrl(attachment)}
               download={attachment.file_name}
               title={attachment.file_name}
-              class="flex min-h-(--mw-size-hit-desktop-min) items-center type-body-lg text-(--mw-component-attachment-file-name-text) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
+              class="flex min-h-(--mw-size-hit-desktop-min) min-w-0 flex-1 items-center type-body text-(--mw-component-attachment-video-name-text) hover:underline focus-visible:focus-ring-inset pointer-coarse:min-h-(--mw-size-hit-web-min)"
             >
               {@render fileName(attachment.file_name)}
               <span class="sr-only">{strings.messages.download(attachment.file_name)}</span>
             </a>
+            <span class="shrink-0 type-body-sm text-(--mw-component-attachment-video-size-text)">{size}</span>
+            <a
+              href={attachmentUrl(attachment)}
+              download={attachment.file_name}
+              tabindex="-1"
+              aria-hidden="true"
+              title={strings.messages.download(attachment.file_name)}
+              class="grid size-(--mw-component-attachment-download-button-size) shrink-0 place-items-center rounded-sm text-(--mw-component-attachment-video-download-icon) transition-colors duration-(--mw-motion-duration-fast) hover:bg-(--mw-component-attachment-video-download-background-hover) hover:text-(--mw-component-attachment-video-download-icon-hover) pointer-coarse:size-(--mw-size-hit-web-min)"
+            >
+              <Icon name="download-simple" class="size-(--mw-component-attachment-download-icon-size)" />
+            </a>
+          </figcaption>
+        </figure>
+      </li>
+    {:else}
+      {@const hasPlaybackFailed = failedMediaIds.has(attachment.id)}
+      <li
+        class="w-full max-w-(--mw-component-attachment-file-max-width) rounded-(--mw-component-attachment-file-radius) border-(length:--mw-component-attachment-file-border-width) border-(--mw-component-attachment-file-border) bg-(--mw-component-attachment-file-background) p-(--mw-component-attachment-file-padding)"
+      >
+        <div class="flex items-center gap-(--mw-component-attachment-file-gap)">
+          <Icon
+            name={PLAYABLE_AUDIO_TYPES.includes(attachment.content_type) ? "file-audio" : "file"}
+            class="size-(--mw-component-attachment-file-icon-size) shrink-0 text-(--mw-component-attachment-file-icon)"
+          />
+          <div class="min-w-0 flex-1">
+            {#if isPending}
+              <p title={attachment.file_name} class="flex type-body-lg text-(--mw-component-message-pending-text)">
+                {@render fileName(attachment.file_name)}
+                <span class="sr-only">{attachment.file_name}</span>
+              </p>
+            {:else}
+              <a
+                id={downloadLinkId(attachment)}
+                href={attachmentUrl(attachment)}
+                download={attachment.file_name}
+                title={attachment.file_name}
+                aria-describedby={hasPlaybackFailed ? `${downloadLinkId(attachment)}-note` : undefined}
+                class="flex min-h-(--mw-size-hit-desktop-min) items-center type-body-lg text-(--mw-component-attachment-file-name-text) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
+              >
+                {@render fileName(attachment.file_name)}
+                <span class="sr-only">{strings.messages.download(attachment.file_name)}</span>
+              </a>
+            {/if}
+            <p class="type-body-sm text-(--mw-component-attachment-file-size-text)">{size}</p>
+            {#if hasPlaybackFailed}
+              <p id={`${downloadLinkId(attachment)}-note`} class="type-body-sm text-(--mw-component-attachment-playback-note-text)">
+                {strings.messages.cannotPlay}
+              </p>
+            {/if}
+          </div>
+          {#if !isPending}
+            <!-- The same download as the name, as a larger pointer target; keyboard and screen
+                 readers use the name link, so this one stays out of the Tab order. -->
+            <a
+              href={attachmentUrl(attachment)}
+              download={attachment.file_name}
+              tabindex="-1"
+              aria-hidden="true"
+              title={strings.messages.download(attachment.file_name)}
+              class="grid size-(--mw-component-attachment-download-button-size) shrink-0 place-items-center rounded-sm text-(--mw-component-attachment-download-icon) transition-colors duration-(--mw-motion-duration-fast) hover:text-(--mw-component-attachment-download-icon-hover) pointer-coarse:size-(--mw-size-hit-web-min)"
+            >
+              <Icon name="download-simple" class="size-(--mw-component-attachment-download-icon-size)" />
+            </a>
           {/if}
-          <p class="type-body-sm text-(--mw-component-attachment-file-size-text)">{size}</p>
         </div>
-        {#if !isPending}
-          <!-- The same download as the name, as a larger pointer target; keyboard and screen
-               readers use the name link, so this one stays out of the Tab order. -->
-          <a
-            href={attachmentUrl(attachment)}
-            download={attachment.file_name}
-            tabindex="-1"
-            aria-hidden="true"
-            title={strings.messages.download(attachment.file_name)}
-            class="grid size-(--mw-component-attachment-download-button-size) shrink-0 place-items-center rounded-sm text-(--mw-component-attachment-download-icon) transition-colors duration-(--mw-motion-duration-fast) hover:text-(--mw-component-attachment-download-icon-hover) pointer-coarse:size-(--mw-size-hit-web-min)"
-          >
-            <Icon name="download-simple" class="size-(--mw-component-attachment-download-icon-size)" />
-          </a>
+        {#if display === "audio"}
+          <audio
+            src={attachmentUrl(attachment)}
+            controls
+            preload="none"
+            aria-label={strings.messages.audioPlayer(attachment.file_name)}
+            class="mt-(--mw-component-attachment-file-gap) block w-full focus-visible:focus-ring"
+            onplay={(event) => pauseOtherMediaWhenOneStarts(event.currentTarget)}
+            onerror={(event) => showDownloadCardAfterPlaybackFailed(event, attachment)}
+          ></audio>
         {/if}
       </li>
     {/if}

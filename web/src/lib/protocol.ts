@@ -249,7 +249,7 @@ export interface Member {
 export interface Attachment {
   id: Snowflake;
   file_name: string;
-  /** One of the previewable image types, or `application/octet-stream`. */
+  /** One of the previewable image or playable media types, or `application/octet-stream`. */
   content_type: string;
   size_bytes: number;
   /** As the picture shows (EXIF orientation applied), to hold its place while it loads. Absent for other files, older uploads and older servers. */
@@ -262,6 +262,10 @@ export const PICTURE_UPLOAD_TYPES: readonly string[] = ["image/png", "image/jpeg
 
 /** Shown inline: the instance serves only these as images (ADR-0020); it stores most compressed pictures as AVIF (ADR-0033). */
 export const PREVIEWABLE_IMAGE_TYPES: readonly string[] = [...PICTURE_UPLOAD_TYPES, "image/avif"];
+
+/** Played inline (ADR-0038): the instance serves only these, sniffed from their bytes, as media with byte ranges. */
+export const PLAYABLE_VIDEO_TYPES: readonly string[] = ["video/mp4", "video/quicktime", "video/webm"];
+export const PLAYABLE_AUDIO_TYPES: readonly string[] = ["audio/mpeg", "audio/aac", "audio/mp4", "audio/ogg", "audio/wav", "audio/flac"];
 
 /**
  * Why a chosen file cannot become an avatar or banner, checked before sending it; null lets the
