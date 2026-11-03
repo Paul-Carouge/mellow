@@ -117,9 +117,19 @@
   --mw-component-attachment-image-max-width: 25rem;
   --mw-component-attachment-image-placeholder: #221B23;
   --mw-component-attachment-image-radius: 0.75rem;
+  --mw-component-attachment-playback-note-text: #C5BEC6;
   --mw-component-attachment-row-gap: 0.25rem;
   --mw-component-attachment-row-icon-size: 1rem;
   --mw-component-attachment-row-text: #C5BEC6;
+  --mw-component-attachment-video-background: #110B11;
+  --mw-component-attachment-video-band-padding-block: 0.25rem;
+  --mw-component-attachment-video-band-padding-inline: 0.75rem;
+  --mw-component-attachment-video-download-background-hover: #362E37;
+  --mw-component-attachment-video-download-icon: #A99FAA;
+  --mw-component-attachment-video-download-icon-hover: #ECE6ED;
+  --mw-component-attachment-video-focus-ring: #33B8FF;
+  --mw-component-attachment-video-name-text: #ECE6ED;
+  --mw-component-attachment-video-size-text: #A99FAA;
   --mw-component-auth-card-backdrop: #110B11;
   --mw-component-auth-card-background: #1B151C;
   --mw-component-auth-card-error-icon-size: 1.25rem;
@@ -1465,6 +1475,7 @@
     --mw-component-attachment-file-name-text: #005FCC;
     --mw-component-attachment-file-size-text: #695F6B;
     --mw-component-attachment-image-placeholder: #ECE6ED;
+    --mw-component-attachment-playback-note-text: #594E5B;
     --mw-component-attachment-row-text: #594E5B;
     --mw-component-auth-card-backdrop: #F5F1F6;
     --mw-component-auth-card-background: #FFFFFF;
@@ -1956,6 +1967,7 @@
   --mw-component-attachment-file-name-text: #005FCC;
   --mw-component-attachment-file-size-text: #695F6B;
   --mw-component-attachment-image-placeholder: #ECE6ED;
+  --mw-component-attachment-playback-note-text: #594E5B;
   --mw-component-attachment-row-text: #594E5B;
   --mw-component-auth-card-backdrop: #F5F1F6;
   --mw-component-auth-card-background: #FFFFFF;

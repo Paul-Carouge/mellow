@@ -53,6 +53,45 @@ const PNG: &[u8] = b"\x89PNG\r\n\x1a\nnot really an image";
 
 const HTML: &[u8] = b"<html><script>alert(1)</script></html>";
 
+#[test]
+fn byte_ranges_follow_rfc_9110_for_one_range() {
+    use super::{MAXIMUM_RANGE_RESPONSE_BYTES, RequestedRange::*, byte_range};
+    assert_eq!(byte_range("bytes=0-", 10), Satisfiable(0..=9));
+    assert_eq!(byte_range("bytes=2-4", 10), Satisfiable(2..=4));
+    assert_eq!(byte_range("bytes=8-99", 10), Satisfiable(8..=9));
+    assert_eq!(byte_range("bytes=-3", 10), Satisfiable(7..=9));
+    assert_eq!(byte_range("bytes=-30", 10), Satisfiable(0..=9));
+    assert_eq!(byte_range("bytes=10-", 10), Unsatisfiable);
+    assert_eq!(byte_range("bytes=-0", 10), Unsatisfiable);
+    assert_eq!(byte_range("bytes=0-", 0), Unsatisfiable);
+    assert_eq!(byte_range("Bytes=2-4", 10), Satisfiable(2..=4));
+    let large = 3 * MAXIMUM_RANGE_RESPONSE_BYTES;
+    assert_eq!(
+        byte_range("bytes=0-", large),
+        Satisfiable(0..=MAXIMUM_RANGE_RESPONSE_BYTES - 1),
+        "a player asks for the next part itself"
+    );
+    assert_eq!(
+        byte_range("bytes=-10", large),
+        Satisfiable(large - 10..=large - 1)
+    );
+    assert_eq!(
+        byte_range(&format!("bytes=-{large}"), large),
+        Satisfiable(0..=MAXIMUM_RANGE_RESPONSE_BYTES - 1)
+    );
+    for ignored in [
+        "items=0-1",
+        "bytes=0-1,4-5",
+        "bytes=5-2",
+        "bytes=-",
+        "bytes=a-1",
+        "bytes=+1-2",
+        "bytes=99999999999999999999999-",
+    ] {
+        assert_eq!(byte_range(ignored, 10), Ignored, "{ignored}");
+    }
+}
+
 /// `path` ends with `?file_name=<name>` for readability; the name goes into the header.
 fn upload_request(path: &str, token: &str, bytes: &'static [u8]) -> Request<Body> {
     let (path, file_name) = path.split_once("?file_name=").unwrap_or((path, "file"));
@@ -740,4 +779,115 @@ async fn attachments_revalidate_without_a_slot_and_downloads_wait_for_one() {
     );
     assert!(was_waiting, "a download waits for a slot, not 503");
     assert_eq!(after_a_slot_freed, StatusCode::OK);
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // One scenario: upload, send, then every range answer.
+async fn videos_play_inline_and_media_players_get_byte_ranges() {
+    use mellow_protocol::Attachment;
+
+    const VIDEO: &[u8] = b"\0\0\0\x20ftypisom\0\0\x02\0not really a video";
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let (owner, general) = owner_and_general_channel(&state).await;
+    let (_, body) = send(
+        &state,
+        upload_request(
+            &format!("/api/v1/channels/{general}/attachments?file_name=clip.mp4"),
+            &owner,
+            VIDEO,
+        ),
+    )
+    .await;
+    let video: Attachment = json(&body);
+    let (status, body) = send(
+        &state,
+        authorized(
+            "POST",
+            &format!("/api/v1/channels/{general}/messages"),
+            &owner,
+            Some(serde_json::json!({"content": "", "attachment_ids": [video.id.to_string()]})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let path = format!("/api/v1/attachments/{}", video.id);
+    let ranged = |range: &str, if_range: Option<&str>| {
+        let mut request = authorized("GET", &path, &owner, None);
+        let headers = request.headers_mut();
+        headers.insert(header::RANGE, HeaderValue::from_str(range).unwrap());
+        if let Some(if_range) = if_range {
+            headers.insert(header::IF_RANGE, HeaderValue::from_str(if_range).unwrap());
+        }
+        request
+    };
+    let ((ranged_status, ranged_bytes), ranged_headers) =
+        send_from(&state, TEST_PEER, ranged("bytes=4-11", None)).await;
+    let ((beyond_end_status, _), beyond_end_headers) =
+        send_from(&state, TEST_PEER, ranged("bytes=999-", None)).await;
+    let ((other_version_status, whole_file), _) =
+        send_from(&state, TEST_PEER, ranged("bytes=4-11", Some("\"0-1\""))).await;
+    let ((whole_status, _), whole_headers) =
+        send_from(&state, TEST_PEER, authorized("GET", &path, &owner, None)).await;
+    let entity_tag = whole_headers.get(header::ETAG).unwrap().to_str().unwrap();
+    let ((same_version_status, _), _) =
+        send_from(&state, TEST_PEER, ranged("bytes=4-11", Some(entity_tag))).await;
+    let mut revalidation = ranged("bytes=4-11", None);
+    revalidation.headers_mut().insert(
+        header::IF_NONE_MATCH,
+        HeaderValue::from_str(entity_tag).unwrap(),
+    );
+    let ((revalidation_status, _), _) = send_from(&state, TEST_PEER, revalidation).await;
+    database.close().await;
+
+    assert_eq!(whole_status, StatusCode::OK);
+    assert_eq!(
+        whole_headers.get(header::CONTENT_LENGTH).unwrap(),
+        &VIDEO.len().to_string()
+    );
+    assert_eq!(same_version_status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        revalidation_status,
+        StatusCode::NOT_MODIFIED,
+        "a revalidation wins over a range"
+    );
+
+    assert_eq!(video.content_type, "video/mp4");
+    assert_eq!(ranged_status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(&ranged_bytes[..], b"ftypisom");
+    let total = VIDEO.len();
+    assert_eq!(
+        ranged_headers.get(header::CONTENT_RANGE).unwrap(),
+        &format!("bytes 4-11/{total}")
+    );
+    assert_eq!(ranged_headers.get(header::ACCEPT_RANGES).unwrap(), "bytes");
+    assert_eq!(ranged_headers.get(header::CONTENT_LENGTH).unwrap(), "8");
+    assert_eq!(
+        ranged_headers.get(header::CONTENT_TYPE).unwrap(),
+        "video/mp4"
+    );
+    assert!(
+        ranged_headers
+            .get(header::CONTENT_DISPOSITION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("inline")
+    );
+    assert_eq!(beyond_end_status, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(
+        beyond_end_headers.get(header::CONTENT_RANGE).unwrap(),
+        &format!("bytes */{total}")
+    );
+    assert_eq!(
+        other_version_status,
+        StatusCode::OK,
+        "If-Range names another version"
+    );
+    assert_eq!(&whole_file[..], VIDEO);
 }

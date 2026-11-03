@@ -35,6 +35,7 @@
     | "eye"
     | "eye-slash"
     | "file"
+    | "file-audio"
     | "file-arrow-up"
     | "flag"
     | "gear-six"
