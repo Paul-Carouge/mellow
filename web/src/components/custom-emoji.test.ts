@@ -30,8 +30,8 @@ describe("the suggestion query", () => {
     expect(emojiSuggestionQuery(":pa", 3)).toEqual({ start: 0, end: 3, query: "pa" });
     expect(emojiSuggestionQuery("hi :party_p", 11)).toEqual({ start: 3, end: 11, query: "party_p" });
     expect(emojiSuggestionQuery("hi\n:Wa", 6)).toEqual({ start: 3, end: 6, query: "Wa" });
-    // Only what is before the caret counts.
-    expect(emojiSuggestionQuery(":party rest", 4)).toEqual({ start: 0, end: 4, query: "par" });
+    // Only what is before the caret is searched; the whole name is replaced, so no "ty" stays.
+    expect(emojiSuggestionQuery(":party rest", 4)).toEqual({ start: 0, end: 6, query: "par" });
   });
 
   it("stays closed for one character, times, URLs and finished names", () => {
