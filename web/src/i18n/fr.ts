@@ -600,6 +600,25 @@ export const fr: Catalogue = {
     download: (fileName) => `Télécharger ${fileName}`,
   },
 
+  pictureViewer: {
+    previous: "Image précédente",
+    next: "Image suivante",
+    position: (index, total) => `${count(index)} / ${count(total)}`,
+    positionLabel: (index, total) => `Image ${count(index)} sur ${count(total)}`,
+    pictureChanged: (index, total, fileName) => `Image ${count(index)} sur ${count(total)}${NO_BREAK_SPACE}: ${fileName}`,
+    caption: (author, timestamp, size) => `${author} · ${timestamp} · ${size}`,
+    actualSize: "Taille réelle",
+    downloadTooltip: "Télécharger",
+    copyLink: "Copier le lien",
+    linkCopied: "Lien copié",
+    copyLinkFailed: "Impossible de copier le lien. Autorise l’accès au presse-papiers et réessaie.",
+    openOriginal: "Ouvrir l’original dans un nouvel onglet",
+    openOriginalTooltip: "Ouvrir l’original",
+    loading: "Chargement de l’image…",
+    fullSizeFailed: "L’image en pleine taille ne s’est pas chargée. Vérifie ta connexion, puis réessaie.",
+    pictureFailed: "Impossible d’afficher cette image. Vérifie ta connexion, puis réessaie, ou télécharge-la.",
+  },
+
   reactions: {
     reactions: "Réactions",
     addReaction: "Ajouter une réaction",

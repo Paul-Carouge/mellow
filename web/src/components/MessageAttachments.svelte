@@ -7,6 +7,8 @@
   import { attachmentCountLabel, fileNameStartAndEnd, humanFileSize } from "./format";
   import Icon from "./Icon.svelte";
   import { retryImageOnceThenMarkFailed } from "./image-retry";
+  import LazyComponent from "./LazyComponent.svelte";
+  import { isPlainPrimaryClick, viewablePictures } from "./picture-viewer";
 
   // Attachments under a message body (DESIGN.md §5.4 "Attachments"): previewable images inline,
   // anything else as a download card. A message still in the outbox is not readable by others
@@ -14,9 +16,26 @@
   interface Props {
     attachments: readonly Attachment[];
     isPending: boolean;
+    /** For the picture viewer's caption: the sender as the message header shows them. */
+    authorName: string;
+    /** Null only while the message is still in the outbox, when no picture is shown. */
+    sentAtUnixMilliseconds: number | null;
   }
 
-  let { attachments, isPending }: Props = $props();
+  let { attachments, isPending, authorName, sentAtUnixMilliseconds }: Props = $props();
+
+  const viewerPictures = $derived(viewablePictures(attachments));
+  let viewer = $state<{ index: number; opener: HTMLElement } | null>(null);
+
+  function openViewer(event: MouseEvent, attachment: Attachment) {
+    const index = viewerPictures.findIndex((picture) => picture.id === attachment.id);
+    // A modified or middle click keeps the link's own behaviour (a new tab, a download).
+    if (index < 0 || sentAtUnixMilliseconds === null || !isPlainPrimaryClick(event) || !(event.currentTarget instanceof HTMLElement)) {
+      return;
+    }
+    event.preventDefault();
+    viewer = { index, opener: event.currentTarget };
+  }
 
   const loadedImageIds = new SvelteSet<Snowflake>();
   // An image the instance could not serve, even on its retry, falls back to its download card.
@@ -47,6 +66,7 @@
           target="_blank"
           rel="noopener noreferrer"
           title={attachment.file_name}
+          onclick={(event) => openViewer(event, attachment)}
           style:width={previewWidth}
           class="block w-fit max-w-[min(100%,var(--mw-component-attachment-image-max-width))] overflow-hidden rounded-(--mw-component-attachment-image-radius) bg-(--mw-component-attachment-image-placeholder) focus-visible:focus-ring"
         >
@@ -119,3 +139,18 @@
     {/if}
   {/each}
 </ul>
+
+{#if viewer && sentAtUnixMilliseconds !== null}
+  <LazyComponent load={() => import("./PictureViewer.svelte")} onclose={() => (viewer = null)}>
+    {#snippet children({ default: PictureViewer })}
+      <PictureViewer
+        pictures={viewerPictures}
+        initialIndex={viewer?.index ?? 0}
+        {authorName}
+        {sentAtUnixMilliseconds}
+        opener={viewer?.opener ?? null}
+        onclose={() => (viewer = null)}
+      />
+    {/snippet}
+  </LazyComponent>
+{/if}

@@ -495,7 +495,12 @@
           </div>
         {/if}
         {#if (message.attachments?.length ?? 0) > 0}
-          <MessageAttachments attachments={message.attachments ?? []} isPending={false} />
+          <MessageAttachments
+            attachments={message.attachments ?? []}
+            isPending={false}
+            authorName={displayName(message.author)}
+            sentAtUnixMilliseconds={sentAt}
+          />
         {/if}
       </div>
     </article>

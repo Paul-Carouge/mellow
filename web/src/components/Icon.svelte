@@ -10,11 +10,13 @@
   export type IconName =
     | "airplane-tilt"
     | "arrow-bend-up-left"
+    | "arrow-square-out"
     | "at"
     | "bell"
     | "bell-slash"
     | "bowl-food"
     | "caret-down"
+    | "caret-left"
     | "caret-right"
     | "caret-up"
     | "cell-signal-high"

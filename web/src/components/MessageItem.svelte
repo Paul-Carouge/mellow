@@ -353,7 +353,7 @@
   {:else}
     {@render body()}
     {#if attachments.length > 0}
-      <MessageAttachments {attachments} isPending={row.kind === "pending"} />
+      <MessageAttachments {attachments} isPending={row.kind === "pending"} authorName={displayName(author)} sentAtUnixMilliseconds={sentAt} />
     {/if}
     {#if message}
       <MessageReactions
