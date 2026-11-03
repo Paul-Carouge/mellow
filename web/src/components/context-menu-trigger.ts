@@ -148,6 +148,10 @@ function invokerOf(element: HTMLElement): HTMLElement {
 const claimedEvents = new WeakSet<Event>();
 
 /** The menu's opener: returns `false` when it has nothing to show, so the browser's menu does. */
+/** `MouseEvent.buttons` bit of the secondary (usually right) button, and its `button` index. */
+const SECONDARY_BUTTON = 2;
+const SECONDARY_BUTTON_INDEX = 2;
+
 export type OpenContextMenu = (origin: MenuOrigin, invoker: HTMLElement, source: "pointer" | "keyboard") => boolean;
 
 /**
@@ -203,13 +207,38 @@ export function contextMenuTrigger(open: OpenContextMenu): Attachment<HTMLElemen
         longPress.holdNow();
         return;
       }
-      if (open({ kind: "point", x: event.clientX, y: event.clientY }, invokerOf(element), "pointer")) {
+      const origin = { x: event.clientX, y: event.clientY };
+      if ((event.buttons & SECONDARY_BUTTON) !== 0) {
+        // Firefox on Linux and macOS fires this as the right button goes down: the button's
+        // release would light-dismiss a menu opened now, so it opens at the release instead.
         event.preventDefault();
-        if (selectedTextBeforePress === false) {
-          // The word macOS just selected under the pointer: the menu replaces it.
-          window.getSelection()?.removeAllRanges();
-        }
+        window.addEventListener(
+          "pointerup",
+          (release: PointerEvent) => {
+            if (release.button === SECONDARY_BUTTON_INDEX) {
+              // After the release's own light dismiss has run.
+              setTimeout(() => openAtPointer(origin, selectedTextBeforePress), 0);
+            }
+          },
+          { once: true },
+        );
+        return;
       }
+      if (openAtPointer(origin, selectedTextBeforePress)) {
+        event.preventDefault();
+      }
+    }
+
+    /** Opens at a right-click; `false` when the host has no menu there. */
+    function openAtPointer(origin: { x: number; y: number }, selectedTextBeforePress: boolean | null): boolean {
+      if (!element.isConnected || !open({ kind: "point", x: origin.x, y: origin.y }, invokerOf(element), "pointer")) {
+        return false;
+      }
+      if (selectedTextBeforePress === false) {
+        // The word macOS just selected under the pointer: the menu replaces it.
+        window.getSelection()?.removeAllRanges();
+      }
+      return true;
     }
 
     function handleKeydown(event: KeyboardEvent) {

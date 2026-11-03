@@ -38,7 +38,7 @@ beforeEach(() => {
   selection = { isCollapsed: true, containsNode: () => false, anchorNode: null, removeAllRanges: vi.fn() };
   vi.stubGlobal("Element", FakeElement);
   vi.stubGlobal("HTMLElement", FakeElement);
-  vi.stubGlobal("window", { getSelection: () => selection });
+  vi.stubGlobal("window", Object.assign(new EventTarget(), { getSelection: () => selection }));
   vi.stubGlobal("document", { documentElement: {} });
   vi.stubGlobal("getComputedStyle", () => ({
     fontSize: "16px",
@@ -84,6 +84,27 @@ describe("right-click", () => {
     const event = fire(element, "contextmenu", { clientX: 5, clientY: 6, shiftKey: false });
     expect(open).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("opens at the right button's release when the browser fires the event as it goes down", () => {
+    const { element, open } = setup();
+    const event = fire(element, "contextmenu", { clientX: 5, clientY: 6, shiftKey: false, buttons: 2 });
+    expect(event.defaultPrevented).toBe(true);
+    vi.runAllTimers();
+    expect(open).not.toHaveBeenCalled();
+    window.dispatchEvent(Object.assign(new Event("pointerup"), { button: 2 }));
+    expect(open).not.toHaveBeenCalled();
+    vi.runAllTimers();
+    expect(open).toHaveBeenCalledWith({ kind: "point", x: 5, y: 6 }, element, "pointer");
+  });
+
+  it("does not open at a later, unrelated release", () => {
+    const { element, open } = setup();
+    fire(element, "contextmenu", { clientX: 5, clientY: 6, shiftKey: false, buttons: 2 });
+    window.dispatchEvent(Object.assign(new Event("pointerup"), { button: 0 }));
+    window.dispatchEvent(Object.assign(new Event("pointerup"), { button: 2 }));
+    vi.runAllTimers();
+    expect(open).not.toHaveBeenCalled();
   });
 
   it("opens at the pointer and takes the event", () => {
