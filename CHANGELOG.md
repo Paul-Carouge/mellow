@@ -4,6 +4,12 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Added
+- Video follows each watcher's connection: the server measures how much it can send to each person (transport-wide congestion control) and fits the cameras and screens they watch into 90 % of it and into their fair share of `[voice] video_upload_mbps`. Smaller tiles go down to a lower picture first, then pause, the large tile last; pictures go back up after 5 seconds with 20 % to spare. A paused tile is announced to its watcher (`VOICE_VIDEO_PAUSED`, additive), for the camera interface to come.
+
+### Changed
+- `[voice] video_upload_mbps` no longer counts 10 Mbit/s per full-quality stream: it is shared among the people watching video, and each layer is costed at what it really sends (at least its target).
+
 ## [0.32.0] - 2026-11-02
 The sound of shared screens (ADR-0037). No database migration; clients of `v0.31.0` keep working and share without sound until reloaded.
 

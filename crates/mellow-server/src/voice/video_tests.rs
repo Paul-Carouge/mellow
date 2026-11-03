@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use futures_util::StreamExt as _;
 use mellow_protocol::{
-    ClientFrame, GatewayEvent, Permissions, SimulcastLayer, Snowflake, VideoTileSize,
+    ClientFrame, GatewayEvent, Permissions, ServerFrame, SimulcastLayer, Snowflake, VideoTileSize,
     VoiceVideoRefusal, WatchedCamera,
 };
 use str0m::change::{SdpAnswer, SdpPendingOffer};
@@ -17,6 +18,7 @@ use str0m::format::Codec;
 use str0m::media::{Direction, Frequency, MediaKind, MediaTime, Mid, Rid, Simulcast};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, Input, Output, Rtc};
+use tokio_tungstenite::tungstenite::Message;
 
 use super::media::MediaEvent;
 use super::tests::{Fixture, HEARING_TIMEOUT, fixture, join, next_voice_state_update, pending_bot};
@@ -38,6 +40,29 @@ const SOUND_FRAME_INTERVAL: Duration = Duration::from_millis(20);
 const SOUND_CLOCK_TICKS_PER_FRAME: u64 = 960;
 /// Long enough for several frames of every layer to arrive if they were still forwarded.
 const SETTLE_TIME: Duration = Duration::from_millis(300);
+/// A slow bot keeps one media datagram in this many, as a link far too slow for its tiles.
+const SLOW_LINK_KEEPS_ONE_DATAGRAM_IN: u32 = 4;
+/// Long enough for the server's estimate of a lossy link to fall below a single small tile.
+const SLOW_LINK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How a bot's link behaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BotLink {
+    /// Without congestion feedback (TWCC removed from the offer): the server has no estimate of
+    /// it, so its tiles depend on their size alone, whatever the load of the test machine.
+    Steady,
+    /// With congestion feedback, losing most media datagrams it receives.
+    Slow,
+}
+
+/// The offer without transport-wide congestion control, so the server estimates nothing.
+fn without_congestion_feedback(offer: &str) -> String {
+    offer
+        .split("\r\n")
+        .filter(|line| !line.contains("transport-wide-cc") && !line.contains("transport-cc"))
+        .collect::<Vec<_>>()
+        .join("\r\n")
+}
 
 /// A frame the VP8 depacketizer accepts: a frame tag (bit 0 clear on keyframes), for keyframes
 /// the start code and a picture size, then the camera's marker and the layer.
@@ -165,7 +190,15 @@ async fn join_with_camera(
     channel_id: Snowflake,
     marker: u8,
 ) -> CameraBot {
-    join_camera_bot(socket, channel_id, marker, FRAME_BYTES, false).await
+    join_camera_bot(
+        socket,
+        channel_id,
+        marker,
+        FRAME_BYTES,
+        false,
+        BotLink::Steady,
+    )
+    .await
 }
 
 /// A camera bot whose offer has screen sound lines, sending its sound 50 times a second.
@@ -174,7 +207,15 @@ async fn join_with_screen_sound(
     channel_id: Snowflake,
     marker: u8,
 ) -> CameraBot {
-    join_camera_bot(socket, channel_id, marker, FRAME_BYTES, true).await
+    join_camera_bot(
+        socket,
+        channel_id,
+        marker,
+        FRAME_BYTES,
+        true,
+        BotLink::Steady,
+    )
+    .await
 }
 
 /// A camera whose `q` frames are `quarter_frame_bytes` long, as a client lying about its layers.
@@ -184,7 +225,15 @@ async fn join_with_camera_sending(
     marker: u8,
     quarter_frame_bytes: usize,
 ) -> CameraBot {
-    join_camera_bot(socket, channel_id, marker, quarter_frame_bytes, false).await
+    join_camera_bot(
+        socket,
+        channel_id,
+        marker,
+        quarter_frame_bytes,
+        false,
+        BotLink::Steady,
+    )
+    .await
 }
 
 async fn join_camera_bot(
@@ -193,6 +242,7 @@ async fn join_camera_bot(
     marker: u8,
     quarter_frame_bytes: usize,
     has_screen_sound: bool,
+    link: BotLink,
 ) -> CameraBot {
     let PendingCameraBot {
         mut rtc,
@@ -202,6 +252,10 @@ async fn join_camera_bot(
         socket: udp,
         offer,
     } = pending_camera_bot(has_screen_sound);
+    let offer = match link {
+        BotLink::Steady => without_congestion_feedback(&offer),
+        BotLink::Slow => offer,
+    };
     let answer = join(socket, channel_id, &offer).await;
     rtc.sdp_api()
         .accept_answer(pending, SdpAnswer::from_sdp_string(&answer).unwrap())
@@ -215,6 +269,7 @@ async fn join_camera_bot(
                 rtc,
                 &udp,
                 (camera_mid, screen_sound_mid, marker, quarter_frame_bytes),
+                link,
                 &received,
                 &stop,
             );
@@ -231,6 +286,7 @@ fn run_camera_bot(
     mut rtc: Rtc,
     socket: &UdpSocket,
     (camera_mid, screen_sound_mid, marker, quarter_frame_bytes): (Mid, Option<Mid>, u8, usize),
+    link: BotLink,
     received: &Mutex<ReceivedFrames>,
     stop: &AtomicBool,
 ) {
@@ -242,6 +298,7 @@ fn run_camera_bot(
     let mut is_keyframe_due = [true; LAYER_RIDS.len()];
     let mut next_sound_at = Instant::now();
     let mut sound_time: u64 = 0;
+    let mut media_datagrams: u32 = 0;
     while !stop.load(Ordering::Relaxed) {
         let timeout = loop {
             match rtc.poll_output().unwrap() {
@@ -310,15 +367,20 @@ fn run_camera_bot(
             .clamp(Duration::from_millis(1), Duration::from_millis(50));
         socket.set_read_timeout(Some(wait)).unwrap();
         let input = match socket.recv_from(&mut buffer) {
-            Ok((length, source)) => Input::Receive(
-                Instant::now(),
-                Receive {
-                    proto: Protocol::Udp,
-                    source,
-                    destination: local_address,
-                    contents: buffer[..length].try_into().unwrap(),
-                },
-            ),
+            Ok((length, source)) => {
+                if is_lost(link, is_connected, buffer[0], &mut media_datagrams) {
+                    continue;
+                }
+                Input::Receive(
+                    Instant::now(),
+                    Receive {
+                        proto: Protocol::Udp,
+                        source,
+                        destination: local_address,
+                        contents: buffer[..length].try_into().unwrap(),
+                    },
+                )
+            }
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 Input::Timeout(Instant::now())
             }
@@ -326,6 +388,16 @@ fn run_camera_bot(
         };
         rtc.handle_input(input).unwrap();
     }
+}
+
+/// Whether the bot's link loses the datagram starting with `first_byte`: a slow link loses most
+/// media datagrams once connected (RTP and RTCP start with 128 to 191), never ICE or DTLS.
+fn is_lost(link: BotLink, is_connected: bool, first_byte: u8, media_datagrams: &mut u32) -> bool {
+    if link != BotLink::Slow || !is_connected || !(128..=191).contains(&first_byte) {
+        return false;
+    }
+    *media_datagrams += 1;
+    !media_datagrams.is_multiple_of(SLOW_LINK_KEEPS_ONE_DATAGRAM_IN)
 }
 
 /// One frame of each of the bot's camera layers, a keyframe where one is due.
@@ -492,6 +564,84 @@ async fn a_watcher_gets_the_layer_of_its_tile_and_switches_at_a_keyframe() {
     );
     assert_eq!(medium_frames, 0, "no tile asked for the medium layer");
     assert_eq!(own_frames, 0, "a camera is never sent back to its owner");
+}
+
+/// The layers the camera is told to keep, until only its lowest is left.
+async fn layers_until_only_the_lowest(socket: &mut ClientSocket) -> Vec<Vec<SimulcastLayer>> {
+    let mut seen = Vec::new();
+    loop {
+        let layers = next_layers(socket).await;
+        let is_lowest_only = layers == [SimulcastLayer::Quarter];
+        seen.push(layers);
+        if is_lowest_only {
+            return seen;
+        }
+    }
+}
+
+/// Waits for `camera_id`'s tile to be paused or to flow again for this session, up to
+/// `SLOW_LINK_TIMEOUT`: on a loaded machine the estimate takes longer to fall than the gateway
+/// helpers wait for a frame, and nothing else reaches the watcher meanwhile.
+async fn next_pause_of(socket: &mut ClientSocket, camera_id: Snowflake) -> bool {
+    let deadline = tokio::time::Instant::now() + SLOW_LINK_TIMEOUT;
+    loop {
+        let message = tokio::time::timeout_at(deadline, socket.next())
+            .await
+            .expect("the tile of the slow watcher was never paused")
+            .expect("socket closed")
+            .unwrap();
+        let Message::Text(text) = message else {
+            continue;
+        };
+        if let ServerFrame::Dispatch { event, .. } = serde_json::from_str(&text).unwrap()
+            && let GatewayEvent::VoiceVideoPaused {
+                user_id, is_paused, ..
+            } = *event
+            && user_id == camera_id
+        {
+            return is_paused;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_watcher_on_a_slow_link_is_moved_down_then_its_tile_paused() {
+    let fixture = fixture().await;
+    let (mut owner, mut member) = identified_pair(&fixture).await;
+    let owner_id = fixture.user_id("owner");
+    let _owner_bot = join_with_camera(&mut owner, fixture.lounge, 1).await;
+    let _member_bot = join_camera_bot(
+        &mut member,
+        fixture.lounge,
+        2,
+        FRAME_BYTES,
+        false,
+        BotLink::Slow,
+    )
+    .await;
+
+    send(&mut owner, &camera_state(true)).await;
+    wait_for_camera(&mut member, owner_id, true).await;
+    let layers_unwatched = next_layers(&mut owner).await;
+    send(&mut member, &watch(owner_id, VideoTileSize::Large)).await;
+    let is_paused = next_pause_of(&mut member, owner_id).await;
+    // Already sent before the pause: read in order.
+    let layers_while_slowing = layers_until_only_the_lowest(&mut owner).await;
+    fixture.close().await;
+
+    assert_eq!(layers_unwatched, [SimulcastLayer::Quarter]);
+    assert!(is_paused);
+    assert_eq!(
+        layers_while_slowing.first().map(Vec::as_slice),
+        Some([SimulcastLayer::Quarter, SimulcastLayer::High].as_slice()),
+        "the large tile first gets the large layer"
+    );
+    assert!(
+        layers_while_slowing
+            .iter()
+            .any(|layers| layers.contains(&SimulcastLayer::Low)),
+        "then the half-size layer before pausing: {layers_while_slowing:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

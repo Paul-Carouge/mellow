@@ -1,8 +1,10 @@
 //! Rules of cameras in voice channels (ADR-0035) that need no I/O: which simulcast layer a tile
 //! receives, when a watcher switches layers, how often a camera is asked for a keyframe, which
-//! layers a camera must keep sending, and how many cameras may be on at once. The media loop and
+//! layers a camera must keep sending, which layers fit a watcher's bandwidth, and how many
+//! cameras may be on at once. The media loop and
 //! the voice service apply them; the permission itself is `domain::permissions::may_send_video`.
 
+use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap};
 use std::hash::Hash;
 use std::time::{Duration, Instant};
@@ -55,28 +57,242 @@ pub(crate) fn missing_room_for_a_camera(
         .then_some(VoiceVideoRefusal::TooManyCameras)
 }
 
-/// What a full-quality stream (`h`) may cost the host's upload at most: a 1440p screen with its
-/// keyframes (ADR-0037).
-pub(crate) const FULL_LAYER_STREAM_MBPS: u32 = 10;
-
-/// How many full-quality streams the instance forwards at once within `[voice] video_upload_mbps`.
+/// What a layer costs a watcher's link at least, in bits per second: its encoder's target
+/// (ADR-0035). A layer arriving faster, such as a 1440p screen's full layer, costs what it
+/// measures instead (`LayerRate`).
 #[must_use]
-pub(crate) const fn maximum_full_layer_streams(video_upload_mbps: u32) -> usize {
-    (video_upload_mbps / FULL_LAYER_STREAM_MBPS) as usize
+pub(crate) const fn nominal_bits_per_second_of(layer: SimulcastLayer) -> u64 {
+    match layer {
+        SimulcastLayer::Quarter => 150_000,
+        SimulcastLayer::Low => 500_000,
+        SimulcastLayer::High => 1_500_000,
+    }
 }
 
-/// The layer a tile gets: the one it asks for, except a full-quality one once the instance already
-/// forwards as many as its upload allows, which gets the half-size layer instead.
+/// The share of a watcher's estimated bandwidth its tiles may use; the rest is for voice,
+/// retransmissions and the estimate's own error (ADR-0035).
+pub(crate) const VIDEO_PERCENT_OF_ESTIMATE: u64 = 90;
+/// Tiles go back up only once the budget exceeds what the higher layers need by this much...
+pub(crate) const HEADROOM_PERCENT_BEFORE_RAISING: u64 = 120;
+/// ...and has done so for this long, so a link at the edge does not flap (ADR-0035).
+pub(crate) const STEADY_TIME_BEFORE_RAISING: Duration = Duration::from_secs(5);
+
+/// A watcher's share of the instance's upload budget, in bits per second, among `watchers`
+/// (those watching a camera of their own channel).
 #[must_use]
-pub(crate) fn layer_within_upload(
-    wanted: SimulcastLayer,
-    full_layer_streams: usize,
-    maximum_full_layer_streams: usize,
-) -> SimulcastLayer {
-    if wanted == SimulcastLayer::High && full_layer_streams >= maximum_full_layer_streams {
-        SimulcastLayer::Low
-    } else {
-        wanted
+pub(crate) fn fair_share_of_upload(video_upload_bits_per_second: u64, watchers: usize) -> u64 {
+    let watchers = u64::try_from(watchers.max(1)).unwrap_or(u64::MAX);
+    video_upload_bits_per_second / watchers
+}
+
+/// A watcher's video budget in bits per second: 90 % of its link's estimate, and at most its
+/// `fair_share` of the upload. `estimate`: `None` before the first one, or for a client sending
+/// no congestion feedback.
+#[must_use]
+pub(crate) fn watcher_video_budget(estimate: Option<u64>, fair_share: u64) -> u64 {
+    estimate.map_or(fair_share, |estimate| {
+        fair_share.min(estimate.saturating_mul(VIDEO_PERCENT_OF_ESTIMATE) / 100)
+    })
+}
+
+/// The bit rate the estimator probes up to for a watcher: what its tiles ask, plus the headroom
+/// going back up needs, and never more than an estimate its `fair_share` could use. Probes are
+/// bursts of padding of up to twice this rate, so a watcher listing many large tiles must not make
+/// the server send far beyond the instance's upload budget.
+#[must_use]
+pub(crate) fn desired_bits_per_second(tiles: &[TileDemand], fair_share: u64) -> u64 {
+    let asked: u64 = tiles.iter().map(|tile| tile.costs.of(tile.asked)).sum();
+    let with_headroom = asked.saturating_mul(HEADROOM_PERCENT_BEFORE_RAISING) / 100;
+    with_headroom.min(fair_share.saturating_mul(100) / VIDEO_PERCENT_OF_ESTIMATE)
+}
+
+/// What a layer costs a watcher, from what it was `measured` to send: at least its target, and at
+/// most its byte budget (`maximum_bytes_per_second_of`), so a camera cannot make its layers look
+/// costlier than they may be and push other tiles down.
+#[must_use]
+pub(crate) fn layer_cost(layer: SimulcastLayer, measured_bits_per_second: u64) -> u64 {
+    let ceiling = u64::from(maximum_bytes_per_second_of(layer)).saturating_mul(8);
+    measured_bits_per_second
+        .min(ceiling)
+        .max(nominal_bits_per_second_of(layer))
+}
+
+/// What each layer of a camera costs a watcher, in bits per second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LayerCosts {
+    pub(crate) quarter: u64,
+    pub(crate) low: u64,
+    pub(crate) high: u64,
+}
+
+impl LayerCosts {
+    #[must_use]
+    pub(crate) const fn of(self, layer: SimulcastLayer) -> u64 {
+        match layer {
+            SimulcastLayer::Quarter => self.quarter,
+            SimulcastLayer::Low => self.low,
+            SimulcastLayer::High => self.high,
+        }
+    }
+}
+
+/// One tile of a watcher, in the order the watcher lists them: the layer its size asks for and
+/// what its camera's layers cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TileDemand {
+    pub(crate) asked: SimulcastLayer,
+    pub(crate) costs: LayerCosts,
+}
+
+/// The layer under `layer`; under the lowest, the tile is paused (`None`).
+const fn layer_below(layer: SimulcastLayer) -> Option<SimulcastLayer> {
+    match layer {
+        SimulcastLayer::High => Some(SimulcastLayer::Low),
+        SimulcastLayer::Low => Some(SimulcastLayer::Quarter),
+        SimulcastLayer::Quarter => None,
+    }
+}
+
+fn cost_of(tiles: &[TileDemand], layers: &[Option<SimulcastLayer>]) -> u64 {
+    tiles
+        .iter()
+        .zip(layers)
+        .filter_map(|(tile, layer)| layer.map(|layer| tile.costs.of(layer)))
+        .sum()
+}
+
+/// The layer each tile gets within `budget` bits per second, `None` for a paused tile
+/// (ADR-0035): from the layers asked, the smallest tiles go down one layer at a time before the
+/// larger ones, the last listed first among equals; once every tile is at the lowest layer,
+/// tiles are paused in the same order. The steps do not depend on the budget, so a larger budget
+/// never gives any tile a lower layer.
+#[must_use]
+pub(crate) fn fit_tiles(tiles: &[TileDemand], budget: u64) -> Vec<Option<SimulcastLayer>> {
+    let mut layers: Vec<Option<SimulcastLayer>> =
+        tiles.iter().map(|tile| Some(tile.asked)).collect();
+    while cost_of(tiles, &layers) > budget {
+        let next_to_lower = layers
+            .iter()
+            .zip(tiles)
+            .enumerate()
+            .filter_map(|(index, (layer, tile))| {
+                layer.map(|layer| (layer == SimulcastLayer::Quarter, tile.asked, Reverse(index)))
+            })
+            .min()
+            .map(|(_, _, Reverse(index))| index);
+        let Some(layer) = next_to_lower.and_then(|index| layers.get_mut(index)) else {
+            break;
+        };
+        *layer = layer.and_then(layer_below);
+    }
+    layers
+}
+
+/// Whether `candidate` gives any tile a higher layer than `current` (a paused tile is lowest).
+fn raises_any(candidate: &[Option<SimulcastLayer>], current: &[Option<SimulcastLayer>]) -> bool {
+    candidate
+        .iter()
+        .zip(current)
+        .any(|(candidate, current)| candidate > current)
+}
+
+/// How a watcher's tiles follow its bandwidth (ADR-0035): down at once when the budget shrinks,
+/// back up only after the budget has exceeded the higher layers' need, plus 20 %, for 5 seconds.
+#[derive(Debug, Default)]
+pub(crate) struct LayerAllocation {
+    raise_possible_since: Option<Instant>,
+}
+
+impl LayerAllocation {
+    /// The layers the tiles get now, given the `current` ones (as many as `tiles`).
+    pub(crate) fn next_layers(
+        &mut self,
+        tiles: &[TileDemand],
+        current: &[Option<SimulcastLayer>],
+        budget: u64,
+        now: Instant,
+    ) -> Vec<Option<SimulcastLayer>> {
+        let fitting = fit_tiles(tiles, budget);
+        if !raises_any(&fitting, current) {
+            self.raise_possible_since = None;
+            return fitting;
+        }
+        let with_headroom = fit_tiles(
+            tiles,
+            budget.saturating_mul(100) / HEADROOM_PERCENT_BEFORE_RAISING,
+        );
+        let kept: Vec<Option<SimulcastLayer>> = current
+            .iter()
+            .zip(&fitting)
+            .map(|(current, fitting)| (*current).min(*fitting))
+            .collect();
+        if !raises_any(&with_headroom, current) {
+            self.raise_possible_since = None;
+            return kept;
+        }
+        let since = *self.raise_possible_since.get_or_insert(now);
+        if now.saturating_duration_since(since) < STEADY_TIME_BEFORE_RAISING {
+            return kept;
+        }
+        self.raise_possible_since = None;
+        with_headroom
+    }
+}
+
+/// The bytes a camera layer sent over its last whole second in which it sent anything, so a layer
+/// is costed at what it really sends (a 1440p screen's full layer is several times a camera's).
+/// A layer paused because nobody receives it keeps its last measure: costed at its target instead,
+/// a 1440p screen would look cheap again, be asked for, and go down again, forever.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LayerRate {
+    window_started_at: Instant,
+    bytes_in_window: u64,
+    bytes_in_last_window: u64,
+}
+
+impl LayerRate {
+    const WINDOW: Duration = Duration::from_secs(1);
+
+    #[must_use]
+    pub(crate) const fn new(now: Instant) -> Self {
+        Self {
+            window_started_at: now,
+            bytes_in_window: 0,
+            bytes_in_last_window: 0,
+        }
+    }
+
+    /// A frame of `bytes` arrived from the camera.
+    pub(crate) fn record(&mut self, bytes: usize, now: Instant) {
+        let elapsed = now.saturating_duration_since(self.window_started_at);
+        if elapsed >= Self::WINDOW {
+            if self.bytes_in_window > 0 {
+                self.bytes_in_last_window = self.bytes_in_window;
+            }
+            self.bytes_in_window = 0;
+            self.window_started_at = if elapsed >= 2 * Self::WINDOW {
+                now
+            } else {
+                self.window_started_at + Self::WINDOW
+            };
+        }
+        self.bytes_in_window = self
+            .bytes_in_window
+            .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+    }
+
+    /// The bits per second of the last whole second in which the layer sent anything; 0 before
+    /// its first whole second.
+    #[must_use]
+    pub(crate) fn bits_per_second(&self, now: Instant) -> u64 {
+        let is_window_complete =
+            now.saturating_duration_since(self.window_started_at) >= Self::WINDOW;
+        let bytes = if is_window_complete && self.bytes_in_window > 0 {
+            self.bytes_in_window
+        } else {
+            self.bytes_in_last_window
+        };
+        bytes.saturating_mul(8)
     }
 }
 
@@ -94,34 +310,38 @@ pub(crate) enum FrameForwarding {
     DropAndRequestKeyframe,
 }
 
-/// One camera as one watcher receives it: the layer it wants (from its tile) and the layer it is
-/// forwarded. A watcher switches only at a keyframe of the wanted layer, and keeps receiving the
-/// old layer until then, so its decoder never gets a frame it cannot decode.
+/// One camera as one watcher receives it: the layer it wants (from its tile and bandwidth, `None`
+/// while paused) and the layer it is forwarded. A watcher switches only at a keyframe of the
+/// wanted layer, and keeps receiving the old layer until then, so its decoder never gets a frame
+/// it cannot decode; a paused tile stops at once and starts again at a keyframe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LayerSwitch {
-    wanted: SimulcastLayer,
+    wanted: Option<SimulcastLayer>,
     forwarded: Option<SimulcastLayer>,
 }
 
 impl LayerSwitch {
     #[must_use]
-    pub(crate) const fn new(wanted: SimulcastLayer) -> Self {
+    pub(crate) const fn new(wanted: Option<SimulcastLayer>) -> Self {
         Self {
             wanted,
             forwarded: None,
         }
     }
 
-    pub(crate) const fn want(&mut self, layer: SimulcastLayer) {
+    pub(crate) const fn want(&mut self, layer: Option<SimulcastLayer>) {
         self.wanted = layer;
+        if layer.is_none() {
+            self.forwarded = None;
+        }
     }
 
     #[must_use]
-    pub(crate) const fn wanted(self) -> SimulcastLayer {
+    pub(crate) const fn wanted(self) -> Option<SimulcastLayer> {
         self.wanted
     }
 
-    /// The layer being forwarded, `None` before the first keyframe.
+    /// The layer being forwarded, `None` before the first keyframe and while paused.
     #[must_use]
     pub(crate) const fn forwarded(self) -> Option<SimulcastLayer> {
         self.forwarded
@@ -130,7 +350,7 @@ impl LayerSwitch {
     /// A frame of `layer` arrived from the camera.
     pub(crate) fn on_frame(&mut self, layer: SimulcastLayer, is_keyframe: bool) -> FrameForwarding {
         let is_forwarded = self.forwarded == Some(layer);
-        if layer != self.wanted {
+        if Some(layer) != self.wanted {
             return if is_forwarded {
                 FrameForwarding::Forward { is_switch: false }
             } else {
@@ -156,7 +376,7 @@ pub(crate) fn active_layers<'a>(
 ) -> Vec<SimulcastLayer> {
     let mut active = BTreeSet::from([SimulcastLayer::Quarter]);
     for switch in switches {
-        active.insert(switch.wanted);
+        active.extend(switch.wanted);
         active.extend(switch.forwarded);
     }
     active.into_iter().collect()
@@ -290,17 +510,199 @@ mod tests {
     use super::*;
     use SimulcastLayer::{High, Low, Quarter};
 
+    const NOMINAL: LayerCosts = LayerCosts {
+        quarter: 150_000,
+        low: 500_000,
+        high: 1_500_000,
+    };
+
+    fn tile(asked: SimulcastLayer) -> TileDemand {
+        TileDemand {
+            asked,
+            costs: NOMINAL,
+        }
+    }
+
     #[test]
-    fn full_quality_streams_stop_at_the_upload_budget_and_tiles_beyond_get_half_size() {
-        assert_eq!(maximum_full_layer_streams(100), 10);
-        assert_eq!(maximum_full_layer_streams(25), 2);
-        assert_eq!(maximum_full_layer_streams(5), 0);
-        assert_eq!(layer_within_upload(High, 9, 10), High);
-        assert_eq!(layer_within_upload(High, 10, 10), Low);
+    fn a_watcher_gets_ninety_percent_of_its_estimate_within_its_share_of_the_upload() {
+        assert_eq!(fair_share_of_upload(100_000_000, 4), 25_000_000);
         assert_eq!(
-            layer_within_upload(Quarter, 10, 10),
-            Quarter,
-            "small tiles are not counted"
+            fair_share_of_upload(100_000_000, 0),
+            100_000_000,
+            "a first watcher counts as one"
+        );
+        assert_eq!(watcher_video_budget(None, 25_000_000), 25_000_000);
+        assert_eq!(
+            watcher_video_budget(Some(10_000_000), 25_000_000),
+            9_000_000
+        );
+        assert_eq!(
+            watcher_video_budget(Some(100_000_000), 10_000_000),
+            10_000_000,
+            "the share of the upload caps a fast link"
+        );
+    }
+
+    #[test]
+    fn probes_aim_at_the_tiles_need_with_headroom_but_never_beyond_the_fair_share() {
+        let tiles = [tile(High), tile(Quarter)];
+        assert_eq!(desired_bits_per_second(&tiles, 100_000_000), 1_980_000);
+        assert_eq!(
+            desired_bits_per_second(&[tile(High); 9], 9_000_000),
+            10_000_000,
+            "nine large tiles probe no further than the share can use"
+        );
+        assert_eq!(desired_bits_per_second(&[], 9_000_000), 0);
+    }
+
+    #[test]
+    fn a_layer_costs_its_measure_between_its_target_and_its_byte_budget() {
+        assert_eq!(layer_cost(Quarter, 0), 150_000);
+        assert_eq!(layer_cost(Quarter, 200_000), 200_000);
+        assert_eq!(
+            layer_cost(Quarter, 12_000_000),
+            300_000,
+            "a camera inflating a layer counts its budget at most"
+        );
+        assert_eq!(layer_cost(High, 8_000_000), 8_000_000, "a 1440p screen");
+    }
+
+    #[test]
+    fn small_tiles_go_down_first_then_tiles_pause_smallest_first() {
+        let tiles = [tile(High), tile(Quarter), tile(Low), tile(Quarter)];
+        // Asked: 1.5 M + 150 k + 500 k + 150 k = 2.3 M.
+        assert_eq!(
+            fit_tiles(&tiles, 2_300_000),
+            [Some(High), Some(Quarter), Some(Low), Some(Quarter)]
+        );
+        assert_eq!(
+            fit_tiles(&tiles, 2_000_000),
+            [Some(High), Some(Quarter), Some(Quarter), Some(Quarter)],
+            "the medium tile goes down before the large one"
+        );
+        assert_eq!(
+            fit_tiles(&tiles, 1_000_000),
+            [Some(Low), Some(Quarter), Some(Quarter), Some(Quarter)],
+            "then the large one"
+        );
+        assert_eq!(
+            fit_tiles(&tiles, 700_000),
+            [Some(Quarter), Some(Quarter), Some(Quarter), Some(Quarter)]
+        );
+        assert_eq!(
+            fit_tiles(&tiles, 599_999),
+            [Some(Quarter), Some(Quarter), Some(Quarter), None],
+            "the last small tile pauses first"
+        );
+        assert_eq!(
+            fit_tiles(&tiles, 300_000),
+            [Some(Quarter), None, Some(Quarter), None]
+        );
+        assert_eq!(
+            fit_tiles(&tiles, 150_000),
+            [Some(Quarter), None, None, None],
+            "the large tile pauses last"
+        );
+        assert_eq!(fit_tiles(&tiles, 0), [None, None, None, None]);
+        assert_eq!(fit_tiles(&[], 0), []);
+    }
+
+    #[test]
+    fn a_layer_is_costed_at_what_it_measures_when_above_its_target() {
+        let screen = TileDemand {
+            asked: High,
+            costs: LayerCosts {
+                high: 8_000_000,
+                ..NOMINAL
+            },
+        };
+        assert_eq!(fit_tiles(&[screen], 9_000_000), [Some(High)]);
+        assert_eq!(fit_tiles(&[screen], 5_000_000), [Some(Low)]);
+    }
+
+    #[test]
+    fn tiles_go_down_at_once_and_back_up_after_five_seconds_with_twenty_percent_to_spare() {
+        let start = Instant::now();
+        let at = |seconds| start + Duration::from_secs(seconds);
+        let tiles = [tile(High)];
+        let mut allocation = LayerAllocation::default();
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(High)], 1_000_000, at(0)),
+            [Some(Low)],
+            "down at once"
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(Low)], 1_600_000, at(1)),
+            [Some(Low)],
+            "enough for High, but not with 20 % to spare"
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(Low)], 1_800_000, at(2)),
+            [Some(Low)]
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(Low)], 1_800_000, at(6)),
+            [Some(Low)],
+            "4 seconds only"
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(Low)], 1_800_000, at(7)),
+            [Some(High)]
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(High)], 1_800_000, at(8)),
+            [Some(High)]
+        );
+    }
+
+    #[test]
+    fn a_dip_below_the_headroom_restarts_the_wait_before_going_up() {
+        let start = Instant::now();
+        let at = |seconds| start + Duration::from_secs(seconds);
+        let tiles = [tile(Quarter)];
+        let mut allocation = LayerAllocation::default();
+        assert_eq!(
+            allocation.next_layers(&tiles, &[None], 200_000, at(0)),
+            [None]
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[None], 160_000, at(3)),
+            [None],
+            "the wait starts again"
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[None], 200_000, at(4)),
+            [None]
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[None], 200_000, at(9)),
+            [Some(Quarter)]
+        );
+    }
+
+    #[test]
+    fn a_layer_rate_is_its_last_whole_second() {
+        let start = Instant::now();
+        let at = |milliseconds| start + Duration::from_millis(milliseconds);
+        let mut rate = LayerRate::new(start);
+        rate.record(1_000, at(0));
+        rate.record(1_000, at(900));
+        assert_eq!(rate.bits_per_second(at(950)), 0, "no whole second yet");
+        assert_eq!(rate.bits_per_second(at(1_100)), 16_000);
+        rate.record(500, at(1_100));
+        assert_eq!(rate.bits_per_second(at(1_200)), 16_000);
+        assert_eq!(rate.bits_per_second(at(2_100)), 4_000);
+        assert_eq!(
+            rate.bits_per_second(at(9_000)),
+            4_000,
+            "a paused layer keeps its last measure"
+        );
+        rate.record(100, at(9_000));
+        assert_eq!(rate.bits_per_second(at(9_500)), 4_000);
+        assert_eq!(
+            rate.bits_per_second(at(10_100)),
+            800,
+            "until it sends again"
         );
     }
 
@@ -351,7 +753,7 @@ mod tests {
 
     #[test]
     fn a_watcher_starts_and_switches_only_at_a_keyframe_of_the_wanted_layer() {
-        let mut switch = LayerSwitch::new(Low);
+        let mut switch = LayerSwitch::new(Some(Low));
         assert_eq!(switch.on_frame(High, true), FrameForwarding::Drop);
         assert_eq!(
             switch.on_frame(Low, false),
@@ -367,7 +769,7 @@ mod tests {
             FrameForwarding::Forward { is_switch: false }
         );
 
-        switch.want(High);
+        switch.want(Some(High));
         assert_eq!(
             switch.on_frame(Low, false),
             FrameForwarding::Forward { is_switch: false },
@@ -383,20 +785,42 @@ mod tests {
         );
         assert_eq!(switch.on_frame(Low, false), FrameForwarding::Drop);
         assert_eq!(switch.forwarded(), Some(High));
-        assert_eq!(switch.wanted(), High);
+        assert_eq!(switch.wanted(), Some(High));
+    }
+
+    #[test]
+    fn a_paused_tile_stops_at_once_and_starts_again_at_a_keyframe() {
+        let mut switch = LayerSwitch::new(Some(Low));
+        assert_eq!(
+            switch.on_frame(Low, true),
+            FrameForwarding::Forward { is_switch: true }
+        );
+        switch.want(None);
+        assert_eq!(switch.on_frame(Low, false), FrameForwarding::Drop);
+        assert_eq!(switch.forwarded(), None);
+        assert_eq!(active_layers([&switch]), [Quarter], "nothing kept for it");
+        switch.want(Some(Low));
+        assert_eq!(
+            switch.on_frame(Low, false),
+            FrameForwarding::DropAndRequestKeyframe
+        );
+        assert_eq!(
+            switch.on_frame(Low, true),
+            FrameForwarding::Forward { is_switch: true }
+        );
     }
 
     #[test]
     fn cameras_keep_their_lowest_layer_and_every_layer_wanted_or_still_forwarded() {
         assert_eq!(active_layers([]), [Quarter], "nobody watches");
-        let mut large = LayerSwitch::new(High);
-        let small = LayerSwitch::new(Quarter);
+        let mut large = LayerSwitch::new(Some(High));
+        let small = LayerSwitch::new(Some(Quarter));
         assert_eq!(active_layers([&large, &small]), [Quarter, High]);
         assert_eq!(
             large.on_frame(High, true),
             FrameForwarding::Forward { is_switch: true }
         );
-        large.want(Low);
+        large.want(Some(Low));
         assert_eq!(
             active_layers([&large]),
             [Quarter, Low, High],

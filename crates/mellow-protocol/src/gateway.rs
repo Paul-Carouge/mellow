@@ -529,6 +529,15 @@ pub enum GatewayEvent {
         channel_id: Snowflake,
         active: Vec<SimulcastLayer>,
     },
+    /// `user_id`'s camera, which this session watches, is paused (`is_paused` true) because this
+    /// session's connection is too slow for even its lowest layer, or flows again (ADR-0035): the
+    /// tile can show the person's avatar with a "connection too slow" mark meanwhile. Sent to
+    /// that session only, when it changes; a tile starts as not paused.
+    VoiceVideoPaused {
+        channel_id: Snowflake,
+        user_id: Snowflake,
+        is_paused: bool,
+    },
     /// The server ended this session's voice connection. Sent to that session only; the others
     /// learn it from `VOICE_STATE_DELETE` (or `VOICE_STATE_UPDATE` after a move).
     VoiceDisconnected {
@@ -871,6 +880,15 @@ mod tests {
                 },
                 serde_json::json!({"t": "VOICE_VIDEO_LAYERS",
                     "data": {"channel_id": "2", "active": ["q", "h"]}}),
+            ),
+            (
+                GatewayEvent::VoiceVideoPaused {
+                    channel_id: Snowflake::from_raw(2),
+                    user_id: Snowflake::from_raw(3),
+                    is_paused: true,
+                },
+                serde_json::json!({"t": "VOICE_VIDEO_PAUSED",
+                    "data": {"channel_id": "2", "user_id": "3", "is_paused": true}}),
             ),
         ];
         for (event, expected) in cases {
