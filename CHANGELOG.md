@@ -4,6 +4,15 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-11-03
+Messages can be forwarded (ADR-0039). Database migration 0034; the protocol gains `forwarded_from` on messages and sends, which older clients ignore.
+
+### Added
+- "Transférer" in a message's menu and hover bar sends it on to up to five channels or conversations, with an optional message of your own. The forward is a copy taken at that moment, files included, marked "Transféré" with a link back to the original when you can see its channel. Forwards mention no one and cannot be edited.
+
+### Changed
+- A file shared by a forward stays on disk as long as a message holds it, and counts once in the upload quota: when the original goes, the oldest forward's author carries it.
+
 ## [0.38.0] - 2026-11-03
 Videos open in the picture viewer. No database migration and no protocol change.
 
