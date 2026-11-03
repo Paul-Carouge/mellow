@@ -186,7 +186,8 @@
     person={personOf(person.userId)}
     video={person.video}
     track={isOwn ? (voice.isSharingScreen ? undefined : (voice.cameraTrack ?? undefined)) : voice.videoTracks.get(person.userId)}
-    isOwn={isOwn && !voice.isSharingScreen}
+    {isOwn}
+    isMirrored={isOwn && !voice.isSharingScreen}
     isSpeaking={isSpeaking(person.userId)}
     isMicrophoneOff={isMicrophoneOff(person.userId)}
     isPaused={!isOwn && voice.pausedVideoUserIds.has(person.userId)}

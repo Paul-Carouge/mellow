@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { MediaQuery, SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
@@ -148,6 +148,17 @@
   $effect(() => {
     void messageSearch.query;
     searchNotice = "";
+  });
+
+  // Going to another channel, conversation or Home shows it: the call and the watched screen,
+  // which cover the chat, step aside (the call goes on).
+  $effect(() => {
+    void client.selectedGuildId;
+    void client.selectedChannelId;
+    untrack(() => {
+      client.voice.closeCallView();
+      client.voice.watchStream(null);
+    });
   });
 
   const guild = $derived(client.selectedGuild);

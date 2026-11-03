@@ -83,6 +83,11 @@ const MEDIA_CONNECT_TIMEOUT_MILLISECONDS = 15_000;
 const ICE_DISCONNECTED_GRACE_MILLISECONDS = 3_000;
 /** An empty `VOICE_VIDEO_LAYERS` this soon after a camera or screen started belongs to the video stopped before it. */
 const VIDEO_RESTART_GRACE_MILLISECONDS = 2_000;
+/**
+ * Watch lists sent this close together are merged into one: the instance takes at most 30 every
+ * 10 s and drops the rest without a word, and a speaker view changes its list at each new speaker.
+ */
+const WATCH_LIST_MINIMUM_INTERVAL_MILLISECONDS = 400;
 /** Silent attempts in a row before the panel says the connection is lost. */
 const MAXIMUM_RECONNECT_ATTEMPTS = 5;
 /**
@@ -337,6 +342,10 @@ export class VoiceSession {
   /** Bumped by each camera start, stop and switch: a slower earlier opening sees it is stale and frees its camera. */
   private cameraSwitch = 0;
   private cameraPreviewSwitch = 0;
+  private isCameraPreviewStarting = false;
+  /** Holds back a watch list sent too soon after the previous one; it then carries the newest. */
+  private watchListTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastWatchListSentAt = Number.NEGATIVE_INFINITY;
   /** When the camera or screen was last turned on: an empty `VOICE_VIDEO_LAYERS` just after is the previous video's. */
   private videoStartedAt = Number.NEGATIVE_INFINITY;
   private microphone: MediaStream | null = null;
@@ -723,6 +732,13 @@ export class VoiceSession {
       return;
     }
     if (this.videoReceivers.some((transceiver) => transceiver.mid === mid)) {
+      // A person has one video slot: the instance frees the old one without a word when it stops
+      // relaying them, and may give it to someone else at once.
+      for (const [otherMid, otherUserId] of this.videoSlotUserIds) {
+        if (otherUserId === userId || otherMid === mid) {
+          this.videoSlotUserIds.delete(otherMid);
+        }
+      }
       this.videoSlotUserIds.set(mid, userId);
       this.refreshVideoTracks();
       return;
@@ -913,14 +929,6 @@ export class VoiceSession {
     }
   }
 
-  async toggleCamera(): Promise<void> {
-    if (this.camera === null) {
-      await this.startCamera();
-    } else {
-      this.stopCamera();
-    }
-  }
-
   dismissCameraProblem(): void {
     this.cameraProblem = null;
   }
@@ -930,12 +938,17 @@ export class VoiceSession {
     this.cameraDeviceId = deviceId;
     // Empty reads back as the default.
     this.ports.storage()?.setItem(CAMERA_DEVICE_STORAGE_KEY, deviceId ?? "");
-    if (this.cameraPreview !== null) {
+    // A preview or a camera still opening restarts on the new choice, as one already open does.
+    if (this.cameraPreview !== null || this.isCameraPreviewStarting) {
       this.releaseCameraPreview();
-      await this.startCameraPreview();
+      void this.startCameraPreview();
     }
-    const sender = this.videoSender;
-    if (this.camera === null || sender === null) {
+    if (this.isCameraStarting) {
+      this.releaseCamera();
+      await this.startCamera();
+      return;
+    }
+    if (this.camera === null) {
       return;
     }
     const attempt = ++this.cameraSwitch;
@@ -949,7 +962,9 @@ export class VoiceSession {
       }
       return;
     }
-    if (attempt !== this.cameraSwitch || this.camera === null) {
+    // Read after the wait: a reconnection meanwhile made a new sender.
+    const sender = this.videoSender;
+    if (attempt !== this.cameraSwitch || this.camera === null || sender === null) {
       stream.getTracks().forEach((stopped) => stopped.stop());
       return;
     }
@@ -968,16 +983,18 @@ export class VoiceSession {
 
   /** The settings' preview; while your camera is on, `cameraTrack` already shows it. */
   async startCameraPreview(): Promise<void> {
-    if (this.cameraPreview !== null || this.camera !== null) {
+    if (this.cameraPreview !== null || this.isCameraPreviewStarting || this.camera !== null) {
       return;
     }
     this.cameraPreviewProblem = null;
     const attempt = ++this.cameraPreviewSwitch;
+    this.isCameraPreviewStarting = true;
     let stream: MediaStream;
     try {
       stream = await this.ports.requestCamera(this.cameraDeviceId);
     } catch (error) {
       if (attempt === this.cameraPreviewSwitch) {
+        this.isCameraPreviewStarting = false;
         this.cameraPreviewProblem = cameraProblemOf(error);
       }
       return;
@@ -986,6 +1003,7 @@ export class VoiceSession {
       stream.getTracks().forEach((stopped) => stopped.stop());
       return;
     }
+    this.isCameraPreviewStarting = false;
     this.cameraPreview = stream;
     this.cameraPreviewTrack = stream.getVideoTracks()[0] ?? null;
     await this.refreshCameraDevices();
@@ -1010,7 +1028,7 @@ export class VoiceSession {
     this.watchedCameras = [...cameras];
     this.refreshVideoTracks();
     if (this.phase !== "idle") {
-      this.sendWatchList();
+      this.requestWatchListSend();
     }
   }
 
@@ -1030,7 +1048,7 @@ export class VoiceSession {
     }
     this.watchedStreamUserId = userId;
     this.refreshVideoTracks();
-    this.sendWatchList();
+    this.requestWatchListSend();
     this.stopStreamSoundSampling();
     if (userId !== null) {
       this.streamSoundTimer = setInterval(() => this.sampleStreamSound(), STREAM_SOUND_SAMPLE_INTERVAL_MILLISECONDS);
@@ -1675,8 +1693,27 @@ export class VoiceSession {
     }
   }
 
+  private requestWatchListSend(): void {
+    if (this.watchListTimer !== null) {
+      return;
+    }
+    const wait = this.lastWatchListSentAt + WATCH_LIST_MINIMUM_INTERVAL_MILLISECONDS - Date.now();
+    if (wait <= 0) {
+      this.sendWatchList();
+      return;
+    }
+    this.watchListTimer = setTimeout(() => {
+      this.watchListTimer = null;
+      if (this.phase !== "idle") {
+        this.sendWatchList();
+      }
+    }, wait);
+  }
+
   /** The watched screen large first, then the cameras shown, 9 at most (ADR-0035). */
   private sendWatchList(): void {
+    this.clearTimer("watchListTimer");
+    this.lastWatchListSentAt = Date.now();
     const streamUserId = this.watchedStreamUserId;
     const watched = [
       ...(streamUserId === null ? [] : [{ userId: streamUserId, size: "large" as const }]),
@@ -1754,6 +1791,7 @@ export class VoiceSession {
 
   private releaseCameraPreview(): void {
     this.cameraPreviewSwitch += 1;
+    this.isCameraPreviewStarting = false;
     this.cameraPreview?.getTracks().forEach((track) => track.stop());
     this.cameraPreview = null;
     this.cameraPreviewTrack = null;
@@ -2047,6 +2085,7 @@ export class VoiceSession {
     this.clearTimer("roundTripTimer");
     this.clearTimer("levelTimer");
     this.clearTimer("pushToTalkReleaseTimer");
+    this.clearTimer("watchListTimer");
     this.microphoneSwitch += 1;
     // Listening to the call's microphone ends with it; the settings' test keeps its own.
     if (!this.isMicrophoneTestRunning) {
@@ -2088,7 +2127,8 @@ export class VoiceSession {
       | "roundTripTimer"
       | "levelTimer"
       | "pushToTalkReleaseTimer"
-      | "streamSoundTimer",
+      | "streamSoundTimer"
+      | "watchListTimer",
   ): void {
     const timer = this[name];
     if (timer !== null) {
