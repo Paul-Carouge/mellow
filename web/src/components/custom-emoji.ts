@@ -51,7 +51,12 @@ export function emojiSuggestionQuery(text: string, caret: number): EmojiSuggesti
   if (colon > 0 && !/\s/u.test(text[colon - 1] ?? "")) {
     return null;
   }
-  return { start: colon, end: caret, query: text.slice(start, caret) };
+  // To the end of the name, so choosing with the caret inside ":smi|le" leaves no "le" behind.
+  let end = caret;
+  while (end < text.length && EMOJI_NAME_CHARACTER.test(text[end] ?? "")) {
+    end += 1;
+  }
+  return { start: colon, end, query: text.slice(start, caret) };
 }
 
 export type EmojiSuggestion =
