@@ -23,8 +23,8 @@ use crate::domain::video_rules::{
     FrameForwarding, LayerAllocation, LayerByteBudget, LayerCosts, LayerRate, LayerSwitch,
     MAXIMUM_SILENCE_OF_A_CAMERA, MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS,
     MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER, Throttle, TileDemand, active_layers,
-    desired_bits_per_second, fair_share_of_upload, fit_tiles, is_keyframe_within_layer_size,
-    layer_cost, watcher_video_budget,
+    arriving_layer_at_most, desired_bits_per_second, fair_share_of_upload, fit_tiles,
+    is_keyframe_within_layer_size, is_layer_gone, layer_cost, watcher_video_budget,
 };
 use crate::domain::voice_rules::{ReceiveSlots, SpeakingDetector};
 
@@ -81,8 +81,10 @@ const OPUS_MINIMUM_PACKET_MILLISECONDS: u8 = 10;
 /// tiles go down then.
 const INITIAL_BANDWIDTH_ESTIMATE: Bitrate = Bitrate::mbps(5);
 /// How often every watcher's tiles are fitted again, besides each new estimate: picks up layers
-/// whose measured rate changed, other watchers coming and going, and the wait before going up.
-const REALLOCATION_INTERVAL: Duration = Duration::from_secs(1);
+/// whose measured rate changed or that a camera stopped sending, other watchers coming and going,
+/// and the wait before going up. Half the silence of a lost layer, so a watcher falls back within
+/// a second and a half of the last frame.
+const REALLOCATION_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Builds the server side of a participant's session and its SDP answer. Called off the async
 /// runtime: building a session generates its DTLS certificate.
@@ -227,11 +229,24 @@ pub(crate) enum MediaEvent {
 struct WatchedCamera {
     /// The watcher's video receive m-line carrying it.
     mid: Mid,
-    /// The layer the tile's size asks for; the switch wants it, or less on a slow link.
+    /// The layer the tile's size asks for.
     asked: SimulcastLayer,
+    /// What the watcher's bandwidth allows of it (`None`: paused). Kept asked of the camera
+    /// even while gone, so its browser sends it again once its uplink allows.
+    allocated: Option<SimulcastLayer>,
+    /// Wants the allocated layer, or the highest lower one still arriving.
     switch: LayerSwitch,
     /// The fitting paused the tile (a tile waiting for its first layer is not paused).
     is_paused: bool,
+}
+
+/// One tile as the fitting sees it.
+struct FittedTile {
+    camera_id: Snowflake,
+    demand: TileDemand,
+    allocated: Option<SimulcastLayer>,
+    /// The layers its camera stopped sending.
+    gone_layers: Vec<SimulcastLayer>,
 }
 
 /// The simulcast layer a camera's frame belongs to, from the RIDs the web client sends (ADR-0035).
@@ -286,6 +301,10 @@ struct ParticipantVideo {
     screen_sound: Option<ScreenSoundMids>,
     /// What each layer of their camera sent over the last second, to cost it for watchers.
     layer_rates: HashMap<SimulcastLayer, LayerRate>,
+    /// Since when each layer of their camera has been asked of it (`VOICE_VIDEO_LAYERS`).
+    layer_requested_since: HashMap<SimulcastLayer, Instant>,
+    /// When each layer of their camera last sent a frame, to tell layers its browser dropped.
+    layer_heard_at: HashMap<SimulcastLayer, Instant>,
     /// The latest estimate of their downlink in bits per second (TWCC), `None` before the first.
     estimated_bits_per_second: Option<u64>,
     /// An estimate arrived since their tiles were last fitted.
@@ -818,6 +837,7 @@ impl MediaLoop<'_> {
             // The next stream (maybe a screen instead of a camera) starts over: watchers wait for
             // its first keyframe, and its layers are measured again.
             camera.video.layer_rates.clear();
+            camera.video.layer_heard_at.clear();
             self.restart_watchers_of(user_id);
         }
         let mut changed_cameras = vec![user_id];
@@ -926,6 +946,7 @@ impl MediaLoop<'_> {
                     WatchedCamera {
                         mid,
                         asked: *layer,
+                        allocated: None,
                         switch: LayerSwitch::new(None),
                         is_paused: false,
                     },
@@ -994,28 +1015,32 @@ impl MediaLoop<'_> {
         // In the order the watcher lists them: among equal tiles, the last listed gives way first.
         // Only cameras on in the watcher's channel count: any other id in a watch list receives
         // nothing, and must not reveal another channel's camera through its cost.
-        let tiles: Vec<(Snowflake, TileDemand, Option<SimulcastLayer>)> = watcher
+        let tiles: Vec<FittedTile> = watcher
             .video
             .shown_cameras
             .iter()
             .filter(|(camera_id, _)| self.is_camera_on_in(*camera_id, watcher.channel_id))
             .filter_map(|(camera_id, _)| {
                 let tile = watcher.video.watched_cameras.get(camera_id)?;
-                let demand = TileDemand {
-                    asked: tile.asked,
-                    costs: self.layer_costs_of(*camera_id, now),
-                };
-                Some((*camera_id, demand, tile.switch.wanted()))
+                Some(FittedTile {
+                    camera_id: *camera_id,
+                    demand: TileDemand {
+                        asked: tile.asked,
+                        costs: self.layer_costs_of(*camera_id, now),
+                    },
+                    allocated: tile.allocated,
+                    gone_layers: self.gone_layers_of(*camera_id, now),
+                })
             })
             .collect();
         let fair_share = fair_share_of_upload(self.video_upload_bits_per_second, watchers);
         let budget = watcher_video_budget(watcher.video.estimated_bits_per_second, fair_share);
-        let demands: Vec<TileDemand> = tiles.iter().map(|(_, demand, _)| *demand).collect();
+        let demands: Vec<TileDemand> = tiles.iter().map(|tile| tile.demand).collect();
         let Some(watcher) = self.participants.get_mut(&watcher_id) else {
             return Vec::new();
         };
         // A camera turned on, off or moved in or out of the channel changes the tiles too.
-        let cameras: Vec<Snowflake> = tiles.iter().map(|(camera_id, _, _)| *camera_id).collect();
+        let cameras: Vec<Snowflake> = tiles.iter().map(|tile| tile.camera_id).collect();
         let is_new_layout = is_new_layout || cameras != watcher.video.fitted_cameras;
         watcher.video.fitted_cameras = cameras;
         let layers = if is_new_layout {
@@ -1023,7 +1048,7 @@ impl MediaLoop<'_> {
             fit_tiles(&demands, budget)
         } else {
             let current: Vec<Option<SimulcastLayer>> =
-                tiles.iter().map(|(_, _, current)| *current).collect();
+                tiles.iter().map(|tile| tile.allocated).collect();
             watcher
                 .video
                 .allocation
@@ -1031,20 +1056,24 @@ impl MediaLoop<'_> {
         };
         let mut changed_cameras = Vec::new();
         let mut pauses = Vec::new();
-        for ((camera_id, _, current), layer) in tiles.iter().zip(layers) {
-            let Some(shown) = watcher.video.watched_cameras.get_mut(camera_id) else {
+        for (tile, layer) in tiles.iter().zip(layers) {
+            let Some(shown) = watcher.video.watched_cameras.get_mut(&tile.camera_id) else {
                 continue;
             };
-            if *current != layer {
-                shown.switch.want(layer);
-                changed_cameras.push(*camera_id);
+            let arriving = layer.map(|layer| {
+                arriving_layer_at_most(layer, |candidate| tile.gone_layers.contains(&candidate))
+            });
+            if shown.allocated != layer || shown.switch.wanted() != arriving {
+                shown.allocated = layer;
+                shown.switch.want(arriving);
+                changed_cameras.push(tile.camera_id);
             }
             if shown.is_paused != layer.is_none() {
                 shown.is_paused = layer.is_none();
                 pauses.push(MediaEvent::TilePaused {
                     watcher_id,
                     connection_id: watcher.connection_id,
-                    camera_id: *camera_id,
+                    camera_id: tile.camera_id,
                     is_paused: shown.is_paused,
                 });
             }
@@ -1096,15 +1125,20 @@ impl MediaLoop<'_> {
             return;
         };
         let active = if camera.video.is_camera_forwarded {
-            active_layers(
-                self.participants
-                    .values()
-                    .filter(|watcher| {
-                        watcher.user_id != camera_id && watcher.channel_id == camera.channel_id
-                    })
-                    .filter_map(|watcher| watcher.video.watched_cameras.get(&camera_id))
-                    .map(|watched| &watched.switch),
-            )
+            let watched: Vec<&WatchedCamera> = self
+                .participants
+                .values()
+                .filter(|watcher| {
+                    watcher.user_id != camera_id && watcher.channel_id == camera.channel_id
+                })
+                .filter_map(|watcher| watcher.video.watched_cameras.get(&camera_id))
+                .collect();
+            let mut active = active_layers(watched.iter().map(|watched| &watched.switch));
+            // A layer gone stays asked for: the browser sends it again once its uplink allows.
+            active.extend(watched.iter().filter_map(|watched| watched.allocated));
+            active.sort_unstable();
+            active.dedup();
+            active
         } else {
             Vec::new()
         };
@@ -1117,9 +1151,32 @@ impl MediaLoop<'_> {
             active: active.clone(),
         };
         if let Some(camera) = self.participants.get_mut(&camera_id) {
+            let now = Instant::now();
+            let requested_since = &mut camera.video.layer_requested_since;
+            requested_since.retain(|layer, _| active.contains(layer));
+            for layer in &active {
+                requested_since.entry(*layer).or_insert(now);
+            }
             camera.video.reported_camera_layers = active;
         }
         self.emit(event);
+    }
+
+    /// The layers `camera_id` was asked for but stopped sending (ADR-0035).
+    fn gone_layers_of(&self, camera_id: Snowflake, now: Instant) -> Vec<SimulcastLayer> {
+        let Some(camera) = self.participants.get(&camera_id) else {
+            return Vec::new();
+        };
+        [SimulcastLayer::Low, SimulcastLayer::High]
+            .into_iter()
+            .filter(|layer| {
+                is_layer_gone(
+                    camera.video.layer_requested_since.get(layer).copied(),
+                    camera.video.layer_heard_at.get(layer).copied(),
+                    now,
+                )
+            })
+            .collect()
     }
 
     /// Whether `camera_id` is a camera turned on in `channel_id`, so watchers there receive it.
@@ -1298,6 +1355,7 @@ impl MediaLoop<'_> {
             return;
         }
         camera.video.camera_heard_at = Some(now);
+        camera.video.layer_heard_at.insert(layer, now);
         let channel_id = camera.channel_id;
         let mut has_switched = false;
         let mut is_keyframe_wanted = false;
@@ -1879,6 +1937,54 @@ mod tests {
         estimate(&mut media, 10_000_000, 7);
         assert_eq!(wanted(&media), Some(SimulcastLayer::High));
         assert_eq!(pauses(&mut events), [false]);
+    }
+
+    #[test]
+    fn a_watcher_falls_back_from_a_layer_its_camera_stopped_and_returns_when_it_comes_back() {
+        let (_commands, command_receiver) = std::sync::mpsc::channel();
+        let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let mut media = media_loop(&command_receiver, &event_sender);
+        let (camera_id, watcher_id) = join_camera_and_watcher(&mut media, Snowflake::from_raw(5));
+        media.set_camera(camera_id, true);
+        media.watch_cameras(watcher_id, &[(camera_id, SimulcastLayer::High)]);
+        let start = Instant::now();
+        let at = |milliseconds| start + Duration::from_millis(milliseconds);
+        let wanted = |media: &MediaLoop<'_>| {
+            media.participants[&watcher_id].video.watched_cameras[&camera_id]
+                .switch
+                .wanted()
+        };
+        let heard = |media: &mut MediaLoop<'_>, layer, at| {
+            let camera = media.participants.get_mut(&camera_id).unwrap();
+            camera.video.layer_heard_at.insert(layer, at);
+        };
+        heard(&mut media, SimulcastLayer::Low, at(1_400));
+        media.follow_bandwidth(at(900));
+        assert_eq!(wanted(&media), Some(SimulcastLayer::High), "just asked");
+
+        media.next_reallocation_at = at(0);
+        media.follow_bandwidth(at(1_500));
+        assert_eq!(wanted(&media), Some(SimulcastLayer::Low));
+        let reported = std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|event| match event {
+                MediaEvent::CameraLayers { active, .. } => Some(active),
+                _ => None,
+            })
+            .last();
+        assert_eq!(
+            reported,
+            Some(vec![
+                SimulcastLayer::Quarter,
+                SimulcastLayer::Low,
+                SimulcastLayer::High
+            ]),
+            "the layer gone stays asked for, next to the fallback"
+        );
+
+        heard(&mut media, SimulcastLayer::High, at(1_600));
+        media.next_reallocation_at = at(0);
+        media.follow_bandwidth(at(1_700));
+        assert_eq!(wanted(&media), Some(SimulcastLayer::High));
     }
 
     #[test]

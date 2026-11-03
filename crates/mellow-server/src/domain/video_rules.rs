@@ -27,6 +27,39 @@ pub(crate) const MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER: Durati
 /// holds a place counts no more toward the cameras allowed (ADR-0035). Long enough for a browser
 /// to start a camera and connect.
 pub(crate) const MAXIMUM_SILENCE_OF_A_CAMERA: Duration = Duration::from_secs(10);
+/// A layer asked of a camera for this long that sent no frame for this long counts as gone: its
+/// sender's browser dropped it for a short uplink, and its watchers fall back to the next lower
+/// layer still arriving (ADR-0035).
+pub(crate) const SILENCE_OF_A_LOST_LAYER: Duration = Duration::from_secs(1);
+
+/// Whether a camera's layer is gone: asked of the camera since `requested_since` and last heard at
+/// `heard_at`, both at least `SILENCE_OF_A_LOST_LAYER` ago. A layer not asked yet is not gone: it
+/// is about to be asked, and its first frames take a moment.
+#[must_use]
+pub(crate) fn is_layer_gone(
+    requested_since: Option<Instant>,
+    heard_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    let is_old = |at: Instant| now.saturating_duration_since(at) >= SILENCE_OF_A_LOST_LAYER;
+    requested_since.is_some_and(is_old) && heard_at.is_none_or(is_old)
+}
+
+/// The layer a tile allocated `allocated` receives: the highest at most `allocated` that is not
+/// gone, and the lowest when every one is (a camera silent for long is turned off anyway).
+#[must_use]
+pub(crate) fn arriving_layer_at_most(
+    allocated: SimulcastLayer,
+    is_gone: impl Fn(SimulcastLayer) -> bool,
+) -> SimulcastLayer {
+    let mut layer = allocated;
+    while is_gone(layer)
+        && let Some(lower) = layer_below(layer)
+    {
+        layer = lower;
+    }
+    layer
+}
 
 /// The layer that fits a tile shown at `size` (ADR-0035).
 #[must_use]
@@ -786,6 +819,33 @@ mod tests {
         assert_eq!(switch.on_frame(Low, false), FrameForwarding::Drop);
         assert_eq!(switch.forwarded(), Some(High));
         assert_eq!(switch.wanted(), Some(High));
+    }
+
+    #[test]
+    fn a_layer_asked_for_a_second_without_a_frame_is_gone() {
+        let start = Instant::now();
+        let at = |milliseconds| start + Duration::from_millis(milliseconds);
+        assert!(!is_layer_gone(None, None, at(5_000)), "not asked yet");
+        assert!(!is_layer_gone(Some(at(0)), None, at(999)), "just asked");
+        assert!(is_layer_gone(Some(at(0)), None, at(1_000)));
+        assert!(!is_layer_gone(Some(at(0)), Some(at(500)), at(1_400)));
+        assert!(is_layer_gone(Some(at(0)), Some(at(500)), at(1_500)));
+    }
+
+    #[test]
+    fn a_tile_falls_back_to_the_highest_layer_still_arriving() {
+        assert_eq!(arriving_layer_at_most(High, |_| false), High);
+        assert_eq!(arriving_layer_at_most(High, |layer| layer == High), Low);
+        assert_eq!(
+            arriving_layer_at_most(High, |layer| layer != Quarter),
+            Quarter
+        );
+        assert_eq!(
+            arriving_layer_at_most(Low, |layer| layer == High),
+            Low,
+            "a higher layer gone changes nothing"
+        );
+        assert_eq!(arriving_layer_at_most(High, |_| true), Quarter);
     }
 
     #[test]
