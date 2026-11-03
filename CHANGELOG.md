@@ -4,6 +4,13 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-11-03
+Videos and sounds play in messages (ADR-0038). No database migration and no protocol change.
+
+### Added
+- Videos (MP4, MOV, WebM) play inside the message with the browser's player, and sounds (MP3, M4A, AAC, Ogg, WAV, FLAC) in a compact player on their card; nothing loads before you press play, and starting one pauses the other. A file your browser cannot decode stays a download. Files sent before this version stay downloads.
+- The instance answers byte ranges on attachments, so players can seek (and Safari can play at all).
+
 ## [0.36.0] - 2026-11-03
 Pictures open inside Mellow. No database migration and no protocol change.
 
