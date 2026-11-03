@@ -70,9 +70,12 @@ Phone (390 px): the video box and the card take the column's width (`min(100%, �
 - **The name over the video's top edge**, as on Discord: hides the picture's top and differs from Mellow's other media surfaces, which keep controls in a band.
 - **A grey or themed box** behind the video: a letterboxed phone video on the chat's ground reads as a broken layout; the stage's dark is the media convention throughout Mellow.
 
+## In the picture viewer (DESIGN.md v0.45)
+
+The band's "Agrandir" icon (`corners-out`, between the size and the download icon, named "Agrandir la vidéo clip.mp4") pauses the list's player and opens the picture viewer on that video, going on from the same second and playing (from the start when it had ended). A video reached with Left or Right does not play by itself (`preload="none"`, as in the list): it holds a 16:9 box until played. The viewer's set is the message's pictures and list-playable videos, in message order. A video there fills the room (grown past its own pixels, as a player does; pictures still never are), with the browser's controls; no "Taille réelle" toggle. Left and Right still move between items unless the focus is on the video, where they seek. "Chargement de la vidéo…" appears after the usual delay, only for the video that autoplays, until its metadata arrives; a video this browser cannot play shows "Impossible de lire cette vidéo ici. Télécharge-la pour l’ouvrir dans une autre application." without "Réessayer" (it would fail again; download stays in the band). A video sent with no other media still opens the viewer alone. Previous and next became "Précédent" and "Suivant", and the position "2 sur 4", since an item may be a picture or a video.
+
 ## Not done
 
-- Opening a video in the picture viewer (large, with the message's other media): the inline player's own full-screen control covers the need for now.
 - A video's real size or a poster frame from the instance (would need probing at upload, ADR-0038 does no transcoding); the 16:9 box letterboxes portrait videos meanwhile.
 - Chrome paints its unloaded `preload="none"` video in its own grey under the controls' gradient, not in the stage colour; only the band shows `media.stage` until the first frame.
 - The light theme's native audio player is Chrome's light grey pill on the light card: its controls are dark and readable, the pill's edge is faint.

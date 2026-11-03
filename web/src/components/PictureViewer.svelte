@@ -3,6 +3,7 @@
 
   import { strings } from "../i18n";
   import { type Attachment, attachmentPreviewUrl, attachmentUrl } from "../lib/protocol";
+  import { forgetMediaWhenItStops, pauseOtherMediaWhenOneStarts } from "./attachment-preview";
   import { fileNameStartAndEnd, humanFileSize, messageTimestampLabel } from "./format";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
@@ -10,40 +11,52 @@
     type PixelSize,
     actualSizeScrollStart,
     attachmentPixelSize,
+    FALLBACK_VIDEO_PIXEL_SIZE,
     fittedPictureSize,
+    fittedVideoSize,
     isPictureLargerThanBox,
+    isViewerVideo,
     wrappedPictureIndex,
   } from "./picture-viewer";
   import { IMAGE_RETRY_DELAY_MILLISECONDS } from "./image-retry";
   import { durationTokenInMilliseconds, lengthTokenInPixels } from "./tokens";
 
-  // docs/design/web-picture-viewer.md: a message's pictures large over the app, on the opaque
+  // docs/design/web-picture-viewer.md: a message's pictures and videos large over the app, on the opaque
   // media stage, with the controls in a band under it. A native modal <dialog> keeps the app inert.
   interface Props {
-    pictures: readonly Attachment[];
+    media: readonly Attachment[];
     initialIndex: number;
+    /** Where the first video shown goes on from, when it was playing in the list. */
+    initialVideoStartSeconds?: number;
     authorName: string;
     sentAtUnixMilliseconds: number;
-    /** The picture link that opened the viewer; focus goes back to it when it closes. */
+    /** The picture link or "Agrandir" button that opened the viewer; focus goes back to it when it closes. */
     opener: HTMLElement | null;
     onclose: () => void;
   }
 
-  let { pictures, initialIndex, authorName, sentAtUnixMilliseconds, opener, onclose }: Props = $props();
+  let { media, initialIndex, initialVideoStartSeconds, authorName, sentAtUnixMilliseconds, opener, onclose }: Props = $props();
 
   const id = $props.id();
   let dialog: HTMLDialogElement;
   let stage: HTMLDivElement;
   let closeButton = $state<HTMLButtonElement | null>(null);
-  // The viewer keeps the pictures it opened with; the list behind it may change meanwhile.
+  // The viewer keeps the pictures and videos it opened with; the list behind it may change meanwhile.
   // svelte-ignore state_referenced_locally
-  let index = $state(Math.min(Math.max(initialIndex, 0), pictures.length - 1));
-  const picture = $derived(pictures[index]);
+  let index = $state(Math.min(Math.max(initialIndex, 0), media.length - 1));
+  const shownMedia = $derived(media[index]);
+  const isVideo = $derived(shownMedia !== undefined && isViewerVideo(shownMedia));
+  // Only the video the viewer opened on goes on from the list's position.
+  // svelte-ignore state_referenced_locally
+  let videoStartSeconds = initialVideoStartSeconds ?? 0;
+  // Nothing plays by itself (ADR-0038): only the video opened from the list's "Agrandir" does.
+  // svelte-ignore state_referenced_locally
+  let shouldAutoplayVideo = $state(initialVideoStartSeconds !== undefined);
 
   let stageWidth = $state(0);
   let stageHeight = $state(0);
   let isActualSize = $state(false);
-  // Per shown picture: reset by `showPicture` and by "Réessayer".
+  // Per shown picture: reset by `showMediaAt` and by "Réessayer".
   let loadedSize = $state<PixelSize | null>(null);
   let isFullLoaded = $state(false);
   let hasFullRetried = $state(false);
@@ -63,28 +76,41 @@
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 
   const stagePadding = lengthTokenInPixels("component-picture-viewer-stage-padding");
-  const naturalSize = $derived(picture ? (attachmentPixelSize(picture) ?? loadedSize) : null);
+  // A video that has not loaded yet holds the list's 16:9 box, so its controls are not a 300 × 150 stamp.
+  const naturalSize = $derived(
+    shownMedia ? (attachmentPixelSize(shownMedia) ?? loadedSize ?? (isVideo ? FALLBACK_VIDEO_PIXEL_SIZE : null)) : null,
+  );
   const box = $derived({ width: Math.max(1, stageWidth - 2 * stagePadding), height: Math.max(1, stageHeight - 2 * stagePadding) });
-  const isZoomable = $derived(naturalSize !== null && isPictureLargerThanBox(naturalSize, box));
+  const isZoomable = $derived(!isVideo && naturalSize !== null && isPictureLargerThanBox(naturalSize, box));
   // A window grown until the picture fits leaves actual size by itself.
   const isShownAtActualSize = $derived(isActualSize && isZoomable);
-  const shownSize = $derived(naturalSize === null ? null : isShownAtActualSize ? naturalSize : fittedPictureSize(naturalSize, box));
+  const shownSize = $derived(
+    naturalSize === null
+      ? null
+      : isVideo
+        ? fittedVideoSize(naturalSize, box)
+        : isShownAtActualSize
+          ? naturalSize
+          : fittedPictureSize(naturalSize, box),
+  );
   const caption = $derived(
-    picture
-      ? strings.pictureViewer.caption(authorName, messageTimestampLabel(sentAtUnixMilliseconds, new Date()), humanFileSize(picture.size_bytes))
+    shownMedia
+      ? strings.pictureViewer.caption(authorName, messageTimestampLabel(sentAtUnixMilliseconds, new Date()), humanFileSize(shownMedia.size_bytes))
       : "",
   );
   const hasNothingToShow = $derived(isFullFailed && isPreviewFailed);
 
-  async function showPicture(nextIndex: number) {
+  async function showMediaAt(nextIndex: number) {
     index = nextIndex;
+    videoStartSeconds = 0;
+    shouldAutoplayVideo = false;
     isActualSize = false;
     clearTimeout(copiedTimer);
     isCopied = false;
     resetLoading();
-    const shown = pictures[index];
+    const shown = media[index];
     if (shown) {
-      announcement = strings.pictureViewer.pictureChanged(index + 1, pictures.length, shown.file_name);
+      announcement = strings.pictureViewer.pictureChanged(index + 1, media.length, shown.file_name);
     }
     await keepFocusInViewer();
   }
@@ -130,7 +156,7 @@
   }
 
   function step(direction: -1 | 1) {
-    void showPicture(wrappedPictureIndex(index, direction, pictures.length));
+    void showMediaAt(wrappedPictureIndex(index, direction, media.length));
   }
 
   function onFullError(generation: number) {
@@ -149,6 +175,21 @@
         }
       }, IMAGE_RETRY_DELAY_MILLISECONDS);
     }
+  }
+
+  /** As in the list: a network error keeps the player (play resumes), anything else cannot play here. */
+  function onVideoError(event: Event, generation: number) {
+    const player = event.currentTarget;
+    if (generation !== loadGeneration) {
+      return;
+    }
+    if (player instanceof HTMLMediaElement && player.error?.code === MediaError.MEDIA_ERR_NETWORK) {
+      isFullLoaded = true;
+      return;
+    }
+    isFullFailed = true;
+    isPreviewFailed = true;
+    void keepFocusInViewer();
   }
 
   async function toggleActualSize(event: MouseEvent | KeyboardEvent) {
@@ -174,11 +215,11 @@
   }
 
   async function copyLink() {
-    if (!picture) {
+    if (!shownMedia) {
       return;
     }
     try {
-      await navigator.clipboard.writeText(new URL(attachmentUrl(picture), window.location.origin).href);
+      await navigator.clipboard.writeText(new URL(attachmentUrl(shownMedia), window.location.origin).href);
     } catch (error) {
       console.warn("copying the picture link failed", error);
       isCopyFailed = true;
@@ -195,8 +236,8 @@
   }
 
   function onkeydown(event: KeyboardEvent) {
-    // At actual size the arrows pan the stage, as the browser does by itself.
-    if (isShownAtActualSize || pictures.length < 2 || event.altKey || event.ctrlKey || event.metaKey) {
+    // At actual size the arrows pan the stage, as the browser does by itself; on a focused video they seek.
+    if (isShownAtActualSize || event.target instanceof HTMLMediaElement || media.length < 2 || event.altKey || event.ctrlKey || event.metaKey) {
       return;
     }
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
@@ -260,7 +301,7 @@
         }
       }}
     >
-      {#if picture && !hasNothingToShow}
+      {#if shownMedia && !hasNothingToShow}
         <svelte:element
           this={isZoomable ? "button" : "div"}
           type={isZoomable ? "button" : undefined}
@@ -275,13 +316,39 @@
           ]}
           onclick={isZoomable ? toggleActualSize : undefined}
         >
-          {#key `${picture.id}:${loadGeneration}`}
+          {#key `${shownMedia.id}:${loadGeneration}`}
             {@const shownGeneration = loadGeneration}
+            {#if isVideo}
+              {#if !isFullFailed}
+                <!-- svelte-ignore a11y_media_has_caption (uploads come without caption tracks) -->
+                <video
+                  src={attachmentUrl(shownMedia)}
+                  controls
+                  autoplay={shouldAutoplayVideo}
+                  preload={shouldAutoplayVideo ? "auto" : "none"}
+                  playsinline
+                  aria-label={strings.messages.videoPlayer(shownMedia.file_name)}
+                  class={["block bg-(--mw-component-picture-viewer-background)", shownSize ? "absolute inset-0 size-full" : "max-h-full max-w-full"]}
+                  onloadedmetadata={(event) => {
+                    if (shownGeneration === loadGeneration) {
+                      const player = event.currentTarget;
+                      loadedSize = player.videoWidth > 0 ? { width: player.videoWidth, height: player.videoHeight } : loadedSize;
+                      isFullLoaded = true;
+                      if (videoStartSeconds > 0) {
+                        player.currentTime = videoStartSeconds;
+                      }
+                    }
+                  }}
+                  onplay={(event) => pauseOtherMediaWhenOneStarts(event.currentTarget)}
+                  onpause={(event) => forgetMediaWhenItStops(event.currentTarget)}
+                  onerror={(event) => onVideoError(event, shownGeneration)}
+                ></video>
+              {/if}
             <!-- The list's preview, already in the cache, holds the place until the full file arrives. -->
-            {#if !isFullLoaded && !isPreviewFailed}
+            {:else if !isFullLoaded && !isPreviewFailed}
               <img
-                src={attachmentPreviewUrl(picture)}
-                alt={picture.file_name}
+                src={attachmentPreviewUrl(shownMedia)}
+                alt={shownMedia.file_name}
                 class={["block", shownSize ? "absolute inset-0 size-full" : "max-h-full max-w-full"]}
                 onload={(event) => {
                   if (shownGeneration === loadGeneration) {
@@ -295,10 +362,10 @@
                 }}
               />
             {/if}
-            {#if !isFullFailed}
+            {#if !isVideo && !isFullFailed}
               <img
-                src={attachmentUrl(picture)}
-                alt={picture.file_name}
+                src={attachmentUrl(shownMedia)}
+                alt={shownMedia.file_name}
                 decoding="async"
                 class={["block", shownSize ? "absolute inset-0 size-full" : "max-h-full max-w-full", !isFullLoaded && "invisible"]}
                 onload={(event) => {
@@ -323,11 +390,14 @@
             <span>
               {isCopyFailed && !isFullFailed
                 ? strings.pictureViewer.copyLinkFailed
-                : hasNothingToShow
+                : isVideo
+                  ? strings.pictureViewer.videoFailed
+                  : hasNothingToShow
                   ? strings.pictureViewer.pictureFailed
                   : strings.pictureViewer.fullSizeFailed}
             </span>
-            {#if isFullFailed}
+            <!-- A video that cannot play here would fail again: download is the way out. -->
+            {#if isFullFailed && !isVideo}
               <button
                 type="button"
                 class="min-h-(--mw-component-picture-viewer-control-size) rounded-(--mw-component-picture-viewer-control-radius) border-(length:--mw-component-picture-viewer-retry-border-width) border-(--mw-component-picture-viewer-retry-border) px-(--mw-component-picture-viewer-status-padding) font-semibold hover:bg-(--mw-component-picture-viewer-control-background-hover) focus-visible:focus-ring"
@@ -335,41 +405,41 @@
               >
             {/if}
           </p>
-        {:else if picture && !isFullLoaded && isLoadingNoticeDue}
+        {:else if shownMedia && !isFullLoaded && isLoadingNoticeDue && (!isVideo || shouldAutoplayVideo)}
           <!-- Shown only when the full file is slow: a cached picture never flashes it. -->
           <p
             class="animate-[mw-fade-in_var(--mw-motion-duration-base)_var(--mw-motion-easing-standard)_both] rounded-(--mw-component-picture-viewer-status-radius) bg-(--mw-component-picture-viewer-status-background) p-(--mw-component-picture-viewer-status-padding) type-body text-(--mw-component-picture-viewer-status-text)"
           >
-            {strings.pictureViewer.loading}
+            {isVideo ? strings.pictureViewer.loadingVideo : strings.pictureViewer.loading}
           </p>
         {/if}
       </div>
     </div>
   </div>
 
-  {#if picture}
-    {@const nameParts = fileNameStartAndEnd(picture.file_name)}
+  {#if shownMedia}
+    {@const nameParts = fileNameStartAndEnd(shownMedia.file_name)}
     <div
       class="flex min-h-(--mw-component-picture-viewer-band-min-height) flex-wrap items-center justify-between gap-x-(--mw-component-picture-viewer-band-gap) gap-y-(--mw-component-picture-viewer-band-row-gap) px-(--mw-component-picture-viewer-band-padding-inline) pt-(--mw-component-picture-viewer-band-padding-block) pb-[calc(var(--mw-component-picture-viewer-band-padding-block)+env(safe-area-inset-bottom))]"
     >
       <div class="min-w-0 flex-[1_1_var(--mw-component-picture-viewer-caption-min-width)]">
-        <h2 id="{id}-name" title={picture.file_name} class="flex type-body-lg text-(--mw-component-picture-viewer-name-text)">
+        <h2 id="{id}-name" title={shownMedia.file_name} class="flex type-body-lg text-(--mw-component-picture-viewer-name-text)">
           <span aria-hidden="true" class="flex min-w-0"
             ><span class="truncate">{nameParts.start}</span><span class="shrink-0 whitespace-pre">{nameParts.end}</span></span
           >
-          <span class="sr-only">{picture.file_name}</span>
+          <span class="sr-only">{shownMedia.file_name}</span>
         </h2>
         <p id="{id}-caption" class="truncate type-body-sm text-(--mw-component-picture-viewer-meta-text)">{caption}</p>
       </div>
 
       <div class="flex flex-1 flex-wrap items-center justify-between gap-(--mw-component-picture-viewer-band-gap)">
-        {#if pictures.length > 1}
+        {#if media.length > 1}
           <div class="flex items-center gap-(--mw-component-picture-viewer-control-gap)">
             {@render control("caret-left", strings.pictureViewer.previous, -1)}
             <span aria-hidden="true" class="type-body text-(--mw-component-picture-viewer-position-text) tabular-nums"
-              >{strings.pictureViewer.position(index + 1, pictures.length)}</span
+              >{strings.pictureViewer.position(index + 1, media.length)}</span
             >
-            <span id="{id}-position" class="sr-only">{strings.pictureViewer.positionLabel(index + 1, pictures.length)}</span>
+            <span id="{id}-position" class="sr-only">{strings.pictureViewer.positionLabel(index + 1, media.length)}</span>
             {@render control("caret-right", strings.pictureViewer.next, 1)}
           </div>
         {/if}
@@ -379,9 +449,9 @@
             <Icon name={icon} class="size-(--mw-component-picture-viewer-control-icon-size)" />
           {/snippet}
           <a
-            href={attachmentUrl(picture)}
-            download={picture.file_name}
-            aria-label={strings.messages.download(picture.file_name)}
+            href={attachmentUrl(shownMedia)}
+            download={shownMedia.file_name}
+            aria-label={strings.messages.download(shownMedia.file_name)}
             title={strings.pictureViewer.downloadTooltip}
             class="control">{@render linkIcon("download-simple")}</a
           >
@@ -393,7 +463,7 @@
             onclick={copyLink}
           />
           <a
-            href={attachmentUrl(picture)}
+            href={attachmentUrl(shownMedia)}
             target="_blank"
             rel="noopener noreferrer"
             aria-label={strings.pictureViewer.openOriginal}

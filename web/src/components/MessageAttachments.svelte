@@ -14,7 +14,7 @@
   import { attachmentCountLabel, fileNameStartAndEnd, humanFileSize } from "./format";
   import Icon from "./Icon.svelte";
   import { retryImageOnceThenMarkFailed } from "./image-retry";
-  import { isPlainPrimaryClick, viewablePictures } from "./picture-viewer";
+  import { isPlainPrimaryClick, viewableMedia } from "./picture-viewer";
   import { openPictureViewer } from "./picture-viewer-request.svelte";
 
   // Attachments under a message body (DESIGN.md §5.4 "Attachments"): previewable images inline,
@@ -32,16 +32,32 @@
   let { attachments, isPending, authorName, sentAtUnixMilliseconds }: Props = $props();
 
   const id = $props.id();
-  const viewerPictures = $derived(viewablePictures(attachments));
+  const viewerMedia = $derived(viewableMedia(attachments));
 
   function openViewer(event: MouseEvent, attachment: Attachment) {
-    const index = viewerPictures.findIndex((picture) => picture.id === attachment.id);
     // A modified or middle click keeps the link's own behaviour (a new tab, a download).
-    if (index < 0 || sentAtUnixMilliseconds === null || !isPlainPrimaryClick(event) || !(event.currentTarget instanceof HTMLElement)) {
+    if (!isPlainPrimaryClick(event) || !(event.currentTarget instanceof HTMLElement)) {
       return;
     }
-    event.preventDefault();
-    openPictureViewer({ pictures: viewerPictures, index, authorName, sentAtUnixMilliseconds, opener: event.currentTarget });
+    if (openViewerAt(attachment, event.currentTarget)) {
+      event.preventDefault();
+    }
+  }
+
+  /** The list's player stops and the viewer goes on from where it was, playing (docs/design/web-inline-media.md). */
+  function openViewerOnVideo(button: HTMLButtonElement, attachment: Attachment) {
+    const player = button.closest("figure")?.querySelector("video");
+    player?.pause();
+    openViewerAt(attachment, button, player?.ended ? 0 : player?.currentTime);
+  }
+
+  function openViewerAt(attachment: Attachment, opener: HTMLElement, videoStartSeconds?: number): boolean {
+    const index = viewerMedia.findIndex((item) => item.id === attachment.id);
+    if (index < 0 || sentAtUnixMilliseconds === null) {
+      return false;
+    }
+    openPictureViewer({ media: viewerMedia, index, videoStartSeconds, authorName, sentAtUnixMilliseconds, opener });
+    return true;
   }
 
   const loadedImageIds = new SvelteSet<Snowflake>();
@@ -159,6 +175,15 @@
               <span class="sr-only">{strings.messages.download(attachment.file_name)}</span>
             </a>
             <span class="shrink-0 type-body-sm text-(--mw-component-attachment-video-size-text)">{size}</span>
+            <button
+              type="button"
+              aria-label={strings.messages.enlargeVideo(attachment.file_name)}
+              title={strings.messages.enlargeVideoTooltip}
+              class="grid size-(--mw-component-attachment-download-button-size) shrink-0 place-items-center rounded-sm text-(--mw-component-attachment-video-download-icon) transition-colors duration-(--mw-motion-duration-fast) hover:bg-(--mw-component-attachment-video-download-background-hover) hover:text-(--mw-component-attachment-video-download-icon-hover) focus-visible:focus-ring-inset pointer-coarse:size-(--mw-size-hit-web-min)"
+              onclick={(event) => openViewerOnVideo(event.currentTarget, attachment)}
+            >
+              <Icon name="corners-out" class="size-(--mw-component-attachment-download-icon-size)" />
+            </button>
             <a
               href={attachmentUrl(attachment)}
               download={attachment.file_name}

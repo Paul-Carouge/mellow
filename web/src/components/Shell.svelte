@@ -871,8 +871,9 @@
     {#snippet children({ default: PictureViewer })}
       {#if request}
         <PictureViewer
-          pictures={request.pictures}
+          media={request.media}
           initialIndex={request.index}
+          initialVideoStartSeconds={request.videoStartSeconds}
           authorName={request.authorName}
           sentAtUnixMilliseconds={request.sentAtUnixMilliseconds}
           opener={request.opener}
