@@ -40,6 +40,8 @@
   /** `null` opens the Friends space. */
   function selectConversation(channelId: Snowflake | null) {
     client.selectGuild(null, channelId);
+    client.voice.closeCallView();
+    client.voice.watchStream(null);
     onnavigate();
   }
 </script>
