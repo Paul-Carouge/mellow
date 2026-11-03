@@ -15,7 +15,7 @@ export function attachmentDisplay(attachment: Attachment, isPending: boolean, ha
     return "image";
   }
   if (PLAYABLE_VIDEO_TYPES.includes(attachment.content_type)) {
-    return "video";
+    return hasAudioOnlyExtension(attachment.file_name) ? "audio" : "video";
   }
   return PLAYABLE_AUDIO_TYPES.includes(attachment.content_type) ? "audio" : "file";
 }
@@ -52,6 +52,17 @@ export function videoBoxSize(attachment: Attachment): { width: string; aspectRat
   };
 }
 
+/**
+ * Voice recorders write sound alone into MP4 or WebM containers under these names; the server
+ * sniffs the container only, so the name picks the compact player (a video type still plays).
+ */
+const AUDIO_ONLY_FILE_EXTENSIONS: readonly string[] = ["m4a", "m4b", "weba", "opus", "mp3", "aac", "oga", "ogg", "wav", "flac"];
+
+function hasAudioOnlyExtension(fileName: string): boolean {
+  const extension = fileName.slice(fileName.lastIndexOf(".") + 1).toLowerCase();
+  return fileName.includes(".") && AUDIO_ONLY_FILE_EXTENSIONS.includes(extension);
+}
+
 let playingMedia: Pick<HTMLMediaElement, "pause"> | null = null;
 
 /** Only one attachment plays at a time, as on Discord: starting one pauses the one playing before. */
@@ -60,6 +71,13 @@ export function pauseOtherMediaWhenOneStarts(started: Pick<HTMLMediaElement, "pa
     playingMedia.pause();
   }
   playingMedia = started;
+}
+
+/** A paused or finished player is let go, so a removed one is not kept alive with its buffer. */
+export function forgetMediaWhenItStops(stopped: Pick<HTMLMediaElement, "pause">): void {
+  if (playingMedia === stopped) {
+    playingMedia = null;
+  }
 }
 
 function isPositiveInteger(value: number | undefined): value is number {

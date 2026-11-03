@@ -782,6 +782,7 @@ async fn attachments_revalidate_without_a_slot_and_downloads_wait_for_one() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // One scenario: upload, send, then every range answer.
 async fn videos_play_inline_and_media_players_get_byte_ranges() {
     use mellow_protocol::Attachment;
 
@@ -831,7 +832,30 @@ async fn videos_play_inline_and_media_players_get_byte_ranges() {
         send_from(&state, TEST_PEER, ranged("bytes=999-", None)).await;
     let ((other_version_status, whole_file), _) =
         send_from(&state, TEST_PEER, ranged("bytes=4-11", Some("\"0-1\""))).await;
+    let ((whole_status, _), whole_headers) =
+        send_from(&state, TEST_PEER, authorized("GET", &path, &owner, None)).await;
+    let entity_tag = whole_headers.get(header::ETAG).unwrap().to_str().unwrap();
+    let ((same_version_status, _), _) =
+        send_from(&state, TEST_PEER, ranged("bytes=4-11", Some(entity_tag))).await;
+    let mut revalidation = ranged("bytes=4-11", None);
+    revalidation.headers_mut().insert(
+        header::IF_NONE_MATCH,
+        HeaderValue::from_str(entity_tag).unwrap(),
+    );
+    let ((revalidation_status, _), _) = send_from(&state, TEST_PEER, revalidation).await;
     database.close().await;
+
+    assert_eq!(whole_status, StatusCode::OK);
+    assert_eq!(
+        whole_headers.get(header::CONTENT_LENGTH).unwrap(),
+        &VIDEO.len().to_string()
+    );
+    assert_eq!(same_version_status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        revalidation_status,
+        StatusCode::NOT_MODIFIED,
+        "a revalidation wins over a range"
+    );
 
     assert_eq!(video.content_type, "video/mp4");
     assert_eq!(ranged_status, StatusCode::PARTIAL_CONTENT);

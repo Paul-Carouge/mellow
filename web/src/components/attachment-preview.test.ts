@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { Attachment } from "../lib/protocol";
-import { attachmentDisplay, imagePreviewWidth, pauseOtherMediaWhenOneStarts, videoBoxSize } from "./attachment-preview";
+import {
+  attachmentDisplay,
+  forgetMediaWhenItStops,
+  imagePreviewWidth,
+  pauseOtherMediaWhenOneStarts,
+  videoBoxSize,
+} from "./attachment-preview";
 
 const PHOTO: Attachment = { id: "1", file_name: "photo.jpg", content_type: "image/jpeg", size_bytes: 10 };
 
@@ -29,6 +35,14 @@ describe("attachmentDisplay", () => {
     expect(attachmentDisplay(file("video/webm"), false, false)).toBe("video");
     expect(attachmentDisplay(file("audio/mpeg"), false, false)).toBe("audio");
     expect(attachmentDisplay(file("audio/flac"), false, false)).toBe("audio");
+  });
+
+  it("shows sound alone in a video container as audio, by its file name", () => {
+    const named = (file_name: string, content_type: string): Attachment => ({ ...PHOTO, file_name, content_type });
+    expect(attachmentDisplay(named("memo.M4A", "video/mp4"), false, false)).toBe("audio");
+    expect(attachmentDisplay(named("voice.weba", "video/webm"), false, false)).toBe("audio");
+    expect(attachmentDisplay(named("clip.mp4", "video/mp4"), false, false)).toBe("video");
+    expect(attachmentDisplay(named("m4a", "video/mp4"), false, false)).toBe("video");
   });
 
   it("keeps the download card for other files, pending uploads and what failed to play", () => {
@@ -68,5 +82,15 @@ describe("pauseOtherMediaWhenOneStarts", () => {
     pauseOtherMediaWhenOneStarts(second);
     expect(first.pause).toHaveBeenCalledOnce();
     expect(second.pause).not.toHaveBeenCalled();
+  });
+
+  it("forgets a player once it stops, so starting another pauses nothing", () => {
+    const first = { pause: vi.fn() };
+    const second = { pause: vi.fn() };
+    pauseOtherMediaWhenOneStarts(first);
+    forgetMediaWhenItStops(second);
+    forgetMediaWhenItStops(first);
+    pauseOtherMediaWhenOneStarts(second);
+    expect(first.pause).not.toHaveBeenCalled();
   });
 });

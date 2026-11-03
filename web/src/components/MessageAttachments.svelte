@@ -4,7 +4,13 @@
 
   import { strings } from "../i18n";
   import { type Attachment, PLAYABLE_AUDIO_TYPES, type Snowflake, attachmentPreviewUrl, attachmentUrl } from "../lib/protocol";
-  import { attachmentDisplay, imagePreviewWidth, pauseOtherMediaWhenOneStarts, videoBoxSize } from "./attachment-preview";
+  import {
+    attachmentDisplay,
+    forgetMediaWhenItStops,
+    imagePreviewWidth,
+    pauseOtherMediaWhenOneStarts,
+    videoBoxSize,
+  } from "./attachment-preview";
   import { attachmentCountLabel, fileNameStartAndEnd, humanFileSize } from "./format";
   import Icon from "./Icon.svelte";
   import { retryImageOnceThenMarkFailed } from "./image-retry";
@@ -44,10 +50,16 @@
   const failedImageIds = new SvelteSet<Snowflake>();
 
   // A video or sound this browser cannot play (its codec, or the instance did not serve it) becomes
-  // its download card with a note; nothing retries, since each try decrypts the whole file.
+  // its download card with a note; nothing retries, since each try decrypts the whole file. A
+  // network error (a busy instance, the download limit) keeps the player: pressing play again
+  // resumes.
   const failedMediaIds = new SvelteSet<Snowflake>();
 
   function showDownloadCardAfterPlaybackFailed(event: Event, attachment: Attachment) {
+    const player = event.currentTarget;
+    if (player instanceof HTMLMediaElement && player.error?.code === MediaError.MEDIA_ERR_NETWORK) {
+      return;
+    }
     const hadFocus = event.currentTarget === document.activeElement;
     failedMediaIds.add(attachment.id);
     // The player that held the focus is gone: hand it to the card's download link.
@@ -131,6 +143,7 @@
             style:aspect-ratio={box.aspectRatio}
             class="block w-full object-contain focus-visible:focus-ring-inset"
             onplay={(event) => pauseOtherMediaWhenOneStarts(event.currentTarget)}
+            onpause={(event) => forgetMediaWhenItStops(event.currentTarget)}
             onerror={(event) => showDownloadCardAfterPlaybackFailed(event, attachment)}
           ></video>
           <figcaption
@@ -218,6 +231,7 @@
             aria-label={strings.messages.audioPlayer(attachment.file_name)}
             class="mt-(--mw-component-attachment-file-gap) block w-full focus-visible:focus-ring"
             onplay={(event) => pauseOtherMediaWhenOneStarts(event.currentTarget)}
+            onpause={(event) => forgetMediaWhenItStops(event.currentTarget)}
             onerror={(event) => showDownloadCardAfterPlaybackFailed(event, attachment)}
           ></audio>
         {/if}

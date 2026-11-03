@@ -177,7 +177,7 @@ async fn serve(
                 .into_response());
         }
         Some(RequestedRange::Satisfiable(range)) => {
-            let (part, content_range) = part_of(download.bytes, range)?;
+            let (part, content_range) = part_of(&download.bytes, range)?;
             (StatusCode::PARTIAL_CONTENT, part, Some(content_range))
         }
     };
@@ -231,17 +231,20 @@ fn requested_range(
         .map(|value| byte_range(value, total))
 }
 
-/// The bytes of `range` (taken in place, no second copy) and their `Content-Range`.
+/// A copy of the bytes of `range` and their `Content-Range`; the whole file is dropped once the
+/// response is built (a part kept in place would hold the whole buffer until a slow player reads it).
 fn part_of(
-    mut bytes: Vec<u8>,
+    bytes: &[u8],
     range: std::ops::RangeInclusive<usize>,
 ) -> Result<(Vec<u8>, HeaderValue), ApiError> {
     let total = bytes.len();
     let content_range =
         content_range_value(&format!("bytes {}-{}/{total}", range.start(), range.end()))?;
-    bytes.truncate(range.end() + 1);
-    bytes.drain(..*range.start());
-    Ok((bytes, content_range))
+    let part = bytes
+        .get(range)
+        .map(<[u8]>::to_vec)
+        .ok_or_else(|| ApiError::internal("a byte range", &"outside its file"))?;
+    Ok((part, content_range))
 }
 
 fn content_range_value(value: &str) -> Result<HeaderValue, ApiError> {
@@ -250,7 +253,7 @@ fn content_range_value(value: &str) -> Result<HeaderValue, ApiError> {
 
 /// The longest part one range answer carries: a player that stops reading (paused, or only
 /// after the metadata) then holds a download slot for a short answer, not a whole file.
-const MAXIMUM_RANGE_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAXIMUM_RANGE_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 /// What a `Range` header asks of a file of `total` bytes.
 #[derive(Debug, PartialEq, Eq)]
