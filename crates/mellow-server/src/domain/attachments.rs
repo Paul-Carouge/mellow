@@ -471,6 +471,12 @@ impl Attachments {
         self.optimize_until_none_is_left(&mut queue).await;
     }
 
+    /// Writes a sealed file as the background compression would, for tests that swap files.
+    #[cfg(test)]
+    pub(crate) async fn write_file(&self, id: Snowflake, bytes: Vec<u8>) {
+        self.files.write(id, bytes).await.unwrap();
+    }
+
     /// Every file in the store, for tests that check what a sweep left.
     #[cfg(test)]
     pub(crate) async fn stored_file_ids(&self) -> Vec<Snowflake> {
@@ -570,7 +576,6 @@ impl Attachments {
         self.files.write(new_file_id, optimized.bytes).await?;
         let updated = storage::update_attachment_file(
             &self.database,
-            attachment.id,
             attachment.file_id,
             new_file_id,
             &file_name,

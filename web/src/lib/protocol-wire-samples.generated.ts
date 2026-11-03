@@ -393,6 +393,10 @@ export const messageSamples = [
     "channel_id": "30",
     "content": "Hello @ada",
     "edited_at_unix_milliseconds": 1700000000500,
+    "forwarded_from": {
+      "channel_id": "31",
+      "message_id": "700"
+    },
     "id": "800",
     "mention_ids": [
       "10"
@@ -546,6 +550,10 @@ export const messageSearchResultsSamples = [
           "channel_id": "30",
           "content": "Hello @ada",
           "edited_at_unix_milliseconds": 1700000000500,
+          "forwarded_from": {
+            "channel_id": "31",
+            "message_id": "700"
+          },
           "id": "800",
           "mention_ids": [
             "10"
@@ -1198,6 +1206,10 @@ export const gatewayEventSamples = [
       "channel_id": "30",
       "content": "Hello @ada",
       "edited_at_unix_milliseconds": 1700000000500,
+      "forwarded_from": {
+        "channel_id": "31",
+        "message_id": "700"
+      },
       "id": "800",
       "mention_ids": [
         "10"
@@ -1266,6 +1278,10 @@ export const gatewayEventSamples = [
       "channel_id": "30",
       "content": "Hello @ada",
       "edited_at_unix_milliseconds": 1700000000500,
+      "forwarded_from": {
+        "channel_id": "31",
+        "message_id": "700"
+      },
       "id": "800",
       "mention_ids": [
         "10"

@@ -1,6 +1,6 @@
 //! Messages, pins and read states (migrations 0003 and 0012).
 
-use mellow_protocol::Snowflake;
+use mellow_protocol::{ForwardOrigin, Snowflake};
 
 use super::Database;
 
@@ -23,6 +23,9 @@ pub(crate) enum MessageStorageError {
     /// An attachment id that is not an unsent upload of this author to this channel.
     #[error("attachment unavailable")]
     AttachmentUnavailable,
+    /// The message being forwarded, or one of its files, was deleted since it was read.
+    #[error("forwarded message gone")]
+    ForwardedMessageGone,
 }
 
 /// The ids as a JSON array: one bound value, read by SQLite's `json_each`. An id SQLite cannot
@@ -45,6 +48,7 @@ pub(crate) struct StoredMessage {
     pub(crate) is_pinned: bool,
     /// By id, so REST answers and events list them alike.
     pub(crate) mention_ids: Vec<Snowflake>,
+    pub(crate) forwarded_from: Option<ForwardOrigin>,
 }
 
 type MessageRow = (
@@ -58,6 +62,8 @@ type MessageRow = (
     Option<i64>,
     Option<i64>,
     String,
+    Option<i64>,
+    Option<i64>,
 );
 
 /// A macro so queries stay `&'static str` through `concat!` (sqlx refuses runtime-built SQL).
@@ -67,7 +73,8 @@ macro_rules! select_message_columns {
          users.display_name, messages.content, messages.reply_to_id, \
          messages.edited_at_unix_milliseconds, messages.pinned_at_unix_milliseconds, \
          (SELECT json_group_array(message_mentions.user_id) FROM message_mentions \
-         WHERE message_mentions.message_id = messages.id) \
+         WHERE message_mentions.message_id = messages.id), \
+         messages.forwarded_from_channel_id, messages.forwarded_from_message_id \
          FROM messages JOIN users ON users.id = messages.author_id "
     };
 }
@@ -80,7 +87,8 @@ macro_rules! returning_message_columns {
          (SELECT display_name FROM users WHERE users.id = author_id), \
          content, reply_to_id, edited_at_unix_milliseconds, pinned_at_unix_milliseconds, \
          (SELECT json_group_array(message_mentions.user_id) FROM message_mentions \
-         WHERE message_mentions.message_id = messages.id)"
+         WHERE message_mentions.message_id = messages.id), \
+         forwarded_from_channel_id, forwarded_from_message_id"
     };
 }
 
@@ -101,6 +109,8 @@ fn message_from_row(row: MessageRow) -> Result<StoredMessage, MessageStorageErro
         edited_at,
         pinned_at,
         mention_ids_json,
+        forwarded_from_channel_id,
+        forwarded_from_message_id,
     ) = row;
     Ok(StoredMessage {
         id: to_snowflake(id)?,
@@ -119,6 +129,13 @@ fn message_from_row(row: MessageRow) -> Result<StoredMessage, MessageStorageErro
                 .map(to_snowflake)
                 .collect::<Result<_, _>>()?,
         ),
+        forwarded_from: match (forwarded_from_channel_id, forwarded_from_message_id) {
+            (Some(channel_id), Some(message_id)) => Some(ForwardOrigin {
+                channel_id: to_snowflake(channel_id)?,
+                message_id: to_snowflake(message_id)?,
+            }),
+            _ => None,
+        },
     })
 }
 
@@ -135,6 +152,23 @@ pub(crate) struct NewMessage {
     pub(crate) attachment_ids: Vec<Snowflake>,
     /// Stored in the same transaction (`domain::mentions`).
     pub(crate) mentioned_user_ids: Vec<Snowflake>,
+    /// A forward (ADR-0039): its origin, and its attachments as copies of the original's.
+    pub(crate) forward: Option<NewForward>,
+}
+
+/// What a forward copies, decided by the domain before the write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NewForward {
+    pub(crate) origin: ForwardOrigin,
+    /// The message whose attachments are copied: the one forwarded, which may itself be a forward.
+    pub(crate) copied_message_id: Snowflake,
+    pub(crate) copied_attachments: Vec<CopiedAttachment>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CopiedAttachment {
+    pub(crate) new_id: Snowflake,
+    pub(crate) original_id: Snowflake,
 }
 
 async fn insert_mentions(
@@ -167,8 +201,9 @@ pub(crate) async fn insert_message(
 ) -> Result<StoredMessage, MessageStorageError> {
     let mut transaction = database.writer().begin().await?;
     let row: MessageRow = sqlx::query_as(concat!(
-        "INSERT INTO messages (id, channel_id, author_id, content, reply_to_id, nonce) \
-         VALUES (?, ?, ?, ?, ?, ?) ",
+        "INSERT INTO messages (id, channel_id, author_id, content, reply_to_id, nonce, \
+         forwarded_from_channel_id, forwarded_from_message_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) ",
         returning_message_columns!()
     ))
     .bind(to_sqlite_integer(message.id.raw())?)
@@ -182,6 +217,20 @@ pub(crate) async fn insert_message(
             .transpose()?,
     )
     .bind(&message.nonce)
+    .bind(
+        message
+            .forward
+            .as_ref()
+            .map(|forward| to_sqlite_integer(forward.origin.channel_id.raw()))
+            .transpose()?,
+    )
+    .bind(
+        message
+            .forward
+            .as_ref()
+            .map(|forward| to_sqlite_integer(forward.origin.message_id.raw()))
+            .transpose()?,
+    )
     .fetch_one(&mut *transaction)
     .await?;
     for attachment_id in &message.attachment_ids {
@@ -201,6 +250,9 @@ pub(crate) async fn insert_message(
             return Err(MessageStorageError::AttachmentUnavailable);
         }
     }
+    if let Some(forward) = &message.forward {
+        copy_attachments(&mut transaction, message, forward).await?;
+    }
     insert_mentions(
         &mut transaction,
         message.channel_id,
@@ -214,6 +266,53 @@ pub(crate) async fn insert_message(
         mention_ids: sorted_ids(message.mentioned_user_ids.clone()),
         ..message_from_row(row)?
     })
+}
+
+/// New rows on the original attachments' sealed files and previews (ADR-0039), marked as copies:
+/// no quota, never queued for compression themselves (the original's compression moves them).
+/// An original message or attachment gone meanwhile fails the whole send, files or not.
+async fn copy_attachments(
+    connection: &mut sqlx::SqliteConnection,
+    message: &NewMessage,
+    forward: &NewForward,
+) -> Result<(), MessageStorageError> {
+    let original_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM messages WHERE id = ?)")
+            .bind(to_sqlite_integer(forward.copied_message_id.raw())?)
+            .fetch_one(&mut *connection)
+            .await?;
+    if !original_exists {
+        return Err(MessageStorageError::ForwardedMessageGone);
+    }
+    for CopiedAttachment {
+        new_id,
+        original_id,
+    } in &forward.copied_attachments
+    {
+        let copied = sqlx::query(
+            "INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
+             content_type, size_bytes, width, height, created_at_unix_milliseconds, file_id, \
+             preview_file_id, preview_content_type, preview_size_bytes, \
+             optimization_attempted_at_unix_milliseconds, compression_version, is_forwarded_copy) \
+             SELECT ?, ?, ?, ?, file_name, content_type, size_bytes, width, height, \
+             created_at_unix_milliseconds, COALESCE(file_id, id), preview_file_id, \
+             preview_content_type, preview_size_bytes, created_at_unix_milliseconds, 1, 1 \
+             FROM attachments WHERE id = ? AND message_id = ?",
+        )
+        .bind(to_sqlite_integer(new_id.raw())?)
+        .bind(to_sqlite_integer(message.channel_id.raw())?)
+        .bind(to_sqlite_integer(message.author_id.raw())?)
+        .bind(to_sqlite_integer(message.id.raw())?)
+        .bind(to_sqlite_integer(original_id.raw())?)
+        .bind(to_sqlite_integer(forward.copied_message_id.raw())?)
+        .execute(&mut *connection)
+        .await?
+        .rows_affected();
+        if copied != 1 {
+            return Err(MessageStorageError::ForwardedMessageGone);
+        }
+    }
+    Ok(())
 }
 
 /// The message if it exists in `channel_id`; a message of another channel is not found.

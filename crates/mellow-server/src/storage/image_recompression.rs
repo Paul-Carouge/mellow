@@ -68,19 +68,32 @@ pub(crate) async fn pictures_to_recompress(
     })
 }
 
+/// An attachment claimed for recompression, with the file it held when claimed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ClaimedAttachment {
+    pub(crate) id: Snowflake,
+    pub(crate) file_id: Snowflake,
+}
+
 /// Marks the newest attachment stored before ADR-0033 as recompressed and answers it: the mark
 /// comes before the work, so a picture that kills the process is not tried again.
 pub(crate) async fn claim_next_attachment(
     database: &Database,
-) -> Result<Option<Snowflake>, MessageStorageError> {
-    let id: Option<i64> = sqlx::query_scalar(
+) -> Result<Option<ClaimedAttachment>, MessageStorageError> {
+    let row: Option<(i64, i64)> = sqlx::query_as(
         "UPDATE attachments SET compression_version = 1 WHERE id = \
          (SELECT id FROM attachments WHERE compression_version = 0 ORDER BY id DESC LIMIT 1) \
-         RETURNING id",
+         RETURNING id, COALESCE(file_id, id)",
     )
     .fetch_optional(database.writer())
     .await?;
-    Ok(id.map(to_snowflake).transpose()?)
+    row.map(|(id, file_id)| {
+        Ok(ClaimedAttachment {
+            id: to_snowflake(id)?,
+            file_id: to_snowflake(file_id)?,
+        })
+    })
+    .transpose()
 }
 
 /// As `claim_next_attachment`, for avatars and banners.
@@ -132,7 +145,10 @@ pub(crate) async fn claim_next_icon(
 /// The table a claimed picture is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClaimedPictureKind {
-    Attachment,
+    /// With the file it held when claimed: a forwarded copy holds its original's (ADR-0039).
+    Attachment {
+        claimed_file_id: Snowflake,
+    },
     ProfileImage,
     Icon,
 }
@@ -146,9 +162,16 @@ pub(crate) async fn release_claim(
     id: Snowflake,
 ) -> Result<(), MessageStorageError> {
     let query = match kind {
-        ClaimedPictureKind::Attachment => {
-            "UPDATE attachments SET compression_version = 0 \
-             WHERE id = ? AND compression_version = 1 AND COALESCE(file_id, id) = id"
+        ClaimedPictureKind::Attachment { claimed_file_id } => {
+            sqlx::query(
+                "UPDATE attachments SET compression_version = 0 \
+                 WHERE id = ? AND compression_version = 1 AND COALESCE(file_id, id) = ?",
+            )
+            .bind(to_sqlite_integer(id.raw())?)
+            .bind(to_sqlite_integer(claimed_file_id.raw())?)
+            .execute(database.writer())
+            .await?;
+            return Ok(());
         }
         ClaimedPictureKind::ProfileImage => {
             "UPDATE profile_images SET compression_version = 0 \
@@ -386,10 +409,11 @@ mod tests {
         release_claim(&database, ClaimedPictureKind::ProfileImage, image.id)
             .await
             .unwrap();
-        for id in [newest, oldest] {
-            release_claim(&database, ClaimedPictureKind::Attachment, id)
-                .await
-                .unwrap();
+        for claimed in [newest, oldest] {
+            let kind = ClaimedPictureKind::Attachment {
+                claimed_file_id: claimed.file_id,
+            };
+            release_claim(&database, kind, claimed.id).await.unwrap();
         }
         let waiting_after_release = pictures_to_recompress(&database).await.unwrap();
         database.close().await;
@@ -404,5 +428,60 @@ mod tests {
             },
             "only the attachment still on its old file"
         );
+    }
+
+    #[tokio::test]
+    async fn a_copy_left_by_a_deleted_original_takes_its_place_in_both_queues_and_the_quota() {
+        let (_directory, database) = crate::domain::accounts::tests::migrated_database().await;
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) \
+             VALUES (30, 20, 1, ''), (31, 20, 2, ''); \
+             INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
+             content_type, size_bytes, created_at_unix_milliseconds, compression_version, \
+             optimization_attempted_at_unix_milliseconds, file_id, is_forwarded_copy) \
+             VALUES (40, 20, 1, 30, 'a.png', 'image/png', 300, 0, 0, NULL, NULL, 0), \
+             (41, 20, 2, 31, 'a.png', 'image/png', 300, 0, 1, 0, 40, 1); \
+             DELETE FROM messages WHERE id = 30;",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+
+        let awaiting_optimization =
+            crate::storage::attachments::newest_attachments_awaiting_optimization(&database, 10)
+                .await
+                .unwrap();
+        let bob_bytes = crate::storage::attachments::stored_bytes_of_uploader(
+            &database,
+            Snowflake::from_raw(2),
+        )
+        .await
+        .unwrap();
+        let claimed = claim_next_attachment(&database).await.unwrap().unwrap();
+        let kind = ClaimedPictureKind::Attachment {
+            claimed_file_id: claimed.file_id,
+        };
+        release_claim(&database, kind, claimed.id).await.unwrap();
+        let waiting_after_release = pictures_to_recompress(&database).await.unwrap();
+        database.close().await;
+
+        let copy = Snowflake::from_raw(41);
+        assert_eq!(awaiting_optimization, [copy], "never tried: queued again");
+        assert_eq!(bob_bytes, 300, "the copy now counts in its author's quota");
+        assert_eq!(
+            claimed,
+            ClaimedAttachment {
+                id: copy,
+                file_id: Snowflake::from_raw(40)
+            }
+        );
+        assert_eq!(waiting_after_release.attachments.count, 1, "released");
     }
 }

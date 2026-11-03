@@ -55,6 +55,10 @@ pub enum MessageRuleViolation {
     CustomReactionEmoji,
     #[error("pages of reacting users hold 1 to {MAXIMUM_REACTING_USERS_PAGE_SIZE} users")]
     ReactingUsersQuery,
+    #[error("a forward carries no content, attachments or reply of its own")]
+    ForwardWithItsOwnContent,
+    #[error("a forwarded message cannot be edited")]
+    ForwardedMessageEdit,
     #[error(transparent)]
     SearchQuery(#[from] crate::domain::search_query::SearchQueryViolation),
 }

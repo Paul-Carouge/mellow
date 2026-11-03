@@ -85,12 +85,14 @@ impl ImageRecompression {
                         .recompress_icon(&self.profile_images, icon)
                         .await,
                 )
-            } else if let Some(id) = storage::claim_next_attachment(&self.database).await? {
+            } else if let Some(claimed) = storage::claim_next_attachment(&self.database).await? {
                 // The same job as a new upload's: smaller stored form and a preview.
                 (
-                    ClaimedPictureKind::Attachment,
-                    id,
-                    self.attachments.optimize(id).await,
+                    ClaimedPictureKind::Attachment {
+                        claimed_file_id: claimed.file_id,
+                    },
+                    claimed.id,
+                    self.attachments.optimize(claimed.id).await,
                 )
             } else {
                 return Ok(Step::NoneLeft);

@@ -891,3 +891,157 @@ async fn videos_play_inline_and_media_players_get_byte_ranges() {
     );
     assert_eq!(&whole_file[..], VIDEO);
 }
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // One scenario: forward, compress the original, delete it, purge.
+async fn a_forward_shares_the_original_files_without_quota_and_keeps_them_once_it_is_deleted() {
+    use mellow_protocol::{Attachment, Message};
+
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let (owner, general) = owner_and_general_channel(&state).await;
+    let stranger = registered_token(&state, "stranger").await;
+    let upload_path = format!("/api/v1/channels/{general}/attachments?file_name=a.png");
+    let (_, body) = send(&state, upload_request(&upload_path, &owner, PNG)).await;
+    let uploaded: Attachment = json(&body);
+    let messages_path = format!("/api/v1/channels/{general}/messages");
+    let (_, body) = send(
+        &state,
+        authorized(
+            "POST",
+            &messages_path,
+            &owner,
+            Some(serde_json::json!({"content": "", "attachment_ids": [uploaded.id.to_string()]})),
+        ),
+    )
+    .await;
+    let original: Message = json(&body);
+    let forward_body = serde_json::json!({
+        "content": "",
+        "forwarded_from": {"channel_id": general.to_string(), "message_id": original.id.to_string()},
+    });
+    let (stranger_status, _) = send(
+        &state,
+        authorized(
+            "POST",
+            &messages_path,
+            &stranger,
+            Some(forward_body.clone()),
+        ),
+    )
+    .await;
+    let (status, body) = send(
+        &state,
+        authorized("POST", &messages_path, &owner, Some(forward_body)),
+    )
+    .await;
+    let forward: Message = json(&body);
+    let copy = forward.attachments[0].clone();
+    let owner_id = json::<CurrentUser>(
+        &send(&state, authorized("GET", "/api/v1/users/@me", &owner, None))
+            .await
+            .1,
+    )
+    .id;
+    let quota_bytes = crate::storage::attachments::stored_bytes_of_uploader(&database, owner_id)
+        .await
+        .unwrap();
+    // A smaller file replacing the original's (ADR-0033) reaches the copy in the same statement.
+    let stored = crate::storage::attachments::find_attachment(&database, uploaded.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let replacement = Snowflake::from_raw(stored.file_id.raw() + 1);
+    state
+        .attachments
+        .write_file(replacement, PNG.to_vec())
+        .await;
+    let moved = crate::storage::attachments::update_attachment_file(
+        &database,
+        stored.file_id,
+        replacement,
+        "a.png",
+        "image/png",
+        PNG.len() as u64,
+    )
+    .await
+    .unwrap();
+    let preview = crate::storage::attachments::StoredPreview {
+        file_id: Snowflake::from_raw(replacement.raw() + 1),
+        content_type: "image/webp".into(),
+        size_bytes: 1,
+    };
+    crate::storage::attachments::record_attachment_preview(&database, uploaded.id, &preview)
+        .await
+        .unwrap();
+    let stored_copy = crate::storage::attachments::find_attachment(&database, copy.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let copy_file_id = stored_copy.file_id;
+    let (deleted, _) = send(
+        &state,
+        authorized(
+            "DELETE",
+            &format!("{messages_path}/{}", original.id),
+            &owner,
+            None,
+        ),
+    )
+    .await;
+    state
+        .attachments
+        .purge(
+            crate::domain::clock::now_unix_milliseconds()
+                + crate::domain::attachments::UNSENT_UPLOAD_LIFETIME_MILLISECONDS * 2,
+        )
+        .await
+        .unwrap();
+    // Deleting the original must not free the quota while a copy keeps its file on disk.
+    let quota_bytes_after_delete =
+        crate::storage::attachments::stored_bytes_of_uploader(&database, owner_id)
+            .await
+            .unwrap();
+    let (download_status, downloaded) = send(
+        &state,
+        authorized(
+            "GET",
+            &format!("/api/v1/attachments/{}", copy.id),
+            &owner,
+            None,
+        ),
+    )
+    .await;
+    database.close().await;
+
+    assert_eq!(stranger_status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(forward.content, "");
+    assert_eq!(
+        forward
+            .forwarded_from
+            .map(|origin| (origin.channel_id, origin.message_id)),
+        Some((general, original.id))
+    );
+    assert_ne!(copy.id, uploaded.id);
+    assert_eq!(
+        (copy.file_name, copy.size_bytes),
+        (uploaded.file_name, uploaded.size_bytes)
+    );
+    assert_eq!(quota_bytes, PNG.len() as u64, "the copy takes no quota");
+    assert!(moved);
+    assert_eq!(copy_file_id, replacement);
+    assert_eq!(
+        stored_copy.preview,
+        Some(preview),
+        "the preview reaches the copy"
+    );
+    assert_eq!(deleted, StatusCode::NO_CONTENT);
+    assert_eq!(
+        quota_bytes_after_delete,
+        PNG.len() as u64,
+        "a copy takes over the quota"
+    );
+    assert_eq!(download_status, StatusCode::OK);
+    assert_eq!(downloaded, PNG);
+}
