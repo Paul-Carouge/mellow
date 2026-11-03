@@ -4,6 +4,12 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-11-03
+Videos open in the picture viewer. No database migration and no protocol change.
+
+### Added
+- "Agrandir" under a video in a message opens it large in the viewer, going on from where it was playing; the viewer moves between the message's pictures and videos with ← and →. A video reached with the arrows waits for you to press play.
+
 ## [0.37.0] - 2026-11-03
 Videos and sounds play in messages (ADR-0038). No database migration and no protocol change.
 
