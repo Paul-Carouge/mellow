@@ -533,6 +533,9 @@
 
   function selectChannel(channelId: Snowflake) {
     client.selectChannel(channelId);
+    // The shell closes the call and the watched screen on a change; the channel already shown comes back too.
+    client.voice.closeCallView();
+    client.voice.watchStream(null);
     onnavigate();
   }
 
