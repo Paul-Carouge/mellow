@@ -370,6 +370,8 @@ export const fr: Catalogue = {
     soundFromScreen: "Écran partagé",
     soundFromScreenHint: `Si tu coches «${NO_BREAK_SPACE}Partager l’audio${NO_BREAK_SPACE}»`,
     systemSoundHint: "Tout ce que joue l’ordinateur",
+    heardWhenMutedHint: "Reste audible même micro coupé",
+    mutedMicrophoneHeard: "Ton micro coupé s’entend encore dans ton partage",
     audioInputHint: "Une entrée audio",
     sharedSound: {
       screen: `Son${NO_BREAK_SPACE}: écran partagé`,

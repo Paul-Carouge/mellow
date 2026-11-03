@@ -136,15 +136,31 @@ const SYSTEM_SOUND_LABEL_PATTERN = /\bmonitor\b|\bmoniteur\b|stereo mix|mixage s
 /**
  * The audio inputs that can be a share's sound, the system's sound first, in the browser's order
  * otherwise. Empty while the browser hides their names (before the microphone is allowed).
+ *
+ * The microphone your voice uses is left out: sent as the share's sound, it would be heard even
+ * while you mute yourself. `voiceInputDeviceId` is the chosen one, or `null` for the default: the
+ * device Chrome's "default" entry names, else (Firefox, Safari) the first input, which browsers
+ * list first as the default, unless it carries the system's sound.
  */
-export function screenSoundDevicesOf(devices: readonly AudioDevice[]): ScreenSoundDevice[] {
-  const inputs = devices
-    .filter(
-      (device) =>
-        device.kind === "audioinput" && device.deviceId !== "" && device.label !== "" && !SYSTEM_CHOICE_DEVICE_IDS.has(device.deviceId),
-    )
+export function screenSoundDevicesOf(devices: readonly AudioDevice[], voiceInputDeviceId: string | null): ScreenSoundDevice[] {
+  const audioInputs = devices.filter((device) => device.kind === "audioinput");
+  const inputs = audioInputs
+    .filter((device) => device.deviceId !== "" && device.label !== "" && !SYSTEM_CHOICE_DEVICE_IDS.has(device.deviceId))
     .map((device) => ({ deviceId: device.deviceId, label: device.label, isSystemSound: SYSTEM_SOUND_LABEL_PATTERN.test(device.label) }));
-  return [...inputs.filter((device) => device.isSystemSound), ...inputs.filter((device) => !device.isSystemSound)];
+  const voiceDeviceId = voiceInputDeviceId ?? defaultInputDeviceId(audioInputs, inputs);
+  const choices = inputs.filter((device) => device.deviceId !== voiceDeviceId);
+  return [...choices.filter((device) => device.isSystemSound), ...choices.filter((device) => !device.isSystemSound)];
+}
+
+/** The device the system's default input is, by the name in Chrome's "Default - …" entry, else the first one. */
+function defaultInputDeviceId(audioInputs: readonly AudioDevice[], inputs: readonly ScreenSoundDevice[]): string | null {
+  const systemDefault = audioInputs.find((device) => device.deviceId === "default");
+  if (systemDefault !== undefined) {
+    const name = systemDefault.label.replace(/^[^-–]+[-–]\s+/u, "");
+    return inputs.find((device) => device.label === name)?.deviceId ?? null;
+  }
+  const first = inputs[0];
+  return first !== undefined && !first.isSystemSound ? first.deviceId : null;
 }
 
 export function readScreenSoundDeviceId(storage: Pick<Storage, "getItem"> | null): string | null {
@@ -217,7 +233,7 @@ export const STREAM_SOUND_SETTINGS_STORAGE_KEY = "mellow.stream-sound-settings";
 export const STREAM_SOUND_SAMPLE_INTERVAL_MILLISECONDS = 500;
 /** RMS (0 to 1) above which the received sound counts as heard: about -50 dBFS, over Opus's comfort noise. */
 export const STREAM_SOUND_LEVEL_THRESHOLD = 0.003;
-/** Heard within this, the share has sound; nothing for this long once its picture came, it has none. */
+/** No sound slot for this long once the picture shows: the share has no sound. */
 export const STREAM_SOUND_HOLD_MILLISECONDS = 5_000;
 
 export type StreamSoundStatus =
@@ -226,12 +242,25 @@ export type StreamSoundStatus =
   | "sound"
   | "silent";
 
-/** `pictureSince`: when the watched picture arrived (`null` before); `lastHeardAt`: when its sound last rose. */
-export function streamSoundStatus(pictureSince: number | null, lastHeardAt: number, now: number): StreamSoundStatus {
-  if (now - lastHeardAt < STREAM_SOUND_HOLD_MILLISECONDS) {
-    return "sound";
+/**
+ * The instance gives a screen's sound a slot only at its first packet, so a slot carrying the
+ * sharer proves a sound track is sent: quiet passages (a silent scene, an idle tab) are never "no
+ * sound". The level only confirms "sound", once heard on that slot. Without a slot for 5 s of
+ * shown picture, there is none.
+ *
+ * `pictureSince`: since when the picture has been shown (`null` while it is not: not arrived,
+ * paused, or you are deafened and the instance relays no sound to you).
+ */
+export function streamSoundStatus(
+  pictureSince: number | null,
+  hasSoundSlot: boolean,
+  hasBeenHeard: boolean,
+  now: number,
+): StreamSoundStatus {
+  if (hasSoundSlot) {
+    return hasBeenHeard ? "sound" : "listening";
   }
-  return pictureSince === null || now - pictureSince < STREAM_SOUND_HOLD_MILLISECONDS ? "listening" : "silent";
+  return pictureSince !== null && now - pictureSince >= STREAM_SOUND_HOLD_MILLISECONDS ? "silent" : "listening";
 }
 
 /** Why a screen is not (or no longer) shared. */

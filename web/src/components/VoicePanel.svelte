@@ -293,13 +293,24 @@
             <span class="min-w-0 truncate">{strings.screenShare.youAreSharing}</span>
           </p>
           {#if sharedSoundLine}
+            <!-- A microphone sent as the share's sound is not a voice: muting does not stop it, so say so. -->
             <p class="mt-3xs flex min-w-0 items-center gap-2xs type-body-sm text-(--mw-component-voice-panel-hint-text)" title={sharedSoundLine}>
-              <Icon
-                name={voice.sharedSound === "none" ? "speaker-slash" : "speaker-high"}
-                class="size-(--mw-component-voice-panel-signal-icon-size) shrink-0"
-              />
+              {#if voice.isMutedMicrophoneHeardInShare}
+                <Icon
+                  name="warning-circle"
+                  class="size-(--mw-component-voice-panel-signal-icon-size) shrink-0 text-(--mw-component-voice-panel-problem-icon)"
+                />
+              {:else}
+                <Icon
+                  name={voice.sharedSound === "none" ? "speaker-slash" : "speaker-high"}
+                  class="size-(--mw-component-voice-panel-signal-icon-size) shrink-0"
+                />
+              {/if}
               <span class="min-w-0 truncate">{sharedSoundLine}</span>
             </p>
+            {#if voice.isMutedMicrophoneHeardInShare}
+              <p class="mt-3xs type-body-sm text-(--mw-component-voice-panel-hint-text)">{strings.screenShare.mutedMicrophoneHeard}</p>
+            {/if}
           {/if}
         {/if}
       {/if}
@@ -437,7 +448,7 @@
           {@render choice(
             device.deviceId === shownSoundDeviceId,
             device.label,
-            device.isSystemSound ? strings.screenShare.systemSoundHint : "",
+            device.isSystemSound ? strings.screenShare.systemSoundHint : strings.screenShare.heardWhenMutedHint,
             () => chooseSound(device.deviceId),
           )}
         {/each}
@@ -461,6 +472,7 @@
   <p class="sr-only" aria-live="polite">{voice.isSharingScreen ? strings.screenShare.youAreSharing : ""}</p>
   <p class="sr-only" aria-live="polite">{voice.phase === "idle" ? "" : (voice.screenShareProblem && strings.screenShare.problems[voice.screenShareProblem]) || ""}</p>
   <p class="sr-only" aria-live="polite">{soundNoticeSentence && `${sharedSoundLine}. ${soundNoticeSentence}`}</p>
+  <p class="sr-only" aria-live="polite">{voice.isMutedMicrophoneHeardInShare ? strings.screenShare.mutedMicrophoneHeard : ""}</p>
   <p class="sr-only" aria-live="polite">{client.voiceAnnouncement}</p>
   <p class="sr-only" aria-live="polite">{voice.phase === "idle" ? "" : deviceNotices.join(" ")}</p>
 </div>

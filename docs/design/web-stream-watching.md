@@ -18,7 +18,7 @@ Real content: "Rust Lyon", Ana sharing `fan_out.rs` in Salon, Paul (you) watchin
 
 **Choose the share's sound (sharer).** The quality half of the split button now opens **Options du partage**: two radio groups, each with a visible label, in the one menu of §6.33.
 - *Qualité*: 720p, 1080p, 1440p, unchanged.
-- *Son*: "Écran partagé" (what the picker gives; hint "Si tu coches « Partager l'audio »", left out in Firefox and Safari, whose picker has no such box), then each audio input by its name, the system's sound first (monitors, stereo mixes, BlackHole, Loopback; hint "Tout ce que joue l'ordinateur"), then the others (no hint). The list is read when the menu opens; it is empty until the microphone is allowed, which joining a call already asks.
+- *Son*: "Écran partagé" (what the picker gives; hint "Si tu coches « Partager l'audio »", left out in Firefox and Safari, whose picker has no such box), then each audio input by its name, the system's sound first (monitors, stereo mixes, BlackHole, Loopback; hint "Tout ce que joue l'ordinateur"), then the others, with the hint "Reste audible même micro coupé" (a share's sound is not a voice, so muting does not stop it). The microphone your voice uses is left out: the chosen one, or the default (named by Chrome's "Default - …" entry, else the first input listed). The list is read when the menu opens and when a share starts; it is empty until the microphone is allowed, which joining a call already asks.
 - On Linux only, after a separator: "Partager le son d'une application", which opens the help dialog.
 - The choice is remembered on the device (`mellow.screen-share-sound`) and applies at once during a share (`replaceTrack` on the screen sound line, the previous input stopped). The picker's own sound stays captured meanwhile, so going back to it needs no new picker.
 
@@ -29,7 +29,9 @@ Real content: "Rust Lyon", Ana sharing `fan_out.rs` in Salon, Paul (you) watchin
 - Chromium elsewhere: "Ton navigateur ne partage que le son d'un onglet (coche « Partager l'audio de l'onglet »). Pour une application ou tout l'ordinateur, choisis une source sonore."
 - Firefox and Safari: "Ton navigateur ne partage pas le son de l'écran. Choisis une source sonore pour en ajouter."
 - Then "Choisir une source sonore" (opens the share's options) and, on Linux, "Partager le son d'une application". Close dismisses it; choosing a source with sound removes it. Choosing "Écran partagé" again later does not bring it back: that is the person's own choice. The browser is told apart by `navigator.userAgentData` (Chromium only), its platform, and the user agent's "Linux" for the help; nothing else is sniffed.
-- The chosen input cannot open, or is unplugged mid-share: "Impossible d'ouvrir la source sonore choisie. Ton partage utilise le son de l'écran partagé, s'il en a." with the warning sign, and the share falls back to the picker's sound.
+- The chosen input cannot open, is unplugged mid-share, or cannot be sent: "Impossible d'ouvrir la source sonore choisie. Ton partage utilise le son de l'écran partagé, s'il en a." with the warning sign, the input is stopped and the share falls back to the picker's sound (or says "Sans son").
+- A remembered input missing from the list when a share starts (unplugged since, or now the voice's microphone) is not tried: the share takes the picker's sound without a warning, and the choice is forgotten.
+- An input other than system sound sent while your microphone is muted: the "Son : …" line gets the warning sign and "Ton micro coupé s'entend encore dans ton partage" under it, read out once.
 - Stopping the share, leaving or moving channel, or the instance refusing the screen stops every input opened for it.
 
 **Help on Linux (dialog).** "Partager le son sous Linux": *Tout ce que joue l'ordinateur* (choose "Monitor of …"; warns that it also carries the call's voices unless Mellow plays on another output such as headphones), then *Une seule application*, four numbered steps (a true sequence): create the "Partage-Mellow" output, loop it back to the speakers so the app is still heard, send the app to it in the sound settings or pavucontrol, choose "Monitor of Partage-Mellow" here. Each command sits in a well with its own "Copier" button ("Copié" for 2 s, announced "Commande copiée"). A footnote: they work with PipeWire and PulseAudio and last until a restart.
@@ -41,7 +43,7 @@ pactl load-module module-loopback source=mellow_partage.monitor
 
 **Watch (watcher).** The stream view keeps its header and dark stage, and gains a **sound band** under the stage, as tall as the header, so the stage sits between two equal bands:
 - the stream's mute (speaker / crossed speaker, `aria-pressed`, "Couper le son du partage"), its volume slider "Volume du partage" (0 to 200 %, value read as "150 %" and shown beside it), both 44 px tall;
-- at the end, whether sound comes: "Avec son", "Sans son" (crossed speaker; tooltip and one announcement "Aucun son ne vient de l'écran de Ana."), or "Sourdine activée" while you are deafened. Nothing while it is not known yet (the first 5 s of the picture).
+- at the end, whether sound comes: "Avec son", "Sans son" (crossed speaker; tooltip and one announcement "Aucun son ne vient de l'écran de Ana."), or "Sourdine activée" while you are deafened. Nothing while it is not known yet, nor while no picture shows (waiting for its first frame, or paused). "Sans son" is read out at most once per watched stream.
 - The volume and mute are per sharer, kept in the browser (`mellow.stream-sound-settings`), apart from the person's voice volume and "Rendre muet pour moi"; output volume and deafen still apply (ADR-0037, amended).
 - In fullscreen the band stays; the keyboard shortcuts for the microphone and deafen keep working there.
 
@@ -49,7 +51,7 @@ pactl load-module module-loopback source=mellow_partage.monitor
 
 ## How "Avec son" is known
 
-The instance gives a watched screen's sound a receive slot at its first packet. The session reads that slot's level from an `AnalyserNode` on a copy of its track (the existing `meterLevel` port), **once every 500 ms**, never per frame, and only while a stream is watched. A level above about -50 dBFS (RMS 0.003) counts as heard; heard within the last 5 s means "Avec son", nothing for 5 s once the picture is there means "Sans son" (`streamSoundStatus`, a pure function). Reading a copy means your own volume and mute do not change the answer.
+The instance gives a watched screen's sound a receive slot at its first packet, so **a slot carrying the sharer proves a sound track is sent**: a silent film scene or an idle tab with its sound ticked is never "Sans son". "Sans son" means no slot for that sharer after 5 s of shown picture; while you are deafened the instance relays no sound to you, so the wait starts again when you hear again. The level only confirms "Avec son": the session reads the slot's level from an `AnalyserNode` on a copy of its track (the existing `meterLevel` port, its context resumed when made), **once every 500 ms**, never per frame, and only while a stream is watched; once a level above about -50 dBFS (RMS 0.003) is heard on that slot, it says "Avec son" for the rest of the watch. A context the browser keeps suspended reads silence, which only leaves the status unknown (`streamSoundStatus`, a pure function). Reading a copy means your own volume and mute do not change the answer.
 
 ## Design plan
 
@@ -99,7 +101,7 @@ Options du partage (menu above the panel)
 - **Sniffing the browser by its user agent.** The advice follows what the picker can do: Chromium is the only browser with `userAgentData`, and its platform says whether the entire screen's sound is offered. The user agent is read only to tell a Linux desktop for the help.
 - **A separate "theatre mode".** The stream view already takes only the sheet: the navigator, with the participants and the voice panel, stays beside it on wide windows and one tap away on phones. Fullscreen covers the rest.
 - **The stream's sound following the person's volume** (as in v0.32.0). People lower a loud talker and want their film loud, or the reverse; Discord keeps them apart for that reason.
-- **Removed before shipping:** the hint "Une entrée audio" under ordinary inputs (the name already says it), and a "Réessayer" button on a picture that is not coming (closing and reopening the view does the same, and says so).
+- **Removed before shipping:** the hint "Une entrée audio" under ordinary inputs (the name already says it; review replaced it with the warning that matters), and a "Réessayer" button on a picture that is not coming (closing and reopening the view does the same, and says so).
 
 ## Gallery
 
@@ -110,4 +112,4 @@ Options du partage (menu above the panel)
 - A real Linux desktop: that Chrome and Firefox list "Monitor of …" inputs (they do with PipeWire and PulseAudio as far as known), that the two `pactl` commands give "Monitor of Partage-Mellow", and the sound quality through Opus (whether music arrives in stereo is not checked).
 - Firefox and Safari: the advice's wording, `getUserMedia` with an exact device id and every processing off, and the meter on a received track.
 - Two real browsers: "Avec son" and "Sans son" on real shares, the paused state on a throttled connection, and that switching inputs mid-share is heard at once by the watchers.
-- The sharer's own microphone mute does not stop the share's sound (it is not a voice, ADR-0037); if a person shares their microphone as the share's sound, it is heard even while muted. The menu lists microphones because some people play music through an interface they see as an input.
+- The sharer's own microphone mute does not stop the share's sound (it is not a voice, ADR-0037). The voice's own microphone is left out of the list, other inputs say so in their hint, and the panel warns while one is sent with the microphone muted. The menu keeps other inputs because some people play music through an interface they see as an input.
