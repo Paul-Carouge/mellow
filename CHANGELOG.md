@@ -5,7 +5,7 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 ## [Unreleased]
 
 ### Added
-- Video follows each watcher's connection: the server measures how much it can send to each person (transport-wide congestion control) and fits the cameras and screens they watch into 90 % of it and into their fair share of `[voice] video_upload_mbps`. Smaller tiles go down to a lower picture first, then pause, the large tile last; pictures go back up after 5 seconds with 20 % to spare. A paused tile is announced to its watcher (`VOICE_VIDEO_PAUSED`, additive), for the camera interface to come.
+- Video follows each watcher's connection: the server measures how much it can send to each person (transport-wide congestion control) and fits the cameras and screens they watch into 90 % of it and into their fair share of `[voice] video_upload_mbps`. Smaller tiles go down to a lower picture first, then pause, the large tile last, and only on a congested link: a still screen keeps its sharp picture; pictures go back up after 5 seconds with 20 % to spare. A paused tile is announced to its watcher (`VOICE_VIDEO_PAUSED`, additive), for the camera interface to come.
 - When a camera or screen stops sending its larger picture (its sender's upload is short), its watchers fall back to the next smaller picture still arriving within about a second and a half, and go back up as soon as it returns.
 
 ### Changed
