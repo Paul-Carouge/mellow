@@ -1,13 +1,25 @@
-import { type Attachment, PREVIEWABLE_IMAGE_TYPES } from "../lib/protocol";
+import type { Attachment } from "../lib/protocol";
+import { attachmentDisplay } from "./attachment-preview";
 
 export interface PixelSize {
   width: number;
   height: number;
 }
 
-/** The message's attachments the viewer can show, in message order (file cards are skipped). */
-export function viewablePictures(attachments: readonly Attachment[]): Attachment[] {
-  return attachments.filter((attachment) => PREVIEWABLE_IMAGE_TYPES.includes(attachment.content_type));
+/**
+ * The message's attachments the viewer can show, in message order: pictures and the videos the
+ * list plays (file cards and sounds are skipped).
+ */
+export function viewableMedia(attachments: readonly Attachment[]): Attachment[] {
+  return attachments.filter((attachment) => isViewerPicture(attachment) || isViewerVideo(attachment));
+}
+
+export function isViewerPicture(attachment: Attachment): boolean {
+  return attachmentDisplay(attachment, false, false) === "image";
+}
+
+export function isViewerVideo(attachment: Attachment): boolean {
+  return attachmentDisplay(attachment, false, false) === "video";
 }
 
 /** Previous and next wrap around, so neither button is ever disabled (docs/design/web-picture-viewer.md). */
@@ -24,6 +36,15 @@ export function isPlainPrimaryClick(event: Pick<MouseEvent, "button" | "ctrlKey"
 export function fittedPictureSize(picture: PixelSize, box: PixelSize): PixelSize {
   const scale = Math.min(1, box.width / picture.width, box.height / picture.height);
   return { width: Math.max(1, Math.round(picture.width * scale)), height: Math.max(1, Math.round(picture.height * scale)) };
+}
+
+/** A video fills the box (grown too, as a player does); its frames are not judged pixel by pixel. */
+/** Most videos are landscape: the box a video holds until its own size is known. */
+export const FALLBACK_VIDEO_PIXEL_SIZE: PixelSize = { width: 16, height: 9 };
+
+export function fittedVideoSize(video: PixelSize, box: PixelSize): PixelSize {
+  const scale = Math.min(box.width / video.width, box.height / video.height);
+  return { width: Math.max(1, Math.round(video.width * scale)), height: Math.max(1, Math.round(video.height * scale)) };
 }
 
 /** Actual size only means something when the fitted picture is smaller than its own pixels. */

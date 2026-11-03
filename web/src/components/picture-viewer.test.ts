@@ -5,9 +5,10 @@ import {
   actualSizeScrollStart,
   attachmentPixelSize,
   fittedPictureSize,
+  fittedVideoSize,
   isPictureLargerThanBox,
   isPlainPrimaryClick,
-  viewablePictures,
+  viewableMedia,
   wrappedPictureIndex,
 } from "./picture-viewer";
 
@@ -18,13 +19,25 @@ function attachment(id: string, contentType: string, size: Partial<Pick<Attachme
 const NO_MODIFIERS = { button: 0, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false };
 
 describe("picture viewer", () => {
-  it("keeps only pictures, in message order", () => {
-    const pictures = viewablePictures([
+  it("keeps pictures and videos, in message order", () => {
+    const media = viewableMedia([
       attachment("1", "image/png"),
       attachment("2", "application/octet-stream"),
-      attachment("3", "image/avif"),
+      attachment("3", "video/mp4"),
+      attachment("4", "audio/mpeg"),
+      attachment("5", "image/avif"),
     ]);
-    expect(pictures.map((picture) => picture.id)).toEqual(["1", "3"]);
+    expect(media.map((item) => item.id)).toEqual(["1", "3", "5"]);
+  });
+
+  it("skips a sound recorded into a video container", () => {
+    const voiceNote = { ...attachment("1", "video/mp4"), file_name: "note.m4a" };
+    expect(viewableMedia([voiceNote])).toEqual([]);
+  });
+
+  it("grows a small video to fill the box, keeping its shape", () => {
+    expect(fittedVideoSize({ width: 640, height: 360 }, { width: 1280, height: 1280 })).toEqual({ width: 1280, height: 720 });
+    expect(fittedVideoSize({ width: 1080, height: 1920 }, { width: 1280, height: 720 })).toEqual({ width: 405, height: 720 });
   });
 
   it("wraps previous and next around the ends", () => {

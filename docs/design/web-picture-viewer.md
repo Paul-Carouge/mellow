@@ -223,7 +223,7 @@ Icons: `caret-left` (new, Fill, the twin of `caret-right`), `caret-right`, `down
 
 ## Not done, to validate
 
-- Videos and audio (a server change), forwarding, and "Copier l’image" (writing a picture to the clipboard needs PNG conversion for most types).
+- Videos are shown since DESIGN.md v0.45 ([web-inline-media.md](web-inline-media.md#in-the-picture-viewer-designmd-v045)); sounds stay in the list. Forwarding, and "Copier l’image" (writing a picture to the clipboard needs PNG conversion for most types).
 - A still frame for animated attachments under reduced motion: the instance serves `/still` for avatars, icons and emoji, not attachments; the viewer plays them as the list already does.
 - Transparent pictures with dark ink sit on the dark room and can be hard to see (Discord has the same); a checkerboard or light room toggle waits for a request.
 - The phone back gesture does not close the viewer (no other dialog does either).

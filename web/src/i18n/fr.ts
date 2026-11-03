@@ -599,16 +599,18 @@ export const fr: Catalogue = {
     more: "Plus",
     download: (fileName) => `Télécharger ${fileName}`,
     videoPlayer: (fileName) => `Vidéo ${fileName}`,
+    enlargeVideo: (fileName) => `Agrandir la vidéo ${fileName}`,
+    enlargeVideoTooltip: "Agrandir",
     audioPlayer: (fileName) => `Audio ${fileName}`,
     cannotPlay: "Impossible de lire ce fichier ici. Télécharge-le pour l’ouvrir dans une autre application.",
   },
 
   pictureViewer: {
-    previous: "Image précédente",
-    next: "Image suivante",
+    previous: "Précédent",
+    next: "Suivant",
     position: (index, total) => `${count(index)} / ${count(total)}`,
-    positionLabel: (index, total) => `Image ${count(index)} sur ${count(total)}`,
-    pictureChanged: (index, total, fileName) => `Image ${count(index)} sur ${count(total)}${NO_BREAK_SPACE}: ${fileName}`,
+    positionLabel: (index, total) => `${count(index)} sur ${count(total)}`,
+    pictureChanged: (index, total, fileName) => `${count(index)} sur ${count(total)}${NO_BREAK_SPACE}: ${fileName}`,
     caption: (author, timestamp, size) => `${author} · ${timestamp} · ${size}`,
     actualSize: "Taille réelle",
     downloadTooltip: "Télécharger",
@@ -618,8 +620,10 @@ export const fr: Catalogue = {
     openOriginal: "Ouvrir l’original dans un nouvel onglet",
     openOriginalTooltip: "Ouvrir l’original",
     loading: "Chargement de l’image…",
+    loadingVideo: "Chargement de la vidéo…",
     fullSizeFailed: "L’image en pleine taille ne s’est pas chargée. Vérifie ta connexion, puis réessaie.",
     pictureFailed: "Impossible d’afficher cette image. Vérifie ta connexion, puis réessaie, ou télécharge-la.",
+    videoFailed: "Impossible de lire cette vidéo ici. Télécharge-la pour l’ouvrir dans une autre application.",
   },
 
   reactions: {

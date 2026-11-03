@@ -624,18 +624,20 @@ export const en = {
     download: (fileName: string) => `Download ${fileName}`,
     /** The inline players' names (ADR-0038); the file name follows. */
     videoPlayer: (fileName: string) => `Video ${fileName}`,
+    enlargeVideo: (fileName: string) => `Enlarge video ${fileName}`,
+    enlargeVideoTooltip: "Enlarge",
     audioPlayer: (fileName: string) => `Audio ${fileName}`,
     /** Under a video or sound this browser could not play: its codec, or the instance did not serve it. */
     cannotPlay: "Couldn't play this file here. Download it to open it in another app.",
   },
 
   pictureViewer: {
-    previous: "Previous picture",
-    next: "Next picture",
+    previous: "Previous",
+    next: "Next",
     position: (index: number, total: number) => `${count(index)} / ${count(total)}`,
-    positionLabel: (index: number, total: number) => `Picture ${count(index)} of ${count(total)}`,
+    positionLabel: (index: number, total: number) => `${count(index)} of ${count(total)}`,
     pictureChanged: (index: number, total: number, fileName: string) =>
-      `Picture ${count(index)} of ${count(total)}: ${fileName}`,
+      `${count(index)} of ${count(total)}: ${fileName}`,
     caption: (author: string, timestamp: string, size: string) => `${author} · ${timestamp} · ${size}`,
     actualSize: "Actual size",
     downloadTooltip: "Download",
@@ -645,8 +647,10 @@ export const en = {
     openOriginal: "Open the original in a new tab",
     openOriginalTooltip: "Open the original",
     loading: "Loading the picture…",
+    loadingVideo: "Loading the video…",
     fullSizeFailed: "The full-size picture didn't load. Check your connection, then try again.",
     pictureFailed: "Couldn't show this picture. Check your connection, then try again, or download it.",
+    videoFailed: "Couldn't play this video here. Download it to open it in another app.",
   },
 
   reactions: {
