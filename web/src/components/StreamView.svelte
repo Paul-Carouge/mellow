@@ -37,7 +37,7 @@
   const canGoFullscreen = typeof document !== "undefined" && document.fullscreenEnabled;
 
   const voice = $derived(client.voice);
-  const track = $derived(voice.streamTracks.get(userId));
+  const track = $derived(voice.videoTracks.get(userId));
   const status = $derived(
     watchedStreamStatus(client.voiceStatesByUserId.get(userId), voice.phase === "idle" ? null : voice.channelId, track !== undefined),
   );
@@ -47,7 +47,7 @@
     return member?.user ?? { id: userId, username: userId, display_name: strings.voice.someone };
   });
   const name = $derived(displayName(person));
-  const isPaused = $derived(voice.pausedStreamUserIds.has(userId));
+  const isPaused = $derived(voice.pausedVideoUserIds.has(userId));
   const isWaitingForPicture = $derived(status === "connecting" || (status === "live" && !hasPicture));
   let isPictureLate = $state(false);
   const stageSentence = $derived.by(() => {

@@ -232,6 +232,8 @@
     watchDevices: () => () => {},
     storage: () => null,
     requestScreen: () => Promise.resolve(canvasScreen()),
+    requestCamera: () => Promise.resolve(canvasScreen()),
+    listCameras: () => Promise.resolve([{ deviceId: "facetime", label: "FaceTime HD Camera" }]),
     requestSoundSource: () => Promise.resolve(oscillatorMicrophone()),
     codecPreferences: () => (hasVideo ? { audio: [], video: [] } : null),
   });
