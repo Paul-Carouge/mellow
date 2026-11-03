@@ -22,9 +22,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::domain::video_rules::{
     FrameForwarding, LayerAllocation, LayerByteBudget, LayerCosts, LayerRate, LayerSwitch,
     MAXIMUM_SILENCE_OF_A_CAMERA, MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS,
-    MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER, Throttle, TileDemand, active_layers,
-    arriving_layer_at_most, desired_bits_per_second, fair_share_of_upload, fit_tiles,
-    is_keyframe_within_layer_size, is_layer_gone, layer_cost, watcher_video_budget,
+    MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER, RecentRate, Throttle, TileDemand,
+    active_layers, arriving_layer_at_most, desired_bits_per_second, fair_share_of_upload,
+    fit_tiles, is_keyframe_within_layer_size, is_layer_gone, layer_cost, layout_budget,
+    watcher_video_budget,
 };
 use crate::domain::voice_rules::{ReceiveSlots, SpeakingDetector};
 
@@ -236,6 +237,8 @@ struct WatchedCamera {
     allocated: Option<SimulcastLayer>,
     /// Wants the allocated layer, or the highest lower one still arriving.
     switch: LayerSwitch,
+    /// What the watcher received of it over the last second, to tell congestion.
+    delivered: RecentRate,
     /// The fitting paused the tile (a tile waiting for its first layer is not paused).
     is_paused: bool,
 }
@@ -247,7 +250,7 @@ struct FittedTile {
     allocated: Option<SimulcastLayer>,
     /// The layers its camera stopped sending.
     gone_layers: Vec<SimulcastLayer>,
-    /// What the layer it receives sent over its last second, in bits per second.
+    /// What the watcher received of it over the last second, in bits per second.
     delivered_bits_per_second: u64,
 }
 
@@ -950,6 +953,7 @@ impl MediaLoop<'_> {
                         asked: *layer,
                         allocated: None,
                         switch: LayerSwitch::new(None),
+                        delivered: RecentRate::new(Instant::now()),
                         is_paused: false,
                     },
                 );
@@ -1043,9 +1047,7 @@ impl MediaLoop<'_> {
                     },
                     allocated: tile.allocated,
                     gone_layers: self.gone_layers_of(*camera_id, now),
-                    delivered_bits_per_second: tile.switch.wanted().map_or(0, |layer| {
-                        self.measured_bits_per_second_of(*camera_id, layer, now)
-                    }),
+                    delivered_bits_per_second: tile.delivered.bits_per_second(now),
                 })
             })
             .collect();
@@ -1059,16 +1061,19 @@ impl MediaLoop<'_> {
         let cameras: Vec<Snowflake> = tiles.iter().map(|tile| tile.camera_id).collect();
         let is_new_layout = is_new_layout || cameras != watcher.video.fitted_cameras;
         watcher.video.fitted_cameras = cameras;
+        let delivered_bits_per_second = tiles
+            .iter()
+            .map(|tile| tile.delivered_bits_per_second)
+            .sum();
         let layers = if is_new_layout {
             watcher.video.allocation = LayerAllocation::default();
-            fit_tiles(&demands, budget)
+            fit_tiles(
+                &demands,
+                layout_budget(budget, fair_share, delivered_bits_per_second),
+            )
         } else {
             let current: Vec<Option<SimulcastLayer>> =
                 tiles.iter().map(|tile| tile.allocated).collect();
-            let delivered_bits_per_second = tiles
-                .iter()
-                .map(|tile| tile.delivered_bits_per_second)
-                .sum();
             watcher.video.allocation.next_layers(
                 &demands,
                 &current,
@@ -1412,6 +1417,7 @@ impl MediaLoop<'_> {
                 }
                 FrameForwarding::Forward { is_switch } => has_switched |= is_switch,
             }
+            watched.delivered.record(frame.data.len(), now);
             let mid = watched.mid;
             self.current_participant = Some(watcher.user_id);
             let Some(writer) = watcher.rtc.writer(mid) else {
@@ -1926,6 +1932,29 @@ mod tests {
     }
 
     #[test]
+    fn a_new_stream_starts_sharp_after_a_light_one_dragged_the_estimate_down() {
+        let (_commands, command_receiver) = std::sync::mpsc::channel();
+        let (event_sender, _events) = tokio::sync::mpsc::unbounded_channel();
+        let mut media = media_loop(&command_receiver, &event_sender);
+        let (camera_id, watcher_id) = join_camera_and_watcher(&mut media, Snowflake::from_raw(5));
+        media.set_camera(camera_id, true);
+        // A still screen watched before left the estimate at 500 kbit/s, without congestion.
+        media
+            .participants
+            .get_mut(&watcher_id)
+            .unwrap()
+            .video
+            .estimated_bits_per_second = Some(500_000);
+        media.watch_cameras(watcher_id, &[(camera_id, SimulcastLayer::High)]);
+        assert_eq!(
+            media.participants[&watcher_id].video.watched_cameras[&camera_id]
+                .switch
+                .wanted(),
+            Some(SimulcastLayer::High)
+        );
+    }
+
+    #[test]
     fn a_tile_pauses_when_its_watcher_slows_down_and_flows_again_five_seconds_after() {
         let (_commands, command_receiver) = std::sync::mpsc::channel();
         let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
@@ -1966,6 +1995,17 @@ mod tests {
         }
         let estimate = |media: &mut MediaLoop<'_>, bits_per_second, seconds| {
             let watcher = media.participants.get_mut(&watcher_id).unwrap();
+            // Over the second before, the watcher received the layer it wants, at its rate.
+            let tile = watcher.video.watched_cameras.get_mut(&camera_id).unwrap();
+            let received_bytes = match tile.switch.wanted() {
+                Some(SimulcastLayer::High) => 250_000,
+                Some(SimulcastLayer::Low) => 62_500,
+                Some(SimulcastLayer::Quarter) => 20_000,
+                None => 0,
+            };
+            let second_before = start + Duration::from_secs(seconds - 1);
+            tile.delivered = RecentRate::new(second_before);
+            tile.delivered.record(received_bytes, second_before);
             watcher.video.estimated_bits_per_second = Some(bits_per_second);
             watcher.video.has_new_estimate = true;
             media.follow_bandwidth(start + Duration::from_secs(seconds));
