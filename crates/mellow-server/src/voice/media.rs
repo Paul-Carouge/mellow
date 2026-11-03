@@ -11,7 +11,6 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use mellow_protocol::{SimulcastLayer, Snowflake};
-use str0m::bwe::{Bitrate, BweKind};
 use str0m::change::SdpOffer;
 use str0m::format::{Codec, FormatParams};
 use str0m::media::{Direction, Frequency, KeyframeRequestKind, MediaData, MediaKind, Mid, Pt, Rid};
@@ -21,11 +20,10 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::domain::video_rules::{
     FrameForwarding, LayerAllocation, LayerByteBudget, LayerCosts, LayerRate, LayerSwitch,
-    MAXIMUM_SILENCE_OF_A_CAMERA, MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS,
+    LinkReport, MAXIMUM_SILENCE_OF_A_CAMERA, MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS,
     MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER, RecentRate, Throttle, TileDemand,
-    active_layers, arriving_layer_at_most, desired_bits_per_second, fair_share_of_upload,
-    fit_tiles, is_keyframe_within_layer_size, is_layer_gone, layer_cost, layout_budget,
-    watcher_video_budget,
+    active_layers, arriving_layer_at_most, fair_share_of_upload, fit_tiles,
+    is_keyframe_within_layer_size, is_layer_gone, layer_cost, loss_percent_of,
 };
 use crate::domain::voice_rules::{ReceiveSlots, SpeakingDetector};
 
@@ -76,12 +74,10 @@ const SILENT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 const OPUS_PAYLOAD_TYPE: u8 = 111;
 const OPUS_CHANNELS: u8 = 2;
 const OPUS_MINIMUM_PACKET_MILLISECONDS: u8 = 10;
-/// Where a watcher's bandwidth estimate starts (ADR-0035). `str0m` reports it as the first
-/// estimate, before any measure: high enough for every usual layout, so tiles do not start low and
-/// wait 5 seconds to go up; a slower link shows loss and delay within a second or two and the
-/// tiles go down then.
-const INITIAL_BANDWIDTH_ESTIMATE: Bitrate = Bitrate::mbps(5);
-/// How often every watcher's tiles are fitted again, besides each new estimate: picks up layers
+/// How often a watcher's session reports the loss its congestion feedback shows (ADR-0035): its
+/// tiles follow it.
+const LINK_REPORT_INTERVAL: Duration = Duration::from_secs(1);
+/// How often every watcher's tiles are fitted again, besides each new loss report: picks up layers
 /// whose measured rate changed or that a camera stopped sending, other watchers coming and going,
 /// and the wait before going up. Half the silence of a lost layer, so a watcher falls back within
 /// a second and a half of the last frame.
@@ -90,8 +86,8 @@ const REALLOCATION_INTERVAL: Duration = Duration::from_millis(500);
 /// Builds the server side of a participant's session and its SDP answer. Called off the async
 /// runtime: building a session generates its DTLS certificate.
 ///
-/// `is_watching_video`: the offer has video receive m-lines, so the server estimates the
-/// participant's downlink to fit the cameras they watch into it (ADR-0035).
+/// `is_watching_video`: the offer has video receive m-lines, so the session reports the loss of
+/// the participant's downlink each second, which the cameras they watch follow (ADR-0035).
 ///
 /// # Errors
 /// `None` when the offer does not parse or cannot be answered with Opus (and VP8 for video).
@@ -103,7 +99,9 @@ pub(crate) fn answer_offer(
     let offer = SdpOffer::from_sdp_string(sdp_offer).ok()?;
     let mut config = Rtc::builder().set_ice_lite(true).clear_codecs();
     if is_watching_video {
-        config = config.enable_bwe(Some(INITIAL_BANDWIDTH_ESTIMATE));
+        // Loss reports only: `str0m`'s bandwidth estimate paces everything sent at 1.1 times an
+        // estimate that lags behind a 1440p screen, which blurred and stalled it on fast links.
+        config = config.set_stats_interval(Some(LINK_REPORT_INTERVAL));
     }
     // VP8 with its retransmission stream is the only video codec (ADR-0035): every watcher can
     // decode every camera, and the server never has to choose.
@@ -232,7 +230,7 @@ struct WatchedCamera {
     mid: Mid,
     /// The layer the tile's size asks for.
     asked: SimulcastLayer,
-    /// What the watcher's bandwidth allows of it (`None`: paused). Kept asked of the camera
+    /// What the watcher's link allows of it (`None`: paused). Kept asked of the camera
     /// even while gone, so its browser sends it again once its uplink allows.
     allocated: Option<SimulcastLayer>,
     /// Wants the allocated layer, or the highest lower one still arriving.
@@ -310,16 +308,15 @@ struct ParticipantVideo {
     layer_requested_since: HashMap<SimulcastLayer, Instant>,
     /// When each layer of their camera last sent a frame, to tell layers its browser dropped.
     layer_heard_at: HashMap<SimulcastLayer, Instant>,
-    /// The latest estimate of their downlink in bits per second (TWCC), `None` before the first.
-    estimated_bits_per_second: Option<u64>,
-    /// An estimate arrived since their tiles were last fitted.
-    has_new_estimate: bool,
+    /// The share of packets sent to them lost over the last second, from their congestion
+    /// feedback; `None` when no feedback covers it.
+    loss_percent: Option<u32>,
+    /// A loss report arrived since their tiles were last fitted.
+    has_new_report: bool,
     /// When their tiles go back up after a slow spell.
     allocation: LayerAllocation,
     /// The cameras their tiles were last fitted with, in order: another set is a new layout.
     fitted_cameras: Vec<Snowflake>,
-    /// The bit rate the estimator was last told to probe up to.
-    desired_bits_per_second: u64,
     /// Screen sound receive m-lines not given to a watched screen.
     free_screen_sound_slots: Vec<Mid>,
     /// The watched screens this participant hears, by sharer.
@@ -589,9 +586,9 @@ fn drain_output(participant: &mut Participant, socket: &UdpSocket, collected: &m
             {
                 collected.frames.push((participant.user_id, frame));
             }
-            Ok(Output::Event(Event::EgressBitrateEstimate(BweKind::Twcc { estimate, .. }))) => {
-                participant.video.estimated_bits_per_second = Some(estimate.as_u64());
-                participant.video.has_new_estimate = true;
+            Ok(Output::Event(Event::PeerStats(stats))) => {
+                participant.video.loss_percent = stats.egress_loss_fraction.map(loss_percent_of);
+                participant.video.has_new_report = true;
             }
             Ok(Output::Event(Event::KeyframeRequest(request))) => {
                 collected
@@ -857,7 +854,7 @@ impl MediaLoop<'_> {
                 .collect();
             for watcher_id in watchers {
                 self.current_participant = Some(watcher_id);
-                changed_cameras.extend(self.fit_tiles_of(watcher_id, now, false));
+                changed_cameras.extend(self.fit_tiles_of(watcher_id, now, false, false));
             }
         }
         for camera_id in changed_cameras {
@@ -971,7 +968,7 @@ impl MediaLoop<'_> {
             self.emit(event);
         }
         // The same list again keeps the wait before going up: resending it does not skip it.
-        changed_cameras.extend(self.fit_tiles_of(user_id, Instant::now(), is_new_layout));
+        changed_cameras.extend(self.fit_tiles_of(user_id, Instant::now(), is_new_layout, false));
         for camera_id in changed_cameras {
             self.report_camera_layers(camera_id);
         }
@@ -1014,6 +1011,7 @@ impl MediaLoop<'_> {
         watcher_id: Snowflake,
         now: Instant,
         is_new_layout: bool,
+        is_new_report: bool,
     ) -> Vec<Snowflake> {
         let watchers = self
             .participants
@@ -1052,7 +1050,6 @@ impl MediaLoop<'_> {
             })
             .collect();
         let fair_share = fair_share_of_upload(self.video_upload_bits_per_second, watchers);
-        let budget = watcher_video_budget(watcher.video.estimated_bits_per_second, fair_share);
         let demands: Vec<TileDemand> = tiles.iter().map(|tile| tile.demand).collect();
         let Some(watcher) = self.participants.get_mut(&watcher_id) else {
             return Vec::new();
@@ -1065,22 +1062,24 @@ impl MediaLoop<'_> {
             .iter()
             .map(|tile| tile.delivered_bits_per_second)
             .sum();
+        let current: Vec<Option<SimulcastLayer>> =
+            tiles.iter().map(|tile| tile.allocated).collect();
         let layers = if is_new_layout {
+            // New tiles start as large as the share allows; a slow link shows loss within a
+            // second or two and they go down then.
             watcher.video.allocation = LayerAllocation::default();
-            fit_tiles(
-                &demands,
-                layout_budget(budget, fair_share, delivered_bits_per_second),
-            )
-        } else {
-            let current: Vec<Option<SimulcastLayer>> =
-                tiles.iter().map(|tile| tile.allocated).collect();
-            watcher.video.allocation.next_layers(
-                &demands,
-                &current,
-                budget,
+            fit_tiles(&demands, fair_share)
+        } else if is_new_report {
+            let report = LinkReport {
+                loss_percent: watcher.video.loss_percent,
                 delivered_bits_per_second,
-                now,
-            )
+            };
+            watcher
+                .video
+                .allocation
+                .next_layers(&demands, &current, report, fair_share, now)
+        } else {
+            current
         };
         let mut changed_cameras = Vec::new();
         let mut pauses = Vec::new();
@@ -1106,40 +1105,31 @@ impl MediaLoop<'_> {
                 });
             }
         }
-        let desired_bits_per_second = desired_bits_per_second(&demands, fair_share);
-        if desired_bits_per_second != watcher.video.desired_bits_per_second {
-            watcher.video.desired_bits_per_second = desired_bits_per_second;
-            self.current_participant = Some(watcher_id);
-            watcher
-                .rtc
-                .bwe()
-                .set_desired_bitrate(Bitrate::bps(desired_bits_per_second));
-        }
         for event in pauses {
             self.emit(event);
         }
         changed_cameras
     }
 
-    /// Fits again the tiles of watchers with a new estimate, and every watcher's once per
-    /// `REALLOCATION_INTERVAL`.
+    /// Fits again the tiles of watchers with a new loss report, and every watcher's once per
+    /// `REALLOCATION_INTERVAL` (layers gone, cameras on or off).
     fn follow_bandwidth(&mut self, now: Instant) {
         let is_periodic = now >= self.next_reallocation_at;
         if is_periodic {
             self.next_reallocation_at = now + REALLOCATION_INTERVAL;
         }
-        let due: Vec<Snowflake> = self
+        let due: Vec<(Snowflake, bool)> = self
             .participants
             .values_mut()
             .filter_map(|participant| {
-                let has_new_estimate = std::mem::take(&mut participant.video.has_new_estimate);
-                ((has_new_estimate || is_periodic) && !participant.video.watched_cameras.is_empty())
-                    .then_some(participant.user_id)
+                let has_new_report = std::mem::take(&mut participant.video.has_new_report);
+                ((has_new_report || is_periodic) && !participant.video.watched_cameras.is_empty())
+                    .then_some((participant.user_id, has_new_report))
             })
             .collect();
-        for watcher_id in due {
+        for (watcher_id, has_new_report) in due {
             self.current_participant = Some(watcher_id);
-            for camera_id in self.fit_tiles_of(watcher_id, now, false) {
+            for camera_id in self.fit_tiles_of(watcher_id, now, false, has_new_report) {
                 self.report_camera_layers(camera_id);
             }
         }
@@ -1927,30 +1917,31 @@ mod tests {
         media.watch_cameras(watcher_id, &[(camera_id, SimulcastLayer::High)]);
         let watcher = &media.participants[&watcher_id].video;
         assert_eq!(watcher.watched_cameras[&camera_id].switch.wanted(), None);
-        assert_eq!(watcher.desired_bits_per_second, 0, "its cost is never read");
         assert_eq!(watcher.fitted_cameras, []);
     }
 
     #[test]
-    fn a_new_stream_starts_sharp_after_a_light_one_dragged_the_estimate_down() {
+    fn a_new_stream_starts_as_large_as_the_share_allows_whatever_the_last_report() {
         let (_commands, command_receiver) = std::sync::mpsc::channel();
         let (event_sender, _events) = tokio::sync::mpsc::unbounded_channel();
         let mut media = media_loop(&command_receiver, &event_sender);
+        media.video_upload_bits_per_second = 600_000;
         let (camera_id, watcher_id) = join_camera_and_watcher(&mut media, Snowflake::from_raw(5));
         media.set_camera(camera_id, true);
-        // A still screen watched before left the estimate at 500 kbit/s, without congestion.
+        // The last stream watched was on a lossy link: the new one starts afresh.
         media
             .participants
             .get_mut(&watcher_id)
             .unwrap()
             .video
-            .estimated_bits_per_second = Some(500_000);
+            .loss_percent = Some(50);
         media.watch_cameras(watcher_id, &[(camera_id, SimulcastLayer::High)]);
         assert_eq!(
             media.participants[&watcher_id].video.watched_cameras[&camera_id]
                 .switch
                 .wanted(),
-            Some(SimulcastLayer::High)
+            Some(SimulcastLayer::Low),
+            "600 kbit/s of upload: the half-size layer"
         );
     }
 
@@ -1981,8 +1972,8 @@ mod tests {
 
         let start = Instant::now();
         // What each layer of the camera delivered over a whole second: 160 kbit/s, 500 kbit/s and
-        // 2 Mbit/s, so a budget below the layer received shows congestion.
         let camera = media.participants.get_mut(&camera_id).unwrap();
+        // 2 Mbit/s, so what gets through a lossy link fits a lower one.
         for (layer, bytes) in [
             (SimulcastLayer::Quarter, 20_000),
             (SimulcastLayer::Low, 62_500),
@@ -1993,7 +1984,7 @@ mod tests {
             rate.record(1, start + Duration::from_secs(1));
             camera.video.layer_rates.insert(layer, rate);
         }
-        let estimate = |media: &mut MediaLoop<'_>, bits_per_second, seconds| {
+        let report = |media: &mut MediaLoop<'_>, loss_percent, seconds| {
             let watcher = media.participants.get_mut(&watcher_id).unwrap();
             // Over the second before, the watcher received the layer it wants, at its rate.
             let tile = watcher.video.watched_cameras.get_mut(&camera_id).unwrap();
@@ -2006,27 +1997,34 @@ mod tests {
             let second_before = start + Duration::from_secs(seconds - 1);
             tile.delivered = RecentRate::new(second_before);
             tile.delivered.record(received_bytes, second_before);
-            watcher.video.estimated_bits_per_second = Some(bits_per_second);
-            watcher.video.has_new_estimate = true;
+            watcher.video.loss_percent = Some(loss_percent);
+            watcher.video.has_new_report = true;
             media.follow_bandwidth(start + Duration::from_secs(seconds));
         };
-        estimate(&mut media, 1_000_000, 1);
+        report(&mut media, 0, 1);
+        assert_eq!(wanted(&media), Some(SimulcastLayer::High), "a clear link");
+        // Half of 2 Mbit/s gets through: 900 kbit/s for tiles.
+        report(&mut media, 50, 2);
         assert_eq!(wanted(&media), Some(SimulcastLayer::Low));
-        estimate(&mut media, 100_000, 2);
+        report(&mut media, 95, 3);
         assert_eq!(wanted(&media), None);
         assert_eq!(pauses(&mut events), [true]);
 
-        estimate(&mut media, 10_000_000, 3);
+        report(&mut media, 0, 4);
         media.watch_cameras(watcher_id, &large_tile);
-        estimate(&mut media, 10_000_000, 7);
+        report(&mut media, 0, 8);
         assert_eq!(
             wanted(&media),
             None,
             "the same tiles again do not skip the wait"
         );
-        estimate(&mut media, 10_000_000, 8);
-        assert_eq!(wanted(&media), Some(SimulcastLayer::High));
+        report(&mut media, 0, 9);
+        assert_eq!(wanted(&media), Some(SimulcastLayer::Quarter), "one step up");
         assert_eq!(pauses(&mut events), [false]);
+        report(&mut media, 0, 14);
+        assert_eq!(wanted(&media), Some(SimulcastLayer::Low));
+        report(&mut media, 0, 19);
+        assert_eq!(wanted(&media), Some(SimulcastLayer::High));
     }
 
     #[test]
