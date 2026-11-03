@@ -4,11 +4,18 @@
   import { strings } from "../i18n";
   import type { MellowClient } from "../lib/client.svelte";
   import { Permission, type Snowflake } from "../lib/protocol";
-  import { SCREEN_SHARE_QUALITIES, type ScreenShareQuality } from "../lib/screen-share";
+  import {
+    SCREEN_SHARE_QUALITIES,
+    type ScreenShareQuality,
+    shownScreenSoundDeviceId,
+    soundlessShareAdvice,
+  } from "../lib/screen-share";
+  import { screenSoundPlatform } from "../lib/voice-browser";
   import Button from "./Button.svelte";
   import ContextMenu from "./ContextMenu.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import LazyComponent from "./LazyComponent.svelte";
   import { createPopoverToggle } from "./popover-toggle";
   import { holds } from "./server-settings";
   import SoundboardPopover from "./SoundboardPopover.svelte";
@@ -41,21 +48,34 @@
   const soundboardToggle = createPopoverToggle(() => isSoundboardOpen);
 
   // Screen sharing (ADR-0037): a split button on its own row, as Discord's panel has its video
-  // buttons: the share half starts or stops, the quality half opens a menu of the three qualities,
-  // which also applies while sharing.
+  // buttons: the share half starts or stops, the quality half opens the share's options (its
+  // quality, then where its sound comes from), which also apply while sharing.
   let qualityButton = $state<HTMLButtonElement | null>(null);
   let shareRow = $state<HTMLElement | null>(null);
   let qualityMenu = $state<ContextMenu | null>(null);
   let isQualityMenuOpen = $state(false);
+  let isSoundHelpOpen = $state(false);
   const qualityToggle = createPopoverToggle(() => isQualityMenuOpen);
+  // Only Chromium shares a picker's sound, and only Linux gets the commands' help.
+  const soundPlatform = screenSoundPlatform();
+  const soundAdvice = soundlessShareAdvice(soundPlatform.chromiumPlatform);
   function openQualityMenu() {
     if (shareRow) {
+      void voice.refreshScreenSoundDevices();
       qualityMenu?.open({ kind: "anchor", bounds: shareRow.getBoundingClientRect(), align: "stretch" }, qualityButton);
     }
   }
   function chooseQuality(quality: ScreenShareQuality) {
     qualityMenu?.close();
     voice.setScreenShareQuality(quality);
+  }
+  function chooseSound(deviceId: string | null) {
+    qualityMenu?.close();
+    voice.setScreenSoundDevice(deviceId);
+  }
+  function openSoundHelp() {
+    qualityMenu?.close();
+    isSoundHelpOpen = true;
   }
 
   const voice = $derived(client.voice);
@@ -68,6 +88,29 @@
     return channel?.name ?? strings.voice.voiceChannel;
   });
   const look = $derived(problem ? problemLook(problem, problemChannelName) : null);
+  const soundNoticeSentence = $derived(
+    voice.screenSoundNotice === null
+      ? ""
+      : voice.screenSoundNotice === "no-sound"
+        ? strings.screenShare.soundNotices["no-sound"][soundAdvice]
+        : strings.screenShare.soundNotices["source-unavailable"],
+  );
+  const shownSoundDeviceId = $derived(shownScreenSoundDeviceId(voice.screenSoundDevices, voice.screenSoundDeviceId));
+  // What your share sends as sound, said under the live line so it is never a guess.
+  const sharedSoundLine = $derived.by(() => {
+    switch (voice.sharedSound) {
+      case "screen":
+        return strings.screenShare.sharedSound.screen;
+      case "input": {
+        const source = voice.screenSoundDevices.find((device) => device.deviceId === voice.screenSoundDeviceId);
+        return strings.screenShare.sharedSound.input(source?.label ?? strings.screenShare.audioInputHint);
+      }
+      case "none":
+        return strings.screenShare.sharedSound.none;
+      default:
+        return "";
+    }
+  });
   // Leaving voice takes the soundboard with it.
   $effect(() => {
     if (voice.phase === "idle") {
@@ -131,9 +174,28 @@
     "truncate type-body-sm text-(--mw-component-context-menu-item-hint-text) group-hover:text-(--mw-component-context-menu-item-hint-text-focus)";
   const shareHalfClass =
     "flex h-(--mw-component-voice-panel-share-height) min-w-0 items-center gap-2xs rounded-(--mw-component-voice-panel-share-radius) type-button transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) pointer-coarse:h-(--mw-size-hit-web-min)";
+  const menuGroupLabelClass =
+    "px-(--mw-component-context-menu-item-padding-inline) pt-2xs pb-3xs type-category text-(--mw-component-context-menu-item-hint-text)";
+  const menuSeparatorClass =
+    "mx-(--mw-component-context-menu-separator-margin-inline) my-(--mw-component-context-menu-separator-margin-block) h-(--mw-component-context-menu-separator-height) shrink-0 border-0 bg-(--mw-component-context-menu-separator)";
+  // Underlined like the channel link above: these are actions inside a sentence's block.
+  const noticeActionClass =
+    "rounded-xs text-start underline text-(--mw-component-voice-panel-channel-text) hover:text-(--mw-component-voice-panel-channel-text-hover) pointer-coarse:min-h-(--mw-size-hit-web-min)";
   const buttonClass =
     "size-(--mw-component-user-panel-button-size) text-(--mw-component-user-panel-button-icon) hover:bg-(--mw-component-user-panel-button-background-hover)";
 </script>
+
+{#snippet choice(isChecked: boolean, label: string, hint: string, onchoose: () => void, isFigure = false)}
+  <button type="button" role="menuitemradio" aria-checked={isChecked} class={menuItemClass} onclick={onchoose}>
+    <span class="flex min-w-0 flex-1 flex-col">
+      <!-- Device names can be long ("Monitor of Built-in Audio Analog Stereo"): whole in the tooltip. -->
+      <span class={["truncate type-menu-item", isFigure && "tabular-nums"]} title={label}>{label}</span>
+      {#if hint}<span class={menuHintClass}>{hint}</span>{/if}
+    </span>
+    <!-- The check says which one is chosen without relying on colour. -->
+    {#if isChecked}<Icon name="check" class="size-(--mw-component-context-menu-item-icon-size) shrink-0" />{/if}
+  </button>
+{/snippet}
 
 <div class="col-span-full min-w-0">
   {#if voice.phase !== "idle" && place}
@@ -208,9 +270,9 @@
             type="button"
             aria-haspopup="menu"
             aria-expanded={isQualityMenuOpen}
-            aria-controls="screen-share-quality-menu"
-            aria-label={strings.screenShare.qualityButton(voice.screenShareQuality)}
-            title={strings.screenShare.qualityMenu}
+            aria-controls="screen-share-options-menu"
+            aria-label={strings.screenShare.optionsButton(voice.screenShareQuality)}
+            title={strings.screenShare.optionsMenu}
             class={[
               shareHalfClass,
               "shrink-0 px-2xs tabular-nums pointer-coarse:min-w-(--mw-size-hit-web-min) hover:bg-(--mw-component-voice-panel-share-background-hover) hover:text-(--mw-component-voice-panel-share-text-hover)",
@@ -230,7 +292,38 @@
             <span aria-hidden="true" class={LIVE_BADGE_CLASS}>{strings.screenShare.live}</span>
             <span class="min-w-0 truncate">{strings.screenShare.youAreSharing}</span>
           </p>
+          {#if sharedSoundLine}
+            <p class="mt-3xs flex min-w-0 items-center gap-2xs type-body-sm text-(--mw-component-voice-panel-hint-text)" title={sharedSoundLine}>
+              <Icon
+                name={voice.sharedSound === "none" ? "speaker-slash" : "speaker-high"}
+                class="size-(--mw-component-voice-panel-signal-icon-size) shrink-0"
+              />
+              <span class="min-w-0 truncate">{sharedSoundLine}</span>
+            </p>
+          {/if}
         {/if}
+      {/if}
+      {#if voice.screenSoundNotice}
+        <!-- Advice, not an alarm: no warning sign unless the chosen source failed. -->
+        <div class="mt-2xs flex items-start gap-2xs type-body-sm text-(--mw-component-voice-panel-hint-text)">
+          {#if voice.screenSoundNotice === "source-unavailable"}
+            <Icon name="warning-circle" class="mt-3xs size-(--mw-component-voice-panel-signal-icon-size) shrink-0 text-(--mw-component-voice-panel-problem-icon)" />
+          {/if}
+          <div class="flex min-w-0 flex-1 flex-col items-start gap-3xs">
+            <p>{soundNoticeSentence}</p>
+            <button type="button" class={noticeActionClass} onclick={openQualityMenu}>{strings.screenShare.chooseSoundSource}</button>
+            {#if soundPlatform.isLinux}
+              <button type="button" class={noticeActionClass} onclick={openSoundHelp}>{strings.screenShare.soundHelp.open}</button>
+            {/if}
+          </div>
+          <IconButton
+            icon="x"
+            label={strings.common.close}
+            class="-me-2xs -my-2xs {buttonClass}"
+            iconClass="size-(--mw-component-voice-panel-signal-icon-size)"
+            onclick={() => voice.dismissScreenSoundNotice()}
+          />
+        </div>
       {/if}
       {#if voice.screenShareProblem}
         <!-- A cancelled picker is your own doing: no warning sign, just what happened. -->
@@ -321,26 +414,53 @@
     <ContextMenu
       bind:this={qualityMenu}
       bind:isOpen={isQualityMenuOpen}
-      id="screen-share-quality-menu"
-      label={strings.screenShare.qualityMenu}
+      id="screen-share-options-menu"
+      label={strings.screenShare.optionsMenu}
       gapToken="space-2xs"
     >
-      {#each SCREEN_SHARE_QUALITIES as quality (quality)}
-        {@const isChecked = quality === voice.screenShareQuality}
-        <button type="button" role="menuitemradio" aria-checked={isChecked} class={menuItemClass} onclick={() => chooseQuality(quality)}>
-          <span class="flex min-w-0 flex-1 flex-col">
-            <span class="type-menu-item tabular-nums">{quality}</span>
-            <span class={menuHintClass}>{strings.screenShare.qualityHints[quality]}</span>
-          </span>
-          <!-- The check says which one is chosen without relying on colour. -->
-          {#if isChecked}<Icon name="check" class="size-(--mw-component-context-menu-item-icon-size)" />{/if}
+      <div role="group" aria-labelledby="screen-share-quality-group">
+        <p id="screen-share-quality-group" class={menuGroupLabelClass}>{strings.screenShare.qualityGroup}</p>
+        {#each SCREEN_SHARE_QUALITIES as quality (quality)}
+          {@render choice(quality === voice.screenShareQuality, quality, strings.screenShare.qualityHints[quality], () => chooseQuality(quality), true)}
+        {/each}
+      </div>
+      <hr class={menuSeparatorClass} />
+      <div role="group" aria-labelledby="screen-share-sound-group">
+        <p id="screen-share-sound-group" class={menuGroupLabelClass}>{strings.screenShare.soundGroup}</p>
+        {@render choice(
+          shownSoundDeviceId === null,
+          strings.screenShare.soundFromScreen,
+          soundAdvice === "sound-source" ? "" : strings.screenShare.soundFromScreenHint,
+          () => chooseSound(null),
+        )}
+        {#each voice.screenSoundDevices as device (device.deviceId)}
+          {@render choice(
+            device.deviceId === shownSoundDeviceId,
+            device.label,
+            device.isSystemSound ? strings.screenShare.systemSoundHint : "",
+            () => chooseSound(device.deviceId),
+          )}
+        {/each}
+      </div>
+      {#if soundPlatform.isLinux}
+        <hr class={menuSeparatorClass} />
+        <button type="button" role="menuitem" class={menuItemClass} onclick={openSoundHelp}>
+          <span class="type-menu-item">{strings.screenShare.soundHelp.open}</span>
         </button>
-      {/each}
+      {/if}
     </ContextMenu>
+  {/if}
+  {#if isSoundHelpOpen}
+    <LazyComponent load={() => import("./ScreenSoundHelpDialog.svelte")} onclose={() => (isSoundHelpOpen = false)}>
+      {#snippet children({ default: ScreenSoundHelpDialog })}
+        <ScreenSoundHelpDialog onclose={() => (isSoundHelpOpen = false)} />
+      {/snippet}
+    </LazyComponent>
   {/if}
   <p class="sr-only" aria-live="polite">{phaseSentence}</p>
   <p class="sr-only" aria-live="polite">{voice.isSharingScreen ? strings.screenShare.youAreSharing : ""}</p>
   <p class="sr-only" aria-live="polite">{voice.phase === "idle" ? "" : (voice.screenShareProblem && strings.screenShare.problems[voice.screenShareProblem]) || ""}</p>
+  <p class="sr-only" aria-live="polite">{soundNoticeSentence && `${sharedSoundLine}. ${soundNoticeSentence}`}</p>
   <p class="sr-only" aria-live="polite">{client.voiceAnnouncement}</p>
   <p class="sr-only" aria-live="polite">{voice.phase === "idle" ? "" : deviceNotices.join(" ")}</p>
 </div>

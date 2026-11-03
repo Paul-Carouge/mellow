@@ -2,6 +2,7 @@
 // instance knows, sized to fit its per-layer budgets and picture limits (ADR-0035).
 
 import type { SimulcastLayer, VoiceVideoRefusal } from "./protocol";
+import type { AudioDevice } from "./voice-settings";
 
 /** The qualities a screen can be shared at (owner, 2026-11-02), all at 30 frames per second. */
 export type ScreenShareQuality = "720p" | "1080p" | "1440p";
@@ -104,6 +105,133 @@ export function withActiveLayers(
     ...encoding,
     active: encoding.rid === undefined || active.some((layer) => layer === encoding.rid),
   }));
+}
+
+// --- The share's sound (docs/design/web-stream-watching.md) ----------------------------------------
+
+/**
+ * Where your share's sound comes from, remembered on this device: absent or empty for the shared
+ * tab's, window's or screen's own sound (what the browser's picker gives), else an audio input's id.
+ */
+export const SCREEN_SOUND_DEVICE_STORAGE_KEY = "mellow.screen-share-sound";
+/** Device ids are opaque, but a stored value longer than this is not one. */
+const MAXIMUM_STORED_DEVICE_ID_LENGTH = 512;
+
+/** An audio input the sharer may send as their screen's sound. */
+export interface ScreenSoundDevice {
+  readonly deviceId: string;
+  readonly label: string;
+  /** Its label says it carries what the computer plays (a PipeWire or PulseAudio monitor, Stereo Mix). */
+  readonly isSystemSound: boolean;
+}
+
+/** Chrome and Edge list the system's choices as extra entries, duplicates of real devices. */
+const SYSTEM_CHOICE_DEVICE_IDS: ReadonlySet<string> = new Set(["default", "communications"]);
+/**
+ * PipeWire and PulseAudio name their monitors "Monitor of …" ("Moniteur de …" in French), Windows
+ * "Stereo Mix" ("Mixage stéréo"); BlackHole and Loopback are the usual virtual devices on macOS.
+ */
+const SYSTEM_SOUND_LABEL_PATTERN = /\bmonitor\b|\bmoniteur\b|stereo mix|mixage st[ée]r[ée]o|what u hear|loopback|blackhole/iu;
+
+/**
+ * The audio inputs that can be a share's sound, the system's sound first, in the browser's order
+ * otherwise. Empty while the browser hides their names (before the microphone is allowed).
+ */
+export function screenSoundDevicesOf(devices: readonly AudioDevice[]): ScreenSoundDevice[] {
+  const inputs = devices
+    .filter(
+      (device) =>
+        device.kind === "audioinput" && device.deviceId !== "" && device.label !== "" && !SYSTEM_CHOICE_DEVICE_IDS.has(device.deviceId),
+    )
+    .map((device) => ({ deviceId: device.deviceId, label: device.label, isSystemSound: SYSTEM_SOUND_LABEL_PATTERN.test(device.label) }));
+  return [...inputs.filter((device) => device.isSystemSound), ...inputs.filter((device) => !device.isSystemSound)];
+}
+
+export function readScreenSoundDeviceId(storage: Pick<Storage, "getItem"> | null): string | null {
+  const stored = storage?.getItem(SCREEN_SOUND_DEVICE_STORAGE_KEY) ?? null;
+  return stored !== null && stored.length > 0 && stored.length <= MAXIMUM_STORED_DEVICE_ID_LENGTH ? stored : null;
+}
+
+/**
+ * The choice the share's options show checked: the remembered input while it is plugged in (or
+ * while the list is unknown), else the screen's own sound, which is what a share then falls back to.
+ */
+export function shownScreenSoundDeviceId(devices: readonly ScreenSoundDevice[], deviceId: string | null): string | null {
+  return deviceId !== null && (devices.length === 0 || devices.some((device) => device.deviceId === deviceId)) ? deviceId : null;
+}
+
+/** An audio input taken as it is: the processing meant for a microphone would flatten music and games. */
+export function soundSourceConstraints(deviceId: string): MediaStreamConstraints {
+  return {
+    audio: { deviceId: { exact: deviceId }, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    video: false,
+  };
+}
+
+/** Said once in the voice panel about your share's sound. */
+export type ScreenSoundNotice =
+  /** The share started without any sound. */
+  | "no-sound"
+  /** The chosen audio input could not open, or was unplugged: the screen's own sound, if any, goes instead. */
+  | "source-unavailable";
+
+/** What to tell someone whose share has no sound, by what their browser's picker can offer. */
+export type SoundlessShareAdvice =
+  /** Chromium on Windows and ChromeOS: a tab's sound, or the whole system's with the entire screen. */
+  | "tab-or-screen"
+  /** Chromium elsewhere (Linux, macOS): only a tab's sound. */
+  | "tab"
+  /** Firefox and Safari share no sound from their picker: only an audio input can carry it. */
+  | "sound-source";
+
+/**
+ * `chromiumPlatform` is `navigator.userAgentData.platform`, which only Chromium browsers have, so
+ * its absence is what says the picker offers no sound at all.
+ */
+export function soundlessShareAdvice(chromiumPlatform: string | null): SoundlessShareAdvice {
+  if (chromiumPlatform === null) {
+    return "sound-source";
+  }
+  return /^(windows|chrome ?os)$/iu.test(chromiumPlatform) ? "tab-or-screen" : "tab";
+}
+
+/**
+ * One app's sound on Linux, without any extension: a virtual output the app plays into, whose
+ * monitor the browser lists as an audio input, and a loopback so its sound is still heard. `pactl`
+ * speaks to PulseAudio and to PipeWire's `pipewire-pulse` alike; both modules last until a restart.
+ */
+export const LINUX_SHARE_OUTPUT_COMMAND =
+  "pactl load-module module-null-sink sink_name=mellow_partage sink_properties=device.description=Partage-Mellow";
+export const LINUX_SHARE_LOOPBACK_COMMAND = "pactl load-module module-loopback source=mellow_partage.monitor";
+
+/** Linux desktops, where the help with PipeWire's and PulseAudio's commands applies; not Android. */
+export function isLinuxDesktop(platform: string): boolean {
+  return /linux/iu.test(platform) && !/android/iu.test(platform);
+}
+
+// --- Watching a share's sound ----------------------------------------------------------------------
+
+/** Each sharer's sound volume and mute, for you only, apart from their voice (as on Discord). */
+export const STREAM_SOUND_SETTINGS_STORAGE_KEY = "mellow.stream-sound-settings";
+/** Twice a second is enough to say whether a share has sound; never per frame. */
+export const STREAM_SOUND_SAMPLE_INTERVAL_MILLISECONDS = 500;
+/** RMS (0 to 1) above which the received sound counts as heard: about -50 dBFS, over Opus's comfort noise. */
+export const STREAM_SOUND_LEVEL_THRESHOLD = 0.003;
+/** Heard within this, the share has sound; nothing for this long once its picture came, it has none. */
+export const STREAM_SOUND_HOLD_MILLISECONDS = 5_000;
+
+export type StreamSoundStatus =
+  /** Not known yet: the picture has not come, or came only a moment ago. */
+  | "listening"
+  | "sound"
+  | "silent";
+
+/** `pictureSince`: when the watched picture arrived (`null` before); `lastHeardAt`: when its sound last rose. */
+export function streamSoundStatus(pictureSince: number | null, lastHeardAt: number, now: number): StreamSoundStatus {
+  if (now - lastHeardAt < STREAM_SOUND_HOLD_MILLISECONDS) {
+    return "sound";
+  }
+  return pictureSince === null || now - pictureSince < STREAM_SOUND_HOLD_MILLISECONDS ? "listening" : "silent";
 }
 
 /** Why a screen is not (or no longer) shared. */

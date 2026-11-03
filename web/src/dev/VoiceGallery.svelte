@@ -12,7 +12,15 @@
   import { DEFAULT_VOICE_SETTINGS, type VoiceSettings as Settings, withEqualizerBand } from "../lib/voice-settings";
   import type { RestClient } from "../lib/api";
   import { MellowClient } from "../lib/client.svelte";
-  import { type Channel, type GatewayEvent, Permission, VIDEO_RECEIVE_SLOTS, type VoiceState } from "../lib/protocol";
+  import {
+    type Channel,
+    type GatewayEvent,
+    Permission,
+    VIDEO_RECEIVE_SLOTS,
+    VOICE_RECEIVE_SLOTS,
+    type VoiceState,
+  } from "../lib/protocol";
+  import ScreenSoundHelpDialog from "../components/ScreenSoundHelpDialog.svelte";
   import type { ScreenShareProblem } from "../lib/screen-share";
 
   // Development only (web/dev/voice.html): the navigator with voice channels, fed with gateway
@@ -33,7 +41,11 @@
   // `&stream=connecting|live|ended` (you watch Ana: before her picture, with it, then she stops and
   // the view closes after its reading time), `&problem=denied|unsupported|stopped|
   // missing_permissions|too_many_cameras|video_unavailable` (the panel's line), `&quality=open`
-  // (the quality menu). The shared screen is a canvas drawn here.
+  // (the share's options). The shared screen is a canvas drawn here, without sound: sharing shows
+  // the "no sound" advice; `&source=monitor` shares a monitor input instead, and `&help=1` opens the
+  // Linux help. Watching (docs/design/web-stream-watching.md): `&stream=paused` (the instance paused
+  // Ana's picture), `&sound=on` (her screen's sound comes; otherwise "Sans son" after 5 s), and
+  // `&stream=connecting` says the picture is not coming after 10 s.
   const parameters = new URLSearchParams(location.hash.slice(1));
   const view = parameters.get("view") ?? "navigator";
   const isDevicesHidden = parameters.get("devices") === "hidden";
@@ -42,6 +54,14 @@
   const stream = parameters.get("stream");
   const screenShareProblem = parameters.get("problem") as ScreenShareProblem | null;
   const hasVideo = stream !== null || screenShareProblem !== null || parameters.get("quality") === "open";
+  const isStreamSoundOn = parameters.get("sound") === "on";
+  /** What the share's options list as sound sources, as Chrome shows them on Linux with PipeWire. */
+  const soundSourceDevices = [
+    { kind: "audioinput", deviceId: "default", label: "Par défaut" },
+    { kind: "audioinput", deviceId: "mic", label: "Micro interne" },
+    { kind: "audioinput", deviceId: "monitor", label: "Monitor of Audio interne Stéréo analogique" },
+    { kind: "audioinput", deviceId: "partage", label: "Monitor of Partage-Mellow" },
+  ] as const;
 
   /** A slide someone shares: a code review, redrawn so the canvas keeps sending frames. */
   function canvasScreen(): MediaStream {
@@ -193,7 +213,10 @@
   const fakeTrack = { enabled: true, stop: () => {}, addEventListener: () => {} };
   const client = new MellowClient(silentRest, {
     createPeerConnection: () => fakePeer as unknown as RTCPeerConnection,
-    meterLevel: view === "settings" ? BROWSER_VOICE_PORTS.meterLevel : () => null,
+    meterLevel:
+      view === "settings"
+        ? BROWSER_VOICE_PORTS.meterLevel
+        : () => (isStreamSoundOn ? { level: () => 0.1, stop: () => {} } : null),
     prepareNoiseSuppressor:
       rnnoise === "unsupported" || rnnoise === "failed" ? () => Promise.resolve(rnnoise) : BROWSER_VOICE_PORTS.prepareNoiseSuppressor,
     processMicrophone: view === "settings" ? BROWSER_VOICE_PORTS.processMicrophone : () => Promise.resolve(null),
@@ -205,10 +228,11 @@
         : Promise.resolve({ getAudioTracks: () => [fakeTrack], getTracks: () => [fakeTrack] } as unknown as MediaStream),
     playTrack: view === "settings" ? BROWSER_VOICE_PORTS.playTrack : () => ({ setGain: () => {}, setOutputDevice: () => {}, stop: () => {} }),
     amplify: () => null,
-    listDevices: () => Promise.resolve([]),
+    listDevices: () => Promise.resolve(hasVideo ? soundSourceDevices : []),
     watchDevices: () => () => {},
     storage: () => null,
     requestScreen: () => Promise.resolve(canvasScreen()),
+    requestSoundSource: () => Promise.resolve(oscillatorMicrophone()),
     codecPreferences: () => (hasVideo ? { audio: [], video: [] } : null),
   });
 
@@ -358,6 +382,8 @@
       }
       return;
     }
+    // The mids this join's lines get, numbered from here as the fake peer hands them out.
+    const firstMid = videoMid + 1;
     await client.voice.join("21");
     if (state === "connecting") {
       return;
@@ -369,6 +395,9 @@
       client.voice.disconnectedByServer("21", "media_timeout");
     }
     if (stream === "share") {
+      if (parameters.get("source") === "monitor") {
+        client.voice.setScreenSoundDevice("monitor");
+      }
       await client.voice.startScreenShare();
       dispatch({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(ME, "21", { self_stream: true }) } });
     }
@@ -377,18 +406,30 @@
     }
     if (parameters.get("quality") === "open") {
       await tick();
-      document.querySelector<HTMLButtonElement>("button[aria-controls=screen-share-quality-menu]")?.click();
+      document.querySelector<HTMLButtonElement>("button[aria-controls=screen-share-options-menu]")?.click();
     }
-    if (stream === "connecting" || stream === "live" || stream === "ended") {
+    if (stream === "connecting" || stream === "live" || stream === "ended" || stream === "paused") {
       client.voice.watchStream("2");
       if (stream !== "connecting") {
         // The first video receive slot: after the voice line, its receive slots and the camera line.
-        const mid = `m${videoMid - VIDEO_RECEIVE_SLOTS + 1}`;
+        const mid = `m${firstMid + 1 + VOICE_RECEIVE_SLOTS + 1}`;
         dispatch({ t: "VOICE_SLOT_ASSIGNED", data: { channel_id: "21", mid, user_id: "2" } });
         const [screenTrack] = canvasScreen().getVideoTracks();
         if (screenTrack) {
           deliverTrack({ track: screenTrack, transceiver: { mid } });
         }
+        if (isStreamSoundOn) {
+          // The first screen sound receive slot: after the video slots and your own screen's sound line.
+          const soundMid = `m${firstMid + 1 + VOICE_RECEIVE_SLOTS + 1 + VIDEO_RECEIVE_SLOTS + 1}`;
+          const [soundTrack] = oscillatorMicrophone().getAudioTracks();
+          if (soundTrack) {
+            deliverTrack({ track: soundTrack, transceiver: { mid: soundMid } });
+          }
+          dispatch({ t: "VOICE_SLOT_ASSIGNED", data: { channel_id: "21", mid: soundMid, user_id: "2" } });
+        }
+      }
+      if (stream === "paused") {
+        dispatch({ t: "VOICE_VIDEO_PAUSED", data: { channel_id: "21", user_id: "2", is_paused: true } });
       }
       if (stream === "ended") {
         setTimeout(() => dispatch({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("2", "21") } }), 1_500);
@@ -471,4 +512,7 @@
     </main>
   {/if}
 </div>
+{#if parameters.get("help") === "1"}
+  <ScreenSoundHelpDialog onclose={() => {}} />
+{/if}
 {/if}
