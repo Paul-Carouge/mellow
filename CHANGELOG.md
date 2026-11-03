@@ -4,6 +4,9 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Fixed
+- In Firefox, a simple right-click opened Mellow's menu and closed it at once (Firefox fires the event as the button goes down, and its release dismissed the menu): the menu now opens as the button is released.
+
 ## [0.33.0] - 2026-11-03
 Screen sharing that keeps its sound and its picture: a sound source of your choice, a stream view with its own volume, and video that follows each watcher's connection (ADR-0035, ADR-0037). No database migration; the gateway gains one additive event, and clients of `v0.32.0` keep working until reloaded.
 
