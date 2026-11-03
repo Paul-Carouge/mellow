@@ -825,8 +825,7 @@ export class MellowClient {
         this.voice.applyVideoLayers(event.data.channel_id, event.data.active);
         return;
       case "VOICE_VIDEO_PAUSED":
-        // shortcut: no camera tiles on the web yet; the camera interface (ROADMAP 16.5, step 4)
-        // shows a paused tile as the person's avatar with "connection too slow".
+        this.voice.noteVideoPaused(event.data.channel_id, event.data.user_id, event.data.is_paused);
         return;
       default: {
         // An event this client does not know yet: skipped, as the native clients do.

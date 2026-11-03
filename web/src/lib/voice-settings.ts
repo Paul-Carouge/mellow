@@ -327,9 +327,12 @@ export const PERSON_VOICE_SETTINGS_STORAGE_KEY = "mellow.voice-person-settings";
 
 const SNOWFLAKE_PATTERN = /^\d{1,20}$/u;
 
-/** Only the people changed from the default are stored. */
-export function readPersonVoiceSettings(storage: Pick<Storage, "getItem"> | null): ReadonlyMap<Snowflake, PersonVoiceSetting> {
-  const stored = storedObject(storage, PERSON_VOICE_SETTINGS_STORAGE_KEY);
+/** Only the people changed from the default are stored; another `key` keeps each sharer's stream sound apart. */
+export function readPersonVoiceSettings(
+  storage: Pick<Storage, "getItem"> | null,
+  key = PERSON_VOICE_SETTINGS_STORAGE_KEY,
+): ReadonlyMap<Snowflake, PersonVoiceSetting> {
+  const stored = storedObject(storage, key);
   const settings = new Map<Snowflake, PersonVoiceSetting>();
   for (const [userId, value] of Object.entries(stored ?? {})) {
     if (!SNOWFLAKE_PATTERN.test(userId) || typeof value !== "object" || value === null) {
@@ -347,12 +350,13 @@ export function readPersonVoiceSettings(storage: Pick<Storage, "getItem"> | null
 export function writePersonVoiceSettings(
   storage: Pick<Storage, "setItem"> | null,
   settings: ReadonlyMap<Snowflake, PersonVoiceSetting>,
+  key = PERSON_VOICE_SETTINGS_STORAGE_KEY,
 ): void {
   const changed = [...settings].filter(
     ([, setting]) => setting.volumePercent !== DEFAULT_VOLUME_PERCENT || setting.isLocallyMuted,
   );
   try {
-    storage?.setItem(PERSON_VOICE_SETTINGS_STORAGE_KEY, JSON.stringify(Object.fromEntries(changed)));
+    storage?.setItem(key, JSON.stringify(Object.fromEntries(changed)));
   } catch (error) {
     console.warn("couldn't store the per-person voice settings", error);
   }
