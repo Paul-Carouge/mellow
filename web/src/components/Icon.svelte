@@ -10,6 +10,7 @@
   export type IconName =
     | "airplane-tilt"
     | "arrow-bend-up-left"
+    | "arrow-bend-up-right"
     | "arrow-square-out"
     | "at"
     | "bell"

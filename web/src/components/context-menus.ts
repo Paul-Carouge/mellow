@@ -48,6 +48,7 @@ function notificationSection(isMuted: boolean): NotificationMenuAction[] {
 export type MessageMenuAction =
   | "add-reaction"
   | "reply"
+  | "forward"
   | "edit"
   | "copy-text"
   | "pin"
@@ -58,6 +59,8 @@ export type MessageMenuAction =
 
 export interface MessageMenuFacts {
   readonly isOwn: boolean;
+  /** A forward copies someone's words: it cannot be edited (ADR-0039). */
+  readonly isForward: boolean;
   readonly hasText: boolean;
   readonly hasReactions: boolean;
   readonly isPinned: boolean;
@@ -76,7 +79,9 @@ export function messageMenuActions(facts: MessageMenuFacts): MenuLine<MessageMen
     [facts.canAddReactions && "add-reaction"],
     [
       facts.canSendMessages && "reply",
-      facts.isOwn && facts.canSendMessages && "edit",
+      // Forwarding needs somewhere else to send to, which the dialog finds; reading is enough here.
+      "forward",
+      facts.isOwn && !facts.isForward && facts.canSendMessages && "edit",
       facts.hasText && "copy-text",
       facts.canManagePins && (facts.isPinned ? "unpin" : "pin"),
       facts.hasReactions && facts.canJoinReactions && "view-reactions",
@@ -279,6 +284,7 @@ export interface MenuItemLook {
 const LOOKS: Record<MenuAction, MenuItemLook> = {
   "add-reaction": { label: strings.reactions.addReaction, icon: "smiley", tone: "normal" },
   reply: { label: strings.messages.reply, icon: "arrow-bend-up-left", tone: "normal" },
+  forward: { label: strings.forward.forward, icon: "arrow-bend-up-right", tone: "normal" },
   edit: { label: strings.messages.editMessage, icon: "pencil-simple", tone: "normal" },
   "copy-text": { label: strings.messages.copyText, icon: "copy", tone: "normal" },
   pin: { label: strings.pins.pin, icon: "push-pin", tone: "normal" },

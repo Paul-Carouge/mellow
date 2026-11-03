@@ -16,6 +16,7 @@ import {
 describe("messageMenuActions", () => {
   const reader: MessageMenuFacts = {
     isOwn: false,
+    isForward: false,
     hasText: true,
     hasReactions: false,
     isPinned: false,
@@ -28,7 +29,7 @@ describe("messageMenuActions", () => {
   };
 
   it("offers a reader of someone else's message what the bar has, without Edit or Delete", () => {
-    expect(messageMenuActions(reader)).toEqual(["add-reaction", "separator", "reply", "copy-text"]);
+    expect(messageMenuActions(reader)).toEqual(["add-reaction", "separator", "reply", "forward", "copy-text"]);
   });
 
   it("adds Edit and Delete, last and separated, on your own message", () => {
@@ -36,11 +37,18 @@ describe("messageMenuActions", () => {
       "add-reaction",
       "separator",
       "reply",
+      "forward",
       "edit",
       "copy-text",
       "separator",
       "delete",
     ]);
+  });
+
+  it("forwards a forward but never edits it, even your own (ADR-0039)", () => {
+    const actions = messageMenuActions({ ...reader, isOwn: true, isForward: true });
+    expect(actions).toContain("forward");
+    expect(actions).not.toContain("edit");
   });
 
   it("gives a moderator pins, reactions and deleting anyone's message", () => {
@@ -50,6 +58,7 @@ describe("messageMenuActions", () => {
       "add-reaction",
       "separator",
       "reply",
+      "forward",
       "copy-text",
       "pin",
       "view-reactions",
@@ -65,7 +74,8 @@ describe("messageMenuActions", () => {
 
   it("leaves out Reply and Edit in a read-only channel, and Add reaction without the permission", () => {
     const readOnly = { ...reader, isOwn: true, canSendMessages: false, canAddReactions: false };
-    expect(messageMenuActions(readOnly)).toEqual(["copy-text", "separator", "delete"]);
+    // Forwarding sends elsewhere: an announcement can still be passed on.
+    expect(messageMenuActions(readOnly)).toEqual(["forward", "copy-text", "separator", "delete"]);
   });
 
   it("has nothing to copy on a message of files only", () => {

@@ -100,6 +100,56 @@ describe("MellowClient", () => {
     expect(currentUser).toHaveBeenCalledTimes(2);
   });
 
+  it("forwards a message by its own ids, outside the outbox, and shows the forward in its destination", async () => {
+    const forwardMessage = vi.fn((channelId: string, origin: { channel_id: string; message_id: string }, nonce: string) =>
+      Promise.resolve({
+        ...message("900", channelId),
+        content: "message 5",
+        nonce,
+        forwarded_from: origin,
+      }),
+    );
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, forwardMessage }));
+    client.applyReady(ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }));
+
+    await client.forwardMessage(RULES, message("5"), "n1");
+
+    expect(forwardMessage).toHaveBeenCalledWith(RULES, { channel_id: GENERAL, message_id: "5" }, "n1");
+    expect(client.pendingMessages).toEqual([]);
+    expect(client.messages(RULES).map((cached) => [cached.id, cached.nonce, cached.forwarded_from])).toEqual([
+      ["900", null, { channel_id: GENERAL, message_id: "5" }],
+    ]);
+  });
+
+  it("leaves a read channel read after forwarding into it, and an unread one unread", async () => {
+    const acknowledge = vi.fn(() => Promise.resolve());
+    const forwardMessage = (channelId: string, origin: { channel_id: string; message_id: string }) =>
+      Promise.resolve({ ...message(channelId === RULES ? "400" : "401", channelId), forwarded_from: origin });
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, acknowledge, forwardMessage }));
+    const third = channel("104");
+    client.applyReady(
+      ready({
+        guilds: [guild([channel(GENERAL), channel(RULES), third])],
+        read_states: [
+          { channel_id: RULES, last_read_message_id: "300" },
+          { channel_id: third.id, last_read_message_id: "300" },
+        ],
+        // #rules is read; the third channel holds a message from someone else not seen yet.
+        channel_unreads: [
+          { channel_id: RULES, last_message_id: "300", mention_count: 0 },
+          { channel_id: third.id, last_message_id: "350", mention_count: 0 },
+        ],
+      }),
+    );
+    expect(client.selectedChannelId).toBe(GENERAL);
+
+    await client.forwardMessage(RULES, message("5"), "n1");
+    await client.forwardMessage(third.id, message("5"), "n2");
+
+    expect(client.hasUnread(RULES)).toBe(false);
+    expect(client.hasUnread(third.id)).toBe(true);
+  });
+
   it("resends failed messages in order and stops at a failure that may pass", async () => {
     const sent: string[] = [];
     let isInstanceBusy = true;

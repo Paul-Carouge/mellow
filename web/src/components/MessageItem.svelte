@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
 
   import { strings } from "../i18n";
-  import type { CustomEmoji, Message, PublicUser, Snowflake } from "../lib/protocol";
+  import type { CustomEmoji, ForwardOrigin, Message, PublicUser, Snowflake } from "../lib/protocol";
   import { autosize } from "./autosize";
   import Avatar from "./Avatar.svelte";
   import {
@@ -10,6 +10,7 @@
     fullTimestampLabel,
     messageTimestampLabel,
     timeOfDayLabel,
+    unixMillisecondsOfSnowflake,
   } from "./format";
   import { contextMenuTrigger } from "./context-menu-trigger";
   import { type MenuLine, type MessageMenuAction, messageMenuActions } from "./context-menus";
@@ -58,6 +59,12 @@
     onopenauthormenu: (author: PublicUser, origin: MenuOrigin, invoker: HTMLElement) => boolean;
     maximumEditorHeight: () => number;
     onreply: (message: Message) => void;
+    /** Opens the forward dialog on this message (ADR-0039). */
+    onforward: (message: Message) => void;
+    /** "#général" for a forward's original channel, or null when the reader does not know it. */
+    forwardOriginPlaceOf: (channelId: Snowflake) => string | null;
+    /** The footer of a forward: its original, in its own channel. */
+    onopenforwardorigin: (origin: ForwardOrigin) => void;
     onstartedit: (message: Message) => void;
     onsaveedit: (message: Message, text: string) => void;
     oncanceledit: () => void;
@@ -88,6 +95,9 @@
     onopenauthormenu,
     maximumEditorHeight,
     onreply,
+    onforward,
+    forwardOriginPlaceOf,
+    onopenforwardorigin,
     onstartedit,
     onsaveedit,
     oncanceledit,
@@ -108,10 +118,16 @@
   const isFailed = $derived(row.kind === "pending" && row.pending.status === "failed");
   const contentBlocks = $derived(parseMessageMarkdown(content, mentionablePeople, customEmojis));
   const isJumbo = $derived(isJumboEmojiMessage(contentBlocks));
+  const forwardedFrom = $derived(message?.forwarded_from ?? null);
+  // Only a forward's place is looked up, among the channels the reader knows.
+  const forwardOriginPlace = $derived(forwardedFrom ? forwardOriginPlaceOf(forwardedFrom.channel_id) : null);
+  const forwardOriginSentAt = $derived(forwardedFrom ? unixMillisecondsOfSnowflake(forwardedFrom.message_id) : null);
   // The server's ids first; the client's own reading too, for messages written before the server
-  // found mentions (migration 16) and for older servers.
+  // found mentions (migration 16) and for older servers. A forward never mentions anyone: its
+  // words were written for another audience (ADR-0039).
   const isMentioningCurrentUser = $derived(
-    (message?.mention_ids ?? []).includes(currentUser.id) || markdownMentionsUser(contentBlocks, currentUser.id),
+    forwardedFrom === null &&
+      ((message?.mention_ids ?? []).includes(currentUser.id) || markdownMentionsUser(contentBlocks, currentUser.id)),
   );
 
   // Taken from the message when the editor opens; later updates to the message keep the typing.
@@ -169,6 +185,7 @@
     message
       ? messageMenuActions({
           isOwn,
+          isForward: forwardedFrom !== null,
           hasText: message.content.trim() !== "",
           hasReactions: reactions.length > 0,
           isPinned,
@@ -230,6 +247,20 @@
       trailing={message?.edited_at_unix_milliseconds ? editedLabel : undefined}
     />
   </div>
+{/snippet}
+
+{#snippet reactionsOf(sentMessage: Message)}
+  <MessageReactions
+    {reactions}
+    {customEmojis}
+    currentUserId={currentUser.id}
+    canJoin={actions.canJoinReactions}
+    canAddNew={actions.canAddReactions}
+    isHeld={actions.heldMessageId === sentMessage.id}
+    ontoggle={(emoji) => actions.toggleReaction(sentMessage, emoji)}
+    onopenpicker={(anchor) => actions.openPicker(sentMessage, anchor)}
+    loadUsers={(emoji) => actions.loadReactors(sentMessage, emoji)}
+  />
 {/snippet}
 
 <!-- Messages take focus (one roving Tab stop, arrows between them) so their actions are reachable
@@ -350,23 +381,51 @@
         >
       </p>
     </div>
+  {:else if forwardedFrom && forwardOriginSentAt !== null}
+    <!-- A forward (ADR-0039): the copied words and files held by the quote bar, named "Forwarded"
+         above and by their place and date below. -->
+    {@const origin = forwardedFrom}
+    <div
+      class="mt-3xs flex flex-col gap-2xs border-l-(length:--mw-component-message-quote-bar-width) border-(--mw-component-message-quote-bar-color) pl-sm"
+    >
+      <p class="flex items-center gap-2xs type-message-timestamp text-text-muted">
+        <Icon name="arrow-bend-up-right" class="size-(--mw-component-message-status-icon-size)" />
+        {strings.forward.forwarded}
+      </p>
+      {@render body()}
+      {#if attachments.length > 0}
+        <MessageAttachments {attachments} isPending={false} authorName={displayName(author)} sentAtUnixMilliseconds={sentAt} />
+      {/if}
+      {#if forwardOriginPlace !== null}
+        <p>
+          <button
+            type="button"
+            class="inline-flex min-h-(--mw-size-hit-desktop-min) items-center rounded-xs type-message-timestamp text-text-muted hover:text-text-secondary hover:underline focus-visible:focus-ring pointer-coarse:min-h-(--mw-size-hit-web-min)"
+            aria-label={strings.forward.goToOriginal(forwardOriginPlace, fullTimestampLabel(forwardOriginSentAt))}
+            onclick={() => onopenforwardorigin(origin)}
+            >{forwardOriginPlace} · {messageTimestampLabel(forwardOriginSentAt, currentDay())}</button
+          >
+        </p>
+      {:else}
+        <p class="type-message-timestamp text-text-muted">
+          <time datetime={new Date(forwardOriginSentAt).toISOString()} title={fullTimestampLabel(forwardOriginSentAt)}
+            ><span class="sr-only">{strings.forward.originalFrom(fullTimestampLabel(forwardOriginSentAt))}</span><span aria-hidden="true"
+              >{messageTimestampLabel(forwardOriginSentAt, currentDay())}</span
+            ></time
+          >
+        </p>
+      {/if}
+    </div>
+    {#if message}
+      {@render reactionsOf(message)}
+    {/if}
   {:else}
     {@render body()}
     {#if attachments.length > 0}
       <MessageAttachments {attachments} isPending={row.kind === "pending"} authorName={displayName(author)} sentAtUnixMilliseconds={sentAt} />
     {/if}
     {#if message}
-      <MessageReactions
-        {reactions}
-        {customEmojis}
-        currentUserId={currentUser.id}
-        canJoin={actions.canJoinReactions}
-        canAddNew={actions.canAddReactions}
-        isHeld={actions.heldMessageId === message.id}
-        ontoggle={(emoji) => actions.toggleReaction(message, emoji)}
-        onopenpicker={(anchor) => actions.openPicker(message, anchor)}
-        loadUsers={(emoji) => actions.loadReactors(message, emoji)}
-      />
+      {@render reactionsOf(message)}
     {/if}
   {/if}
 
@@ -433,12 +492,13 @@
           onclick={(event) => pickerToggle.shouldOpenOnClick() && actions.openPicker(message, event.currentTarget)}
         />
       {/if}
-      {#if isOwn && canSendMessages}
+      {#if isOwn && canSendMessages && forwardedFrom === null}
         <IconButton icon="pencil-simple" label={strings.common.edit} class={buttonClass} {iconClass} onclick={() => onstartedit(message)} />
       {/if}
       {#if canSendMessages}
         <IconButton icon="arrow-bend-up-left" label={strings.messages.reply} class={buttonClass} {iconClass} onclick={() => onreply(message)} />
       {/if}
+      <IconButton icon="arrow-bend-up-right" label={strings.forward.forward} class={buttonClass} {iconClass} onclick={() => onforward(message)} />
       <IconButton icon="copy" label={strings.messages.copyText} class={buttonClass} {iconClass} onclick={() => oncopy(message.content)} />
       {#if isOwn || canManageMessages}
         <IconButton

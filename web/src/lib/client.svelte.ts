@@ -1511,14 +1511,55 @@ export class MellowClient {
         pending.attachments.map((attachment) => attachment.id),
       );
       this.pendingMessages = this.pendingMessages.filter((candidate) => candidate.nonce !== pending.nonce);
-      this.noteConversationActivity(message.channel_id, message.id);
-      this.insertMessages(message.channel_id, [{ ...message, nonce: null }]);
+      this.takeInSentMessage(message);
       return "sent";
     } catch (error) {
       this.setPendingStatus(pending.nonce, "failed", errorReason(error));
       this.reportError(error, "send message");
       return error instanceof ApiError && REFUSED_FOR_GOOD.has(error.code) ? "refused" : "failed";
     }
+  }
+
+  /** The instance's answer to a send, before its gateway event (which may come later or not at all). */
+  private takeInSentMessage(message: Message): void {
+    this.noteConversationActivity(message.channel_id, message.id);
+    this.insertMessages(message.channel_id, [{ ...message, nonce: null }]);
+  }
+
+  /**
+   * Your own message in a channel you are not looking at leaves it read when it was read before:
+   * the instance never moves the sender's read position. Anything newer from others stays unread.
+   */
+  private keepReadAfterSendingElsewhere(message: Message, wasReadBefore: boolean): void {
+    const channelId = message.channel_id;
+    const lastRead = this.lastReadByChannel.get(channelId);
+    if (!wasReadBefore || channelId === this.selectedChannelId || (lastRead && compareSnowflakes(message.id, lastRead) <= 0)) {
+      return;
+    }
+    this.lastReadByChannel.set(channelId, message.id);
+    this.unsentReadChannelIds.add(channelId);
+    this.scheduleReadStateSend();
+  }
+
+  /**
+   * Forwards `message` to `channelId` (ADR-0039), outside the outbox: the forward dialog shows each
+   * destination's failure itself. A retry with the same nonce gets the forward already made.
+   */
+  async forwardMessage(channelId: Snowflake, message: Message, nonce: string): Promise<void> {
+    const wasReadBefore = !this.hasUnread(channelId);
+    // The instance keeps a forward's first origin, so a forward of a forward names itself here.
+    const origin = { channel_id: message.channel_id, message_id: message.id };
+    const forward = await this.rest.forwardMessage(channelId, origin, nonce);
+    this.takeInSentMessage(forward);
+    this.keepReadAfterSendingElsewhere(forward, wasReadBefore);
+  }
+
+  /** A text message to any channel, outside the outbox: the note sent after a forward. */
+  async sendMessageTo(channelId: Snowflake, content: string, nonce: string): Promise<void> {
+    const wasReadBefore = !this.hasUnread(channelId);
+    const sent = await this.rest.sendMessage(channelId, content, nonce);
+    this.takeInSentMessage(sent);
+    this.keepReadAfterSendingElsewhere(sent, wasReadBefore);
   }
 
   private setPendingStatus(nonce: string, status: PendingMessage["status"], failureReason?: string): void {

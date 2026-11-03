@@ -15,6 +15,7 @@ import {
   type CurrentUser,
   type CustomEmoji,
   type DirectMessageChannel,
+  type ForwardOrigin,
   type Guild,
   type GuildInvite,
   type Invite,
@@ -27,6 +28,7 @@ import {
   type PublicUser,
   type Relationship,
   type Role,
+  type SendMessageRequest,
   type SessionCreated,
   type Snowflake,
   type SoundboardSound,
@@ -381,12 +383,19 @@ export class RestClient {
     replyToId: Snowflake | null = null,
     attachmentIds: readonly Snowflake[] = [],
   ): Promise<Message> {
-    return this.request("POST", `channels/${channelId}/messages`, {
+    const body: SendMessageRequest = {
       content,
       reply_to_id: replyToId,
       nonce,
-      ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
-    });
+      ...(attachmentIds.length > 0 ? { attachment_ids: [...attachmentIds] } : {}),
+    };
+    return this.request("POST", `channels/${channelId}/messages`, body);
+  }
+
+  /** A copy of `origin` posted in `channelId` (ADR-0039); the instance fills its content and files. */
+  forwardMessage(channelId: Snowflake, origin: ForwardOrigin, nonce: string): Promise<Message> {
+    const body: SendMessageRequest = { content: "", forwarded_from: origin, nonce };
+    return this.request("POST", `channels/${channelId}/messages`, body);
   }
 
   /** One file, sent as the raw body; its id goes into a message within the hour (ADR-0020). */
