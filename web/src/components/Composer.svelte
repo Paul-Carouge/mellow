@@ -4,9 +4,10 @@
   import { strings } from "../i18n";
   import { ApiError } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
-  import { type CustomEmoji, type Message, type PublicUser, MAXIMUM_MESSAGE_LENGTH } from "../lib/protocol";
+  import { type CustomEmoji, type Message, type PublicUser, type Snowflake, MAXIMUM_MESSAGE_LENGTH } from "../lib/protocol";
   import AttachmentTray, { type AttachmentTrayItem } from "./AttachmentTray.svelte";
   import { autosize } from "./autosize";
+  import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
   import type { ComposerDrafts } from "./composer-drafts.svelte";
   import {
@@ -18,9 +19,11 @@
     suggestEmoji,
     withEmojiNamesAsMarkup,
   } from "./custom-emoji";
-  import EmojiSuggestions from "./EmojiSuggestions.svelte";
+  import ComposerSuggestions from "./ComposerSuggestions.svelte";
+  import CustomEmojiImage from "./CustomEmojiImage.svelte";
   import { displayName, humanFileSize } from "./format";
   import IconButton from "./IconButton.svelte";
+  import { type MentionSuggestionQuery, mentionSuggestionQuery, suggestMentions } from "./mentions";
   import { MESSAGE_LENGTH_COUNTER_THRESHOLD, messageCharactersLeft } from "./message-length";
   import { createPopoverToggle } from "./popover-toggle";
   import { noteEmojiUsed } from "./recent-emoji.svelte";
@@ -33,6 +36,9 @@
     drafts: ComposerDrafts;
     /** Typed as ":name:" and sent as markup (ADR-0028); empty outside a server channel. */
     serverEmojis: readonly CustomEmoji[];
+    /** Who "@na" suggests; the writer is left out. */
+    mentionCandidates: readonly PublicUser[];
+    currentUserId: Snowflake | null;
     label: string;
     canSendMessages: boolean;
     canAttachFiles: boolean;
@@ -60,6 +66,8 @@
     client,
     drafts,
     serverEmojis,
+    mentionCandidates,
+    currentUserId,
     label,
     canSendMessages,
     canAttachFiles,
@@ -100,15 +108,23 @@
   // Counted as sent: a typed ":name:" goes out as its longer markup.
   const charactersLeft = $derived(messageCharactersLeft(withEmojiNamesAsMarkup(drafts.text, serverEmojis)));
 
-  // The ":na" suggestions (DESIGN.md §5.5): follow the caret; Esc hides them until the word changes.
-  let suggestionQuery = $state<EmojiSuggestionQuery | null>(null);
+  // The ":na" and "@na" suggestions (DESIGN.md §5.5): follow the caret; Esc hides them until the
+  // word changes. A word is one or the other: ":" and "@" each open their own.
+  type SuggestionQuery = (EmojiSuggestionQuery & { kind: "emoji" }) | (MentionSuggestionQuery & { kind: "mention" });
+  type ComposerSuggestion = EmojiSuggestion | { kind: "person"; person: PublicUser };
+  let suggestionQuery = $state<SuggestionQuery | null>(null);
   let dismissedSuggestionStart = $state<number | null>(null);
   let activeSuggestionIndex = $state(0);
-  const suggestions = $derived(
-    suggestionQuery && suggestionQuery.start !== dismissedSuggestionStart
+  const suggestions: readonly ComposerSuggestion[] = $derived.by(() => {
+    if (!suggestionQuery || suggestionQuery.start === dismissedSuggestionStart) {
+      return [];
+    }
+    return suggestionQuery.kind === "emoji"
       ? suggestEmoji(suggestionQuery.query, serverEmojis)
-      : [],
-  );
+      : suggestMentions(suggestionQuery.query, mentionCandidates, currentUserId ?? "").map(
+          (person): ComposerSuggestion => ({ kind: "person", person }),
+        );
+  });
   // Within the list as it is now: a gateway update can shorten it under the arrows.
   const activeSuggestion = $derived(Math.min(activeSuggestionIndex, Math.max(suggestions.length - 1, 0)));
   const suggestionsId = $props.id();
@@ -230,8 +246,19 @@
     const caret = field?.selectionStart ?? null;
     const isCaretCollapsed = caret !== null && caret === field?.selectionEnd;
     // The field's own value: the draft may not have followed this input event yet.
-    const query = isCaretCollapsed ? emojiSuggestionQuery(field?.value ?? drafts.text, caret) : null;
-    if (query?.start !== suggestionQuery?.start || query?.query !== suggestionQuery?.query) {
+    const text = field?.value ?? drafts.text;
+    const emojiQuery = isCaretCollapsed ? emojiSuggestionQuery(text, caret) : null;
+    const mentionQuery = isCaretCollapsed && !emojiQuery ? mentionSuggestionQuery(text, caret) : null;
+    const query: SuggestionQuery | null = emojiQuery
+      ? { ...emojiQuery, kind: "emoji" }
+      : mentionQuery
+        ? { ...mentionQuery, kind: "mention" }
+        : null;
+    if (
+      query?.start !== suggestionQuery?.start ||
+      query?.query !== suggestionQuery?.query ||
+      query?.kind !== suggestionQuery?.kind
+    ) {
       activeSuggestionIndex = 0;
     }
     if (query?.start !== dismissedSuggestionStart) {
@@ -252,11 +279,27 @@
     field?.setSelectionRange(result.caret, result.caret);
   }
 
-  function chooseSuggestion(suggestion: EmojiSuggestion) {
+  function chooseSuggestion(suggestion: ComposerSuggestion) {
+    if (suggestion.kind === "person") {
+      // The username: it always mentions, where a display name may be shared or hold spaces.
+      void insertAt(`@${suggestion.person.username}`, suggestionQuery);
+      return;
+    }
     if (suggestion.kind === "unicode") {
       noteEmojiUsed(suggestion.emoji);
     }
     void insertAt(composerTextOf(suggestion.emoji), suggestionQuery);
+  }
+
+  function suggestionKey(suggestion: ComposerSuggestion): string {
+    switch (suggestion.kind) {
+      case "person":
+        return `person-${suggestion.person.id}`;
+      case "custom":
+        return `custom-${suggestion.emoji.id}`;
+      case "unicode":
+        return suggestion.emoji;
+    }
   }
 
   /** Arrows, Enter and Tab work the suggestions while they show; true when the key was theirs. */
@@ -310,6 +353,30 @@
   }
 </script>
 
+{#snippet suggestionRow(suggestion: ComposerSuggestion)}
+  {#if suggestion.kind === "person"}
+    <Avatar user={suggestion.person} sizeToken="--mw-component-custom-emoji-suggestion-avatar-size" />
+    <span class="min-w-0 truncate">{displayName(suggestion.person)}</span>
+    <span class="min-w-0 flex-1 truncate text-text-secondary">@{suggestion.person.username}</span>
+  {:else}
+    <span
+      aria-hidden="true"
+      class="grid size-(--mw-component-emoji-picker-emoji-size) shrink-0 place-items-center text-(length:--mw-component-emoji-picker-emoji-size) leading-none"
+    >
+      {#if suggestion.kind === "custom"}
+        <CustomEmojiImage emoji={suggestion.emoji} class="size-(--mw-component-emoji-picker-emoji-size)" isDecorative />
+      {:else}
+        {suggestion.emoji}
+      {/if}
+    </span>
+    <span class="min-w-0 flex-1 truncate">{suggestion.kind === "custom" ? `:${suggestion.emoji.name}:` : suggestion.name}</span>
+    {#if suggestion.kind === "unicode"}
+      <!-- The built-in emoji itself, for screen readers that only read the word. -->
+      <span class="sr-only">{suggestion.emoji}</span>
+    {/if}
+  {/if}
+{/snippet}
+
 <div role="status" class="contents">
   {#if notice}
     <p class="px-(--mw-component-composer-margin-inline) py-(--mw-component-composer-error-padding-block) type-body text-text-secondary">
@@ -339,17 +406,27 @@
 >
   {#if canSendMessages && suggestionQuery && suggestions.length > 0}
     <div class="absolute inset-x-(--mw-component-composer-margin-inline) top-0">
-      <EmojiSuggestions
+      <ComposerSuggestions
         id={suggestionsId}
-        query={suggestionQuery.query}
+        title={suggestionQuery.kind === "emoji"
+          ? strings.chat.emojiSuggestionsTitle(suggestionQuery.query)
+          : strings.chat.mentionSuggestionsTitle(suggestionQuery.query)}
         {suggestions}
+        keyOf={suggestionKey}
         activeIndex={activeSuggestion}
+        row={suggestionRow}
         onchoose={chooseSuggestion}
         onhover={(index) => (activeSuggestionIndex = index)}
       />
     </div>
   {/if}
-  <p class="sr-only" aria-live="polite">{suggestions.length > 0 ? strings.chat.emojiSuggestionsCount(suggestions.length) : ""}</p>
+  <p class="sr-only" aria-live="polite">
+    {suggestions.length === 0
+      ? ""
+      : suggestionQuery?.kind === "mention"
+        ? strings.chat.mentionSuggestionsCount(suggestions.length)
+        : strings.chat.emojiSuggestionsCount(suggestions.length)}
+  </p>
   <p
     aria-hidden="true"
     data-typing-row

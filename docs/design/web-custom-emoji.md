@@ -55,7 +55,7 @@ New `component.custom-emoji.*`: `inline-size` 22 px, `jumbo-size` 48 px, `missin
 
 - `CustomEmojiImage.svelte`: the picture, still under reduced motion, `:name:` on failure.
 - `ReactionEmoji.svelte`: a chip's emoji (built-in, picture, or the deleted outline).
-- `EmojiSuggestions.svelte`: the composer's listbox.
+- `ComposerSuggestions.svelte` (was `EmojiSuggestions.svelte`): the composer's listbox, shared with `@` suggestions since DESIGN.md v0.42.
 - `EmojiSettings.svelte`: the settings page.
 - Logic in `custom-emoji.ts` (tested): suggestion query and ranking, `:name:` conversion, plain text, jumbo detection, reaction appearance, upload naming and checks, failure sentences, rename checks; `markdown.ts` parses the markup into a `customEmoji` node.
 

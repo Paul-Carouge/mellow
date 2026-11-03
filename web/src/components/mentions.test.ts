@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import type { PublicUser } from "../lib/protocol";
-import { memoizedMentionablePeople, mentionablePeople, splitMentions } from "./mentions";
+import {
+  MAXIMUM_MENTION_SUGGESTIONS,
+  memoizedMentionablePeople,
+  mentionablePeople,
+  mentionSuggestionQuery,
+  splitMentions,
+  suggestMentions,
+} from "./mentions";
 
 const paul: PublicUser = { id: "1", username: "paul", display_name: "Paul Carouge" };
 const zoe: PublicUser = { id: "2", username: "zoe", display_name: "Zoé" };
@@ -70,5 +77,48 @@ describe("memoizedMentionablePeople", () => {
     expect(left.has("j.doe")).toBe(false);
     const renamed = { ...zoe, username: "zoe2" };
     expect(mentionable([paul, renamed]).get("zoe2")).toBe(renamed);
+  });
+});
+
+describe("mentionSuggestionQuery", () => {
+  it("reads the name typed after an @ at the start or after a space", () => {
+    expect(mentionSuggestionQuery("@pa", 3)).toEqual({ start: 0, end: 3, query: "pa" });
+    expect(mentionSuggestionQuery("hi @Zo", 6)).toEqual({ start: 3, end: 6, query: "Zo" });
+    expect(mentionSuggestionQuery("hi @", 4)).toEqual({ start: 3, end: 4, query: "" });
+    expect(mentionSuggestionQuery("@j.do and more", 5)).toEqual({ start: 0, end: 5, query: "j.do" });
+  });
+
+  it("ignores an @ inside a word, after the caret moved past a space, or after a long name", () => {
+    expect(mentionSuggestionQuery("mail@pa", 7)).toBeNull();
+    expect(mentionSuggestionQuery("@pa ", 4)).toBeNull();
+    expect(mentionSuggestionQuery(`@${"a".repeat(33)}`, 34)).toBeNull();
+    expect(mentionSuggestionQuery(`@${"a".repeat(32)}`, 33)?.query).toHaveLength(32);
+  });
+});
+
+describe("suggestMentions", () => {
+  const ana: PublicUser = { id: "10", username: "ana", display_name: "Ana Paula" };
+  const pablo: PublicUser = { id: "11", username: "pablo", display_name: "" };
+  const everyone = [paul, zoe, dotted, ana, pablo];
+
+  it("ranks names starting with the query, then display name words, then names holding it", () => {
+    expect(suggestMentions("pa", everyone, "0").map((person) => person.id)).toEqual(["11", "1", "10"]);
+    expect(suggestMentions("ul", everyone, "0").map((person) => person.id)).toEqual(["10", "1"]);
+  });
+
+  it("ignores case and accents, leaves out the writer and repeats no one", () => {
+    expect(suggestMentions("ZOE", everyone, "0")).toEqual([zoe]);
+    expect(suggestMentions("zoé", [zoe, zoe], "0")).toEqual([zoe]);
+    expect(suggestMentions("pau", everyone, "1")).toEqual([ana]);
+  });
+
+  it("offers everyone for a lone @, by name, and at most a bounded number", () => {
+    expect(suggestMentions("", [zoe, paul], "0")).toEqual([paul, zoe]);
+    const crowd = Array.from({ length: 20 }, (_, index): PublicUser => ({
+      id: String(100 + index),
+      username: `user${index}`,
+      display_name: "",
+    }));
+    expect(suggestMentions("user", crowd, "0")).toHaveLength(MAXIMUM_MENTION_SUGGESTIONS);
   });
 });

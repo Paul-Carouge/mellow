@@ -3,7 +3,9 @@
 // matching "@username" (or a one-word display name) against the people this client knows; move to
 // the instance's own mention ids once the protocol carries them.
 
-import type { PublicUser } from "../lib/protocol";
+import type { PublicUser, Snowflake } from "../lib/protocol";
+import { foldForSearch } from "../lib/search-text";
+import { displayName } from "./format";
 
 export type MentionSegment = { kind: "text"; text: string } | { kind: "mention"; text: string; user: PublicUser };
 
@@ -101,4 +103,79 @@ export function splitMentions(text: string, people: MentionablePeople): MentionS
     segments.push({ kind: "text", text: text.slice(textStart) });
   }
   return segments;
+}
+
+// --- Suggestions while typing "@na" (DESIGN.md §5.5) -----------------------------------------
+
+/** The "@" and the name being typed before the caret, which a chosen person replaces. */
+export interface MentionSuggestionQuery {
+  start: number;
+  end: number;
+  query: string;
+}
+
+const NAME_CHARACTER = /[\p{Alphabetic}\p{N}_.]/u;
+
+/**
+ * The "@na" ending at `caret`: an "@" at the start or after a space, then up to a name's length of
+ * name characters; a lone "@" asks for everyone, as on Discord.
+ */
+export function mentionSuggestionQuery(text: string, caret: number): MentionSuggestionQuery | null {
+  let start = caret;
+  while (start > 0 && caret - start <= MAXIMUM_NAME_LENGTH && NAME_CHARACTER.test(text[start - 1] ?? "")) {
+    start -= 1;
+  }
+  const at = start - 1;
+  if (text[at] !== "@" || caret - start > MAXIMUM_NAME_LENGTH) {
+    return null;
+  }
+  if (at > 0 && !/\s/u.test(text[at - 1] ?? "")) {
+    return null;
+  }
+  return { start: at, end: caret, query: text.slice(start, caret) };
+}
+
+export const MAXIMUM_MENTION_SUGGESTIONS = 10;
+
+/**
+ * How well `person` matches the folded query, lower first: a name starting with it, then a word
+ * of the display name starting with it, then a name holding it; null for no match.
+ */
+function mentionMatchRank(person: PublicUser, foldedQuery: string): number | null {
+  const username = foldForSearch(person.username);
+  const shownName = foldForSearch(person.display_name.trim());
+  if (username.startsWith(foldedQuery) || shownName.startsWith(foldedQuery)) {
+    return 0;
+  }
+  if (shownName.split(/\s+/u).some((word) => word.startsWith(foldedQuery))) {
+    return 1;
+  }
+  return username.includes(foldedQuery) || shownName.includes(foldedQuery) ? 2 : null;
+}
+
+/**
+ * The people `query` may name, best match first and then by shown name, at most
+ * `MAXIMUM_MENTION_SUGGESTIONS`, without `excludedUserId` (the writer: mentioning oneself counts
+ * for no one) and each person once. Case and accents are ignored, as in the message search.
+ */
+export function suggestMentions(
+  query: string,
+  people: readonly PublicUser[],
+  excludedUserId: Snowflake,
+): PublicUser[] {
+  const foldedQuery = foldForSearch(query);
+  const seen = new Set<Snowflake>([excludedUserId]);
+  const ranked: { person: PublicUser; rank: number; name: string }[] = [];
+  for (const person of people) {
+    if (seen.has(person.id)) {
+      continue;
+    }
+    seen.add(person.id);
+    const rank = mentionMatchRank(person, foldedQuery);
+    if (rank !== null) {
+      ranked.push({ person, rank, name: displayName(person) });
+    }
+  }
+  ranked.sort((left, right) => left.rank - right.rank || left.name.localeCompare(right.name));
+  return ranked.slice(0, MAXIMUM_MENTION_SUGGESTIONS).map((entry) => entry.person);
 }

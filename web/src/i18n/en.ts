@@ -549,6 +549,9 @@ export const en = {
     emojiSuggestionsTitle: (query: string) => `Emoji matching :${query}`,
     emojiSuggestionsCount: (suggestions: number) =>
       `${count(suggestions)} emoji. Up and Down to choose, Enter or Tab to insert.`,
+    mentionSuggestionsTitle: (query: string) => `People matching @${query}`,
+    mentionSuggestionsCount: (suggestions: number) =>
+      `${count(suggestions)} ${plural(suggestions, { one: "person", other: "people" })}. Up and Down to choose, Enter or Tab to insert.`,
     sendMessage: "Send message",
     cannotSend: "You do not have permission to send messages in this channel.",
     /** The locked composer of a conversation with someone you blocked (ADR-0025). */
