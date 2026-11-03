@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use futures_util::StreamExt as _;
 use mellow_protocol::{
-    ClientFrame, GatewayEvent, Permissions, SimulcastLayer, Snowflake, VideoTileSize,
+    ClientFrame, GatewayEvent, Permissions, ServerFrame, SimulcastLayer, Snowflake, VideoTileSize,
     VoiceVideoRefusal, WatchedCamera,
 };
 use str0m::change::{SdpAnswer, SdpPendingOffer};
@@ -17,6 +18,7 @@ use str0m::format::Codec;
 use str0m::media::{Direction, Frequency, MediaKind, MediaTime, Mid, Rid, Simulcast};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, Input, Output, Rtc};
+use tokio_tungstenite::tungstenite::Message;
 
 use super::media::MediaEvent;
 use super::tests::{Fixture, HEARING_TIMEOUT, fixture, join, next_voice_state_update, pending_bot};
@@ -577,16 +579,28 @@ async fn layers_until_only_the_lowest(socket: &mut ClientSocket) -> Vec<Vec<Simu
     }
 }
 
-/// Waits for `camera_id`'s tile to be paused or to flow again for this session.
+/// Waits for `camera_id`'s tile to be paused or to flow again for this session, up to
+/// `SLOW_LINK_TIMEOUT`: on a loaded machine the estimate takes longer to fall than the gateway
+/// helpers wait for a frame, and nothing else reaches the watcher meanwhile.
 async fn next_pause_of(socket: &mut ClientSocket, camera_id: Snowflake) -> bool {
-    match receive_dispatch(socket, |event| {
-        matches!(event, GatewayEvent::VoiceVideoPaused { user_id, .. } if *user_id == camera_id)
-    })
-    .await
-    .1
-    {
-        GatewayEvent::VoiceVideoPaused { is_paused, .. } => is_paused,
-        other => unreachable!("{other:?}"),
+    let deadline = tokio::time::Instant::now() + SLOW_LINK_TIMEOUT;
+    loop {
+        let message = tokio::time::timeout_at(deadline, socket.next())
+            .await
+            .expect("the tile of the slow watcher was never paused")
+            .expect("socket closed")
+            .unwrap();
+        let Message::Text(text) = message else {
+            continue;
+        };
+        if let ServerFrame::Dispatch { event, .. } = serde_json::from_str(&text).unwrap()
+            && let GatewayEvent::VoiceVideoPaused {
+                user_id, is_paused, ..
+            } = *event
+            && user_id == camera_id
+        {
+            return is_paused;
+        }
     }
 }
 
@@ -610,9 +624,7 @@ async fn a_watcher_on_a_slow_link_is_moved_down_then_its_tile_paused() {
     wait_for_camera(&mut member, owner_id, true).await;
     let layers_unwatched = next_layers(&mut owner).await;
     send(&mut member, &watch(owner_id, VideoTileSize::Large)).await;
-    let is_paused = tokio::time::timeout(SLOW_LINK_TIMEOUT, next_pause_of(&mut member, owner_id))
-        .await
-        .expect("the tile of the slow watcher was never paused");
+    let is_paused = next_pause_of(&mut member, owner_id).await;
     // Already sent before the pause: read in order.
     let layers_while_slowing = layers_until_only_the_lowest(&mut owner).await;
     fixture.close().await;

@@ -1105,10 +1105,11 @@ fn missing_room(
     (others_on_instance >= max_participants).then_some(VoiceJoinRefusal::InstanceFull)
 }
 
-/// Kernel buffer asked for each direction of the voice socket: a keyframe arrives as a burst of
-/// dozens of packets per camera, which Linux's default 208 KiB drops with many cameras (ADR-0035).
 /// `[voice] video_upload_mbps` is in megabits per second; the media loop counts bits.
 const BITS_PER_MEGABIT: u64 = 1_000_000;
+
+/// Kernel buffer asked for each direction of the voice socket: a keyframe arrives as a burst of
+/// dozens of packets per camera, which Linux's default 208 KiB drops with many cameras (ADR-0035).
 const UDP_SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
 /// Asks the kernel for larger buffers; it may grant less (Linux caps them at `net.core.rmem_max`

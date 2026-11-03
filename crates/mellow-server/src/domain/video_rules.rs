@@ -77,20 +77,44 @@ pub(crate) const HEADROOM_PERCENT_BEFORE_RAISING: u64 = 120;
 /// ...and has done so for this long, so a link at the edge does not flap (ADR-0035).
 pub(crate) const STEADY_TIME_BEFORE_RAISING: Duration = Duration::from_secs(5);
 
-/// A watcher's video budget in bits per second: 90 % of its link's estimate, and at most its fair
-/// share of the instance's upload budget among `watchers` (those watching a camera).
-/// `estimate`: `None` before the first one, or for a client sending no congestion feedback.
+/// A watcher's share of the instance's upload budget, in bits per second, among `watchers`
+/// (those watching a camera of their own channel).
 #[must_use]
-pub(crate) fn watcher_video_budget(
-    estimate: Option<u64>,
-    video_upload_bits_per_second: u64,
-    watchers: usize,
-) -> u64 {
+pub(crate) fn fair_share_of_upload(video_upload_bits_per_second: u64, watchers: usize) -> u64 {
     let watchers = u64::try_from(watchers.max(1)).unwrap_or(u64::MAX);
-    let fair_share = video_upload_bits_per_second / watchers;
+    video_upload_bits_per_second / watchers
+}
+
+/// A watcher's video budget in bits per second: 90 % of its link's estimate, and at most its
+/// `fair_share` of the upload. `estimate`: `None` before the first one, or for a client sending
+/// no congestion feedback.
+#[must_use]
+pub(crate) fn watcher_video_budget(estimate: Option<u64>, fair_share: u64) -> u64 {
     estimate.map_or(fair_share, |estimate| {
         fair_share.min(estimate.saturating_mul(VIDEO_PERCENT_OF_ESTIMATE) / 100)
     })
+}
+
+/// The bit rate the estimator probes up to for a watcher: what its tiles ask, plus the headroom
+/// going back up needs, and never more than an estimate its `fair_share` could use. Probes are
+/// bursts of padding of up to twice this rate, so a watcher listing many large tiles must not make
+/// the server send far beyond the instance's upload budget.
+#[must_use]
+pub(crate) fn desired_bits_per_second(tiles: &[TileDemand], fair_share: u64) -> u64 {
+    let asked: u64 = tiles.iter().map(|tile| tile.costs.of(tile.asked)).sum();
+    let with_headroom = asked.saturating_mul(HEADROOM_PERCENT_BEFORE_RAISING) / 100;
+    with_headroom.min(fair_share.saturating_mul(100) / VIDEO_PERCENT_OF_ESTIMATE)
+}
+
+/// What a layer costs a watcher, from what it was `measured` to send: at least its target, and at
+/// most its byte budget (`maximum_bytes_per_second_of`), so a camera cannot make its layers look
+/// costlier than they may be and push other tiles down.
+#[must_use]
+pub(crate) fn layer_cost(layer: SimulcastLayer, measured_bits_per_second: u64) -> u64 {
+    let ceiling = u64::from(maximum_bytes_per_second_of(layer)).saturating_mul(8);
+    measured_bits_per_second
+        .min(ceiling)
+        .max(nominal_bits_per_second_of(layer))
 }
 
 /// What each layer of a camera costs a watcher, in bits per second.
@@ -215,8 +239,10 @@ impl LayerAllocation {
     }
 }
 
-/// The bytes a camera layer sent over its last whole second, so a layer is costed at what it
-/// really sends (a 1440p screen's full layer is several times a camera's).
+/// The bytes a camera layer sent over its last whole second in which it sent anything, so a layer
+/// is costed at what it really sends (a 1440p screen's full layer is several times a camera's).
+/// A layer paused because nobody receives it keeps its last measure: costed at its target instead,
+/// a 1440p screen would look cheap again, be asked for, and go down again, forever.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LayerRate {
     window_started_at: Instant,
@@ -239,30 +265,32 @@ impl LayerRate {
     /// A frame of `bytes` arrived from the camera.
     pub(crate) fn record(&mut self, bytes: usize, now: Instant) {
         let elapsed = now.saturating_duration_since(self.window_started_at);
-        if elapsed >= 2 * Self::WINDOW {
-            self.bytes_in_last_window = 0;
+        if elapsed >= Self::WINDOW {
+            if self.bytes_in_window > 0 {
+                self.bytes_in_last_window = self.bytes_in_window;
+            }
             self.bytes_in_window = 0;
-            self.window_started_at = now;
-        } else if elapsed >= Self::WINDOW {
-            self.bytes_in_last_window = self.bytes_in_window;
-            self.bytes_in_window = 0;
-            self.window_started_at += Self::WINDOW;
+            self.window_started_at = if elapsed >= 2 * Self::WINDOW {
+                now
+            } else {
+                self.window_started_at + Self::WINDOW
+            };
         }
         self.bytes_in_window = self
             .bytes_in_window
             .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
     }
 
-    /// The bits per second of the last whole second; 0 once the layer stopped for a second.
+    /// The bits per second of the last whole second in which the layer sent anything; 0 before
+    /// its first whole second.
     #[must_use]
     pub(crate) fn bits_per_second(&self, now: Instant) -> u64 {
-        let elapsed = now.saturating_duration_since(self.window_started_at);
-        let bytes = if elapsed < Self::WINDOW {
-            self.bytes_in_last_window
-        } else if elapsed < 2 * Self::WINDOW {
+        let is_window_complete =
+            now.saturating_duration_since(self.window_started_at) >= Self::WINDOW;
+        let bytes = if is_window_complete && self.bytes_in_window > 0 {
             self.bytes_in_window
         } else {
-            0
+            self.bytes_in_last_window
         };
         bytes.saturating_mul(8)
     }
@@ -497,21 +525,46 @@ mod tests {
 
     #[test]
     fn a_watcher_gets_ninety_percent_of_its_estimate_within_its_share_of_the_upload() {
-        assert_eq!(watcher_video_budget(None, 100_000_000, 4), 25_000_000);
+        assert_eq!(fair_share_of_upload(100_000_000, 4), 25_000_000);
         assert_eq!(
-            watcher_video_budget(Some(10_000_000), 100_000_000, 4),
-            9_000_000
-        );
-        assert_eq!(
-            watcher_video_budget(Some(100_000_000), 100_000_000, 10),
-            10_000_000,
-            "the share of the upload caps a fast link"
-        );
-        assert_eq!(
-            watcher_video_budget(None, 100_000_000, 0),
+            fair_share_of_upload(100_000_000, 0),
             100_000_000,
             "a first watcher counts as one"
         );
+        assert_eq!(watcher_video_budget(None, 25_000_000), 25_000_000);
+        assert_eq!(
+            watcher_video_budget(Some(10_000_000), 25_000_000),
+            9_000_000
+        );
+        assert_eq!(
+            watcher_video_budget(Some(100_000_000), 10_000_000),
+            10_000_000,
+            "the share of the upload caps a fast link"
+        );
+    }
+
+    #[test]
+    fn probes_aim_at_the_tiles_need_with_headroom_but_never_beyond_the_fair_share() {
+        let tiles = [tile(High), tile(Quarter)];
+        assert_eq!(desired_bits_per_second(&tiles, 100_000_000), 1_980_000);
+        assert_eq!(
+            desired_bits_per_second(&[tile(High); 9], 9_000_000),
+            10_000_000,
+            "nine large tiles probe no further than the share can use"
+        );
+        assert_eq!(desired_bits_per_second(&[], 9_000_000), 0);
+    }
+
+    #[test]
+    fn a_layer_costs_its_measure_between_its_target_and_its_byte_budget() {
+        assert_eq!(layer_cost(Quarter, 0), 150_000);
+        assert_eq!(layer_cost(Quarter, 200_000), 200_000);
+        assert_eq!(
+            layer_cost(Quarter, 12_000_000),
+            300_000,
+            "a camera inflating a layer counts its budget at most"
+        );
+        assert_eq!(layer_cost(High, 8_000_000), 8_000_000, "a 1440p screen");
     }
 
     #[test]
@@ -639,9 +692,18 @@ mod tests {
         rate.record(500, at(1_100));
         assert_eq!(rate.bits_per_second(at(1_200)), 16_000);
         assert_eq!(rate.bits_per_second(at(2_100)), 4_000);
-        assert_eq!(rate.bits_per_second(at(3_100)), 0, "stopped for a second");
-        rate.record(100, at(5_000));
-        assert_eq!(rate.bits_per_second(at(5_500)), 0, "a long pause forgets");
+        assert_eq!(
+            rate.bits_per_second(at(9_000)),
+            4_000,
+            "a paused layer keeps its last measure"
+        );
+        rate.record(100, at(9_000));
+        assert_eq!(rate.bits_per_second(at(9_500)), 4_000);
+        assert_eq!(
+            rate.bits_per_second(at(10_100)),
+            800,
+            "until it sends again"
+        );
     }
 
     #[test]

@@ -20,11 +20,11 @@ use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::domain::video_rules::{
-    FrameForwarding, HEADROOM_PERCENT_BEFORE_RAISING, LayerAllocation, LayerByteBudget, LayerCosts,
-    LayerRate, LayerSwitch, MAXIMUM_SILENCE_OF_A_CAMERA,
-    MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS,
+    FrameForwarding, LayerAllocation, LayerByteBudget, LayerCosts, LayerRate, LayerSwitch,
+    MAXIMUM_SILENCE_OF_A_CAMERA, MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS,
     MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER, Throttle, TileDemand, active_layers,
-    fit_tiles, is_keyframe_within_layer_size, nominal_bits_per_second_of, watcher_video_budget,
+    desired_bits_per_second, fair_share_of_upload, fit_tiles, is_keyframe_within_layer_size,
+    layer_cost, watcher_video_budget,
 };
 use crate::domain::voice_rules::{ReceiveSlots, SpeakingDetector};
 
@@ -292,6 +292,8 @@ struct ParticipantVideo {
     has_new_estimate: bool,
     /// When their tiles go back up after a slow spell.
     allocation: LayerAllocation,
+    /// The cameras their tiles were last fitted with, in order: another set is a new layout.
+    fitted_cameras: Vec<Snowflake>,
     /// The bit rate the estimator was last told to probe up to.
     desired_bits_per_second: u64,
     /// Screen sound receive m-lines not given to a watched screen.
@@ -813,10 +815,29 @@ impl MediaLoop<'_> {
             camera.video.camera_heard_at = Some(Instant::now());
         }
         if !camera.video.is_camera_forwarded {
-            // The next stream starts over: watchers wait for its first keyframe.
+            // The next stream (maybe a screen instead of a camera) starts over: watchers wait for
+            // its first keyframe, and its layers are measured again.
+            camera.video.layer_rates.clear();
             self.restart_watchers_of(user_id);
         }
-        self.report_camera_layers(user_id);
+        let mut changed_cameras = vec![user_id];
+        if is_camera_forwarded != was_forwarded {
+            // Its watchers' tiles change: fitted again now, not at the next periodic pass.
+            let now = Instant::now();
+            let watchers: Vec<Snowflake> = self
+                .participants
+                .values()
+                .filter(|watcher| watcher.video.watched_cameras.contains_key(&user_id))
+                .map(|watcher| watcher.user_id)
+                .collect();
+            for watcher_id in watchers {
+                self.current_participant = Some(watcher_id);
+                changed_cameras.extend(self.fit_tiles_of(watcher_id, now, false));
+            }
+        }
+        for camera_id in changed_cameras {
+            self.report_camera_layers(camera_id);
+        }
     }
 
     /// The watchers forwarded `layer` of `camera_id` wait for its next keyframe.
@@ -918,11 +939,12 @@ impl MediaLoop<'_> {
                 });
             }
         }
-        // The same list again keeps the wait before going up: resending it does not skip it.
-        changed_cameras.extend(self.fit_tiles_of(user_id, Instant::now(), is_new_layout));
+        // Before any pause of the same tiles: a tile starts as not paused, at its slot assignment.
         for event in slot_assignments {
             self.emit(event);
         }
+        // The same list again keeps the wait before going up: resending it does not skip it.
+        changed_cameras.extend(self.fit_tiles_of(user_id, Instant::now(), is_new_layout));
         for camera_id in changed_cameras {
             self.report_camera_layers(camera_id);
         }
@@ -937,7 +959,7 @@ impl MediaLoop<'_> {
                 .get(&camera_id)
                 .and_then(|camera| camera.video.layer_rates.get(&layer))
                 .map_or(0, |rate| rate.bits_per_second(now));
-            measured.max(nominal_bits_per_second_of(layer))
+            layer_cost(layer, measured)
         };
         LayerCosts {
             quarter: cost(SimulcastLayer::Quarter),
@@ -958,16 +980,25 @@ impl MediaLoop<'_> {
         let watchers = self
             .participants
             .values()
-            .filter(|participant| !participant.video.watched_cameras.is_empty())
+            .filter(|participant| {
+                participant
+                    .video
+                    .watched_cameras
+                    .keys()
+                    .any(|camera_id| self.is_camera_on_in(*camera_id, participant.channel_id))
+            })
             .count();
         let Some(watcher) = self.participants.get(&watcher_id) else {
             return Vec::new();
         };
         // In the order the watcher lists them: among equal tiles, the last listed gives way first.
+        // Only cameras on in the watcher's channel count: any other id in a watch list receives
+        // nothing, and must not reveal another channel's camera through its cost.
         let tiles: Vec<(Snowflake, TileDemand, Option<SimulcastLayer>)> = watcher
             .video
             .shown_cameras
             .iter()
+            .filter(|(camera_id, _)| self.is_camera_on_in(*camera_id, watcher.channel_id))
             .filter_map(|(camera_id, _)| {
                 let tile = watcher.video.watched_cameras.get(camera_id)?;
                 let demand = TileDemand {
@@ -977,15 +1008,16 @@ impl MediaLoop<'_> {
                 Some((*camera_id, demand, tile.switch.wanted()))
             })
             .collect();
-        let budget = watcher_video_budget(
-            watcher.video.estimated_bits_per_second,
-            self.video_upload_bits_per_second,
-            watchers,
-        );
+        let fair_share = fair_share_of_upload(self.video_upload_bits_per_second, watchers);
+        let budget = watcher_video_budget(watcher.video.estimated_bits_per_second, fair_share);
         let demands: Vec<TileDemand> = tiles.iter().map(|(_, demand, _)| *demand).collect();
         let Some(watcher) = self.participants.get_mut(&watcher_id) else {
             return Vec::new();
         };
+        // A camera turned on, off or moved in or out of the channel changes the tiles too.
+        let cameras: Vec<Snowflake> = tiles.iter().map(|(camera_id, _, _)| *camera_id).collect();
+        let is_new_layout = is_new_layout || cameras != watcher.video.fitted_cameras;
+        watcher.video.fitted_cameras = cameras;
         let layers = if is_new_layout {
             watcher.video.allocation = LayerAllocation::default();
             fit_tiles(&demands, budget)
@@ -1017,13 +1049,7 @@ impl MediaLoop<'_> {
                 });
             }
         }
-        // The estimator probes up to what the tiles ask, with the headroom going up needs.
-        let desired_bits_per_second = demands
-            .iter()
-            .map(|demand| demand.costs.of(demand.asked))
-            .sum::<u64>()
-            .saturating_mul(HEADROOM_PERCENT_BEFORE_RAISING)
-            / 100;
+        let desired_bits_per_second = desired_bits_per_second(&demands, fair_share);
         if desired_bits_per_second != watcher.video.desired_bits_per_second {
             watcher.video.desired_bits_per_second = desired_bits_per_second;
             self.current_participant = Some(watcher_id);
@@ -1094,6 +1120,13 @@ impl MediaLoop<'_> {
             camera.video.reported_camera_layers = active;
         }
         self.emit(event);
+    }
+
+    /// Whether `camera_id` is a camera turned on in `channel_id`, so watchers there receive it.
+    fn is_camera_on_in(&self, camera_id: Snowflake, channel_id: Snowflake) -> bool {
+        self.participants.get(&camera_id).is_some_and(|camera| {
+            camera.channel_id == channel_id && camera.video.is_camera_forwarded
+        })
     }
 
     fn emit(&self, event: MediaEvent) {
@@ -1265,12 +1298,6 @@ impl MediaLoop<'_> {
             return;
         }
         camera.video.camera_heard_at = Some(now);
-        camera
-            .video
-            .layer_rates
-            .entry(layer)
-            .or_insert_with(|| LayerRate::new(now))
-            .record(frame.data.len(), now);
         let channel_id = camera.channel_id;
         let mut has_switched = false;
         let mut is_keyframe_wanted = false;
@@ -1314,13 +1341,18 @@ impl MediaLoop<'_> {
             // A watcher only receives media here; what it sends arrives through its own input.
             drain_output(watcher, &self.socket, &mut ignored);
         }
-        if has_reached_a_watcher
-            && let Some(budget) = self
-                .participants
-                .get_mut(&camera_id)
-                .and_then(|camera| camera.video.layer_budgets.get_mut(&layer))
-        {
-            budget.spend(frame.data.len());
+        // Only frames someone received count, in the budget and in the layer's measured cost: a
+        // layer sent to no one cannot make itself look costly to push other tiles down.
+        if has_reached_a_watcher && let Some(camera) = self.participants.get_mut(&camera_id) {
+            if let Some(budget) = camera.video.layer_budgets.get_mut(&layer) {
+                budget.spend(frame.data.len());
+            }
+            camera
+                .video
+                .layer_rates
+                .entry(layer)
+                .or_insert_with(|| LayerRate::new(now))
+                .record(frame.data.len(), now);
         }
         if is_keyframe_wanted {
             self.request_keyframe(camera_id, layer, now);
@@ -1747,6 +1779,106 @@ mod tests {
         );
         media.turn_off_silent_cameras(turned_on_at + MAXIMUM_SILENCE_OF_A_CAMERA * 2);
         assert!(events.try_recv().is_err(), "reported once");
+    }
+
+    /// A camera in channel 5 and a watcher with one video slot in `watcher_channel_id`.
+    fn join_camera_and_watcher(
+        media: &mut MediaLoop<'_>,
+        watcher_channel_id: Snowflake,
+    ) -> (Snowflake, Snowflake) {
+        let candidate: SocketAddr = "127.0.0.1:50000".parse().unwrap();
+        let (camera_id, watcher_id) = (Snowflake::from_raw(1), Snowflake::from_raw(2));
+        for (user_id, connection_id, channel_id) in [
+            (camera_id, 10, Snowflake::from_raw(5)),
+            (watcher_id, 20, watcher_channel_id),
+        ] {
+            let (rtc, _) = answer_offer(&client_offer(), candidate, false).unwrap();
+            media.apply(MediaCommand::Join(Box::new(MediaJoin {
+                user_id,
+                connection_id,
+                channel_id,
+                rtc,
+                candidate_address: candidate,
+                is_forwarded: true,
+                is_deafened: false,
+                may_speak: true,
+                screen_sound: None,
+            })));
+        }
+        // `str0m` announces video slots once connected; this session never connects.
+        media
+            .participants
+            .get_mut(&watcher_id)
+            .unwrap()
+            .video
+            .free_video_slots
+            .push(Mid::from("v1"));
+        (camera_id, watcher_id)
+    }
+
+    #[test]
+    fn a_camera_of_another_channel_in_a_watch_list_is_neither_fitted_nor_counted() {
+        let (_commands, command_receiver) = std::sync::mpsc::channel();
+        let (event_sender, _events) = tokio::sync::mpsc::unbounded_channel();
+        let mut media = media_loop(&command_receiver, &event_sender);
+        let (camera_id, watcher_id) = join_camera_and_watcher(&mut media, Snowflake::from_raw(6));
+        media.set_camera(camera_id, true);
+        media.watch_cameras(watcher_id, &[(camera_id, SimulcastLayer::High)]);
+        let watcher = &media.participants[&watcher_id].video;
+        assert_eq!(watcher.watched_cameras[&camera_id].switch.wanted(), None);
+        assert_eq!(watcher.desired_bits_per_second, 0, "its cost is never read");
+        assert_eq!(watcher.fitted_cameras, []);
+    }
+
+    #[test]
+    fn a_tile_pauses_when_its_watcher_slows_down_and_flows_again_five_seconds_after() {
+        let (_commands, command_receiver) = std::sync::mpsc::channel();
+        let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let mut media = media_loop(&command_receiver, &event_sender);
+        let (camera_id, watcher_id) = join_camera_and_watcher(&mut media, Snowflake::from_raw(5));
+        media.set_camera(camera_id, true);
+        let large_tile = [(camera_id, SimulcastLayer::High)];
+        media.watch_cameras(watcher_id, &large_tile);
+        let pauses = |events: &mut tokio::sync::mpsc::UnboundedReceiver<MediaEvent>| {
+            std::iter::from_fn(|| events.try_recv().ok())
+                .filter_map(|event| match event {
+                    MediaEvent::TilePaused { is_paused, .. } => Some(is_paused),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let wanted = |media: &MediaLoop<'_>| {
+            media.participants[&watcher_id].video.watched_cameras[&camera_id]
+                .switch
+                .wanted()
+        };
+        assert_eq!(wanted(&media), Some(SimulcastLayer::High));
+        assert_eq!(pauses(&mut events), [false; 0]);
+
+        let start = Instant::now();
+        let estimate = |media: &mut MediaLoop<'_>, bits_per_second, seconds| {
+            let watcher = media.participants.get_mut(&watcher_id).unwrap();
+            watcher.video.estimated_bits_per_second = Some(bits_per_second);
+            watcher.video.has_new_estimate = true;
+            media.follow_bandwidth(start + Duration::from_secs(seconds));
+        };
+        estimate(&mut media, 1_000_000, 0);
+        assert_eq!(wanted(&media), Some(SimulcastLayer::Low));
+        estimate(&mut media, 100_000, 1);
+        assert_eq!(wanted(&media), None);
+        assert_eq!(pauses(&mut events), [true]);
+
+        estimate(&mut media, 10_000_000, 2);
+        media.watch_cameras(watcher_id, &large_tile);
+        estimate(&mut media, 10_000_000, 6);
+        assert_eq!(
+            wanted(&media),
+            None,
+            "the same tiles again do not skip the wait"
+        );
+        estimate(&mut media, 10_000_000, 7);
+        assert_eq!(wanted(&media), Some(SimulcastLayer::High));
+        assert_eq!(pauses(&mut events), [false]);
     }
 
     #[test]
