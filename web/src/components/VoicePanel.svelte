@@ -78,8 +78,40 @@
     isSoundHelpOpen = true;
   }
 
+  // The camera (ADR-0035): a split button before the share's, its half turning the camera on (and
+  // opening the call view, where your own tile says it is starting) or off, its caret choosing
+  // which camera, applied live.
+  let cameraButton = $state<HTMLButtonElement | null>(null);
+  let cameraMenu = $state<ContextMenu | null>(null);
+  let isCameraMenuOpen = $state(false);
+  const cameraToggle = createPopoverToggle(() => isCameraMenuOpen);
+  function openCameraMenu() {
+    if (shareRow) {
+      void voice.refreshCameraDevices();
+      cameraMenu?.open({ kind: "anchor", bounds: shareRow.getBoundingClientRect(), align: "stretch" }, cameraButton);
+    }
+  }
+  function chooseCamera(deviceId: string | null) {
+    cameraMenu?.close();
+    void voice.setCameraDevice(deviceId);
+  }
+  function toggleCamera() {
+    if (voice.isCameraOn || voice.isCameraStarting) {
+      voice.stopCamera();
+      return;
+    }
+    voice.openCallView();
+    void voice.startCamera();
+  }
+
   const voice = $derived(client.voice);
   const place = $derived(client.voiceChannel);
+  const chosenCameraLabel = $derived(
+    voice.cameraDevices.find((device) => device.deviceId === voice.cameraDeviceId)?.label ?? strings.camera.defaultCamera,
+  );
+  const cameraLabel = $derived(
+    voice.isCameraStarting ? strings.camera.starting : voice.isCameraOn ? strings.camera.turnOff : strings.camera.turnOn,
+  );
   const signal = $derived(signalLook(voice.roundTripMilliseconds));
   const problem = $derived(voice.problem);
   const problemChannelName = $derived.by(() => {
@@ -248,8 +280,45 @@
           onclick={() => voice.leave()}
         />
       </div>
-      {#if voice.canShareScreen || voice.isSharingScreen}
+      {#if voice.canShareScreen || voice.isSharingScreen || voice.isCameraOn}
         <div bind:this={shareRow} class="mt-xs flex gap-(--mw-component-voice-panel-share-split-gap)">
+          <!-- The camera: an icon (its name says the action, the apricot wash says it is on), then its choice. -->
+          <button
+            type="button"
+            aria-label={cameraLabel}
+            aria-busy={voice.isCameraStarting}
+            title={cameraLabel}
+            class={[
+              shareHalfClass,
+              "shrink-0 justify-center px-xs pointer-coarse:min-w-(--mw-size-hit-web-min)",
+              voice.isCameraOn || voice.isCameraStarting
+                ? "bg-(--mw-component-voice-panel-share-background-active) text-(--mw-component-voice-panel-share-text-active) hover:bg-(--mw-component-voice-panel-share-background-active-hover) hover:text-(--mw-component-voice-panel-share-text-active-hover)"
+                : "bg-(--mw-component-voice-panel-share-background) text-(--mw-component-voice-panel-share-text) hover:bg-(--mw-component-voice-panel-share-background-hover) hover:text-(--mw-component-voice-panel-share-text-hover)",
+            ]}
+            onclick={toggleCamera}
+          >
+            <Icon name="video-camera" class="size-(--mw-component-voice-panel-signal-icon-size) shrink-0" />
+          </button>
+          <button
+            bind:this={cameraButton}
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={isCameraMenuOpen}
+            aria-controls="camera-options-menu"
+            aria-label={strings.camera.optionsButton(chosenCameraLabel)}
+            title={strings.camera.optionsMenu}
+            class={[
+              shareHalfClass,
+              "me-2xs shrink-0 px-3xs pointer-coarse:min-w-(--mw-size-hit-web-min) hover:bg-(--mw-component-voice-panel-share-background-hover) hover:text-(--mw-component-voice-panel-share-text-hover)",
+              isCameraMenuOpen
+                ? "bg-(--mw-component-voice-panel-share-background-hover) text-(--mw-component-voice-panel-share-text-hover)"
+                : "bg-(--mw-component-voice-panel-share-background) text-(--mw-component-voice-panel-share-text)",
+            ]}
+            onpointerdown={cameraToggle.notePress}
+            onclick={() => (cameraToggle.shouldOpenOnClick() ? openCameraMenu() : cameraMenu?.close())}
+          >
+            <Icon name="caret-up" class="size-(--mw-component-voice-panel-signal-icon-size) shrink-0" />
+          </button>
           <!-- The label says the action; the apricot wash and the live line below say the state. -->
           <button
             type="button"
@@ -262,7 +331,10 @@
             ]}
             onclick={() => (voice.isSharingScreen ? voice.stopScreenShare() : void voice.startScreenShare())}
           >
-            <Icon name="monitor-arrow-up" class="size-(--mw-component-voice-panel-signal-icon-size) shrink-0" />
+            <!-- While sharing, the wash and the live line say it: the label gets the icon's room, beside the camera. -->
+            {#if !voice.isSharingScreen}
+              <Icon name="monitor-arrow-up" class="size-(--mw-component-voice-panel-signal-icon-size) shrink-0" />
+            {/if}
             <span class="truncate">{voice.isSharingScreen ? strings.screenShare.stop : strings.screenShare.share}</span>
           </button>
           <button
@@ -333,6 +405,19 @@
             class="-me-2xs -my-2xs {buttonClass}"
             iconClass="size-(--mw-component-voice-panel-signal-icon-size)"
             onclick={() => voice.dismissScreenSoundNotice()}
+          />
+        </div>
+      {/if}
+      {#if voice.cameraProblem}
+        <div class="mt-2xs flex items-start gap-2xs type-body-sm text-(--mw-component-voice-panel-hint-text)">
+          <Icon name="warning-circle" class="mt-3xs size-(--mw-component-voice-panel-signal-icon-size) shrink-0 text-(--mw-component-voice-panel-problem-icon)" />
+          <p class="min-w-0 flex-1 self-center">{strings.camera.problems[voice.cameraProblem]}</p>
+          <IconButton
+            icon="x"
+            label={strings.common.close}
+            class="-me-2xs -my-2xs {buttonClass}"
+            iconClass="size-(--mw-component-voice-panel-signal-icon-size)"
+            onclick={() => voice.dismissCameraProblem()}
           />
         </div>
       {/if}
@@ -461,6 +546,28 @@
       {/if}
     </ContextMenu>
   {/if}
+  {#if voice.phase !== "idle"}
+    <ContextMenu
+      bind:this={cameraMenu}
+      bind:isOpen={isCameraMenuOpen}
+      id="camera-options-menu"
+      label={strings.camera.optionsMenu}
+      gapToken="space-2xs"
+    >
+      <div role="group" aria-labelledby="camera-choice-group">
+        <p id="camera-choice-group" class={menuGroupLabelClass}>{strings.camera.chooseGroup}</p>
+        {@render choice(
+          voice.cameraDeviceId === null || !voice.cameraDevices.some((device) => device.deviceId === voice.cameraDeviceId),
+          strings.camera.defaultCamera,
+          voice.cameraDevices.length === 0 ? strings.camera.namesHidden : "",
+          () => chooseCamera(null),
+        )}
+        {#each voice.cameraDevices as device (device.deviceId)}
+          {@render choice(device.deviceId === voice.cameraDeviceId, device.label, "", () => chooseCamera(device.deviceId))}
+        {/each}
+      </div>
+    </ContextMenu>
+  {/if}
   {#if isSoundHelpOpen}
     <LazyComponent load={() => import("./ScreenSoundHelpDialog.svelte")} onclose={() => (isSoundHelpOpen = false)}>
       {#snippet children({ default: ScreenSoundHelpDialog })}
@@ -470,6 +577,8 @@
   {/if}
   <p class="sr-only" aria-live="polite">{phaseSentence}</p>
   <p class="sr-only" aria-live="polite">{voice.isSharingScreen ? strings.screenShare.youAreSharing : ""}</p>
+  <p class="sr-only" aria-live="polite">{voice.isCameraOn ? strings.camera.isOn : ""}</p>
+  <p class="sr-only" aria-live="polite">{voice.phase === "idle" ? "" : (voice.cameraProblem && strings.camera.problems[voice.cameraProblem]) || ""}</p>
   <p class="sr-only" aria-live="polite">{voice.phase === "idle" ? "" : (voice.screenShareProblem && strings.screenShare.problems[voice.screenShareProblem]) || ""}</p>
   <p class="sr-only" aria-live="polite">{soundNoticeSentence && `${sharedSoundLine}. ${soundNoticeSentence}`}</p>
   <p class="sr-only" aria-live="polite">{voice.isMutedMicrophoneHeardInShare ? strings.screenShare.mutedMicrophoneHeard : ""}</p>

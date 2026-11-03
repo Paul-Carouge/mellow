@@ -612,9 +612,9 @@
     {/if}
 
     <main class="relative flex min-w-0 flex-1">
-      <!-- A watched screen takes the sheet's place (ADR-0037); the conversation stays underneath,
-           unreachable, so its scroll and draft are there when the screen closes. -->
-      <div class="contents" inert={client.voice.watchedStreamUserId !== null}>
+      <!-- A watched screen (ADR-0037) or the call view (ADR-0035) takes the sheet's place; the
+           conversation stays underneath, unreachable, so its scroll and draft are there when it closes. -->
+      <div class="contents" inert={client.voice.watchedStreamUserId !== null || client.voice.isCallViewOpen}>
       {#if client.isFriendsSpaceOpen}
         <FriendsPane
           bind:this={friendsPane}
@@ -652,6 +652,13 @@
                 onopennavigation={() => (isNavigationDrawerOpen = true)}
               />
             {/key}
+          {/snippet}
+        </LazyComponent>
+      {:else if client.voice.isCallViewOpen}
+        <!-- While a screen is watched the call view steps aside (unmounted, so it asks for no picture) and comes back when the screen closes. -->
+        <LazyComponent load={() => import("./CallView.svelte")} onclose={() => client.voice.closeCallView()}>
+          {#snippet children({ default: CallView })}
+            <CallView {client} hasNavigationDrawer={!hasRoomForNavigator.current} onopennavigation={() => (isNavigationDrawerOpen = true)} />
           {/snippet}
         </LazyComponent>
       {/if}

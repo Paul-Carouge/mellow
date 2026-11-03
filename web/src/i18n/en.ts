@@ -274,7 +274,7 @@ export const en = {
             ? `${count(people)} of ${count(limit)} people`
             : `${count(people)} ${plural(people, { one: "person", other: "people" })}`
           : "",
-        isHere ? "you're here" : "",
+        isHere ? "you're here. Show the call" : "",
         canConnect ? "" : "you can't connect",
       ]
         .filter(Boolean)
@@ -429,6 +429,51 @@ export const en = {
       too_many_cameras: "Too many videos are already shared in this channel or on this instance. Try again when one ends.",
       video_unavailable: "Video is turned off on this instance. Its administrator can turn it on.",
     },
+  },
+
+  camera: {
+    turnOn: "Turn on camera",
+    turnOff: "Turn off camera",
+    starting: "Starting camera…",
+    /** Read out once the camera is on. */
+    isOn: "Your camera is on",
+    optionsMenu: "Camera options",
+    optionsButton: (camera: string) => `Camera: ${camera}`,
+    chooseGroup: "Camera",
+    defaultCamera: "Default camera",
+    namesHidden: "Names show once a camera is allowed",
+    /** Read after a participant's name. */
+    cameraOn: "camera on",
+    show: (person: string) => `See ${person}'s camera`,
+    yourCamera: "Your camera is on",
+    joinToSee: (channel: string) => `Join ${channel} to see it`,
+    problems: {
+      denied: "Your browser blocks the camera. Allow it in the site settings, next to the address, then turn it on again.",
+      "not-found": "No camera found. Plug one in, then turn it on again.",
+      "in-use": "Another application is using your camera. Close it, then turn it on again.",
+      unsupported: "This browser couldn't send your camera. Try a recent Firefox, Chrome or Edge.",
+      ended: "Your camera was unplugged or taken by another application, so it turned off.",
+      stopped: "The instance stopped your camera, perhaps because your Video permission was removed. Turn it on again to carry on.",
+      missing_permissions: "You need the Video permission in this channel to turn on your camera. Ask someone who manages the server.",
+      too_many_cameras: "Too many cameras are already on in this channel or on this instance. Try again when one turns off.",
+      video_unavailable: "Video is turned off on this instance. Its administrator can turn it on.",
+    },
+  },
+
+  call: {
+    viewOf: (channel: string) => `Call in ${channel}`,
+    close: "Back to the chat",
+    layout: "Layout",
+    grid: "Grid",
+    speaker: "Speaker",
+    /** A toggle on each tile: the speaker view keeps that person large. */
+    feature: (person: string) => `Put ${person} forward`,
+    you: (person: string) => `${person} (you)`,
+    startingCamera: "Starting your camera…",
+    paused: "Connection too slow",
+    overflow: (people: number) => `${count(people)} more in the call`,
+    controls: "Call controls",
+    shareScreen: "Share your screen",
   },
 
   soundboard: {
@@ -1665,6 +1710,16 @@ export const en = {
       Enter: "Enter",
       Backspace: "Backspace",
     } as Record<string, string>,
+    video: "Video",
+    camera: "Camera",
+    cameraNamesHidden: "Camera names show after a first test.",
+    testCamera: "Test the camera",
+    stopCameraTest: "Stop the test",
+    cameraPreview: "Camera preview",
+    cameraPreviewDescription: "Only you see this preview, mirrored as in a mirror; the others see you the right way round. It stops when you leave this page.",
+    cameraLiveDescription: "Your camera is on in the call: this is it, mirrored as in a mirror; the others see you the right way round.",
+    cameraPreviewIdle: "Test the camera to see yourself here.",
+    cameraDeviceMissing: "Your chosen camera is unplugged: Mellow uses the default one until it's back.",
   },
 
   /** Notifications, mutes and the permission bar (docs/design/web-notifications.md). */
