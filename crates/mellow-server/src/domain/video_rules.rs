@@ -107,43 +107,38 @@ pub(crate) const fn nominal_bits_per_second_of(layer: SimulcastLayer) -> u64 {
     }
 }
 
-/// The share of a watcher's estimated bandwidth its tiles may use; the rest is for voice,
-/// retransmissions and the estimate's own error (ADR-0035).
-pub(crate) const VIDEO_PERCENT_OF_ESTIMATE: u64 = 90;
-/// Tiles go back up only once the budget exceeds what the higher layers need by this much...
-pub(crate) const HEADROOM_PERCENT_BEFORE_RAISING: u64 = 120;
-/// A link counts as congested once its budget falls below this share of what its tiles deliver:
-/// `str0m` backs its estimate off to 0.85 of the acknowledged rate at any delay spike, which with
-/// the 90 % video share leaves a budget of about 0.77 of what flows, and must not count.
-pub(crate) const CONGESTION_PERCENT_OF_DELIVERED: u64 = 75;
+/// Loss over a watcher's last second, in percent of the packets sent to it, from which its link
+/// counts as congested: its tiles go down to what gets through (ADR-0035, as built 2026-11-03).
+pub(crate) const LOSS_PERCENT_TO_GO_DOWN: u32 = 10;
+/// Loss under which a watcher's link counts as clear: its tiles may go back up. Between the two,
+/// they hold.
+pub(crate) const LOSS_PERCENT_OF_A_CLEAR_LINK: u32 = 2;
+/// How long a link stays clear before its tiles try one step up, at first...
+pub(crate) const FIRST_WAIT_BEFORE_RAISING: Duration = Duration::from_secs(5);
+/// ...doubled each time a step up meets loss within `TRIAL_OF_A_RAISE`, up to this, so a link at
+/// its limit tries rarely...
+pub(crate) const LONGEST_WAIT_BEFORE_RAISING: Duration = Duration::from_secs(60);
+pub(crate) const TRIAL_OF_A_RAISE: Duration = Duration::from_secs(10);
+/// ...and back to the first wait once a step up held this long.
+pub(crate) const HELD_RAISE: Duration = Duration::from_secs(30);
+/// The share of what gets through a lossy link its tiles are fitted into.
+const PERCENT_OF_WHAT_GETS_THROUGH: u64 = 90;
 
-/// Whether a watcher's link is congested: its `budget` below what its tiles deliver, beyond one
-/// ordinary back-off of the estimator. An estimate merely following a light stream (a still
-/// screen sends little, and the estimator tracks what is acknowledged) shows nothing.
+/// A loss fraction (0 to 1) as a whole percentage.
 #[must_use]
-pub(crate) const fn is_congested(delivered_bits_per_second: u64, budget: u64) -> bool {
-    delivered_bits_per_second.saturating_mul(CONGESTION_PERCENT_OF_DELIVERED) / 100 > budget
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(crate) fn loss_percent_of(fraction: f32) -> u32 {
+    // Clamped to 0..=100 first: the cast cannot truncate or lose a sign.
+    (fraction.clamp(0.0, 1.0) * 100.0).round() as u32
 }
 
-/// The budget new tiles are fitted into: the estimate's when the link is congested, otherwise
-/// the watcher's `fair_share`, since an estimate that followed the previous, lighter stream says
-/// nothing about the next one. A slow link shows congestion within a second or two and the tiles
-/// go down then.
-#[must_use]
-pub(crate) const fn layout_budget(
-    budget: u64,
-    fair_share: u64,
-    delivered_bits_per_second: u64,
-) -> u64 {
-    if is_congested(delivered_bits_per_second, budget) {
-        budget
-    } else {
-        fair_share
-    }
+/// A watcher's last second: the share of packets sent to it that were lost (from its congestion
+/// feedback, 0 without any) and what its tiles received.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LinkReport {
+    pub(crate) loss_percent: u32,
+    pub(crate) delivered_bits_per_second: u64,
 }
-
-/// ...and has done so for this long, so a link at the edge does not flap (ADR-0035).
-pub(crate) const STEADY_TIME_BEFORE_RAISING: Duration = Duration::from_secs(5);
 
 /// A watcher's share of the instance's upload budget, in bits per second, among `watchers`
 /// (those watching a camera of their own channel).
@@ -151,27 +146,6 @@ pub(crate) const STEADY_TIME_BEFORE_RAISING: Duration = Duration::from_secs(5);
 pub(crate) fn fair_share_of_upload(video_upload_bits_per_second: u64, watchers: usize) -> u64 {
     let watchers = u64::try_from(watchers.max(1)).unwrap_or(u64::MAX);
     video_upload_bits_per_second / watchers
-}
-
-/// A watcher's video budget in bits per second: 90 % of its link's estimate, and at most its
-/// `fair_share` of the upload. `estimate`: `None` before the first one, or for a client sending
-/// no congestion feedback.
-#[must_use]
-pub(crate) fn watcher_video_budget(estimate: Option<u64>, fair_share: u64) -> u64 {
-    estimate.map_or(fair_share, |estimate| {
-        fair_share.min(estimate.saturating_mul(VIDEO_PERCENT_OF_ESTIMATE) / 100)
-    })
-}
-
-/// The bit rate the estimator probes up to for a watcher: what its tiles ask, plus the headroom
-/// going back up needs, and never more than an estimate its `fair_share` could use. Probes are
-/// bursts of padding of up to twice this rate, so a watcher listing many large tiles must not make
-/// the server send far beyond the instance's upload budget.
-#[must_use]
-pub(crate) fn desired_bits_per_second(tiles: &[TileDemand], fair_share: u64) -> u64 {
-    let asked: u64 = tiles.iter().map(|tile| tile.costs.of(tile.asked)).sum();
-    let with_headroom = asked.saturating_mul(HEADROOM_PERCENT_BEFORE_RAISING) / 100;
-    with_headroom.min(fair_share.saturating_mul(100) / VIDEO_PERCENT_OF_ESTIMATE)
 }
 
 /// What a layer costs a watcher, from what it was `measured` to send: at least its target, and at
@@ -229,95 +203,150 @@ fn cost_of(tiles: &[TileDemand], layers: &[Option<SimulcastLayer>]) -> u64 {
         .sum()
 }
 
+/// The step after `layers` on the tiles' chain: the smallest tile goes down one layer before the
+/// larger ones, the last listed first among equals; once every tile is at the lowest layer, one is
+/// paused in the same order. `None` once every tile is paused.
+fn lowered_once(
+    tiles: &[TileDemand],
+    layers: &[Option<SimulcastLayer>],
+) -> Option<Vec<Option<SimulcastLayer>>> {
+    let index = layers
+        .iter()
+        .zip(tiles)
+        .enumerate()
+        .filter_map(|(index, (layer, tile))| {
+            layer.map(|layer| (layer == SimulcastLayer::Quarter, tile.asked, Reverse(index)))
+        })
+        .min()
+        .map(|(_, _, Reverse(index))| index)?;
+    let mut lowered = layers.to_vec();
+    let layer = lowered.get_mut(index)?;
+    *layer = layer.and_then(layer_below);
+    Some(lowered)
+}
+
 /// The layer each tile gets within `budget` bits per second, `None` for a paused tile
-/// (ADR-0035): from the layers asked, the smallest tiles go down one layer at a time before the
-/// larger ones, the last listed first among equals; once every tile is at the lowest layer,
-/// tiles are paused in the same order. The steps do not depend on the budget, so a larger budget
-/// never gives any tile a lower layer.
+/// (ADR-0035): the first step of the tiles' chain (`lowered_once`), from the layers asked, that
+/// fits. The steps do not depend on the budget, so a larger budget never gives any tile a lower
+/// layer.
 #[must_use]
 pub(crate) fn fit_tiles(tiles: &[TileDemand], budget: u64) -> Vec<Option<SimulcastLayer>> {
     let mut layers: Vec<Option<SimulcastLayer>> =
         tiles.iter().map(|tile| Some(tile.asked)).collect();
     while cost_of(tiles, &layers) > budget {
-        let next_to_lower = layers
-            .iter()
-            .zip(tiles)
-            .enumerate()
-            .filter_map(|(index, (layer, tile))| {
-                layer.map(|layer| (layer == SimulcastLayer::Quarter, tile.asked, Reverse(index)))
-            })
-            .min()
-            .map(|(_, _, Reverse(index))| index);
-        let Some(layer) = next_to_lower.and_then(|index| layers.get_mut(index)) else {
+        let Some(lowered) = lowered_once(tiles, &layers) else {
             break;
         };
-        *layer = layer.and_then(layer_below);
+        layers = lowered;
     }
     layers
 }
 
-/// Whether `candidate` gives any tile a higher layer than `current` (a paused tile is lowest).
-fn raises_any(candidate: &[Option<SimulcastLayer>], current: &[Option<SimulcastLayer>]) -> bool {
-    candidate
-        .iter()
-        .zip(current)
-        .any(|(candidate, current)| candidate > current)
+/// The step before `current` on the tiles' chain, `None` at its top or off it.
+fn step_above(
+    tiles: &[TileDemand],
+    current: &[Option<SimulcastLayer>],
+) -> Option<Vec<Option<SimulcastLayer>>> {
+    let mut above = None;
+    let mut layers: Vec<Option<SimulcastLayer>> =
+        tiles.iter().map(|tile| Some(tile.asked)).collect();
+    while layers != current {
+        let lowered = lowered_once(tiles, &layers)?;
+        above = Some(std::mem::replace(&mut layers, lowered));
+    }
+    above
 }
 
-/// How a watcher's tiles follow its bandwidth (ADR-0035): down at once when the budget shrinks,
-/// back up only after the budget has exceeded the higher layers' need, plus 20 %, for 5 seconds.
-#[derive(Debug, Default)]
+/// Each tile's lower layer of the two.
+fn lower_of_each(
+    first: &[Option<SimulcastLayer>],
+    second: &[Option<SimulcastLayer>],
+) -> Vec<Option<SimulcastLayer>> {
+    first
+        .iter()
+        .zip(second)
+        .map(|(a, b)| (*a).min(*b))
+        .collect()
+}
+
+/// How a watcher's tiles follow its link (ADR-0035, as built 2026-11-03), from the loss its
+/// congestion feedback reports each second rather than a bandwidth estimate: an estimate follows
+/// what flows, so a still screen dragged it low and kept a sharp 1440p screen blurred on a link
+/// that carried it easily. Down at once to what gets through when 10 % or more is lost; one step up
+/// after the link stayed clear (under 2 %) for a wait that doubles each time a step up meets loss.
+#[derive(Debug)]
 pub(crate) struct LayerAllocation {
-    raise_possible_since: Option<Instant>,
+    clear_since: Option<Instant>,
+    raised_at: Option<Instant>,
+    wait_before_raising: Duration,
+}
+
+impl Default for LayerAllocation {
+    fn default() -> Self {
+        Self {
+            clear_since: None,
+            raised_at: None,
+            wait_before_raising: FIRST_WAIT_BEFORE_RAISING,
+        }
+    }
 }
 
 impl LayerAllocation {
-    /// The layers the tiles get now, given the `current` ones (as many as `tiles`) and what they
-    /// deliver to the watcher now, in bits per second.
-    ///
-    /// Tiles go down only on a congested link (`is_congested`): an estimate merely following a
-    /// light stream must not blur a sharp picture.
+    /// The layers the tiles get after a `report`, given the `current` ones (as many as `tiles`),
+    /// never beyond the watcher's `fair_share` of the instance's upload.
     pub(crate) fn next_layers(
         &mut self,
         tiles: &[TileDemand],
         current: &[Option<SimulcastLayer>],
-        budget: u64,
-        delivered_bits_per_second: u64,
+        report: LinkReport,
+        fair_share: u64,
         now: Instant,
     ) -> Vec<Option<SimulcastLayer>> {
-        let is_congested = is_congested(delivered_bits_per_second, budget);
-        let fitting = fit_tiles(tiles, budget);
-        if !raises_any(&fitting, current) {
-            self.raise_possible_since = None;
-            return if is_congested {
-                fitting
-            } else {
-                current.to_vec()
-            };
+        let elapsed_since = |at: Instant| now.saturating_duration_since(at);
+        // More watchers leave each one a smaller share.
+        let current = lower_of_each(current, &fit_tiles(tiles, fair_share));
+        if report.loss_percent >= LOSS_PERCENT_TO_GO_DOWN {
+            self.clear_since = None;
+            if self
+                .raised_at
+                .take()
+                .is_some_and(|at| elapsed_since(at) < TRIAL_OF_A_RAISE)
+            {
+                self.wait_before_raising =
+                    (self.wait_before_raising * 2).min(LONGEST_WAIT_BEFORE_RAISING);
+            }
+            let kept_percent = u64::from(100 - report.loss_percent.min(100));
+            let gets_through = report
+                .delivered_bits_per_second
+                .saturating_mul(kept_percent)
+                / 100
+                * PERCENT_OF_WHAT_GETS_THROUGH
+                / 100;
+            return lower_of_each(&current, &fit_tiles(tiles, gets_through));
         }
-        let with_headroom = fit_tiles(
-            tiles,
-            budget.saturating_mul(100) / HEADROOM_PERCENT_BEFORE_RAISING,
-        );
-        let kept: Vec<Option<SimulcastLayer>> = if is_congested {
-            current
-                .iter()
-                .zip(&fitting)
-                .map(|(current, fitting)| (*current).min(*fitting))
-                .collect()
-        } else {
-            current.to_vec()
+        if report.loss_percent >= LOSS_PERCENT_OF_A_CLEAR_LINK {
+            self.clear_since = None;
+            return current;
+        }
+        if self
+            .raised_at
+            .is_some_and(|at| elapsed_since(at) >= HELD_RAISE)
+        {
+            self.raised_at = None;
+            self.wait_before_raising = FIRST_WAIT_BEFORE_RAISING;
+        }
+        let since = *self.clear_since.get_or_insert(now);
+        if elapsed_since(since) < self.wait_before_raising {
+            return current;
+        }
+        let Some(above) =
+            step_above(tiles, &current).filter(|above| cost_of(tiles, above) <= fair_share)
+        else {
+            return current;
         };
-        if !raises_any(&with_headroom, current) {
-            self.raise_possible_since = None;
-            return kept;
-        }
-        let since = *self.raise_possible_since.get_or_insert(now);
-        if now.saturating_duration_since(since) < STEADY_TIME_BEFORE_RAISING {
-            return kept;
-        }
-        self.raise_possible_since = None;
-        with_headroom
+        self.clear_since = Some(now);
+        self.raised_at = Some(now);
+        above
     }
 }
 
@@ -660,38 +689,6 @@ mod tests {
     }
 
     #[test]
-    fn a_watcher_gets_ninety_percent_of_its_estimate_within_its_share_of_the_upload() {
-        assert_eq!(fair_share_of_upload(100_000_000, 4), 25_000_000);
-        assert_eq!(
-            fair_share_of_upload(100_000_000, 0),
-            100_000_000,
-            "a first watcher counts as one"
-        );
-        assert_eq!(watcher_video_budget(None, 25_000_000), 25_000_000);
-        assert_eq!(
-            watcher_video_budget(Some(10_000_000), 25_000_000),
-            9_000_000
-        );
-        assert_eq!(
-            watcher_video_budget(Some(100_000_000), 10_000_000),
-            10_000_000,
-            "the share of the upload caps a fast link"
-        );
-    }
-
-    #[test]
-    fn probes_aim_at_the_tiles_need_with_headroom_but_never_beyond_the_fair_share() {
-        let tiles = [tile(High), tile(Quarter)];
-        assert_eq!(desired_bits_per_second(&tiles, 100_000_000), 1_980_000);
-        assert_eq!(
-            desired_bits_per_second(&[tile(High); 9], 9_000_000),
-            10_000_000,
-            "nine large tiles probe no further than the share can use"
-        );
-        assert_eq!(desired_bits_per_second(&[], 9_000_000), 0);
-    }
-
-    #[test]
     fn a_layer_costs_its_measure_between_its_target_and_its_byte_budget() {
         assert_eq!(layer_cost(Quarter, 0), 150_000);
         assert_eq!(layer_cost(Quarter, 200_000), 200_000);
@@ -701,6 +698,161 @@ mod tests {
             "a camera inflating a layer counts its budget at most"
         );
         assert_eq!(layer_cost(High, 8_000_000), 8_000_000, "a 1440p screen");
+    }
+
+    #[test]
+    fn a_share_of_the_upload_for_each_watcher() {
+        assert_eq!(fair_share_of_upload(100_000_000, 4), 25_000_000);
+        assert_eq!(
+            fair_share_of_upload(100_000_000, 0),
+            100_000_000,
+            "a first watcher counts as one"
+        );
+    }
+
+    fn report(loss_percent: u32, delivered_bits_per_second: u64) -> LinkReport {
+        LinkReport {
+            loss_percent,
+            delivered_bits_per_second,
+        }
+    }
+
+    #[test]
+    fn a_clear_link_keeps_a_sharp_screen_however_light_it_runs() {
+        let start = Instant::now();
+        let screen = TileDemand {
+            asked: High,
+            costs: LayerCosts {
+                high: 8_000_000,
+                ..NOMINAL
+            },
+        };
+        let mut allocation = LayerAllocation::default();
+        for second in 0..30 {
+            assert_eq!(
+                allocation.next_layers(
+                    &[screen],
+                    &[Some(High)],
+                    report(0, 300_000),
+                    100_000_000,
+                    start + Duration::from_secs(second)
+                ),
+                [Some(High)]
+            );
+        }
+    }
+
+    #[test]
+    fn heavy_loss_lowers_to_what_gets_through_and_light_loss_holds() {
+        let now = Instant::now();
+        let tiles = [tile(High)];
+        let mut allocation = LayerAllocation::default();
+        assert_eq!(
+            allocation.next_layers(
+                &tiles,
+                &[Some(High)],
+                report(5, 1_500_000),
+                100_000_000,
+                now
+            ),
+            [Some(High)],
+            "5 % lost: hold"
+        );
+        // 1.5 Mbit/s sent, 40 % lost: 900 kbit/s get through, 810 kbit/s for tiles.
+        assert_eq!(
+            allocation.next_layers(
+                &tiles,
+                &[Some(High)],
+                report(40, 1_500_000),
+                100_000_000,
+                now
+            ),
+            [Some(Low)]
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(Low)], report(90, 500_000), 100_000_000, now),
+            [None],
+            "almost nothing gets through: paused"
+        );
+    }
+
+    #[test]
+    fn a_clear_link_goes_up_one_step_at_a_time_and_waits_longer_after_a_failed_step() {
+        let start = Instant::now();
+        let at = |seconds| start + Duration::from_secs(seconds);
+        let tiles = [tile(High)];
+        let share = 100_000_000;
+        let mut allocation = LayerAllocation::default();
+        assert_eq!(
+            allocation.next_layers(&tiles, &[None], report(0, 0), share, at(0)),
+            [None]
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[None], report(0, 0), share, at(5)),
+            [Some(Quarter)],
+            "5 s clear: one step"
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(Quarter)], report(1, 150_000), share, at(9)),
+            [Some(Quarter)]
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(Quarter)], report(1, 150_000), share, at(10)),
+            [Some(Low)]
+        );
+        // The step to Low meets loss within its trial: back down, and the next wait is 10 s.
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(Low)], report(30, 500_000), share, at(12)),
+            [Some(Quarter)]
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(Quarter)], report(0, 150_000), share, at(13)),
+            [Some(Quarter)]
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(Quarter)], report(0, 150_000), share, at(22)),
+            [Some(Quarter)],
+            "9 s only"
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(Quarter)], report(0, 150_000), share, at(23)),
+            [Some(Low)]
+        );
+    }
+
+    #[test]
+    fn a_step_up_never_passes_the_fair_share_and_a_smaller_share_lowers_at_once() {
+        let start = Instant::now();
+        let tiles = [tile(High)];
+        let mut allocation = LayerAllocation::default();
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(Low)], report(0, 500_000), 1_000_000, start),
+            [Some(Low)]
+        );
+        assert_eq!(
+            allocation.next_layers(
+                &tiles,
+                &[Some(Low)],
+                report(0, 500_000),
+                1_000_000,
+                start + Duration::from_secs(60)
+            ),
+            [Some(Low)],
+            "High would pass the share"
+        );
+        assert_eq!(
+            allocation.next_layers(&tiles, &[Some(High)], report(0, 1_500_000), 400_000, start),
+            [Some(Quarter)]
+        );
+    }
+
+    #[test]
+    fn loss_fractions_become_whole_percentages() {
+        assert_eq!(loss_percent_of(0.0), 0);
+        assert_eq!(loss_percent_of(0.104), 10);
+        assert_eq!(loss_percent_of(1.5), 100);
+        assert_eq!(loss_percent_of(-0.2), 0);
+        assert_eq!(loss_percent_of(f32::NAN), 0);
     }
 
     #[test]
@@ -757,80 +909,6 @@ mod tests {
     }
 
     #[test]
-    fn tiles_go_down_at_once_and_back_up_after_five_seconds_with_twenty_percent_to_spare() {
-        let start = Instant::now();
-        let at = |seconds| start + Duration::from_secs(seconds);
-        let tiles = [tile(High)];
-        let mut allocation = LayerAllocation::default();
-        assert_eq!(
-            allocation.next_layers(&tiles, &[Some(High)], 1_000_000, 1_500_000, at(0)),
-            [Some(Low)],
-            "down at once"
-        );
-        assert_eq!(
-            allocation.next_layers(&tiles, &[Some(Low)], 1_600_000, 500_000, at(1)),
-            [Some(Low)],
-            "enough for High, but not with 20 % to spare"
-        );
-        assert_eq!(
-            allocation.next_layers(&tiles, &[Some(Low)], 1_800_000, 500_000, at(2)),
-            [Some(Low)]
-        );
-        assert_eq!(
-            allocation.next_layers(&tiles, &[Some(Low)], 1_800_000, 500_000, at(6)),
-            [Some(Low)],
-            "4 seconds only"
-        );
-        assert_eq!(
-            allocation.next_layers(&tiles, &[Some(Low)], 1_800_000, 500_000, at(7)),
-            [Some(High)]
-        );
-        assert_eq!(
-            allocation.next_layers(&tiles, &[Some(High)], 1_800_000, 1_500_000, at(8)),
-            [Some(High)]
-        );
-    }
-
-    #[test]
-    fn a_low_estimate_following_a_light_stream_lowers_nothing() {
-        let now = Instant::now();
-        let tiles = [tile(High)];
-        let mut allocation = LayerAllocation::default();
-        assert_eq!(
-            allocation.next_layers(&tiles, &[Some(High)], 600_000, 400_000, now),
-            [Some(High)],
-            "a still screen sends 400 kbit/s and the estimate follows it: the link is not the limit"
-        );
-        assert_eq!(
-            allocation.next_layers(&tiles, &[Some(High)], 600_000, 2_000_000, now),
-            [Some(Low)],
-            "below what flows: congestion"
-        );
-    }
-
-    #[test]
-    fn one_back_off_of_the_estimator_is_not_congestion() {
-        let now = Instant::now();
-        let tiles = [tile(High)];
-        let mut allocation = LayerAllocation::default();
-        // A still screen delivers 400 kbit/s; one back-off: 0.85 of it, 90 % for video.
-        let backed_off = 400_000 * 85 / 100 * 90 / 100;
-        assert!(!is_congested(400_000, backed_off));
-        assert_eq!(
-            allocation.next_layers(&tiles, &[Some(High)], backed_off, 400_000, now),
-            [Some(High)]
-        );
-        assert!(is_congested(400_000, 290_000));
-    }
-
-    #[test]
-    fn new_tiles_start_within_the_fair_share_unless_the_link_is_congested() {
-        assert_eq!(layout_budget(500_000, 25_000_000, 0), 25_000_000);
-        assert_eq!(layout_budget(500_000, 25_000_000, 600_000), 25_000_000);
-        assert_eq!(layout_budget(500_000, 25_000_000, 2_000_000), 500_000);
-    }
-
-    #[test]
     fn a_recent_rate_forgets_a_stream_that_stopped() {
         let start = Instant::now();
         let at = |milliseconds| start + Duration::from_millis(milliseconds);
@@ -847,31 +925,6 @@ mod tests {
             rate.bits_per_second(at(9_500)),
             0,
             "the old seconds are gone"
-        );
-    }
-
-    #[test]
-    fn a_dip_below_the_headroom_restarts_the_wait_before_going_up() {
-        let start = Instant::now();
-        let at = |seconds| start + Duration::from_secs(seconds);
-        let tiles = [tile(Quarter)];
-        let mut allocation = LayerAllocation::default();
-        assert_eq!(
-            allocation.next_layers(&tiles, &[None], 200_000, 0, at(0)),
-            [None]
-        );
-        assert_eq!(
-            allocation.next_layers(&tiles, &[None], 160_000, 0, at(3)),
-            [None],
-            "the wait starts again"
-        );
-        assert_eq!(
-            allocation.next_layers(&tiles, &[None], 200_000, 0, at(4)),
-            [None]
-        );
-        assert_eq!(
-            allocation.next_layers(&tiles, &[None], 200_000, 0, at(9)),
-            [Some(Quarter)]
         );
     }
 

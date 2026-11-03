@@ -630,7 +630,7 @@ async fn next_pause_of(socket: &mut ClientSocket, camera_id: Snowflake) -> bool 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_watcher_on_a_slow_link_is_moved_down_then_its_tile_paused() {
+async fn a_watcher_on_a_lossy_link_has_its_tile_paused() {
     let fixture = fixture().await;
     let (mut owner, mut member) = identified_pair(&fixture).await;
     let owner_id = fixture.user_id("owner");
@@ -669,12 +669,6 @@ async fn a_watcher_on_a_slow_link_is_moved_down_then_its_tile_paused() {
         layers_while_slowing.first().map(Vec::as_slice),
         Some([SimulcastLayer::Quarter, SimulcastLayer::High].as_slice()),
         "the large tile first gets the large layer"
-    );
-    assert!(
-        layers_while_slowing
-            .iter()
-            .any(|layers| layers.contains(&SimulcastLayer::Low)),
-        "then the half-size layer before pausing: {layers_while_slowing:?}"
     );
 }
 
