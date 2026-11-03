@@ -19,6 +19,8 @@
     track: MediaStreamTrack | undefined;
     /** Your own camera: mirrored, as a mirror shows you. */
     isOwn: boolean;
+    /** Your own camera, shown as in a mirror; never your shared screen. */
+    isMirrored: boolean;
     isSpeaking: boolean;
     isMicrophoneOff: boolean;
     /** Paused by the instance for this connection (`VOICE_VIDEO_PAUSED`). */
@@ -32,7 +34,7 @@
     action: { label: string; isPressed: boolean | undefined; onclick: () => void } | null;
   }
 
-  let { person, video, track, isOwn, isSpeaking, isMicrophoneOff, isPaused, sentence, isSmall, isInStrip, action }: Props = $props();
+  let { person, video, track, isOwn, isMirrored, isSpeaking, isMicrophoneOff, isPaused, sentence, isSmall, isInStrip, action }: Props = $props();
 
   let hasPicture = $state(false);
   const name = $derived(displayName(person));
@@ -81,7 +83,7 @@
       class={[
         "absolute inset-0 size-full",
         video === "screen" ? "object-contain" : "object-cover",
-        isOwn && "-scale-x-100",
+        isMirrored && "-scale-x-100",
         !isPictureShown && "invisible",
       ]}
       onloadeddata={() => (hasPicture = true)}
