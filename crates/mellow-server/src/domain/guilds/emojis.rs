@@ -302,6 +302,7 @@ mod tests {
                 reply_to_id: None,
                 nonce: None,
                 attachment_ids: Vec::new(),
+                forwarded_from: None,
             };
             self.state
                 .messages

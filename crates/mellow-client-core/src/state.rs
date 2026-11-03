@@ -91,6 +91,7 @@ impl PendingMessage {
             reply_to_id: self.reply_to_id,
             nonce: Some(self.nonce.clone()),
             attachment_ids: Vec::new(),
+            forwarded_from: None,
         }
     }
 }
@@ -911,6 +912,7 @@ mod tests {
             reactions: Vec::new(),
             pinned: false,
             mention_ids: Vec::new(),
+            forwarded_from: None,
         }
     }
 

@@ -130,11 +130,11 @@ pub(crate) async fn insert_attachment(
     Ok(())
 }
 
-/// Points the row at its compressed file, written under `new_file_id` (ADR-0033), if it still
-/// holds `previous_file_id`; `false` when the attachment is gone or its file changed meanwhile.
+/// Points every row still holding `previous_file_id` at the compressed file written under
+/// `new_file_id` (ADR-0033): the attachment and its forwarded copies (ADR-0039), so the previous
+/// file can go. `false` when no row holds it any more (deleted, or its file changed meanwhile).
 pub(crate) async fn update_attachment_file(
     database: &Database,
-    attachment_id: Snowflake,
     previous_file_id: Snowflake,
     new_file_id: Snowflake,
     file_name: &str,
@@ -143,20 +143,20 @@ pub(crate) async fn update_attachment_file(
 ) -> Result<bool, MessageStorageError> {
     let updated = sqlx::query(
         "UPDATE attachments SET file_id = ?, file_name = ?, content_type = ?, size_bytes = ? \
-         WHERE id = ? AND COALESCE(file_id, id) = ?",
+         WHERE COALESCE(file_id, id) = ?",
     )
     .bind(to_sqlite_integer(new_file_id.raw())?)
     .bind(file_name)
     .bind(content_type)
     .bind(to_sqlite_integer(size_bytes)?)
-    .bind(to_sqlite_integer(attachment_id.raw())?)
     .bind(to_sqlite_integer(previous_file_id.raw())?)
     .execute(database.writer())
     .await?;
     Ok(updated.rows_affected() > 0)
 }
 
-/// Points the row at its preview's file; `false` when the attachment is gone.
+/// Points the attachment and every row sharing its file (forwarded copies, ADR-0039) at its
+/// preview's file; `false` when the attachment is gone.
 pub(crate) async fn record_attachment_preview(
     database: &Database,
     attachment_id: Snowflake,
@@ -164,7 +164,8 @@ pub(crate) async fn record_attachment_preview(
 ) -> Result<bool, MessageStorageError> {
     let updated = sqlx::query(
         "UPDATE attachments SET preview_file_id = ?, preview_content_type = ?, \
-         preview_size_bytes = ? WHERE id = ?",
+         preview_size_bytes = ? WHERE COALESCE(file_id, id) = \
+         (SELECT COALESCE(file_id, id) FROM attachments WHERE id = ?)",
     )
     .bind(to_sqlite_integer(preview.file_id.raw())?)
     .bind(&preview.content_type)
@@ -290,11 +291,12 @@ fn file_ids_of_rows(rows: Vec<(i64, Option<i64>)>) -> Result<Vec<Snowflake>, Mes
         .collect::<Result<_, _>>()?)
 }
 
-/// Shared with the migration test that checks it stays on `attachments_by_uploader_id`.
-pub(crate) const STORED_BYTES_OF_UPLOADER_QUERY: &str =
-    "SELECT COALESCE(SUM(size_bytes), 0) FROM attachments WHERE uploader_id = ?";
+/// Shared with the migration test that checks it stays on `attachments_uploaded_by_uploader_id`.
+pub(crate) const STORED_BYTES_OF_UPLOADER_QUERY: &str = "SELECT COALESCE(SUM(size_bytes), 0) FROM attachments \
+     WHERE uploader_id = ? AND is_forwarded_copy = 0";
 
-/// What a user's uploads take on disk, sent or not, for the per-user quota.
+/// What a user's uploads take on disk, sent or not, for the per-user quota. Forwarded copies
+/// share their original's file and are left out (ADR-0039).
 pub(crate) async fn stored_bytes_of_uploader(
     database: &Database,
     uploader_id: Snowflake,

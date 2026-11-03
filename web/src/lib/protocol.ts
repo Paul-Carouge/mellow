@@ -313,6 +313,28 @@ export interface Message {
    * those who can view the channel; never the author. Absent when empty and from older servers.
    */
   mention_ids?: Snowflake[];
+  /** Set on a forward (ADR-0039): its content and files copy that message's. */
+  forwarded_from?: ForwardOrigin;
+}
+
+/** Where a forwarded message was first written (ADR-0039); its date is the message id's. */
+export interface ForwardOrigin {
+  channel_id: Snowflake;
+  message_id: Snowflake;
+}
+
+/** Body of `POST /channels/{id}/messages`. */
+export interface SendMessageRequest {
+  content: string;
+  reply_to_id?: Snowflake | null;
+  nonce?: string | null;
+  /** Left out when empty, so older servers still accept text-only messages. */
+  attachment_ids?: Snowflake[];
+  /**
+   * Forwards that message (ADR-0039): the instance copies its content and files, so `content`
+   * stays empty, without `attachment_ids` or `reply_to_id`.
+   */
+  forwarded_from?: ForwardOrigin;
 }
 
 export interface ReactionSummary {

@@ -14,8 +14,8 @@ use mellow_protocol::{
     ApiErrorCode, Attachment, AuditAction, AuditChange, AuditChangeKey, AuditLogEntry,
     AuthorSearchFacet, Ban, Channel, ChannelKind, ChannelPlacement, ChannelSearchFacet,
     ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel,
-    GatewayEvent, Guild, GuildInvite, GuildSummary, Hello, HighlightRange, InitialCategory,
-    InitialTextChannel, Invite, MAXIMUM_COUNTED_UNREAD_MENTIONS,
+    ForwardOrigin, GatewayEvent, Guild, GuildInvite, GuildSummary, Hello, HighlightRange,
+    InitialCategory, InitialTextChannel, Invite, MAXIMUM_COUNTED_UNREAD_MENTIONS,
     MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH, MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
     MAXIMUM_REACHABLE_SEARCH_RESULTS, MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS,
     MAXIMUM_SEARCH_QUERY_LENGTH, MAXIMUM_SEARCH_QUERY_PARTS, MAXIMUM_SEARCH_RESULTS_PER_PAGE,
@@ -306,6 +306,10 @@ fn message() -> Message {
         reactions: vec![reaction_summary()],
         pinned: true,
         mention_ids: vec![id(10)],
+        forwarded_from: Some(ForwardOrigin {
+            channel_id: id(31),
+            message_id: id(700),
+        }),
     }
 }
 
@@ -319,6 +323,7 @@ fn sparse_message() -> Message {
         reactions: Vec::new(),
         pinned: false,
         mention_ids: Vec::new(),
+        forwarded_from: None,
         ..message()
     }
 }

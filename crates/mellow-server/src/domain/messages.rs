@@ -16,8 +16,8 @@ use std::sync::Arc;
 use crate::storage::Database;
 use mellow_protocol::{
     AcknowledgeRequest, Attachment, AuditAction, ChannelKind, ChannelUnread, EditMessageRequest,
-    GatewayEvent, MAXIMUM_COUNTED_UNREAD_MENTIONS, Message, MessageHistoryQuery, Permissions,
-    PublicUser, ReactionSummary, ReadState, SendMessageRequest, Snowflake,
+    ForwardOrigin, GatewayEvent, MAXIMUM_COUNTED_UNREAD_MENTIONS, Message, MessageHistoryQuery,
+    Permissions, PublicUser, ReactionSummary, ReadState, SendMessageRequest, Snowflake,
 };
 
 use crate::domain::guilds::{ChannelAudience, GuildError, Guilds};
@@ -33,7 +33,8 @@ use crate::storage::attachments::{self as attachment_storage, StoredAttachment};
 use crate::storage::direct_messages as direct_message_storage;
 use crate::storage::guild_channels::StoredChannel;
 use crate::storage::messages::{
-    self as message_storage, HistoryPage, MessageStorageError, NewMessage, StoredMessage,
+    self as message_storage, CopiedAttachment, HistoryPage, MessageStorageError, NewForward,
+    NewMessage, StoredMessage,
 };
 use crate::storage::reactions as reaction_storage;
 
@@ -63,6 +64,7 @@ impl From<MessageStorageError> for MessageError {
     fn from(error: MessageStorageError) -> Self {
         match error {
             MessageStorageError::AttachmentUnavailable => MessageRuleViolation::Attachments.into(),
+            MessageStorageError::ForwardedMessageGone => Self::MessageNotFound,
             other => Self::Internal(Box::new(other)),
         }
     }
@@ -112,6 +114,7 @@ fn message_from_stored(
         reactions: Vec::new(),
         pinned: message.is_pinned,
         mention_ids: message.mention_ids,
+        forwarded_from: message.forwarded_from,
     }
 }
 
@@ -150,6 +153,75 @@ async fn attachments_of(
             .remove(&message_id)
             .unwrap_or_default(),
     )
+}
+
+/// A send checked against the channel's permissions, before the lock.
+struct SendInput {
+    channel: MessageChannel,
+    forwarded: Option<ForwardedMessage>,
+    content: String,
+    has_files: bool,
+}
+
+/// The message `author_id` already sent to this channel with this nonce, as stored now, with the
+/// nonce echoed back and the author's reactions.
+async fn already_sent_with_nonce(
+    database: &Database,
+    channel_id: Snowflake,
+    author_id: Snowflake,
+    nonce: &str,
+) -> Result<Option<Message>, MessageError> {
+    let Some(already_sent) =
+        message_storage::find_message_by_nonce(database, channel_id, author_id, nonce).await?
+    else {
+        return Ok(None);
+    };
+    let attachments = attachments_of(database, already_sent.id).await?;
+    let mut message = message_from_stored(already_sent, Some(nonce.to_owned()), attachments);
+    fill_profile_images(database, [&mut message.author]).await?;
+    fill_reactions(database, author_id, std::slice::from_mut(&mut message)).await?;
+    Ok(Some(message))
+}
+
+/// What a forward copies, read before the send's lock (ADR-0039).
+struct ForwardedMessage {
+    origin: ForwardOrigin,
+    message: StoredMessage,
+    attachments: Vec<StoredAttachment>,
+}
+
+impl ForwardedMessage {
+    /// Gives each copied attachment its new id.
+    fn into_new_forward(
+        self,
+        ids: &SnowflakeGenerator,
+        now_unix_milliseconds: u64,
+    ) -> Result<NewForward, MessageError> {
+        Ok(NewForward {
+            origin: self.origin,
+            copied_message_id: self.message.id,
+            copied_attachments: self
+                .attachments
+                .iter()
+                .map(|original| {
+                    Ok(CopiedAttachment {
+                        new_id: ids.next_id(now_unix_milliseconds)?,
+                        original_id: original.id,
+                    })
+                })
+                .collect::<Result<_, MessageError>>()?,
+        })
+    }
+}
+
+/// Files need the right to attach them when they are sent too, not only when they were uploaded:
+/// taking it away stops publishing what is already uploaded, and forwarding files.
+fn permissions_to_send(has_files: bool) -> Permissions {
+    if has_files {
+        Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES | Permissions::ATTACH_FILES
+    } else {
+        Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES
+    }
 }
 
 /// Where a message action happens.
@@ -402,10 +474,12 @@ impl Messages {
             .ok_or(MessageError::MessageNotFound)
     }
 
-    /// Needs `VIEW_CHANNEL` and `SEND_MESSAGES`. The nonce is echoed back to the sender only. A
-    /// send repeating a nonce the author already used in this channel (an outbox retry after a
-    /// lost response) returns that message as stored now, edits included, without a new event and
-    /// whatever the new content. Once that message is deleted, the nonce is free again.
+    /// Needs `VIEW_CHANNEL` and `SEND_MESSAGES`, and `ATTACH_FILES` with files; a forward also
+    /// needs `VIEW_CHANNEL` and `READ_MESSAGE_HISTORY` on the original's channel (ADR-0039). The
+    /// nonce is echoed back to the sender only. A send repeating a nonce the author already used
+    /// in this channel (an outbox retry after a lost response) returns that message as stored now,
+    /// edits included, without a new event and whatever the new content. Once that message is
+    /// deleted, the nonce is free again.
     pub(crate) async fn send(
         &self,
         user_id: Snowflake,
@@ -413,27 +487,36 @@ impl Messages {
         request: SendMessageRequest,
         now_unix_milliseconds: u64,
     ) -> Result<Message, MessageError> {
-        let (channel, _) = self
-            .text_channel_and_permissions_requiring(
-                user_id,
-                channel_id,
-                // Files need the right to attach them when they are sent too, not only when they
-                // were uploaded: taking it away stops publishing what is already uploaded.
-                if request.attachment_ids.is_empty() {
-                    Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES
-                } else {
-                    Permissions::VIEW_CHANNEL
-                        | Permissions::SEND_MESSAGES
-                        | Permissions::ATTACH_FILES
-                },
-            )
+        // A forward's retry is answered before the original is read again: it may be gone, or no
+        // longer readable, while the forward itself was stored.
+        if request.forwarded_from.is_some()
+            && let Some(nonce) = &request.nonce
+        {
+            self.require_channel_permissions(user_id, channel_id, Permissions::VIEW_CHANNEL)
+                .await?;
+            if let Some(message) =
+                already_sent_with_nonce(&self.database, channel_id, user_id, nonce).await?
+            {
+                return Ok(message);
+            }
+        }
+        let SendInput {
+            channel,
+            forwarded,
+            content,
+            has_files,
+        } = self
+            .checked_send_input(user_id, channel_id, &request)
             .await?;
-        let content = validated_content_to_send(&request)?;
         // Decided before the lock and the write: a failure leaves nothing stored, and the scan of
         // a restricted channel's members does not hold up every other send (ADR-0015).
         let audience = self.audience(&channel).await?;
-        let mentioned_user_ids =
-            mentioned_user_ids(&self.database, &channel, &audience, user_id, &content).await?;
+        // A forward's text was written for another audience: it mentions no one (ADR-0039).
+        let mentioned_user_ids = if forwarded.is_some() {
+            Vec::new()
+        } else {
+            mentioned_user_ids(&self.database, &channel, &audience, user_id, &content).await?
+        };
         let channel_id = channel.id();
         // Read before the write too, so nothing can fail between the insert and the events.
         let conversation_views = match &channel {
@@ -459,14 +542,9 @@ impl Messages {
             let author_images = profile_images_of_user(&database, user_id).await?;
             let _send_order = send_order.lock_owned().await;
             if let Some(nonce) = &request.nonce
-                && let Some(already_sent) =
-                    message_storage::find_message_by_nonce(&database, channel_id, user_id, nonce)
-                        .await?
+                && let Some(message) =
+                    already_sent_with_nonce(&database, channel_id, user_id, nonce).await?
             {
-                let attachments = attachments_of(&database, already_sent.id).await?;
-                let mut message = message_from_stored(already_sent, request.nonce, attachments);
-                fill_profile_images(&database, [&mut message.author]).await?;
-                fill_reactions(&database, user_id, std::slice::from_mut(&mut message)).await?;
                 return Ok(message);
             }
             if let Some(reply_to_id) = request.reply_to_id {
@@ -476,10 +554,14 @@ impl Messages {
             }
             let is_first_direct_message =
                 !conversation_views.is_empty() && is_empty_channel(&database, channel_id).await?;
+            let id = ids.next_id(now_unix_milliseconds)?;
+            let forward = forwarded
+                .map(|forwarded| forwarded.into_new_forward(&ids, now_unix_milliseconds))
+                .transpose()?;
             let stored = message_storage::insert_message(
                 &database,
                 &NewMessage {
-                    id: ids.next_id(now_unix_milliseconds)?,
+                    id,
                     channel_id,
                     author_id: user_id,
                     content,
@@ -487,15 +569,16 @@ impl Messages {
                     nonce: request.nonce.clone(),
                     attachment_ids: request.attachment_ids.clone(),
                     mentioned_user_ids,
+                    forward,
                 },
             )
             .await?;
             // The new message links exactly the requested uploads: none asked, none to read back
             // while every other send waits on the lock.
-            let attachments = if request.attachment_ids.is_empty() {
-                Vec::new()
-            } else {
+            let attachments = if has_files {
                 attachments_of(&database, stored.id).await?
+            } else {
+                Vec::new()
             };
             if is_first_direct_message {
                 direct_messages::announce_conversation(&guilds, conversation_views, stored.id);
@@ -514,6 +597,81 @@ impl Messages {
         })
         .await
         .map_err(|error| MessageError::Internal(Box::new(error)))?
+    }
+
+    /// What `send` writes, once the user may send it to this channel: a forward's copy, or the
+    /// request's own content.
+    async fn checked_send_input(
+        &self,
+        user_id: Snowflake,
+        channel_id: Snowflake,
+        request: &SendMessageRequest,
+    ) -> Result<SendInput, MessageError> {
+        let forwarded = match request.forwarded_from {
+            Some(origin) => Some(self.message_to_forward(user_id, request, origin).await?),
+            None => None,
+        };
+        let has_files = forwarded
+            .as_ref()
+            .map_or(!request.attachment_ids.is_empty(), |forwarded| {
+                !forwarded.attachments.is_empty()
+            });
+        let (channel, _) = self
+            .text_channel_and_permissions_requiring(
+                user_id,
+                channel_id,
+                permissions_to_send(has_files),
+            )
+            .await?;
+        let content = match &forwarded {
+            Some(forwarded) => forwarded.message.content.clone(),
+            None => validated_content_to_send(request)?,
+        };
+        Ok(SendInput {
+            channel,
+            forwarded,
+            content,
+            has_files,
+        })
+    }
+
+    /// The message a forward copies (ADR-0039), after checking the request carries nothing of its
+    /// own and the forwarder may read the original: a message they cannot read is not found.
+    async fn message_to_forward(
+        &self,
+        user_id: Snowflake,
+        request: &SendMessageRequest,
+        origin: ForwardOrigin,
+    ) -> Result<ForwardedMessage, MessageError> {
+        if !request.content.is_empty()
+            || !request.attachment_ids.is_empty()
+            || request.reply_to_id.is_some()
+        {
+            return Err(MessageRuleViolation::ForwardWithItsOwnContent.into());
+        }
+        if let Some(nonce) = &request.nonce {
+            validate_nonce(nonce)?;
+        }
+        self.text_channel_and_permissions_requiring(
+            user_id,
+            origin.channel_id,
+            Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY,
+        )
+        .await
+        .map_err(|error| match error {
+            MessageError::Guild(GuildError::MissingPermissions) => MessageError::MessageNotFound,
+            other => other,
+        })?;
+        let message = self
+            .message_in_channel(origin.channel_id, origin.message_id)
+            .await?;
+        let attachments = attachments_of(&self.database, message.id).await?;
+        Ok(ForwardedMessage {
+            // A forward of a forward names the message written first.
+            origin: message.forwarded_from.unwrap_or(origin),
+            message,
+            attachments,
+        })
     }
 
     /// Needs `VIEW_CHANNEL` and `READ_MESSAGE_HISTORY`. Chronological order, oldest first.
@@ -588,6 +746,9 @@ impl Messages {
         let message = self.message_in_channel(channel.id(), message_id).await?;
         if message.author_id != user_id {
             return Err(GuildError::MissingPermissions.into());
+        }
+        if message.forwarded_from.is_some() {
+            return Err(MessageRuleViolation::ForwardedMessageEdit.into());
         }
         let content = normalize_line_endings(&request.content);
         validate_message_content(&content)?;
@@ -885,7 +1046,365 @@ mod tests {
             reply_to_id: None,
             nonce: None,
             attachment_ids: Vec::new(),
+            forwarded_from: None,
         }
+    }
+
+    fn forward_of(channel_id: Snowflake, message_id: Snowflake) -> SendMessageRequest {
+        SendMessageRequest {
+            forwarded_from: Some(ForwardOrigin {
+                channel_id,
+                message_id,
+            }),
+            ..text("")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_forward_copies_the_text_names_the_first_origin_mentions_no_one_and_stays_as_sent() {
+        let fixture = fixture().await;
+        let lounge = create_text_channel(&fixture, "lounge").await;
+        let original = fixture
+            .messages
+            .send(fixture.owner, fixture.general, text("hello @member"), NOW)
+            .await
+            .unwrap();
+        let forward = fixture
+            .messages
+            .send(
+                fixture.member,
+                lounge.id,
+                forward_of(fixture.general, original.id),
+                NOW,
+            )
+            .await
+            .unwrap();
+        let forward_of_forward = fixture
+            .messages
+            .send(
+                fixture.owner,
+                fixture.general,
+                forward_of(lounge.id, forward.id),
+                NOW,
+            )
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .edit(
+                fixture.owner,
+                fixture.general,
+                original.id,
+                EditMessageRequest {
+                    content: "changed".into(),
+                },
+                NOW,
+            )
+            .await
+            .unwrap();
+        let edit_of_forward = fixture
+            .messages
+            .edit(
+                fixture.member,
+                lounge.id,
+                forward.id,
+                EditMessageRequest {
+                    content: "my words".into(),
+                },
+                NOW,
+            )
+            .await;
+        let lounge_history = history(&fixture, fixture.owner, lounge.id).await;
+        fixture.database.close().await;
+
+        let origin = Some(ForwardOrigin {
+            channel_id: fixture.general,
+            message_id: original.id,
+        });
+        assert_eq!(original.mention_ids, [fixture.member]);
+        assert_eq!(
+            (
+                forward.content.as_str(),
+                forward.author.id,
+                forward.forwarded_from
+            ),
+            ("hello @member", fixture.member, origin)
+        );
+        assert!(forward.mention_ids.is_empty(), "a forward pings no one");
+        assert_eq!(forward_of_forward.forwarded_from, origin);
+        assert!(matches!(
+            edit_of_forward,
+            Err(MessageError::InvalidInput(
+                MessageRuleViolation::ForwardedMessageEdit
+            ))
+        ));
+        let listed = lounge_history.last().unwrap();
+        assert_eq!(
+            (listed.content.as_str(), listed.forwarded_from),
+            ("hello @member", origin),
+            "the original's edit leaves the copy as it was"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // One scenario: each refused forward, then the malformed ones.
+    async fn only_messages_one_may_read_are_forwarded_and_only_as_they_are() {
+        use mellow_protocol::{OverwriteKind, SetPermissionOverwriteRequest};
+
+        let fixture = fixture().await;
+        let staff = create_text_channel(&fixture, "staff").await;
+        let archive = create_text_channel(&fixture, "archive").await;
+        for (channel, deny) in [
+            (staff.id, Permissions::VIEW_CHANNEL),
+            (archive.id, Permissions::READ_MESSAGE_HISTORY),
+        ] {
+            fixture
+                .guilds
+                .set_permission_overwrite(
+                    fixture.owner,
+                    channel,
+                    fixture.guild.id,
+                    SetPermissionOverwriteRequest {
+                        kind: OverwriteKind::Role,
+                        allow: Permissions::empty(),
+                        deny,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let mut refused = Vec::new();
+        for channel in [staff.id, archive.id, fixture.general] {
+            let secret = fixture
+                .messages
+                .send(fixture.owner, channel, text("secret"), NOW)
+                .await
+                .unwrap();
+            let target = if channel == fixture.general {
+                Snowflake::from_raw(secret.id.raw() + 1)
+            } else {
+                secret.id
+            };
+            refused.push(
+                fixture
+                    .messages
+                    .send(
+                        fixture.member,
+                        fixture.general,
+                        forward_of(channel, target),
+                        NOW,
+                    )
+                    .await,
+            );
+        }
+        let public = fixture
+            .messages
+            .send(fixture.owner, fixture.general, text("public"), NOW)
+            .await
+            .unwrap();
+        let with_text = fixture
+            .messages
+            .send(
+                fixture.member,
+                fixture.general,
+                SendMessageRequest {
+                    content: "look".into(),
+                    ..forward_of(fixture.general, public.id)
+                },
+                NOW,
+            )
+            .await;
+        let as_reply = fixture
+            .messages
+            .send(
+                fixture.member,
+                fixture.general,
+                SendMessageRequest {
+                    reply_to_id: Some(public.id),
+                    ..forward_of(fixture.general, public.id)
+                },
+                NOW,
+            )
+            .await;
+        let outsider = fixture
+            .messages
+            .send(
+                fixture.outsider,
+                fixture.general,
+                forward_of(fixture.general, public.id),
+                NOW,
+            )
+            .await;
+        fixture.database.close().await;
+
+        assert!(
+            matches!(refused[0], Err(MessageError::Guild(GuildError::NotFound))),
+            "{:?}",
+            refused[0]
+        );
+        for answer in &refused[1..] {
+            assert!(
+                matches!(answer, Err(MessageError::MessageNotFound)),
+                "{answer:?}"
+            );
+        }
+        for answer in [with_text, as_reply] {
+            assert!(
+                matches!(
+                    answer,
+                    Err(MessageError::InvalidInput(
+                        MessageRuleViolation::ForwardWithItsOwnContent
+                    ))
+                ),
+                "{answer:?}"
+            );
+        }
+        assert!(
+            matches!(outsider, Err(MessageError::Guild(GuildError::NotFound))),
+            "{outsider:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn files_need_attach_files_where_they_are_forwarded_and_a_retry_outlives_the_original() {
+        use mellow_protocol::{OverwriteKind, SetPermissionOverwriteRequest};
+
+        let fixture = fixture().await;
+        let lounge = create_text_channel(&fixture, "lounge").await;
+        fixture
+            .guilds
+            .set_permission_overwrite(
+                fixture.owner,
+                lounge.id,
+                fixture.guild.id,
+                SetPermissionOverwriteRequest {
+                    kind: OverwriteKind::Role,
+                    allow: Permissions::empty(),
+                    deny: Permissions::ATTACH_FILES,
+                },
+            )
+            .await
+            .unwrap();
+        let with_file = fixture
+            .messages
+            .send(fixture.owner, fixture.general, text("look"), NOW)
+            .await
+            .unwrap();
+        // Forwarding reads no file: a row is enough.
+        sqlx::query(
+            "INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
+             content_type, size_bytes, created_at_unix_milliseconds) \
+             VALUES (?, ?, ?, ?, 'a.txt', 'application/octet-stream', 1, 0)",
+        )
+        .bind(i64::try_from(with_file.id.raw() + 1).unwrap())
+        .bind(i64::try_from(fixture.general.raw()).unwrap())
+        .bind(i64::try_from(fixture.owner.raw()).unwrap())
+        .bind(i64::try_from(with_file.id.raw()).unwrap())
+        .execute(fixture.database.writer())
+        .await
+        .unwrap();
+        let text_only = fixture
+            .messages
+            .send(fixture.owner, fixture.general, text("words"), NOW)
+            .await
+            .unwrap();
+        let files_refused = fixture
+            .messages
+            .send(
+                fixture.member,
+                lounge.id,
+                forward_of(fixture.general, with_file.id),
+                NOW,
+            )
+            .await;
+        let with_nonce = SendMessageRequest {
+            nonce: Some("forward-1".into()),
+            ..forward_of(fixture.general, text_only.id)
+        };
+        let forward = fixture
+            .messages
+            .send(fixture.member, lounge.id, with_nonce.clone(), NOW)
+            .await
+            .unwrap();
+        fixture
+            .messages
+            .delete(fixture.owner, fixture.general, text_only.id)
+            .await
+            .unwrap();
+        let retry = fixture
+            .messages
+            .send(fixture.member, lounge.id, with_nonce, NOW)
+            .await
+            .unwrap();
+        let after_deletion = fixture
+            .messages
+            .send(
+                fixture.member,
+                lounge.id,
+                forward_of(fixture.general, text_only.id),
+                NOW,
+            )
+            .await;
+        fixture.database.close().await;
+
+        assert!(
+            matches!(
+                files_refused,
+                Err(MessageError::Guild(GuildError::MissingPermissions))
+            ),
+            "{files_refused:?}"
+        );
+        assert_eq!(retry.id, forward.id, "the stored forward, not a 404");
+        assert!(matches!(after_deletion, Err(MessageError::MessageNotFound)));
+    }
+
+    #[tokio::test]
+    async fn a_forward_whose_original_went_meanwhile_is_not_stored_with_or_without_files() {
+        let fixture = fixture().await;
+        let gone = Snowflake::from_raw(77);
+        let mut results = Vec::new();
+        for copied_attachments in [
+            Vec::new(),
+            vec![message_storage::CopiedAttachment {
+                new_id: Snowflake::from_raw(79),
+                original_id: Snowflake::from_raw(78),
+            }],
+        ] {
+            results.push(
+                message_storage::insert_message(
+                    &fixture.database,
+                    &NewMessage {
+                        id: Snowflake::from_raw(80 + results.len() as u64),
+                        channel_id: fixture.general,
+                        author_id: fixture.member,
+                        content: "copied".into(),
+                        reply_to_id: None,
+                        nonce: None,
+                        attachment_ids: Vec::new(),
+                        mentioned_user_ids: Vec::new(),
+                        forward: Some(NewForward {
+                            origin: ForwardOrigin {
+                                channel_id: fixture.general,
+                                message_id: gone,
+                            },
+                            copied_message_id: gone,
+                            copied_attachments,
+                        }),
+                    },
+                )
+                .await,
+            );
+        }
+        let history = history(&fixture, fixture.owner, fixture.general).await;
+        fixture.database.close().await;
+
+        for result in results {
+            assert!(
+                matches!(result, Err(MessageStorageError::ForwardedMessageGone)),
+                "{result:?}"
+            );
+        }
+        assert!(history.is_empty(), "rolled back");
     }
 
     #[tokio::test]
@@ -1391,6 +1910,7 @@ mod tests {
                     reply_to_id: Some(original.id),
                     nonce: Some("outbox-1".into()),
                     attachment_ids: Vec::new(),
+                    forwarded_from: None,
                 },
                 NOW,
             )
@@ -1406,6 +1926,7 @@ mod tests {
                     reply_to_id: Some(original.id),
                     nonce: None,
                     attachment_ids: Vec::new(),
+                    forwarded_from: None,
                 },
                 NOW,
             )
@@ -1438,6 +1959,7 @@ mod tests {
             reply_to_id: None,
             nonce: Some("outbox-1".into()),
             attachment_ids: Vec::new(),
+            forwarded_from: None,
         };
 
         let first = fixture
@@ -1502,6 +2024,7 @@ mod tests {
                     reply_to_id: None,
                     nonce: Some("outbox-2".into()),
                     attachment_ids: Vec::new(),
+                    forwarded_from: None,
                 },
                 NOW,
             )
@@ -1530,6 +2053,7 @@ mod tests {
             reply_to_id: None,
             nonce: Some("outbox-3".into()),
             attachment_ids: Vec::new(),
+            forwarded_from: None,
         };
         let first = fixture
             .messages

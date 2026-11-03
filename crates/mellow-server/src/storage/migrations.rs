@@ -333,7 +333,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert!(
-            plan.contains("SEARCH") && plan.contains("COVERING INDEX attachments_by_uploader_id"),
+            plan.contains("SEARCH")
+                && plan.contains("COVERING INDEX attachments_uploaded_by_uploader_id"),
             "{plan}"
         );
         assert_eq!(ada_total, 8, "sent and unsent uploads both count");

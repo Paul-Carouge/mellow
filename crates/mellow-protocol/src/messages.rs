@@ -16,6 +16,18 @@ pub struct SendMessageRequest {
     /// the body when empty, so older servers still accept text-only messages.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachment_ids: Vec<Snowflake>,
+    /// Forwards this message (ADR-0039): the server copies its content and files, so `content`
+    /// and `attachment_ids` stay empty and `reply_to_id` absent. Left out of the body when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarded_from: Option<ForwardOrigin>,
+}
+
+/// Where a forwarded message was first written (ADR-0039). Its date is the message id's.
+/// Unknown fields are allowed: it is also part of `Message`, which later servers may extend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForwardOrigin {
+    pub channel_id: Snowflake,
+    pub message_id: Snowflake,
 }
 
 /// A file shared in a message (ADR-0020), downloaded at
@@ -89,6 +101,10 @@ pub struct Message {
     /// servers' payloads.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mention_ids: Vec<Snowflake>,
+    /// Set on a forward (ADR-0039): its content and files are a copy of that message's, taken
+    /// when it was forwarded. Absent otherwise and from older servers' payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarded_from: Option<ForwardOrigin>,
 }
 
 /// One emoji's reactions on a message.
@@ -173,6 +189,10 @@ mod tests {
             }],
             pinned: true,
             mention_ids: Vec::new(),
+            forwarded_from: Some(ForwardOrigin {
+                channel_id: Snowflake::from_raw(7),
+                message_id: Snowflake::from_raw(8),
+            }),
         };
         let json = serde_json::to_value(&message).unwrap();
         assert_eq!(json["id"], "9");
@@ -183,6 +203,10 @@ mod tests {
             serde_json::json!([{"emoji": "👍", "count": 2, "me": true}])
         );
         assert_eq!(json["pinned"], true);
+        assert_eq!(
+            json["forwarded_from"],
+            serde_json::json!({"channel_id": "7", "message_id": "8"})
+        );
     }
 
     #[test]
@@ -193,6 +217,7 @@ mod tests {
         .unwrap();
         assert_eq!(message.reactions, Vec::new());
         assert!(!message.pinned);
+        assert_eq!(message.forwarded_from, None);
     }
 
     #[test]
