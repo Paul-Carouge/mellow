@@ -268,7 +268,7 @@ export const fr: Catalogue = {
             ? `${count(people)} sur ${count(limit)}`
             : `${count(people)} ${plural(people, { one: "personne", other: "personnes" })}`
           : "",
-        isHere ? "tu es dedans" : "",
+        isHere ? "tu es dedans. Afficher l’appel" : "",
         canConnect ? "" : "tu ne peux pas t’y connecter",
       ]
         .filter(Boolean)
@@ -415,6 +415,48 @@ export const fr: Catalogue = {
       too_many_cameras: "Trop de vidéos sont déjà partagées dans ce salon ou sur l’instance. Réessaie quand l’une d’elles s’arrête.",
       video_unavailable: "La vidéo est désactivée sur cette instance. Son administrateur peut l’activer.",
     },
+  },
+
+  camera: {
+    turnOn: "Allumer la caméra",
+    turnOff: "Éteindre la caméra",
+    starting: "Allumage de la caméra…",
+    isOn: "Ta caméra est allumée",
+    optionsMenu: "Options de la caméra",
+    optionsButton: (camera) => `Caméra${NO_BREAK_SPACE}: ${camera}`,
+    chooseGroup: "Caméra",
+    defaultCamera: "Caméra par défaut",
+    namesHidden: "Les noms s’affichent une fois une caméra autorisée",
+    cameraOn: "caméra allumée",
+    show: (person) => `Voir la caméra de ${person}`,
+    yourCamera: "Ta caméra est allumée",
+    joinToSee: (channel) => `Rejoins ${channel} pour la voir`,
+    problems: {
+      denied: "Ton navigateur bloque la caméra. Autorise-la dans les réglages du site, à côté de l’adresse, puis rallume-la.",
+      "not-found": "Aucune caméra trouvée. Branches-en une, puis rallume-la.",
+      "in-use": "Une autre application utilise ta caméra. Ferme-la, puis rallume-la.",
+      unsupported: "Ton navigateur n’a pas pu envoyer ta caméra. Essaie avec une version récente de Firefox, Chrome ou Edge.",
+      ended: `Ta caméra a été débranchée ou prise par une autre application${NO_BREAK_SPACE}: elle s’est éteinte.`,
+      stopped: "L’instance a arrêté ta caméra, peut-être parce que ta permission Vidéo a été retirée. Rallume-la pour continuer.",
+      missing_permissions: "Il te faut la permission Vidéo dans ce salon pour allumer ta caméra. Demande-la à quelqu’un qui gère le serveur.",
+      too_many_cameras: "Trop de caméras sont déjà allumées dans ce salon ou sur l’instance. Réessaie quand l’une d’elles s’éteint.",
+      video_unavailable: "La vidéo est désactivée sur cette instance. Son administrateur peut l’activer.",
+    },
+  },
+
+  call: {
+    viewOf: (channel) => `Appel dans ${channel}`,
+    close: "Revenir à la discussion",
+    layout: "Disposition",
+    grid: "Grille",
+    speaker: "Intervenant",
+    feature: (person) => `Mettre ${person} en avant`,
+    you: (person) => `${person} (toi)`,
+    startingCamera: "Allumage de ta caméra…",
+    paused: "Connexion trop lente",
+    overflow: (people) => `Encore ${count(people)} dans l’appel`,
+    controls: "Commandes de l’appel",
+    shareScreen: "Partager l’écran",
   },
 
   soundboard: {
@@ -1656,6 +1698,16 @@ export const fr: Catalogue = {
       Enter: "Entrée",
       Backspace: "Retour arrière",
     },
+    video: "Vidéo",
+    camera: "Caméra",
+    cameraNamesHidden: "Les noms des caméras s’affichent après un premier test.",
+    testCamera: "Tester la caméra",
+    stopCameraTest: "Arrêter le test",
+    cameraPreview: "Aperçu de la caméra",
+    cameraPreviewDescription: `Toi seul vois cet aperçu, inversé comme dans un miroir${NARROW_NO_BREAK_SPACE}; les autres te voient à l’endroit. Il s’arrête quand tu quittes cette page.`,
+    cameraLiveDescription: `Ta caméra est allumée dans l’appel${NO_BREAK_SPACE}: la voici, inversée comme dans un miroir${NARROW_NO_BREAK_SPACE}; les autres te voient à l’endroit.`,
+    cameraPreviewIdle: "Teste la caméra pour te voir ici.",
+    cameraDeviceMissing: `Ta caméra choisie est débranchée${NO_BREAK_SPACE}: Mellow utilise celle par défaut en attendant son retour.`,
   },
 
   notifications: {

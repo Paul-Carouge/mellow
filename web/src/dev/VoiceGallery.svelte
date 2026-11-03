@@ -3,6 +3,7 @@
   import { SvelteSet } from "svelte/reactivity";
 
   import Navigator from "../components/Navigator.svelte";
+  import CallView from "../components/CallView.svelte";
   import StreamView from "../components/StreamView.svelte";
   import VoiceSettings from "../components/VoiceSettings.svelte";
   import AddSoundDialog from "../components/AddSoundDialog.svelte";
@@ -22,6 +23,7 @@
   } from "../lib/protocol";
   import ScreenSoundHelpDialog from "../components/ScreenSoundHelpDialog.svelte";
   import type { ScreenShareProblem } from "../lib/screen-share";
+  import type { CameraProblem } from "../lib/camera";
 
   // Development only (web/dev/voice.html): the navigator with voice channels, fed with gateway
   // events by hand, since no instance speaks voice yet. `#state=` connected (default), connecting,
@@ -46,6 +48,12 @@
   // Linux help. Watching (docs/design/web-stream-watching.md): `&stream=paused` (the instance paused
   // Ana's picture), `&sound=on` (her screen's sound comes; otherwise "Sans son" after 5 s), and
   // `&stream=connecting` says the picture is not coming after 10 s.
+  // Cameras (ADR-0035, docs/design/web-cameras.md): `&call=grid|speaker|many|alone|starting` opens
+  // the call view: you and Ana with cameras, Bob without, Chloé sharing her screen, Dimitri's
+  // picture paused by the instance; `many` adds people past the nine tiles, `alone` is you alone
+  // with your camera off, `starting` is your camera waiting for the browser. `&camera=open` opens the
+  // camera's choice, `&cameraproblem=<reason>` shows the panel's line. `&view=settings&camera=preview`
+  // shows the Vidéo settings' preview. Cameras are canvases drawn here.
   const parameters = new URLSearchParams(location.hash.slice(1));
   const view = parameters.get("view") ?? "navigator";
   const isDevicesHidden = parameters.get("devices") === "hidden";
@@ -53,7 +61,15 @@
   const rnnoise = parameters.get("rnnoise");
   const stream = parameters.get("stream");
   const screenShareProblem = parameters.get("problem") as ScreenShareProblem | null;
-  const hasVideo = stream !== null || screenShareProblem !== null || parameters.get("quality") === "open";
+  const call = parameters.get("call");
+  const cameraProblem = parameters.get("cameraproblem") as CameraProblem | null;
+  const hasVideo =
+    stream !== null ||
+    screenShareProblem !== null ||
+    parameters.get("quality") === "open" ||
+    call !== null ||
+    cameraProblem !== null ||
+    parameters.get("camera") === "open";
   const isStreamSoundOn = parameters.get("sound") === "on";
   /** What the share's options list as sound sources, as Chrome shows them on Linux with PipeWire. */
   const soundSourceDevices = [
@@ -102,6 +118,38 @@
     return canvas.captureStream(15);
   }
 
+  /** A webcam stand-in: a warm room, a head and shoulders that sway, so tiles show moving pictures. */
+  function canvasCamera(hue: number): MediaStream {
+    const canvas = document.createElement("canvas");
+    canvas.width = 640;
+    canvas.height = 360;
+    const context = canvas.getContext("2d");
+    const draw = () => {
+      if (!context) {
+        return;
+      }
+      const sway = Math.sin(Date.now() / 600) * 12;
+      const wall = context.createLinearGradient(0, 0, 640, 360);
+      wall.addColorStop(0, `hsl(${hue} 30% 32%)`);
+      wall.addColorStop(1, `hsl(${hue + 30} 25% 18%)`);
+      context.fillStyle = wall;
+      context.fillRect(0, 0, 640, 360);
+      context.fillStyle = `hsl(${hue} 20% 70%)`;
+      context.fillRect(470, 40, 120, 90);
+      context.fillStyle = `hsl(${hue + 180} 25% 30%)`;
+      context.beginPath();
+      context.ellipse(320 + sway, 360, 170, 110, 0, Math.PI, 0);
+      context.fill();
+      context.fillStyle = `hsl(25 45% 68%)`;
+      context.beginPath();
+      context.ellipse(320 + sway, 170, 62, 76, 0, 0, Math.PI * 2);
+      context.fill();
+    };
+    draw();
+    setInterval(draw, 100);
+    return canvas.captureStream(15);
+  }
+
   /** A microphone that hums between quiet and loud, about once a second. */
   function oscillatorMicrophone(): MediaStream {
     const context = new AudioContext();
@@ -133,12 +181,16 @@
         { kind: "audiooutput", deviceId: "speakers", label: "Haut-parleurs MacBook Pro", groupId: "c" },
         { kind: "audiooutput", deviceId: "headset", label: "Casque WH-1000XM4", groupId: "d" },
       ];
+  const galleryCameras = [
+    { kind: "videoinput", deviceId: "facetime", label: "Caméra FaceTime HD", groupId: "e" },
+    { kind: "videoinput", deviceId: "brio", label: "Logitech BRIO", groupId: "f" },
+  ];
   if (view === "settings") {
     Object.defineProperty(navigator, "mediaDevices", {
       configurable: true,
       value: {
-        getUserMedia: () => Promise.resolve(oscillatorMicrophone()),
-        enumerateDevices: () => Promise.resolve(galleryDevices),
+        getUserMedia: (constraints: MediaStreamConstraints) => Promise.resolve(constraints.video ? canvasCamera(200) : oscillatorMicrophone()),
+        enumerateDevices: () => Promise.resolve([...galleryDevices, ...galleryCameras]),
         addEventListener: () => {},
         removeEventListener: () => {},
       },
@@ -232,8 +284,8 @@
     watchDevices: () => () => {},
     storage: () => null,
     requestScreen: () => Promise.resolve(canvasScreen()),
-    requestCamera: () => Promise.resolve(canvasScreen()),
-    listCameras: () => Promise.resolve([{ deviceId: "facetime", label: "FaceTime HD Camera" }]),
+    requestCamera: () => (call === "starting" ? new Promise<MediaStream>(() => {}) : Promise.resolve(canvasCamera(200))),
+    listCameras: () => Promise.resolve(galleryCameras.map(({ deviceId, label }) => ({ deviceId, label }))),
     requestSoundSource: () => Promise.resolve(oscillatorMicrophone()),
     codecPreferences: () => (hasVideo ? { audio: [], video: [] } : null),
   });
@@ -244,6 +296,13 @@
     { id: "3", username: "bob", display_name: "Bob" },
     { id: "4", username: "chloe", display_name: "Chloé" },
     { id: "5", username: "dimitri", display_name: "Dimitri Kowalczyk-Lefèvre" },
+    ...(call === "many"
+      ? ["Élodie", "Farid", "Gaëlle", "Hugo", "Inès", "Jules", "Karim", "Léa"].map((name, index) => ({
+          id: String(6 + index),
+          username: name.toLowerCase(),
+          display_name: name,
+        }))
+      : []),
   ];
   const gallerySounds = [
     { id: "901", name: "Klaxon", emoji: "📯", duration_milliseconds: 1_200 },
@@ -319,12 +378,23 @@
     ],
     read_states: [],
     online_user_ids: people.map((person) => person.id),
-    voice_states: [
-      voiceState("2", "21", { self_stream: stream !== null }),
-      voiceState("3", "21", { self_mute: true }),
-      voiceState("4", "22", { self_mute: true, self_deaf: true, self_stream: stream !== null }),
-      voiceState("5", "22", { suppressed: true }),
-    ],
+    voice_states:
+      call === null
+        ? [
+            voiceState("2", "21", { self_stream: stream !== null }),
+            voiceState("3", "21", { self_mute: true }),
+            voiceState("4", "22", { self_mute: true, self_deaf: true, self_stream: stream !== null }),
+            voiceState("5", "22", { suppressed: true }),
+          ]
+        : call === "alone"
+          ? [voiceState("4", "22", { self_video: true })]
+          : [
+              voiceState("2", "21", { self_video: true }),
+              voiceState("3", "21", { self_mute: true }),
+              voiceState("4", "21", { self_stream: true }),
+              voiceState("5", "21", { self_video: true }),
+              ...people.slice(5).map((person) => voiceState(person.id, "21", { self_mute: true })),
+            ],
     voice_enabled: true,
   });
   client.membersByGuild.set(
@@ -359,6 +429,9 @@
       }
       if (parameters.get("listen") === "1") {
         client.voice.setMonitoring(true);
+      }
+      if (parameters.get("camera") === "preview") {
+        await client.voice.startCameraPreview();
       }
       return;
     }
@@ -405,6 +478,41 @@
     }
     if (screenShareProblem !== null) {
       client.voice.screenShareProblem = screenShareProblem;
+    }
+    if (cameraProblem !== null) {
+      client.voice.cameraProblem = cameraProblem;
+    }
+    if (parameters.get("camera") === "open") {
+      await tick();
+      document.querySelector<HTMLButtonElement>("button[aria-controls=camera-options-menu]")?.click();
+    }
+    if (call !== null) {
+      client.voice.openCallView();
+      if (call !== "alone") {
+        void client.voice.startCamera();
+        dispatch({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(ME, "21", { self_video: true }) } });
+        dispatch({ t: "SPEAKING", data: { guild_id: GUILD, channel_id: "21", user_id: "3", speaking: true } });
+      }
+      // The call view mounts once the session says it is open.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      if (call === "speaker") {
+        document.querySelector<HTMLButtonElement>("button[aria-pressed][title=Intervenant], button[aria-pressed][title=Speaker]")?.click();
+      }
+      // The first video receive slots, after the voice line, its receive slots and the camera line.
+      const pictures = [
+        { userId: "2", track: canvasCamera(20) },
+        { userId: "4", track: canvasScreen() },
+        { userId: "5", track: canvasCamera(140) },
+      ];
+      pictures.forEach(({ userId, track }, index) => {
+        const mid = `m${firstMid + 1 + VOICE_RECEIVE_SLOTS + 1 + index}`;
+        dispatch({ t: "VOICE_SLOT_ASSIGNED", data: { channel_id: "21", mid, user_id: userId } });
+        const [videoTrack] = track.getVideoTracks();
+        if (videoTrack) {
+          deliverTrack({ track: videoTrack, transceiver: { mid } });
+        }
+      });
+      dispatch({ t: "VOICE_VIDEO_PAUSED", data: { channel_id: "21", user_id: "5", is_paused: true } });
     }
     if (parameters.get("quality") === "open") {
       await tick();
@@ -490,6 +598,11 @@
   </div>
 {:else}
 <div class="flex h-dvh gap-(--mw-size-sheet-inset) bg-surface-rail p-(--mw-size-sheet-inset) font-sans text-text-normal">
+  {#if !isWide && call !== null && client.voice.isCallViewOpen}
+    <main class="relative flex min-w-0 flex-1 bg-surface-chat">
+      <CallView {client} hasNavigationDrawer onopennavigation={() => {}} />
+    </main>
+  {:else}
   <div class={isWide ? "h-full" : "h-full w-full"}>
     <Navigator
       {client}
@@ -504,14 +617,17 @@
       onopenusersettings={() => {}}
     />
   </div>
-  {#if isWide && stream !== null}
+  {#if isWide && (stream !== null || call !== null)}
     <main class="relative flex min-w-0 flex-1 rounded-(--mw-component-sheet-radius) bg-surface-chat">
       {#if client.voice.watchedStreamUserId !== null}
         {#key client.voice.watchedStreamUserId}
           <StreamView {client} userId={client.voice.watchedStreamUserId} hasNavigationDrawer={false} onopennavigation={() => {}} />
         {/key}
+      {:else if client.voice.isCallViewOpen}
+        <CallView {client} hasNavigationDrawer={false} onopennavigation={() => {}} />
       {/if}
     </main>
+  {/if}
   {/if}
 </div>
 {#if parameters.get("help") === "1"}

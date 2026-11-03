@@ -110,8 +110,16 @@
   function isInVoiceChannel(channelId: Snowflake): boolean {
     return client.voice.phase !== "idle" && client.voice.channelId === channelId;
   }
-  /** A click joins (and asks for the microphone then): voice channels never open a chat. */
+  /**
+   * A click joins (and asks for the microphone then): voice channels never open a chat. In the
+   * channel you are in, it shows the call (ADR-0035), as on Discord.
+   */
   function joinVoiceChannel(channelId: Snowflake) {
+    if (isInVoiceChannel(channelId)) {
+      client.voice.openCallView();
+      onnavigate();
+      return;
+    }
     void prepareChimeSound();
     void client.voice.join(channelId);
   }
@@ -903,6 +911,7 @@
               state.suppressed && strings.voice.cannotSpeak,
               state.user_id !== user?.id && client.voice.personSetting(state.user_id).isLocallyMuted && strings.voice.mutedForYou,
               state.self_stream === true && strings.screenShare.sharesScreen,
+              state.self_video === true && strings.camera.cameraOn,
             ].filter((label): label is string => typeof label === "string")}
             {@const isMutedForYou = state.user_id !== user?.id && client.voice.personSetting(state.user_id).isLocallyMuted}
             {@const liveBadge = liveBadgeOf(state, user?.id ?? null, watcher)}
@@ -916,7 +925,7 @@
                 aria-haspopup="menu"
                 class={[
                   "flex h-(--mw-component-voice-participant-row-height) min-w-0 flex-1 items-center gap-(--mw-component-voice-participant-gap) rounded-(--mw-component-channel-row-radius) ps-(--mw-component-voice-participant-indent) text-start focus-visible:focus-ring-inset pointer-coarse:h-(--mw-size-hit-web-min)",
-                  liveBadge !== "watch" && "pe-(--mw-component-channel-row-padding-inline)",
+                  liveBadge !== "watch" && !(state.self_video === true && isHere) && "pe-(--mw-component-channel-row-padding-inline)",
                 ]}
                 onclick={(event) => openParticipantMenu(person, event.currentTarget)}
                 {@attach contextMenuTrigger((origin, invoker) => personMenu?.openFor(person, origin, invoker, { isInVoice: true }) ?? false)}
@@ -955,6 +964,12 @@
               {#if isMutedForYou}
                 <Icon name="speaker-x" class="size-(--mw-component-voice-participant-state-icon-size) shrink-0 text-(--mw-component-voice-participant-local-mute-icon)" />
               {/if}
+              {#if state.self_video === true && !isHere}
+                <!-- Shown only outside your call, where you join first; in your call it opens the call view (after this button). -->
+                <span title={state.user_id === user?.id ? strings.camera.yourCamera : strings.camera.joinToSee(channel.name)} class="inline-flex">
+                  <Icon name="video-camera" class="size-(--mw-component-voice-participant-state-icon-size) shrink-0 text-(--mw-component-voice-participant-state-icon)" />
+                </span>
+              {/if}
               {#if liveBadge !== null && liveBadge !== "watch"}
                 <!-- Shown only: your own share never loops back, and elsewhere you join first. The name says it. -->
                 <span
@@ -968,6 +983,21 @@
                 >
               {/if}
               </button>
+              {#if state.self_video === true && isHere}
+                {@const seeLabel = state.user_id === user?.id ? strings.camera.yourCamera : strings.camera.show(displayName(person))}
+                <button
+                  type="button"
+                  aria-label={seeLabel}
+                  title={seeLabel}
+                  class="grid shrink-0 place-items-center rounded-(--mw-component-channel-row-radius) ps-(--mw-component-voice-participant-gap) pe-(--mw-component-channel-row-padding-inline) text-(--mw-component-voice-participant-state-icon) hover:text-text-heading focus-visible:focus-ring-inset pointer-coarse:min-w-(--mw-size-hit-web-min)"
+                  onclick={() => {
+                    client.voice.openCallView();
+                    onnavigate();
+                  }}
+                >
+                  <Icon name="video-camera" class="size-(--mw-component-voice-participant-state-icon-size)" />
+                </button>
+              {/if}
               {#if liveBadge === "watch"}
                 {@const watchLabel = strings.screenShare.watch(displayName(person))}
                 <button

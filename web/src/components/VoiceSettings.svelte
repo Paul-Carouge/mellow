@@ -111,7 +111,34 @@
     await refreshDevices();
   }
 
+  // The camera (ADR-0035): chosen here or from the panel's caret, previewed only on request, as the
+  // microphone test is, and mirrored as people expect to see themselves.
+  const cameraChoices = $derived<DeviceChoices>({ defaultDeviceName: null, devices: voice.cameraDevices, areLabelsHidden: false });
+  const cameraPreviewTrack = $derived(voice.isCameraOn ? voice.cameraTrack : voice.cameraPreviewTrack);
+  let hasCameraPicture = $state(false);
+
+  function toggleCameraPreview() {
+    if (voice.cameraPreviewTrack !== null) {
+      voice.stopCameraPreview();
+    } else {
+      void voice.startCameraPreview();
+    }
+  }
+
+  /** Plays the preview's track, and lets it go when it changes or the page closes. */
+  function playCameraPreview(element: HTMLVideoElement) {
+    if (cameraPreviewTrack === null) {
+      return;
+    }
+    hasCameraPicture = false;
+    element.srcObject = new MediaStream([cameraPreviewTrack]);
+    return () => {
+      element.srcObject = null;
+    };
+  }
+
   onMount(() => {
+    void voice.refreshCameraDevices();
     voice.preloadNoiseSuppressor();
     void refreshDevices();
     const stopWatching = watchAudioDevices(() => void refreshDevices());
@@ -123,6 +150,7 @@
       stopWatching();
       cancelAnimationFrame(frame);
       voice.stopMicrophoneTest();
+      voice.stopCameraPreview();
     };
   });
 </script>
@@ -453,4 +481,65 @@
     voice.isMonitoring,
     (isOn) => voice.setMonitoring(isOn),
   )}
+</div>
+
+{@render sectionTitle(strings.voiceSettings.video)}
+<div
+  class="grid grid-cols-[repeat(auto-fit,minmax(min(100%,var(--mw-component-settings-voice-column-min-width)),1fr))] gap-x-lg gap-y-md"
+>
+  <div class="flex min-w-0 flex-col gap-xs">
+    {@render deviceField(
+      "camera",
+      strings.voiceSettings.camera,
+      cameraChoices,
+      voice.cameraDevices.length === 0 ? null : voice.cameraDeviceId,
+      strings.voiceSettings.cameraDeviceMissing,
+      (deviceId) => void voice.setCameraDevice(deviceId),
+    )}
+    {#if voice.cameraDevices.length === 0}
+      <p class="type-body text-(--mw-component-text-field-helper-text)">{strings.voiceSettings.cameraNamesHidden}</p>
+    {/if}
+    <p id="{id}-camera-description" class="type-body text-(--mw-component-text-field-helper-text)">
+      {voice.isCameraOn ? strings.voiceSettings.cameraLiveDescription : strings.voiceSettings.cameraPreviewDescription}
+    </p>
+    {#if !voice.isCameraOn}
+      <div>
+        <Button variant="secondary" onclick={toggleCameraPreview}>
+          {voice.cameraPreviewTrack !== null ? strings.voiceSettings.stopCameraTest : strings.voiceSettings.testCamera}
+        </Button>
+      </div>
+    {/if}
+    {#if voice.cameraPreviewProblem}
+      <p role="alert" class="flex gap-2xs type-body text-(--mw-component-settings-error-text)">
+        <Icon name="warning-circle" class="mt-3xs size-(--mw-component-voice-panel-signal-icon-size) shrink-0" />
+        <span>{strings.camera.problems[voice.cameraPreviewProblem]}</span>
+      </p>
+    {/if}
+  </div>
+  <!-- The stage of the call view, so the preview looks as your tile will. -->
+  <figure
+    aria-label={strings.voiceSettings.cameraPreview}
+    aria-describedby="{id}-camera-description"
+    class="relative m-0 aspect-video w-full overflow-hidden rounded-(--mw-component-call-view-stage-radius) bg-(--mw-component-call-view-stage)"
+  >
+    {#if cameraPreviewTrack !== null}
+      <video
+        {@attach playCameraPreview}
+        autoplay
+        playsinline
+        muted
+        aria-hidden="true"
+        width="1280"
+        height="720"
+        class={["absolute inset-0 size-full -scale-x-100 object-cover", !hasCameraPicture && "invisible"]}
+        onloadeddata={() => (hasCameraPicture = true)}
+      ></video>
+    {/if}
+    {#if cameraPreviewTrack === null || !hasCameraPicture}
+      <figcaption class="absolute inset-0 flex items-center justify-center gap-2xs p-md text-center type-body text-(--mw-component-call-view-tile-text)">
+        {#if cameraPreviewTrack === null}<Icon name="video-camera-slash" class="size-(--mw-component-voice-panel-signal-icon-size) shrink-0" />{/if}
+        <span>{cameraPreviewTrack === null ? strings.voiceSettings.cameraPreviewIdle : strings.camera.starting}</span>
+      </figcaption>
+    {/if}
+  </figure>
 </div>
