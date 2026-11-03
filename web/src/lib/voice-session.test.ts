@@ -1393,6 +1393,7 @@ describe("VoiceSession cameras (ADR-0035)", () => {
     await flush();
     const camera = cameras[0];
     expect(session.isCameraOn).toBe(true);
+    expect(session.isCameraStarting).toBe(false);
     expect(camera?.track.contentHint).toBe("motion");
     expect(session.cameraTrack).toBe(camera?.track);
     expect(lastPeer().replacedTracks).toEqual([camera?.track]);
@@ -1414,6 +1415,7 @@ describe("VoiceSession cameras (ADR-0035)", () => {
     await session.startCamera();
     expect(session.isCameraOn).toBe(false);
     expect(session.cameraProblem).toBe("in-use");
+    expect(session.isCameraStarting).toBe(false);
   });
 
   it("frees a camera that opened after it was turned off, or after hanging up", async () => {
@@ -1421,7 +1423,9 @@ describe("VoiceSession cameras (ADR-0035)", () => {
     await connect();
     cameraGate.isHeld = true;
     const opening = session.startCamera();
+    expect(session.isCameraStarting).toBe(true);
     session.stopCamera();
+    expect(session.isCameraStarting).toBe(false);
     cameraGate.release();
     await opening;
     expect(session.isCameraOn).toBe(false);
