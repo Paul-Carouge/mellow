@@ -4,6 +4,14 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-11-03
+Cameras in voice channels on the web (ADR-0035, ADR-0037). No database migration and no protocol change.
+
+### Added
+- A camera button in "Voix connectée", with the camera to use: your camera goes to everyone in the channel at 720p, and replaces your shared screen (or the reverse).
+- A call view in the conversation's place: everyone in the channel in a grid, or one person large in the speaker view, with speaking rings, your own picture mirrored, and "Connexion trop lente" on a picture paused for your connection. Open it from your voice channel or the camera icon next to someone's name.
+- Voix → Vidéo in the settings: choose your camera and try it in a preview.
+
 ## [0.33.2] - 2026-11-03
 Sharp shared screens. No database migration.
 
