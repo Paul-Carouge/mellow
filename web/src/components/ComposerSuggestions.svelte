@@ -1,21 +1,21 @@
-<script lang="ts">
-  import { strings } from "../i18n";
-  import CustomEmojiImage from "./CustomEmojiImage.svelte";
-  import type { EmojiSuggestion } from "./custom-emoji";
+<script lang="ts" generics="Suggestion">
+  import type { Snippet } from "svelte";
 
-  // The ":na" suggestions above the composer (DESIGN.md §5.5, §6.58), Discord's autocomplete: the
-  // server's emoji, then built-in ones. Focus stays in the composer, which points at the active
-  // option (`aria-activedescendant`); a click chooses without taking focus from it.
+  // The ":na" and "@na" suggestions above the composer (DESIGN.md §5.5, §6.58), Discord's
+  // autocomplete. Focus stays in the composer, which points at the active option
+  // (`aria-activedescendant`); a click chooses without taking focus from it.
   interface Props {
     id: string;
-    query: string;
-    suggestions: readonly EmojiSuggestion[];
+    title: string;
+    suggestions: readonly Suggestion[];
+    keyOf: (suggestion: Suggestion) => string;
     activeIndex: number;
-    onchoose: (suggestion: EmojiSuggestion) => void;
+    row: Snippet<[Suggestion]>;
+    onchoose: (suggestion: Suggestion) => void;
     onhover: (index: number) => void;
   }
 
-  let { id, query, suggestions, activeIndex, onchoose, onhover }: Props = $props();
+  let { id, title, suggestions, keyOf, activeIndex, row, onchoose, onhover }: Props = $props();
 
   /** Keeps the active option in view as the arrows move it. */
   function scrollIntoViewWhenActive(isActive: boolean) {
@@ -34,17 +34,16 @@
     aria-hidden="true"
     class="shrink-0 truncate px-(--mw-component-context-menu-item-padding-inline) pt-(--mw-component-context-menu-padding) pb-2xs type-category text-(--mw-component-emoji-picker-heading-text)"
   >
-    {strings.chat.emojiSuggestionsTitle(query)}
+    {title}
   </p>
   <ul
     id="{id}-listbox"
     role="listbox"
-    aria-label={strings.chat.emojiSuggestionsTitle(query)}
+    aria-label={title}
     class="min-h-0 overflow-y-auto p-(--mw-component-context-menu-padding) pt-0 [scrollbar-width:thin]"
   >
-    {#each suggestions as suggestion, index (suggestion.kind === "custom" ? suggestion.emoji.id : suggestion.emoji)}
+    {#each suggestions as suggestion, index (keyOf(suggestion))}
       {@const isActive = index === activeIndex}
-      {@const name = suggestion.kind === "custom" ? `:${suggestion.emoji.name}:` : suggestion.name}
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <li
         id="{id}-option-{index}"
@@ -61,18 +60,7 @@
         onpointermove={() => onhover(index)}
         onclick={() => onchoose(suggestion)}
       >
-        <span aria-hidden="true" class="grid size-(--mw-component-emoji-picker-emoji-size) shrink-0 place-items-center text-(length:--mw-component-emoji-picker-emoji-size) leading-none">
-          {#if suggestion.kind === "custom"}
-            <CustomEmojiImage emoji={suggestion.emoji} class="size-(--mw-component-emoji-picker-emoji-size)" isDecorative />
-          {:else}
-            {suggestion.emoji}
-          {/if}
-        </span>
-        <span class="min-w-0 flex-1 truncate">{name}</span>
-        {#if suggestion.kind === "unicode"}
-          <!-- The built-in emoji itself, for screen readers that only read the word. -->
-          <span class="sr-only">{suggestion.emoji}</span>
-        {/if}
+        {@render row(suggestion)}
       </li>
     {/each}
   </ul>

@@ -143,6 +143,12 @@
 
   // Custom emoji are offered only in their own server's channels (ADR-0028).
   const serverEmojis = $derived(guild && channel ? client.emojisOf(guild.id) : []);
+  // Who "@na" suggests: the server's members, or the conversation's people.
+  const mentionCandidates = $derived(
+    guild && channel
+      ? (client.membersByGuild.get(guild.id) ?? []).map((member) => member.user)
+      : (conversation?.recipients ?? []),
+  );
   const pickerServer = $derived(guild && channel ? { name: guild.name, emojis: serverEmojis } : null);
 
   // Each channel keeps its own unsent text (DESIGN.md §5.5); replies and edits do not carry over.
@@ -612,6 +618,8 @@
       {client}
       {drafts}
       {serverEmojis}
+      {mentionCandidates}
+      currentUserId={user?.id ?? null}
       label={composerLabel}
       {canSendMessages}
       {canAttachFiles}

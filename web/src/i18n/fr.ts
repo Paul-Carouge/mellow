@@ -531,6 +531,9 @@ export const fr: Catalogue = {
     emojiSuggestionsTitle: (query) => `Emoji correspondant à :${query}`,
     emojiSuggestionsCount: (suggestions) =>
       `${count(suggestions)}${NO_BREAK_SPACE}emoji. Haut et Bas pour choisir, Entrée ou Tab pour insérer.`,
+    mentionSuggestionsTitle: (query) => `Personnes correspondant à @${query}`,
+    mentionSuggestionsCount: (suggestions) =>
+      `${count(suggestions)}${NO_BREAK_SPACE}${plural(suggestions, { one: "personne", other: "personnes" })}. Haut et Bas pour choisir, Entrée ou Tab pour insérer.`,
     sendMessage: "Envoyer le message",
     cannotSend: "Tu n’as pas la permission d’envoyer des messages dans ce salon.",
     youBlocked: (person) => `Tu as bloqué ${person}. Débloque cette personne pour lui écrire.`,
