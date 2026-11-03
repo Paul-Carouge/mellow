@@ -4,6 +4,15 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-11-03
+Mentions suggested as you type. No database migration and no protocol change.
+
+### Added
+- Typing `@` in the composer lists the server's members (or the conversation's people) and narrows as you type, ignoring capitals and accents; Up and Down to choose, Enter or Tab to insert the mention.
+
+### Fixed
+- Choosing an emoji suggestion with the cursor in the middle of a name left the end of the name in the message.
+
 ## [0.34.0] - 2026-11-03
 Cameras in voice channels on the web (ADR-0035, ADR-0037). No database migration and no protocol change.
 
