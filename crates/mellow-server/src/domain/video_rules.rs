@@ -33,16 +33,21 @@ pub(crate) const MAXIMUM_SILENCE_OF_A_CAMERA: Duration = Duration::from_secs(10)
 pub(crate) const SILENCE_OF_A_LOST_LAYER: Duration = Duration::from_secs(1);
 
 /// Whether a camera's layer is gone: asked of the camera since `requested_since` and last heard at
-/// `heard_at`, both at least `SILENCE_OF_A_LOST_LAYER` ago. A layer not asked yet is not gone: it
-/// is about to be asked, and its first frames take a moment.
+/// `heard_at`, both at least `SILENCE_OF_A_LOST_LAYER` ago, while its lowest layer, last heard at
+/// `lowest_heard_at`, still flows. A layer not asked yet is not gone: it is about to be asked, and
+/// its first frames take a moment. Every layer silent together is not a lost layer but a picture
+/// that does not change (a static screen sends a frame only now and then): nothing is gone.
 #[must_use]
 pub(crate) fn is_layer_gone(
     requested_since: Option<Instant>,
     heard_at: Option<Instant>,
+    lowest_heard_at: Option<Instant>,
     now: Instant,
 ) -> bool {
     let is_old = |at: Instant| now.saturating_duration_since(at) >= SILENCE_OF_A_LOST_LAYER;
-    requested_since.is_some_and(is_old) && heard_at.is_none_or(is_old)
+    lowest_heard_at.is_some_and(|at| !is_old(at))
+        && requested_since.is_some_and(is_old)
+        && heard_at.is_none_or(is_old)
 }
 
 /// The layer a tile allocated `allocated` receives: the highest at most `allocated` that is not
@@ -825,11 +830,33 @@ mod tests {
     fn a_layer_asked_for_a_second_without_a_frame_is_gone() {
         let start = Instant::now();
         let at = |milliseconds| start + Duration::from_millis(milliseconds);
-        assert!(!is_layer_gone(None, None, at(5_000)), "not asked yet");
-        assert!(!is_layer_gone(Some(at(0)), None, at(999)), "just asked");
-        assert!(is_layer_gone(Some(at(0)), None, at(1_000)));
-        assert!(!is_layer_gone(Some(at(0)), Some(at(500)), at(1_400)));
-        assert!(is_layer_gone(Some(at(0)), Some(at(500)), at(1_500)));
+        let lowest = Some(at(4_900));
+        assert!(
+            !is_layer_gone(None, None, lowest, at(5_000)),
+            "not asked yet"
+        );
+        assert!(
+            !is_layer_gone(Some(at(4_100)), None, lowest, at(5_000)),
+            "just asked"
+        );
+        assert!(is_layer_gone(Some(at(0)), None, lowest, at(5_000)));
+        assert!(!is_layer_gone(
+            Some(at(0)),
+            Some(at(4_500)),
+            lowest,
+            at(5_000)
+        ));
+        assert!(is_layer_gone(
+            Some(at(0)),
+            Some(at(3_900)),
+            lowest,
+            at(5_000)
+        ));
+        assert!(
+            !is_layer_gone(Some(at(0)), Some(at(3_900)), Some(at(3_900)), at(5_000)),
+            "every layer silent together: a still picture, nothing gone"
+        );
+        assert!(!is_layer_gone(Some(at(0)), None, None, at(5_000)));
     }
 
     #[test]

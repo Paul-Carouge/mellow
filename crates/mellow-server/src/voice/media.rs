@@ -1173,6 +1173,11 @@ impl MediaLoop<'_> {
                 is_layer_gone(
                     camera.video.layer_requested_since.get(layer).copied(),
                     camera.video.layer_heard_at.get(layer).copied(),
+                    camera
+                        .video
+                        .layer_heard_at
+                        .get(&SimulcastLayer::Quarter)
+                        .copied(),
                     now,
                 )
             })
@@ -1367,6 +1372,15 @@ impl MediaLoop<'_> {
             let Some(watched) = watcher.video.watched_cameras.get_mut(&camera_id) else {
                 continue;
             };
+            // A layer coming back starts with a keyframe: a tile allocated it and receiving a
+            // lower one takes it now, instead of dropping it and asking for another.
+            if is_keyframe
+                && watched.allocated >= Some(layer)
+                && watched.switch.wanted() < Some(layer)
+                && watched.switch.wanted().is_some()
+            {
+                watched.switch.want(Some(layer));
+            }
             match watched.switch.on_frame(layer, is_keyframe) {
                 FrameForwarding::Drop => continue,
                 FrameForwarding::DropAndRequestKeyframe => {
@@ -1958,7 +1972,16 @@ mod tests {
             let camera = media.participants.get_mut(&camera_id).unwrap();
             camera.video.layer_heard_at.insert(layer, at);
         };
+        // Asked at the start, as the test's clock counts, not the machine's.
+        media
+            .participants
+            .get_mut(&camera_id)
+            .unwrap()
+            .video
+            .layer_requested_since
+            .insert(SimulcastLayer::High, at(0));
         heard(&mut media, SimulcastLayer::Low, at(1_400));
+        heard(&mut media, SimulcastLayer::Quarter, at(1_400));
         media.follow_bandwidth(at(900));
         assert_eq!(wanted(&media), Some(SimulcastLayer::High), "just asked");
 
