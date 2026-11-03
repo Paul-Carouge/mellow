@@ -1567,6 +1567,22 @@ describe("VoiceSession cameras (ADR-0035)", () => {
     session.watchCameras([]);
     expect(session.videoTracks.size).toBe(0);
   });
+
+  it("opens the call view only during a call, and closes it when the call ends", async () => {
+    const { session, connect } = harness({ canShowVideo: true });
+    session.openCallView();
+    expect(session.isCallViewOpen).toBe(false);
+
+    await connect();
+    session.openCallView();
+    expect(session.isCallViewOpen).toBe(true);
+    session.closeCallView();
+    expect(session.isCallViewOpen).toBe(false);
+
+    session.openCallView();
+    session.leave();
+    expect(session.isCallViewOpen).toBe(false);
+  });
 });
 
 /** The first receive line of watched screens' sound, right after your own screen's sound line. */
