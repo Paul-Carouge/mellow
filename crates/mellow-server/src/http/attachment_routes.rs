@@ -177,16 +177,11 @@ async fn serve(
                 .into_response());
         }
         Some(RequestedRange::Satisfiable(range)) => {
-            let total = download.bytes.len();
-            let value = format!("bytes {}-{}/{total}", range.start(), range.end());
-            let part = download.bytes[range].to_vec();
-            (
-                StatusCode::PARTIAL_CONTENT,
-                part,
-                Some(content_range_value(&value)?),
-            )
+            let (part, content_range) = part_of(download.bytes, range)?;
+            (StatusCode::PARTIAL_CONTENT, part, Some(content_range))
         }
     };
+    let body_length = bytes.len();
     let mut response = (
         status,
         [
@@ -207,6 +202,10 @@ async fn serve(
         body_keeping_permit(bytes, download.permit),
     )
         .into_response();
+    // A known length lets players size their buffer (a stream body sends none by itself).
+    response
+        .headers_mut()
+        .insert(header::CONTENT_LENGTH, HeaderValue::from(body_length));
     if let Some(content_range) = content_range {
         response
             .headers_mut()
@@ -232,9 +231,26 @@ fn requested_range(
         .map(|value| byte_range(value, total))
 }
 
+/// The bytes of `range` (taken in place, no second copy) and their `Content-Range`.
+fn part_of(
+    mut bytes: Vec<u8>,
+    range: std::ops::RangeInclusive<usize>,
+) -> Result<(Vec<u8>, HeaderValue), ApiError> {
+    let total = bytes.len();
+    let content_range =
+        content_range_value(&format!("bytes {}-{}/{total}", range.start(), range.end()))?;
+    bytes.truncate(range.end() + 1);
+    bytes.drain(..*range.start());
+    Ok((bytes, content_range))
+}
+
 fn content_range_value(value: &str) -> Result<HeaderValue, ApiError> {
     HeaderValue::from_str(value).map_err(|error| ApiError::internal("a content range", &error))
 }
+
+/// The longest part one range answer carries: a player that stops reading (paused, or only
+/// after the metadata) then holds a download slot for a short answer, not a whole file.
+const MAXIMUM_RANGE_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 /// What a `Range` header asks of a file of `total` bytes.
 #[derive(Debug, PartialEq, Eq)]
@@ -248,9 +264,15 @@ enum RequestedRange {
 }
 
 /// `bytes=first-last`, `bytes=first-` or `bytes=-suffix_length` (RFC 9110 §14.1.2), one range
-/// only; a last position past the end is clamped to it.
+/// only; a last position past the end is clamped to it, and an answer to at most
+/// `MAXIMUM_RANGE_RESPONSE_BYTES` (the player asks for the next part itself).
 fn byte_range(header_value: &str, total: usize) -> RequestedRange {
-    let Some(spec) = header_value.trim().strip_prefix("bytes=") else {
+    let header_value = header_value.trim();
+    let Some(spec) = header_value
+        .get(..6)
+        .filter(|unit| unit.eq_ignore_ascii_case("bytes="))
+        .and_then(|_| header_value.get(6..))
+    else {
         return RequestedRange::Ignored;
     };
     let Some((first, last)) = spec.trim().split_once('-') else {
@@ -290,7 +312,8 @@ fn byte_range(header_value: &str, total: usize) -> RequestedRange {
         }
         (true, true) => return RequestedRange::Ignored,
     };
-    RequestedRange::Satisfiable(first..=last)
+    let longest_last = first.saturating_add(MAXIMUM_RANGE_RESPONSE_BYTES - 1);
+    RequestedRange::Satisfiable(first..=last.min(longest_last))
 }
 
 /// The file as a response body that holds its transfer slot until the body is dropped, after its

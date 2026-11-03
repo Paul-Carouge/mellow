@@ -55,7 +55,7 @@ const HTML: &[u8] = b"<html><script>alert(1)</script></html>";
 
 #[test]
 fn byte_ranges_follow_rfc_9110_for_one_range() {
-    use super::{RequestedRange::*, byte_range};
+    use super::{MAXIMUM_RANGE_RESPONSE_BYTES, RequestedRange::*, byte_range};
     assert_eq!(byte_range("bytes=0-", 10), Satisfiable(0..=9));
     assert_eq!(byte_range("bytes=2-4", 10), Satisfiable(2..=4));
     assert_eq!(byte_range("bytes=8-99", 10), Satisfiable(8..=9));
@@ -64,6 +64,21 @@ fn byte_ranges_follow_rfc_9110_for_one_range() {
     assert_eq!(byte_range("bytes=10-", 10), Unsatisfiable);
     assert_eq!(byte_range("bytes=-0", 10), Unsatisfiable);
     assert_eq!(byte_range("bytes=0-", 0), Unsatisfiable);
+    assert_eq!(byte_range("Bytes=2-4", 10), Satisfiable(2..=4));
+    let large = 3 * MAXIMUM_RANGE_RESPONSE_BYTES;
+    assert_eq!(
+        byte_range("bytes=0-", large),
+        Satisfiable(0..=MAXIMUM_RANGE_RESPONSE_BYTES - 1),
+        "a player asks for the next part itself"
+    );
+    assert_eq!(
+        byte_range("bytes=-10", large),
+        Satisfiable(large - 10..=large - 1)
+    );
+    assert_eq!(
+        byte_range(&format!("bytes=-{large}"), large),
+        Satisfiable(0..=MAXIMUM_RANGE_RESPONSE_BYTES - 1)
+    );
     for ignored in [
         "items=0-1",
         "bytes=0-1,4-5",
@@ -827,6 +842,7 @@ async fn videos_play_inline_and_media_players_get_byte_ranges() {
         &format!("bytes 4-11/{total}")
     );
     assert_eq!(ranged_headers.get(header::ACCEPT_RANGES).unwrap(), "bytes");
+    assert_eq!(ranged_headers.get(header::CONTENT_LENGTH).unwrap(), "8");
     assert_eq!(
         ranged_headers.get(header::CONTENT_TYPE).unwrap(),
         "video/mp4"
