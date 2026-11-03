@@ -266,6 +266,8 @@ export class VoiceSession {
   screenShareQuality = $state<ScreenShareQuality>(DEFAULT_SCREEN_SHARE_QUALITY);
   /** The person whose shared screen you watch, if any. */
   watchedStreamUserId = $state<Snowflake | null>(null);
+  /** The call view shows the channel's people and cameras in the sheet's place (ADR-0035); closed when the call ends. */
+  isCallViewOpen = $state(false);
   /** The cameras you show and how large (`watchCameras`), the watched screen aside. */
   watchedCameras = $state.raw<readonly WatchedCamera[]>([]);
   /** The watched screen's and cameras' video tracks, by person, once their picture arrives. */
@@ -1002,6 +1004,15 @@ export class VoiceSession {
     if (this.phase !== "idle") {
       this.sendWatchList();
     }
+  }
+
+  /** Only during a call: there is nothing to show otherwise. */
+  openCallView(): void {
+    this.isCallViewOpen = this.phase !== "idle";
+  }
+
+  closeCallView(): void {
+    this.isCallViewOpen = false;
   }
 
   /** Watches `userId`'s shared screen large, or nothing with `null`. */
@@ -2037,6 +2048,7 @@ export class VoiceSession {
     this.releaseCamera();
     this.watchedStreamUserId = null;
     this.watchedCameras = [];
+    this.isCallViewOpen = false;
     this.stopStreamSoundSampling();
     this.pausedVideoUserIds = new Set();
     this.stopWatchingDevices?.();
