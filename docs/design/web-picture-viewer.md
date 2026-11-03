@@ -1,6 +1,6 @@
 # Picture viewer on the web (ROADMAP item 18, second slice)
 
-Status: designed on `feat/web-picture-viewer`, DESIGN.md v0.43; the component is still to build. Web only: no server, protocol or migration change. Tokens `component.picture-viewer.*` and three `color.media.*` additions are in `design/tokens.json`; icons `caret-left` and `arrow-square-out` were added to `design/icons`.
+Status: designed on `feat/web-picture-viewer`, DESIGN.md v0.43; built in `PictureViewer.svelte` (logic in `picture-viewer.ts`), opened from `MessageAttachments.svelte`. Web only: no server, protocol or migration change. Tokens `component.picture-viewer.*` and three `color.media.*` additions are in `design/tokens.json`; icons `caret-left` and `arrow-square-out` were added to `design/icons`.
 
 ## Brief
 

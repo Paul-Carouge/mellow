@@ -624,6 +624,26 @@ export const en = {
     download: (fileName: string) => `Download ${fileName}`,
   },
 
+  pictureViewer: {
+    previous: "Previous picture",
+    next: "Next picture",
+    position: (index: number, total: number) => `${count(index)} / ${count(total)}`,
+    positionLabel: (index: number, total: number) => `Picture ${count(index)} of ${count(total)}`,
+    pictureChanged: (index: number, total: number, fileName: string) =>
+      `Picture ${count(index)} of ${count(total)}: ${fileName}`,
+    caption: (author: string, timestamp: string, size: string) => `${author} · ${timestamp} · ${size}`,
+    actualSize: "Actual size",
+    downloadTooltip: "Download",
+    copyLink: "Copy link",
+    linkCopied: "Link copied",
+    copyLinkFailed: "Couldn't copy the link. Allow clipboard access and try again.",
+    openOriginal: "Open the original in a new tab",
+    openOriginalTooltip: "Open the original",
+    loading: "Loading the picture…",
+    fullSizeFailed: "The full-size picture didn't load. Check your connection, then try again.",
+    pictureFailed: "Couldn't show this picture. Check your connection, then try again, or download it.",
+  },
+
   reactions: {
     reactions: "Reactions",
     addReaction: "Add reaction",
