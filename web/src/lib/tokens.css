@@ -792,6 +792,11 @@
   --mw-component-roles-swatch-ring-offset: 0.125rem;
   --mw-component-roles-swatch-ring-width: 0.125rem;
   --mw-component-roles-swatch-size: 2rem;
+  --mw-component-screen-sound-help-command-background: #1A141A;
+  --mw-component-screen-sound-help-command-border: #3C353E;
+  --mw-component-screen-sound-help-command-padding: 0.5rem;
+  --mw-component-screen-sound-help-command-radius: 0.5rem;
+  --mw-component-screen-sound-help-command-text: #D6D0D7;
   --mw-component-search-channel-label-text: #A99FAA;
   --mw-component-search-facet-background: #312A32;
   --mw-component-search-facet-background-hover: #362E37;
@@ -948,11 +953,17 @@
   --mw-component-status-size-small: 0.625rem;
   --mw-component-stream-view-avatar-size: 4rem;
   --mw-component-stream-view-background: #221B23;
+  --mw-component-stream-view-control-size: 2.75rem;
   --mw-component-stream-view-ended-close-delay: 3000ms;
+  --mw-component-stream-view-slow-connect-delay: 10000ms;
+  --mw-component-stream-view-sound-bar-gap: 0.5rem;
+  --mw-component-stream-view-sound-bar-height: 3rem;
+  --mw-component-stream-view-sound-status-text: #A99FAA;
   --mw-component-stream-view-stage: #110B11;
   --mw-component-stream-view-stage-inset: 0.5rem;
   --mw-component-stream-view-stage-radius: 0.75rem;
   --mw-component-stream-view-stage-text: #ECE6ED;
+  --mw-component-stream-view-volume-width: 10rem;
   --mw-component-switch-disabled-opacity: 0.5;
   --mw-component-switch-glyph-off: #554C56;
   --mw-component-switch-glyph-on: #23A55A;
@@ -1122,6 +1133,7 @@
   --mw-motion-delay-pending-label: 2000ms;
   --mw-motion-delay-skeleton: 300ms;
   --mw-motion-delay-stream-ended: 3000ms;
+  --mw-motion-delay-stream-slow: 10000ms;
   --mw-motion-delay-tooltip: 500ms;
   --mw-motion-delay-tooltip-rail: 0ms;
   --mw-motion-duration-base: 200ms;
@@ -1653,6 +1665,9 @@
     --mw-component-roles-swatch-check: #221B23;
     --mw-component-roles-swatch-check-plate: #FFFFFF;
     --mw-component-roles-swatch-ring: #221B23;
+    --mw-component-screen-sound-help-command-background: #F8F4F8;
+    --mw-component-screen-sound-help-command-border: #E3DDE4;
+    --mw-component-screen-sound-help-command-text: #392F3A;
     --mw-component-search-channel-label-text: #695F6B;
     --mw-component-search-facet-background: #F5F1F6;
     --mw-component-search-facet-background-hover: #DFD8DF;
@@ -1718,6 +1733,7 @@
     --mw-component-status-offline: #726874;
     --mw-component-status-online: #1A7F45;
     --mw-component-stream-view-background: #FFFFFF;
+    --mw-component-stream-view-sound-status-text: #695F6B;
     --mw-component-switch-glyph-off: #695F6B;
     --mw-component-switch-glyph-on: #1A7F45;
     --mw-component-switch-track-off: #695F6B;
@@ -2131,6 +2147,9 @@
   --mw-component-roles-swatch-check: #221B23;
   --mw-component-roles-swatch-check-plate: #FFFFFF;
   --mw-component-roles-swatch-ring: #221B23;
+  --mw-component-screen-sound-help-command-background: #F8F4F8;
+  --mw-component-screen-sound-help-command-border: #E3DDE4;
+  --mw-component-screen-sound-help-command-text: #392F3A;
   --mw-component-search-channel-label-text: #695F6B;
   --mw-component-search-facet-background: #F5F1F6;
   --mw-component-search-facet-background-hover: #DFD8DF;
@@ -2196,6 +2215,7 @@
   --mw-component-status-offline: #726874;
   --mw-component-status-online: #1A7F45;
   --mw-component-stream-view-background: #FFFFFF;
+  --mw-component-stream-view-sound-status-text: #695F6B;
   --mw-component-switch-glyph-off: #695F6B;
   --mw-component-switch-glyph-on: #1A7F45;
   --mw-component-switch-track-off: #695F6B;

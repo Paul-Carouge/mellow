@@ -20,7 +20,14 @@ import {
   silentNoiseSuppressorMilliseconds,
 } from "./voice-processing";
 import type { AudioDevice, EqualizerBand } from "./voice-settings";
-import { type CodecPreferences, preferredCodecs, screenCaptureOptions, type ScreenShareQuality } from "./screen-share";
+import {
+  type CodecPreferences,
+  isLinuxDesktop,
+  preferredCodecs,
+  screenCaptureOptions,
+  type ScreenShareQuality,
+  soundSourceConstraints,
+} from "./screen-share";
 import type { AudioOutput, InputAmplifier, LevelMeter, MicrophoneProcessor, VoicePorts } from "./voice-session.svelte";
 
 const ANALYSER_FFT_SIZE = 512;
@@ -40,6 +47,28 @@ function requestScreen(quality: ScreenShareQuality): Promise<MediaStream> {
     return Promise.reject(new TypeError("navigator.mediaDevices.getDisplayMedia is unavailable"));
   }
   return navigator.mediaDevices.getDisplayMedia(screenCaptureOptions(quality));
+}
+
+function requestSoundSource(deviceId: string): Promise<MediaStream> {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return Promise.reject(new TypeError("navigator.mediaDevices is unavailable"));
+  }
+  return navigator.mediaDevices.getUserMedia(soundSourceConstraints(deviceId));
+}
+
+/** `navigator.userAgentData` is Chromium's only, and not in TypeScript's DOM types yet. */
+type NavigatorWithUserAgentData = Navigator & { readonly userAgentData?: { readonly platform: string } };
+
+/**
+ * What the advice for a share without sound depends on: Chromium's platform (`null` in Firefox and
+ * Safari, whose picker shares no sound) and whether this is a Linux desktop.
+ */
+export function screenSoundPlatform(): { readonly chromiumPlatform: string | null; readonly isLinux: boolean } {
+  if (typeof navigator === "undefined") {
+    return { chromiumPlatform: null, isLinux: false };
+  }
+  const chromiumPlatform = (navigator as NavigatorWithUserAgentData).userAgentData?.platform ?? null;
+  return { chromiumPlatform, isLinux: isLinuxDesktop(chromiumPlatform ?? navigator.userAgent) };
 }
 
 function codecPreferences(): CodecPreferences | null {
@@ -437,6 +466,7 @@ export const BROWSER_VOICE_PORTS: Omit<VoicePorts, "sendFrame"> = {
   amplify,
   listDevices: listAudioDevices,
   requestScreen,
+  requestSoundSource,
   codecPreferences,
   watchDevices: watchAudioDevices,
   storage: browserStorage,

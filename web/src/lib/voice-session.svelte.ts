@@ -19,12 +19,22 @@ import {
   type CodecPreferences,
   DEFAULT_SCREEN_SHARE_QUALITY,
   isScreenShareQuality,
+  readScreenSoundDeviceId,
   SCREEN_SHARE_QUALITY_STORAGE_KEY,
+  SCREEN_SOUND_DEVICE_STORAGE_KEY,
   type ScreenShareProblem,
   type ScreenShareQuality,
+  type ScreenSoundDevice,
+  type ScreenSoundNotice,
+  STREAM_SOUND_LEVEL_THRESHOLD,
+  STREAM_SOUND_SAMPLE_INTERVAL_MILLISECONDS,
+  STREAM_SOUND_SETTINGS_STORAGE_KEY,
+  type StreamSoundStatus,
   screenCaptureConstraints,
   screenEncodings,
   screenShareProblemOf,
+  screenSoundDevicesOf,
+  streamSoundStatus,
   withActiveLayers,
   withQuality,
 } from "./screen-share";
@@ -192,6 +202,8 @@ export interface VoicePorts {
   listDevices(): Promise<readonly AudioDevice[]>;
   /** The browser's screen picker (ADR-0037); rejects when cancelled or unavailable. */
   requestScreen(quality: ScreenShareQuality): Promise<MediaStream>;
+  /** An audio input sent as a shared screen's sound, untouched; rejects when it cannot open. */
+  requestSoundSource(deviceId: string): Promise<MediaStream>;
   /** Opus and VP8 to keep in offers with video; `null` where the browser cannot restrict codecs: audio only. */
   codecPreferences(): CodecPreferences | null;
   /** Calls `onChange` when a device is plugged or unplugged; returns how to stop. */
@@ -236,6 +248,23 @@ export class VoiceSession {
   watchedStreamUserId = $state<Snowflake | null>(null);
   /** The watched screens' video tracks, by person, once their picture arrives. */
   streamTracks = $state.raw<ReadonlyMap<Snowflake, MediaStreamTrack>>(new Map());
+  /** Sharers whose picture the instance paused for this connection, too slow for it (`VOICE_VIDEO_PAUSED`). */
+  pausedStreamUserIds = $state.raw<ReadonlySet<Snowflake>>(new Set());
+  /** Whether the watched screen carries sound, sampled twice a second. */
+  watchedStreamSound = $state<StreamSoundStatus>("listening");
+  /** Each sharer's sound volume and mute, for you only, apart from their voice. */
+  streamSoundSettings = $state.raw<ReadonlyMap<Snowflake, PersonVoiceSetting>>(new Map());
+  /**
+   * Where your share's sound comes from: `null` for the shared tab's, window's or screen's own (if
+   * ticked in the browser's picker), else an audio input. Remembered on this device.
+   */
+  screenSoundDeviceId = $state<string | null>(null);
+  /** The audio inputs that can be your share's sound, the system's sound first; listed on demand. */
+  screenSoundDevices = $state.raw<readonly ScreenSoundDevice[]>([]);
+  /** Said once in the panel about your share's sound, until dismissed or the share ends. */
+  screenSoundNotice = $state<ScreenSoundNotice | null>(null);
+  /** What your share sends as sound now: the screen's own, the chosen input, or nothing; `null` while not sharing. */
+  sharedSound = $state<"screen" | "input" | "none" | null>(null);
 
   private peer: RTCPeerConnection | null = null;
   private sender: RTCRtpSender | null = null;
@@ -249,6 +278,17 @@ export class VoiceSession {
   /** Who each video receive slot carries now. */
   private videoSlotUserIds = new Map<string, Snowflake>();
   private screen: MediaStream | null = null;
+  /** The audio input sent as your screen's sound, when one is chosen and open. */
+  private screenSoundSource: MediaStream | null = null;
+  /** Bumped by each change of your share's sound: a slower earlier one sees it is stale and frees its input. */
+  private screenSoundSwitch = 0;
+  /** The receive lines of watched screens' sound, after your own screen's sound line (ADR-0037). */
+  private screenSoundReceivers: RTCRtpTransceiver[] = [];
+  /** Reads the watched screen's sound level, from a copy of its track. */
+  private streamSoundMeter: { track: MediaStreamTrack; meter: LevelMeter | null } | null = null;
+  private streamPictureSince: number | null = null;
+  private streamSoundHeardAt = Number.NEGATIVE_INFINITY;
+  private streamSoundTimer: ReturnType<typeof setInterval> | null = null;
   /** The browser's picker is open: a second click waits for it. */
   private isRequestingScreen = false;
   /** When the screen was last turned on: an empty `VOICE_VIDEO_LAYERS` just after is the previous share's. */
@@ -264,7 +304,7 @@ export class VoiceSession {
   /** Bumped by each test start and stop: a slower earlier start sees it is stale and frees its stream. */
   private microphoneTestAttempt = 0;
   /** Each receive slot's voice, by the SDP mid of its transceiver. */
-  private outputs: { mid: string | null; output: AudioOutput }[] = [];
+  private outputs: { mid: string | null; output: AudioOutput; track: MediaStreamTrack }[] = [];
   /** Who each receive slot carries now (`VOICE_SLOT_ASSIGNED`), for the current media session only. */
   private slotUserIds = new Map<string, Snowflake>();
   private isPushToTalkOpen = false;
@@ -298,6 +338,8 @@ export class VoiceSession {
     this.personSettings = readPersonVoiceSettings(storage);
     const quality = storage?.getItem(SCREEN_SHARE_QUALITY_STORAGE_KEY) ?? null;
     this.screenShareQuality = isScreenShareQuality(quality) ? quality : DEFAULT_SCREEN_SHARE_QUALITY;
+    this.screenSoundDeviceId = readScreenSoundDeviceId(storage);
+    this.streamSoundSettings = readPersonVoiceSettings(storage, STREAM_SOUND_SETTINGS_STORAGE_KEY);
   }
 
   /** Muted by choice, or connected with no microphone. */
@@ -323,6 +365,7 @@ export class VoiceSession {
     // A share never follows you into another channel, as on Discord: its people did not see it start.
     this.releaseScreen();
     this.watchedStreamUserId = null;
+    this.stopStreamSoundSampling();
     this.streamTracks = new Map();
     this.channelId = channelId;
     this.phase = "connecting";
@@ -579,6 +622,8 @@ export class VoiceSession {
     this.slotUserIds.clear();
     this.applyGains();
     this.videoSlotUserIds.clear();
+    // A picture starts as not paused in each media session.
+    this.pausedStreamUserIds = new Set();
     try {
       await peer.setRemoteDescription({ type: "answer", sdp: sdpAnswer });
     } catch (error) {
@@ -687,13 +732,38 @@ export class VoiceSession {
     if (this.screen !== stream) {
       return;
     }
-    // Absent when the person did not tick the sound in the picker, or the browser cannot share it.
-    void this.screenSoundSender
-      ?.replaceTrack(stream.getAudioTracks()[0] ?? null)
-      .catch((error: unknown) => console.warn("couldn't send the shared screen's sound", error));
     // The quality may have changed since this connection's encodings were set.
     this.applyScreenShareQualityToSender(sender);
     this.sendVoiceState();
+    // The panel names the chosen input under the live line.
+    void this.refreshScreenSoundDevices();
+    await this.applyScreenSound(true);
+  }
+
+  /** Remembered for the next share, and applied at once to the current one. `null`: the screen's own sound. */
+  setScreenSoundDevice(deviceId: string | null): void {
+    this.screenSoundDeviceId = deviceId;
+    try {
+      this.ports.storage()?.setItem(SCREEN_SOUND_DEVICE_STORAGE_KEY, deviceId ?? "");
+    } catch (error) {
+      console.warn("couldn't remember the share's sound", error);
+    }
+    if (this.screen !== null) {
+      void this.applyScreenSound(false);
+    }
+  }
+
+  /** Lists the audio inputs that can be your share's sound, when its options open. */
+  async refreshScreenSoundDevices(): Promise<void> {
+    try {
+      this.screenSoundDevices = screenSoundDevicesOf(await this.ports.listDevices());
+    } catch (error) {
+      console.warn("couldn't list the sound sources", error);
+    }
+  }
+
+  dismissScreenSoundNotice(): void {
+    this.screenSoundNotice = null;
   }
 
   stopScreenShare(): void {
@@ -738,6 +808,37 @@ export class VoiceSession {
     this.watchedStreamUserId = userId;
     this.refreshStreamTracks();
     this.sendWatchList();
+    this.stopStreamSoundSampling();
+    if (userId !== null) {
+      this.streamSoundTimer = setInterval(() => this.sampleStreamSound(), STREAM_SOUND_SAMPLE_INTERVAL_MILLISECONDS);
+    }
+  }
+
+  streamSoundSetting(userId: Snowflake): PersonVoiceSetting {
+    return this.streamSoundSettings.get(userId) ?? DEFAULT_PERSON_VOICE_SETTING;
+  }
+
+  setStreamVolume(userId: Snowflake, volumePercent: number): void {
+    this.setStreamSoundSetting(userId, { ...this.streamSoundSetting(userId), volumePercent });
+  }
+
+  toggleStreamMuted(userId: Snowflake): void {
+    const current = this.streamSoundSetting(userId);
+    this.setStreamSoundSetting(userId, { ...current, isLocallyMuted: !current.isLocallyMuted });
+  }
+
+  /** The instance paused `userId`'s picture for this connection (too slow for it), or resumed it. */
+  noteVideoPaused(channelId: Snowflake, userId: Snowflake, isPaused: boolean): void {
+    if (channelId !== this.channelId || this.phase === "idle" || this.pausedStreamUserIds.has(userId) === isPaused) {
+      return;
+    }
+    const next = new Set(this.pausedStreamUserIds);
+    if (isPaused) {
+      next.add(userId);
+    } else {
+      next.delete(userId);
+    }
+    this.pausedStreamUserIds = next;
   }
 
   /** The instance refused to relay your screen. */
@@ -1159,7 +1260,7 @@ export class VoiceSession {
       const mid = event.transceiver.mid;
       output.setOutputDevice(this.outputDeviceId());
       output.setGain(this.gainOfSlot(mid));
-      this.outputs.push({ mid, output });
+      this.outputs.push({ mid, output, track: event.track });
     });
     peer.addEventListener("iceconnectionstatechange", () => this.iceStateChanged(peer));
     this.applyTransmission();
@@ -1295,6 +1396,7 @@ export class VoiceSession {
     this.videoSender = null;
     this.screenSoundSender = null;
     this.videoReceivers = [];
+    this.screenSoundReceivers = [];
     this.videoTracksByMid.clear();
     this.videoSlotUserIds.clear();
     const codecs = this.ports.codecPreferences();
@@ -1316,14 +1418,18 @@ export class VoiceSession {
       }
       // The shared screen's sound, then the watched screens' sound: audio lines after the video
       // ones, so the instance tells them from voices by their place (ADR-0037).
-      const screenSound = peer.addTransceiver(this.screen?.getAudioTracks()[0] ?? "audio", { direction: "sendonly" });
+      const screenSound = peer.addTransceiver(this.sentScreenSound() ?? "audio", { direction: "sendonly" });
       screenSound.setCodecPreferences(codecs.audio);
+      const soundReceivers: RTCRtpTransceiver[] = [];
       for (let slot = 0; slot < SCREEN_SOUND_RECEIVE_SLOTS; slot += 1) {
-        peer.addTransceiver("audio", { direction: "recvonly" }).setCodecPreferences(codecs.audio);
+        const soundReceiver = peer.addTransceiver("audio", { direction: "recvonly" });
+        soundReceiver.setCodecPreferences(codecs.audio);
+        soundReceivers.push(soundReceiver);
       }
       this.videoSender = camera.sender;
       this.screenSoundSender = screenSound.sender;
       this.videoReceivers = receivers;
+      this.screenSoundReceivers = soundReceivers;
     } catch (error) {
       // A browser refusing simulcast or these codecs joins with audio only.
       console.warn("couldn't add video to the call", error);
@@ -1353,7 +1459,124 @@ export class VoiceSession {
     this.screen?.getTracks().forEach((track) => track.stop());
     this.screen = null;
     this.isSharingScreen = false;
+    this.screenSoundSwitch += 1;
+    this.releaseScreenSoundSource();
+    this.screenSoundNotice = null;
+    this.sharedSound = null;
     void this.screenSoundSender?.replaceTrack(null).catch(() => {});
+  }
+
+  private releaseScreenSoundSource(): void {
+    this.screenSoundSource?.getTracks().forEach((track) => track.stop());
+    this.screenSoundSource = null;
+  }
+
+  /** The chosen audio input when open, else the sound the browser's picker gave with the screen, if any. */
+  private sentScreenSound(): MediaStreamTrack | null {
+    return this.screenSoundSource?.getAudioTracks()[0] ?? this.screen?.getAudioTracks()[0] ?? null;
+  }
+
+  /**
+   * Opens the chosen audio input (if any) and sends it as the screen's sound, or the screen's own
+   * sound when none is chosen or it cannot open. The screen's own track stays captured either way,
+   * so going back to it needs no new picker. Says once, at the share's start, when nothing goes.
+   */
+  private async applyScreenSound(isShareStart: boolean): Promise<void> {
+    const screen = this.screen;
+    if (screen === null) {
+      return;
+    }
+    this.screenSoundSwitch += 1;
+    const attempt = this.screenSoundSwitch;
+    const deviceId = this.screenSoundDeviceId;
+    let source: MediaStream | null = null;
+    let isSourceUnavailable = false;
+    if (deviceId !== null) {
+      try {
+        source = await this.ports.requestSoundSource(deviceId);
+      } catch (error) {
+        console.warn("couldn't open the chosen sound source for the shared screen", error);
+        isSourceUnavailable = true;
+      }
+    }
+    // Another choice, or the share's end, came meanwhile: this input would never be stopped.
+    if (attempt !== this.screenSoundSwitch || this.screen !== screen) {
+      source?.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    this.releaseScreenSoundSource();
+    this.screenSoundSource = source;
+    // Unplugged during the share: back to the screen's own sound, and said.
+    source?.getAudioTracks()[0]?.addEventListener("ended", () => {
+      if (this.screenSoundSource === source) {
+        void this.applyScreenSound(false);
+      }
+    });
+    const track = this.sentScreenSound();
+    this.sharedSound = source !== null ? "input" : track !== null ? "screen" : "none";
+    if (isSourceUnavailable) {
+      this.screenSoundNotice = "source-unavailable";
+    } else if (track !== null) {
+      this.screenSoundNotice = null;
+    } else if (isShareStart) {
+      this.screenSoundNotice = "no-sound";
+    }
+    try {
+      await this.screenSoundSender?.replaceTrack(track);
+    } catch (error) {
+      console.warn("couldn't send the shared screen's sound", error);
+    }
+  }
+
+  private setStreamSoundSetting(userId: Snowflake, setting: PersonVoiceSetting): void {
+    const next = new Map(this.streamSoundSettings);
+    next.set(userId, setting);
+    this.streamSoundSettings = next;
+    writePersonVoiceSettings(this.ports.storage(), next, STREAM_SOUND_SETTINGS_STORAGE_KEY);
+    this.applyGains();
+  }
+
+  private isScreenSoundSlot(mid: string): boolean {
+    return this.screenSoundReceivers.some((transceiver) => transceiver.mid === mid);
+  }
+
+  /** The watched sharer's screen sound, once the instance put it on a slot (at its first packet). */
+  private streamSoundTrackOf(userId: Snowflake): MediaStreamTrack | undefined {
+    return this.outputs.find(({ mid }) => mid !== null && this.isScreenSoundSlot(mid) && this.slotUserIds.get(mid) === userId)?.track;
+  }
+
+  /**
+   * Whether the watched screen has sound: one look at its level every 500 ms, on a copy of its
+   * track, so your own volume and mute do not change the answer.
+   */
+  private sampleStreamSound(): void {
+    const userId = this.watchedStreamUserId;
+    if (userId === null) {
+      return;
+    }
+    const now = Date.now();
+    this.streamPictureSince = this.streamTracks.has(userId) && !this.pausedStreamUserIds.has(userId) ? (this.streamPictureSince ?? now) : null;
+    const track = this.streamSoundTrackOf(userId);
+    if (this.streamSoundMeter?.track !== track) {
+      this.streamSoundMeter?.meter?.stop();
+      this.streamSoundMeter = track === undefined ? null : { track, meter: this.ports.meterLevel(track) };
+    }
+    if ((this.streamSoundMeter?.meter?.level() ?? 0) >= STREAM_SOUND_LEVEL_THRESHOLD) {
+      this.streamSoundHeardAt = now;
+    }
+    const status = streamSoundStatus(this.streamPictureSince, this.streamSoundHeardAt, now);
+    if (status !== this.watchedStreamSound) {
+      this.watchedStreamSound = status;
+    }
+  }
+
+  private stopStreamSoundSampling(): void {
+    this.clearTimer("streamSoundTimer");
+    this.streamSoundMeter?.meter?.stop();
+    this.streamSoundMeter = null;
+    this.streamPictureSince = null;
+    this.streamSoundHeardAt = Number.NEGATIVE_INFINITY;
+    this.watchedStreamSound = "listening";
   }
 
   /** Whether the input mode lets sound out now (mute aside). */
@@ -1399,6 +1622,10 @@ export class VoiceSession {
 
   private gainOfSlot(mid: string | null): number {
     const userId = mid === null ? undefined : this.slotUserIds.get(mid);
+    if (mid !== null && this.isScreenSoundSlot(mid)) {
+      const stream = userId === undefined ? null : this.streamSoundSetting(userId);
+      return playbackGain(this.settings.outputVolumePercent, stream, this.toggles.isDeafened);
+    }
     const person = userId === undefined ? null : this.personSetting(userId);
     return playbackGain(this.settings.outputVolumePercent, person, this.toggles.isDeafened);
   }
@@ -1472,6 +1699,7 @@ export class VoiceSession {
     this.videoSender = null;
     this.screenSoundSender = null;
     this.videoReceivers = [];
+    this.screenSoundReceivers = [];
     this.videoTracksByMid.clear();
     this.videoSlotUserIds.clear();
     this.streamTracks = new Map();
@@ -1493,6 +1721,8 @@ export class VoiceSession {
     this.releaseMicrophone();
     this.releaseScreen();
     this.watchedStreamUserId = null;
+    this.stopStreamSoundSampling();
+    this.pausedStreamUserIds = new Set();
     this.stopWatchingDevices?.();
     this.stopWatchingDevices = null;
     this.microphoneProblem = null;
@@ -1514,7 +1744,14 @@ export class VoiceSession {
   }
 
   private clearTimer(
-    name: "connectTimer" | "iceGraceTimer" | "ownStateDroppedTimer" | "roundTripTimer" | "levelTimer" | "pushToTalkReleaseTimer",
+    name:
+      | "connectTimer"
+      | "iceGraceTimer"
+      | "ownStateDroppedTimer"
+      | "roundTripTimer"
+      | "levelTimer"
+      | "pushToTalkReleaseTimer"
+      | "streamSoundTimer",
   ): void {
     const timer = this[name];
     if (timer !== null) {
