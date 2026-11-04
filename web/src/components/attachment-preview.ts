@@ -26,8 +26,8 @@ export function attachmentDisplay(attachment: Attachment, isPending: boolean, ha
  * preview maxima), so nothing moves when it arrives. `undefined` without a usable size: the
  * caller keeps its fallback box.
  */
-export function imagePreviewWidth(attachment: Attachment): string | undefined {
-  const { width, height } = attachment;
+export function imagePreviewWidth(picture: Pick<Attachment, "width" | "height">): string | undefined {
+  const { width, height } = picture;
   if (!isPositiveInteger(width) || !isPositiveInteger(height)) {
     return undefined;
   }

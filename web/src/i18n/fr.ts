@@ -725,6 +725,12 @@ export const fr: Catalogue = {
     originalFrom: (date) => `Message d’origine du ${date}`,
   },
 
+  linkPreviews: {
+    playYouTubeVideo: (title) => `Lire la vidéo YouTube${NO_BREAK_SPACE}: ${title}`,
+    youTubePlayer: (title) => `Vidéo YouTube${NO_BREAK_SPACE}: ${title}`,
+    pictureFrom: (hostName) => `Image de ${hostName}`,
+  },
+
   pins: {
     pinnedMessages: "Messages épinglés",
     pin: "Épingler le message",
