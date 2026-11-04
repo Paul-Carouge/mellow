@@ -2,6 +2,7 @@
 
 use url::Url;
 
+use super::fetcher::is_klipy_host;
 use crate::domain::mentions::text_outside_code;
 
 /// A message previews at most this many links, the first ones.
@@ -58,13 +59,6 @@ fn trimmed_link(candidate: &str) -> &str {
             return link;
         }
     }
-}
-
-/// Klipy's pages and media are never fetched by the server: its terms require members' browsers to
-/// load them, and a preview would copy its media (ADR-0042).
-fn is_klipy_host(url: &Url) -> bool {
-    url.host_str()
-        .is_some_and(|host| host == "klipy.com" || host.ends_with(".klipy.com"))
 }
 
 fn is_previewable(url: &Url) -> bool {

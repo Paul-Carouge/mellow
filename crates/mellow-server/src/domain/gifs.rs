@@ -43,6 +43,10 @@ impl Gifs {
         }
     }
 
+    pub(crate) fn klipy_app_key(&self) -> &str {
+        &self.klipy_app_key
+    }
+
     /// What `user_id`'s browser needs to search Klipy. The customer id is a keyed hash of the
     /// user id: stable, and telling Klipy nothing about the account.
     pub(crate) fn settings_for(&self, user_id: Snowflake) -> GifSettings {

@@ -57,6 +57,15 @@ pub(crate) struct LinkFetcher {
 /// Whether the fetcher may request `url` (before any name resolution, which the resolver
 /// checks): `http` or `https`, default ports, no credentials, and a public address when the
 /// host is one.
+/// Klipy's pages and media are never fetched by the server, whatever leads there (a link, a
+/// redirect, a page's picture): its terms require members' browsers to load them (ADR-0042).
+pub(crate) fn is_klipy_host(url: &Url) -> bool {
+    url.host_str().is_some_and(|host| {
+        let host = host.trim_end_matches('.');
+        host.eq_ignore_ascii_case("klipy.com") || host.to_ascii_lowercase().ends_with(".klipy.com")
+    })
+}
+
 fn is_allowed(url: &Url, policy: AddressPolicy) -> bool {
     let is_allowed_host = match url.host() {
         Some(Host::Domain(_)) => true,
@@ -186,7 +195,7 @@ impl LinkFetcher {
         deadline: tokio::time::Instant,
     ) -> Result<(Url, reqwest::Response), FetchError> {
         for _ in 0..=MAXIMUM_REDIRECTS {
-            if !is_allowed(&url, self.policy) {
+            if !is_allowed(&url, self.policy) || is_klipy_host(&url) {
                 return Err(FetchError::NotAllowed);
             }
             let response = tokio::time::timeout_at(
@@ -279,6 +288,50 @@ mod tests {
         assert!(!allowed("https://user@example.org/"));
         assert!(!allowed("file:///etc/passwd"));
         assert!(!allowed("gopher://example.org/"));
+        for klipy in [
+            "https://static.klipy.com/ii/x.webp",
+            "https://static.klipy.com./ii/x.webp",
+            "https://KLIPY.com/gifs/x",
+        ] {
+            assert!(is_klipy_host(&Url::parse(klipy).unwrap()), "{klipy}");
+        }
+        assert!(!is_klipy_host(
+            &Url::parse("https://klipy.com.evil.example/").unwrap()
+        ));
+        assert!(!is_klipy_host(
+            &Url::parse("https://notklipy.com/").unwrap()
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_redirect_to_klipy_is_never_followed() {
+        let site = axum::Router::new().route(
+            "/gif",
+            axum::routing::get(|| async {
+                (
+                    axum::http::StatusCode::FOUND,
+                    [(
+                        axum::http::header::LOCATION,
+                        "https://static.klipy.com./ii/x.webp",
+                    )],
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, site).await });
+        let fetcher = LinkFetcher::allowing_loopback_for_tests();
+        let page = fetcher
+            .fetch_page_or_picture(Url::parse(&format!("http://{address}/gif")).unwrap())
+            .await;
+        let picture = fetcher
+            .fetch_picture(Url::parse(&format!("http://{address}/gif")).unwrap())
+            .await;
+        assert!(matches!(page, Err(FetchError::NotAllowed)), "{page:?}");
+        assert!(
+            matches!(picture, Err(FetchError::NotAllowed)),
+            "a page's picture too"
+        );
     }
 
     #[tokio::test]

@@ -73,6 +73,7 @@ pub(crate) fn test_state(database: Database, registration_mode: RegistrationMode
         trusted_proxy_networks: Arc::default(),
         voice,
         gifs: None,
+        gif_content_security_policy: None,
     }
 }
 
