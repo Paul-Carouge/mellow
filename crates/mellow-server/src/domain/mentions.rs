@@ -158,8 +158,8 @@ pub(crate) fn may_mention_someone(content: &str) -> bool {
     content.contains('@') && !mention_candidates(content).is_empty()
 }
 
-/// A role of the guild and whether anyone may mention it.
-pub(crate) struct MentionableRole {
+/// A role of the guild and whether anyone may mention it (`Role.is_mentionable`).
+pub(crate) struct RoleWithMentionSetting {
     pub(crate) id: Snowflake,
     pub(crate) is_mentionable: bool,
 }
@@ -168,7 +168,7 @@ pub(crate) struct MentionableRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RoleMentionReach {
     /// Only roles anyone may mention.
-    MentionableRoles,
+    RoleWithMentionSettings,
     /// `MENTION_EVERYONE`: every role and `@everyone`.
     EveryRoleAndEveryone,
 }
@@ -199,7 +199,7 @@ fn role_mention_candidates(text: &str) -> Vec<u64> {
 pub(crate) fn mentioned_role_ids(
     content: &str,
     guild_id: Snowflake,
-    roles: &[MentionableRole],
+    roles: &[RoleWithMentionSetting],
     reach: RoleMentionReach,
 ) -> Vec<Snowflake> {
     let may_mention_every_role = reach == RoleMentionReach::EveryRoleAndEveryone;
@@ -305,8 +305,8 @@ mod tests {
         assert_eq!(mentioned("line\n@bob"), [3]);
     }
 
-    fn role(id: u64, is_mentionable: bool) -> MentionableRole {
-        MentionableRole {
+    fn role(id: u64, is_mentionable: bool) -> RoleWithMentionSetting {
+        RoleWithMentionSetting {
             id: Snowflake::from_raw(id),
             is_mentionable,
         }
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn roles_anyone_may_mention_are_mentioned_by_id_once_and_outside_code() {
-        let reach = RoleMentionReach::MentionableRoles;
+        let reach = RoleMentionReach::RoleWithMentionSettings;
         assert_eq!(mentioned_roles("hi <@&501> and <@&501>", reach), [501]);
         assert_eq!(mentioned_roles("<@&502>", reach), Vec::<u64>::new());
         assert_eq!(mentioned_roles("`<@&501>`", reach), Vec::<u64>::new());

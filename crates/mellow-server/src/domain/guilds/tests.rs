@@ -3325,6 +3325,64 @@ async fn deleting_a_guild_removes_what_it_holds_and_keeps_conversations() {
 }
 
 #[tokio::test]
+async fn a_mentionable_role_is_saved_and_its_change_is_recorded() {
+    let fixture = fixture().await;
+    let guild = guild_with_member(&fixture).await;
+    let guilds = &fixture.guilds;
+    let owner = fixture.owner;
+    let helpers = guilds
+        .create_role(
+            owner,
+            guild.id,
+            role_request("Helpers", Permissions::empty()),
+            NOW,
+        )
+        .await
+        .unwrap();
+    let mentionable = guilds
+        .update_role(
+            owner,
+            guild.id,
+            helpers.id,
+            UpdateRoleRequest {
+                is_mentionable: Some(true),
+                ..UpdateRoleRequest::default()
+            },
+        )
+        .await
+        .unwrap();
+    let listed = guilds.get_guild(owner, guild.id).await.unwrap();
+    let entries = guilds
+        .list_audit_log(owner, guild.id, AuditLogQuery::default())
+        .await
+        .unwrap();
+    fixture.database.close().await;
+
+    assert!(!helpers.is_mentionable, "roles start not mentionable");
+    assert!(mentionable.is_mentionable);
+    assert!(
+        listed
+            .roles
+            .iter()
+            .any(|role| role.id == helpers.id && role.is_mentionable)
+    );
+    let role_update = entries
+        .iter()
+        .find(|entry| {
+            entry.action == AuditAction::RoleUpdate && entry.target_id == Some(helpers.id)
+        })
+        .unwrap();
+    assert_eq!(
+        role_update.changes,
+        [AuditChange {
+            key: AuditChangeKey::Mentionable,
+            old_value: "false".into(),
+            new_value: "true".into(),
+        }]
+    );
+}
+
+#[tokio::test]
 async fn a_role_displayed_separately_reaches_members_and_its_change_is_recorded() {
     let fixture = fixture().await;
     let guild = guild_with_member(&fixture).await;

@@ -737,18 +737,22 @@ pub(crate) async fn last_message_ids(
 
 /// `?1` the user, `?2` the channel ids as a JSON array, `?3` the cap; one row per channel. The
 /// read position and the channel's guild are read once per channel; a conversation has no
-/// guild, so no role row matches there. `pub(crate)` for its query-plan test.
+/// guild, so no role row matches there. Each branch is capped before the union, so a channel
+/// full of old role mentions costs at most `?3` rows per branch: the role list is one `IN` so
+/// the search uses the whole primary key `(channel_id, role_id, message_id)`. `pub(crate)` for
+/// its query-plan test.
 pub(crate) const UNREAD_MENTION_COUNTS_QUERY: &str = "SELECT place.channel_id, \
     (SELECT COUNT(*) FROM ( \
-        SELECT message_id FROM message_mentions \
-        WHERE user_id = ?1 AND channel_id = place.channel_id \
-        AND message_id > place.read_position \
+        SELECT message_id FROM (SELECT message_id FROM message_mentions \
+            WHERE user_id = ?1 AND channel_id = place.channel_id \
+            AND message_id > place.read_position LIMIT ?3) \
         UNION \
-        SELECT message_id FROM message_role_mentions \
-        WHERE channel_id = place.channel_id AND message_id > place.read_position \
-        AND (role_id = place.guild_id OR role_id IN (SELECT role_id FROM member_roles \
-            WHERE guild_id = place.guild_id AND user_id = ?1)) \
-        AND (SELECT author_id FROM messages WHERE id = message_id) != ?1 \
+        SELECT message_id FROM (SELECT message_id FROM message_role_mentions \
+            WHERE channel_id = place.channel_id AND message_id > place.read_position \
+            AND role_id IN (SELECT place.guild_id UNION ALL SELECT role_id FROM member_roles \
+                WHERE guild_id = place.guild_id AND user_id = ?1) \
+            AND (SELECT author_id FROM messages WHERE id = message_id) != ?1 \
+            LIMIT ?3) \
         LIMIT ?3)) \
     FROM (SELECT channel.value AS channel_id, \
         (SELECT guild_id FROM channels WHERE id = channel.value) AS guild_id, \
@@ -757,8 +761,8 @@ pub(crate) const UNREAD_MENTION_COUNTS_QUERY: &str = "SELECT place.channel_id, \
         FROM json_each(?2) AS channel) AS place";
 
 /// How many messages after the user's read position mention them, by name or through a role
-/// they hold or `@everyone` (ADR-0040), in each of `channel_ids`, counted up to `limit`: bounded
-/// ranges of the primary keys per channel. The user's own messages never count.
+/// they hold or `@everyone` (ADR-0040), in each of `channel_ids`, counted up to `limit`: at most
+/// `limit` rows of each mention table per channel. The user's own messages never count.
 ///
 /// # Errors
 /// Fails on database errors.

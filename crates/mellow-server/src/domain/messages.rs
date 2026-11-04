@@ -22,7 +22,7 @@ use mellow_protocol::{
 };
 
 use crate::domain::guilds::{ChannelAudience, GuildError, Guilds};
-use crate::domain::mentions::{self, MentionablePerson, MentionableRole, RoleMentionReach};
+use crate::domain::mentions::{self, MentionablePerson, RoleMentionReach, RoleWithMentionSetting};
 use crate::domain::message_rules::{
     MAXIMUM_ATTACHMENTS_PER_MESSAGE, MessageRuleViolation, history_page_size,
     normalize_line_endings, validate_message_content, validate_nonce,
@@ -385,11 +385,11 @@ async fn mentioned_role_ids(
     if !mentions::may_mention_a_role(content) {
         return Ok(Vec::new());
     }
-    let roles: Vec<MentionableRole> = role_storage::list_roles(database, channel.guild_id)
+    let roles: Vec<RoleWithMentionSetting> = role_storage::list_roles(database, channel.guild_id)
         .await
         .map_err(GuildError::from)?
         .into_iter()
-        .map(|role| MentionableRole {
+        .map(|role| RoleWithMentionSetting {
             id: role.id,
             is_mentionable: role.is_mentionable,
         })
@@ -398,7 +398,7 @@ async fn mentioned_role_ids(
     let reach = if permissions.contains(Permissions::MENTION_EVERYONE) {
         RoleMentionReach::EveryRoleAndEveryone
     } else {
-        RoleMentionReach::MentionableRoles
+        RoleMentionReach::RoleWithMentionSettings
     };
     Ok(mentions::mentioned_role_ids(
         content,
@@ -1148,7 +1148,12 @@ mod tests {
         let lounge = create_text_channel(&fixture, "lounge").await;
         let original = fixture
             .messages
-            .send(fixture.owner, fixture.general, text("hello @member"), NOW)
+            .send(
+                fixture.owner,
+                fixture.general,
+                text("hello @member @everyone"),
+                NOW,
+            )
             .await
             .unwrap();
         let forward = fixture
@@ -1210,9 +1215,11 @@ mod tests {
                 forward.author.id,
                 forward.forwarded_from
             ),
-            ("hello @member", fixture.member, origin)
+            ("hello @member @everyone", fixture.member, origin)
         );
+        assert_eq!(original.mention_role_ids, [fixture.guild.id]);
         assert!(forward.mention_ids.is_empty(), "a forward pings no one");
+        assert!(forward.mention_role_ids.is_empty(), "nor any role");
         assert_eq!(forward_of_forward.forwarded_from, origin);
         assert!(matches!(
             edit_of_forward,
@@ -1223,7 +1230,7 @@ mod tests {
         let listed = lounge_history.last().unwrap();
         assert_eq!(
             (listed.content.as_str(), listed.forwarded_from),
-            ("hello @member", origin),
+            ("hello @member @everyone", origin),
             "the original's edit leaves the copy as it was"
         );
     }
@@ -1843,12 +1850,15 @@ mod tests {
             )
             .await
             .unwrap();
-        for content in ["one", "two"] {
-            fixture
-                .messages
-                .send(fixture.member, conversation.id, text(content), NOW)
-                .await
-                .unwrap();
+        let mut in_conversation = Vec::new();
+        for content in ["one", "two @everyone <@&1>"] {
+            in_conversation.push(
+                fixture
+                    .messages
+                    .send(fixture.member, conversation.id, text(content), NOW)
+                    .await
+                    .unwrap(),
+            );
         }
         let (guild_channels, conversations) = ([staff.id], [conversation.id]);
         let mut unreads = Vec::new();
@@ -1871,6 +1881,11 @@ mod tests {
                 .collect::<HashMap<_, _>>()
         };
         assert_eq!(in_staff.mention_ids, []);
+        assert_eq!(
+            in_conversation[1].mention_role_ids,
+            [],
+            "no role in conversations"
+        );
         assert_eq!(
             counts(owner_unreads),
             HashMap::from([(staff.id, 0), (conversation.id, 2)])
