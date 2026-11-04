@@ -2065,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "mellow-client-core"
-version = "0.42.0"
+version = "0.43.0"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -2086,7 +2086,7 @@ dependencies = [
 
 [[package]]
 name = "mellow-protocol"
-version = "0.42.0"
+version = "0.43.0"
 dependencies = [
  "bitflags",
  "serde",
@@ -2096,7 +2096,7 @@ dependencies = [
 
 [[package]]
 name = "mellow-server"
-version = "0.42.0"
+version = "0.43.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2149,7 +2149,7 @@ dependencies = [
 
 [[package]]
 name = "mellow-update"
-version = "0.42.0"
+version = "0.43.0"
 dependencies = [
  "minisign-verify",
  "reqwest",
@@ -4656,7 +4656,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.42.0"
+version = "0.43.0"
 dependencies = [
  "anyhow",
  "resvg",
