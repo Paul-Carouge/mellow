@@ -5,6 +5,7 @@
   import { strings } from "../i18n";
   import CustomEmojiImage from "./CustomEmojiImage.svelte";
   import type { BlockNode, InlineNode } from "./markdown";
+  import MessageCodeBlock from "./MessageCodeBlock.svelte";
   import { roleMentionChipColorsInTheme } from "./name-colors.svelte";
   import { roleMentionLabel } from "./role-mentions";
   import { NO_ROLE_COLOR } from "./server-settings";
@@ -108,7 +109,7 @@
         {/each}
       </ul>
     {:else if block.kind === "codeBlock"}
-      <pre class="code-block type-code"><code>{block.text}</code></pre>
+      <MessageCodeBlock text={block.text} />
     {/if}
   {/each}
 {/snippet}
@@ -154,16 +155,6 @@
     padding-inline: var(--mw-space-3xs);
     font-family: var(--mw-type-code-font-family);
     font-size: var(--mw-type-code-font-size);
-  }
-
-  .code-block {
-    margin-block: var(--mw-space-2xs);
-    overflow-x: auto;
-    border: 1px solid var(--mw-component-message-code-border);
-    border-radius: var(--mw-radius-sm);
-    background: var(--mw-component-message-code-background);
-    padding: var(--mw-space-xs);
-    white-space: pre;
   }
 
   .quote {
