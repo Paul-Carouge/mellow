@@ -43,6 +43,7 @@
   import ReactionsDialog from "./ReactionsDialog.svelte";
   import { createPopoverToggle } from "./popover-toggle";
   import { noteEmojiUsed } from "./recent-emoji.svelte";
+  import { rolesWriterMayMention, withRoleNamesAsMarkup } from "./role-mentions";
 
   // The chat pane (DESIGN.md §5.4, §5.5): header, message list, composer and typing band.
   interface Props {
@@ -155,6 +156,16 @@
     guild && channel
       ? (client.membersByGuild.get(guild.id) ?? []).map((member) => member.user)
       : (conversation?.recipients ?? []),
+  );
+  // Roles and @everyone after the people, in a server's channels only (ADR-0040).
+  const canMentionEveryone = $derived(
+    guild !== null &&
+      channel !== null &&
+      channelPermissions !== null &&
+      hasPermission(channelPermissions, Permission.MENTION_EVERYONE),
+  );
+  const mentionableRoles = $derived(
+    guild && channel ? rolesWriterMayMention(guild.roles, guild.id, canMentionEveryone) : [],
   );
   const pickerServer = $derived(guild && channel ? { name: guild.name, emojis: serverEmojis } : null);
 
@@ -316,7 +327,9 @@
 
   async function saveEdit(message: Message, text: string) {
     editingMessageId = null;
-    const trimmed = withEmojiNamesAsMarkup(text.trim(), serverEmojis);
+    // As on send (Composer's `textAsSent`): typed ":name:" and a role's "@Name" become markup.
+    const peopleNames = new Set(mentionCandidates.map((person) => person.username.toLowerCase()));
+    const trimmed = withRoleNamesAsMarkup(withEmojiNamesAsMarkup(text.trim(), serverEmojis), mentionableRoles, peopleNames);
     // Saving an empty message asks to delete it; an unchanged one is not sent again (DESIGN.md §5.5).
     if (trimmed === "") {
       deletingMessage = message;
@@ -633,6 +646,8 @@
       {drafts}
       {serverEmojis}
       {mentionCandidates}
+      {mentionableRoles}
+      {canMentionEveryone}
       currentUserId={user?.id ?? null}
       label={composerLabel}
       {canSendMessages}
@@ -724,6 +739,7 @@
 {#if pinning}
   {@const { message, isPinned } = pinning}
   <ConfirmMessageDialog
+    roles={client.knownRoles}
     {message}
     title={isPinned ? strings.pins.pinTitle : strings.pins.unpinTitle}
     subtitle={isPinned
@@ -745,6 +761,7 @@
 {#if removingReactionsOf}
   {@const message = removingReactionsOf}
   <ConfirmMessageDialog
+    roles={client.knownRoles}
     {message}
     title={strings.reactions.removeAllTitle}
     subtitle={strings.reactions.removeAllSubtitle}
@@ -793,6 +810,7 @@
 {#if deletingMessage}
   {@const message = deletingMessage}
   <DeleteMessageDialog
+    roles={client.knownRoles}
     {message}
     onclose={() => (deletingMessage = null)}
     onconfirm={() => {

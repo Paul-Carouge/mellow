@@ -452,6 +452,25 @@
               />
             </div>
 
+            <!-- ADR-0040: on the Display tab, which @everyone never shows. -->
+            <div class="flex items-center gap-(--mw-component-roles-permission-gap) border-b border-(--mw-component-roles-permission-divider) py-(--mw-component-roles-permission-padding-block)">
+              <div class="min-w-0 flex-1">
+                <p id="{id}-mentionable" class="type-channel-name text-(--mw-component-roles-permission-label-text)">
+                  {strings.serverSettings.roles.mentionable}
+                </p>
+                <p id="{id}-mentionable-description" class="type-body text-(--mw-component-roles-permission-description-text)">
+                  {strings.serverSettings.roles.mentionableDescription}
+                </p>
+              </div>
+              <Switch
+                isOn={shown.isMentionable}
+                isLocked={!isEditable}
+                labelledBy="{id}-mentionable"
+                describedBy="{id}-mentionable-description"
+                onchange={(isOn) => change({ ...shown, isMentionable: isOn })}
+              />
+            </div>
+
             {#if isEditable}
               <div>
                 <Button variant="danger" isDisabled={busy !== null} onclick={() => (isDeleteDialogOpen = true)}>

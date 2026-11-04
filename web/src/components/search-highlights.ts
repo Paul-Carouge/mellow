@@ -111,9 +111,12 @@ export function withSearchHighlights(blocks: readonly BlockNode[], content: stri
           });
         // shortcut: a mention chip stays whole and unlit even when its name matched; mark the chip if people miss it.
         case "mention":
+        case "everyoneMention":
         case "code":
           locate(node.text);
           return [node];
+        // The content holds `<@&id>`, never the role's name: nothing to find in it.
+        case "roleMention":
         case "customEmoji":
         case "match":
           return [node];

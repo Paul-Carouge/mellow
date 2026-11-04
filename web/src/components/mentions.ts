@@ -7,7 +7,14 @@ import type { PublicUser, Snowflake } from "../lib/protocol";
 import { foldForSearch } from "../lib/search-text";
 import { displayName } from "./format";
 
-export type MentionSegment = { kind: "text"; text: string } | { kind: "mention"; text: string; user: PublicUser };
+export type MentionSegment =
+  | { kind: "text"; text: string }
+  | { kind: "mention"; text: string; user: PublicUser }
+  /** `@everyone` as written, when the server kept it as a mention (ADR-0040). */
+  | { kind: "everyoneMention"; text: string };
+
+/** The word that mentions everyone who can see the channel, in any case; never a person's name. */
+export const EVERYONE_MENTION_WORD = "everyone";
 
 /** People by the lowercase names they can be mentioned with. */
 export type MentionablePeople = ReadonlyMap<string, PublicUser>;
@@ -84,19 +91,31 @@ function findMentioned(name: string, people: MentionablePeople): { user: PublicU
   return null;
 }
 
-export function splitMentions(text: string, people: MentionablePeople): MentionSegment[] {
+/** Whether `name` (after the "@") is the everyone word, a closing full stop allowed. */
+function isEveryoneWord(name: string): boolean {
+  return name.replace(/\.+$/u, "").toLowerCase() === EVERYONE_MENTION_WORD;
+}
+
+/**
+ * `text` cut into plain text and mentions. `@everyone` is never a person: it is a mention when
+ * `isEveryoneMentioned` (the server kept it, ADR-0040), plain text otherwise.
+ */
+export function splitMentions(text: string, people: MentionablePeople, isEveryoneMentioned = false): MentionSegment[] {
   const segments: MentionSegment[] = [];
   let textStart = 0;
   for (const match of text.matchAll(MENTION_CANDIDATE)) {
-    const found = match[1] ? findMentioned(match[1], people) : null;
-    if (!found) {
+    const name = match[1] ?? "";
+    const isEveryone = isEveryoneWord(name);
+    const found = isEveryone ? null : findMentioned(name, people);
+    if (!found && !(isEveryone && isEveryoneMentioned)) {
       continue;
     }
     if (match.index > textStart) {
       segments.push({ kind: "text", text: text.slice(textStart, match.index) });
     }
-    const end = match.index + 1 + found.length;
-    segments.push({ kind: "mention", text: text.slice(match.index, end), user: found.user });
+    const end = match.index + 1 + (found ? found.length : EVERYONE_MENTION_WORD.length);
+    const written = text.slice(match.index, end);
+    segments.push(found ? { kind: "mention", text: written, user: found.user } : { kind: "everyoneMention", text: written });
     textStart = end;
   }
   if (textStart < text.length) {

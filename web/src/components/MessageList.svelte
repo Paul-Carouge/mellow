@@ -88,6 +88,7 @@
 
   const INITIAL_SKELETON_COUNT = 5;
   const OLDER_HISTORY_SKELETON_COUNT = 3;
+  const NO_ROLE_IDS: readonly Snowflake[] = [];
   /** Varied on purpose, so placeholders read as messages rather than a grid (as on desktop). */
   const SKELETON_SHAPES = [
     { name: 0.75, lines: [0.72, 0.46] },
@@ -121,6 +122,11 @@
       ...conversationRecipients,
     ]),
   );
+  // Primitives and the guild's own array: a guild update that changes neither keeps every row's
+  // "mentions me" as it was (ADR-0040).
+  const readerGuildId = $derived(client.selectedGuild?.id ?? null);
+  const readerRoleIds = $derived(client.selectedGuild?.my_role_ids ?? NO_ROLE_IDS);
+  const mentionReader = $derived({ userId: currentUser.id, guildId: readerGuildId, roleIds: readerRoleIds });
   const unreadMarker = $derived(client.unreadMarkers.get(channelId) ?? null);
   // The divider waits until the first new message is loaded, so it never jumps as pages arrive.
   const dividerAfterMessageId = $derived(
@@ -368,7 +374,7 @@
       latest.message.author.id !== currentUser.id &&
       !client.isBlocked(latest.message.author.id)
     ) {
-      announcement = strings.messages.authorSaid(displayName(latest.message.author), messageSummary(latest.message));
+      announcement = strings.messages.authorSaid(displayName(latest.message.author), messageSummary(latest.message, client.knownRoles));
     }
     lastAnnouncedKey = latest.key;
   }
@@ -580,10 +586,12 @@
             {currentUser}
             mentionablePeople={mentionable}
             customEmojis={client.knownCustomEmojis}
+            roles={client.knownRoles}
+            {mentionReader}
             doesServerFindMentions={client.doesServerFindMentions}
             authorColor={authorColors.get(row.kind === "sent" ? row.message.author.id : currentUser.id) ?? null}
             replyReference={row.kind === "sent"
-              ? replyReferenceOf(row.message, messagesById, (userId) => client.isBlocked(userId))
+              ? replyReferenceOf(row.message, messagesById, (userId) => client.isBlocked(userId), client.knownRoles)
               : null}
             {canSendMessages}
             {canManageMessages}

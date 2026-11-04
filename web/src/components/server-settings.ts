@@ -178,6 +178,8 @@ export interface RoleDraft {
   color: number;
   permissions: PermissionBits;
   isDisplayedSeparately: boolean;
+  /** Anyone may `@mention` it (ADR-0040); absent from older servers, read as off. */
+  isMentionable: boolean;
 }
 
 export function draftOf(role: Role): RoleDraft {
@@ -186,6 +188,7 @@ export function draftOf(role: Role): RoleDraft {
     color: role.color,
     permissions: role.permissions,
     isDisplayedSeparately: role.is_displayed_separately,
+    isMentionable: role.is_mentionable === true,
   };
 }
 
@@ -202,7 +205,8 @@ function isSameAsStored(draft: RoleDraft, stored: RoleDraft): boolean {
     draft.name.trim() === stored.name &&
     draft.color === stored.color &&
     draft.permissions === stored.permissions &&
-    draft.isDisplayedSeparately === stored.isDisplayedSeparately
+    draft.isDisplayedSeparately === stored.isDisplayedSeparately &&
+    draft.isMentionable === stored.isMentionable
   );
 }
 
@@ -222,6 +226,7 @@ export function rebaseRoleEdit(edit: RoleEdit, stored: Role): RoleEdit | null {
       edit.draft.isDisplayedSeparately === edit.base.isDisplayedSeparately
         ? base.isDisplayedSeparately
         : edit.draft.isDisplayedSeparately,
+    isMentionable: edit.draft.isMentionable === edit.base.isMentionable ? base.isMentionable : edit.draft.isMentionable,
     // The toggled bits take the wanted value, so a role that already has it (our own save
     // echoed by the gateway) ends the edit instead of reverting it.
     permissions: String((BigInt(base.permissions) & ~toggled) | (wanted & toggled)),
@@ -258,6 +263,8 @@ export function roleUpdateBody(
     ...(!isEveryone && draft.isDisplayedSeparately !== stored.is_displayed_separately
       ? { is_displayed_separately: draft.isDisplayedSeparately }
       : {}),
+    // Left out when unchanged, so an instance from before ADR-0040 still accepts the request.
+    ...(!isEveryone && draft.isMentionable !== (stored.is_mentionable === true) ? { is_mentionable: draft.isMentionable } : {}),
     ...(draft.permissions !== stored.permissions ? { permissions: draft.permissions } : {}),
   };
 }
@@ -512,6 +519,8 @@ export function auditChangeLines(entry: AuditLogEntry, context: AuditContext): s
         return [log.colorChange];
       case "displayed_separately":
         return [log.displayedSeparatelyChange(change.new_value === "true")];
+      case "mentionable":
+        return [log.mentionableChange(change.new_value === "true")];
       case "permissions":
       case "allow":
       case "deny": {

@@ -452,7 +452,10 @@
       >
     </div>
   {:else}
-    {@const blocks = withSearchHighlights(parseMessageMarkdown(message.content, mentionable, client.knownCustomEmojis), message.content, hit.highlights)}
+    {@const blocks = withSearchHighlights(parseMessageMarkdown(message.content, mentionable, client.knownCustomEmojis, {
+      roles: client.knownRoles,
+      isEveryoneMentioned: guild !== null && (message.mention_role_ids ?? []).includes(guild.id),
+    }), message.content, hit.highlights)}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
     <article
       aria-label={strings.messages.authorSaid(displayName(message.author), "")}

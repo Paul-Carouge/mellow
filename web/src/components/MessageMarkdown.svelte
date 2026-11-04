@@ -5,6 +5,8 @@
   import { strings } from "../i18n";
   import CustomEmojiImage from "./CustomEmojiImage.svelte";
   import type { BlockNode, InlineNode } from "./markdown";
+  import { roleMentionChipColorsInTheme } from "./name-colors.svelte";
+  import { roleMentionLabel } from "./role-mentions";
 
   // A message body parsed by `markdown.ts` (DESIGN.md §5.4). Every node becomes an element or a
   // text node here: message text is never inserted as HTML.
@@ -37,6 +39,10 @@
   }
 
   const lastBlock = $derived(blocks.at(-1));
+
+  /** A person, `@everyone` or a role without colour (DESIGN.md §5.4): the lamp's amber chip. */
+  const MENTION_CHIP_CLASS =
+    "rounded-(--mw-component-mention-chip-radius) bg-(--mw-component-mention-chip-background) px-(--mw-component-mention-chip-padding-inline) font-medium text-(--mw-component-mention-chip-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-mention-chip-background-hover) hover:text-(--mw-component-mention-chip-text-hover)";
 </script>
 
 <!-- Inline nodes are written without whitespace between tags: paragraphs keep the sender's spaces. -->
@@ -46,10 +52,14 @@
       >{:else if node.kind === "customEmoji"}<CustomEmojiImage
         emoji={node.emoji}
         class={isJumbo ? "size-(--mw-component-custom-emoji-jumbo-size)" : "size-(--mw-component-custom-emoji-inline-size)"}
-      />{:else if node.kind === "mention"}<span
-        class="rounded-(--mw-component-mention-chip-radius) bg-(--mw-component-mention-chip-background) px-(--mw-component-mention-chip-padding-inline) font-medium text-(--mw-component-mention-chip-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-mention-chip-background-hover) hover:text-(--mw-component-mention-chip-text-hover)"
-        >{node.text}</span
-      >{:else if node.kind === "code"}<code class="inline-code">{node.text}</code
+      />{:else if node.kind === "mention" || node.kind === "everyoneMention"}<span class={MENTION_CHIP_CLASS}>{node.text}</span
+      >{:else if node.kind === "roleMention"}{#if node.role === null}{roleMentionLabel(null)}{:else if node.role.color === 0}<span
+            class={MENTION_CHIP_CLASS}>{roleMentionLabel(node.role)}</span
+          >{:else}{@const chip = roleMentionChipColorsInTheme(node.role.color)}<span
+            class="role-mention"
+            style:--role-mention-background={chip.background}
+            style:--role-mention-text={chip.text}>{roleMentionLabel(node.role)}</span
+          >{/if}{:else if node.kind === "code"}<code class="inline-code">{node.text}</code
       >{:else if node.kind === "strong"}<strong class="font-bold">{@render inlines(node.children, areLinksActive)}</strong
       >{:else if node.kind === "emphasis"}<em>{@render inlines(node.children, areLinksActive)}</em
       >{:else if node.kind === "underline"}<u>{@render inlines(node.children, areLinksActive)}</u
@@ -116,6 +126,25 @@
     color: var(--mw-component-search-match-text);
     font-weight: var(--mw-font-weight-semibold);
     box-decoration-break: clone;
+  }
+
+  /* A role's chip (DESIGN.md §5.4): the sheet washed with the role colour, the name in that colour
+     made readable on it; hovered, the two swap, as the amber chip fills. Opaque, so it reads the
+     same on a highlighted row. */
+  .role-mention {
+    border-radius: var(--mw-component-mention-chip-radius);
+    background: var(--role-mention-background);
+    padding-inline: var(--mw-component-mention-chip-padding-inline);
+    color: var(--role-mention-text);
+    font-weight: var(--mw-font-weight-medium);
+    transition:
+      background-color var(--mw-motion-duration-fast) var(--mw-motion-easing-standard),
+      color var(--mw-motion-duration-fast) var(--mw-motion-easing-standard);
+  }
+
+  .role-mention:hover {
+    background: var(--role-mention-text);
+    color: var(--role-mention-background);
   }
 
   .inline-code {

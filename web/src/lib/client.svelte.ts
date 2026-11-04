@@ -19,6 +19,7 @@ import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
 import { CustomEmojiLibrary } from "./custom-emoji-library.svelte";
 import { reactionKey, withReactionAdded, withReactionRemoved, withoutEmoji } from "./reactions";
+import { type MentionReader, doesMessageMentionReader } from "./reader-mentions";
 import { Relationships } from "./relationships.svelte";
 import {
   type Attachment,
@@ -1418,7 +1419,13 @@ export class MellowClient {
       return false;
     }
     const isConversation = this.conversations.some((channel) => channel.id === message.channel_id);
-    return isConversation || (message.mention_ids ?? []).includes(userId);
+    return isConversation || doesMessageMentionReader(message, this.mentionReaderIn(message.channel_id, userId));
+  }
+
+  /** The reader of `channelId` for `doesMessageMentionReader`: their roles in its guild, if any. */
+  mentionReaderIn(channelId: Snowflake, userId: Snowflake): MentionReader {
+    const guild = this.guilds.find((candidate) => candidate.channels.some((channel) => channel.id === channelId));
+    return { userId, guildId: guild?.id ?? null, roleIds: guild?.my_role_ids ?? [] };
   }
 
   /**
@@ -1953,6 +1960,27 @@ export class MellowClient {
     await this.rest.deleteGuild(guildId);
     this.removeGuild(guildId);
   }
+
+  /**
+   * Every role of the user's guilds by id, `@everyone` left out (it is mentioned by its word), for
+   * `<@&id>` mentions (ADR-0040). Channel and member events replace the guild but keep its roles:
+   * the same map then spares every message row a new parse.
+   */
+  readonly knownRoles: ReadonlyMap<Snowflake, Role> = $derived.by(() => {
+    const lists = this.guilds.map((guild) => guild.roles);
+    const isUnchanged =
+      lists.length === this.knownRoleLists.length && lists.every((list, index) => list === this.knownRoleLists[index]);
+    if (!isUnchanged) {
+      this.knownRoleLists = lists;
+      this.knownRoleMap = new Map(
+        this.guilds.flatMap((guild) => guild.roles.filter((role) => role.id !== guild.id).map((role) => [role.id, role] as const)),
+      );
+    }
+    return this.knownRoleMap;
+  });
+  /** The lists `knownRoles` was last built from; never reactive. */
+  private knownRoleLists: readonly Role[][] = [];
+  private knownRoleMap: ReadonlyMap<Snowflake, Role> = new Map();
 
   // --- Custom emoji (ADR-0028): `customEmojis`, under the names components already use -------
 

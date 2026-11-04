@@ -1,6 +1,6 @@
 import { prefersDarkColorScheme } from "../lib/color-scheme.svelte";
 import type { Guild, Member, Snowflake } from "../lib/protocol";
-import { highestColouredRole, readableRoleColor } from "./role-colors";
+import { type RoleMentionChipColors, highestColouredRole, readableRoleColor, roleMentionChipColors } from "./role-colors";
 import { colorTokenValue } from "./tokens";
 
 /**
@@ -26,6 +26,23 @@ export function nameColorsByUserId(
       byRoleId.set(role.id, color);
       colors.set(member.user.id, color);
     }
+  }
+  return colors;
+}
+
+// Worked out once per colour and theme: every chip of a role in every row shares it.
+const chipColorsByThemeAndColor = new Map<string, RoleMentionChipColors>();
+
+/**
+ * A role mention chip's colours on the chat sheet in the current theme (DESIGN.md §5.4). The
+ * chip is opaque, so it reads the same on a highlighted row or a search result.
+ */
+export function roleMentionChipColorsInTheme(color: number): RoleMentionChipColors {
+  const key = `${prefersDarkColorScheme.current ? "dark" : "light"}:${color}`;
+  let colors = chipColorsByThemeAndColor.get(key);
+  if (!colors) {
+    colors = roleMentionChipColors(color, colorTokenValue("color-surface-chat"));
+    chipColorsByThemeAndColor.set(key, colors);
   }
   return colors;
 }

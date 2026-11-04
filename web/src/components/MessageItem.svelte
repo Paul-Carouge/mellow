@@ -2,7 +2,8 @@
   import { onMount } from "svelte";
 
   import { strings } from "../i18n";
-  import type { CustomEmoji, ForwardOrigin, Message, PublicUser, Snowflake } from "../lib/protocol";
+  import type { CustomEmoji, ForwardOrigin, Message, PublicUser, Role, Snowflake } from "../lib/protocol";
+  import { type MentionReader, doesMessageMentionReader } from "../lib/reader-mentions";
   import { autosize } from "./autosize";
   import Avatar from "./Avatar.svelte";
   import {
@@ -44,6 +45,10 @@
     mentionablePeople: MentionablePeople;
     /** The custom emoji whose picture the user may load (`MellowClient.knownCustomEmojis`). */
     customEmojis: ReadonlyMap<Snowflake, CustomEmoji>;
+    /** The roles a `<@&id>` names (`MellowClient.knownRoles`). */
+    roles: ReadonlyMap<Snowflake, Role>;
+    /** The reader and their roles here, for "mentions me" (ADR-0040). */
+    mentionReader: MentionReader;
     /** The server fills `mention_ids` (absent when empty): it decides who a message mentions. */
     doesServerFindMentions: boolean;
     canSendMessages: boolean;
@@ -84,6 +89,8 @@
     authorColor,
     mentionablePeople,
     customEmojis,
+    roles,
+    mentionReader,
     doesServerFindMentions,
     canSendMessages,
     canManageMessages,
@@ -116,18 +123,26 @@
   const isOwn = $derived(author.id === currentUser.id);
   const isSending = $derived(row.kind === "pending" && row.pending.status === "sending");
   const isFailed = $derived(row.kind === "pending" && row.pending.status === "failed");
-  const contentBlocks = $derived(parseMessageMarkdown(content, mentionablePeople, customEmojis));
+  // A primitive, so a guild update that leaves it as it was parses no row again.
+  const isEveryoneMentioned = $derived(
+    mentionReader.guildId !== null && (message?.mention_role_ids ?? []).includes(mentionReader.guildId),
+  );
+  const contentBlocks = $derived(
+    parseMessageMarkdown(content, mentionablePeople, customEmojis, { roles, isEveryoneMentioned }),
+  );
   const isJumbo = $derived(isJumboEmojiMessage(contentBlocks));
   const forwardedFrom = $derived(message?.forwarded_from ?? null);
   // Only a forward's place is looked up, among the channels the reader knows.
   const forwardOriginPlace = $derived(forwardedFrom ? forwardOriginPlaceOf(forwardedFrom.channel_id) : null);
   const forwardOriginSentAt = $derived(forwardedFrom ? unixMillisecondsOfSnowflake(forwardedFrom.message_id) : null);
-  // The server's ids first; the client's own reading too, for messages written before the server
-  // found mentions (migration 16) and for older servers. A forward never mentions anyone: its
-  // words were written for another audience (ADR-0039).
+  // The server's ids first (people, roles the reader holds, @everyone); the client's own reading
+  // too, for messages written before the server found mentions (migration 16) and for older
+  // servers. A forward never mentions anyone: its words were written for another audience
+  // (ADR-0039).
   const isMentioningCurrentUser = $derived(
     forwardedFrom === null &&
-      ((message?.mention_ids ?? []).includes(currentUser.id) || markdownMentionsUser(contentBlocks, currentUser.id)),
+      ((message !== null && doesMessageMentionReader(message, mentionReader)) ||
+        markdownMentionsUser(contentBlocks, currentUser.id)),
   );
 
   // Taken from the message when the editor opens; later updates to the message keep the typing.

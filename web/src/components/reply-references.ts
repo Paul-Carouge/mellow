@@ -1,9 +1,9 @@
 // The quoted line above a reply (DESIGN.md §5.4): the original's author and text.
 
 import { strings } from "../i18n";
-import type { Message, PublicUser, Snowflake } from "../lib/protocol";
-import { withCustomEmojiAsNames } from "./custom-emoji";
+import type { Message, PublicUser, Role, Snowflake } from "../lib/protocol";
 import { attachmentCountLabel } from "./format";
+import { messageAsPlainText } from "./role-mentions";
 
 export interface ReplyReference {
   author: PublicUser | null;
@@ -14,11 +14,12 @@ export type ReplyReferenceLookup = (
   message: Message,
   messagesById: ReadonlyMap<Snowflake, Message>,
   isBlocked: (userId: Snowflake) => boolean,
+  roles: ReadonlyMap<Snowflake, Role>,
 ) => ReplyReference | null;
 
-/** The text, then "2 attachments" when files came with it (DESIGN.md §7.3). */
-export function messageSummary(message: Message): string {
-  return [withCustomEmojiAsNames(message.content), attachmentCountLabel(message.attachments?.length ?? 0)]
+/** The text, roles named, then "2 attachments" when files came with it (DESIGN.md §7.3). */
+export function messageSummary(message: Message, roles: ReadonlyMap<Snowflake, Role>): string {
+  return [messageAsPlainText(message.content, roles), attachmentCountLabel(message.attachments?.length ?? 0)]
     .filter(Boolean)
     .join(" ");
 }
@@ -26,13 +27,15 @@ export function messageSummary(message: Message): string {
 /**
  * Finds the reply's original among the loaded messages. The answer stays the same object while the
  * original message and its author's blocked state do, so reply rows that did not change keep their
- * props. Messages are replaced, never changed in place, when they are edited.
+ * props. Messages are replaced, never changed in place, when they are edited; a new roles map
+ * (a role renamed) words every quote again.
  */
 export function createReplyReferenceLookup(): ReplyReferenceLookup {
-  const referencesByOriginal = new WeakMap<Message, ReplyReference>();
+  let referencesByOriginal = new WeakMap<Message, ReplyReference>();
+  let rolesQuoted: ReadonlyMap<Snowflake, Role> | null = null;
   let originalUnavailable: ReplyReference | null = null;
   let blockedReply: ReplyReference | null = null;
-  return (message, messagesById, isBlocked) => {
+  return (message, messagesById, isBlocked, roles) => {
     if (message.reply_to_id === null) {
       return null;
     }
@@ -44,9 +47,13 @@ export function createReplyReferenceLookup(): ReplyReferenceLookup {
     if (isBlocked(original.author.id)) {
       return (blockedReply ??= { author: null, text: strings.messages.blockedReply });
     }
+    if (roles !== rolesQuoted) {
+      rolesQuoted = roles;
+      referencesByOriginal = new WeakMap();
+    }
     let reference = referencesByOriginal.get(original);
     if (!reference) {
-      reference = { author: original.author, text: messageSummary(original) };
+      reference = { author: original.author, text: messageSummary(original, roles) };
       referencesByOriginal.set(original, reference);
     }
     return reference;

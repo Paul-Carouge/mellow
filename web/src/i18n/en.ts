@@ -554,9 +554,13 @@ export const en = {
     emojiSuggestionsTitle: (query: string) => `Emoji matching :${query}`,
     emojiSuggestionsCount: (suggestions: number) =>
       `${count(suggestions)} emoji. Up and Down to choose, Enter or Tab to insert.`,
-    mentionSuggestionsTitle: (query: string) => `People matching @${query}`,
+    mentionSuggestionsTitle: (query: string) => `Mentions matching @${query}`,
     mentionSuggestionsCount: (suggestions: number) =>
-      `${count(suggestions)} ${plural(suggestions, { one: "person", other: "people" })}. Up and Down to choose, Enter or Tab to insert.`,
+      `${count(suggestions)} ${plural(suggestions, { one: "mention", other: "mentions" })}. Up and Down to choose, Enter or Tab to insert.`,
+    /** Next to @everyone in the "@na" suggestions (ADR-0040). */
+    everyoneMentionHint: "Notifies the whole channel",
+    /** Next to a role in the "@na" suggestions, for screen readers and as a quiet label. */
+    roleMentionHint: "Role",
     sendMessage: "Send message",
     cannotSend: "You do not have permission to send messages in this channel.",
     /** The locked composer of a conversation with someone you blocked (ADR-0025). */
@@ -594,6 +598,8 @@ export const en = {
     viewingOlder: "You're viewing older messages",
     jumpToPresent: "Jump to present",
     originalUnavailable: "Original message was deleted or is not loaded",
+    /** A role mention whose role this client does not know, shown after "@". */
+    deletedRoleName: "deleted-role",
     /** A reply to someone you blocked: their words stay folded (ADR-0025). */
     blockedReply: "Blocked message",
     blockedRun: (messages: number) =>
@@ -1273,6 +1279,8 @@ export const en = {
       colorPreview: "Names with this role",
       displayedSeparately: "Display members separately",
       displayedSeparatelyDescription: "Online members with this role are listed under its name, above everyone else.",
+      mentionable: "Allow anyone to @mention this role",
+      mentionableDescription: "Members with “Mention @everyone and all roles” can mention it anyway.",
       moveUp: "Move up",
       moveDown: "Move down",
       moveHint: "Ctrl+Shift+Up and Ctrl+Shift+Down move the selected role too.",
@@ -1321,7 +1329,10 @@ export const en = {
       },
       attachFiles: { label: "Attach files", description: "Add files and pictures to their messages." },
       addReactions: { label: "Add reactions", description: "React to messages with a new emoji." },
-      mentionEveryone: { label: "Mention @everyone", description: "Notify everyone in a channel at once." },
+      mentionEveryone: {
+        label: "Mention @everyone and all roles",
+        description: "Notify everyone in a channel at once, and mention any role, even one nobody else may mention.",
+      },
       manageMessages: { label: "Manage messages", description: "Delete messages sent by other members." },
       connect: { label: "Connect", description: "Join voice channels." },
       speak: { label: "Speak", description: "Be heard in voice channels. Without it, they join muted." },
@@ -1553,6 +1564,7 @@ export const en = {
       topicCleared: "Topic removed",
       colorChange: "Colour changed",
       displayedSeparatelyChange: (isOn: boolean): string => (isOn ? "Members now displayed separately" : "Members no longer displayed separately"),
+      mentionableChange: (isOn: boolean): string => (isOn ? "Anyone can now mention this role" : "Only members allowed to mention all roles can now mention it"),
       permissionsAdded: (key: "permissions" | "allow" | "deny", names: string) =>
         key === "deny" ? `Now denied: ${names}` : key === "allow" ? `Now allowed: ${names}` : `Granted: ${names}`,
       permissionsRemoved: (key: "permissions" | "allow" | "deny", names: string) =>

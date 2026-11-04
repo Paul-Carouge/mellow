@@ -40,6 +40,31 @@ export function readableRoleColor(color: number, surfaceHex: string): string {
   return direction > 0 ? "#FFFFFF" : "#000000";
 }
 
+/** How much of the role colour washes a role mention chip's background over the sheet. */
+const ROLE_MENTION_WASH_WEIGHT = 0.2;
+
+/** A role mention chip's colours: its text is the role colour adjusted to 4.5:1 on its background. */
+export interface RoleMentionChipColors {
+  background: string;
+  text: string;
+}
+
+/**
+ * The chip of a role mention on `surfaceHex` (DESIGN.md §5.4): the sheet washed with the role
+ * colour, and the role colour made readable on that wash. Hovered, the two swap, which keeps the
+ * same contrast.
+ */
+export function roleMentionChipColors(color: number, surfaceHex: string): RoleMentionChipColors {
+  const surface = parseHexColor(surfaceHex);
+  if (!surface) {
+    return { background: surfaceHex, text: readableRoleColor(color, surfaceHex) };
+  }
+  const picked: Rgb = [((color >> 16) & 0xff) / 255, ((color >> 8) & 0xff) / 255, (color & 0xff) / 255];
+  const mixed = (index: 0 | 1 | 2) => surface[index] + (picked[index] - surface[index]) * ROLE_MENTION_WASH_WEIGHT;
+  const wash = toHex([mixed(0), mixed(1), mixed(2)]);
+  return { background: wash, text: readableRoleColor(color, wash) };
+}
+
 export function contrastRatio(left: Rgb, right: Rgb): number {
   const [lighter, darker] = [relativeLuminance(left), relativeLuminance(right)].sort((x, y) => y - x) as [number, number];
   return (lighter + 0.05) / (darker + 0.05);
