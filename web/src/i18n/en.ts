@@ -616,6 +616,14 @@ export const en = {
     spoilerHidden: "Spoiler, select to reveal",
     /** Read out before a revealed spoiler's text. */
     spoilerRevealedPrefix: "Spoiler: ",
+    copyCode: "Copy code",
+    codeCopied: "Copied",
+    codeCopiedAnnouncement: "Code copied",
+    copyCodeFailedShort: "Couldn't copy",
+    copyCodeFailed: "Couldn't copy the code. Select it and copy it by hand.",
+    /** Under a folded code block. */
+    showAllCode: (lines: number) => `Show all (${count(lines)} ${plural(lines, { one: "line", other: "lines" })})`,
+    foldCode: "Collapse",
     editMessage: "Edit message",
     escTo: "Esc to",
     cancelLowercase: "cancel",
