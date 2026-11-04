@@ -21,7 +21,7 @@ ROADMAP item 18 asks for link previews (plain pages, YouTube, Spotify, YouTube M
   - links found before the send lock, in linear time on hostile text;
   - a bounded queue (256 messages; a full queue drops the message, which simply gets no preview) and 2 jobs at a time for the whole instance, plus the existing image processing permits; running jobs stop with the server.
 - **The user agent says who it is**: `Mellow/<version> (link preview; +https://github.com/Paul-Carouge/mellow)`. Logs say how many links a message had and how many previews it shows, at debug, never which; the HTTP client's own connection lines (`hyper_util`) are capped at errors whatever `RUST_LOG` says.
-- **Players**: a YouTube link's preview plays in place after a click, in `https://www.youtube-nocookie.com/embed/<id>` (the policy gains `frame-src https://www.youtube-nocookie.com`; nothing loads from YouTube before the click). Spotify, YouTube Music and Deezer show their preview card and open in a new tab; their players come later, each adding its own origin to `frame-src`.
+- **Players**: a YouTube link's preview plays in place after a click, in `https://www.youtube-nocookie.com/embed/<id>` (the policy gains `frame-src https://www.youtube-nocookie.com`; nothing loads from YouTube before the click). YouTube Music watch links carry the same video id and play in the same player. Spotify and Deezer show their preview card and open in a new tab; their players come later, each adding its own origin to `frame-src`.
 
 ## Consequences
 - Every link posted is fetched by the instance, from the instance's address, private channels and conversations included, as on Discord. Sites see the instance, never its members. An instance that must not reach the Internet turns previews off.
