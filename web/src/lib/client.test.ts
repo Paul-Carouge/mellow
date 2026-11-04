@@ -632,6 +632,24 @@ describe("reactions and pins", () => {
     expect(client.messages(GENERAL)[0]?.link_previews).toEqual([]);
   });
 
+  it("keep link previews over a message update that is not a newer edit", async () => {
+    const client = await clientWithHistory();
+    const preview = { id: "900", url: "https://example.org/", title: "Example" };
+    client.applyEvent(
+      { t: "MESSAGE_LINK_PREVIEWS_UPDATE", data: { channel_id: GENERAL, message_id: "200", link_previews: [preview] } },
+      0,
+    );
+    const cached = client.messages(GENERAL)[0];
+    if (!cached) throw new Error("no message");
+    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...cached, pinned: true, link_previews: [] } }, 0);
+    expect(client.messages(GENERAL)[0]?.link_previews).toEqual([preview]);
+    client.applyEvent(
+      { t: "MESSAGE_UPDATE", data: { ...cached, content: "edited", edited_at_unix_milliseconds: 5, link_previews: [] } },
+      0,
+    );
+    expect(client.messages(GENERAL)[0]?.link_previews).toEqual([]);
+  });
+
   it("show the user's reaction at once, count its event once, and undo it if refused", async () => {
     let refuse = false;
     const client = await clientWithHistory({

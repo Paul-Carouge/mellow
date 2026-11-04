@@ -190,7 +190,8 @@ pub(crate) async fn insert_preview(
 }
 
 /// Makes `preview_ids` the message's previews, in order, if its content is still
-/// `expected_content` (an edit meanwhile queued its own previews). Returns whether it wrote.
+/// `expected_content` (an edit meanwhile queued its own previews). Returns how many previews it
+/// replaced, or `None` when it wrote nothing.
 ///
 /// # Errors
 /// Fails on database errors. Nothing is written then.
@@ -199,7 +200,7 @@ pub(crate) async fn set_message_previews(
     message_id: Snowflake,
     expected_content: &str,
     preview_ids: &[Snowflake],
-) -> Result<bool, MessageStorageError> {
+) -> Result<Option<u64>, MessageStorageError> {
     let message_id = to_sqlite_integer(message_id.raw())?;
     let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
     let is_unchanged: bool =
@@ -209,12 +210,13 @@ pub(crate) async fn set_message_previews(
             .fetch_one(&mut *transaction)
             .await?;
     if !is_unchanged {
-        return Ok(false);
+        return Ok(None);
     }
-    sqlx::query("DELETE FROM message_link_previews WHERE message_id = ?")
+    let removed = sqlx::query("DELETE FROM message_link_previews WHERE message_id = ?")
         .bind(message_id)
         .execute(&mut *transaction)
-        .await?;
+        .await?
+        .rows_affected();
     for (position, preview_id) in preview_ids.iter().enumerate() {
         sqlx::query(
             "INSERT INTO message_link_previews (message_id, position, link_preview_id) \
@@ -227,7 +229,7 @@ pub(crate) async fn set_message_previews(
         .await?;
     }
     transaction.commit().await?;
-    Ok(true)
+    Ok(Some(removed))
 }
 
 /// The previews of each of `message_ids` that has some, in their order: one query.
@@ -333,14 +335,16 @@ pub(crate) async fn find_message_preview_image(
     .transpose()
 }
 
-/// Deletes previews expired before `now` that no message shows, and returns their pictures'
-/// file ids, for the caller to delete after the commit.
+/// Deletes previews that no message shows and that expired at least `grace_milliseconds` before
+/// `now` (longer than any fetch job, which may be about to link one it found fresh), and returns
+/// their pictures' file ids.
 ///
 /// # Errors
 /// Fails on database errors.
 pub(crate) async fn delete_expired_unshown_previews(
     database: &Database,
     now_unix_milliseconds: u64,
+    grace_milliseconds: u64,
 ) -> Result<Vec<Snowflake>, MessageStorageError> {
     let file_ids: Vec<Option<i64>> = sqlx::query_scalar(
         "DELETE FROM link_previews WHERE expires_at_unix_milliseconds <= ? \
@@ -348,7 +352,9 @@ pub(crate) async fn delete_expired_unshown_previews(
              WHERE message_link_previews.link_preview_id = link_previews.id) \
          RETURNING image_file_id",
     )
-    .bind(to_sqlite_integer(now_unix_milliseconds)?)
+    .bind(to_sqlite_integer(
+        now_unix_milliseconds.saturating_sub(grace_milliseconds),
+    )?)
     .fetch_all(database.writer())
     .await?;
     file_ids
@@ -371,4 +377,147 @@ pub(crate) async fn all_preview_image_file_ids(
     .fetch_all(database.readers())
     .await?;
     ids.into_iter().map(|id| Ok(to_snowflake(id)?)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::accounts::tests::migrated_database;
+
+    const HOUR: u64 = 60 * 60 * 1_000;
+
+    fn preview(id: u64, url: &str, file_id: Option<u64>) -> StoredLinkPreview {
+        StoredLinkPreview {
+            id: Snowflake::from_raw(id),
+            url: url.into(),
+            title: Some("Title".into()),
+            description: None,
+            site_name: None,
+            theme_color: None,
+            image: file_id.map(|file_id| StoredPreviewImage {
+                file_id: Snowflake::from_raw(file_id),
+                content_type: "image/webp".into(),
+                size_bytes: 10,
+                width: 4,
+                height: 3,
+            }),
+            is_empty: false,
+        }
+    }
+
+    async fn record(database: &Database, preview: StoredLinkPreview, expires_at: u64) {
+        insert_preview(
+            database,
+            &NewLinkPreview {
+                url_sha256: [u8::try_from(preview.id.raw() % 256).unwrap(); 32],
+                preview,
+                fetched_at_unix_milliseconds: 0,
+                expires_at_unix_milliseconds: expires_at,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn previews_are_set_only_on_the_text_the_job_saw_and_report_what_they_replaced() {
+        let (_directory, database) = migrated_database().await;
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) \
+             VALUES (30, 20, 1, 'see https://a.example/');",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        record(&database, preview(40, "https://a.example/", None), HOUR).await;
+        let message = Snowflake::from_raw(30);
+        let ids = [Snowflake::from_raw(40)];
+
+        let stale = set_message_previews(&database, message, "older text", &ids)
+            .await
+            .unwrap();
+        let first = set_message_previews(&database, message, "see https://a.example/", &ids)
+            .await
+            .unwrap();
+        let shown = previews_of_messages(&database, &[message]).await.unwrap();
+        let cleared = set_message_previews(&database, message, "see https://a.example/", &[])
+            .await
+            .unwrap();
+        database.close().await;
+
+        assert_eq!(stale, None, "an edit happened since the job read the text");
+        assert_eq!(first, Some(0));
+        assert_eq!(shown[&message].len(), 1);
+        assert_eq!(
+            cleared,
+            Some(1),
+            "the worker then tells clients they went away"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_purge_keeps_shown_previews_and_fresh_ones_and_frees_the_others_pictures() {
+        let (_directory, database) = migrated_database().await;
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) VALUES (30, 20, 1, 'x');",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        record(
+            &database,
+            preview(40, "https://shown.example/", Some(400)),
+            HOUR,
+        )
+        .await;
+        record(
+            &database,
+            preview(41, "https://gone.example/", Some(410)),
+            HOUR,
+        )
+        .await;
+        record(
+            &database,
+            preview(42, "https://fresh.example/", Some(420)),
+            10 * HOUR,
+        )
+        .await;
+        record(
+            &database,
+            preview(43, "https://recent.example/", None),
+            2 * HOUR,
+        )
+        .await;
+        set_message_previews(
+            &database,
+            Snowflake::from_raw(30),
+            "x",
+            &[Snowflake::from_raw(40)],
+        )
+        .await
+        .unwrap();
+
+        let deleted = delete_expired_unshown_previews(&database, 3 * HOUR, HOUR / 2)
+            .await
+            .unwrap();
+        let pictures = all_preview_image_file_ids(&database).await.unwrap();
+        database.close().await;
+
+        assert_eq!(deleted, [Snowflake::from_raw(410)]);
+        let mut pictures: Vec<u64> = pictures.into_iter().map(Snowflake::raw).collect();
+        pictures.sort_unstable();
+        assert_eq!(pictures, [400, 420], "shown and fresh pictures stay");
+    }
 }

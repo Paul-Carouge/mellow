@@ -607,9 +607,9 @@ impl Messages {
         // Read before the write too, so nothing can fail between the insert and the events.
         let conversation_views = one_to_one_conversation_views(&self.database, &channel).await?;
         let send_order = self.send_order.clone();
-        let link_preview_ticket = self
-            .link_previews
-            .ticket(channel.guild_id(), forwarded.is_some());
+        let link_preview_ticket =
+            self.link_previews
+                .ticket(channel.guild_id(), forwarded.is_some(), &content);
         let database = self.database.clone();
         let ids = self.ids.clone();
         let guilds = self.guilds.clone();
@@ -868,7 +868,6 @@ impl Messages {
         let author_images = profile_images_of_user(&self.database, user_id).await?;
         let attachments = attachments_of(&self.database, message.id).await?;
         let previews_before = link_previews::previews_of(&self.database, message.id).await?;
-        let had_previews = !previews_before.is_empty();
         let updated = message_storage::update_message_content(
             &self.database,
             channel.id(),
@@ -889,17 +888,16 @@ impl Messages {
             &audience,
             &GatewayEvent::MessageUpdate(updated.clone()),
         );
-        link_previews::queue(
-            self.link_previews.sender_if_enabled().as_ref(),
-            link_previews::PreviewJob::for_message(
-                channel.guild_id(),
-                channel.id(),
-                updated.id,
-                &updated.content,
-                audience,
-                had_previews,
-            ),
-        );
+        if let Some(sender) = self.link_previews.sender_if_enabled() {
+            link_previews::queue(
+                Some(&sender),
+                Some(link_previews::PreviewJob::for_edit(
+                    channel.guild_id(),
+                    &updated,
+                    audience,
+                )),
+            );
+        }
         // Only the editor's answer carries reactions; a failure here leaves the edit published.
         fill_reactions(&self.database, user_id, std::slice::from_mut(&mut updated)).await?;
         Ok(updated)

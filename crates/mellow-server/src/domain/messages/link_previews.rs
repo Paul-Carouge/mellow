@@ -21,6 +21,8 @@ use crate::storage::link_previews::{self as storage, NewLinkPreview, StoredLinkP
 const LINK_PREVIEW_QUEUE_CAPACITY: usize = 256;
 /// Links fetched at once for the whole instance.
 const CONCURRENT_LINK_PREVIEW_JOBS: usize = 2;
+/// The most one message's previews may take, its three links and their pictures together.
+const LINK_PREVIEW_JOB_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
 /// A fetched preview is reused this long by every message linking the same address.
 const PREVIEW_LIFETIME_MILLISECONDS: u64 = 24 * 60 * 60 * 1_000;
 /// A link that gave nothing to show is not fetched again before this.
@@ -35,8 +37,6 @@ pub(super) struct PreviewJob {
     content: String,
     links: Vec<Url>,
     audience: MessageAudience,
-    /// The message showed previews before (an edit): an empty answer must reach clients too.
-    had_previews: bool,
 }
 
 /// The queue between message writes and the background fetcher, off until the instance turns
@@ -70,61 +70,66 @@ impl std::fmt::Debug for PreviewJob {
 }
 
 impl PreviewJob {
-    /// The job for a message just written, or `None` when it has no link and showed no preview.
-    pub(super) fn for_message(
+    /// The job for an edited message: always one, even without links, so previews of links the
+    /// edit removed go away (a job fetching the old text may have recorded them while the edit
+    /// was being written).
+    pub(super) fn for_edit(
         guild_id: Option<Snowflake>,
-        channel_id: Snowflake,
-        message_id: Snowflake,
-        content: &str,
+        message: &mellow_protocol::Message,
         audience: MessageAudience,
-        had_previews: bool,
-    ) -> Option<Self> {
-        let links = links_to_preview(content);
-        (!links.is_empty() || had_previews).then(|| Self {
+    ) -> Self {
+        Self {
             guild_id,
-            channel_id,
-            message_id,
-            content: content.to_owned(),
-            links,
+            channel_id: message.channel_id,
+            message_id: message.id,
+            content: message.content.clone(),
+            links: links_to_preview(&message.content),
             audience,
-            had_previews,
-        })
+        }
     }
 }
 
-/// What a new message needs to queue its previews once it is stored.
+/// What a new message needs to queue its previews once it is stored: its links, found before
+/// the send lock so a long text never holds up other sends.
 pub(super) struct LinkPreviewTicket {
     sender: mpsc::Sender<PreviewJob>,
     guild_id: Option<Snowflake>,
+    links: Vec<Url>,
 }
 
 impl LinkPreviewTicket {
-    /// Queues the new message's previews, if it has links.
+    /// Queues the new message's previews.
     pub(super) fn queue_for(self, message: &mellow_protocol::Message, audience: MessageAudience) {
         queue(
             Some(&self.sender),
-            PreviewJob::for_message(
-                self.guild_id,
-                message.channel_id,
-                message.id,
-                &message.content,
+            Some(PreviewJob {
+                guild_id: self.guild_id,
+                channel_id: message.channel_id,
+                message_id: message.id,
+                content: message.content.clone(),
+                links: self.links,
                 audience,
-                false,
-            ),
+            }),
         );
     }
 }
 
 impl LinkPreviewQueue {
-    /// For a message about to be sent; none for a forward, which copies its original's words,
-    /// not its previews (ADR-0041).
+    /// For a message about to be sent with `content`; none without links, and none for a
+    /// forward, which copies its original's words, not its previews (ADR-0041).
     pub(super) fn ticket(
         &self,
         guild_id: Option<Snowflake>,
         is_forward: bool,
+        content: &str,
     ) -> Option<LinkPreviewTicket> {
         let sender = self.sender_if_enabled().filter(|_| !is_forward)?;
-        Some(LinkPreviewTicket { sender, guild_id })
+        let links = links_to_preview(content);
+        (!links.is_empty()).then_some(LinkPreviewTicket {
+            sender,
+            guild_id,
+            links,
+        })
     }
 
     pub(super) fn sender_if_enabled(&self) -> Option<mpsc::Sender<PreviewJob>> {
@@ -211,7 +216,11 @@ pub(crate) async fn fetch_link_previews_in_background(
         return;
     };
     let slots = Arc::new(Semaphore::new(CONCURRENT_LINK_PREVIEW_JOBS));
+    // Dropped with this task when the server stops, which aborts the jobs still running before
+    // the database closes.
+    let mut jobs = tokio::task::JoinSet::new();
     while let Some(job) = receiver.recv().await {
+        while jobs.try_join_next().is_some() {}
         let Ok(slot) = slots.clone().acquire_owned().await else {
             return;
         };
@@ -220,10 +229,13 @@ pub(crate) async fn fetch_link_previews_in_background(
             attachments: attachments.clone(),
             fetcher: fetcher.clone(),
         };
-        tokio::spawn(async move {
+        jobs.spawn(async move {
             let _slot = slot;
-            if let Err(error) = worker.run(job).await {
-                tracing::warn!(%error, "cannot record link previews");
+            // One job's links cannot keep a slot longer than this, whatever the sites do.
+            match tokio::time::timeout(LINK_PREVIEW_JOB_BUDGET, worker.run(job)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(%error, "cannot record link previews"),
+                Err(_) => tracing::debug!("link preview job out of time"),
             }
         });
     }
@@ -259,6 +271,16 @@ pub(crate) async fn fetch_queued_link_previews(
     }
 }
 
+/// A preview's id, random rather than a Snowflake: the cache is shared by every channel, and an id
+/// carrying its fetch time would tell a member that someone elsewhere posted the same link, and
+/// when (security audit of ADR-0041).
+fn random_preview_id() -> Result<Snowflake, MessageError> {
+    let mut bytes = [0_u8; 8];
+    getrandom::fill(&mut bytes).map_err(|error| MessageError::Internal(Box::new(error)))?;
+    // Positive and never 0, as SQLite integer keys and ids are.
+    Ok(Snowflake::from_raw((u64::from_le_bytes(bytes) >> 1).max(1)))
+}
+
 struct PreviewWorker {
     messages: Arc<Messages>,
     attachments: Arc<Attachments>,
@@ -274,15 +296,22 @@ impl PreviewWorker {
                 previews.push(preview);
             }
         }
+        // Counts only: links are message content (logs rule).
+        tracing::debug!(
+            links = job.links.len(),
+            shown = previews.len(),
+            "link previews ready"
+        );
         let preview_ids: Vec<Snowflake> = previews.iter().map(|preview| preview.id).collect();
-        let is_written = storage::set_message_previews(
+        let replaced = storage::set_message_previews(
             &self.messages.database,
             job.message_id,
             &job.content,
             &preview_ids,
         )
         .await?;
-        if is_written && (!previews.is_empty() || job.had_previews) {
+        // Published when there is something to show or something shown went away.
+        if replaced.is_some_and(|removed| !previews.is_empty() || removed > 0) {
             publish(
                 &self.messages.guilds,
                 &job.audience,
@@ -329,7 +358,7 @@ impl PreviewWorker {
             PREVIEW_LIFETIME_MILLISECONDS
         };
         let preview = StoredLinkPreview {
-            id: self.messages.ids.next_id(fetched_at)?,
+            id: random_preview_id()?,
             url: link.to_string(),
             title: details.title,
             description: details.description,

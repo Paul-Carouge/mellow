@@ -34,6 +34,8 @@ pub(crate) enum FetchError {
     Unsupported,
     #[error("too large")]
     TooLarge,
+    #[error("timed out")]
+    TimedOut,
     #[error("cannot build the HTTP client")]
     Client,
 }
@@ -118,17 +120,39 @@ impl LinkFetcher {
     /// # Errors
     /// Any refusal, network error, status other than 2xx, or content that is neither.
     pub(crate) async fn fetch_page_or_picture(&self, url: Url) -> Result<Fetched, FetchError> {
+        let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;
         let (final_url, response) = self
-            .get_following_redirects(url, "text/html,application/xhtml+xml,image/*;q=0.8")
+            .get_following_redirects(
+                url,
+                "text/html,application/xhtml+xml,image/*;q=0.8",
+                deadline,
+            )
             .await?;
         let content_type = content_type_of(&response);
         if PAGE_CONTENT_TYPES.contains(&content_type.as_str()) {
-            let body = read_at_most(response, MAXIMUM_PAGE_BYTES, BodyOverflow::Truncate).await?;
-            let html = String::from_utf8_lossy(&body);
-            return Ok(Fetched::Page(page_details(&html, &final_url)));
+            let body = read_at_most(
+                response,
+                MAXIMUM_PAGE_BYTES,
+                BodyOverflow::Truncate,
+                deadline,
+            )
+            .await?;
+            // Parsing a hostile megabyte is bounded but not free: off the async threads.
+            let details = tokio::task::spawn_blocking(move || {
+                page_details(&String::from_utf8_lossy(&body), &final_url)
+            })
+            .await
+            .map_err(|_| FetchError::Unsupported)?;
+            return Ok(Fetched::Page(details));
         }
         if content_type.starts_with("image/") {
-            let body = read_at_most(response, MAXIMUM_PICTURE_BYTES, BodyOverflow::Fail).await?;
+            let body = read_at_most(
+                response,
+                MAXIMUM_PICTURE_BYTES,
+                BodyOverflow::Fail,
+                deadline,
+            )
+            .await?;
             return Ok(Fetched::Picture(body));
         }
         Err(FetchError::Unsupported)
@@ -139,19 +163,28 @@ impl LinkFetcher {
     /// # Errors
     /// Any refusal, network error, status other than 2xx, or a body over the limit.
     pub(crate) async fn fetch_picture(&self, url: Url) -> Result<Vec<u8>, FetchError> {
-        let (_, response) = self.get_following_redirects(url, "image/*").await?;
+        let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;
+        let (_, response) = self
+            .get_following_redirects(url, "image/*", deadline)
+            .await?;
         if !content_type_of(&response).starts_with("image/") {
             return Err(FetchError::Unsupported);
         }
-        read_at_most(response, MAXIMUM_PICTURE_BYTES, BodyOverflow::Fail).await
+        read_at_most(
+            response,
+            MAXIMUM_PICTURE_BYTES,
+            BodyOverflow::Fail,
+            deadline,
+        )
+        .await
     }
 
     async fn get_following_redirects(
         &self,
         mut url: Url,
         accept: &str,
+        deadline: tokio::time::Instant,
     ) -> Result<(Url, reqwest::Response), FetchError> {
-        let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;
         for _ in 0..=MAXIMUM_REDIRECTS {
             if !is_allowed(&url, self.policy) {
                 return Err(FetchError::NotAllowed);
@@ -161,7 +194,7 @@ impl LinkFetcher {
                 self.client.get(url.clone()).header(ACCEPT, accept).send(),
             )
             .await
-            .map_err(|_| FetchError::Status)??;
+            .map_err(|_| FetchError::TimedOut)??;
             let status = response.status();
             if status.is_redirection() {
                 let location = response
@@ -189,7 +222,19 @@ enum BodyOverflow {
     Fail,
 }
 
+/// The body, within `deadline` too: the whole fetch, redirects and body, has one time budget.
 async fn read_at_most(
+    response: reqwest::Response,
+    maximum: usize,
+    overflow: BodyOverflow,
+    deadline: tokio::time::Instant,
+) -> Result<Vec<u8>, FetchError> {
+    tokio::time::timeout_at(deadline, read_body(response, maximum, overflow))
+        .await
+        .map_err(|_| FetchError::TimedOut)?
+}
+
+async fn read_body(
     mut response: reqwest::Response,
     maximum: usize,
     overflow: BodyOverflow,

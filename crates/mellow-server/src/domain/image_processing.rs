@@ -574,10 +574,11 @@ pub(crate) fn attachment_preview(
 }
 
 /// A link preview's picture (ADR-0041), fitted within the same box as attachment previews and
-/// stored in its smallest visually lossless form, with its size in pixels. Unlike
-/// `attachment_preview`, a picture that already fits is encoded too: nothing fetched from
-/// another site is stored as it came, metadata included. `None` when nothing passes, for an
-/// animated PNG, and when the stored form could not show the same colours.
+/// stored in its smallest visually lossless form, with its size in pixels: its first frame only,
+/// so a fetched animation never takes more than one still picture's room (previews count in no
+/// quota). Unlike `attachment_preview`, a picture that already fits is encoded too: nothing
+/// fetched from another site is stored as it came, metadata included. `None` when nothing
+/// passes, for an animated PNG, and when the stored form could not show the same colours.
 pub(crate) fn link_preview_picture(
     bytes: &[u8],
     content_type: &str,
@@ -596,18 +597,13 @@ pub(crate) fn link_preview_picture(
         return Ok(None);
     }
     let (width, height) = first.dimensions();
-    let is_animated = picture.frames.len() > 1;
-    let encoded = if is_animated {
-        Some(smallest_animation(&picture.frames, deadline)?)
-    } else {
-        smallest_still(first, &picture.colour, !picture.is_photo, deadline)?
-    };
+    let encoded = smallest_still(first, &picture.colour, !picture.is_photo, deadline)?;
     Ok(encoded.map(|encoded| {
         (
             ProcessedImage {
                 bytes: encoded.bytes,
                 content_type: encoded.content_type,
-                is_animated,
+                is_animated: false,
             },
             width,
             height,

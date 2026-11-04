@@ -35,19 +35,26 @@ fn text_outside_code_and_spoilers(content: &str) -> String {
 }
 
 /// Cuts what Markdown and prose put around a link: closing marks and punctuation, and a closing
-/// parenthesis the link did not open (`(see https://a.b/c)`, `[x](https://a.b)`).
+/// parenthesis the link did not open (`(see https://a.b/c)`, `[x](https://a.b)`). Parentheses
+/// are counted once, so a hostile run of them costs one pass.
 fn trimmed_link(candidate: &str) -> &str {
+    let open = candidate.matches('(').count();
+    let mut close = candidate.matches(')').count();
     let mut link = candidate;
     loop {
-        let before = link;
+        let before = link.len();
+        // None of these marks is a parenthesis: the counts stay right.
         link = link.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"', '*', '_', '~', '|']);
-        if link.ends_with(')') && link.matches('(').count() < link.matches(')').count() {
-            link = &link[..link.len() - 1];
+        if open < close
+            && let Some(shorter) = link.strip_suffix(')')
+        {
+            link = shorter;
+            close -= 1;
         }
-        if link.ends_with('>') {
-            link = &link[..link.len() - 1];
+        if let Some(shorter) = link.strip_suffix('>') {
+            link = shorter;
         }
-        if link == before {
+        if link.len() == before {
             return link;
         }
     }
@@ -80,7 +87,10 @@ pub(crate) fn links_to_preview(content: &str) -> Vec<Url> {
             .find(|character: char| character.is_whitespace() || character == '<')
             .unwrap_or(rest.len());
         let candidate = &rest[..candidate_length];
-        if is_after_angle_bracket && candidate.contains('>') {
+        // Checked before any other work: a link longer than this is not previewed anyway.
+        if candidate.len() > MAXIMUM_PREVIEWED_LINK_LENGTH + 16
+            || is_after_angle_bracket && candidate.contains('>')
+        {
             continue;
         }
         let link = trimmed_link(candidate);
@@ -169,5 +179,8 @@ mod tests {
             Vec::<String>::new()
         );
         assert_eq!(links("no link here"), Vec::<String>::new());
+        // Once quadratic: one parenthesis trimmed per pass, recounted each time.
+        let hostile = format!("{}{}", "http://[".repeat(167), ")".repeat(2_667));
+        assert_eq!(links(&hostile), Vec::<String>::new());
     }
 }

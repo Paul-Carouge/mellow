@@ -4,6 +4,8 @@
 
 use url::Url;
 
+use crate::domain::message_rules::is_forbidden_in_messages;
+
 const MAXIMUM_TITLE_CHARACTERS: usize = 256;
 const MAXIMUM_DESCRIPTION_CHARACTERS: usize = 350;
 const MAXIMUM_SITE_NAME_CHARACTERS: usize = 64;
@@ -110,13 +112,14 @@ fn head_values(html: &str) -> HeadValues {
             };
             position = start + end + closing.len();
         } else if is_tag(rest, "title") {
-            let Some(open_end) = rest.find('>') else {
-                break;
-            };
+            // The closing tag first, then the opening's end before it, and the scan resumes after
+            // the closing tag: each byte is read a bounded number of times.
             let Some(close) = rest.find("</title") else {
                 break;
             };
-            if values.html_title.is_none() && open_end < close {
+            if let Some(open_end) = rest[..close].find('>')
+                && values.html_title.is_none()
+            {
                 values.html_title =
                     Some(decode_entities(&html[start + open_end + 1..start + close]));
             }
@@ -260,7 +263,10 @@ fn decode_entities(text: &str) -> String {
 /// `None` when nothing is left.
 fn plain_text(text: &str, maximum: usize) -> Option<String> {
     let words: Vec<&str> = text
-        .split(|character: char| character.is_whitespace() || character.is_control())
+        .split(|character: char| {
+            // Direction overrides would let a page make its title read as something else.
+            character.is_whitespace() || is_forbidden_in_messages(character)
+        })
         .filter(|word| !word.is_empty())
         .collect();
     let line = words.join(" ");
@@ -366,6 +372,15 @@ mod tests {
             details(r#"<meta name="theme-color" content="red">"#).theme_color,
             None
         );
+        assert_eq!(
+            details("<title>evil\u{202E}gnp.exe</title>")
+                .title
+                .as_deref(),
+            Some("evil gnp.exe")
+        );
+        // Once quadratic: every "<title" scanned to the page's one ">" at the end.
+        let hostile = format!("{}>", "<title </title".repeat(20_000));
+        assert_eq!(details(&hostile), PageDetails::default());
         assert_eq!(
             decode_entities("a &unknown; &amp &#xD83D; é&"),
             "a &unknown; &amp &#xD83D; é&"

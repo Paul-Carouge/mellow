@@ -205,7 +205,7 @@ pub fn normalize_line_endings(content: &str) -> String {
 /// Bidirectional overrides and isolates, tags and interlinear annotations: they can make a link
 /// or text read differently from what it is (Trojan Source, CWE-451). Zero-width joiners and
 /// variation selectors stay allowed: emoji sequences need them.
-fn is_forbidden_in_messages(character: char) -> bool {
+pub(crate) fn is_forbidden_in_messages(character: char) -> bool {
     (character.is_control() && character != '\n' && character != '\t')
         || matches!(
             character,
