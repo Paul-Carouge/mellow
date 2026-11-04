@@ -305,6 +305,7 @@
   --mw-component-column-resize-line-inset: 1rem;
   --mw-component-column-resize-line-width: 0.125rem;
   --mw-component-composer-suggestions-avatar-size: 1.5rem;
+  --mw-component-composer-suggestions-command-list-width: 26rem;
   --mw-component-composer-attach-button-size: 2rem;
   --mw-component-composer-background: #312A32;
   --mw-component-composer-error-padding-block: 0.25rem;

@@ -561,6 +561,31 @@ export const en = {
     everyoneMentionHint: "Notifies the whole channel",
     /** Next to a role in the "@na" suggestions, for screen readers and as a quiet label. */
     roleMentionHint: "Role",
+    /** Above the "/" menu (docs/design/web-slash-menu.md). */
+    slashCommandSuggestionsTitle: (query: string) => (query === "" ? "Formatting and commands" : `Commands matching /${query}`),
+    slashCommandSuggestionsCount: (suggestions: number) =>
+      `${count(suggestions)} ${plural(suggestions, { one: "command", other: "commands" })}. Up and Down to choose, Enter or Tab to apply.`,
+    /** The selected word of a link written by "/link", typed over. */
+    linkTextPlaceholder: "text",
+    /** The "/" menu's commands; English names also find them in every language. */
+    slashCommands: {
+      heading1: { name: "Heading 1", description: "Large section title" },
+      heading2: { name: "Heading 2", description: "Medium section title" },
+      heading3: { name: "Heading 3", description: "Small section title" },
+      bold: { name: "Bold", description: "Strong emphasis" },
+      italic: { name: "Italic", description: "Light emphasis" },
+      underline: { name: "Underline", description: "Underlined text" },
+      strikethrough: { name: "Strikethrough", description: "Crossed-out text" },
+      spoiler: { name: "Spoiler", description: "Hidden until someone reveals it" },
+      inlineCode: { name: "Code", description: "Code within a sentence" },
+      codeBlock: { name: "Code block", description: "Several lines of code" },
+      quote: { name: "Quote", description: "Quoted line" },
+      bulletedList: { name: "Bulleted list", description: "List item with a bullet" },
+      numberedList: { name: "Numbered list", description: "List item with a number" },
+      link: { name: "Link", description: "Words that open an address" },
+      shrug: { name: "shrug", description: "Adds a shrug" },
+      tableflip: { name: "tableflip", description: "Flips the table" },
+    },
     sendMessage: "Send message",
     cannotSend: "You do not have permission to send messages in this channel.",
     /** The locked composer of a conversation with someone you blocked (ADR-0025). */

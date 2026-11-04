@@ -321,7 +321,8 @@
     // Ctrl+U, as on Discord; not while a dialog or the settings cover the shell.
     const isShortcut =
       (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "u";
-    if (!isShortcut || !hasMemberSheet || isCoveredByModal()) {
+    // The composer took it to underline a selection.
+    if (!isShortcut || event.defaultPrevented || !hasMemberSheet || isCoveredByModal()) {
       return;
     }
     event.preventDefault();
