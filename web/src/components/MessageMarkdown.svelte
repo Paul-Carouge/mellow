@@ -109,7 +109,8 @@
         {/each}
       </ul>
     {:else if block.kind === "codeBlock"}
-      <MessageCodeBlock text={block.text} />
+      <!-- Keyed by its text: an edit that changes a block starts it folded again, even if blocks moved. -->
+      {#key block.text}<MessageCodeBlock text={block.text} />{/key}
     {/if}
   {/each}
 {/snippet}

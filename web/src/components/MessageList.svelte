@@ -243,6 +243,8 @@
     }
   }
 
+  // `MessageCodeBlock` also calls this through a synthetic `scroll` right after it unfolds, so the
+  // list re-reads its position before its ResizeObserver re-pins the bottom: keep it synchronous.
   function handleScroll() {
     const wasPinnedToLatest = isPinnedToLatest;
     isPinnedToLatest = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 1;
