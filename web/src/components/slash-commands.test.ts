@@ -241,6 +241,27 @@ describe("toggleInlineMarks", () => {
     expect(toggle("***[mot]***", "*")).toBe("**[mot]**");
     expect(toggle("***[mot]***", "**")).toBe("*[mot]*");
   });
+
+  it("reads the whole run of stars inside a selection too", () => {
+    expect(toggle("[**mot**]", "*")).toBe("*[**mot**]*");
+    expect(toggle("[*mot*]", "*")).toBe("[mot]");
+    expect(toggle("[***mot***]", "*")).toBe("[**mot**]");
+    expect(toggle("[**mot**]", "**")).toBe("[mot]");
+  });
+
+  it("formats each line of a selection on several lines, after its block mark", () => {
+    expect(toggle("[# Plan\n- a\n\n> b]", "**")).toBe("[# **Plan**\n- **a**\n\n> **b**]");
+    expect(toggle("[# **Plan**\n- **a**]", "**")).toBe("[# Plan\n- a]");
+  });
+});
+
+describe("slashCommandQuery in code", () => {
+  it("stays closed inside a fenced code block and opens after it", () => {
+    const inside = "```\n/co";
+    const after = "```\nx\n```\n/co";
+    expect(slashCommandQuery(inside, inside.length)).toBeNull();
+    expect(slashCommandQuery(after, after.length)).not.toBeNull();
+  });
 });
 
 describe("differingRange", () => {
