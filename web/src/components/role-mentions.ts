@@ -77,6 +77,8 @@ export function suggestRoleMentions(
 
 /** A role name may be followed by punctuation, not by more of a word. */
 const WORD_CHARACTER = /[\p{Alphabetic}\p{N}_]/u;
+/** A username may hold dots ("mod.ana"): a dot followed by a name character continues the name. */
+const USERNAME_CHARACTER = /[\p{Alphabetic}\p{N}_.]/u;
 /** What may come right before a mention's "@", as the server reads it. */
 const MENTION_PRECEDER = /[\s*_~|]/u;
 
@@ -94,7 +96,9 @@ function roleNamedAt(text: string, at: number, rolesByLongestName: readonly Role
     const end = at + 1 + role.name.length;
     if (
       text.slice(at + 1, end).toLocaleLowerCase() === role.name.toLocaleLowerCase() &&
-      !WORD_CHARACTER.test(text[end] ?? "")
+      !WORD_CHARACTER.test(text[end] ?? "") &&
+      // "@mod.ana" names a person even with a role "Mod"; "@Mod." ending a sentence is the role.
+      !(text[end] === "." && USERNAME_CHARACTER.test(text[end + 1] ?? ""))
     ) {
       return role;
     }

@@ -7,6 +7,7 @@
   import type { BlockNode, InlineNode } from "./markdown";
   import { roleMentionChipColorsInTheme } from "./name-colors.svelte";
   import { roleMentionLabel } from "./role-mentions";
+  import { NO_ROLE_COLOR } from "./server-settings";
 
   // A message body parsed by `markdown.ts` (DESIGN.md §5.4). Every node becomes an element or a
   // text node here: message text is never inserted as HTML.
@@ -53,7 +54,7 @@
         emoji={node.emoji}
         class={isJumbo ? "size-(--mw-component-custom-emoji-jumbo-size)" : "size-(--mw-component-custom-emoji-inline-size)"}
       />{:else if node.kind === "mention" || node.kind === "everyoneMention"}<span class={MENTION_CHIP_CLASS}>{node.text}</span
-      >{:else if node.kind === "roleMention"}{#if node.role === null}{roleMentionLabel(null)}{:else if node.role.color === 0}<span
+      >{:else if node.kind === "roleMention"}{#if node.role === null}{roleMentionLabel(null)}{:else if node.role.color === NO_ROLE_COLOR}<span
             class={MENTION_CHIP_CLASS}>{roleMentionLabel(node.role)}</span
           >{:else}{@const chip = roleMentionChipColorsInTheme(node.role.color)}<span
             class="role-mention"

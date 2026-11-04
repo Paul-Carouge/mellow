@@ -63,3 +63,4 @@ Merci @rôle-supprimé                           plain text: nothing to point at
 - The message editor still shows `<@&id>` for a role mention already sent (as it shows `<:name:id>` for emoji).
 - `@here`, and message search's `mentions:` for roles (ADR-0040).
 - A role of another server named in a forward shows its own name if the reader is in that server, `@rôle-supprimé` otherwise: roles are looked up across the reader's servers by id.
+- The composer converts `@Name` to `<@&id>` by name when the message is sent, not by the role picked: of two roles with the same name (case ignored) the higher one is mentioned, and a role renamed or made unmentionable between the pick and the send leaves `@OldName` as plain text that notifies no one. Keeping the picked ids with the draft would fix both.

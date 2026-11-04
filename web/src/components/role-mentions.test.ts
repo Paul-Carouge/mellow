@@ -83,6 +83,11 @@ describe("suggestRoleMentions", () => {
 });
 
 describe("withRoleNamesAsMarkup", () => {
+  it("leaves a dotted username that starts like a role name to the person", () => {
+    const mod = role("301", "Mod", 1, true);
+    expect(withRoleNamesAsMarkup("@mod.ana hi", [mod], new Set(["mod.ana"]))).toBe("@mod.ana hi");
+    expect(withRoleNamesAsMarkup("ask @Mod.", [mod], NOBODY)).toBe("ask <@&301>.");
+  });
   const allowed = [moderators, sound];
 
   it("turns a picked role's @Name into its markup, longest name first, any case", () => {
