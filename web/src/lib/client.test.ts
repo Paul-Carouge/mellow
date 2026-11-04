@@ -838,6 +838,21 @@ describe("unread state and mention counts", () => {
     expect(client.mentionCount(GENERAL)).toBe(0);
   });
 
+  it("count @everyone and the roles the user holds as mentions, not other roles (ADR-0040)", async () => {
+    const client = new MellowClient(fakeRest(QUIET_REST));
+    client.applyReady(
+      ready({
+        guilds: [{ ...guild([channel(GENERAL), channel(RULES)]), my_role_ids: ["201"] }],
+        channel_unreads: [{ channel_id: RULES, last_message_id: "310", mention_count: 0 }],
+      }),
+    );
+    client.applyEvent({ t: "MESSAGE_CREATE", data: { ...message("320", RULES), mention_role_ids: ["202"] } }, 0);
+    expect(client.mentionCount(RULES)).toBe(0);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: { ...message("321", RULES), mention_role_ids: ["201"] } }, 0);
+    client.applyEvent({ t: "MESSAGE_CREATE", data: { ...message("322", RULES), mention_role_ids: [GUILD] } }, 0);
+    expect(client.mentionCount(RULES)).toBe(2);
+  });
+
   it("never count a message from a blocked author", async () => {
     const client = await clientWithUnreadRules();
     client.applyEvent(

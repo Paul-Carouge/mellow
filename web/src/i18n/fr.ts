@@ -536,9 +536,11 @@ export const fr: Catalogue = {
     emojiSuggestionsTitle: (query) => `Emoji correspondant à :${query}`,
     emojiSuggestionsCount: (suggestions) =>
       `${count(suggestions)}${NO_BREAK_SPACE}emoji. Haut et Bas pour choisir, Entrée ou Tab pour insérer.`,
-    mentionSuggestionsTitle: (query) => `Personnes correspondant à @${query}`,
+    mentionSuggestionsTitle: (query) => `Mentions correspondant à @${query}`,
     mentionSuggestionsCount: (suggestions) =>
-      `${count(suggestions)}${NO_BREAK_SPACE}${plural(suggestions, { one: "personne", other: "personnes" })}. Haut et Bas pour choisir, Entrée ou Tab pour insérer.`,
+      `${count(suggestions)}${NO_BREAK_SPACE}${plural(suggestions, { one: "mention", other: "mentions" })}. Haut et Bas pour choisir, Entrée ou Tab pour insérer.`,
+    everyoneMentionHint: "Notifie tout le salon",
+    roleMentionHint: "Rôle",
     sendMessage: "Envoyer le message",
     cannotSend: "Tu n’as pas la permission d’envoyer des messages dans ce salon.",
     youBlocked: (person) => `Tu as bloqué ${person}. Débloque cette personne pour lui écrire.`,
@@ -574,6 +576,7 @@ export const fr: Catalogue = {
     viewingOlder: "Tu consultes des messages plus anciens",
     jumpToPresent: "Revenir au présent",
     originalUnavailable: "Le message d’origine a été supprimé ou n’est pas chargé",
+    deletedRoleName: "rôle-supprimé",
     blockedReply: "Message bloqué",
     blockedRun: (messages) => `${count(messages)} ${plural(messages, { one: "message bloqué", other: "messages bloqués" })}`,
     showBlocked: "Afficher",
@@ -1230,6 +1233,8 @@ export const fr: Catalogue = {
       colorPreview: "Les noms avec ce rôle",
       displayedSeparately: "Afficher les membres à part",
       displayedSeparatelyDescription: "Les membres en ligne qui ont ce rôle sont listés sous son nom, au-dessus des autres.",
+      mentionable: "Autoriser tout le monde à @mentionner ce rôle",
+      mentionableDescription: `Les membres qui ont «${NO_BREAK_SPACE}Mentionner @everyone et tous les rôles${NO_BREAK_SPACE}» peuvent le mentionner quand même.`,
       moveUp: "Monter",
       moveDown: "Descendre",
       moveHint: "Ctrl+Maj+Haut et Ctrl+Maj+Bas déplacent aussi le rôle choisi.",
@@ -1283,8 +1288,8 @@ export const fr: Catalogue = {
       attachFiles: { label: "Joindre des fichiers", description: "Ajouter des fichiers et des images à ses messages." },
       addReactions: { label: "Ajouter des réactions", description: "Réagir aux messages avec un nouvel emoji." },
       mentionEveryone: {
-        label: "Mentionner @everyone",
-        description: "Prévenir tout le monde dans un salon en une fois.",
+        label: "Mentionner @everyone et tous les rôles",
+        description: "Prévenir tout le monde dans un salon en une fois, et mentionner n’importe quel rôle, même ceux que personne d’autre ne peut mentionner.",
       },
       manageMessages: {
         label: "Gérer les messages",
@@ -1526,6 +1531,7 @@ export const fr: Catalogue = {
       topicCleared: "Sujet retiré",
       colorChange: "Couleur changée",
       displayedSeparatelyChange: (isOn) => (isOn ? "Membres désormais affichés à part" : "Membres de nouveau affichés avec les autres"),
+      mentionableChange: (isOn) => (isOn ? "Tout le monde peut désormais mentionner ce rôle" : "Seuls les membres autorisés à mentionner tous les rôles peuvent désormais le mentionner"),
       permissionsAdded: (key, names) =>
         key === "deny"
           ? `Désormais refusé${NO_BREAK_SPACE}: ${names}`

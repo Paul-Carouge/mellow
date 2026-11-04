@@ -6,16 +6,10 @@
   import type { Message, Snowflake } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
-  import { withCustomEmojiAsNames } from "./custom-emoji";
-  import {
-    attachmentCountLabel,
-    displayName,
-    fullTimestampLabel,
-    messageTimestampLabel,
-    unixMillisecondsOfSnowflake,
-  } from "./format";
+  import { displayName, fullTimestampLabel, messageTimestampLabel, unixMillisecondsOfSnowflake } from "./format";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import { messageSummary } from "./reply-references";
 
   // The pinned messages of the open channel (DESIGN.md §6.53), from the chat header's pin button:
   // newest pin first, with Jump for the ones loaded in the list and Unpin for those who may.
@@ -62,9 +56,7 @@
     if (client.isBlocked(message.author.id)) {
       return strings.messages.blockedReply;
     }
-    return [withCustomEmojiAsNames(message.content), attachmentCountLabel(message.attachments?.length ?? 0)]
-      .filter(Boolean)
-      .join(" ");
+    return messageSummary(message, client.knownRoles);
   }
 </script>
 

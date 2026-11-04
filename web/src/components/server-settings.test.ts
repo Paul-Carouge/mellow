@@ -135,12 +135,13 @@ describe("roles", () => {
     const stored = role("201", 1, Permission.SEND_MESSAGES | Permission.ATTACH_FILES);
     const edit = {
       roleId: stored.id,
-      base: { name: stored.name, color: 0, permissions: stored.permissions, isDisplayedSeparately: false },
+      base: { name: stored.name, color: 0, permissions: stored.permissions, isDisplayedSeparately: false, isMentionable: false },
       draft: {
         name: "Helpers",
         color: 0,
         permissions: String(Permission.SEND_MESSAGES | Permission.ATTACH_FILES | Permission.KICK_MEMBERS),
         isDisplayedSeparately: true,
+        isMentionable: true,
       },
     };
     // Someone else removed ATTACH_FILES and set a colour.
@@ -150,8 +151,15 @@ describe("roles", () => {
       color: 0x3498db,
       permissions: String(Permission.SEND_MESSAGES | Permission.KICK_MEMBERS),
       isDisplayedSeparately: true,
+      isMentionable: true,
     });
-    const saved = { ...stored, name: "Helpers", permissions: edit.draft.permissions, is_displayed_separately: true };
+    const saved = {
+      ...stored,
+      name: "Helpers",
+      permissions: edit.draft.permissions,
+      is_displayed_separately: true,
+      is_mentionable: true,
+    };
     expect(rebaseRoleEdit(edit, saved)).toBeNull();
     expect(rebaseRoleEdit({ ...edit, draft: { ...edit.base, name: `${stored.name} ` } }, stored)).toBeNull();
   });
@@ -160,8 +168,8 @@ describe("roles", () => {
     const stored = role("201", 1);
     const edit = {
       roleId: stored.id,
-      base: { name: stored.name, color: 0, permissions: "0", isDisplayedSeparately: false },
-      draft: { name: "Helpers", color: 0, permissions: "0", isDisplayedSeparately: false },
+      base: { name: stored.name, color: 0, permissions: "0", isDisplayedSeparately: false, isMentionable: false },
+      draft: { name: "Helpers", color: 0, permissions: "0", isDisplayedSeparately: false, isMentionable: false },
     };
     expect(isRoleEditPending(edit, stored)).toBe(true);
     // Our save, echoed by the gateway: nothing left to save, the page drops the edit.
@@ -174,15 +182,20 @@ describe("roles", () => {
 
   it("sends only the changed fields, and only permissions for @everyone", () => {
     const stored = role("201", 1);
-    const unchanged = { name: stored.name, color: 0, permissions: "0", isDisplayedSeparately: false };
+    const unchanged = { name: stored.name, color: 0, permissions: "0", isDisplayedSeparately: false, isMentionable: false };
     expect(roleUpdateBody(stored, { ...unchanged, name: " Helpers " }, false)).toEqual({ name: "Helpers" });
     expect(roleUpdateBody(stored, { ...unchanged, name: "  " }, false)).toBeNull();
     expect(roleUpdateBody(stored, { ...unchanged, isDisplayedSeparately: true }, false)).toEqual({
       is_displayed_separately: true,
     });
-    expect(roleUpdateBody(EVERYONE, { name: "x", color: 5, permissions: "4", isDisplayedSeparately: true }, true)).toEqual({
-      permissions: "4",
+    expect(roleUpdateBody(stored, { ...unchanged, isMentionable: true }, false)).toEqual({ is_mentionable: true });
+    // Absent from an older server: off, so leaving it off sends nothing.
+    expect(roleUpdateBody({ ...stored, is_mentionable: true }, { ...unchanged, isMentionable: false }, false)).toEqual({
+      is_mentionable: false,
     });
+    expect(
+      roleUpdateBody(EVERYONE, { name: "x", color: 5, permissions: "4", isDisplayedSeparately: true, isMentionable: true }, true),
+    ).toEqual({ permissions: "4" });
   });
 });
 
@@ -253,6 +266,13 @@ describe("moderation log", () => {
     });
     expect(auditChangeLines(shown, context)).toEqual(["Members now displayed separately"]);
     expect(auditChangeLines(hidden, context)).toEqual(["Members no longer displayed separately"]);
+  });
+
+  it("says whether anyone may mention a role", () => {
+    const opened = entry({ action: "role_update", target_id: "404", changes: [{ key: "mentionable", old_value: "false", new_value: "true" }] });
+    const closed = entry({ action: "role_update", target_id: "404", changes: [{ key: "mentionable", old_value: "true", new_value: "false" }] });
+    expect(auditChangeLines(opened, context)).toEqual(["Anyone can now mention this role"]);
+    expect(auditChangeLines(closed, context)).toEqual(["Only members allowed to mention all roles can now mention it"]);
   });
 
   it("tells renames and invites from their changes, and actions of a newer server", () => {

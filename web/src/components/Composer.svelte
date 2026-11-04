@@ -4,7 +4,14 @@
   import { strings } from "../i18n";
   import { ApiError } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
-  import { type CustomEmoji, type Message, type PublicUser, type Snowflake, MAXIMUM_MESSAGE_LENGTH } from "../lib/protocol";
+  import {
+    type CustomEmoji,
+    type Message,
+    type PublicUser,
+    type Role,
+    type Snowflake,
+    MAXIMUM_MESSAGE_LENGTH,
+  } from "../lib/protocol";
   import AttachmentTray, { type AttachmentTrayItem } from "./AttachmentTray.svelte";
   import { autosize } from "./autosize";
   import Avatar from "./Avatar.svelte";
@@ -22,8 +29,11 @@
   import ComposerSuggestions from "./ComposerSuggestions.svelte";
   import CustomEmojiImage from "./CustomEmojiImage.svelte";
   import { displayName, humanFileSize } from "./format";
+  import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
-  import { type MentionSuggestionQuery, mentionSuggestionQuery, suggestMentions } from "./mentions";
+  import { EVERYONE_MENTION_WORD, type MentionSuggestionQuery, mentionSuggestionQuery, suggestMentions } from "./mentions";
+  import { type RoleMentionSuggestion, suggestRoleMentions, withRoleNamesAsMarkup } from "./role-mentions";
+  import { NO_ROLE_COLOR, roleColorHex } from "./server-settings";
   import { MESSAGE_LENGTH_COUNTER_THRESHOLD, messageCharactersLeft } from "./message-length";
   import { createPopoverToggle } from "./popover-toggle";
   import { noteEmojiUsed } from "./recent-emoji.svelte";
@@ -38,6 +48,10 @@
     serverEmojis: readonly CustomEmoji[];
     /** Who "@na" suggests; the writer is left out. */
     mentionCandidates: readonly PublicUser[];
+    /** The roles "@na" suggests after people (`rolesWriterMayMention`); empty outside a server channel. */
+    mentionableRoles: readonly Role[];
+    /** The writer holds `MENTION_EVERYONE` in this channel: "@na" offers @everyone (ADR-0040). */
+    canMentionEveryone: boolean;
     currentUserId: Snowflake | null;
     label: string;
     canSendMessages: boolean;
@@ -67,6 +81,8 @@
     drafts,
     serverEmojis,
     mentionCandidates,
+    mentionableRoles,
+    canMentionEveryone,
     currentUserId,
     label,
     canSendMessages,
@@ -105,13 +121,19 @@
   const uploadedAttachments = $derived(
     drafts.trayItems.flatMap((item) => (item.status === "uploaded" && item.attachment ? [item.attachment] : [])),
   );
-  // Counted as sent: a typed ":name:" goes out as its longer markup.
-  const charactersLeft = $derived(messageCharactersLeft(withEmojiNamesAsMarkup(drafts.text, serverEmojis)));
+  // Usernames: a role named like someone stays that person's mention.
+  const peopleNames = $derived(new Set(mentionCandidates.map((person) => person.username.toLowerCase())));
+  /** The text as sent: ":name:" and a picked role's "@Name" become their markup (ADR-0028, ADR-0040). */
+  function textAsSent(text: string): string {
+    return withRoleNamesAsMarkup(withEmojiNamesAsMarkup(text, serverEmojis), mentionableRoles, peopleNames);
+  }
+  // Counted as sent: a typed ":name:" or "@Role" goes out as its longer markup.
+  const charactersLeft = $derived(messageCharactersLeft(textAsSent(drafts.text)));
 
   // The ":na" and "@na" suggestions (DESIGN.md §5.5): follow the caret; Esc hides them until the
   // word changes. A word is one or the other: ":" and "@" each open their own.
   type SuggestionQuery = (EmojiSuggestionQuery & { kind: "emoji" }) | (MentionSuggestionQuery & { kind: "mention" });
-  type ComposerSuggestion = EmojiSuggestion | { kind: "person"; person: PublicUser };
+  type ComposerSuggestion = EmojiSuggestion | { kind: "person"; person: PublicUser } | RoleMentionSuggestion;
   let suggestionQuery = $state<SuggestionQuery | null>(null);
   let dismissedSuggestionStart = $state<number | null>(null);
   let activeSuggestionIndex = $state(0);
@@ -121,9 +143,13 @@
     }
     return suggestionQuery.kind === "emoji"
       ? suggestEmoji(suggestionQuery.query, serverEmojis)
-      : suggestMentions(suggestionQuery.query, mentionCandidates, currentUserId ?? "").map(
-          (person): ComposerSuggestion => ({ kind: "person", person }),
-        );
+      : [
+          ...suggestMentions(suggestionQuery.query, mentionCandidates, currentUserId ?? "").map(
+            (person): ComposerSuggestion => ({ kind: "person", person }),
+          ),
+          // After the people, as on Discord (ADR-0040).
+          ...suggestRoleMentions(suggestionQuery.query, mentionableRoles, canMentionEveryone),
+        ];
   });
   // Within the list as it is now: a gateway update can shorten it under the arrows.
   const activeSuggestion = $derived(Math.min(activeSuggestionIndex, Math.max(suggestions.length - 1, 0)));
@@ -185,7 +211,7 @@
     }
     hasTriedSendingTooLong = false;
     void client.sendMessage(
-      withEmojiNamesAsMarkup(drafts.text.trim(), serverEmojis),
+      textAsSent(drafts.text.trim()),
       replyingTo?.id ?? null,
       $state.snapshot(uploadedAttachments),
     );
@@ -285,6 +311,15 @@
       void insertAt(`@${suggestion.person.username}`, suggestionQuery);
       return;
     }
+    if (suggestion.kind === "everyone") {
+      void insertAt(`@${EVERYONE_MENTION_WORD}`, suggestionQuery);
+      return;
+    }
+    if (suggestion.kind === "role") {
+      // Shown as "@Name" while writing, sent as `<@&id>` (`textAsSent`).
+      void insertAt(`@${suggestion.role.name}`, suggestionQuery);
+      return;
+    }
     if (suggestion.kind === "unicode") {
       noteEmojiUsed(suggestion.emoji);
     }
@@ -295,6 +330,10 @@
     switch (suggestion.kind) {
       case "person":
         return `person-${suggestion.person.id}`;
+      case "everyone":
+        return "everyone";
+      case "role":
+        return `role-${suggestion.role.id}`;
       case "custom":
         return `custom-${suggestion.emoji.id}`;
       case "unicode":
@@ -358,6 +397,24 @@
     <Avatar user={suggestion.person} sizeToken="--mw-component-composer-suggestions-avatar-size" />
     <span class="min-w-0 truncate">{displayName(suggestion.person)}</span>
     <span class="min-w-0 flex-1 truncate text-text-secondary">@{suggestion.person.username}</span>
+  {:else if suggestion.kind === "everyone"}
+    <span aria-hidden="true" class="grid size-(--mw-component-composer-suggestions-avatar-size) shrink-0 place-items-center">
+      <Icon name="users" class="size-(--mw-component-context-menu-item-icon-size)" />
+    </span>
+    <span class="min-w-0 truncate">@{EVERYONE_MENTION_WORD}</span>
+    <span class="min-w-0 flex-1 truncate text-text-secondary" title={strings.chat.everyoneMentionHint}>{strings.chat.everyoneMentionHint}</span>
+  {:else if suggestion.kind === "role"}
+    <span aria-hidden="true" class="grid size-(--mw-component-composer-suggestions-avatar-size) shrink-0 place-items-center">
+      <span
+        class={[
+          "size-(--mw-component-roles-row-dot-size) rounded-full",
+          suggestion.role.color === NO_ROLE_COLOR && "bg-(--mw-component-roles-neutral-color)",
+        ]}
+        style:background-color={suggestion.role.color === NO_ROLE_COLOR ? undefined : roleColorHex(suggestion.role.color)}
+      ></span>
+    </span>
+    <span class="min-w-0 truncate">@{suggestion.role.name}</span>
+    <span class="min-w-0 flex-1 truncate text-text-secondary">{strings.chat.roleMentionHint}</span>
   {:else}
     <span
       aria-hidden="true"

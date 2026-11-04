@@ -1,18 +1,19 @@
 <script lang="ts">
   import { strings } from "../i18n";
-  import type { Message } from "../lib/protocol";
+  import type { Message, Role, Snowflake } from "../lib/protocol";
   import MessagePreview from "./MessagePreview.svelte";
   import ModalDialog from "./ModalDialog.svelte";
 
   // "Delete this message?" (DESIGN.md §5.4, §8): the message as a preview, Cancel focused first.
   interface Props {
     message: Message;
+    roles: ReadonlyMap<Snowflake, Role>;
     onconfirm: () => void;
     onclose: () => void;
     fallbackFocus: () => void;
   }
 
-  let { message, onconfirm, onclose, fallbackFocus }: Props = $props();
+  let { message, roles, onconfirm, onclose, fallbackFocus }: Props = $props();
 </script>
 
 <ModalDialog
@@ -24,6 +25,6 @@
   onsubmit={onconfirm}
   {fallbackFocus}
 >
-  <MessagePreview {message} />
+  <MessagePreview {message} {roles} />
   <p class="type-body-sm text-(--mw-component-dialog-hint-text)">{strings.deleteMessage.tip}</p>
 </ModalDialog>

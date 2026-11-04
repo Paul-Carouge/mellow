@@ -12,10 +12,12 @@ import {
   isMuteActive,
   muteEndFor,
 } from "../lib/notification-settings";
-import type { ChosenStatus, Message, Snowflake } from "../lib/protocol";
+import type { ChosenStatus, Message, Role, Snowflake } from "../lib/protocol";
 import { withCustomEmojiAsNames } from "./custom-emoji";
 import { type BlockNode, type InlineNode, parseMessageMarkdown } from "./markdown";
+import { doesMessageMentionReader } from "../lib/reader-mentions";
 import { mentionablePeople } from "./mentions";
+import { roleMentionLabel } from "./role-mentions";
 
 /** A message's place: a server's channel, or a conversation (no server). */
 export interface NotificationPlace {
@@ -103,8 +105,10 @@ export function isPlaceMuted(settings: NotificationSettings, place: Notification
 }
 
 export interface IncomingMessageFacts {
-  readonly message: Pick<Message, "author" | "mention_ids">;
+  readonly message: Pick<Message, "author" | "mention_ids" | "mention_role_ids">;
   readonly currentUserId: Snowflake | null;
+  /** The reader's roles in the place's server: a role or `@everyone` mention counts (ADR-0040). */
+  readonly readerRoleIds: readonly Snowflake[];
   readonly place: NotificationPlace;
   readonly isAuthorBlocked: boolean;
   readonly chosenStatus: ChosenStatus | undefined;
@@ -125,7 +129,11 @@ export function shouldAlertAbout(facts: IncomingMessageFacts): boolean {
     return false;
   }
   const level = notifyLevelOf(settings, place);
-  const mentionsReader = (message.mention_ids ?? []).includes(currentUserId);
+  const mentionsReader = doesMessageMentionReader(message, {
+    userId: currentUserId,
+    guildId: place.guildId,
+    roleIds: facts.readerRoleIds,
+  });
   switch (level) {
     case "nothing":
       return false;
@@ -165,9 +173,16 @@ const ELLIPSIS = "…";
 const NOBODY_TO_MENTION = mentionablePeople([]);
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-/** A message as one line of plain text: no Markdown marks, spoilers hidden, emoji as `:name:`. */
-export function messagePreviewText(message: Pick<Message, "content" | "attachments">): string {
-  const text = blocksAsText(parseMessageMarkdown(message.content, NOBODY_TO_MENTION))
+/**
+ * A message as one line of plain text: no Markdown marks, spoilers hidden, emoji as `:name:`,
+ * roles as `@Name` among `roles` (`MellowClient.knownRoles`).
+ */
+export function messagePreviewText(
+  message: Pick<Message, "content" | "attachments">,
+  roles: ReadonlyMap<Snowflake, Role>,
+): string {
+  const roleMentions = { roles, isEveryoneMentioned: false };
+  const text = blocksAsText(parseMessageMarkdown(message.content, NOBODY_TO_MENTION, new Map(), roleMentions))
     .replace(/\s+/gu, " ")
     .trim();
   if (text === "") {
@@ -204,8 +219,11 @@ function inlinesAsText(nodes: readonly InlineNode[]): string {
       switch (node.kind) {
         case "text":
         case "mention":
+        case "everyoneMention":
         case "match":
           return withCustomEmojiAsNames(node.text);
+        case "roleMention":
+          return roleMentionLabel(node.role);
         case "code":
           return node.text;
         case "customEmoji":

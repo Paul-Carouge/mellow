@@ -113,6 +113,7 @@ function alertAbout(client: MellowClient, message: Message): void {
     !shouldAlertAbout({
       message,
       currentUserId: client.user?.id ?? null,
+      readerRoleIds: client.guilds.find((guild) => guild.id === place.guildId)?.my_role_ids ?? [],
       place,
       isAuthorBlocked: client.isBlocked(message.author.id),
       chosenStatus: client.user?.status,
@@ -148,7 +149,7 @@ function showBrowserNotification(client: MellowClient, message: Message, place: 
     authorName: displayName(message.author),
     placeTitle,
     isOneToOneConversation: isOneToOne,
-    preview: messagePreviewText(message),
+    preview: messagePreviewText(message, client.knownRoles),
     messageCount: count,
     shouldShowPreview: notificationSettings().shouldShowPreviews,
   });

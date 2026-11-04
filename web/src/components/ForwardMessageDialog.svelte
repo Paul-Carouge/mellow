@@ -4,7 +4,6 @@
   import type { MellowClient } from "../lib/client.svelte";
   import { MAXIMUM_MESSAGE_LENGTH, type Message, type Snowflake } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
-  import { withCustomEmojiAsNames } from "./custom-emoji";
   import {
     type ForwardAttempts,
     type ForwardDestination,
@@ -18,6 +17,7 @@
   import GroupAvatar from "./GroupAvatar.svelte";
   import Icon from "./Icon.svelte";
   import ModalDialog from "./ModalDialog.svelte";
+  import { messageAsPlainText } from "./role-mentions";
   import TextField from "./TextField.svelte";
 
   // "Forward message" (DESIGN.md §5.4, ADR-0039): the places the reader may post in, searchable,
@@ -248,7 +248,7 @@
         <p
           class="max-h-(--mw-component-dialog-preview-body-max-height) overflow-hidden type-message break-words whitespace-pre-wrap text-(--mw-component-message-body-text)"
         >
-          {withCustomEmojiAsNames(message.content)}
+          {messageAsPlainText(message.content, client.knownRoles)}
         </p>
       {/if}
       {#if attachmentCount > 0}

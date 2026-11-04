@@ -5,12 +5,16 @@
 // the answer is reused by later openers, so hostile text (thousands of `*`) stays linear in its
 // length times the nesting cap, with no backtracking regular expression.
 
-import type { CustomEmoji, PublicUser, Snowflake } from "../lib/protocol";
+import type { CustomEmoji, PublicUser, Role, Snowflake } from "../lib/protocol";
 import { type MentionablePeople, splitMentions } from "./mentions";
 
 export type InlineNode =
   | { kind: "text"; text: string }
   | { kind: "mention"; text: string; user: PublicUser }
+  /** `<@&id>` (ADR-0040): `role` is null when this client knows no such role (a deleted one). */
+  | { kind: "roleMention"; role: Role | null }
+  /** `@everyone` as written, when the server kept it as a mention. */
+  | { kind: "everyoneMention"; text: string }
   | { kind: "code"; text: string }
   /**
    * `<:name:id>` of an emoji this client knows, labelled with its server's name for it: the name
@@ -42,6 +46,8 @@ const LIST_ITEM_LINE = /^[-*] (.*\S.*)$/u;
 const FENCE_LANGUAGE = /([a-z0-9_+\-.#]+)\n/iuy;
 /** Discord's custom emoji syntax, `<:name:id>` or `<a:name:id>` (ADR-0028), read at one position. */
 const CUSTOM_EMOJI_MARKUP = /<a?:([A-Za-z0-9_]{2,32}):(\d{1,20})>/uy;
+/** A role mention, `<@&id>` (ADR-0040), read at one position. */
+const ROLE_MENTION_MARKUP = /<@&(\d{1,20})>/uy;
 const AUTOLINK = /https?:\/\/[^\s<>"]+/iuy;
 const HTTP_URL_PREFIX = /^https?:\/\//iu;
 /** Punctuation that usually ends the sentence around a link rather than the link itself. */
@@ -65,23 +71,36 @@ const VISIBLE_CHARACTER = /[^\s\p{Cf}\p{Z}\u2800\u3164\u115F\u1160\uFFA0]/u;
  */
 let parserStepCount = 0;
 
+/** What role and `@everyone` mentions of one message read from (ADR-0040). */
+export interface RoleMentionContext {
+  /** The roles a `<@&id>` may name (`MellowClient.knownRoles`). */
+  readonly roles: ReadonlyMap<Snowflake, Role>;
+  /** The server kept `@everyone` as a mention: the message's `mention_role_ids` holds its guild. */
+  readonly isEveryoneMentioned: boolean;
+}
+
+export const NO_ROLE_MENTIONS: RoleMentionContext = { roles: new Map(), isEveryoneMentioned: false };
+
 interface ParseContext {
   people: MentionablePeople;
   customEmojis: ReadonlyMap<Snowflake, CustomEmoji>;
+  roleMentions: RoleMentionContext;
   nextSpoilerId: number;
 }
 
 /**
  * Parses a message body into blocks; `people` are those an `@name` can point at, `customEmojis`
- * the emoji whose picture this client may load (any other reads as `:name:`).
+ * the emoji whose picture this client may load (any other reads as `:name:`), `roleMentions` the
+ * roles `<@&id>` names and whether `@everyone` counts.
  */
 export function parseMessageMarkdown(
   content: string,
   people: MentionablePeople,
   customEmojis: ReadonlyMap<Snowflake, CustomEmoji> = new Map(),
+  roleMentions: RoleMentionContext = NO_ROLE_MENTIONS,
 ): BlockNode[] {
   parserStepCount = 0;
-  return parseBlocks(content, { people, customEmojis, nextSpoilerId: 0 }, false);
+  return parseBlocks(content, { people, customEmojis, roleMentions, nextSpoilerId: 0 }, false);
 }
 
 /** Test entry point: `parseMessageMarkdown` and the loop iterations it took. */
@@ -111,13 +130,19 @@ export function markdownMentionsUser(blocks: readonly BlockNode[], userId: Snowf
   });
 }
 
-/** Whether `nodes` mention `userId`, or anyone when it is null. */
+/** Whether `nodes` mention `userId` by name, or anyone in any way when it is null. */
 function inlinesContainMention(nodes: readonly InlineNode[], userId: Snowflake | null): boolean {
-  return nodes.some((node) =>
-    node.kind === "mention"
-      ? userId === null || node.user.id === userId
-      : "children" in node && inlinesContainMention(node.children, userId),
-  );
+  return nodes.some((node) => {
+    switch (node.kind) {
+      case "mention":
+        return userId === null || node.user.id === userId;
+      case "roleMention":
+      case "everyoneMention":
+        return userId === null;
+      default:
+        return "children" in node && inlinesContainMention(node.children, userId);
+    }
+  });
 }
 
 /** The http(s) URL `candidate` names, normalised; null for any other scheme, a user name or password, or no URL. */
@@ -331,18 +356,26 @@ export function findCodeSpans(text: string): Map<number, { end: number; content:
   return spans;
 }
 
-/** Custom emoji markup by start index, outside code spans and escapes. */
-function findCustomEmojiSpans(text: string, insideCode: Uint8Array): Map<number, { end: number; name: string; id: Snowflake }> {
-  const spans = new Map<number, { end: number; name: string; id: Snowflake }>();
+type MarkupSpan = { end: number } & ({ kind: "emoji"; name: string; id: Snowflake } | { kind: "role"; id: Snowflake });
+
+/** Custom emoji and role mention markup by start index, outside code spans and escapes. */
+function findMarkupSpans(text: string, insideCode: Uint8Array): Map<number, MarkupSpan> {
+  const spans = new Map<number, MarkupSpan>();
   for (let start = text.indexOf("<"); start !== -1; start = text.indexOf("<", start + 1)) {
     parserStepCount += 1;
     if (insideCode[start] || isEscaped(text, start)) {
       continue;
     }
     CUSTOM_EMOJI_MARKUP.lastIndex = start;
-    const match = CUSTOM_EMOJI_MARKUP.exec(text);
-    if (match?.[1] !== undefined && match[2] !== undefined) {
-      spans.set(start, { end: start + match[0].length, name: match[1], id: match[2] });
+    const emoji = CUSTOM_EMOJI_MARKUP.exec(text);
+    if (emoji?.[1] !== undefined && emoji[2] !== undefined) {
+      spans.set(start, { end: start + emoji[0].length, kind: "emoji", name: emoji[1], id: emoji[2] });
+      continue;
+    }
+    ROLE_MENTION_MARKUP.lastIndex = start;
+    const role = ROLE_MENTION_MARKUP.exec(text);
+    if (role?.[1] !== undefined) {
+      spans.set(start, { end: start + role[0].length, kind: "role", id: role[1] });
     }
   }
   return spans;
@@ -451,7 +484,7 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
   let textStart = 0;
   const flushText = (end: number) => {
     if (end > textStart) {
-      nodes.push(...splitMentions(text.slice(textStart, end), context.people));
+      nodes.push(...splitMentions(text.slice(textStart, end), context.people, context.roleMentions.isEveryoneMentioned));
     }
   };
   if (depth >= MAXIMUM_INLINE_NESTING_DEPTH) {
@@ -464,9 +497,9 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
   for (const [start, span] of codeSpans) {
     insideCode.fill(1, start, span.end);
   }
-  const emojiSpans = findCustomEmojiSpans(text, insideCode);
+  const markupSpans = findMarkupSpans(text, insideCode);
   // A marker inside an emoji's name ("<:ab_:1>") never closes formatting around it.
-  for (const [start, span] of emojiSpans) {
+  for (const [start, span] of markupSpans) {
     insideCode.fill(1, start, span.end);
   }
   const findClosers = DELIMITER_RULES.map((rule) => createCachedCloserSearch(text, insideCode, (position) => rule.isCloserAt(text, position)));
@@ -485,12 +518,16 @@ function parseInline(text: string, context: ParseContext, depth: number, areLink
       continue;
     }
 
-    const emojiSpan = emojiSpans.get(position);
-    if (emojiSpan) {
+    const markupSpan = markupSpans.get(position);
+    if (markupSpan) {
       flushText(position);
-      const emoji = context.customEmojis.get(emojiSpan.id);
-      nodes.push(emoji ? { kind: "customEmoji", emoji } : { kind: "text", text: `:${emojiSpan.name}:` });
-      position = textStart = emojiSpan.end;
+      if (markupSpan.kind === "role") {
+        nodes.push({ kind: "roleMention", role: context.roleMentions.roles.get(markupSpan.id) ?? null });
+      } else {
+        const emoji = context.customEmojis.get(markupSpan.id);
+        nodes.push(emoji ? { kind: "customEmoji", emoji } : { kind: "text", text: `:${markupSpan.name}:` });
+      }
+      position = textStart = markupSpan.end;
       continue;
     }
 

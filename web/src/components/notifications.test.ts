@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_NOTIFICATION_SETTINGS, type NotificationSettings } from "../lib/notification-settings";
+import type { Role } from "../lib/protocol";
 import {
   type IncomingMessageFacts,
   MAXIMUM_PREVIEW_CHARACTERS,
@@ -22,6 +23,7 @@ const SERVER = "100";
 const GENERAL = "101";
 const CONVERSATION = "200";
 const NOW = 1_800_000_000_000;
+const NO_ROLES = new Map<string, Role>();
 
 function settingsWith(places: NotificationSettings["places"]): NotificationSettings {
   return { ...DEFAULT_NOTIFICATION_SETTINGS, places };
@@ -32,6 +34,7 @@ function facts(overrides: Partial<IncomingMessageFacts> & { mentionsMe?: boolean
   return {
     message: { author: { id: ANA, username: "ana", display_name: "Ana" }, mention_ids: mentionsMe ? [ME] : [] },
     currentUserId: ME,
+    readerRoleIds: [],
     place: { guildId: SERVER, channelId: GENERAL },
     isAuthorBlocked: false,
     chosenStatus: "online",
@@ -56,6 +59,15 @@ describe("who is told", () => {
     expect(shouldAlertAbout(facts({ place: IN_CONVERSATION, isAuthorBlocked: true }))).toBe(false);
     expect(shouldAlertAbout(facts({ place: IN_CONVERSATION, chosenStatus: "do_not_disturb", mentionsMe: true }))).toBe(false);
     expect(shouldAlertAbout(facts({ place: IN_CONVERSATION, currentUserId: null }))).toBe(false);
+  });
+
+  it("counts @everyone and a role the reader holds as mentions (ADR-0040)", () => {
+    const mentioning = (roleIds: string[]) => ({ ...facts().message, mention_role_ids: roleIds });
+    expect(shouldAlertAbout(facts({ message: mentioning([SERVER]) }))).toBe(true);
+    expect(shouldAlertAbout(facts({ message: mentioning(["300"]), readerRoleIds: ["300"] }))).toBe(true);
+    expect(shouldAlertAbout(facts({ message: mentioning(["300"]), readerRoleIds: ["301"] }))).toBe(false);
+    const mutedChannel = settingsWith({ [GENERAL]: { level: "all", mutedUntil: NOW + 1 } });
+    expect(shouldAlertAbout(facts({ message: mentioning([SERVER]), settings: mutedChannel }))).toBe(true);
   });
 
   it("follows the channel's level, else the server's", () => {
@@ -99,21 +111,29 @@ describe("how they are told", () => {
 
 describe("words", () => {
   it("previews plain text without Markdown and never a spoiler", () => {
-    expect(messagePreviewText({ content: "**see** you at\n\n||the secret place|| at `7`" })).toBe(
+    expect(messagePreviewText({ content: "**see** you at\n\n||the secret place|| at `7`" }, NO_ROLES)).toBe(
       "see you at spoiler at 7",
     );
-    expect(messagePreviewText({ content: "look <:party:123> > here" })).toBe("look :party: > here");
+    expect(messagePreviewText({ content: "look <:party:123> > here" }, NO_ROLES)).toBe("look :party: > here");
+  });
+
+  it("names mentioned roles, never their markup", () => {
+    const moderators: Role = { id: "300", name: "Moderators", color: 0, position: 1, permissions: "0", is_displayed_separately: false };
+    const roles = new Map([[moderators.id, moderators]]);
+    expect(messagePreviewText({ content: "<@&300> and <@&301>, @everyone" }, roles)).toBe(
+      "@Moderators and @deleted-role, @everyone",
+    );
   });
 
   it("says files were sent when there is no text", () => {
     const file = { id: "1", file_name: "a.png", content_type: "image/png", size_bytes: 1 };
-    expect(messagePreviewText({ content: "", attachments: [file] })).toBe("Sent a file");
-    expect(messagePreviewText({ content: " ", attachments: [file, file] })).toBe("Sent 2 files");
-    expect(messagePreviewText({ content: "" })).toBe("");
+    expect(messagePreviewText({ content: "", attachments: [file] }, NO_ROLES)).toBe("Sent a file");
+    expect(messagePreviewText({ content: " ", attachments: [file, file] }, NO_ROLES)).toBe("Sent 2 files");
+    expect(messagePreviewText({ content: "" }, NO_ROLES)).toBe("");
   });
 
   it("cuts long messages on a character boundary, with an ellipsis", () => {
-    const preview = messagePreviewText({ content: "é".repeat(500) });
+    const preview = messagePreviewText({ content: "é".repeat(500) }, NO_ROLES);
     expect(Array.from(preview)).toHaveLength(MAXIMUM_PREVIEW_CHARACTERS);
     expect(preview.endsWith("…")).toBe(true);
   });

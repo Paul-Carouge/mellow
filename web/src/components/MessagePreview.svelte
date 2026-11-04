@@ -1,15 +1,17 @@
 <script lang="ts">
-  import type { Message } from "../lib/protocol";
+  import type { Message, Role, Snowflake } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
-  import { withCustomEmojiAsNames } from "./custom-emoji";
   import { displayName } from "./format";
+  import { messageAsPlainText } from "./role-mentions";
 
   // The message a dialog acts on, as a framed preview (DESIGN.md §6.35): author and plain text.
   interface Props {
     message: Message;
+    /** Names `<@&id>` mentions (`MellowClient.knownRoles`). */
+    roles: ReadonlyMap<Snowflake, Role>;
   }
 
-  let { message }: Props = $props();
+  let { message, roles }: Props = $props();
 </script>
 
 <div
@@ -23,7 +25,7 @@
     <p
       class="max-h-(--mw-component-dialog-preview-body-max-height) overflow-hidden type-message break-words whitespace-pre-wrap text-(--mw-component-message-body-text)"
     >
-      {withCustomEmojiAsNames(message.content)}
+      {messageAsPlainText(message.content, roles)}
     </p>
   </div>
 </div>

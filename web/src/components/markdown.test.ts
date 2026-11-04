@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { PublicUser } from "../lib/protocol";
+import type { PublicUser, Role } from "../lib/protocol";
 import {
   type BlockNode,
   type InlineNode,
@@ -377,5 +377,43 @@ describe("custom emoji", () => {
       { kind: "strong", children: [{ kind: "customEmoji", emoji: party }] },
     ]);
     expect(parse("<:x:500> <:party:abc>")).toEqual([text("<:x:500> <:party:abc>")]);
+  });
+});
+
+describe("role and @everyone mentions (ADR-0040)", () => {
+  const moderators: Role = { id: "201", name: "Modérateurs", color: 0x3498db, position: 1, permissions: "0", is_displayed_separately: false };
+  const roles = new Map([[moderators.id, moderators]]);
+  const parse = (content: string, isEveryoneMentioned = false) => {
+    const [block] = parseMessageMarkdown(content, people, new Map(), { roles, isEveryoneMentioned });
+    return block?.kind === "paragraph" ? block.children : [];
+  };
+
+  it("show a role by its id, and a role this client does not know as deleted", () => {
+    expect(parse("hi <@&201>!")).toEqual([text("hi "), { kind: "roleMention", role: moderators }, text("!")]);
+    expect(parse("<@&999>")).toEqual([{ kind: "roleMention", role: null }]);
+    expect(parse("**<@&201>**")).toEqual([{ kind: "strong", children: [{ kind: "roleMention", role: moderators }] }]);
+  });
+
+  it("stay literal in code, when escaped, and when malformed", () => {
+    expect(parse("`<@&201>`")).toEqual([{ kind: "code", text: "<@&201>" }]);
+    expect(parse("\\<@&201>")).toEqual([text("<"), text("@&201>")]);
+    expect(parse("<@&abc> <@&>")).toEqual([text("<@&abc> <@&>")]);
+  });
+
+  it("read @everyone as a mention only when the server kept it, never as a person", () => {
+    const everyonePerson = mentionablePeople([{ id: "9", username: "everyone", display_name: "" }]);
+    expect(parse("hey @Everyone.", true)).toEqual([text("hey "), { kind: "everyoneMention", text: "@Everyone" }, text(".")]);
+    expect(parse("hey @everyone")).toEqual([text("hey @everyone")]);
+    expect(parseMessageMarkdown("@everyone", everyonePerson)).toEqual([paragraph(text("@everyone"))]);
+    expect(parse("`@everyone`", true)).toEqual([{ kind: "code", text: "@everyone" }]);
+    expect(parse("||@everyone||", true)).toEqual([{ kind: "spoiler", id: 0, children: [{ kind: "everyoneMention", text: "@everyone" }] }]);
+  });
+
+  it("keep a masked link from holding them, as person mentions do", () => {
+    expect(parse("[<@&201>](https://example.com)")[0]?.kind).not.toBe("link");
+  });
+
+  it("never count as mentioning the reader by name", () => {
+    expect(markdownMentionsUser(parseMessageMarkdown("<@&201> @everyone", people, new Map(), { roles, isEveryoneMentioned: true }), "1")).toBe(false);
   });
 });
