@@ -32,16 +32,23 @@ const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wa
      frame-src https://www.youtube-nocookie.com; \
      base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
-/// The same, with Klipy's API and media hosts, when the owner set a Klipy key (ADR-0042): members'
-/// browsers search Klipy and load its GIFs themselves, as Klipy's terms require.
-const CONTENT_SECURITY_POLICY_WITH_KLIPY: &str = "default-src 'self'; \
-     script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
-     img-src 'self' data: blob: https://static.klipy.com https://static1.klipy.com \
-     https://static2.klipy.com; \
-     media-src 'self' https://static.klipy.com https://static1.klipy.com https://static2.klipy.com; \
-     font-src 'self'; connect-src 'self' https://api.klipy.com; manifest-src 'self'; \
-     worker-src 'none'; object-src 'none'; frame-src https://www.youtube-nocookie.com; \
-     base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+/// The same, with Klipy's media hosts and its API under the instance's own key only, when the
+/// owner set a Klipy key (ADR-0042): members' browsers search Klipy and load its GIFs themselves,
+/// as Klipy's terms require, and an injected script could not reach Klipy with another key.
+pub(crate) fn content_security_policy_with_klipy(klipy_app_key: &str) -> String {
+    format!(
+        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
+         style-src 'self' 'unsafe-inline'; \
+         img-src 'self' data: blob: https://static.klipy.com https://static1.klipy.com \
+         https://static2.klipy.com; \
+         media-src 'self' https://static.klipy.com https://static1.klipy.com \
+         https://static2.klipy.com; \
+         font-src 'self'; connect-src 'self' https://api.klipy.com/api/v1/{klipy_app_key}/; \
+         manifest-src 'self'; worker-src 'none'; object-src 'none'; \
+         frame-src https://www.youtube-nocookie.com; \
+         base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    )
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ContentEncoding {
@@ -78,18 +85,18 @@ pub(crate) async fn serve(
 ) -> Response {
     with_policy_for_gifs(
         web_client_response(uri.path(), &request_headers, embedded_asset),
-        state.gifs.is_some(),
+        state.gif_content_security_policy.as_ref(),
     )
 }
 
-/// Widens the page's policy to Klipy's hosts when GIFs are on (ADR-0042).
-fn with_policy_for_gifs(mut response: Response, are_gifs_on: bool) -> Response {
-    if are_gifs_on
+/// Puts `gif_policy` in place of the page's policy when GIFs are on (ADR-0042).
+fn with_policy_for_gifs(mut response: Response, gif_policy: Option<&HeaderValue>) -> Response {
+    if let Some(gif_policy) = gif_policy
         && let Some(policy) = response
             .headers_mut()
             .get_mut(header::CONTENT_SECURITY_POLICY)
     {
-        *policy = HeaderValue::from_static(CONTENT_SECURITY_POLICY_WITH_KLIPY);
+        policy.clone_from(gif_policy);
     }
     response
 }
@@ -542,12 +549,14 @@ mod tests {
                 .unwrap()
                 .to_owned()
         };
-        let off = policy_of(&with_policy_for_gifs(page(), false));
-        let on = policy_of(&with_policy_for_gifs(page(), true));
+        let gif_policy =
+            HeaderValue::from_str(&content_security_policy_with_klipy("test-key")).unwrap();
+        let off = policy_of(&with_policy_for_gifs(page(), None));
+        let on = policy_of(&with_policy_for_gifs(page(), Some(&gif_policy)));
         assert!(!off.contains("klipy"), "{off}");
         assert!(
-            on.contains("connect-src 'self' https://api.klipy.com;"),
-            "{on}"
+            on.contains("connect-src 'self' https://api.klipy.com/api/v1/test-key/;"),
+            "only the instance's key: {on}"
         );
         assert!(
             on.contains("media-src 'self' https://static.klipy.com"),

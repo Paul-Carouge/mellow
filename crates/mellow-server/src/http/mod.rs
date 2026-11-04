@@ -69,11 +69,23 @@ pub(crate) struct AppState {
     pub(crate) voice: crate::voice::VoiceService,
     /// GIFs from Klipy (ADR-0042), when the owner set a key.
     pub(crate) gifs: Option<Arc<crate::domain::gifs::Gifs>>,
+    /// The web page's policy with Klipy's hosts and this key's API path, when GIFs are on.
+    pub(crate) gif_content_security_policy: Option<HeaderValue>,
 }
 
 impl AppState {
     /// Turns GIFs on (ADR-0042): `serve` calls it when `mellow.toml` holds a Klipy key.
+    ///
+    /// # Panics
+    /// When the key holds characters a header cannot: never for a key `GifsConfig` validated.
     pub(crate) fn with_gifs(mut self, gifs: crate::domain::gifs::Gifs) -> Self {
+        // Invariant: `GifsConfig::validate` allows only letters, digits, `-` and `_`.
+        #[allow(clippy::expect_used)]
+        let policy = HeaderValue::from_str(&web_client::content_security_policy_with_klipy(
+            gifs.klipy_app_key(),
+        ))
+        .expect("a validated Klipy key fits in a header");
+        self.gif_content_security_policy = Some(policy);
         self.gifs = Some(Arc::new(gifs));
         self
     }
@@ -140,6 +152,7 @@ impl AppState {
             .into(),
             voice,
             gifs: None,
+            gif_content_security_policy: None,
         }
     }
 }

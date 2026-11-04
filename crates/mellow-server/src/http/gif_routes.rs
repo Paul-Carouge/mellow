@@ -20,8 +20,7 @@ pub(crate) async fn settings(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<GifSettings>, ApiError> {
-    let gifs = state.gifs.as_ref().ok_or_else(ApiError::not_found)?;
-    Ok(Json(gifs.settings_for(user.id)))
+    Ok(Json(require_gifs_on(&state)?.settings_for(user.id)))
 }
 
 /// `GET /api/v1/users/@me/gif-favourites`: Klipy slugs, newest first.
@@ -29,7 +28,13 @@ pub(crate) async fn favourites(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> Result<Json<Vec<String>>, ApiError> {
+    require_gifs_on(&state)?;
     Ok(Json(gifs::favourites(&state.database, user.id).await?))
+}
+
+/// Every GIF route answers `404` while the instance has no Klipy key (ADR-0042).
+fn require_gifs_on(state: &AppState) -> Result<&crate::domain::gifs::Gifs, ApiError> {
+    state.gifs.as_deref().ok_or_else(ApiError::not_found)
 }
 
 fn require_change_allowed(
@@ -53,6 +58,7 @@ pub(crate) async fn add_favourite(
     AuthenticatedUser(user): AuthenticatedUser,
     ApiPath(slug): ApiPath<String>,
 ) -> Result<StatusCode, ApiError> {
+    require_gifs_on(&state)?;
     require_change_allowed(&state, user.id)?;
     gifs::add_favourite(&state.database, user.id, &slug, now_unix_milliseconds()).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -64,6 +70,7 @@ pub(crate) async fn remove_favourite(
     AuthenticatedUser(user): AuthenticatedUser,
     ApiPath(slug): ApiPath<String>,
 ) -> Result<StatusCode, ApiError> {
+    require_gifs_on(&state)?;
     require_change_allowed(&state, user.id)?;
     gifs::remove_favourite(&state.database, user.id, &slug).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -117,10 +124,16 @@ mod tests {
     #[tokio::test]
     async fn favourites_are_kept_per_member_by_slug() {
         let (_directory, database) = migrated_database().await;
-        let state = test_state(database.clone(), RegistrationMode::Open);
-        let ada = registered_token(&state, "ada").await;
-        let bob = registered_token(&state, "bob").await;
+        let without_key = test_state(database.clone(), RegistrationMode::Open);
+        let ada = registered_token(&without_key, "ada").await;
+        let bob = registered_token(&without_key, "bob").await;
         let path = "/api/v1/users/@me/gif-favourites";
+        let (off, _) = send(
+            &without_key,
+            authorized("PUT", &format!("{path}/happy-cat"), &ada, None),
+        )
+        .await;
+        let state = without_key.with_gifs(Gifs::new("test-key".into(), Zeroizing::new([3; 32])));
         let (added, _) = send(
             &state,
             authorized("PUT", &format!("{path}/happy-cat"), &ada, None),
@@ -141,6 +154,7 @@ mod tests {
         let (_, after_removal) = send(&state, authorized("GET", path, &ada, None)).await;
         database.close().await;
 
+        assert_eq!(off, axum::http::StatusCode::NOT_FOUND, "no key, no GIFs");
         assert_eq!(added, axum::http::StatusCode::NO_CONTENT);
         assert_eq!(invalid, axum::http::StatusCode::BAD_REQUEST);
         assert_eq!(json::<Vec<String>>(&ada_list), ["happy-cat"]);
