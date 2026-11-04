@@ -15,11 +15,12 @@ use mellow_protocol::{
     AuthorSearchFacet, Ban, Channel, ChannelKind, ChannelPlacement, ChannelSearchFacet,
     ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel,
     ForwardOrigin, GatewayEvent, Guild, GuildInvite, GuildSummary, Hello, HighlightRange,
-    InitialCategory, InitialTextChannel, Invite, MAXIMUM_COUNTED_UNREAD_MENTIONS,
-    MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH, MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
-    MAXIMUM_REACHABLE_SEARCH_RESULTS, MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS,
-    MAXIMUM_SEARCH_QUERY_LENGTH, MAXIMUM_SEARCH_QUERY_PARTS, MAXIMUM_SEARCH_RESULTS_PER_PAGE,
-    MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
+    InitialCategory, InitialTextChannel, Invite, LinkPreview, LinkPreviewImage,
+    MAXIMUM_COUNTED_UNREAD_MENTIONS, MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH,
+    MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS, MAXIMUM_REACHABLE_SEARCH_RESULTS,
+    MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS, MAXIMUM_SEARCH_QUERY_LENGTH, MAXIMUM_SEARCH_QUERY_PARTS,
+    MAXIMUM_SEARCH_RESULTS_PER_PAGE, MAXIMUM_VIDEO_RECEIVE_SLOTS,
+    MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
     MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, Member, Message, MessageReaction, MessageSearchHit,
     MessageSearchQuery, MessageSearchResults, MessageSearchSort, OverwriteKind,
     PermissionOverwrite, Permissions, Presence, PresenceStatus, ProfileImage, PublicUser,
@@ -277,6 +278,33 @@ fn attachment() -> Attachment {
     }
 }
 
+fn link_preview() -> LinkPreview {
+    LinkPreview {
+        id: id(900),
+        url: "https://example.org/article".into(),
+        title: Some("An article".into()),
+        description: Some("What it says".into()),
+        site_name: Some("Example".into()),
+        theme_color: Some(0x0033_aa77),
+        image: Some(LinkPreviewImage {
+            width: 400,
+            height: 210,
+        }),
+    }
+}
+
+fn sparse_link_preview() -> LinkPreview {
+    LinkPreview {
+        id: id(901),
+        url: "https://example.org/".into(),
+        title: Some("Example".into()),
+        description: None,
+        site_name: None,
+        theme_color: None,
+        image: None,
+    }
+}
+
 fn sparse_attachment() -> Attachment {
     Attachment {
         content_type: "application/octet-stream".into(),
@@ -308,6 +336,7 @@ fn message() -> Message {
         pinned: true,
         mention_ids: vec![id(10)],
         mention_role_ids: vec![id(20)],
+        link_previews: vec![link_preview(), sparse_link_preview()],
         forwarded_from: Some(ForwardOrigin {
             channel_id: id(31),
             message_id: id(700),
@@ -326,6 +355,7 @@ fn sparse_message() -> Message {
         pinned: false,
         mention_ids: Vec::new(),
         mention_role_ids: Vec::new(),
+        link_previews: Vec::new(),
         forwarded_from: None,
         ..message()
     }
@@ -528,6 +558,18 @@ fn gateway_events() -> Vec<GatewayEvent> {
             guild_id: None,
             channel_id: id(40),
             id: id(800),
+        },
+        GatewayEvent::MessageLinkPreviewsUpdate { .. } => GatewayEvent::MessageLinkPreviewsUpdate {
+            guild_id: Some(id(1)),
+            channel_id: id(30),
+            message_id: id(800),
+            link_previews: vec![link_preview()],
+        },
+        GatewayEvent::MessageLinkPreviewsUpdate { .. } => GatewayEvent::MessageLinkPreviewsUpdate {
+            guild_id: None,
+            channel_id: id(40),
+            message_id: id(800),
+            link_previews: Vec::new(),
         },
         GatewayEvent::ChannelCreate(_) => GatewayEvent::ChannelCreate(channel()),
         GatewayEvent::ChannelUpdate(_) => GatewayEvent::ChannelUpdate(sparse_channel()),

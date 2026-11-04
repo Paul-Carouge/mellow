@@ -51,6 +51,35 @@ pub struct Attachment {
     pub height: Option<u32>,
 }
 
+/// A preview of a link in a message, fetched by the server after the message was sent
+/// (ADR-0041). Every text is plain: clients never read it as HTML or Markdown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkPreview {
+    pub id: Snowflake,
+    /// The link as fetched, without its fragment; it may differ from the message's text.
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_name: Option<String>,
+    /// The page's colour, `0xRRGGBB`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_color: Option<u32>,
+    /// Served by
+    /// `GET /api/v1/channels/{channel_id}/messages/{message_id}/link-previews/{id}/image`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<LinkPreviewImage>,
+}
+
+/// A link preview's picture, as stored: its size in pixels, so clients hold its place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkPreviewImage {
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Body of `PATCH /api/v1/channels/{channel_id}/messages/{message_id}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -106,6 +135,11 @@ pub struct Message {
     /// direct messages or forwards. Absent when empty and from older servers' payloads.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mention_role_ids: Vec<Snowflake>,
+    /// Previews of the message's links, in their order, once the server fetched them
+    /// (ADR-0041); `MESSAGE_LINK_PREVIEWS_UPDATE` brings them to open clients. Absent when empty
+    /// and from older servers' payloads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub link_previews: Vec<LinkPreview>,
     /// Set on a forward (ADR-0039): its content and files are a copy of that message's, taken
     /// when it was forwarded. Absent otherwise and from older servers' payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -195,6 +229,7 @@ mod tests {
             pinned: true,
             mention_ids: Vec::new(),
             mention_role_ids: Vec::new(),
+            link_previews: Vec::new(),
             forwarded_from: Some(ForwardOrigin {
                 channel_id: Snowflake::from_raw(7),
                 message_id: Snowflake::from_raw(8),

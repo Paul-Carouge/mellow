@@ -16,6 +16,7 @@ pub(crate) mod guild_roles;
 pub(crate) mod guild_sounds;
 pub(crate) mod guilds;
 pub(crate) mod image_recompression;
+pub(crate) mod link_previews;
 mod master_key;
 pub(crate) mod messages;
 mod migrations;

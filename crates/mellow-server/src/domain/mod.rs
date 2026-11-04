@@ -9,6 +9,7 @@ pub(crate) mod guild_rules;
 pub(crate) mod guilds;
 pub(crate) mod image_processing;
 pub(crate) mod image_recompression;
+pub(crate) mod link_previews;
 pub(crate) mod mentions;
 pub(crate) mod message_rules;
 pub(crate) mod messages;

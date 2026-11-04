@@ -44,7 +44,7 @@ fn is_name_character(character: char) -> bool {
 /// The text outside code, where mentions count. A run of backticks opens code up to the next run
 /// of the same length, across lines too, which covers fenced blocks as the web client reads them;
 /// a run never closed stays text.
-fn text_outside_code(content: &str) -> String {
+pub(crate) fn text_outside_code(content: &str) -> String {
     let characters: Vec<char> = content.chars().collect();
     let mut kept = String::with_capacity(content.len());
     let mut index = 0;

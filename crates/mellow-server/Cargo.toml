@@ -33,6 +33,8 @@ ipnet.workspace = true
 mellow-protocol.workspace = true
 moxcms.workspace = true
 rav1e.workspace = true
+# Link previews (ADR-0041): the only outbound HTTP client of the server.
+reqwest.workspace = true
 rpassword.workspace = true
 rustls-acme.workspace = true
 serde.workspace = true
@@ -47,7 +49,10 @@ tokio = { workspace = true, features = ["sync", "time"] }
 tower.workspace = true
 toml.workspace = true
 tracing.workspace = true
+url.workspace = true
 webp-animation.workspace = true
+# TLS roots built into the binary for link previews, so the host needs no CA bundle (ADR-0041).
+webpki-root-certs.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 zeroize.workspace = true
 
@@ -67,7 +72,6 @@ h2.workspace = true
 proptest.workspace = true
 tokio = { workspace = true, features = ["test-util", "process"] }
 rcgen.workspace = true
-reqwest.workspace = true
 tempfile.workspace = true
 tokio-tungstenite.workspace = true
 

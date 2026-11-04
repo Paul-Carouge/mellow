@@ -311,6 +311,10 @@ fn message_router(maximum_attachment_bytes: u64) -> Router<AppState> {
             "/api/v1/attachments/{attachment_id}/preview",
             get(attachment_routes::download_preview),
         )
+        .route(
+            "/api/v1/channels/{channel_id}/messages/{message_id}/link-previews/{preview_id}/image",
+            get(attachment_routes::download_link_preview_image),
+        )
 }
 
 fn relationship_router() -> Router<AppState> {

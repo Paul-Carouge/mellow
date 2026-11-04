@@ -400,6 +400,25 @@ export const messageSamples = [
       "message_id": "700"
     },
     "id": "800",
+    "link_previews": [
+      {
+        "description": "What it says",
+        "id": "900",
+        "image": {
+          "height": 210,
+          "width": 400
+        },
+        "site_name": "Example",
+        "theme_color": 3385975,
+        "title": "An article",
+        "url": "https://example.org/article"
+      },
+      {
+        "id": "901",
+        "title": "Example",
+        "url": "https://example.org/"
+      }
+    ],
     "mention_ids": [
       "10"
     ],
@@ -560,6 +579,25 @@ export const messageSearchResultsSamples = [
             "message_id": "700"
           },
           "id": "800",
+          "link_previews": [
+            {
+              "description": "What it says",
+              "id": "900",
+              "image": {
+                "height": 210,
+                "width": 400
+              },
+              "site_name": "Example",
+              "theme_color": 3385975,
+              "title": "An article",
+              "url": "https://example.org/article"
+            },
+            {
+              "id": "901",
+              "title": "Example",
+              "url": "https://example.org/"
+            }
+          ],
           "mention_ids": [
             "10"
           ],
@@ -1225,6 +1263,25 @@ export const gatewayEventSamples = [
         "message_id": "700"
       },
       "id": "800",
+      "link_previews": [
+        {
+          "description": "What it says",
+          "id": "900",
+          "image": {
+            "height": 210,
+            "width": 400
+          },
+          "site_name": "Example",
+          "theme_color": 3385975,
+          "title": "An article",
+          "url": "https://example.org/article"
+        },
+        {
+          "id": "901",
+          "title": "Example",
+          "url": "https://example.org/"
+        }
+      ],
       "mention_ids": [
         "10"
       ],
@@ -1300,6 +1357,25 @@ export const gatewayEventSamples = [
         "message_id": "700"
       },
       "id": "800",
+      "link_previews": [
+        {
+          "description": "What it says",
+          "id": "900",
+          "image": {
+            "height": 210,
+            "width": 400
+          },
+          "site_name": "Example",
+          "theme_color": 3385975,
+          "title": "An article",
+          "url": "https://example.org/article"
+        },
+        {
+          "id": "901",
+          "title": "Example",
+          "url": "https://example.org/"
+        }
+      ],
       "mention_ids": [
         "10"
       ],
@@ -1333,6 +1409,36 @@ export const gatewayEventSamples = [
       "id": "800"
     },
     "t": "MESSAGE_DELETE"
+  },
+  {
+    "data": {
+      "channel_id": "30",
+      "guild_id": "1",
+      "link_previews": [
+        {
+          "description": "What it says",
+          "id": "900",
+          "image": {
+            "height": 210,
+            "width": 400
+          },
+          "site_name": "Example",
+          "theme_color": 3385975,
+          "title": "An article",
+          "url": "https://example.org/article"
+        }
+      ],
+      "message_id": "800"
+    },
+    "t": "MESSAGE_LINK_PREVIEWS_UPDATE"
+  },
+  {
+    "data": {
+      "channel_id": "40",
+      "link_previews": [],
+      "message_id": "800"
+    },
+    "t": "MESSAGE_LINK_PREVIEWS_UPDATE"
   },
   {
     "data": {

@@ -613,6 +613,25 @@ describe("reactions and pins", () => {
     expect(reactionsOf(client)).toEqual([]);
   });
 
+  it("take a message's link previews from their event and leave other rows as they were", async () => {
+    const client = await clientWithHistory();
+    const before = client.messages(GENERAL);
+    const preview = { id: "900", url: "https://example.org/", title: "Example" };
+    client.applyEvent(
+      { t: "MESSAGE_LINK_PREVIEWS_UPDATE", data: { channel_id: GENERAL, message_id: "200", link_previews: [preview] } },
+      0,
+    );
+    const after = client.messages(GENERAL);
+    expect(after[0]?.link_previews).toEqual([preview]);
+    expect(after.slice(1)).toEqual(before.slice(1));
+    after.slice(1).forEach((message, index) => expect(message).toBe(before[index + 1]));
+    client.applyEvent(
+      { t: "MESSAGE_LINK_PREVIEWS_UPDATE", data: { channel_id: GENERAL, message_id: "200", link_previews: [] } },
+      0,
+    );
+    expect(client.messages(GENERAL)[0]?.link_previews).toEqual([]);
+  });
+
   it("show the user's reaction at once, count its event once, and undo it if refused", async () => {
     let refuse = false;
     const client = await clientWithHistory({

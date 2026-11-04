@@ -41,9 +41,9 @@ pub use guilds::{
 };
 pub use health::{HealthResponse, HealthStatus};
 pub use messages::{
-    AcknowledgeRequest, Attachment, ChannelUnread, EditMessageRequest, ForwardOrigin,
-    MAXIMUM_COUNTED_UNREAD_MENTIONS, Message, MessageHistoryQuery, ReactionSummary,
-    ReactionUsersQuery, ReadState, SendMessageRequest,
+    AcknowledgeRequest, Attachment, ChannelUnread, EditMessageRequest, ForwardOrigin, LinkPreview,
+    LinkPreviewImage, MAXIMUM_COUNTED_UNREAD_MENTIONS, Message, MessageHistoryQuery,
+    ReactionSummary, ReactionUsersQuery, ReadState, SendMessageRequest,
 };
 pub use permissions::{
     Permissions, compute_channel_permissions, compute_guild_permissions, highest_role_position,

@@ -338,21 +338,7 @@ impl ClientState {
                 self.upsert_channel(channel);
                 StateChange::Guilds
             }
-            GatewayEvent::ChannelDelete { guild_id, id } => {
-                if let Some(guild) = self.guilds.iter_mut().find(|guild| guild.id == guild_id) {
-                    guild.channels.retain(|channel| channel.id != id);
-                    // Children of a deleted category become uncategorised, as on the server.
-                    for channel in &mut guild.channels {
-                        if channel.parent_id == Some(id) {
-                            channel.parent_id = None;
-                        }
-                    }
-                }
-                self.history_by_channel.remove(&id);
-                self.pending_messages
-                    .retain(|pending| pending.channel_id != id);
-                StateChange::Guilds
-            }
+            GatewayEvent::ChannelDelete { guild_id, id } => self.remove_channel(guild_id, id),
             GatewayEvent::GuildCreate(guild) => self.replace_guild(*guild),
             GatewayEvent::DirectMessageChannelCreate(channel) => {
                 self.upsert_direct_message_channel(channel)
@@ -402,7 +388,7 @@ impl ClientState {
                 StateChange::Presence
             }
             GatewayEvent::UserUpdate(user) => self.rename_user(&user),
-            // shortcut: friends, groups, reactions, custom emoji and voice are web-only (ADR-0023) until the desktop port.
+            // shortcut: friends, groups, reactions, link previews, custom emoji and voice are web-only (ADR-0023) until the desktop port.
             GatewayEvent::RelationshipAdd(_)
             | GatewayEvent::RelationshipRemove { .. }
             | GatewayEvent::DirectMessageChannelUpdate(_)
@@ -411,6 +397,7 @@ impl ClientState {
             | GatewayEvent::MessageReactionRemove(_)
             | GatewayEvent::MessageReactionRemoveAll { .. }
             | GatewayEvent::MessageReactionRemoveEmoji { .. }
+            | GatewayEvent::MessageLinkPreviewsUpdate { .. }
             | GatewayEvent::GuildEmojisUpdate { .. }
             | GatewayEvent::GuildSoundsUpdate { .. }
             | GatewayEvent::MyJoinSoundUpdate { .. }
@@ -492,6 +479,22 @@ impl ClientState {
     /// Only cached messages change: an edit of older history must not appear out of context, nor
     /// mark a never-opened channel as unread. An older edit never replaces a newer one: our own
     /// REST answer can arrive after the gateway already delivered a later edit.
+    fn remove_channel(&mut self, guild_id: Snowflake, id: Snowflake) -> StateChange {
+        if let Some(guild) = self.guilds.iter_mut().find(|guild| guild.id == guild_id) {
+            guild.channels.retain(|channel| channel.id != id);
+            // Children of a deleted category become uncategorised, as on the server.
+            for channel in &mut guild.channels {
+                if channel.parent_id == Some(id) {
+                    channel.parent_id = None;
+                }
+            }
+        }
+        self.history_by_channel.remove(&id);
+        self.pending_messages
+            .retain(|pending| pending.channel_id != id);
+        StateChange::Guilds
+    }
+
     fn replace_cached_message(&mut self, message: Message) -> StateChange {
         let channel_id = message.channel_id;
         let Some(cached) = self
@@ -913,6 +916,7 @@ mod tests {
             pinned: false,
             mention_ids: Vec::new(),
             mention_role_ids: Vec::new(),
+            link_previews: Vec::new(),
             forwarded_from: None,
         }
     }

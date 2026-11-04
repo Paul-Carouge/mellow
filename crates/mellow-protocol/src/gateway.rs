@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Channel, ChannelUnread, CurrentUser, CustomEmoji, DirectMessageChannel, Guild, GuildSummary,
-    Member, Message, PublicUser, ReadState, Relationship, Role, Snowflake, SoundboardSound,
+    LinkPreview, Member, Message, PublicUser, ReadState, Relationship, Role, Snowflake,
+    SoundboardSound,
 };
 
 pub const GATEWAY_VERSION: u32 = 1;
@@ -375,6 +376,16 @@ pub enum GatewayEvent {
         guild_id: Option<Snowflake>,
         channel_id: Snowflake,
         id: Snowflake,
+    },
+    /// The message's link previews, all of them, as the server fetched them after a send or an
+    /// edit (ADR-0041); empty when an edit removed its links. Older clients skip it.
+    MessageLinkPreviewsUpdate {
+        /// `None` in a direct-message conversation, and then left out of the frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guild_id: Option<Snowflake>,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        link_previews: Vec<LinkPreview>,
     },
     ChannelCreate(Channel),
     ChannelUpdate(Channel),
