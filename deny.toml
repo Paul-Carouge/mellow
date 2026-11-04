@@ -48,6 +48,9 @@ allow = [
 # target outside the graph.
 exceptions = [
     { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+    # The same Mozilla list as certificates, for the link preview client (ADR-0041), so the
+    # server reaches HTTPS sites without a CA bundle on the host.
+    { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [licenses.private]

@@ -1045,3 +1045,183 @@ async fn a_forward_shares_the_original_files_without_quota_and_keeps_them_once_i
     assert_eq!(download_status, StatusCode::OK);
     assert_eq!(downloaded, PNG);
 }
+
+/// A site on this machine for link previews: a page with Open Graph tags and a picture, a
+/// redirect into a private network, plain text; it counts the page's fetches.
+async fn local_site() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use axum::response::IntoResponse as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let page_fetches = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = page_fetches.clone();
+    let site = axum::Router::new()
+        .route(
+            "/page",
+            axum::routing::get(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                async {
+                    (
+                        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                        r##"<html><head><title>Plain</title>
+                        <meta property="og:title" content="Local &amp; page">
+                        <meta property="og:description" content="What it says">
+                        <meta property="og:site_name" content="Local">
+                        <meta property="og:image" content="/picture.png">
+                        <meta name="theme-color" content="#3366cc"></head><body></body></html>"##,
+                    )
+                }
+            }),
+        )
+        .route(
+            "/picture.png",
+            axum::routing::get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "image/png")],
+                    crate::domain::image_processing::tests::png(120, 90),
+                )
+                    .into_response()
+            }),
+        )
+        .route(
+            "/private",
+            axum::routing::get(|| async {
+                (
+                    StatusCode::FOUND,
+                    [(header::LOCATION, "http://10.0.0.1/admin")],
+                )
+            }),
+        )
+        .route(
+            "/text",
+            axum::routing::get(|| async { ([(header::CONTENT_TYPE, "text/plain")], "plain") }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, site).await });
+    (format!("http://{address}"), page_fetches)
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // One scenario: fetch, publish, serve, cache, edit away.
+async fn link_previews_are_fetched_once_shown_in_history_and_served_to_readers_only() {
+    use mellow_protocol::Message;
+    use std::sync::atomic::Ordering;
+
+    use crate::domain::link_previews::fetcher::LinkFetcher;
+    use crate::domain::messages::fetch_queued_link_previews;
+
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let (owner, general) = owner_and_general_channel(&state).await;
+    let stranger = registered_token(&state, "stranger").await;
+    let (site, page_fetches) = local_site().await;
+    let fetcher = LinkFetcher::allowing_loopback_for_tests();
+    state.messages.enable_link_previews();
+    let messages_path = format!("/api/v1/channels/{general}/messages");
+    let post = |content: String| {
+        authorized(
+            "POST",
+            &messages_path,
+            &owner,
+            Some(serde_json::json!({ "content": content })),
+        )
+    };
+    let (status, body) = send(
+        &state,
+        post(format!(
+            "see {site}/page, {site}/private and {site}/text, not <{site}/hidden>"
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let sent: Message = json(&body);
+    assert!(sent.link_previews.is_empty(), "fetched after the answer");
+    fetch_queued_link_previews(&state.messages, &state.attachments, &fetcher).await;
+    let (_, body) = send(&state, authorized("GET", &messages_path, &owner, None)).await;
+    let history: Vec<Message> = json(&body);
+    let previews = &history[0].link_previews;
+    assert_eq!(
+        previews.len(),
+        1,
+        "a private redirect and plain text give none"
+    );
+    let preview = &previews[0];
+    assert_eq!(preview.url, format!("{site}/page"));
+    assert_eq!(preview.title.as_deref(), Some("Local & page"));
+    assert_eq!(preview.description.as_deref(), Some("What it says"));
+    assert_eq!(preview.site_name.as_deref(), Some("Local"));
+    assert_eq!(preview.theme_color, Some(0x0033_66cc));
+    let image = preview.image.unwrap();
+    assert_eq!((image.width, image.height), (120, 90));
+
+    let image_path = format!(
+        "/api/v1/channels/{general}/messages/{}/link-previews/{}/image",
+        sent.id, preview.id
+    );
+    let ((status, bytes), headers) = send_from(
+        &state,
+        TEST_PEER,
+        authorized("GET", &image_path, &owner, None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("image/")
+    );
+    assert!(!bytes.is_empty());
+    let entity_tag = headers[header::ETAG].clone();
+    let mut revalidation = authorized("GET", &image_path, &owner, None);
+    revalidation
+        .headers_mut()
+        .insert(header::IF_NONE_MATCH, entity_tag);
+    let (status, _) = send(&state, revalidation).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    let (status, _) = send(&state, authorized("GET", &image_path, &stranger, None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "only readers of the channel");
+
+    let (_, body) = send(&state, post(format!("again {site}/page"))).await;
+    let again: Message = json(&body);
+    fetch_queued_link_previews(&state.messages, &state.attachments, &fetcher).await;
+    assert_eq!(
+        page_fetches.load(Ordering::SeqCst),
+        1,
+        "a fresh preview is reused"
+    );
+
+    let (status, _) = send(
+        &state,
+        authorized(
+            "PATCH",
+            &format!("{messages_path}/{}", again.id),
+            &owner,
+            Some(serde_json::json!({ "content": "no link any more" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    fetch_queued_link_previews(&state.messages, &state.attachments, &fetcher).await;
+    let (_, body) = send(&state, authorized("GET", &messages_path, &owner, None)).await;
+    let history: Vec<Message> = json(&body);
+    database.close().await;
+
+    let edited = history
+        .iter()
+        .find(|message| message.id == again.id)
+        .unwrap();
+    assert!(
+        edited.link_previews.is_empty(),
+        "an edit drops the previews"
+    );
+    assert_eq!(
+        history
+            .iter()
+            .find(|message| message.id == sent.id)
+            .unwrap()
+            .link_previews
+            .len(),
+        1
+    );
+}

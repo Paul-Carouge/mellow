@@ -84,9 +84,33 @@ pub struct ServerConfig {
     /// values in TOML.
     #[serde(default, skip_serializing_if = "VoiceConfig::is_default")]
     pub voice: VoiceConfig,
+    /// Link previews fetched by the server (ADR-0041); on by default, so the table is usually
+    /// absent.
+    #[serde(default, skip_serializing_if = "LinkPreviewsConfig::is_default")]
+    pub link_previews: LinkPreviewsConfig,
     /// Built-in TLS with ACME certificates (ADR-0013). Last field: TOML writes tables after values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
+}
+
+/// The `[link_previews]` table of `mellow.toml` (ADR-0041).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LinkPreviewsConfig {
+    /// `false` keeps the instance from fetching any link posted in a message.
+    pub enabled: bool,
+}
+
+impl Default for LinkPreviewsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+impl LinkPreviewsConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// UDP port of the voice media, which the router must forward and the firewall must open.
@@ -657,6 +681,7 @@ mod tests {
             maximum_attachment_storage_bytes_per_user:
                 DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER,
             voice: VoiceConfig::default(),
+            link_previews: LinkPreviewsConfig::default(),
             tls: None,
         };
 

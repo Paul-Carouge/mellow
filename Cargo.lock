@@ -2141,7 +2141,9 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "url",
  "webp-animation",
+ "webpki-root-certs",
  "zeroize",
 ]
 

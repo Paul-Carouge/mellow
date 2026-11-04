@@ -10,8 +10,9 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
 use crate::domain::image_processing::{
     ImageProcessingError, OPTIMIZABLE_CONTENT_TYPES, ProcessedImage, attachment_preview,
-    optimize_attachment,
+    link_preview_picture, optimize_attachment,
 };
+use crate::storage::link_previews::{self as link_preview_storage, StoredPreviewImage};
 
 use crate::domain::image_recompression::ImageRecompression;
 use crate::domain::message_rules::{UNKNOWN_CONTENT_TYPE, clean_file_name, sniff_content_type};
@@ -141,8 +142,8 @@ pub(crate) async fn purge_attachments_periodically(attachments: Arc<Attachments>
     }
 }
 
-/// The id of every file a row points at: attachments and their previews, avatars, banners, icons
-/// and sounds, which share the file store (ADR-0021, ADR-0032).
+/// The id of every file a row points at: attachments and their previews, avatars, banners, icons,
+/// sounds and link preview pictures, which share the file store (ADR-0021, ADR-0032, ADR-0041).
 pub(crate) async fn file_ids_in_use(
     database: &Database,
 ) -> Result<HashSet<Snowflake>, MessageError> {
@@ -160,6 +161,7 @@ pub(crate) async fn file_ids_in_use(
                 .await
                 .map_err(crate::domain::guilds::GuildError::from)?,
         )
+        .chain(link_preview_storage::all_preview_image_file_ids(database).await?)
         .collect())
 }
 
@@ -654,6 +656,81 @@ impl Attachments {
         })
     }
 
+    /// A link preview's picture (ADR-0041), if the reader may read the message showing it:
+    /// `VIEW_CHANNEL` and `READ_MESSAGE_HISTORY` in its channel, as for attachments.
+    pub(crate) async fn find_readable_link_preview_image(
+        &self,
+        user_id: Snowflake,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        preview_id: Snowflake,
+    ) -> Result<ReadableAttachment, MessageError> {
+        self.messages
+            .require_channel_permissions(
+                user_id,
+                channel_id,
+                Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY,
+            )
+            .await?;
+        let image = link_preview_storage::find_message_preview_image(
+            &self.database,
+            channel_id,
+            message_id,
+            preview_id,
+        )
+        .await?
+        .ok_or(MessageError::MessageNotFound)?;
+        Ok(ReadableAttachment {
+            id: image.file_id,
+            file_name: with_extension_of("preview", &image.content_type),
+            content_type: image.content_type,
+            size_bytes: image.size_bytes,
+        })
+    }
+
+    /// Stores a link preview's picture (ADR-0041): recognised by its bytes, re-encoded by the
+    /// visually lossless pipeline within the attachment preview box, sealed in the file store.
+    /// `None` when the bytes are no picture Mellow shows or nothing could be encoded.
+    pub(crate) async fn store_link_preview_picture(
+        &self,
+        bytes: Vec<u8>,
+    ) -> Result<Option<StoredPreviewImage>, MessageError> {
+        let content_type = sniff_content_type(&bytes);
+        if !OPTIMIZABLE_CONTENT_TYPES.contains(&content_type) {
+            return Ok(None);
+        }
+        let permit = self.wait_for_image_processing_permit().await?;
+        let deadline = std::time::Instant::now() + PREVIEW_TIME_BUDGET;
+        let processed = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            link_preview_picture(&bytes, content_type, deadline)
+        })
+        .await
+        .map_err(|error| MessageError::Internal(Box::new(error)))?;
+        let (picture, width, height) = match processed {
+            Ok(Some(processed)) => processed,
+            Ok(None) | Err(ImageProcessingError::Unsupported | ImageProcessingError::TooLarge) => {
+                return Ok(None);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "cannot make a link preview picture");
+                return Ok(None);
+            }
+        };
+        let file_id = self
+            .ids
+            .next_id(crate::domain::clock::now_unix_milliseconds())?;
+        let size_bytes = u64::try_from(picture.bytes.len()).unwrap_or(u64::MAX);
+        self.files.write(file_id, picture.bytes).await?;
+        Ok(Some(StoredPreviewImage {
+            file_id,
+            content_type: picture.content_type.to_owned(),
+            size_bytes,
+            width,
+            height,
+        }))
+    }
+
     /// Reads and decrypts a file `find_readable` allowed, waiting a moment for a transfer slot
     /// before answering `Busy`: a burst of previews queues rather than failing.
     pub(crate) async fn download(
@@ -691,6 +768,12 @@ impl Attachments {
     ) -> Result<SweptFiles, MessageError> {
         let cutoff = now_unix_milliseconds.saturating_sub(UNSENT_UPLOAD_LIFETIME_MILLISECONDS);
         let mut swept = SweptFiles::default();
+        // Their pictures have no row any more: the orphan sweep below deletes them.
+        link_preview_storage::delete_expired_unshown_previews(
+            &self.database,
+            now_unix_milliseconds,
+        )
+        .await?;
         // A file left behind here has no row any more: the orphan sweep below retries it.
         for id in storage::delete_unlinked_before(&self.database, cutoff).await? {
             self.delete_swept_file(id, &mut swept).await;

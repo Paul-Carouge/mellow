@@ -791,6 +791,11 @@ export class MellowClient {
       case "MESSAGE_REACTION_REMOVE_ALL":
         this.updateReactions(event.data.channel_id, event.data.message_id, () => []);
         return;
+      case "MESSAGE_LINK_PREVIEWS_UPDATE": {
+        const { channel_id, message_id, link_previews } = event.data;
+        this.updateCachedMessage(channel_id, message_id, (message) => ({ ...message, link_previews }));
+        return;
+      }
       case "VOICE_STATE_UPDATE":
         this.applyVoiceState(event.data.voice_state);
         return;
@@ -849,18 +854,25 @@ export class MellowClient {
     messageId: Snowflake,
     change: (reactions: readonly ReactionSummary[]) => ReactionSummary[],
   ): void {
+    this.updateCachedMessage(channelId, messageId, (message) => ({
+      ...message,
+      reactions: change(message.reactions ?? []),
+    }));
+  }
+
+  /** Changes one message wherever it is cached (history and pins); other rows keep their identity. */
+  private updateCachedMessage(channelId: Snowflake, messageId: Snowflake, change: (message: Message) => Message): void {
     if (!this.isKnownChannel(channelId)) {
       return;
     }
-    const withChangedReactions = (message: Message) =>
-      message.id === messageId ? { ...message, reactions: change(message.reactions ?? []) } : message;
+    const withChange = (message: Message) => (message.id === messageId ? change(message) : message);
     const messages = this.messagesByChannel.get(channelId);
     if (messages) {
-      this.messagesByChannel.set(channelId, messages.map(withChangedReactions));
+      this.messagesByChannel.set(channelId, messages.map(withChange));
     }
     const pins = this.pinsByChannel.get(channelId);
     if (pins?.status === "loaded") {
-      this.pinsByChannel.set(channelId, { status: "loaded", messages: pins.messages.map(withChangedReactions) });
+      this.pinsByChannel.set(channelId, { status: "loaded", messages: pins.messages.map(withChange) });
     }
     this.notePinsChangedWhileLoading(channelId);
   }

@@ -68,6 +68,7 @@ impl Messages {
         // commit and the event.
         let author_images = profile_images_of_user(&self.database, message.author_id).await?;
         let attachments = attachments_of(&self.database, message.id).await?;
+        let previews = super::link_previews::previews_of(&self.database, message.id).await?;
         let audit = channel
             .guild_id()
             .map(|guild_id| {
@@ -112,6 +113,8 @@ impl Messages {
             let mut changed = message_from_stored(changed, None, attachments);
             changed.author.avatar = author_images.avatar;
             changed.author.banner = author_images.banner;
+            // Clients replace the message with the event's: it must keep its previews.
+            changed.link_previews = previews;
             publish(
                 &self.guilds,
                 &audience,

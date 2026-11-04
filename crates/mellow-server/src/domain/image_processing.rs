@@ -573,6 +573,48 @@ pub(crate) fn attachment_preview(
     }))
 }
 
+/// A link preview's picture (ADR-0041), fitted within the same box as attachment previews and
+/// stored in its smallest visually lossless form, with its size in pixels. Unlike
+/// `attachment_preview`, a picture that already fits is encoded too: nothing fetched from
+/// another site is stored as it came, metadata included. `None` when nothing passes, for an
+/// animated PNG, and when the stored form could not show the same colours.
+pub(crate) fn link_preview_picture(
+    bytes: &[u8],
+    content_type: &str,
+    deadline: Instant,
+) -> Result<Option<(ProcessedImage, u32, u32)>, ImageProcessingError> {
+    if !OPTIMIZABLE_CONTENT_TYPES.contains(&content_type) || is_animated_png(bytes)? {
+        return Ok(None);
+    }
+    let picture = decode_picture(bytes, |frame| {
+        fit_within(frame, PREVIEW_WIDTH_PIXELS, PREVIEW_HEIGHT_PIXELS)
+    })?;
+    let Some((first, _)) = picture.frames.first() else {
+        return Err(ImageProcessingError::Unsupported);
+    };
+    if !picture.colour.keeps_colours(first) {
+        return Ok(None);
+    }
+    let (width, height) = first.dimensions();
+    let is_animated = picture.frames.len() > 1;
+    let encoded = if is_animated {
+        Some(smallest_animation(&picture.frames, deadline)?)
+    } else {
+        smallest_still(first, &picture.colour, !picture.is_photo, deadline)?
+    };
+    Ok(encoded.map(|encoded| {
+        (
+            ProcessedImage {
+                bytes: encoded.bytes,
+                content_type: encoded.content_type,
+                is_animated,
+            },
+            width,
+            height,
+        )
+    }))
+}
+
 /// Whether a PNG is animated (APNG), from its header: decoding would keep only its first frame.
 fn is_animated_png(bytes: &[u8]) -> Result<bool, ImageProcessingError> {
     if image::guess_format(bytes).ok() != Some(ImageFormat::Png) {

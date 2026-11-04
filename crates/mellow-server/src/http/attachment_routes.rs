@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use mellow_protocol::{Attachment, Snowflake};
 
-use crate::domain::attachments::AttachmentFileKind;
+use crate::domain::attachments::{AttachmentFileKind, ReadableAttachment};
 use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::message_rules::{PLAYABLE_MEDIA_TYPES, PREVIEWABLE_IMAGE_TYPES};
 use crate::http::AppState;
@@ -128,6 +128,37 @@ async fn serve(
         .attachments
         .find_readable(user_id, attachment_id, kind)
         .await?;
+    serve_readable(state, attachment, headers).await
+}
+
+/// `GET /api/v1/channels/{channel_id}/messages/{message_id}/link-previews/{preview_id}/image`:
+/// a link preview's picture (ADR-0041), with the same checks, limits and headers as attachment
+/// previews.
+pub(crate) async fn download_link_preview_image(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id, preview_id)): ApiPath<(Snowflake, Snowflake, Snowflake)>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    if !state.rate_limiter.record_event(
+        &format!("attachment-download:{}", user.id),
+        ATTACHMENT_DOWNLOADS_PER_USER,
+        Instant::now(),
+    ) {
+        return Err(ApiError::rate_limited());
+    }
+    let image = state
+        .attachments
+        .find_readable_link_preview_image(user.id, channel_id, message_id, preview_id)
+        .await?;
+    serve_readable(&state, image, &headers).await
+}
+
+async fn serve_readable(
+    state: &AppState,
+    attachment: ReadableAttachment,
+    headers: &HeaderMap,
+) -> Result<Response, ApiError> {
     let entity_tag = HeaderValue::from_str(&attachment.entity_tag())
         .map_err(|error| ApiError::internal("an attachment entity tag", &error))?;
     // Revalidated on every view: a shared computer keeps no conversation's files usable after

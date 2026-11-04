@@ -324,8 +324,31 @@ export interface Message {
    * servers.
    */
   mention_role_ids?: Snowflake[];
+  /**
+   * Previews of the message's links, in order, once the server fetched them (ADR-0041);
+   * `MESSAGE_LINK_PREVIEWS_UPDATE` brings them later. Absent when empty and from older servers.
+   */
+  link_previews?: LinkPreview[];
   /** Set on a forward (ADR-0039): its content and files copy that message's. */
   forwarded_from?: ForwardOrigin;
+}
+
+/**
+ * A link's preview, fetched by the server (ADR-0041). Every text is plain: never render it as
+ * HTML or Markdown. The picture is served at
+ * `/api/v1/channels/{channel_id}/messages/{message_id}/link-previews/{id}/image`.
+ */
+export interface LinkPreview {
+  id: Snowflake;
+  /** The link as fetched, without its fragment. */
+  url: string;
+  title?: string;
+  description?: string;
+  site_name?: string;
+  /** `0xRRGGBB`. */
+  theme_color?: number;
+  /** Its size in pixels as stored. */
+  image?: { width: number; height: number };
 }
 
 /** Where a forwarded message was first written (ADR-0039); its date is the message id's. */
@@ -661,6 +684,15 @@ export type GatewayEvent =
   | { t: "MESSAGE_CREATE"; data: Message }
   | { t: "MESSAGE_UPDATE"; data: Message }
   | { t: "MESSAGE_DELETE"; data: { guild_id?: Snowflake; channel_id: Snowflake; id: Snowflake } }
+  | {
+      t: "MESSAGE_LINK_PREVIEWS_UPDATE";
+      data: {
+        guild_id?: Snowflake;
+        channel_id: Snowflake;
+        message_id: Snowflake;
+        link_previews: LinkPreview[];
+      };
+    }
   | { t: "MESSAGE_REACTION_ADD"; data: MessageReaction }
   | { t: "MESSAGE_REACTION_REMOVE"; data: MessageReaction }
   | {

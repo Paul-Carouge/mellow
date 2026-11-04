@@ -4,10 +4,14 @@
 
 mod direct_messages;
 mod group_conversations;
+mod link_previews;
 mod pins;
 mod reactions;
 mod search;
 
+pub(crate) use link_previews::fetch_link_previews_in_background;
+#[cfg(test)]
+pub(crate) use link_previews::fetch_queued_link_previews;
 pub(crate) use reactions::ReactionRemoval;
 
 use std::collections::{HashMap, HashSet};
@@ -117,6 +121,8 @@ fn message_from_stored(
         pinned: message.is_pinned,
         mention_ids: message.mention_ids,
         mention_role_ids: message.mention_role_ids,
+        // Filled by `fill_link_previews` for REST answers; events carry the stored ones too.
+        link_previews: Vec::new(),
         forwarded_from: message.forwarded_from,
     }
 }
@@ -185,6 +191,7 @@ async fn already_sent_with_nonce(
     let mut message = message_from_stored(already_sent, Some(nonce.to_owned()), attachments);
     fill_profile_images(database, [&mut message.author]).await?;
     fill_reactions(database, author_id, std::slice::from_mut(&mut message)).await?;
+    link_previews::fill_link_previews(database, std::slice::from_mut(&mut message)).await?;
     Ok(Some(message))
 }
 
@@ -442,6 +449,8 @@ pub(crate) struct Messages {
     /// Searches take at most `MAXIMUM_CONCURRENT_SEARCHES` of the four reader connections, so
     /// history and other reads keep the rest (ADR-0029).
     search_permits: Arc<tokio::sync::Semaphore>,
+    /// Messages whose links to preview, for the background fetcher (ADR-0041).
+    link_previews: link_previews::LinkPreviewQueue,
 }
 
 /// Searches running at once on the instance; others wait for a permit.
@@ -460,6 +469,7 @@ impl Messages {
             send_order: Arc::default(),
             running_searches: Arc::default(),
             search_permits: Arc::new(tokio::sync::Semaphore::new(MAXIMUM_CONCURRENT_SEARCHES)),
+            link_previews: link_previews::LinkPreviewQueue::default(),
         }
     }
 
@@ -561,18 +571,11 @@ impl Messages {
         request: SendMessageRequest,
         now_unix_milliseconds: u64,
     ) -> Result<Message, MessageError> {
-        // A forward's retry is answered before the original is read again: it may be gone, or no
-        // longer readable, while the forward itself was stored.
-        if request.forwarded_from.is_some()
-            && let Some(nonce) = &request.nonce
+        if let Some(message) = self
+            .forward_already_sent(user_id, channel_id, &request)
+            .await?
         {
-            self.require_channel_permissions(user_id, channel_id, Permissions::VIEW_CHANNEL)
-                .await?;
-            if let Some(message) =
-                already_sent_with_nonce(&self.database, channel_id, user_id, nonce).await?
-            {
-                return Ok(message);
-            }
+            return Ok(message);
         }
         let SendInput {
             channel,
@@ -604,6 +607,9 @@ impl Messages {
         // Read before the write too, so nothing can fail between the insert and the events.
         let conversation_views = one_to_one_conversation_views(&self.database, &channel).await?;
         let send_order = self.send_order.clone();
+        let link_preview_ticket = self
+            .link_previews
+            .ticket(channel.guild_id(), forwarded.is_some());
         let database = self.database.clone();
         let ids = self.ids.clone();
         let guilds = self.guilds.clone();
@@ -665,11 +671,30 @@ impl Messages {
                 &audience,
                 &GatewayEvent::MessageCreate(message.clone()),
             );
+            if let Some(ticket) = link_preview_ticket {
+                ticket.queue_for(&message, audience);
+            }
             message.nonce = request.nonce;
             Ok(message)
         })
         .await
         .map_err(|error| MessageError::Internal(Box::new(error)))?
+    }
+
+    /// A forward's retry is answered before the original is read again: it may be gone, or no
+    /// longer readable, while the forward itself was stored.
+    async fn forward_already_sent(
+        &self,
+        user_id: Snowflake,
+        channel_id: Snowflake,
+        request: &SendMessageRequest,
+    ) -> Result<Option<Message>, MessageError> {
+        let (Some(_), Some(nonce)) = (request.forwarded_from, &request.nonce) else {
+            return Ok(None);
+        };
+        self.require_channel_permissions(user_id, channel_id, Permissions::VIEW_CHANNEL)
+            .await?;
+        already_sent_with_nonce(&self.database, channel_id, user_id, nonce).await
     }
 
     /// What `send` writes, once the user may send it to this channel: a forward's copy, or the
@@ -797,6 +822,7 @@ impl Messages {
         )
         .await?;
         fill_reactions(&self.database, viewer_id, &mut messages).await?;
+        link_previews::fill_link_previews(&self.database, &mut messages).await?;
         Ok(messages)
     }
 
@@ -841,6 +867,8 @@ impl Messages {
         // between the commit and the event.
         let author_images = profile_images_of_user(&self.database, user_id).await?;
         let attachments = attachments_of(&self.database, message.id).await?;
+        let previews_before = link_previews::previews_of(&self.database, message.id).await?;
+        let had_previews = !previews_before.is_empty();
         let updated = message_storage::update_message_content(
             &self.database,
             channel.id(),
@@ -854,10 +882,23 @@ impl Messages {
         let mut updated = message_from_stored(updated, None, attachments);
         updated.author.avatar = author_images.avatar;
         updated.author.banner = author_images.banner;
+        // The previews of the text before the edit, until the fetcher answers for the new one.
+        updated.link_previews = previews_before;
         publish(
             &self.guilds,
             &audience,
             &GatewayEvent::MessageUpdate(updated.clone()),
+        );
+        link_previews::queue(
+            self.link_previews.sender_if_enabled().as_ref(),
+            link_previews::PreviewJob::for_message(
+                channel.guild_id(),
+                channel.id(),
+                updated.id,
+                &updated.content,
+                audience,
+                had_previews,
+            ),
         );
         // Only the editor's answer carries reactions; a failure here leaves the edit published.
         fill_reactions(&self.database, user_id, std::slice::from_mut(&mut updated)).await?;

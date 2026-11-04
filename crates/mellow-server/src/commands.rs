@@ -45,6 +45,7 @@ pub async fn initialize_instance(options: &InitializeOptions) -> Result<ServerCo
         maximum_attachment_storage_bytes_per_user:
             crate::config::DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER,
         voice: crate::config::VoiceConfig::default(),
+        link_previews: crate::config::LinkPreviewsConfig::default(),
         tls: options
             .tls
             .clone()
@@ -210,6 +211,23 @@ pub async fn serve_instance(
                 ),
             ),
         );
+        let link_preview_fetcher = if config.link_previews.enabled {
+            let fetcher = crate::domain::link_previews::fetcher::LinkFetcher::new(&format!(
+                "Mellow/{} (link preview; +https://github.com/Paul-Carouge/mellow)",
+                env!("CARGO_PKG_VERSION")
+            ))
+            .context("cannot build the link preview client")?;
+            state.messages.enable_link_previews();
+            Some(tokio::spawn(
+                crate::domain::messages::fetch_link_previews_in_background(
+                    state.messages.clone(),
+                    state.attachments.clone(),
+                    fetcher,
+                ),
+            ))
+        } else {
+            None
+        };
         let served = match &config.tls {
             Some(tls) => crate::tls::serve_tls_until_shutdown(listener, state, tls, shutdown).await,
             None => serve_until_shutdown(listener, state, shutdown).await,
@@ -221,6 +239,10 @@ pub async fn serve_instance(
         let _cancelled = attachment_purge.await;
         attachment_optimizer.abort();
         let _cancelled = attachment_optimizer.await;
+        if let Some(link_preview_fetcher) = link_preview_fetcher {
+            link_preview_fetcher.abort();
+            let _cancelled = link_preview_fetcher.await;
+        }
         served
     }
     .await;
