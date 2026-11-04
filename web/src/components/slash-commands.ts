@@ -98,10 +98,20 @@ export function slashCommandQuery(text: string, caret: number): SlashCommandQuer
   if (text[slash] !== "/" || caret - start > MAXIMUM_SLASH_QUERY_LENGTH) {
     return null;
   }
-  if (text.slice(lineStartOf(text, slash), slash).trim() !== "") {
+  const lineStart = lineStartOf(text, slash);
+  if (text.slice(lineStart, slash).trim() !== "" || isInsideCodeFence(text, lineStart)) {
     return null;
   }
   return { start: slash, end: caret, query: text.slice(start, caret) };
+}
+
+/** Whether the line starting at `lineStart` is inside a fenced code block: an odd number of fence lines before it. */
+function isInsideCodeFence(text: string, lineStart: number): boolean {
+  const fences = text
+    .slice(0, lineStart)
+    .split("\n")
+    .filter((line) => line.trimStart().startsWith("```")).length;
+  return fences % 2 === 1;
 }
 
 function lineStartOf(text: string, position: number): number {
@@ -242,6 +252,9 @@ export function formattingMarksForShortcut(event: {
  * the marks, where Markdown needs them; an empty selection gets an empty pair with the caret inside.
  */
 export function toggleInlineMarks(text: string, selectionStart: number, selectionEnd: number, marks: string): TextEdit {
+  if (text.slice(selectionStart, selectionEnd).trim().includes("\n")) {
+    return toggleMarksOnEachLine(text, selectionStart, selectionEnd, marks);
+  }
   let start = selectionStart;
   let end = selectionEnd;
   while (start < end && /\s/u.test(text[start] ?? "")) {
@@ -259,7 +272,7 @@ export function toggleInlineMarks(text: string, selectionStart: number, selectio
     };
   }
   const selected = text.slice(start, end);
-  if (selected.length >= 2 * length && hasMarks(selected, length, selected.length - length, marks)) {
+  if (selected.length >= 2 * length && hasMarksAtEnds(selected, marks)) {
     const inner = selected.slice(length, selected.length - length);
     return { text: text.slice(0, start) + inner + text.slice(end), selectionStart: start, selectionEnd: start + inner.length };
   }
@@ -268,6 +281,46 @@ export function toggleInlineMarks(text: string, selectionStart: number, selectio
     selectionStart: start + length,
     selectionEnd: end + length,
   };
+}
+
+/**
+ * Marks across several lines would break their blocks ("**# Plan" is no heading): each line's
+ * text after its block mark ("# ", "> ", "- ", "1. ") is toggled on its own; blank lines stay.
+ */
+function toggleMarksOnEachLine(text: string, selectionStart: number, selectionEnd: number, marks: string): TextEdit {
+  const lines = text.slice(selectionStart, selectionEnd).split("\n");
+  const toggled = lines.map((line) => {
+    const prefix = /^\s*(?:#{1,3} |> |- |\d+\. )?/u.exec(line)?.[0] ?? "";
+    const content = line.slice(prefix.length);
+    if (content.trim() === "") {
+      return line;
+    }
+    return prefix + toggleInlineMarks(content, 0, content.length, marks).text;
+  });
+  const replaced = toggled.join("\n");
+  return {
+    text: text.slice(0, selectionStart) + replaced + text.slice(selectionEnd),
+    selectionStart,
+    selectionEnd: selectionStart + replaced.length,
+  };
+}
+
+/** Whether `selected` starts and ends with `marks`, whole runs of the mark's character counted. */
+function hasMarksAtEnds(selected: string, marks: string): boolean {
+  const markCharacter = marks[0] ?? "";
+  let runAtStart = 0;
+  while (runAtStart < selected.length && selected[runAtStart] === markCharacter) {
+    runAtStart += 1;
+  }
+  let runAtEnd = 0;
+  while (runAtEnd < selected.length - runAtStart && selected[selected.length - 1 - runAtEnd] === markCharacter) {
+    runAtEnd += 1;
+  }
+  return isMarkRun(Math.min(runAtStart, runAtEnd), marks);
+}
+
+function isMarkRun(run: number, marks: string): boolean {
+  return marks.length === 1 ? run % 2 === 1 : run >= marks.length;
 }
 
 /**
@@ -284,8 +337,7 @@ function hasMarks(text: string, start: number, end: number, marks: string): bool
   while (end + runAfter < text.length && text[end + runAfter] === markCharacter) {
     runAfter += 1;
   }
-  const run = Math.min(runBefore, runAfter);
-  return marks.length === 1 ? run % 2 === 1 : run >= marks.length;
+  return isMarkRun(Math.min(runBefore, runAfter), marks);
 }
 
 /**
