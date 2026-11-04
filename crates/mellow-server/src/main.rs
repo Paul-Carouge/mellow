@@ -40,6 +40,12 @@ const WEBRTC_LOG_TARGETS: [&str; 6] = [
     "sctp_proto",
 ];
 
+/// The outbound HTTP client of link previews (ADR-0041): its debug lines name the hosts and
+/// addresses of links posted in conversations, which logs never carry.
+/// Only `hyper_util` logs connections through `tracing` (reqwest and rustls use `log`, which is
+/// not bridged); capping `rustls` would also cap `rustls_acme`, whose renewal lines matter.
+const LINK_PREVIEW_CLIENT_LOG_TARGETS: [&str; 1] = ["hyper_util"];
+
 /// A second, per-layer filter: unlike directives added to the `EnvFilter`, `RUST_LOG` cannot
 /// override it.
 fn webrtc_log_cap() -> Targets {
@@ -48,6 +54,7 @@ fn webrtc_log_cap() -> Targets {
         .with_targets(
             WEBRTC_LOG_TARGETS
                 .iter()
+                .chain(LINK_PREVIEW_CLIENT_LOG_TARGETS.iter())
                 .map(|target| (*target, LevelFilter::ERROR)),
         )
 }

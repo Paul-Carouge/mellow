@@ -31,7 +31,9 @@ fn is_public_ipv4(address: Ipv4Addr) -> bool {
         || (first == 198 && second == 51 && third == 100) // documentation
         || (first == 203 && second == 0 && third == 113) // documentation
         || first >= 224; // multicast, reserved and broadcast
-    !is_in_special_range
+    // Azure's host agent (WireServer) answers on a public address from inside every VM.
+    let is_cloud_host_endpoint = address == Ipv4Addr::new(168, 63, 129, 16);
+    !is_in_special_range && !is_cloud_host_endpoint
 }
 
 fn is_public_ipv6(address: Ipv6Addr) -> bool {
@@ -157,6 +159,7 @@ mod tests {
             "224.0.0.1",
             "240.0.0.1",
             "255.255.255.255",
+            "168.63.129.16",
         ] {
             assert!(!is_public(address), "{address}");
         }

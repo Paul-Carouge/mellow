@@ -476,9 +476,6 @@ impl ClientState {
         StateChange::UserRenamed { user_id: user.id }
     }
 
-    /// Only cached messages change: an edit of older history must not appear out of context, nor
-    /// mark a never-opened channel as unread. An older edit never replaces a newer one: our own
-    /// REST answer can arrive after the gateway already delivered a later edit.
     fn remove_channel(&mut self, guild_id: Snowflake, id: Snowflake) -> StateChange {
         if let Some(guild) = self.guilds.iter_mut().find(|guild| guild.id == guild_id) {
             guild.channels.retain(|channel| channel.id != id);
@@ -495,6 +492,9 @@ impl ClientState {
         StateChange::Guilds
     }
 
+    /// Only cached messages change: an edit of older history must not appear out of context, nor
+    /// mark a never-opened channel as unread. An older edit never replaces a newer one: our own
+    /// REST answer can arrive after the gateway already delivered a later edit.
     fn replace_cached_message(&mut self, message: Message) -> StateChange {
         let channel_id = message.channel_id;
         let Some(cached) = self

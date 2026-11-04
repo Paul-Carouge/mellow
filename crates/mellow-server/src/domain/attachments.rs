@@ -165,6 +165,10 @@ pub(crate) async fn file_ids_in_use(
         .collect())
 }
 
+/// An expired link preview no message shows stays this long, so a fetch job that found it fresh
+/// can still link it (a job takes well under a minute).
+const LINK_PREVIEW_PURGE_GRACE_MILLISECONDS: u64 = 10 * 60 * 1_000;
+
 /// An upload not sent in a message within this long is deleted.
 pub(crate) const UNSENT_UPLOAD_LIFETIME_MILLISECONDS: u64 = 60 * 60 * 1_000;
 
@@ -187,6 +191,9 @@ pub(crate) enum AttachmentFileKind {
 pub(crate) struct ReadableAttachment {
     /// The file's own id: a preview's, or a recompressed file's, differs from its attachment's.
     id: Snowflake,
+    /// Names this version of the file in its entity tag: the file id, except for a link
+    /// preview's picture, whose file id would tell when the link was first fetched (ADR-0041).
+    tag_id: Snowflake,
     file_name: String,
     content_type: String,
     size_bytes: u64,
@@ -197,7 +204,7 @@ impl ReadableAttachment {
     /// writes a replacement under a new one), and a preview's id differs from the original's, so
     /// no two versions share a tag.
     pub(crate) fn entity_tag(&self) -> String {
-        format!("\"{}-{}\"", self.id, self.size_bytes)
+        format!("\"{}-{}\"", self.tag_id, self.size_bytes)
     }
 }
 
@@ -643,12 +650,14 @@ impl Attachments {
         Ok(match (kind, attachment.preview) {
             (AttachmentFileKind::Preview, Some(preview)) => ReadableAttachment {
                 id: preview.file_id,
+                tag_id: preview.file_id,
                 file_name: with_extension_of(&attachment.file_name, &preview.content_type),
                 content_type: preview.content_type,
                 size_bytes: preview.size_bytes,
             },
             (AttachmentFileKind::Original | AttachmentFileKind::Preview, _) => ReadableAttachment {
                 id: attachment.file_id,
+                tag_id: attachment.file_id,
                 file_name: attachment.file_name,
                 content_type: attachment.content_type,
                 size_bytes: attachment.size_bytes,
@@ -682,6 +691,7 @@ impl Attachments {
         .ok_or(MessageError::MessageNotFound)?;
         Ok(ReadableAttachment {
             id: image.file_id,
+            tag_id: preview_id,
             file_name: with_extension_of("preview", &image.content_type),
             content_type: image.content_type,
             size_bytes: image.size_bytes,
@@ -772,6 +782,7 @@ impl Attachments {
         link_preview_storage::delete_expired_unshown_previews(
             &self.database,
             now_unix_milliseconds,
+            LINK_PREVIEW_PURGE_GRACE_MILLISECONDS,
         )
         .await?;
         // A file left behind here has no row any more: the orphan sweep below retries it.

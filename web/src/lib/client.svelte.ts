@@ -603,7 +603,9 @@ export class MellowClient {
           return;
         }
         // A late REST answer must not undo a newer edit the gateway already brought. Events never
-        // carry reactions (`me` differs per viewer), so the cached ones stay.
+        // carry reactions (`me` differs per viewer), so the cached ones stay. Link previews come
+        // later in their own event: only a newer edit's are taken, never a pin's or a REST echo's
+        // read before the fetcher wrote them.
         const updated = event.data;
         const previous = messages.find((message) => message.id === updated.id);
         if (previous && (previous.edited_at_unix_milliseconds ?? 0) <= (updated.edited_at_unix_milliseconds ?? 0)) {
@@ -614,7 +616,14 @@ export class MellowClient {
           messages.map((message) =>
             message.id === updated.id &&
             (message.edited_at_unix_milliseconds ?? 0) <= (updated.edited_at_unix_milliseconds ?? 0)
-              ? { ...updated, reactions: message.reactions }
+              ? {
+                  ...updated,
+                  reactions: message.reactions,
+                  link_previews:
+                    (message.edited_at_unix_milliseconds ?? 0) < (updated.edited_at_unix_milliseconds ?? 0)
+                      ? updated.link_previews
+                      : message.link_previews,
+                }
               : message,
           ),
         );
