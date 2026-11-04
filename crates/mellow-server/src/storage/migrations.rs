@@ -2102,6 +2102,13 @@ mod tests {
                 "{table} is searched, not scanned:\n{plan}"
             );
         }
+        assert!(
+            plan.contains(
+                "SEARCH message_role_mentions USING PRIMARY KEY \
+                 (channel_id=? AND role_id=? AND message_id>?)"
+            ),
+            "only unread mentions of the reader's roles are read:\n{plan}"
+        );
     }
 
     #[tokio::test]
