@@ -759,6 +759,12 @@ export const en = {
     originalFrom: (date: string) => `Original message from ${date}`,
   },
 
+  linkPreviews: {
+    playYouTubeVideo: (title: string) => `Play YouTube video: ${title}`,
+    youTubePlayer: (title: string) => `YouTube video: ${title}`,
+    pictureFrom: (hostName: string) => `Picture from ${hostName}`,
+  },
+
   pins: {
     pinnedMessages: "Pinned messages",
     pin: "Pin message",

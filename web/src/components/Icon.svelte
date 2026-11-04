@@ -55,6 +55,7 @@
     | "paw-print"
     | "phone-disconnect"
     | "pencil-simple"
+    | "play"
     | "plus"
     | "plus-circle"
     | "prohibit"

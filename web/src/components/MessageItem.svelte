@@ -28,6 +28,7 @@
   import { markdownMentionsUser, parseMessageMarkdown } from "./markdown";
   import type { MentionablePeople } from "./mentions";
   import MessageAttachments from "./MessageAttachments.svelte";
+  import MessageLinkPreviews from "./MessageLinkPreviews.svelte";
   import MessageMarkdown from "./MessageMarkdown.svelte";
   import type { MessageListRow } from "./message-rows";
   import { durationTokenInMilliseconds } from "./tokens";
@@ -438,6 +439,9 @@
     {@render body()}
     {#if attachments.length > 0}
       <MessageAttachments {attachments} isPending={row.kind === "pending"} authorName={displayName(author)} sentAtUnixMilliseconds={sentAt} />
+    {/if}
+    {#if message?.link_previews}
+      <MessageLinkPreviews previews={message.link_previews} channelId={message.channel_id} messageId={message.id} />
     {/if}
     {#if message}
       {@render reactionsOf(message)}
