@@ -60,6 +60,7 @@ export interface RoleChanges {
   color?: number;
   permissions?: PermissionBits;
   is_displayed_separately?: boolean;
+  is_mentionable?: boolean;
 }
 
 /** A refusal from the instance. Its `message` is the instance's own text: never shown as is. */

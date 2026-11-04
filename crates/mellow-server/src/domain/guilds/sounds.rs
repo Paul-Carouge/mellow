@@ -698,6 +698,7 @@ mod tests {
                     color: None,
                     permissions: Some(Permissions::DEFAULT_EVERYONE - Permissions::USE_SOUNDBOARD),
                     is_displayed_separately: None,
+                    is_mentionable: None,
                 },
             )
             .await

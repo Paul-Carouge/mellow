@@ -225,6 +225,7 @@ fn role() -> Role {
         position: 1,
         permissions: Permissions::MANAGE_MESSAGES | Permissions::KICK_MEMBERS,
         is_displayed_separately: true,
+        is_mentionable: true,
     }
 }
 
@@ -298,7 +299,7 @@ fn message() -> Message {
         id: id(800),
         channel_id: id(30),
         author: public_user(),
-        content: "Hello @ada".into(),
+        content: "Hello @ada and <@&20>".into(),
         reply_to_id: Some(id(799)),
         edited_at_unix_milliseconds: Some(1_700_000_000_500),
         nonce: Some("nonce-1".into()),
@@ -306,6 +307,7 @@ fn message() -> Message {
         reactions: vec![reaction_summary()],
         pinned: true,
         mention_ids: vec![id(10)],
+        mention_role_ids: vec![id(20)],
         forwarded_from: Some(ForwardOrigin {
             channel_id: id(31),
             message_id: id(700),
@@ -323,6 +325,7 @@ fn sparse_message() -> Message {
         reactions: Vec::new(),
         pinned: false,
         mention_ids: Vec::new(),
+        mention_role_ids: Vec::new(),
         forwarded_from: None,
         ..message()
     }
@@ -915,7 +918,7 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
             Interface,
             &every_variant!(AuditChangeKey:
                 Name, Topic, Color, Permissions, Allow, Deny, Code, Icon, Parent, UserLimit,
-                Emoji, DisplayedSeparately, Unknown,
+                Emoji, DisplayedSeparately, Mentionable, Unknown,
             )
             .into_iter()
             .map(|key| AuditChange {

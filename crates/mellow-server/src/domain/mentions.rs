@@ -4,6 +4,9 @@
 //! syntax yet, so the server finds them in the text the same way.
 //! shortcut: escapes ("\*@paul") are not read as Markdown here, so the rare mention right after
 //! one shows a chip but counts for no one; send mention ids from the composer to drop the guess.
+//!
+//! Roles are mentioned by id, `<@&id>`, which the composer writes when a role is picked, and
+//! everyone by `@everyone` (ADR-0040); both outside code too.
 
 use std::collections::{HashMap, HashSet};
 
@@ -15,6 +18,11 @@ const MAXIMUM_CANDIDATE_LENGTH: usize = 33;
 /// A message naming more people than this mentions only the first ones, so a crafted message
 /// costs a bounded amount of work.
 pub(crate) const MAXIMUM_MENTIONS_PER_MESSAGE: usize = 50;
+
+/// The word that mentions every member who can view the channel (ADR-0040), never a person.
+const EVERYONE_MENTION_WORD: &str = "everyone";
+/// What opens a role mention, `<@&id>`.
+const ROLE_MENTION_OPENING: &str = "<@&";
 
 /// Someone who may be mentioned: their id, username and display name.
 pub(crate) struct MentionablePerson {
@@ -129,7 +137,7 @@ pub(crate) fn mentioned_ids(
     for spellings in mention_candidates(content) {
         let Some(id) = spellings
             .iter()
-            .filter(|spelling| !spelling.is_empty())
+            .filter(|spelling| !spelling.is_empty() && *spelling != EVERYONE_MENTION_WORD)
             .find_map(|spelling| by_name.get(spelling).copied().flatten())
         else {
             continue;
@@ -148,6 +156,84 @@ pub(crate) fn mentioned_ids(
 /// the member list.
 pub(crate) fn may_mention_someone(content: &str) -> bool {
     content.contains('@') && !mention_candidates(content).is_empty()
+}
+
+/// A role of the guild and whether anyone may mention it.
+pub(crate) struct MentionableRole {
+    pub(crate) id: Snowflake,
+    pub(crate) is_mentionable: bool,
+}
+
+/// What a role mention may reach, decided by the author's permissions in the channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RoleMentionReach {
+    /// Only roles anyone may mention.
+    MentionableRoles,
+    /// `MENTION_EVERYONE`: every role and `@everyone`.
+    EveryRoleAndEveryone,
+}
+
+/// The role ids written as `<@&id>` outside code, in order, once each.
+fn role_mention_candidates(text: &str) -> Vec<u64> {
+    let mut candidates = Vec::new();
+    for (start, _) in text.match_indices(ROLE_MENTION_OPENING) {
+        let rest = &text[start + ROLE_MENTION_OPENING.len()..];
+        let digits_length = rest
+            .find(|character: char| !character.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if digits_length == 0 || !rest[digits_length..].starts_with('>') {
+            continue;
+        }
+        if let Ok(id) = rest[..digits_length].parse::<u64>()
+            && !candidates.contains(&id)
+        {
+            candidates.push(id);
+        }
+    }
+    candidates
+}
+
+/// The roles `content` mentions among `roles` that `reach` allows, in order of first mention,
+/// with `guild_id` (the `@everyone` role's id) first when it mentions everyone. A role written
+/// with the guild's id is not a mention: everyone is mentioned by `@everyone` only.
+pub(crate) fn mentioned_role_ids(
+    content: &str,
+    guild_id: Snowflake,
+    roles: &[MentionableRole],
+    reach: RoleMentionReach,
+) -> Vec<Snowflake> {
+    let may_mention_every_role = reach == RoleMentionReach::EveryRoleAndEveryone;
+    let mut mentioned = Vec::new();
+    let mentions_everyone = may_mention_every_role
+        && mention_candidates(content).iter().any(|spellings| {
+            spellings
+                .iter()
+                .any(|spelling| spelling == EVERYONE_MENTION_WORD)
+        });
+    if mentions_everyone {
+        mentioned.push(guild_id);
+    }
+    for id in role_mention_candidates(&text_outside_code(content)) {
+        let Some(role) = roles
+            .iter()
+            .find(|role| role.id.raw() == id && role.id != guild_id)
+        else {
+            continue;
+        };
+        if role.is_mentionable || may_mention_every_role {
+            mentioned.push(role.id);
+            if mentioned.len() == MAXIMUM_MENTIONS_PER_MESSAGE {
+                break;
+            }
+        }
+    }
+    mentioned
+}
+
+/// Whether `content` has anything that could mention a role or everyone, so a message without
+/// one never reads the guild's roles.
+pub(crate) fn may_mention_a_role(content: &str) -> bool {
+    content.contains(ROLE_MENTION_OPENING) || content.to_lowercase().contains("@everyone")
 }
 
 #[cfg(test)]
@@ -217,6 +303,68 @@ mod tests {
         assert_eq!(mentioned("```\n@paul"), [1], "a fence never closed is text");
         assert_eq!(mentioned("**@paul** ||@bob|| _@alice_"), [1, 3, 2]);
         assert_eq!(mentioned("line\n@bob"), [3]);
+    }
+
+    fn role(id: u64, is_mentionable: bool) -> MentionableRole {
+        MentionableRole {
+            id: Snowflake::from_raw(id),
+            is_mentionable,
+        }
+    }
+
+    const GUILD: Snowflake = Snowflake::from_raw(500);
+
+    fn mentioned_roles(content: &str, reach: RoleMentionReach) -> Vec<u64> {
+        let roles = [role(500, false), role(501, true), role(502, false)];
+        mentioned_role_ids(content, GUILD, &roles, reach)
+            .into_iter()
+            .map(Snowflake::raw)
+            .collect()
+    }
+
+    #[test]
+    fn roles_anyone_may_mention_are_mentioned_by_id_once_and_outside_code() {
+        let reach = RoleMentionReach::MentionableRoles;
+        assert_eq!(mentioned_roles("hi <@&501> and <@&501>", reach), [501]);
+        assert_eq!(mentioned_roles("<@&502>", reach), Vec::<u64>::new());
+        assert_eq!(mentioned_roles("`<@&501>`", reach), Vec::<u64>::new());
+        assert_eq!(
+            mentioned_roles("<@&999> <@&> <@&501", reach),
+            Vec::<u64>::new()
+        );
+        assert_eq!(
+            mentioned_roles("@everyone", reach),
+            Vec::<u64>::new(),
+            "everyone needs MENTION_EVERYONE"
+        );
+    }
+
+    #[test]
+    fn mention_everyone_reaches_every_role_and_everyone_but_not_the_guild_id_as_a_role() {
+        let reach = RoleMentionReach::EveryRoleAndEveryone;
+        assert_eq!(
+            mentioned_roles("<@&502> **@everyone** <@&501>", reach),
+            [500, 502, 501]
+        );
+        assert_eq!(mentioned_roles("<@&500>", reach), Vec::<u64>::new());
+        assert_eq!(mentioned_roles("mail@everyone", reach), Vec::<u64>::new());
+        assert_eq!(
+            mentioned_roles("```\n@everyone\n```", reach),
+            Vec::<u64>::new()
+        );
+        assert_eq!(mentioned_roles("hi @everyone.", reach), [500]);
+        assert!(may_mention_a_role("x <@&1>"));
+        assert!(may_mention_a_role("@Everyone"));
+        assert!(!may_mention_a_role("@paul"));
+    }
+
+    #[test]
+    fn everyone_is_never_a_person() {
+        let people = [person(7, "everyone", "Everyone")];
+        assert_eq!(
+            mentioned_ids("@everyone", Snowflake::from_raw(99), &people),
+            Vec::<Snowflake>::new()
+        );
     }
 
     #[test]

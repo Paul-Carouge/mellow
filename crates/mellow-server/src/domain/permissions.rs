@@ -285,6 +285,7 @@ mod tests {
             position,
             permissions,
             is_displayed_separately: false,
+            is_mentionable: false,
         }
     }
 

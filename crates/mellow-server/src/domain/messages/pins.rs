@@ -96,7 +96,7 @@ impl Messages {
             )
             .await?
             {
-                PinOutcome::Pinned(pinned) => Some(pinned),
+                PinOutcome::Pinned(pinned) => Some(*pinned),
                 PinOutcome::AlreadyPinned => None,
                 PinOutcome::LimitReached => {
                     return Err(GuildError::LimitReached("pins per channel").into());

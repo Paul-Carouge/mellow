@@ -143,6 +143,11 @@ pub struct Role {
     /// (Discord's "hoist"). Never set on `@everyone`. Added after `v0.28.0`.
     #[serde(default)]
     pub is_displayed_separately: bool,
+    /// Anyone who can send in a channel may mention it (`<@&id>`) and notify its members;
+    /// otherwise only members holding `MENTION_EVERYONE` there (ADR-0040). Never set on
+    /// `@everyone`. Added after `v0.39.0`.
+    #[serde(default)]
+    pub is_mentionable: bool,
 }
 
 /// Body of `POST /api/v1/guilds/{guild_id}/roles`. The role is created just above `@everyone`.
@@ -157,6 +162,9 @@ pub struct CreateRoleRequest {
     /// Left out when off, so an instance from before it (`deny_unknown_fields`) still accepts it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_displayed_separately: bool,
+    /// Left out when off, so an instance from before it still accepts it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_mentionable: bool,
 }
 
 /// Body of `PATCH /api/v1/guilds/{guild_id}/roles/{role_id}`; absent fields are unchanged.
@@ -170,6 +178,9 @@ pub struct UpdateRoleRequest {
     /// Left out when unchanged, so an instance from before it still accepts the request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_displayed_separately: Option<bool>,
+    /// Left out when unchanged, so an instance from before it still accepts the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_mentionable: Option<bool>,
 }
 
 /// Body of `PUT /api/v1/guilds/{guild_id}/roles/order`: every role of the guild except
@@ -296,6 +307,8 @@ pub enum AuditChangeKey {
     Emoji,
     /// Of a role: `true` or `false`. Added after `v0.28.0`.
     DisplayedSeparately,
+    /// Of a role: `true` or `false`. Added after `v0.39.0`.
+    Mentionable,
     /// A field added by a newer server.
     #[serde(other)]
     Unknown,
@@ -569,6 +582,7 @@ mod tests {
             color: 0,
             permissions: Permissions::empty(),
             is_displayed_separately: false,
+            is_mentionable: false,
         };
         let created = serde_json::to_value(&create).unwrap();
         assert!(created.get("is_displayed_separately").is_none());

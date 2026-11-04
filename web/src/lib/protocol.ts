@@ -220,6 +220,11 @@ export interface Role {
   permissions: PermissionBits;
   /** Its members are listed under its name, above everyone else, in the member list. */
   is_displayed_separately: boolean;
+  /**
+   * Anyone may mention it (`<@&id>`); otherwise only holders of `MENTION_EVERYONE` in the channel
+   * (ADR-0040). Never set on `@everyone`. Absent from older servers.
+   */
+  is_mentionable?: boolean;
 }
 
 export interface Guild {
@@ -313,6 +318,12 @@ export interface Message {
    * those who can view the channel; never the author. Absent when empty and from older servers.
    */
   mention_ids?: Snowflake[];
+  /**
+   * The roles mentioned (`<@&id>`), and the guild's id for `@everyone`, as far as the author may
+   * mention them (ADR-0040); a viewer holding one is mentioned. Absent when empty and from older
+   * servers.
+   */
+  mention_role_ids?: Snowflake[];
   /** Set on a forward (ADR-0039): its content and files copy that message's. */
   forwarded_from?: ForwardOrigin;
 }
@@ -525,6 +536,8 @@ export interface AuditChange {
     | "emoji"
     /** A role's "display separately": `true` or `false`. */
     | "displayed_separately"
+    /** A role's "allow anyone to mention": `true` or `false`. */
+    | "mentionable"
     | "unknown";
   /** Permissions and colours in decimal. */
   old_value: string;

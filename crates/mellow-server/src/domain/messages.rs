@@ -15,13 +15,14 @@ use std::sync::Arc;
 
 use crate::storage::Database;
 use mellow_protocol::{
-    AcknowledgeRequest, Attachment, AuditAction, ChannelKind, ChannelUnread, EditMessageRequest,
-    ForwardOrigin, GatewayEvent, MAXIMUM_COUNTED_UNREAD_MENTIONS, Message, MessageHistoryQuery,
-    Permissions, PublicUser, ReactionSummary, ReadState, SendMessageRequest, Snowflake,
+    AcknowledgeRequest, Attachment, AuditAction, ChannelKind, ChannelUnread, DirectMessageChannel,
+    EditMessageRequest, ForwardOrigin, GatewayEvent, MAXIMUM_COUNTED_UNREAD_MENTIONS, Message,
+    MessageHistoryQuery, Permissions, PublicUser, ReactionSummary, ReadState, SendMessageRequest,
+    Snowflake,
 };
 
 use crate::domain::guilds::{ChannelAudience, GuildError, Guilds};
-use crate::domain::mentions::{self, MentionablePerson};
+use crate::domain::mentions::{self, MentionablePerson, MentionableRole, RoleMentionReach};
 use crate::domain::message_rules::{
     MAXIMUM_ATTACHMENTS_PER_MESSAGE, MessageRuleViolation, history_page_size,
     normalize_line_endings, validate_message_content, validate_nonce,
@@ -32,9 +33,10 @@ use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::storage::attachments::{self as attachment_storage, StoredAttachment};
 use crate::storage::direct_messages as direct_message_storage;
 use crate::storage::guild_channels::StoredChannel;
+use crate::storage::guild_roles as role_storage;
 use crate::storage::messages::{
-    self as message_storage, CopiedAttachment, HistoryPage, MessageStorageError, NewForward,
-    NewMessage, StoredMessage,
+    self as message_storage, CopiedAttachment, HistoryPage, MessageMentions, MessageStorageError,
+    NewForward, NewMessage, StoredMessage,
 };
 use crate::storage::reactions as reaction_storage;
 
@@ -114,6 +116,7 @@ fn message_from_stored(
         reactions: Vec::new(),
         pinned: message.is_pinned,
         mention_ids: message.mention_ids,
+        mention_role_ids: message.mention_role_ids,
         forwarded_from: message.forwarded_from,
     }
 }
@@ -158,6 +161,8 @@ async fn attachments_of(
 /// A send checked against the channel's permissions, before the lock.
 struct SendInput {
     channel: MessageChannel,
+    /// The author's, in the channel: they decide which roles a mention reaches.
+    permissions: Permissions,
     forwarded: Option<ForwardedMessage>,
     content: String,
     has_files: bool,
@@ -334,6 +339,75 @@ async fn mentioned_user_ids(
     Ok(mentions::mentioned_ids(content, author_id, &people))
 }
 
+/// A one-to-one conversation as each participant sees it, to announce it on its first message;
+/// none for groups and guild channels.
+async fn one_to_one_conversation_views(
+    database: &Database,
+    channel: &MessageChannel,
+) -> Result<Vec<(Snowflake, DirectMessageChannel)>, MessageError> {
+    match channel {
+        MessageChannel::Direct {
+            participant_ids,
+            is_group: false,
+            ..
+        } => direct_messages::conversation_views(database, channel.id(), participant_ids).await,
+        MessageChannel::Direct { is_group: true, .. } | MessageChannel::Guild(_) => Ok(Vec::new()),
+    }
+}
+
+/// Who `content` mentions, by name and by role, with the author's `permissions` in the channel.
+async fn mentions_in(
+    database: &Database,
+    channel: &MessageChannel,
+    audience: &MessageAudience,
+    author_id: Snowflake,
+    permissions: Permissions,
+    content: &str,
+) -> Result<MessageMentions, MessageError> {
+    Ok(MessageMentions {
+        user_ids: mentioned_user_ids(database, channel, audience, author_id, content).await?,
+        role_ids: mentioned_role_ids(database, channel, permissions, content).await?,
+    })
+}
+
+/// The roles `content` mentions in a guild channel, as far as the author's `permissions` there
+/// reach (ADR-0040); none in conversations.
+async fn mentioned_role_ids(
+    database: &Database,
+    channel: &MessageChannel,
+    permissions: Permissions,
+    content: &str,
+) -> Result<Vec<Snowflake>, MessageError> {
+    let MessageChannel::Guild(channel) = channel else {
+        return Ok(Vec::new());
+    };
+    // Most messages mention no role: they never read the role list.
+    if !mentions::may_mention_a_role(content) {
+        return Ok(Vec::new());
+    }
+    let roles: Vec<MentionableRole> = role_storage::list_roles(database, channel.guild_id)
+        .await
+        .map_err(GuildError::from)?
+        .into_iter()
+        .map(|role| MentionableRole {
+            id: role.id,
+            is_mentionable: role.is_mentionable,
+        })
+        .collect();
+    // `ADMINISTRATOR` already yields every permission in the computed set (ADR-0007).
+    let reach = if permissions.contains(Permissions::MENTION_EVERYONE) {
+        RoleMentionReach::EveryRoleAndEveryone
+    } else {
+        RoleMentionReach::MentionableRoles
+    };
+    Ok(mentions::mentioned_role_ids(
+        content,
+        channel.guild_id,
+        &roles,
+        reach,
+    ))
+}
+
 async fn is_empty_channel(
     database: &Database,
     channel_id: Snowflake,
@@ -502,6 +576,7 @@ impl Messages {
         }
         let SendInput {
             channel,
+            permissions,
             forwarded,
             content,
             has_files,
@@ -512,24 +587,22 @@ impl Messages {
         // a restricted channel's members does not hold up every other send (ADR-0015).
         let audience = self.audience(&channel).await?;
         // A forward's text was written for another audience: it mentions no one (ADR-0039).
-        let mentioned_user_ids = if forwarded.is_some() {
-            Vec::new()
+        let mentions = if forwarded.is_some() {
+            MessageMentions::default()
         } else {
-            mentioned_user_ids(&self.database, &channel, &audience, user_id, &content).await?
+            mentions_in(
+                &self.database,
+                &channel,
+                &audience,
+                user_id,
+                permissions,
+                &content,
+            )
+            .await?
         };
         let channel_id = channel.id();
         // Read before the write too, so nothing can fail between the insert and the events.
-        let conversation_views = match &channel {
-            MessageChannel::Direct {
-                participant_ids,
-                is_group: false,
-                ..
-            } => {
-                direct_messages::conversation_views(&self.database, channel_id, participant_ids)
-                    .await?
-            }
-            MessageChannel::Direct { is_group: true, .. } | MessageChannel::Guild(_) => Vec::new(),
-        };
+        let conversation_views = one_to_one_conversation_views(&self.database, &channel).await?;
         let send_order = self.send_order.clone();
         let database = self.database.clone();
         let ids = self.ids.clone();
@@ -568,7 +641,7 @@ impl Messages {
                     reply_to_id: request.reply_to_id,
                     nonce: request.nonce.clone(),
                     attachment_ids: request.attachment_ids.clone(),
-                    mentioned_user_ids,
+                    mentions,
                     forward,
                 },
             )
@@ -616,7 +689,7 @@ impl Messages {
             .map_or(!request.attachment_ids.is_empty(), |forwarded| {
                 !forwarded.attachments.is_empty()
             });
-        let (channel, _) = self
+        let (channel, permissions) = self
             .text_channel_and_permissions_requiring(
                 user_id,
                 channel_id,
@@ -629,6 +702,7 @@ impl Messages {
         };
         Ok(SendInput {
             channel,
+            permissions,
             forwarded,
             content,
             has_files,
@@ -736,7 +810,7 @@ impl Messages {
         request: EditMessageRequest,
         now_unix_milliseconds: u64,
     ) -> Result<Message, MessageError> {
-        let (channel, _) = self
+        let (channel, permissions) = self
             .text_channel_and_permissions_requiring(
                 user_id,
                 channel_id,
@@ -753,8 +827,16 @@ impl Messages {
         let content = normalize_line_endings(&request.content);
         validate_message_content(&content)?;
         let audience = self.audience(&channel).await?;
-        let mentioned_user_ids =
-            mentioned_user_ids(&self.database, &channel, &audience, user_id, &content).await?;
+        // With the editor's permissions now, as Discord does: an edit may add or drop a mention.
+        let mentions = mentions_in(
+            &self.database,
+            &channel,
+            &audience,
+            user_id,
+            permissions,
+            &content,
+        )
+        .await?;
         // Read before the write (attachments never change once sent), so nothing can fail
         // between the commit and the event.
         let author_images = profile_images_of_user(&self.database, user_id).await?;
@@ -764,7 +846,7 @@ impl Messages {
             channel.id(),
             message.id,
             &content,
-            &mentioned_user_ids,
+            &mentions,
             now_unix_milliseconds,
         )
         .await?
@@ -1381,7 +1463,7 @@ mod tests {
                         reply_to_id: None,
                         nonce: None,
                         attachment_ids: Vec::new(),
-                        mentioned_user_ids: Vec::new(),
+                        mentions: MessageMentions::default(),
                         forward: Some(NewForward {
                             origin: ForwardOrigin {
                                 channel_id: fixture.general,
@@ -1600,6 +1682,122 @@ mod tests {
         assert_eq!(after_mentioning_again, [(naming_others.id, 1)]);
         assert_eq!(after_reading, [(naming_others.id, 0)]);
         assert_eq!(owner_view, [(naming_others.id, 0)]);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // One scenario: roles, sends, counts, an edit.
+    async fn role_mentions_follow_the_authors_reach_and_count_for_each_holder() {
+        use mellow_protocol::{CreateRoleRequest, UpdateRoleRequest};
+
+        let fixture = fixture().await;
+        let (messages, guilds, owner, member, general, guild_id) = (
+            &fixture.messages,
+            &fixture.guilds,
+            fixture.owner,
+            fixture.member,
+            fixture.general,
+            fixture.guild.id,
+        );
+        let create = |name: &str, is_mentionable: bool| {
+            guilds.create_role(
+                owner,
+                guild_id,
+                CreateRoleRequest {
+                    name: name.into(),
+                    color: 0,
+                    permissions: Permissions::empty(),
+                    is_displayed_separately: false,
+                    is_mentionable,
+                },
+                NOW,
+            )
+        };
+        let helpers = create("Helpers", true).await.unwrap().id;
+        let staff = create("Staff", false).await.unwrap().id;
+        guilds
+            .add_member_role(owner, guild_id, member, staff)
+            .await
+            .unwrap();
+        let everyone_refused = guilds
+            .update_role(
+                owner,
+                guild_id,
+                guild_id,
+                UpdateRoleRequest {
+                    is_mentionable: Some(true),
+                    ..UpdateRoleRequest::default()
+                },
+            )
+            .await;
+        let from_member = messages
+            .send(
+                member,
+                general,
+                text(&format!(
+                    "<@&{helpers}> <@&{staff}> @everyone <@&{guild_id}>"
+                )),
+                NOW,
+            )
+            .await
+            .unwrap();
+        let from_owner = messages
+            .send(owner, general, text(&format!("@everyone <@&{staff}>")), NOW)
+            .await
+            .unwrap();
+        let member_before_edit = unread_mentions_of(&fixture, member).await;
+        let owner_without_helpers = unread_mentions_of(&fixture, owner).await;
+        guilds
+            .add_member_role(owner, guild_id, owner, helpers)
+            .await
+            .unwrap();
+        let owner_with_helpers = unread_mentions_of(&fixture, owner).await;
+        let edited = messages
+            .edit(
+                owner,
+                general,
+                from_owner.id,
+                EditMessageRequest {
+                    content: format!("`<@&{staff}>` no one"),
+                },
+                NOW,
+            )
+            .await
+            .unwrap();
+        let member_after_edit = unread_mentions_of(&fixture, member).await;
+        let history = messages
+            .list_messages(member, general, MessageHistoryQuery::default())
+            .await
+            .unwrap();
+        fixture.database.close().await;
+
+        assert!(matches!(
+            everyone_refused,
+            Err(GuildError::InvalidInput(
+                crate::domain::guild_rules::GuildRuleViolation::EveryoneRole
+            ))
+        ));
+        assert_eq!(
+            from_member.mention_role_ids,
+            [helpers],
+            "without MENTION_EVERYONE: mentionable roles only"
+        );
+        let mut everyone_and_staff = vec![guild_id, staff];
+        everyone_and_staff.sort_unstable_by_key(|id| id.raw());
+        assert_eq!(from_owner.mention_role_ids, everyone_and_staff);
+        assert_eq!(
+            member_before_edit,
+            [(from_owner.id, 1)],
+            "one message through two roles counts once; one's own never"
+        );
+        assert_eq!(owner_without_helpers, [(from_owner.id, 0)]);
+        assert_eq!(owner_with_helpers, [(from_owner.id, 1)]);
+        assert_eq!(edited.mention_role_ids, []);
+        assert_eq!(member_after_edit, [(from_owner.id, 0)]);
+        let from_member_in_history = history
+            .iter()
+            .find(|message| message.id == from_member.id)
+            .unwrap();
+        assert_eq!(from_member_in_history.mention_role_ids, [helpers]);
     }
 
     #[tokio::test]

@@ -365,6 +365,7 @@ async fn roles_and_overwrites_round_trip(
                 color: 0x0000_aaff,
                 permissions: Permissions::KICK_MEMBERS,
                 is_displayed_separately: false,
+                is_mentionable: false,
             },
         )
         .await
@@ -377,6 +378,7 @@ async fn roles_and_overwrites_round_trip(
                 color: 0,
                 permissions: Permissions::empty(),
                 is_displayed_separately: false,
+                is_mentionable: false,
             },
         )
         .await

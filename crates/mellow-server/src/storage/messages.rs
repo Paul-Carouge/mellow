@@ -1,4 +1,4 @@
-//! Messages, pins and read states (migrations 0003 and 0012).
+//! Messages, pins, mentions and read states (migrations 0003, 0012, 0016 and 0035).
 
 use mellow_protocol::{ForwardOrigin, Snowflake};
 
@@ -48,7 +48,17 @@ pub(crate) struct StoredMessage {
     pub(crate) is_pinned: bool,
     /// By id, so REST answers and events list them alike.
     pub(crate) mention_ids: Vec<Snowflake>,
+    /// By id too (ADR-0040).
+    pub(crate) mention_role_ids: Vec<Snowflake>,
     pub(crate) forwarded_from: Option<ForwardOrigin>,
+}
+
+/// Who a message mentions, decided by the domain (`domain::mentions`) and stored with it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct MessageMentions {
+    pub(crate) user_ids: Vec<Snowflake>,
+    /// Roles, and the guild's id for `@everyone` (ADR-0040).
+    pub(crate) role_ids: Vec<Snowflake>,
 }
 
 type MessageRow = (
@@ -62,6 +72,7 @@ type MessageRow = (
     Option<i64>,
     Option<i64>,
     String,
+    String,
     Option<i64>,
     Option<i64>,
 );
@@ -74,6 +85,8 @@ macro_rules! select_message_columns {
          messages.edited_at_unix_milliseconds, messages.pinned_at_unix_milliseconds, \
          (SELECT json_group_array(message_mentions.user_id) FROM message_mentions \
          WHERE message_mentions.message_id = messages.id), \
+         (SELECT json_group_array(message_role_mentions.role_id) FROM message_role_mentions \
+         WHERE message_role_mentions.message_id = messages.id), \
          messages.forwarded_from_channel_id, messages.forwarded_from_message_id \
          FROM messages JOIN users ON users.id = messages.author_id "
     };
@@ -88,6 +101,8 @@ macro_rules! returning_message_columns {
          content, reply_to_id, edited_at_unix_milliseconds, pinned_at_unix_milliseconds, \
          (SELECT json_group_array(message_mentions.user_id) FROM message_mentions \
          WHERE message_mentions.message_id = messages.id), \
+         (SELECT json_group_array(message_role_mentions.role_id) FROM message_role_mentions \
+         WHERE message_role_mentions.message_id = messages.id), \
          forwarded_from_channel_id, forwarded_from_message_id"
     };
 }
@@ -95,6 +110,16 @@ macro_rules! returning_message_columns {
 fn sorted_ids(mut ids: Vec<Snowflake>) -> Vec<Snowflake> {
     ids.sort_unstable_by_key(|id| id.raw());
     ids
+}
+
+fn ids_from_json_array(json: &str) -> Result<Vec<Snowflake>, MessageStorageError> {
+    Ok(sorted_ids(
+        serde_json::from_str::<Vec<i64>>(json)
+            .map_err(|_| MessageStorageError::InvalidMentionList)?
+            .into_iter()
+            .map(to_snowflake)
+            .collect::<Result<_, _>>()?,
+    ))
 }
 
 fn message_from_row(row: MessageRow) -> Result<StoredMessage, MessageStorageError> {
@@ -109,6 +134,7 @@ fn message_from_row(row: MessageRow) -> Result<StoredMessage, MessageStorageErro
         edited_at,
         pinned_at,
         mention_ids_json,
+        mention_role_ids_json,
         forwarded_from_channel_id,
         forwarded_from_message_id,
     ) = row;
@@ -122,13 +148,8 @@ fn message_from_row(row: MessageRow) -> Result<StoredMessage, MessageStorageErro
         reply_to_id: reply_to_id.map(to_snowflake).transpose()?,
         edited_at_unix_milliseconds: edited_at.map(convert_integer::<_, u64>).transpose()?,
         is_pinned: pinned_at.is_some(),
-        mention_ids: sorted_ids(
-            serde_json::from_str::<Vec<i64>>(&mention_ids_json)
-                .map_err(|_| MessageStorageError::InvalidMentionList)?
-                .into_iter()
-                .map(to_snowflake)
-                .collect::<Result<_, _>>()?,
-        ),
+        mention_ids: ids_from_json_array(&mention_ids_json)?,
+        mention_role_ids: ids_from_json_array(&mention_role_ids_json)?,
         forwarded_from: match (forwarded_from_channel_id, forwarded_from_message_id) {
             (Some(channel_id), Some(message_id)) => Some(ForwardOrigin {
                 channel_id: to_snowflake(channel_id)?,
@@ -151,7 +172,7 @@ pub(crate) struct NewMessage {
     /// Unsent uploads of the author to this channel, linked in the same transaction.
     pub(crate) attachment_ids: Vec<Snowflake>,
     /// Stored in the same transaction (`domain::mentions`).
-    pub(crate) mentioned_user_ids: Vec<Snowflake>,
+    pub(crate) mentions: MessageMentions,
     /// A forward (ADR-0039): its origin, and its attachments as copies of the original's.
     pub(crate) forward: Option<NewForward>,
 }
@@ -175,9 +196,20 @@ async fn insert_mentions(
     connection: &mut sqlx::SqliteConnection,
     channel_id: Snowflake,
     message_id: Snowflake,
-    user_ids: &[Snowflake],
+    mentions: &MessageMentions,
 ) -> Result<(), MessageStorageError> {
-    for user_id in user_ids {
+    for role_id in &mentions.role_ids {
+        sqlx::query(
+            "INSERT OR IGNORE INTO message_role_mentions (role_id, channel_id, message_id) \
+             VALUES (?, ?, ?)",
+        )
+        .bind(to_sqlite_integer(role_id.raw())?)
+        .bind(to_sqlite_integer(channel_id.raw())?)
+        .bind(to_sqlite_integer(message_id.raw())?)
+        .execute(&mut *connection)
+        .await?;
+    }
+    for user_id in &mentions.user_ids {
         sqlx::query(
             "INSERT OR IGNORE INTO message_mentions (user_id, channel_id, message_id) \
              VALUES (?, ?, ?)",
@@ -257,13 +289,14 @@ pub(crate) async fn insert_message(
         &mut transaction,
         message.channel_id,
         message.id,
-        &message.mentioned_user_ids,
+        &message.mentions,
     )
     .await?;
     transaction.commit().await?;
     // RETURNING ran before the mentions were stored.
     Ok(StoredMessage {
-        mention_ids: sorted_ids(message.mentioned_user_ids.clone()),
+        mention_ids: sorted_ids(message.mentions.user_ids.clone()),
+        mention_role_ids: sorted_ids(message.mentions.role_ids.clone()),
         ..message_from_row(row)?
     })
 }
@@ -451,7 +484,7 @@ pub(crate) async fn update_message_content(
     channel_id: Snowflake,
     message_id: Snowflake,
     content: &str,
-    mentioned_user_ids: &[Snowflake],
+    mentions: &MessageMentions,
     edited_at_unix_milliseconds: u64,
 ) -> Result<Option<StoredMessage>, MessageStorageError> {
     let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
@@ -469,15 +502,21 @@ pub(crate) async fn update_message_content(
     let Some(row) = row else {
         return Ok(None);
     };
-    sqlx::query("DELETE FROM message_mentions WHERE message_id = ?")
-        .bind(to_sqlite_integer(message_id.raw())?)
-        .execute(&mut *transaction)
-        .await?;
-    insert_mentions(&mut transaction, channel_id, message_id, mentioned_user_ids).await?;
+    for table_query in [
+        "DELETE FROM message_mentions WHERE message_id = ?",
+        "DELETE FROM message_role_mentions WHERE message_id = ?",
+    ] {
+        sqlx::query(table_query)
+            .bind(to_sqlite_integer(message_id.raw())?)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    insert_mentions(&mut transaction, channel_id, message_id, mentions).await?;
     transaction.commit().await?;
     // RETURNING ran before the mentions were replaced.
     Ok(Some(StoredMessage {
-        mention_ids: sorted_ids(mentioned_user_ids.to_vec()),
+        mention_ids: sorted_ids(mentions.user_ids.clone()),
+        mention_role_ids: sorted_ids(mentions.role_ids.clone()),
         ..message_from_row(row)?
     }))
 }
@@ -510,7 +549,7 @@ pub(crate) async fn delete_message(
 /// What pinning a message did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PinOutcome {
-    Pinned(StoredMessage),
+    Pinned(Box<StoredMessage>),
     AlreadyPinned,
     /// The channel already holds the maximum number of pins.
     LimitReached,
@@ -569,7 +608,7 @@ pub(crate) async fn pin_message(
         insert_audit_entry(&mut transaction, audit).await?;
     }
     transaction.commit().await?;
-    Ok(PinOutcome::Pinned(message_from_row(row)?))
+    Ok(PinOutcome::Pinned(Box::new(message_from_row(row)?)))
 }
 
 /// Unpins the message and records `audit` in the same transaction; `None` when it was not pinned
@@ -696,8 +735,30 @@ pub(crate) async fn last_message_ids(
         .collect()
 }
 
-/// How many messages after the user's read position mention them, in each of `channel_ids`,
-/// counted up to `limit`: one bounded range of the primary key per channel.
+/// `?1` the user, `?2` the channel ids as a JSON array, `?3` the cap; one row per channel. The
+/// read position and the channel's guild are read once per channel; a conversation has no
+/// guild, so no role row matches there. `pub(crate)` for its query-plan test.
+pub(crate) const UNREAD_MENTION_COUNTS_QUERY: &str = "SELECT place.channel_id, \
+    (SELECT COUNT(*) FROM ( \
+        SELECT message_id FROM message_mentions \
+        WHERE user_id = ?1 AND channel_id = place.channel_id \
+        AND message_id > place.read_position \
+        UNION \
+        SELECT message_id FROM message_role_mentions \
+        WHERE channel_id = place.channel_id AND message_id > place.read_position \
+        AND (role_id = place.guild_id OR role_id IN (SELECT role_id FROM member_roles \
+            WHERE guild_id = place.guild_id AND user_id = ?1)) \
+        AND (SELECT author_id FROM messages WHERE id = message_id) != ?1 \
+        LIMIT ?3)) \
+    FROM (SELECT channel.value AS channel_id, \
+        (SELECT guild_id FROM channels WHERE id = channel.value) AS guild_id, \
+        COALESCE((SELECT last_read_message_id FROM read_states \
+            WHERE user_id = ?1 AND channel_id = channel.value), 0) AS read_position \
+        FROM json_each(?2) AS channel) AS place";
+
+/// How many messages after the user's read position mention them, by name or through a role
+/// they hold or `@everyone` (ADR-0040), in each of `channel_ids`, counted up to `limit`: bounded
+/// ranges of the primary keys per channel. The user's own messages never count.
 ///
 /// # Errors
 /// Fails on database errors.
@@ -707,19 +768,12 @@ pub(crate) async fn unread_mention_counts(
     channel_ids: &[Snowflake],
     limit: u32,
 ) -> Result<Vec<(Snowflake, u32)>, MessageStorageError> {
-    let rows: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT channel.value, (SELECT COUNT(*) FROM (SELECT 1 FROM message_mentions \
-             WHERE user_id = ?1 AND channel_id = channel.value \
-             AND message_id > COALESCE((SELECT last_read_message_id FROM read_states \
-                 WHERE user_id = ?1 AND channel_id = channel.value), 0) \
-             LIMIT ?3)) \
-         FROM json_each(?2) AS channel",
-    )
-    .bind(to_sqlite_integer(user_id.raw())?)
-    .bind(json_array_of_ids(channel_ids))
-    .bind(i64::from(limit))
-    .fetch_all(database.readers())
-    .await?;
+    let rows: Vec<(i64, i64)> = sqlx::query_as(UNREAD_MENTION_COUNTS_QUERY)
+        .bind(to_sqlite_integer(user_id.raw())?)
+        .bind(json_array_of_ids(channel_ids))
+        .bind(i64::from(limit))
+        .fetch_all(database.readers())
+        .await?;
     counts_from_rows(rows)
 }
 

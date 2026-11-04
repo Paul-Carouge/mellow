@@ -208,7 +208,7 @@ async fn write_backup(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{DatabaseKey, attachments, open_encrypted_database};
+    use crate::storage::{DatabaseKey, attachments, messages, open_encrypted_database};
     use mellow_protocol::Snowflake;
 
     const SQLITE_PLAINTEXT_HEADER: &[u8] = b"SQLite format 3\0";
@@ -1980,6 +1980,128 @@ mod tests {
             version_after > version_before,
             "displaying a role separately refreshes cached permission snapshots"
         );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // One scenario: migrate, store, cascade, count, plan.
+    async fn existing_roles_are_not_mentionable_and_role_mentions_are_counted_by_index() {
+        const LAST_VERSION_WITHOUT_ROLE_MENTIONS: i64 = 34;
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_WITHOUT_ROLE_MENTIONS, database.writer())
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO roles (id, guild_id, name, permissions, position, color) \
+             VALUES (10, 10, '@everyone', 6, 0, 0), (11, 10, 'Moderators', 8, 1, 255); \
+             INSERT INTO guild_members (guild_id, user_id, joined_at_unix_milliseconds) \
+             VALUES (10, 1, 0), (10, 2, 0); \
+             INSERT INTO member_roles (guild_id, user_id, role_id) VALUES (10, 2, 11); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) \
+             VALUES (30, 20, 1, 'hi'), (31, 20, 1, 'again');",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+
+        let outcome = migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let roles: Vec<(i64, String, i64)> =
+            sqlx::query_as("SELECT id, name, is_mentionable FROM roles ORDER BY id")
+                .fetch_all(database.writer())
+                .await
+                .unwrap();
+        let not_a_boolean = sqlx::query("UPDATE roles SET is_mentionable = 2 WHERE id = 11")
+            .execute(database.writer())
+            .await;
+        sqlx::raw_sql(
+            "INSERT INTO message_role_mentions (role_id, channel_id, message_id) \
+             VALUES (11, 20, 30), (10, 20, 30), (10, 20, 31); \
+             DELETE FROM messages WHERE id = 31;",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let remaining: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT role_id, message_id FROM message_role_mentions ORDER BY role_id",
+        )
+        .fetch_all(database.writer())
+        .await
+        .unwrap();
+        let counts = messages::unread_mention_counts(
+            &database,
+            Snowflake::from_raw(2),
+            &[Snowflake::from_raw(20)],
+            100,
+        )
+        .await
+        .unwrap();
+        let author_counts = messages::unread_mention_counts(
+            &database,
+            Snowflake::from_raw(1),
+            &[Snowflake::from_raw(20)],
+            100,
+        )
+        .await
+        .unwrap();
+        let plan_query = format!(
+            "EXPLAIN QUERY PLAN {}",
+            messages::UNREAD_MENTION_COUNTS_QUERY
+        );
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(plan_query))
+            .bind(2_i64)
+            .bind("[20]")
+            .bind(100_i64)
+            .fetch_all(database.writer())
+            .await
+            .unwrap();
+        database.close().await;
+
+        assert_eq!(
+            outcome.applied_versions.first(),
+            Some(&(LAST_VERSION_WITHOUT_ROLE_MENTIONS + 1))
+        );
+        assert_eq!(
+            roles,
+            [
+                (10, "@everyone".to_owned(), 0),
+                (11, "Moderators".to_owned(), 0)
+            ]
+        );
+        assert!(not_a_boolean.is_err(), "only 0 and 1 are stored");
+        assert_eq!(
+            remaining,
+            [(10, 30), (11, 30)],
+            "rows go with their message"
+        );
+        assert_eq!(
+            counts,
+            [(Snowflake::from_raw(20), 1)],
+            "two roles, one message"
+        );
+        assert_eq!(author_counts, [(Snowflake::from_raw(20), 0)]);
+        let plan = plan
+            .into_iter()
+            .map(|row| row.3)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for table in ["message_role_mentions", "message_mentions", "member_roles"] {
+            assert!(
+                !plan.contains(&format!("SCAN {table}")),
+                "{table} is searched, not scanned:\n{plan}"
+            );
+        }
     }
 
     #[tokio::test]
