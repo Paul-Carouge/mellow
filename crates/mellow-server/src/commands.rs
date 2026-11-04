@@ -46,6 +46,7 @@ pub async fn initialize_instance(options: &InitializeOptions) -> Result<ServerCo
             crate::config::DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER,
         voice: crate::config::VoiceConfig::default(),
         link_previews: crate::config::LinkPreviewsConfig::default(),
+        gifs: crate::config::GifsConfig::default(),
         tls: options
             .tls
             .clone()
@@ -133,6 +134,29 @@ fn write_new_file(path: &Path, content: &str) -> Result<()> {
         .with_context(|| format!("cannot write {}", path.display()))
 }
 
+/// Starts the background link preview fetcher when previews are on (ADR-0041).
+fn start_link_previews(
+    config: &ServerConfig,
+    state: &AppState,
+) -> Result<Option<tokio::task::JoinHandle<()>>> {
+    if !config.link_previews.enabled {
+        return Ok(None);
+    }
+    let fetcher = crate::domain::link_previews::fetcher::LinkFetcher::new(&format!(
+        "Mellow/{} (link preview; +https://github.com/Paul-Carouge/mellow)",
+        env!("CARGO_PKG_VERSION")
+    ))
+    .context("cannot build the link preview client")?;
+    state.messages.enable_link_previews();
+    Ok(Some(tokio::spawn(
+        crate::domain::messages::fetch_link_previews_in_background(
+            state.messages.clone(),
+            state.attachments.clone(),
+            fetcher,
+        ),
+    )))
+}
+
 /// Opens the database, applies migrations, then serves HTTP until `shutdown` completes.
 ///
 /// # Errors
@@ -160,11 +184,12 @@ pub async fn serve_instance(
     }
     // The master key is dropped (and wiped) as soon as the database and attachment keys are
     // derived.
-    let (database_key, attachment_key) = {
+    let (database_key, attachment_key, gif_customer_key) = {
         let master_key = MasterKey::read_file(&config.master_key_file)?;
         (
             master_key.derive_database_key(),
             master_key.derive_attachment_key(),
+            master_key.derive_gif_customer_key(),
         )
     };
     let attachment_files = crate::storage::attachment_files::AttachmentFiles::new(
@@ -195,7 +220,13 @@ pub async fn serve_instance(
                 "attachment files moved to their shards"
             );
         }
-        let state = AppState::new(database.clone(), config, attachment_files);
+        let mut state = AppState::new(database.clone(), config, attachment_files);
+        if let Some(klipy_app_key) = &config.gifs.klipy_app_key {
+            state = state.with_gifs(crate::domain::gifs::Gifs::new(
+                klipy_app_key.clone(),
+                gif_customer_key,
+            ));
+        }
         let session_purge = tokio::spawn(purge_expired_sessions_periodically(database.clone()));
         let attachment_purge = tokio::spawn(
             crate::domain::attachments::purge_attachments_periodically(state.attachments.clone()),
@@ -211,23 +242,7 @@ pub async fn serve_instance(
                 ),
             ),
         );
-        let link_preview_fetcher = if config.link_previews.enabled {
-            let fetcher = crate::domain::link_previews::fetcher::LinkFetcher::new(&format!(
-                "Mellow/{} (link preview; +https://github.com/Paul-Carouge/mellow)",
-                env!("CARGO_PKG_VERSION")
-            ))
-            .context("cannot build the link preview client")?;
-            state.messages.enable_link_previews();
-            Some(tokio::spawn(
-                crate::domain::messages::fetch_link_previews_in_background(
-                    state.messages.clone(),
-                    state.attachments.clone(),
-                    fetcher,
-                ),
-            ))
-        } else {
-            None
-        };
+        let link_preview_fetcher = start_link_previews(config, &state)?;
         let served = match &config.tls {
             Some(tls) => crate::tls::serve_tls_until_shutdown(listener, state, tls, shutdown).await,
             None => serve_until_shutdown(listener, state, shutdown).await,

@@ -18,6 +18,7 @@ const MAXIMUM_MASTER_KEY_FILE_LENGTH_BYTES: u64 = MASTER_KEY_HEX_LENGTH as u64 +
 /// Versioned so a future key schedule can coexist with this one.
 const DATABASE_KEY_DERIVATION_INFO: &[u8] = b"mellow/sqlcipher-database-key/v1";
 const ATTACHMENT_KEY_DERIVATION_INFO: &[u8] = b"mellow/attachments-aes-256-gcm/v1";
+const GIF_CUSTOMER_KEY_DERIVATION_INFO: &[u8] = b"mellow/klipy-customer-id/v1";
 /// Owner read/write only.
 #[cfg(unix)]
 const MASTER_KEY_FILE_MODE: u32 = 0o600;
@@ -149,6 +150,24 @@ impl MasterKey {
             .expand(ATTACHMENT_KEY_DERIVATION_INFO, attachment_key.as_mut())
             .expect("32 bytes is within HKDF-SHA256's output limit");
         attachment_key
+    }
+}
+
+impl MasterKey {
+    /// The key that turns a user id into the opaque `customer_id` Klipy sees (ADR-0042).
+    ///
+    /// # Panics
+    /// Never: HKDF-SHA256 can output up to 8160 bytes and 32 are requested.
+    #[must_use]
+    pub fn derive_gif_customer_key(&self) -> Zeroizing<[u8; MASTER_KEY_LENGTH_BYTES]> {
+        let mut key = Zeroizing::new([0u8; MASTER_KEY_LENGTH_BYTES]);
+        let derivation = Hkdf::<Sha256>::new(None, &self.0);
+        // Invariant: HKDF-SHA256 can produce up to 255 × 32 bytes, and we ask for 32.
+        #[allow(clippy::expect_used)]
+        derivation
+            .expand(GIF_CUSTOMER_KEY_DERIVATION_INFO, key.as_mut())
+            .expect("32 bytes is within HKDF-SHA256's output limit");
+        key
     }
 }
 

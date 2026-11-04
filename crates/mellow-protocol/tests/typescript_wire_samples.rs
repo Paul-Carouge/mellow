@@ -14,13 +14,13 @@ use mellow_protocol::{
     ApiErrorCode, Attachment, AuditAction, AuditChange, AuditChangeKey, AuditLogEntry,
     AuthorSearchFacet, Ban, Channel, ChannelKind, ChannelPlacement, ChannelSearchFacet,
     ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel,
-    ForwardOrigin, GatewayEvent, Guild, GuildInvite, GuildSummary, Hello, HighlightRange,
-    InitialCategory, InitialTextChannel, Invite, LinkPreview, LinkPreviewImage,
-    MAXIMUM_COUNTED_UNREAD_MENTIONS, MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH,
-    MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS, MAXIMUM_REACHABLE_SEARCH_RESULTS,
-    MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS, MAXIMUM_SEARCH_QUERY_LENGTH, MAXIMUM_SEARCH_QUERY_PARTS,
-    MAXIMUM_SEARCH_RESULTS_PER_PAGE, MAXIMUM_VIDEO_RECEIVE_SLOTS,
-    MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
+    ForwardOrigin, GatewayEvent, GifSettings, Guild, GuildInvite, GuildSummary, Hello,
+    HighlightRange, InitialCategory, InitialTextChannel, Invite, LinkPreview, LinkPreviewImage,
+    MAXIMUM_COUNTED_UNREAD_MENTIONS, MAXIMUM_GIF_FAVOURITES,
+    MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH, MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
+    MAXIMUM_REACHABLE_SEARCH_RESULTS, MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS,
+    MAXIMUM_SEARCH_QUERY_LENGTH, MAXIMUM_SEARCH_QUERY_PARTS, MAXIMUM_SEARCH_RESULTS_PER_PAGE,
+    MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
     MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, Member, Message, MessageReaction, MessageSearchHit,
     MessageSearchQuery, MessageSearchResults, MessageSearchSort, OverwriteKind,
     PermissionOverwrite, Permissions, Presence, PresenceStatus, ProfileImage, PublicUser,
@@ -795,6 +795,14 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
     Ok(vec![
         sampled("ProfileImage", Interface, &[picture()])?,
         sampled(
+            "GifSettings",
+            Interface,
+            &[GifSettings {
+                klipy_app_key: "app-key".into(),
+                customer_id: "00112233445566778899aabbccddeeff".into(),
+            }],
+        )?,
+        sampled(
             "CurrentUser",
             Interface,
             &[current_user(), sparse_current_user()],
@@ -1039,6 +1047,7 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
 fn shared_constants() -> Value {
     json!({
         "MAXIMUM_COUNTED_UNREAD_MENTIONS": MAXIMUM_COUNTED_UNREAD_MENTIONS,
+        "MAXIMUM_GIF_FAVOURITES": MAXIMUM_GIF_FAVOURITES,
         "MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH": MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH,
         "MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS": MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
         "MAXIMUM_REACHABLE_SEARCH_RESULTS": MAXIMUM_REACHABLE_SEARCH_RESULTS,

@@ -184,6 +184,12 @@ pub(crate) const PROFILE_IMAGE_DOWNLOADS_PER_USER: RateLimit = RateLimit {
     window: Duration::from_mins(1),
 };
 /// Attachment downloads per user: each one decrypts a whole file in memory (ADR-0020).
+/// Starring and unstarring GIFs (ADR-0042): a few clicks a minute, never a script's loop.
+pub(crate) const GIF_FAVOURITE_CHANGES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 30,
+    window: Duration::from_mins(1),
+};
+
 pub(crate) const ATTACHMENT_DOWNLOADS_PER_USER: RateLimit = RateLimit {
     maximum_events: 120,
     window: Duration::from_mins(1),

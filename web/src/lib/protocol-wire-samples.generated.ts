@@ -3,7 +3,7 @@
 // `npm run check` type-checks every sample against protocol.ts; protocol.test.ts compares
 // the constants and permission bits.
 
-import type { ApiErrorCode, Attachment, AuditAction, AuditChange, AuditLogEntry, Ban, Channel, ChannelKind, ChannelPlacement, ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel, GatewayEvent, Guild, GuildInvite, InitialCategory, Invite, Member, Message, MessageReaction, MessageSearchQuery, MessageSearchResults, MessageSearchSort, PermissionOverwrite, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer, SoundboardSound, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal } from "./protocol";
+import type { ApiErrorCode, Attachment, AuditAction, AuditChange, AuditLogEntry, Ban, Channel, ChannelKind, ChannelPlacement, ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel, GatewayEvent, GifSettings, Guild, GuildInvite, InitialCategory, Invite, Member, Message, MessageReaction, MessageSearchQuery, MessageSearchResults, MessageSearchSort, PermissionOverwrite, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer, SoundboardSound, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal } from "./protocol";
 
 /** `true` only when every member of `Union` has a sample. */
 type HasEveryMember<Union, Sampled> = [Exclude<Union, Sampled>] extends [never] ? true : false;
@@ -14,6 +14,13 @@ export const profileImageSamples = [
     "is_animated": true
   }
 ] satisfies ProfileImage[];
+
+export const gifSettingsSamples = [
+  {
+    "customer_id": "00112233445566778899aabbccddeeff",
+    "klipy_app_key": "app-key"
+  }
+] satisfies GifSettings[];
 
 export const currentUserSamples = [
   {
@@ -2270,6 +2277,7 @@ export const clientFrameSamplesHaveEveryMember: HasEveryMember<ClientFrame["op"]
 
 export const sharedConstants = {
   "MAXIMUM_COUNTED_UNREAD_MENTIONS": 100,
+  "MAXIMUM_GIF_FAVOURITES": 200,
   "MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH": 100,
   "MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS": 10,
   "MAXIMUM_REACHABLE_SEARCH_RESULTS": 1000,

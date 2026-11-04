@@ -7,6 +7,7 @@ pub(crate) mod audit_log;
 pub(crate) mod backups;
 mod database;
 pub(crate) mod direct_messages;
+pub(crate) mod gif_favourites;
 pub(crate) mod guild_channels;
 pub(crate) mod guild_emojis;
 pub(crate) mod guild_images;

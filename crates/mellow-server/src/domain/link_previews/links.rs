@@ -60,8 +60,16 @@ fn trimmed_link(candidate: &str) -> &str {
     }
 }
 
+/// Klipy's pages and media are never fetched by the server: its terms require members' browsers to
+/// load them, and a preview would copy its media (ADR-0042).
+fn is_klipy_host(url: &Url) -> bool {
+    url.host_str()
+        .is_some_and(|host| host == "klipy.com" || host.ends_with(".klipy.com"))
+}
+
 fn is_previewable(url: &Url) -> bool {
-    matches!(url.scheme(), "http" | "https")
+    !is_klipy_host(url)
+        && matches!(url.scheme(), "http" | "https")
         && url.host().is_some()
         && url.username().is_empty()
         && url.password().is_none()
@@ -179,6 +187,13 @@ mod tests {
             Vec::<String>::new()
         );
         assert_eq!(links("no link here"), Vec::<String>::new());
+        assert_eq!(
+            links(
+                "https://static.klipy.com/ii/a/b.webp https://klipy.com/gifs/x https://notklipy.com/"
+            ),
+            ["https://notklipy.com/"],
+            "Klipy's own links only"
+        );
         // Once quadratic: one parenthesis trimmed per pass, recounted each time.
         let hostile = format!("{}{}", "http://[".repeat(167), ")".repeat(2_667));
         assert_eq!(links(&hostile), Vec::<String>::new());

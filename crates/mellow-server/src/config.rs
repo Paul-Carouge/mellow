@@ -88,6 +88,9 @@ pub struct ServerConfig {
     /// absent.
     #[serde(default, skip_serializing_if = "LinkPreviewsConfig::is_default")]
     pub link_previews: LinkPreviewsConfig,
+    /// GIFs from Klipy (ADR-0042); off until the owner sets a key, so the table is usually absent.
+    #[serde(default, skip_serializing_if = "GifsConfig::is_default")]
+    pub gifs: GifsConfig,
     /// Built-in TLS with ACME certificates (ADR-0013). Last field: TOML writes tables after values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
@@ -110,6 +113,50 @@ impl Default for LinkPreviewsConfig {
 impl LinkPreviewsConfig {
     fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+}
+
+/// The `[gifs]` table of `mellow.toml` (ADR-0042).
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct GifsConfig {
+    /// The instance's Klipy app key: members' browsers search Klipy with it. Absent: no GIFs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub klipy_app_key: Option<String>,
+}
+
+impl std::fmt::Debug for GifsConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Public by design, but a key has no business in logs.
+        formatter
+            .debug_struct("GifsConfig")
+            .field(
+                "klipy_app_key",
+                &self.klipy_app_key.as_ref().map(|_| "<set>"),
+            )
+            .finish()
+    }
+}
+
+/// Klipy app keys are letters, digits, `-` and `_`; anything else would break the request URL.
+const MAXIMUM_KLIPY_APP_KEY_LENGTH: usize = 128;
+
+impl GifsConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(key) = &self.klipy_app_key
+            && (key.is_empty()
+                || key.len() > MAXIMUM_KLIPY_APP_KEY_LENGTH
+                || !key.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                }))
+        {
+            return Err(ConfigError::InvalidKlipyAppKey);
+        }
+        Ok(())
     }
 }
 
@@ -258,6 +305,8 @@ pub enum ConfigError {
     InvalidVoicePublicAddress { address: String },
     #[error("[voice] max_participants must be at least 1; set enabled = false to turn voice off")]
     NoVoiceParticipants,
+    #[error("[gifs] klipy_app_key must be 1 to 128 letters, digits, '-' or '_'")]
+    InvalidKlipyAppKey,
 }
 
 /// Peers are compared in canonical form, so an IPv4-mapped IPv6 network would never match: it is
@@ -375,6 +424,7 @@ impl ServerConfig {
             });
         }
         self.voice.validate()?;
+        self.gifs.validate()?;
         if !self.trusted_proxy_networks.is_empty() && !self.behind_tls_reverse_proxy {
             return Err(ConfigError::TrustedProxyNetworksWithoutReverseProxy);
         }
@@ -516,6 +566,22 @@ fn is_plausible_email(email: &str) -> bool {
 #[cfg(unix)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_klipy_key_must_fit_in_a_request_path() {
+        let with = |key: &str| GifsConfig {
+            klipy_app_key: Some(key.into()),
+        };
+        assert!(with("Abc_123-x").validate().is_ok());
+        assert!(GifsConfig::default().validate().is_ok());
+        for bad in ["", "a/b", "a b", "key?x=1", &"k".repeat(129)] {
+            assert!(
+                matches!(with(bad).validate(), Err(ConfigError::InvalidKlipyAppKey)),
+                "{bad}"
+            );
+        }
+        assert!(!format!("{:?}", with("secret-ish")).contains("secret-ish"));
+    }
 
     const VALID_CONFIG: &str = r#"
         data_directory = "/var/lib/mellow"
@@ -682,6 +748,7 @@ mod tests {
                 DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER,
             voice: VoiceConfig::default(),
             link_previews: LinkPreviewsConfig::default(),
+            gifs: GifsConfig::default(),
             tls: None,
         };
 

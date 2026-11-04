@@ -72,6 +72,7 @@ pub(crate) fn test_state(database: Database, registration_mode: RegistrationMode
         gateway_rate_limiter: Arc::default(),
         trusted_proxy_networks: Arc::default(),
         voice,
+        gifs: None,
     }
 }
 

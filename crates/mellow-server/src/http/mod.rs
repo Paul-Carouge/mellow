@@ -7,6 +7,7 @@ pub(crate) mod attachment_routes;
 pub(crate) mod authentication;
 pub(crate) mod client_address;
 mod emoji_routes;
+mod gif_routes;
 mod guild_routes;
 mod message_routes;
 mod profile_image_routes;
@@ -66,9 +67,17 @@ pub(crate) struct AppState {
     pub(crate) trusted_proxy_networks: Arc<[IpNet]>,
     /// Voice channels (ADR-0030), signalled over the gateway.
     pub(crate) voice: crate::voice::VoiceService,
+    /// GIFs from Klipy (ADR-0042), when the owner set a key.
+    pub(crate) gifs: Option<Arc<crate::domain::gifs::Gifs>>,
 }
 
 impl AppState {
+    /// Turns GIFs on (ADR-0042): `serve` calls it when `mellow.toml` holds a Klipy key.
+    pub(crate) fn with_gifs(mut self, gifs: crate::domain::gifs::Gifs) -> Self {
+        self.gifs = Some(Arc::new(gifs));
+        self
+    }
+
     pub(crate) fn new(
         database: Database,
         config: &ServerConfig,
@@ -130,6 +139,7 @@ impl AppState {
             )
             .into(),
             voice,
+            gifs: None,
         }
     }
 }
@@ -169,6 +179,15 @@ fn account_router() -> Router<AppState> {
         .route(
             "/api/v1/users/@me/presence",
             put(account_routes::update_presence),
+        )
+        .route("/api/v1/gifs/settings", get(gif_routes::settings))
+        .route(
+            "/api/v1/users/@me/gif-favourites",
+            get(gif_routes::favourites),
+        )
+        .route(
+            "/api/v1/users/@me/gif-favourites/{slug}",
+            put(gif_routes::add_favourite).delete(gif_routes::remove_favourite),
         )
         .route(
             "/api/v1/users/@me/avatar",
