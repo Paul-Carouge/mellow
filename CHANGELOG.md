@@ -4,6 +4,17 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-11-04
+Links in messages get a preview, and YouTube videos play in place (ADR-0041). Database migration 0036; the protocol gains `link_previews` on messages and the `MESSAGE_LINK_PREVIEWS_UPDATE` event, which older clients ignore.
+
+### Added
+- A card under each link (up to three per message): the site, the page's title and description, and its picture, fetched once by the server for everyone. Sites see the instance's address, never its members'. Write a link as `<https://…>` to keep it without a card.
+- YouTube and YouTube Music links play in the message after a click, in YouTube's privacy-enhanced player; nothing loads from YouTube before.
+- `[link_previews] enabled = false` in `mellow.toml` keeps the instance from fetching any link.
+
+### Security
+- The server only reaches public addresses on ports 80 and 443 to fetch previews, never its own machine or network, with bounded time and size.
+
 ## [0.41.0] - 2026-11-04
 Long code blocks fold, and every code block can be copied. Web client only: no database migration and no protocol change.
 
