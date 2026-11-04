@@ -4,6 +4,13 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-11-04
+Long code blocks fold, and every code block can be copied. Web client only: no database migration and no protocol change.
+
+### Added
+- A code block over 20 lines shows its first 12 with "Afficher tout (N lignes)"; "Réduire" folds it again.
+- "Copier le code" on every code block copies its whole text.
+
 ## [0.40.0] - 2026-11-04
 Roles and everyone can be mentioned (ADR-0040). Database migration 0035; the protocol gains `is_mentionable` on roles and `mention_role_ids` on messages, which older clients ignore.
 
