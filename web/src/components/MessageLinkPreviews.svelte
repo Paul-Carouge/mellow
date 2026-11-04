@@ -107,7 +107,7 @@
                   href={preview.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="self-start rounded-xs type-body-lg font-semibold break-words text-(--mw-component-link-preview-title-text) hover:underline focus-visible:focus-ring"
+                  class="inline-flex min-h-(--mw-size-hit-desktop-min) items-center self-start rounded-xs type-body-lg font-semibold break-words text-(--mw-component-link-preview-title-text) hover:underline focus-visible:focus-ring pointer-coarse:min-h-(--mw-size-hit-web-min)"
                   >{title}</a
                 >
                 {#if preview.description}
