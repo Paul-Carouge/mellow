@@ -334,6 +334,19 @@ export interface Message {
 }
 
 /**
+ * `GET /api/v1/gifs/settings` (ADR-0042), `404` when the instance has no GIFs: what the browser
+ * needs to call Klipy itself.
+ */
+export interface GifSettings {
+  klipy_app_key: string;
+  /** Opaque and stable per member; never their id. */
+  customer_id: string;
+}
+
+/** A member keeps at most this many starred GIFs (`/api/v1/users/@me/gif-favourites`). */
+export const MAXIMUM_GIF_FAVOURITES = 200;
+
+/**
  * A link's preview, fetched by the server (ADR-0041). Every text is plain: never render it as
  * HTML or Markdown. The picture is served at
  * `/api/v1/channels/{channel_id}/messages/{message_id}/link-previews/{id}/image`.

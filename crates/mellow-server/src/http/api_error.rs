@@ -160,6 +160,21 @@ impl From<GuildError> for ApiError {
     }
 }
 
+impl From<crate::domain::gifs::GifError> for ApiError {
+    fn from(error: crate::domain::gifs::GifError) -> Self {
+        use crate::domain::gifs::GifError;
+        match error {
+            GifError::InvalidSlug => Self::validation(error.to_string()),
+            GifError::TooManyFavourites => Self {
+                status: StatusCode::CONFLICT,
+                code: ApiErrorCode::LimitReached,
+                message: error.to_string(),
+            },
+            GifError::Message(error) => error.into(),
+        }
+    }
+}
+
 impl From<MessageError> for ApiError {
     fn from(error: MessageError) -> Self {
         match error {

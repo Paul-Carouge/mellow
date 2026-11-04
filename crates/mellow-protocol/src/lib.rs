@@ -4,6 +4,7 @@ mod accounts;
 mod canonical_decimal;
 mod direct_messages;
 mod gateway;
+mod gifs;
 mod guilds;
 mod health;
 mod messages;
@@ -28,6 +29,7 @@ pub use gateway::{
     ServerFrame, SimulcastLayer, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal,
     VoiceState, VoiceVideoRefusal, WatchedCamera,
 };
+pub use gifs::{GifSettings, MAXIMUM_GIF_FAVOURITES};
 pub use guilds::{
     AuditAction, AuditChange, AuditChangeKey, AuditLogEntry, AuditLogQuery, Ban, BannerCropQuery,
     Channel, ChannelKind, ChannelPlacement, CreateBanRequest, CreateChannelRequest,

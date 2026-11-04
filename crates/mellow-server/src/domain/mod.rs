@@ -5,6 +5,7 @@ pub mod account_rules;
 pub mod accounts;
 pub(crate) mod attachments;
 pub mod clock;
+pub(crate) mod gifs;
 pub(crate) mod guild_rules;
 pub(crate) mod guilds;
 pub(crate) mod image_processing;

@@ -4,9 +4,11 @@
 //! files, chosen here by `Accept-Encoding`, so the server never compresses at runtime.
 
 use axum::body::Body;
+use axum::extract::State;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 
+use crate::http::AppState;
 use crate::http::api_error::ApiError;
 
 include!(concat!(env!("OUT_DIR"), "/web_client_assets.rs"));
@@ -28,6 +30,17 @@ const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wa
      style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; \
      connect-src 'self'; manifest-src 'self'; worker-src 'none'; object-src 'none'; \
      frame-src https://www.youtube-nocookie.com; \
+     base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+/// The same, with Klipy's API and media hosts, when the owner set a Klipy key (ADR-0042): members'
+/// browsers search Klipy and load its GIFs themselves, as Klipy's terms require.
+const CONTENT_SECURITY_POLICY_WITH_KLIPY: &str = "default-src 'self'; \
+     script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
+     img-src 'self' data: blob: https://static.klipy.com https://static1.klipy.com \
+     https://static2.klipy.com; \
+     media-src 'self' https://static.klipy.com https://static1.klipy.com https://static2.klipy.com; \
+     font-src 'self'; connect-src 'self' https://api.klipy.com; manifest-src 'self'; \
+     worker-src 'none'; object-src 'none'; frame-src https://www.youtube-nocookie.com; \
      base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,8 +71,27 @@ impl ContentEncoding {
     }
 }
 
-pub(crate) async fn serve(uri: Uri, request_headers: HeaderMap) -> Response {
-    web_client_response(uri.path(), &request_headers, embedded_asset)
+pub(crate) async fn serve(
+    State(state): State<AppState>,
+    uri: Uri,
+    request_headers: HeaderMap,
+) -> Response {
+    with_policy_for_gifs(
+        web_client_response(uri.path(), &request_headers, embedded_asset),
+        state.gifs.is_some(),
+    )
+}
+
+/// Widens the page's policy to Klipy's hosts when GIFs are on (ADR-0042).
+fn with_policy_for_gifs(mut response: Response, are_gifs_on: bool) -> Response {
+    if are_gifs_on
+        && let Some(policy) = response
+            .headers_mut()
+            .get_mut(header::CONTENT_SECURITY_POLICY)
+    {
+        *policy = HeaderValue::from_static(CONTENT_SECURITY_POLICY_WITH_KLIPY);
+    }
+    response
 }
 
 fn embedded_asset(name: &str) -> Option<&'static [u8]> {
@@ -501,10 +533,42 @@ mod tests {
         assert_eq!(icon.headers()[header::CACHE_CONTROL], CACHE_REVALIDATE);
     }
 
+    #[test]
+    fn the_policy_opens_to_klipy_only_when_gifs_are_on() {
+        let page = || asset_response("index.html", ContentEncoding::Identity, b"<html>", "");
+        let policy_of = |response: &Response| {
+            response.headers()[header::CONTENT_SECURITY_POLICY]
+                .to_str()
+                .unwrap()
+                .to_owned()
+        };
+        let off = policy_of(&with_policy_for_gifs(page(), false));
+        let on = policy_of(&with_policy_for_gifs(page(), true));
+        assert!(!off.contains("klipy"), "{off}");
+        assert!(
+            on.contains("connect-src 'self' https://api.klipy.com;"),
+            "{on}"
+        );
+        assert!(
+            on.contains("media-src 'self' https://static.klipy.com"),
+            "{on}"
+        );
+        assert!(on.contains("https://static2.klipy.com"), "{on}");
+        // Everything else stays as strict as without GIFs.
+        for directive in [
+            "worker-src 'none'",
+            "object-src 'none'",
+            "frame-ancestors 'none'",
+            "frame-src https://www.youtube-nocookie.com;",
+        ] {
+            assert!(on.contains(directive), "{directive} in {on}");
+        }
+    }
+
     #[tokio::test]
     async fn api_and_gateway_paths_never_reach_the_client() {
         for path in ["/api/v1/nothing", "/api", "/gateway/x"] {
-            let response = serve(path.parse().unwrap(), HeaderMap::new()).await;
+            let response = web_client_response(path, &HeaderMap::new(), embedded_asset);
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
             let content_type = response.headers().get(header::CONTENT_TYPE).unwrap();
             assert_eq!(content_type, "application/json");
