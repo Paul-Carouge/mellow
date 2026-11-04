@@ -4,6 +4,13 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-11-04
+A "/" menu in the composer and formatting shortcuts. Web client only: no database migration and no protocol change.
+
+### Added
+- "/" at the start of a line lists formatting commands (headings, bold, italic, underline, strikethrough, spoiler, code, code block, quote, lists, link, shrug, tableflip), filtered as you type, each showing the Markdown it writes.
+- Ctrl+B, Ctrl+I, Ctrl+U and Ctrl+Shift+X (Cmd on macOS) put marks around a selection or take them off; Ctrl+U without a selection still opens the member list.
+
 ## [0.42.0] - 2026-11-04
 Links in messages get a preview, and YouTube videos play in place (ADR-0041). Database migration 0036; the protocol gains `link_previews` on messages and the `MESSAGE_LINK_PREVIEWS_UPDATE` event, which older clients ignore.
 
