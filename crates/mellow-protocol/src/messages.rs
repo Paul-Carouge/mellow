@@ -101,6 +101,11 @@ pub struct Message {
     /// servers' payloads.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mention_ids: Vec<Snowflake>,
+    /// The roles the message mentions (`<@&id>`), and the guild's id for `@everyone`, when the
+    /// author may mention them (ADR-0040); each viewer holding one is mentioned. Never in
+    /// direct messages or forwards. Absent when empty and from older servers' payloads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mention_role_ids: Vec<Snowflake>,
     /// Set on a forward (ADR-0039): its content and files are a copy of that message's, taken
     /// when it was forwarded. Absent otherwise and from older servers' payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -189,6 +194,7 @@ mod tests {
             }],
             pinned: true,
             mention_ids: Vec::new(),
+            mention_role_ids: Vec::new(),
             forwarded_from: Some(ForwardOrigin {
                 channel_id: Snowflake::from_raw(7),
                 message_id: Snowflake::from_raw(8),

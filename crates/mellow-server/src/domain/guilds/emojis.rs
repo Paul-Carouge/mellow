@@ -372,6 +372,7 @@ mod tests {
                     color: 0,
                     permissions: Permissions::MANAGE_EXPRESSIONS,
                     is_displayed_separately: false,
+                    is_mentionable: false,
                 },
                 NOW,
             )

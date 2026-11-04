@@ -912,6 +912,7 @@ mod tests {
             reactions: Vec::new(),
             pinned: false,
             mention_ids: Vec::new(),
+            mention_role_ids: Vec::new(),
             forwarded_from: None,
         }
     }
@@ -1250,6 +1251,7 @@ mod tests {
             position,
             permissions,
             is_displayed_separately: false,
+            is_mentionable: false,
         };
         let everyone = role(CLUB, 0, Permissions::DEFAULT_EVERYONE);
         let mut state = ready_state();

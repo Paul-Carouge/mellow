@@ -222,6 +222,7 @@ export const roleSamples = [
     "color": 16746496,
     "id": "20",
     "is_displayed_separately": true,
+    "is_mentionable": true,
     "name": "Moderators",
     "permissions": "2112",
     "position": 1
@@ -288,6 +289,7 @@ export const guildSamples = [
         "color": 16746496,
         "id": "20",
         "is_displayed_separately": true,
+        "is_mentionable": true,
         "name": "Moderators",
         "permissions": "2112",
         "position": 1
@@ -391,7 +393,7 @@ export const messageSamples = [
       "username": "ada"
     },
     "channel_id": "30",
-    "content": "Hello @ada",
+    "content": "Hello @ada and <@&20>",
     "edited_at_unix_milliseconds": 1700000000500,
     "forwarded_from": {
       "channel_id": "31",
@@ -400,6 +402,9 @@ export const messageSamples = [
     "id": "800",
     "mention_ids": [
       "10"
+    ],
+    "mention_role_ids": [
+      "20"
     ],
     "nonce": "nonce-1",
     "pinned": true,
@@ -419,7 +424,7 @@ export const messageSamples = [
       "username": "ada"
     },
     "channel_id": "30",
-    "content": "Hello @ada",
+    "content": "Hello @ada and <@&20>",
     "edited_at_unix_milliseconds": null,
     "id": "800",
     "nonce": null,
@@ -548,7 +553,7 @@ export const messageSearchResultsSamples = [
             "username": "ada"
           },
           "channel_id": "30",
-          "content": "Hello @ada",
+          "content": "Hello @ada and <@&20>",
           "edited_at_unix_milliseconds": 1700000000500,
           "forwarded_from": {
             "channel_id": "31",
@@ -557,6 +562,9 @@ export const messageSearchResultsSamples = [
           "id": "800",
           "mention_ids": [
             "10"
+          ],
+          "mention_role_ids": [
+            "20"
           ],
           "nonce": "nonce-1",
           "pinned": true,
@@ -791,6 +799,11 @@ export const auditChangeSamples = [
     "old_value": "old"
   },
   {
+    "key": "mentionable",
+    "new_value": "new",
+    "old_value": "old"
+  },
+  {
     "key": "unknown",
     "new_value": "new",
     "old_value": "old"
@@ -921,6 +934,7 @@ export const readySamples = [
             "color": 16746496,
             "id": "20",
             "is_displayed_separately": true,
+            "is_mentionable": true,
             "name": "Moderators",
             "permissions": "2112",
             "position": 1
@@ -1204,7 +1218,7 @@ export const gatewayEventSamples = [
         "username": "ada"
       },
       "channel_id": "30",
-      "content": "Hello @ada",
+      "content": "Hello @ada and <@&20>",
       "edited_at_unix_milliseconds": 1700000000500,
       "forwarded_from": {
         "channel_id": "31",
@@ -1213,6 +1227,9 @@ export const gatewayEventSamples = [
       "id": "800",
       "mention_ids": [
         "10"
+      ],
+      "mention_role_ids": [
+        "20"
       ],
       "nonce": "nonce-1",
       "pinned": true,
@@ -1235,7 +1252,7 @@ export const gatewayEventSamples = [
         "username": "ada"
       },
       "channel_id": "30",
-      "content": "Hello @ada",
+      "content": "Hello @ada and <@&20>",
       "edited_at_unix_milliseconds": null,
       "id": "800",
       "nonce": null,
@@ -1276,7 +1293,7 @@ export const gatewayEventSamples = [
         "username": "ada"
       },
       "channel_id": "30",
-      "content": "Hello @ada",
+      "content": "Hello @ada and <@&20>",
       "edited_at_unix_milliseconds": 1700000000500,
       "forwarded_from": {
         "channel_id": "31",
@@ -1285,6 +1302,9 @@ export const gatewayEventSamples = [
       "id": "800",
       "mention_ids": [
         "10"
+      ],
+      "mention_role_ids": [
+        "20"
       ],
       "nonce": "nonce-1",
       "pinned": true,
@@ -1419,6 +1439,7 @@ export const gatewayEventSamples = [
           "color": 16746496,
           "id": "20",
           "is_displayed_separately": true,
+          "is_mentionable": true,
           "name": "Moderators",
           "permissions": "2112",
           "position": 1
@@ -1514,6 +1535,7 @@ export const gatewayEventSamples = [
           "color": 16746496,
           "id": "20",
           "is_displayed_separately": true,
+          "is_mentionable": true,
           "name": "Moderators",
           "permissions": "2112",
           "position": 1
@@ -1937,6 +1959,7 @@ export const serverFrameSamples = [
               "color": 16746496,
               "id": "20",
               "is_displayed_separately": true,
+              "is_mentionable": true,
               "name": "Moderators",
               "permissions": "2112",
               "position": 1

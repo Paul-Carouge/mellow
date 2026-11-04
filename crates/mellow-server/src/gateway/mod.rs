@@ -1236,6 +1236,7 @@ pub(crate) mod tests {
                     color: 0,
                     permissions: mellow_protocol::Permissions::KICK_MEMBERS,
                     is_displayed_separately: false,
+                    is_mentionable: false,
                 },
                 now(),
             )
@@ -1264,6 +1265,7 @@ pub(crate) mod tests {
                     color: 0,
                     permissions: mellow_protocol::Permissions::empty(),
                     is_displayed_separately: false,
+                    is_mentionable: false,
                 },
                 now(),
             )

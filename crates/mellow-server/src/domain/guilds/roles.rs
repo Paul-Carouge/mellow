@@ -92,6 +92,7 @@ impl Guilds {
                 position: 1,
                 permissions,
                 is_displayed_separately: request.is_displayed_separately,
+                is_mentionable: request.is_mentionable,
             },
             MAXIMUM_ROLES_PER_GUILD,
             &audit,
@@ -108,7 +109,8 @@ impl Guilds {
     }
 
     /// Needs `MANAGE_ROLES` over this role (`RoleManager`). `@everyone` changes only its
-    /// permissions: it is never displayed separately, since everyone holds it.
+    /// permissions: it is never displayed separately, since everyone holds it, and never
+    /// mentionable, since mentioning everyone always needs `MENTION_EVERYONE` (ADR-0040).
     pub(crate) async fn update_role(
         &self,
         user_id: Snowflake,
@@ -119,13 +121,15 @@ impl Guilds {
         if role_id == guild_id
             && (request.name.is_some()
                 || request.color.is_some()
-                || request.is_displayed_separately.is_some())
+                || request.is_displayed_separately.is_some()
+                || request.is_mentionable.is_some())
         {
             return Err(GuildRuleViolation::EveryoneRole.into());
         }
         let name = request
             .name
-            .map(|name| normalize_role_name(&name))
+            .as_deref()
+            .map(normalize_role_name)
             .transpose()?;
         let color = request.color.map(validate_role_color).transpose()?;
         let permissions = request
@@ -145,31 +149,13 @@ impl Guilds {
             role.permissions.difference(manager.permissions)
                 | wanted.intersection(manager.permissions)
         });
-        let changes: Vec<AuditChange> = [
-            text_change(AuditChangeKey::Name, &role.name, name.as_deref()),
-            color.and_then(|color| {
-                text_change(
-                    AuditChangeKey::Color,
-                    &role.color.to_string(),
-                    Some(&color.to_string()),
-                )
-            }),
-            effective_permissions.and_then(|permissions| {
-                permissions_change(AuditChangeKey::Permissions, role.permissions, permissions)
-            }),
-            request
-                .is_displayed_separately
-                .and_then(|is_displayed_separately| {
-                    text_change(
-                        AuditChangeKey::DisplayedSeparately,
-                        &role.is_displayed_separately.to_string(),
-                        Some(&is_displayed_separately.to_string()),
-                    )
-                }),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let changes = role_audit_changes(
+            &role,
+            name.as_deref(),
+            color,
+            effective_permissions,
+            &request,
+        );
         // Nothing to write, record or send.
         if changes.is_empty() {
             return Ok(role);
@@ -193,6 +179,7 @@ impl Guilds {
                 color,
                 permissions,
                 is_displayed_separately: request.is_displayed_separately,
+                is_mentionable: request.is_mentionable,
             },
             manager.permissions,
             &audit,
@@ -374,4 +361,46 @@ impl Guilds {
             },
         );
     }
+}
+
+/// What an update changes in `role`, for the moderation log; empty when nothing changes.
+fn role_audit_changes(
+    role: &Role,
+    name: Option<&str>,
+    color: Option<u32>,
+    effective_permissions: Option<Permissions>,
+    request: &UpdateRoleRequest,
+) -> Vec<AuditChange> {
+    [
+        text_change(AuditChangeKey::Name, &role.name, name),
+        color.and_then(|color| {
+            text_change(
+                AuditChangeKey::Color,
+                &role.color.to_string(),
+                Some(&color.to_string()),
+            )
+        }),
+        effective_permissions.and_then(|permissions| {
+            permissions_change(AuditChangeKey::Permissions, role.permissions, permissions)
+        }),
+        request
+            .is_displayed_separately
+            .and_then(|is_displayed_separately| {
+                text_change(
+                    AuditChangeKey::DisplayedSeparately,
+                    &role.is_displayed_separately.to_string(),
+                    Some(&is_displayed_separately.to_string()),
+                )
+            }),
+        request.is_mentionable.and_then(|is_mentionable| {
+            text_change(
+                AuditChangeKey::Mentionable,
+                &role.is_mentionable.to_string(),
+                Some(&is_mentionable.to_string()),
+            )
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }

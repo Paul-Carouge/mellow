@@ -611,6 +611,7 @@ fn role_request(name: &str, permissions: Permissions) -> CreateRoleRequest {
         color: 0,
         permissions,
         is_displayed_separately: false,
+        is_mentionable: false,
     }
 }
 
@@ -1790,6 +1791,7 @@ async fn a_resynchronized_member_receives_exactly_what_get_guild_answers_them() 
                 color: None,
                 permissions: Some(Permissions::ADD_REACTIONS),
                 is_displayed_separately: None,
+                is_mentionable: None,
             },
         )
         .await
@@ -2537,6 +2539,7 @@ async fn unchanged_or_refused_actions_record_nothing() {
                 color: Some(0),
                 permissions: Some(Permissions::empty()),
                 is_displayed_separately: None,
+                is_mentionable: None,
             },
         )
         .await
@@ -3334,6 +3337,7 @@ async fn a_role_displayed_separately_reaches_members_and_its_change_is_recorded(
             guild.id,
             CreateRoleRequest {
                 is_displayed_separately: true,
+                is_mentionable: false,
                 ..role_request("Moderators", Permissions::empty())
             },
             NOW,

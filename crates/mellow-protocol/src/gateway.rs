@@ -642,6 +642,7 @@ mod tests {
                 position: 0,
                 permissions: crate::Permissions::SEND_MESSAGES,
                 is_displayed_separately: false,
+                is_mentionable: false,
             }],
         };
         let json = serde_json::to_value(&event).unwrap();
