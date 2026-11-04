@@ -22,10 +22,12 @@ const CACHE_REVALIDATE: &str = "no-cache";
 /// installable as an app; there is no service worker (Chrome installs without one), and
 /// `worker-src 'none'` keeps a script served from this origin, such as an upload, from becoming one.
 /// `'wasm-unsafe-eval'` lets the voice noise suppressor compile its WebAssembly (ADR-0031); it
-/// allows no JavaScript `eval`.
+/// allows no JavaScript `eval`. Frames come only from the `youtube-nocookie.com` player, loaded
+/// after a click on a link preview (ADR-0041).
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
      style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; \
      connect-src 'self'; manifest-src 'self'; worker-src 'none'; object-src 'none'; \
+     frame-src https://www.youtube-nocookie.com; \
      base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -479,6 +481,10 @@ mod tests {
         let policy = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
         assert!(policy.contains("manifest-src 'self'"), "{policy}");
         assert!(policy.contains("worker-src 'none'"), "{policy}");
+        assert!(
+            policy.contains("frame-src https://www.youtube-nocookie.com;"),
+            "only the privacy-enhanced YouTube player may be framed (ADR-0041): {policy}"
+        );
         assert!(
             policy.contains("script-src 'self' 'wasm-unsafe-eval';")
                 && !policy.contains("'unsafe-eval'"),
