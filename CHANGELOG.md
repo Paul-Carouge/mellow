@@ -4,6 +4,16 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-11-04
+Roles and everyone can be mentioned (ADR-0040). Database migration 0035; the protocol gains `is_mentionable` on roles and `mention_role_ids` on messages, which older clients ignore.
+
+### Added
+- `@` in the composer now also offers the server's roles you may mention, and `@everyone`. A role mention shows as a chip in the role's colour and counts as a mention for everyone holding the role: message tint, notification and red badge.
+- Role settings → Display: "Autoriser tout le monde à @mentionner ce rôle". Without it, only members with "Mentionner @everyone et tous les rôles" can mention the role; `@everyone` always needs that permission.
+
+### Changed
+- The "Mention @everyone" permission now does what it says and covers every role. A server that already granted it lets those members mention everyone and every role from this version on.
+
 ## [0.39.0] - 2026-11-03
 Messages can be forwarded (ADR-0039). Database migration 0034; the protocol gains `forwarded_from` on messages and sends, which older clients ignore.
 
