@@ -1,12 +1,14 @@
 <script lang="ts" generics="Suggestion">
   import type { Snippet } from "svelte";
 
-  // The ":na" and "@na" suggestions above the composer (DESIGN.md §5.5, §6.58), Discord's
+  // The ":na", "@na" and "/" suggestions above the composer (DESIGN.md §5.5, §6.58), Discord's
   // autocomplete. Focus stays in the composer, which points at the active option
   // (`aria-activedescendant`); a click chooses without taking focus from it.
   interface Props {
     id: string;
     title: string;
+    /** The "/" menu: its rows also show a description and the Markdown they write. */
+    isWide?: boolean;
     suggestions: readonly Suggestion[];
     keyOf: (suggestion: Suggestion) => string;
     activeIndex: number;
@@ -15,7 +17,7 @@
     onhover: (index: number) => void;
   }
 
-  let { id, title, suggestions, keyOf, activeIndex, row, onchoose, onhover }: Props = $props();
+  let { id, title, isWide = false, suggestions, keyOf, activeIndex, row, onchoose, onhover }: Props = $props();
 
   /** Keeps the active option in view as the arrows move it. */
   function scrollIntoViewWhenActive(isActive: boolean) {
@@ -28,7 +30,10 @@
 </script>
 
 <div
-  class="absolute inset-x-0 bottom-full z-20 mx-auto flex max-h-(--mw-component-custom-emoji-suggestion-max-height) w-full max-w-(--mw-component-custom-emoji-suggestion-width) flex-col overflow-hidden rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) shadow-(--mw-component-context-menu-shadow) sm:mx-0"
+  class={[
+    "absolute inset-x-0 bottom-full z-20 mx-auto flex max-h-(--mw-component-custom-emoji-suggestion-max-height) w-full flex-col overflow-hidden rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) shadow-(--mw-component-context-menu-shadow) sm:mx-0",
+    isWide ? "max-w-(--mw-component-composer-suggestions-command-list-width)" : "max-w-(--mw-component-custom-emoji-suggestion-width)",
+  ]}
 >
   <p
     aria-hidden="true"

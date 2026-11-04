@@ -2,6 +2,7 @@
   import { tick } from "svelte";
 
   import { strings } from "../i18n";
+  import { en } from "../i18n/en";
   import { ApiError } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import {
@@ -37,6 +38,18 @@
   import { MESSAGE_LENGTH_COUNTER_THRESHOLD, messageCharactersLeft } from "./message-length";
   import { createPopoverToggle } from "./popover-toggle";
   import { noteEmojiUsed } from "./recent-emoji.svelte";
+  import {
+    type NamedSlashCommand,
+    type SlashCommandQuery,
+    type TextEdit,
+    applySlashCommand,
+    differingRange,
+    formattingMarksForShortcut,
+    namedSlashCommands,
+    slashCommandQuery,
+    suggestSlashCommands,
+    toggleInlineMarks,
+  } from "./slash-commands";
 
   // The chat's composer zone (DESIGN.md §5.5, ADR-0022 §4): the notices above it, the typing row,
   // the field with its reply bar and tray, or the sentence that says why it is locked.
@@ -130,16 +143,30 @@
   // Counted as sent: a typed ":name:" or "@Role" goes out as its longer markup.
   const charactersLeft = $derived(messageCharactersLeft(textAsSent(drafts.text)));
 
-  // The ":na" and "@na" suggestions (DESIGN.md §5.5): follow the caret; Esc hides them until the
-  // word changes. A word is one or the other: ":" and "@" each open their own.
-  type SuggestionQuery = (EmojiSuggestionQuery & { kind: "emoji" }) | (MentionSuggestionQuery & { kind: "mention" });
-  type ComposerSuggestion = EmojiSuggestion | { kind: "person"; person: PublicUser } | RoleMentionSuggestion;
+  // The ":na", "@na" and "/" suggestions (DESIGN.md §5.5): follow the caret; Esc hides them until
+  // the word changes. A word is one or the other: ":", "@" and "/" each open their own.
+  type SuggestionQuery =
+    | (EmojiSuggestionQuery & { kind: "emoji" })
+    | (MentionSuggestionQuery & { kind: "mention" })
+    | (SlashCommandQuery & { kind: "command" });
+  type ComposerSuggestion =
+    | EmojiSuggestion
+    | { kind: "person"; person: PublicUser }
+    | RoleMentionSuggestion
+    | { kind: "command"; named: NamedSlashCommand };
+  // English names find the commands in any language: "/bold" works in French too.
+  const NAMED_SLASH_COMMANDS = namedSlashCommands(strings.chat.slashCommands, en.chat.slashCommands);
   let suggestionQuery = $state<SuggestionQuery | null>(null);
   let dismissedSuggestionStart = $state<number | null>(null);
   let activeSuggestionIndex = $state(0);
   const suggestions: readonly ComposerSuggestion[] = $derived.by(() => {
     if (!suggestionQuery || suggestionQuery.start === dismissedSuggestionStart) {
       return [];
+    }
+    if (suggestionQuery.kind === "command") {
+      return suggestSlashCommands(suggestionQuery.query, NAMED_SLASH_COMMANDS).map(
+        (named): ComposerSuggestion => ({ kind: "command", named }),
+      );
     }
     return suggestionQuery.kind === "emoji"
       ? suggestEmoji(suggestionQuery.query, serverEmojis)
@@ -275,11 +302,14 @@
     const text = field?.value ?? drafts.text;
     const emojiQuery = isCaretCollapsed ? emojiSuggestionQuery(text, caret) : null;
     const mentionQuery = isCaretCollapsed && !emojiQuery ? mentionSuggestionQuery(text, caret) : null;
+    const commandQuery = isCaretCollapsed && !emojiQuery && !mentionQuery ? slashCommandQuery(text, caret) : null;
     const query: SuggestionQuery | null = emojiQuery
       ? { ...emojiQuery, kind: "emoji" }
       : mentionQuery
         ? { ...mentionQuery, kind: "mention" }
-        : null;
+        : commandQuery
+          ? { ...commandQuery, kind: "command" }
+          : null;
     if (
       query?.start !== suggestionQuery?.start ||
       query?.query !== suggestionQuery?.query ||
@@ -305,7 +335,42 @@
     field?.setSelectionRange(result.caret, result.caret);
   }
 
+  /**
+   * Writes `edit` into the field as typing would, so Ctrl+Z gives the text back: assigning the
+   * value would wipe the browser's undo history. `execCommand` is deprecated but still the only
+   * way to edit a text field undoably; where it does nothing, the text is set directly.
+   */
+  async function writeEdit(edit: TextEdit) {
+    suggestionQuery = null;
+    const currentField = field;
+    if (!currentField) {
+      drafts.text = edit.text;
+      return;
+    }
+    const change = differingRange(currentField.value, edit.text);
+    currentField.focus();
+    currentField.setSelectionRange(change.start, change.end);
+    if (change.inserted === "") {
+      document.execCommand("delete");
+    } else {
+      document.execCommand("insertText", false, change.inserted);
+    }
+    if (currentField.value !== edit.text) {
+      drafts.text = edit.text;
+      await tick();
+    }
+    currentField.setSelectionRange(edit.selectionStart, edit.selectionEnd);
+    // The input event read the caret before it was placed.
+    suggestionQuery = null;
+  }
+
   function chooseSuggestion(suggestion: ComposerSuggestion) {
+    if (suggestion.kind === "command") {
+      if (suggestionQuery && field) {
+        void writeEdit(applySlashCommand(field.value, suggestionQuery, suggestion.named.command, strings.chat.linkTextPlaceholder));
+      }
+      return;
+    }
     if (suggestion.kind === "person") {
       // The username: it always mentions, where a display name may be shared or hold spaces.
       void insertAt(`@${suggestion.person.username}`, suggestionQuery);
@@ -338,6 +403,8 @@
         return `custom-${suggestion.emoji.id}`;
       case "unicode":
         return suggestion.emoji;
+      case "command":
+        return `command-${suggestion.named.command.id}`;
     }
   }
 
@@ -376,6 +443,13 @@
       onopenemojipicker(emojiButton);
       return;
     }
+    const marks = formattingMarksForShortcut(event);
+    // Ctrl+U without a selection stays the member list's (Shell), as on Discord.
+    if (marks && field && !(marks === "__" && field.selectionStart === field.selectionEnd)) {
+      event.preventDefault();
+      void writeEdit(toggleInlineMarks(field.value, field.selectionStart, field.selectionEnd, marks));
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       send();
@@ -393,7 +467,15 @@
 </script>
 
 {#snippet suggestionRow(suggestion: ComposerSuggestion)}
-  {#if suggestion.kind === "person"}
+  {#if suggestion.kind === "command"}
+    <span aria-hidden="true" class="grid size-(--mw-component-composer-suggestions-avatar-size) shrink-0 place-items-center">
+      <Icon name={suggestion.named.command.icon} class="size-(--mw-component-context-menu-item-icon-size)" />
+    </span>
+    <span class="min-w-0 truncate">{suggestion.named.name}</span>
+    <span class="min-w-0 flex-1 truncate text-text-secondary">{suggestion.named.description}</span>
+    <!-- What the command writes, as inline code shows in messages: the menu teaches the Markdown. -->
+    <code class="min-w-0 truncate rounded-xs bg-(--mw-component-message-code-background) px-3xs type-code text-text-normal">{suggestion.named.command.markup}</code>
+  {:else if suggestion.kind === "person"}
     <Avatar user={suggestion.person} sizeToken="--mw-component-composer-suggestions-avatar-size" />
     <span class="min-w-0 truncate">{displayName(suggestion.person)}</span>
     <span class="min-w-0 flex-1 truncate text-text-secondary">@{suggestion.person.username}</span>
@@ -467,7 +549,10 @@
         id={suggestionsId}
         title={suggestionQuery.kind === "emoji"
           ? strings.chat.emojiSuggestionsTitle(suggestionQuery.query)
-          : strings.chat.mentionSuggestionsTitle(suggestionQuery.query)}
+          : suggestionQuery.kind === "command"
+            ? strings.chat.slashCommandSuggestionsTitle(suggestionQuery.query)
+            : strings.chat.mentionSuggestionsTitle(suggestionQuery.query)}
+        isWide={suggestionQuery.kind === "command"}
         {suggestions}
         keyOf={suggestionKey}
         activeIndex={activeSuggestion}
@@ -482,7 +567,9 @@
       ? ""
       : suggestionQuery?.kind === "mention"
         ? strings.chat.mentionSuggestionsCount(suggestions.length)
-        : strings.chat.emojiSuggestionsCount(suggestions.length)}
+        : suggestionQuery?.kind === "command"
+          ? strings.chat.slashCommandSuggestionsCount(suggestions.length)
+          : strings.chat.emojiSuggestionsCount(suggestions.length)}
   </p>
   <p
     aria-hidden="true"
