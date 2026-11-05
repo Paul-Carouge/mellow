@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { en } from "./en";
 import { fr } from "./fr";
-import { catalogueFor, chooseLanguage } from "./index";
+import { chooseLanguage, loadCatalogue, strings } from "./index";
 
 describe("chooseLanguage", () => {
   it("speaks French when French is the first language the client knows", () => {
@@ -41,9 +41,14 @@ describe("chooseLanguage", () => {
     expect(chooseLanguage(["fy-NL", "en"]).language).toBe("en");
   });
 
-  it("gives the catalogue of the chosen language", () => {
-    expect(catalogueFor("fr")).toBe(fr);
-    expect(catalogueFor("en")).toBe(en);
+  it("loads the catalogue of the chosen language", async () => {
+    await expect(loadCatalogue("fr")).resolves.toBe(fr);
+    await expect(loadCatalogue("en")).resolves.toBe(en);
+  });
+
+  it("has the reader's catalogue loaded before anything reads it", () => {
+    // The test setup stands for `main.ts`: it loads the catalogue of `navigator.languages` (en-GB).
+    expect(strings).toBe(en);
   });
 });
 

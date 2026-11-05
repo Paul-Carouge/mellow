@@ -1,7 +1,6 @@
 // The interface language, chosen once from the browser's languages (ADR-0022 §7), and its catalogue.
 
-import { type Catalogue, en } from "./en";
-import { fr } from "./fr";
+import type { Catalogue } from "./en";
 
 export type { Catalogue };
 export type Language = "en" | "fr";
@@ -16,8 +15,6 @@ export interface LanguageChoice {
   /** For formats with words (weekday and month names): always a tag of `language`. */
   wordedFormattingLocale: string;
 }
-
-const CATALOGUES: Record<Language, Catalogue> = { en, fr };
 
 /** The first of the reader's languages the client speaks, in their order; English when none is. */
 export function chooseLanguage(preferredLanguages: readonly string[]): LanguageChoice {
@@ -41,10 +38,19 @@ function isUsableLocale(tag: string): boolean {
   }
 }
 
-export function catalogueFor(language: Language): Catalogue {
-  return CATALOGUES[language];
+/** Each catalogue is its own chunk, so a reader downloads only their language's. */
+export async function loadCatalogue(language: Language): Promise<Catalogue> {
+  return language === "fr" ? (await import("./fr")).fr : (await import("./en")).en;
 }
 
 export const { language, formattingLocale, wordedFormattingLocale } = chooseLanguage(globalThis.navigator?.languages ?? []);
-/** Every string the client shows or announces, in the reader's language. */
-export const strings: Catalogue = catalogueFor(language);
+/**
+ * Every string the client shows or announces, in the reader's language: a live binding set by
+ * `loadStrings`, which every entry point awaits before mounting. Read it inside functions and
+ * components only, never at a module's top level, where it is not set yet.
+ */
+export let strings: Catalogue;
+
+export async function loadStrings(): Promise<void> {
+  strings = await loadCatalogue(language);
+}
