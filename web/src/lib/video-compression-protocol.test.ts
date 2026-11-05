@@ -67,7 +67,8 @@ describe("compressVideoInWorker", () => {
   it("resolves with the original when the Worker fails", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { worker, result } = start();
-    worker.onerror?.(new ErrorEvent("error"));
+    // Node has no global ErrorEvent; the code under test reads nothing from the event.
+    worker.onerror?.(new Event("error") as ErrorEvent);
     expect(await result).toBe(ORIGINAL);
     expect(worker.isTerminated).toBe(true);
     expect(warn).toHaveBeenCalledOnce();
