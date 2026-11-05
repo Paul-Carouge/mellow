@@ -1112,7 +1112,10 @@ export class MellowClient {
         cached !== undefined &&
         (cached.edited_at_unix_milliseconds ?? 0) > (message.edited_at_unix_milliseconds ?? 0);
       if (!this.deletedMessageIds.has(message.id) && !isOlderEdit) {
-        byId.set(message.id, message);
+        const isSameEdit =
+          cached !== undefined &&
+          (cached.edited_at_unix_milliseconds ?? 0) === (message.edited_at_unix_milliseconds ?? 0);
+        byId.set(message.id, isSameEdit ? withWhatOnlyEventsBrought(message, cached) : message);
       }
     }
     let merged = [...byId.values()].sort((left, right) => compareSnowflakes(left.id, right.id));
@@ -1743,7 +1746,11 @@ export class MellowClient {
         await this.rest.addReaction(channelId, messageId, emoji);
       }
     } catch (error) {
-      applyOwnReactionLocally(isRemoving);
+      if (error instanceof ApiError && error.status !== 0) {
+        applyOwnReactionLocally(isRemoving);
+      } else {
+        await this.settleReactionsAndPoll(channelId, messageId);
+      }
       this.reportError(error, "react");
       throw error;
     } finally {
@@ -1828,16 +1835,42 @@ export class MellowClient {
     } catch (error) {
       // Only a refusal is undone, and only what the instance did not take: a move is one request,
       // so all of it; a "Remove my vote" keeps the removals that went through. A lost answer may
-      // hide a vote the instance kept: its echo or the next `Ready` settles it.
-      if (error instanceof ApiError) {
+      // hide a vote the instance kept, and its echo may already have come: the instance's copy
+      // settles it.
+      if (error instanceof ApiError && error.status !== 0) {
         for (const { answerId, change } of changes.slice(sent).reverse()) {
           applyLocally(answerId, change === 1 ? -1 : 1);
         }
+      } else {
+        await this.settleReactionsAndPoll(channelId, messageId);
       }
       this.reportError(error, "vote in poll");
       throw error;
     } finally {
       this.pollVotesInFlight.delete(messageId);
+    }
+  }
+
+  /**
+   * After an answer lost on the way (status 0, timeouts included), the change may or may not have
+   * been kept: the instance's copy of the message settles the reactions and the poll. Called while
+   * the change is still in flight, so no newer click can be overwritten by this copy.
+   */
+  private async settleReactionsAndPoll(channelId: Snowflake, messageId: Snowflake): Promise<void> {
+    try {
+      // The page just before the next id holds the message alone (there is no single-message route).
+      const [stored] = await this.rest.listMessages(channelId, (BigInt(messageId) + 1n).toString(), 1);
+      if (stored?.id !== messageId) {
+        return; // Deleted meanwhile: its `MESSAGE_DELETE` takes the row away.
+      }
+      this.updateCachedMessage(channelId, messageId, (cached) => ({
+        ...cached,
+        reactions: stored.reactions ?? [],
+        poll: stored.poll ?? cached.poll,
+      }));
+    } catch (error) {
+      // The optimistic state stays until the next `Ready` reloads the history.
+      this.reportError(error, "reload message");
     }
   }
 
@@ -2464,6 +2497,19 @@ export class MellowClient {
     }
     console.warn(`${action} failed`, error);
   }
+}
+
+/**
+ * A copy of the same edit read before its events (a send's answer behind its `MESSAGE_CREATE`, a
+ * history page) lacks the previews, reactions and poll those events brought: the cached ones stay.
+ */
+function withWhatOnlyEventsBrought(incoming: Message, cached: Message): Message {
+  return {
+    ...incoming,
+    link_previews: incoming.link_previews?.length ? incoming.link_previews : cached.link_previews,
+    reactions: incoming.reactions?.length ? incoming.reactions : cached.reactions,
+    poll: incoming.poll ?? cached.poll,
+  };
 }
 
 function newestOf(left: Snowflake | null, right: Snowflake | null): Snowflake | null {

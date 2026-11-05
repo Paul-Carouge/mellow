@@ -682,6 +682,28 @@ describe("reactions and pins", () => {
     expect(client.messages(GENERAL)[0]?.link_previews).toEqual([]);
   });
 
+  it("keep link previews and reactions that arrived before the send's answer", async () => {
+    let answer: (sent: Message) => void = () => undefined;
+    const client = await clientWithHistory({
+      sendMessage: () => new Promise<Message>((resolve) => (answer = resolve)),
+    });
+    client.selectChannel(GENERAL);
+    const sent: Message = { ...message("300"), author: { id: ME, username: "me", display_name: "Me" } };
+    const sending = client.sendMessage("https://example.org/");
+    const preview = { id: "900", url: "https://example.org/", title: "Example" };
+    client.applyEvent({ t: "MESSAGE_CREATE", data: sent }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_LINK_PREVIEWS_UPDATE", data: { channel_id: GENERAL, message_id: "300", link_previews: [preview] } },
+      0,
+    );
+    client.applyEvent({ t: "MESSAGE_REACTION_ADD", data: { ...reaction(OTHER), message_id: "300" } }, 0);
+    answer({ ...sent, nonce: "n" });
+    await sending;
+    const row = client.messages(GENERAL).find((candidate) => candidate.id === "300");
+    expect(row?.link_previews).toEqual([preview]);
+    expect(row?.reactions).toEqual([{ emoji: "👍", count: 1, me: false }]);
+  });
+
   it("show the user's reaction at once, count its event once, and undo it if refused", async () => {
     let refuse = false;
     const client = await clientWithHistory({
@@ -719,6 +741,33 @@ describe("reactions and pins", () => {
     await first;
     expect(calls).toBe(1);
     expect(reactionsOf(client)).toEqual([{ emoji: "👍", count: 1, me: true }]);
+  });
+
+  it("settle a reaction whose answer was lost from the instance's copy, kept or not", async () => {
+    let isKeptByInstance = false;
+    const reloads: unknown[] = [];
+    const client = await clientWithHistory({
+      addReaction: () => Promise.reject(new ApiError(0, "NETWORK")),
+      listMessages: (...parameters: unknown[]) => {
+        reloads.push(parameters);
+        const reactions = isKeptByInstance ? [{ emoji: "👍", count: 1, me: true }] : [];
+        return Promise.resolve([{ ...message("200"), reactions }]);
+      },
+    });
+    reloads.length = 0;
+    isKeptByInstance = true;
+    // The echo came, then the answer was lost: the instance kept the reaction.
+    const kept = client.toggleReaction(GENERAL, "200", "👍");
+    client.applyEvent({ t: "MESSAGE_REACTION_ADD", data: reaction(ME) }, 0);
+    await expect(kept).rejects.toBeInstanceOf(ApiError);
+    expect(reactionsOf(client)).toEqual([{ emoji: "👍", count: 1, me: true }]);
+    expect(reloads).toEqual([[GENERAL, "201", 1]]);
+
+    // The request never reached the instance: no phantom reaction stays.
+    client.applyEvent({ t: "MESSAGE_REACTION_REMOVE", data: reaction(ME) }, 0);
+    isKeptByInstance = false;
+    await expect(client.toggleReaction(GENERAL, "200", "👍")).rejects.toBeInstanceOf(ApiError);
+    expect(reactionsOf(client)).toEqual([]);
   });
 
   describe("polls", () => {
@@ -826,6 +875,38 @@ describe("reactions and pins", () => {
       expect(calls).toBe(1);
       expect(countsOf(client)).toEqual([
         [3, true],
+        [0, false],
+      ]);
+    });
+
+    it("settle a vote whose answer was lost from the instance's copy, kept or not", async () => {
+      let isKeptByInstance = false;
+      const keptVote = (answer: { id: number; vote_count: number; me_voted: boolean }) =>
+        answer.id === 1 ? { ...answer, vote_count: 3, me_voted: true } : answer;
+      const client = await clientWithHistory({
+        listMessages: () => {
+          const stored = poll(false);
+          const answers = isKeptByInstance ? stored.answers.map(keptVote) : stored.answers;
+          return Promise.resolve([{ ...pollMessage(), poll: { ...stored, answers } }]);
+        },
+        addPollVote: () => Promise.reject(new ApiError(0, "NETWORK")),
+      });
+      isKeptByInstance = true;
+      // The echo came, then the answer was lost: the instance kept the vote.
+      const kept = client.choosePollAnswer(GENERAL, "200", 1);
+      client.applyEvent({ t: "MESSAGE_POLL_VOTE_ADD", data: vote(1) }, 0);
+      await expect(kept).rejects.toBeInstanceOf(ApiError);
+      expect(countsOf(client)).toEqual([
+        [3, true],
+        [0, false],
+      ]);
+
+      // The request never reached the instance: no phantom vote stays.
+      client.applyEvent({ t: "MESSAGE_POLL_VOTE_REMOVE", data: vote(1) }, 0);
+      isKeptByInstance = false;
+      await expect(client.choosePollAnswer(GENERAL, "200", 1)).rejects.toBeInstanceOf(ApiError);
+      expect(countsOf(client)).toEqual([
+        [2, false],
         [0, false],
       ]);
     });
