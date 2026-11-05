@@ -57,7 +57,15 @@
   let activeIndex = $state(-1);
 
   const guild = $derived(search.scopeGuildId ? (client.guilds.find((candidate) => candidate.id === search.scopeGuildId) ?? null) : null);
-  const placeholder = $derived(guild ? strings.search.placeholderInServer(guild.name) : strings.search.placeholderInConversations);
+  // The header's field at rest is too narrow for its scope, and a sentence cut mid-word reads
+  // broken: the scope shows once focus widens it, and is always in the field's name.
+  const placeholder = $derived(
+    placement === "header" && !hasFocus
+      ? strings.search.placeholder
+      : guild
+        ? strings.search.placeholderInServer(guild.name)
+        : strings.search.placeholderInConversations,
+  );
   const label = $derived(guild ? strings.search.fieldLabelInServer(guild.name) : strings.search.fieldLabelInConversations);
 
   const people = $derived.by((): PublicUser[] => {
@@ -272,7 +280,7 @@
       aria-activedescendant={isListShown && activeOption >= 0 ? `${id}-option-${activeOption}` : undefined}
       {placeholder}
       value={search.draft}
-      class="h-full min-w-0 flex-1 bg-transparent type-body text-text-normal outline-none placeholder:text-text-muted"
+      class="h-full min-w-0 flex-1 bg-transparent type-body text-ellipsis text-text-normal outline-none placeholder:text-text-muted"
       oninput={handleInput}
       onkeydown={handleKeydown}
       onkeyup={(event) => {
@@ -365,14 +373,19 @@
     {:else if suggestion?.kind === "channel"}
       <Icon name={suggestion.isConversation ? "at" : "hash"} class="size-(--mw-component-search-suggestion-icon-size) text-text-muted" />
     {/if}
-    <!-- A filter's name stays whole and its description takes the rest; a value's name comes first. -->
+    <!-- A filter's name stays whole and its description follows it, truncating first, as in the
+         "/" menu; a value's name comes first. -->
     <span class={["truncate", suggestion?.kind === "key" ? "shrink-0 font-semibold" : "min-w-0 flex-1"]}>{main}</span>
     {#if detail}
       <span
         class={[
           "truncate type-body-sm",
-          suggestion?.kind === "key" ? "min-w-0 flex-1 text-end" : "max-w-1/2 shrink-0",
-          isActive ? "text-(--mw-component-context-menu-item-text-focus)" : "text-(--mw-component-search-suggestion-detail-text)",
+          suggestion?.kind === "key" ? "min-w-0 flex-1" : "max-w-1/2 shrink-0",
+          isActive
+            ? "text-(--mw-component-context-menu-item-text-focus)"
+            : suggestion?.kind === "key"
+              ? "text-text-secondary"
+              : "text-(--mw-component-search-suggestion-detail-text)",
           suggestion === null && "rounded-xs border border-border-divider px-2xs pointer-coarse:hidden",
         ]}>{detail}</span
       >
