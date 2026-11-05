@@ -25,13 +25,14 @@ const MAXIMUM_ENCODES_PER_FORMAT: usize = 4;
 /// AVIF at its highest quality: stored when nothing else passes and lossless WebP cannot carry
 /// the picture's colours.
 const LAST_RESORT_AVIF_QUALITY: u8 = 100;
-/// libwebp's effort for lossless encoding: 0 (fast) to 100 (smallest); the pixels are the same
-/// whatever the effort. Measured in release on a 480 × 480, 60-frame GIF: 2.4 s at 60/4, 2.2 s at
-/// 25/1, 1.5 s at 10/0, decoding included.
-const LOSSLESS_EFFORT: f32 = 25.0;
-const LOSSLESS_METHOD: usize = 1;
-/// libwebp's lossy method: 4 is its default balance of speed and size.
-const LOSSY_METHOD: usize = 4;
+/// libwebp's effort for lossless animations: 0 (fast) to 100 (smallest); the pixels are the same
+/// whatever the effort. Measured in release on a 480 × 480, 60-frame GIF: 2.4 s at 60, 2.2 s at
+/// 25, 1.5 s at 10, decoding included. libwebp's method stays its default, 4: `webp-animation`
+/// 0.10 never passes `EncodingConfig::method` on.
+const ANIMATION_LOSSLESS_EFFORT: f32 = 25.0;
+/// A still is one frame, so a high effort stays cheap: a 1 920 × 1 080 chat screenshot takes
+/// 107 KB at 25 and about 23 KB at 90.
+const STILL_LOSSLESS_EFFORT: f32 = 90.0;
 /// Frames of an animation scored, evenly spaced: the metric is the slow part.
 const SCORED_ANIMATION_FRAMES: usize = 12;
 
@@ -88,12 +89,44 @@ fn search_quality(
     Ok(best)
 }
 
-fn webp_options(encoding_type: EncodingType, quality: f32, method: usize) -> EncoderOptions {
+/// The smallest passing AVIF: `search_quality` from `AVIF_FIRST_QUALITY`, bounded by the size of
+/// the lossless candidate when there is one. Bytes shrink as quality falls, so the lowest quality
+/// is probed first: when even it is no smaller than lossless, no quality can win and nothing is
+/// scored; when it passes, nothing smaller exists. A candidate at least as large as the bound is
+/// not scored (scoring is the slow part) and sends the search lower. Every bytes answered passed.
+fn smallest_passing_avif<Decoded>(
+    lossless_size: Option<usize>,
+    deadline: Instant,
+    mut encode: impl FnMut(u8) -> Result<(Vec<u8>, Decoded), ImageProcessingError>,
+    mut passes: impl FnMut(&Decoded) -> bool,
+) -> Result<Option<Vec<u8>>, ImageProcessingError> {
+    let is_smaller = |bytes: &[u8]| lossless_size.is_none_or(|bound| bytes.len() < bound);
+    if lossless_size.is_some() && Instant::now() < deadline {
+        let (bytes, decoded) = encode(LOWEST_QUALITY)?;
+        if !is_smaller(&bytes) {
+            return Ok(None);
+        }
+        if passes(&decoded) {
+            return Ok(Some(bytes));
+        }
+    }
+    let best = search_quality(AVIF_FIRST_QUALITY, deadline, |quality| {
+        let (bytes, decoded) = encode(quality)?;
+        if !is_smaller(&bytes) {
+            // Answered as passing only to search lower: filtered out below.
+            return Ok(Some(bytes));
+        }
+        Ok(passes(&decoded).then_some(bytes))
+    })?;
+    Ok(best.filter(|bytes| is_smaller(bytes)))
+}
+
+fn webp_options(encoding_type: EncodingType, quality: f32) -> EncoderOptions {
     EncoderOptions {
         encoding_config: Some(EncodingConfig {
             encoding_type,
             quality,
-            method,
+            ..EncodingConfig::default()
         }),
         ..EncoderOptions::default()
     }
@@ -127,7 +160,7 @@ fn encode_webp<'a>(
 pub(super) fn lossless_webp(frames: &Frames) -> Result<Vec<u8>, ImageProcessingError> {
     encode_webp(
         frames.iter().map(|(frame, delay)| (frame, *delay)),
-        webp_options(EncodingType::Lossless, LOSSLESS_EFFORT, LOSSLESS_METHOD),
+        webp_options(EncodingType::Lossless, ANIMATION_LOSSLESS_EFFORT),
     )
 }
 
@@ -135,7 +168,7 @@ fn lossless_still_webp(image: &RgbaImage) -> Result<Encoded, ImageProcessingErro
     Ok(Encoded {
         bytes: encode_webp(
             [(image, 0)],
-            webp_options(EncodingType::Lossless, LOSSLESS_EFFORT, LOSSLESS_METHOD),
+            webp_options(EncodingType::Lossless, STILL_LOSSLESS_EFFORT),
         )?,
         content_type: WEBP_CONTENT_TYPE,
     })
@@ -149,11 +182,7 @@ fn lossy_webp(frames: &Frames, quality: u8) -> Result<Vec<u8>, ImageProcessingEr
     };
     encode_webp(
         frames.iter().map(|(frame, delay)| (frame, *delay)),
-        webp_options(
-            EncodingType::Lossy(config),
-            f32::from(quality),
-            LOSSY_METHOD,
-        ),
+        webp_options(EncodingType::Lossy(config), f32::from(quality)),
     )
 }
 
@@ -178,10 +207,15 @@ pub(super) fn smallest_still(
         .stored(source)
         .ok_or(ImageProcessingError::Encoding)?;
     let primaries = colour.primaries();
-    let avif = search_quality(AVIF_FIRST_QUALITY, deadline, |quality| {
-        let encoded = avif::encode(&stored, quality, primaries)?;
-        Ok(quality::passes(&[(&stored, &encoded.decoded)], primaries).then_some(encoded.bytes))
-    })?
+    let avif = smallest_passing_avif(
+        lossless.as_ref().map(|lossless| lossless.bytes.len()),
+        deadline,
+        |quality| {
+            let encoded = avif::encode(&stored, quality, primaries)?;
+            Ok((encoded.bytes, encoded.decoded))
+        },
+        |decoded| quality::passes(&[(&stored, decoded)], primaries),
+    )?
     .map(|bytes| Encoded {
         bytes,
         content_type: AVIF_CONTENT_TYPE,
@@ -274,6 +308,8 @@ pub(super) fn smallest_animation(
 
 #[cfg(test)]
 mod tests {
+    use image::Rgba;
+
     use super::*;
 
     #[test]
@@ -307,5 +343,102 @@ mod tests {
         })
         .unwrap();
         assert_eq!(nothing_started, None);
+    }
+
+    /// Encodes and scorings of `smallest_passing_avif` when an encode at quality `q` takes `q`
+    /// bytes and passes from 80 up.
+    fn bounded_search(lossless_size: Option<usize>) -> (Option<usize>, Vec<u8>, Vec<u8>) {
+        let far = Instant::now() + std::time::Duration::from_secs(3_600);
+        let (mut encoded, mut scored) = (Vec::new(), Vec::new());
+        let found = smallest_passing_avif(
+            lossless_size,
+            far,
+            |quality| {
+                encoded.push(quality);
+                Ok((vec![0; usize::from(quality)], quality))
+            },
+            |quality| {
+                scored.push(*quality);
+                *quality >= 80
+            },
+        )
+        .unwrap();
+        (found.map(|bytes| bytes.len()), encoded, scored)
+    }
+
+    #[test]
+    fn the_avif_search_stops_as_soon_as_lossless_cannot_be_beaten() {
+        assert_eq!(
+            bounded_search(None),
+            (Some(80), vec![88, 73, 80, 76], vec![88, 73, 80, 76]),
+            "no lossless: the plain search"
+        );
+        assert_eq!(
+            bounded_search(Some(60)),
+            (None, vec![60], vec![]),
+            "the lowest quality is already as large as lossless: one encode, nothing scored"
+        );
+        assert_eq!(
+            bounded_search(Some(85)),
+            (Some(80), vec![60, 88, 73, 80, 76], vec![60, 73, 80, 76]),
+            "88 is larger than lossless: encoded, never scored"
+        );
+        assert_eq!(
+            bounded_search(Some(80)),
+            (None, vec![60, 88, 73, 80, 76], vec![60, 73, 76]),
+            "what passes is never smaller than lossless"
+        );
+    }
+
+    #[test]
+    fn a_lossless_still_is_encoded_at_a_high_effort() {
+        // A UI-like picture: a sidebar and a chat sheet with lines of text, words drawn by a
+        // seeded hash from a vocabulary of 16, each a run of glyphs of 8 × 12 from 26.
+        let hash = |value: u32| value.wrapping_mul(2_654_435_761).rotate_left(13) ^ value;
+        let screenshot = RgbaImage::from_fn(960, 600, |x, y| {
+            let panel = if x < 200 {
+                [0x2B, 0x22, 0x2D]
+            } else {
+                [0x22, 0x1B, 0x23]
+            };
+            let (line, row) = (y / 20, y % 20);
+            // Words of 6 glyphs and a space, so 56 px each.
+            let (word_slot, within_word) = ((x % 200) / 56, (x % 200) % 56);
+            let word = hash(line * 31 + x / 200 * 7 + word_slot) % 16;
+            let (letter, column) = (within_word / 8, within_word % 8);
+            let glyph = hash(word * 7 + letter) % 26;
+            let is_text = (4..16).contains(&row) && letter < 6 && x % 200 < 168;
+            // Anti-aliased: a glyph's pixel is the panel blended with the text in 5 steps.
+            let coverage = if is_text {
+                hash(glyph * 96 + (row - 4) * 8 + column) % 5
+            } else {
+                0
+            };
+            let blend = |from: u8, to: u8| {
+                let (from, to) = (u32::from(from), u32::from(to));
+                u8::try_from((from * (4 - coverage) + to * coverage) / 4).unwrap()
+            };
+            let text = [0xE8, 0xDF, 0xE6];
+            Rgba([
+                blend(panel[0], text[0]),
+                blend(panel[1], text[1]),
+                blend(panel[2], text[2]),
+                255,
+            ])
+        });
+        let at_animation_effort = encode_webp(
+            [(&screenshot, 0)],
+            webp_options(EncodingType::Lossless, ANIMATION_LOSSLESS_EFFORT),
+        )
+        .unwrap();
+        let still = lossless_still_webp(&screenshot).unwrap();
+        // 46 118 B at 25 and 9 662 B at 90 when written; the chat screenshot of the corpus
+        // went from 107 738 B to 22 768 B.
+        assert!(
+            at_animation_effort.len() >= 3 * still.bytes.len(),
+            "{} B at 25, {} B at 90",
+            at_animation_effort.len(),
+            still.bytes.len()
+        );
     }
 }
