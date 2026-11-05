@@ -51,6 +51,10 @@ pub enum MessageRuleViolation {
     )]
     Picture,
     #[error(
+        "MP4 and QuickTime files need well-formed boxes, nested at most 8 deep, with at most 4 MiB of movie header (`moov`)"
+    )]
+    Media,
+    #[error(
         "a reaction is exactly one Unicode emoji (at most {MAXIMUM_REACTION_EMOJI_BYTES} bytes), without text or spaces, or a custom emoji as `:id`"
     )]
     ReactionEmoji,
@@ -104,6 +108,13 @@ const MP4_VIDEO_BRANDS: [&[u8; 4]; 11] = [
     b"isom", b"iso2", b"iso4", b"iso5", b"iso6", b"mp41", b"mp42", b"avc1", b"M4V ", b"dash",
     b"mmp4",
 ];
+/// Compatible brands that make a file of any other major brand (cameras write their own, such as
+/// Sony's `XAVC` or Apple's `MSNV`) an ordinary video.
+const MP4_COMPATIBLE_VIDEO_BRANDS: [&[u8; 4]; 3] = [b"isom", b"mp41", b"mp42"];
+/// Compatible brands of HEIF and AVIF pictures and image sequences, which may list `isom` too.
+const HEIF_IMAGE_BRANDS: [&[u8; 4]; 6] = [b"mif1", b"msf1", b"heic", b"heix", b"avif", b"avis"];
+/// Compatible brands read from an `ftyp` box; real files list a handful.
+const MAXIMUM_COMPATIBLE_BRANDS_READ: usize = 16;
 /// ISO-BMFF major brands of audio-only files (iTunes AAC and audiobooks).
 const MP4_AUDIO_BRANDS: [&[u8; 4]; 2] = [b"M4A ", b"M4B "];
 /// The EBML magic number Matroska and `WebM` files start with.
@@ -153,6 +164,32 @@ pub fn sniff_content_type(bytes: &[u8]) -> &'static str {
     }
 }
 
+/// Whether an `ftyp` box whose major brand is unknown lists `isom`, `mp41` or `mp42` among its
+/// first compatible brands, and no HEIF or AVIF picture brand.
+fn is_compatible_with_ordinary_video(bytes: &[u8]) -> bool {
+    const FIRST_COMPATIBLE_BRAND_OFFSET: usize = 16;
+    let Some(box_size) = bytes
+        .first_chunk::<4>()
+        .and_then(|size| usize::try_from(u32::from_be_bytes(*size)).ok())
+    else {
+        return false;
+    };
+    let end = box_size
+        .min(bytes.len())
+        .min(FIRST_COMPATIBLE_BRAND_OFFSET + 4 * MAXIMUM_COMPATIBLE_BRANDS_READ);
+    let (brands, _) = bytes
+        .get(FIRST_COMPATIBLE_BRAND_OFFSET..end)
+        .unwrap_or_default()
+        .as_chunks::<4>();
+    let lists = |known: &[&[u8; 4]]| brands.iter().any(|brand| known.contains(&brand));
+    let major_brand = bytes.get(8..12).unwrap_or_default();
+    let is_picture = lists(&HEIF_IMAGE_BRANDS)
+        || HEIF_IMAGE_BRANDS
+            .iter()
+            .any(|known| known.as_slice() == major_brand);
+    lists(&MP4_COMPATIBLE_VIDEO_BRANDS) && !is_picture
+}
+
 /// The playable audio or video container these bytes start with (ADR-0038), if any. Checked
 /// after the pictures: a JPEG also starts with `0xFF`, as MPEG audio frames do.
 fn sniff_media_type(bytes: &[u8]) -> Option<&'static str> {
@@ -170,6 +207,8 @@ fn sniff_media_type(bytes: &[u8]) -> Option<&'static str> {
             Some("audio/mp4")
         } else if brand == b"qt  " {
             Some("video/quicktime")
+        } else if is_compatible_with_ordinary_video(bytes) {
+            Some("video/mp4")
         } else {
             None
         };
@@ -710,5 +749,44 @@ mod tests {
         for bytes in refused {
             assert_eq!(sniff_content_type(bytes), UNKNOWN_CONTENT_TYPE, "{bytes:?}");
         }
+    }
+
+    #[test]
+    fn a_camera_brand_is_a_video_when_it_lists_an_ordinary_compatible_brand() {
+        // Sony's XAVC and Apple's MSNV, compatible with isom, mp42 or mp41.
+        let videos: [&[u8]; 3] = [
+            b"\0\0\0\x18ftypXAVC\0\0\0\0isom",
+            b"\0\0\0\x1cftypMSNV\0\0\x02\0MSNVmp42",
+            b"\0\0\0\x20ftypxxxx\0\0\0\0aaaabbbbmp41",
+        ];
+        for bytes in videos {
+            assert_eq!(sniff_content_type(bytes), "video/mp4", "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn heif_and_avif_pictures_listing_isom_are_not_videos() {
+        let pictures: [&[u8]; 4] = [
+            b"\0\0\0\x1cftypheic\0\0\0\0mif1isom",
+            b"\0\0\0\x1cftypmif1\0\0\0\0heicisom",
+            b"\0\0\0\x20ftypmif1\0\0\0\0avifmiafisom",
+            b"\0\0\0\x1cftypmsf1\0\0\0\0avisisom",
+        ];
+        for bytes in pictures {
+            assert_eq!(sniff_content_type(bytes), UNKNOWN_CONTENT_TYPE, "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn compatible_brands_are_read_within_the_box_and_only_the_first_sixteen() {
+        // The box ends before `isom`, which belongs to the next box.
+        assert_eq!(
+            sniff_content_type(b"\0\0\0\x10ftypXAVC\0\0\0\0isom"),
+            UNKNOWN_CONTENT_TYPE
+        );
+        let mut seventeenth = b"\0\0\0\x54ftypXAVC\0\0\0\0".to_vec();
+        seventeenth.extend_from_slice(&b"XAVC".repeat(16));
+        seventeenth.extend_from_slice(b"isom");
+        assert_eq!(sniff_content_type(&seventeenth), UNKNOWN_CONTENT_TYPE);
     }
 }

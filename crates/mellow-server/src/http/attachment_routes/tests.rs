@@ -906,6 +906,95 @@ async fn videos_play_inline_and_media_players_get_byte_ranges() {
     assert_eq!(&whole_file[..], VIDEO);
 }
 
+fn mp4_box(kind: &[u8], payload: &[u8]) -> Vec<u8> {
+    let size = u32::try_from(payload.len() + 8).unwrap();
+    [&size.to_be_bytes()[..], kind, payload].concat()
+}
+
+/// A phone's portrait video: a 1920 × 1080 track turned 90°, filmed at `place`.
+fn portrait_video_filmed_at(place: &[u8]) -> &'static [u8] {
+    let mut track_header = vec![0; 24 + 16];
+    for word in [0, 0x0001_0000, 0, 0xFFFF_0000_u32, 0, 0, 0, 0, 0x4000_0000] {
+        track_header.extend(word.to_be_bytes());
+    }
+    track_header.extend((1920_u32 << 16).to_be_bytes());
+    track_header.extend((1080_u32 << 16).to_be_bytes());
+    let handler = mp4_box(b"hdlr", &[&[0; 8][..], b"vide", &[0; 12]].concat());
+    let track = mp4_box(
+        b"trak",
+        &[mp4_box(b"tkhd", &track_header), mp4_box(b"mdia", &handler)].concat(),
+    );
+    let place = mp4_box(
+        b"udta",
+        &mp4_box(b"\xa9xyz", &[&[0, 18, 0, 0][..], place].concat()),
+    );
+    let file = [
+        mp4_box(b"ftyp", b"mp42\0\0\0\0isommp42"),
+        mp4_box(b"moov", &[track, place].concat()),
+        mp4_box(b"mdat", b"frames"),
+    ]
+    .concat();
+    file.leak()
+}
+
+#[tokio::test]
+async fn a_portrait_video_keeps_its_shape_and_loses_its_place_before_anyone_downloads_it() {
+    use mellow_protocol::Attachment;
+
+    const PLACE: &[u8] = b"+48.8584+002.2945/";
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let (owner, general) = owner_and_general_channel(&state).await;
+    let upload_path = format!("/api/v1/channels/{general}/attachments?file_name=clip.mp4");
+    let video_bytes = portrait_video_filmed_at(PLACE);
+    let (_, body) = send(&state, upload_request(&upload_path, &owner, video_bytes)).await;
+    let video: Attachment = json(&body);
+    let mut malformed = video_bytes.to_vec();
+    // The `trak` box claims more than its `moov` holds.
+    let track_at = malformed.windows(4).position(|w| w == b"trak").unwrap() - 4;
+    malformed[track_at..track_at + 4].copy_from_slice(&0x7FFF_u32.to_be_bytes());
+    let (malformed_status, _) = send(
+        &state,
+        upload_request(&upload_path, &owner, malformed.leak()),
+    )
+    .await;
+    let (status, _) = send(
+        &state,
+        authorized(
+            "POST",
+            &format!("/api/v1/channels/{general}/messages"),
+            &owner,
+            Some(serde_json::json!({"content": "", "attachment_ids": [video.id.to_string()]})),
+        ),
+    )
+    .await;
+    let ((download_status, served), _) = send_from(
+        &state,
+        TEST_PEER,
+        authorized(
+            "GET",
+            &format!("/api/v1/attachments/{}", video.id),
+            &owner,
+            None,
+        ),
+    )
+    .await;
+    database.close().await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(video.content_type, "video/mp4");
+    assert_eq!((video.width, video.height), (Some(1080), Some(1920)));
+    assert_eq!(download_status, StatusCode::OK);
+    assert_eq!(served.len(), video_bytes.len());
+    assert!(!served.windows(PLACE.len()).any(|w| w == PLACE));
+    assert!(!served.windows(4).any(|w| w == b"udta"));
+    assert_eq!(
+        malformed_status,
+        StatusCode::BAD_REQUEST,
+        "boxes that cannot be walked may hide a place"
+    );
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)] // One scenario: forward, compress the original, delete it, purge.
 async fn a_forward_shares_the_original_files_without_quota_and_keeps_them_once_it_is_deleted() {
