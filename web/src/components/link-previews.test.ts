@@ -8,40 +8,89 @@ import {
   linkPreviewLayout,
   thumbnailWidth,
   youTubeEmbedUrl,
-  youTubeVideoIdOf,
+  youTubeEmbedOf,
 } from "./link-previews";
 
 const ARTICLE: LinkPreview = { id: "900", url: "https://example.org/article", title: "An article", description: "What it says" };
 
-describe("youTubeVideoIdOf", () => {
-  it("reads watch, short, Shorts and YouTube Music links", () => {
-    expect(youTubeVideoIdOf("https://www.youtube.com/watch?v=dQw4w9WgXcQ")).toBe("dQw4w9WgXcQ");
-    expect(youTubeVideoIdOf("https://youtube.com/watch?v=dQw4w9WgXcQ&t=42s")).toBe("dQw4w9WgXcQ");
-    expect(youTubeVideoIdOf("https://m.youtube.com/watch?feature=share&v=dQw4w9WgXcQ")).toBe("dQw4w9WgXcQ");
-    expect(youTubeVideoIdOf("https://youtu.be/dQw4w9WgXcQ?si=abc")).toBe("dQw4w9WgXcQ");
-    expect(youTubeVideoIdOf("https://www.youtube.com/shorts/a_b-C1d2E3f")).toBe("a_b-C1d2E3f");
-    expect(youTubeVideoIdOf("https://music.youtube.com/watch?v=dQw4w9WgXcQ&list=RD")).toBe("dQw4w9WgXcQ");
-    expect(youTubeVideoIdOf("http://WWW.YouTube.com/watch?v=dQw4w9WgXcQ")).toBe("dQw4w9WgXcQ");
+const VIDEO = { videoId: "dQw4w9WgXcQ", playlistId: null, startSeconds: null, isShort: false };
+const SHORT = { ...VIDEO, videoId: "a_b-C1d2E3f", isShort: true };
+const PLAYLIST_ID = "PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI";
+
+describe("youTubeEmbedOf", () => {
+  it.each([
+    ["https://www.youtube.com/watch?v=dQw4w9WgXcQ", VIDEO],
+    ["https://m.youtube.com/watch?feature=share&v=dQw4w9WgXcQ", VIDEO],
+    ["http://WWW.YouTube.com/watch?v=dQw4w9WgXcQ", VIDEO],
+    ["https://youtu.be/dQw4w9WgXcQ?si=abc", VIDEO],
+    ["https://music.youtube.com/watch?v=dQw4w9WgXcQ", VIDEO],
+    ["https://www.youtube.com/live/dQw4w9WgXcQ?si=abc", VIDEO],
+    ["https://www.youtube.com/embed/dQw4w9WgXcQ", VIDEO],
+    ["https://www.youtube.com/v/dQw4w9WgXcQ", VIDEO],
+    ["https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ", VIDEO],
+    ["https://youtube-nocookie.com/embed/dQw4w9WgXcQ", VIDEO],
+    ["https://www.youtube.com/shorts/a_b-C1d2E3f", SHORT],
+    ["https://youtube.com/shorts/a_b-C1d2E3f?si=Xy-9_aBcDeFgHiJk", SHORT],
+    ["https://m.youtube.com/shorts/a_b-C1d2E3f", SHORT],
+  ])("reads %s", (link, expected) => {
+    expect(youTubeEmbedOf(link)).toEqual(expected);
+  });
+
+  it.each([
+    ["t=90", 90],
+    ["t=90s", 90],
+    ["t=2m", 120],
+    ["t=1h", 3600],
+    ["t=1h2m3s", 3723],
+    ["t=2m5", 125],
+    ["start=42", 42],
+    ["t=10&start=42", 10],
+  ])("starts at %s", (query, seconds) => {
+    expect(youTubeEmbedOf(`https://www.youtube.com/watch?v=dQw4w9WgXcQ&${query}`)?.startSeconds).toBe(seconds);
+    expect(youTubeEmbedOf(`https://youtu.be/dQw4w9WgXcQ?${query}`)?.startSeconds).toBe(seconds);
+  });
+
+  it.each(["t=", "t=0", "t=0s", "t=abc", "t=1x", "t=-5", "t=s", "t=1m2h", "t=12345678", "start=4.5", "start=1e3", "start="])(
+    "starts at the beginning with %s",
+    (query) => {
+      expect(youTubeEmbedOf(`https://www.youtube.com/watch?v=dQw4w9WgXcQ&${query}`)).toEqual(VIDEO);
+    },
+  );
+
+  it("keeps a public playlist and drops the ones the embedded player cannot show", () => {
+    expect(youTubeEmbedOf(`https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=${PLAYLIST_ID}`)?.playlistId).toBe(PLAYLIST_ID);
+    expect(youTubeEmbedOf(`https://youtu.be/dQw4w9WgXcQ?list=${PLAYLIST_ID}&t=5`)).toEqual({
+      ...VIDEO,
+      playlistId: PLAYLIST_ID,
+      startSeconds: 5,
+    });
+    for (const list of ["RD", "RDdQw4w9WgXcQ", "LL", "WL", "PL<script>xxxxxxx", `${PLAYLIST_ID}&`, "x".repeat(65)]) {
+      expect(youTubeEmbedOf(`https://music.youtube.com/watch?v=dQw4w9WgXcQ&list=${encodeURIComponent(list)}`)).toEqual(VIDEO);
+    }
   });
 
   it("refuses ids of the wrong length or with other characters", () => {
-    expect(youTubeVideoIdOf("https://www.youtube.com/watch?v=dQw4w9WgXc")).toBeNull();
-    expect(youTubeVideoIdOf("https://www.youtube.com/watch?v=dQw4w9WgXcQQ")).toBeNull();
-    expect(youTubeVideoIdOf("https://youtu.be/dQw4w9WgX%2F")).toBeNull();
-    expect(youTubeVideoIdOf("https://www.youtube.com/watch?v=dQw4w9WgX.Q")).toBeNull();
-    expect(youTubeVideoIdOf("https://www.youtube.com/watch")).toBeNull();
+    expect(youTubeEmbedOf("https://www.youtube.com/watch?v=dQw4w9WgXc")).toBeNull();
+    expect(youTubeEmbedOf("https://www.youtube.com/watch?v=dQw4w9WgXcQQ")).toBeNull();
+    expect(youTubeEmbedOf("https://youtu.be/dQw4w9WgX%2F")).toBeNull();
+    expect(youTubeEmbedOf("https://www.youtube.com/watch?v=dQw4w9WgX.Q")).toBeNull();
+    expect(youTubeEmbedOf("https://www.youtube.com/watch")).toBeNull();
+    expect(youTubeEmbedOf("https://www.youtube.com/embed/")).toBeNull();
   });
 
   it("ignores other YouTube pages and look-alike hosts", () => {
-    expect(youTubeVideoIdOf("https://www.youtube.com/@channel")).toBeNull();
-    expect(youTubeVideoIdOf("https://www.youtube.com/playlist?list=PL123")).toBeNull();
-    expect(youTubeVideoIdOf("https://www.youtube.com/shorts/dQw4w9WgXcQ/extra")).toBeNull();
-    expect(youTubeVideoIdOf("https://youtu.be/dQw4w9WgXcQ/extra")).toBeNull();
-    expect(youTubeVideoIdOf("https://notyoutube.com/watch?v=dQw4w9WgXcQ")).toBeNull();
-    expect(youTubeVideoIdOf("https://www.youtube.com.evil.example/watch?v=dQw4w9WgXcQ")).toBeNull();
-    expect(youTubeVideoIdOf("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC")).toBeNull();
-    expect(youTubeVideoIdOf("javascript:alert(1)//youtu.be/dQw4w9WgXcQ")).toBeNull();
-    expect(youTubeVideoIdOf("https://user@youtu.be/dQw4w9WgXcQ")).toBeNull();
+    expect(youTubeEmbedOf("https://www.youtube.com/@channel")).toBeNull();
+    expect(youTubeEmbedOf("https://www.youtube.com/playlist?list=PL123")).toBeNull();
+    expect(youTubeEmbedOf("https://www.youtube.com/shorts/dQw4w9WgXcQ/extra")).toBeNull();
+    expect(youTubeEmbedOf("https://www.youtube.com/channel/UCuAXFkgsw1L7xaCfnd5JJOw")).toBeNull();
+    expect(youTubeEmbedOf("https://youtu.be/dQw4w9WgXcQ/extra")).toBeNull();
+    expect(youTubeEmbedOf("https://youtu.be/shorts/dQw4w9WgXcQ")).toBeNull();
+    expect(youTubeEmbedOf("https://notyoutube.com/watch?v=dQw4w9WgXcQ")).toBeNull();
+    expect(youTubeEmbedOf("https://www.youtube.com.evil.example/watch?v=dQw4w9WgXcQ")).toBeNull();
+    expect(youTubeEmbedOf("https://youtube-nocookie.com.evil.example/embed/dQw4w9WgXcQ")).toBeNull();
+    expect(youTubeEmbedOf("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC")).toBeNull();
+    expect(youTubeEmbedOf("javascript:alert(1)//youtu.be/dQw4w9WgXcQ")).toBeNull();
+    expect(youTubeEmbedOf("https://user@youtu.be/dQw4w9WgXcQ")).toBeNull();
   });
 });
 
@@ -67,8 +116,8 @@ describe("linkPreviewLayout", () => {
   });
 
   it("gives every YouTube video its player, with or without a picture", () => {
-    expect(linkPreviewLayout({ ...ARTICLE, image: { width: 480, height: 360 } }, "dQw4w9WgXcQ")).toBe("youtube");
-    expect(linkPreviewLayout(ARTICLE, "dQw4w9WgXcQ")).toBe("youtube");
+    expect(linkPreviewLayout({ ...ARTICLE, image: { width: 480, height: 360 } }, VIDEO)).toBe("youtube");
+    expect(linkPreviewLayout(ARTICLE, VIDEO)).toBe("youtube");
   });
 
   it("never links anywhere but http(s)", () => {
@@ -84,7 +133,18 @@ describe("linkPreviewImageUrl", () => {
 
 describe("youTubeEmbedUrl", () => {
   it("uses the privacy-enhanced player and starts it", () => {
-    expect(youTubeEmbedUrl("dQw4w9WgXcQ")).toBe("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?autoplay=1");
+    expect(youTubeEmbedUrl(VIDEO)).toBe("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?autoplay=1");
+  });
+
+  it("carries the start time and the playlist", () => {
+    expect(youTubeEmbedUrl({ ...VIDEO, startSeconds: 3723, playlistId: PLAYLIST_ID })).toBe(
+      `https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?autoplay=1&start=3723&list=${PLAYLIST_ID}`,
+    );
+  });
+
+  it("plays a Shorts link in the same player", () => {
+    const short = youTubeEmbedOf("https://youtube.com/shorts/a_b-C1d2E3f?si=Xy-9_aBcDeFgHiJk");
+    expect(short && youTubeEmbedUrl(short)).toBe("https://www.youtube-nocookie.com/embed/a_b-C1d2E3f?autoplay=1");
   });
 });
 

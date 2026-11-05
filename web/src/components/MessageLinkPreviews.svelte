@@ -13,7 +13,7 @@
     linkPreviewLayout,
     thumbnailWidth,
     youTubeEmbedUrl,
-    youTubeVideoIdOf,
+    youTubeEmbedOf,
   } from "./link-previews";
 
   // Link previews under a message body (ADR-0041, docs/design/web-link-previews.md): a card per
@@ -31,11 +31,11 @@
   const shownPreviews = $derived(
     previews
       .map((preview) => {
-        const youTubeVideoId = youTubeVideoIdOf(preview.url);
+        const youTubeEmbed = youTubeEmbedOf(preview.url);
         return {
           preview,
-          youTubeVideoId,
-          layout: linkPreviewLayout(preview, youTubeVideoId),
+          youTubeEmbed,
+          layout: linkPreviewLayout(preview, youTubeEmbed),
           title: preview.title ?? linkHostName(preview.url),
           barColor: linkPreviewBarColor(preview.theme_color),
           imageUrl: preview.image ? linkPreviewImageUrl(channelId, messageId, preview.id) : null,
@@ -72,7 +72,7 @@
 
 {#if shownPreviews.length > 0}
   <div class="flex flex-col items-start gap-(--mw-component-link-preview-gap) pt-(--mw-component-attachment-gap)">
-    {#each shownPreviews as { preview, youTubeVideoId, layout, title, barColor, imageUrl } (preview.id)}
+    {#each shownPreviews as { preview, youTubeEmbed, layout, title, barColor, imageUrl } (preview.id)}
       {@const hasPicture = imageUrl !== null && !failedImageIds.has(preview.id)}
       {#if layout === "picture-only"}
         {#if hasPicture}
@@ -139,15 +139,20 @@
                   "",
                 )}
               </a>
-            {:else if layout === "youtube" && youTubeVideoId !== null}
-              <!-- 16:9 from the start, picture then player, so nothing moves on play. Nothing comes
-                   from YouTube before the click (ADR-0041). -->
+            {:else if layout === "youtube" && youTubeEmbed !== null}
+              <!-- 16:9 (a Short 9:16, its height capped) from the start, picture then player, so
+                   nothing moves on play. Nothing comes from YouTube before the click (ADR-0041). -->
               <div
-                class="relative aspect-video w-full overflow-hidden rounded-(--mw-component-link-preview-picture-radius) bg-(--mw-component-link-preview-player-background)"
+                class={[
+                  "relative overflow-hidden rounded-(--mw-component-link-preview-picture-radius) bg-(--mw-component-link-preview-player-background)",
+                  youTubeEmbed.isShort
+                    ? "aspect-9/16 w-[min(100%,calc(var(--mw-component-link-preview-short-player-max-height)*9/16))]"
+                    : "aspect-video w-full",
+                ]}
               >
                 {#if playingPreviewIds.has(preview.id)}
                   <iframe
-                    src={youTubeEmbedUrl(youTubeVideoId)}
+                    src={youTubeEmbedUrl(youTubeEmbed)}
                     title={strings.linkPreviews.youTubePlayer(title)}
                     allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
                     referrerpolicy="strict-origin-when-cross-origin"
