@@ -35,7 +35,7 @@ use crate::storage::create_private_directory;
 
 mod request_progress;
 
-use request_progress::{RequestProgress, WatchedRequestService};
+use request_progress::{MinimumResponsePace, RequestProgress, WatchedRequestService};
 
 const LETS_ENCRYPT_PRODUCTION_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
 const LETS_ENCRYPT_STAGING_DIRECTORY: &str =
@@ -73,6 +73,9 @@ struct ConnectionPolicy {
     maximum_connections_per_ipv6_site: usize,
     /// A connection whose peer accepts no written byte for this long is closed (slow reads).
     write_stall_timeout: Duration,
+    /// A connection whose response of known length is not handed over whole by then is closed
+    /// (reads that trickle), so its download slot comes back (ADR-0038).
+    response_pace: MinimumResponsePace,
 }
 
 const PRODUCTION_CONNECTION_POLICY: ConnectionPolicy = ConnectionPolicy {
@@ -83,6 +86,10 @@ const PRODUCTION_CONNECTION_POLICY: ConnectionPolicy = ConnectionPolicy {
     maximum_connections_per_client_address: 256,
     maximum_connections_per_ipv6_site: 1_024,
     write_stall_timeout: Duration::from_secs(30),
+    response_pace: MinimumResponsePace {
+        minimum_time: Duration::from_secs(30),
+        minimum_bytes_per_second: 32 * 1024,
+    },
 };
 
 /// Plain HTTP only listens on loopback or behind a reverse proxy (config validation), so nearly
@@ -572,6 +579,7 @@ where
                 policy.header_read_timeout,
                 policy.idle_read_timeout,
                 policy.write_stall_timeout,
+                policy.response_pace,
             ));
             Ok((
                 IdleTimeoutStream::new(stream, policy, request_progress.clone(), slot),
@@ -587,7 +595,8 @@ where
 /// Fails reads once nothing has arrived for `idle_read_timeout` (covers the bytes hyper reads
 /// before its own timers start, and request bodies sent a byte at a time), and writes once the
 /// peer has accepted nothing for `write_stall_timeout` (a client that stops reading). Also fails
-/// reads once `request_progress` says an HTTP/2 request waited too long on the client.
+/// reads and waiting writes once `request_progress` says a request waited too long on the
+/// client (any HTTP/2 wait, or a response read too slowly on either version).
 struct IdleTimeoutStream<Inner> {
     inner: Inner,
     idle_read_timeout: Duration,
@@ -633,7 +642,7 @@ impl<Inner> IdleTimeoutStream<Inner> {
             if deadline <= now {
                 return Poll::Ready(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "an HTTP/2 request waited too long on the client",
+                    "a request waited too long on the client",
                 ));
             }
             let next_check = deadline.min(now + self.request_progress.shortest_timeout());
@@ -667,7 +676,8 @@ impl<Inner> IdleTimeoutStream<Inner> {
                 io::ErrorKind::TimedOut,
                 "the client stopped reading",
             ))),
-            Poll::Pending => Poll::Pending,
+            // A client that trickles makes progress often enough for the stall deadline.
+            Poll::Pending => self.poll_request_progress(context).map(Err),
         }
     }
 }
@@ -749,6 +759,10 @@ mod tests {
         maximum_connections_per_client_address: 2,
         maximum_connections_per_ipv6_site: 3,
         write_stall_timeout: Duration::from_millis(600),
+        response_pace: MinimumResponsePace {
+            minimum_time: Duration::from_millis(600),
+            minimum_bytes_per_second: 64 * 1024,
+        },
     };
 
     fn tls_config(certificate_directory: &Path) -> TlsConfig {
@@ -973,6 +987,7 @@ mod tests {
             FAST_POLICY.header_read_timeout,
             FAST_POLICY.idle_read_timeout,
             FAST_POLICY.write_stall_timeout,
+            FAST_POLICY.response_pace,
         ));
         IdleTimeoutStream::new(
             inner,
@@ -1013,11 +1028,26 @@ mod tests {
     const PATIENT_POLICY: ConnectionPolicy = ConnectionPolicy {
         idle_read_timeout: Duration::from_secs(3_600),
         write_stall_timeout: Duration::from_secs(3_600),
+        response_pace: MinimumResponsePace {
+            minimum_time: Duration::from_secs(3_600),
+            minimum_bytes_per_second: 1,
+        },
         ..FAST_POLICY
     };
 
-    /// A plain HTTP server with `policy` whose `/download` holds a permit of `downloads` while its
-    /// body is alive, and whose `/upload` reads the whole request body.
+    /// More than loopback socket buffers hold, so a client reading slowly keeps the body alive.
+    const TEST_LARGE_DOWNLOAD_BYTES: usize = 4 * 1024 * 1024;
+    /// What the trickling client reads per tick: 10 KiB/s, far below `FAST_POLICY`'s 64 KiB/s.
+    const TRICKLE_BYTES_PER_TICK: usize = 1024;
+    const TRICKLE_TICK: Duration = Duration::from_millis(100);
+    /// Only the minimum response pace of `FAST_POLICY` can cut a client of `PATIENT_POLICY`.
+    const TRICKLE_POLICY: ConnectionPolicy = ConnectionPolicy {
+        response_pace: FAST_POLICY.response_pace,
+        ..PATIENT_POLICY
+    };
+
+    /// A plain HTTP server with `policy` whose `/download` (and `/large-download`) holds a permit
+    /// of `downloads` while its body is alive, and whose `/upload` reads the whole request body.
     fn spawn_flow_control_test_server(
         listener: TcpListener,
         downloads: Arc<Semaphore>,
@@ -1025,17 +1055,20 @@ mod tests {
     ) -> tokio::task::JoinHandle<io::Result<()>> {
         use axum::routing::{get, post};
 
+        let download = move |length: usize| {
+            let downloads = downloads.clone();
+            async move || {
+                let permit = downloads.try_acquire_owned().unwrap();
+                // Attachments set their length: the body itself is a stream of unknown length.
+                (
+                    [(axum::http::header::CONTENT_LENGTH, length)],
+                    crate::http::attachment_routes::body_keeping_permit(vec![0; length], permit),
+                )
+            }
+        };
         let router = axum::Router::new()
-            .route(
-                "/download",
-                get(async move || {
-                    let permit = downloads.clone().try_acquire_owned().unwrap();
-                    crate::http::attachment_routes::body_keeping_permit(
-                        vec![0; TEST_DOWNLOAD_BYTES],
-                        permit,
-                    )
-                }),
-            )
+            .route("/download", get(download(TEST_DOWNLOAD_BYTES)))
+            .route("/large-download", get(download(TEST_LARGE_DOWNLOAD_BYTES)))
             .route(
                 "/upload",
                 post(async |body: axum::body::Bytes| body.len().to_string()),
@@ -1128,6 +1161,71 @@ mod tests {
             .unwrap();
         assert_eq!(downloads.available_permits(), 1);
         server.abort();
+    }
+
+    /// Reads one HTTP/1.1 download `TRICKLE_BYTES_PER_TICK` at a time until the server closes
+    /// the connection; answers the bytes received, headers included.
+    async fn trickled_http1_download(address: SocketAddr) -> usize {
+        use tokio::io::AsyncWriteExt as _;
+
+        let mut tcp = TcpStream::connect(address).await.unwrap();
+        tcp.write_all(b"GET /large-download HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut budget = [0_u8; TRICKLE_BYTES_PER_TICK];
+        let mut received_bytes = 0;
+        while let Ok(read @ 1..) = tcp.read(&mut budget).await {
+            received_bytes += read;
+            tokio::time::sleep(TRICKLE_TICK).await;
+        }
+        received_bytes
+    }
+
+    /// The same over HTTP/2, granting the server `TRICKLE_BYTES_PER_TICK` of flow control a tick.
+    async fn trickled_http2_download(address: SocketAddr) -> usize {
+        let window = u32::try_from(TRICKLE_BYTES_PER_TICK).unwrap();
+        let (mut client, _connection) = pinging_http2_client(address, window).await;
+        let (response, _) = client
+            .send_request(test_request("GET", "/large-download"), true)
+            .unwrap();
+        let mut body = response.await.unwrap().into_body();
+        let mut received_bytes = 0;
+        while let Some(Ok(chunk)) = body.data().await {
+            received_bytes += chunk.len();
+            tokio::time::sleep(TRICKLE_TICK).await;
+            let _ = body.flow_control().release_capacity(chunk.len());
+        }
+        received_bytes
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_download_read_slower_than_the_minimum_pace_is_cut_and_frees_its_permit() {
+        for is_http2 in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let downloads = Arc::new(Semaphore::new(1));
+            let server =
+                spawn_flow_control_test_server(listener, downloads.clone(), TRICKLE_POLICY);
+
+            let received_bytes = if is_http2 {
+                trickled_http2_download(address).await
+            } else {
+                trickled_http1_download(address).await
+            };
+            tokio::time::timeout(TEST_CLOSING_LIMIT, async {
+                while downloads.available_permits() == 0 {
+                    tokio::time::sleep(TRICKLE_TICK).await;
+                }
+            })
+            .await
+            .expect("the permit of the cut download never came back");
+            server.abort();
+
+            assert!(
+                received_bytes < TEST_LARGE_DOWNLOAD_BYTES,
+                "HTTP/2: {is_http2}; {received_bytes} bytes read before the cut"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]

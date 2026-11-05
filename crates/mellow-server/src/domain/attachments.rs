@@ -1,8 +1,8 @@
 //! Uploads and downloads of attachment files (ADR-0020). Access goes through the channel's
 //! permissions (`Messages::require_channel_permissions`); the files are sealed on disk.
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::storage::Database;
 use mellow_protocol::{Attachment, Permissions, Snowflake};
@@ -29,6 +29,9 @@ const PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_mins(10);
 /// uploads can never stop downloads; a download keeps its slot until its last byte is sent.
 const CONCURRENT_UPLOADS: usize = 4;
 const CONCURRENT_DOWNLOADS: usize = 8;
+/// Downloads one reader holds at once, so one account (several tabs, or a client reading slowly
+/// on purpose) can never take every slot: the others always keep at least two.
+pub(crate) const CONCURRENT_DOWNLOADS_PER_READER: usize = 3;
 /// How long a download waits for a free slot before the instance answers "busy".
 const DOWNLOAD_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Pictures decoded at once (avatars, banners, background compression): each can take a few
@@ -189,6 +192,8 @@ pub(crate) enum AttachmentFileKind {
 /// An attachment file the reader may download, not read yet.
 #[derive(Debug)]
 pub(crate) struct ReadableAttachment {
+    /// Who asked: their downloads count against `CONCURRENT_DOWNLOADS_PER_READER`.
+    reader_id: Snowflake,
     /// The file's own id: a preview's, or a recompressed file's, differs from its attachment's.
     id: Snowflake,
     /// Names this version of the file in its entity tag: the file id, except for a link
@@ -215,7 +220,41 @@ pub(crate) struct AttachmentDownload {
     pub(crate) content_type: String,
     pub(crate) bytes: Vec<u8>,
     /// Kept by the response body until it is sent.
-    pub(crate) permit: OwnedSemaphorePermit,
+    pub(crate) permit: DownloadSlot,
+}
+
+/// A download's place in the instance's slots and in its reader's share of them.
+#[derive(Debug)]
+pub(crate) struct DownloadSlot {
+    _transfer: OwnedSemaphorePermit,
+    _reader: ReaderDownloadSlot,
+}
+
+/// One of a reader's `CONCURRENT_DOWNLOADS_PER_READER` slots; the reader is forgotten once
+/// nothing of theirs holds or waits for one, so the map only grows with live downloads.
+#[derive(Debug)]
+struct ReaderDownloadSlot {
+    permit: Option<OwnedSemaphorePermit>,
+    downloading_readers: Arc<Mutex<HashMap<Snowflake, Arc<Semaphore>>>>,
+    reader_id: Snowflake,
+}
+
+impl Drop for ReaderDownloadSlot {
+    fn drop(&mut self) {
+        let mut readers = self
+            .downloading_readers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        drop(self.permit.take());
+        // Every clone is taken under this lock, and permits and waiters hold one: a count of one
+        // means only the map still knows the reader.
+        if readers
+            .get(&self.reader_id)
+            .is_some_and(|slots| Arc::strong_count(slots) == 1)
+        {
+            readers.remove(&self.reader_id);
+        }
+    }
 }
 
 /// An upload allowed before its body is read: the checks come first, so a refused or
@@ -253,6 +292,7 @@ pub(crate) struct Attachments {
     files: AttachmentFiles,
     uploads: Arc<Semaphore>,
     downloads: Arc<Semaphore>,
+    downloading_readers: Arc<Mutex<HashMap<Snowflake, Arc<Semaphore>>>>,
     uploading_users: Arc<std::sync::Mutex<HashSet<Snowflake>>>,
     image_processing: Arc<Semaphore>,
     maximum_stored_bytes_per_user: u64,
@@ -278,6 +318,7 @@ impl Attachments {
             files,
             uploads: Arc::new(Semaphore::new(CONCURRENT_UPLOADS)),
             downloads: Arc::new(Semaphore::new(CONCURRENT_DOWNLOADS)),
+            downloading_readers: Arc::default(),
             uploading_users: Arc::default(),
             image_processing: Arc::new(Semaphore::new(CONCURRENT_IMAGE_PROCESSING)),
             maximum_stored_bytes_per_user,
@@ -649,6 +690,7 @@ impl Attachments {
             .await?;
         Ok(match (kind, attachment.preview) {
             (AttachmentFileKind::Preview, Some(preview)) => ReadableAttachment {
+                reader_id: user_id,
                 id: preview.file_id,
                 tag_id: preview.file_id,
                 file_name: with_extension_of(&attachment.file_name, &preview.content_type),
@@ -656,6 +698,7 @@ impl Attachments {
                 size_bytes: preview.size_bytes,
             },
             (AttachmentFileKind::Original | AttachmentFileKind::Preview, _) => ReadableAttachment {
+                reader_id: user_id,
                 id: attachment.file_id,
                 tag_id: attachment.file_id,
                 file_name: attachment.file_name,
@@ -690,6 +733,7 @@ impl Attachments {
         .await?
         .ok_or(MessageError::MessageNotFound)?;
         Ok(ReadableAttachment {
+            reader_id: user_id,
             id: image.file_id,
             tag_id: preview_id,
             file_name: with_extension_of("preview", &image.content_type),
@@ -741,17 +785,24 @@ impl Attachments {
         }))
     }
 
-    /// Reads and decrypts a file `find_readable` allowed, waiting a moment for a transfer slot
-    /// before answering `Busy`: a burst of previews queues rather than failing.
+    /// Reads and decrypts a file `find_readable` allowed, waiting a moment for one of the
+    /// reader's slots, then one of the instance's, before answering `Busy`: a burst of previews
+    /// queues rather than failing.
     pub(crate) async fn download(
         &self,
         attachment: ReadableAttachment,
     ) -> Result<AttachmentDownload, MessageError> {
-        let permit =
-            tokio::time::timeout(DOWNLOAD_SLOT_WAIT, self.downloads.clone().acquire_owned())
-                .await
-                .map_err(|_| MessageError::Busy)?
-                .map_err(|error| MessageError::Internal(Box::new(error)))?;
+        let permit = tokio::time::timeout(DOWNLOAD_SLOT_WAIT, async {
+            let reader = self.reader_download_slot(attachment.reader_id).await?;
+            let transfer = self.downloads.clone().acquire_owned().await?;
+            Ok::<_, tokio::sync::AcquireError>(DownloadSlot {
+                _transfer: transfer,
+                _reader: reader,
+            })
+        })
+        .await
+        .map_err(|_| MessageError::Busy)?
+        .map_err(|error| MessageError::Internal(Box::new(error)))?;
         let bytes = self.files.read(attachment.id).await?;
         // Checked again on the bytes served, whatever the row says.
         let content_type = if sniff_content_type(&bytes) == attachment.content_type {
@@ -765,6 +816,29 @@ impl Attachments {
             bytes,
             permit,
         })
+    }
+
+    async fn reader_download_slot(
+        &self,
+        reader_id: Snowflake,
+    ) -> Result<ReaderDownloadSlot, tokio::sync::AcquireError> {
+        let slots = self
+            .downloading_readers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(reader_id)
+            .or_insert_with(|| Arc::new(Semaphore::new(CONCURRENT_DOWNLOADS_PER_READER)))
+            .clone();
+        // Built before the wait ends, so a wait cut short still tries to forget an idle reader.
+        // An entry it leaves (the wait's own clone still alive at that point) is one per account
+        // at most, and reused by their next download.
+        let mut slot = ReaderDownloadSlot {
+            permit: None,
+            downloading_readers: self.downloading_readers.clone(),
+            reader_id,
+        };
+        slot.permit = Some(slots.acquire_owned().await?);
+        Ok(slot)
     }
 
     /// Deletes uploads never sent, files whose row is gone (their message, channel or guild was
@@ -896,6 +970,61 @@ mod tests {
             }
         );
         assert_eq!(remaining, Vec::new());
+    }
+
+    /// A stored file `reader_id` may read, as `find_readable` answers it.
+    async fn readable_file(state: &crate::http::AppState, reader_id: u64) -> ReadableAttachment {
+        let id = SnowflakeGenerator::default()
+            .next_id(crate::domain::clock::now_unix_milliseconds())
+            .unwrap();
+        state
+            .attachments
+            .files
+            .write(id, vec![7; 10])
+            .await
+            .unwrap();
+        ReadableAttachment {
+            reader_id: Snowflake::from_raw(reader_id),
+            id,
+            tag_id: id,
+            file_name: "notes.txt".into(),
+            content_type: UNKNOWN_CONTENT_TYPE.into(),
+            size_bytes: 10,
+        }
+    }
+
+    #[tokio::test]
+    async fn one_reader_holds_at_most_its_share_of_the_download_slots() {
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let attachments = &state.attachments;
+        let mut held = Vec::new();
+        for _ in 0..CONCURRENT_DOWNLOADS_PER_READER {
+            let readable = readable_file(&state, 1).await;
+            held.push(attachments.download(readable).await.unwrap());
+        }
+        let one_more_of_the_same_reader = readable_file(&state, 1).await;
+        let another_reader = readable_file(&state, 2).await;
+
+        // Only the slot wait runs on the paused clock: the files were read above.
+        tokio::time::pause();
+        let past_the_cap = attachments.download(one_more_of_the_same_reader).await;
+        let second_reader = attachments.download(another_reader).await;
+        tokio::time::resume();
+        let is_second_reader_served = second_reader.is_ok();
+        let readers_tracked_while_held = attachments.downloading_readers.lock().unwrap().len();
+        drop(second_reader);
+        drop(held);
+        let readers_tracked_after = attachments.downloading_readers.lock().unwrap().len();
+        database.close().await;
+
+        assert!(matches!(past_the_cap, Err(MessageError::Busy)));
+        assert!(
+            is_second_reader_served,
+            "another reader still gets a slot while the first holds its maximum"
+        );
+        assert_eq!(readers_tracked_while_held, 2);
+        assert_eq!(readers_tracked_after, 0, "finished readers are forgotten");
     }
 
     /// A sent PNG attachment of 1 000 bytes, its file written; answers its row.

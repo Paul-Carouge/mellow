@@ -8,6 +8,10 @@
 //! request body waits longer than `idle_read_timeout` for its next bytes, or no request has been
 //! open for `header_read_timeout` (the HTTP/2 counterpart of the HTTP/1.1 header deadline).
 //! Closing the connection drops every response body, so the transfer permits they hold come back.
+//!
+//! On both versions, a response of known length must also be handed over whole within
+//! `MinimumResponsePace::time_for` its length: a client that reads, but slower than that floor,
+//! loses its connection (and the download slot its body holds) instead of keeping it for hours.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -26,12 +30,30 @@ use tokio::time::Instant;
 /// (and HTTP/2 buffers at most about two pieces of it) however large the body's own frames are.
 const RESPONSE_PIECE_BYTES: usize = 64 * 1024;
 
+/// The slowest a response of known length may be read: `minimum_time`, plus one second for
+/// every `minimum_bytes_per_second` of it.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct MinimumResponsePace {
+    pub(super) minimum_time: Duration,
+    pub(super) minimum_bytes_per_second: u64,
+}
+
+impl MinimumResponsePace {
+    fn time_for(self, response_bytes: u64) -> Duration {
+        let milliseconds =
+            response_bytes.saturating_mul(1_000) / self.minimum_bytes_per_second.max(1);
+        self.minimum_time
+            .saturating_add(Duration::from_millis(milliseconds))
+    }
+}
+
 /// The client-side waits of one connection's requests, shared by its service and its stream.
 #[derive(Debug)]
 pub(super) struct RequestProgress {
     header_read_timeout: Duration,
     idle_read_timeout: Duration,
     write_stall_timeout: Duration,
+    response_pace: MinimumResponsePace,
     state: Mutex<RequestProgressState>,
 }
 
@@ -44,8 +66,15 @@ struct RequestProgressState {
     /// When the last request opened or ended (or the connection was accepted).
     last_request_change: Instant,
     /// By when each waiting body must hear from the client.
-    client_wait_deadlines: HashMap<u64, Instant>,
+    client_wait_deadlines: HashMap<u64, ClientDeadline>,
     next_client_wait_id: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClientDeadline {
+    at: Instant,
+    /// Only whole-response deadlines: HTTP/1.1 leaves the other waits to the socket deadlines.
+    applies_to_http1: bool,
 }
 
 impl RequestProgress {
@@ -53,11 +82,13 @@ impl RequestProgress {
         header_read_timeout: Duration,
         idle_read_timeout: Duration,
         write_stall_timeout: Duration,
+        response_pace: MinimumResponsePace,
     ) -> Self {
         Self {
             header_read_timeout,
             idle_read_timeout,
             write_stall_timeout,
+            response_pace,
             state: Mutex::new(RequestProgressState {
                 has_served_http1_request: false,
                 open_requests: 0,
@@ -72,13 +103,22 @@ impl RequestProgress {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// When the connection must be closed if nothing changes; `None` for HTTP/1.1.
+    /// When the connection must be closed if nothing changes; on HTTP/1.1, only for a response
+    /// read too slowly.
     pub(super) fn closing_deadline(&self) -> Option<Instant> {
         let state = self.state();
+        let earliest = |is_counted: fn(&ClientDeadline) -> bool| {
+            state
+                .client_wait_deadlines
+                .values()
+                .filter(|deadline| is_counted(deadline))
+                .map(|deadline| deadline.at)
+                .min()
+        };
         if state.has_served_http1_request {
-            return None;
+            return earliest(|deadline| deadline.applies_to_http1);
         }
-        let earliest_client_wait = state.client_wait_deadlines.values().min().copied();
+        let earliest_client_wait = earliest(|_| true);
         let no_open_request = (state.open_requests == 0)
             .then(|| state.last_request_change + self.header_read_timeout);
         earliest_client_wait
@@ -93,6 +133,7 @@ impl RequestProgress {
         self.header_read_timeout
             .min(self.idle_read_timeout)
             .min(self.write_stall_timeout)
+            .min(self.response_pace.minimum_time)
     }
 
     fn open_request(self: &Arc<Self>, version: Version) -> OpenRequest {
@@ -127,11 +168,25 @@ impl Drop for OpenRequest {
 struct ClientWait {
     progress: Arc<RequestProgress>,
     id: Option<u64>,
+    applies_to_http1: bool,
 }
 
 impl ClientWait {
     fn new(progress: Arc<RequestProgress>) -> Self {
-        Self { progress, id: None }
+        Self {
+            progress,
+            id: None,
+            applies_to_http1: false,
+        }
+    }
+
+    /// The wait for a whole response to be handed over, on either version.
+    fn whole_response(progress: Arc<RequestProgress>) -> Self {
+        Self {
+            progress,
+            id: None,
+            applies_to_http1: true,
+        }
     }
 
     fn start_or_restart(&mut self, timeout: Duration) {
@@ -140,9 +195,11 @@ impl ClientWait {
             state.next_client_wait_id += 1;
             state.next_client_wait_id
         });
-        state
-            .client_wait_deadlines
-            .insert(id, Instant::now() + timeout);
+        let deadline = ClientDeadline {
+            at: Instant::now() + timeout,
+            applies_to_http1: self.applies_to_http1,
+        };
+        state.client_wait_deadlines.insert(id, deadline);
     }
 
     fn start_unless_waiting(&mut self, timeout: Duration) {
@@ -199,19 +256,44 @@ impl<Inner: http_body::Body + Unpin> http_body::Body for WatchedRequestBody<Inne
 }
 
 /// The response body, cut into pieces: waits on the client from each piece handed over until
-/// the next is asked for, but not while the handler is still producing data.
+/// the next is asked for, but not while the handler is still producing data. A body of known
+/// length also waits, from its first piece to its end, for the whole of it to be handed over.
 struct WatchedResponseBody {
     inner: Body,
     unsent_piece_remainder: Bytes,
     wait: ClientWait,
+    /// `None` for a body of unknown length.
+    whole_response_timeout: Option<Duration>,
+    whole_response_wait: ClientWait,
     _request: OpenRequest,
 }
 
 impl WatchedResponseBody {
+    fn new(inner: Body, wait: ClientWait, request: OpenRequest, length: Option<u64>) -> Self {
+        let progress = wait.progress.clone();
+        Self {
+            inner,
+            unsent_piece_remainder: Bytes::new(),
+            whole_response_timeout: length.map(|length| progress.response_pace.time_for(length)),
+            whole_response_wait: ClientWait::whole_response(progress),
+            wait,
+            _request: request,
+        }
+    }
+
+    fn stop_waiting(&mut self) {
+        self.wait.stop();
+        self.whole_response_wait.stop();
+    }
+
     fn next_piece(&mut self) -> Frame<Bytes> {
         let length = self.unsent_piece_remainder.len().min(RESPONSE_PIECE_BYTES);
         let timeout = self.wait.progress.write_stall_timeout;
         self.wait.start_or_restart(timeout);
+        // Started by the first piece: a response with no data (an upgrade) never gets one.
+        if let Some(timeout) = self.whole_response_timeout {
+            self.whole_response_wait.start_unless_waiting(timeout);
+        }
         Frame::data(self.unsent_piece_remainder.split_to(length))
     }
 }
@@ -235,12 +317,12 @@ impl http_body::Body for WatchedResponseBody {
                     Poll::Ready(Some(Ok(this.next_piece())))
                 }
                 Err(trailers) => {
-                    this.wait.stop();
+                    this.stop_waiting();
                     Poll::Ready(Some(Ok(trailers)))
                 }
             },
             other => {
-                this.wait.stop();
+                this.stop_waiting();
                 other
             }
         }
@@ -295,13 +377,14 @@ where
             let mut wait = ClientWait::new(progress);
             let timeout = wait.progress.write_stall_timeout;
             wait.start_or_restart(timeout);
+            // Streamed bodies (attachments) carry their length in the header alone.
+            let length = response
+                .headers()
+                .get(axum::http::header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok()?.parse::<u64>().ok())
+                .or_else(|| http_body::Body::size_hint(response.body()).exact());
             Ok(response.map(|inner| {
-                Body::new(WatchedResponseBody {
-                    inner,
-                    unsent_piece_remainder: Bytes::new(),
-                    wait,
-                    _request: open_request,
-                })
+                Body::new(WatchedResponseBody::new(inner, wait, open_request, length))
             }))
         })
     }
@@ -317,11 +400,17 @@ mod tests {
     const IDLE_READ_TIMEOUT: Duration = Duration::from_secs(75);
     const WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(20);
 
+    const RESPONSE_PACE: MinimumResponsePace = MinimumResponsePace {
+        minimum_time: Duration::from_secs(30),
+        minimum_bytes_per_second: 32 * 1024,
+    };
+
     fn progress() -> Arc<RequestProgress> {
         Arc::new(RequestProgress::new(
             HEADER_READ_TIMEOUT,
             IDLE_READ_TIMEOUT,
             WRITE_STALL_TIMEOUT,
+            RESPONSE_PACE,
         ))
     }
 
@@ -376,12 +465,12 @@ mod tests {
             .cycle()
             .take(RESPONSE_PIECE_BYTES * 2 + 1)
             .collect();
-        let mut body = Box::pin(WatchedResponseBody {
-            inner: Body::from(bytes.clone()),
-            unsent_piece_remainder: Bytes::new(),
-            wait: ClientWait::new(progress.clone()),
-            _request: progress.open_request(Version::HTTP_2),
-        });
+        let mut body = Box::pin(WatchedResponseBody::new(
+            Body::from(bytes.clone()),
+            ClientWait::new(progress.clone()),
+            progress.open_request(Version::HTTP_2),
+            u64::try_from(bytes.len()).ok(),
+        ));
         let mut pieces: Vec<Bytes> = Vec::new();
         let mut unsent_bytes = bytes.len();
         while let Some(frame) =
@@ -403,5 +492,57 @@ mod tests {
             Some(Instant::now() + HEADER_READ_TIMEOUT),
             "the finished body neither waits nor keeps its request open"
         );
+    }
+
+    #[test]
+    fn the_whole_response_time_grows_with_its_length() {
+        assert_eq!(RESPONSE_PACE.time_for(0), Duration::from_secs(30));
+        assert_eq!(
+            RESPONSE_PACE.time_for(25 * 1024 * 1024),
+            Duration::from_secs(30 + 800),
+            "the largest default attachment at 32 KiB/s"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_response_must_be_handed_over_whole_in_time_on_both_versions() {
+        const LENGTH: usize = RESPONSE_PIECE_BYTES * 3;
+        for version in [Version::HTTP_11, Version::HTTP_2] {
+            let progress = progress();
+            let request = progress.open_request(version);
+            let mut body = Box::pin(WatchedResponseBody::new(
+                Body::from(vec![0_u8; LENGTH]),
+                ClientWait::new(progress.clone()),
+                request,
+                u64::try_from(LENGTH).ok(),
+            ));
+            let whole_response_deadline =
+                Instant::now() + RESPONSE_PACE.time_for(u64::try_from(LENGTH).unwrap());
+            let mut next_piece =
+                async || std::future::poll_fn(|context| body.as_mut().poll_frame(context)).await;
+            next_piece().await.unwrap().unwrap();
+            // The client takes each piece just before its write deadline: never stalled, too slow.
+            for _ in 1..3 {
+                tokio::time::advance(WRITE_STALL_TIMEOUT.saturating_sub(Duration::from_secs(1)))
+                    .await;
+                next_piece().await.unwrap().unwrap();
+            }
+            let deadline_while_sending = progress.closing_deadline();
+            assert!(next_piece().await.is_none());
+            let deadline_once_sent = progress.closing_deadline();
+
+            assert!(
+                deadline_while_sending.is_some_and(|deadline| deadline <= whole_response_deadline),
+                "{version:?}: counted from the first piece, whatever the pace of the others"
+            );
+            assert!(
+                Instant::now() > whole_response_deadline,
+                "the client was too slow"
+            );
+            if version == Version::HTTP_11 {
+                assert_eq!(deadline_while_sending, Some(whole_response_deadline));
+                assert_eq!(deadline_once_sent, None, "nothing left to wait for");
+            }
+        }
     }
 }

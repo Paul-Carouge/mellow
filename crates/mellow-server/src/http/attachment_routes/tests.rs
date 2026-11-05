@@ -735,9 +735,9 @@ async fn attachments_revalidate_without_a_slot_and_downloads_wait_for_one() {
     let ((_, _), first_headers) = send_from(&state, TEST_PEER, get(&owner, None)).await;
     let entity_tag = first_headers.get(header::ETAG).unwrap().clone();
 
-    // Every slot held by a body not sent yet: revalidating needs none.
+    // Every slot of the reader held by a body not sent yet: revalidating needs none.
     let mut held = Vec::new();
-    for _ in 0..state.attachments.free_download_slots() {
+    for _ in 0..crate::domain::attachments::CONCURRENT_DOWNLOADS_PER_READER {
         held.push(
             router(state.clone())
                 .layer(MockConnectInfo(TEST_PEER.parse::<SocketAddr>().unwrap()))

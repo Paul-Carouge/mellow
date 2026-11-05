@@ -352,10 +352,7 @@ fn byte_range(header_value: &str, total: usize) -> RequestedRange {
 
 /// The file as a response body that holds its transfer slot until the body is dropped, after its
 /// last byte is sent: a slow reader keeps a slot, not an unbounded number of buffers.
-pub(crate) fn body_keeping_permit(
-    bytes: Vec<u8>,
-    permit: tokio::sync::OwnedSemaphorePermit,
-) -> axum::body::Body {
+pub(crate) fn body_keeping_permit(bytes: Vec<u8>, permit: impl Send + 'static) -> axum::body::Body {
     use futures_util::StreamExt as _;
     let chunks = futures_util::stream::iter([Ok::<_, std::convert::Infallible>(
         axum::body::Bytes::from(bytes),
