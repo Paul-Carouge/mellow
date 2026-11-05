@@ -344,6 +344,7 @@ fn link_embeds() -> Vec<LinkEmbed> {
         provider: MusicProvider::Spotify,
         item: MusicItem::Album,
         id: "4aawyAB9vmqN3uQ7FjRGTy".into(),
+        storefront: None,
         artist: Some("Daft Punk".into()),
         track_count: Some(14),
         duration_seconds: Some(4_440),
@@ -397,9 +398,17 @@ fn link_embeds() -> Vec<LinkEmbed> {
             provider: MusicProvider::Bandcamp,
             item: MusicItem::Track,
             id: "1234567890".into(),
+            storefront: None,
             artist: None,
             track_count: None,
             duration_seconds: None,
+        }),
+        LinkEmbed::Music(_) => LinkEmbed::Music(MusicEmbed {
+            provider: MusicProvider::AppleMusic,
+            item: MusicItem::Track,
+            id: "1440818839".into(),
+            storefront: Some("fr".into()),
+            ..music.clone()
         }),
         LinkEmbed::VimeoVideo(_) => LinkEmbed::VimeoVideo(VimeoVideoEmbed {
             video_id: "76979871".into(),

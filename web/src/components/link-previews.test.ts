@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { LinkPreview } from "../lib/protocol";
 import {
+  knownLinkEmbedOf,
   linkHostName,
   linkPreviewBarColor,
   linkPreviewImageUrl,
@@ -129,6 +130,30 @@ describe("linkPreviewLayout", () => {
       '{"id":"1","url":"https://example.org/article","title":"An article","embed":{"kind":"hologram","depth":3}}',
     );
     expect(linkPreviewLayout(preview, null)).toBe("text-only");
+  });
+});
+
+describe("knownLinkEmbedOf (ADR-0044)", () => {
+  const withEmbed = (embed: string): LinkPreview => JSON.parse(`{"id":"1","url":"https://example.org/","embed":${embed}}`);
+
+  it("reads the kinds and values this client knows", () => {
+    expect(knownLinkEmbedOf(withEmbed('{"kind":"twitch","item":"clip","id":"Slug"}'))).toEqual({
+      kind: "twitch",
+      item: "clip",
+      id: "Slug",
+    });
+    expect(knownLinkEmbedOf(ARTICLE)).toBeNull();
+  });
+
+  it.each([
+    '{"kind":"hologram","depth":3}',
+    '{"kind":"toString"}',
+    '{"kind":"music","provider":"tidal","item":"track","id":"1"}',
+    '{"kind":"music","provider":"spotify","item":"audiobook","id":"1"}',
+    '{"kind":"github_pull_request","owner":"a","repository":"b","number":1,"state":"queued","author":"c","comments":0}',
+    '{"kind":"twitch","item":"stream","id":"a"}',
+  ])("leaves out %s from a newer server", (embed) => {
+    expect(knownLinkEmbedOf(withEmbed(embed))).toBeNull();
   });
 });
 
