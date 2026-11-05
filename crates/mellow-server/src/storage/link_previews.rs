@@ -262,28 +262,42 @@ async fn shown_previews(
 }
 
 /// Drops the message's previews of links no longer in `kept_links`, inside an edit's
-/// transaction: the edit itself takes away what it removed, whatever happens to its job.
+/// transaction: the edit itself takes away what it removed, whatever happens to its job. Returns
+/// the previews it kept, in order, read in the same transaction so the edit's event carries
+/// exactly what it committed, even a card a job recorded while the edit waited for the writer.
 ///
 /// # Errors
 /// Fails on database errors.
-pub(crate) async fn drop_previews_of_removed_links(
+pub(crate) async fn keep_previews_of_links(
     connection: &mut sqlx::SqliteConnection,
     message_id: Snowflake,
     kept_links: &[&str],
-) -> Result<(), MessageStorageError> {
+) -> Result<Vec<StoredLinkPreview>, MessageStorageError> {
     let message_id = to_sqlite_integer(message_id.raw())?;
-    for (preview_id, url) in shown_previews(&mut *connection, message_id).await? {
-        if !kept_links.contains(&url.as_str()) {
+    let rows: Vec<PreviewRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {PREVIEW_COLUMNS} FROM message_link_previews \
+         JOIN link_previews ON link_previews.id = message_link_previews.link_preview_id \
+         WHERE message_link_previews.message_id = ? ORDER BY message_link_previews.position"
+    )))
+    .bind(message_id)
+    .fetch_all(&mut *connection)
+    .await?;
+    let mut kept = Vec::with_capacity(rows.len());
+    for row in rows {
+        let preview = preview_from_row(row)?;
+        if kept_links.contains(&preview.url.as_str()) {
+            kept.push(preview);
+        } else {
             sqlx::query(
                 "DELETE FROM message_link_previews WHERE message_id = ? AND link_preview_id = ?",
             )
             .bind(message_id)
-            .bind(preview_id)
+            .bind(to_sqlite_integer(preview.id.raw())?)
             .execute(&mut *connection)
             .await?;
         }
     }
-    Ok(())
+    Ok(kept)
 }
 
 /// The previews of each of `message_ids` that has some, in their order: one query.
@@ -532,7 +546,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_edit_drops_only_the_previews_of_the_links_it_removed() {
+    async fn an_edit_drops_only_the_previews_of_the_links_it_removed_and_returns_the_rest() {
         let (_directory, database) = migrated_database().await;
         sqlx::raw_sql(
             "INSERT INTO users (id, username, display_name, email, password_hash, \
@@ -563,7 +577,7 @@ mod tests {
         .unwrap();
 
         let mut connection = database.writer().acquire().await.unwrap();
-        drop_previews_of_removed_links(&mut connection, message, &[b, "https://c.example/"])
+        let kept = keep_previews_of_links(&mut connection, message, &[b, "https://c.example/"])
             .await
             .unwrap();
         drop(connection);
@@ -575,6 +589,8 @@ mod tests {
             .map(|preview| preview.url.as_str())
             .collect();
         assert_eq!(urls, [b]);
+        let kept_urls: Vec<&str> = kept.iter().map(|preview| preview.url.as_str()).collect();
+        assert_eq!(kept_urls, [b], "what it kept is what the message now shows");
     }
 
     #[tokio::test]

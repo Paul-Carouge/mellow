@@ -42,7 +42,7 @@ const CONCURRENT_IMAGE_PROCESSING: usize = 2;
 /// Link preview pictures processed at once, apart from the slots above so a burst of links never
 /// makes an avatar upload answer "busy" (ADR-0041). A preview is skipped rather than waiting
 /// for it, and its source is at most `MAXIMUM_LINK_PREVIEW_SOURCE_PIXELS`, so it is never one of
-/// the large jobs above: a few tens of MB and well under a second of a core.
+/// the large jobs above: a few tens of MB, and one core for at most `PREVIEW_TIME_BUDGET`.
 const CONCURRENT_LINK_PREVIEW_PICTURES: usize = 1;
 
 /// Uploads waiting for compression; past this, new ones keep their original file.
@@ -203,6 +203,16 @@ pub(crate) enum AttachmentFileKind {
 }
 
 /// An attachment file the reader may download, not read yet.
+/// What became of a link preview's picture.
+#[derive(Debug)]
+pub(crate) enum LinkPreviewPicture {
+    Stored(StoredPreviewImage),
+    /// No picture Mellow shows, or nothing could be encoded.
+    NotShown,
+    /// Another preview picture was being made: worth trying again soon.
+    SlotBusy,
+}
+
 #[derive(Debug)]
 pub(crate) struct ReadableAttachment {
     /// Who asked: their downloads count against `CONCURRENT_DOWNLOADS_PER_READER`.
@@ -768,19 +778,18 @@ impl Attachments {
 
     /// Stores a link preview's picture (ADR-0041): recognised by its bytes, re-encoded by the
     /// visually lossless pipeline within the attachment preview box, sealed in the file store.
-    /// `None` when the bytes are no picture Mellow shows, nothing could be encoded or another
-    /// preview picture is being made: the preview then keeps its text only.
+    /// Without a picture, the preview keeps its text only.
     pub(crate) async fn store_link_preview_picture(
         &self,
         bytes: Vec<u8>,
-    ) -> Result<Option<StoredPreviewImage>, MessageError> {
+    ) -> Result<LinkPreviewPicture, MessageError> {
         let content_type = sniff_content_type(&bytes);
         if !OPTIMIZABLE_CONTENT_TYPES.contains(&content_type) {
-            return Ok(None);
+            return Ok(LinkPreviewPicture::NotShown);
         }
         let Ok(permit) = self.link_preview_pictures.clone().try_acquire_owned() else {
             tracing::debug!("link preview picture skipped: another one is being made");
-            return Ok(None);
+            return Ok(LinkPreviewPicture::SlotBusy);
         };
         let deadline = std::time::Instant::now() + PREVIEW_TIME_BUDGET;
         let processed = tokio::task::spawn_blocking(move || {
@@ -792,11 +801,11 @@ impl Attachments {
         let (picture, width, height) = match processed {
             Ok(Some(processed)) => processed,
             Ok(None) | Err(ImageProcessingError::Unsupported | ImageProcessingError::TooLarge) => {
-                return Ok(None);
+                return Ok(LinkPreviewPicture::NotShown);
             }
             Err(error) => {
                 tracing::warn!(%error, "cannot make a link preview picture");
-                return Ok(None);
+                return Ok(LinkPreviewPicture::NotShown);
             }
         };
         let file_id = self
@@ -804,7 +813,7 @@ impl Attachments {
             .next_id(crate::domain::clock::now_unix_milliseconds())?;
         let size_bytes = u64::try_from(picture.bytes.len()).unwrap_or(u64::MAX);
         self.files.write(file_id, picture.bytes).await?;
-        Ok(Some(StoredPreviewImage {
+        Ok(LinkPreviewPicture::Stored(StoredPreviewImage {
             file_id,
             content_type: picture.content_type.to_owned(),
             size_bytes,
