@@ -18,37 +18,61 @@ const INDEX_PATH: &str = "index.html";
 const HASHED_ASSETS_PREFIX: &str = "assets/";
 const CACHE_HASHED_ASSET: &str = "public, max-age=31536000, immutable";
 const CACHE_REVALIDATE: &str = "no-cache";
-/// Scripts and styles from this origin only; connections to this origin only (REST and the
-/// gateway). Inline styles are allowed for Svelte transitions; inline scripts never are. `blob:`
-/// images are the composer's previews of files about to be uploaded. The manifest makes the client
-/// installable as an app; there is no service worker (Chrome installs without one), and
-/// `worker-src 'none'` keeps a script served from this origin, such as an upload, from becoming one.
-/// `'wasm-unsafe-eval'` lets the voice noise suppressor compile its WebAssembly (ADR-0031); it
-/// allows no JavaScript `eval`. Frames come only from the `youtube-nocookie.com` player, loaded
-/// after a click on a link preview (ADR-0041).
-const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
-     style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; \
-     connect-src 'self'; manifest-src 'self'; worker-src 'none'; object-src 'none'; \
-     frame-src https://www.youtube-nocookie.com; \
-     base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+/// The only origins a page may frame: the players a link preview opens after a click, never
+/// before (ADR-0041, ADR-0044). The client builds each player's address from a checked id.
+pub(crate) const PLAYER_FRAME_ORIGINS: [&str; 9] = [
+    "https://www.youtube-nocookie.com",
+    "https://open.spotify.com",
+    "https://widget.deezer.com",
+    "https://w.soundcloud.com",
+    "https://embed.music.apple.com",
+    "https://bandcamp.com",
+    "https://player.vimeo.com",
+    "https://player.twitch.tv",
+    "https://clips.twitch.tv",
+];
 
-/// The same, with Klipy's media hosts and its API under the instance's own key only, when the
-/// owner set a Klipy key (ADR-0042): members' browsers search Klipy and load its GIFs themselves,
-/// as Klipy's terms require, and an injected script could not reach Klipy with another key.
-pub(crate) fn content_security_policy_with_klipy(klipy_app_key: &str) -> String {
+/// Klipy's media hosts (ADR-0042).
+const KLIPY_MEDIA_ORIGINS: &str =
+    "https://static.klipy.com https://static1.klipy.com https://static2.klipy.com";
+
+/// The web client's Content-Security-Policy, the one place it is written. Scripts and styles from
+/// this origin only; connections to this origin only (REST and the gateway). Inline styles are
+/// allowed for Svelte transitions; inline scripts never are. `blob:` images are the composer's
+/// previews of files about to be uploaded. The manifest makes the client installable as an app;
+/// there is no service worker (Chrome installs without one), and `worker-src 'none'` keeps a script
+/// served from this origin, such as an upload, from becoming one. `'wasm-unsafe-eval'` lets the
+/// voice noise suppressor compile its WebAssembly (ADR-0031); it allows no JavaScript `eval`.
+/// Frames come only from `PLAYER_FRAME_ORIGINS`.
+///
+/// With the owner's Klipy key (ADR-0042), Klipy's media hosts and its API under that key only are
+/// added: members' browsers search Klipy and load its GIFs themselves, as Klipy's terms require,
+/// and an injected script could not reach Klipy with another key.
+pub(crate) fn content_security_policy(klipy_app_key: Option<&str>) -> String {
+    let (klipy_images, klipy_media, klipy_api) = match klipy_app_key {
+        Some(key) => (
+            format!(" {KLIPY_MEDIA_ORIGINS}"),
+            format!(" media-src 'self' {KLIPY_MEDIA_ORIGINS};"),
+            format!(" https://api.klipy.com/api/v1/{key}/"),
+        ),
+        None => (String::new(), String::new(), String::new()),
+    };
+    let frame_origins = PLAYER_FRAME_ORIGINS.join(" ");
     format!(
         "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
-         style-src 'self' 'unsafe-inline'; \
-         img-src 'self' data: blob: https://static.klipy.com https://static1.klipy.com \
-         https://static2.klipy.com; \
-         media-src 'self' https://static.klipy.com https://static1.klipy.com \
-         https://static2.klipy.com; \
-         font-src 'self'; connect-src 'self' https://api.klipy.com/api/v1/{klipy_app_key}/; \
-         manifest-src 'self'; worker-src 'none'; object-src 'none'; \
-         frame-src https://www.youtube-nocookie.com; \
+         style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:{klipy_images};{klipy_media} \
+         font-src 'self'; connect-src 'self'{klipy_api}; manifest-src 'self'; worker-src 'none'; \
+         object-src 'none'; frame-src {frame_origins}; \
          base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
     )
 }
+
+/// The policy without GIFs, built once: every asset answer carries it.
+static CONTENT_SECURITY_POLICY: std::sync::LazyLock<HeaderValue> = std::sync::LazyLock::new(|| {
+    // Invariant: the policy is built from the ASCII constants above only.
+    #[allow(clippy::expect_used)]
+    HeaderValue::from_str(&content_security_policy(None)).expect("an ASCII policy fits a header")
+});
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ContentEncoding {
@@ -252,7 +276,7 @@ fn asset_response(
             ),
             (
                 header::CONTENT_SECURITY_POLICY,
-                HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+                CONTENT_SECURITY_POLICY.clone(),
             ),
             (
                 header::X_CONTENT_TYPE_OPTIONS,
@@ -521,8 +545,13 @@ mod tests {
         assert!(policy.contains("manifest-src 'self'"), "{policy}");
         assert!(policy.contains("worker-src 'none'"), "{policy}");
         assert!(
-            policy.contains("frame-src https://www.youtube-nocookie.com;"),
-            "only the privacy-enhanced YouTube player may be framed (ADR-0041): {policy}"
+            policy.contains(
+                "frame-src https://www.youtube-nocookie.com https://open.spotify.com \
+                 https://widget.deezer.com https://w.soundcloud.com https://embed.music.apple.com \
+                 https://bandcamp.com https://player.vimeo.com https://player.twitch.tv \
+                 https://clips.twitch.tv;"
+            ),
+            "only the listed players may be framed (ADR-0044): {policy}"
         );
         assert!(
             policy.contains("script-src 'self' 'wasm-unsafe-eval';")
@@ -549,11 +578,26 @@ mod tests {
                 .unwrap()
                 .to_owned()
         };
-        let gif_policy =
-            HeaderValue::from_str(&content_security_policy_with_klipy("test-key")).unwrap();
+        let gif_policy = HeaderValue::from_str(&content_security_policy(Some("test-key"))).unwrap();
         let off = policy_of(&with_policy_for_gifs(page(), None));
         let on = policy_of(&with_policy_for_gifs(page(), Some(&gif_policy)));
         assert!(!off.contains("klipy"), "{off}");
+        // Both answers come from one builder: without Klipy's additions, they are the same.
+        let without_klipy = on
+            .replace(" https://api.klipy.com/api/v1/test-key/", "")
+            .replace(&format!(" media-src 'self' {KLIPY_MEDIA_ORIGINS};"), "")
+            .replace(&format!(" {KLIPY_MEDIA_ORIGINS}"), "");
+        assert_eq!(without_klipy, off);
+        let frame_sources = format!("frame-src {};", PLAYER_FRAME_ORIGINS.join(" "));
+        assert_eq!(
+            off,
+            format!(
+                "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
+                 style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; \
+                 connect-src 'self'; manifest-src 'self'; worker-src 'none'; object-src 'none'; \
+                 {frame_sources} base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+            )
+        );
         assert!(
             on.contains("connect-src 'self' https://api.klipy.com/api/v1/test-key/;"),
             "only the instance's key: {on}"
@@ -568,7 +612,7 @@ mod tests {
             "worker-src 'none'",
             "object-src 'none'",
             "frame-ancestors 'none'",
-            "frame-src https://www.youtube-nocookie.com;",
+            &frame_sources,
         ] {
             assert!(on.contains(directive), "{directive} in {on}");
         }
