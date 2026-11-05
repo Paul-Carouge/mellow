@@ -16,14 +16,16 @@
   let { label, side, isFullWindow = false, onclose, children }: Props = $props();
 
   let dialog: HTMLDialogElement;
+  let wasClosedWithEscape = false;
 
   onMount(() => {
     const opener =
       document.activeElement instanceof HTMLElement && document.activeElement !== document.body
         ? document.activeElement
         : null;
-    // Opened by a tap or a click, the drawer gives focus back without the keyboard's ring, which
-    // would be noise on a phone; opened from the keyboard, the ring shows where focus went.
+    // Opened and closed by a tap or a click, the drawer gives focus back without the keyboard's
+    // ring, which would be noise on a phone; after a key (opening from it, or Esc) the browser
+    // decides, so a keyboard user sees where focus went (WCAG 2.4.7).
     const wasOpenedFromKeyboard = opener?.matches(":focus-visible") ?? false;
     dialog.showModal();
     // The current channel takes focus, so the reader starts where they are, not on the first icon.
@@ -33,8 +35,8 @@
       dialog.close();
       if (opener?.isConnected && !dialog.contains(document.activeElement)) {
         // `focusVisible` (HTML FocusOptions) is not in TypeScript's DOM types yet.
-        const focusOptions: FocusOptions & { focusVisible: boolean } = { focusVisible: wasOpenedFromKeyboard };
-        opener.focus(focusOptions);
+        const withoutRing: FocusOptions & { focusVisible: boolean } = { focusVisible: false };
+        opener.focus(wasOpenedFromKeyboard || wasClosedWithEscape ? undefined : withoutRing);
       }
     };
   });
@@ -55,6 +57,7 @@
   ]}
   oncancel={(event) => {
     event.preventDefault();
+    wasClosedWithEscape = true;
     onclose();
   }}
   onclick={(event) => {
