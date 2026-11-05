@@ -80,6 +80,7 @@
   siteName={preview.site_name}
   label={title}
   isFitContent={video.isShort}
+  hasVideoPlayer={!video.isShort}
   onClosePlayer={isPlaying ? closePlayer : undefined}
 >
   <!-- A Short's texts wrap to its player's width instead of widening the card. -->

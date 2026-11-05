@@ -53,7 +53,7 @@
   }
 </script>
 
-<EmbedCard {barColor} siteName={service} label={`${title}, ${artist}, ${service}`}>
+<EmbedCard {barColor} siteName={service} label={`${title}, ${artist}, ${service}`} hasVideoPlayer>
   <!-- The text column keeps text-min-width beside the cover, else wraps under it. -->
   <div class="flex flex-wrap items-start gap-(--mw-component-link-preview-gap)">
     <div
