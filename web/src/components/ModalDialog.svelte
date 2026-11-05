@@ -13,7 +13,6 @@
   interface Props {
     title: string;
     subtitle?: string;
-    isHeadingCentered?: boolean;
     /** Two columns side by side ("Create a server"), stacked when the window is narrower. */
     isWide?: boolean;
     /** For a dialog that runs its action itself; an `onsubmit` promise's failure is shown on its own. */
@@ -44,7 +43,6 @@
   let {
     title,
     subtitle = "",
-    isHeadingCentered = false,
     isWide = false,
     errorMessage = "",
     isBusy = false,
@@ -135,7 +133,7 @@
     }}
   >
     <div class="flex flex-col gap-(--mw-component-dialog-section-gap) overflow-y-auto p-(--mw-component-dialog-padding)">
-      <div class={["flex flex-col gap-(--mw-component-dialog-subtitle-gap)", isHeadingCentered && "text-center"]}>
+      <div class="flex flex-col gap-(--mw-component-dialog-subtitle-gap)">
         <h2 id="{id}-title" class="type-heading-lg text-(--mw-component-dialog-title-text)">{title}</h2>
         {#if subtitle}
           <p id="{id}-subtitle" class="type-body text-(--mw-component-dialog-subtitle-text)">{subtitle}</p>
