@@ -35,6 +35,15 @@ fn published(event: &GatewayEvent) -> Option<SharedEvent> {
     }
 }
 
+/// Who an event goes to: a guild's sessions, those of some of its members (a restricted
+/// channel, ADR-0015), or every session of some users (a conversation's participants).
+#[derive(Debug)]
+pub(crate) enum Recipients<'a> {
+    Guild(Snowflake),
+    GuildMembers(Snowflake, &'a HashSet<Snowflake>),
+    Users(&'a [Snowflake]),
+}
+
 /// Identifies one gateway session inside the hub.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct SessionKey(u64);
@@ -147,6 +156,28 @@ impl HubState {
             .get(&user_id)
             .map(|keys| keys.iter().copied().collect())
             .unwrap_or_default()
+    }
+
+    /// Each session once, even when a user is named twice.
+    fn keys_of_recipients(&self, recipients: &Recipients<'_>) -> Vec<SessionKey> {
+        match recipients {
+            Recipients::Guild(guild_id) => self.keys_of_guild(*guild_id),
+            Recipients::GuildMembers(guild_id, user_ids) => self
+                .keys_of_guild(*guild_id)
+                .into_iter()
+                .filter(|key| {
+                    self.sessions
+                        .get(key)
+                        .is_some_and(|entry| user_ids.contains(&entry.user_id))
+                })
+                .collect(),
+            Recipients::Users(user_ids) => user_ids
+                .iter()
+                .flat_map(|user_id| self.keys_of_user(*user_id))
+                .collect::<HashSet<SessionKey>>()
+                .into_iter()
+                .collect(),
+        }
     }
 
     /// Whether live sessions of `a` and `b` are subscribed to a common guild.
@@ -561,7 +592,7 @@ impl EventHub {
             return;
         };
         let mut state = self.state();
-        let keys = state.keys_of_guild(guild_id);
+        let keys = state.keys_of_recipients(&Recipients::Guild(guild_id));
         state.send_to(keys, &event);
     }
 
@@ -577,17 +608,36 @@ impl EventHub {
             return;
         };
         let mut state = self.state();
-        let keys: Vec<SessionKey> = state
-            .keys_of_guild(guild_id)
+        let keys = state.keys_of_recipients(&Recipients::GuildMembers(guild_id, user_ids));
+        state.send_to(keys, &event);
+    }
+
+    /// Delivers `event` to `recipients`, except the sessions of `own_user_id` among them, which
+    /// get `own_event` instead: the author's `MESSAGE_CREATE` carries the send's nonce, which no
+    /// one else may see. Both are serialized once, before the lock, and sent under one lock, so
+    /// no other event can reach the author between the two.
+    pub(crate) fn publish_with_own_copy(
+        &self,
+        recipients: &Recipients<'_>,
+        own_user_id: Snowflake,
+        own_event: &GatewayEvent,
+        event: &GatewayEvent,
+    ) {
+        let (Some(own_event), Some(event)) = (published(own_event), published(event)) else {
+            return;
+        };
+        let mut state = self.state();
+        let (own_keys, other_keys): (Vec<SessionKey>, Vec<SessionKey>) = state
+            .keys_of_recipients(recipients)
             .into_iter()
-            .filter(|key| {
+            .partition(|key| {
                 state
                     .sessions
                     .get(key)
-                    .is_some_and(|entry| user_ids.contains(&entry.user_id))
-            })
-            .collect();
-        state.send_to(keys, &event);
+                    .is_some_and(|entry| entry.user_id == own_user_id)
+            });
+        state.send_to(own_keys, &own_event);
+        state.send_to(other_keys, &event);
     }
 
     /// The presence of every member of `guild_id` others can see online, invisible ones left out.
@@ -656,10 +706,7 @@ impl EventHub {
             return;
         };
         let mut state = self.state();
-        let keys: HashSet<SessionKey> = user_ids
-            .iter()
-            .flat_map(|user_id| state.keys_of_user(*user_id))
-            .collect();
+        let keys = state.keys_of_recipients(&Recipients::Users(user_ids));
         state.send_to(keys, &event);
     }
 
@@ -804,6 +851,46 @@ mod tests {
             Vec::<String>::new(),
             "only sessions subscribed to that guild"
         );
+    }
+
+    #[test]
+    fn an_own_copy_reaches_only_its_users_sessions_among_the_recipients() {
+        let hub = EventHub::default();
+        let (alice_key, mut alice_events) = hub.register_session(ALICE, TOKEN_A, NO_CAP).unwrap();
+        hub.activate_session(alice_key, &[GUILD]);
+        let (bob_key, mut bob_events) = hub.register_session(BOB, TOKEN_B, NO_CAP).unwrap();
+        hub.activate_session(bob_key, &[GUILD]);
+        drain(&mut alice_events);
+        drain(&mut bob_events);
+        let own = GatewayEvent::TypingStart {
+            guild_id: None,
+            channel_id: Snowflake::from_raw(12),
+            user_id: ALICE,
+        };
+        let shared = serde_json::to_string(&typing()).unwrap();
+        let own_json = serde_json::to_string(&own).unwrap();
+        let viewers = HashSet::from([ALICE, BOB]);
+        for recipients in [
+            Recipients::Guild(GUILD),
+            Recipients::GuildMembers(GUILD, &viewers),
+            Recipients::Users(&[ALICE, BOB, ALICE]),
+        ] {
+            hub.publish_with_own_copy(&recipients, ALICE, &own, &typing());
+            assert_eq!(
+                drain(&mut alice_events),
+                vec![own_json.clone()],
+                "{recipients:?}"
+            );
+            assert_eq!(
+                drain(&mut bob_events),
+                vec![shared.clone()],
+                "{recipients:?}"
+            );
+        }
+        // Not among the recipients: no copy at all.
+        hub.publish_with_own_copy(&Recipients::Users(&[BOB]), ALICE, &own, &typing());
+        assert_eq!(drain(&mut alice_events), Vec::<String>::new());
+        assert_eq!(drain(&mut bob_events), vec![shared]);
     }
 
     #[test]

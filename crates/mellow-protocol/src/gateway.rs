@@ -736,6 +736,35 @@ mod tests {
     }
 
     #[test]
+    fn message_creates_round_trip_with_the_authors_nonce_and_without_it() {
+        let json = serde_json::json!({"t": "MESSAGE_CREATE", "data": {
+            "id": "3", "channel_id": "2",
+            "author": {"id": "1", "username": "ada", "display_name": "Ada"},
+            "content": "hi", "reply_to_id": null, "edited_at_unix_milliseconds": null,
+            "nonce": "n-1"}});
+        let event: GatewayEvent = serde_json::from_value(json.clone()).unwrap();
+        let GatewayEvent::MessageCreate(message) = &event else {
+            panic!("unexpected {event:?}");
+        };
+        assert_eq!(message.nonce.as_deref(), Some("n-1"));
+        let mut round_trip = serde_json::to_value(&event).unwrap();
+        round_trip["data"].as_object_mut().unwrap().remove("pinned");
+        assert_eq!(round_trip, json);
+
+        // Others' events, and older servers', have no nonce at all.
+        let mut without_nonce = json;
+        without_nonce["data"]
+            .as_object_mut()
+            .unwrap()
+            .remove("nonce");
+        let event: GatewayEvent = serde_json::from_value(without_nonce).unwrap();
+        assert!(matches!(&event, GatewayEvent::MessageCreate(message) if message.nonce.is_none()));
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["data"]["nonce"], serde_json::Value::Null);
+        assert_eq!(serde_json::from_value::<GatewayEvent>(json).unwrap(), event);
+    }
+
+    #[test]
     fn reaction_events_carry_the_emoji_and_string_ids() {
         let event = GatewayEvent::MessageReactionAdd(MessageReaction {
             guild_id: None,

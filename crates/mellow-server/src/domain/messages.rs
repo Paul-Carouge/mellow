@@ -35,6 +35,7 @@ use crate::domain::message_rules::{
 use crate::domain::permissions::direct_message_permissions;
 use crate::domain::profile_images::{fill_profile_images, profile_images_of_user};
 use crate::domain::snowflake_generator::SnowflakeGenerator;
+use crate::events::Recipients;
 use crate::storage::attachments::{self as attachment_storage, StoredAttachment};
 use crate::storage::direct_messages as direct_message_storage;
 use crate::storage::guild_channels::StoredChannel;
@@ -296,6 +297,20 @@ impl MessageAudience {
                 ..
             } => viewers.contains(&user_id),
             Self::Participants(participant_ids) => participant_ids.contains(&user_id),
+        }
+    }
+
+    fn recipients(&self) -> Recipients<'_> {
+        match self {
+            Self::Guild {
+                guild_id,
+                viewers: ChannelAudience::EveryMember,
+            } => Recipients::Guild(*guild_id),
+            Self::Guild {
+                guild_id,
+                viewers: ChannelAudience::Members(viewers),
+            } => Recipients::GuildMembers(*guild_id, viewers),
+            Self::Participants(participant_ids) => Recipients::Users(participant_ids),
         }
     }
 }
@@ -666,16 +681,19 @@ impl Messages {
             message.author.avatar = author_images.avatar;
             message.author.banner = author_images.banner;
             message.poll = published_poll;
-            // The nonce goes back to the sender only, never in the event.
-            publish(
-                &guilds,
-                &audience,
+            let event = GatewayEvent::MessageCreate(message.clone());
+            message.nonce = request.nonce;
+            // The nonce goes to the sender only: in this answer and in their own sessions' event,
+            // so a client whose answer is lost still matches the message to its pending send.
+            guilds.publish_with_own_copy(
+                &audience.recipients(),
+                user_id,
                 &GatewayEvent::MessageCreate(message.clone()),
+                &event,
             );
             if let Some(ticket) = link_preview_ticket {
                 ticket.queue_for(&message, audience);
             }
-            message.nonce = request.nonce;
             Ok(message)
         })
         .await
