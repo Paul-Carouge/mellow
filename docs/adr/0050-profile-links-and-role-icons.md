@@ -1,0 +1,30 @@
+# 0050. Profile "about me", links with server-fetched site icons, and role icons
+
+- Status: Accepted
+- Date: 2026-11-05
+
+## Context
+ROADMAP item 19 ("Accounts and profiles", owner 2026-11-02) asks for "a richer profile with social links (icons from their favicons, cached); role icons". Discord shows an "About me" and connected accounts in the profile, and lets a server give roles a small picture or emoji shown beside members' names. Two constraints shape the design: browsers must never load anything from third parties because of a profile (ADR-0042 keeps that exception for Klipy alone), and every stored picture goes through the visually lossless pipeline (ADR-0033) and the sharded file store (ADR-0034).
+
+## Decision
+- **Profile details** live apart from `PublicUser`, which travels with every message author and member: `GET /api/v1/users/{user_id}/profile` (and `/users/@me/profile`) answers `UserProfile {user_id, about_me, links}`; `PUT /api/v1/users/@me/profile` replaces both. Clients read it when a profile opens; no gateway event carries it.
+- **Who may read it**: the user, and whoever shares a server, a conversation or a relationship row with them (one query over indexed tables). Anyone else gets `NOT_FOUND`, as for a missing user, so profiles cannot be scraped by id.
+- **About me**: up to 190 characters (Unicode scalar values), trimmed, line breaks kept, no control or invisible characters except emoji joiners and presentation selectors (the custom status rule). Clients render inline Markdown only: no headings, lists, quotes or code blocks, no mentions and no custom emoji, since the text is read outside any server.
+- **Links**: up to five, `https` only, a named host (no IP address), default port, no credentials, at most 300 characters as the URL parser writes them back (hosts lowercased and in punycode, so a look-alike name shows what it is), each with an optional label of up to 40 characters. Clients show the label with the host beside it, so a label cannot hide the destination, and open links with `noopener noreferrer nofollow ugc`.
+- **Site icons**: fetched by the server, once per host, by the link preview fetcher (ADR-0041: public addresses only, redirects checked one by one, 8 s and 8 MiB per fetch): the home page's first non-SVG `apple-touch-icon`, else its first non-SVG `icon`, else `/favicon.ico` (from an ICO file, its largest PNG image; bitmap-only ICO files give no icon). The picture goes through `process_icon` (64 px square, always still, at most 64 KiB stored) and is sealed under a **random id**, not a Snowflake, so its id does not tell when someone first linked the site (as link preview pictures, ADR-0041). `profile_link_icons` keeps one row per host with the file and `refresh_after`: 7 days after a fetch, 1 hour after a site that did not answer (the stored icon stays meanwhile). Hosts are queued after a save and when a profile read finds a missing or stale icon; one background task fetches them one at a time from a bounded queue (64 hosts, each queued once). Icons are fetched only when link previews are on (`[link_previews] enabled`): the owner who turned outbound fetches off gets links without icons. `GET /api/v1/link-icons/{id}` serves an icon to any signed-in user with immutable cache headers, under the picture download budget. A save that drops a host's last link deletes its icon row and file in the same step.
+- **Role icons**: `Role.icon` (a picture) or `Role.unicode_emoji`, never both. `PUT /api/v1/guilds/{guild_id}/roles/{role_id}/icon` takes a picture as the raw body (at most 256 KiB, crop query as icons; the centred square otherwise), processed like a custom emoji at 64 px, animated GIFs kept animated with a still frame, stored as a guild image, so it is served to the guild's members at `/api/v1/icons/{id}`, swept and dropped with the guild like an icon. `PUT …/icon/emoji` takes one Unicode emoji (custom emoji are refused: they belong to one server), `DELETE …/icon` removes either. All need `MANAGE_ROLES` over the role (`RoleManager`, checked again after processing), never on `@everyone`, record a `RoleUpdate` audit entry with an `icon` change, and publish `GUILD_ROLES_UPDATE`. Deleting a role deletes its picture's row (the file goes with the next orphan sweep).
+- **Display**: messages and the member list show the member's highest role that has an icon, after the name, labelled with the role's name.
+- **Storage**: migration 0043 adds `user_profiles`, `user_profile_links` (five positions per user, indexed by host), `profile_link_icons`, and `roles.icon_id`, `icon_is_animated`, `unicode_emoji` with a check that a role never has both.
+
+## Consequences
+- Opening a profile costs one small request; a member list never loads profile details.
+- Sites see the instance's address and user agent when their icon is fetched, at most once a week per host, never a member's.
+- A site whose icon is only an SVG or a bitmap ICO shows the link glyph.
+- A role icon change bumps the guild's permission version through the existing roles trigger (migration 0015), so cached permission snapshots are refreshed once; nothing else depends on it.
+- Older clients ignore the new fields (protocol additive).
+
+## Alternatives considered
+- **Profile fields in `PublicUser`**: every message author and member payload would carry up to 1.7 KB more, for text read only when a profile opens.
+- **Browsers loading favicons from the sites, or through a favicon service**: leaks who views whose profile to third parties, against the instance's privacy promise.
+- **Decoding ICO and SVG**: ICO bitmaps need the `image` crate's BMP decoder on untrusted bytes for little gain (sites with an ICO usually also name a PNG); SVG needs a renderer, a large dependency and attack surface.
+- **A separate permission for role icons**: Discord uses Manage Roles; so does Mellow.
