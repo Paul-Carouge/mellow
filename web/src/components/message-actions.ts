@@ -1,4 +1,5 @@
-// What the chat pane lets a message row do with reactions, pins and polls, passed down as one object.
+// What the chat pane lets a message row do with reactions, pins, polls, checklists and progress
+// bars, passed down as one object.
 
 import type { Message, PublicUser, Snowflake } from "../lib/protocol";
 
@@ -25,4 +26,15 @@ export interface ReactionAndPinActions {
   removeOwnPollVotes: (message: Message) => void;
   viewPollVoters: (message: Message, answerId: number) => void;
   askToEndPoll: (message: Message) => void;
+  /** Writing here (ADR-0047). */
+  canTickChecklists: boolean;
+  /** Its author while they may write here, or a moderator of a server channel. */
+  canEditTracker: (message: Message) => boolean;
+  nameOfUser: (userId: Snowflake) => string;
+  toggleChecklistItem: (message: Message, itemId: number) => void;
+  /** Each resolves `true` once the instance took the change; a refusal is shown by the pane. */
+  addChecklistItem: (message: Message, text: string) => Promise<boolean>;
+  renameChecklistItem: (message: Message, itemId: number, text: string) => Promise<boolean>;
+  removeChecklistItem: (message: Message, itemId: number) => void;
+  updateProgressBar: (message: Message) => void;
 }

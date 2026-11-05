@@ -22,7 +22,12 @@ export type SlashCommandId =
   | "link"
   | "shrug"
   | "tableflip"
-  | "poll";
+  | "poll"
+  | "checklist"
+  | "progressBar";
+
+/** The commands that open a dialog instead of writing Markdown. */
+export type DialogSlashCommandId = "poll" | "checklist" | "progressBar";
 
 type SlashCommandEffect =
   /** Starts the line: the spaces and the "/query" in front of it are replaced. */
@@ -33,7 +38,7 @@ type SlashCommandEffect =
   /** `[text](https://)` with the text selected, ready to be typed over. */
   | { kind: "link" }
   | { kind: "text"; text: string }
-  /** Opens a dialog (a poll, ADR-0043): the "/query" goes, nothing is written. */
+  /** Opens a dialog (a poll, a checklist or a progress bar): the "/query" goes, nothing is written. */
   | { kind: "dialog" };
 
 export interface SlashCommand {
@@ -56,7 +61,8 @@ const CODE_FENCE = "```";
 
 /**
  * In the order the menu lists them before anything is typed: headings, inline marks, blocks,
- * extras, then the poll, the one command that opens a dialog instead of writing Markdown.
+ * extras, then the poll, the checklist and the progress bar, which open a dialog instead of
+ * writing Markdown.
  */
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { id: "heading1", icon: "text-h-one", effect: { kind: "linePrefix", prefix: "# " }, markup: "#", keywords: ["h1"] },
@@ -76,6 +82,8 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { id: "shrug", icon: "smiley-meh", effect: { kind: "text", text: SHRUG_MARKDOWN }, markup: "¯\\_(ツ)_/¯", keywords: [] },
   { id: "tableflip", icon: "smiley-angry", effect: { kind: "text", text: TABLEFLIP_TEXT }, markup: TABLEFLIP_TEXT, keywords: [] },
   { id: "poll", icon: "chart-bar-horizontal", effect: { kind: "dialog" }, markup: "", keywords: ["vote"] },
+  { id: "checklist", icon: "list-checks", effect: { kind: "dialog" }, markup: "", keywords: ["todo", "tasks"] },
+  { id: "progressBar", icon: "gauge", effect: { kind: "dialog" }, markup: "", keywords: ["progress"] },
 ];
 
 // --- Finding the "/co" being typed -----------------------------------------------------------

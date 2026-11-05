@@ -19,4 +19,6 @@ export const ENGLISH_SLASH_COMMANDS = {
   shrug: { name: "shrug", description: "Adds a shrug" },
   tableflip: { name: "tableflip", description: "Flips the table" },
   poll: { name: "Poll", description: "Ask a question with answers to vote on" },
+  checklist: { name: "Checklist", description: "A list the channel ticks together" },
+  progressBar: { name: "Progress bar", description: "A bar showing how far something is" },
 };

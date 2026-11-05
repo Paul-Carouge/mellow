@@ -311,6 +311,7 @@ export const PERMISSION_GROUPS: readonly { group: PermissionGroupKey; permission
       { key: "attachFiles", bit: Permission.ATTACH_FILES, isSensitive: false },
       { key: "addReactions", bit: Permission.ADD_REACTIONS, isSensitive: false },
       { key: "sendPolls", bit: Permission.SEND_POLLS, isSensitive: false },
+      { key: "sendChecklists", bit: Permission.SEND_CHECKLISTS, isSensitive: false },
       { key: "mentionEveryone", bit: Permission.MENTION_EVERYONE, isSensitive: false },
       { key: "manageMessages", bit: Permission.MANAGE_MESSAGES, isSensitive: false },
     ],

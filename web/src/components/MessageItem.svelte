@@ -44,7 +44,10 @@
   import { MESSAGE_LENGTH_COUNTER_THRESHOLD } from "./message-length";
   import type { MessageListRow } from "./message-rows";
   import { isPollEnded } from "../lib/polls";
+  import ChecklistCard from "./ChecklistCard.svelte";
   import PollCard from "./PollCard.svelte";
+  import ProgressBarCard from "./ProgressBarCard.svelte";
+  import { pendingChecklistPreview, pendingProgressBarPreview } from "./tracker-view";
   import { pollClockNow } from "./poll-clock.svelte";
   import { pendingPollPreview } from "./poll-view";
   import { durationTokenInMilliseconds } from "./tokens";
@@ -170,6 +173,22 @@
         ? pendingPollPreview(row.pending.poll, pollClockNow())
         : null,
   );
+  // So do a checklist and a progress bar (ADR-0047).
+  const checklist = $derived(
+    row.kind === "sent"
+      ? (row.message.checklist ?? null)
+      : row.pending.checklist
+        ? pendingChecklistPreview(row.pending.checklist)
+        : null,
+  );
+  const progressBar = $derived(
+    row.kind === "sent"
+      ? (row.message.progress_bar ?? null)
+      : row.pending.progressBar
+        ? pendingProgressBarPreview(row.pending.progressBar)
+        : null,
+  );
+  const isTracker = $derived(checklist !== null || progressBar !== null);
   // Only a forward's place is looked up, among the channels the reader knows.
   const forwardOriginPlace = $derived(forwardedFrom ? forwardOriginPlaceOf(forwardedFrom.channel_id) : null);
   const forwardOriginSentAt = $derived(forwardedFrom ? unixMillisecondsOfSnowflake(forwardedFrom.message_id) : null);
@@ -233,6 +252,7 @@
           isOwn,
           isForward: forwardedFrom !== null,
           isPoll: poll !== null,
+          isTracker,
           isPollOpen: poll !== null && !isPollEnded(poll, pollClockNow()),
           hasText: message.content.trim() !== "",
           hasReactions: reactions.length > 0,
@@ -507,6 +527,31 @@
     {#if message}
       {@render reactionsOf(message)}
     {/if}
+  {:else if checklist}
+    <ChecklistCard
+      {checklist}
+      isPending={row.kind === "pending"}
+      canTick={actions.canTickChecklists}
+      canEdit={message !== null && actions.canEditTracker(message)}
+      nameOfUser={actions.nameOfUser}
+      ontoggle={(itemId) => message && actions.toggleChecklistItem(message, itemId)}
+      onadd={(text) => (message ? actions.addChecklistItem(message, text) : Promise.resolve(false))}
+      onrename={(itemId, text) => (message ? actions.renameChecklistItem(message, itemId, text) : Promise.resolve(false))}
+      onremove={(itemId) => message && actions.removeChecklistItem(message, itemId)}
+    />
+    {#if message}
+      {@render reactionsOf(message)}
+    {/if}
+  {:else if progressBar}
+    <ProgressBarCard
+      bar={progressBar}
+      isPending={row.kind === "pending"}
+      canEdit={message !== null && actions.canEditTracker(message)}
+      onupdate={() => message && actions.updateProgressBar(message)}
+    />
+    {#if message}
+      {@render reactionsOf(message)}
+    {/if}
   {:else}
     {@render body()}
     {#if attachments.length > 0}
@@ -583,14 +628,14 @@
           onclick={(event) => pickerToggle.shouldOpenOnClick() && actions.openPicker(message, event.currentTarget)}
         />
       {/if}
-      {#if isOwn && canSendMessages && forwardedFrom === null && poll === null}
+      {#if isOwn && canSendMessages && forwardedFrom === null && poll === null && !isTracker}
         <IconButton icon="pencil-simple" label={strings.common.edit} class={buttonClass} {iconClass} onclick={() => onstartedit(message)} />
       {/if}
       {#if canSendMessages}
         <IconButton icon="arrow-bend-up-left" label={strings.messages.reply} class={buttonClass} {iconClass} onclick={() => onreply(message)} />
       {/if}
-      <!-- A poll is neither forwarded nor copied as text (ADR-0043). -->
-      {#if poll === null}
+      <!-- A poll, checklist or progress bar is neither forwarded nor copied as text (ADR-0043, ADR-0047). -->
+      {#if poll === null && !isTracker}
         <IconButton icon="arrow-bend-up-right" label={strings.forward.forward} class={buttonClass} {iconClass} onclick={() => onforward(message)} />
         <IconButton icon="copy" label={strings.messages.copyText} class={buttonClass} {iconClass} onclick={() => oncopy(message.content)} />
       {/if}

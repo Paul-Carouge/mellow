@@ -19,6 +19,7 @@
   import { conversationDisplayName } from "./group-conversations";
   import Icon from "./Icon.svelte";
   import { pollSummary } from "./poll-view";
+  import { trackerSummary } from "./tracker-view";
   import IconButton from "./IconButton.svelte";
   import { type BlockNode, parseMessageMarkdown } from "./markdown";
   import { mentionablePeople } from "./mentions";
@@ -534,6 +535,16 @@
     <p class="flex items-center gap-2xs type-message text-(--mw-component-message-body-text)">
       <Icon name="chart-bar-horizontal" class="size-(--mw-component-message-status-icon-size) shrink-0 text-text-muted" />
       <span class="min-w-0 break-words">{pollSummary(message.poll)}</span>
+    </p>
+  {/if}
+  {#if trackerSummary(message) !== null}
+    <!-- Its title or label, never its ticks: the slip opens the message for those (ADR-0047). -->
+    <p class="flex items-center gap-2xs type-message text-(--mw-component-message-body-text)">
+      <Icon
+        name={message.checklist ? "list-checks" : "gauge"}
+        class="size-(--mw-component-message-status-icon-size) shrink-0 text-text-muted"
+      />
+      <span class="min-w-0 break-words">{trackerSummary(message)}</span>
     </p>
   {/if}
   {#if (message.attachments?.length ?? 0) > 0}

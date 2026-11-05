@@ -794,6 +794,62 @@ export const en = {
     duplicateAnswer: (answer: string) => `“${answer}” is already an answer.`,
   },
 
+  checklists: {
+    /** A checklist in one line of text: reply lines, pins, notifications, search results. */
+    summary: (title: string) => `Checklist: ${title}`,
+    /** The bar's visible figure. */
+    done: (done: number, total: number) => `${count(done)}/${count(total)}`,
+    /** The bar's spoken value, also announced when it changes. */
+    doneSpoken: (done: number, total: number) => `${count(done)} of ${count(total)} done`,
+    tickedBy: (name: string, date: string) => `Ticked by ${name}, ${date}`,
+    tickFailed: "Couldn't tick the item",
+    edit: "Edit list",
+    doneEditing: "Done",
+    newItem: "New item",
+    addItem: "Add",
+    rename: (text: string) => `Rename “${text}”`,
+    remove: (text: string) => `Remove “${text}”`,
+    itemsLeft: (left: number) =>
+      left === 0 ? "That's the most items a checklist can have." : `You can add ${count(left)} more.`,
+    lastItemStays: "A checklist keeps at least one item.",
+    changeFailed: "Couldn't change the checklist",
+    create: "Create a checklist",
+    createSubtitle: "Everyone who can write here can tick its items; you and moderators can change them.",
+    title: "Title",
+    titlePlaceholder: "What needs doing?",
+    items: "Items",
+    item: (position: number) => `Item ${count(position)}`,
+    removeItem: (position: number) => `Remove item ${count(position)}`,
+    send: "Send checklist",
+    titleEmpty: "Write the title.",
+    tooFewItems: "Write at least one item.",
+  },
+
+  progressBars: {
+    /** A progress bar in one line of text. */
+    summary: (label: string) => `Progress: ${label}`,
+    /** The figure beside the bar: a percentage out of 100, else "3/5". */
+    figure: (value: number, maximum: number, percent: number) =>
+      maximum === 100 ? `${count(percent)}%` : `${count(value)}/${count(maximum)}`,
+    spoken: (value: number, maximum: number, percent: number) =>
+      maximum === 100 ? `${count(percent)}%` : `${count(value)} of ${count(maximum)}`,
+    update: "Update",
+    create: "Create a progress bar",
+    edit: "Update the progress bar",
+    createSubtitle: "You and moderators can move it along later.",
+    label: "Label",
+    labelPlaceholder: "What is progressing?",
+    value: "Value",
+    maximum: "Out of",
+    maximumHint: "Out of 100, it shows as a percentage.",
+    send: "Send progress bar",
+    save: "Save",
+    labelEmpty: "Write the label.",
+    wholeNumberUpTo: (minimum: number, maximum: number) =>
+      `Enter a whole number from ${count(minimum)} to ${count(maximum)}.`,
+    updateFailed: "Couldn't update the progress bar",
+  },
+
   emojiPicker: {
     label: "Emoji picker",
     search: "Search emoji",
@@ -1498,6 +1554,10 @@ export const en = {
       attachFiles: { label: "Attach files", description: "Add files and pictures to their messages." },
       addReactions: { label: "Add reactions", description: "React to messages with a new emoji." },
       sendPolls: { label: "Create polls", description: "Ask a question with answers others vote on." },
+      sendChecklists: {
+        label: "Create checklists and progress bars",
+        description: "Share a list others tick, or a bar that shows how far something is.",
+      },
       mentionEveryone: {
         label: "Mention @everyone and all roles",
         description: "Notify everyone in a channel at once, and mention any role, even one nobody else may mention.",
