@@ -972,6 +972,34 @@ export const fr: Catalogue = {
     jumpTo: (author) => `Aller au message de ${author}`,
   },
 
+  providerCards: {
+    wikipedia: "Wikipédia",
+    wikipediaIn: (language) => `Wikipédia en ${language}`,
+    disambiguation: "Page d’homonymie",
+    topics: "Sujets",
+    archived: "Archivé",
+    stars: (stars) =>
+      plural(stars, { one: `${count(stars)}${NO_BREAK_SPACE}étoile`, other: `${count(stars)}${NO_BREAK_SPACE}étoiles` }),
+    forks: (forks) => plural(forks, { one: `${count(forks)}${NO_BREAK_SPACE}fork`, other: `${count(forks)}${NO_BREAK_SPACE}forks` }),
+    language: (name) => `Langage${NO_BREAK_SPACE}: ${name}`,
+    licence: (id) => `Licence${NO_BREAK_SPACE}: ${id}`,
+    issueStates: {
+      open: "Ouverte",
+      draft: "Brouillon",
+      merged: "Fusionnée",
+      completed: "Terminée",
+      not_planned: "Non prévue",
+      closed: "Fermée",
+    },
+    openedBy: (author, date) => `${author} l’a ouverte le ${date}`,
+    mergedOn: (date) => `fusionnée le ${date}`,
+    comments: (comments) =>
+      plural(comments, {
+        one: `${count(comments)}${NO_BREAK_SPACE}commentaire`,
+        other: `${count(comments)}${NO_BREAK_SPACE}commentaires`,
+      }),
+  },
+
   attachmentTray: {
     filesToSend: "Fichiers à envoyer",
     uploading: "Envoi…",

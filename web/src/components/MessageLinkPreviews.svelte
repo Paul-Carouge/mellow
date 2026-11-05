@@ -6,9 +6,11 @@
   import { imagePreviewWidth } from "./attachment-preview";
   import EmbedCard from "./embeds/EmbedCard.svelte";
   import EmbedTitleLink from "./embeds/EmbedTitleLink.svelte";
+  import GitHubCard from "./embeds/GitHubCard.svelte";
   import MusicCard from "./embeds/MusicCard.svelte";
   import PreviewPicture from "./embeds/PreviewPicture.svelte";
   import VideoEmbed from "./embeds/VideoEmbed.svelte";
+  import WikipediaCard from "./embeds/WikipediaCard.svelte";
   import {
     knownLinkEmbedOf,
     linkHostName,
@@ -57,7 +59,11 @@
     {#each shownPreviews as { preview, youTubeEmbed, embed, layout, title, barColor, imageUrl } (preview.id)}
       {@const hasPicture = imageUrl !== null && !failedImageIds.has(preview.id)}
       {@const markPictureFailed = () => failedImageIds.add(preview.id)}
-      {#if layout === "picture-only"}
+      {#if embed?.kind === "github_repository" || embed?.kind === "github_issue" || embed?.kind === "github_pull_request"}
+        <GitHubCard {preview} {embed} {imageUrl} {barColor} />
+      {:else if embed?.kind === "wikipedia_article"}
+        <WikipediaCard {preview} {embed} {imageUrl} {barColor} />
+      {:else if layout === "picture-only"}
         {#if hasPicture}
           <a
             href={preview.url}

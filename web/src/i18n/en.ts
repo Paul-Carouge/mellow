@@ -1002,6 +1002,31 @@ export const en = {
     jumpTo: (author: string) => `Jump to ${author}'s message`,
   },
 
+  providerCards: {
+    wikipedia: "Wikipedia",
+    /** `language` is the wiki's language as the interface names it ("French"). */
+    wikipediaIn: (language: string) => `${language} Wikipedia`,
+    disambiguation: "Disambiguation page",
+    topics: "Topics",
+    archived: "Archived",
+    stars: (stars: number) => plural(stars, { one: `${count(stars)} star`, other: `${count(stars)} stars` }),
+    forks: (forks: number) => plural(forks, { one: `${count(forks)} fork`, other: `${count(forks)} forks` }),
+    language: (name: string) => `Language: ${name}`,
+    licence: (id: string) => `Licence: ${id}`,
+    issueStates: {
+      open: "Open",
+      draft: "Draft",
+      merged: "Merged",
+      completed: "Completed",
+      not_planned: "Not planned",
+      closed: "Closed",
+    },
+    openedBy: (author: string, date: string) => `${author} opened this on ${date}`,
+    mergedOn: (date: string) => `merged on ${date}`,
+    comments: (comments: number) =>
+      plural(comments, { one: `${count(comments)} comment`, other: `${count(comments)} comments` }),
+  },
+
   attachmentTray: {
     filesToSend: "Files to send",
     uploading: "Uploading…",
