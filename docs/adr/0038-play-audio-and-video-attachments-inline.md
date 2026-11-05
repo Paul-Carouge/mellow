@@ -5,6 +5,7 @@
 - Amended: 2026-11-05 (compatible brands; metadata blanked and video size read at upload)
 - Amended by: [ADR-0046](0046-videos-compressed-in-the-uploaders-browser.md) (the web client compresses videos before they upload)
 - Amends: [ADR-0020](0020-attachments-and-avatars-encrypted-on-disk.md)
+- Its "No transcoding" consequence is superseded for audio by [ADR-0045](0045-audio-attachments-transcoded-to-opus.md).
 
 ## Context
 ROADMAP item 18 (owner, #roadmap): audio files played by clicking them whatever their common format, and videos watched inside the app. ADR-0020 serves everything but checked raster pictures with `Content-Disposition: attachment` and `application/octet-stream`, so a browser can only download them. Media elements also need byte ranges: Safari plays nothing without them, and other browsers cannot seek.

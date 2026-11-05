@@ -83,6 +83,15 @@ url = "2.5.8"
 webpki-root-certs = "1.0.10"
 tower = { version = "0.5.3", features = ["util"] }
 tokio-tungstenite = "0.30.0"
+# Ogg pages around the Opus packets of transcoded audio attachments (ADR-0045).
+ogg = "0.9.2"
+# libopus built from source by cmake and linked statically, no system library: audio attachments
+# are transcoded to Opus (ADR-0045).
+opus = "0.4.0"
+# Resamples decoded audio to the 48 kHz Opus encodes, pure Rust, without its FFT resampler.
+rubato = { version = "5.0.1", default-features = false }
+# Decodes uploaded audio in pure Rust for the Opus transcode, only the formats it takes (ADR-0045).
+symphonia = { version = "0.6.1", default-features = false, features = ["wav", "pcm", "flac", "mp3", "aac", "isomp4"] }
 # Lossless (animated) WebP encoding through libwebp built from source, no system library (ADR-0021).
 webp-animation = { version = "0.10.0", default-features = false, features = ["static"] }
 

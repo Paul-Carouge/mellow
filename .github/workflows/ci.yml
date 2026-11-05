@@ -18,8 +18,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-  # The server's AVIF encoder (rav1e) assembles its x86-64 code with nasm (ADR-0033).
-  SERVER_BUILD_PACKAGES: nasm
+  # The server's AVIF encoder (rav1e) assembles its x86-64 code with nasm (ADR-0033); libopus,
+  # linked into the server for audio attachments, is built from source by cmake (ADR-0045).
+  SERVER_BUILD_PACKAGES: nasm cmake
 
 jobs:
   lint:
