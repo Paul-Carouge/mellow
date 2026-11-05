@@ -260,6 +260,10 @@ pub fn validated_poll(
             && validate_message_content(text).is_ok()
             && !text.contains('\n')
     };
+    // Counted before any copy: a body may hold thousands of empty answers.
+    if !(MINIMUM_POLL_ANSWERS..=MAXIMUM_POLL_ANSWERS).contains(&poll.answers.len()) {
+        return Err(MessageRuleViolation::Poll);
+    }
     let question = poll.question.trim().to_owned();
     let answers: Vec<String> = poll
         .answers
