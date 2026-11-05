@@ -62,6 +62,8 @@
     onopenedconversation: () => void;
     /** Below the drawer breakpoint: the jump bar keeps only its action, on one line. */
     isCompact: boolean;
+    /** The chat's top unread bar while it shows: it covers the top of the list. */
+    topUnreadBar: HTMLElement | null;
   }
 
   let {
@@ -90,6 +92,7 @@
     onjumptopresent,
     onopenedconversation,
     isCompact,
+    topUnreadBar,
   }: Props = $props();
 
   const INITIAL_SKELETON_COUNT = 5;
@@ -382,11 +385,10 @@
     hasShownUnreadDivider = true;
     const distanceAboveView = viewport.getBoundingClientRect().top - divider.getBoundingClientRect().top;
     if (distanceAboveView > 0) {
-      // The chat's top unread bar wraps on phones and grows to 44 px under touch: clear what it
-      // really covers, so the divider and its date are not left under it.
-      const topUnreadBar = viewport.closest("section")?.querySelector<HTMLElement>(".unread-bar");
+      // The top unread bar wraps on phones and grows to 44 px under touch: clear what it really
+      // covers, from its top offset under the header. offsetHeight ignores its entry transform.
       const coveredHeight = topUnreadBar
-        ? Math.max(0, topUnreadBar.getBoundingClientRect().bottom - viewport.getBoundingClientRect().top)
+        ? lengthTokenInPixels("space-2xs") + topUnreadBar.offsetHeight
         : lengthTokenInPixels("component-jump-bar-height");
       const clearanceUnderJumpBar = coveredHeight + lengthTokenInPixels("space-md");
       viewport.scrollTop -= distanceAboveView + clearanceUnderJumpBar;
