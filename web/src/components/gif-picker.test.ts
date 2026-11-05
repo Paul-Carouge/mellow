@@ -4,8 +4,11 @@ import type { KlipyGif, KlipyItem } from "../lib/klipy";
 import {
   GIF_SEARCH_DEBOUNCE_MILLISECONDS,
   type TileBounds,
+  containedFrame,
   createLatestRequestGuard,
   debounce,
+  favouritesPage,
+  gifItemKey,
   gifsInSlugOrder,
   nextGifTile,
   tileAspectRatio,
@@ -109,5 +112,45 @@ describe("tileAspectRatio", () => {
     expect(tileAspectRatio(gif("a", 10, 100))).toBe(0.5);
     expect(tileAspectRatio({ kind: "ad", position: 0, width: null, height: null })).toBe(1);
     expect(tileAspectRatio({ kind: "ad", position: 0, width: 300, height: 250 })).toBe(1.2);
+  });
+});
+
+describe("gifItemKey", () => {
+  it("stays unique when Klipy repeats a GIF across pages", () => {
+    // Trending shifts between two requests: page 2 may start with page 1's last GIF.
+    const items: KlipyItem[] = [gif("a"), gif("b"), { kind: "ad", position: 2, width: null, height: null }, gif("b"), gif("a")];
+    const keys = items.map((item, index) => gifItemKey(item, index));
+    expect(new Set(keys).size).toBe(items.length);
+  });
+});
+
+describe("favouritesPage", () => {
+  it("pages through the list frozen at the first page, whatever is starred meanwhile", () => {
+    const frozen = Array.from({ length: 30 }, (_, index) => `slug-${index}`);
+    const first = favouritesPage(frozen, 0, 24);
+    expect(first).toEqual({ slugs: frozen.slice(0, 24), askedCount: 24, hasNext: true });
+    // A star after the first page moves "slug-27" to the front of the live list; the frozen copy
+    // keeps the order the first page was cut from, so nothing shows twice.
+    const live = withFavouriteSet(frozen, "slug-27", true);
+    const second = favouritesPage(frozen, first.askedCount, 24);
+    expect(second).toEqual({ slugs: frozen.slice(24), askedCount: 30, hasNext: false });
+    const shown = [...first.slugs, ...second.slugs];
+    expect(new Set(shown).size).toBe(shown.length);
+    expect(live[0]).toBe("slug-27");
+    expect(favouritesPage(frozen, 30, 24)).toEqual({ slugs: [], askedCount: 30, hasNext: false });
+  });
+});
+
+describe("containedFrame", () => {
+  // Rounded to a thousandth of a pixel: the scale is a float.
+  const rounded = (frame: ReturnType<typeof containedFrame>) =>
+    frame && Object.fromEntries(Object.entries(frame).map(([name, value]) => [name, Math.round(value * 1000) / 1000 + 0]));
+
+  it("fits a picture inside its box, centred, as object-fit: contain does", () => {
+    expect(rounded(containedFrame(448, 448, 360, 260))).toEqual({ x: 0, y: 62.222, width: 448, height: 323.556 });
+    expect(rounded(containedFrame(300, 448, 160, 200))).toEqual({ x: 0, y: 36.5, width: 300, height: 375 });
+    expect(rounded(containedFrame(620, 448, 200, 200))).toEqual({ x: 86, y: 0, width: 448, height: 448 });
+    expect(containedFrame(0, 448, 200, 200)).toBeNull();
+    expect(containedFrame(448, 448, 0, 200)).toBeNull();
   });
 });

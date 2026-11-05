@@ -21,6 +21,8 @@
     GIF_SEARCH_DEBOUNCE_MILLISECONDS,
     createLatestRequestGuard,
     debounce,
+    favouritesPage,
+    gifItemKey,
     gifsInSlugOrder,
     nextGifTile,
     tileAspectRatio,
@@ -69,7 +71,11 @@
   let status = $state<Status>({ kind: "loading" });
   let hasNext = $state(false);
   let nextPage = 1;
-  /** Favourites are paged here: how many of the starred slugs were already asked of Klipy. */
+  /**
+   * Favourites are paged here, over the list as it was when their first page loaded (stars
+   * changed meanwhile reorder the live one), counting the slugs already asked of Klipy.
+   */
+  let frozenFavouriteSlugs: readonly string[] = [];
   let favouritesAskedCount = 0;
   let isLoadingMore = $state(false);
   let moreFailure = $state<KlipyFailure | null>(null);
@@ -114,7 +120,12 @@
 
   /** Favourites first when there are some, as on Discord; trending otherwise. */
   async function openOnFavouritesOrTrending() {
+    // A tab clicked or a search typed meanwhile starts its own request and wins.
+    const opening = requests.start();
     await loadFavouriteSlugs();
+    if (!requests.isLatest(opening)) {
+      return;
+    }
     tab = favouriteSlugs !== null && favouriteSlugs.length > 0 ? "favourites" : "trending";
     await loadFirstPage();
   }
@@ -153,14 +164,13 @@
       nextPage += 1;
       return { items: [...page.items], hasNext: page.hasNext };
     }
-    const slugs = favouriteSlugs ?? [];
-    const asked = slugs.slice(favouritesAskedCount, favouritesAskedCount + KLIPY_PAGE_SIZE);
-    if (asked.length === 0) {
+    const next = favouritesPage(frozenFavouriteSlugs, favouritesAskedCount, KLIPY_PAGE_SIZE);
+    if (next.slugs.length === 0) {
       return { items: [], hasNext: false };
     }
-    const page = await fetchKlipyPage(klipyItemsUrl(settings, asked), signal);
-    favouritesAskedCount += asked.length;
-    return { items: gifsInSlugOrder(page.items, asked), hasNext: favouritesAskedCount < slugs.length };
+    const page = await fetchKlipyPage(klipyItemsUrl(settings, next.slugs), signal);
+    favouritesAskedCount = next.askedCount;
+    return { items: gifsInSlugOrder(page.items, next.slugs), hasNext: next.hasNext };
   }
 
   async function loadFirstPage() {
@@ -186,6 +196,7 @@
         return;
       }
     }
+    frozenFavouriteSlugs = favouriteSlugs ?? [];
     status = { kind: "loading" };
     try {
       const next = await fetchNextItems(controller.signal);
@@ -228,7 +239,8 @@
   }
 
   function showTab(next: Tab) {
-    if (next === tab && !isSearching) {
+    // While the picker opens, even the tab already shown is a choice that must stick.
+    if (next === tab && !isSearching && status.kind !== "loading") {
       return;
     }
     tab = next;
@@ -245,7 +257,10 @@
       }
       return;
     }
-    if (query.trim() !== searchedQuery) {
+    if (query.trim() === searchedQuery) {
+      // Back to the words already searched: nothing new to ask.
+      searchAfterPause.cancel();
+    } else {
       searchAfterPause.call();
     }
   }
@@ -526,7 +541,7 @@
       <!-- Justified rows: each tile takes the row's height and a width from its shape, so the
            sheet reads in Klipy's order, row by row; the spacer keeps the last row from stretching. -->
       <div class="flex flex-wrap gap-(--mw-component-gif-tile-gap)">
-        {#each items as item, index (item.kind === "gif" ? `gif-${item.slug}` : `ad-${index}`)}
+        {#each items as item, index (gifItemKey(item, index))}
           {@const ratio = tileAspectRatio(item)}
           {#if item.kind === "gif"}
             {@const title = item.title || strings.gifs.untitled}
