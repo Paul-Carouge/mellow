@@ -81,9 +81,9 @@ impl AppState {
     pub(crate) fn with_gifs(mut self, gifs: crate::domain::gifs::Gifs) -> Self {
         // Invariant: `GifsConfig::validate` allows only letters, digits, `-` and `_`.
         #[allow(clippy::expect_used)]
-        let policy = HeaderValue::from_str(&web_client::content_security_policy_with_klipy(
+        let policy = HeaderValue::from_str(&web_client::content_security_policy(Some(
             gifs.klipy_app_key(),
-        ))
+        )))
         .expect("a validated Klipy key fits in a header");
         self.gif_content_security_policy = Some(policy);
         self.gifs = Some(Arc::new(gifs));
