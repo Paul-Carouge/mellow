@@ -184,6 +184,7 @@ One PR each, in this order. **WP0 lands first**: it is the only package that edi
 ### WP4. Hover bar and menus (M)
 - Files: `MessageItem.svelte` (hover bar only), `ContextMenu.svelte`, `ChannelSidebar.svelte` (server menu instantiation), `Drawer.svelte` (bottom variant if needed), `message-actions.ts`.
 - Content: L4, N2, Q1.
+- Status: built on `feat/web-hover-bar-and-touch-menus`; details and measurements in [web-context-menus.md](web-context-menus.md) ("Design pass 2026-11"). `ChannelSidebar.svelte` and `Drawer.svelte` needed no change: the fix lives in `ContextMenu.svelte` and `menu-placement.ts`, and the sheet is the menu's own popover.
 - Acceptance: own message bar = reactions, Edit, Forward, Copy (if text), More; others' = reactions, Reply, Forward, Copy, More; Shift shows Delete; the server menu never wraps an item at the minimum sidebar width; on a touch phone the message menu is a bottom sheet with 48 px rows and focus returns to the message.
 
 ### WP5. Markdown gaps (M)
