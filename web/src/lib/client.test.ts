@@ -2,7 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError, type RestClient } from "./api";
 import { MellowClient, errorReason } from "./client.svelte";
-import type { Channel, DirectMessageChannel, Guild, Message, Ready, Relationship, Role, VoiceState } from "./protocol";
+import type {
+  Channel,
+  DirectMessageChannel,
+  Guild,
+  Message,
+  Ready,
+  Relationship,
+  Role,
+  VoiceState,
+} from "./protocol";
 
 const ME = "1";
 const OTHER = "2";
@@ -10,7 +19,10 @@ const GUILD = "100";
 const GENERAL = "102";
 const RULES = "103";
 
-function channel(id: string, overwrites: Channel["permission_overwrites"] = []): Channel {
+function channel(
+  id: string,
+  overwrites: Channel["permission_overwrites"] = [],
+): Channel {
   return {
     id,
     guild_id: GUILD,
@@ -38,7 +50,13 @@ function guild(channels: Channel[] = [channel(GENERAL)]): Guild {
 function ready(overrides: Partial<Ready> = {}): Ready {
   return {
     session_id: "s",
-    user: { id: ME, username: "me", display_name: "Me", email: "me@example.org", is_instance_administrator: false },
+    user: {
+      id: ME,
+      username: "me",
+      display_name: "Me",
+      email: "me@example.org",
+      is_instance_administrator: false,
+    },
     guilds: [guild()],
     read_states: [],
     online_user_ids: [],
@@ -47,7 +65,11 @@ function ready(overrides: Partial<Ready> = {}): Ready {
   };
 }
 
-function message(id: string, channelId = GENERAL, editedAt: number | null = null): Message {
+function message(
+  id: string,
+  channelId = GENERAL,
+  editedAt: number | null = null,
+): Message {
   return {
     id,
     channel_id: channelId,
@@ -59,13 +81,16 @@ function message(id: string, channelId = GENERAL, editedAt: number | null = null
 }
 
 /** Only what each test needs; every other call fails loudly. The cast is limited to this fake. */
-function fakeRest(overrides: Partial<Record<keyof RestClient, unknown>>): RestClient {
+function fakeRest(
+  overrides: Partial<Record<keyof RestClient, unknown>>,
+): RestClient {
   return new Proxy(overrides, {
     get(target, property) {
       if (property in target) {
         return target[property as keyof RestClient];
       }
-      return () => Promise.reject(new Error(`unexpected call ${String(property)}`));
+      return () =>
+        Promise.reject(new Error(`unexpected call ${String(property)}`));
     },
   }) as unknown as RestClient;
 }
@@ -93,8 +118,13 @@ describe("MellowClient", () => {
   });
 
   it("drops GIF settings that answer after the session ended", async () => {
-    let answer: (settings: { klipy_app_key: string; customer_id: string }) => void = () => {};
-    const gifSettings = vi.fn(() => new Promise((resolve) => (answer = resolve)));
+    let answer: (settings: {
+      klipy_app_key: string;
+      customer_id: string;
+    }) => void = () => {};
+    const gifSettings = vi.fn(
+      () => new Promise((resolve) => (answer = resolve)),
+    );
     const client = new MellowClient(fakeRest({ ...QUIET_REST, gifSettings }));
     client.applyReady(ready());
     client["endSession"]();
@@ -105,25 +135,49 @@ describe("MellowClient", () => {
   });
 
   it("refuses a file over the instance's limit without uploading it, and lets one at the limit through", async () => {
-    const attachment = { id: "9", file_name: "ok.bin", content_type: "application/octet-stream", size_bytes: 4 };
+    const attachment = {
+      id: "9",
+      file_name: "ok.bin",
+      content_type: "application/octet-stream",
+      size_bytes: 4,
+    };
     const uploadAttachment = vi.fn(() => Promise.resolve(attachment));
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, uploadAttachment }));
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, uploadAttachment }),
+    );
     client.applyReady(ready({ maximum_attachment_bytes: 4 }));
 
-    const refusal = client.uploadAttachment(new File(["12345"], "big.bin"));
+    const refusal = client.uploadAttachment(
+      new File(["12345"], "big.bin"),
+      new AbortController().signal,
+    );
     await expect(refusal).rejects.toEqual(new ApiError(413, "FILE_TOO_LARGE"));
     expect(uploadAttachment).not.toHaveBeenCalled();
 
-    await expect(client.uploadAttachment(new File(["1234"], "ok.bin"))).resolves.toBe(attachment);
+    await expect(
+      client.uploadAttachment(
+        new File(["1234"], "ok.bin"),
+        new AbortController().signal,
+      ),
+    ).resolves.toBe(attachment);
     expect(uploadAttachment).toHaveBeenCalledTimes(1);
   });
 
   it("lets an older instance, which does not tell its limit, answer for any size", async () => {
-    const uploadAttachment = vi.fn(() => Promise.reject(new ApiError(413, "FILE_TOO_LARGE")));
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, uploadAttachment }));
+    const uploadAttachment = vi.fn(() =>
+      Promise.reject(new ApiError(413, "FILE_TOO_LARGE")),
+    );
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, uploadAttachment }),
+    );
     client.applyReady(ready());
 
-    await expect(client.uploadAttachment(new File(["12345"], "big.bin"))).rejects.toBeInstanceOf(ApiError);
+    await expect(
+      client.uploadAttachment(
+        new File(["12345"], "big.bin"),
+        new AbortController().signal,
+      ),
+    ).rejects.toBeInstanceOf(ApiError);
     expect(uploadAttachment).toHaveBeenCalledTimes(1);
   });
 
@@ -138,7 +192,11 @@ describe("MellowClient", () => {
   it("joins a session resume already under way instead of starting another", async () => {
     let refuseCurrentUser: () => void = () => {};
     const currentUser = vi.fn(
-      () => new Promise((_resolve, reject) => (refuseCurrentUser = () => reject(new ApiError(0, "NETWORK")))),
+      () =>
+        new Promise(
+          (_resolve, reject) =>
+            (refuseCurrentUser = () => reject(new ApiError(0, "NETWORK"))),
+        ),
     );
     const client = new MellowClient(fakeRest({ currentUser }));
 
@@ -155,31 +213,54 @@ describe("MellowClient", () => {
   });
 
   it("forwards a message by its own ids, outside the outbox, and shows the forward in its destination", async () => {
-    const forwardMessage = vi.fn((channelId: string, origin: { channel_id: string; message_id: string }, nonce: string) =>
-      Promise.resolve({
-        ...message("900", channelId),
-        content: "message 5",
-        nonce,
-        forwarded_from: origin,
-      }),
+    const forwardMessage = vi.fn(
+      (
+        channelId: string,
+        origin: { channel_id: string; message_id: string },
+        nonce: string,
+      ) =>
+        Promise.resolve({
+          ...message("900", channelId),
+          content: "message 5",
+          nonce,
+          forwarded_from: origin,
+        }),
     );
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, forwardMessage }));
-    client.applyReady(ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }));
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, forwardMessage }),
+    );
+    client.applyReady(
+      ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }),
+    );
 
     await client.forwardMessage(RULES, message("5"), "n1");
 
-    expect(forwardMessage).toHaveBeenCalledWith(RULES, { channel_id: GENERAL, message_id: "5" }, "n1");
+    expect(forwardMessage).toHaveBeenCalledWith(
+      RULES,
+      { channel_id: GENERAL, message_id: "5" },
+      "n1",
+    );
     expect(client.pendingMessages).toEqual([]);
-    expect(client.messages(RULES).map((cached) => [cached.id, cached.nonce, cached.forwarded_from])).toEqual([
-      ["900", null, { channel_id: GENERAL, message_id: "5" }],
-    ]);
+    expect(
+      client
+        .messages(RULES)
+        .map((cached) => [cached.id, cached.nonce, cached.forwarded_from]),
+    ).toEqual([["900", null, { channel_id: GENERAL, message_id: "5" }]]);
   });
 
   it("leaves a read channel read after forwarding into it, and an unread one unread", async () => {
     const acknowledge = vi.fn(() => Promise.resolve());
-    const forwardMessage = (channelId: string, origin: { channel_id: string; message_id: string }) =>
-      Promise.resolve({ ...message(channelId === RULES ? "400" : "401", channelId), forwarded_from: origin });
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, acknowledge, forwardMessage }));
+    const forwardMessage = (
+      channelId: string,
+      origin: { channel_id: string; message_id: string },
+    ) =>
+      Promise.resolve({
+        ...message(channelId === RULES ? "400" : "401", channelId),
+        forwarded_from: origin,
+      });
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, acknowledge, forwardMessage }),
+    );
     const third = channel("104");
     client.applyReady(
       ready({
@@ -220,18 +301,25 @@ describe("MellowClient", () => {
       }),
     );
     client.applyReady(ready());
-    client.pendingMessages = ["first", "second", "third"].map((content, index) => ({
-      nonce: `n${index}`,
-      channelId: GENERAL,
-      content,
-      replyToId: null,
-      attachments: [],
-      poll: null,
-      status: "failed" as const,
-    }));
+    client.pendingMessages = ["first", "second", "third"].map(
+      (content, index) => ({
+        nonce: `n${index}`,
+        channelId: GENERAL,
+        content,
+        replyToId: null,
+        attachments: [],
+        poll: null,
+        status: "failed" as const,
+      }),
+    );
     await client["resendFailedMessages"]();
     expect(sent).toEqual(["first"]);
-    expect(client.pendingMessages.map((pending) => [pending.content, pending.status])).toEqual([
+    expect(
+      client.pendingMessages.map((pending) => [
+        pending.content,
+        pending.status,
+      ]),
+    ).toEqual([
       ["second", "failed"],
       ["third", "failed"],
     ]);
@@ -242,7 +330,17 @@ describe("MellowClient", () => {
 
   it("never discards a message while it is being sent", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
-    client.pendingMessages = [{ nonce: "n", channelId: GENERAL, content: "x", replyToId: null, attachments: [], poll: null, status: "sending" }];
+    client.pendingMessages = [
+      {
+        nonce: "n",
+        channelId: GENERAL,
+        content: "x",
+        replyToId: null,
+        attachments: [],
+        poll: null,
+        status: "sending",
+      },
+    ];
     client.discardMessage("n");
     expect(client.pendingMessages).toHaveLength(1);
   });
@@ -269,15 +367,27 @@ describe("MellowClient", () => {
 
   it("keeps a hidden channel hidden when a late update about it arrives", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
-    client.applyReady(ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }));
-    client.applyEvent({ t: "GUILD_CREATE", data: guild([channel(GENERAL)]) }, 0);
-    client.applyEvent({ t: "CHANNEL_UPDATE", data: { ...channel(RULES), name: "renamed" } }, 0);
-    expect(client.guilds[0]?.channels.map((candidate) => candidate.id)).toEqual([GENERAL]);
+    client.applyReady(
+      ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }),
+    );
+    client.applyEvent(
+      { t: "GUILD_CREATE", data: guild([channel(GENERAL)]) },
+      0,
+    );
+    client.applyEvent(
+      { t: "CHANNEL_UPDATE", data: { ...channel(RULES), name: "renamed" } },
+      0,
+    );
+    expect(client.guilds[0]?.channels.map((candidate) => candidate.id)).toEqual(
+      [GENERAL],
+    );
   });
 
   it("keeps why the instance refused a message, for Not sent", async () => {
     const refusal = new ApiError(400, "VALIDATION_FAILED");
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, sendMessage: () => Promise.reject(refusal) }));
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, sendMessage: () => Promise.reject(refusal) }),
+    );
     client.applyReady(ready());
     client.selectGuild(GUILD, GENERAL);
     await client.sendMessage("hello");
@@ -298,7 +408,10 @@ describe("MellowClient", () => {
     const text: Channel = { ...channel("105"), parent_id: "104" };
     const created = [category, text];
     const client = new MellowClient(
-      fakeRest({ ...QUIET_REST, createChannel: () => Promise.resolve(created.shift()) }),
+      fakeRest({
+        ...QUIET_REST,
+        createChannel: () => Promise.resolve(created.shift()),
+      }),
     );
     client.applyReady(ready());
     client.selectGuild(GUILD, GENERAL);
@@ -310,12 +423,21 @@ describe("MellowClient", () => {
 
   it("removes a deleted category at once and leaves its channels uncategorised", async () => {
     const category: Channel = { ...channel("104"), kind: "category" };
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, deleteChannel: () => Promise.resolve() }));
-    client.applyReady(ready({ guilds: [guild([category, { ...channel(GENERAL), parent_id: "104" }])] }));
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, deleteChannel: () => Promise.resolve() }),
+    );
+    client.applyReady(
+      ready({
+        guilds: [guild([category, { ...channel(GENERAL), parent_id: "104" }])],
+      }),
+    );
     await client.deleteChannel(GUILD, "104");
-    expect(client.guilds[0]?.channels.map((candidate) => [candidate.id, candidate.parent_id])).toEqual([
-      [GENERAL, null],
-    ]);
+    expect(
+      client.guilds[0]?.channels.map((candidate) => [
+        candidate.id,
+        candidate.parent_id,
+      ]),
+    ).toEqual([[GENERAL, null]]);
   });
 
   it("applies a new avatar and a removed banner from USER_UPDATE to authors and to the signed-in user", () => {
@@ -324,8 +446,20 @@ describe("MellowClient", () => {
     client.applyReady(ready({ user: client.user }));
     client.applyEvent({ t: "MESSAGE_CREATE", data: message("150") }, 0);
     const avatar = { id: "71", is_animated: true };
-    client.applyEvent({ t: "USER_UPDATE", data: { id: OTHER, username: "other", display_name: "Other", avatar } }, 0);
-    client.applyEvent({ t: "USER_UPDATE", data: { id: ME, username: "me", display_name: "Me" } }, 0);
+    client.applyEvent(
+      {
+        t: "USER_UPDATE",
+        data: { id: OTHER, username: "other", display_name: "Other", avatar },
+      },
+      0,
+    );
+    client.applyEvent(
+      {
+        t: "USER_UPDATE",
+        data: { id: ME, username: "me", display_name: "Me" },
+      },
+      0,
+    );
     expect(client.messages(GENERAL)[0]?.author.avatar).toEqual(avatar);
     expect(client.user?.banner).toBeNull();
     expect(client.user?.email).toBe("me@example.org");
@@ -333,38 +467,73 @@ describe("MellowClient", () => {
 
   it("replaces only what shows the user a USER_UPDATE is about", async () => {
     const third = { id: "3", username: "third", display_name: "Third" };
-    const member = (user: typeof third) => ({ user, role_ids: [], joined_at_unix_milliseconds: 0 });
+    const member = (user: typeof third) => ({
+      user,
+      role_ids: [],
+      joined_at_unix_milliseconds: 0,
+    });
     const otherUser = { id: OTHER, username: "other", display_name: "Other" };
     const client = new MellowClient(
-      fakeRest({ ...QUIET_REST, listMembers: () => Promise.resolve([member(otherUser), member(third)]) }),
+      fakeRest({
+        ...QUIET_REST,
+        listMembers: () => Promise.resolve([member(otherUser), member(third)]),
+      }),
     );
-    client.applyReady(ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }));
+    client.applyReady(
+      ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }),
+    );
     await new Promise((resolve) => setTimeout(resolve, 0));
     client.applyEvent({ t: "MESSAGE_CREATE", data: message("150") }, 0);
-    client.applyEvent({ t: "MESSAGE_CREATE", data: { ...message("151"), author: third } }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_CREATE", data: { ...message("151"), author: third } },
+      0,
+    );
     client.applyEvent({ t: "MESSAGE_CREATE", data: message("152", RULES) }, 0);
-    client.upsertConversation({ id: "500", recipients: [otherUser], last_message_id: null });
+    client.upsertConversation({
+      id: "500",
+      recipients: [otherUser],
+      last_message_id: null,
+    });
     const general = client.messages(GENERAL);
     const rules = client.messages(RULES);
     const members = client.membersByGuild.get(GUILD);
     const conversations = client.conversations;
 
-    client.applyEvent({ t: "USER_UPDATE", data: { ...third, avatar: { id: "71", is_animated: false } } }, 0);
+    client.applyEvent(
+      {
+        t: "USER_UPDATE",
+        data: { ...third, avatar: { id: "71", is_animated: false } },
+      },
+      0,
+    );
 
     expect(client.messages(GENERAL)[0]).toBe(general[0]);
-    expect(client.messages(GENERAL)[1]?.author.avatar).toEqual({ id: "71", is_animated: false });
+    expect(client.messages(GENERAL)[1]?.author.avatar).toEqual({
+      id: "71",
+      is_animated: false,
+    });
     expect(client.messages(RULES)).toBe(rules);
     expect(client.membersByGuild.get(GUILD)?.[0]).toBe(members?.[0]);
-    expect(client.membersByGuild.get(GUILD)?.[1]?.user.avatar).toEqual({ id: "71", is_animated: false });
+    expect(client.membersByGuild.get(GUILD)?.[1]?.user.avatar).toEqual({
+      id: "71",
+      is_animated: false,
+    });
     expect(client.conversations).toBe(conversations);
   });
 
   describe("member lists on their way", () => {
-    const person = (id: string) => ({ user: { id, username: id, display_name: id }, role_ids: [], joined_at_unix_milliseconds: 0 });
+    const person = (id: string) => ({
+      user: { id, username: id, display_name: id },
+      role_ids: [],
+      joined_at_unix_milliseconds: 0,
+    });
     /** Each `listMembers` waits until the test answers it, in any order. */
     function deferredMembers() {
       const answers: ((members: ReturnType<typeof person>[]) => void)[] = [];
-      const listMembers = () => new Promise<ReturnType<typeof person>[]>((resolve) => answers.push(resolve));
+      const listMembers = () =>
+        new Promise<ReturnType<typeof person>[]>((resolve) =>
+          answers.push(resolve),
+        );
       return { answers, listMembers };
     }
 
@@ -372,13 +541,21 @@ describe("MellowClient", () => {
       const { answers, listMembers } = deferredMembers();
       const client = new MellowClient(fakeRest({ ...QUIET_REST, listMembers }));
       client.applyReady(ready());
-      client.applyEvent({ t: "GUILD_MEMBER_ADD", data: { guild_id: GUILD, member: person("7") } }, 0);
+      client.applyEvent(
+        {
+          t: "GUILD_MEMBER_ADD",
+          data: { guild_id: GUILD, member: person("7") },
+        },
+        0,
+      );
       answers[0]?.([person(OTHER)]);
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(client.membersByGuild.has(GUILD)).toBe(false);
       answers[1]?.([person(OTHER), person("7")]);
       await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(client.membersByGuild.get(GUILD)?.map((member) => member.user.id)).toEqual([OTHER, "7"]);
+      expect(
+        client.membersByGuild.get(GUILD)?.map((member) => member.user.id),
+      ).toEqual([OTHER, "7"]);
     });
 
     it("drops a list asked before the last Ready", async () => {
@@ -390,38 +567,71 @@ describe("MellowClient", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       answers[0]?.([person("stale")]);
       await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(client.membersByGuild.get(GUILD)?.map((member) => member.user.id)).toEqual(["8"]);
+      expect(
+        client.membersByGuild.get(GUILD)?.map((member) => member.user.id),
+      ).toEqual(["8"]);
     });
   });
 
   it("keeps an edit that arrived while an older history page was on its way", async () => {
     let answer: (page: Message[]) => void = () => undefined;
     const client = new MellowClient(
-      fakeRest({ ...QUIET_REST, listMessages: () => new Promise<Message[]>((resolve) => (answer = resolve)) }),
+      fakeRest({
+        ...QUIET_REST,
+        listMessages: () =>
+          new Promise<Message[]>((resolve) => (answer = resolve)),
+      }),
     );
     client.applyReady(ready());
     client.applyEvent({ t: "MESSAGE_CREATE", data: message("150") }, 0);
-    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...message("150", GENERAL, 20), content: "edited" } }, 0);
+    client.applyEvent(
+      {
+        t: "MESSAGE_UPDATE",
+        data: { ...message("150", GENERAL, 20), content: "edited" },
+      },
+      0,
+    );
     answer([message("149"), message("150")]);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(client.messages(GENERAL).map((cached) => cached.content)).toEqual(["message 149", "edited"]);
+    expect(client.messages(GENERAL).map((cached) => cached.content)).toEqual([
+      "message 149",
+      "edited",
+    ]);
   });
 
   it("keeps the newer edit when an older one comes back late", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(ready());
     client.applyEvent({ t: "MESSAGE_CREATE", data: message("150") }, 0);
-    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...message("150", GENERAL, 20), content: "newer" } }, 0);
-    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...message("150", GENERAL, 10), content: "older" } }, 0);
+    client.applyEvent(
+      {
+        t: "MESSAGE_UPDATE",
+        data: { ...message("150", GENERAL, 20), content: "newer" },
+      },
+      0,
+    );
+    client.applyEvent(
+      {
+        t: "MESSAGE_UPDATE",
+        data: { ...message("150", GENERAL, 10), content: "older" },
+      },
+      0,
+    );
     expect(client.messages(GENERAL)[0]?.content).toBe("newer");
   });
 
   it("reads channel overwrites: a read-only channel refuses sending", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
-    const readOnly = channel(RULES, [{ id: GUILD, kind: "role", allow: "0", deny: String(1n << 2n) }]);
+    const readOnly = channel(RULES, [
+      { id: GUILD, kind: "role", allow: "0", deny: String(1n << 2n) },
+    ]);
     client.applyReady(ready({ guilds: [guild([channel(GENERAL), readOnly])] }));
-    expect(BigInt(client.myChannelPermissions(GENERAL) ?? "0") & (1n << 2n)).toBe(1n << 2n);
-    expect(BigInt(client.myChannelPermissions(RULES) ?? "0") & (1n << 2n)).toBe(0n);
+    expect(
+      BigInt(client.myChannelPermissions(GENERAL) ?? "0") & (1n << 2n),
+    ).toBe(1n << 2n);
+    expect(BigInt(client.myChannelPermissions(RULES) ?? "0") & (1n << 2n)).toBe(
+      0n,
+    );
   });
 
   it("stops asking for older history after a failure until Try again", async () => {
@@ -431,7 +641,11 @@ describe("MellowClient", () => {
         ...QUIET_REST,
         listMessages: (_channelId: string, before?: string) => {
           if (!before) {
-            return Promise.resolve(Array.from({ length: 50 }, (_, index) => message(String(300 + index))));
+            return Promise.resolve(
+              Array.from({ length: 50 }, (_, index) =>
+                message(String(300 + index)),
+              ),
+            );
           }
           olderRequests += 1;
           return Promise.reject(new ApiError(0, "NETWORK"));
@@ -454,24 +668,34 @@ describe("MellowClient", () => {
     const client = new MellowClient(
       fakeRest({
         ...QUIET_REST,
-        listMessages: () => new Promise<Message[]>((resolve) => (answerFirstPage = resolve)),
+        listMessages: () =>
+          new Promise<Message[]>((resolve) => (answerFirstPage = resolve)),
       }),
     );
     client.applyReady(ready());
-    client.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: GENERAL, id: "301" } }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_DELETE", data: { channel_id: GENERAL, id: "301" } },
+      0,
+    );
     answerFirstPage([message("300"), message("301")]);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(client.messages(GENERAL).map((cached) => cached.id)).toEqual(["300"]);
+    expect(client.messages(GENERAL).map((cached) => cached.id)).toEqual([
+      "300",
+    ]);
   });
 
   it("drops an older page that comes back after a Ready emptied the cache, so no gap opens", async () => {
     let answerOlderPage: (page: Message[]) => void = () => {};
-    const latestPage = Array.from({ length: 50 }, (_, index) => message(String(300 + index)));
+    const latestPage = Array.from({ length: 50 }, (_, index) =>
+      message(String(300 + index)),
+    );
     const client = new MellowClient(
       fakeRest({
         ...QUIET_REST,
         listMessages: (_channelId: string, before?: string) =>
-          before ? new Promise<Message[]>((resolve) => (answerOlderPage = resolve)) : Promise.resolve(latestPage),
+          before
+            ? new Promise<Message[]>((resolve) => (answerOlderPage = resolve))
+            : Promise.resolve(latestPage),
       }),
     );
     client.applyReady(ready());
@@ -481,7 +705,9 @@ describe("MellowClient", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     answerOlderPage([message("100"), message("101")]);
     await olderLoad;
-    expect(client.messages(GENERAL).map((cached) => cached.id)).toEqual(latestPage.map((page) => page.id));
+    expect(client.messages(GENERAL).map((cached) => cached.id)).toEqual(
+      latestPage.map((page) => page.id),
+    );
   });
 
   it("deletes in the message's own channel, and treats an already deleted message as deleted", async () => {
@@ -489,14 +715,17 @@ describe("MellowClient", () => {
     const client = new MellowClient(
       fakeRest({
         ...QUIET_REST,
-        listMessages: (channelId: string) => Promise.resolve(channelId === GENERAL ? [message("300")] : []),
+        listMessages: (channelId: string) =>
+          Promise.resolve(channelId === GENERAL ? [message("300")] : []),
         deleteMessage: (channelId: string, messageId: string) => {
           deletions.push(`${channelId}/${messageId}`);
           return Promise.reject(new ApiError(404, "NOT_FOUND"));
         },
       }),
     );
-    client.applyReady(ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }));
+    client.applyReady(
+      ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }),
+    );
     await new Promise((resolve) => setTimeout(resolve, 0));
     const deleted = client.messages(GENERAL)[0];
     expect(deleted).toBeDefined();
@@ -511,11 +740,23 @@ describe("MellowClient", () => {
       fakeRest({
         ...QUIET_REST,
         updateCurrentUser: (changes: { display_name?: string }) =>
-          Promise.resolve({ ...ready().user, display_name: changes.display_name ?? "Me" }),
+          Promise.resolve({
+            ...ready().user,
+            display_name: changes.display_name ?? "Me",
+          }),
       }),
     );
     client.applyReady(ready());
-    client.applyEvent({ t: "MESSAGE_CREATE", data: { ...message("150"), author: { id: ME, username: "me", display_name: "Me" } } }, 0);
+    client.applyEvent(
+      {
+        t: "MESSAGE_CREATE",
+        data: {
+          ...message("150"),
+          author: { id: ME, username: "me", display_name: "Me" },
+        },
+      },
+      0,
+    );
     await client.updateDisplayName("  Paul  ");
     expect(client.user?.display_name).toBe("Paul");
     expect(client.messages(GENERAL)[0]?.author.display_name).toBe("Paul");
@@ -541,20 +782,36 @@ describe("MellowClient", () => {
     client.applyReady(start);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(client.unreadMarkers.get(GENERAL)).toEqual({ lastReadMessageId: "200", newestAtOpenMessageId: "201" });
+    expect(client.unreadMarkers.get(GENERAL)).toEqual({
+      lastReadMessageId: "200",
+      newestAtOpenMessageId: "201",
+    });
     client.noteTabHidden();
     expect(acknowledged).toEqual(["201"]);
     // A message arriving during the visit is read at once and moves no line.
-    client.applyEvent({ t: "MESSAGE_CREATE", data: message("202") }, Date.now());
-    expect(client.unreadMarkers.get(GENERAL)).toEqual({ lastReadMessageId: "200", newestAtOpenMessageId: "201" });
+    client.applyEvent(
+      { t: "MESSAGE_CREATE", data: message("202") },
+      Date.now(),
+    );
+    expect(client.unreadMarkers.get(GENERAL)).toEqual({
+      lastReadMessageId: "200",
+      newestAtOpenMessageId: "201",
+    });
 
     client.selectChannel(RULES);
     expect(client.unreadMarkers.has(GENERAL)).toBe(false);
   });
 
   it("draws no New divider for a channel read up to its last message", async () => {
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: () => Promise.resolve([message("200")]) }));
-    const start = ready({ read_states: [{ channel_id: GENERAL, last_read_message_id: "200" }] });
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        listMessages: () => Promise.resolve([message("200")]),
+      }),
+    );
+    const start = ready({
+      read_states: [{ channel_id: GENERAL, last_read_message_id: "200" }],
+    });
     client.user = start.user;
     client.applyReady(start);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -565,33 +822,94 @@ describe("MellowClient", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(ready());
     const icon = { id: "900", is_animated: true };
-    client.applyEvent({ t: "GUILD_UPDATE", data: { id: GUILD, name: "Book club", icon } }, 0);
+    client.applyEvent(
+      { t: "GUILD_UPDATE", data: { id: GUILD, name: "Book club", icon } },
+      0,
+    );
     expect(client.selectedGuild?.name).toBe("Book club");
     expect(client.selectedGuild?.icon).toEqual(icon);
-    client.applyEvent({ t: "GUILD_UPDATE", data: { id: GUILD, name: "Book club" } }, 0);
+    client.applyEvent(
+      { t: "GUILD_UPDATE", data: { id: GUILD, name: "Book club" } },
+      0,
+    );
     expect(client.selectedGuild?.icon).toBeNull();
   });
 
   it("drops a deleted role from members and from the user's own roles", async () => {
-    const helper: Role = { id: "201", name: "Helper", color: 0, position: 1, permissions: "0", is_displayed_separately: false };
-    const everyone: Role = { id: GUILD, name: "@everyone", color: 0, position: 0, permissions: "6", is_displayed_separately: false };
-    const member = { user: { id: OTHER, username: "other", display_name: "Other" }, role_ids: [helper.id], joined_at_unix_milliseconds: 0 };
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMembers: () => Promise.resolve([member]) }));
-    client.applyReady(ready({ guilds: [{ ...guild(), roles: [everyone, helper], my_role_ids: [helper.id] }] }));
+    const helper: Role = {
+      id: "201",
+      name: "Helper",
+      color: 0,
+      position: 1,
+      permissions: "0",
+      is_displayed_separately: false,
+    };
+    const everyone: Role = {
+      id: GUILD,
+      name: "@everyone",
+      color: 0,
+      position: 0,
+      permissions: "6",
+      is_displayed_separately: false,
+    };
+    const member = {
+      user: { id: OTHER, username: "other", display_name: "Other" },
+      role_ids: [helper.id],
+      joined_at_unix_milliseconds: 0,
+    };
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, listMembers: () => Promise.resolve([member]) }),
+    );
+    client.applyReady(
+      ready({
+        guilds: [
+          { ...guild(), roles: [everyone, helper], my_role_ids: [helper.id] },
+        ],
+      }),
+    );
     await new Promise((resolve) => setTimeout(resolve, 0));
-    client.applyEvent({ t: "GUILD_ROLES_UPDATE", data: { guild_id: GUILD, roles: [everyone] } }, 0);
+    client.applyEvent(
+      { t: "GUILD_ROLES_UPDATE", data: { guild_id: GUILD, roles: [everyone] } },
+      0,
+    );
     expect(client.selectedGuild?.my_role_ids).toEqual([]);
     expect(client.membersByGuild.get(GUILD)?.[0]?.role_ids).toEqual([]);
   });
 
   it("puts a created role above @everyone at once, and once only when the gateway came first", async () => {
-    const everyone: Role = { id: GUILD, name: "@everyone", color: 0, position: 0, permissions: "6", is_displayed_separately: false };
-    const helper: Role = { id: "201", name: "Helper", color: 0, position: 1, permissions: "0", is_displayed_separately: false };
-    const created: Role = { id: "202", name: "new role", color: 0, position: 1, permissions: "0", is_displayed_separately: false };
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, createRole: () => Promise.resolve(created) }));
-    client.applyReady(ready({ guilds: [{ ...guild(), roles: [everyone, helper] }] }));
+    const everyone: Role = {
+      id: GUILD,
+      name: "@everyone",
+      color: 0,
+      position: 0,
+      permissions: "6",
+      is_displayed_separately: false,
+    };
+    const helper: Role = {
+      id: "201",
+      name: "Helper",
+      color: 0,
+      position: 1,
+      permissions: "0",
+      is_displayed_separately: false,
+    };
+    const created: Role = {
+      id: "202",
+      name: "new role",
+      color: 0,
+      position: 1,
+      permissions: "0",
+      is_displayed_separately: false,
+    };
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, createRole: () => Promise.resolve(created) }),
+    );
+    client.applyReady(
+      ready({ guilds: [{ ...guild(), roles: [everyone, helper] }] }),
+    );
     await client.createRole(GUILD, "new role");
-    const positions = () => client.selectedGuild?.roles.map((role) => [role.id, role.position]);
+    const positions = () =>
+      client.selectedGuild?.roles.map((role) => [role.id, role.position]);
     expect(positions()).toEqual([
       [GUILD, 0],
       ["201", 2],
@@ -602,11 +920,30 @@ describe("MellowClient", () => {
   });
 
   it("never lets a late settings answer undo newer state from the gateway", async () => {
-    const helper: Role = { id: "201", name: "Helper", color: 0, position: 1, permissions: "0", is_displayed_separately: false };
-    const everyone: Role = { id: GUILD, name: "@everyone", color: 0, position: 0, permissions: "6", is_displayed_separately: false };
-    const member = { user: { id: OTHER, username: "other", display_name: "Other" }, role_ids: [], joined_at_unix_milliseconds: 0 };
+    const helper: Role = {
+      id: "201",
+      name: "Helper",
+      color: 0,
+      position: 1,
+      permissions: "0",
+      is_displayed_separately: false,
+    };
+    const everyone: Role = {
+      id: GUILD,
+      name: "@everyone",
+      color: 0,
+      position: 0,
+      permissions: "6",
+      is_displayed_separately: false,
+    };
+    const member = {
+      user: { id: OTHER, username: "other", display_name: "Other" },
+      role_ids: [],
+      joined_at_unix_milliseconds: 0,
+    };
     const answers: (() => void)[] = [];
-    const late = <T>(value: T) => new Promise<T>((resolve) => answers.push(() => resolve(value)));
+    const late = <T>(value: T) =>
+      new Promise<T>((resolve) => answers.push(() => resolve(value)));
     const client = new MellowClient(
       fakeRest({
         ...QUIET_REST,
@@ -617,7 +954,9 @@ describe("MellowClient", () => {
         addMemberRole: () => late(undefined),
       }),
     );
-    client.applyReady(ready({ guilds: [{ ...guild(), roles: [everyone, helper] }] }));
+    client.applyReady(
+      ready({ guilds: [{ ...guild(), roles: [everyone, helper] }] }),
+    );
     await new Promise((resolve) => setTimeout(resolve, 0));
     const requests = [
       client.renameServer(GUILD, "Old answer"),
@@ -626,22 +965,43 @@ describe("MellowClient", () => {
       client.setMemberRole(GUILD, OTHER, helper.id, true),
     ];
     // Newer changes reach the gateway before the answers.
-    client.applyEvent({ t: "GUILD_UPDATE", data: { id: GUILD, name: "Newest" } }, 0);
-    client.applyEvent({ t: "GUILD_ROLES_UPDATE", data: { guild_id: GUILD, roles: [everyone, { ...helper, name: "Newest" }] } }, 0);
+    client.applyEvent(
+      { t: "GUILD_UPDATE", data: { id: GUILD, name: "Newest" } },
+      0,
+    );
+    client.applyEvent(
+      {
+        t: "GUILD_ROLES_UPDATE",
+        data: {
+          guild_id: GUILD,
+          roles: [everyone, { ...helper, name: "Newest" }],
+        },
+      },
+      0,
+    );
     for (const answer of answers) {
       answer();
     }
     await Promise.all(requests);
     expect(client.selectedGuild?.name).toBe("Newest");
-    expect(client.selectedGuild?.roles.map((role) => role.name)).toEqual(["@everyone", "Newest"]);
+    expect(client.selectedGuild?.roles.map((role) => role.name)).toEqual([
+      "@everyone",
+      "Newest",
+    ]);
     expect(client.membersByGuild.get(GUILD)?.[0]?.role_ids).toEqual([]);
   });
 });
 
 describe("reactions and pins", () => {
-  async function clientWithHistory(rest: Partial<Record<keyof RestClient, unknown>> = {}) {
+  async function clientWithHistory(
+    rest: Partial<Record<keyof RestClient, unknown>> = {},
+  ) {
     const client = new MellowClient(
-      fakeRest({ ...QUIET_REST, listMessages: () => Promise.resolve([message("200")]), ...rest }),
+      fakeRest({
+        ...QUIET_REST,
+        listMessages: () => Promise.resolve([message("200")]),
+        ...rest,
+      }),
     );
     const start = ready();
     client.user = start.user;
@@ -649,39 +1009,76 @@ describe("reactions and pins", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     return client;
   }
-  const reactionsOf = (client: MellowClient) => client.messages(GENERAL)[0]?.reactions ?? [];
-  const reaction = (userId: string, emoji = "👍") => ({ channel_id: GENERAL, message_id: "200", user_id: userId, emoji });
+  const reactionsOf = (client: MellowClient) =>
+    client.messages(GENERAL)[0]?.reactions ?? [];
+  const reaction = (userId: string, emoji = "👍") => ({
+    channel_id: GENERAL,
+    message_id: "200",
+    user_id: userId,
+    emoji,
+  });
 
   it("count reactions from events, with `me` for the user's own", async () => {
     const client = await clientWithHistory();
     client.applyEvent({ t: "MESSAGE_REACTION_ADD", data: reaction(OTHER) }, 0);
     client.applyEvent({ t: "MESSAGE_REACTION_ADD", data: reaction(ME) }, 0);
-    client.applyEvent({ t: "MESSAGE_REACTION_ADD", data: reaction(OTHER, "🔥") }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_REACTION_ADD", data: reaction(OTHER, "🔥") },
+      0,
+    );
     expect(reactionsOf(client)).toEqual([
       { emoji: "👍", count: 2, me: true },
       { emoji: "🔥", count: 1, me: false },
     ]);
     client.applyEvent({ t: "MESSAGE_REACTION_REMOVE", data: reaction(ME) }, 0);
-    client.applyEvent({ t: "MESSAGE_REACTION_REMOVE_EMOJI", data: { channel_id: GENERAL, message_id: "200", emoji: "🔥" } }, 0);
+    client.applyEvent(
+      {
+        t: "MESSAGE_REACTION_REMOVE_EMOJI",
+        data: { channel_id: GENERAL, message_id: "200", emoji: "🔥" },
+      },
+      0,
+    );
     expect(reactionsOf(client)).toEqual([{ emoji: "👍", count: 1, me: false }]);
-    client.applyEvent({ t: "MESSAGE_REACTION_REMOVE_ALL", data: { channel_id: GENERAL, message_id: "200" } }, 0);
+    client.applyEvent(
+      {
+        t: "MESSAGE_REACTION_REMOVE_ALL",
+        data: { channel_id: GENERAL, message_id: "200" },
+      },
+      0,
+    );
     expect(reactionsOf(client)).toEqual([]);
   });
 
   it("take a message's link previews from their event and leave other rows as they were", async () => {
     const client = await clientWithHistory();
     const before = client.messages(GENERAL);
-    const preview = { id: "900", url: "https://example.org/", title: "Example" };
+    const preview = {
+      id: "900",
+      url: "https://example.org/",
+      title: "Example",
+    };
     client.applyEvent(
-      { t: "MESSAGE_LINK_PREVIEWS_UPDATE", data: { channel_id: GENERAL, message_id: "200", link_previews: [preview] } },
+      {
+        t: "MESSAGE_LINK_PREVIEWS_UPDATE",
+        data: {
+          channel_id: GENERAL,
+          message_id: "200",
+          link_previews: [preview],
+        },
+      },
       0,
     );
     const after = client.messages(GENERAL);
     expect(after[0]?.link_previews).toEqual([preview]);
     expect(after.slice(1)).toEqual(before.slice(1));
-    after.slice(1).forEach((message, index) => expect(message).toBe(before[index + 1]));
+    after
+      .slice(1)
+      .forEach((message, index) => expect(message).toBe(before[index + 1]));
     client.applyEvent(
-      { t: "MESSAGE_LINK_PREVIEWS_UPDATE", data: { channel_id: GENERAL, message_id: "200", link_previews: [] } },
+      {
+        t: "MESSAGE_LINK_PREVIEWS_UPDATE",
+        data: { channel_id: GENERAL, message_id: "200", link_previews: [] },
+      },
       0,
     );
     expect(client.messages(GENERAL)[0]?.link_previews).toEqual([]);
@@ -689,17 +1086,42 @@ describe("reactions and pins", () => {
 
   it("keep link previews over a message update that is not a newer edit", async () => {
     const client = await clientWithHistory();
-    const preview = { id: "900", url: "https://example.org/", title: "Example" };
+    const preview = {
+      id: "900",
+      url: "https://example.org/",
+      title: "Example",
+    };
     client.applyEvent(
-      { t: "MESSAGE_LINK_PREVIEWS_UPDATE", data: { channel_id: GENERAL, message_id: "200", link_previews: [preview] } },
+      {
+        t: "MESSAGE_LINK_PREVIEWS_UPDATE",
+        data: {
+          channel_id: GENERAL,
+          message_id: "200",
+          link_previews: [preview],
+        },
+      },
       0,
     );
     const cached = client.messages(GENERAL)[0];
     if (!cached) throw new Error("no message");
-    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...cached, pinned: true, link_previews: [] } }, 0);
+    client.applyEvent(
+      {
+        t: "MESSAGE_UPDATE",
+        data: { ...cached, pinned: true, link_previews: [] },
+      },
+      0,
+    );
     expect(client.messages(GENERAL)[0]?.link_previews).toEqual([preview]);
     client.applyEvent(
-      { t: "MESSAGE_UPDATE", data: { ...cached, content: "edited", edited_at_unix_milliseconds: 5, link_previews: [] } },
+      {
+        t: "MESSAGE_UPDATE",
+        data: {
+          ...cached,
+          content: "edited",
+          edited_at_unix_milliseconds: 5,
+          link_previews: [],
+        },
+      },
       0,
     );
     expect(client.messages(GENERAL)[0]?.link_previews).toEqual([]);
@@ -708,13 +1130,19 @@ describe("reactions and pins", () => {
   it("show the user's reaction at once, count its event once, and undo it if refused", async () => {
     let refuse = false;
     const client = await clientWithHistory({
-      addReaction: () => (refuse ? Promise.reject(new ApiError(403, "MISSING_PERMISSIONS")) : Promise.resolve()),
+      addReaction: () =>
+        refuse
+          ? Promise.reject(new ApiError(403, "MISSING_PERMISSIONS"))
+          : Promise.resolve(),
       removeOwnReaction: () => Promise.resolve(),
     });
     const adding = client.toggleReaction(GENERAL, "200", "❤️");
     expect(reactionsOf(client)).toEqual([{ emoji: "❤", count: 1, me: true }]);
     await adding;
-    client.applyEvent({ t: "MESSAGE_REACTION_ADD", data: reaction(ME, "❤") }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_REACTION_ADD", data: reaction(ME, "❤") },
+      0,
+    );
     expect(reactionsOf(client)).toEqual([{ emoji: "❤", count: 1, me: true }]);
 
     await client.toggleReaction(GENERAL, "200", "❤");
@@ -755,13 +1183,18 @@ describe("reactions and pins", () => {
       expires_at_unix_milliseconds: 10_000,
       ...(endedAt === undefined ? {} : { ended_at_unix_milliseconds: endedAt }),
     });
-    const pollMessage = (allowsMultipleAnswers = false, endedAt?: number): Message => ({
+    const pollMessage = (
+      allowsMultipleAnswers = false,
+      endedAt?: number,
+    ): Message => ({
       ...message("200"),
       content: "",
       poll: poll(allowsMultipleAnswers, endedAt),
     });
     const countsOf = (client: MellowClient) =>
-      client.messages(GENERAL)[0]?.poll?.answers.map((answer) => [answer.vote_count, answer.me_voted]);
+      client
+        .messages(GENERAL)[0]
+        ?.poll?.answers.map((answer) => [answer.vote_count, answer.me_voted]);
     const vote = (answerId: number, userId = ME) => ({
       channel_id: GENERAL,
       message_id: "200",
@@ -776,7 +1209,9 @@ describe("reactions and pins", () => {
         listMessages: () => Promise.resolve([pollMessage()]),
         addPollVote: (_channel: string, _message: string, answerId: number) => {
           added.push(answerId);
-          return refuse ? Promise.reject(new ApiError(400, "VALIDATION_FAILED")) : Promise.resolve();
+          return refuse
+            ? Promise.reject(new ApiError(400, "VALIDATION_FAILED"))
+            : Promise.resolve();
         },
       });
       await client.choosePollAnswer(GENERAL, "200", 1);
@@ -802,7 +1237,9 @@ describe("reactions and pins", () => {
       expect(added).toEqual([1, 2]);
 
       refuse = true;
-      await expect(client.choosePollAnswer(GENERAL, "200", 1)).rejects.toBeInstanceOf(ApiError);
+      await expect(
+        client.choosePollAnswer(GENERAL, "200", 1),
+      ).rejects.toBeInstanceOf(ApiError);
       expect(countsOf(client)).toEqual([
         [2, false],
         [1, true],
@@ -816,7 +1253,9 @@ describe("reactions and pins", () => {
         addPollVote: () => Promise.resolve(),
         removePollVote: () => {
           removals += 1;
-          return removals === 2 ? Promise.reject(new ApiError(429, "RATE_LIMITED")) : Promise.resolve();
+          return removals === 2
+            ? Promise.reject(new ApiError(429, "RATE_LIMITED"))
+            : Promise.resolve();
         },
       });
       await client.choosePollAnswer(GENERAL, "200", 1);
@@ -825,7 +1264,9 @@ describe("reactions and pins", () => {
         [3, true],
         [1, true],
       ]);
-      await expect(client.removeOwnPollVotes(GENERAL, "200")).rejects.toBeInstanceOf(ApiError);
+      await expect(
+        client.removeOwnPollVotes(GENERAL, "200"),
+      ).rejects.toBeInstanceOf(ApiError);
       expect(countsOf(client)).toEqual([
         [2, false],
         [1, true],
@@ -858,13 +1299,23 @@ describe("reactions and pins", () => {
         listMessages: () => Promise.resolve([pollMessage()]),
         endPoll: () => Promise.resolve(),
       });
-      client.applyEvent({ t: "MESSAGE_POLL_VOTE_ADD", data: vote(2, OTHER) }, 0);
+      client.applyEvent(
+        { t: "MESSAGE_POLL_VOTE_ADD", data: vote(2, OTHER) },
+        0,
+      );
       const cached = client.messages(GENERAL)[0];
       if (!cached) throw new Error("no message");
       await client.endPoll(cached);
-      expect(client.messages(GENERAL)[0]?.poll?.ended_at_unix_milliseconds).toBeTypeOf("number");
-      client.applyEvent({ t: "MESSAGE_UPDATE", data: pollMessage(false, 5) }, 0);
-      expect(client.messages(GENERAL)[0]?.poll?.ended_at_unix_milliseconds).toBe(5);
+      expect(
+        client.messages(GENERAL)[0]?.poll?.ended_at_unix_milliseconds,
+      ).toBeTypeOf("number");
+      client.applyEvent(
+        { t: "MESSAGE_UPDATE", data: pollMessage(false, 5) },
+        0,
+      );
+      expect(
+        client.messages(GENERAL)[0]?.poll?.ended_at_unix_milliseconds,
+      ).toBe(5);
       expect(countsOf(client)).toEqual([
         [2, false],
         [1, false],
@@ -880,11 +1331,20 @@ describe("reactions and pins", () => {
         },
       });
       client.selectChannel(GENERAL);
-      const newPoll = { question: "Lunch?", answers: ["Pizza", "Soup"], allows_multiple_answers: false, duration_hours: 24 };
+      const newPoll = {
+        question: "Lunch?",
+        answers: ["Pizza", "Soup"],
+        allows_multiple_answers: false,
+        duration_hours: 24,
+      };
       await client.sendPoll(newPoll);
-      expect(calls).toEqual([[GENERAL, "", expect.any(String), null, [], newPoll]]);
+      expect(calls).toEqual([
+        [GENERAL, "", expect.any(String), null, [], newPoll],
+      ]);
       expect(client.pendingMessages).toEqual([]);
-      expect(client.messages(GENERAL).map((candidate) => candidate.id)).toContain("300");
+      expect(
+        client.messages(GENERAL).map((candidate) => candidate.id),
+      ).toContain("300");
     });
   });
 
@@ -895,16 +1355,29 @@ describe("reactions and pins", () => {
       pinMessage: () => Promise.resolve(),
     });
     await client.loadPins(GENERAL);
-    expect(client.pinnedMessages(GENERAL).map((candidate) => candidate.id)).toEqual(["150"]);
+    expect(
+      client.pinnedMessages(GENERAL).map((candidate) => candidate.id),
+    ).toEqual(["150"]);
 
     await client.setPinned(message("200"), true);
     expect(client.messages(GENERAL)[0]?.pinned).toBe(true);
-    expect(client.pinnedMessages(GENERAL).map((candidate) => candidate.id)).toEqual(["200", "150"]);
+    expect(
+      client.pinnedMessages(GENERAL).map((candidate) => candidate.id),
+    ).toEqual(["200", "150"]);
 
-    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...pinned, content: "edited" } }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_UPDATE", data: { ...pinned, content: "edited" } },
+      0,
+    );
     expect(client.pinnedMessages(GENERAL)[1]?.content).toBe("edited");
-    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...message("200"), pinned: false } }, 0);
-    client.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: GENERAL, id: "150" } }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_UPDATE", data: { ...message("200"), pinned: false } },
+      0,
+    );
+    client.applyEvent(
+      { t: "MESSAGE_DELETE", data: { channel_id: GENERAL, id: "150" } },
+      0,
+    );
     expect(client.pinnedMessages(GENERAL)).toEqual([]);
     expect(client.pinsByChannel.get(GENERAL)?.status).toBe("loaded");
   });
@@ -912,20 +1385,30 @@ describe("reactions and pins", () => {
   it("tell a failed pins load, and load again on Try again", async () => {
     let fail = true;
     const client = await clientWithHistory({
-      listPins: () => (fail ? Promise.reject(new ApiError(0, "NETWORK")) : Promise.resolve([])),
+      listPins: () =>
+        fail ? Promise.reject(new ApiError(0, "NETWORK")) : Promise.resolve([]),
     });
     await client.loadPins(GENERAL);
     expect(client.pinsByChannel.get(GENERAL)?.status).toBe("failed");
     fail = false;
     await client.loadPins(GENERAL, true);
-    expect(client.pinsByChannel.get(GENERAL)).toEqual({ status: "loaded", messages: [] });
+    expect(client.pinsByChannel.get(GENERAL)).toEqual({
+      status: "loaded",
+      messages: [],
+    });
   });
 });
 
 describe("reaction and pin edge cases", () => {
-  async function clientWithHistory(rest: Partial<Record<keyof RestClient, unknown>> = {}) {
+  async function clientWithHistory(
+    rest: Partial<Record<keyof RestClient, unknown>> = {},
+  ) {
     const client = new MellowClient(
-      fakeRest({ ...QUIET_REST, listMessages: () => Promise.resolve([message("200")]), ...rest }),
+      fakeRest({
+        ...QUIET_REST,
+        listMessages: () => Promise.resolve([message("200")]),
+        ...rest,
+      }),
     );
     const start = ready();
     client.user = start.user;
@@ -933,7 +1416,12 @@ describe("reaction and pin edge cases", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     return client;
   }
-  const reaction = (userId: string, emoji = "👍") => ({ channel_id: GENERAL, message_id: "200", user_id: userId, emoji });
+  const reaction = (userId: string, emoji = "👍") => ({
+    channel_id: GENERAL,
+    message_id: "200",
+    user_id: userId,
+    emoji,
+  });
 
   it("put back a reaction whose removal the instance refused", async () => {
     const client = await clientWithHistory({
@@ -943,25 +1431,40 @@ describe("reaction and pin edge cases", () => {
     const removing = client.toggleReaction(GENERAL, "200", "👍");
     expect(client.messages(GENERAL)[0]?.reactions).toEqual([]);
     await expect(removing).rejects.toBeInstanceOf(ApiError);
-    expect(client.messages(GENERAL)[0]?.reactions).toEqual([{ emoji: "👍", count: 1, me: true }]);
+    expect(client.messages(GENERAL)[0]?.reactions).toEqual([
+      { emoji: "👍", count: 1, me: true },
+    ]);
   });
 
   it("ignore the removal of the user's own reaction when it is not counted", async () => {
     const client = await clientWithHistory();
     client.applyEvent({ t: "MESSAGE_REACTION_ADD", data: reaction(OTHER) }, 0);
     client.applyEvent({ t: "MESSAGE_REACTION_REMOVE", data: reaction(ME) }, 0);
-    expect(client.messages(GENERAL)[0]?.reactions).toEqual([{ emoji: "👍", count: 1, me: false }]);
+    expect(client.messages(GENERAL)[0]?.reactions).toEqual([
+      { emoji: "👍", count: 1, me: false },
+    ]);
   });
 
   it("count reactions on loaded pins too, and keep them when a pin arrives by MESSAGE_UPDATE", async () => {
-    const client = await clientWithHistory({ listPins: () => Promise.resolve([]) });
+    const client = await clientWithHistory({
+      listPins: () => Promise.resolve([]),
+    });
     await client.loadPins(GENERAL);
     client.applyEvent({ t: "MESSAGE_REACTION_ADD", data: reaction(OTHER) }, 0);
-    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...message("200"), pinned: true } }, 0);
-    expect(client.pinnedMessages(GENERAL)[0]?.reactions).toEqual([{ emoji: "👍", count: 1, me: false }]);
+    client.applyEvent(
+      { t: "MESSAGE_UPDATE", data: { ...message("200"), pinned: true } },
+      0,
+    );
+    expect(client.pinnedMessages(GENERAL)[0]?.reactions).toEqual([
+      { emoji: "👍", count: 1, me: false },
+    ]);
     client.applyEvent({ t: "MESSAGE_REACTION_ADD", data: reaction(ME) }, 0);
-    expect(client.pinnedMessages(GENERAL)[0]?.reactions).toEqual([{ emoji: "👍", count: 2, me: true }]);
-    expect(client.messages(GENERAL)[0]?.reactions).toEqual([{ emoji: "👍", count: 2, me: true }]);
+    expect(client.pinnedMessages(GENERAL)[0]?.reactions).toEqual([
+      { emoji: "👍", count: 2, me: true },
+    ]);
+    expect(client.messages(GENERAL)[0]?.reactions).toEqual([
+      { emoji: "👍", count: 2, me: true },
+    ]);
   });
 
   it("ask for the pins again when one changed while they were loading", async () => {
@@ -978,11 +1481,16 @@ describe("reaction and pin edge cases", () => {
       },
     });
     const loading = client.loadPins(GENERAL);
-    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...message("200"), pinned: true } }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_UPDATE", data: { ...message("200"), pinned: true } },
+      0,
+    );
     answerFirst();
     await loading;
     expect(requests).toBe(2);
-    expect(client.pinnedMessages(GENERAL).map((pinned) => pinned.id)).toEqual(["200"]);
+    expect(client.pinnedMessages(GENERAL).map((pinned) => pinned.id)).toEqual([
+      "200",
+    ]);
   });
 });
 
@@ -1000,7 +1508,9 @@ describe("unread state and mention counts", () => {
   const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
   /** GENERAL is open and read; RULES was read up to 300, has 310 and 3 unread mentions. */
-  async function clientWithUnreadRules(rest: Partial<Record<keyof RestClient, unknown>> = {}) {
+  async function clientWithUnreadRules(
+    rest: Partial<Record<keyof RestClient, unknown>> = {},
+  ) {
     const client = new MellowClient(fakeRest({ ...QUIET_REST, ...rest }));
     client.applyReady(
       ready({
@@ -1033,8 +1543,14 @@ describe("unread state and mention counts", () => {
 
   it("keep the unread state and the counts through GUILD_CREATE and CHANNEL_UPDATE", async () => {
     const client = await clientWithUnreadRules();
-    client.applyEvent({ t: "GUILD_CREATE", data: guild([channel(GENERAL), channel(RULES)]) }, 0);
-    client.applyEvent({ t: "CHANNEL_UPDATE", data: { ...channel(RULES), name: "renamed" } }, 0);
+    client.applyEvent(
+      { t: "GUILD_CREATE", data: guild([channel(GENERAL), channel(RULES)]) },
+      0,
+    );
+    client.applyEvent(
+      { t: "CHANNEL_UPDATE", data: { ...channel(RULES), name: "renamed" } },
+      0,
+    );
     expect(client.hasUnread(RULES)).toBe(true);
     expect(client.mentionCount(RULES)).toBe(3);
   });
@@ -1045,7 +1561,9 @@ describe("unread state and mention counts", () => {
       ready({
         guilds: [guild([channel(GENERAL), channel(RULES)])],
         read_states: [{ channel_id: RULES, last_read_message_id: "310" }],
-        channel_unreads: [{ channel_id: RULES, last_message_id: "310", mention_count: 0 }],
+        channel_unreads: [
+          { channel_id: RULES, last_message_id: "310", mention_count: 0 },
+        ],
       }),
     );
     expect(client.hasUnread(RULES)).toBe(false);
@@ -1069,7 +1587,10 @@ describe("unread state and mention counts", () => {
       },
       0,
     );
-    client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("330", GENERAL) }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_CREATE", data: mentioning("330", GENERAL) },
+      0,
+    );
     expect(client.mentionCount(RULES)).toBe(4);
     expect(client.mentionCount(GENERAL)).toBe(0);
   });
@@ -1078,14 +1599,39 @@ describe("unread state and mention counts", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(
       ready({
-        guilds: [{ ...guild([channel(GENERAL), channel(RULES)]), my_role_ids: ["201"] }],
-        channel_unreads: [{ channel_id: RULES, last_message_id: "310", mention_count: 0 }],
+        guilds: [
+          {
+            ...guild([channel(GENERAL), channel(RULES)]),
+            my_role_ids: ["201"],
+          },
+        ],
+        channel_unreads: [
+          { channel_id: RULES, last_message_id: "310", mention_count: 0 },
+        ],
       }),
     );
-    client.applyEvent({ t: "MESSAGE_CREATE", data: { ...message("320", RULES), mention_role_ids: ["202"] } }, 0);
+    client.applyEvent(
+      {
+        t: "MESSAGE_CREATE",
+        data: { ...message("320", RULES), mention_role_ids: ["202"] },
+      },
+      0,
+    );
     expect(client.mentionCount(RULES)).toBe(0);
-    client.applyEvent({ t: "MESSAGE_CREATE", data: { ...message("321", RULES), mention_role_ids: ["201"] } }, 0);
-    client.applyEvent({ t: "MESSAGE_CREATE", data: { ...message("322", RULES), mention_role_ids: [GUILD] } }, 0);
+    client.applyEvent(
+      {
+        t: "MESSAGE_CREATE",
+        data: { ...message("321", RULES), mention_role_ids: ["201"] },
+      },
+      0,
+    );
+    client.applyEvent(
+      {
+        t: "MESSAGE_CREATE",
+        data: { ...message("322", RULES), mention_role_ids: [GUILD] },
+      },
+      0,
+    );
     expect(client.mentionCount(RULES)).toBe(2);
   });
 
@@ -1094,19 +1640,29 @@ describe("unread state and mention counts", () => {
     client.applyEvent(
       {
         t: "RELATIONSHIP_ADD",
-        data: { user: { id: OTHER, username: "other", display_name: "" }, kind: "blocked", since_unix_milliseconds: 0 },
+        data: {
+          user: { id: OTHER, username: "other", display_name: "" },
+          kind: "blocked",
+          since_unix_milliseconds: 0,
+        },
       },
       0,
     );
     client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("340") }, 0);
-    client.applyEvent({ t: "MESSAGE_CREATE", data: message("420", CONVERSATION) }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_CREATE", data: message("420", CONVERSATION) },
+      0,
+    );
     expect(client.mentionCount(RULES)).toBe(3);
     expect(client.mentionCount(CONVERSATION)).toBe(2);
   });
 
   it("count every message from someone else in a conversation", async () => {
     const client = await clientWithUnreadRules();
-    client.applyEvent({ t: "MESSAGE_CREATE", data: message("410", CONVERSATION) }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_CREATE", data: message("410", CONVERSATION) },
+      0,
+    );
     client.applyEvent(
       {
         t: "MESSAGE_CREATE",
@@ -1142,7 +1698,10 @@ describe("unread state and mention counts", () => {
       0,
     );
     expect(client.mentionCount(RULES)).toBe(4);
-    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...message("320", RULES, 2) } }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_UPDATE", data: { ...message("320", RULES, 2) } },
+      0,
+    );
     expect(client.mentionCount(RULES)).toBe(3);
     client.applyEvent(
       {
@@ -1151,10 +1710,16 @@ describe("unread state and mention counts", () => {
       },
       0,
     );
-    client.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "320" } }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "320" } },
+      0,
+    );
     expect(client.mentionCount(RULES)).toBe(3);
     // Counted in Ready only: the client cannot tell, so the count stays.
-    client.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "305" } }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "305" } },
+      0,
+    );
     expect(client.mentionCount(RULES)).toBe(3);
   });
 
@@ -1163,7 +1728,10 @@ describe("unread state and mention counts", () => {
     // 310 was committed while the server built Ready: counted there, then replayed.
     client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("310") }, 0);
     expect(client.mentionCount(RULES)).toBe(3);
-    client.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "310" } }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "310" } },
+      0,
+    );
     expect(client.mentionCount(RULES)).toBe(2);
     client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("311") }, 0);
     expect(client.mentionCount(RULES)).toBe(3);
@@ -1176,7 +1744,13 @@ describe("unread state and mention counts", () => {
     client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("310") }, 0);
     client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("311") }, 0);
     client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("311") }, 0);
-    client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...mentioning("311"), content: "edited" } }, 0);
+    client.applyEvent(
+      {
+        t: "MESSAGE_UPDATE",
+        data: { ...mentioning("311"), content: "edited" },
+      },
+      0,
+    );
     expect(handed).toEqual(["311"]);
   });
 
@@ -1185,12 +1759,17 @@ describe("unread state and mention counts", () => {
     client.applyReady(
       ready({
         guilds: [guild([channel(GENERAL), channel(RULES)])],
-        channel_unreads: [{ channel_id: RULES, last_message_id: "310", mention_count: 100 }],
+        channel_unreads: [
+          { channel_id: RULES, last_message_id: "310", mention_count: 100 },
+        ],
       }),
     );
     await flush();
     client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("320") }, 0);
-    client.applyEvent({ t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "320" } }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_DELETE", data: { channel_id: RULES, id: "320" } },
+      0,
+    );
     expect(client.mentionCount(RULES)).toBe(101);
   });
 
@@ -1199,8 +1778,14 @@ describe("unread state and mention counts", () => {
     client.applyReady(ready({ direct_message_channels: [conversation] }));
     expect(client.doesServerFindMentions).toBe(false);
     expect(client.mentionCount(GENERAL)).toBe(0);
-    client.applyEvent({ t: "MESSAGE_CREATE", data: message("410", CONVERSATION) }, 0);
-    client.applyEvent({ t: "MESSAGE_CREATE", data: mentioning("411", GENERAL) }, 0);
+    client.applyEvent(
+      { t: "MESSAGE_CREATE", data: message("410", CONVERSATION) },
+      0,
+    );
+    client.applyEvent(
+      { t: "MESSAGE_CREATE", data: mentioning("411", GENERAL) },
+      0,
+    );
     expect(client.mentionCount(CONVERSATION)).toBe(0);
     expect(client.mentionCount(GENERAL)).toBe(0);
   });
@@ -1212,7 +1797,9 @@ describe("Presence", () => {
     client.applyReady(
       ready({
         online_user_ids: [OTHER],
-        presences: [{ user_id: OTHER, status: "do_not_disturb", custom_status: "Focus" }],
+        presences: [
+          { user_id: OTHER, status: "do_not_disturb", custom_status: "Focus" },
+        ],
       }),
     );
     expect(client.presenceOf(OTHER)).toBe("do_not_disturb");
@@ -1227,10 +1814,19 @@ describe("Presence", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(ready());
     expect(client.presenceOf(OTHER)).toBe("offline");
-    client.applyEvent({ t: "PRESENCE_UPDATE", data: { user_id: OTHER, status: "idle", custom_status: "Lunch" } }, 0);
+    client.applyEvent(
+      {
+        t: "PRESENCE_UPDATE",
+        data: { user_id: OTHER, status: "idle", custom_status: "Lunch" },
+      },
+      0,
+    );
     expect(client.presenceOf(OTHER)).toBe("idle");
     expect(client.customStatusOf(OTHER)).toBe("Lunch");
-    client.applyEvent({ t: "PRESENCE_UPDATE", data: { user_id: OTHER, status: "offline" } }, 0);
+    client.applyEvent(
+      { t: "PRESENCE_UPDATE", data: { user_id: OTHER, status: "offline" } },
+      0,
+    );
     expect(client.presenceOf(OTHER)).toBe("offline");
     expect(client.customStatusOf(OTHER)).toBeNull();
   });
@@ -1260,10 +1856,19 @@ describe("Presence", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.user = { ...ready().user, custom_status: "Old" };
     client.applyReady(ready());
-    client.applyEvent({ t: "PRESENCE_UPDATE", data: { user_id: ME, status: "idle", custom_status: "Lunch" } }, 0);
+    client.applyEvent(
+      {
+        t: "PRESENCE_UPDATE",
+        data: { user_id: ME, status: "idle", custom_status: "Lunch" },
+      },
+      0,
+    );
     expect(client.user?.status).toBe("idle");
     expect(client.user?.custom_status).toBe("Lunch");
-    client.applyEvent({ t: "PRESENCE_UPDATE", data: { user_id: ME, status: "offline" } }, 0);
+    client.applyEvent(
+      { t: "PRESENCE_UPDATE", data: { user_id: ME, status: "offline" } },
+      0,
+    );
     expect(client.user?.status).toBe("invisible");
     expect(client.user?.custom_status).toBe("Lunch");
     expect(client.presenceOf(ME)).toBe("offline");
@@ -1271,7 +1876,11 @@ describe("Presence", () => {
 });
 
 describe("Friends", () => {
-  const relationshipWith = (id: string, kind: Relationship["kind"], name = `user${id}`): Relationship => ({
+  const relationshipWith = (
+    id: string,
+    kind: Relationship["kind"],
+    name = `user${id}`,
+  ): Relationship => ({
     user: { id, username: name, display_name: "" },
     kind,
     since_unix_milliseconds: 0,
@@ -1284,30 +1893,50 @@ describe("Friends", () => {
         ...QUIET_REST,
         sendFriendRequest: (username: string) => {
           sentTo.push(username);
-          return Promise.resolve(relationshipWith("30", "outgoing_request", username));
+          return Promise.resolve(
+            relationshipWith("30", "outgoing_request", username),
+          );
         },
-        setRelationship: (userId: string, kind: "friend" | "blocked") => Promise.resolve(relationshipWith(userId, kind)),
+        setRelationship: (userId: string, kind: "friend" | "blocked") =>
+          Promise.resolve(relationshipWith(userId, kind)),
         removeRelationship: () => Promise.resolve(),
       }),
     );
     client.applyReady(
       ready({
-        relationships: [relationshipWith("20", "incoming_request"), relationshipWith("21", "friend", "zoe"), relationshipWith("22", "friend", "anna")],
+        relationships: [
+          relationshipWith("20", "incoming_request"),
+          relationshipWith("21", "friend", "zoe"),
+          relationshipWith("22", "friend", "anna"),
+        ],
       }),
     );
     expect(client.incomingRequestCount()).toBe(1);
-    expect(client.relationshipsOfKind("friend").map((relationship) => relationship.user.username)).toEqual([
-      "anna",
-      "zoe",
-    ]);
+    expect(
+      client
+        .relationshipsOfKind("friend")
+        .map((relationship) => relationship.user.username),
+    ).toEqual(["anna", "zoe"]);
 
     await client.acceptFriendRequest("20");
     await client.sendFriendRequest("  carol ");
     await client.blockUser("22");
     await client.removeRelationship("21");
-    client.applyEvent({ t: "RELATIONSHIP_ADD", data: relationshipWith("40", "incoming_request") }, 0);
+    client.applyEvent(
+      {
+        t: "RELATIONSHIP_ADD",
+        data: relationshipWith("40", "incoming_request"),
+      },
+      0,
+    );
     client.applyEvent({ t: "RELATIONSHIP_REMOVE", data: { user_id: "30" } }, 0);
-    client.applyEvent({ t: "USER_UPDATE", data: { id: "20", username: "renamed", display_name: "" } }, 0);
+    client.applyEvent(
+      {
+        t: "USER_UPDATE",
+        data: { id: "20", username: "renamed", display_name: "" },
+      },
+      0,
+    );
 
     expect(sentTo).toEqual(["carol"]);
     expect(client.relationshipByUserId.get("20")?.kind).toBe("friend");
@@ -1315,14 +1944,22 @@ describe("Friends", () => {
     expect(client.relationshipByUserId.has("21")).toBe(false);
     expect(client.relationshipByUserId.has("30")).toBe(false);
     expect(client.incomingRequestCount()).toBe(1);
-    expect(client.relationshipByUserId.get("20")?.user.username).toBe("renamed");
+    expect(client.relationshipByUserId.get("20")?.user.username).toBe(
+      "renamed",
+    );
   });
 
   it("open at Home without a conversation, as Discord's Home opens Friends", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     expect(client.isFriendsSpaceOpen).toBe(false);
-    const conversation = { id: "500", recipients: [{ id: OTHER, username: "other", display_name: "" }], last_message_id: "501" };
-    client.applyReady(ready({ guilds: [], direct_message_channels: [conversation] }));
+    const conversation = {
+      id: "500",
+      recipients: [{ id: OTHER, username: "other", display_name: "" }],
+      last_message_id: "501",
+    };
+    client.applyReady(
+      ready({ guilds: [], direct_message_channels: [conversation] }),
+    );
     expect(client.selectedChannelId).toBeNull();
     expect(client.isFriendsSpaceOpen).toBe(true);
     client.selectGuild(null, "500");
@@ -1333,7 +1970,11 @@ describe("Friends", () => {
 
   it("stay open across a new Ready, and take over when the open conversation is gone", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
-    const conversation = { id: "500", recipients: [{ id: OTHER, username: "other", display_name: "" }], last_message_id: "501" };
+    const conversation = {
+      id: "500",
+      recipients: [{ id: OTHER, username: "other", display_name: "" }],
+      last_message_id: "501",
+    };
     client.applyReady(ready({ direct_message_channels: [conversation] }));
     expect(client.selectedGuildId).toBe(GUILD);
     client.selectGuild(null, null);
@@ -1350,9 +1991,19 @@ describe("Friends", () => {
   it("count a removal already done elsewhere as done, and report other refusals", async () => {
     let refusal = new ApiError(404, "NOT_FOUND");
     const client = new MellowClient(
-      fakeRest({ ...QUIET_REST, removeRelationship: () => Promise.reject(refusal) }),
+      fakeRest({
+        ...QUIET_REST,
+        removeRelationship: () => Promise.reject(refusal),
+      }),
     );
-    client.applyReady(ready({ relationships: [relationshipWith("21", "friend"), relationshipWith("22", "blocked")] }));
+    client.applyReady(
+      ready({
+        relationships: [
+          relationshipWith("21", "friend"),
+          relationshipWith("22", "blocked"),
+        ],
+      }),
+    );
     await client.removeRelationship("21");
     expect(client.relationshipByUserId.has("21")).toBe(false);
 
@@ -1369,9 +2020,17 @@ describe("Friends", () => {
 });
 
 describe("Group conversations", () => {
-  const group = (id: string, recipientIds: string[], name = ""): DirectMessageChannel => ({
+  const group = (
+    id: string,
+    recipientIds: string[],
+    name = "",
+  ): DirectMessageChannel => ({
     id,
-    recipients: recipientIds.map((recipientId) => ({ id: recipientId, username: `user${recipientId}`, display_name: "" })),
+    recipients: recipientIds.map((recipientId) => ({
+      id: recipientId,
+      username: `user${recipientId}`,
+      display_name: "",
+    })),
     last_message_id: null,
     owner_id: ME,
     name,
@@ -1384,7 +2043,11 @@ describe("Group conversations", () => {
         ...QUIET_REST,
         openDirectMessage: (userId: string) => {
           calls.push(`open:${userId}`);
-          return Promise.resolve({ id: "600", recipients: [], last_message_id: null });
+          return Promise.resolve({
+            id: "600",
+            recipients: [],
+            last_message_id: null,
+          });
         },
         createGroupConversation: (recipientIds: string[], name: string) => {
           calls.push(`group:${recipientIds.join(",")}:${name}`);
@@ -1400,14 +2063,27 @@ describe("Group conversations", () => {
     expect(calls).toEqual(["open:20", "group:20,21:Trip"]);
     expect(client.selectedChannelId).toBe("700");
 
-    client.applyEvent({ t: "DIRECT_MESSAGE_CHANNEL_UPDATE", data: group("700", ["20", "21", "22"], "Trip") }, 0);
-    expect(client.conversations.find((channel) => channel.id === "700")?.recipients).toHaveLength(3);
+    client.applyEvent(
+      {
+        t: "DIRECT_MESSAGE_CHANNEL_UPDATE",
+        data: group("700", ["20", "21", "22"], "Trip"),
+      },
+      0,
+    );
+    expect(
+      client.conversations.find((channel) => channel.id === "700")?.recipients,
+    ).toHaveLength(3);
 
     await client.leaveGroupConversation("700");
-    expect(client.conversations.some((channel) => channel.id === "700")).toBe(false);
+    expect(client.conversations.some((channel) => channel.id === "700")).toBe(
+      false,
+    );
     expect(client.selectedChannelId).toBeNull();
     expect(client.isFriendsSpaceOpen).toBe(true);
-    expect(client.closedConversation).toMatchObject({ reason: "left", conversation: { id: "700", name: "Trip" } });
+    expect(client.closedConversation).toMatchObject({
+      reason: "left",
+      conversation: { id: "700", name: "Trip" },
+    });
   });
 
   it("never bring back a group whose delete event came before the answer to a rename or an add", async () => {
@@ -1416,15 +2092,24 @@ describe("Group conversations", () => {
       fakeRest({
         ...QUIET_REST,
         renameGroupConversation: (channelId: string, name: string) =>
-          new Promise((resolve) => answers.push(() => resolve(group(channelId, ["20", "21"], name)))),
+          new Promise((resolve) =>
+            answers.push(() => resolve(group(channelId, ["20", "21"], name))),
+          ),
         addGroupParticipant: (channelId: string, userId: string) =>
-          new Promise((resolve) => answers.push(() => resolve(group(channelId, ["20", "21", userId])))),
+          new Promise((resolve) =>
+            answers.push(() => resolve(group(channelId, ["20", "21", userId]))),
+          ),
       }),
     );
-    client.applyReady(ready({ direct_message_channels: [group("860", ["20", "21"])] }));
+    client.applyReady(
+      ready({ direct_message_channels: [group("860", ["20", "21"])] }),
+    );
     const renaming = client.renameGroupConversation("860", "Trip");
     const adding = client.addGroupParticipant("860", "22");
-    client.applyEvent({ t: "DIRECT_MESSAGE_CHANNEL_DELETE", data: { id: "860" } }, 0);
+    client.applyEvent(
+      { t: "DIRECT_MESSAGE_CHANNEL_DELETE", data: { id: "860" } },
+      0,
+    );
     for (const answer of answers) {
       answer();
     }
@@ -1433,24 +2118,51 @@ describe("Group conversations", () => {
   });
 
   it("take someone the owner removed out of the group at once", async () => {
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, removeGroupParticipant: () => Promise.resolve() }));
-    client.applyReady(ready({ direct_message_channels: [group("850", ["20", "21", "22"], "Trip")] }));
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        removeGroupParticipant: () => Promise.resolve(),
+      }),
+    );
+    client.applyReady(
+      ready({
+        direct_message_channels: [group("850", ["20", "21", "22"], "Trip")],
+      }),
+    );
     await client.removeGroupParticipant("850", "21");
-    expect(client.conversations[0]?.recipients.map((recipient) => recipient.id)).toEqual(["20", "22"]);
+    expect(
+      client.conversations[0]?.recipients.map((recipient) => recipient.id),
+    ).toEqual(["20", "22"]);
     expect(client.conversations[0]?.name).toBe("Trip");
   });
 
   it("drop a group the user was removed from, and say so only when it was open", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
-    client.applyReady(ready({ direct_message_channels: [group("800", ["20", "21"]), group("801", ["20", "22"])] }));
-    client.applyEvent({ t: "DIRECT_MESSAGE_CHANNEL_DELETE", data: { id: "801" } }, 0);
+    client.applyReady(
+      ready({
+        direct_message_channels: [
+          group("800", ["20", "21"]),
+          group("801", ["20", "22"]),
+        ],
+      }),
+    );
+    client.applyEvent(
+      { t: "DIRECT_MESSAGE_CHANNEL_DELETE", data: { id: "801" } },
+      0,
+    );
     expect(client.closedConversation).toBeNull();
 
     client.selectGuild(null, "800");
-    client.applyEvent({ t: "DIRECT_MESSAGE_CHANNEL_DELETE", data: { id: "800" } }, 0);
+    client.applyEvent(
+      { t: "DIRECT_MESSAGE_CHANNEL_DELETE", data: { id: "800" } },
+      0,
+    );
     expect(client.conversations).toEqual([]);
     expect(client.isFriendsSpaceOpen).toBe(true);
-    expect(client.closedConversation).toMatchObject({ reason: "removed", conversation: { id: "800" } });
+    expect(client.closedConversation).toMatchObject({
+      reason: "removed",
+      conversation: { id: "800" },
+    });
   });
 
   it("count leaving as leaving when the gateway's delete comes before the instance's answer", async () => {
@@ -1458,13 +2170,19 @@ describe("Group conversations", () => {
     const client = new MellowClient(
       fakeRest({
         ...QUIET_REST,
-        removeGroupParticipant: () => new Promise<void>((resolve) => (answer = resolve)),
+        removeGroupParticipant: () =>
+          new Promise<void>((resolve) => (answer = resolve)),
       }),
     );
-    client.applyReady(ready({ direct_message_channels: [group("900", ["20", "21"])] }));
+    client.applyReady(
+      ready({ direct_message_channels: [group("900", ["20", "21"])] }),
+    );
     client.selectGuild(null, "900");
     const leaving = client.leaveGroupConversation("900");
-    client.applyEvent({ t: "DIRECT_MESSAGE_CHANNEL_DELETE", data: { id: "900" } }, 0);
+    client.applyEvent(
+      { t: "DIRECT_MESSAGE_CHANNEL_DELETE", data: { id: "900" } },
+      0,
+    );
     answer();
     await leaving;
     expect(client.closedConversation?.reason).toBe("left");
@@ -1489,7 +2207,14 @@ describe("Group conversations", () => {
     client.applyReady(ready({ guilds: [guild(), other] }));
     expect(client.selectedGuildId).toBe(GUILD);
 
-    expect((await client.createInvite("200", { maxUses: null, expiresInSeconds: null })).code).toBe("code-200");
+    expect(
+      (
+        await client.createInvite("200", {
+          maxUses: null,
+          expiresInSeconds: null,
+        })
+      ).code,
+    ).toBe("code-200");
     expect(invited).toEqual(["200"]);
 
     await client.leaveServer("200");
@@ -1500,14 +2225,21 @@ describe("Group conversations", () => {
 
   it("leave the open server and move to another one", async () => {
     const other = { ...guild([channel("202")]), id: "200" };
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, leaveGuild: () => Promise.resolve() }));
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, leaveGuild: () => Promise.resolve() }),
+    );
     client.applyReady(ready({ guilds: [guild(), other] }));
     await client.leaveServer(GUILD);
     expect(client.selectedGuildId).toBe("200");
   });
 
   it("keep the server when leaving fails", async () => {
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, leaveGuild: () => Promise.reject(new ApiError(500, "SERVER_BUSY")) }));
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        leaveGuild: () => Promise.reject(new ApiError(500, "SERVER_BUSY")),
+      }),
+    );
     client.applyReady(ready());
     await expect(client.leaveServer(GUILD)).rejects.toBeInstanceOf(ApiError);
     expect(client.guilds).toHaveLength(1);
@@ -1522,9 +2254,18 @@ describe("Custom emoji", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.applyReady(ready());
     expect(client.emojisOf(GUILD)).toEqual([]);
-    client.applyEvent({ t: "GUILD_EMOJIS_UPDATE", data: { guild_id: GUILD, emojis: [party, parrot] } }, 0);
+    client.applyEvent(
+      {
+        t: "GUILD_EMOJIS_UPDATE",
+        data: { guild_id: GUILD, emojis: [party, parrot] },
+      },
+      0,
+    );
     expect(client.emojisOf(GUILD)).toEqual([party, parrot]);
-    client.applyEvent({ t: "GUILD_EMOJIS_UPDATE", data: { guild_id: "999", emojis: [party] } }, 0);
+    client.applyEvent(
+      { t: "GUILD_EMOJIS_UPDATE", data: { guild_id: "999", emojis: [party] } },
+      0,
+    );
     expect(client.emojisOf("999")).toEqual([]);
   });
 
@@ -1533,9 +2274,18 @@ describe("Custom emoji", () => {
     client.applyReady(ready({ guilds: [{ ...guild(), emojis: [party] }] }));
     const known = client.knownCustomEmojis;
     expect([...known.values()]).toEqual([party]);
-    client.applyEvent({ t: "GUILD_ROLES_UPDATE", data: { guild_id: GUILD, roles: [] } }, 0);
+    client.applyEvent(
+      { t: "GUILD_ROLES_UPDATE", data: { guild_id: GUILD, roles: [] } },
+      0,
+    );
     expect(client.knownCustomEmojis).toBe(known);
-    client.applyEvent({ t: "GUILD_EMOJIS_UPDATE", data: { guild_id: GUILD, emojis: [party, parrot] } }, 0);
+    client.applyEvent(
+      {
+        t: "GUILD_EMOJIS_UPDATE",
+        data: { guild_id: GUILD, emojis: [party, parrot] },
+      },
+      0,
+    );
     expect(client.knownCustomEmojis).not.toBe(known);
     expect(client.knownCustomEmojis.get(parrot.id)).toEqual(parrot);
   });
@@ -1564,15 +2314,33 @@ describe("Custom emoji", () => {
 
     expect(await client.createEmoji(GUILD, "parrot", file)).toEqual(parrot);
     expect(client.emojisOf(GUILD)).toEqual([party, parrot]);
-    client.applyEvent({ t: "GUILD_EMOJIS_UPDATE", data: { guild_id: GUILD, emojis: [party, parrot] } }, 0);
+    client.applyEvent(
+      {
+        t: "GUILD_EMOJIS_UPDATE",
+        data: { guild_id: GUILD, emojis: [party, parrot] },
+      },
+      0,
+    );
     await client.createEmoji(GUILD, "parrot", file);
     expect(client.emojisOf(GUILD)).toEqual([party, parrot]);
 
     await client.renameEmoji(GUILD, party.id, "fiesta");
-    expect(client.emojisOf(GUILD).map((emoji) => emoji.name)).toEqual(["party", "parrot"]);
+    expect(client.emojisOf(GUILD).map((emoji) => emoji.name)).toEqual([
+      "party",
+      "parrot",
+    ]);
     const renamedParty = { ...party, name: "fiesta" };
-    client.applyEvent({ t: "GUILD_EMOJIS_UPDATE", data: { guild_id: GUILD, emojis: [renamedParty, parrot] } }, 0);
-    expect(client.emojisOf(GUILD).map((emoji) => emoji.name)).toEqual(["fiesta", "parrot"]);
+    client.applyEvent(
+      {
+        t: "GUILD_EMOJIS_UPDATE",
+        data: { guild_id: GUILD, emojis: [renamedParty, parrot] },
+      },
+      0,
+    );
+    expect(client.emojisOf(GUILD).map((emoji) => emoji.name)).toEqual([
+      "fiesta",
+      "parrot",
+    ]);
     await client.deleteEmoji(GUILD, parrot.id);
     expect(client.emojisOf(GUILD).map((emoji) => emoji.id)).toEqual([party.id]);
     expect(calls).toEqual([
@@ -1585,10 +2353,16 @@ describe("Custom emoji", () => {
 
   it("stay as they were when the instance refuses", async () => {
     const client = new MellowClient(
-      fakeRest({ ...QUIET_REST, deleteEmoji: () => Promise.reject(new ApiError(403, "MISSING_PERMISSIONS")) }),
+      fakeRest({
+        ...QUIET_REST,
+        deleteEmoji: () =>
+          Promise.reject(new ApiError(403, "MISSING_PERMISSIONS")),
+      }),
     );
     client.applyReady(ready({ guilds: [{ ...guild(), emojis: [party] }] }));
-    await expect(client.deleteEmoji(GUILD, party.id)).rejects.toBeInstanceOf(ApiError);
+    await expect(client.deleteEmoji(GUILD, party.id)).rejects.toBeInstanceOf(
+      ApiError,
+    );
     expect(client.emojisOf(GUILD)).toEqual([party]);
   });
 });
@@ -1596,7 +2370,13 @@ describe("Custom emoji", () => {
 describe("Message search", () => {
   it("passes the query on with this browser's offset east of UTC", async () => {
     const calls: unknown[][] = [];
-    const results = { hits: [], total_count: 0, total_count_is_lower_bound: false, channel_facets: [], author_facets: [] };
+    const results = {
+      hits: [],
+      total_count: 0,
+      total_count_is_lower_bound: false,
+      channel_facets: [],
+      author_facets: [],
+    };
     const client = new MellowClient(
       fakeRest({
         searchMessages: (...parameters: unknown[]) => {
@@ -1605,10 +2385,20 @@ describe("Message search", () => {
         },
       }),
     );
-    const answer = await client.searchMessages(GUILD, { q: "pizza", sort: "newest" });
+    const answer = await client.searchMessages(GUILD, {
+      q: "pizza",
+      sort: "newest",
+    });
     expect(answer).toBe(results);
     expect(calls).toEqual([
-      [GUILD, { q: "pizza", sort: "newest", utc_offset_minutes: -new Date().getTimezoneOffset() || 0 }],
+      [
+        GUILD,
+        {
+          q: "pizza",
+          sort: "newest",
+          utc_offset_minutes: -new Date().getTimezoneOffset() || 0,
+        },
+      ],
     ]);
   });
 });
@@ -1616,58 +2406,84 @@ describe("Message search", () => {
 describe("Reaching a message far back", () => {
   /** A channel of `count` messages with ids 1000 and up, served like the instance: `limit` at most, oldest first. */
   function historyOf(count: number, requests: (string | undefined)[] = []) {
-    const all = Array.from({ length: count }, (_, index) => message(String(1000 + index)));
+    const all = Array.from({ length: count }, (_, index) =>
+      message(String(1000 + index)),
+    );
     return (_channelId: string, before?: string, limit = 50) => {
       requests.push(before);
-      const older = before ? all.filter((candidate) => Number(candidate.id) < Number(before)) : all;
+      const older = before
+        ? all.filter((candidate) => Number(candidate.id) < Number(before))
+        : all;
       return Promise.resolve(older.slice(-limit));
     };
   }
 
   it("loads older pages until the message is cached, without leaving a gap", async () => {
     const requests: (string | undefined)[] = [];
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: historyOf(200, requests) }));
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, listMessages: historyOf(200, requests) }),
+    );
     client.applyReady(ready());
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(await client.loadHistoryUntilMessage(GENERAL, "1020")).toBe("loaded");
+    expect(await client.loadHistoryUntilMessage(GENERAL, "1020")).toBe(
+      "loaded",
+    );
     const ids = client.messages(GENERAL).map((cached) => Number(cached.id));
     expect(ids[0]).toBeLessThanOrEqual(1020);
-    expect(ids).toEqual(Array.from({ length: ids.length }, (_, index) => (ids[0] ?? 0) + index));
+    expect(ids).toEqual(
+      Array.from({ length: ids.length }, (_, index) => (ids[0] ?? 0) + index),
+    );
     // The first page is the usual 50; the jump asks for 100 at a time.
     expect(requests).toEqual([undefined, "1150", "1050"]);
   });
 
   it("says the message is missing once an older one or the start is cached", async () => {
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: historyOf(30) }));
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, listMessages: historyOf(30) }),
+    );
     client.applyReady(ready());
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(await client.loadHistoryUntilMessage(GENERAL, "999")).toBe("missing");
+    expect(await client.loadHistoryUntilMessage(GENERAL, "999")).toBe(
+      "missing",
+    );
   });
 
   it("reaches a message 900 back in 9 requests", async () => {
     const requests: (string | undefined)[] = [];
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: historyOf(1_000, requests) }));
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, listMessages: historyOf(1_000, requests) }),
+    );
     client.applyReady(ready());
     await new Promise((resolve) => setTimeout(resolve, 0));
     requests.length = 0;
-    expect(await client.loadHistoryUntilMessage(GENERAL, "1050")).toBe("loaded");
+    expect(await client.loadHistoryUntilMessage(GENERAL, "1050")).toBe(
+      "loaded",
+    );
     expect(requests).toHaveLength(9);
   });
 
   it("knows the start is cached from a page shorter than the 100 it asked for", async () => {
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: historyOf(230) }));
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, listMessages: historyOf(230) }),
+    );
     client.applyReady(ready());
     await new Promise((resolve) => setTimeout(resolve, 0));
     // 1180 to 1229 first, then 1080 to 1179, then the last 80.
-    expect(await client.loadHistoryUntilMessage(GENERAL, "1000")).toBe("loaded");
+    expect(await client.loadHistoryUntilMessage(GENERAL, "1000")).toBe(
+      "loaded",
+    );
     expect(client.reachedStartChannelIds.has(GENERAL)).toBe(true);
   });
 
   it("keeps only the newest 500 of the open channel once the reader is back at the latest", async () => {
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: historyOf(700) }));
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, listMessages: historyOf(700) }),
+    );
     client.applyReady(ready());
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(await client.loadHistoryUntilMessage(GENERAL, "1000")).toBe("loaded");
+    expect(await client.loadHistoryUntilMessage(GENERAL, "1000")).toBe(
+      "loaded",
+    );
     expect(client.messages(GENERAL)).toHaveLength(700);
     expect(client.reachedStartChannelIds.has(GENERAL)).toBe(true);
     client.noteReaderAtLatest(RULES);
@@ -1679,10 +2495,14 @@ describe("Reaching a message far back", () => {
   });
 
   it("gives up 1 000 messages back, and stops for a channel that is not open", async () => {
-    const client = new MellowClient(fakeRest({ ...QUIET_REST, listMessages: historyOf(2_000) }));
+    const client = new MellowClient(
+      fakeRest({ ...QUIET_REST, listMessages: historyOf(2_000) }),
+    );
     client.applyReady(ready());
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(await client.loadHistoryUntilMessage(GENERAL, "1000")).toBe("too-far");
+    expect(await client.loadHistoryUntilMessage(GENERAL, "1000")).toBe(
+      "too-far",
+    );
     expect(await client.loadHistoryUntilMessage(RULES, "1000")).toBe("left");
   });
 });
@@ -1690,8 +2510,15 @@ describe("Reaching a message far back", () => {
 describe("Voice states", () => {
   const LOUNGE = "104";
   const STAGE = "105";
-  const voiceChannel = (id: string): Channel => ({ ...channel(id), kind: "voice" });
-  const voiceState = (userId: string, channelId: string, overrides: Partial<VoiceState> = {}): VoiceState => ({
+  const voiceChannel = (id: string): Channel => ({
+    ...channel(id),
+    kind: "voice",
+  });
+  const voiceState = (
+    userId: string,
+    channelId: string,
+    overrides: Partial<VoiceState> = {},
+  ): VoiceState => ({
     user_id: userId,
     guild_id: GUILD,
     channel_id: channelId,
@@ -1709,7 +2536,9 @@ describe("Voice states", () => {
       iceConnectionState: "new",
       signalingState: "stable",
       localDescription: { sdp: "offer" },
-      addTransceiver: () => ({ sender: { replaceTrack: () => Promise.resolve() } }),
+      addTransceiver: () => ({
+        sender: { replaceTrack: () => Promise.resolve() },
+      }),
       createOffer: () => Promise.resolve({ type: "offer", sdp: "offer" }),
       setLocalDescription: () => Promise.resolve(),
       addEventListener: (type: string, listener: () => void) => {
@@ -1735,13 +2564,18 @@ describe("Voice states", () => {
     // The cast is limited to this fake peer, which implements what the session calls.
     const client = new MellowClient(fakeRest(QUIET_REST), {
       createPeerConnection: () => peer as unknown as RTCPeerConnection,
-      requestMicrophone: () => Promise.reject(new TypeError("no microphone in tests")),
+      requestMicrophone: () =>
+        Promise.reject(new TypeError("no microphone in tests")),
       prepareNoiseSuppressor: () => {
         noiseSuppressorLoads.count += 1;
         return Promise.resolve(null);
       },
       processMicrophone: () => Promise.resolve(null),
-      playTrack: () => ({ setGain: () => {}, setOutputDevice: () => {}, stop: () => {} }),
+      playTrack: () => ({
+        setGain: () => {},
+        setOutputDevice: () => {},
+        stop: () => {},
+      }),
       meterLevel: () => null,
       amplify: () => null,
       listDevices: () => Promise.resolve([]),
@@ -1750,13 +2584,16 @@ describe("Voice states", () => {
       requestScreen: () => Promise.reject(new TypeError("no screen in tests")),
       requestCamera: () => Promise.reject(new TypeError("no camera in tests")),
       listCameras: () => Promise.resolve([]),
-      requestSoundSource: () => Promise.reject(new TypeError("no sound source in tests")),
+      requestSoundSource: () =>
+        Promise.reject(new TypeError("no sound source in tests")),
       codecPreferences: () => null,
     });
     client.voice.onCue = (cue) => cues.push(cue);
     client.applyReady(
       ready({
-        guilds: [guild([channel(GENERAL), voiceChannel(LOUNGE), voiceChannel(STAGE)])],
+        guilds: [
+          guild([channel(GENERAL), voiceChannel(LOUNGE), voiceChannel(STAGE)]),
+        ],
         voice_states: [voiceState(OTHER, LOUNGE), voiceState("3", "999")],
         voice_enabled: true,
       }),
@@ -1769,13 +2606,21 @@ describe("Voice states", () => {
     expect(client.voice.isVoiceEnabledOnInstance).toBe(true);
     // The instance has voice: RNNoise loads now, not when joining.
     expect(noiseSuppressorLoads.count).toBe(1);
-    expect(client.voiceParticipants(LOUNGE).map((state) => state.user_id)).toEqual([OTHER]);
+    expect(
+      client.voiceParticipants(LOUNGE).map((state) => state.user_id),
+    ).toEqual([OTHER]);
     expect(client.voiceStatesByUserId.has("3")).toBe(false);
   });
 
   it("never opens a voice channel as the first channel of a server", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
-    client.applyReady(ready({ guilds: [guild([{ ...voiceChannel(LOUNGE), position: 0 }, channel(GENERAL)])] }));
+    client.applyReady(
+      ready({
+        guilds: [
+          guild([{ ...voiceChannel(LOUNGE), position: 0 }, channel(GENERAL)]),
+        ],
+      }),
+    );
     expect(client.selectedChannelId).toBe(GENERAL);
     // An instance that does not say voice is on (an older one) has none.
     expect(client.voice.isVoiceEnabledOnInstance).toBe(false);
@@ -1783,70 +2628,219 @@ describe("Voice states", () => {
 
   it("follows moves in join order, and drops speaking with the move", () => {
     const { client } = voiceClient();
-    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", STAGE) } }, 0);
-    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("4", STAGE) } }, 0);
-    client.applyEvent({ t: "SPEAKING", data: { guild_id: GUILD, channel_id: LOUNGE, user_id: OTHER, speaking: true } }, 0);
+    client.applyEvent(
+      {
+        t: "VOICE_STATE_UPDATE",
+        data: { voice_state: voiceState("3", STAGE) },
+      },
+      0,
+    );
+    client.applyEvent(
+      {
+        t: "VOICE_STATE_UPDATE",
+        data: { voice_state: voiceState("4", STAGE) },
+      },
+      0,
+    );
+    client.applyEvent(
+      {
+        t: "SPEAKING",
+        data: {
+          guild_id: GUILD,
+          channel_id: LOUNGE,
+          user_id: OTHER,
+          speaking: true,
+        },
+      },
+      0,
+    );
     expect(client.speakingUserIds.has(OTHER)).toBe(true);
-    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(OTHER, STAGE) } }, 0);
+    client.applyEvent(
+      {
+        t: "VOICE_STATE_UPDATE",
+        data: { voice_state: voiceState(OTHER, STAGE) },
+      },
+      0,
+    );
     expect(client.voiceParticipants(LOUNGE)).toEqual([]);
-    expect(client.voiceParticipants(STAGE).map((state) => state.user_id)).toEqual(["3", "4", OTHER]);
+    expect(
+      client.voiceParticipants(STAGE).map((state) => state.user_id),
+    ).toEqual(["3", "4", OTHER]);
     expect(client.speakingUserIds.has(OTHER)).toBe(false);
   });
 
   it("keeps a mute change in place and ignores a late delete for a channel already left", () => {
     const { client } = voiceClient();
-    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(OTHER, LOUNGE, { self_mute: true }) } }, 0);
+    client.applyEvent(
+      {
+        t: "VOICE_STATE_UPDATE",
+        data: { voice_state: voiceState(OTHER, LOUNGE, { self_mute: true }) },
+      },
+      0,
+    );
     expect(client.voiceStatesByUserId.get(OTHER)?.self_mute).toBe(true);
-    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(OTHER, STAGE) } }, 0);
-    client.applyEvent({ t: "VOICE_STATE_DELETE", data: { guild_id: GUILD, channel_id: LOUNGE, user_id: OTHER } }, 0);
-    expect(client.voiceParticipants(STAGE).map((state) => state.user_id)).toEqual([OTHER]);
-    client.applyEvent({ t: "VOICE_STATE_DELETE", data: { guild_id: GUILD, channel_id: STAGE, user_id: OTHER } }, 0);
+    client.applyEvent(
+      {
+        t: "VOICE_STATE_UPDATE",
+        data: { voice_state: voiceState(OTHER, STAGE) },
+      },
+      0,
+    );
+    client.applyEvent(
+      {
+        t: "VOICE_STATE_DELETE",
+        data: { guild_id: GUILD, channel_id: LOUNGE, user_id: OTHER },
+      },
+      0,
+    );
+    expect(
+      client.voiceParticipants(STAGE).map((state) => state.user_id),
+    ).toEqual([OTHER]);
+    client.applyEvent(
+      {
+        t: "VOICE_STATE_DELETE",
+        data: { guild_id: GUILD, channel_id: STAGE, user_id: OTHER },
+      },
+      0,
+    );
     expect(client.voiceStatesByUserId.size).toBe(0);
   });
 
   it("lights speaking only for someone in that channel", () => {
     const { client } = voiceClient();
-    client.applyEvent({ t: "SPEAKING", data: { guild_id: GUILD, channel_id: STAGE, user_id: OTHER, speaking: true } }, 0);
+    client.applyEvent(
+      {
+        t: "SPEAKING",
+        data: {
+          guild_id: GUILD,
+          channel_id: STAGE,
+          user_id: OTHER,
+          speaking: true,
+        },
+      },
+      0,
+    );
     expect(client.speakingUserIds.size).toBe(0);
-    client.applyEvent({ t: "SPEAKING", data: { guild_id: GUILD, channel_id: LOUNGE, user_id: OTHER, speaking: true } }, 0);
-    client.applyEvent({ t: "SPEAKING", data: { guild_id: GUILD, channel_id: LOUNGE, user_id: OTHER, speaking: false } }, 0);
+    client.applyEvent(
+      {
+        t: "SPEAKING",
+        data: {
+          guild_id: GUILD,
+          channel_id: LOUNGE,
+          user_id: OTHER,
+          speaking: true,
+        },
+      },
+      0,
+    );
+    client.applyEvent(
+      {
+        t: "SPEAKING",
+        data: {
+          guild_id: GUILD,
+          channel_id: LOUNGE,
+          user_id: OTHER,
+          speaking: false,
+        },
+      },
+      0,
+    );
     expect(client.speakingUserIds.size).toBe(0);
   });
 
   it("forgets the people of a deleted channel, and someone gone where the reader cannot see", () => {
     const { client } = voiceClient();
-    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", STAGE) } }, 0);
-    client.applyEvent({ t: "CHANNEL_DELETE", data: { guild_id: GUILD, id: LOUNGE } }, 0);
+    client.applyEvent(
+      {
+        t: "VOICE_STATE_UPDATE",
+        data: { voice_state: voiceState("3", STAGE) },
+      },
+      0,
+    );
+    client.applyEvent(
+      { t: "CHANNEL_DELETE", data: { guild_id: GUILD, id: LOUNGE } },
+      0,
+    );
     expect(client.voiceStatesByUserId.has(OTHER)).toBe(false);
-    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", "999") } }, 0);
+    client.applyEvent(
+      {
+        t: "VOICE_STATE_UPDATE",
+        data: { voice_state: voiceState("3", "999") },
+      },
+      0,
+    );
     expect(client.voiceStatesByUserId.has("3")).toBe(false);
   });
 
   it("plays a sound and reads out who joins or leaves your channel, only once connected", async () => {
     const { client, peer, cues } = voiceClient();
-    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", LOUNGE) } }, 0);
+    client.applyEvent(
+      {
+        t: "VOICE_STATE_UPDATE",
+        data: { voice_state: voiceState("3", LOUNGE) },
+      },
+      0,
+    );
     expect(cues).toEqual([]);
     await client.voice.join(LOUNGE);
     peer.connect();
     expect(client.voice.phase).toBe("connected");
-    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("4", LOUNGE) } }, 0);
-    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", STAGE) } }, 0);
-    client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(ME, LOUNGE) } }, 0);
+    client.applyEvent(
+      {
+        t: "VOICE_STATE_UPDATE",
+        data: { voice_state: voiceState("4", LOUNGE) },
+      },
+      0,
+    );
+    client.applyEvent(
+      {
+        t: "VOICE_STATE_UPDATE",
+        data: { voice_state: voiceState("3", STAGE) },
+      },
+      0,
+    );
+    client.applyEvent(
+      {
+        t: "VOICE_STATE_UPDATE",
+        data: { voice_state: voiceState(ME, LOUNGE) },
+      },
+      0,
+    );
     expect(cues).toEqual(["self-join", "peer-join", "peer-leave"]);
     expect(client.voiceAnnouncement).toBe(`Someone left c${LOUNGE}.`);
   });
 
   describe("soundboard", () => {
-    const HORN = { id: "900", name: "horn", emoji: "📯", duration_milliseconds: 800 };
+    const HORN = {
+      id: "900",
+      name: "horn",
+      emoji: "📯",
+      duration_milliseconds: 800,
+    };
     const CLAP = { id: "901", name: "clap", duration_milliseconds: 300 };
 
-    async function connectedWithSounds(permissions: bigint = (1n << 1n) | (1n << 18n) | (1n << 19n) | (1n << 20n)) {
+    async function connectedWithSounds(
+      permissions: bigint = (1n << 1n) |
+        (1n << 18n) |
+        (1n << 19n) |
+        (1n << 20n),
+    ) {
       const { client, peer, cues } = voiceClient();
       const played: [string, string, string | null][] = [];
-      client.onSound = (soundId, playerId, fallbackCue) => played.push([soundId, playerId, fallbackCue]);
-      client.applyEvent({ t: "GUILD_SOUNDS_UPDATE", data: { guild_id: GUILD, sounds: [HORN, CLAP] } }, 0);
+      client.onSound = (soundId, playerId, fallbackCue) =>
+        played.push([soundId, playerId, fallbackCue]);
       client.applyEvent(
-        { t: "GUILD_CREATE", data: { ...client.guilds[0]!, my_permissions: String(permissions) } },
+        {
+          t: "GUILD_SOUNDS_UPDATE",
+          data: { guild_id: GUILD, sounds: [HORN, CLAP] },
+        },
+        0,
+      );
+      client.applyEvent(
+        {
+          t: "GUILD_CREATE",
+          data: { ...client.guilds[0]!, my_permissions: String(permissions) },
+        },
         0,
       );
       await client.voice.join(LOUNGE);
@@ -1856,27 +2850,69 @@ describe("Voice states", () => {
 
     it("keeps the server's list and your join sound from the gateway", () => {
       const { client } = voiceClient();
-      client.applyEvent({ t: "GUILD_SOUNDS_UPDATE", data: { guild_id: GUILD, sounds: [HORN] } }, 0);
-      client.applyEvent({ t: "MY_JOIN_SOUND_UPDATE", data: { guild_id: GUILD, sound_id: HORN.id } }, 0);
+      client.applyEvent(
+        { t: "GUILD_SOUNDS_UPDATE", data: { guild_id: GUILD, sounds: [HORN] } },
+        0,
+      );
+      client.applyEvent(
+        {
+          t: "MY_JOIN_SOUND_UPDATE",
+          data: { guild_id: GUILD, sound_id: HORN.id },
+        },
+        0,
+      );
       expect(client.soundsOf(GUILD)).toEqual([HORN]);
       expect(client.guilds[0]?.my_join_sound_id).toBe(HORN.id);
-      client.applyEvent({ t: "MY_JOIN_SOUND_UPDATE", data: { guild_id: GUILD, sound_id: null } }, 0);
+      client.applyEvent(
+        {
+          t: "MY_JOIN_SOUND_UPDATE",
+          data: { guild_id: GUILD, sound_id: null },
+        },
+        0,
+      );
       expect(client.guilds[0]?.my_join_sound_id).toBeNull();
     });
 
     it("plays sounds of your channel, shows the player's emoji, and skips them deafened or muted for you", async () => {
       const { client, played } = await connectedWithSounds();
-      client.applyEvent({ t: "VOICE_SOUND_PLAYED", data: { channel_id: LOUNGE, user_id: OTHER, sound_id: HORN.id } }, 0);
-      client.applyEvent({ t: "VOICE_SOUND_PLAYED", data: { channel_id: STAGE, user_id: "3", sound_id: CLAP.id } }, 0);
+      client.applyEvent(
+        {
+          t: "VOICE_SOUND_PLAYED",
+          data: { channel_id: LOUNGE, user_id: OTHER, sound_id: HORN.id },
+        },
+        0,
+      );
+      client.applyEvent(
+        {
+          t: "VOICE_SOUND_PLAYED",
+          data: { channel_id: STAGE, user_id: "3", sound_id: CLAP.id },
+        },
+        0,
+      );
       expect(played).toEqual([[HORN.id, OTHER, null]]);
-      expect(client.soundIndicators.get(OTHER)).toEqual({ soundId: HORN.id, guildId: GUILD });
+      expect(client.soundIndicators.get(OTHER)).toEqual({
+        soundId: HORN.id,
+        guildId: GUILD,
+      });
       expect(client.soundIndicators.has("3")).toBe(false);
 
       client.voice.togglePersonMuted(OTHER);
-      client.applyEvent({ t: "VOICE_SOUND_PLAYED", data: { channel_id: LOUNGE, user_id: OTHER, sound_id: CLAP.id } }, 0);
+      client.applyEvent(
+        {
+          t: "VOICE_SOUND_PLAYED",
+          data: { channel_id: LOUNGE, user_id: OTHER, sound_id: CLAP.id },
+        },
+        0,
+      );
       client.voice.togglePersonMuted(OTHER);
       client.voice.toggleDeafened();
-      client.applyEvent({ t: "VOICE_SOUND_PLAYED", data: { channel_id: LOUNGE, user_id: OTHER, sound_id: CLAP.id } }, 0);
+      client.applyEvent(
+        {
+          t: "VOICE_SOUND_PLAYED",
+          data: { channel_id: LOUNGE, user_id: OTHER, sound_id: CLAP.id },
+        },
+        0,
+      );
       expect(played).toEqual([[HORN.id, OTHER, null]]);
       // Still shown: who played what is not sound.
       expect(client.soundIndicators.get(OTHER)?.soundId).toBe(CLAP.id);
@@ -1885,16 +2921,26 @@ describe("Voice states", () => {
     it("waits 2 s after your own sound, from the instance's echo", async () => {
       const { client } = await connectedWithSounds();
       expect(client.soundboardBlock(10_000)).toBeNull();
-      client.applyEvent({ t: "VOICE_SOUND_PLAYED", data: { channel_id: LOUNGE, user_id: ME, sound_id: HORN.id } }, 10_000);
+      client.applyEvent(
+        {
+          t: "VOICE_SOUND_PLAYED",
+          data: { channel_id: LOUNGE, user_id: ME, sound_id: HORN.id },
+        },
+        10_000,
+      );
       expect(client.soundboardBlock(11_999)).toBe("cooling-down");
       expect(client.soundboardBlock(12_000)).toBeNull();
     });
 
     it("greys the soundboard without its permission, without Speak, deafened, or not connected", async () => {
-      const { client } = await connectedWithSounds((1n << 1n) | (1n << 18n) | (1n << 19n));
+      const { client } = await connectedWithSounds(
+        (1n << 1n) | (1n << 18n) | (1n << 19n),
+      );
       expect(client.soundboardBlock(0)).toBe("no-permission");
       expect(client.playSound(HORN.id, 0)).toBe(false);
-      const speechless = await connectedWithSounds((1n << 1n) | (1n << 18n) | (1n << 20n));
+      const speechless = await connectedWithSounds(
+        (1n << 1n) | (1n << 18n) | (1n << 20n),
+      );
       expect(speechless.client.soundboardBlock(0)).toBe("cannot-speak");
       const allowed = await connectedWithSounds();
       allowed.client.voice.toggleDeafened();
@@ -1904,8 +2950,24 @@ describe("Voice states", () => {
 
     it("plays a newcomer's join sound instead of the chime, else the chime", async () => {
       const { client, cues, played } = await connectedWithSounds();
-      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", LOUNGE, { join_sound_id: HORN.id }) } }, 0);
-      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("4", LOUNGE, { join_sound_id: "404" }) } }, 0);
+      client.applyEvent(
+        {
+          t: "VOICE_STATE_UPDATE",
+          data: {
+            voice_state: voiceState("3", LOUNGE, { join_sound_id: HORN.id }),
+          },
+        },
+        0,
+      );
+      client.applyEvent(
+        {
+          t: "VOICE_STATE_UPDATE",
+          data: {
+            voice_state: voiceState("4", LOUNGE, { join_sound_id: "404" }),
+          },
+        },
+        0,
+      );
       expect(played).toEqual([[HORN.id, "3", "peer-join"]]);
       expect(cues).toEqual(["self-join", "peer-join"]);
       expect(client.soundIndicators.get("3")?.soundId).toBe(HORN.id);
@@ -1914,24 +2976,57 @@ describe("Voice states", () => {
     it("plays a join sound once per arrival, not again when the newcomer mutes", async () => {
       const { client, cues, played } = await connectedWithSounds();
       const arrival = voiceState("3", LOUNGE, { join_sound_id: HORN.id });
-      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: arrival } }, 0);
-      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: { ...arrival, self_mute: true } } }, 0);
+      client.applyEvent(
+        { t: "VOICE_STATE_UPDATE", data: { voice_state: arrival } },
+        0,
+      );
+      client.applyEvent(
+        {
+          t: "VOICE_STATE_UPDATE",
+          data: { voice_state: { ...arrival, self_mute: true } },
+        },
+        0,
+      );
       expect(played).toEqual([[HORN.id, "3", "peer-join"]]);
       expect(cues).toEqual(["self-join"]);
     });
 
     it("plays a join sound for a move into your channel, and nothing for an arrival elsewhere", async () => {
       const { client, cues, played } = await connectedWithSounds();
-      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", STAGE, { join_sound_id: HORN.id }) } }, 0);
+      client.applyEvent(
+        {
+          t: "VOICE_STATE_UPDATE",
+          data: {
+            voice_state: voiceState("3", STAGE, { join_sound_id: HORN.id }),
+          },
+        },
+        0,
+      );
       expect(played).toEqual([]);
       expect(cues).toEqual(["self-join"]);
-      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState("3", LOUNGE, { join_sound_id: HORN.id }) } }, 0);
+      client.applyEvent(
+        {
+          t: "VOICE_STATE_UPDATE",
+          data: {
+            voice_state: voiceState("3", LOUNGE, { join_sound_id: HORN.id }),
+          },
+        },
+        0,
+      );
       expect(played).toEqual([[HORN.id, "3", "peer-join"]]);
     });
 
     it("plays nothing for someone already there when Ready came", async () => {
       const { client, cues, played } = await connectedWithSounds();
-      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(OTHER, LOUNGE, { join_sound_id: HORN.id }) } }, 0);
+      client.applyEvent(
+        {
+          t: "VOICE_STATE_UPDATE",
+          data: {
+            voice_state: voiceState(OTHER, LOUNGE, { join_sound_id: HORN.id }),
+          },
+        },
+        0,
+      );
       expect(played).toEqual([]);
       expect(cues).toEqual(["self-join"]);
     });
@@ -1939,28 +3034,59 @@ describe("Voice states", () => {
     it("finds your own join sound once your state is in the channel", async () => {
       const { client } = await connectedWithSounds();
       expect(client.startOwnJoinSound()).toBeNull();
-      client.applyEvent({ t: "VOICE_STATE_UPDATE", data: { voice_state: voiceState(ME, LOUNGE, { join_sound_id: CLAP.id }) } }, 0);
+      client.applyEvent(
+        {
+          t: "VOICE_STATE_UPDATE",
+          data: {
+            voice_state: voiceState(ME, LOUNGE, { join_sound_id: CLAP.id }),
+          },
+        },
+        0,
+      );
       expect(client.startOwnJoinSound()).toBe(CLAP.id);
       expect(client.soundIndicators.get(ME)?.soundId).toBe(CLAP.id);
     });
 
     it("adds, edits and deletes sounds, and clears a deleted join sound", async () => {
-      const created = { id: "902", name: "tada", emoji: null, duration_milliseconds: 1_000 };
+      const created = {
+        id: "902",
+        name: "tada",
+        emoji: null,
+        duration_milliseconds: 1_000,
+      };
       const requests: unknown[][] = [];
       const client = new MellowClient(
         fakeRest({
           ...QUIET_REST,
-          createSound: (...args: unknown[]) => (requests.push(["create", ...args]), Promise.resolve(created)),
-          updateSound: (...args: unknown[]) => (requests.push(["update", ...args]), Promise.resolve({ ...created, name: "ta-da", emoji: "🎉" })),
-          deleteSound: (...args: unknown[]) => (requests.push(["delete", ...args]), Promise.resolve()),
-          setJoinSound: (...args: unknown[]) => (requests.push(["join", ...args]), Promise.resolve()),
+          createSound: (...args: unknown[]) => (
+            requests.push(["create", ...args]),
+            Promise.resolve(created)
+          ),
+          updateSound: (...args: unknown[]) => (
+            requests.push(["update", ...args]),
+            Promise.resolve({ ...created, name: "ta-da", emoji: "🎉" })
+          ),
+          deleteSound: (...args: unknown[]) => (
+            requests.push(["delete", ...args]),
+            Promise.resolve()
+          ),
+          setJoinSound: (...args: unknown[]) => (
+            requests.push(["join", ...args]),
+            Promise.resolve()
+          ),
         }),
       );
       client.applyReady(ready());
       const wav = new Blob(["x"]);
       await client.createSound(GUILD, "tada", null, wav);
       // The gateway's list arriving first is not doubled.
-      client.applyEvent({ t: "GUILD_SOUNDS_UPDATE", data: { guild_id: GUILD, sounds: [created] } }, 0);
+      client.applyEvent(
+        {
+          t: "GUILD_SOUNDS_UPDATE",
+          data: { guild_id: GUILD, sounds: [created] },
+        },
+        0,
+      );
       await client.createSound(GUILD, "tada", null, wav);
       expect(client.soundsOf(GUILD)).toEqual([created]);
       await client.updateSound(GUILD, created.id, "ta-da", "🎉");
@@ -1971,7 +3097,13 @@ describe("Voice states", () => {
       expect(client.soundsOf(GUILD)).toEqual([]);
       expect(client.guilds[0]?.my_join_sound_id).toBeNull();
       expect(requests[0]).toEqual(["create", GUILD, "tada", null, wav]);
-      expect(requests.map((request) => request[0])).toEqual(["create", "create", "update", "join", "delete"]);
+      expect(requests.map((request) => request[0])).toEqual([
+        "create",
+        "create",
+        "update",
+        "join",
+        "delete",
+      ]);
     });
   });
 
@@ -1981,11 +3113,19 @@ describe("Voice states", () => {
     client.applyEvent(
       {
         t: "VOICE_JOIN_REFUSED",
-        data: { channel_id: LOUNGE, offer_id: client.voice.currentOfferId, reason: "missing_permissions" },
+        data: {
+          channel_id: LOUNGE,
+          offer_id: client.voice.currentOfferId,
+          reason: "missing_permissions",
+        },
       },
       0,
     );
-    expect(client.voice.problem).toEqual({ kind: "refused", channelId: LOUNGE, reason: "missing_permissions" });
+    expect(client.voice.problem).toEqual({
+      kind: "refused",
+      channelId: LOUNGE,
+      reason: "missing_permissions",
+    });
   });
 });
 
@@ -2021,7 +3161,10 @@ describe("Read state sends", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(server.sent).toEqual(["200"]);
     for (let index = 0; index < 50; index += 1) {
-      client.applyEvent({ t: "MESSAGE_CREATE", data: message(String(300 + index)) }, Date.now());
+      client.applyEvent(
+        { t: "MESSAGE_CREATE", data: message(String(300 + index)) },
+        Date.now(),
+      );
       // Read here at once, whatever the server has heard so far.
       expect(client.lastReadByChannel.get(GENERAL)).toBe(String(300 + index));
       await vi.advanceTimersByTimeAsync(200);
@@ -2034,10 +3177,15 @@ describe("Read state sends", () => {
   it("keeps a refused position for the next send and never moves the local one back", async () => {
     const { server, rest } = readStateServer();
     const client = new MellowClient(fakeRest(rest));
-    client.applyReady(ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }));
+    client.applyReady(
+      ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }),
+    );
     await vi.advanceTimersByTimeAsync(1_000);
     server.refuse = true;
-    client.applyEvent({ t: "MESSAGE_CREATE", data: message("201") }, Date.now());
+    client.applyEvent(
+      { t: "MESSAGE_CREATE", data: message("201") },
+      Date.now(),
+    );
     await vi.advanceTimersByTimeAsync(1_000);
     expect(client.lastReadByChannel.get(GENERAL)).toBe("201");
     server.refuse = false;
@@ -2059,17 +3207,25 @@ describe("Read state sends", () => {
       },
     };
     const client = new MellowClient(fakeRest(rest));
-    client.applyReady(ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }));
+    client.applyReady(
+      ready({ guilds: [guild([channel(GENERAL), channel(RULES)])] }),
+    );
     await vi.advanceTimersByTimeAsync(1_000);
     // The message read was deleted before the send went out.
     refusal = new ApiError(404, "NOT_FOUND");
-    client.applyEvent({ t: "MESSAGE_CREATE", data: message("201") }, Date.now());
+    client.applyEvent(
+      { t: "MESSAGE_CREATE", data: message("201") },
+      Date.now(),
+    );
     await vi.advanceTimersByTimeAsync(1_000);
     refusal = null;
     client.selectChannel(RULES);
     client.noteTabHidden();
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(sent.filter((entry) => entry.startsWith(`${GENERAL}:`))).toEqual([`${GENERAL}:200`, `${GENERAL}:201`]);
+    expect(sent.filter((entry) => entry.startsWith(`${GENERAL}:`))).toEqual([
+      `${GENERAL}:200`,
+      `${GENERAL}:201`,
+    ]);
   });
 
   it("sends at once when the tab hides, and keeps an unsent read through a Ready", async () => {
@@ -2079,8 +3235,15 @@ describe("Read state sends", () => {
     await vi.advanceTimersByTimeAsync(0);
     client.noteTabHidden();
     expect(server.sent).toEqual(["200"]);
-    client.applyEvent({ t: "MESSAGE_CREATE", data: message("201") }, Date.now());
-    client.applyReady(ready({ read_states: [{ channel_id: GENERAL, last_read_message_id: "200" }] }));
+    client.applyEvent(
+      { t: "MESSAGE_CREATE", data: message("201") },
+      Date.now(),
+    );
+    client.applyReady(
+      ready({
+        read_states: [{ channel_id: GENERAL, last_read_message_id: "200" }],
+      }),
+    );
     expect(client.lastReadByChannel.get(GENERAL)).toBe("201");
     await vi.advanceTimersByTimeAsync(1_000);
     expect(server.sent).toEqual(["200", "201"]);
