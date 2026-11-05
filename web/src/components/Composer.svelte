@@ -630,8 +630,10 @@
       >
     {/if}
   </p>
+  <!-- The field is focused almost all the time and matches :focus-visible on a click too, so the
+       ring shows only when focus came from the keyboard (input-modality.ts, DESIGN.md §7.2). -->
   <div
-    class="overflow-hidden rounded-(--mw-component-composer-radius) bg-(--mw-component-composer-background) has-[textarea:focus-visible]:focus-ring"
+    class="overflow-hidden rounded-(--mw-component-composer-radius) bg-(--mw-component-composer-background) in-data-[input-modality=keyboard]:has-[textarea:focus]:focus-ring"
   >
     {#if replyingTo && canSendMessages}
       <div
