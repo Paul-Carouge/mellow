@@ -16,6 +16,7 @@
   import { retryImageOnceThenMarkFailed } from "./image-retry";
   import { isPlainPrimaryClick, viewableMedia } from "./picture-viewer";
   import { openPictureViewer } from "./picture-viewer-request.svelte";
+  import { lengthTokenInPixels } from "./tokens";
 
   // Attachments under a message body (DESIGN.md §5.4 "Attachments"): previewable images inline,
   // videos and sounds as players (ADR-0038), anything else as a download card. A message still in the outbox is not readable by others
@@ -84,16 +85,27 @@
     }
   }
 
+  // Measured per video: a band narrower than its compact width hides the size from sight (phones),
+  // so the file name keeps its start and extension.
+  const videoBandWidths: Record<Snowflake, number> = $state({});
+
+  function isVideoBandCompact(attachment: Attachment): boolean {
+    const bandWidth = videoBandWidths[attachment.id];
+    return bandWidth !== undefined && bandWidth < lengthTokenInPixels("component-attachment-video-band-compact-width");
+  }
+
   function downloadLinkId(attachment: Attachment): string {
     return `${id}-download-${attachment.id}`;
   }
 </script>
 
-<!-- Cut in the middle at any width: the start gives way, the extension stays (DESIGN.md §5.4). -->
+<!-- Cut in the middle at any width: the start gives way, the end too once the start is gone (DESIGN.md §5.4). -->
 {#snippet fileName(name: string)}
   {@const parts = fileNameStartAndEnd(name)}
   <span aria-hidden="true" class="flex min-w-0"
-    ><span class="truncate">{parts.start}</span><span class="shrink-0 whitespace-pre">{parts.end}</span></span
+    ><span class="truncate">{parts.start}</span><span class="max-w-full shrink-0 overflow-hidden text-ellipsis whitespace-pre"
+      >{parts.end}</span
+    ></span
   >
 {/snippet}
 
@@ -163,6 +175,7 @@
             onerror={(event) => showDownloadCardAfterPlaybackFailed(event, attachment)}
           ></video>
           <figcaption
+            bind:clientWidth={videoBandWidths[attachment.id]}
             class="flex items-center gap-(--mw-component-attachment-file-gap) px-(--mw-component-attachment-video-band-padding-inline) py-(--mw-component-attachment-video-band-padding-block)"
           >
             <a
@@ -174,7 +187,10 @@
               {@render fileName(attachment.file_name)}
               <span class="sr-only">{strings.messages.download(attachment.file_name)}</span>
             </a>
-            <span class="shrink-0 type-body-sm text-(--mw-component-attachment-video-size-text)">{size}</span>
+            <!-- Out of sight only: a screen reader still reads it after the name. -->
+            <span class={["shrink-0 type-body-sm text-(--mw-component-attachment-video-size-text)", isVideoBandCompact(attachment) && "sr-only"]}
+              >{size}</span
+            >
             <button
               type="button"
               aria-label={strings.messages.enlargeVideo(attachment.file_name)}
