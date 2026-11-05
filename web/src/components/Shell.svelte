@@ -139,11 +139,12 @@
   const messageSearch = new MessageSearch((guildId, query) => client.searchMessages(guildId, query));
   $effect(() => messageSearch.setScope(client.selectedGuildId));
   // The results panel is its own chunk, fetched as soon as the header field gets focus, so it is
-  // there by the time the first results come back. One promise, so opening can wait for it.
-  let messageSearchPanelLoading: Promise<typeof import("./MessageSearchPanel.svelte")> | null = null;
-  function loadMessageSearchPanel() {
-    messageSearchPanelLoading ??= import("./MessageSearchPanel.svelte");
-    return messageSearchPanelLoading;
+  // there by the time the first results come back. Not cached: a failed import is retried on the
+  // next opening, and the browser already shares an import in flight and keeps loaded modules.
+  const loadMessageSearchPanel = () => import("./MessageSearchPanel.svelte");
+  function preloadMessageSearchPanel(): void {
+    // LazyComponent reports a failure when the panel opens; the preload stays quiet.
+    loadMessageSearchPanel().catch(() => undefined);
   }
   const isSearchDocked = $derived(messageSearch.isPanelOpen && hasRoomForSearchSheet.current);
   const isSearchOverlayOpen = $derived(messageSearch.isPanelOpen && !hasRoomForSearchSheet.current);
@@ -573,7 +574,7 @@
       search={messageSearch}
       placement="header"
       onopenquickswitcher={openQuickSwitcherFromSearch}
-      onfocus={() => void loadMessageSearchPanel()}
+      onfocus={preloadMessageSearchPanel}
     />
   {:else}
     <IconButton
