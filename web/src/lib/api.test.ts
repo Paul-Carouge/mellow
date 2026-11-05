@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, RestClient } from "./api";
+import { ApiError, RestClient, uploadTimeoutMilliseconds } from "./api";
 
 /** Records each request and answers 200 with `{}`. */
 function recordFetches(): { url: string; body: unknown }[] {
@@ -122,5 +122,62 @@ describe("RestClient forwarding", () => {
       { url: "/api/v1/channels/40/messages", body: { content: "", forwarded_from: { channel_id: "30", message_id: "800" }, nonce: "nonce-1" } },
       { url: "/api/v1/channels/40/messages", body: { content: "Regarde ça", reply_to_id: null, nonce: "nonce-2" } },
     ]);
+  });
+});
+
+describe("RestClient uploads", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** Requests that never answer: each ends only when its signal aborts. */
+  function stallFetches(): AbortSignal[] {
+    const signals: AbortSignal[] = [];
+    vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
+      const signal = init.signal;
+      if (!signal) {
+        return Promise.reject(new Error("the upload has no signal"));
+      }
+      signals.push(signal);
+      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+    });
+    return signals;
+  }
+
+  it("aborts an attachment's request when its caller aborts", async () => {
+    const signals = stallFetches();
+    const controller = new AbortController();
+    const upload = new RestClient().uploadAttachment("40", new File(["cat"], "cat.png"), controller.signal);
+    controller.abort();
+    await expect(upload).rejects.toEqual(new ApiError(0, "NETWORK"));
+    expect(signals.map((signal) => signal.aborted)).toEqual([true]);
+  });
+
+  it("gives up on a stalled attachment, avatar, emoji or sound at its deadline", async () => {
+    vi.useFakeTimers();
+    stallFetches();
+    const rest = new RestClient();
+    const file = new File(["x".repeat(1000)], "small.png");
+    let settledCount = 0;
+    const outcomes = [
+      rest.uploadAttachment("40", file, new AbortController().signal),
+      rest.setProfileImage("avatar", file, null),
+      rest.createEmoji("100", "wave", file),
+      rest.createSound("100", "boop", null, file),
+    ].map((upload) =>
+      upload.then(
+        () => "answered",
+        (error: unknown) => error,
+      ).finally(() => settledCount++),
+    );
+    await vi.advanceTimersByTimeAsync(uploadTimeoutMilliseconds(file.size) - 1);
+    expect(settledCount).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await Promise.all(outcomes)).toEqual(outcomes.map(() => new ApiError(0, "NETWORK")));
+  });
+
+  it("waits longer for a larger file", () => {
+    expect(uploadTimeoutMilliseconds(8 * 1024 * 1024)).toBeGreaterThan(uploadTimeoutMilliseconds(1000));
   });
 });

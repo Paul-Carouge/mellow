@@ -11,6 +11,8 @@
     attachment: Attachment | null;
     /** Why the upload failed, as a sentence; empty otherwise. */
     error: string;
+    /** Stops the upload when the file leaves the tray. */
+    uploadAbort: AbortController;
   }
 </script>
 
@@ -24,9 +26,10 @@
   interface Props {
     items: readonly AttachmentTrayItem[];
     onremove: (key: number) => void;
+    onretry: (item: AttachmentTrayItem) => void;
   }
 
-  let { items, onremove }: Props = $props();
+  let { items, onremove, onretry }: Props = $props();
 
   /** CSS cannot cut a name in the middle; an item's width fits about this many characters. */
   const FILE_NAME_MAXIMUM_CHARACTERS = 16;
@@ -68,6 +71,13 @@
           <Icon name="warning-circle" class="size-(--mw-component-message-status-icon-size)" />
           <span class="min-w-0 break-words">{item.error}</span>
         </p>
+        <!-- The message row's Retry link: a failed file never blocks Send, it waits here to be tried again. -->
+        <button
+          type="button"
+          class="min-h-(--mw-size-hit-desktop-min) self-start type-body-sm text-(--mw-component-message-editor-hint-link) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
+          aria-label={strings.attachmentTray.retry(item.file.name)}
+          onclick={() => onretry(item)}>{strings.messages.retry}</button
+        >
       {:else}
         <p class="type-body-sm text-(--mw-component-composer-tray-item-status-text)">
           {item.status === "uploading" ? strings.attachmentTray.uploading : humanFileSize(item.file.size)}

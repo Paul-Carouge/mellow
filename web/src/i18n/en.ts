@@ -927,6 +927,7 @@ export const en = {
     filesToSend: "Files to send",
     uploading: "Uploading…",
     remove: (fileName: string) => `Remove ${fileName}`,
+    retry: (fileName: string) => `Try uploading ${fileName} again`,
   },
 
   deleteMessage: {

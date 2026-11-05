@@ -280,7 +280,7 @@
 
   async function upload(item: AttachmentTrayItem) {
     try {
-      item.attachment = await client.uploadAttachment(item.file);
+      item.attachment = await client.uploadAttachment(item.file, item.uploadAbort.signal);
       item.status = "uploaded";
       announceUpload(item, strings.chat.uploaded(item.file.name));
     } catch (error) {
@@ -303,6 +303,11 @@
       return strings.chat.fileTooLarge(file.name, humanFileSize(file.size), window.location.host);
     }
     return describeError(error, strings.chat.uploadFailed(file.name));
+  }
+
+  function retryUpload(item: AttachmentTrayItem) {
+    drafts.restartUpload(item);
+    void upload(item);
   }
 
   function removeTrayItem(key: number) {
@@ -642,7 +647,7 @@
       </div>
     {/if}
     {#if canSendMessages && drafts.trayItems.length > 0}
-      <AttachmentTray items={drafts.trayItems} onremove={removeTrayItem} />
+      <AttachmentTray items={drafts.trayItems} onremove={removeTrayItem} onretry={retryUpload} />
     {/if}
     <div class="flex items-end gap-2xs px-xs">
       {#if canSendMessages}

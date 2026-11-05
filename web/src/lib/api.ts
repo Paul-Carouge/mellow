@@ -57,6 +57,19 @@ const DEVICE_NAME = "Web browser";
 /** JSON requests only: uploads may take longer on a slow link. */
 const REQUEST_TIMEOUT_MILLISECONDS = 30_000;
 const SESSION_TRANSPORT_HEADER = "X-Mellow-Session-Transport";
+/** What any upload gets, for the instance to answer (pictures are re-encoded before the answer). */
+const UPLOAD_BASE_TIMEOUT_MILLISECONDS = 60_000;
+/** About 256 kbit/s: an upload slower than this on average is taken as stalled. */
+const UPLOAD_SLOWEST_BYTES_PER_MILLISECOND = 32;
+
+/**
+ * How long an upload of `bytes` may take before it is given up as stalled.
+ * shortcut: `fetch` does not report upload progress, so the deadline grows with the size rather
+ * than restarting on each sent chunk; switch to an inactivity timer if uploads move to XHR.
+ */
+export function uploadTimeoutMilliseconds(bytes: number): number {
+  return UPLOAD_BASE_TIMEOUT_MILLISECONDS + Math.ceil(bytes / UPLOAD_SLOWEST_BYTES_PER_MILLISECOND);
+}
 
 /** The fields of a role to change, as `PATCH /guilds/{id}/roles/{id}` takes them. */
 export interface RoleChanges {
@@ -406,11 +419,15 @@ export class RestClient {
   }
 
   /** One file, sent as the raw body; its id goes into a message within the hour (ADR-0020). */
-  uploadAttachment(channelId: Snowflake, file: File): Promise<Attachment> {
+  uploadAttachment(channelId: Snowflake, file: File, signal: AbortSignal): Promise<Attachment> {
     // The name travels in a header, never in the URL: proxy logs must not hold file names.
-    return this.sendFile("POST", `channels/${channelId}/attachments`, file, {
-      "X-Mellow-File-Name": encodeURIComponent(file.name),
-    });
+    return this.sendFile(
+      "POST",
+      `channels/${channelId}/attachments`,
+      file,
+      { "X-Mellow-File-Name": encodeURIComponent(file.name) },
+      signal,
+    );
   }
 
   /** The picture as the raw body; the instance resizes and compresses it before answering (ADR-0021). */
@@ -423,12 +440,36 @@ export class RestClient {
     return this.request("DELETE", `users/@me/${kind}`);
   }
 
-  /** `extraHeaders` may replace the generic `Content-Type`. */
+  /**
+   * `extraHeaders` may replace the generic `Content-Type`. Fails with `NETWORK` when `signal`
+   * aborts or the upload outlives `uploadTimeoutMilliseconds`.
+   */
   private async sendFile<T>(
     method: string,
     path: string,
     file: Blob,
     extraHeaders: Record<string, string> = {},
+    signal?: AbortSignal,
+  ): Promise<T> {
+    // `AbortSignal.any` is too recent for the browsers Vite builds for: joined by hand, as in klipy.ts.
+    const request = new AbortController();
+    const abortRequest = () => request.abort();
+    signal?.addEventListener("abort", abortRequest, { once: true });
+    const timeout = setTimeout(abortRequest, uploadTimeoutMilliseconds(file.size));
+    try {
+      return await this.sendFileWithSignal<T>(method, path, file, extraHeaders, request.signal);
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abortRequest);
+    }
+  }
+
+  private async sendFileWithSignal<T>(
+    method: string,
+    path: string,
+    file: Blob,
+    extraHeaders: Record<string, string>,
+    signal: AbortSignal,
   ): Promise<T> {
     let response: Response;
     try {
@@ -441,6 +482,7 @@ export class RestClient {
         },
         body: file,
         credentials: "same-origin",
+        signal,
       });
     } catch {
       throw new ApiError(0, "NETWORK");

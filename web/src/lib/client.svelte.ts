@@ -1519,12 +1519,12 @@ export class MellowClient {
   }
 
   /** Uploads one file to the open channel, for the next message sent there. */
-  uploadAttachment(file: File): Promise<Attachment> {
+  uploadAttachment(file: File, signal: AbortSignal): Promise<Attachment> {
     const channelId = this.selectedChannelId;
     if (!channelId) {
       return Promise.reject(new ApiError(404, "NOT_FOUND"));
     }
-    return this.rest.uploadAttachment(channelId, file);
+    return this.rest.uploadAttachment(channelId, file, signal);
   }
 
   /**
