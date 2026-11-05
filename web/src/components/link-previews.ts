@@ -5,12 +5,21 @@ import { safeHttpUrl } from "./markdown";
  * How a link's preview shows under its message (docs/design/web-link-previews.md):
  * - `picture-only`: the link is itself a picture, shown alone like an attached one;
  * - `youtube`: the card with a 16:9 picture (9:16 for Shorts) that becomes the player on a click;
+ * - `youtube-music`: a YouTube Music track the instance named the artist of: cover, title, artist
+ *   and a Listen key that opens the visible player under them (docs/design/web-provider-embeds.md);
  * - `large-picture`: the card with a wide picture under its text;
  * - `thumbnail`: the card with a small or square picture at its trailing top;
  * - `text-only`: the card without picture;
  * - `none`: nothing worth a card (no text, no picture), or a link that is not http(s).
  */
-export type LinkPreviewLayout = "picture-only" | "youtube" | "large-picture" | "thumbnail" | "text-only" | "none";
+export type LinkPreviewLayout =
+  | "picture-only"
+  | "youtube"
+  | "youtube-music"
+  | "large-picture"
+  | "thumbnail"
+  | "text-only"
+  | "none";
 
 /** A landscape picture at least this much wider than high reads as a banner, shown large. */
 export const MINIMUM_LARGE_PICTURE_ASPECT_RATIO = 1.6;
@@ -18,12 +27,18 @@ export const MINIMUM_LARGE_PICTURE_ASPECT_RATIO = 1.6;
 /** Narrower than this, a picture would be stretched past its pixels across the card: a thumbnail. */
 export const MINIMUM_LARGE_PICTURE_WIDTH_PIXELS = 300;
 
-export function linkPreviewLayout(preview: LinkPreview, youTubeEmbed: YouTubeEmbed | null): LinkPreviewLayout {
+export function linkPreviewLayout(
+  preview: LinkPreview,
+  youTubeEmbed: YouTubeEmbed | null,
+  embed: LinkEmbed | null = null,
+): LinkPreviewLayout {
   if (safeHttpUrl(preview.url) === null) {
     return "none";
   }
   if (youTubeEmbed !== null) {
-    return "youtube";
+    // The player's id comes from the link, checked strictly; the embed only adds the artist.
+    const isSameTrack = embed?.kind === "youtube_music_track" && embed.video_id === youTubeEmbed.videoId;
+    return isSameTrack ? "youtube-music" : "youtube";
   }
   const hasText = Boolean(preview.title || preview.description);
   const { image } = preview;
@@ -143,12 +158,55 @@ export function linkPreviewImageUrl(channelId: Snowflake, messageId: Snowflake, 
   return `/api/v1/channels/${channelId}/messages/${messageId}/link-previews/${previewId}/image`;
 }
 
-/** `#rrggbb` for the page's `theme-color`, or null (the token's dusk) when absent or out of range. */
+/**
+ * Lighter than this (WCAG relative luminance), a page's colour is a white or near-white page
+ * background (YouTube's), not a brand colour: it would vanish on the light card.
+ */
+export const MAXIMUM_BAR_COLOR_LUMINANCE = 0.85;
+
+/**
+ * `#rrggbb` for the page's `theme-color`, or null (the token's dusk) when absent, out of range or
+ * near white.
+ */
 export function linkPreviewBarColor(themeColor: number | undefined): string | null {
   if (themeColor === undefined || !Number.isInteger(themeColor) || themeColor < 0 || themeColor > 0xffffff) {
     return null;
   }
+  if (relativeLuminance(themeColor) > MAXIMUM_BAR_COLOR_LUMINANCE) {
+    return null;
+  }
   return `#${themeColor.toString(16).padStart(6, "0")}`;
+}
+
+/** WCAG 2.2's relative luminance of `0xRRGGBB`. */
+function relativeLuminance(color: number): number {
+  const linear = (channel: number) => {
+    const value = channel / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * linear((color >> 16) & 0xff) + 0.7152 * linear((color >> 8) & 0xff) + 0.0722 * linear(color & 0xff);
+}
+
+/** Whole hours, minutes and seconds of a duration in seconds. */
+export interface DurationParts {
+  hours: number;
+  minutes: number;
+  seconds: number;
+}
+
+export function durationParts(totalSeconds: number): DurationParts {
+  return {
+    hours: Math.floor(totalSeconds / SECONDS_PER_HOUR),
+    minutes: Math.floor((totalSeconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE),
+    seconds: totalSeconds % SECONDS_PER_MINUTE,
+  };
+}
+
+/** "1:30", "1:02:03": a video's start time as players show it. */
+export function clockDurationLabel(totalSeconds: number): string {
+  const { hours, minutes, seconds } = durationParts(totalSeconds);
+  const twoDigits = (value: number) => String(value).padStart(2, "0");
+  return hours > 0 ? `${hours}:${twoDigits(minutes)}:${twoDigits(seconds)}` : `${minutes}:${twoDigits(seconds)}`;
 }
 
 /** "example.org" for a link, so a picture or player without a title still has a name. */
@@ -233,3 +291,7 @@ export function knownLinkEmbedOf(preview: LinkPreview): LinkEmbed | null {
       return known;
   }
 }
+
+/** What every provider's player may do (ADR-0044): the page's policy frames them all, so this is the limit. */
+export const EMBED_PLAYER_SANDBOX = "allow-scripts allow-same-origin allow-presentation allow-popups allow-popups-to-escape-sandbox";
+export const VIDEO_PLAYER_PERMISSIONS = "autoplay; encrypted-media; picture-in-picture; fullscreen";

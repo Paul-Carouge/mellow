@@ -1,6 +1,6 @@
 # Provider embeds on the web: YouTube, YouTube Music, GitHub, music services, Vimeo, Twitch, Wikipedia
 
-Status: designed 2026-11-05 on top of v0.45.0 (link previews of DESIGN.md v0.49, ADR-0041, `docs/design/web-link-previews.md`). The foundation is built: [ADR-0044](../adr/0044-provider-embeds.md), the `LinkPreview.embed` union (`crates/mellow-protocol`, `web/src/lib/protocol.ts`), its storage (migration 0039), the fetcher's JSON path and the players' `frame-src`. No provider fills an embed yet and no web slice is built. Section 9 is the proposal as written; where they differ (field names, every player origin allowed at once), ADR-0044 and the protocol are what holds.
+Status: designed 2026-11-05 on top of v0.45.0 (link previews of DESIGN.md v0.49, ADR-0041, `docs/design/web-link-previews.md`). The foundation is built: [ADR-0044](../adr/0044-provider-embeds.md), the `LinkPreview.embed` union (`crates/mellow-protocol`, `web/src/lib/protocol.ts`), its storage (migration 0039), the fetcher's JSON path and the players' `frame-src`. YouTube fills `youtube_video` and `youtube_music_track` from its oEmbed endpoint (ADR-0044), and slices E1 and E2 are built (`web/src/components/embeds/`: `EmbedCard`, `VideoEmbed`, `MusicCard`, `embed-players.svelte.ts`); the other providers and slices are not yet. Section 9 is the proposal as written; where they differ (field names, every player origin allowed at once), ADR-0044 and the protocol are what holds.
 
 ## 1. Brief
 
@@ -229,7 +229,7 @@ Existing tokens stay. New ones, with their aliases:
 |---|---|---|
 | `description-lines` | 3 (number) | Description clamp (today a literal `line-clamp-3`) |
 | `wikipedia-extract-lines` | 6 | Wikipedia extract clamp |
-| `short-player-width` | 270 px (16.875rem) | Width of a Short's 9:16 box |
+| `short-player-width` | 270 px (16.875rem) | Width of a Short's 9:16 box (built as `short-player-max-height` × 9/16, the token that already existed) |
 | `start-chip-background` | `{color.media.stage}` | Start-time chip on the poster |
 | `start-chip-text` | `{color.media.text}` | Its text (15.84:1) |
 | `start-chip-radius` | `{radius.xs}` | |
@@ -262,6 +262,8 @@ Existing tokens stay. New ones, with their aliases:
 | `state-closed-background` / `-text` | `{color.danger.wash}` / `{color.text.danger}` | 5.17 dark / 4.97 light |
 | `state-draft-border` / `-text` | `{color.border.strong}` / `{color.text.muted}` | Edge 5.27 / 3.30 on the card; text 7.62 / 5.45 |
 | `close-player-icon` | `{color.text.secondary}` | The × key on the first line |
+| `cover-placeholder-icon` | `{color.text.muted}` | The `music-notes` glyph of a missing cover (added in E2) |
+| `player-error-text` | `{color.text.danger}` | The offline line under a player (added in E1) |
 
 Contrast pairs to declare in `$extensions.org.mellow.contrast-pairs` (all computed with the generator's formula on 2026-11-05): `text.positive` on `positive.wash` (4.5), `text.danger` on `danger.wash` (4.5), `text.heading` on `state.selected` (exists), `text.secondary` on `state.selected` (exists), `text.muted` on `surface.sidebar` (exists), `border.strong` on `surface.sidebar` (exists, 3.0), `media.text` on `media.stage` (3.0 exists for the play glyph; add 4.5 for the chip's text).
 

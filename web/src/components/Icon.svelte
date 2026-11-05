@@ -58,6 +58,7 @@
     | "microphone-slash"
     | "minus"
     | "monitor-arrow-up"
+    | "music-notes"
     | "paper-plane-right"
     | "paw-print"
     | "pencil-simple"
