@@ -4,6 +4,8 @@ import type { PublicUser, Role } from "../lib/protocol";
 import {
   type BlockNode,
   type InlineNode,
+  type MarkdownList,
+  type MarkdownListItem,
   markdownMentionsUser,
   parseMessageMarkdown,
   parseMessageMarkdownCountingSteps,
@@ -16,6 +18,12 @@ const people = mentionablePeople([paul]);
 
 const text = (value: string): InlineNode => ({ kind: "text", text: value });
 const paragraph = (...children: InlineNode[]): BlockNode => ({ kind: "paragraph", children });
+const item = (...parts: (InlineNode | MarkdownList)[]): MarkdownListItem => ({
+  children: parts.filter((part): part is InlineNode => part.kind !== "list"),
+  sublists: parts.filter((part): part is MarkdownList => part.kind === "list"),
+});
+const bullets = (...items: MarkdownListItem[]): MarkdownList => ({ kind: "list", start: null, items });
+const numbered = (start: number, ...items: MarkdownListItem[]): MarkdownList => ({ kind: "list", start, items });
 
 /** The inline nodes of a message that is one paragraph. */
 function inlines(content: string): InlineNode[] {
@@ -193,6 +201,8 @@ describe("mentions", () => {
     expect(markdownMentionsUser(parseMessageMarkdown("`@paul`", people), "1")).toBe(false);
     expect(markdownMentionsUser(parseMessageMarkdown("```\n@paul\n```", people), "1")).toBe(false);
     expect(markdownMentionsUser(parseMessageMarkdown("> - ||@paul||", people), "1")).toBe(true);
+    expect(markdownMentionsUser(parseMessageMarkdown("- a\n  1. @paul", people), "1")).toBe(true);
+    expect(markdownMentionsUser(parseMessageMarkdown("-# @paul", people), "1")).toBe(true);
     expect(markdownMentionsUser(parseMessageMarkdown("@zoe", people), "1")).toBe(false);
   });
 
@@ -229,8 +239,57 @@ describe("blocks", () => {
   it("reads bullet lists", () => {
     expect(parseMessageMarkdown("Shopping:\n- milk\n* **eggs**\nthanks", people)).toEqual([
       paragraph(text("Shopping:")),
-      { kind: "list", items: [[text("milk")], [{ kind: "strong", children: [text("eggs")] }]] },
+      bullets(item(text("milk")), item({ kind: "strong", children: [text("eggs")] })),
       paragraph(text("thanks")),
+    ]);
+  });
+
+  it("reads numbered lists from their first number, with dots or parentheses", () => {
+    expect(parseMessageMarkdown("1. un\n2. deux", people)).toEqual([numbered(1, item(text("un")), item(text("deux")))]);
+    expect(parseMessageMarkdown("3) trois\n3) quatre", people)).toEqual([numbered(3, item(text("trois")), item(text("quatre")))]);
+    expect(parseMessageMarkdown("0. zéro", people)).toEqual([numbered(0, item(text("zéro")))]);
+  });
+
+  it("starts a new list when bullets and numbers alternate", () => {
+    expect(parseMessageMarkdown("- a\n1. b\n- c", people)).toEqual([
+      bullets(item(text("a"))),
+      numbered(1, item(text("b"))),
+      bullets(item(text("c"))),
+    ]);
+  });
+
+  it("leaves numbers without a space, past nine digits or with nothing after them as text", () => {
+    expect(parseMessageMarkdown("1.5 kg\n1234567890. trop\n2. ", people)).toEqual([paragraph(text("1.5 kg\n1234567890. trop\n2. "))]);
+  });
+
+  it("nests an item indented by two spaces or a tab under the one before, once", () => {
+    expect(parseMessageMarkdown("- a\n  - b\n\t1. c\n      2. d\n- e", people)).toEqual([
+      bullets(
+        item(text("a"), bullets(item(text("b"))), numbered(1, item(text("c")), item(text("d")))),
+        item(text("e")),
+      ),
+    ]);
+  });
+
+  it("keeps an indented item without a parent, or indented by one space, out of a list", () => {
+    expect(parseMessageMarkdown("  - orphan", people)).toEqual([paragraph(text("  - orphan"))]);
+    expect(parseMessageMarkdown("- a\n - b", people)).toEqual([bullets(item(text("a"))), paragraph(text(" - b"))]);
+  });
+
+  it("reads subtext at line start, with formatting inside", () => {
+    expect(parseMessageMarkdown("hello\n-# **petit** mot\n-#nospace\n-# ", people)).toEqual([
+      paragraph(text("hello")),
+      { kind: "subtext", children: [{ kind: "strong", children: [text("petit")] }, text(" mot")] },
+      paragraph(text("-#nospace\n-# ")),
+    ]);
+  });
+
+  it("reads lists and subtext inside quotes", () => {
+    expect(parseMessageMarkdown("> 1. a\n>   - b\n> -# note", people)).toEqual([
+      {
+        kind: "quote",
+        children: [numbered(1, item(text("a"), bullets(item(text("b"))))), { kind: "subtext", children: [text("note")] }],
+      },
     ]);
   });
 
@@ -307,6 +366,9 @@ describe("hostile text", () => {
     ["backslashes", (scale) => "\\".repeat(4_000 * scale) + "*"],
     ["fences", (scale) => "```".repeat(1_300 * scale)],
     ["quote lines", (scale) => "> ".repeat(2_000 * scale)],
+    ["numbered items", (scale) => "1. a\n".repeat(2_000 * scale)],
+    ["nested items", (scale) => "- a\n" + "  - b\n\t1. c\n".repeat(1_000 * scale)],
+    ["subtext lines", (scale) => "-# a\n".repeat(2_000 * scale)],
     ["links", (scale) => "http://a".repeat(500 * scale) + ".".repeat(2_000 * scale)],
     // Many openers with no closer: each search must be answered once, not once per opener.
     ["unclosed stars", (scale) => "*a ".repeat(15_000 * scale)],

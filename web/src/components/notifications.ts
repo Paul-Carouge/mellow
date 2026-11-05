@@ -206,11 +206,12 @@ function blocksAsText(blocks: readonly BlockNode[]): string {
       switch (block.kind) {
         case "paragraph":
         case "heading":
+        case "subtext":
           return inlinesAsText(block.children);
         case "quote":
           return blocksAsText(block.children);
         case "list":
-          return block.items.map(inlinesAsText).join(" ");
+          return block.items.map((item) => `${inlinesAsText(item.children)} ${blocksAsText(item.sublists)}`).join(" ");
         case "codeBlock":
           return block.text;
       }

@@ -4,7 +4,7 @@
 
   import { strings } from "../i18n";
   import CustomEmojiImage from "./CustomEmojiImage.svelte";
-  import type { BlockNode, InlineNode } from "./markdown";
+  import type { BlockNode, InlineNode, MarkdownList } from "./markdown";
   import MessageCodeBlock from "./MessageCodeBlock.svelte";
   import { roleMentionChipColorsInTheme } from "./name-colors.svelte";
   import { roleMentionLabel } from "./role-mentions";
@@ -41,6 +41,13 @@
   }
 
   const lastBlock = $derived(blocks.at(-1));
+  /** Blocks that end in a line of text, where "(edited)" can follow the last word. */
+  const isLastBlockInline = $derived(lastBlock?.kind === "paragraph" || lastBlock?.kind === "subtext");
+
+  /** Digits of a numbered list's last number, so its markers get room and never hang into the gutter. */
+  function largestNumberDigitCount(list: MarkdownList): number {
+    return String((list.start ?? 0) + list.items.length - 1).length;
+  }
 
   /** A person, `@everyone` or a role without colour (DESIGN.md §5.4): the lamp's amber chip. */
   const MENTION_CHIP_CLASS =
@@ -85,6 +92,20 @@
           class="text-text-link hover:underline">{@render inlines(node.children, false)}</a
         >{:else}<span class="text-text-link">{@render inlines(node.children, false)}</span>{/if}{/if}{/each}{/snippet}
 
+<!-- Items are written without whitespace, as they keep the sender's spaces (whitespace-pre-wrap). -->
+{#snippet markdownList(list: MarkdownList)}
+  <svelte:element
+    this={list.start === null ? "ul" : "ol"}
+    start={list.start ?? undefined}
+    class="markdown-list"
+    style:--list-number-digits={list.start === null ? undefined : largestNumberDigitCount(list)}
+  >
+    {#each list.items as item, itemIndex (itemIndex)}
+      <li class="break-words whitespace-pre-wrap">{@render inlines(item.children, true)}{#each item.sublists as sublist, sublistIndex (sublistIndex)}{@render markdownList(sublist)}{/each}</li>
+    {/each}
+  </svelte:element>
+{/snippet}
+
 {#snippet blockList(nodes: readonly BlockNode[])}
   {#each nodes as block, index (index)}
     {#if block.kind === "paragraph"}
@@ -100,14 +121,12 @@
           block.level === 3 && "type-message-h3",
         ]}
       >{@render inlines(block.children, true)}</p>
+    {:else if block.kind === "subtext"}
+      <p class="type-message-subtext break-words whitespace-pre-wrap text-text-muted">{@render inlines(block.children, true)}{#if block === lastBlock && trailing}{" "}{@render trailing()}{/if}</p>
     {:else if block.kind === "quote"}
       <blockquote class="quote">{@render blockList(block.children)}</blockquote>
     {:else if block.kind === "list"}
-      <ul class="bullet-list">
-        {#each block.items as item, itemIndex (itemIndex)}
-          <li class="break-words whitespace-pre-wrap">{@render inlines(item, true)}</li>
-        {/each}
-      </ul>
+      {@render markdownList(block)}
     {:else if block.kind === "codeBlock"}
       <!-- Keyed by its text: an edit that changes a block starts it folded again, even if blocks moved. -->
       {#key block.text}<MessageCodeBlock text={block.text} />{/key}
@@ -116,7 +135,7 @@
 {/snippet}
 
 {@render blockList(blocks)}
-{#if trailing && lastBlock?.kind !== "paragraph"}
+{#if trailing && !isLastBlockInline}
   <p>{@render trailing()}</p>
 {/if}
 
@@ -164,9 +183,25 @@
     padding-inline-start: var(--mw-space-sm);
   }
 
-  .bullet-list {
+  .markdown-list {
     margin-inline-start: var(--mw-space-md);
     list-style: disc outside;
+  }
+
+  /* A level down reads as a level down: hollow bullets, as on Discord. */
+  li > ul.markdown-list {
+    list-style-type: circle;
+  }
+
+  /* Outside markers end where the text starts; each digit past the first takes one more figure's
+     width, so "10." lines up with "9." and never hangs into the avatar gutter. */
+  ol.markdown-list {
+    margin-inline-start: calc(var(--mw-space-md) + (var(--list-number-digits) - 1) * 1ch);
+    list-style-type: decimal;
+  }
+
+  ol.markdown-list > li::marker {
+    font-variant-numeric: tabular-nums;
   }
 
   .spoiler-hidden {

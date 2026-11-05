@@ -115,6 +115,7 @@ describe("words", () => {
       "see you at spoiler at 7",
     );
     expect(messagePreviewText({ content: "look <:party:123> > here" }, NO_ROLES)).toBe("look :party: > here");
+    expect(messagePreviewText({ content: "3. pain\n  - complet\n4. lait\n-# merci" }, NO_ROLES)).toBe("pain complet lait merci");
   });
 
   it("names mentioned roles, never their markup", () => {
