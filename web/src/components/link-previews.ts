@@ -295,3 +295,5 @@ export function knownLinkEmbedOf(preview: LinkPreview): LinkEmbed | null {
 /** What every provider's player may do (ADR-0044): the page's policy frames them all, so this is the limit. */
 export const EMBED_PLAYER_SANDBOX = "allow-scripts allow-same-origin allow-presentation allow-popups allow-popups-to-escape-sandbox";
 export const VIDEO_PLAYER_PERMISSIONS = "autoplay; encrypted-media; picture-in-picture; fullscreen";
+/** ADR-0044: a music player plays sound only, so it gets neither picture-in-picture nor fullscreen. */
+export const MUSIC_PLAYER_PERMISSIONS = "autoplay; encrypted-media";
