@@ -16,6 +16,7 @@
   import { embedPlayerKey, embedPlayers } from "./embed-players.svelte";
   import EmbedTitleLink from "./EmbedTitleLink.svelte";
   import PreviewPicture from "./PreviewPicture.svelte";
+  import { playYouTubeAtRememberedVolume } from "./youtube-player";
 
   // A YouTube video or Short (docs/design/web-provider-embeds.md 4.1): the instance's poster in a
   // 16:9 box (9:16 for a Short) that becomes the player on a press, from where the link starts.
@@ -104,13 +105,14 @@
   >
     {#if isPlaying}
       <iframe
-        src={youTubeEmbedUrl(video)}
+        src={youTubeEmbedUrl(video, location.origin)}
         title={strings.linkPreviews.youTubePlayer(title)}
         allow={VIDEO_PLAYER_PERMISSIONS}
         sandbox={EMBED_PLAYER_SANDBOX}
         referrerpolicy="strict-origin-when-cross-origin"
         class="absolute inset-0 size-full border-0"
         {@attach focusPlayer}
+        {@attach playYouTubeAtRememberedVolume}
       ></iframe>
     {:else}
       {#if imageUrl !== null && !isPictureFailed}

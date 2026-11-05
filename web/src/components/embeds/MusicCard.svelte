@@ -9,6 +9,7 @@
   import { embedPlayerKey, embedPlayers } from "./embed-players.svelte";
   import EmbedTitleLink from "./EmbedTitleLink.svelte";
   import PreviewPicture from "./PreviewPicture.svelte";
+  import { playYouTubeAtRememberedVolume } from "./youtube-player";
 
   // A track (docs/design/web-provider-embeds.md 4.2): its cover, title and artist, and a Listen
   // key. YouTube's terms forbid sound without its visible player, so Listen opens the YouTube
@@ -97,13 +98,14 @@
       class="relative aspect-video w-full overflow-hidden rounded-(--mw-component-link-preview-picture-radius) bg-(--mw-component-link-preview-player-background)"
     >
       <iframe
-        src={youTubeEmbedUrl(track)}
+        src={youTubeEmbedUrl(track, location.origin)}
         title={strings.linkPreviews.playerTitle(service, title)}
         allow={MUSIC_PLAYER_PERMISSIONS}
         sandbox={EMBED_PLAYER_SANDBOX}
         referrerpolicy="strict-origin-when-cross-origin"
         class="absolute inset-0 size-full border-0"
         {@attach focusPlayer}
+        {@attach playYouTubeAtRememberedVolume}
       ></iframe>
     </div>
   {/if}

@@ -3,6 +3,7 @@
   import { SvelteSet } from "svelte/reactivity";
 
   import { strings } from "../i18n";
+  import { playAtRememberedVolume } from "../lib/media-volume";
   import { type Attachment, PLAYABLE_AUDIO_TYPES, type Snowflake, attachmentPreviewUrl, attachmentUrl } from "../lib/protocol";
   import {
     attachmentDisplay,
@@ -173,6 +174,7 @@
             onplay={(event) => pauseOtherMediaWhenOneStarts(event.currentTarget)}
             onpause={(event) => forgetMediaWhenItStops(event.currentTarget)}
             onerror={(event) => showDownloadCardAfterPlaybackFailed(event, attachment)}
+            {@attach playAtRememberedVolume}
           ></video>
           <figcaption
             bind:clientWidth={videoBandWidths[attachment.id]}
@@ -274,6 +276,7 @@
             onplay={(event) => pauseOtherMediaWhenOneStarts(event.currentTarget)}
             onpause={(event) => forgetMediaWhenItStops(event.currentTarget)}
             onerror={(event) => showDownloadCardAfterPlaybackFailed(event, attachment)}
+            {@attach playAtRememberedVolume}
           ></audio>
         {/if}
       </li>

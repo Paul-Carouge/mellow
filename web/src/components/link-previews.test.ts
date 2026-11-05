@@ -188,19 +188,26 @@ describe("linkPreviewImageUrl", () => {
 });
 
 describe("youTubeEmbedUrl", () => {
-  it("uses the privacy-enhanced player and starts it", () => {
-    expect(youTubeEmbedUrl(VIDEO)).toBe("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?autoplay=1");
+  const PAGE_ORIGIN = "https://mellow.example";
+  const PLAYER_PARAMETERS = "autoplay=1&enablejsapi=1&origin=https%3A%2F%2Fmellow.example";
+
+  it("uses the privacy-enhanced player, starts it and lets this page talk to it", () => {
+    expect(youTubeEmbedUrl(VIDEO, PAGE_ORIGIN)).toBe(
+      `https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?${PLAYER_PARAMETERS}`,
+    );
   });
 
   it("carries the start time and the playlist", () => {
-    expect(youTubeEmbedUrl({ ...VIDEO, startSeconds: 3723, playlistId: PLAYLIST_ID })).toBe(
-      `https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?autoplay=1&start=3723&list=${PLAYLIST_ID}`,
+    expect(youTubeEmbedUrl({ ...VIDEO, startSeconds: 3723, playlistId: PLAYLIST_ID }, PAGE_ORIGIN)).toBe(
+      `https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?${PLAYER_PARAMETERS}&start=3723&list=${PLAYLIST_ID}`,
     );
   });
 
   it("plays a Shorts link in the same player", () => {
     const short = youTubeEmbedOf("https://youtube.com/shorts/a_b-C1d2E3f?si=Xy-9_aBcDeFgHiJk");
-    expect(short && youTubeEmbedUrl(short)).toBe("https://www.youtube-nocookie.com/embed/a_b-C1d2E3f?autoplay=1");
+    expect(short && youTubeEmbedUrl(short, PAGE_ORIGIN)).toBe(
+      `https://www.youtube-nocookie.com/embed/a_b-C1d2E3f?${PLAYER_PARAMETERS}`,
+    );
   });
 });
 
