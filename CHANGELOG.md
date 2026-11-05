@@ -4,6 +4,32 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-11-05
+Accounts: one unique name per account, friend codes, two-factor sign-in, richer profiles and role icons, and a remembered media volume. Database migrations 0041 (unique names and friend codes), 0042 (two-factor sign-in) and 0043 (profile links and role icons); the protocol gains `display_name` uniqueness, `friend_code`, the two-factor routes and types, `UserProfile` and role icons, all additive. `username` stays a deprecated alias of the name in API v1.
+
+**Before updating:** sign-in now takes the account's name or its email. Where two existing accounts had the same name (whatever the capitals or accents), the oldest keeps it and the others get " 2", " 3"…; tell your members they can sign in with their email if their old username no longer works.
+
+### Added
+- Each account has one name, unique whatever the capitals or accents; you sign in with this name or your email, and renaming checks availability as you type (ADR-0048).
+- Each account gets a permanent friend code (XXXX-XXXX), shown in My account and Friends, with "Add by friend code".
+- Two-factor sign-in with an authenticator app (Settings → Sécurité): QR code drawn in your browser, 10 single-use recovery codes and a second sign-in step. Administrators can reset it with `mellow-server admin reset-two-factor` (ADR-0049).
+- Profiles have an "About me" text and up to five links, each shown with its site's icon, fetched and cached by the server (ADR-0050).
+- Roles can have an icon, a small picture or an emoji, shown next to their members' names in messages and the member list.
+- Search: `from:` and `mentions:` accept quoted names with spaces (`from:"Paul Carouge"`).
+- The volume and mute you set are remembered across YouTube videos, video and audio attachments and the picture viewer.
+
+### Changed
+- The "@name" line under names is gone everywhere: an account has only one name.
+- The inline YouTube player is 480 px wide.
+
+### Fixed
+- YouTube's volume slider no longer closes as you move the pointer to it.
+
+### Security
+- Repeated wrong two-factor codes lock app codes for 15 minutes, doubling each time up to 24 hours, stored in the database so a restart forgives nothing; recovery codes always work. Turning two-factor on signs out your other sessions, and the Sécurité page warns you for 30 days after a wrong code.
+- Per-account sign-in limits are keyed on the folded name, so writing a name with other accents or full-width letters does not get more guesses.
+- Blocking someone no longer lets you read their profile; profiles are readable only by people who share a server or a conversation. Site icons are fetched by the server with SSRF guards, size and time limits, never by readers' browsers.
+
 ## [0.47.0] - 2026-11-05
 Rich link embeds, smaller media, checklists and progress bars, and a full design pass of the web client. Database migrations 0039 (link preview embeds) and 0040 (checklists and progress bars); the protocol gains `LinkPreview.embed`, checklists, progress bars, their events and the `SEND_CHECKLISTS` permission, which older clients ignore. Building from source now requires cmake (libopus, ADR-0045).
 
