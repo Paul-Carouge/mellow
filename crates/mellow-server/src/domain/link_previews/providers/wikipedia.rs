@@ -21,6 +21,9 @@ const SITE_NAME: &str = "Wikipedia";
 const DISAMBIGUATION_TYPE: &str = "disambiguation";
 /// Wiki codes: `fr`, `simple`, `zh-min-nan`, `be-tarask`.
 const LANGUAGE_CODE_LENGTHS: std::ops::RangeInclusive<usize> = 2..=16;
+/// Query parameters that show another page than the article's current version (a revision, a
+/// diff, a search): such links are left as they are.
+const PAGE_CHANGING_PARAMETERS: [&str; 4] = ["oldid", "diff", "curid", "search"];
 /// Wikipedia's titles are at most 255 bytes, up to three times that once percent-encoded.
 const MAXIMUM_TITLE_IN_PATH_BYTES: usize = 3 * 255;
 
@@ -91,6 +94,12 @@ pub(crate) fn article_of(link: &Url) -> Option<WikipediaArticle> {
         .and_then(|language| language.strip_suffix('.'))
         .unwrap_or(host);
     let title_in_path = link.path().strip_prefix(ARTICLE_PATH_PREFIX)?;
+    if link
+        .query_pairs()
+        .any(|(name, _)| PAGE_CHANGING_PARAMETERS.contains(&name.as_ref()))
+    {
+        return None;
+    }
     if !is_language_code(language)
         || title_in_path.is_empty()
         || title_in_path.len() > MAXIMUM_TITLE_IN_PATH_BYTES
@@ -217,6 +226,10 @@ mod tests {
             "https://en.wikipedia.org:8443/wiki/Twilight",
             "https://e.wikipedia.org/wiki/Twilight",
             "https://e1.wikipedia.org/wiki/Twilight",
+            "https://en.wikipedia.org/wiki/Twilight?oldid=123",
+            "https://en.wikipedia.org/wiki/Twilight?diff=prev&oldid=123",
+            "https://en.wikipedia.org/wiki/Twilight?curid=42",
+            "https://en.wikipedia.org/wiki/Special:Search?search=dusk",
         ] {
             assert_eq!(canonical(link), None, "{link}");
         }

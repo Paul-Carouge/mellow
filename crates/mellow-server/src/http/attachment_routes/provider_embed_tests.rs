@@ -397,3 +397,43 @@ async fn wikipedia_links_get_the_article_summary_and_thumbnail() {
         }))
     );
 }
+
+#[tokio::test]
+async fn links_github_does_not_know_show_the_page_card_for_a_day_without_spending_the_budget() {
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let (owner, general) = owner_and_general_channel(&state).await;
+    let (site, site_fetches) = stub_site(None).await;
+    let fetcher = LinkFetcher::allowing_loopback_for_tests()
+        .with_providers_for_tests(LinkProviders::served_by_for_tests(&site));
+    state.messages.enable_link_previews();
+
+    let previews = previews_of_message_with(
+        &state,
+        &fetcher,
+        &owner,
+        general,
+        &format!("{site}mellow-org/gone and {site}topics/rust"),
+    )
+    .await;
+    let lifetimes: Vec<i64> = sqlx::query_scalar(
+        "SELECT expires_at_unix_milliseconds - fetched_at_unix_milliseconds FROM link_previews",
+    )
+    .fetch_all(database.readers())
+    .await
+    .unwrap();
+    database.close().await;
+
+    assert_eq!(
+        site_fetches.api.load(Ordering::SeqCst),
+        1,
+        "GitHub's own pages never reach the API"
+    );
+    assert_eq!(site_fetches.pages.load(Ordering::SeqCst), 2);
+    for preview in &previews {
+        assert_eq!(preview.title.as_deref(), Some("The page's card"));
+        assert_eq!(preview.embed, None);
+    }
+    assert_eq!(previews.len(), 2);
+    assert_eq!(lifetimes, [24 * 60 * 60 * 1_000, 24 * 60 * 60 * 1_000]);
+}

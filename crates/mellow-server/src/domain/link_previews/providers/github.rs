@@ -27,6 +27,26 @@ const MAXIMUM_REPOSITORY_NAME_LENGTH: usize = 100;
 const MAXIMUM_NUMBER_DIGITS: usize = 10;
 const ISSUES_PATH_KIND: &str = "issues";
 const PULL_REQUEST_PATH_KIND: &str = "pull";
+/// GitHub's own pages whose paths look like `<owner>/<name>`, never a repository: each would
+/// spend a request of the hour's budget on a 404.
+const RESERVED_FIRST_SEGMENTS: [&str; 16] = [
+    "about",
+    "advisories",
+    "apps",
+    "collections",
+    "enterprise",
+    "explore",
+    "features",
+    "marketplace",
+    "notifications",
+    "orgs",
+    "organizations",
+    "settings",
+    "sponsors",
+    "topics",
+    "trending",
+    "users",
+];
 /// Tabs of a pull request's page, which name the same pull request.
 const PULL_REQUEST_TABS: [&str; 3] = ["files", "commits", "checks"];
 const CLONE_SUFFIX: &str = ".git";
@@ -167,6 +187,13 @@ impl GitHub {
                     ProviderOutcome::Found(Box::new(preview))
                 })
             }
+            // No such repository, or a private one: the answer stands, so the page's card is kept
+            // as long as any other link's instead of spending a request every hour.
+            Err(FetchError::Status { status, .. })
+                if status == StatusCode::NOT_FOUND || status == StatusCode::GONE =>
+            {
+                ProviderOutcome::NotProvided
+            }
             Err(FetchError::Status { status, headers }) => {
                 self.pause_after(Some(status), &headers, now);
                 ProviderOutcome::Failed
@@ -187,8 +214,9 @@ impl GitHub {
 }
 
 /// Until when to leave GitHub's API alone after an answer (GitHub's rate-limit guide): the reset
-/// once the budget is spent, `retry-after` on a refusal that gives one, a minute on a 429 that
-/// gives none. A 403 without either is a refusal of that one link, which pauses nothing.
+/// once the budget is spent, `retry-after` on a refusal that gives one, otherwise a minute on any
+/// 403 or 429. Without a token, a 403 is almost always a secondary rate limit, and calling on
+/// through one gets an instance blocked for longer.
 fn pause_until_after_answer(
     status: Option<StatusCode>,
     headers: &HeaderMap,
@@ -218,8 +246,7 @@ fn pause_until_after_answer(
                 .min(latest),
         );
     }
-    (status == StatusCode::TOO_MANY_REQUESTS)
-        .then(|| now.saturating_add(DEFAULT_PAUSE_MILLISECONDS))
+    Some(now.saturating_add(DEFAULT_PAUSE_MILLISECONDS))
 }
 
 /// `https://github.com/<owner>/<name>` (lowercase, without `.git`), or its `/issues/<n>` or
@@ -257,10 +284,13 @@ fn github_link_of_path(link: &Url) -> Option<GitHubLink> {
         _ => return None,
     };
     let repository = repository.strip_suffix(CLONE_SUFFIX).unwrap_or(repository);
-    if !is_owner_login(owner) || !is_repository_name(repository) {
+    let (owner, repository) = (owner.to_ascii_lowercase(), repository.to_ascii_lowercase());
+    if !is_owner_login(&owner)
+        || RESERVED_FIRST_SEGMENTS.contains(&owner.as_str())
+        || !is_repository_name(&repository)
+    {
         return None;
     }
-    let (owner, repository) = (owner.to_ascii_lowercase(), repository.to_ascii_lowercase());
     let (number, is_pull_request_link) = match rest {
         [] => {
             return Some(GitHubLink::Repository {
@@ -666,6 +696,11 @@ mod tests {
             "https://github.com:8443/rust-lang/rust",
             "https://gist.github.com/rust-lang/rust",
             "https://github.com.evil.example/rust-lang/rust",
+            "https://github.com/topics/rust",
+            "https://github.com/Sponsors/rust-lang",
+            "https://github.com/orgs/rust-lang/people",
+            "https://github.com/features/actions",
+            "https://github.com/advisories/GHSA-xxxx",
         ] {
             assert_eq!(canonical(link), None, "{link}");
         }
@@ -743,8 +778,8 @@ mod tests {
         assert_eq!(pause_until_after_answer(None, &left, now), None);
         assert_eq!(
             pause_until_after_answer(Some(StatusCode::FORBIDDEN), &left, now),
-            None,
-            "a blocked repository pauses nothing"
+            Some(now + DEFAULT_PAUSE_MILLISECONDS),
+            "a secondary rate limit says neither when nor how much is left"
         );
         assert_eq!(
             pause_until_after_answer(Some(StatusCode::NOT_FOUND), &HeaderMap::new(), now),
@@ -768,5 +803,65 @@ mod tests {
             body_excerpt(&long_body).is_some(),
             "cut on a character boundary"
         );
+    }
+
+    /// The state the card shows for an issue (`pull_request` absent) or a pull request.
+    fn state_of(answer: &serde_json::Value) -> Option<(bool, GitHubIssueState)> {
+        let mut issue = serde_json::json!({ "title": "A title", "state": "open" });
+        issue
+            .as_object_mut()
+            .unwrap()
+            .extend(answer.as_object().unwrap().clone());
+        let preview = issue_preview(serde_json::from_value(issue).unwrap(), "o", "r", 1)?;
+        match preview.embed {
+            LinkEmbed::GitHubIssue(embed) => Some((false, embed.state)),
+            LinkEmbed::GitHubPullRequest(embed) => Some((true, embed.state)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn issues_and_pull_requests_get_the_state_github_shows() {
+        use GitHubIssueState::*;
+        use serde_json::json;
+        let pull_request = json!({});
+        let merged = json!({ "merged_at": "2026-11-05T08:30:00Z" });
+        for (answer, expected) in [
+            (json!({}), Some((false, Open))),
+            (json!({ "draft": true }), Some((false, Open))),
+            (json!({ "pull_request": pull_request }), Some((true, Open))),
+            (
+                json!({ "pull_request": pull_request, "draft": true }),
+                Some((true, Draft)),
+            ),
+            (
+                json!({ "state": "closed", "pull_request": pull_request }),
+                Some((true, Closed)),
+            ),
+            (
+                json!({ "state": "closed", "pull_request": merged }),
+                Some((true, Merged)),
+            ),
+            (
+                json!({ "state": "closed", "state_reason": "completed" }),
+                Some((false, Completed)),
+            ),
+            (
+                json!({ "state": "closed", "state_reason": "not_planned" }),
+                Some((false, NotPlanned)),
+            ),
+            (
+                json!({ "state": "closed", "state_reason": "duplicate" }),
+                Some((false, Closed)),
+            ),
+            (json!({ "state": "closed" }), Some((false, Closed))),
+            (
+                json!({ "state": "closed", "state_reason": "reopened" }),
+                Some((false, Closed)),
+            ),
+            (json!({ "state": "locked" }), None),
+        ] {
+            assert_eq!(state_of(&answer), expected, "{answer}");
+        }
     }
 }
