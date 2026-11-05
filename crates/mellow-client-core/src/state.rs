@@ -968,6 +968,7 @@ mod tests {
             relationships: Vec::new(),
             voice_states: Vec::new(),
             voice_enabled: false,
+            maximum_attachment_bytes: None,
         });
         state
     }
@@ -1511,6 +1512,7 @@ mod tests {
             relationships: Vec::new(),
             voice_states: Vec::new(),
             voice_enabled: false,
+            maximum_attachment_bytes: None,
         });
         let statuses: Vec<(&str, PendingMessageStatus)> = state
             .pending_messages(GENERAL)
@@ -1611,6 +1613,7 @@ mod tests {
             relationships: Vec::new(),
             voice_states: Vec::new(),
             voice_enabled: false,
+            maximum_attachment_bytes: None,
         });
         assert_eq!(state.pending_messages(GENERAL).count(), 0);
     }
@@ -1707,6 +1710,7 @@ mod tests {
             relationships: Vec::new(),
             voice_states: Vec::new(),
             voice_enabled: false,
+            maximum_attachment_bytes: None,
         });
         assert_eq!(
             state.direct_message_channels(),

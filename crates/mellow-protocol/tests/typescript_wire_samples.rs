@@ -478,6 +478,7 @@ fn ready() -> Ready {
         may_create_guilds: true,
         voice_states: vec![voice_state(), sparse_voice_state()],
         voice_enabled: true,
+        maximum_attachment_bytes: Some(26_214_400),
     }
 }
 
@@ -494,6 +495,7 @@ fn sparse_ready() -> Ready {
         may_create_guilds: false,
         voice_states: Vec::new(),
         voice_enabled: false,
+        maximum_attachment_bytes: None,
         ..ready()
     }
 }

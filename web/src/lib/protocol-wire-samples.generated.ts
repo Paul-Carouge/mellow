@@ -1051,6 +1051,7 @@ export const readySamples = [
         "sounds": []
       }
     ],
+    "maximum_attachment_bytes": 26214400,
     "may_create_guilds": true,
     "online_user_ids": [
       "10"
@@ -2203,6 +2204,7 @@ export const serverFrameSamples = [
           "sounds": []
         }
       ],
+      "maximum_attachment_bytes": 26214400,
       "may_create_guilds": true,
       "online_user_ids": [
         "10"

@@ -104,6 +104,29 @@ describe("MellowClient", () => {
     expect(client.gifSettings).toBeNull();
   });
 
+  it("refuses a file over the instance's limit without uploading it, and lets one at the limit through", async () => {
+    const attachment = { id: "9", file_name: "ok.bin", content_type: "application/octet-stream", size_bytes: 4 };
+    const uploadAttachment = vi.fn(() => Promise.resolve(attachment));
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, uploadAttachment }));
+    client.applyReady(ready({ maximum_attachment_bytes: 4 }));
+
+    const refusal = client.uploadAttachment(new File(["12345"], "big.bin"));
+    await expect(refusal).rejects.toEqual(new ApiError(413, "FILE_TOO_LARGE"));
+    expect(uploadAttachment).not.toHaveBeenCalled();
+
+    await expect(client.uploadAttachment(new File(["1234"], "ok.bin"))).resolves.toBe(attachment);
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets an older instance, which does not tell its limit, answer for any size", async () => {
+    const uploadAttachment = vi.fn(() => Promise.reject(new ApiError(413, "FILE_TOO_LARGE")));
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, uploadAttachment }));
+    client.applyReady(ready());
+
+    await expect(client.uploadAttachment(new File(["12345"], "big.bin"))).rejects.toBeInstanceOf(ApiError);
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
+  });
+
   it("opens the first server at the first Ready, not home", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.user = ready().user;
