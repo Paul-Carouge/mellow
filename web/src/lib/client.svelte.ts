@@ -194,6 +194,11 @@ export class MellowClient {
   failedMemberGuildIds = new SvelteSet<Snowflake>();
   /** Empty hides it; built with `describeError`. */
   signOutError = $state("");
+  /** The instance ended the session (expired, or revoked from another device), not a sign-out
+   * from this tab: the sign-in card says so. */
+  hasSessionEndedByItself = $state(false);
+  /** The gateway checks whether its socket survived a network change: not live until it answers. */
+  isCheckingLink = $state(false);
   /**
    * The open conversation that closed under the user: they left it, or its owner removed them
    * (ADR-0026). The shell announces it once Friends shows; cleared at sign-out.
@@ -405,11 +410,18 @@ export class MellowClient {
         return;
       }
     }
-    this.endSession();
+    this.endSession(false);
+  }
+
+  /** Skips the wait before the next attempt; an attempt already under way goes on. */
+  reconnectNow(): void {
+    this.gateway?.reconnectNow();
   }
 
   private connect(): void {
     this.gateway?.close();
+    this.hasSessionEndedByItself = false;
+    this.isCheckingLink = false;
     this.status = "connecting";
     this.gateway = new GatewayConnection(
       "",
@@ -428,7 +440,8 @@ export class MellowClient {
     }
   }
 
-  private endSession(): void {
+  private endSession(hasEndedByItself: boolean): void {
+    this.hasSessionEndedByItself = hasEndedByItself;
     this.voice.end();
     this.voiceStatesByUserId.clear();
     this.speakingUserIds.clear();
@@ -436,6 +449,7 @@ export class MellowClient {
     this.voiceAnnouncement = "";
     this.gateway?.close();
     this.gateway = null;
+    this.isCheckingLink = false;
     this.hasReceivedReady = false;
     this.signOutError = "";
     this.gifSettings = null;
@@ -473,6 +487,8 @@ export class MellowClient {
   // --- Gateway -------------------------------------------------------------------------------
 
   private applyGatewayUpdate(update: GatewayUpdate): void {
+    // Events flow during the check; the answer, a new socket or a sign-out ends it.
+    this.isCheckingLink = update.kind === "checking-link" || (this.isCheckingLink && update.kind === "event");
     switch (update.kind) {
       case "ready":
         this.applyReady(update.ready);
@@ -493,7 +509,10 @@ export class MellowClient {
         this.status = "reconnecting";
         break;
       case "signed-out":
-        this.endSession();
+        this.endSession(true);
+        break;
+      case "checking-link":
+      case "link-answered":
         break;
       default: {
         const unknown: never = update;
@@ -2531,7 +2550,8 @@ export class MellowClient {
 
   private reportError(error: unknown, action: string): void {
     if (error instanceof ApiError && error.needsNewLogin) {
-      this.endSession();
+      // A request sent before a sign-out from here can answer after it: that is not the instance ending it.
+      if (this.user !== null) this.endSession(true);
       return;
     }
     console.warn(`${action} failed`, error);

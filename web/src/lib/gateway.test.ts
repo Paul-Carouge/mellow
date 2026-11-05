@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GatewayConnection, NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT_MILLISECONDS } from "./gateway";
+import {
+  GatewayConnection,
+  type GatewayUpdate,
+  NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT_MILLISECONDS,
+} from "./gateway";
 
 const HEARTBEAT_INTERVAL_MILLISECONDS = 30_000;
 
@@ -79,6 +83,25 @@ describe("GatewayConnection", () => {
     expect(FakeWebSocket.opened).toHaveLength(1);
   });
 
+  it("reconnects at once when asked instead of waiting out the backoff", () => {
+    const gateway = gatewayWaitingToReconnect();
+
+    gateway.reconnectNow();
+
+    expect(FakeWebSocket.opened).toHaveLength(2);
+    vi.runOnlyPendingTimers();
+    expect(FakeWebSocket.opened).toHaveLength(2);
+  });
+
+  it("does not open a second socket when asked to reconnect while one is opening", () => {
+    const gateway = new GatewayConnection("", () => {}, () => Promise.resolve(false));
+    gateway.open();
+
+    gateway.reconnectNow();
+
+    expect(FakeWebSocket.opened).toHaveLength(1);
+  });
+
   it("ignores the network coming back once the backoff timer has already reopened", () => {
     gatewayWaitingToReconnect();
     vi.advanceTimersToNextTimer();
@@ -90,8 +113,8 @@ describe("GatewayConnection", () => {
   });
 
   /** A gateway attached to a session on its first socket: `hello` then `ready` came back. */
-  function attachedGateway(): GatewayConnection {
-    const gateway = new GatewayConnection("", () => {}, () => Promise.resolve(false));
+  function attachedGateway(onUpdate: (update: GatewayUpdate) => void = () => {}): GatewayConnection {
+    const gateway = new GatewayConnection("", onUpdate, () => Promise.resolve(false));
     gateway.open();
     const socket = FakeWebSocket.opened[0]!;
     socket.receive({ op: "hello", d: { heartbeat_interval_milliseconds: HEARTBEAT_INTERVAL_MILLISECONDS } });
@@ -127,6 +150,22 @@ describe("GatewayConnection", () => {
     vi.advanceTimersByTime(NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT_MILLISECONDS + 1);
 
     expect(FakeWebSocket.opened).toHaveLength(1);
+  });
+
+  it("says when it checks the open socket after a network change and when the socket answers", () => {
+    const kinds: string[] = [];
+    attachedGateway((update) => kinds.push(update.kind));
+    const socket = FakeWebSocket.opened[0]!;
+
+    fakeWindow.dispatchEvent(new Event("online"));
+    expect(kinds.at(-1)).toBe("checking-link");
+    socket.receive({ op: "heartbeat_ack" });
+    expect(kinds.at(-1)).toBe("link-answered");
+
+    // A regular heartbeat's ack confirms nothing new.
+    vi.advanceTimersByTime(HEARTBEAT_INTERVAL_MILLISECONDS);
+    socket.receive({ op: "heartbeat_ack" });
+    expect(kinds.filter((kind) => kind === "link-answered")).toHaveLength(1);
   });
 
   it("keeps an open socket when a regular heartbeat tick falls inside the network change check", () => {
