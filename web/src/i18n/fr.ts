@@ -168,6 +168,13 @@ export const fr: Catalogue = {
     signInFailed: "Impossible de te connecter",
     registerFailed: "Impossible de créer ton compte",
     showPassword: "Afficher le mot de passe",
+    sessionEnded: (instance) => `Ta session sur ${instance} a pris fin. Reconnecte-toi pour continuer à discuter.`,
+    loginMissing: "Entre ton nom d’utilisateur ou ton e-mail.",
+    passwordMissing: "Entre ton mot de passe.",
+    emailMissing: "Entre ton e-mail.",
+    emailMalformed: "Entre une adresse e-mail, comme ana@exemple.fr.",
+    usernameMissing: "Choisis un nom d’utilisateur.",
+    newPasswordMissing: "Choisis un mot de passe.",
   },
 
   rail: {
