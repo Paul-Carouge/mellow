@@ -241,6 +241,7 @@ describe("buildMessageRows", () => {
       content: "hi",
       replyToId: null,
       attachments: [],
+      poll: null,
       status: "sending",
     };
     const rows = buildMessageRows([message(snowflakeAt(start), "1")], [pending], "1", start + 1_000);

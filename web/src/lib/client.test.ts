@@ -203,6 +203,7 @@ describe("MellowClient", () => {
       content,
       replyToId: null,
       attachments: [],
+      poll: null,
       status: "failed" as const,
     }));
     await client["resendFailedMessages"]();
@@ -218,7 +219,7 @@ describe("MellowClient", () => {
 
   it("never discards a message while it is being sent", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
-    client.pendingMessages = [{ nonce: "n", channelId: GENERAL, content: "x", replyToId: null, attachments: [], status: "sending" }];
+    client.pendingMessages = [{ nonce: "n", channelId: GENERAL, content: "x", replyToId: null, attachments: [], poll: null, status: "sending" }];
     client.discardMessage("n");
     expect(client.pendingMessages).toHaveLength(1);
   });
@@ -718,6 +719,150 @@ describe("reactions and pins", () => {
     await first;
     expect(calls).toBe(1);
     expect(reactionsOf(client)).toEqual([{ emoji: "👍", count: 1, me: true }]);
+  });
+
+  describe("polls", () => {
+    const poll = (allowsMultipleAnswers: boolean, endedAt?: number) => ({
+      question: "Lunch?",
+      answers: [
+        { id: 1, text: "Pizza", vote_count: 2, me_voted: false },
+        { id: 2, text: "Soup", vote_count: 0, me_voted: false },
+      ],
+      allows_multiple_answers: allowsMultipleAnswers,
+      expires_at_unix_milliseconds: 10_000,
+      ...(endedAt === undefined ? {} : { ended_at_unix_milliseconds: endedAt }),
+    });
+    const pollMessage = (allowsMultipleAnswers = false, endedAt?: number): Message => ({
+      ...message("200"),
+      content: "",
+      poll: poll(allowsMultipleAnswers, endedAt),
+    });
+    const countsOf = (client: MellowClient) =>
+      client.messages(GENERAL)[0]?.poll?.answers.map((answer) => [answer.vote_count, answer.me_voted]);
+    const vote = (answerId: number, userId = ME) => ({
+      channel_id: GENERAL,
+      message_id: "200",
+      answer_id: answerId,
+      user_id: userId,
+    });
+
+    it("move a single choice at once, count its events once, and undo it if refused", async () => {
+      let refuse = false;
+      const added: number[] = [];
+      const client = await clientWithHistory({
+        listMessages: () => Promise.resolve([pollMessage()]),
+        addPollVote: (_channel: string, _message: string, answerId: number) => {
+          added.push(answerId);
+          return refuse ? Promise.reject(new ApiError(400, "VALIDATION_FAILED")) : Promise.resolve();
+        },
+      });
+      await client.choosePollAnswer(GENERAL, "200", 1);
+      client.applyEvent({ t: "MESSAGE_POLL_VOTE_ADD", data: vote(1) }, 0);
+      expect(countsOf(client)).toEqual([
+        [3, true],
+        [0, false],
+      ]);
+
+      const moving = client.choosePollAnswer(GENERAL, "200", 2);
+      expect(countsOf(client)).toEqual([
+        [2, false],
+        [1, true],
+      ]);
+      await moving;
+      client.applyEvent({ t: "MESSAGE_POLL_VOTE_REMOVE", data: vote(1) }, 0);
+      client.applyEvent({ t: "MESSAGE_POLL_VOTE_ADD", data: vote(2) }, 0);
+      expect(countsOf(client)).toEqual([
+        [2, false],
+        [1, true],
+      ]);
+      // One PUT per move: the instance takes the old vote back itself.
+      expect(added).toEqual([1, 2]);
+
+      refuse = true;
+      await expect(client.choosePollAnswer(GENERAL, "200", 1)).rejects.toBeInstanceOf(ApiError);
+      expect(countsOf(client)).toEqual([
+        [2, false],
+        [1, true],
+      ]);
+    });
+
+    it("take back every vote of a multiple-choice poll, keeping those the instance removed", async () => {
+      let removals = 0;
+      const client = await clientWithHistory({
+        listMessages: () => Promise.resolve([pollMessage(true)]),
+        addPollVote: () => Promise.resolve(),
+        removePollVote: () => {
+          removals += 1;
+          return removals === 2 ? Promise.reject(new ApiError(429, "RATE_LIMITED")) : Promise.resolve();
+        },
+      });
+      await client.choosePollAnswer(GENERAL, "200", 1);
+      await client.choosePollAnswer(GENERAL, "200", 2);
+      expect(countsOf(client)).toEqual([
+        [3, true],
+        [1, true],
+      ]);
+      await expect(client.removeOwnPollVotes(GENERAL, "200")).rejects.toBeInstanceOf(ApiError);
+      expect(countsOf(client)).toEqual([
+        [2, false],
+        [1, true],
+      ]);
+    });
+
+    it("ignore a vote while the poll's previous change is on its way", async () => {
+      let finish: () => void = () => undefined;
+      let calls = 0;
+      const client = await clientWithHistory({
+        listMessages: () => Promise.resolve([pollMessage()]),
+        addPollVote: () => {
+          calls += 1;
+          return new Promise<void>((resolve) => (finish = resolve));
+        },
+      });
+      const first = client.choosePollAnswer(GENERAL, "200", 1);
+      await client.choosePollAnswer(GENERAL, "200", 2);
+      finish();
+      await first;
+      expect(calls).toBe(1);
+      expect(countsOf(client)).toEqual([
+        [3, true],
+        [0, false],
+      ]);
+    });
+
+    it("end a poll at once, and keep vote counts over its update", async () => {
+      const client = await clientWithHistory({
+        listMessages: () => Promise.resolve([pollMessage()]),
+        endPoll: () => Promise.resolve(),
+      });
+      client.applyEvent({ t: "MESSAGE_POLL_VOTE_ADD", data: vote(2, OTHER) }, 0);
+      const cached = client.messages(GENERAL)[0];
+      if (!cached) throw new Error("no message");
+      await client.endPoll(cached);
+      expect(client.messages(GENERAL)[0]?.poll?.ended_at_unix_milliseconds).toBeTypeOf("number");
+      client.applyEvent({ t: "MESSAGE_UPDATE", data: pollMessage(false, 5) }, 0);
+      expect(client.messages(GENERAL)[0]?.poll?.ended_at_unix_milliseconds).toBe(5);
+      expect(countsOf(client)).toEqual([
+        [2, false],
+        [1, false],
+      ]);
+    });
+
+    it("send a poll through the outbox with its nonce, alone", async () => {
+      const calls: unknown[] = [];
+      const client = await clientWithHistory({
+        sendMessage: (...parameters: unknown[]) => {
+          calls.push(parameters);
+          return Promise.resolve({ ...pollMessage(), id: "300" });
+        },
+      });
+      client.selectChannel(GENERAL);
+      const newPoll = { question: "Lunch?", answers: ["Pizza", "Soup"], allows_multiple_answers: false, duration_hours: 24 };
+      await client.sendPoll(newPoll);
+      expect(calls).toEqual([[GENERAL, "", expect.any(String), null, [], newPoll]]);
+      expect(client.pendingMessages).toEqual([]);
+      expect(client.messages(GENERAL).map((candidate) => candidate.id)).toContain("300");
+    });
   });
 
   it("keep loaded pins in step with pins, unpins, edits and deletions", async () => {
