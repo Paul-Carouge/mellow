@@ -6,6 +6,7 @@ use super::Database;
 
 use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
 use crate::storage::guilds::GuildStorageError;
+use crate::storage::link_previews::{StoredLinkPreview, keep_previews_of_links};
 use crate::storage::sqlite_integers::{
     IntegerOutOfRange, convert_integer, lookup_integer, to_snowflake, to_sqlite_integer,
 };
@@ -480,7 +481,8 @@ pub(crate) async fn list_messages(
 }
 
 /// Replaces the content, stamps the edit time and drops the previews of links not in
-/// `kept_links` (ADR-0041); returns the updated message, or `None` if it was deleted meanwhile.
+/// `kept_links` (ADR-0041); returns the updated message with the previews it kept, or `None` if
+/// it was deleted meanwhile.
 ///
 /// # Errors
 /// Fails on database errors.
@@ -492,7 +494,7 @@ pub(crate) async fn update_message_content(
     mentions: &MessageMentions,
     kept_links: &[&str],
     edited_at_unix_milliseconds: u64,
-) -> Result<Option<StoredMessage>, MessageStorageError> {
+) -> Result<Option<(StoredMessage, Vec<StoredLinkPreview>)>, MessageStorageError> {
     let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
     let row: Option<MessageRow> = sqlx::query_as(concat!(
         "UPDATE messages SET content = ?, edited_at_unix_milliseconds = ? \
@@ -518,19 +520,17 @@ pub(crate) async fn update_message_content(
             .await?;
     }
     insert_mentions(&mut transaction, channel_id, message_id, mentions).await?;
-    crate::storage::link_previews::drop_previews_of_removed_links(
-        &mut transaction,
-        message_id,
-        kept_links,
-    )
-    .await?;
+    let kept_previews = keep_previews_of_links(&mut transaction, message_id, kept_links).await?;
     transaction.commit().await?;
     // RETURNING ran before the mentions were replaced.
-    Ok(Some(StoredMessage {
-        mention_ids: sorted_ids(mentions.user_ids.clone()),
-        mention_role_ids: sorted_ids(mentions.role_ids.clone()),
-        ..message_from_row(row)?
-    }))
+    Ok(Some((
+        StoredMessage {
+            mention_ids: sorted_ids(mentions.user_ids.clone()),
+            mention_role_ids: sorted_ids(mentions.role_ids.clone()),
+            ..message_from_row(row)?
+        },
+        kept_previews,
+    )))
 }
 
 /// `audit` records a moderator deleting someone else's message, in the same transaction; an

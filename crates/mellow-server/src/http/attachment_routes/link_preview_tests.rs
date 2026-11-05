@@ -394,6 +394,12 @@ async fn a_preview_never_takes_the_picture_slot_an_avatar_upload_needs() {
     .await;
     fetch_queued_link_previews(&state.messages, &state.attachments, &fetcher).await;
     let after = history(&state, &messages_path, &owner).await;
+    let lifetimes: Vec<i64> = sqlx::query_scalar(
+        "SELECT expires_at_unix_milliseconds - fetched_at_unix_milliseconds FROM link_previews",
+    )
+    .fetch_all(database.readers())
+    .await
+    .unwrap();
     let (avatar_status, body) = send(
         &state,
         picture_request("PUT", "/api/v1/users/@me/avatar", &owner, png(64, 64)),
@@ -405,9 +411,127 @@ async fn a_preview_never_takes_the_picture_slot_an_avatar_upload_needs() {
     assert_eq!(preview.title.as_deref(), Some("Local & page"), "text kept");
     assert_eq!(preview.image, None, "its picture skipped, not waited for");
     assert_eq!(
+        lifetimes,
+        [60 * 60 * 1_000],
+        "fetched again within the hour, not kept without its picture for a day"
+    );
+    assert_eq!(
         avatar_status,
         StatusCode::OK,
         "{}",
         String::from_utf8_lossy(&body)
     );
+}
+
+#[tokio::test]
+async fn an_error_on_a_later_link_keeps_the_preview_of_the_link_before_it() {
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let (owner, general) = owner_and_general_channel(&state).await;
+    let mut owner_events = live_session(&state, &owner, 1).await;
+    let (site, _) = card_site().await;
+    let fetcher = LinkFetcher::allowing_loopback_for_tests();
+    state.messages.enable_link_previews();
+    let messages_path = format!("/api/v1/channels/{general}/messages");
+    // Recording the second link's preview fails, as a full disk or a database error would.
+    sqlx::raw_sql(
+        "CREATE TRIGGER refuse_second_link BEFORE INSERT ON link_previews \
+         WHEN NEW.url LIKE '%?second' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+    )
+    .execute(database.writer())
+    .await
+    .unwrap();
+    send(
+        &state,
+        post_message(
+            &messages_path,
+            &owner,
+            &format!("see {site}/card?first and {site}/card?second"),
+        ),
+    )
+    .await;
+    events_of_type(&mut owner_events, "");
+
+    let results = run_queued_link_preview_jobs(
+        &state.messages,
+        &state.attachments,
+        &fetcher,
+        std::future::pending(),
+    )
+    .await;
+    let after = history(&state, &messages_path, &owner).await;
+    let published = events_of_type(&mut owner_events, "MESSAGE_LINK_PREVIEWS_UPDATE");
+    database.close().await;
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].is_err(), "the error is still reported");
+    let urls: Vec<&str> = after[0]
+        .link_previews
+        .iter()
+        .map(|preview| preview.url.as_str())
+        .collect();
+    assert_eq!(urls, [format!("{site}/card?first")]);
+    assert_eq!(published.len(), 1);
+    assert_eq!(published[0]["link_previews"][0]["title"], "A card");
+}
+
+#[tokio::test]
+async fn an_edit_carries_the_card_a_job_recorded_while_the_edit_waited_for_the_writer() {
+    const KEPT_LINK: &str = "https://card.example/";
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let (owner, general) = owner_and_general_channel(&state).await;
+    let mut owner_events = live_session(&state, &owner, 1).await;
+    let messages_path = format!("/api/v1/channels/{general}/messages");
+    let (_, body) = send(
+        &state,
+        post_message(&messages_path, &owner, &format!("see {KEPT_LINK}")),
+    )
+    .await;
+    let message: Message = json(&body);
+    events_of_type(&mut owner_events, "");
+    // The send's job records the kept link's card while holding the writer, as it would while
+    // the edit reads what to publish and then waits for the writer.
+    let mut job_transaction = database
+        .writer()
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO link_previews (id, url_sha256, url, title, is_empty, \
+         fetched_at_unix_milliseconds, expires_at_unix_milliseconds) \
+         VALUES (77, zeroblob(32), '{KEPT_LINK}', 'A card', 0, 0, 9000000000000); \
+         INSERT INTO message_link_previews (message_id, position, link_preview_id) \
+         VALUES ({}, 0, 77);",
+        message.id
+    )))
+    .execute(&mut *job_transaction)
+    .await
+    .unwrap();
+    let job_commits_later = async {
+        // Lets the edit run as far as it can without the writer before the job commits.
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        job_transaction.commit().await.unwrap();
+    };
+
+    let ((status, _), ()) = tokio::join!(
+        send(
+            &state,
+            authorized(
+                "PATCH",
+                &format!("{messages_path}/{}", message.id),
+                &owner,
+                Some(serde_json::json!({ "content": format!("fixed: see {KEPT_LINK}") })),
+            ),
+        ),
+        job_commits_later,
+    );
+    let updates = events_of_type(&mut owner_events, "MESSAGE_UPDATE");
+    database.close().await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0]["link_previews"][0]["title"], "A card");
 }

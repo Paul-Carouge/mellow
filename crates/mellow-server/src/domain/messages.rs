@@ -927,12 +927,10 @@ impl Messages {
         // (previews off, queue full, job failed or out of time); the job only adds.
         let links = links_to_preview(&content);
         let kept_links: Vec<&str> = links.iter().map(url::Url::as_str).collect();
-        let mut previews_kept = link_previews::previews_of(&self.database, message.id).await?;
-        previews_kept.retain(|preview| kept_links.contains(&preview.url.as_str()));
         let link_preview_ticket = self
             .link_previews
             .ticket(&channel, user_id, false, &content);
-        let updated = message_storage::update_message_content(
+        let (updated, previews_kept) = message_storage::update_message_content(
             &self.database,
             channel.id(),
             message.id,
@@ -946,8 +944,12 @@ impl Messages {
         let mut updated = message_from_stored(updated, None, attachments);
         updated.author.avatar = author_images.avatar;
         updated.author.banner = author_images.banner;
-        // The previews of the links the edit kept, until the fetcher answers for the new ones.
-        updated.link_previews = previews_kept;
+        // The previews of the links the edit kept, as it committed them, until the fetcher
+        // answers for the new ones.
+        updated.link_previews = previews_kept
+            .into_iter()
+            .map(link_previews::link_preview_from_stored)
+            .collect();
         publish(
             &self.guilds,
             &audience,

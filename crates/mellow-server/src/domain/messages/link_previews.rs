@@ -16,7 +16,7 @@ use url::Url;
 use super::{
     MessageAudience, MessageChannel, MessageError, Messages, direct_message_storage, publish,
 };
-use crate::domain::attachments::Attachments;
+use crate::domain::attachments::{Attachments, LinkPreviewPicture};
 use crate::domain::guilds::GuildError;
 use crate::domain::link_previews::fetcher::{Fetched, LinkFetcher};
 use crate::domain::link_previews::links::links_to_preview;
@@ -394,18 +394,25 @@ struct PreviewWorker {
 }
 
 impl PreviewWorker {
-    /// Fetches the job's links in order until `deadline`, then records and publishes what it
-    /// found by then.
+    /// Fetches the job's links in order until `deadline` or the first error, then records and
+    /// publishes what it found by then; that error is returned afterwards.
     async fn run<D: Future<Output = ()>>(
         &self,
         job: PreviewJob,
         mut deadline: Pin<&mut D>,
     ) -> Result<(), MessageError> {
         let mut found = Vec::with_capacity(job.links.len());
+        let mut link_error = None;
         for link in &job.links {
             tokio::select! {
                 biased;
-                preview = self.preview_of(link) => found.push(preview?),
+                preview = self.preview_of(link) => match preview {
+                    Ok(preview) => found.push(preview),
+                    Err(error) => {
+                        link_error = Some(error);
+                        break;
+                    }
+                },
                 () = deadline.as_mut() => {
                     tracing::debug!("link preview job out of time: what it found is kept");
                     break;
@@ -448,7 +455,7 @@ impl PreviewWorker {
                 },
             );
         }
-        Ok(())
+        link_error.map_or(Ok(()), Err)
     }
 
     /// The link's fresh preview, fetched and recorded when there is none.
@@ -471,13 +478,20 @@ impl PreviewWorker {
             Ok(Fetched::Picture(bytes)) => (PageDetails::default(), Some(bytes)),
             Err(_) => (PageDetails::default(), None),
         };
-        let image = match picture {
+        let picture = match picture {
             Some(bytes) => self.attachments.store_link_preview_picture(bytes).await?,
-            None => None,
+            None => LinkPreviewPicture::NotShown,
+        };
+        let is_picture_skipped = matches!(picture, LinkPreviewPicture::SlotBusy);
+        let image = match picture {
+            LinkPreviewPicture::Stored(image) => Some(image),
+            LinkPreviewPicture::NotShown | LinkPreviewPicture::SlotBusy => None,
         };
         let is_empty = details.title.is_none() && details.description.is_none() && image.is_none();
         let fetched_at = crate::domain::clock::now_unix_milliseconds();
-        let lifetime = if is_empty {
+        // A card whose picture was skipped for a busy slot is fetched again soon, so one member
+        // keeping the slot busy cannot leave everyone's cards without pictures for a day.
+        let lifetime = if is_empty || is_picture_skipped {
             EMPTY_PREVIEW_LIFETIME_MILLISECONDS
         } else {
             PREVIEW_LIFETIME_MILLISECONDS
