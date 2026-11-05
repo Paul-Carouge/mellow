@@ -15,6 +15,20 @@ fn large_uploads_get_time_at_a_slow_speed_and_small_ones_a_floor() {
     assert_eq!(upload_deadline(1024), MINIMUM_UPLOAD_DEADLINE);
 }
 
+#[tokio::test]
+async fn a_body_keeping_its_permit_has_an_exact_length_and_frees_the_permit_once_dropped() {
+    use http_body::Body as _;
+    let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+    let permit = slots.clone().try_acquire_owned().unwrap();
+    let body = body_keeping_permit(vec![7; 5], permit);
+    // The exact length is what arms the throughput floor for avatars and sounds (ADR-0038).
+    assert_eq!(body.size_hint().exact(), Some(5));
+    assert_eq!(slots.available_permits(), 0);
+    let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+    assert_eq!(bytes.as_ref(), [7; 5]);
+    assert_eq!(slots.available_permits(), 1);
+}
+
 #[test]
 fn if_none_match_matches_the_tag_in_a_list_weakly_or_any() {
     let tag = HeaderValue::from_static("\"7-42\"");

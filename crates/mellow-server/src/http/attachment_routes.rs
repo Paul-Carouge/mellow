@@ -351,17 +351,47 @@ fn byte_range(header_value: &str, total: usize) -> RequestedRange {
 }
 
 /// The file as a response body that holds its transfer slot until the body is dropped, after its
-/// last byte is sent: a slow reader keeps a slot, not an unbounded number of buffers.
+/// last byte is sent: a slow reader keeps a slot, not an unbounded number of buffers. Its exact
+/// length lets `RequestProgress` arm the whole-response deadline (ADR-0038 throughput floor) for
+/// every caller, whether or not it sets `Content-Length` itself.
 pub(crate) fn body_keeping_permit(bytes: Vec<u8>, permit: impl Send + 'static) -> axum::body::Body {
-    use futures_util::StreamExt as _;
-    let chunks = futures_util::stream::iter([Ok::<_, std::convert::Infallible>(
-        axum::body::Bytes::from(bytes),
-    )])
-    .map(move |chunk| {
-        let _held_until_the_body_is_dropped = &permit;
-        chunk
-    });
-    axum::body::Body::from_stream(chunks)
+    axum::body::Body::new(BodyKeepingPermit {
+        bytes: Some(axum::body::Bytes::from(bytes)),
+        _permit: permit,
+    })
+}
+
+struct BodyKeepingPermit<P> {
+    bytes: Option<axum::body::Bytes>,
+    _permit: P,
+}
+
+// The permit is never pinned-projected: it is only held until the body is dropped.
+impl<P> Unpin for BodyKeepingPermit<P> {}
+
+impl<P: Send + 'static> http_body::Body for BodyKeepingPermit<P> {
+    type Data = axum::body::Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        std::task::Poll::Ready(
+            self.bytes
+                .take()
+                .map(|bytes| Ok(http_body::Frame::data(bytes))),
+        )
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.bytes.is_none()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        let length = self.bytes.as_ref().map_or(0, axum::body::Bytes::len);
+        http_body::SizeHint::with_exact(u64::try_from(length).unwrap_or(u64::MAX))
+    }
 }
 
 /// `If-None-Match` (RFC 9110 §13.1.2): `*`, or a list holding the tag; weak comparison, so a

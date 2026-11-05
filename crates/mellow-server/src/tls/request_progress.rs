@@ -1,7 +1,7 @@
 //! Deadlines on what an HTTP/2 connection's requests wait for from the client.
 //!
-//! HTTP/1.1 needs none of this: one request at a time, so the socket deadlines of
-//! `IdleTimeoutStream` already bound it. HTTP/2 multiplexes, and its flow control lets a client
+//! HTTP/1.1 needs only the whole-response deadline below: one request at a time, so the socket
+//! deadlines of `IdleTimeoutStream` bound its other waits. HTTP/2 multiplexes, and its flow control lets a client
 //! stall a response without ever blocking the socket, while any frame (a PING) keeps the
 //! connection's reads alive. So each request is watched on its own: the connection is closed once
 //! a response waits longer than `write_stall_timeout` for the client to accept its next chunk, a
@@ -59,8 +59,8 @@ pub(super) struct RequestProgress {
 
 #[derive(Debug)]
 struct RequestProgressState {
-    /// HTTP/1.1 connections are left to the socket deadlines, and upgraded `WebSocket` ones must
-    /// not be closed for having no open request.
+    /// On HTTP/1.1 only whole-response deadlines count (the socket deadlines bound the rest), and
+    /// upgraded `WebSocket` connections must not be closed for having no open request.
     has_served_http1_request: bool,
     open_requests: usize,
     /// When the last request opened or ended (or the connection was accepted).
