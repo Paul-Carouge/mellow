@@ -518,9 +518,12 @@ export const fr: Catalogue = {
     goTo: "Aller à…",
     memberList: "Liste des membres",
     channelSettings: "Paramètres du salon",
+    moreOptions: "Plus d’options",
     markAsRead: "Marquer comme lu",
     newMessagesSince: (newCount, isPartial, since) =>
       `${count(newCount)}${isPartial ? "+" : ""} ${plural(isPartial ? 2 : newCount, { one: "nouveau message", other: "nouveaux messages" })} depuis ${since}`,
+    newMessagesShort: (newCount, isPartial) =>
+      `${count(newCount)}${isPartial ? "+" : ""} ${plural(isPartial ? 2 : newCount, { one: "nouveau", other: "nouveaux" })}`,
     composerInChannel: (channel) => `Écrire dans #${channel}`,
     composerToPerson: (person) => `Écrire à @${person}`,
     welcomeToChannel: (channel) => `Bienvenue dans #${channel}`,
@@ -1223,6 +1226,7 @@ export const fr: Catalogue = {
   },
 
   search: {
+    placeholder: "Rechercher",
     placeholderInServer: (server) => `Rechercher dans ${server}`,
     placeholderInConversations: "Rechercher dans les conversations",
     fieldLabelInServer: (server) => `Rechercher des messages dans ${server}`,
