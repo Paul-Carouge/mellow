@@ -39,6 +39,8 @@ import {
   type SessionCreated,
   type Snowflake,
   type SoundboardSound,
+  type UpdateUserProfileRequest,
+  type UserProfile,
   reactionsPath,
 } from "./protocol";
 import type { TwoFactorChallenge, TwoFactorEnrolment, TwoFactorRecoveryCodes, TwoFactorStatus } from "./protocol";
@@ -481,6 +483,28 @@ export class RestClient {
 
   removeProfileImage(kind: ProfileImageKind): Promise<CurrentUser> {
     return this.request("DELETE", `users/@me/${kind}`);
+  }
+
+  /** "About me" and links (ADR-0050); `NOT_FOUND` for someone the reader shares nothing with. */
+  userProfile(userId: Snowflake): Promise<UserProfile> {
+    return this.request("GET", `users/${userId}/profile`);
+  }
+
+  updateMyProfile(request: UpdateUserProfileRequest): Promise<UserProfile> {
+    return this.request("PUT", "users/@me/profile", request);
+  }
+
+  /** The picture as the raw body, its centred square kept; it replaces an emoji (ADR-0050). */
+  setRoleIconPicture(guildId: Snowflake, roleId: Snowflake, file: File): Promise<Role> {
+    return this.sendFile("PUT", `guilds/${guildId}/roles/${roleId}/icon`, file);
+  }
+
+  setRoleIconEmoji(guildId: Snowflake, roleId: Snowflake, emoji: string): Promise<Role> {
+    return this.request("PUT", `guilds/${guildId}/roles/${roleId}/icon/emoji`, { unicode_emoji: emoji });
+  }
+
+  removeRoleIcon(guildId: Snowflake, roleId: Snowflake): Promise<Role> {
+    return this.request("DELETE", `guilds/${guildId}/roles/${roleId}/icon`);
   }
 
   /**

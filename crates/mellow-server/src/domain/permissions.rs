@@ -345,6 +345,8 @@ mod tests {
             permissions,
             is_displayed_separately: false,
             is_mentionable: false,
+            icon: None,
+            unicode_emoji: None,
         }
     }
 

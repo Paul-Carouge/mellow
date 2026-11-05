@@ -430,6 +430,7 @@ fn repository_preview(answer: ApiRepository) -> Option<ProviderPreview> {
             site_name: Some(SITE_NAME.to_owned()),
             image_url,
             theme_color: None,
+            icon_url: None,
         },
         picture: None,
         embed: LinkEmbed::GitHubRepository(GitHubRepositoryEmbed {
@@ -517,6 +518,7 @@ fn issue_preview(
             // The author's avatar is not shown for issues (docs/design/web-provider-embeds.md).
             image_url: None,
             theme_color: None,
+            icon_url: None,
         },
         picture: None,
         embed: if is_pull_request {

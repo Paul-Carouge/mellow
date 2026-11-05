@@ -9,6 +9,7 @@
   import Icon from "./Icon.svelte";
   import ModalDialog from "./ModalDialog.svelte";
   import { readableRoleColor } from "./role-colors";
+  import RoleIconEditor from "./RoleIconEditor.svelte";
   import {
     type MoveDirection,
     NO_ROLE_COLOR,
@@ -45,9 +46,11 @@
     attention: number;
     /** True while a role differs from its stored self; false again when this page goes away. */
     onunsavedchange: (hasChanges: boolean) => void;
+    /** Narrow pages: the emoji picker opens as a sheet. */
+    isCompact?: boolean;
   }
 
-  let { client, guild, attention, onunsavedchange }: Props = $props();
+  let { client, guild, attention, onunsavedchange, isCompact = false }: Props = $props();
 
   type Tab = "display" | "permissions";
 
@@ -476,6 +479,9 @@
                 onchange={(isOn) => change({ ...shown, isMentionable: isOn })}
               />
             </div>
+
+            <!-- Saved at once (ADR-0050), like moving a role: a picture is not a draft. -->
+            <RoleIconEditor {client} {guild} role={selectedRole} {isEditable} {isCompact} />
 
             {#if isEditable}
               <div>

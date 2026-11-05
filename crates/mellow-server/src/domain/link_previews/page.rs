@@ -21,6 +21,9 @@ pub(crate) struct PageDetails {
     pub(crate) image_url: Option<Url>,
     /// `0xRRGGBB`.
     pub(crate) theme_color: Option<u32>,
+    /// The site icon a profile link shows (ADR-0050): a touch icon, else the first
+    /// `<link rel="icon">` that is not SVG, which pictures are never decoded from.
+    pub(crate) icon_url: Option<Url>,
 }
 
 /// The values found in the head, by priority: Open Graph, then Twitter, then plain HTML.
@@ -37,6 +40,8 @@ struct HeadValues {
     open_graph_secure_image: Option<String>,
     twitter_image: Option<String>,
     theme_color: Option<String>,
+    touch_icon: Option<String>,
+    icon: Option<String>,
 }
 
 impl HeadValues {
@@ -87,6 +92,11 @@ pub(crate) fn page_details(html: &str, page_url: &Url) -> PageDetails {
             .and_then(|text| plain_text(&text, MAXIMUM_SITE_NAME_CHARACTERS)),
         image_url,
         theme_color: values.theme_color.as_deref().and_then(hex_colour),
+        icon_url: [values.touch_icon, values.icon]
+            .into_iter()
+            .flatten()
+            .find_map(|link| page_url.join(link.trim()).ok())
+            .filter(|url| matches!(url.scheme(), "http" | "https")),
     }
 }
 
@@ -124,6 +134,11 @@ fn head_values(html: &str) -> HeadValues {
                     Some(decode_entities(&html[start + open_end + 1..start + close]));
             }
             position = start + close + "</title".len();
+        } else if is_tag(rest, "link") {
+            let Some(end) = tag_end(rest) else { break };
+            let attributes = attributes_of(&html[start + "<link".len()..start + end]);
+            take_icon_link(&mut values, &attributes);
+            position = start + end + 1;
         } else if is_tag(rest, "meta") {
             let Some(end) = tag_end(rest) else { break };
             let attributes = attributes_of(&html[start + "<meta".len()..start + end]);
@@ -137,6 +152,34 @@ fn head_values(html: &str) -> HeadValues {
         }
     }
     values
+}
+
+/// Keeps the first touch icon and the first other icon a `<link>` names, SVG ones left out.
+fn take_icon_link(values: &mut HeadValues, attributes: &[(String, &str)]) {
+    let (Some(relation), Some(href)) =
+        (attribute(attributes, "rel"), attribute(attributes, "href"))
+    else {
+        return;
+    };
+    let is_svg = attribute(attributes, "type")
+        .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("image/svg+xml"))
+        || href
+            .split(['?', '#'])
+            .next()
+            .is_some_and(|path| path.to_ascii_lowercase().ends_with(".svg"));
+    if is_svg {
+        return;
+    }
+    let relation = relation.to_ascii_lowercase();
+    let mut kinds = relation.split_ascii_whitespace();
+    let slot = if kinds.clone().any(|kind| kind == "apple-touch-icon") {
+        &mut values.touch_icon
+    } else if kinds.any(|kind| kind == "icon") {
+        &mut values.icon
+    } else {
+        return;
+    };
+    slot.get_or_insert_with(|| decode_entities(href));
 }
 
 /// Whether `rest` (lowercase, starting at `<`) opens the tag `name`.
@@ -309,6 +352,42 @@ mod tests {
             html,
             &Url::parse("https://example.org/articles/one").unwrap(),
         )
+    }
+
+    #[test]
+    fn touch_icons_win_over_icons_and_svg_ones_are_left_out() {
+        let page = details(
+            r#"<head><link rel="stylesheet" href="/a.css">
+            <link rel="icon" type="image/svg+xml" href="/icon.svg">
+            <link rel="shortcut icon" href="/favicon.png?v=2&amp;x=1">
+            <link rel="icon" href="/later.png">
+            <link rel="apple-touch-icon" href="https://cdn.example.org/touch.png">
+            <link rel="apple-touch-icon" href="/touch.svg"></head>"#,
+        );
+        assert_eq!(
+            page.icon_url.unwrap().as_str(),
+            "https://cdn.example.org/touch.png"
+        );
+        let page = details(
+            r#"<link rel="shortcut icon" href="/favicon.png?v=2&amp;x=1"><link rel=icon href=b.png>"#,
+        );
+        assert_eq!(
+            page.icon_url.unwrap().as_str(),
+            "https://example.org/favicon.png?v=2&x=1"
+        );
+        let page = details(r#"<link rel=icon href="favicon.png"><link rel=icon href=x.svg>"#);
+        assert_eq!(
+            page.icon_url.unwrap().as_str(),
+            "https://example.org/articles/favicon.png"
+        );
+        assert_eq!(
+            details(r#"<link rel="icon" href="data:image/png;base64,AA">"#).icon_url,
+            None
+        );
+        assert_eq!(
+            details(r#"<link rel="icon" href="/x.svg#a">"#).icon_url,
+            None
+        );
     }
 
     #[test]

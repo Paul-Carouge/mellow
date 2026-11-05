@@ -10,6 +10,10 @@
   import Icon from "./Icon.svelte";
   import PictureCropDialog from "./PictureCropDialog.svelte";
   import ProfileCard from "./ProfileCard.svelte";
+  import ProfileDetails from "./ProfileDetails.svelte";
+  import ProfileDetailsSettings from "./ProfileDetailsSettings.svelte";
+  import { EMPTY_PROFILE_DRAFT, type ProfileDraft, previewLinks } from "./profile-details-form";
+  import type { ProfileLink } from "../lib/protocol";
 
   // User settings, Profile (DESIGN.md §5.9, ADR-0021): Discord's Profiles page, the avatar and
   // banner editors beside a live preview of the profile card (under them on narrow pages). A
@@ -35,6 +39,9 @@
   let chosen = $state<{ kind: ProfileImageKind; file: File } | null>(null);
   let dialogError = $state("");
   const fileInputs: Partial<Record<ProfileImageKind, HTMLInputElement>> = $state({});
+  // "About me" and links (ADR-0050): the editor's draft, shown in the preview as typed.
+  let detailsDraft = $state<ProfileDraft>(EMPTY_PROFILE_DRAFT);
+  let savedLinks = $state<readonly ProfileLink[]>([]);
 
   /** Says what to do about each refusal, in the words of this page rather than the generic ones. */
   function describeFailure(error: unknown, summary: string): string {
@@ -187,6 +194,7 @@
   <div class="flex min-w-0 flex-[1_1_var(--mw-component-profile-popover-width)] flex-col gap-(--mw-component-settings-section-gap)">
     {@render editor("avatar")}
     {@render editor("banner")}
+    <ProfileDetailsSettings {client} bind:draft={detailsDraft} bind:savedLinks />
   </div>
   {#if user}
     <section aria-labelledby="{id}-preview-title" class="flex flex-[0_1_var(--mw-component-profile-popover-width)] flex-col gap-(--mw-component-settings-section-label-gap)">
@@ -195,7 +203,9 @@
         aria-busy={busy !== null}
         class="w-full max-w-(--mw-component-profile-popover-width) overflow-hidden rounded-(--mw-component-profile-popover-radius) border-(length:--mw-component-profile-popover-border-width) border-(--mw-component-profile-popover-border) bg-(--mw-component-profile-popover-background)"
       >
-        <ProfileCard {user} nameElement="p" />
+        <ProfileCard {user} nameElement="p">
+          <ProfileDetails aboutMe={detailsDraft.aboutMe.trim()} links={previewLinks(detailsDraft, savedLinks)} id="{id}-preview-details" />
+        </ProfileCard>
       </div>
     </section>
   {/if}

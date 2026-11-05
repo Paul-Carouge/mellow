@@ -61,6 +61,8 @@ import {
   type Role,
   type Snowflake,
   type SoundboardSound,
+  type UpdateUserProfileRequest,
+  type UserProfile,
   type VoiceState,
   DIRECT_MESSAGE_PERMISSIONS,
   MAXIMUM_COUNTED_UNREAD_MENTIONS,
@@ -2456,6 +2458,38 @@ export class MellowClient {
       guildId,
       this.rolesOf(guildId).filter((role) => role.id !== roleId),
     );
+  }
+
+  /** The new icon arrives with the gateway's `GUILD_ROLES_UPDATE`, as other role edits (ADR-0050). */
+  async setRoleIcon(
+    guildId: Snowflake,
+    roleId: Snowflake,
+    icon: { kind: "picture"; file: File } | { kind: "emoji"; emoji: string } | { kind: "none" },
+  ): Promise<void> {
+    switch (icon.kind) {
+      case "picture":
+        await this.rest.setRoleIconPicture(guildId, roleId, icon.file);
+        return;
+      case "emoji":
+        await this.rest.setRoleIconEmoji(guildId, roleId, icon.emoji);
+        return;
+      case "none":
+        await this.rest.removeRoleIcon(guildId, roleId);
+        return;
+      default: {
+        const unknown: never = icon;
+        throw new Error(`unknown role icon change ${JSON.stringify(unknown)}`);
+      }
+    }
+  }
+
+  /** "About me" and links (ADR-0050), read when a profile opens: no gateway event carries them. */
+  loadUserProfile(userId: Snowflake): Promise<UserProfile> {
+    return this.rest.userProfile(userId);
+  }
+
+  updateMyProfile(request: UpdateUserProfileRequest): Promise<UserProfile> {
+    return this.rest.updateMyProfile(request);
   }
 
   async reorderRoles(guildId: Snowflake, roleIds: readonly Snowflake[]): Promise<void> {

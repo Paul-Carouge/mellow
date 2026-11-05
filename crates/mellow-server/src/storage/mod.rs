@@ -30,6 +30,7 @@ pub(crate) mod relationships;
 pub(crate) mod search;
 mod sqlite_integers;
 pub(crate) mod two_factor;
+pub(crate) mod user_profiles;
 
 pub use database::{Database, DatabaseKey, StorageError, open_encrypted_database};
 pub use master_key::{MasterKey, MasterKeyError};

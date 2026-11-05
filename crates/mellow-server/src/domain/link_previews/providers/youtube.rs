@@ -128,6 +128,7 @@ pub(super) async fn youtube_preview(fetcher: &LinkFetcher, link: &YouTubeLink) -
             site_name: Some(site_name.to_owned()),
             image_url: None,
             theme_color: None,
+            icon_url: None,
         },
         picture: poster(fetcher, &link.video_id).await,
         embed,

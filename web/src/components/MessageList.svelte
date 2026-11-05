@@ -29,6 +29,7 @@
   import PersonContextMenu from "./PersonContextMenu.svelte";
   import { createReplyReferenceLookup, messageSummary } from "./reply-references";
   import { durationTokenInMilliseconds, lengthTokenInPixels } from "./tokens";
+  import { roleIconsByUserId } from "./role-icons";
 
   // The message list (DESIGN.md §5.4): history start or skeletons above the oldest message, the
   // rows, and "Jump to present" while reading older messages. It sticks to the latest message
@@ -117,6 +118,13 @@
       client.selectedGuild,
       client.selectedGuild ? client.membersByGuild.get(client.selectedGuild.id) : undefined,
       "color-surface-chat",
+    ),
+  );
+  // Each author's highest role with an icon, beside their name (ADR-0050).
+  const authorRoleIcons = $derived(
+    roleIconsByUserId(
+      client.selectedGuild,
+      client.selectedGuild ? client.membersByGuild.get(client.selectedGuild.id) : undefined,
     ),
   );
   // Each new message re-sorts the conversations into new objects; their recipients stay the same
@@ -665,6 +673,7 @@
             doesServerFindMentions={client.doesServerFindMentions}
             areGifsShown={client.gifSettings !== null}
             authorColor={authorColors.get(row.kind === "sent" ? row.message.author.id : currentUser.id) ?? null}
+            authorRoleIcon={authorRoleIcons.get(row.kind === "sent" ? row.message.author.id : currentUser.id) ?? null}
             replyReference={row.kind === "sent"
               ? replyReferenceOf(row.message, messagesById, (userId) => client.isBlocked(userId), client.knownRoles)
               : null}

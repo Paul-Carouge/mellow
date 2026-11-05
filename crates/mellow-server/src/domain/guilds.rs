@@ -39,6 +39,7 @@ mod icons;
 mod invites;
 mod members;
 mod overwrites;
+mod role_icons;
 mod roles;
 mod sounds;
 #[cfg(test)]
@@ -46,6 +47,7 @@ mod tests;
 
 pub(crate) use audience::ChannelAudience;
 pub(crate) use icons::IconUpload;
+pub(crate) use role_icons::RoleIconRequest;
 
 const DEFAULT_CATEGORY_NAME: &str = "Text channels";
 const DEFAULT_CHANNEL_NAME: &str = "general";

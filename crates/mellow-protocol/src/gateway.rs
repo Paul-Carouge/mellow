@@ -697,6 +697,8 @@ mod tests {
                 permissions: crate::Permissions::SEND_MESSAGES,
                 is_displayed_separately: false,
                 is_mentionable: false,
+                icon: None,
+                unicode_emoji: None,
             }],
         };
         let json = serde_json::to_value(&event).unwrap();

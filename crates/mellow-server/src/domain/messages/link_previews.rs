@@ -495,7 +495,7 @@ impl PreviewWorker {
                 match self.fetcher.fetch_page_or_picture(link.clone()).await {
                     Ok(Fetched::Page(details)) => {
                         let picture = self.picture_of(&details).await;
-                        (details, None, picture)
+                        (*details, None, picture)
                     }
                     Ok(Fetched::Picture(bytes)) => (PageDetails::default(), None, Some(bytes)),
                     Err(_) => (PageDetails::default(), None, None),

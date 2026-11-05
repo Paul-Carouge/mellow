@@ -177,6 +177,7 @@ fn summary_preview(summary: Summary, language: &str) -> Option<ProviderPreview> 
                 .and_then(|thumbnail| Url::parse(&thumbnail.source).ok())
                 .filter(|url| matches!(url.scheme(), "http" | "https")),
             theme_color: None,
+            icon_url: None,
         },
         picture: None,
         embed: LinkEmbed::WikipediaArticle(WikipediaArticleEmbed {
