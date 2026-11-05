@@ -82,12 +82,15 @@
     isEmojiPickerOpen: boolean;
     /** The instance has GIFs (ADR-0042): the GIF button shows beside the emoji one. */
     canChooseGifs: boolean;
+    /** The writer holds "Create polls" here (ADR-0043): the "/" menu offers the poll. */
+    canCreatePolls: boolean;
     isGifPickerOpen: boolean;
     /** Escape marks the channel as read while the unread bar shows. */
     hasUnreadBar: boolean;
     maximumHeight: () => number;
     onopenemojipicker: (anchor: HTMLElement) => void;
     onopengifpicker: (anchor: HTMLElement) => void;
+    onopenpolldialog: () => void;
     onmarkasread: () => void;
     oneditlastmessage: () => void;
     onsent: () => void;
@@ -112,11 +115,13 @@
     replyingTo = $bindable(),
     isEmojiPickerOpen,
     canChooseGifs,
+    canCreatePolls,
     isGifPickerOpen,
     hasUnreadBar,
     maximumHeight,
     onopenemojipicker,
     onopengifpicker,
+    onopenpolldialog,
     onmarkasread,
     oneditlastmessage,
     onsent,
@@ -164,6 +169,9 @@
     | { kind: "command"; named: NamedSlashCommand };
   // English names find the commands in any language: "/bold" works in French too.
   const NAMED_SLASH_COMMANDS = namedSlashCommands(strings.chat.slashCommands, en.chat.slashCommands);
+  const offeredSlashCommands = $derived(
+    canCreatePolls ? NAMED_SLASH_COMMANDS : NAMED_SLASH_COMMANDS.filter((named) => named.command.id !== "poll"),
+  );
   let suggestionQuery = $state<SuggestionQuery | null>(null);
   let dismissedSuggestionStart = $state<number | null>(null);
   let activeSuggestionIndex = $state(0);
@@ -172,7 +180,7 @@
       return [];
     }
     if (suggestionQuery.kind === "command") {
-      return suggestSlashCommands(suggestionQuery.query, NAMED_SLASH_COMMANDS).map(
+      return suggestSlashCommands(suggestionQuery.query, offeredSlashCommands).map(
         (named): ComposerSuggestion => ({ kind: "command", named }),
       );
     }
@@ -387,6 +395,9 @@
       if (suggestionQuery && field) {
         void writeEdit(applySlashCommand(field.value, suggestionQuery, suggestion.named.command, strings.chat.linkTextPlaceholder));
       }
+      if (suggestion.named.command.effect.kind === "dialog") {
+        onopenpolldialog();
+      }
       return;
     }
     if (suggestion.kind === "person") {
@@ -492,7 +503,9 @@
     <span class="min-w-0 truncate">{suggestion.named.name}</span>
     <span class="min-w-0 flex-1 truncate text-text-secondary">{suggestion.named.description}</span>
     <!-- What the command writes, as inline code shows in messages: the menu teaches the Markdown. -->
-    <code class="min-w-0 truncate rounded-xs bg-(--mw-component-message-code-background) px-3xs type-code text-text-normal">{suggestion.named.command.markup}</code>
+    {#if suggestion.named.command.markup}
+      <code class="min-w-0 truncate rounded-xs bg-(--mw-component-message-code-background) px-3xs type-code text-text-normal">{suggestion.named.command.markup}</code>
+    {/if}
   {:else if suggestion.kind === "person"}
     <Avatar user={suggestion.person} sizeToken="--mw-component-composer-suggestions-avatar-size" />
     <span class="min-w-0 truncate">{displayName(suggestion.person)}</span>

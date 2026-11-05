@@ -132,6 +132,11 @@ describe("words", () => {
     expect(messagePreviewText({ content: "" }, NO_ROLES)).toBe("");
   });
 
+  it("names a poll by its question (ADR-0043)", () => {
+    const poll = { question: "Lunch?", answers: [], allows_multiple_answers: false, expires_at_unix_milliseconds: 0 };
+    expect(messagePreviewText({ content: "", poll }, NO_ROLES)).toBe("Poll: Lunch?");
+  });
+
   it("cuts long messages on a character boundary, with an ellipsis", () => {
     const preview = messagePreviewText({ content: "é".repeat(500) }, NO_ROLES);
     expect(Array.from(preview)).toHaveLength(MAXIMUM_PREVIEW_CHARACTERS);

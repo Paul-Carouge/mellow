@@ -17,6 +17,7 @@
   import { calendarDayLabel, displayName, fullTimestampLabel, messageTimestampLabel, unixMillisecondsOfSnowflake } from "./format";
   import { conversationDisplayName } from "./group-conversations";
   import Icon from "./Icon.svelte";
+  import { pollSummary } from "./poll-view";
   import IconButton from "./IconButton.svelte";
   import { parseMessageMarkdown } from "./markdown";
   import { mentionablePeople } from "./mentions";
@@ -496,6 +497,13 @@
           <div class="type-message text-(--mw-component-message-body-text)">
             <MessageMarkdown {blocks} />
           </div>
+        {/if}
+        {#if message.poll}
+          <!-- A poll's question, never its votes: the slip opens the message for those (ADR-0043). -->
+          <p class="flex items-center gap-2xs type-message text-(--mw-component-message-body-text)">
+            <Icon name="chart-bar-horizontal" class="size-(--mw-component-message-status-icon-size) shrink-0 text-text-muted" />
+            <span class="min-w-0 break-words">{pollSummary(message.poll)}</span>
+          </p>
         {/if}
         {#if (message.attachments?.length ?? 0) > 0}
           <MessageAttachments

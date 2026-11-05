@@ -562,6 +562,7 @@ export const fr: Catalogue = {
       link: { name: "Lien", description: "Des mots qui ouvrent une adresse" },
       shrug: { name: "shrug", description: "Hausse les épaules" },
       tableflip: { name: "tableflip", description: "Renverse la table" },
+      poll: { name: "Sondage", description: "Pose une question avec des réponses à voter" },
     },
     sendMessage: "Envoyer le message",
     cannotSend: "Tu n’as pas la permission d’envoyer des messages dans ce salon.",
@@ -695,6 +696,75 @@ export const fr: Catalogue = {
     removeAllFailed: "Impossible de retirer les réactions",
     noReactions: "Plus aucune réaction.",
     deletedEmoji: "un emoji supprimé",
+  },
+
+  polls: {
+    summary: (question) => `Sondage${NO_BREAK_SPACE}: ${question}`,
+    chooseOne: "Choisis une réponse",
+    chooseSeveral: "Choisis une ou plusieurs réponses",
+    votes: (votes) => `${count(votes)}${NO_BREAK_SPACE}${plural(votes, { one: "vote", other: "votes" })}`,
+    percent: (value) => `${count(value)}${NARROW_NO_BREAK_SPACE}%`,
+    answerResults: (votes, percent) =>
+      `${count(votes)}${NO_BREAK_SPACE}${plural(votes, { one: "vote", other: "votes" })}, ${count(percent)}${NARROW_NO_BREAK_SPACE}%`,
+    seeVoters: (answer) => `, voir qui a voté pour «${NO_BREAK_SPACE}${answer}${NO_BREAK_SPACE}»`,
+    winner: "Réponse gagnante",
+    endsIn: (unit, amount) =>
+      `Se termine dans ${count(amount)}${NO_BREAK_SPACE}${
+        unit === "minutes"
+          ? plural(amount, { one: "minute", other: "minutes" })
+          : unit === "hours"
+            ? plural(amount, { one: "heure", other: "heures" })
+            : plural(amount, { one: "jour", other: "jours" })
+      }`,
+    endsInLessThanAMinute: "Se termine dans moins d’une minute",
+    ended: "Terminé",
+    endsAt: (date) => `Se termine ${date}`,
+    endedAt: (date) => `Terminé ${date}`,
+    showResults: "Voir les résultats",
+    hideResults: "Masquer les résultats",
+    removeVote: "Retirer mon vote",
+    voteFailed: "Impossible de voter",
+    removeVoteFailed: "Impossible de retirer ton vote",
+    hasEnded: "Ce sondage est terminé, les votes ne comptent plus.",
+    end: "Terminer le sondage",
+    endTitle: `Terminer ce sondage${NARROW_NO_BREAK_SPACE}?`,
+    endSubtitle: "Les votes s’arrêtent maintenant et tout le monde voit les résultats définitifs.",
+    endFailed: "Impossible de terminer le sondage",
+    votersTitle: (answer) => `Votes pour «${NO_BREAK_SPACE}${answer}${NO_BREAK_SPACE}»`,
+    loadingVoters: "Chargement des votes…",
+    votersFailed: "Impossible de savoir qui a voté.",
+    noVoters: "Personne n’a encore voté pour cette réponse.",
+    moreVoters: "Afficher plus",
+    moreVotersFailed: "Impossible d’afficher plus de votes.",
+    create: "Créer un sondage",
+    createSubtitle: "Tous ceux qui peuvent lire ce salon peuvent voter jusqu’à la fin du sondage.",
+    createSubtitleConversation: "Tout le monde dans cette conversation peut voter jusqu’à la fin du sondage.",
+    question: "Question",
+    questionPlaceholder: `Que veux-tu demander${NARROW_NO_BREAK_SPACE}?`,
+    answers: "Réponses",
+    answer: (position) => `Réponse ${count(position)}`,
+    addAnswer: "Ajouter une réponse",
+    removeAnswer: (position) => `Retirer la réponse ${count(position)}`,
+    answersLeft: (left) =>
+      left === 0
+        ? "Un sondage ne peut pas avoir plus de réponses."
+        : `Tu peux encore en ajouter ${count(left)}.`,
+    charactersUsed: (used, maximum) => `${count(used)}/${count(maximum)}`,
+    charactersUsedSpoken: (used, maximum) => `${count(used)} caractères sur ${count(maximum)}`,
+    allowMultiple: "Autoriser plusieurs réponses",
+    allowMultipleHint: "Chacun peut cocher plus d’une réponse.",
+    duration: "Durée",
+    durationOption: (hours) =>
+      hours % 168 === 0
+        ? `${count(hours / 168)}${NO_BREAK_SPACE}${plural(hours / 168, { one: "semaine", other: "semaines" })}`
+        : hours % 24 === 0 && hours > 24
+          ? `${count(hours / 24)}${NO_BREAK_SPACE}jours`
+          : `${count(hours)}${NO_BREAK_SPACE}${plural(hours, { one: "heure", other: "heures" })}`,
+    send: "Envoyer le sondage",
+    questionEmpty: "Écris la question.",
+    textTooLong: (maximum) => `Au plus ${count(maximum)}${NO_BREAK_SPACE}caractères.`,
+    tooFewAnswers: (minimum) => `Écris au moins ${count(minimum)}${NO_BREAK_SPACE}réponses.`,
+    duplicateAnswer: (answer) => `«${NO_BREAK_SPACE}${answer}${NO_BREAK_SPACE}» est déjà une réponse.`,
   },
 
   emojiPicker: {
@@ -1358,6 +1428,7 @@ export const fr: Catalogue = {
       },
       attachFiles: { label: "Joindre des fichiers", description: "Ajouter des fichiers et des images à ses messages." },
       addReactions: { label: "Ajouter des réactions", description: "Réagir aux messages avec un nouvel emoji." },
+      sendPolls: { label: "Créer des sondages", description: "Poser une question avec des réponses que les autres votent." },
       mentionEveryone: {
         label: "Mentionner @everyone et tous les rôles",
         description: "Prévenir tout le monde dans un salon en une fois, et mentionner n’importe quel rôle, même ceux que personne d’autre ne peut mentionner.",

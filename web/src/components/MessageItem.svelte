@@ -33,6 +33,10 @@
   import MessageLinkPreviews from "./MessageLinkPreviews.svelte";
   import MessageMarkdown from "./MessageMarkdown.svelte";
   import type { MessageListRow } from "./message-rows";
+  import { isPollEnded } from "../lib/polls";
+  import PollCard from "./PollCard.svelte";
+  import { pollClockNow } from "./poll-clock.svelte";
+  import { pendingPollPreview } from "./poll-view";
   import { durationTokenInMilliseconds } from "./tokens";
 
   // One message row (DESIGN.md §5.4): group start with avatar, author and time, or a continuation
@@ -145,6 +149,14 @@
   const gifMedia = $derived(areGifsShown ? messageGifMediaOf(content) : null);
   let failedGifUrl = $state<string | null>(null);
   const forwardedFrom = $derived(message?.forwarded_from ?? null);
+  // A poll in the outbox shows as it will arrive (ADR-0043).
+  const poll = $derived(
+    row.kind === "sent"
+      ? (row.message.poll ?? null)
+      : row.pending.poll
+        ? pendingPollPreview(row.pending.poll, Date.now())
+        : null,
+  );
   // Only a forward's place is looked up, among the channels the reader knows.
   const forwardOriginPlace = $derived(forwardedFrom ? forwardOriginPlaceOf(forwardedFrom.channel_id) : null);
   const forwardOriginSentAt = $derived(forwardedFrom ? unixMillisecondsOfSnowflake(forwardedFrom.message_id) : null);
@@ -214,6 +226,8 @@
       ? messageMenuActions({
           isOwn,
           isForward: forwardedFrom !== null,
+          isPoll: poll !== null,
+          isPollOpen: poll !== null && !isPollEnded(poll, pollClockNow()),
           hasText: message.content.trim() !== "",
           hasReactions: reactions.length > 0,
           isPinned,
@@ -453,6 +467,18 @@
     {#if message}
       {@render reactionsOf(message)}
     {/if}
+  {:else if poll}
+    <PollCard
+      {poll}
+      isPending={row.kind === "pending"}
+      canVote={actions.canVoteInPolls}
+      onchoose={(answerId) => message && actions.choosePollAnswer(message, answerId)}
+      onremovevote={() => message && actions.removeOwnPollVotes(message)}
+      onviewvoters={(answerId) => message && actions.viewPollVoters(message, answerId)}
+    />
+    {#if message}
+      {@render reactionsOf(message)}
+    {/if}
   {:else}
     {@render body()}
     {#if attachments.length > 0}
@@ -529,14 +555,17 @@
           onclick={(event) => pickerToggle.shouldOpenOnClick() && actions.openPicker(message, event.currentTarget)}
         />
       {/if}
-      {#if isOwn && canSendMessages && forwardedFrom === null}
+      {#if isOwn && canSendMessages && forwardedFrom === null && poll === null}
         <IconButton icon="pencil-simple" label={strings.common.edit} class={buttonClass} {iconClass} onclick={() => onstartedit(message)} />
       {/if}
       {#if canSendMessages}
         <IconButton icon="arrow-bend-up-left" label={strings.messages.reply} class={buttonClass} {iconClass} onclick={() => onreply(message)} />
       {/if}
-      <IconButton icon="arrow-bend-up-right" label={strings.forward.forward} class={buttonClass} {iconClass} onclick={() => onforward(message)} />
-      <IconButton icon="copy" label={strings.messages.copyText} class={buttonClass} {iconClass} onclick={() => oncopy(message.content)} />
+      <!-- A poll is neither forwarded nor copied as text (ADR-0043). -->
+      {#if poll === null}
+        <IconButton icon="arrow-bend-up-right" label={strings.forward.forward} class={buttonClass} {iconClass} onclick={() => onforward(message)} />
+        <IconButton icon="copy" label={strings.messages.copyText} class={buttonClass} {iconClass} onclick={() => oncopy(message.content)} />
+      {/if}
       {#if isOwn || canManageMessages}
         <IconButton
           icon="trash"

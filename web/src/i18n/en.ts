@@ -585,6 +585,7 @@ export const en = {
       link: { name: "Link", description: "Words that open an address" },
       shrug: { name: "shrug", description: "Adds a shrug" },
       tableflip: { name: "tableflip", description: "Flips the table" },
+      poll: { name: "Poll", description: "Ask a question with answers to vote on" },
     },
     sendMessage: "Send message",
     cannotSend: "You do not have permission to send messages in this channel.",
@@ -728,6 +729,77 @@ export const en = {
     noReactions: "No reactions left.",
     /** A reaction whose server emoji was deleted: its chip and "reacted with …". */
     deletedEmoji: "a deleted emoji",
+  },
+
+  /** Polls in messages (ADR-0043, docs/design/web-polls.md). */
+  polls: {
+    /** A poll in one line of text: reply lines, pins, notifications, dialogs' previews. */
+    summary: (question: string) => `Poll: ${question}`,
+    chooseOne: "Choose one answer",
+    chooseSeveral: "Choose one or more answers",
+    votes: (votes: number) => `${count(votes)} ${plural(votes, { one: "vote", other: "votes" })}`,
+    percent: (value: number) => `${count(value)}%`,
+    /** What a screen reader hears after an answer once results show. */
+    answerResults: (votes: number, percent: number) =>
+      `${count(votes)} ${plural(votes, { one: "vote", other: "votes" })}, ${count(percent)}%`,
+    /** Ends the count button's name, after its visible "3 votes 25%". */
+    seeVoters: (answer: string) => `, see who voted for ${answer}`,
+    winner: "Winning answer",
+    endsIn: (unit: "minutes" | "hours" | "days", amount: number) =>
+      `Ends in ${count(amount)} ${
+        unit === "minutes"
+          ? plural(amount, { one: "minute", other: "minutes" })
+          : unit === "hours"
+            ? plural(amount, { one: "hour", other: "hours" })
+            : plural(amount, { one: "day", other: "days" })
+      }`,
+    endsInLessThanAMinute: "Ends in less than a minute",
+    ended: "Ended",
+    endsAt: (date: string) => `Ends ${date}`,
+    endedAt: (date: string) => `Ended ${date}`,
+    showResults: "Show results",
+    hideResults: "Hide results",
+    removeVote: "Remove my vote",
+    voteFailed: "Couldn't vote",
+    removeVoteFailed: "Couldn't remove your vote",
+    hasEnded: "This poll has ended, so votes no longer count.",
+    end: "End poll",
+    endTitle: "End this poll?",
+    endSubtitle: "Voting stops now, and everyone sees the final results.",
+    endFailed: "Couldn't end the poll",
+    votersTitle: (answer: string) => `Votes for “${answer}”`,
+    loadingVoters: "Loading who voted…",
+    votersFailed: "Couldn't load who voted.",
+    noVoters: "Nobody voted for this answer yet.",
+    moreVoters: "Show more",
+    moreVotersFailed: "Couldn't load more voters.",
+    create: "Create a poll",
+    createSubtitle: "Everyone who can read this channel can vote until the poll ends.",
+    createSubtitleConversation: "Everyone in this conversation can vote until the poll ends.",
+    question: "Question",
+    questionPlaceholder: "What do you want to ask?",
+    answers: "Answers",
+    answer: (position: number) => `Answer ${count(position)}`,
+    addAnswer: "Add an answer",
+    removeAnswer: (position: number) => `Remove answer ${count(position)}`,
+    answersLeft: (left: number) =>
+      left === 0 ? "That's the most answers a poll can have." : `You can add ${count(left)} more.`,
+    charactersUsed: (used: number, maximum: number) => `${count(used)}/${count(maximum)}`,
+    charactersUsedSpoken: (used: number, maximum: number) => `${count(used)} of ${count(maximum)} characters`,
+    allowMultiple: "Allow several answers",
+    allowMultipleHint: "People can tick more than one answer.",
+    duration: "Duration",
+    durationOption: (hours: number) =>
+      hours % 168 === 0
+        ? `${count(hours / 168)} ${plural(hours / 168, { one: "week", other: "weeks" })}`
+        : hours % 24 === 0 && hours > 24
+          ? `${count(hours / 24)} days`
+          : `${count(hours)} ${plural(hours, { one: "hour", other: "hours" })}`,
+    send: "Send poll",
+    questionEmpty: "Write the question.",
+    textTooLong: (maximum: number) => `Keep it to ${count(maximum)} characters.`,
+    tooFewAnswers: (minimum: number) => `Write at least ${count(minimum)} answers.`,
+    duplicateAnswer: (answer: string) => `“${answer}” is already an answer.`,
   },
 
   emojiPicker: {
@@ -1408,6 +1480,7 @@ export const en = {
       },
       attachFiles: { label: "Attach files", description: "Add files and pictures to their messages." },
       addReactions: { label: "Add reactions", description: "React to messages with a new emoji." },
+      sendPolls: { label: "Create polls", description: "Ask a question with answers others vote on." },
       mentionEveryone: {
         label: "Mention @everyone and all roles",
         description: "Notify everyone in a channel at once, and mention any role, even one nobody else may mention.",

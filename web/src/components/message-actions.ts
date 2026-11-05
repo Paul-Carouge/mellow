@@ -1,4 +1,4 @@
-// What the chat pane lets a message row do with reactions and pins, passed down as one object.
+// What the chat pane lets a message row do with reactions, pins and polls, passed down as one object.
 
 import type { Message, PublicUser, Snowflake } from "../lib/protocol";
 
@@ -19,4 +19,10 @@ export interface ReactionAndPinActions {
   askToPin: (message: Message, isPinned: boolean) => void;
   viewReactions: (message: Message) => void;
   askToRemoveAllReactions: (message: Message) => void;
+  /** Reading a server channel's history, or writing in a conversation (ADR-0043). */
+  canVoteInPolls: boolean;
+  choosePollAnswer: (message: Message, answerId: number) => void;
+  removeOwnPollVotes: (message: Message) => void;
+  viewPollVoters: (message: Message, answerId: number) => void;
+  askToEndPoll: (message: Message) => void;
 }
