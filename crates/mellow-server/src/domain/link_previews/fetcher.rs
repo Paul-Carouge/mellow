@@ -56,6 +56,9 @@ pub(crate) enum Fetched {
 pub(crate) struct LinkFetcher {
     client: reqwest::Client,
     policy: AddressPolicy,
+    /// The local site standing in for every host; only tests set it
+    /// (`stand_in_for_every_host_for_tests`).
+    stand_in_site: Option<Url>,
 }
 
 /// Whether the fetcher may request `url` (before any name resolution, which the resolver
@@ -108,6 +111,31 @@ impl LinkFetcher {
         Self::with_policy("Mellow test", AddressPolicy::AlsoLoopbackOnAnyPort).unwrap()
     }
 
+    /// Sends every request to `site` instead, the real host as the path's first segment
+    /// (`https://www.youtube.com/oembed?url=…` asks `{site}/www.youtube.com/oembed?url=…`), so
+    /// tests stand in for providers' fixed endpoints without touching the network.
+    #[cfg(test)]
+    pub(crate) fn stand_in_for_every_host_for_tests(site: &str) -> Self {
+        Self {
+            stand_in_site: Some(Url::parse(site).unwrap()),
+            ..Self::allowing_loopback_for_tests()
+        }
+    }
+
+    fn request_url(&self, url: &Url) -> Url {
+        let Some(site) = &self.stand_in_site else {
+            return url.clone();
+        };
+        let mut request_url = site.clone();
+        request_url.set_path(&format!(
+            "{}{}",
+            url.host_str().unwrap_or_default(),
+            url.path()
+        ));
+        request_url.set_query(url.query());
+        request_url
+    }
+
     fn with_policy(user_agent: &str, policy: AddressPolicy) -> Result<Self, FetchError> {
         let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS
             .iter()
@@ -125,7 +153,11 @@ impl LinkFetcher {
             .tls_certs_only(roots)
             .build()
             .map_err(|_| FetchError::Client)?;
-        Ok(Self { client, policy })
+        Ok(Self {
+            client,
+            policy,
+            stand_in_site: None,
+        })
     }
 
     /// The page's details, or the picture the link points at.
@@ -197,10 +229,6 @@ impl LinkFetcher {
     /// # Errors
     /// Any refusal, network error, status other than 2xx, a type other than JSON, a body over
     /// 64 KiB, or JSON that is not a `T`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the provider fetchers of ADR-0044 call it")
-    )]
     pub(crate) async fn fetch_json<T: serde::de::DeserializeOwned>(
         &self,
         url: Url,
@@ -231,7 +259,10 @@ impl LinkFetcher {
             }
             let response = tokio::time::timeout_at(
                 deadline,
-                self.client.get(url.clone()).header(ACCEPT, accept).send(),
+                self.client
+                    .get(self.request_url(&url))
+                    .header(ACCEPT, accept)
+                    .send(),
             )
             .await
             .map_err(|_| FetchError::TimedOut)??;

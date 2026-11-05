@@ -39,11 +39,11 @@ fn is_youtube_id_character(character: char) -> bool {
     character.is_ascii_alphanumeric() || character == '-' || character == '_'
 }
 
-fn is_youtube_video_id(id: &str) -> bool {
+pub(crate) fn is_youtube_video_id(id: &str) -> bool {
     id.len() == YOUTUBE_VIDEO_ID_LENGTH && id.chars().all(is_youtube_id_character)
 }
 
-fn is_public_youtube_playlist_id(id: &str) -> bool {
+pub(crate) fn is_public_youtube_playlist_id(id: &str) -> bool {
     YOUTUBE_PLAYLIST_ID_LENGTHS.contains(&id.len())
         && !id.starts_with(YOUTUBE_PERSONAL_MIX_PREFIX)
         && id.chars().all(is_youtube_id_character)

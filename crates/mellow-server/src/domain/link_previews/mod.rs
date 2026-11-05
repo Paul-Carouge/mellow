@@ -5,4 +5,5 @@ pub(crate) mod canonical_links;
 pub(crate) mod fetcher;
 pub(crate) mod links;
 pub(crate) mod page;
+pub(crate) mod providers;
 pub(crate) mod public_addresses;
