@@ -1,21 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GatewayConnection } from "./gateway";
+import { GatewayConnection, NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT_MILLISECONDS } from "./gateway";
+
+const HEARTBEAT_INTERVAL_MILLISECONDS = 30_000;
 
 /** Records every socket opened, so a test can close one as the network would. */
 class FakeWebSocket extends EventTarget {
   static readonly OPEN = 1;
   static opened: FakeWebSocket[] = [];
   readyState = 0;
+  readonly sentFrames: unknown[] = [];
 
   constructor(readonly url: string) {
     super();
     FakeWebSocket.opened.push(this);
   }
 
-  send(): void {}
+  send(frame: string): void {
+    this.sentFrames.push(JSON.parse(frame));
+  }
 
   close(): void {}
+
+  /** Opens the socket and delivers a server frame, as the instance would. */
+  receive(frame: object): void {
+    this.readyState = FakeWebSocket.OPEN;
+    this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) }));
+  }
 
   dropByNetwork(): void {
     this.dispatchEvent(new Event("close"));
@@ -76,6 +87,46 @@ describe("GatewayConnection", () => {
     fakeWindow.dispatchEvent(new Event("online"));
 
     expect(FakeWebSocket.opened).toHaveLength(2);
+  });
+
+  /** A gateway attached to a session on its first socket: `hello` then `ready` came back. */
+  function attachedGateway(): GatewayConnection {
+    const gateway = new GatewayConnection("", () => {}, () => Promise.resolve(false));
+    gateway.open();
+    const socket = FakeWebSocket.opened[0]!;
+    socket.receive({ op: "hello", d: { heartbeat_interval_milliseconds: HEARTBEAT_INTERVAL_MILLISECONDS } });
+    socket.receive({ op: "ready", d: { session_id: "session" } });
+    return gateway;
+  }
+
+  it("resumes on a new socket when an open one does not answer a heartbeat after a network change", () => {
+    attachedGateway();
+    const firstSocket = FakeWebSocket.opened[0]!;
+
+    fakeWindow.dispatchEvent(new Event("online"));
+
+    // The check goes out at once, without waiting for the next regular heartbeat.
+    expect(firstSocket.sentFrames.at(-1)).toEqual({ op: "heartbeat" });
+    expect(FakeWebSocket.opened).toHaveLength(1);
+    vi.advanceTimersByTime(NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT_MILLISECONDS);
+    vi.advanceTimersToNextTimer();
+    expect(FakeWebSocket.opened).toHaveLength(2);
+    const secondSocket = FakeWebSocket.opened[1]!;
+    secondSocket.receive({ op: "hello", d: { heartbeat_interval_milliseconds: HEARTBEAT_INTERVAL_MILLISECONDS } });
+    expect(secondSocket.sentFrames).toEqual([
+      { op: "resume", d: { token: "", session_id: "session", last_sequence: 0 } },
+    ]);
+  });
+
+  it("keeps an open socket that answers the heartbeat sent after a network change", () => {
+    attachedGateway();
+    const socket = FakeWebSocket.opened[0]!;
+
+    fakeWindow.dispatchEvent(new Event("online"));
+    socket.receive({ op: "heartbeat_ack" });
+    vi.advanceTimersByTime(NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT_MILLISECONDS + 1);
+
+    expect(FakeWebSocket.opened).toHaveLength(1);
   });
 
   it("stops listening for the network once closed", () => {

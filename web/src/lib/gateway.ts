@@ -8,6 +8,9 @@ const FIRST_RECONNECT_DELAY_MILLISECONDS = 1_000;
 const MAXIMUM_RECONNECT_DELAY_MILLISECONDS = 30_000;
 /** `hello` then `ready` or `resumed` must arrive within this, as `HANDSHAKE_TIMEOUT` in the core. */
 const HANDSHAKE_TIMEOUT_MILLISECONDS = 15_000;
+/** After an `online` event, an open socket must acknowledge a heartbeat within this or it is
+ * abandoned: a socket that survived a network change may be dead without knowing it. */
+export const NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT_MILLISECONDS = 10_000;
 
 export type GatewayUpdate =
   | { kind: "ready"; ready: Ready }
@@ -27,6 +30,8 @@ export class GatewayConnection {
   private socketListeners: AbortController | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Running while the heartbeat sent after a network change waits for its ack. */
+  private networkChangeCheckTimer: ReturnType<typeof setTimeout> | null = null;
   /** A link that went dead (sleep, Wi-Fi change) can stay "open" for minutes: an unanswered
    * heartbeat ends it, as in the core. */
   private isHeartbeatAcknowledged = true;
@@ -54,7 +59,7 @@ export class GatewayConnection {
     this.isClosedByUs = false;
     if (!this.onlineListener) {
       this.onlineListener = new AbortController();
-      window.addEventListener("online", () => this.reconnectNow(), { signal: this.onlineListener.signal });
+      window.addEventListener("online", () => this.networkCameBack(), { signal: this.onlineListener.signal });
     }
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(`${scheme}//${location.host}${GATEWAY_PATH}`);
@@ -144,6 +149,7 @@ export class GatewayConnection {
         break;
       case "heartbeat_ack":
         this.isHeartbeatAcknowledged = true;
+        this.stopNetworkChangeCheckTimer();
         break;
       case "dispatch":
         if (this.resumable) {
@@ -196,7 +202,37 @@ export class GatewayConnection {
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAXIMUM_RECONNECT_DELAY_MILLISECONDS);
   }
 
-  /** The network came back: waiting out the backoff (up to 30 s) would only delay the user. */
+  /** The network came back (or changed): reconnect now if waiting, or check that the open socket
+   * still answers instead of waiting up to two heartbeat intervals to notice it died. */
+  private networkCameBack(): void {
+    if (this.reconnectTimer) {
+      this.reconnectNow();
+    } else if (this.isSessionAttached()) {
+      this.checkSocketAfterNetworkChange();
+    }
+  }
+
+  /** `ready` or `resumed` came back on the open socket: a heartbeat sent earlier would end the
+   * handshake, which the handshake timer already watches. */
+  private isSessionAttached(): boolean {
+    return (
+      this.socket?.readyState === WebSocket.OPEN && this.heartbeatTimer !== null && this.handshakeTimer === null
+    );
+  }
+
+  private checkSocketAfterNetworkChange(): void {
+    if (this.networkChangeCheckTimer) {
+      return;
+    }
+    this.isHeartbeatAcknowledged = false;
+    this.send({ op: "heartbeat" });
+    this.networkChangeCheckTimer = setTimeout(() => {
+      this.networkChangeCheckTimer = null;
+      this.abandonSocket();
+    }, NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT_MILLISECONDS);
+  }
+
+  /** Waiting out the backoff (up to 30 s) would only delay the user. */
   private reconnectNow(): void {
     if (!this.reconnectTimer) {
       return;
@@ -213,6 +249,10 @@ export class GatewayConnection {
     }
     this.isHeartbeatAcknowledged = true;
     this.heartbeatTimer = setInterval(() => {
+      // A network-change check owns the deadline of the heartbeat it sent.
+      if (this.networkChangeCheckTimer) {
+        return;
+      }
       if (!this.isHeartbeatAcknowledged) {
         this.abandonSocket();
         return;
@@ -229,8 +269,16 @@ export class GatewayConnection {
     }
   }
 
+  private stopNetworkChangeCheckTimer(): void {
+    if (this.networkChangeCheckTimer) {
+      clearTimeout(this.networkChangeCheckTimer);
+      this.networkChangeCheckTimer = null;
+    }
+  }
+
   private stopTimers(): void {
     this.stopHandshakeTimer();
+    this.stopNetworkChangeCheckTimer();
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
