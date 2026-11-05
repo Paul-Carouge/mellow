@@ -406,6 +406,112 @@ export interface LinkPreview {
   theme_color?: number;
   /** Its size in pixels as stored. */
   image?: { width: number; height: number };
+  /**
+   * What a known provider says about the link (ADR-0044); `title`, `description` and `image` keep
+   * the title, the summary and the one picture. Absent for other links and from older servers.
+   */
+  embed?: LinkEmbed;
+}
+
+/**
+ * A provider's facts about a link (ADR-0044), told apart by `kind`. A newer server may send kinds
+ * and values this list lacks: show the plain card for them. Re-check every id before building a
+ * player's address from it.
+ */
+export type LinkEmbed =
+  | ({ kind: "youtube_video" } & YouTubeVideoEmbed)
+  | ({ kind: "youtube_music_track" } & YouTubeMusicTrackEmbed)
+  | ({ kind: "github_repository" } & GitHubRepositoryEmbed)
+  | ({ kind: "github_issue" } & GitHubIssueEmbed)
+  | ({ kind: "github_pull_request" } & GitHubIssueEmbed)
+  | ({ kind: "music" } & MusicEmbed)
+  | ({ kind: "vimeo_video" } & VimeoVideoEmbed)
+  | ({ kind: "twitch" } & TwitchEmbed)
+  | ({ kind: "wikipedia_article" } & WikipediaArticleEmbed);
+
+export interface YouTubeVideoEmbed {
+  video_id: string;
+  /** Plays in a 9:16 frame. */
+  is_short: boolean;
+  /** Whole seconds above zero. */
+  start_seconds?: number;
+  playlist_id?: string;
+  duration_seconds?: number;
+}
+
+/** `title` is the track's, `image` its square cover; plays in the visible YouTube player. */
+export interface YouTubeMusicTrackEmbed {
+  video_id: string;
+  artist: string;
+  album?: string;
+  duration_seconds?: number;
+}
+
+/** `description` is the repository's, `image` the owner's avatar. */
+export interface GitHubRepositoryEmbed {
+  owner: string;
+  name: string;
+  stars: number;
+  forks: number;
+  language?: string;
+  /** `0xRRGGBB`. */
+  language_color?: number;
+  topics: string[];
+  /** An SPDX id, such as `MIT`. */
+  licence_spdx?: string;
+  is_archived: boolean;
+}
+
+/** An issue or a pull request; `title` is its title. */
+export interface GitHubIssueEmbed {
+  owner: string;
+  repository: string;
+  number: number;
+  state: GitHubIssueState;
+  /** The author's login. */
+  author: string;
+  opened_at_unix_milliseconds?: number;
+  merged_at_unix_milliseconds?: number;
+  comments: number;
+}
+
+/** `draft` and `merged` for pull requests, `completed` and `not_planned` for closed issues. */
+export type GitHubIssueState = "open" | "draft" | "merged" | "completed" | "not_planned" | "closed";
+
+/** `image` is the cover. */
+export interface MusicEmbed {
+  provider: MusicProvider;
+  item: MusicItem;
+  /** The provider's id of the item (Bandcamp's is numeric). */
+  id: string;
+  artist?: string;
+  track_count?: number;
+  duration_seconds?: number;
+}
+
+export type MusicProvider = "spotify" | "deezer" | "soundcloud" | "apple_music" | "bandcamp";
+
+export type MusicItem = "track" | "album" | "playlist" | "episode" | "show" | "artist";
+
+export interface VimeoVideoEmbed {
+  video_id: string;
+  /** The privacy hash of an unlisted video. */
+  hash?: string;
+}
+
+export interface TwitchEmbed {
+  item: TwitchItem;
+  /** The channel's login, the video's number or the clip's slug. */
+  id: string;
+}
+
+export type TwitchItem = "channel" | "video" | "clip";
+
+/** `description` is the summary, `image` the thumbnail. */
+export interface WikipediaArticleEmbed {
+  /** `fr` for `fr.wikipedia.org`. */
+  language: string;
+  is_disambiguation: boolean;
 }
 
 /** Where a forwarded message was first written (ADR-0039); its date is the message id's. */

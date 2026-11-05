@@ -21,6 +21,8 @@ pub(crate) enum MessageStorageError {
     AuditEntry(#[from] GuildStorageError),
     #[error("a stored mention list is not a JSON array of ids")]
     InvalidMentionList,
+    #[error("a link embed cannot be written as JSON")]
+    UnwritableLinkEmbed,
     /// An attachment id that is not an unsent upload of this author to this channel.
     #[error("attachment unavailable")]
     AttachmentUnavailable,

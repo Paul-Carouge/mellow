@@ -2237,6 +2237,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn previews_stored_before_provider_embeds_keep_their_card_and_have_no_embed() {
+        const LAST_VERSION_BEFORE_EMBEDS: i64 = 38;
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_BEFORE_EMBEDS, database.writer())
+            .await
+            .unwrap();
+        // A YouTube card with its picture, a text-only card, and an empty fetch, as 0036 stored.
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) VALUES (30, 20, 1, \
+             'https://youtu.be/dQw4w9WgXcQ https://example.org/ https://gone.example/'); \
+             INSERT INTO link_previews (id, url_sha256, url, title, description, site_name, \
+             theme_color, image_file_id, image_content_type, image_size_bytes, image_width, \
+             image_height, is_empty, fetched_at_unix_milliseconds, expires_at_unix_milliseconds) \
+             VALUES (40, randomblob(32), 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', \
+             'Never Gonna Give You Up', 'The official video', 'YouTube', 16711680, 400, \
+             'image/avif', 18000, 1280, 720, 0, 1, 86400001), \
+             (41, randomblob(32), 'https://example.org/', 'Example', NULL, NULL, NULL, NULL, \
+             NULL, NULL, NULL, NULL, 0, 1, 86400001), \
+             (42, randomblob(32), 'https://gone.example/', NULL, NULL, NULL, NULL, NULL, NULL, \
+             NULL, NULL, NULL, 1, 1, 3600001); \
+             INSERT INTO message_link_previews (message_id, position, link_preview_id) \
+             VALUES (30, 0, 40), (30, 1, 41);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let message = Snowflake::from_raw(30);
+        let shown = crate::storage::link_previews::previews_of_messages(&database, &[message])
+            .await
+            .unwrap();
+        let embeds: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT embed FROM link_previews ORDER BY id")
+                .fetch_all(database.writer())
+                .await
+                .unwrap();
+        let invalid = sqlx::query("UPDATE link_previews SET embed = 'not json' WHERE id = 41")
+            .execute(database.writer())
+            .await;
+        database.close().await;
+
+        let shown = &shown[&message];
+        assert_eq!(shown.len(), 2);
+        let youtube = &shown[0];
+        assert_eq!(youtube.title.as_deref(), Some("Never Gonna Give You Up"));
+        assert_eq!(youtube.theme_color, Some(0x00ff_0000));
+        assert_eq!(youtube.image.as_ref().map(|image| image.width), Some(1280));
+        assert_eq!(shown[1].url, "https://example.org/");
+        assert!(shown.iter().all(|preview| preview.embed.is_none()));
+        assert_eq!(embeds, [None, None, None]);
+        assert!(invalid.is_err(), "the column only holds JSON");
+    }
+
+    #[tokio::test]
     async fn a_database_from_a_newer_binary_is_refused_even_with_nothing_pending() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())

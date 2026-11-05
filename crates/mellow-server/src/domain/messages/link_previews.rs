@@ -195,6 +195,7 @@ pub(crate) fn link_preview_from_stored(preview: StoredLinkPreview) -> LinkPrevie
             width: image.width,
             height: image.height,
         }),
+        embed: preview.embed,
     }
 }
 
@@ -504,6 +505,7 @@ impl PreviewWorker {
             site_name: details.site_name,
             theme_color: details.theme_color,
             image,
+            embed: None,
             is_empty,
         };
         storage::insert_preview(
