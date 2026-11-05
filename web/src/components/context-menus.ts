@@ -287,7 +287,10 @@ export interface MenuItemLook {
   readonly tone: "normal" | "accent" | "danger";
 }
 
-const LOOKS: Record<MenuAction, MenuItemLook> = {
+// Built on first use: the catalogue is not loaded yet when this module is evaluated.
+let looks: Record<MenuAction, MenuItemLook> | undefined;
+
+const looksInReadersLanguage = (): Record<MenuAction, MenuItemLook> => ({
   "add-reaction": { label: strings.reactions.addReaction, icon: "smiley", tone: "normal" },
   reply: { label: strings.messages.reply, icon: "arrow-bend-up-left", tone: "normal" },
   forward: { label: strings.forward.forward, icon: "arrow-bend-up-right", tone: "normal" },
@@ -331,10 +334,11 @@ const LOOKS: Record<MenuAction, MenuItemLook> = {
   mute: { label: strings.notifications.muteMenu, icon: "bell-slash", tone: "normal" },
   unmute: { label: strings.notifications.unmute, icon: "bell", tone: "normal" },
   "notification-settings": { label: strings.notifications.settingsMenu, icon: "bell", tone: "normal" },
-};
+});
 
 export function menuItemLook(action: MenuAction): MenuItemLook {
-  return LOOKS[action];
+  looks ??= looksInReadersLanguage();
+  return looks[action];
 }
 
 // --- From actions to the menu's entries ---------------------------------------------------------

@@ -2,7 +2,7 @@
   import { tick } from "svelte";
 
   import { strings } from "../i18n";
-  import { en } from "../i18n/en";
+  import { ENGLISH_SLASH_COMMANDS } from "../i18n/english-slash-commands";
   import { ApiError } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import {
@@ -168,7 +168,7 @@
     | RoleMentionSuggestion
     | { kind: "command"; named: NamedSlashCommand };
   // English names find the commands in any language: "/bold" works in French too.
-  const NAMED_SLASH_COMMANDS = namedSlashCommands(strings.chat.slashCommands, en.chat.slashCommands);
+  const NAMED_SLASH_COMMANDS = namedSlashCommands(strings.chat.slashCommands, ENGLISH_SLASH_COMMANDS);
   const offeredSlashCommands = $derived(
     canCreatePolls ? NAMED_SLASH_COMMANDS : NAMED_SLASH_COMMANDS.filter((named) => named.command.id !== "poll"),
   );
