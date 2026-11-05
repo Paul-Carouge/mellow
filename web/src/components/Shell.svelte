@@ -26,6 +26,7 @@
   import { conversationDisplayName, isGroupConversation } from "./group-conversations";
   import GroupMembersSheet from "./GroupMembersSheet.svelte";
   import IconButton from "./IconButton.svelte";
+  import { trackInputModality } from "./input-modality";
   import LazyComponent from "./LazyComponent.svelte";
   import { closePictureViewer, pictureViewerRequest } from "./picture-viewer-request.svelte";
   import LeaveServerDialog from "./LeaveServerDialog.svelte";
@@ -125,6 +126,8 @@
       stopPushToTalk();
     };
   });
+  // The composer's focus ring follows the last input modality (DESIGN.md §7.2).
+  onMount(() => trackInputModality(window, document.documentElement));
   $effect(() => showAttentionCount(attentionCount(client)));
   $effect(() => {
     const channelId = client.selectedChannelId;
