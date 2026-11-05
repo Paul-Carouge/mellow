@@ -3417,6 +3417,121 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)] // One scenario: remove, add, replay, pin.
+    async fn checklist_items_keep_their_ids_and_trackers_ride_along_on_pins_and_nonce_replays() {
+        use mellow_protocol::ChecklistItemRequest;
+
+        let fixture = fixture().await;
+        let (messages, owner, member, general) = (
+            &fixture.messages,
+            fixture.owner,
+            fixture.member,
+            fixture.general,
+        );
+        let with_nonce = |nonce: &str, request: SendMessageRequest| SendMessageRequest {
+            nonce: Some(nonce.into()),
+            ..request
+        };
+        let checklist = messages
+            .send(
+                member,
+                general,
+                with_nonce("checklist-1", checklist_request(&["Tag", "Build", "Ship"])),
+                NOW,
+            )
+            .await
+            .unwrap();
+        let bar = messages
+            .send(
+                member,
+                general,
+                with_nonce("bar-1", progress_bar_request(1, 4)),
+                NOW,
+            )
+            .await
+            .unwrap();
+        messages
+            .remove_checklist_item(member, general, checklist.id, 3)
+            .await
+            .unwrap();
+        let after_add = messages
+            .add_checklist_item(
+                member,
+                general,
+                checklist.id,
+                &ChecklistItemRequest {
+                    text: "Deploy".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let tick_of_removed = messages
+            .tick_checklist_item(member, general, checklist.id, 3, true, NOW)
+            .await;
+        let checklist_replay = messages
+            .send(
+                member,
+                general,
+                with_nonce("checklist-1", checklist_request(&["Other"])),
+                NOW + 1,
+            )
+            .await
+            .unwrap();
+        let bar_replay = messages
+            .send(
+                member,
+                general,
+                with_nonce("bar-1", progress_bar_request(2, 4)),
+                NOW + 1,
+            )
+            .await
+            .unwrap();
+        let [_owner_events, mut member_events] = live_sessions(&fixture);
+        for message in [&checklist, &bar] {
+            messages
+                .pin(owner, general, message.id, NOW + 2)
+                .await
+                .unwrap();
+        }
+        let pin_updates: Vec<serde_json::Value> =
+            std::iter::from_fn(|| member_events.try_recv().ok())
+                .map(|event| serde_json::from_str(&event.payload_json).unwrap())
+                .collect();
+        let pins = messages.list_pins(member, general).await.unwrap();
+        fixture.database.close().await;
+
+        assert_eq!(
+            after_add
+                .items
+                .iter()
+                .map(|item| (item.id, item.text.as_str()))
+                .collect::<Vec<_>>(),
+            [(1, "Tag"), (2, "Build"), (4, "Deploy")],
+            "a removed item's id is never given again"
+        );
+        assert!(matches!(
+            tick_of_removed,
+            Err(MessageError::MessageNotFound)
+        ));
+        assert_eq!(checklist_replay.id, checklist.id);
+        assert_eq!(checklist_replay.checklist, Some(after_add.clone()));
+        assert_eq!(bar_replay.id, bar.id);
+        assert_eq!(bar_replay.progress_bar, bar.progress_bar);
+        assert_eq!(pin_updates.len(), 2);
+        assert_eq!(pin_updates[0]["t"], "MESSAGE_UPDATE");
+        assert_eq!(pin_updates[0]["data"]["checklist"]["items"][2]["id"], 4);
+        assert_eq!(pin_updates[1]["data"]["progress_bar"]["value"], 1);
+        assert!(
+            pins.iter()
+                .any(|pinned| pinned.checklist == Some(after_add.clone()))
+        );
+        assert!(
+            pins.iter()
+                .any(|pinned| pinned.progress_bar == bar.progress_bar)
+        );
+    }
+
+    #[tokio::test]
     async fn progress_bars_are_updated_by_their_author_or_moderators() {
         let fixture = fixture().await;
         let (messages, owner, member, general) = (
