@@ -6,6 +6,7 @@ import {
   type PersonMenuFacts,
   categoryMenuActions,
   channelMenuActions,
+  chatHeaderMenuActions,
   groupMenuActions,
   menuItemLook,
   messageMenuActions,
@@ -297,5 +298,31 @@ describe("menuItemLook", () => {
     }
     expect(menuItemLook("invite-people").tone).toBe("accent");
     expect(menuItemLook("reply").tone).toBe("normal");
+  });
+});
+
+describe("chatHeaderMenuActions", () => {
+  it("offers a plain member of a channel Go to and the pins, never the channel's settings", () => {
+    expect(chatHeaderMenuActions({ isGroup: false, canEditChannel: false })).toEqual(["go-to", "pinned-messages"]);
+  });
+
+  it("adds the channel's settings for a reader who may change the channel", () => {
+    expect(chatHeaderMenuActions({ isGroup: false, canEditChannel: true })).toEqual([
+      "go-to",
+      "pinned-messages",
+      "channel-settings",
+    ]);
+  });
+
+  it("adds Add friends in a group, and nothing more in a one-to-one conversation", () => {
+    expect(chatHeaderMenuActions({ isGroup: true, canEditChannel: false })).toEqual([
+      "go-to",
+      "pinned-messages",
+      "add-friends-to-group",
+    ]);
+  });
+
+  it("names Go to's shortcut for screen readers", () => {
+    expect(menuItemLook("go-to").keyShortcuts).toBe("Control+K");
   });
 });

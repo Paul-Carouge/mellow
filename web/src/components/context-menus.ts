@@ -14,7 +14,8 @@ export type MenuAction =
   | ChannelMenuAction
   | CategoryMenuAction
   | ServerMenuAction
-  | GroupMenuAction;
+  | GroupMenuAction
+  | ChatHeaderMenuAction;
 
 export type MenuLine<Action extends MenuAction> = Action | "separator";
 
@@ -279,12 +280,31 @@ export function groupMenuActions(isMuted: boolean): MenuLine<GroupMenuAction>[] 
   ]);
 }
 
+// --- The phone chat header's "More options" ----------------------------------------------------
+
+export type ChatHeaderMenuAction = "go-to" | "pinned-messages" | "add-friends-to-group" | "channel-settings";
+
+export interface ChatHeaderMenuFacts {
+  readonly isGroup: boolean;
+  /** A channel is open and the reader may change at least one of its settings. */
+  readonly canEditChannel: boolean;
+}
+
+/** The header keys a phone folds away (DESIGN.md 4.5), each only where the wide header shows it. */
+export function chatHeaderMenuActions(facts: ChatHeaderMenuFacts): MenuLine<ChatHeaderMenuAction>[] {
+  return joinSections<ChatHeaderMenuAction>([
+    ["go-to", "pinned-messages", facts.isGroup && "add-friends-to-group", facts.canEditChannel && "channel-settings"],
+  ]);
+}
+
 // --- How each item reads -------------------------------------------------------------------------
 
 export interface MenuItemLook {
   readonly label: string;
   readonly icon: IconName;
   readonly tone: "normal" | "accent" | "danger";
+  /** The action's own shortcut, for screen readers (`aria-keyshortcuts`). */
+  readonly keyShortcuts?: string;
 }
 
 // Built on first use: the catalogue is not loaded yet when this module is evaluated.
@@ -334,6 +354,10 @@ const looksInReadersLanguage = (): Record<MenuAction, MenuItemLook> => ({
   mute: { label: strings.notifications.muteMenu, icon: "bell-slash", tone: "normal" },
   unmute: { label: strings.notifications.unmute, icon: "bell", tone: "normal" },
   "notification-settings": { label: strings.notifications.settingsMenu, icon: "bell", tone: "normal" },
+  "go-to": { label: strings.chat.goTo, icon: "compass", tone: "normal", keyShortcuts: "Control+K" },
+  "pinned-messages": { label: strings.pins.pinnedMessages, icon: "push-pin", tone: "normal" },
+  "add-friends-to-group": { label: strings.groups.addFriendsToGroup, icon: "user-plus", tone: "normal" },
+  "channel-settings": { label: strings.chat.channelSettings, icon: "gear-six", tone: "normal" },
 });
 
 export function menuItemLook(action: MenuAction): MenuItemLook {
