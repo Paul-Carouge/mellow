@@ -268,7 +268,7 @@
         };
   });
   // Handed to the list, which opens on the "New" divider below whatever height the bar wraps to.
-  let unreadBar = $state<HTMLElement | null>(null);
+  let unreadBarElement = $state<HTMLElement | null>(null);
 
   function markAsRead() {
     if (channelId) {
@@ -756,7 +756,7 @@
   {#if unreadBar}
     <!-- Over the list, under the header, so the rows being read do not move. -->
     <div
-      bind:this={unreadBar}
+      bind:this={unreadBarElement}
       class="unread-bar absolute inset-x-md top-[calc(var(--mw-component-chat-header-height)_+_var(--mw-space-2xs))] z-10 flex min-h-(--mw-component-jump-bar-height) items-center justify-between gap-xs rounded-(--mw-component-jump-bar-radius) bg-(--mw-component-jump-bar-background) ps-sm pe-2xs type-body font-semibold text-(--mw-component-jump-bar-text) pointer-coarse:min-h-(--mw-size-hit-web-min)"
     >
       {#if hasNavigationDrawer}
@@ -781,7 +781,7 @@
         {client}
         {channelId}
         isCompact={hasNavigationDrawer}
-        topUnreadBar={unreadBar}
+        topUnreadBar={unreadBarElement}
         currentUser={user}
         channelLabel={channel ? `#${channel.name}` : conversationName}
         heroIcon={channel ? "hash" : isGroup ? "users" : "at"}
