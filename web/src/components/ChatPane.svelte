@@ -40,6 +40,7 @@
   import IconButton from "./IconButton.svelte";
   import LazyComponent from "./LazyComponent.svelte";
   import type { ReactionAndPinActions } from "./message-actions";
+  import { MessageEditor } from "./message-editor.svelte";
   import MessageList from "./MessageList.svelte";
   import PinnedMessagesPanel from "./PinnedMessagesPanel.svelte";
   import ReactionsDialog from "./ReactionsDialog.svelte";
@@ -139,7 +140,7 @@
   } | null>(null);
   const drafts = new ComposerDrafts();
   let replyingTo = $state<Message | null>(null);
-  let editingMessageId = $state<Snowflake | null>(null);
+  const messageEditor = new MessageEditor(editTextAsSent);
   let deletingMessage = $state<Message | null>(null);
   let forwardingMessage = $state<Message | null>(null);
   /** For a message's reactions, or, without one, for the composer. */
@@ -188,7 +189,7 @@
       return;
     }
     replyingTo = null;
-    editingMessageId = null;
+    messageEditor.close();
     actionError = "";
     notice = "";
     picker = null;
@@ -199,7 +200,7 @@
   // Edits are refused where sending is.
   $effect.pre(() => {
     if (!canSendMessages) {
-      editingMessageId = null;
+      messageEditor.close();
       replyingTo = null;
     }
   });
@@ -338,15 +339,22 @@
           )
       : undefined;
     if (lastOwn) {
-      editingMessageId = lastOwn.id;
+      messageEditor.open(lastOwn);
     }
   }
 
-  async function saveEdit(message: Message, text: string) {
-    editingMessageId = null;
-    // As on send (Composer's `textAsSent`): typed ":name:" and a role's "@Name" become markup.
+  /** As on send (Composer's `textAsSent`): typed ":name:" and a role's "@Name" become markup. */
+  function editTextAsSent(text: string): string {
     const peopleNames = new Set(mentionCandidates.map((person) => person.username.toLowerCase()));
-    const trimmed = withRoleNamesAsMarkup(withEmojiNamesAsMarkup(text.trim(), serverEmojis), mentionableRoles, peopleNames);
+    return withRoleNamesAsMarkup(withEmojiNamesAsMarkup(text, serverEmojis), mentionableRoles, peopleNames);
+  }
+
+  async function saveEdit(message: Message) {
+    const text = messageEditor.takeTextToSave();
+    if (text === null) {
+      return;
+    }
+    const trimmed = editTextAsSent(text.trim());
     // Saving an empty message asks to delete it; an unchanged one is not sent again (DESIGN.md §5.5).
     if (trimmed === "") {
       deletingMessage = message;
@@ -360,6 +368,8 @@
     try {
       await client.editMessage(message, trimmed);
     } catch (error) {
+      // The typed text is not lost: the editor reopens with it, or keeps it for the next edit.
+      messageEditor.giveBack(message, text, message.channel_id === channelId && canSendMessages);
       showActionError(message.channel_id, describeError(error, strings.chat.editFailed));
     }
   }
@@ -680,17 +690,17 @@
         {canSendMessages}
         {canManageMessages}
         {reactionAndPinActions}
-        {editingMessageId}
+        {messageEditor}
         maximumEditorHeight={maximumComposerHeight}
         onreply={startReply}
         onforward={(message) => (forwardingMessage = message)}
         forwardOriginPlaceOf={(originChannelId) =>
           forwardOriginPlace(originChannelId, client.guilds, client.conversations, user.id)?.label ?? null}
         {onopenforwardorigin}
-        onstartedit={(message) => (editingMessageId = message.id)}
+        onstartedit={(message) => messageEditor.open(message)}
         onsaveedit={saveEdit}
         oncanceledit={() => {
-          editingMessageId = null;
+          messageEditor.close();
           focusComposer();
         }}
         ondelete={(message, skipConfirmation) =>

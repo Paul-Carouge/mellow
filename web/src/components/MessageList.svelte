@@ -11,6 +11,7 @@
   import { displayName, timeOfDayLabel } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
   import type { ReactionAndPinActions } from "./message-actions";
+  import type { MessageEditor } from "./message-editor.svelte";
   import type { MenuOrigin } from "./menu-placement";
   import MessageItem from "./MessageItem.svelte";
   import { memoizedMentionablePeople } from "./mentions";
@@ -43,14 +44,15 @@
     canSendMessages: boolean;
     canManageMessages: boolean;
     reactionAndPinActions: ReactionAndPinActions;
-    editingMessageId: Snowflake | null;
+    /** The inline editor, open on at most one message. */
+    messageEditor: MessageEditor;
     maximumEditorHeight: () => number;
     onreply: (message: Message) => void;
     onforward: (message: Message) => void;
     forwardOriginPlaceOf: (channelId: Snowflake) => string | null;
     onopenforwardorigin: (origin: ForwardOrigin) => void;
     onstartedit: (message: Message) => void;
-    onsaveedit: (message: Message, text: string) => void;
+    onsaveedit: (message: Message) => void;
     oncanceledit: () => void;
     ondelete: (message: Message, skipConfirmation: boolean) => void;
     oncopy: (text: string) => void;
@@ -71,7 +73,7 @@
     canSendMessages,
     canManageMessages,
     reactionAndPinActions,
-    editingMessageId,
+    messageEditor,
     maximumEditorHeight,
     onreply,
     onforward,
@@ -601,7 +603,8 @@
             {canSendMessages}
             {canManageMessages}
             {reactionAndPinActions}
-            isEditing={row.kind === "sent" && row.message.id === editingMessageId}
+            isEditing={row.kind === "sent" && row.message.id === messageEditor.messageId}
+            {messageEditor}
             isRovingTarget={row.key === rovingTargetKey}
             isMenuOpen={row.kind === "sent" && menuTarget?.message.id === row.message.id}
             onopenmenu={openMessageMenu}
