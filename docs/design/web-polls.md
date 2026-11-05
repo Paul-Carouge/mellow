@@ -28,16 +28,18 @@ Desktop (in the message column, 432 px at most)          Phone (320 px, full wid
 │ On mange où vendredi midi ?                  │          │ On mange où vendredi      │
 │ Choisis une réponse                          │          │ midi ?                    │
 │ ┌──────────────────────────────────┬───────┐ │          │ Choisis une réponse       │
-│ │░░░░░░░░░░░░░░░ ○ Pizzeria du coin│2 votes│ │          │ ┌──────────────────┬────┐ │
-│ │░░░░░░░░░░░░░░░                   │  50 % │ │          │ │░░░ ○ Pizzeria du │2 v.│ │
-│ ├──────────────────────────────────┼───────┤ │          │ │░░░   coin        │50 %│ │
-│ │▓▓▓▓▓ ● Le thaï de la rue Paul-Bert│1 vote│ │ yours:   │ └──────────────────┴────┘ │
+│ │░░░░░░░░░░░░░░░ ○ Pizzeria du coin│2 votes│ │          │ ┌───────────────────────┐ │
+│ │░░░░░░░░░░░░░░░                   │  50 % │ │          │ │░░░ ○ Pizzeria du  50 %│ │
+│ ├──────────────────────────────────┼───────┤ │          │ │░░░   coin             │ │
+│ │▓▓▓▓▓ ● Le thaï de la rue Paul-Bert│1 vote│ │ yours:   │ └───────────────────────┘ │
 │ │▓▓▓▓▓                             │  25 % │ │ apricot  │  …                        │
 │ └──────────────────────────────────┴───────┘ │ edge+fill│ 4 votes · Se termine dans │
 │ 4 votes · Se termine dans 23 heures  Retirer │          │ 23 heures                 │
 │                                    mon vote  │          │ Retirer mon vote          │
 └──────────────────────────────────────────────┘          └───────────────────────────┘
 ```
+
+Below `poll.compact-width` (360 px of card, so every phone up to 430 px), the results column keeps only the percentage, without its 56 px minimum (the voters button keeps the hit target, `size.hit-web-min` under a coarse pointer) and with `space.2xs` of inline padding, the answer's trailing padding also `space.2xs`; the vote count stays in the row's accessible description and the voters button's name (design pass WP6, 2026-11-05). At 320 px this gives an answer 111 to 128 px instead of 86 to 91: "Chacun ramène son plat, on partage en salle de réunion" goes from six lines to four, "Pizzeria du coin" from two to one.
 
 ## Design plan
 
