@@ -25,7 +25,7 @@
     /** Each resolves `true` once the instance took the change. */
     onadd?: (text: string) => Promise<boolean>;
     onrename?: (itemId: number, text: string) => Promise<boolean>;
-    onremove?: (itemId: number) => void;
+    onremove?: (itemId: number) => Promise<boolean>;
   }
 
   let { checklist, isPending = false, canTick, canEdit, nameOfUser, ontoggle, onadd, onrename, onremove }: Props =
@@ -37,6 +37,7 @@
   let isEditing = $state(false);
   let newItem = $state("");
   let newItemField = $state<HTMLInputElement | null>(null);
+  let itemList = $state<HTMLUListElement | null>(null);
 
   async function startEditing() {
     isEditing = true;
@@ -49,6 +50,16 @@
     if (text !== null && (await onadd?.(text))) {
       newItem = "";
     }
+  }
+
+  /** Focus goes to the next item's field, else the previous one, else the new-item field, as in the dialog. */
+  async function remove(itemId: number, index: number) {
+    if (!(await onremove?.(itemId))) {
+      return;
+    }
+    await tick();
+    const fields = itemList?.querySelectorAll("input") ?? [];
+    (fields[index] ?? fields[index - 1] ?? newItemField)?.focus();
   }
 
   /** On Enter or leaving the field: a blank or unchanged text keeps the item as it is. */
@@ -85,8 +96,8 @@
     />
   </div>
 
-  <ul class="flex flex-col gap-(--mw-component-poll-answer-gap)" aria-labelledby="{id}-title">
-    {#each checklist.items as item (item.id)}
+  <ul bind:this={itemList} class="flex flex-col gap-(--mw-component-poll-answer-gap)" aria-labelledby="{id}-title">
+    {#each checklist.items as item, index (item.id)}
       {@const isChecked = item.checked !== undefined}
       <li
         class={[
@@ -114,7 +125,7 @@
               label={strings.checklists.remove(item.text)}
               class="size-(--mw-size-hit-web-min) shrink-0 text-(--mw-component-poll-hint-text) hover:bg-state-hover hover:text-(--mw-component-action-bar-icon-danger-hover) focus-visible:focus-ring-inset"
               iconClass="size-(--mw-component-poll-mark-glyph-size)"
-              onclick={() => onremove?.(item.id)}
+              onclick={() => void remove(item.id, index)}
             />
           {/if}
         {:else}
@@ -123,6 +134,7 @@
             role="checkbox"
             aria-checked={isChecked}
             aria-disabled={!canTickNow || undefined}
+            aria-labelledby="{id}-text-{item.id}"
             aria-describedby={item.checked ? `${id}-by-${item.id}` : undefined}
             class={[
               "flex min-w-0 flex-1 items-center gap-(--mw-component-poll-answer-inner-gap) px-(--mw-component-poll-answer-padding-inline) py-(--mw-component-poll-answer-padding-block) text-start focus-visible:focus-ring-inset",
@@ -144,7 +156,9 @@
               {/if}
             </span>
             <span class="flex min-w-0 flex-col">
-              <span class={["type-message break-words text-(--mw-component-poll-answer-text)", isChecked && "line-through"]}
+              <span
+                id="{id}-text-{item.id}"
+                class={["type-message break-words text-(--mw-component-poll-answer-text)", isChecked && "line-through"]}
                 >{item.text}</span
               >
               {#if item.checked}

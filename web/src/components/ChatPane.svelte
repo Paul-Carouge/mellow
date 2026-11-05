@@ -661,7 +661,7 @@
         client.renameChecklistItem(message.channel_id, message.id, itemId, text),
       ),
     removeChecklistItem: (message, itemId) =>
-      void runChecklistChange(message, strings.checklists.changeFailed, () =>
+      runChecklistChange(message, strings.checklists.changeFailed, () =>
         client.removeChecklistItem(message.channel_id, message.id, itemId),
       ),
     updateProgressBar: (message) => (progressBarDialog = { message }),

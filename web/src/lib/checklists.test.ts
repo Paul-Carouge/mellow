@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { checklistProgress, newestTracker, progressPercent, withItemTick } from "./checklists";
+import { checklistProgress, liveAnnouncer, newestTracker, progressPercent, withItemTick } from "./checklists";
 import type { Checklist } from "./protocol";
 
 const checklist: Checklist = {
@@ -40,5 +40,14 @@ describe("checklists", () => {
     expect(progressPercent(995, 1000)).toBe(99);
     expect(progressPercent(7, 5)).toBe(100);
     expect(progressPercent(1, 0)).toBe(0);
+  });
+});
+
+describe("liveAnnouncer", () => {
+  it("stays quiet on the first value, then says every change, a return to the first value included", () => {
+    const announce = liveAnnouncer("1 of 3");
+    expect(announce("1 of 3")).toBe("");
+    expect(announce("2 of 3")).toBe("2 of 3");
+    expect(announce("1 of 3")).toBe("1 of 3");
   });
 });
