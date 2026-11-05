@@ -6,7 +6,7 @@
 
   // "Go to… Ctrl K" in the chat header (DESIGN.md 5.10), beside message search (5.12). It reads
   // as a field but is a button: the field itself lives in the switcher, so typing starts there.
-  // Its own header decides its form: below `trigger-collapse-width` beside the search field (a
+  // Its own header decides its form: below `COLLAPSE_BESIDE_SEARCH_FIELD` beside the search field (a
   // chat next to a docked sheet, before the topic is cut), or below the chat's minimum width beside
   // search's magnifier, it becomes a compass button, so the channel name and topic keep their room
   // and two magnifier buttons never sit side by side. Phones offer it in the chat header's menu.
@@ -18,6 +18,14 @@
 
   let { isBesideSearchField, onopen }: Props = $props();
 
+  // The chat's minimum width plus this trigger and the search field at rest: below it the topic
+  // would be cut. Focusing the field takes its extra 80 px from the topic, which truncates.
+  const COLLAPSE_BESIDE_SEARCH_FIELD = [
+    "size-chat-min-width",
+    "component-quick-switcher-trigger-width",
+    "component-search-field-width",
+  ] as const;
+
   let isCollapsed = $state(false);
 
   function followHeaderWidth(element: HTMLElement) {
@@ -26,8 +34,8 @@
       return;
     }
     const observer = new ResizeObserver(() => {
-      const collapseWidthToken = isBesideSearchField ? "component-quick-switcher-trigger-collapse-width" : "size-chat-min-width";
-      isCollapsed = header.clientWidth < lengthTokenInPixels(collapseWidthToken);
+      const collapseWidthTokens = isBesideSearchField ? COLLAPSE_BESIDE_SEARCH_FIELD : ["size-chat-min-width"];
+      isCollapsed = header.clientWidth < collapseWidthTokens.reduce((total, name) => total + lengthTokenInPixels(name), 0);
     });
     observer.observe(header);
     return () => observer.disconnect();
