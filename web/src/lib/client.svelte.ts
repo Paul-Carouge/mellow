@@ -19,7 +19,7 @@ import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
 import { CustomEmojiLibrary } from "./custom-emoji-library.svelte";
 import { reactionKey, withReactionAdded, withReactionRemoved, withoutEmoji } from "./reactions";
-import { withPollVote } from "./polls";
+import { ownVoteChangesForChoice, withPollVote } from "./polls";
 import { type MentionReader, doesMessageMentionReader } from "./reader-mentions";
 import { Relationships } from "./relationships.svelte";
 import {
@@ -41,6 +41,7 @@ import {
   type Message,
   type MessageSearchQuery,
   type MessageSearchResults,
+  type NewPoll,
   type PermissionBits,
   type PermissionOverwrite,
   type Presence,
@@ -102,6 +103,8 @@ export interface PendingMessage {
   replyToId: Snowflake | null;
   /** Uploaded already; they stay sendable for an hour (ADR-0020). */
   attachments: Attachment[];
+  /** A poll goes alone: no text, files or reply (ADR-0043). */
+  poll: NewPoll | null;
   status: "sending" | "failed";
   /** Why the last attempt failed, shown under "Not sent."; absent while sending. */
   failureReason?: string;
@@ -202,6 +205,8 @@ export class MellowClient {
   pinsByChannel = new SvelteMap<Snowflake, PinnedMessages>();
   /** `${messageId}:${emoji key}` of the user's reaction clicks still on their way. */
   private reactionsInFlight = new Set<string>();
+  /** The polls (by message id) whose vote change from this user is still on its way. */
+  private pollVotesInFlight = new Set<Snowflake>();
   /** Channels whose pins changed while their list was loading: asked again once it arrives. */
   private pinsChangedWhileLoading = new Set<Snowflake>();
   /** Servers whose members changed while their list was loading: asked again once it arrives. */
@@ -1545,6 +1550,26 @@ export class MellowClient {
       content: text,
       replyToId,
       attachments: [...attachments],
+      poll: null,
+      status: "sending",
+    };
+    this.pendingMessages = [...this.pendingMessages, pending];
+    await this.deliver(pending);
+  }
+
+  /** A poll in the open channel (ADR-0043), through the outbox like any message. */
+  async sendPoll(poll: NewPoll): Promise<void> {
+    const channelId = this.selectedChannelId;
+    if (!channelId) {
+      return;
+    }
+    const pending: PendingMessage = {
+      nonce: generateMessageNonce(),
+      channelId,
+      content: "",
+      replyToId: null,
+      attachments: [],
+      poll,
       status: "sending",
     };
     this.pendingMessages = [...this.pendingMessages, pending];
@@ -1576,6 +1601,7 @@ export class MellowClient {
         pending.nonce,
         pending.replyToId,
         pending.attachments.map((attachment) => attachment.id),
+        pending.poll,
       );
       this.pendingMessages = this.pendingMessages.filter((candidate) => candidate.nonce !== pending.nonce);
       this.takeInSentMessage(message);
@@ -1726,6 +1752,94 @@ export class MellowClient {
   async removeAllReactions(channelId: Snowflake, messageId: Snowflake): Promise<void> {
     await this.rest.removeAllReactions(channelId, messageId);
     this.updateReactions(channelId, messageId, () => []);
+  }
+
+  // --- Polls (ADR-0043) ------------------------------------------------------------------------
+
+  /**
+   * The user's choice of `answerId`: a single-choice poll moves the vote there, a multiple-choice
+   * one toggles it. Shown at once and undone if the instance refuses; the error is thrown for the
+   * caller to tell. A click while the poll's previous change is on its way is ignored, so changes
+   * cannot arrive out of order.
+   */
+  async choosePollAnswer(channelId: Snowflake, messageId: Snowflake, answerId: number): Promise<void> {
+    const poll = this.cachedPoll(channelId, messageId);
+    if (poll) {
+      await this.changeOwnPollVotes(channelId, messageId, ownVoteChangesForChoice(poll, answerId));
+    }
+  }
+
+  /** Takes back every vote of the user on this poll ("Remove my vote"). */
+  async removeOwnPollVotes(channelId: Snowflake, messageId: Snowflake): Promise<void> {
+    const poll = this.cachedPoll(channelId, messageId);
+    const changes = (poll?.answers ?? [])
+      .filter((answer) => answer.me_voted)
+      .map((answer) => ({ answerId: answer.id, change: -1 as const }));
+    await this.changeOwnPollVotes(channelId, messageId, changes);
+  }
+
+  private cachedPoll(channelId: Snowflake, messageId: Snowflake) {
+    const message =
+      this.messages(channelId).find((candidate) => candidate.id === messageId) ??
+      this.pinnedMessages(channelId).find((candidate) => candidate.id === messageId);
+    return message?.poll ?? null;
+  }
+
+  /** One request per change, in order (the removal first, as the instance moves a vote). */
+  private async changeOwnPollVotes(
+    channelId: Snowflake,
+    messageId: Snowflake,
+    changes: readonly { answerId: number; change: 1 | -1 }[],
+  ): Promise<void> {
+    if (changes.length === 0 || this.pollVotesInFlight.has(messageId)) {
+      return;
+    }
+    const applyLocally = (answerId: number, change: 1 | -1) =>
+      this.updateCachedMessage(channelId, messageId, (message) =>
+        message.poll ? { ...message, poll: withPollVote(message.poll, answerId, change, true) } : message,
+      );
+    this.pollVotesInFlight.add(messageId);
+    for (const { answerId, change } of changes) {
+      applyLocally(answerId, change);
+    }
+    let sent = 0;
+    try {
+      // A single-choice move is one PUT: the instance takes the old vote back itself.
+      const requests = changes.some((candidate) => candidate.change === 1)
+        ? changes.filter((candidate) => candidate.change === 1)
+        : changes;
+      for (const { answerId, change } of requests) {
+        await (change === 1
+          ? this.rest.addPollVote(channelId, messageId, answerId)
+          : this.rest.removePollVote(channelId, messageId, answerId));
+        sent += 1;
+      }
+    } catch (error) {
+      // Only what the instance did not take is undone: a move is one request, so all of it; a
+      // "Remove my vote" keeps the removals that went through.
+      for (const { answerId, change } of changes.slice(sent).reverse()) {
+        applyLocally(answerId, change === 1 ? -1 : 1);
+      }
+      this.reportError(error, "vote in poll");
+      throw error;
+    } finally {
+      this.pollVotesInFlight.delete(messageId);
+    }
+  }
+
+  listPollVoters(channelId: Snowflake, messageId: Snowflake, answerId: number, after?: Snowflake): Promise<PublicUser[]> {
+    return this.rest.listPollVoters(channelId, messageId, answerId, after);
+  }
+
+  /** The author ends the poll now; shown at once, and the instance's `MESSAGE_UPDATE` confirms it. */
+  async endPoll(message: Message): Promise<void> {
+    await this.rest.endPoll(message.channel_id, message.id);
+    const endedAt = Date.now();
+    this.updateCachedMessage(message.channel_id, message.id, (cached) =>
+      cached.poll && cached.poll.ended_at_unix_milliseconds === undefined
+        ? { ...cached, poll: { ...cached.poll, ended_at_unix_milliseconds: endedAt } }
+        : cached,
+    );
   }
 
   pinnedMessages(channelId: Snowflake): Message[] {

@@ -24,6 +24,7 @@ import {
   type Message,
   type MessageSearchQuery,
   type MessageSearchResults,
+  type NewPoll,
   type PermissionBits,
   type PermissionOverwrite,
   type PublicUser,
@@ -41,6 +42,8 @@ export const HISTORY_PAGE_SIZE = 50;
 export const MAXIMUM_HISTORY_PAGE_SIZE = 100;
 /** One page of "who reacted": the most the instance gives at once. */
 export const REACTING_USERS_PAGE_SIZE = 100;
+/** One page of a poll answer's voters: the most the instance gives at once (ADR-0043). */
+export const POLL_VOTERS_PAGE_SIZE = 100;
 /** The path segment of `/users/@me/{kind}` (ADR-0021). */
 export type ProfileImageKind = "avatar" | "banner";
 
@@ -384,12 +387,14 @@ export class RestClient {
     nonce: string,
     replyToId: Snowflake | null = null,
     attachmentIds: readonly Snowflake[] = [],
+    poll: NewPoll | null = null,
   ): Promise<Message> {
     const body: SendMessageRequest = {
       content,
       reply_to_id: replyToId,
       nonce,
       ...(attachmentIds.length > 0 ? { attachment_ids: [...attachmentIds] } : {}),
+      ...(poll ? { poll } : {}),
     };
     return this.request("POST", `channels/${channelId}/messages`, body);
   }
@@ -484,6 +489,29 @@ export class RestClient {
   listReactingUsers(channelId: Snowflake, messageId: Snowflake, emoji: string): Promise<PublicUser[]> {
     const query = new URLSearchParams({ limit: String(REACTING_USERS_PAGE_SIZE) });
     return this.request("GET", `${reactionsPath(channelId, messageId, emoji)}?${query}`);
+  }
+
+  /** Idempotent; a single-choice poll moves the vote here (ADR-0043). */
+  addPollVote(channelId: Snowflake, messageId: Snowflake, answerId: number): Promise<void> {
+    return this.request("PUT", `${pollAnswerPath(channelId, messageId, answerId)}/votes/@me`);
+  }
+
+  removePollVote(channelId: Snowflake, messageId: Snowflake, answerId: number): Promise<void> {
+    return this.request("DELETE", `${pollAnswerPath(channelId, messageId, answerId)}/votes/@me`);
+  }
+
+  /** Who voted for this answer, by ascending id, after `after` when given. */
+  listPollVoters(channelId: Snowflake, messageId: Snowflake, answerId: number, after?: Snowflake): Promise<PublicUser[]> {
+    const query = new URLSearchParams({ limit: String(POLL_VOTERS_PAGE_SIZE) });
+    if (after) {
+      query.set("after", after);
+    }
+    return this.request("GET", `${pollAnswerPath(channelId, messageId, answerId)}/voters?${query}`);
+  }
+
+  /** Its author ends the poll now; the instance's `MESSAGE_UPDATE` carries `ended_at`. */
+  endPoll(channelId: Snowflake, messageId: Snowflake): Promise<void> {
+    return this.request("POST", `channels/${channelId}/messages/${messageId}/poll/end`);
   }
 
   /** Searches a server's channels the user can read, or with `guildId` null their conversations. */
@@ -609,4 +637,8 @@ export function pictureCropQuery(crop: PictureCrop | null, shape: "square" | "ba
 export function generateMessageNonce(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function pollAnswerPath(channelId: Snowflake, messageId: Snowflake, answerId: number): string {
+  return `channels/${channelId}/messages/${messageId}/poll/answers/${answerId}`;
 }
