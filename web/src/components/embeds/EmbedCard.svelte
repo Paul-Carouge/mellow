@@ -15,20 +15,26 @@
     label?: string;
     /** A Short's card shrinks to its 9:16 player instead of the column's width. */
     isFitContent?: boolean;
+    /** Widens the card so its 16:9 YouTube player gets `video-player-width` when the column has room. */
+    hasVideoPlayer?: boolean;
     /** Shows "Close player" on the first line while the card's player is open. */
     onClosePlayer?: () => void;
     children: Snippet;
   }
 
-  let { barColor, siteName, label, isFitContent = false, onClosePlayer, children }: Props = $props();
+  let { barColor, siteName, label, isFitContent = false, hasVideoPlayer = false, onClosePlayer, children }: Props = $props();
 </script>
 
 <div
   role={label === undefined ? undefined : "group"}
   aria-label={label}
   class={[
-    "flex max-w-(--mw-component-link-preview-max-width) gap-(--mw-component-link-preview-gap) rounded-(--mw-component-link-preview-radius) border-(length:--mw-component-link-preview-border-width) border-(--mw-component-link-preview-border) bg-(--mw-component-link-preview-background) p-(--mw-component-link-preview-padding)",
+    "flex gap-(--mw-component-link-preview-gap) rounded-(--mw-component-link-preview-radius) border-(length:--mw-component-link-preview-border-width) border-(--mw-component-link-preview-border) bg-(--mw-component-link-preview-background) p-(--mw-component-link-preview-padding)",
     isFitContent ? "w-fit" : "w-full",
+    // The player's width plus what surrounds it in the card: padding, border, pill and gap.
+    hasVideoPlayer
+      ? "max-w-[calc(var(--mw-component-link-preview-video-player-width)+2*var(--mw-component-link-preview-padding)+2*var(--mw-component-link-preview-border-width)+var(--mw-component-link-preview-bar-width)+var(--mw-component-link-preview-gap))]"
+      : "max-w-(--mw-component-link-preview-max-width)",
   ]}
 >
   <!-- The page's colour is decoration only; without one, the quote bar's dusk. -->

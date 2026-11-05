@@ -230,6 +230,7 @@ Existing tokens stay. New ones, with their aliases:
 | `description-lines` | 3 (number) | Description clamp (today a literal `line-clamp-3`) |
 | `wikipedia-extract-lines` | 6 | Wikipedia extract clamp |
 | `short-player-width` | 270 px (16.875rem) | Width of a Short's 9:16 box (built as `short-player-max-height` × 9/16, the token that already existed) |
+| `video-player-width` | 480 px (30rem) | Added 2026-11-05 ([web-media-volume.md](web-media-volume.md)): a 16:9 YouTube player's width when the column has room, so YouTube's volume slider stays open; its card is wider than other previews |
 | `start-chip-background` | `{color.media.stage}` | Start-time chip on the poster |
 | `start-chip-text` | `{color.media.text}` | Its text (15.84:1) |
 | `start-chip-radius` | `{radius.xs}` | |

@@ -141,9 +141,13 @@ function youTubeStartSecondsOf(searchParams: URLSearchParams): number | null {
   return seconds !== null && seconds > 0 ? seconds : null;
 }
 
-/** The privacy-enhanced player (ADR-0041), allowed by the page's `frame-src`; only built after a click. */
-export function youTubeEmbedUrl(embed: YouTubeEmbed): string {
-  const parameters = new URLSearchParams({ autoplay: "1" });
+/**
+ * The privacy-enhanced player (ADR-0041), allowed by the page's `frame-src`; only built after a
+ * click. `enablejsapi` and `origin` (this page's) let the player talk to the page by
+ * `postMessage`, for the remembered volume (`embeds/youtube-player.ts`).
+ */
+export function youTubeEmbedUrl(embed: YouTubeEmbed, pageOrigin: string): string {
+  const parameters = new URLSearchParams({ autoplay: "1", enablejsapi: "1", origin: pageOrigin });
   if (embed.startSeconds !== null) {
     parameters.set("start", String(embed.startSeconds));
   }

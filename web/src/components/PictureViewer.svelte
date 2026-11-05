@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
 
   import { strings } from "../i18n";
+  import { playAtRememberedVolume } from "../lib/media-volume";
   import { type Attachment, attachmentPreviewUrl, attachmentUrl } from "../lib/protocol";
   import { forgetMediaWhenItStops, pauseOtherMediaWhenOneStarts } from "./attachment-preview";
   import { fileNameStartAndEnd, humanFileSize, messageTimestampLabel } from "./format";
@@ -342,6 +343,7 @@
                   onplay={(event) => pauseOtherMediaWhenOneStarts(event.currentTarget)}
                   onpause={(event) => forgetMediaWhenItStops(event.currentTarget)}
                   onerror={(event) => onVideoError(event, shownGeneration)}
+                  {@attach playAtRememberedVolume}
                 ></video>
               {/if}
             <!-- The list's preview, already in the cache, holds the place until the full file arrives. -->
