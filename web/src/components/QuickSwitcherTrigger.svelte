@@ -7,9 +7,9 @@
   // "Go to… Ctrl K" in the chat header (DESIGN.md 5.10), beside message search (5.12). It reads
   // as a field but is a button: the field itself lives in the switcher, so typing starts there.
   // Its own header decides its form: below `trigger-collapse-width` beside the search field (a
-  // narrow chat next to a docked sheet), or below the chat's minimum width beside search's
-  // magnifier (phones), it becomes a compass button, so the channel name keeps its room and two
-  // magnifier buttons never sit side by side.
+  // chat next to a docked sheet, before the topic is cut), or below the chat's minimum width beside
+  // search's magnifier, it becomes a compass button, so the channel name and topic keep their room
+  // and two magnifier buttons never sit side by side. Phones offer it in the chat header's menu.
   interface Props {
     /** Beside the search field it takes its content's width; alone it keeps item 12's 208 px. */
     isBesideSearchField: boolean;
