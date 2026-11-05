@@ -30,6 +30,8 @@
   } from "./gif-picker";
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
+  import { anchorEdgesOf, popoverPositionBesideAnchor } from "./popover-placement";
+  import { lengthTokenInPixels } from "./tokens";
 
   // The GIF picker (DESIGN.md §6.80, docs/design/web-gif-picker.md, ADR-0042): Klipy's search
   // field, the Favoris and Tendances tabs, then a contact sheet of GIFs in justified rows, in
@@ -140,17 +142,13 @@
     }
   }
 
-  /** Beside the button, inside the window: below it when there is room, else above. */
+  /** Beside the button, a gap away, inside the window: below it when there is room, else above. */
   function place() {
     if (isCompact) {
       return;
     }
-    const anchorBounds = anchor.getBoundingClientRect();
-    const panelBounds = panel.getBoundingClientRect();
-    const fitsBelow = anchorBounds.bottom + panelBounds.height <= window.innerHeight;
-    const top = fitsBelow ? anchorBounds.bottom : Math.max(anchorBounds.top - panelBounds.height, 0);
-    const left = Math.min(Math.max(anchorBounds.right - panelBounds.width, 0), window.innerWidth - panelBounds.width);
-    position = { top, left: Math.max(left, 0) };
+    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    position = popoverPositionBesideAnchor(anchorEdgesOf(anchor), panel.getBoundingClientRect(), viewport, lengthTokenInPixels("component-gif-picker-gap"));
   }
 
   function failureOf(error: unknown): KlipyFailure {
