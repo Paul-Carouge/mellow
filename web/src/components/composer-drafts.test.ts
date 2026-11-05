@@ -144,6 +144,20 @@ describe("ComposerDrafts", () => {
     expect(kept.uploadAbort.signal.aborted).toBe(false);
   });
 
+  it("stops a removed video's compression after its upload, so the original is not sent instead", () => {
+    const drafts = new ComposerDrafts();
+    drafts.open(GENERAL);
+    const video = drafts.attach(new File(["clip"], "clip.mov", { type: "video/quicktime" }));
+    let wasUploadAbortedFirst = false;
+    video.compressionAbort.signal.addEventListener("abort", () => {
+      wasUploadAbortedFirst = video.uploadAbort.signal.aborted;
+    });
+
+    drafts.removeTrayItem(video.key);
+
+    expect([video.compressionAbort.signal.aborted, wasUploadAbortedFirst]).toEqual([true, true]);
+  });
+
   it("aborts the open tray's uploads when cleared, and every upload when disposed", () => {
     const drafts = new ComposerDrafts();
     drafts.open(GENERAL);

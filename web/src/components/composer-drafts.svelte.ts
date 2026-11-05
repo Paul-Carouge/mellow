@@ -47,9 +47,11 @@ export class ComposerDrafts {
       file,
       previewUrl: PREVIEWABLE_IMAGE_TYPES.includes(file.type) ? URL.createObjectURL(file) : null,
       status: "uploading",
+      compressionProgress: 0,
       attachment: null,
       error: "",
       uploadAbort: new AbortController(),
+      compressionAbort: new AbortController(),
     });
     // `push` stored a proxy of the literal, not the literal itself.
     const item = this.trayItems.at(-1);
@@ -76,7 +78,7 @@ export class ComposerDrafts {
     this.trayItems = [];
   }
 
-  /** Stops every upload and frees every preview, open and aside; for when the chat goes away. */
+  /** Stops every compression and upload and frees every preview, open and aside; for when the chat goes away. */
   dispose(): void {
     letGo(this.trayItems);
     for (const draft of this.#draftsAside.values()) {
@@ -85,10 +87,12 @@ export class ComposerDrafts {
   }
 }
 
-/** Items leaving the tray: their uploads stop and their previews are freed. */
+/** Items leaving the tray: their compressions and uploads stop and their previews are freed. */
 function letGo(items: readonly AttachmentTrayItem[]): void {
   for (const item of items) {
+    // Upload first: a compression stopping with its upload still live would send the original.
     item.uploadAbort.abort();
+    item.compressionAbort.abort();
     if (item.previewUrl) {
       URL.revokeObjectURL(item.previewUrl);
     }

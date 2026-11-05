@@ -909,6 +909,9 @@ export const en = {
   attachmentTray: {
     filesToSend: "Files to send",
     uploading: "Uploading…",
+    compressing: (percent: number) => `Compressing… ${count(percent)}%`,
+    sendOriginal: "Send the original",
+    sendOriginalOf: (fileName: string) => `Send the original of ${fileName}`,
     remove: (fileName: string) => `Remove ${fileName}`,
     retry: (fileName: string) => `Retry uploading ${fileName}`,
   },

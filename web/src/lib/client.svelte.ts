@@ -232,7 +232,10 @@ export class MellowClient {
   /** Klipy's key and this member's customer id (ADR-0042); null while unknown or when the instance has no GIFs. */
   gifSettings = $state<GifSettings | null>(null);
   /** `Ready.maximum_attachment_bytes`; null with servers that predate it, whose upload answer tells. */
-  private maximumAttachmentBytes: number | null = null;
+  private readyMaximumAttachmentBytes: number | null = null;
+  get maximumAttachmentBytes(): number | null {
+    return this.readyMaximumAttachmentBytes;
+  }
 
   /** Who is in which voice channel, by user (one connection each, ADR-0030), in join order. */
   voiceStatesByUserId = new SvelteMap<Snowflake, VoiceState>();
@@ -504,7 +507,7 @@ export class MellowClient {
     this.hasReceivedReady = true;
     this.user = ready.user;
     this.mayCreateGuilds = ready.may_create_guilds ?? true;
-    this.maximumAttachmentBytes = ready.maximum_attachment_bytes ?? null;
+    this.readyMaximumAttachmentBytes = ready.maximum_attachment_bytes ?? null;
     if (this.gifSettings === null) {
       void this.loadGifSettings(ready.user.id);
     }
