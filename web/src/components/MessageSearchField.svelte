@@ -32,9 +32,11 @@
     /** In the chat header (grows on focus) or at the top of the results sheet. */
     placement: "header" | "sheet";
     onopenquickswitcher: () => void;
+    /** The field got focus: a search may follow. */
+    onfocus?: () => void;
   }
 
-  let { client, search, placement, onopenquickswitcher }: Props = $props();
+  let { client, search, placement, onopenquickswitcher, onfocus }: Props = $props();
 
   const KEY_ICONS: Record<SearchFilterKey, IconName> = {
     from: "pencil-simple",
@@ -280,6 +282,7 @@
       }}
       onclick={noteCaret}
       onfocus={() => {
+        onfocus?.();
         hasFocus = true;
         noteCaret();
       }}

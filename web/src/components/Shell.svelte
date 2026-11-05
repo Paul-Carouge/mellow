@@ -33,7 +33,6 @@
   import { readMemberSheetPlaceIds, writeMemberSheetPlaceIds } from "./member-sheet-places";
   import { MessageSearch } from "./message-search.svelte";
   import MessageSearchField from "./MessageSearchField.svelte";
-  import MessageSearchPanel from "./MessageSearchPanel.svelte";
   import Navigator from "./Navigator.svelte";
   import {
     closeNotificationDialog,
@@ -139,6 +138,13 @@
   // results take the side sheet's place; the members come back when it closes.
   const messageSearch = new MessageSearch((guildId, query) => client.searchMessages(guildId, query));
   $effect(() => messageSearch.setScope(client.selectedGuildId));
+  // The results panel is its own chunk, fetched as soon as the header field gets focus, so it is
+  // there by the time the first results come back. One promise, so opening can wait for it.
+  let messageSearchPanelLoading: Promise<typeof import("./MessageSearchPanel.svelte")> | null = null;
+  function loadMessageSearchPanel() {
+    messageSearchPanelLoading ??= import("./MessageSearchPanel.svelte");
+    return messageSearchPanelLoading;
+  }
   const isSearchDocked = $derived(messageSearch.isPanelOpen && hasRoomForSearchSheet.current);
   const isSearchOverlayOpen = $derived(messageSearch.isPanelOpen && !hasRoomForSearchSheet.current);
   /** The result being opened, while its page loads. */
@@ -383,9 +389,9 @@
 
   async function openSearchSheet() {
     messageSearch.isPanelOpen = true;
-    // After the drawer has put focus on itself.
+    // After the drawer has put focus on itself; the panel's field may still be loading.
     await tick();
-    messageSearch.focusField();
+    messageSearch.focusFieldOnceShown();
   }
 
   /** The close button: the search ends and its field empties. */
@@ -562,7 +568,13 @@
        message search (Ctrl F). -->
   <QuickSwitcherTrigger isBesideSearchField={hasRoomForSearchSheet.current} onopen={() => (isQuickSwitcherOpen = true)} />
   {#if hasRoomForSearchSheet.current}
-    <MessageSearchField {client} search={messageSearch} placement="header" onopenquickswitcher={openQuickSwitcherFromSearch} />
+    <MessageSearchField
+      {client}
+      search={messageSearch}
+      placement="header"
+      onopenquickswitcher={openQuickSwitcherFromSearch}
+      onfocus={() => void loadMessageSearchPanel()}
+    />
   {:else}
     <IconButton
       icon="magnifying-glass"
@@ -578,17 +590,21 @@
 {/snippet}
 
 {#snippet searchPanel(isDocked: boolean)}
-  <MessageSearchPanel
-    {client}
-    search={messageSearch}
-    {isDocked}
-    isFullWindow={!isDocked && !hasRoomForNavigator.current}
-    {openingMessageId}
-    notice={searchNotice}
-    onopenresult={(hit) => void openSearchResult(hit)}
-    onclose={() => void closeSearch()}
-    onopenquickswitcher={openQuickSwitcherFromSearch}
-  />
+  <LazyComponent load={loadMessageSearchPanel} onclose={() => void closeSearch()}>
+    {#snippet children({ default: MessageSearchPanel })}
+      <MessageSearchPanel
+        {client}
+        search={messageSearch}
+        {isDocked}
+        isFullWindow={!isDocked && !hasRoomForNavigator.current}
+        {openingMessageId}
+        notice={searchNotice}
+        onopenresult={(hit) => void openSearchResult(hit)}
+        onclose={() => void closeSearch()}
+        onopenquickswitcher={openQuickSwitcherFromSearch}
+      />
+    {/snippet}
+  </LazyComponent>
 {/snippet}
 
 {#snippet navigator(isInDrawer: boolean)}
