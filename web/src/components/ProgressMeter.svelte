@@ -1,6 +1,8 @@
 <script lang="ts">
   import { untrack } from "svelte";
 
+  import { liveAnnouncer } from "../lib/checklists";
+
   // The level of a checklist or a progress bar (docs/design/web-checklists-and-progress.md,
   // ADR-0047): a `progressbar` named by its card's heading, a track filled from its leading side
   // in the poll level's colour, and its figure. A change is also said in a polite live region,
@@ -20,8 +22,8 @@
 
   let { labelledBy, value, maximum, percent, figure, spoken }: Props = $props();
 
-  const firstSpoken = untrack(() => spoken);
-  const announcement = $derived(spoken === firstSpoken ? "" : spoken);
+  const announce = liveAnnouncer(untrack(() => spoken));
+  const announcement = $derived(announce(spoken));
 </script>
 
 <div class="flex items-center gap-(--mw-component-poll-answer-inner-gap)">

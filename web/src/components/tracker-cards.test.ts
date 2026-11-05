@@ -29,6 +29,17 @@ describe("the checklist card", () => {
     expect(html).not.toContain(strings.checklists.edit);
   });
 
+  it("names each checkbox by its text alone, and describes it by who ticked it", () => {
+    const html = render(ChecklistCard, {
+      props: { checklist, canTick: true, canEdit: false, nameOfUser: () => "Ada" },
+    }).body;
+    const ticked = html.match(/role="checkbox"[^>]*aria-labelledby="([^"]+)"[^>]*aria-describedby="([^"]+)"/);
+    expect(ticked).not.toBeNull();
+    const [, labelId, descriptionId] = ticked!;
+    expect(html).toMatch(new RegExp(`id="${labelId}"[^>]*>Tag<`));
+    expect(html).toMatch(new RegExp(`id="${descriptionId}"[^>]*>\\s*<time`));
+  });
+
   it("offers editing to its author or moderators, and nothing to press while pending", () => {
     const editable = render(ChecklistCard, {
       props: { checklist, canTick: true, canEdit: true, nameOfUser: () => "Ada" },

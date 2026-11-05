@@ -45,3 +45,15 @@ export function checklistProgress(checklist: Checklist): { done: number; total: 
 export function progressPercent(value: number, maximum: number): number {
   return maximum > 0 ? Math.floor((Math.min(Math.max(value, 0), maximum) * 100) / maximum) : 0;
 }
+
+/**
+ * What a level's live region says (ADR-0047): nothing for the first value, so a page of history
+ * stays quiet, then every new value, a return to the first one included.
+ */
+export function liveAnnouncer(firstSpoken: string): (spoken: string) => string {
+  let hasChanged = false;
+  return (spoken) => {
+    hasChanged ||= spoken !== firstSpoken;
+    return hasChanged ? spoken : "";
+  };
+}

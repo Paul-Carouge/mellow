@@ -57,7 +57,7 @@ function renderedEditingRow(editor: MessageEditor): string {
         toggleChecklistItem: ignore,
         addChecklistItem: () => Promise.resolve(false),
         renameChecklistItem: () => Promise.resolve(false),
-        removeChecklistItem: ignore,
+        removeChecklistItem: () => Promise.resolve(false),
         updateProgressBar: ignore,
       },
       isEditing: editor.messageId === MESSAGE.id,

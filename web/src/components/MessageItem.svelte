@@ -537,7 +537,7 @@
       ontoggle={(itemId) => message && actions.toggleChecklistItem(message, itemId)}
       onadd={(text) => (message ? actions.addChecklistItem(message, text) : Promise.resolve(false))}
       onrename={(itemId, text) => (message ? actions.renameChecklistItem(message, itemId, text) : Promise.resolve(false))}
-      onremove={(itemId) => message && actions.removeChecklistItem(message, itemId)}
+      onremove={(itemId) => (message ? actions.removeChecklistItem(message, itemId) : Promise.resolve(false))}
     />
     {#if message}
       {@render reactionsOf(message)}

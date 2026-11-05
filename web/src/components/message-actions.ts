@@ -35,6 +35,6 @@ export interface ReactionAndPinActions {
   /** Each resolves `true` once the instance took the change; a refusal is shown by the pane. */
   addChecklistItem: (message: Message, text: string) => Promise<boolean>;
   renameChecklistItem: (message: Message, itemId: number, text: string) => Promise<boolean>;
-  removeChecklistItem: (message: Message, itemId: number) => void;
+  removeChecklistItem: (message: Message, itemId: number) => Promise<boolean>;
   updateProgressBar: (message: Message) => void;
 }
