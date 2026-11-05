@@ -155,7 +155,7 @@
           id="register-username"
           label={strings.signIn.username}
           autocomplete="username"
-          autocapitalize="none"
+          autocapitalize="words"
           spellcheck={false}
           helper={strings.signIn.usernameHelper}
           error={fieldErrors.get("register-username")}

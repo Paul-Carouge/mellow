@@ -330,7 +330,9 @@ fn apply_filter(parsed: &mut ParsedSearchQuery, token: &str) -> bool {
     }
     match key.to_lowercase().as_str() {
         "from" | "mentions" => {
-            let username = value.trim_start_matches('@').to_lowercase();
+            // Compared by the folded key of names (ADR-0048), so "from:elodie" finds Élodie.
+            let username =
+                crate::domain::account_names::account_name_key(value.trim_start_matches('@'));
             if username.is_empty() {
                 return false;
             }

@@ -22,6 +22,7 @@ import {
   type Invite,
   type Member,
   type Message,
+  type NameAvailability,
   type MessageSearchQuery,
   type MessageSearchResults,
   type Checklist,
@@ -50,6 +51,9 @@ export const REACTING_USERS_PAGE_SIZE = 100;
 export const POLL_VOTERS_PAGE_SIZE = 100;
 /** The path segment of `/users/@me/{kind}` (ADR-0021). */
 export type ProfileImageKind = "avatar" | "banner";
+
+/** Who a friend request is for: an account's name (any case), or its friend code (ADR-0048). */
+export type FriendRequestTarget = { readonly username: string } | { readonly friend_code: string };
 
 /** What `POST /guilds/{id}/invites` accepts: up to 10 000 uses and 30 days, `null` for no limit. */
 export interface InviteLimits {
@@ -141,9 +145,11 @@ export class RestClient {
     });
   }
 
-  register(username: string, email: string, password: string): Promise<SessionCreated> {
+  /** `username` is only the deprecated alias of the name (ADR-0048). */
+  register(name: string, email: string, password: string): Promise<SessionCreated> {
     return this.request<SessionCreated>("POST", "auth/register", {
-      username,
+      username: name,
+      display_name: name,
       email,
       password,
       device_name: DEVICE_NAME,
@@ -158,13 +164,14 @@ export class RestClient {
     return this.request("GET", "users/@me");
   }
 
-  /** Absent fields stay unchanged; a new username needs the current password. */
-  updateCurrentUser(changes: {
-    display_name?: string;
-    username?: string;
-    current_password?: string;
-  }): Promise<CurrentUser> {
+  /** Renames the account; `USERNAME_TAKEN` when another account has the name (ADR-0048). */
+  updateCurrentUser(changes: { display_name: string }): Promise<CurrentUser> {
     return this.request("PATCH", "users/@me", changes);
+  }
+
+  /** Whether the signed-in user could take `name`; `VALIDATION_FAILED` when it breaks the rules. */
+  nameAvailability(name: string): Promise<NameAvailability> {
+    return this.request("GET", `users/name-availability?name=${encodeURIComponent(name)}`);
   }
 
   /** Replaces both; a blank or absent custom status clears it. */
@@ -647,8 +654,8 @@ export class RestClient {
   }
 
   /** Asks them to be friends, or accepts their request; a missing account or a block is `NOT_FOUND`. */
-  sendFriendRequest(username: string): Promise<Relationship> {
-    return this.request("POST", "users/@me/relationships", { username });
+  sendFriendRequest(target: FriendRequestTarget): Promise<Relationship> {
+    return this.request("POST", "users/@me/relationships", target);
   }
 
   /** `friend` accepts their request; `blocked` blocks them. */

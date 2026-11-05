@@ -3,7 +3,7 @@
 // `npm run check` type-checks every sample against protocol.ts; protocol.test.ts compares
 // the constants and permission bits.
 
-import type { ApiErrorCode, Attachment, AuditAction, AuditChange, AuditLogEntry, Ban, Channel, ChannelKind, ChannelPlacement, ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel, GatewayEvent, GifSettings, GitHubIssueState, Guild, GuildInvite, InitialCategory, Invite, LinkEmbed, Member, Message, MessageReaction, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicItem, MusicProvider, PermissionOverwrite, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer, SoundboardSound, TwitchItem, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal } from "./protocol";
+import type { ApiErrorCode, Attachment, AuditAction, AuditChange, AuditLogEntry, Ban, Channel, ChannelKind, ChannelPlacement, ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel, GatewayEvent, GifSettings, GitHubIssueState, Guild, GuildInvite, InitialCategory, Invite, LinkEmbed, Member, Message, MessageReaction, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicItem, MusicProvider, NameAvailability, PermissionOverwrite, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer, SoundboardSound, TwitchItem, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal } from "./protocol";
 
 /** `true` only when every member of `Union` has a sample. */
 type HasEveryMember<Union, Sampled> = [Exclude<Union, Sampled>] extends [never] ? true : false;
@@ -35,6 +35,7 @@ export const currentUserSamples = [
     "custom_status": "Writing notes",
     "display_name": "Ada",
     "email": "ada@example.org",
+    "friend_code": "LD0A-0DA8",
     "id": "10",
     "is_instance_administrator": true,
     "status": "do_not_disturb",
@@ -49,6 +50,12 @@ export const currentUserSamples = [
     "username": "ada"
   }
 ] satisfies CurrentUser[];
+
+export const nameAvailabilitySamples = [
+  {
+    "is_available": true
+  }
+] satisfies NameAvailability[];
 
 export const chosenStatusSamples = [
   "online",
@@ -136,6 +143,7 @@ export const sessionCreatedSamples = [
       "custom_status": "Writing notes",
       "display_name": "Ada",
       "email": "ada@example.org",
+      "friend_code": "LD0A-0DA8",
       "id": "10",
       "is_instance_administrator": true,
       "status": "do_not_disturb",
@@ -1313,6 +1321,7 @@ export const readySamples = [
       "custom_status": "Writing notes",
       "display_name": "Ada",
       "email": "ada@example.org",
+      "friend_code": "LD0A-0DA8",
       "id": "10",
       "is_instance_administrator": true,
       "status": "do_not_disturb",
@@ -2577,6 +2586,7 @@ export const serverFrameSamples = [
         "custom_status": "Writing notes",
         "display_name": "Ada",
         "email": "ada@example.org",
+        "friend_code": "LD0A-0DA8",
         "id": "10",
         "is_instance_administrator": true,
         "status": "do_not_disturb",

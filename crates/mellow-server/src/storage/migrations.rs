@@ -38,6 +38,8 @@ pub enum MigrationError {
          first, it migrates the database"
     )]
     Pending { count: usize },
+    #[error("cannot give older accounts their unique name and friend code")]
+    AccountNames(#[source] Box<crate::storage::accounts::AccountStorageError>),
 }
 
 /// What happened, for the startup log line.
@@ -73,6 +75,17 @@ pub async fn migrate_with_backup(
         _ => None,
     };
     MIGRATOR.run(pool).await?;
+    // Migration 0041's data half: SQLite cannot fold Unicode names (ADR-0048).
+    let named_accounts =
+        crate::storage::account_names::give_names_and_friend_codes_to_older_accounts(database)
+            .await
+            .map_err(|error| MigrationError::AccountNames(Box::new(error)))?;
+    if named_accounts > 0 {
+        tracing::warn!(
+            named_accounts,
+            "accounts given a unique name and a friend code"
+        );
+    }
     Ok(MigrationOutcome {
         applied_versions: pending_versions,
         backup_path,
@@ -2361,6 +2374,151 @@ mod tests {
         assert!(shown.iter().all(|preview| preview.embed.is_none()));
         assert_eq!(embeds, [None, None, None]);
         assert!(invalid.is_err(), "the column only holds JSON");
+    }
+
+    /// The owner's instance shape: a few dozen accounts, accented names, names shared in another
+    /// case or accent, emoji, a disabled account, an old username that is the reserved word.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // The accounts and what each becomes, side by side.
+    async fn older_accounts_keep_their_name_when_free_oldest_first_and_all_get_a_friend_code() {
+        const LAST_VERSION_BEFORE_UNIQUE_NAMES: i64 = 40;
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_BEFORE_UNIQUE_NAMES, database.writer())
+            .await
+            .unwrap();
+        // (id, created at, username, display name, name expected after the migration)
+        let mut accounts: Vec<(i64, i64, String, String, String)> = [
+            (1, 100, "paul", "Paul Carouge", "Paul Carouge"),
+            (2, 200, "elodie", "Élodie", "Élodie 2"),
+            (3, 150, "elo", "elodie", "elodie"),
+            (4, 300, "aurore", "Aurore 🌸", "Aurore"),
+            (5, 310, "aurore.b", "aurore", "aurore 2"),
+            (6, 320, "flower", "🌸🌸", "flower"),
+            (7, 330, "flower2", "flower", "flower 2"),
+            (8, 340, "twin.a", "Twin", "Twin"),
+            (9, 340, "twin.b", "TWIN", "TWIN 2"),
+            (10, 340, "twin.c", "twïn", "twïn 3"),
+            (11, 350, "everyone", "Everyone", "everyone 1"),
+            (12, 360, "ghost", "Paul Carouge", "Paul Carouge 2"),
+            (13, 370, "jp", "Jean-Paul (admin)", "Jean-Paul admin"),
+            (
+                14,
+                380,
+                "long",
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef",
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef",
+            ),
+            (
+                15,
+                390,
+                "long2",
+                "abcdefghijklmnopqrstuvwxyzabcdef",
+                "abcdefghijklmnopqrstuvwxyzabcd 2",
+            ),
+        ]
+        .into_iter()
+        .map(|(id, created_at, username, display_name, expected)| {
+            (
+                id,
+                created_at,
+                username.into(),
+                display_name.into(),
+                expected.into(),
+            )
+        })
+        .collect();
+        for number in 16..=40 {
+            accounts.push((
+                number,
+                400 + number,
+                format!("member{number}"),
+                format!("Membre {number}"),
+                format!("Membre {number}"),
+            ));
+        }
+        for (id, created_at, username, display_name, _) in &accounts {
+            sqlx::query(
+                "INSERT INTO users (id, username, display_name, email, password_hash, \
+                 created_at_unix_milliseconds) VALUES (?, ?, ?, ?, 'x', ?)",
+            )
+            .bind(id)
+            .bind(username)
+            .bind(display_name)
+            .bind(format!("{username}@example.org"))
+            .bind(created_at)
+            .execute(database.writer())
+            .await
+            .unwrap();
+        }
+        sqlx::query("UPDATE users SET disabled_at_unix_milliseconds = 1 WHERE id = 12")
+            .execute(database.writer())
+            .await
+            .unwrap();
+
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let read_rows = || async {
+            sqlx::query_as::<_, (i64, String, String, String, i64)>(
+                "SELECT id, username, display_name, name_key, friend_code FROM users ORDER BY id",
+            )
+            .fetch_all(database.writer())
+            .await
+            .unwrap()
+        };
+        let rows = read_rows().await;
+        let given_again =
+            crate::storage::account_names::give_names_and_friend_codes_to_older_accounts(&database)
+                .await
+                .unwrap();
+        let rows_after_a_restart = read_rows().await;
+        let found_by_folded_name = crate::storage::accounts::find_user_by_login(
+            &database,
+            &crate::domain::account_names::account_name_key("ÉLODIE"),
+            "ÉLODIE",
+        )
+        .await
+        .unwrap()
+        .map(|user| user.id.raw());
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "EXPLAIN QUERY PLAN SELECT id FROM users WHERE name_key = 'x' OR email = 'x'",
+        )
+        .fetch_all(database.writer())
+        .await
+        .unwrap();
+        let plan: Vec<String> = plan.into_iter().map(|row| row.3).collect();
+        database.close().await;
+
+        assert_eq!(rows.len(), accounts.len());
+        for ((id, username, display_name, name_key, friend_code), account) in
+            rows.iter().zip(&accounts)
+        {
+            assert_eq!(*id, account.0);
+            assert_eq!(display_name, &account.4, "account {id}");
+            assert_eq!(username, display_name, "the deprecated username follows");
+            assert_eq!(
+                name_key,
+                &crate::domain::account_names::account_name_key(display_name)
+            );
+            assert!((0..1_i64 << 40).contains(friend_code));
+        }
+        let keys: std::collections::HashSet<_> = rows.iter().map(|row| &row.3).collect();
+        let codes: std::collections::HashSet<_> = rows.iter().map(|row| row.4).collect();
+        assert_eq!((keys.len(), codes.len()), (rows.len(), rows.len()));
+        assert_eq!(given_again, 0);
+        assert_eq!(
+            rows_after_a_restart, rows,
+            "names and codes never change again"
+        );
+        assert_eq!(found_by_folded_name, Some(3));
+        assert!(
+            plan.iter().all(|line| !line.starts_with("SCAN")),
+            "sign-in reads two indexes: {plan:?}"
+        );
     }
 
     #[tokio::test]

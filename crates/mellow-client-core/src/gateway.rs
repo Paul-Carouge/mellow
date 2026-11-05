@@ -371,6 +371,7 @@ mod tests {
                     banner: None,
                     status: mellow_protocol::ChosenStatus::Online,
                     custom_status: None,
+                    friend_code: None,
                 },
                 guilds: Vec::new(),
                 read_states: Vec::new(),

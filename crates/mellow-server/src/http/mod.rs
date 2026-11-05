@@ -186,6 +186,10 @@ fn account_router() -> Router<AppState> {
             get(account_routes::current_user).patch(account_routes::update_current_user),
         )
         .route(
+            "/api/v1/users/name-availability",
+            get(account_routes::name_availability),
+        )
+        .route(
             "/api/v1/users/@me/password",
             post(account_routes::change_password),
         )

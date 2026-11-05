@@ -2,9 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const MINIMUM_USERNAME_LENGTH: usize = 2;
-pub const MAXIMUM_USERNAME_LENGTH: usize = 32;
-pub const MAXIMUM_DISPLAY_NAME_LENGTH: usize = 32;
 /// RFC 5321 limit for a forward path.
 pub const MAXIMUM_EMAIL_LENGTH: usize = 254;
 /// NIST SP 800-63B: at least 8 characters; we ask for 10 since there is no breach-list check yet.
@@ -13,7 +10,7 @@ pub const MINIMUM_PASSWORD_LENGTH: usize = 10;
 pub const MAXIMUM_PASSWORD_LENGTH: usize = 256;
 pub const MAXIMUM_DEVICE_NAME_LENGTH: usize = 64;
 pub const MAXIMUM_CUSTOM_STATUS_LENGTH: usize = 128;
-/// A login is a username or an email address, so the longer of the two bounds it.
+/// A login is a name or an email address, so the longer of the two bounds it.
 pub const MAXIMUM_LOGIN_LENGTH: usize = MAXIMUM_EMAIL_LENGTH;
 
 /// Who may create an account on this instance (ADR-0005).
@@ -50,14 +47,8 @@ impl GuildCreationPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AccountRuleViolation {
-    #[error(
-        "usernames are {MINIMUM_USERNAME_LENGTH} to {MAXIMUM_USERNAME_LENGTH} characters: lowercase letters, digits, `_` and `.`, without `..`"
-    )]
-    InvalidUsername,
-    #[error(
-        "display names are 1 to {MAXIMUM_DISPLAY_NAME_LENGTH} characters, without control characters"
-    )]
-    InvalidDisplayName,
+    #[error("names are 2 to 32 characters: letters, digits, spaces, `_`, `.` and `-` (ADR-0048)")]
+    InvalidAccountName,
     #[error("this does not look like an email address")]
     InvalidEmail,
     #[error("passwords are {MINIMUM_PASSWORD_LENGTH} to {MAXIMUM_PASSWORD_LENGTH} characters")]
@@ -72,34 +63,6 @@ pub enum AccountRuleViolation {
         "custom statuses are up to {MAXIMUM_CUSTOM_STATUS_LENGTH} characters, without control characters"
     )]
     InvalidCustomStatus,
-}
-
-/// Discord-style usernames: lowercase so they are unambiguous when typed or mentioned.
-///
-/// # Errors
-/// `InvalidUsername` when the rules above are not met.
-pub fn validate_username(username: &str) -> Result<(), AccountRuleViolation> {
-    let length = username.chars().count();
-    let has_allowed_characters = username.bytes().all(|byte| {
-        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'.'
-    });
-    if (MINIMUM_USERNAME_LENGTH..=MAXIMUM_USERNAME_LENGTH).contains(&length)
-        && has_allowed_characters
-        && !username.contains("..")
-    {
-        Ok(())
-    } else {
-        Err(AccountRuleViolation::InvalidUsername)
-    }
-}
-
-/// Trims surrounding whitespace and returns the display name to store.
-///
-/// # Errors
-/// `InvalidDisplayName` when empty, too long or containing control characters.
-pub fn normalize_display_name(display_name: &str) -> Result<String, AccountRuleViolation> {
-    normalize_short_text(display_name, MAXIMUM_DISPLAY_NAME_LENGTH)
-        .ok_or(AccountRuleViolation::InvalidDisplayName)
 }
 
 /// # Errors
@@ -238,46 +201,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn usernames_follow_discord_style_rules() {
-        for valid in ["ab", "paul.carouge", "user_42", &"a".repeat(32)] {
-            assert_eq!(validate_username(valid), Ok(()), "{valid}");
-        }
-        for invalid in [
-            "a",
-            "Paul",
-            "paul carouge",
-            "élise",
-            "a..b",
-            "a-b",
-            &"a".repeat(33),
-            "",
-        ] {
-            assert_eq!(
-                validate_username(invalid),
-                Err(AccountRuleViolation::InvalidUsername),
-                "{invalid}"
-            );
-        }
-    }
-
-    #[test]
-    fn display_and_device_names_are_trimmed_and_bounded() {
-        assert_eq!(normalize_display_name("  Élise  ").unwrap(), "Élise");
-        assert!(normalize_display_name("   ").is_err());
-        assert!(normalize_display_name("a\u{0007}b").is_err());
-        assert!(normalize_display_name(&"é".repeat(33)).is_err());
-        for hidden in [
-            "\u{202E}nimda",
-            "\u{3164}",
-            "ab\u{E0041}",
-            "x\u{FE0F}",
-            "\u{2800}\u{2800}",
-            "Aur\u{200B}ore",
-            "\u{FEFF}Basile",
-            "Chlo\u{2066}é",
-        ] {
-            assert!(normalize_display_name(hidden).is_err(), "{hidden:?}");
-        }
+    fn device_names_are_trimmed_and_bounded() {
+        assert!(normalize_device_name("   ").is_err());
+        assert!(normalize_device_name("a\u{0007}b").is_err());
+        assert!(normalize_device_name("Aur\u{200B}ore").is_err());
         assert_eq!(
             normalize_device_name("Paul's MacBook").unwrap(),
             "Paul's MacBook"

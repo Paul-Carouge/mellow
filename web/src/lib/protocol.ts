@@ -15,6 +15,7 @@ export interface ProfileImage {
 
 export interface CurrentUser {
   id: Snowflake;
+  /** Deprecated alias of `display_name`, the account's unique name (ADR-0048). */
   username: string;
   display_name: string;
   email: string;
@@ -25,6 +26,13 @@ export interface CurrentUser {
   /** Absent from older servers, which only knew "online". */
   status?: ChosenStatus;
   custom_status?: string | null;
+  /** `XXXX-XXXX`, permanent, sent only to its owner (ADR-0048); absent from older servers. */
+  friend_code?: string | null;
+}
+
+/** `GET /users/name-availability?name=`: never says who holds a taken name (ADR-0048). */
+export interface NameAvailability {
+  is_available: boolean;
 }
 
 /** The status a user picks for themselves (`PUT /users/@me/presence`). Others see "invisible" as offline. */
