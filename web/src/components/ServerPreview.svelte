@@ -25,7 +25,8 @@
   class="flex max-h-(--mw-component-server-preview-max-height) overflow-hidden rounded-(--mw-component-server-preview-radius) border-(length:--mw-component-server-preview-border-width) border-(--mw-component-server-preview-border) bg-(--mw-component-server-preview-background)"
 >
   <!-- The strip: the new server, selected, with the apricot pill. -->
-  <div class="relative flex w-(--mw-component-navigator-strip-width) shrink-0 justify-center pt-(--mw-component-rail-padding-top)">
+  <!-- Padded below too: with no channels (the overview page), the strip alone sets the height. -->
+  <div class="relative flex w-(--mw-component-navigator-strip-width) shrink-0 justify-center py-(--mw-component-rail-padding-top)">
     <span
       class="absolute start-0 top-[calc(var(--mw-component-rail-padding-top)+(var(--mw-component-rail-item-size)-var(--mw-component-rail-pill-height-selected))/2)] h-(--mw-component-rail-pill-height-selected) w-(--mw-component-rail-pill-width) -translate-x-1/2 rounded-full bg-(--mw-component-rail-pill-color-selected)"
     ></span>
