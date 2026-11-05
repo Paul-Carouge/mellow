@@ -16,7 +16,7 @@ ROADMAP item 18 asks for link previews (plain pages, YouTube, Spotify, YouTube M
 - **The fetcher refuses the instance's own network**:
   - only `http` and `https` on ports 80 and 443; no credentials in links; no proxy from the environment, no cookies;
   - the server resolves the name itself and connects only if every address is public: loopback, private, link-local, carrier-grade NAT, multicast, broadcast, documentation, benchmarking, reserved and unspecified ranges are refused in IPv4 and IPv6, and IPv4 inside IPv6 (mapped, compatible, NAT64) is checked as IPv4. The connection goes to the checked address, so a second DNS answer cannot swap it;
-  - redirects are followed by hand, at most 3, each checked again (scheme, port, addresses);
+  - redirects are followed by hand, at most 5 (3 until the 2026-11-05 amendment), each checked again (scheme, port, addresses);
   - 3 seconds to connect, 8 seconds per fetch (redirects and body included), 30 seconds per message for its links and pictures together, at most 1 MiB of a page read (the head is enough), only `text/html` and `application/xhtml+xml` parsed, off the async threads and in linear time on hostile markup;
   - links found before the send lock, in linear time on hostile text;
   - a bounded queue (256 messages; a full queue drops the message, which simply gets no preview) and 2 jobs at a time for the whole instance, plus the existing image processing permits; running jobs stop with the server.
@@ -36,3 +36,6 @@ ROADMAP item 18 asks for link previews (plain pages, YouTube, Spotify, YouTube M
 - **The sender's browser fetches and sends the preview**: CORS again, and a sender could forge any title and picture for any link.
 - **An external preview service** (iframely, a self-hosted proxy): one more thing to install or trust, against the one-binary promise.
 - **An HTML5 parser crate**: a full parser for a few `<meta>` tags; a bounded reader of the head is enough and keeps the dependency list as it is.
+
+## Amendment (2026-11-05): five redirects
+A Shorts link shared from YouTube's app (`youtube.com/shorts/<id>?si=…`) reached from some servers' addresses goes through YouTube's consent page and back, four redirects, so the fetcher gave up and the link got no card and no player. The fetcher now follows at most 5 redirects. Each one is still checked like the first (scheme, port, credentials, every resolved address, Klipy), and the whole fetch keeps its single 8-second budget, so the extra hops add no reach and no time.

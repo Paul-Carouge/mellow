@@ -13,7 +13,8 @@ use super::public_addresses::{AddressPolicy, PublicAddressResolver};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// The whole fetch of one page or picture, redirects included.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
-const MAXIMUM_REDIRECTS: usize = 3;
+// YouTube sends some servers through its consent page and back, four hops for a Shorts link.
+const MAXIMUM_REDIRECTS: usize = 5;
 /// The head of a page is enough; a longer page is read up to here and parsed as it is.
 const MAXIMUM_PAGE_BYTES: usize = 1024 * 1024;
 pub(crate) const MAXIMUM_PICTURE_BYTES: usize = 8 * 1024 * 1024;
@@ -273,6 +274,7 @@ async fn read_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::response::IntoResponse;
 
     #[test]
     fn only_public_default_port_web_links_without_credentials_are_allowed() {
@@ -331,6 +333,57 @@ mod tests {
         assert!(
             matches!(picture, Err(FetchError::NotAllowed)),
             "a page's picture too"
+        );
+    }
+
+    /// A site answering `/hop/<n>` with a redirect to `/hop/<n - 1>`, and a page at `/hop/0`.
+    async fn serve_redirect_chain() -> std::net::SocketAddr {
+        let site = axum::Router::new().route(
+            "/hop/{remaining}",
+            axum::routing::get(
+                |axum::extract::Path(remaining): axum::extract::Path<usize>| async move {
+                    if remaining == 0 {
+                        return axum::response::Html(
+                            "<html><head><title>Arrived</title></head></html>",
+                        )
+                        .into_response();
+                    }
+                    axum::response::Redirect::to(&format!("/hop/{}", remaining - 1)).into_response()
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, site).await });
+        address
+    }
+
+    #[tokio::test]
+    async fn a_chain_of_four_redirects_is_followed() {
+        // YouTube's Shorts links go through a consent page and back: four hops from some servers.
+        let address = serve_redirect_chain().await;
+        let fetcher = LinkFetcher::allowing_loopback_for_tests();
+        let outcome = fetcher
+            .fetch_page_or_picture(Url::parse(&format!("http://{address}/hop/4")).unwrap())
+            .await;
+        let Ok(Fetched::Page(page)) = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(page.title.as_deref(), Some("Arrived"));
+    }
+
+    #[tokio::test]
+    async fn a_chain_longer_than_the_redirect_limit_is_refused() {
+        let address = serve_redirect_chain().await;
+        let fetcher = LinkFetcher::allowing_loopback_for_tests();
+        let outcome = fetcher
+            .fetch_page_or_picture(
+                Url::parse(&format!("http://{address}/hop/{}", MAXIMUM_REDIRECTS + 1)).unwrap(),
+            )
+            .await;
+        assert!(
+            matches!(outcome, Err(FetchError::TooManyRedirects)),
+            "{outcome:?}"
         );
     }
 
