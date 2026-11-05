@@ -936,7 +936,7 @@ Phone (< 816)                     Drawer open
 - User settings (5.9) open from the user panel's gear button ("User settings"), as on desktop; "Sign out" is the last item of their navigation.
 - Attachments (5.4, 5.5): images open the picture viewer (6.76), with a fit / actual size toggle instead of zoom steps and no swipe; an image that fails to load becomes its download card instead of "Couldn't load this image."; no upload progress percentage (the tray says "Uploading…"), no "Add a description" or "Mark as spoiler" yet.
 - Server settings follow 5.8 ([design/web-server-settings.md](docs/design/web-server-settings.md)); channel settings are not there yet.
-- Not in the web client yet: the connection dock's "Back online" and session-expired states. Mentions are found by the server with the client's rule (`Message.mention_ids`, and `Message.mention_role_ids` for roles and `@everyone`, ADR-0040) and counted in `Ready.channel_unreads` for the red badges; the client still reads names itself to draw chips, and to highlight messages written before the server found mentions ([design/web-dusk-navigator.md](docs/design/web-dusk-navigator.md)).
+- Mentions are found by the server with the client's rule (`Message.mention_ids`, and `Message.mention_role_ids` for roles and `@everyone`, ADR-0040) and counted in `Ready.channel_unreads` for the red badges; the client still reads names itself to draw chips, and to highlight messages written before the server found mentions ([design/web-dusk-navigator.md](docs/design/web-dusk-navigator.md)).
 
 ### 4.4 Admin web UI (server-rendered HTML + htmx)
 
@@ -1006,6 +1006,10 @@ All steps use one centred card (480 px wide, `surface.chat`, `radius.xl`, `space
 | Wrong credentials | "That username and password don't match. Check them and try again." |
 | Rate limited | "Too many attempts. You can try again in 5 minutes." (time from the server) |
 | Account suspended | "This account is suspended on chat.example.org. Contact the instance admin if you think this is a mistake." |
+| Empty or malformed field (web) | Under the field, with `warning-circle` in `text.danger`, the field edged in `text.danger`: "Enter your username or email.", "Enter your password." (register: "Enter your email.", "Enter an email address, like ana@example.org.", "Choose a username.", "Choose a password."); the form has `novalidate`, so the browser's bubble never shows, and focus goes to the first field to fix |
+| Session ended (web) | The session expired or was revoked elsewhere: the subtitle becomes the "Session expired" sentence of 5.2, read as an alert; the card's "Sign in" is the action |
+
+Web (design pass WP7, [docs/design/web-connection-and-sign-in-states.md](docs/design/web-connection-and-sign-in-states.md)): `auth-card.melli-size` sizes the cloud itself (its box is 256/164 of it); the cloud stands above the card's top edge and its shadow falls on the card, and Melli shows `connecting` while the form is sent.
 
 **Create account**: username (live availability check after 400 ms idle: "Available" in `text.positive` with an icon, or "Taken. Try another one."), display name (optional, "Shown to others. You can change it later."), email (if required), password with its requirements listed up front ("At least 12 characters"), invite code (prefilled from an invite link, shown only when invite-only), and a checkbox "I agree to the rules of chat.example.org" when the instance has rules. Primary "Create account".
 
@@ -1046,6 +1050,8 @@ Server context menu (right-click, `Shift+F10`): Mark as read, Invite people, Mut
 | Offline (device) | "You're offline. Showing saved messages." |
 | Back online | "Back online" for 2 s, then hidden; missed messages are fetched and the unread divider marks them |
 | Session expired | "Your session on chat.example.org has ended. Sign in again to keep chatting." with "Sign in" |
+
+Web: the connection dock is the notice bar at the top of the window (6.37). Offline (the browser's own `online` state, ahead of the gateway) and reconnecting are amber; "Retry now" is the bar's ink as a fill, its focus ring inside; "Back online" is `positive.wash` with `text.positive` and `check`, never Discord's green fill, and follows only a lost connection. Session expired is said on the sign-in card (5.1), since the session's data goes with it. On phones (< 816 px) the notification invitation is one 48 px row: "Notifications are off", "Turn on", close, the full sentence kept as its accessible name ([docs/design/web-connection-and-sign-in-states.md](docs/design/web-connection-and-sign-in-states.md)).
 
 ### 5.3 Channel sidebar
 

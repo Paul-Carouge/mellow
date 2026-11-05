@@ -202,6 +202,7 @@ One PR each, in this order. **WP0 lands first**: it is the only package that edi
 - Files: `ConnectionBanner.svelte`, `NotificationPermissionBar.svelte`, `SignInScreen.svelte`, a small addition in `web/src/lib/client.svelte.ts` (coordinate with whoever owns the client model).
 - Content: X1, X2, X3, X4.
 - Acceptance: Chrome's offline toggle shows the offline bar within one second and "De retour en ligne" for 2 s after; after 30 s of reconnecting, "Réessayer maintenant" appears and works; an expired session shows the sign-in prompt; on a 390 px phone the notification bar is one 48 px row; empty sign-in fields show Mellow's errors, never the browser bubble.
+- Done on `feat/web-connection-and-sign-in-states`: see [web-connection-and-sign-in-states.md](web-connection-and-sign-in-states.md). The token `component.auth-card.melli-overlap` is no longer read.
 
 ### WP8. Apricot discipline and the last Discord tells (S–M, owner decisions first)
 - Files: `Button.svelte`, `Switch.svelte`, `ServerRail.svelte`, `ChoiceOption.svelte`, `IconEditor.svelte`, `AccountSettings.svelte`, `RoleSettings.svelte`, `FriendsPane.svelte`, `ConversationList.svelte`, `AddServerDialog.svelte`, `ServerOverviewSettings.svelte`, `ChannelOverviewSettings.svelte`.
