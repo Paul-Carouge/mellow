@@ -748,14 +748,14 @@ mod tests {
             outcome.applied_versions.first(),
             Some(&(LAST_VERSION_WITHOUT_MEMBER_ROLES + 1))
         );
-        // Migrations 0012, 0022, 0023, 0033 and 0038 add ADD_REACTIONS (1 << 16), CONNECT and SPEAK
-        // (1 << 18 and 1 << 19), USE_SOUNDBOARD (1 << 20), STREAM (1 << 21) and SEND_POLLS
-        // (1 << 22) to every @everyone role.
+        // Migrations 0012, 0022, 0023, 0033, 0038 and 0040 add ADD_REACTIONS (1 << 16), CONNECT and
+        // SPEAK (1 << 18 and 1 << 19), USE_SOUNDBOARD (1 << 20), STREAM (1 << 21), SEND_POLLS
+        // (1 << 22) and SEND_CHECKLISTS (1 << 23) to every @everyone role.
         assert_eq!(
             everyone,
             (
                 "@everyone".to_owned(),
-                0x064a | 0x1_0000 | 0xC_0000 | 0x10_0000 | 0x20_0000 | 0x40_0000,
+                0x064a | 0x1_0000 | 0xC_0000 | 0x10_0000 | 0x20_0000 | 0x40_0000 | 0x80_0000,
                 0,
                 0
             )
@@ -1259,12 +1259,12 @@ mod tests {
         );
         assert_eq!(
             permissions,
-            // Migrations 0022, 0023, 0033 and 0038 add CONNECT, SPEAK, USE_SOUNDBOARD, STREAM and
-            // SEND_POLLS to @everyone too.
+            // Migrations 0022, 0023, 0033, 0038 and 0040 add CONNECT, SPEAK, USE_SOUNDBOARD, STREAM,
+            // SEND_POLLS and SEND_CHECKLISTS to @everyone too.
             [
                 (
                     10,
-                    0x043e | 0x1_0000 | 0xC_0000 | 0x10_0000 | 0x20_0000 | 0x40_0000
+                    0x043e | 0x1_0000 | 0xC_0000 | 0x10_0000 | 0x20_0000 | 0x40_0000 | 0x80_0000
                 ),
                 (11, 0)
             ],
@@ -1739,8 +1739,9 @@ mod tests {
     async fn existing_everyone_roles_may_use_voice_and_channels_keep_no_user_limit() {
         const LAST_VERSION_WITHOUT_VOICE: i64 = 21;
         const CONNECT_AND_SPEAK: i64 = (1 << 18) | (1 << 19);
-        // Migrations 0023, 0033 and 0038 add USE_SOUNDBOARD, STREAM and SEND_POLLS to @everyone too.
-        const USE_SOUNDBOARD: i64 = (1 << 20) | (1 << 21) | (1 << 22);
+        // Migrations 0023, 0033, 0038 and 0040 add USE_SOUNDBOARD, STREAM, SEND_POLLS and
+        // SEND_CHECKLISTS to @everyone too.
+        const USE_SOUNDBOARD: i64 = (1 << 20) | (1 << 21) | (1 << 22) | (1 << 23);
         // VIEW_CHANNEL, SEND_MESSAGES, READ_MESSAGE_HISTORY, ATTACH_FILES, CREATE_INVITE,
         // CHANGE_NICKNAME and ADD_REACTIONS: the defaults before voice.
         const EVERYONE_BEFORE_VOICE: i64 = 0x1_241e;
@@ -1834,8 +1835,8 @@ mod tests {
     async fn existing_everyone_roles_may_use_the_soundboard_and_deleted_sounds_clear_join_sounds() {
         const LAST_VERSION_WITHOUT_SOUNDS: i64 = 22;
         const USE_SOUNDBOARD: i64 = 1 << 20;
-        // Migrations 0033 and 0038 add STREAM and SEND_POLLS to @everyone too.
-        const STREAM: i64 = (1 << 21) | (1 << 22);
+        // Migrations 0033, 0038 and 0040 add STREAM, SEND_POLLS and SEND_CHECKLISTS to @everyone too.
+        const STREAM: i64 = (1 << 21) | (1 << 22) | (1 << 23);
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
@@ -1914,8 +1915,8 @@ mod tests {
     #[tokio::test]
     async fn existing_roles_are_not_displayed_separately_and_only_booleans_are_kept() {
         const LAST_VERSION_WITHOUT_DISPLAYED_ROLES: i64 = 31;
-        // Migrations 0033 and 0038 add STREAM and SEND_POLLS to @everyone.
-        const STREAM: i64 = (1 << 21) | (1 << 22);
+        // Migrations 0033, 0038 and 0040 add STREAM, SEND_POLLS and SEND_CHECKLISTS to @everyone.
+        const STREAM: i64 = (1 << 21) | (1 << 22) | (1 << 23);
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
@@ -2115,10 +2116,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn existing_everyone_roles_may_turn_their_camera_on_and_create_polls() {
+    async fn existing_everyone_roles_may_turn_their_camera_on_and_create_polls_and_checklists() {
         const LAST_VERSION_WITHOUT_VIDEO: i64 = 32;
         const STREAM: i64 = 1 << 21;
-        const SEND_POLLS: i64 = 1 << 22;
+        // Migration 0040 grants SEND_CHECKLISTS the same way (ADR-0047).
+        const SEND_POLLS: i64 = (1 << 22) | (1 << 23);
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
             .await
@@ -2172,7 +2174,7 @@ mod tests {
                 (11, 0),
                 (50, STREAM | SEND_POLLS)
             ],
-            "only @everyone roles gain STREAM and SEND_POLLS"
+            "only @everyone roles gain STREAM, SEND_POLLS and SEND_CHECKLISTS"
         );
         assert!(
             version_after > version_before,

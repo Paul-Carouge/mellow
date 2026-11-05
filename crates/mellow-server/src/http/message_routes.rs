@@ -7,10 +7,10 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use mellow_protocol::{
-    AcknowledgeRequest, CreateGroupConversationRequest, DirectMessageChannel, EditMessageRequest,
-    Message, MessageHistoryQuery, MessageSearchQuery, MessageSearchResults,
-    OpenDirectMessageRequest, PublicUser, ReactionUsersQuery, ReadState, SendMessageRequest,
-    Snowflake, UpdateGroupConversationRequest,
+    AcknowledgeRequest, Checklist, ChecklistItemRequest, CreateGroupConversationRequest,
+    DirectMessageChannel, EditMessageRequest, Message, MessageHistoryQuery, MessageSearchQuery,
+    MessageSearchResults, NewProgressBar, OpenDirectMessageRequest, ProgressBar, PublicUser,
+    ReactionUsersQuery, ReadState, SendMessageRequest, Snowflake, UpdateGroupConversationRequest,
 };
 
 use crate::domain::clock::now_unix_milliseconds;
@@ -281,6 +281,114 @@ pub(crate) async fn end_poll(
         .end_poll(user.id, channel_id, message_id, now_unix_milliseconds())
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PUT …/messages/{message_id}/checklist/items/{item_id}/check` (ADR-0047): ticks the item.
+/// Checklist writes share the reactions' write budget and answer the checklist as it is now.
+pub(crate) async fn tick_checklist_item(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id, item_id)): ApiPath<(Snowflake, Snowflake, u32)>,
+) -> Result<Json<Checklist>, ApiError> {
+    limit_reaction_writes(&state, user.id, channel_id)?;
+    Ok(Json(
+        state
+            .messages
+            .tick_checklist_item(
+                user.id,
+                channel_id,
+                message_id,
+                item_id,
+                true,
+                now_unix_milliseconds(),
+            )
+            .await?,
+    ))
+}
+
+/// `DELETE …/messages/{message_id}/checklist/items/{item_id}/check`: unticks the item.
+pub(crate) async fn untick_checklist_item(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id, item_id)): ApiPath<(Snowflake, Snowflake, u32)>,
+) -> Result<Json<Checklist>, ApiError> {
+    limit_reaction_writes(&state, user.id, channel_id)?;
+    Ok(Json(
+        state
+            .messages
+            .tick_checklist_item(
+                user.id,
+                channel_id,
+                message_id,
+                item_id,
+                false,
+                now_unix_milliseconds(),
+            )
+            .await?,
+    ))
+}
+
+/// `POST …/messages/{message_id}/checklist/items`: adds an item at the end.
+pub(crate) async fn add_checklist_item(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id)): ApiPath<(Snowflake, Snowflake)>,
+    ApiJson(request): ApiJson<ChecklistItemRequest>,
+) -> Result<Json<Checklist>, ApiError> {
+    limit_reaction_writes(&state, user.id, channel_id)?;
+    Ok(Json(
+        state
+            .messages
+            .add_checklist_item(user.id, channel_id, message_id, &request)
+            .await?,
+    ))
+}
+
+/// `PATCH …/messages/{message_id}/checklist/items/{item_id}`: renames the item.
+pub(crate) async fn rename_checklist_item(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id, item_id)): ApiPath<(Snowflake, Snowflake, u32)>,
+    ApiJson(request): ApiJson<ChecklistItemRequest>,
+) -> Result<Json<Checklist>, ApiError> {
+    limit_reaction_writes(&state, user.id, channel_id)?;
+    Ok(Json(
+        state
+            .messages
+            .rename_checklist_item(user.id, channel_id, message_id, item_id, &request)
+            .await?,
+    ))
+}
+
+/// `DELETE …/messages/{message_id}/checklist/items/{item_id}`: removes the item.
+pub(crate) async fn remove_checklist_item(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id, item_id)): ApiPath<(Snowflake, Snowflake, u32)>,
+) -> Result<Json<Checklist>, ApiError> {
+    limit_reaction_writes(&state, user.id, channel_id)?;
+    Ok(Json(
+        state
+            .messages
+            .remove_checklist_item(user.id, channel_id, message_id, item_id)
+            .await?,
+    ))
+}
+
+/// `PATCH …/messages/{message_id}/progress-bar` (ADR-0047): replaces its label and value.
+pub(crate) async fn update_progress_bar(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id)): ApiPath<(Snowflake, Snowflake)>,
+    ApiJson(request): ApiJson<NewProgressBar>,
+) -> Result<Json<ProgressBar>, ApiError> {
+    limit_reaction_writes(&state, user.id, channel_id)?;
+    Ok(Json(
+        state
+            .messages
+            .update_progress_bar(user.id, channel_id, message_id, &request)
+            .await?,
+    ))
 }
 
 /// `GET /api/v1/channels/{channel_id}/pins`.

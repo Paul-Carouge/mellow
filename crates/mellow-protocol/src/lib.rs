@@ -43,14 +43,16 @@ pub use guilds::{
 };
 pub use health::{HealthResponse, HealthStatus};
 pub use messages::{
-    AcknowledgeRequest, Attachment, ChannelUnread, EditMessageRequest, ForwardOrigin,
-    GitHubIssueEmbed, GitHubIssueState, GitHubRepositoryEmbed, LinkEmbed, LinkPreview,
-    LinkPreviewImage, MAXIMUM_COUNTED_UNREAD_MENTIONS, MAXIMUM_POLL_ANSWER_LENGTH,
-    MAXIMUM_POLL_ANSWERS, MAXIMUM_POLL_QUESTION_LENGTH, MINIMUM_POLL_ANSWERS, Message,
-    MessageHistoryQuery, MusicEmbed, MusicItem, MusicProvider, NewPoll, POLL_DURATIONS_IN_HOURS,
-    Poll, PollAnswer, ReactionSummary, ReactionUsersQuery, ReadState, SendMessageRequest,
-    TwitchEmbed, TwitchItem, VimeoVideoEmbed, WikipediaArticleEmbed, YouTubeMusicTrackEmbed,
-    YouTubeVideoEmbed,
+    AcknowledgeRequest, Attachment, ChannelUnread, Checklist, ChecklistItem, ChecklistItemRequest,
+    ChecklistTick, EditMessageRequest, ForwardOrigin, GitHubIssueEmbed, GitHubIssueState,
+    GitHubRepositoryEmbed, LinkEmbed, LinkPreview, LinkPreviewImage, MAXIMUM_CHECKLIST_ITEM_LENGTH,
+    MAXIMUM_CHECKLIST_ITEMS, MAXIMUM_CHECKLIST_TITLE_LENGTH, MAXIMUM_COUNTED_UNREAD_MENTIONS,
+    MAXIMUM_POLL_ANSWER_LENGTH, MAXIMUM_POLL_ANSWERS, MAXIMUM_POLL_QUESTION_LENGTH,
+    MAXIMUM_PROGRESS_BAR_LABEL_LENGTH, MAXIMUM_PROGRESS_BAR_MAXIMUM, MINIMUM_POLL_ANSWERS, Message,
+    MessageHistoryQuery, MusicEmbed, MusicItem, MusicProvider, NewChecklist, NewPoll,
+    NewProgressBar, POLL_DURATIONS_IN_HOURS, Poll, PollAnswer, ProgressBar, ReactionSummary,
+    ReactionUsersQuery, ReadState, SendMessageRequest, TwitchEmbed, TwitchItem, VimeoVideoEmbed,
+    WikipediaArticleEmbed, YouTubeMusicTrackEmbed, YouTubeVideoEmbed,
 };
 pub use permissions::{
     Permissions, compute_channel_permissions, compute_guild_permissions, highest_role_position,

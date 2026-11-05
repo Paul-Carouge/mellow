@@ -128,6 +128,7 @@ pub fn direct_message_permissions(
                 | Permissions::ATTACH_FILES
                 | Permissions::ADD_REACTIONS
                 | Permissions::SEND_POLLS
+                | Permissions::SEND_CHECKLISTS
         }
     }
 }
@@ -198,6 +199,26 @@ pub fn may_vote_in_poll(channel_permissions: Permissions, is_direct_message: boo
         reads
     };
     channel_permissions.contains(needed)
+}
+
+/// Ticking and unticking a checklist's items (ADR-0047): whoever may write where it was sent, so
+/// a read-only channel's checklists stay its writers' and someone blocked in a conversation
+/// cannot keep notifying the other (ADR-0025).
+#[must_use]
+pub fn may_tick_checklist_items(channel_permissions: Permissions) -> bool {
+    channel_permissions.contains(
+        Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY | Permissions::SEND_MESSAGES,
+    )
+}
+
+/// Adding, renaming and removing a checklist's items, and updating a progress bar (ADR-0047):
+/// their author while still allowed to write there, as for an edit, or whoever manages messages
+/// in a guild channel (no one does in a conversation, `direct_message_permissions`).
+#[must_use]
+pub fn may_edit_tracker(channel_permissions: Permissions, is_author: bool) -> bool {
+    let reads = Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY;
+    (is_author && channel_permissions.contains(reads | Permissions::SEND_MESSAGES))
+        || channel_permissions.contains(reads | Permissions::MANAGE_MESSAGES)
 }
 
 /// Pinning and unpinning: `MANAGE_MESSAGES` in a guild channel; in a conversation, where no one
@@ -808,6 +829,36 @@ mod tests {
         assert!(!may_vote_in_poll(
             direct_message_permissions(false, true, true),
             true
+        ));
+    }
+
+    #[test]
+    fn checklists_are_ticked_by_writers_and_edited_by_their_author_or_moderators() {
+        let sends = Permissions::SEND_MESSAGES | Permissions::SEND_CHECKLISTS;
+        assert!(direct_message_permissions(true, true, false).contains(sends));
+        assert!(direct_message_permissions(true, false, true).contains(sends));
+        let blocked = direct_message_permissions(true, false, false);
+        assert!(!blocked.contains(Permissions::SEND_CHECKLISTS));
+        assert!(Permissions::DEFAULT_EVERYONE.contains(Permissions::SEND_CHECKLISTS));
+
+        assert!(may_tick_checklist_items(Permissions::DEFAULT_EVERYONE));
+        assert!(!may_tick_checklist_items(
+            Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY
+        ));
+        assert!(!may_tick_checklist_items(blocked), "a blocked conversation");
+
+        let reads = Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY;
+        assert!(may_edit_tracker(Permissions::DEFAULT_EVERYONE, true));
+        assert!(!may_edit_tracker(Permissions::DEFAULT_EVERYONE, false));
+        assert!(!may_edit_tracker(reads, true), "a muted author");
+        assert!(may_edit_tracker(
+            reads | Permissions::MANAGE_MESSAGES,
+            false
+        ));
+        assert!(!may_edit_tracker(blocked, true));
+        assert!(!may_edit_tracker(
+            direct_message_permissions(true, true, true),
+            false
         ));
     }
 

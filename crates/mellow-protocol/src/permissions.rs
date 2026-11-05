@@ -44,6 +44,9 @@ bitflags::bitflags! {
         /// Sending a poll, with `SEND_MESSAGES`; the interface calls it "Create polls"
         /// (ADR-0043, Discord's `SEND_POLLS`).
         const SEND_POLLS           = 1 << 22;
+        /// Sending a checklist or a progress bar, with `SEND_MESSAGES`; the interface calls it
+        /// "Create checklists and progress bars" (ADR-0047).
+        const SEND_CHECKLISTS      = 1 << 23;
     }
 }
 
@@ -63,7 +66,8 @@ impl Permissions {
         .union(Self::SPEAK)
         .union(Self::USE_SOUNDBOARD)
         .union(Self::STREAM)
-        .union(Self::SEND_POLLS);
+        .union(Self::SEND_POLLS)
+        .union(Self::SEND_CHECKLISTS);
 
     /// Permissions granted to `@everyone` in a newly created guild.
     pub const DEFAULT_EVERYONE: Self = Self::VIEW_CHANNEL
@@ -77,7 +81,8 @@ impl Permissions {
         .union(Self::SPEAK)
         .union(Self::USE_SOUNDBOARD)
         .union(Self::STREAM)
-        .union(Self::SEND_POLLS);
+        .union(Self::SEND_POLLS)
+        .union(Self::SEND_CHECKLISTS);
 }
 
 /// A member's permissions in a guild (ADR-0007 steps 1 to 3): the owner and administrators get

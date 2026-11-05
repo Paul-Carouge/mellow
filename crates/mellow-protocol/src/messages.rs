@@ -24,6 +24,89 @@ pub struct SendMessageRequest {
     /// stay empty. Left out of the body when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll: Option<NewPoll>,
+    /// Sends a checklist (ADR-0047), with nothing else of its own, as a poll. Left out of the
+    /// body when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checklist: Option<NewChecklist>,
+    /// Sends a progress bar (ADR-0047), with nothing else of its own, as a poll. Left out of the
+    /// body when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_bar: Option<NewProgressBar>,
+}
+
+/// The checklist a message carries (ADR-0047), as its author writes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewChecklist {
+    /// 1 to `MAXIMUM_CHECKLIST_TITLE_LENGTH` characters.
+    pub title: String,
+    /// 1 to `MAXIMUM_CHECKLIST_ITEMS`, each 1 to `MAXIMUM_CHECKLIST_ITEM_LENGTH` characters.
+    pub items: Vec<String>,
+}
+
+/// Body of `POST …/checklist/items` and `PATCH …/checklist/items/{item_id}` (ADR-0047).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChecklistItemRequest {
+    /// 1 to `MAXIMUM_CHECKLIST_ITEM_LENGTH` characters.
+    pub text: String,
+}
+
+pub const MAXIMUM_CHECKLIST_TITLE_LENGTH: usize = 300;
+pub const MAXIMUM_CHECKLIST_ITEMS: usize = 25;
+pub const MAXIMUM_CHECKLIST_ITEM_LENGTH: usize = 200;
+
+/// A message's checklist (ADR-0047).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Checklist {
+    pub title: String,
+    /// In the order they were added; an item keeps its id for life, and ids are never reused.
+    pub items: Vec<ChecklistItem>,
+    /// Grows with every change to the checklist: clients keep the highest they saw, since a
+    /// `MESSAGE_UPDATE` or a history page may have read it before a later change.
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChecklistItem {
+    pub id: u32,
+    pub text: String,
+    /// Who ticked it and when; absent while it is not ticked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<ChecklistTick>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChecklistTick {
+    pub user_id: Snowflake,
+    pub at_unix_milliseconds: u64,
+}
+
+/// A progress bar a message carries (ADR-0047), as its author writes it or updates it (the body
+/// of `PATCH …/progress-bar`): `value` out of `maximum`, shown as a percentage when `maximum` is
+/// 100.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewProgressBar {
+    /// 1 to `MAXIMUM_PROGRESS_BAR_LABEL_LENGTH` characters.
+    pub label: String,
+    /// 0 to `maximum`.
+    pub value: u32,
+    /// 1 to `MAXIMUM_PROGRESS_BAR_MAXIMUM`.
+    pub maximum: u32,
+}
+
+pub const MAXIMUM_PROGRESS_BAR_LABEL_LENGTH: usize = 300;
+pub const MAXIMUM_PROGRESS_BAR_MAXIMUM: u32 = 1_000_000;
+
+/// A message's progress bar (ADR-0047).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgressBar {
+    pub label: String,
+    pub value: u32,
+    pub maximum: u32,
+    /// Grows with every update, as `Checklist::revision`.
+    pub revision: u64,
 }
 
 /// The poll a message asks (ADR-0043), as its author writes it.
@@ -401,6 +484,12 @@ pub struct Message {
     /// The message's poll (ADR-0043). Absent otherwise and from older servers' payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll: Option<Poll>,
+    /// The message's checklist (ADR-0047). Absent otherwise and from older servers' payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checklist: Option<Checklist>,
+    /// The message's progress bar (ADR-0047). Absent otherwise and from older servers' payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_bar: Option<ProgressBar>,
     /// Set on a forward (ADR-0039): its content and files are a copy of that message's, taken
     /// when it was forwarded. Absent otherwise and from older servers' payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -492,6 +581,8 @@ mod tests {
             mention_role_ids: Vec::new(),
             link_previews: Vec::new(),
             poll: None,
+            checklist: None,
+            progress_bar: None,
             forwarded_from: Some(ForwardOrigin {
                 channel_id: Snowflake::from_raw(7),
                 message_id: Snowflake::from_raw(8),

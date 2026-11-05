@@ -333,7 +333,63 @@ export interface Message {
   forwarded_from?: ForwardOrigin;
   /** The message's poll (ADR-0043); its content is then empty. */
   poll?: Poll;
+  /** The message's checklist (ADR-0047); its content is then empty. */
+  checklist?: Checklist;
+  /** The message's progress bar (ADR-0047); its content is then empty. */
+  progress_bar?: ProgressBar;
 }
+
+/**
+ * A message's checklist (ADR-0047). `revision` grows with every change: keep the highest seen,
+ * since a `MESSAGE_UPDATE` or a history page may have read it before a later tick.
+ */
+export interface Checklist {
+  title: string;
+  /** In the order they were added; ids are never reused. */
+  items: ChecklistItem[];
+  revision: number;
+}
+
+export interface ChecklistItem {
+  id: number;
+  text: string;
+  /** Who ticked it and when; absent while not ticked. */
+  checked?: ChecklistTick;
+}
+
+export interface ChecklistTick {
+  user_id: Snowflake;
+  at_unix_milliseconds: number;
+}
+
+/** What a checklist is sent with (`SendMessageRequest.checklist`). */
+export interface NewChecklist {
+  title: string;
+  items: string[];
+}
+
+export const MAXIMUM_CHECKLIST_TITLE_LENGTH = 300;
+export const MAXIMUM_CHECKLIST_ITEMS = 25;
+export const MAXIMUM_CHECKLIST_ITEM_LENGTH = 200;
+
+/** A message's progress bar (ADR-0047): `value` out of `maximum`, a percentage when `maximum` is 100. */
+export interface ProgressBar {
+  label: string;
+  value: number;
+  maximum: number;
+  /** As `Checklist.revision`. */
+  revision: number;
+}
+
+/** What a progress bar is sent and updated with (`SendMessageRequest.progress_bar`, `PATCH …/progress-bar`). */
+export interface NewProgressBar {
+  label: string;
+  value: number;
+  maximum: number;
+}
+
+export const MAXIMUM_PROGRESS_BAR_LABEL_LENGTH = 300;
+export const MAXIMUM_PROGRESS_BAR_MAXIMUM = 1_000_000;
 
 /** A message's poll (ADR-0043). Ended once `expires_at_unix_milliseconds` passed or `ended_at` is set. */
 export interface Poll {
@@ -544,6 +600,10 @@ export interface SendMessageRequest {
   forwarded_from?: ForwardOrigin;
   /** Sends a poll (ADR-0043), with empty `content` and nothing else. */
   poll?: NewPoll;
+  /** Sends a checklist (ADR-0047), with empty `content` and nothing else. */
+  checklist?: NewChecklist;
+  /** Sends a progress bar (ADR-0047), with empty `content` and nothing else. */
+  progress_bar?: NewProgressBar;
 }
 
 export interface ReactionSummary {
@@ -870,6 +930,14 @@ export type GatewayEvent =
         link_previews: LinkPreview[];
       };
     }
+  | {
+      t: "MESSAGE_CHECKLIST_UPDATE";
+      data: { guild_id?: Snowflake; channel_id: Snowflake; message_id: Snowflake; checklist: Checklist };
+    }
+  | {
+      t: "MESSAGE_PROGRESS_BAR_UPDATE";
+      data: { guild_id?: Snowflake; channel_id: Snowflake; message_id: Snowflake; progress_bar: ProgressBar };
+    }
   | { t: "MESSAGE_POLL_VOTE_ADD"; data: PollVote }
   | { t: "MESSAGE_POLL_VOTE_REMOVE"; data: PollVote }
   | { t: "MESSAGE_REACTION_ADD"; data: MessageReaction }
@@ -1009,6 +1077,8 @@ export const Permission = {
   STREAM: 1n << 21n,
   /** Send a poll, with `SEND_MESSAGES`; "Create polls" in the interface (ADR-0043). */
   SEND_POLLS: 1n << 22n,
+  /** Send a checklist or a progress bar, with `SEND_MESSAGES` (ADR-0047). */
+  SEND_CHECKLISTS: 1n << 23n,
 } as const;
 
 /** What a channel overwrite may allow or deny (`Permissions::CHANNEL_SCOPED`). */
@@ -1027,7 +1097,8 @@ export const CHANNEL_SCOPED_PERMISSIONS =
   Permission.SPEAK |
   Permission.USE_SOUNDBOARD |
   Permission.STREAM |
-  Permission.SEND_POLLS;
+  Permission.SEND_POLLS |
+  Permission.SEND_CHECKLISTS;
 
 export function hasPermission(bits: PermissionBits, permission: bigint): boolean {
   const value = BigInt(bits);

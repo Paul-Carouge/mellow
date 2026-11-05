@@ -1,8 +1,10 @@
 //! Input rules for messages.
 
 use mellow_protocol::{
+    MAXIMUM_CHECKLIST_ITEM_LENGTH, MAXIMUM_CHECKLIST_ITEMS, MAXIMUM_CHECKLIST_TITLE_LENGTH,
     MAXIMUM_POLL_ANSWER_LENGTH, MAXIMUM_POLL_ANSWERS, MAXIMUM_POLL_QUESTION_LENGTH,
-    MINIMUM_POLL_ANSWERS, POLL_DURATIONS_IN_HOURS, Snowflake,
+    MAXIMUM_PROGRESS_BAR_LABEL_LENGTH, MAXIMUM_PROGRESS_BAR_MAXIMUM, MINIMUM_POLL_ANSWERS,
+    POLL_DURATIONS_IN_HOURS, Snowflake,
 };
 
 use crate::domain::account_rules::is_invisible_format_character;
@@ -74,6 +76,16 @@ pub enum MessageRuleViolation {
     PollChange,
     #[error("this poll has ended")]
     PollEnded,
+    #[error(
+        "a checklist has a title of 1 to {MAXIMUM_CHECKLIST_TITLE_LENGTH} characters and 1 to {MAXIMUM_CHECKLIST_ITEMS} items of 1 to {MAXIMUM_CHECKLIST_ITEM_LENGTH} characters, and carries no text, files, reply, forward or poll"
+    )]
+    Checklist,
+    #[error(
+        "a progress bar has a label of 1 to {MAXIMUM_PROGRESS_BAR_LABEL_LENGTH} characters and a value from 0 to its maximum, itself 1 to {MAXIMUM_PROGRESS_BAR_MAXIMUM}, and carries no text, files, reply, forward or poll"
+    )]
+    ProgressBar,
+    #[error("a checklist or a progress bar changes through its own routes and cannot be forwarded")]
+    TrackerChange,
     #[error(transparent)]
     SearchQuery(#[from] crate::domain::search_query::SearchQueryViolation),
 }
@@ -329,6 +341,62 @@ pub fn validated_poll(
     }
 }
 
+/// One line of visible text of 1 to `maximum` characters, trimmed, as poll answers are.
+fn trimmed_single_line(text: &str, maximum: usize) -> Option<String> {
+    let text = text.trim();
+    let is_valid = (1..=maximum).contains(&text.chars().count())
+        && validate_message_content(text).is_ok()
+        && !text.contains('\n');
+    is_valid.then(|| text.to_owned())
+}
+
+/// A checklist's title and items, trimmed, once within the limits of ADR-0047. Items may repeat.
+///
+/// # Errors
+/// `Checklist` otherwise.
+pub fn validated_checklist(
+    checklist: &mellow_protocol::NewChecklist,
+) -> Result<mellow_protocol::NewChecklist, MessageRuleViolation> {
+    // Counted before any copy: a body may hold thousands of empty items.
+    if !(1..=MAXIMUM_CHECKLIST_ITEMS).contains(&checklist.items.len()) {
+        return Err(MessageRuleViolation::Checklist);
+    }
+    Ok(mellow_protocol::NewChecklist {
+        title: trimmed_single_line(&checklist.title, MAXIMUM_CHECKLIST_TITLE_LENGTH)
+            .ok_or(MessageRuleViolation::Checklist)?,
+        items: checklist
+            .items
+            .iter()
+            .map(|item| validated_checklist_item(item))
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+/// # Errors
+/// `Checklist` unless one line of 1 to `MAXIMUM_CHECKLIST_ITEM_LENGTH` visible characters.
+pub fn validated_checklist_item(text: &str) -> Result<String, MessageRuleViolation> {
+    trimmed_single_line(text, MAXIMUM_CHECKLIST_ITEM_LENGTH).ok_or(MessageRuleViolation::Checklist)
+}
+
+/// A progress bar with its label trimmed, once within the limits of ADR-0047.
+///
+/// # Errors
+/// `ProgressBar` otherwise.
+pub fn validated_progress_bar(
+    bar: &mellow_protocol::NewProgressBar,
+) -> Result<mellow_protocol::NewProgressBar, MessageRuleViolation> {
+    let label = trimmed_single_line(&bar.label, MAXIMUM_PROGRESS_BAR_LABEL_LENGTH)
+        .ok_or(MessageRuleViolation::ProgressBar)?;
+    if !(1..=MAXIMUM_PROGRESS_BAR_MAXIMUM).contains(&bar.maximum) || bar.value > bar.maximum {
+        return Err(MessageRuleViolation::ProgressBar);
+    }
+    Ok(mellow_protocol::NewProgressBar {
+        label,
+        value: bar.value,
+        maximum: bar.maximum,
+    })
+}
+
 /// # Errors
 /// `Nonce` when empty, too long or not printable ASCII.
 pub fn validate_nonce(nonce: &str) -> Result<(), MessageRuleViolation> {
@@ -502,6 +570,66 @@ mod tests {
             answers: answers.iter().map(|answer| (*answer).into()).collect(),
             allows_multiple_answers: false,
             duration_hours,
+        }
+    }
+
+    #[test]
+    fn checklists_have_a_visible_title_and_one_to_twenty_five_single_line_items() {
+        let checklist = |title: &str, items: &[&str]| mellow_protocol::NewChecklist {
+            title: title.into(),
+            items: items.iter().map(|item| (*item).to_owned()).collect(),
+        };
+        assert_eq!(
+            validated_checklist(&checklist(" Release ", &[" Tag", "Tag"])),
+            Ok(checklist("Release", &["Tag", "Tag"])),
+            "trimmed; items may repeat"
+        );
+        let too_many: Vec<&str> = vec!["x"; MAXIMUM_CHECKLIST_ITEMS + 1];
+        let too_long = "x".repeat(MAXIMUM_CHECKLIST_ITEM_LENGTH + 1);
+        for refused in [
+            checklist("", &["a"]),
+            checklist("t", &[]),
+            checklist("t", &too_many),
+            checklist("t", &["a", " "]),
+            checklist("t", &[&too_long]),
+            checklist("t", &["two\nlines"]),
+            checklist("t", &["a\u{202E}"]),
+            checklist(&"t".repeat(MAXIMUM_CHECKLIST_TITLE_LENGTH + 1), &["a"]),
+        ] {
+            assert_eq!(
+                validated_checklist(&refused),
+                Err(MessageRuleViolation::Checklist),
+                "{refused:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn progress_bars_hold_a_value_from_zero_to_their_maximum() {
+        let bar = |label: &str, value, maximum| mellow_protocol::NewProgressBar {
+            label: label.into(),
+            value,
+            maximum,
+        };
+        assert_eq!(
+            validated_progress_bar(&bar(" Sync ", 0, 100)),
+            Ok(bar("Sync", 0, 100))
+        );
+        assert_eq!(
+            validated_progress_bar(&bar("Sync", 5, 5)),
+            Ok(bar("Sync", 5, 5))
+        );
+        for refused in [
+            bar("", 1, 2),
+            bar("Sync", 6, 5),
+            bar("Sync", 0, 0),
+            bar("Sync", 0, MAXIMUM_PROGRESS_BAR_MAXIMUM + 1),
+        ] {
+            assert_eq!(
+                validated_progress_bar(&refused),
+                Err(MessageRuleViolation::ProgressBar),
+                "{refused:?}"
+            );
         }
     }
 
