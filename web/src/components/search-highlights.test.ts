@@ -154,5 +154,6 @@ describe("search results", () => {
     expect(queryNarrowedToChannel("pizza", { id: "9", name: "Game night" })).toBe("pizza in:9");
     expect(queryNarrowedToChannel("pizza", { id: "9", name: null })).toBe("pizza in:9");
     expect(queryNarrowedToAuthor("pizza in:9", { username: "ada" })).toBe("pizza in:9 from:ada");
+    expect(queryNarrowedToAuthor("pizza", { username: "Paul Carouge" })).toBe('pizza from:"Paul Carouge"');
   });
 });

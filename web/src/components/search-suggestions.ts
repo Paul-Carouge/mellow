@@ -12,6 +12,7 @@ import {
   type SearchHasValue,
   isSearchableDay,
   isoDayOf,
+  searchFilterText,
 } from "./search-query";
 
 /** People and channels listed at most, so the list stays a glance. */
@@ -122,7 +123,7 @@ export function suggestionInsertion(suggestion: SearchSuggestion): { text: strin
     case "key":
       return { text: `${suggestion.key}:`, endsPart: false };
     case "person":
-      return { text: `${suggestion.key}:${suggestion.user.username}`, endsPart: true };
+      return { text: searchFilterText(suggestion.key, suggestion.user.username), endsPart: true };
     case "channel":
       return { text: `in:${suggestion.value}`, endsPart: true };
     case "has":
