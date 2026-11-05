@@ -251,8 +251,7 @@
       ? messageMenuActions({
           isOwn,
           isForward: forwardedFrom !== null,
-          // Checklists and progress bars follow polls here (ADR-0047).
-          isPoll: poll !== null || isTracker,
+          isPoll: poll !== null,
           isTracker,
           isPollOpen: poll !== null && !isPollEnded(poll, pollClockNow()),
           hasText: message.content.trim() !== "",
