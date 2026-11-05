@@ -69,7 +69,7 @@ mellow/
 ├── design/
 │   ├── tokens.json             # design tokens, single source of truth (see DESIGN.md)
 │   ├── icons/                  # Phosphor icons (SVG)
-│   └── fonts/                  # Figtree
+│   └── fonts/                  # Figtree, Source Code Pro
 ├── docs/
 │   └── adr/                    # architecture decision records
 ├── ARCHITECTURE.md
