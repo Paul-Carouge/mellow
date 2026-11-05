@@ -42,6 +42,29 @@ pub fn channel_permissions(
     )
 }
 
+/// `channel_permissions` of a member given by the ids of their roles (`@everyone` left out) among
+/// every role of the guild, borrowed: deciding for each member of a large guild copies no role.
+#[must_use]
+pub(crate) fn channel_permissions_with_role_ids(
+    member_id: Snowflake,
+    owner_id: Snowflake,
+    guild_id: Snowflake,
+    guild_roles: &[Role],
+    member_role_ids: &[Snowflake],
+    overwrites: &[PermissionOverwrite],
+) -> Permissions {
+    let member_roles = guild_roles
+        .iter()
+        .filter(|role| role.id == guild_id || member_role_ids.contains(&role.id));
+    compute_channel_permissions(
+        compute_guild_permissions(member_id, owner_id, member_roles),
+        guild_id,
+        member_id,
+        member_role_ids,
+        overwrites,
+    )
+}
+
 /// What a member may do in a voice channel (ADR-0030), from their permissions there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VoiceEntitlement {
@@ -411,6 +434,54 @@ mod tests {
             VoiceEntitlement::Refused,
             "connecting needs viewing"
         );
+    }
+
+    #[test]
+    fn permissions_from_role_ids_match_permissions_from_roles() {
+        use mellow_protocol::{OverwriteKind, PermissionOverwrite};
+        let reader = role(10, 1, Permissions::VIEW_CHANNEL);
+        let administrator = role(11, 2, Permissions::ADMINISTRATOR);
+        let guild_roles = [everyone(), reader.clone(), administrator.clone()];
+        let hidden_but_for_readers = [
+            PermissionOverwrite {
+                id: GUILD,
+                kind: OverwriteKind::Role,
+                allow: Permissions::empty(),
+                deny: Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES,
+            },
+            PermissionOverwrite {
+                id: reader.id,
+                kind: OverwriteKind::Role,
+                allow: Permissions::VIEW_CHANNEL,
+                deny: Permissions::empty(),
+            },
+        ];
+        for (member, roles_of_member) in [
+            (MEMBER, vec![everyone()]),
+            (MEMBER, vec![everyone(), reader.clone()]),
+            (MEMBER, vec![everyone(), administrator.clone()]),
+            (OWNER, vec![everyone()]),
+        ] {
+            let role_ids: Vec<Snowflake> = roles_of_member
+                .iter()
+                .map(|role| role.id)
+                .filter(|id| *id != GUILD)
+                .collect();
+            for overwrites in [&[][..], &hidden_but_for_readers[..]] {
+                assert_eq!(
+                    channel_permissions_with_role_ids(
+                        member,
+                        OWNER,
+                        GUILD,
+                        &guild_roles,
+                        &role_ids,
+                        overwrites
+                    ),
+                    channel_permissions(member, OWNER, GUILD, &roles_of_member, overwrites),
+                    "{member:?} {role_ids:?} {overwrites:?}"
+                );
+            }
+        }
     }
 
     #[test]

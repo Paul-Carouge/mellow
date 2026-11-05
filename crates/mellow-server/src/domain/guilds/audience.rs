@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use mellow_protocol::{GatewayEvent, Guild, PermissionOverwrite, Permissions, Role, Snowflake};
 
 use super::{GuildError, Guilds, guild_seen_by_member};
-use crate::domain::permissions::{channel_permissions, is_visible_to_every_member};
+use crate::domain::permissions::{channel_permissions_with_role_ids, is_visible_to_every_member};
 use crate::storage::guild_channels::{self as channel_storage, StoredChannel};
 use crate::storage::guild_sounds as guild_sounds_storage;
 use crate::storage::guilds::{self as guild_storage, StoredPermissionSnapshot};
@@ -34,11 +34,12 @@ pub(super) fn viewer_ids(
         .role_ids_by_member
         .iter()
         .filter(|(member_id, role_ids)| {
-            channel_permissions(
+            channel_permissions_with_role_ids(
                 **member_id,
                 snapshot.owner_id,
                 guild_id,
-                &roles_with_ids_and_everyone(guild_id, snapshot, role_ids),
+                &snapshot.roles,
+                role_ids,
                 overwrites,
             )
             .contains(Permissions::VIEW_CHANNEL)
