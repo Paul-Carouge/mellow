@@ -15,11 +15,12 @@
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
   import { calendarDayLabel, displayName, fullTimestampLabel, messageTimestampLabel, unixMillisecondsOfSnowflake } from "./format";
+  import { forwardOriginPlace } from "./forward-messages";
   import { conversationDisplayName } from "./group-conversations";
   import Icon from "./Icon.svelte";
   import { pollSummary } from "./poll-view";
   import IconButton from "./IconButton.svelte";
-  import { parseMessageMarkdown } from "./markdown";
+  import { type BlockNode, parseMessageMarkdown } from "./markdown";
   import { mentionablePeople } from "./mentions";
   import MessageAttachments from "./MessageAttachments.svelte";
   import MessageMarkdown from "./MessageMarkdown.svelte";
@@ -493,28 +494,55 @@
             }}>{isOpening ? strings.search.opening : strings.search.jump}</button
           >
         </div>
-        {#if message.content}
-          <div class="type-message text-(--mw-component-message-body-text)">
-            <MessageMarkdown {blocks} />
+        {#if message.forwarded_from}
+          <!-- A forward as the list shows it (ADR-0039): the quote bar, "Forwarded", the copied words
+               and files, then their place and date, so the words are never read as the forwarder's. -->
+          {@const originSentAt = unixMillisecondsOfSnowflake(message.forwarded_from.message_id)}
+          {@const originPlace = forwardOriginPlace(message.forwarded_from.channel_id, client.guilds, client.conversations, client.user?.id ?? null)}
+          <div
+            class="flex flex-col gap-2xs border-l-(length:--mw-component-message-quote-bar-width) border-(--mw-component-message-quote-bar-color) pl-sm"
+          >
+            <p class="flex items-center gap-2xs type-message-timestamp text-text-muted">
+              <Icon name="arrow-bend-up-right" class="size-(--mw-component-message-status-icon-size)" />
+              {strings.forward.forwarded}
+            </p>
+            {@render content(message, blocks, sentAt)}
+            <p class="type-message-timestamp text-text-muted">
+              <time datetime={new Date(originSentAt).toISOString()} title={fullTimestampLabel(originSentAt)}
+                ><span class="sr-only">{originPlace ? `${originPlace.label}, ` : ""}{strings.forward.originalFrom(fullTimestampLabel(originSentAt))}</span><span aria-hidden="true"
+                  >{originPlace ? `${originPlace.label} · ` : ""}{messageTimestampLabel(originSentAt, new Date())}</span
+                ></time
+              >
+            </p>
           </div>
-        {/if}
-        {#if message.poll}
-          <!-- A poll's question, never its votes: the slip opens the message for those (ADR-0043). -->
-          <p class="flex items-center gap-2xs type-message text-(--mw-component-message-body-text)">
-            <Icon name="chart-bar-horizontal" class="size-(--mw-component-message-status-icon-size) shrink-0 text-text-muted" />
-            <span class="min-w-0 break-words">{pollSummary(message.poll)}</span>
-          </p>
-        {/if}
-        {#if (message.attachments?.length ?? 0) > 0}
-          <MessageAttachments
-            attachments={message.attachments ?? []}
-            isPending={false}
-            authorName={displayName(message.author)}
-            sentAtUnixMilliseconds={sentAt}
-          />
+        {:else}
+          {@render content(message, blocks, sentAt)}
         {/if}
       </div>
     </article>
+  {/if}
+{/snippet}
+
+{#snippet content(message: MessageSearchHit["message"], blocks: readonly BlockNode[], sentAt: number)}
+  {#if message.content}
+    <div class="type-message text-(--mw-component-message-body-text)">
+      <MessageMarkdown {blocks} />
+    </div>
+  {/if}
+  {#if message.poll}
+    <!-- A poll's question, never its votes: the slip opens the message for those (ADR-0043). -->
+    <p class="flex items-center gap-2xs type-message text-(--mw-component-message-body-text)">
+      <Icon name="chart-bar-horizontal" class="size-(--mw-component-message-status-icon-size) shrink-0 text-text-muted" />
+      <span class="min-w-0 break-words">{pollSummary(message.poll)}</span>
+    </p>
+  {/if}
+  {#if (message.attachments?.length ?? 0) > 0}
+    <MessageAttachments
+      attachments={message.attachments ?? []}
+      isPending={false}
+      authorName={displayName(message.author)}
+      sentAtUnixMilliseconds={sentAt}
+    />
   {/if}
 {/snippet}
 
