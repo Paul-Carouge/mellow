@@ -134,7 +134,7 @@
   const UPLOADS_RUNNING_SENTENCE = strings.chat.uploadsRunning;
   // The composer's buttons sit centred on its base row, which is as tall as the user card.
   const BUTTON_CLASS =
-    "my-[calc((var(--mw-size-dock-height)_-_var(--mw-component-composer-attach-button-size))/2)] size-(--mw-component-composer-attach-button-size) text-(--mw-component-composer-icon) hover:bg-state-hover hover:text-(--mw-component-composer-icon-hover)";
+    "my-[calc((var(--mw-size-dock-height)_-_var(--mw-component-composer-attach-button-size))/2)] pointer-coarse:my-[calc((var(--mw-size-dock-height)_-_var(--mw-size-hit-web-min))/2)] size-(--mw-component-composer-attach-button-size) text-(--mw-component-composer-icon) hover:bg-state-hover hover:text-(--mw-component-composer-icon-hover)";
 
   let field = $state<HTMLTextAreaElement | null>(null);
   let emojiButton = $state<HTMLButtonElement | null>(null);
@@ -689,6 +689,8 @@
             }}
           />
         {/if}
+        <!-- The placeholder stays on one line: Chrome draws its ellipsis from the field's own
+             text-overflow (typed text wraps, so it never shows there). -->
         <!-- The emoji suggestions are owned as a textbox's list, without role="combobox" (nor
              aria-expanded, which needs it): ARIA's combobox is a single-line field, and screen
              readers would stop announcing a multi-line text box where Shift+Enter adds lines. -->
@@ -704,7 +706,7 @@
             .filter(Boolean)
             .join(" ") || undefined}
           placeholder={label}
-          class="min-h-(--mw-size-dock-height) min-w-0 flex-1 resize-none bg-transparent px-2xs py-[calc((var(--mw-size-dock-height)_-_var(--mw-type-message-font-size)_*_var(--mw-type-message-line-height))/2)] type-message text-(--mw-component-composer-text) outline-none placeholder:text-(--mw-component-composer-placeholder)"
+          class="min-h-(--mw-size-dock-height) min-w-0 flex-1 resize-none bg-transparent px-2xs py-[calc((var(--mw-size-dock-height)_-_var(--mw-type-message-font-size)_*_var(--mw-type-message-line-height))/2)] type-message text-(--mw-component-composer-text) text-ellipsis outline-none placeholder:truncate placeholder:text-(--mw-component-composer-placeholder)"
           aria-autocomplete="list"
           aria-controls={suggestions.length > 0 ? `${suggestionsId}-listbox` : undefined}
           aria-activedescendant={suggestions.length > 0 ? `${suggestionsId}-option-${activeSuggestion}` : undefined}
