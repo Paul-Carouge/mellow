@@ -104,6 +104,7 @@ pub fn direct_message_permissions(
                 | Permissions::READ_MESSAGE_HISTORY
                 | Permissions::ATTACH_FILES
                 | Permissions::ADD_REACTIONS
+                | Permissions::SEND_POLLS
         }
     }
 }
@@ -160,6 +161,20 @@ pub fn may_react_with_custom_emoji(
     channel_guild_id: Option<Snowflake>,
 ) -> bool {
     channel_guild_id == Some(emoji_guild_id)
+}
+
+/// Voting on a poll (ADR-0043): whoever reads a guild channel; in a conversation, only a
+/// participant who may still write there, so someone blocked cannot keep notifying the other
+/// with votes (ADR-0025), as with reactions.
+#[must_use]
+pub fn may_vote_in_poll(channel_permissions: Permissions, is_direct_message: bool) -> bool {
+    let reads = Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY;
+    let needed = if is_direct_message {
+        reads | Permissions::SEND_MESSAGES
+    } else {
+        reads
+    };
+    channel_permissions.contains(needed)
 }
 
 /// Pinning and unpinning: `MANAGE_MESSAGES` in a guild channel; in a conversation, where no one
@@ -696,6 +711,31 @@ mod tests {
         ));
         assert!(!may_manage_pins(
             direct_message_permissions(false, false, true),
+            true
+        ));
+    }
+
+    #[test]
+    fn polls_are_created_and_voted_on_by_readers_and_only_by_reachable_participants() {
+        let sends_polls = Permissions::SEND_MESSAGES | Permissions::SEND_POLLS;
+        assert!(direct_message_permissions(true, true, false).contains(sends_polls));
+        assert!(direct_message_permissions(true, false, true).contains(sends_polls));
+        assert!(
+            !direct_message_permissions(true, false, false).contains(Permissions::SEND_POLLS),
+            "a blocked conversation"
+        );
+        assert!(may_vote_in_poll(Permissions::DEFAULT_EVERYONE, false));
+        assert!(!may_vote_in_poll(Permissions::VIEW_CHANNEL, false));
+        assert!(may_vote_in_poll(
+            direct_message_permissions(true, false, true),
+            true
+        ));
+        assert!(!may_vote_in_poll(
+            direct_message_permissions(true, false, false),
+            true
+        ));
+        assert!(!may_vote_in_poll(
+            direct_message_permissions(false, true, true),
             true
         ));
     }

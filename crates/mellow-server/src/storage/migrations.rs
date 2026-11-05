@@ -2181,6 +2181,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn polls_and_their_votes_go_with_their_message_and_votes_with_their_voter() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) \
+             VALUES (30, 20, 1, ''), (31, 20, 1, ''); \
+             INSERT INTO polls (message_id, question, allows_multiple_answers, \
+             expires_at_unix_milliseconds) VALUES (30, 'q', 0, 9), (31, 'q', 1, 9); \
+             INSERT INTO poll_answers (message_id, answer_id, text) \
+             VALUES (30, 1, 'a'), (30, 2, 'b'), (31, 1, 'a'); \
+             INSERT INTO poll_votes (message_id, answer_id, user_id) \
+             VALUES (30, 1, 1), (30, 2, 2), (31, 1, 2); \
+             DELETE FROM messages WHERE id = 30; \
+             DELETE FROM users WHERE id = 2;",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let polls: Vec<i64> = sqlx::query_scalar("SELECT message_id FROM polls")
+            .fetch_all(database.writer())
+            .await
+            .unwrap();
+        let answers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM poll_answers")
+            .fetch_one(database.writer())
+            .await
+            .unwrap();
+        let votes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM poll_votes")
+            .fetch_one(database.writer())
+            .await
+            .unwrap();
+        let out_of_range = sqlx::query(
+            "INSERT INTO poll_answers (message_id, answer_id, text) VALUES (31, 11, 'x')",
+        )
+        .execute(database.writer())
+        .await;
+        database.close().await;
+
+        assert_eq!(polls, [31]);
+        assert_eq!(answers, 1);
+        assert_eq!(votes, 0, "the deleted poll's and the deleted voter's");
+        assert!(out_of_range.is_err(), "at most 10 answers");
+    }
+
+    #[tokio::test]
     async fn a_database_from_a_newer_binary_is_refused_even_with_nothing_pending() {
         let directory = tempfile::tempdir().unwrap();
         let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())

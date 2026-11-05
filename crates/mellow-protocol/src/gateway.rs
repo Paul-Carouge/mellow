@@ -452,10 +452,12 @@ pub enum GatewayEvent {
         guild_id: Snowflake,
         sound_id: Option<Snowflake>,
     },
-    /// Someone reacted to a message. Sent to the channel's viewers, the reacting user included.
-    /// A vote on a poll (ADR-0043); older clients skip it.
+    /// Someone voted on a poll (ADR-0043). Sent to the channel's viewers, the voter included;
+    /// older clients skip it.
     MessagePollVoteAdd(PollVote),
+    /// Someone took their vote back, or moved it (a single-choice poll).
     MessagePollVoteRemove(PollVote),
+    /// Someone reacted to a message. Sent to the channel's viewers, the reacting user included.
     MessageReactionAdd(MessageReaction),
     /// Someone took their reaction back, or a moderator removed it.
     MessageReactionRemove(MessageReaction),

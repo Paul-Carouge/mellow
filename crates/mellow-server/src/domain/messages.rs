@@ -715,6 +715,10 @@ impl Messages {
             .map_or(!request.attachment_ids.is_empty(), |forwarded| {
                 !forwarded.attachments.is_empty()
             });
+        // Every send's nonce, whatever the message carries.
+        if let Some(nonce) = &request.nonce {
+            validate_nonce(nonce)?;
+        }
         let poll = polls::checked_poll(request)?;
         let needed = if poll.is_some() {
             permissions_to_send(has_files) | Permissions::SEND_POLLS
@@ -2952,6 +2956,29 @@ mod tests {
                 NOW,
             )
             .await;
+        let with_long_nonce = messages
+            .send(
+                owner,
+                general,
+                SendMessageRequest {
+                    nonce: Some("n".repeat(65)),
+                    ..poll_request(false)
+                },
+                NOW,
+            )
+            .await;
+        let conversation = messages
+            .open_direct_message(member, open_with(owner), NOW)
+            .await
+            .unwrap();
+        let in_conversation = messages
+            .send(member, conversation.id, poll_request(false), NOW)
+            .await
+            .unwrap();
+        messages
+            .add_poll_vote(owner, conversation.id, in_conversation.id, 1, NOW)
+            .await
+            .unwrap();
         while owner_events.try_recv().is_ok() {}
         let vote = |user, message: Snowflake, answer, now| {
             messages.add_poll_vote(user, general, message, answer, now)
@@ -2986,10 +3013,13 @@ mod tests {
             .send(owner, lounge.id, forward_of(general, single.id), NOW)
             .await;
         let ended_by_other = messages.end_poll(member, general, single.id, NOW).await;
+        while owner_events.try_recv().is_ok() {}
         messages
             .end_poll(owner, general, single.id, NOW)
             .await
             .unwrap();
+        let end_event: serde_json::Value =
+            serde_json::from_str(&owner_events.try_recv().unwrap().payload_json).unwrap();
         let after_end = vote(member, single.id, 3, NOW).await;
         let after_expiry = vote(owner, multiple.id, 2, NOW + HOUR).await;
         fixture
@@ -3032,6 +3062,17 @@ mod tests {
             with_text,
             Err(MessageError::InvalidInput(MessageRuleViolation::Poll))
         ));
+        assert!(
+            matches!(
+                with_long_nonce,
+                Err(MessageError::InvalidInput(MessageRuleViolation::Nonce))
+            ),
+            "a poll's nonce is checked like any other"
+        );
+        assert!(in_conversation.poll.is_some(), "participants create polls");
+        assert_eq!(end_event["t"], "MESSAGE_UPDATE");
+        assert_eq!(end_event["data"]["poll"]["ended_at_unix_milliseconds"], NOW);
+        assert_eq!(end_event["data"]["poll"]["answers"][1]["vote_count"], 2);
         assert_eq!(
             vote_events,
             [

@@ -11,6 +11,7 @@ use crate::domain::guilds::GuildError;
 use crate::domain::message_rules::{
     MessageRuleViolation, reacting_users_page_size, validated_poll,
 };
+use crate::domain::permissions::may_vote_in_poll;
 use crate::domain::profile_images::{fill_profile_images, profile_images_of_user};
 use crate::storage::Database;
 use crate::storage::polls::{self as storage, NewStoredPoll, StoredPoll, VoteOutcome, VoteRefusal};
@@ -130,20 +131,25 @@ pub(super) async fn poll_of(
 }
 
 impl Messages {
-    /// The channel and message of a poll the user may vote on or list: they read the channel.
+    /// The channel and message of a poll the user reads; `is_vote` also asks that they may vote
+    /// (`may_vote_in_poll`).
     async fn poll_target(
         &self,
         user_id: Snowflake,
         channel_id: Snowflake,
         message_id: Snowflake,
+        is_vote: bool,
     ) -> Result<(super::MessageChannel, super::StoredMessage), MessageError> {
-        let (channel, _) = self
+        let (channel, permissions) = self
             .text_channel_and_permissions_requiring(
                 user_id,
                 channel_id,
                 Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY,
             )
             .await?;
+        if is_vote && !may_vote_in_poll(permissions, channel.guild_id().is_none()) {
+            return Err(GuildError::MissingPermissions.into());
+        }
         let message = self.message_in_channel(channel.id(), message_id).await?;
         if !storage::has_poll(&self.database, message.id).await? {
             return Err(MessageError::MessageNotFound);
@@ -161,7 +167,9 @@ impl Messages {
         answer_id: u32,
         now_unix_milliseconds: u64,
     ) -> Result<(), MessageError> {
-        let (channel, message) = self.poll_target(user_id, channel_id, message_id).await?;
+        let (channel, message) = self
+            .poll_target(user_id, channel_id, message_id, true)
+            .await?;
         let audience = self.audience(&channel).await?;
         let vote = |answer_id| PollVote {
             guild_id: channel.guild_id(),
@@ -209,7 +217,9 @@ impl Messages {
         answer_id: u32,
         now_unix_milliseconds: u64,
     ) -> Result<(), MessageError> {
-        let (channel, message) = self.poll_target(user_id, channel_id, message_id).await?;
+        let (channel, message) = self
+            .poll_target(user_id, channel_id, message_id, true)
+            .await?;
         let audience = self.audience(&channel).await?;
         match storage::remove_vote(
             &self.database,
@@ -247,7 +257,9 @@ impl Messages {
         message_id: Snowflake,
         now_unix_milliseconds: u64,
     ) -> Result<(), MessageError> {
-        let (channel, message) = self.poll_target(user_id, channel_id, message_id).await?;
+        let (channel, message) = self
+            .poll_target(user_id, channel_id, message_id, true)
+            .await?;
         if message.author_id != user_id {
             return Err(GuildError::MissingPermissions.into());
         }
@@ -282,7 +294,9 @@ impl Messages {
         query: ReactionUsersQuery,
     ) -> Result<Vec<PublicUser>, MessageError> {
         let limit = reacting_users_page_size(query.limit)?;
-        let (_, message) = self.poll_target(user_id, channel_id, message_id).await?;
+        let (_, message) = self
+            .poll_target(user_id, channel_id, message_id, false)
+            .await?;
         let mut users: Vec<PublicUser> =
             storage::list_voters(&self.database, message.id, answer_id, query.after, limit)
                 .await?

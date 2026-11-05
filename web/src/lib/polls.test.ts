@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isPollEnded, withPollVote, withReaderVotesKept } from "./polls";
+import { isPollEnded, withPollVote } from "./polls";
 import type { Poll } from "./protocol";
 
 const poll: Poll = {
@@ -23,13 +23,6 @@ describe("polls", () => {
     const theirs = withPollVote(mine, 1, -1, false);
     expect(theirs.answers[0]).toMatchObject({ vote_count: 0, me_voted: false });
     expect(withPollVote(theirs, 1, -1, false).answers[0]?.vote_count).toBe(0);
-  });
-
-  it("keeps the reader's votes over an event's poll", () => {
-    const cached = withPollVote(poll, 2, 1, true);
-    const fromEvent: Poll = { ...cached, answers: cached.answers.map((answer) => ({ ...answer, me_voted: false })) };
-    expect(withReaderVotesKept(fromEvent, cached).answers[1]?.me_voted).toBe(true);
-    expect(withReaderVotesKept(fromEvent, undefined)).toBe(fromEvent);
   });
 
   it("ends at its expiry or when ended early", () => {

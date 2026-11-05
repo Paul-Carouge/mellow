@@ -19,7 +19,7 @@ import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
 import { CustomEmojiLibrary } from "./custom-emoji-library.svelte";
 import { reactionKey, withReactionAdded, withReactionRemoved, withoutEmoji } from "./reactions";
-import { withPollVote, withReaderVotesKept } from "./polls";
+import { withPollVote } from "./polls";
 import { type MentionReader, doesMessageMentionReader } from "./reader-mentions";
 import { Relationships } from "./relationships.svelte";
 import {
@@ -627,8 +627,9 @@ export class MellowClient {
               ? {
                   ...updated,
                   reactions: message.reactions,
-                  // Events never carry the reader's votes: their marks stay.
-                  poll: updated.poll ? withReaderVotesKept(updated.poll, message.poll) : updated.poll,
+                  // Votes follow their own events, as reactions do: an update may have read the
+                  // counts before a vote, so only the poll's end is taken from it.
+                  poll: updated.poll && message.poll ? { ...updated.poll, answers: message.poll.answers } : updated.poll,
                   link_previews:
                     (message.edited_at_unix_milliseconds ?? 0) < (updated.edited_at_unix_milliseconds ?? 0)
                       ? updated.link_previews

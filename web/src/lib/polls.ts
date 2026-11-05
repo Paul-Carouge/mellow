@@ -16,23 +16,6 @@ export function withPollVote(poll: Poll, answerId: number, change: 1 | -1, isMin
   };
 }
 
-/**
- * A poll from an event over the cached one: events carry counts but never the reader's votes
- * (`me_voted` is always false there), so the cached marks stay.
- */
-export function withReaderVotesKept(updated: Poll, cached: Poll | undefined): Poll {
-  if (!cached) {
-    return updated;
-  }
-  return {
-    ...updated,
-    answers: updated.answers.map((answer) => ({
-      ...answer,
-      me_voted: cached.answers.find((known) => known.id === answer.id)?.me_voted ?? false,
-    })),
-  };
-}
-
 /** Whether no more votes are taken at `now`. */
 export function isPollEnded(poll: Poll, nowUnixMilliseconds: number): boolean {
   return poll.ended_at_unix_milliseconds !== undefined || poll.expires_at_unix_milliseconds <= nowUnixMilliseconds;
