@@ -3,9 +3,42 @@
 
 import { strings } from "../i18n";
 import type { VoiceDisconnectReason, VoiceJoinRefusal } from "../lib/protocol";
+import type { ScreenSoundNotice, SoundlessShareAdvice } from "../lib/screen-share";
 import { type LatencyQuality, latencyQuality } from "../lib/voice";
-import type { VoiceProblem } from "../lib/voice-session.svelte";
+import type { VoiceProblem, VoiceSession } from "../lib/voice-session.svelte";
 import type { IconName } from "./Icon.svelte";
+
+// Said both by the panel, which loads once voice starts, and by its live regions, which never wait.
+
+/** What your share sends as sound, said under the live line so it is never a guess. */
+export function describeSharedSound(voice: VoiceSession): string {
+  switch (voice.sharedSound) {
+    case "screen":
+      return strings.screenShare.sharedSound.screen;
+    case "input": {
+      const source = voice.screenSoundDevices.find((device) => device.deviceId === voice.screenSoundDeviceId);
+      return strings.screenShare.sharedSound.input(source?.label ?? strings.screenShare.audioInputHint);
+    }
+    case "none":
+      return strings.screenShare.sharedSound.none;
+    default:
+      return "";
+  }
+}
+
+export function screenSoundNoticeSentence(notice: ScreenSoundNotice | null, advice: SoundlessShareAdvice): string {
+  if (notice === null) {
+    return "";
+  }
+  return notice === "no-sound" ? strings.screenShare.soundNotices["no-sound"][advice] : strings.screenShare.soundNotices["source-unavailable"];
+}
+
+export function describeMissingDevices(voice: VoiceSession): string[] {
+  return [
+    voice.isInputDeviceMissing && strings.voice.inputDeviceMissing,
+    voice.isOutputDeviceMissing && strings.voice.outputDeviceMissing,
+  ].filter((notice): notice is string => typeof notice === "string");
+}
 
 export interface SignalLook {
   readonly icon: IconName;
