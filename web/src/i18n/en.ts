@@ -192,7 +192,8 @@ export const en = {
     serverSettings: "Server settings",
     leaveServer: "Leave server",
     channelsIn: (server: string) => `Channels in ${server}`,
-    noConversations: "No conversations yet. Message a friend, or someone from a server's member list.",
+    noConversationsTitle: "No conversations yet",
+    noConversations: "Message a friend, or someone from a server's member list.",
     friends: "Friends",
     /** The Friends entry's name, with the count its red badge shows. */
     friendsWithRequests: (incoming: number) =>

@@ -190,8 +190,8 @@ export const fr: Catalogue = {
     serverSettings: "Paramètres du serveur",
     leaveServer: "Quitter le serveur",
     channelsIn: (server) => `Salons de ${server}`,
-    noConversations:
-      "Aucune conversation pour l’instant. Écris à un ami, ou à quelqu’un de la liste des membres d’un serveur.",
+    noConversationsTitle: "Pas encore de conversation",
+    noConversations: "Écris à un ami, ou à quelqu’un de la liste des membres d’un serveur.",
     friends: "Amis",
     friendsWithRequests: (incoming) =>
       incoming > 0
