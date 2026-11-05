@@ -9,6 +9,8 @@
     readonly icon: IconName;
     /** `accent` is Discord's highlighted "Invite people"; `danger` items come last, separated. */
     readonly tone?: "normal" | "accent" | "danger";
+    /** The action's own shortcut, for screen readers (`aria-keyshortcuts`, "Control+K"). */
+    readonly keyShortcuts?: string;
   }
 
   /**
@@ -206,6 +208,7 @@
           type="button"
           role="menuitem"
           aria-disabled={isWaiting || undefined}
+          aria-keyshortcuts={entry.keyShortcuts}
           class={[
             "flex min-h-(--mw-component-context-menu-item-height) w-full items-center justify-between gap-xs rounded-(--mw-component-context-menu-item-radius) px-(--mw-component-context-menu-item-padding-inline) py-3xs text-start type-menu-item focus-visible:focus-ring-inset aria-disabled:opacity-(--mw-component-button-disabled-opacity) pointer-coarse:min-h-(--mw-size-hit-web-min)",
             tone === "danger"

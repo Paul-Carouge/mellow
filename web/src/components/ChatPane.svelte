@@ -19,6 +19,7 @@
   } from "../lib/protocol";
   import { visibleChannelSections } from "./channel-settings";
   import Composer from "./Composer.svelte";
+  import ContextMenu, { type ContextMenuEntry } from "./ContextMenu.svelte";
   import { ComposerDrafts } from "./composer-drafts.svelte";
   import ConfirmMessageDialog from "./ConfirmMessageDialog.svelte";
   import { composerTextOf, withEmojiNamesAsMarkup } from "./custom-emoji";
@@ -55,8 +56,13 @@
     /** Below the sidebar breakpoint the header opens the navigation drawer. */
     hasNavigationDrawer: boolean;
     onopennavigation: () => void;
-    /** Message search (DESIGN.md 5.12): the field where the results sheet docks, else its magnifier. */
-    searchControl: Snippet;
+    /**
+     * Message search (DESIGN.md 5.12): the field where the results sheet docks, else its magnifier;
+     * with "Go to…" (5.10) unless that waits in the header's "More options" menu (phones).
+     */
+    searchControl: Snippet<[isGoToInMenu: boolean]>;
+    /** "Go to…" from the header's "More options" menu. */
+    onopenquickswitcher: () => void;
     isMemberListOpen: boolean;
     ontogglememberlist: () => void;
     /** The header's gear: the open channel's settings. */
@@ -72,6 +78,7 @@
     hasNavigationDrawer,
     onopennavigation,
     searchControl,
+    onopenquickswitcher,
     isMemberListOpen,
     ontogglememberlist,
     oneditchannel,
@@ -156,6 +163,15 @@
   let isPinsPanelOpen = $state(false);
   let pinsButton = $state<HTMLButtonElement | null>(null);
   const pinsPanelToggle = createPopoverToggle(() => isPinsPanelOpen);
+  // Phones (the drawer layout) keep the drawer key, the name, search and members in the header,
+  // and fold "Go to…", the pins, "Add friends" and the channel settings into one menu, so the
+  // channel's name stays readable at 320 px.
+  let moreOptionsButton = $state<HTMLButtonElement | null>(null);
+  let moreOptionsMenu = $state<ContextMenu | null>(null);
+  let isMoreOptionsOpen = $state(false);
+  const moreOptionsToggle = createPopoverToggle(() => isMoreOptionsOpen);
+  /** The pins panel opens under its own key, or under "More options" on phones. */
+  const pinsPanelAnchor = $derived(hasNavigationDrawer ? moreOptionsButton : pinsButton);
   let actionError = $state("");
   /** Information rather than a failure (a search result too far back): quiet, not red. */
   let notice = $state("");
@@ -231,10 +247,11 @@
   const typing = $derived(channelId ? typingSegments(client.typingUserIds(channelId, now).map(nameOfUser)) : []);
 
   // What others wrote before the visit and has not been seen yet, for the jump bar (DESIGN.md §5.4).
-  const unreadBarText = $derived.by(() => {
+  // Phones show only the count, so the bar stays one line beside "Mark as read".
+  const unreadBar = $derived.by((): { sentence: string; short: string } | null => {
     const marker = channelId ? client.unreadMarkers.get(channelId) : undefined;
     if (!channelId || !marker) {
-      return "";
+      return null;
     }
     const summary = unreadSummary(
       client.messages(channelId),
@@ -243,8 +260,11 @@
       client.reachedStartChannelIds.has(channelId),
     );
     return summary.count === 0
-      ? ""
-      : unreadBarLabel(summary, unixMillisecondsOfSnowflake(marker.lastReadMessageId), new Date());
+      ? null
+      : {
+          sentence: unreadBarLabel(summary, unixMillisecondsOfSnowflake(marker.lastReadMessageId), new Date()),
+          short: strings.chat.newMessagesShort(summary.count, summary.isPartial),
+        };
   });
   // Handed to the list, which opens on the "New" divider below whatever height the bar wraps to.
   let unreadBar = $state<HTMLElement | null>(null);
@@ -414,6 +434,21 @@
     }
   }
 
+  const moreOptionsEntries = $derived.by((): ContextMenuEntry[] => [
+    { label: strings.chat.goTo, icon: "compass", keyShortcuts: "Control+K", onselect: onopenquickswitcher },
+    { label: strings.pins.pinnedMessages, icon: "push-pin", onselect: () => (isPinsPanelOpen = true) },
+    ...(isGroup ? [{ label: strings.groups.addFriendsToGroup, icon: "user-plus" as const, onselect: onaddtogroup }] : []),
+    ...(channel && canEditChannel
+      ? [{ label: strings.chat.channelSettings, icon: "gear-six" as const, onselect: () => oneditchannel(channel) }]
+      : []),
+  ]);
+
+  function openMoreOptions() {
+    if (moreOptionsButton) {
+      moreOptionsMenu?.open({ kind: "anchor", bounds: moreOptionsButton.getBoundingClientRect(), align: "end" }, moreOptionsButton);
+    }
+  }
+
   const headerButtonClass =
     "size-(--mw-component-chat-header-button-size) text-(--mw-component-chat-header-icon) hover:bg-state-hover hover:text-text-normal";
 
@@ -578,7 +613,13 @@
       />
     {/if}
     {#if channel || conversation}
-      <div class="flex max-w-1/2 min-w-0 items-center gap-2xs text-(--mw-component-chat-header-name-text)">
+      <!-- On phones the name takes all the room the keys leave; elsewhere half, beside the topic. -->
+      <div
+        class={[
+          "flex min-w-0 items-center gap-2xs text-(--mw-component-chat-header-name-text)",
+          hasNavigationDrawer ? "flex-1" : "max-w-1/2",
+        ]}
+      >
         {#if channelIcon}
           {@const iconId = channelIcon.id}
           <img
@@ -617,12 +658,13 @@
       <p class="min-w-0 flex-1 truncate type-body text-(--mw-component-group-avatar-member-count-text)">
         {strings.groups.memberCount(participantCount(conversation, user?.id ?? null))}
       </p>
-    {:else}
+    {:else if !hasNavigationDrawer || !(channel || conversation)}
       <span class="flex-1"></span>
     {/if}
     <!-- Where Discord has it; Ctrl+K stays the quick switcher, offered again in its suggestions. -->
-    {@render searchControl()}
-    {#if channel && canEditChannel}
+    {@render searchControl(hasNavigationDrawer)}
+    <!-- Phones fold these keys into "More options", after the member toggle. -->
+    {#if channel && canEditChannel && !hasNavigationDrawer}
       <IconButton
         icon="gear-six"
         label={strings.chat.channelSettings}
@@ -632,7 +674,7 @@
         onclick={() => oneditchannel(channel)}
       />
     {/if}
-    {#if channel || conversation}
+    {#if (channel || conversation) && !hasNavigationDrawer}
       <IconButton
         bind:element={pinsButton}
         icon="push-pin"
@@ -645,7 +687,7 @@
         onclick={() => (isPinsPanelOpen = pinsPanelToggle.shouldOpenOnClick())}
       />
     {/if}
-    {#if isGroup}
+    {#if isGroup && !hasNavigationDrawer}
       <!-- Discord's "Add friends to DM" in the header; the members sheet has the same action. -->
       <IconButton
         icon="user-plus"
@@ -668,15 +710,45 @@
         onclick={ontogglememberlist}
       />
     {/if}
+    {#if (channel || conversation) && hasNavigationDrawer}
+      <IconButton
+        bind:element={moreOptionsButton}
+        icon="dots-three"
+        label={strings.chat.moreOptions}
+        aria-haspopup="menu"
+        aria-expanded={isMoreOptionsOpen}
+        aria-controls="chat-more-options"
+        class="{headerButtonClass} aria-expanded:text-text-heading"
+        iconClass="size-(--mw-component-chat-header-icon-size)"
+        onpointerdown={moreOptionsToggle.notePress}
+        onclick={() => (moreOptionsToggle.shouldOpenOnClick() ? openMoreOptions() : moreOptionsMenu?.close())}
+      />
+    {/if}
   </header>
 
-  {#if unreadBarText}
+  {#if hasNavigationDrawer}
+    <ContextMenu
+      bind:this={moreOptionsMenu}
+      bind:isOpen={isMoreOptionsOpen}
+      id="chat-more-options"
+      label={strings.chat.moreOptions}
+      entries={moreOptionsEntries}
+      gapToken="space-2xs"
+    />
+  {/if}
+
+  {#if unreadBar}
     <!-- Over the list, under the header, so the rows being read do not move. -->
     <div
       bind:this={unreadBar}
       class="unread-bar absolute inset-x-md top-[calc(var(--mw-component-chat-header-height)_+_var(--mw-space-2xs))] z-10 flex min-h-(--mw-component-jump-bar-height) items-center justify-between gap-xs rounded-(--mw-component-jump-bar-radius) bg-(--mw-component-jump-bar-background) ps-sm pe-2xs type-body font-semibold text-(--mw-component-jump-bar-text) pointer-coarse:min-h-(--mw-size-hit-web-min)"
     >
-      <span class="min-w-0">{unreadBarText}</span>
+      {#if hasNavigationDrawer}
+        <span class="sr-only">{unreadBar.sentence}</span>
+        <span aria-hidden="true" class="min-w-0 truncate">{unreadBar.short}</span>
+      {:else}
+        <span class="min-w-0">{unreadBar.sentence}</span>
+      {/if}
       <button
         type="button"
         aria-keyshortcuts="Escape"
@@ -750,7 +822,7 @@
       canChooseGifs={client.gifSettings !== null}
       {canCreatePolls}
       isGifPickerOpen={gifPickerAnchor !== null}
-      hasUnreadBar={unreadBarText !== ""}
+      hasUnreadBar={unreadBar !== null}
       maximumHeight={maximumComposerHeight}
       onopenemojipicker={(anchor) => (picker = { message: null, anchor })}
       onopengifpicker={(anchor) => (gifPickerAnchor = anchor)}
@@ -840,11 +912,11 @@
   </LazyComponent>
 {/if}
 
-{#if isPinsPanelOpen && channelId && pinsButton}
+{#if isPinsPanelOpen && channelId && pinsPanelAnchor}
   <PinnedMessagesPanel
     {client}
     {channelId}
-    anchor={pinsButton}
+    anchor={pinsPanelAnchor}
     isCompact={hasNavigationDrawer}
     canManagePins={reactionAndPinActions.canManagePins}
     onjump={(messageId) => void messageList?.revealMessage(messageId)}
@@ -852,7 +924,7 @@
     onclose={(shouldReturnFocus) => {
       isPinsPanelOpen = false;
       if (shouldReturnFocus) {
-        pinsButton?.focus();
+        pinsPanelAnchor?.focus();
       }
     }}
   />

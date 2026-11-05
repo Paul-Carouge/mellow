@@ -84,6 +84,14 @@ describe("catalogues", () => {
     expect(fr.chat.newMessagesSince(1, true, "hier à 09:15")).toBe("1+ nouveaux messages depuis hier à 09:15");
   });
 
+  it("word the phone's unread bar with its count alone", () => {
+    expect(en.chat.newMessagesShort(12, false)).toBe("12 new");
+    expect(en.chat.newMessagesShort(50, true)).toBe("50+ new");
+    expect(fr.chat.newMessagesShort(1, false)).toBe("1 nouveau");
+    expect(fr.chat.newMessagesShort(12, false)).toBe("12 nouveaux");
+    expect(fr.chat.newMessagesShort(1, true)).toBe("1+ nouveaux");
+  });
+
   it("group large numbers and sizes the French way", () => {
     expect(fr.members.groupLabel("En ligne", 1204)).toBe("En ligne, 1 204 membres");
     expect(fr.fileSize.inUnit("2,4", "MB")).toBe("2,4 Mo");

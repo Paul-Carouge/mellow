@@ -567,10 +567,12 @@
   }}
 />
 
-{#snippet searchControl()}
+{#snippet searchControl(isGoToInMenu = false)}
   <!-- Both ways around the header, as the owner asked: the quick switcher ("Go to…", Ctrl K) and
-       message search (Ctrl F). -->
-  <QuickSwitcherTrigger isBesideSearchField={hasRoomForSearchSheet.current} onopen={() => (isQuickSwitcherOpen = true)} />
+       message search (Ctrl F). On phones the chat header offers "Go to…" in its "More options". -->
+  {#if !isGoToInMenu}
+    <QuickSwitcherTrigger isBesideSearchField={hasRoomForSearchSheet.current} onopen={() => (isQuickSwitcherOpen = true)} />
+  {/if}
   {#if hasRoomForSearchSheet.current}
     <MessageSearchField
       {client}
@@ -694,6 +696,7 @@
           hasNavigationDrawer={!hasRoomForNavigator.current}
           onopennavigation={() => (isNavigationDrawerOpen = true)}
           {searchControl}
+          onopenquickswitcher={() => (isQuickSwitcherOpen = true)}
           isMemberListOpen={isMemberSheetOpen}
           ontogglememberlist={toggleMemberSheet}
           oneditchannel={openChannelSettings}

@@ -536,9 +536,13 @@ export const en = {
     goTo: "Go to…",
     memberList: "Member list",
     channelSettings: "Channel settings",
+    /** Phones: the header's menu holding "Go to…", the pins and the channel settings. */
+    moreOptions: "More options",
     markAsRead: "Mark as read",
     newMessagesSince: (newCount: number, isPartial: boolean, since: string) =>
       `${count(newCount)}${isPartial ? "+" : ""} new ${plural(isPartial ? 2 : newCount, { one: "message", other: "messages" })} since ${since}`,
+    /** The unread bar on phones, where the sentence would wrap; screen readers still hear it whole. */
+    newMessagesShort: (newCount: number, isPartial: boolean) => `${count(newCount)}${isPartial ? "+" : ""} new`,
     composerInChannel: (channel: string) => `Message #${channel}`,
     composerToPerson: (person: string) => `Message @${person}`,
     welcomeToChannel: (channel: string) => `Welcome to #${channel}`,
@@ -1266,6 +1270,8 @@ export const en = {
 
   /** Message search (DESIGN.md 5.12): the header's field, its suggestions and the results sheet. */
   search: {
+    /** The header's field at rest: its scope, cut mid-word there, shows once the field widens on focus. */
+    placeholder: "Search",
     placeholderInServer: (server: string) => `Search ${server}`,
     placeholderInConversations: "Search conversations",
     fieldLabelInServer: (server: string) => `Search messages in ${server}`,
