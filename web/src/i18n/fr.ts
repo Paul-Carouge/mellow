@@ -883,6 +883,9 @@ export const fr: Catalogue = {
   attachmentTray: {
     filesToSend: "Fichiers à envoyer",
     uploading: "Envoi…",
+    compressing: (percent) => `Compression… ${count(percent)}${NARROW_NO_BREAK_SPACE}%`,
+    sendOriginal: "Envoyer l’original",
+    sendOriginalOf: (fileName) => `Envoyer l’original de ${fileName}`,
     remove: (fileName) => `Retirer ${fileName}`,
     retry: (fileName) => `Réessayer d’envoyer ${fileName}`,
   },

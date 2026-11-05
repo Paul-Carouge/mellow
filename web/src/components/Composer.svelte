@@ -13,6 +13,7 @@
     type Snowflake,
     MAXIMUM_MESSAGE_LENGTH,
   } from "../lib/protocol";
+  import { canCompressVideosHere, compressVideoInWorker } from "../lib/video-compression-protocol";
   import AttachmentTray, { type AttachmentTrayItem } from "./AttachmentTray.svelte";
   import { autosize } from "./autosize";
   import Avatar from "./Avatar.svelte";
@@ -143,7 +144,11 @@
   let uploadAnnouncement = $state("");
   let isUnblocking = $state(false);
 
-  const isUploading = $derived(drafts.trayItems.some((item) => item.status === "uploading"));
+  const isUploading = $derived(
+    drafts.trayItems.some((item) => item.status === "uploading" || item.status === "compressing"),
+  );
+  /** Asked once: the browser has WebCodecs encoding and Workers (ADR-0046). */
+  const CAN_COMPRESS_VIDEOS = canCompressVideosHere();
   const uploadedAttachments = $derived(
     drafts.trayItems.flatMap((item) => (item.status === "uploaded" && item.attachment ? [item.attachment] : [])),
   );
@@ -232,7 +237,7 @@
       actionError = TOO_MANY_ATTACHMENTS_SENTENCE;
     }
     for (const file of files.slice(0, room)) {
-      void upload(drafts.attach(file));
+      void compressThenUpload(drafts.attach(file));
     }
   }
 
@@ -276,6 +281,32 @@
       actionError = "";
     }
     onsent();
+  }
+
+  /** Videos are compressed in a Worker first (ADR-0046); the instance's limit is checked on the result. */
+  async function compressThenUpload(item: AttachmentTrayItem) {
+    if (CAN_COMPRESS_VIDEOS && item.file.type.startsWith("video/")) {
+      item.status = "compressing";
+      try {
+        item.file = await compressVideoInWorker(
+          item.file,
+          client.maximumAttachmentBytes,
+          (fraction) => (item.compressionProgress = fraction),
+          item.compressionAbort.signal,
+        );
+      } catch (error) {
+        // Aborted by "Send the original" or a removal, or the Worker could not start: the original goes.
+        if (!item.compressionAbort.signal.aborted) {
+          console.warn("couldn't start compressing a video", error);
+        }
+      }
+      // Removed from the tray meanwhile: nothing to upload.
+      if (item.uploadAbort.signal.aborted) {
+        return;
+      }
+      item.status = "uploading";
+    }
+    await upload(item);
   }
 
   async function upload(item: AttachmentTrayItem) {
@@ -648,7 +679,12 @@
       </div>
     {/if}
     {#if canSendMessages && drafts.trayItems.length > 0}
-      <AttachmentTray items={drafts.trayItems} onremove={removeTrayItem} onretry={retryUpload} />
+      <AttachmentTray
+        items={drafts.trayItems}
+        onremove={removeTrayItem}
+        onretry={retryUpload}
+        onsendoriginal={(item) => item.compressionAbort.abort()}
+      />
     {/if}
     <div class="flex items-end gap-2xs px-xs">
       {#if canSendMessages}

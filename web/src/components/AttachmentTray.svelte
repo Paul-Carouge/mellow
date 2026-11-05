@@ -7,12 +7,17 @@
     file: File;
     /** Object URL of a previewable image; revoked when the item leaves the tray. */
     previewUrl: string | null;
-    status: "uploading" | "uploaded" | "failed";
+    /** A video is compressed in the browser before it uploads (ADR-0046). */
+    status: "compressing" | "uploading" | "uploaded" | "failed";
+    /** How far compression got, from 0 to 1. */
+    compressionProgress: number;
     attachment: Attachment | null;
     /** Why the upload failed, as a sentence; empty otherwise. */
     error: string;
     /** Stops the upload when the file leaves the tray. */
     uploadAbort: AbortController;
+    /** Stops compression; the original uploads instead unless the upload was aborted too. */
+    compressionAbort: AbortController;
   }
 </script>
 
@@ -27,9 +32,12 @@
     items: readonly AttachmentTrayItem[];
     onremove: (key: number) => void;
     onretry: (item: AttachmentTrayItem) => void;
+    onsendoriginal: (item: AttachmentTrayItem) => void;
   }
 
-  let { items, onremove, onretry }: Props = $props();
+  let { items, onremove, onretry, onsendoriginal }: Props = $props();
+
+  const PERCENT = 100;
 
   /** CSS cannot cut a name in the middle; an item's width fits about this many characters. */
   const FILE_NAME_MAXIMUM_CHARACTERS = 16;
@@ -49,7 +57,7 @@
       <div
         class={[
           "grid h-(--mw-component-composer-tray-item-preview-height) place-items-center overflow-hidden rounded-(--mw-component-composer-tray-item-radius) bg-(--mw-component-composer-tray-item-preview-background)",
-          item.status === "uploading" && "opacity-(--mw-component-composer-tray-item-uploading-opacity)",
+          (item.status === "uploading" || item.status === "compressing") && "opacity-(--mw-component-composer-tray-item-uploading-opacity)",
         ]}
       >
         {#if item.previewUrl}
@@ -77,6 +85,17 @@
           class="min-h-(--mw-size-hit-desktop-min) self-start type-body-sm text-(--mw-component-message-editor-hint-link) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
           aria-label={strings.attachmentTray.retry(item.file.name)}
           onclick={() => onretry(item)}>{strings.messages.retry}</button
+        >
+      {:else if item.status === "compressing"}
+        <p class="type-body-sm text-(--mw-component-composer-tray-item-status-text)">
+          {strings.attachmentTray.compressing(Math.floor(item.compressionProgress * PERCENT))}
+        </p>
+        <!-- Compressing a long clip can take a while: the reader may send it as it is instead. -->
+        <button
+          type="button"
+          class="min-h-(--mw-size-hit-desktop-min) self-start type-body-sm text-(--mw-component-message-editor-hint-link) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
+          aria-label={strings.attachmentTray.sendOriginalOf(item.file.name)}
+          onclick={() => onsendoriginal(item)}>{strings.attachmentTray.sendOriginal}</button
         >
       {:else}
         <p class="type-body-sm text-(--mw-component-composer-tray-item-status-text)">

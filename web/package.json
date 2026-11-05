@@ -23,7 +23,8 @@
     "vitest": "5.0.5"
   },
   "dependencies": {
-    "@sapphi-red/web-noise-suppressor": "0.4.1"
+    "@sapphi-red/web-noise-suppressor": "0.4.1",
+    "mediabunny": "1.65.2"
   },
   "//": [
     "allowScripts: fsevents (Vite's optional macOS file watcher) ships its prebuilt fsevents.node, so its install script has nothing to do; denying it explicitly silences npm's install-scripts warning without running unreviewed code.",
