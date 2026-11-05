@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-11-03
 - Amended: 2026-11-05 (compatible brands; metadata blanked and video size read at upload)
+- Amended by: [ADR-0046](0046-videos-compressed-in-the-uploaders-browser.md) (the web client compresses videos before they upload)
 - Amends: [ADR-0020](0020-attachments-and-avatars-encrypted-on-disk.md)
 
 ## Context
@@ -24,7 +25,7 @@ ROADMAP item 18 (owner, #roadmap): audio files played by clicking them whatever 
 - MP4, QuickTime and M4A uploads lose their `udta`, `meta` and XMP boxes (amended 2026-11-05, superseding "metadata kept"), which hold `©xyz`, Apple's ISO 6709 key and XMP GPS: titles, artists and cover art of M4A songs go with the location, since `udta` and `meta` hold both. Files uploaded before keep theirs: no migration rewrites sealed files. Other audio containers (MP3's ID3, FLAC, Ogg, WAV) and `WebM` keep their tags, which phones do not fill with a place. shortcut: GPS telemetry tracks (GoPro `gpmd`, Google `camm`, DJI) keep their samples in `mdat`, and vendor `uuid` boxes (Canon's CMT) are kept; zero those samples through `stco`/`stsz` when action-camera or drone uploads matter.
 - An odd but playable MP4 whose boxes break the walk's rules is now refused instead of stored; real recordings have a `moov` of a few hundred KiB and boxes three deep.
 - Audio and video uploaded before this change keep `application/octet-stream` and stay downloads (their type was stored at upload); no migration rewrites them.
-- No transcoding: a file plays when the reader's browser can decode its codec (H.264, VP8/VP9, AV1, AAC, MP3, Opus, Vorbis, FLAC and PCM cover what phones and recorders produce). HEVC in MP4 plays in Safari and some Chrome builds only.
+- No transcoding on the server (the web client compresses videos to H.264 before upload, ADR-0046): a file plays when the reader's browser can decode its codec (H.264, VP8/VP9, AV1, AAC, MP3, Opus, Vorbis, FLAC and PCM cover what phones and recorders produce). HEVC in MP4 plays in Safari and some Chrome builds only.
 
 ## Alternatives considered
 - **Sniffing at download time** so old uploads play too: clients choose the player from the type in the message, which would still say `application/octet-stream`; a migration reading and decrypting every file costs more than re-uploading the few concerned.
