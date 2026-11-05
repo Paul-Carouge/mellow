@@ -77,7 +77,9 @@ function isSameYouTubeVolume(first: MediaVolume, second: MediaVolume): boolean {
 /**
  * One player's side of the conversation: on ready, sends the remembered volume; then remembers
  * every volume the player reports. Reports of the player's own starting volume, which can still
- * arrive after the commands, are skipped until the player reports the volume it was sent.
+ * arrive after the commands, are skipped until the player reports the volume it was sent. The wait
+ * ends too at the first report of any other volume (the reader, or YouTube refusing the command,
+ * moved it), so a player that never reports the sent volume still remembers the reader's changes.
  */
 export function followYouTubeVolume(
   storage: Pick<Storage, "getItem" | "setItem"> | null,
@@ -85,6 +87,7 @@ export function followYouTubeVolume(
 ): (message: YouTubePlayerMessage) => void {
   let isReady = false;
   let awaitedVolume: MediaVolume | null = null;
+  let startingVolume: MediaVolume | null = null;
   return (message) => {
     if (message.kind === "ready") {
       if (isReady) {
@@ -98,13 +101,19 @@ export function followYouTubeVolume(
       return;
     }
     if (!isReady) {
+      startingVolume = message.volume;
       return;
     }
     if (awaitedVolume !== null) {
       if (isSameYouTubeVolume(message.volume, awaitedVolume)) {
         awaitedVolume = null;
+        return;
       }
-      return;
+      startingVolume ??= message.volume;
+      if (isSameYouTubeVolume(message.volume, startingVolume)) {
+        return;
+      }
+      awaitedVolume = null;
     }
     rememberMediaVolume(storage, message.volume);
   };

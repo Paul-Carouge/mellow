@@ -147,6 +147,36 @@ describe("followYouTubeVolume", () => {
     expect(readMediaVolume(storage)).toEqual({ volume: 0.8, isMuted: false });
   });
 
+  it("stops waiting when the player never reports the volume it was sent", () => {
+    // Volume 0 unmuted, set on an attachment: YouTube can answer `unMute` with a volume of its own.
+    const storage = memoryStorage();
+    writeMediaVolume(storage, { volume: 0, isMuted: false });
+    const follow = followYouTubeVolume(storage, () => {});
+
+    follow({ kind: "ready" });
+    follow(volumeMessage(1));
+    follow(volumeMessage(1));
+    expect(readMediaVolume(storage)).toEqual({ volume: 0, isMuted: false });
+
+    follow(volumeMessage(0.4));
+    expect(readMediaVolume(storage)).toEqual({ volume: 0.4, isMuted: false });
+  });
+
+  it("stops waiting when the browser keeps the player muted", () => {
+    const storage = memoryStorage();
+    writeMediaVolume(storage, { volume: 0.3, isMuted: false });
+    const follow = followYouTubeVolume(storage, () => {});
+
+    follow(volumeMessage(1));
+    follow({ kind: "ready" });
+    follow(volumeMessage(1));
+    follow(volumeMessage(0.3, true));
+    follow(volumeMessage(0.6, true));
+    expect(readMediaVolume(storage)).toEqual({ volume: 0.6, isMuted: true });
+    follow(volumeMessage(0.6));
+    expect(readMediaVolume(storage)).toEqual({ volume: 0.6, isMuted: false });
+  });
+
   it("sends the commands once even if the player says it is ready again", () => {
     const storage = memoryStorage();
     writeMediaVolume(storage, { volume: 0.5, isMuted: false });
