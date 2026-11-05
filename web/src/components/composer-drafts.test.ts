@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ComposerDrafts } from "./composer-drafts.svelte";
+import { ComposerDrafts, compressThenUpload } from "./composer-drafts.svelte";
 
 const GENERAL = "100";
 const RANDOM = "200";
@@ -173,6 +173,15 @@ describe("ComposerDrafts", () => {
     expect([open.aborted, aside.aborted]).toEqual([true, true]);
   });
 
+  it("binds each file to the channel open when it was attached, not the one open when it uploads", () => {
+    const drafts = new ComposerDrafts();
+    drafts.open(GENERAL);
+    const item = drafts.attach(imageFile("cat.png"));
+    drafts.open(RANDOM);
+
+    expect(item.channelId).toBe(GENERAL);
+  });
+
   it("starts a failed file over with a fresh upload", () => {
     const drafts = new ComposerDrafts();
     drafts.open(GENERAL);
@@ -184,5 +193,89 @@ describe("ComposerDrafts", () => {
     drafts.restartUpload(item);
 
     expect([item.status, item.error, item.uploadAbort.signal.aborted]).toEqual(["uploading", "", false]);
+  });
+});
+
+describe("compressThenUpload", () => {
+  function videoItem() {
+    const drafts = new ComposerDrafts();
+    drafts.open(GENERAL);
+    return drafts.attach(new File(["clip"], "clip.mov", { type: "video/quicktime" }));
+  }
+
+  /** A compression that runs until `signal` aborts, as the Worker does. */
+  function compressUntilAborted(_file: File, _onprogress: (fraction: number) => void, signal: AbortSignal) {
+    return new Promise<File>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+  }
+
+  it("uploads the compressed file and reports progress meanwhile", async () => {
+    const item = videoItem();
+    const compressed = new File(["small"], "clip.mp4", { type: "video/mp4" });
+    const uploaded: File[] = [];
+
+    await compressThenUpload(
+      item,
+      (_file, onprogress) => {
+        expect(item.status).toBe("compressing");
+        onprogress(0.5);
+        expect(item.compressionProgress).toBe(0.5);
+        return Promise.resolve(compressed);
+      },
+      (uploading) => void uploaded.push(uploading.file),
+    );
+
+    expect(uploaded).toEqual([compressed]);
+  });
+
+  it("uploads the original when the reader picks it during compression", async () => {
+    const item = videoItem();
+    const original = item.file;
+    const uploaded: File[] = [];
+
+    const done = compressThenUpload(item, compressUntilAborted, (uploading) => void uploaded.push(uploading.file));
+    item.compressionAbort.abort();
+    await done;
+
+    expect([uploaded, item.status]).toEqual([[original], "uploading"]);
+  });
+
+  it("uploads nothing when the video leaves the tray during compression", async () => {
+    const item = videoItem();
+    const upload = vi.fn();
+
+    const done = compressThenUpload(item, compressUntilAborted, upload);
+    item.uploadAbort.abort();
+    item.compressionAbort.abort();
+    await done;
+
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it("uploads the original when the compression cannot start", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const item = videoItem();
+    const original = item.file;
+    const uploaded: File[] = [];
+
+    await compressThenUpload(
+      item,
+      () => Promise.reject(new Error("no worker")),
+      (uploading) => void uploaded.push(uploading.file),
+    );
+
+    expect(uploaded).toEqual([original]);
+    vi.restoreAllMocks();
+  });
+
+  it("uploads other files, and videos where the browser cannot compress, at once", async () => {
+    const compress = vi.fn();
+    const uploaded: string[] = [];
+    const drafts = new ComposerDrafts();
+    drafts.open(GENERAL);
+
+    await compressThenUpload(drafts.attach(imageFile("cat.png")), compress, (item) => void uploaded.push(item.file.name));
+    await compressThenUpload(videoItem(), null, (item) => void uploaded.push(item.file.name));
+
+    expect([compress.mock.calls.length, uploaded]).toEqual([0, ["cat.png", "clip.mov"]]);
   });
 });

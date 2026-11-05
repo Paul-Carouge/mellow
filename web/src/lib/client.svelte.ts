@@ -1536,9 +1536,11 @@ export class MellowClient {
     return this.pendingMessages.filter((pending) => pending.channelId === channelId);
   }
 
-  /** Uploads one file to the open channel, for the next message sent there. */
-  uploadAttachment(file: File, signal: AbortSignal): Promise<Attachment> {
-    const channelId = this.selectedChannelId;
+  /**
+   * Uploads one file to `channelId`, for the next message sent there: the channel it was attached
+   * in, which may no longer be open once a video's compression ends.
+   */
+  uploadAttachment(channelId: Snowflake | null, file: File, signal: AbortSignal): Promise<Attachment> {
     if (!channelId) {
       return Promise.reject(new ApiError(404, "NOT_FOUND"));
     }

@@ -44,6 +44,7 @@ export class ComposerDrafts {
     const key = this.#nextTrayItemKey++;
     this.trayItems.push({
       key,
+      channelId: this.#openChannelId,
       file,
       previewUrl: PREVIEWABLE_IMAGE_TYPES.includes(file.type) ? URL.createObjectURL(file) : null,
       status: "uploading",
@@ -85,6 +86,41 @@ export class ComposerDrafts {
       letGo(draft.trayItems);
     }
   }
+}
+
+/** Turns a picked file into the one to send: rejects when `signal` aborts. */
+export type CompressVideo = (file: File, onprogress: (fraction: number) => void, signal: AbortSignal) => Promise<File>;
+
+/**
+ * A video is compressed first (ADR-0046), with `compress` (null where the browser cannot), then
+ * uploaded with `upload`: compressed, or the original when the reader asked for it or compression
+ * failed, and not at all when the item left the tray meanwhile. Other files upload at once.
+ */
+export async function compressThenUpload(
+  item: AttachmentTrayItem,
+  compress: CompressVideo | null,
+  upload: (item: AttachmentTrayItem) => Promise<void> | void,
+): Promise<void> {
+  if (compress !== null && item.file.type.startsWith("video/")) {
+    item.status = "compressing";
+    try {
+      item.file = await compress(
+        item.file,
+        (fraction) => (item.compressionProgress = fraction),
+        item.compressionAbort.signal,
+      );
+    } catch (error) {
+      // Aborted by "Send the original" or a removal, or the Worker could not start: the original goes.
+      if (!item.compressionAbort.signal.aborted) {
+        console.warn("couldn't start compressing a video", error);
+      }
+    }
+    if (item.uploadAbort.signal.aborted) {
+      return;
+    }
+    item.status = "uploading";
+  }
+  await upload(item);
 }
 
 /** Items leaving the tray: their compressions and uploads stop and their previews are freed. */
