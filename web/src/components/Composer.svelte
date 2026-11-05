@@ -426,7 +426,7 @@
       return;
     }
     if (suggestion.kind === "person") {
-      // The username: it always mentions, where a display name may be shared or hold spaces.
+      // The unique name (ADR-0048), spaces included: the longest name written after "@" mentions.
       void insertAt(`@${suggestion.person.username}`, suggestionQuery);
       return;
     }
