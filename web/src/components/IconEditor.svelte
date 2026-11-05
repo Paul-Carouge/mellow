@@ -157,7 +157,7 @@
       onchange={(event) => choose(event.currentTarget)}
     />
     <div class="mt-(--mw-component-settings-section-label-gap) flex flex-wrap gap-(--mw-component-settings-account-button-gap)">
-      <Button id="{id}-upload" variant="primary" aria-describedby="{id}-note" isDisabled={busy !== null} onclick={() => fileInput?.click()}>
+      <Button id="{id}-upload" aria-describedby="{id}-note" isDisabled={busy !== null} onclick={() => fileInput?.click()}>
         {busy === "upload" ? strings.iconEditor.uploading : strings.iconEditor.upload}
       </Button>
       {#if icon}

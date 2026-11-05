@@ -143,7 +143,6 @@
     <div class="mt-(--mw-component-settings-section-label-gap) flex flex-wrap gap-(--mw-component-settings-account-button-gap)">
       <Button
         id={changeButtonId(kind)}
-        variant="primary"
         aria-describedby="{id}-formats"
         isDisabled={busy !== null}
         onclick={() => fileInputs[kind]?.click()}

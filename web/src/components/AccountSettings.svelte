@@ -298,7 +298,7 @@
     </div>
   {:else}
     <div class="flex flex-col items-start gap-(--mw-component-settings-action-gap)">
-      <Button id={openerId("password")} variant="primary" isDisabled={isBusy} onclick={() => void open("password")}
+      <Button id={openerId("password")} isDisabled={isBusy} onclick={() => void open("password")}
         >{strings.account.changePassword}</Button
       >
       {@render savedNotice("password")}
