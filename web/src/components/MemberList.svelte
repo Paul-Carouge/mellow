@@ -13,7 +13,11 @@
   import { nameColorsByUserId } from "./name-colors.svelte";
   import PersonContextMenu from "./PersonContextMenu.svelte";
   import ProfileCard from "./ProfileCard.svelte";
+  import ProfileDetails from "./ProfileDetails.svelte";
   import RelationshipConfirmDialog from "./RelationshipConfirmDialog.svelte";
+  import RoleIcon from "./RoleIcon.svelte";
+  import { roleIconsByUserId } from "./role-icons";
+  import { createUserProfileLoader } from "./user-profile-loader.svelte";
 
   // The members side sheet (DESIGN.md §5.7, ADR-0022 §1): Online then Offline, offline avatars
   // dimmed while names keep full contrast; choosing a member shows their profile in the sheet,
@@ -35,6 +39,9 @@
   const members = $derived(client.membersByGuild.get(guild.id) ?? null);
   // Role colours on names, readable on the side sheet in the current theme (DESIGN.md §2.3).
   const nameColors = $derived(nameColorsByUserId(guild, members ?? undefined, "component-side-sheet-background"));
+  // Each member's highest role with an icon, beside their name (ADR-0050).
+  const roleIcons = $derived(roleIconsByUserId(guild, members ?? undefined));
+  const sheetId = $props.id();
   const isOnline = (userId: string) => client.presenceOf(userId) !== "offline";
   // Sorted only when the members change: a presence update just splits the sorted list again.
   const sortedMembers = $derived(membersSortedByDisplayName(members ?? []));
@@ -57,10 +64,13 @@
   let backButton = $state<HTMLButtonElement | null>(null);
   let isOpening = $state(false);
   let errorMessage = $state("");
+  // "About me" and links, read when a profile opens (ADR-0050).
+  const profileDetails = createUserProfileLoader((userId) => client.loadUserProfile(userId));
 
   async function showProfile(user: PublicUser, row: HTMLElement) {
     opener = row;
     profileUserId = user.id;
+    profileDetails.show(user.id);
     errorMessage = "";
     await tick();
     backButton?.focus();
@@ -68,6 +78,7 @@
 
   async function showMembers() {
     profileUserId = null;
+    profileDetails.show(null);
     await tick();
     if (opener?.isConnected) {
       opener.focus();
@@ -165,6 +176,14 @@
       {@const isSelf = profile.id === client.user?.id}
       <div class="profile-enter">
         <ProfileCard user={profile} surfaceToken="--mw-component-side-sheet-background">
+          {@const details = profileDetails.current}
+          {#if details.kind === "loaded" && details.userId === profile.id}
+            <ProfileDetails aboutMe={details.profile.about_me} links={details.profile.links} id="{sheetId}-details" />
+          {:else if details.kind === "failed" && details.userId === profile.id}
+            <p class="mt-(--mw-component-profile-popover-section-gap) type-body-sm text-(--mw-component-profile-popover-username-text)">
+              {strings.profileDetails.loadFailed}
+            </p>
+          {/if}
           {#if !isSelf}
             {@const user = profile}
             {@const person = displayName(user)}
@@ -260,10 +279,12 @@
             {@const isOnline = group.isOnline}
             {@const presence = client.presenceOf(member.user.id)}
             {@const customStatus = client.customStatusOf(member.user.id)}
+            {@const roleIcon = roleIcons.get(member.user.id)}
             <li class="mx-(--mw-component-member-row-margin-inline) mt-(--mw-component-member-row-gap)">
               <button
                 type="button"
-                aria-label={strings.members.memberLabel(displayName(member.user), strings.presence[presence], customStatus)}
+                aria-label={strings.members.memberLabel(displayName(member.user), strings.presence[presence], customStatus) +
+                  (roleIcon ? `, ${roleIcon.name}` : "")}
                 class="flex h-(--mw-component-member-row-height) w-full items-center gap-sm rounded-(--mw-component-member-row-radius) px-(--mw-component-member-row-padding-inline) text-start text-(--mw-component-member-row-name-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-member-row-background-hover) hover:text-(--mw-component-member-row-name-text-hover) focus-visible:focus-ring-inset pointer-coarse:min-h-(--mw-size-hit-web-min)"
                 onclick={(event) => void showProfile(member.user, event.currentTarget)}
                 {@attach contextMenuTrigger((origin, invoker) => personMenu?.openFor(member.user, origin, invoker) ?? false)}
@@ -276,9 +297,12 @@
                   isDimmed={!isOnline}
                 />
                 <span class="flex min-w-0 flex-1 flex-col">
-                  <span class="truncate type-member-name" style:color={nameColors.get(member.user.id)}
-                    >{displayName(member.user)}</span
-                  >
+                  <span class="flex min-w-0 items-center gap-(--mw-component-role-icon-gap)">
+                    <span class="truncate type-member-name" style:color={nameColors.get(member.user.id)}
+                      >{displayName(member.user)}</span
+                    >
+                    {#if roleIcon}<RoleIcon role={roleIcon} sizeToken="--mw-component-role-icon-member-size" />{/if}
+                  </span>
                   {#if customStatus}
                     <span class="truncate type-body-sm text-(--mw-component-member-row-activity-text)">{customStatus}</span>
                   {/if}

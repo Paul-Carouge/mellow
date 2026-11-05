@@ -2202,6 +2202,53 @@ export const en = {
       },
     },
   },
+  /** "About me" and links (ADR-0050): in a profile, and their editor in settings, Profile. */
+  profileDetails: {
+    aboutMe: "About me",
+    links: "Links",
+    linkLabel: (label: string, host: string) => `${label} (${host})`,
+    opensInNewTab: "opens in a new tab",
+    loading: "Loading the profile…",
+    loadFailed: "Couldn't load the About me and links.",
+    editorTitle: "About me and links",
+    editorIntro: "Shown in your profile to the people you share a server or a conversation with.",
+    aboutMeHelper: (maximum: number) => `Up to ${maximum} characters. **Bold**, *italics* and links work; lists and headings don't.`,
+    remaining: (characters: number) =>
+      plural(characters, { one: `${count(characters)} character left`, other: `${count(characters)} characters left` }),
+    linksHelper: (maximum: number) =>
+      `Up to ${maximum} links starting with https://. Their site icons are fetched by this server, never by people's browsers.`,
+    linkAddress: (position: number) => `Address of link ${position}`,
+    linkName: (position: number) => `Name of link ${position}`,
+    linkNamePlaceholder: "Name (optional)",
+    addLink: "Add a link",
+    removeLink: (position: number) => `Remove link ${position}`,
+    notHttps: "Use a full address starting with https://.",
+    tooLong: "Keep the address under 300 characters and the name under 40.",
+    save: "Save About me and links",
+    saving: "Saving…",
+    saved: "About me and links saved.",
+    saveFailed: "Couldn't save the About me and links",
+    loadEditorFailed: "Couldn't load your About me and links.",
+  },
+  /** Role icons (ADR-0050), in server settings, Roles, and next to names. */
+  roleIcons: {
+    title: "Role icon",
+    intro: "Shown next to the names of this role's members, when it is their highest role with an icon.",
+    none: "No icon",
+    formats: (kilobytes: number) => `A PNG, JPEG, GIF or WebP up to ${kilobytes} KB, its centred square kept; GIFs stay animated.`,
+    uploadPicture: "Upload a picture",
+    uploading: "Uploading…",
+    chooseEmoji: "Choose an emoji",
+    remove: "Remove icon",
+    removing: "Removing…",
+    saved: "Role icon saved.",
+    removed: "Role icon removed.",
+    changeFailed: "Couldn't change the role icon",
+    removeFailed: "Couldn't remove the role icon",
+    tooLarge: (kilobytes: number) => `the picture is larger than ${kilobytes} KB. Choose a smaller one.`,
+    unreadable: "the picture couldn't be read. Choose another one.",
+    currentIcon: (role: string) => `Icon of ${role}`,
+  },
 };
 
 export type Catalogue = typeof en;
