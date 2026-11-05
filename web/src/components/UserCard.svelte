@@ -157,10 +157,8 @@
           <Icon name="check" class="size-(--mw-component-status-size-menu)" />
           <span class="truncate">{strings.userCard.userIdCopied}</span>
         </span>
-      {:else}
-        <span class="status-line truncate type-body-sm" title={customStatus ?? undefined}
-          >{customStatus ?? `@${user.username}`}</span
-        >
+      {:else if customStatus}
+        <span class="status-line truncate type-body-sm" title={customStatus}>{customStatus}</span>
       {/if}
     </span>
   </button>

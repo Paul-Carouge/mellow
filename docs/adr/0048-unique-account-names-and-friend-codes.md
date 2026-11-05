@@ -15,14 +15,17 @@ ROADMAP item 19 (owner, 2026-11-02): "one display name per account, unique whate
 - **Friend code**: 40 random bits from the operating system's generator (`getrandom`), stored in `users.friend_code` (unique index), shown as 8 symbols of Crockford's base 32 `XXXX-XXXX` (no I, L, O, U), and read in any case, with or without the dash or spaces, I and L as 1 and O as 0. It never changes. It is sent only to its owner (`CurrentUser.friend_code`), never in `PublicUser`. A new account draws again on the rare collision (up to four draws).
 - **Friend requests**: `POST /api/v1/users/@me/relationships` takes `friend_code` (optional, wins) or `username` (now the name, found by its key). An unknown code, oneself or a block answer `NOT_FOUND`, as for names (ADR-0025), within the same friend-request rate limits.
 - **Mentions** follow: a name with spaces or dashes is mentioned as written ("@Paul Carouge"); the longest name written after the "@" wins, on the server (`domain/mentions.rs`) and in the web client alike.
-- **Search filters** `from:` and `mentions:` compare folded keys (`from:elodie` finds Élodie).
+- **Search filters** `from:` and `mentions:` compare folded keys (`from:elodie` finds Élodie) and take a quoted name holding spaces (`from:"Paul Carouge"`); the web client quotes such names when it writes the filter.
+- **Sign-in rate limits** per account are keyed on the folded key of the login, the same identity sign-in looks the account up by, so respelling a name (accents, full-width letters, spaces) shares one budget.
+- **No "@name" line**: the web client no longer shows the name a second time under itself (profile card, user panel, member and ban lists, composer and people suggestions).
 - **Migration 0041** adds `name_key` and `friend_code` (nullable, unique indexes). SQLite cannot fold Unicode, so the server fills both right after the migrations run, in one write transaction (`storage::account_names::give_names_and_friend_codes_to_older_accounts`), for every account still without them; afterwards it finds none and changes nothing. Oldest account first (`created_at`, then id), each keeps its display name, without the characters names may no longer hold ("Aurore 🌸" becomes "Aurore", "Jean-Paul (admin)" becomes "Jean-Paul admin"), or its old username when too little is left; when an older account already took that key, " 2", " 3"… is added (shortened to stay within 32 characters). Old usernames step aside first so a name never meets another account's old username.
 - **Logs** never hold names or codes: the migration logs only how many accounts it named.
 
 ## Consequences
 - Existing accounts sign in with their display name (any case) or their email, no longer with their old handle; renamed duplicates ("Paul 2") can rename themselves at once. The owner should tell members before updating.
 - Messages written before the update that mention someone by their old handle ("@paul" for "Paul Carouge") no longer show a chip; who was notified is kept.
-- `from:` and `mentions:` search filters take one word, so a name with a space cannot be written there yet.
+- Every account has an email (required since migration 0001), so a member whose name changed in the migration ("Aurore 🌸" to "Aurore", a duplicate to "Paul 2") can always sign in with it; the old handle is not kept as a sign-in alias.
+- Mentions are still read from the text: someone named "Paul Merci" is the one mentioned by "@Paul merci", since the longest name wins. The composer sending the chosen mention ids would remove this; it is a protocol change left for later.
 - The deprecated `username` will be removed only in a future API version.
 - `mellow-server admin create-user --username` sets the name (`--display-name` wins when given); `admin set-administrator --username` finds the account by its folded name.
 
