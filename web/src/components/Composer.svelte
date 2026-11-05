@@ -18,7 +18,7 @@
   import { autosize } from "./autosize";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
-  import type { ComposerDrafts } from "./composer-drafts.svelte";
+  import { type ComposerDrafts, type CompressVideo, compressThenUpload } from "./composer-drafts.svelte";
   import {
     type EmojiSuggestion,
     type EmojiSuggestionQuery,
@@ -147,8 +147,10 @@
   const isUploading = $derived(
     drafts.trayItems.some((item) => item.status === "uploading" || item.status === "compressing"),
   );
-  /** Asked once: the browser has WebCodecs encoding and Workers (ADR-0046). */
-  const CAN_COMPRESS_VIDEOS = canCompressVideosHere();
+  /** Asked once: the browser has WebCodecs encoding and Workers (ADR-0046); the limit is checked on the result. */
+  const compressVideo: CompressVideo | null = canCompressVideosHere()
+    ? (file, onprogress, signal) => compressVideoInWorker(file, client.maximumAttachmentBytes, onprogress, signal)
+    : null;
   const uploadedAttachments = $derived(
     drafts.trayItems.flatMap((item) => (item.status === "uploaded" && item.attachment ? [item.attachment] : [])),
   );
@@ -237,7 +239,7 @@
       actionError = TOO_MANY_ATTACHMENTS_SENTENCE;
     }
     for (const file of files.slice(0, room)) {
-      void compressThenUpload(drafts.attach(file));
+      void compressThenUpload(drafts.attach(file), compressVideo, upload);
     }
   }
 
@@ -283,35 +285,9 @@
     onsent();
   }
 
-  /** Videos are compressed in a Worker first (ADR-0046); the instance's limit is checked on the result. */
-  async function compressThenUpload(item: AttachmentTrayItem) {
-    if (CAN_COMPRESS_VIDEOS && item.file.type.startsWith("video/")) {
-      item.status = "compressing";
-      try {
-        item.file = await compressVideoInWorker(
-          item.file,
-          client.maximumAttachmentBytes,
-          (fraction) => (item.compressionProgress = fraction),
-          item.compressionAbort.signal,
-        );
-      } catch (error) {
-        // Aborted by "Send the original" or a removal, or the Worker could not start: the original goes.
-        if (!item.compressionAbort.signal.aborted) {
-          console.warn("couldn't start compressing a video", error);
-        }
-      }
-      // Removed from the tray meanwhile: nothing to upload.
-      if (item.uploadAbort.signal.aborted) {
-        return;
-      }
-      item.status = "uploading";
-    }
-    await upload(item);
-  }
-
   async function upload(item: AttachmentTrayItem) {
     try {
-      item.attachment = await client.uploadAttachment(item.file, item.uploadAbort.signal);
+      item.attachment = await client.uploadAttachment(item.channelId, item.file, item.uploadAbort.signal);
       item.status = "uploaded";
       announceUpload(item, strings.chat.uploaded(item.file.name));
     } catch (error) {

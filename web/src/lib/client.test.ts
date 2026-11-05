@@ -148,6 +148,7 @@ describe("MellowClient", () => {
     client.applyReady(ready({ maximum_attachment_bytes: 4 }));
 
     const refusal = client.uploadAttachment(
+      GENERAL,
       new File(["12345"], "big.bin"),
       new AbortController().signal,
     );
@@ -156,11 +157,25 @@ describe("MellowClient", () => {
 
     await expect(
       client.uploadAttachment(
+        GENERAL,
         new File(["1234"], "ok.bin"),
         new AbortController().signal,
       ),
     ).resolves.toBe(attachment);
     expect(uploadAttachment).toHaveBeenCalledTimes(1);
+  });
+
+  it("uploads to the channel the file was attached in, not the one open now", async () => {
+    const uploadAttachment = vi.fn(() => Promise.reject(new ApiError(500, "INTERNAL")));
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, uploadAttachment }));
+    client.applyReady(ready());
+    const signal = new AbortController().signal;
+    const file = new File(["clip"], "clip.mp4");
+
+    await expect(client.uploadAttachment(RULES, file, signal)).rejects.toBeInstanceOf(ApiError);
+
+    expect(client.selectedChannelId).toBe(GENERAL);
+    expect(uploadAttachment).toHaveBeenCalledWith(RULES, file, signal);
   });
 
   it("lets an older instance, which does not tell its limit, answer for any size", async () => {
@@ -174,6 +189,7 @@ describe("MellowClient", () => {
 
     await expect(
       client.uploadAttachment(
+        GENERAL,
         new File(["12345"], "big.bin"),
         new AbortController().signal,
       ),

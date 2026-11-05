@@ -1,9 +1,11 @@
 <script lang="ts" module>
-  import type { Attachment } from "../lib/protocol";
+  import type { Attachment, Snowflake } from "../lib/protocol";
 
   /** A file chosen for the next message: it uploads at once, then waits for Send (ADR-0020). */
   export interface AttachmentTrayItem {
     key: number;
+    /** The channel open when the file was attached: it uploads there, whatever is open by then. */
+    readonly channelId: Snowflake | null;
     file: File;
     /** Object URL of a previewable image; revoked when the item leaves the tray. */
     previewUrl: string | null;
