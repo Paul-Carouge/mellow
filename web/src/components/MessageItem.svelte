@@ -21,6 +21,7 @@
   import type { ReactionAndPinActions } from "./message-actions";
   import MessageReactions from "./MessageReactions.svelte";
   import { reactionKey } from "../lib/reactions";
+  import { messageGifMediaOf } from "../lib/klipy";
   import { currentDay } from "./current-day.svelte";
   import { createPopoverToggle } from "./popover-toggle";
   import { noteEmojiUsed, quickReactionEmoji } from "./recent-emoji.svelte";
@@ -28,6 +29,7 @@
   import { markdownMentionsUser, parseMessageMarkdown } from "./markdown";
   import type { MentionablePeople } from "./mentions";
   import MessageAttachments from "./MessageAttachments.svelte";
+  import MessageGif from "./MessageGif.svelte";
   import MessageLinkPreviews from "./MessageLinkPreviews.svelte";
   import MessageMarkdown from "./MessageMarkdown.svelte";
   import type { MessageListRow } from "./message-rows";
@@ -132,6 +134,10 @@
     parseMessageMarkdown(content, mentionablePeople, customEmojis, { roles, isEveryoneMentioned }),
   );
   const isJumbo = $derived(isJumboEmojiMessage(contentBlocks));
+  // A message that is only a Klipy media address is the GIF itself (ADR-0042); the link comes
+  // back when the GIF cannot be shown.
+  const gifMedia = $derived(messageGifMediaOf(content));
+  let failedGifUrl = $state<string | null>(null);
   const forwardedFrom = $derived(message?.forwarded_from ?? null);
   // Only a forward's place is looked up, among the channels the reader knows.
   const forwardOriginPlace = $derived(forwardedFrom ? forwardOriginPlaceOf(forwardedFrom.channel_id) : null);
@@ -257,11 +263,17 @@
     ]}
   >
     {#if !row.startsAuthorGroup}<span class="sr-only">{strings.messages.authorSaid(displayName(author), "")}</span>{/if}
-    <MessageMarkdown
-      blocks={contentBlocks}
-      isJumbo={isJumbo}
-      trailing={message?.edited_at_unix_milliseconds ? editedLabel : undefined}
-    />
+    {#if gifMedia && gifMedia.url !== failedGifUrl}
+      {@const shownGif = gifMedia}
+      <MessageGif media={shownGif} onfailed={() => (failedGifUrl = shownGif.url)} />
+      {@render editedLabel()}
+    {:else}
+      <MessageMarkdown
+        blocks={contentBlocks}
+        isJumbo={isJumbo}
+        trailing={message?.edited_at_unix_milliseconds ? editedLabel : undefined}
+      />
+    {/if}
   </div>
 {/snippet}
 

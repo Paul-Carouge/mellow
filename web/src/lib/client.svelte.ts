@@ -27,6 +27,7 @@ import {
   type ChannelKind,
   type ChannelPlacement,
   type ClientFrame,
+  type GifSettings,
   type ChosenStatus,
   type CurrentUser,
   type CustomEmoji,
@@ -222,6 +223,8 @@ export class MellowClient {
   onIncomingMessage: ((message: Message) => void) | null = null;
   /** Whether this user may create servers (`Ready.may_create_guilds`); `true` with servers that predate it. */
   mayCreateGuilds = $state(true);
+  /** Klipy's key and this member's customer id (ADR-0042); null while unknown or when the instance has no GIFs. */
+  gifSettings = $state<GifSettings | null>(null);
 
   /** Who is in which voice channel, by user (one connection each, ADR-0030), in join order. */
   voiceStatesByUserId = new SvelteMap<Snowflake, VoiceState>();
@@ -424,6 +427,7 @@ export class MellowClient {
     this.gateway = null;
     this.hasReceivedReady = false;
     this.signOutError = "";
+    this.gifSettings = null;
     this.closedConversation = null;
     this.requestedHistory.clear();
     this.requestedMembers.clear();
@@ -492,6 +496,9 @@ export class MellowClient {
     this.hasReceivedReady = true;
     this.user = ready.user;
     this.mayCreateGuilds = ready.may_create_guilds ?? true;
+    if (this.gifSettings === null) {
+      void this.loadGifSettings(ready.user.id);
+    }
     this.guilds = ready.guilds;
     const conversations = ready.direct_message_channels ?? [];
     // Kept while its first message is still unsent: `Ready` lists only conversations with one.
@@ -1488,6 +1495,24 @@ export class MellowClient {
       return Promise.reject(new ApiError(404, "NOT_FOUND"));
     }
     return this.rest.uploadAttachment(channelId, file);
+  }
+
+  /**
+   * Asked once per session: the GIF button shows only when the instance has GIFs. A failure leaves
+   * it hidden until the next `Ready`; an answer for an earlier session is dropped.
+   */
+  private async loadGifSettings(userId: Snowflake): Promise<void> {
+    try {
+      const settings = await this.rest.gifSettings();
+      if (this.user?.id === userId) {
+        this.gifSettings = settings;
+      }
+    } catch (error) {
+      // NOT_FOUND is the instance without GIFs: nothing to report.
+      if (!(error instanceof ApiError && error.code === "NOT_FOUND")) {
+        this.reportError(error, "load GIF settings");
+      }
+    }
   }
 
   async sendMessage(

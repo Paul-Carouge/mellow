@@ -80,10 +80,14 @@
     actionError: string;
     replyingTo: Message | null;
     isEmojiPickerOpen: boolean;
+    /** The instance has GIFs (ADR-0042): the GIF button shows beside the emoji one. */
+    canChooseGifs: boolean;
+    isGifPickerOpen: boolean;
     /** Escape marks the channel as read while the unread bar shows. */
     hasUnreadBar: boolean;
     maximumHeight: () => number;
     onopenemojipicker: (anchor: HTMLElement) => void;
+    onopengifpicker: (anchor: HTMLElement) => void;
     onmarkasread: () => void;
     oneditlastmessage: () => void;
     onsent: () => void;
@@ -107,9 +111,12 @@
     actionError = $bindable(),
     replyingTo = $bindable(),
     isEmojiPickerOpen,
+    canChooseGifs,
+    isGifPickerOpen,
     hasUnreadBar,
     maximumHeight,
     onopenemojipicker,
+    onopengifpicker,
     onmarkasread,
     oneditlastmessage,
     onsent,
@@ -126,6 +133,7 @@
   let field = $state<HTMLTextAreaElement | null>(null);
   let emojiButton = $state<HTMLButtonElement | null>(null);
   const emojiPickerToggle = createPopoverToggle(() => isEmojiPickerOpen);
+  const gifPickerToggle = createPopoverToggle(() => isGifPickerOpen);
   let fileInput = $state<HTMLInputElement | null>(null);
   let uploadAnnouncement = $state("");
   let isUnblocking = $state(false);
@@ -194,6 +202,16 @@
   /** Writes `text` and a space at the caret, as the emoji picker does. */
   export function insert(text: string): Promise<void> {
     return insertAt(text, null);
+  }
+
+  /**
+   * Sends a GIF picked in the picker as its own message (ADR-0042), through the outbox like any
+   * other; the text being written stays in the field, and a reply in progress goes with the GIF.
+   */
+  export function sendGif(url: string) {
+    void client.sendMessage(url, replyingTo?.id ?? null);
+    replyingTo = null;
+    onsent();
   }
 
   /** Each file uploads at once to the open channel and waits in the tray for Send (DESIGN.md §5.5). */
@@ -689,6 +707,23 @@
           <span id="composer-reply-hint" class="sr-only">
             {strings.chat.replyHint(displayName(replyingTo.author))}
           </span>
+        {/if}
+        <!-- Before the emoji, as on Discord. -->
+        {#if canChooseGifs}
+          <IconButton
+            icon="gif"
+            label={strings.gifs.chooseGif}
+            aria-haspopup="dialog"
+            aria-expanded={isGifPickerOpen}
+            class={BUTTON_CLASS}
+            iconClass="size-(--mw-component-composer-icon-size)"
+            onpointerdown={gifPickerToggle.notePress}
+            onclick={(event) => {
+              if (gifPickerToggle.shouldOpenOnClick()) {
+                onopengifpicker(event.currentTarget);
+              }
+            }}
+          />
         {/if}
         <IconButton
           bind:element={emojiButton}
