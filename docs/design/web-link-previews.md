@@ -16,7 +16,7 @@ Assumption: most links are articles, repositories and videos; a message carries 
 4. **Card with a small or square picture** (logos, avatars): an 80 px thumbnail at the trailing top.
 5. **Card without picture**: the pill, site name, title, description.
 6. **A link that is itself a picture** (the server found no page, only an image): the picture alone, with the attached pictures' maxima, opening the link.
-7. **YouTube**: the card's picture in a 16:9 box with the play key. Pressed, the privacy-enhanced player takes the same box and plays; focus moves into it. Several videos can be open at once.
+7. **YouTube**: the card's picture in a 16:9 box with the play key. Pressed, the privacy-enhanced player takes the same box and plays; focus moves into it. A Shorts link gets a 9:16 box instead, at most `component.link-preview.short-player-max-height` high (270 × 480 px). The player starts where the link says (`t=` or `start=`) and in the link's public playlist (`list=`); watch, short, Shorts, live, embed, `/v/` and `youtube-nocookie.com` links all play. Several videos can be open at once.
 8. **Picture fails** (twice, as attachments retry once): the picture goes, the card stays; a picture-only preview disappears, the link in the text remains. A YouTube box keeps its stage and its play key.
 9. **Nothing to show** (a page with only a site name, or a link that is not http(s)): no card.
 10. **Suppressed** (`<https://…>`): the server previews nothing. **Forwards** copy no preview. **Edits** bring the new set of previews; a player stays open while its link is still in the message.
