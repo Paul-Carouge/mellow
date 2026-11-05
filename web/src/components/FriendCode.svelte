@@ -45,11 +45,12 @@
 
 <div class="flex flex-col gap-(--mw-component-settings-section-label-gap)">
   <div class="flex items-center gap-(--mw-component-settings-account-button-gap)">
-    <div class="flex min-w-0 flex-1 flex-col gap-(--mw-component-settings-account-value-gap)">
-      <h3 id="{id}-label" class="type-category text-(--mw-component-settings-section-label-text)">{strings.friendCode.label}</h3>
+    <!-- A term and its value, so screen readers read the code with its label. -->
+    <dl class="flex min-w-0 flex-1 flex-col gap-(--mw-component-settings-account-value-gap)">
+      <dt class="type-category text-(--mw-component-settings-section-label-text)">{strings.friendCode.label}</dt>
       <!-- Selectable whole, for copying by hand. -->
-      <p aria-labelledby="{id}-label" class="type-code select-all text-(--mw-component-settings-account-value-text)">{code}</p>
-    </div>
+      <dd class="type-code select-all text-(--mw-component-settings-account-value-text)">{code}</dd>
+    </dl>
     <Button aria-describedby="{id}-hint" onclick={() => void copy()}>
       {isCopied ? strings.friendCode.copiedShort : strings.friendCode.copy}
     </Button>

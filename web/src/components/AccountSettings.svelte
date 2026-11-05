@@ -4,7 +4,7 @@
   import { ApiError } from "../lib/api";
   import { strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
-  import { MINIMUM_PASSWORD_LENGTH } from "../lib/protocol";
+  import { MAXIMUM_ACCOUNT_NAME_LENGTH, MINIMUM_PASSWORD_LENGTH } from "../lib/protocol";
   import AccountEditForm from "./AccountEditForm.svelte";
   import Button from "./Button.svelte";
   import FriendCode from "./FriendCode.svelte";
@@ -212,6 +212,7 @@
         error={nameProblem}
         autocomplete="username"
         spellcheck={false}
+        maxlength={MAXIMUM_ACCOUNT_NAME_LENGTH}
         readonly={isBusy}
         bind:value={displayNameDraft}
         bind:element={firstField}

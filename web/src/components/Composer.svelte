@@ -533,8 +533,7 @@
     {/if}
   {:else if suggestion.kind === "person"}
     <Avatar user={suggestion.person} sizeToken="--mw-component-composer-suggestions-avatar-size" />
-    <span class="min-w-0 truncate">{displayName(suggestion.person)}</span>
-    <span class="min-w-0 flex-1 truncate text-text-secondary">@{suggestion.person.username}</span>
+    <span class="min-w-0 flex-1 truncate">{displayName(suggestion.person)}</span>
   {:else if suggestion.kind === "everyone"}
     <span aria-hidden="true" class="grid size-(--mw-component-composer-suggestions-avatar-size) shrink-0 place-items-center">
       <Icon name="users" class="size-(--mw-component-context-menu-item-icon-size)" />

@@ -100,7 +100,7 @@
   }
 </script>
 
-<ModalDialog title={name} subtitle="@{member.user.username}" cancelLabel={strings.common.close} {onclose} {fallbackFocus}>
+<ModalDialog title={name} cancelLabel={strings.common.close} {onclose} {fallbackFocus}>
   {#if canGiveRoles}
     <section aria-labelledby="{id}-roles" class="flex flex-col">
       <h3 id="{id}-roles" class="type-category text-(--mw-component-settings-section-label-text)">

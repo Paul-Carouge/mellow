@@ -64,6 +64,8 @@ export interface PublicUser {
 
 /** Mirrors the server's rule (mellow-server domain/account_rules.rs); the server still decides. */
 export const MINIMUM_PASSWORD_LENGTH = 10;
+/** Mirrors the server's rule (mellow-server domain/account_names.rs, ADR-0048); the server still decides. */
+export const MAXIMUM_ACCOUNT_NAME_LENGTH = 32;
 
 /** Mirrors the server's rules (mellow-server domain/guild_rules.rs); the server still decides. */
 export const MAXIMUM_SERVER_NAME_LENGTH = 100;
