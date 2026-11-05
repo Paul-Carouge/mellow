@@ -4,12 +4,18 @@
 
 use crate::domain::message_rules::MessageRuleViolation;
 
-/// Movie headers hold the sample tables: a few hundred KiB for a long phone video.
+/// Movie headers hold the sample tables: a few hundred KiB for a long phone video. Counts the
+/// bytes walked in `moov`, not the metadata blanked there (an audiobook's cover art is megabytes).
 const MAXIMUM_MOVIE_HEADER_BYTES: usize = 4 * 1024 * 1024;
 /// Boxes walked through nest three deep (`moov`, `trak`, `mdia`); anything deeper is malformed.
 const MAXIMUM_BOX_DEPTH: usize = 8;
 /// `WebM` puts its tracks before its first cluster, in the first few KiB.
 const MAXIMUM_WEBM_HEADER_BYTES: usize = 4 * 1024 * 1024;
+
+/// The `uuid` box type Adobe tools and exiftool write XMP in (it may hold `exif:GPSLatitude`).
+const XMP_BOX_UUID: [u8; 16] = [
+    0xBE, 0x7A, 0xCF, 0xCB, 0x97, 0xA9, 0x42, 0xE8, 0x9C, 0x71, 0x99, 0x94, 0x91, 0xE3, 0xAF, 0xAC,
+];
 
 const BOX_HEADER_BYTES: usize = 8;
 const LARGE_BOX_HEADER_BYTES: usize = 16;
@@ -30,13 +36,13 @@ struct MovieWalk {
     first_video_dimensions: Option<(u32, u32)>,
 }
 
-/// Blanks every `udta` and `meta` box of an MP4 or `QuickTime` file (at the top, in `moov` and in
-/// each `trak`): renamed `free` and zeroed in place, so players skip them and their bytes are
-/// gone. Returns the first video track's size as shown, a quarter turn of its matrix applied.
+/// Blanks every `udta`, `meta` and XMP `uuid` box of an MP4 or `QuickTime` file (at the top, in
+/// `moov`, in each `trak` and `mdia`): renamed `free` and zeroed in place, so players skip them
+/// and their bytes are gone. Returns the first video track's size as shown, a quarter turn of its matrix applied.
 ///
 /// # Errors
 /// `Media` for a box size that does not fit its parent, boxes nested deeper than
-/// `MAXIMUM_BOX_DEPTH`, or more than `MAXIMUM_MOVIE_HEADER_BYTES` of `moov`: its metadata could
+/// `MAXIMUM_BOX_DEPTH`, or more than `MAXIMUM_MOVIE_HEADER_BYTES` of `moov` walked: its metadata could
 /// not be removed, so the file is refused rather than published with it.
 pub(crate) fn blank_metadata_and_read_video_dimensions(
     file: &mut [u8],
@@ -61,20 +67,29 @@ impl MovieWalk {
             };
             let end = offset + box_bytes;
             let payload = &mut boxes[offset + header_bytes..end];
+            let is_metadata = matches!(&kind, b"udta" | b"meta")
+                || (&kind == b"uuid" && payload.starts_with(&XMP_BOX_UUID));
+            if is_metadata {
+                // A linear fill, not a walk: not charged to the movie header budget.
+                payload.fill(0);
+                boxes[offset + 4..offset + 8].copy_from_slice(b"free");
+                offset = end;
+                continue;
+            }
+            // `trak` and `mdia` only inside a `moov`, so everything below the top is in its budget:
+            // a box walked into costs its header, any other its whole length.
+            let is_walked_into = match &kind {
+                b"moov" => true,
+                b"trak" | b"mdia" => !is_top_level,
+                _ => false,
+            };
+            if is_walked_into {
+                self.charge_movie_header_bytes(header_bytes)?;
+            } else if !is_top_level {
+                self.charge_movie_header_bytes(box_bytes)?;
+            }
             match &kind {
-                b"udta" | b"meta" => {
-                    payload.fill(0);
-                    boxes[offset + 4..offset + 8].copy_from_slice(b"free");
-                }
-                b"moov" => {
-                    self.movie_header_bytes_read =
-                        self.movie_header_bytes_read.saturating_add(box_bytes);
-                    if self.movie_header_bytes_read > MAXIMUM_MOVIE_HEADER_BYTES {
-                        return Err(MessageRuleViolation::Media);
-                    }
-                    self.walk_boxes(payload, depth + 1)?;
-                }
-                // Only inside a `moov`, so everything walked below the top counts in its budget.
+                b"moov" => self.walk_boxes(payload, depth + 1)?,
                 b"trak" if !is_top_level => {
                     let outer = self.track.replace(TrackFacts::default());
                     self.walk_boxes(payload, depth + 1)?;
@@ -103,6 +118,14 @@ impl MovieWalk {
                 _ => {}
             }
             offset = end;
+        }
+        Ok(())
+    }
+
+    fn charge_movie_header_bytes(&mut self, bytes: usize) -> Result<(), MessageRuleViolation> {
+        self.movie_header_bytes_read = self.movie_header_bytes_read.saturating_add(bytes);
+        if self.movie_header_bytes_read > MAXIMUM_MOVIE_HEADER_BYTES {
+            return Err(MessageRuleViolation::Media);
         }
         Ok(())
     }
@@ -196,9 +219,16 @@ const EBML_PIXEL_HEIGHT: u32 = 0xBA;
 /// `MAXIMUM_WEBM_HEADER_BYTES`. `None` when they are not there or the elements are malformed.
 pub(crate) fn webm_video_dimensions(file: &[u8]) -> Option<(u32, u32)> {
     let header = &file[..file.len().min(MAXIMUM_WEBM_HEADER_BYTES)];
-    let segment = child_element(header, EBML_SEGMENT)?;
+    // Seekable muxers (ffmpeg, OBS) write the segment's real size, past the window read: the
+    // top level alone may end at the window, every element inside stays strict.
+    let segment = EbmlElements {
+        rest: header,
+        may_end_at_the_window: true,
+    }
+    .find(|(id, _)| *id == EBML_SEGMENT)
+    .map(|(_, segment)| segment)?;
     let tracks = child_element(segment, EBML_TRACKS)?;
-    EbmlElements { rest: tracks }
+    EbmlElements::strict(tracks)
         .filter(|(id, _)| *id == EBML_TRACK_ENTRY)
         .find_map(|(_, entry)| {
             let video = child_element(entry, EBML_VIDEO)?;
@@ -209,7 +239,7 @@ pub(crate) fn webm_video_dimensions(file: &[u8]) -> Option<(u32, u32)> {
 }
 
 fn child_element(body: &[u8], wanted: u32) -> Option<&[u8]> {
-    EbmlElements { rest: body }
+    EbmlElements::strict(body)
         .find(|(id, _)| *id == wanted)
         .map(|(_, child)| child)
 }
@@ -229,6 +259,17 @@ fn unsigned_element(body: &[u8]) -> Option<u32> {
 /// unknown size (a live recording's segment or cluster) runs to the end of its parent.
 struct EbmlElements<'a> {
     rest: &'a [u8],
+    /// Whether a known size past the end of `rest` ends with it instead of stopping.
+    may_end_at_the_window: bool,
+}
+
+impl<'a> EbmlElements<'a> {
+    fn strict(rest: &'a [u8]) -> Self {
+        Self {
+            rest,
+            may_end_at_the_window: false,
+        }
+    }
 }
 
 impl<'a> Iterator for EbmlElements<'a> {
@@ -241,7 +282,17 @@ impl<'a> Iterator for EbmlElements<'a> {
         let body_start = id_bytes + size_bytes;
         let body_end = match size {
             None => self.rest.len(),
-            Some(size) => body_start.checked_add(usize::try_from(size).ok()?)?,
+            Some(size) => {
+                let end = body_start.checked_add(usize::try_from(size).unwrap_or(usize::MAX));
+                match end {
+                    Some(end) if end <= self.rest.len() => end,
+                    _ if self.may_end_at_the_window => self.rest.len(),
+                    _ => {
+                        self.rest = &[];
+                        return None;
+                    }
+                }
+            }
         };
         let Some(body) = self.rest.get(body_start..body_end) else {
             self.rest = &[];

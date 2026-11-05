@@ -111,8 +111,11 @@ const MP4_VIDEO_BRANDS: [&[u8; 4]; 11] = [
 /// Compatible brands that make a file of any other major brand (cameras write their own, such as
 /// Sony's `XAVC` or Apple's `MSNV`) an ordinary video.
 const MP4_COMPATIBLE_VIDEO_BRANDS: [&[u8; 4]; 3] = [b"isom", b"mp41", b"mp42"];
-/// Compatible brands of HEIF and AVIF pictures and image sequences, which may list `isom` too.
-const HEIF_IMAGE_BRANDS: [&[u8; 4]; 6] = [b"mif1", b"msf1", b"heic", b"heix", b"avif", b"avis"];
+/// Brands of ISO-BMFF pictures that may list `isom` too: HEIF and AVIF pictures and image
+/// sequences, and Canon CR3 raw photos.
+const ISO_BMFF_PICTURE_BRANDS: [&[u8; 4]; 7] = [
+    b"mif1", b"msf1", b"heic", b"heix", b"avif", b"avis", b"crx ",
+];
 /// Compatible brands read from an `ftyp` box; real files list a handful.
 const MAXIMUM_COMPATIBLE_BRANDS_READ: usize = 16;
 /// ISO-BMFF major brands of audio-only files (iTunes AAC and audiobooks).
@@ -165,7 +168,7 @@ pub fn sniff_content_type(bytes: &[u8]) -> &'static str {
 }
 
 /// Whether an `ftyp` box whose major brand is unknown lists `isom`, `mp41` or `mp42` among its
-/// first compatible brands, and no HEIF or AVIF picture brand.
+/// first compatible brands, and no picture brand (HEIF, AVIF, CR3).
 fn is_compatible_with_ordinary_video(bytes: &[u8]) -> bool {
     const FIRST_COMPATIBLE_BRAND_OFFSET: usize = 16;
     let Some(box_size) = bytes
@@ -183,8 +186,8 @@ fn is_compatible_with_ordinary_video(bytes: &[u8]) -> bool {
         .as_chunks::<4>();
     let lists = |known: &[&[u8; 4]]| brands.iter().any(|brand| known.contains(&brand));
     let major_brand = bytes.get(8..12).unwrap_or_default();
-    let is_picture = lists(&HEIF_IMAGE_BRANDS)
-        || HEIF_IMAGE_BRANDS
+    let is_picture = lists(&ISO_BMFF_PICTURE_BRANDS)
+        || ISO_BMFF_PICTURE_BRANDS
             .iter()
             .any(|known| known.as_slice() == major_brand);
     lists(&MP4_COMPATIBLE_VIDEO_BRANDS) && !is_picture
@@ -771,6 +774,18 @@ mod tests {
             b"\0\0\0\x1cftypmif1\0\0\0\0heicisom",
             b"\0\0\0\x20ftypmif1\0\0\0\0avifmiafisom",
             b"\0\0\0\x1cftypmsf1\0\0\0\0avisisom",
+        ];
+        for bytes in pictures {
+            assert_eq!(sniff_content_type(bytes), UNKNOWN_CONTENT_TYPE, "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn canon_raw_pictures_listing_isom_stay_downloads() {
+        // CR3: major brand `crx `, compatible `crx ` and `isom`; its GPS sits in Canon `uuid` boxes.
+        let pictures: [&[u8]; 2] = [
+            b"\0\0\0\x18ftypcrx \0\0\0\x01crx isom",
+            b"\0\0\0\x18ftypXAVC\0\0\0\x01isomcrx ",
         ];
         for bytes in pictures {
             assert_eq!(sniff_content_type(bytes), UNKNOWN_CONTENT_TYPE, "{bytes:?}");

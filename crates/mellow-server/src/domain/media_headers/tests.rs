@@ -248,16 +248,21 @@ fn element(id: &[u8], body: &[u8]) -> Vec<u8> {
     [id, &[size], body].concat()
 }
 
+/// A browser's recording: segment and cluster of unknown size.
+const UNKNOWN_EBML_SIZE: [u8; 8] = [0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+
 fn webm(entries: &[Vec<u8>]) -> Vec<u8> {
+    webm_with_segment_size(entries, UNKNOWN_EBML_SIZE)
+}
+
+fn webm_with_segment_size(entries: &[Vec<u8>], segment_size: [u8; 8]) -> Vec<u8> {
     let header = element(&[0x1A, 0x45, 0xDF, 0xA3], &element(&[0x42, 0x82], b"webm"));
     let tracks = element(&[0x16, 0x54, 0xAE, 0x6B], &entries.concat());
-    // A browser's recording: segment and cluster of unknown size.
-    let unknown_size = [0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
-    let cluster = [&[0x1F, 0x43, 0xB6, 0x75][..], &unknown_size, b"frames"].concat();
+    let cluster = [&[0x1F, 0x43, 0xB6, 0x75][..], &UNKNOWN_EBML_SIZE, b"frames"].concat();
     [
         header,
         vec![0x18, 0x53, 0x80, 0x67],
-        unknown_size.to_vec(),
+        segment_size.to_vec(),
         element(&[0x15, 0x49, 0xA9, 0x66], b"info"),
         tracks,
         cluster,
@@ -304,4 +309,66 @@ fn a_webm_file_without_a_readable_video_track_has_no_dimensions() {
     assert_eq!(webm_video_dimensions(&cut), None);
     assert_eq!(webm_video_dimensions(b""), None);
     assert_eq!(webm_video_dimensions(&[0x00; 16]), None);
+}
+
+#[test]
+fn a_webm_file_with_a_known_segment_size_past_the_bytes_read_reads_its_tracks() {
+    // ffmpeg and other seekable muxers write the real segment size: 256 MiB here, far past the
+    // header window and the bytes given.
+    let file = webm_with_segment_size(
+        &[webm_track(Some((&[0x02, 0x80], &[0x01, 0x68])))],
+        [0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00],
+    );
+    assert_eq!(webm_video_dimensions(&file), Some((640, 360)));
+}
+
+#[test]
+fn metadata_larger_than_the_movie_header_limit_is_blanked_not_refused() {
+    // An audiobook's cover art in `moov/udta/meta/ilst/covr`.
+    let cover = boxed(b"covr", &vec![7; MAXIMUM_MOVIE_HEADER_BYTES]);
+    let mut file = movie(&[
+        boxed(b"mvhd", &[0; 100]),
+        boxed(b"udta", &boxed(b"meta", &boxed(b"ilst", &cover))),
+    ]);
+    let length = file.len();
+    assert_eq!(
+        blank_metadata_and_read_video_dimensions(&mut file),
+        Ok(None)
+    );
+    assert_eq!(file.len(), length);
+    assert!(!file.contains(&7));
+}
+
+#[test]
+fn xmp_boxes_are_blanked_at_the_top_and_in_the_movie() {
+    let xmp = boxed(
+        b"uuid",
+        &[
+            &XMP_BOX_UUID[..],
+            b"<exif:GPSLatitude>48,51.5N</exif:GPSLatitude>",
+        ]
+        .concat(),
+    );
+    let other_uuid = boxed(b"uuid", &[&[0xAB; 16][..], b"kept"].concat());
+    let mut file = [
+        movie(&[
+            xmp.clone(),
+            other_uuid,
+            track(track_header(0, 1920, 1080, IDENTITY), b"vide", &[]),
+        ]),
+        xmp,
+    ]
+    .concat();
+    let length = file.len();
+    assert_eq!(
+        blank_metadata_and_read_video_dimensions(&mut file),
+        Ok(Some((1920, 1080)))
+    );
+    assert_eq!(file.len(), length);
+    assert!(!contains(&file, b"GPSLatitude"));
+    assert!(!contains(&file, &XMP_BOX_UUID));
+    assert!(
+        contains(&file, b"kept"),
+        "other `uuid` boxes are left alone"
+    );
 }
