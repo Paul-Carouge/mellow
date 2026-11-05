@@ -30,9 +30,10 @@ use mellow_protocol::{
     MusicItem, MusicProvider, OverwriteKind, PermissionOverwrite, Permissions, Poll, PollAnswer,
     PollVote, Presence, PresenceStatus, ProfileImage, ProgressBar, PublicUser, ReactionSummary,
     ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated,
-    SimulcastLayer, Snowflake, SoundboardSound, TwitchEmbed, TwitchItem, VideoTileSize,
-    VimeoVideoEmbed, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal,
-    WatchedCamera, WikipediaArticleEmbed, YouTubeMusicTrackEmbed, YouTubeVideoEmbed,
+    SimulcastLayer, Snowflake, SoundboardSound, TwitchEmbed, TwitchItem, TwoFactorChallenge,
+    TwoFactorEnrolment, TwoFactorRecoveryCodes, TwoFactorStatus, VideoTileSize, VimeoVideoEmbed,
+    VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal, WatchedCamera,
+    WikipediaArticleEmbed, YouTubeMusicTrackEmbed, YouTubeVideoEmbed,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -1041,6 +1042,36 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
             }],
         )?,
         sampled(
+            "TwoFactorChallenge",
+            Interface,
+            &[TwoFactorChallenge {
+                two_factor_token: "mlw_challenge".into(),
+                expires_in_seconds: 300,
+            }],
+        )?,
+        sampled(
+            "TwoFactorStatus",
+            Interface,
+            &[TwoFactorStatus {
+                is_enabled: true,
+                recovery_codes_remaining: 9,
+            }],
+        )?,
+        sampled(
+            "TwoFactorEnrolment",
+            Interface,
+            &[TwoFactorEnrolment {
+                secret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP".into(),
+            }],
+        )?,
+        sampled(
+            "TwoFactorRecoveryCodes",
+            Interface,
+            &[TwoFactorRecoveryCodes {
+                recovery_codes: vec!["abcd-efgh-ijkl-mnop".into()],
+            }],
+        )?,
+        sampled(
             "ChannelKind",
             StringUnion,
             &every_variant!(ChannelKind: Category, Text, Voice),
@@ -1268,7 +1299,7 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
                 ValidationFailed, UsernameTaken, EmailTaken, RegistrationClosed,
                 InvalidCredentials, Unauthorized, AccountDisabled, RateLimited, ServerBusy,
                 NotFound, MissingPermissions, InvalidInvite, OwnerCannotLeave, Banned,
-                LimitReached, Conflict, Internal,
+                LimitReached, Conflict, Internal, InvalidTwoFactorCode,
             ),
         )?,
         sampled("GatewayEvent", TaggedUnion("t"), &gateway_events())?,

@@ -3,7 +3,7 @@
 // `npm run check` type-checks every sample against protocol.ts; protocol.test.ts compares
 // the constants and permission bits.
 
-import type { ApiErrorCode, Attachment, AuditAction, AuditChange, AuditLogEntry, Ban, Channel, ChannelKind, ChannelPlacement, ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel, GatewayEvent, GifSettings, GitHubIssueState, Guild, GuildInvite, InitialCategory, Invite, LinkEmbed, Member, Message, MessageReaction, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicItem, MusicProvider, PermissionOverwrite, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer, SoundboardSound, TwitchItem, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal } from "./protocol";
+import type { ApiErrorCode, Attachment, AuditAction, AuditChange, AuditLogEntry, Ban, Channel, ChannelKind, ChannelPlacement, ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel, GatewayEvent, GifSettings, GitHubIssueState, Guild, GuildInvite, InitialCategory, Invite, LinkEmbed, Member, Message, MessageReaction, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicItem, MusicProvider, PermissionOverwrite, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer, SoundboardSound, TwitchItem, TwoFactorChallenge, TwoFactorEnrolment, TwoFactorRecoveryCodes, TwoFactorStatus, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal } from "./protocol";
 
 /** `true` only when every member of `Union` has a sample. */
 type HasEveryMember<Union, Sampled> = [Exclude<Union, Sampled>] extends [never] ? true : false;
@@ -143,6 +143,34 @@ export const sessionCreatedSamples = [
     }
   }
 ] satisfies SessionCreated[];
+
+export const twoFactorChallengeSamples = [
+  {
+    "expires_in_seconds": 300,
+    "two_factor_token": "mlw_challenge"
+  }
+] satisfies TwoFactorChallenge[];
+
+export const twoFactorStatusSamples = [
+  {
+    "is_enabled": true,
+    "recovery_codes_remaining": 9
+  }
+] satisfies TwoFactorStatus[];
+
+export const twoFactorEnrolmentSamples = [
+  {
+    "secret": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+  }
+] satisfies TwoFactorEnrolment[];
+
+export const twoFactorRecoveryCodesSamples = [
+  {
+    "recovery_codes": [
+      "abcd-efgh-ijkl-mnop"
+    ]
+  }
+] satisfies TwoFactorRecoveryCodes[];
 
 export const channelKindSamples = [
   "category",
@@ -1475,7 +1503,8 @@ export const apiErrorCodeSamples = [
   "BANNED",
   "LIMIT_REACHED",
   "CONFLICT",
-  "INTERNAL"
+  "INTERNAL",
+  "INVALID_TWO_FACTOR_CODE"
 ] satisfies ApiErrorCode[];
 export const apiErrorCodeSamplesHaveEveryMember: HasEveryMember<ApiErrorCode, (typeof apiErrorCodeSamples)[number]> = true;
 

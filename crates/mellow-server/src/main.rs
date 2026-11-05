@@ -12,7 +12,7 @@ use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use mellow_server::commands::{
     CreateUserOptions, InitializeOptions, back_up_instance, create_user, initialize_instance,
-    pictures_to_recompress, request_image_recompression, serve_instance,
+    pictures_to_recompress, request_image_recompression, reset_two_factor, serve_instance,
     set_instance_administrator, shutdown_signal,
 };
 use mellow_server::config::{
@@ -157,6 +157,15 @@ enum AdminCommand {
         username: String,
         #[arg(long)]
         revoke: bool,
+    },
+    /// Turn off an account's two-factor sign-in, for someone who lost both their authenticator
+    /// and their recovery codes. Check who is asking first: this removes the account's second
+    /// factor. The reset is recorded in the database.
+    ResetTwoFactor {
+        #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
+        config: PathBuf,
+        #[arg(long)]
+        username: String,
     },
     /// Store the pictures kept before visually lossless compression (ADR-0033) again, smaller:
     /// avatars, banners, guild and channel icons and picture attachments. No original is kept.
@@ -432,6 +441,17 @@ async fn run_admin_command(command: AdminCommand) -> Result<()> {
                 "{username} is {} an instance administrator.",
                 if revoke { "no longer" } else { "now" }
             );
+            Ok(())
+        }
+        AdminCommand::ResetTwoFactor { config, username } => {
+            if reset_two_factor(&load_config(&config)?, &username).await? {
+                eprintln!(
+                    "Two-factor sign-in of {username} is off; they sign in with their password \
+                     alone and can turn it on again in Settings."
+                );
+            } else {
+                eprintln!("{username} had no two-factor sign-in; nothing changed.");
+            }
             Ok(())
         }
         AdminCommand::RecompressImages {

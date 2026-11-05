@@ -133,6 +133,8 @@ pub enum ApiErrorCode {
     /// refresh and try again.
     Conflict,
     Internal,
+    /// The two-factor code (or recovery code) is wrong, already used, or from too long ago.
+    InvalidTwoFactorCode,
 }
 
 const REDACTED: &str = "<redacted>";

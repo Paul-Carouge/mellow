@@ -12,6 +12,7 @@ mod permissions;
 mod relationships;
 mod search;
 mod snowflake;
+mod two_factor;
 
 pub use accounts::{
     ApiErrorBody, ApiErrorCode, ChangePasswordRequest, ChosenStatus, CurrentUser, LoginRequest,
@@ -70,4 +71,9 @@ pub use search::{
 pub use snowflake::{
     MAXIMUM_SEQUENCE, MAXIMUM_TIMESTAMP_MILLISECONDS_SINCE_EPOCH, MELLOW_EPOCH_UNIX_MILLISECONDS,
     Snowflake, SnowflakeError,
+};
+pub use two_factor::{
+    CompleteTwoFactorSignInRequest, EnableTwoFactorRequest, ProveTwoFactorRequest,
+    StartTwoFactorEnrolmentRequest, TwoFactorChallenge, TwoFactorEnrolment, TwoFactorRecoveryCodes,
+    TwoFactorStatus,
 };
