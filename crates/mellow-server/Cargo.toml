@@ -32,10 +32,13 @@ mellow-update.workspace = true
 ipnet.workspace = true
 mellow-protocol.workspace = true
 moxcms.workspace = true
+ogg.workspace = true
+opus.workspace = true
 rav1e.workspace = true
 # Link previews (ADR-0041): the only outbound HTTP client of the server.
 reqwest.workspace = true
 rpassword.workspace = true
+rubato.workspace = true
 rustls-acme.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -44,6 +47,7 @@ socket2.workspace = true
 ssimulacra2.workspace = true
 sqlx.workspace = true
 str0m.workspace = true
+symphonia.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 tower.workspace = true

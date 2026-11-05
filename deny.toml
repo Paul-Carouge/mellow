@@ -70,8 +70,6 @@ deny = [
 # base64 and syn, the other) major version. Each entry names the exact version so that a new
 # duplicate still warns; delete an entry once its upstream moves on.
 skip = [
-    { crate = "windows-sys@0.52.0", reason = "winapi-util 0.1 (walkdir)" },
-    { crate = "windows-sys@0.59.0", reason = "errno, tempfile and rustls-platform-verifier" },
     { crate = "hashbrown@0.16.1", reason = "hashlink 0.11 under sqlx-core 0.9" },
     { crate = "miniz_oxide@0.8.9", reason = "png 0.18 (image, resvg)" },
     { crate = "nom@7.1.3", reason = "x509-parser 0.18 (rustls-acme) and cexpr (bindgen)" },

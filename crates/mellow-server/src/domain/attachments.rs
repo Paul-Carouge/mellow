@@ -14,6 +14,11 @@ use crate::domain::image_processing::{
 };
 use crate::storage::link_previews::{self as link_preview_storage, StoredPreviewImage};
 
+use crate::domain::audio_transcoding::{
+    AudioTranscodingBudget, AudioTranscodingError, AudioTranscodingOutcome,
+    MAXIMUM_TRANSCODED_AUDIO_SECONDS, OPUS_CONTENT_TYPE, OPUS_FILE_EXTENSION,
+    TRANSCODABLE_AUDIO_TYPES, transcode_to_opus,
+};
 use crate::domain::image_recompression::ImageRecompression;
 use crate::domain::media_headers;
 use crate::domain::message_rules::{UNKNOWN_CONTENT_TYPE, clean_file_name, sniff_content_type};
@@ -59,6 +64,15 @@ const PREVIEW_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(
 const RECOMPRESSION_REQUEST_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_mins(1);
 /// Extensions a file name may end with that name a picture type, replaced when it is converted.
 const PICTURE_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "jfif", "gif", "webp", "avif"];
+/// Extensions of the audio types transcoded to Opus (ADR-0045), replaced by `.opus`.
+const AUDIO_EXTENSIONS: [&str; 8] = ["wav", "wave", "flac", "mp3", "aac", "m4a", "m4b", "mp4"];
+/// No transcode of an audio attachment runs past this, counted from the job's start. Decoding,
+/// resampling and encoding run about 70 times faster than real time on one Apple M3 core
+/// (ADR-0045), so a 25 MB upload (at most about 10 minutes of 320 kbit/s MP3) ends well within
+/// it even on a host several times slower; past it, the upload stays as it is. An exception to
+/// "no time budget in background work" (ADR-0045): the input is hostile, and this is the backstop
+/// should a decoder spend far more per byte than measured.
+const AUDIO_TRANSCODING_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Compresses uploaded pictures one at a time, after they were answered, until the server stops
 /// (ADR-0021, ADR-0033): one worker bounds the CPU it takes. Whenever it runs out of work, at startup
@@ -117,13 +131,21 @@ async fn stored_form_and_dimensions(
     .map_err(|error| MessageError::Internal(Box::new(error)))?
 }
 
-/// `photo.jpg` stored as AVIF becomes `photo.avif`; a name without a picture extension gains one.
+/// `photo.jpg` stored as AVIF becomes `photo.avif`, `take.wav` stored as Opus `take.opus`; a name
+/// without an extension of its kind gains one.
 fn with_extension_of(file_name: &str, content_type: &str) -> String {
-    let extension = content_type.strip_prefix("image/").unwrap_or("bin");
+    let (extension, replaced_extensions) = if content_type == OPUS_CONTENT_TYPE {
+        (OPUS_FILE_EXTENSION, AUDIO_EXTENSIONS.as_slice())
+    } else {
+        (
+            content_type.strip_prefix("image/").unwrap_or("bin"),
+            PICTURE_EXTENSIONS.as_slice(),
+        )
+    };
     let stem = match file_name.rsplit_once('.') {
         Some((stem, current))
             if !stem.is_empty()
-                && PICTURE_EXTENSIONS
+                && replaced_extensions
                     .iter()
                     .any(|known| current.eq_ignore_ascii_case(known)) =>
         {
@@ -467,9 +489,14 @@ impl Attachments {
             let _ = self.files.delete(id).await;
             return Err(error.into());
         }
-        if OPTIMIZABLE_CONTENT_TYPES.contains(&content_type.as_str()) {
+        if OPTIMIZABLE_CONTENT_TYPES.contains(&content_type.as_str())
+            || TRANSCODABLE_AUDIO_TYPES.contains(&content_type.as_str())
+        {
             // Answering the upload never waits on compression: a full queue drops the job, and the
             // worker picks the upload up again once idle (its attempt is not recorded yet).
+            // shortcut: only pictures are picked up again (the index of migration 0027 lists their
+            // types); a dropped audio job keeps its upload. Add the audio types to that index with
+            // a migration if full queues or restarts show up in practice.
             let _ = self.optimization_sender.try_send(id);
         }
         Ok(Attachment {
@@ -581,12 +608,16 @@ impl Attachments {
 
     /// Replaces the file with its compressed form when smaller (ADR-0033): no original is kept.
     /// Anything undecodable, failing the quality check or not smaller keeps the file as it is.
-    /// Then stores a preview for the message list when one is smaller than the stored file.
+    /// Then stores a preview for the message list when one is smaller than the stored file. Audio
+    /// goes to `transcode_audio` instead.
     pub(crate) async fn optimize(&self, attachment_id: Snowflake) -> Result<(), MessageError> {
         let Some(attachment) = storage::find_attachment(&self.database, attachment_id).await?
         else {
             return Ok(());
         };
+        if TRANSCODABLE_AUDIO_TYPES.contains(&attachment.content_type.as_str()) {
+            return self.transcode_audio(&attachment).await;
+        }
         let permit = self.wait_for_image_processing_permit().await?;
         let original = self.files.read(attachment.file_id).await?;
         let content_type = attachment.content_type.clone();
@@ -604,7 +635,10 @@ impl Attachments {
         .await
         .map_err(|error| MessageError::Internal(Box::new(error)))?;
         let stored_size_bytes = match optimized {
-            Ok(Some(optimized)) => match self.replace_file(&attachment, optimized).await? {
+            Ok(Some(optimized)) => match self
+                .replace_file(&attachment, optimized.bytes, optimized.content_type)
+                .await?
+            {
                 Some(size_bytes) => size_bytes,
                 None => return Ok(()),
             },
@@ -635,6 +669,42 @@ impl Attachments {
         self.store_preview(attachment.id, preview).await
     }
 
+    /// Replaces an audio file with its Ogg Opus form when that is smaller (ADR-0045), as `optimize`
+    /// does for pictures: no original is kept, and anything undecodable, too long or not smaller
+    /// keeps the upload. Takes a picture slot, so heavy media jobs stay bounded together.
+    async fn transcode_audio(&self, attachment: &StoredAttachment) -> Result<(), MessageError> {
+        let permit = self.wait_for_image_processing_permit().await?;
+        let original = self.files.read(attachment.file_id).await?;
+        let content_type = attachment.content_type.clone();
+        let budget = AudioTranscodingBudget {
+            maximum_seconds: MAXIMUM_TRANSCODED_AUDIO_SECONDS,
+            deadline: std::time::Instant::now() + AUDIO_TRANSCODING_TIME_BUDGET,
+        };
+        let transcoded = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            transcode_to_opus(&original, &content_type, budget)
+        })
+        .await
+        .map_err(|error| MessageError::Internal(Box::new(error)))?;
+        match transcoded {
+            Ok(AudioTranscodingOutcome::Transcoded(opus)) => {
+                self.replace_file(attachment, opus, OPUS_CONTENT_TYPE)
+                    .await?;
+            }
+            Ok(
+                AudioTranscodingOutcome::NotSmaller
+                | AudioTranscodingOutcome::LeftAsItIs
+                | AudioTranscodingOutcome::OverBudget,
+            )
+            | Err(AudioTranscodingError::Undecodable) => {}
+            // A failing encoder is a server fault, not a property of the upload: say so.
+            Err(error @ AudioTranscodingError::Encoding) => {
+                tracing::warn!(%error, "cannot transcode an audio attachment");
+            }
+        }
+        Ok(())
+    }
+
     /// Replaces the file with its smaller form when it is smaller; the size of the file stored
     /// afterwards, or `None` when the attachment was deleted or its file replaced meanwhile. The new
     /// form is written under a new file id and the row switched to it before the old file goes, so
@@ -643,27 +713,28 @@ impl Attachments {
     async fn replace_file(
         &self,
         attachment: &StoredAttachment,
-        optimized: ProcessedImage,
+        smaller_bytes: Vec<u8>,
+        smaller_content_type: &'static str,
     ) -> Result<Option<u64>, MessageError> {
-        let file_name = if optimized.content_type == attachment.content_type {
+        let file_name = if smaller_content_type == attachment.content_type {
             attachment.file_name.clone()
         } else {
-            with_extension_of(&attachment.file_name, optimized.content_type)
+            with_extension_of(&attachment.file_name, smaller_content_type)
         };
-        let size_bytes = u64::try_from(optimized.bytes.len()).unwrap_or(u64::MAX);
+        let size_bytes = u64::try_from(smaller_bytes.len()).unwrap_or(u64::MAX);
         if size_bytes >= attachment.size_bytes {
             return Ok(Some(attachment.size_bytes));
         }
         let new_file_id = self
             .ids
             .next_id(crate::domain::clock::now_unix_milliseconds())?;
-        self.files.write(new_file_id, optimized.bytes).await?;
+        self.files.write(new_file_id, smaller_bytes).await?;
         let updated = storage::update_attachment_file(
             &self.database,
             attachment.file_id,
             new_file_id,
             &file_name,
-            optimized.content_type,
+            smaller_content_type,
             size_bytes,
         )
         .await;
@@ -1066,6 +1137,17 @@ mod tests {
 
     /// A sent PNG attachment of 1 000 bytes, its file written; answers its row.
     async fn stored_png_attachment(state: &crate::http::AppState) -> StoredAttachment {
+        stored_attachment(state, "photo.png", "image/png", vec![7; 1_000]).await
+    }
+
+    /// An attachment sent in a message, stored as uploaded.
+    async fn stored_attachment(
+        state: &crate::http::AppState,
+        file_name: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> StoredAttachment {
+        let size_bytes = bytes.len();
         let id = SnowflakeGenerator::default()
             .next_id(crate::domain::clock::now_unix_milliseconds())
             .unwrap();
@@ -1079,21 +1161,67 @@ mod tests {
              INSERT INTO messages (id, channel_id, author_id, content) VALUES (30, 20, 1, ''); \
              INSERT INTO attachments (id, channel_id, uploader_id, message_id, file_name, \
              content_type, size_bytes, created_at_unix_milliseconds) \
-             VALUES ({id}, 20, 1, 30, 'photo.png', 'image/png', 1000, 0);"
+             VALUES ({id}, 20, 1, 30, '{file_name}', '{content_type}', {size_bytes}, 0);"
         )))
         .execute(state.attachments.database.writer())
         .await
         .unwrap();
-        state
-            .attachments
-            .files
-            .write(id, vec![7; 1_000])
-            .await
-            .unwrap();
+        state.attachments.files.write(id, bytes).await.unwrap();
         storage::find_attachment(&state.attachments.database, id)
             .await
             .unwrap()
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_wav_attachment_is_replaced_by_its_smaller_ogg_opus_form() {
+        use crate::domain::audio_transcoding::tests::chord_wav;
+
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let wav = chord_wav(44_100, 2, 3);
+        let before = stored_attachment(&state, "take 1.wav", "audio/wav", wav.clone()).await;
+
+        state.attachments.optimize(before.id).await.unwrap();
+        let after = storage::find_attachment(&database, before.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let stored = state.attachments.files.read(after.file_id).await.unwrap();
+        let stored_files = state.attachments.files.stored_ids().await.unwrap();
+        database.close().await;
+
+        assert_eq!(
+            (after.file_name.as_str(), after.content_type.as_str()),
+            ("take 1.opus", "audio/ogg")
+        );
+        assert!(after.size_bytes * 5 < u64::try_from(wav.len()).unwrap());
+        assert_eq!(after.size_bytes, u64::try_from(stored.len()).unwrap());
+        assert_eq!(&stored[..4], b"OggS");
+        assert_eq!(stored_files, vec![after.file_id], "the WAV is gone");
+    }
+
+    #[tokio::test]
+    async fn a_low_bitrate_mp3_attachment_is_kept_as_uploaded() {
+        let (_directory, database) = migrated_database().await;
+        let state = test_state(database.clone(), RegistrationMode::Open);
+        let mp3 = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/audio/tone-64kbps-mono.mp3"
+        ))
+        .to_vec();
+        let before = stored_attachment(&state, "memo.mp3", "audio/mpeg", mp3).await;
+
+        state.attachments.optimize(before.id).await.unwrap();
+        let after = storage::find_attachment(&database, before.id)
+            .await
+            .unwrap()
+            .unwrap();
+        database.close().await;
+
+        assert_eq!(after.file_id, before.file_id);
+        assert_eq!(after.content_type, "audio/mpeg");
+        assert_eq!(after.size_bytes, before.size_bytes);
     }
 
     fn smaller_avif() -> ProcessedImage {
@@ -1112,7 +1240,7 @@ mod tests {
 
         let replaced = state
             .attachments
-            .replace_file(&before, smaller_avif())
+            .replace_file(&before, smaller_avif().bytes, smaller_avif().content_type)
             .await
             .unwrap();
         let after = storage::find_attachment(&database, before.id)
@@ -1165,7 +1293,11 @@ mod tests {
 
         let replaced = state
             .attachments
-            .replace_file(&read_before_the_swap, smaller_avif())
+            .replace_file(
+                &read_before_the_swap,
+                smaller_avif().bytes,
+                smaller_avif().content_type,
+            )
             .await
             .unwrap();
         let after = storage::find_attachment(&database, read_before_the_swap.id)
@@ -1206,5 +1338,15 @@ mod tests {
             "no-extension.avif"
         );
         assert_eq!(with_extension_of(".gif", "image/webp"), ".gif.webp");
+        assert_eq!(with_extension_of("take 3.WAV", "audio/ogg"), "take 3.opus");
+        assert_eq!(with_extension_of("song.m4a", "audio/ogg"), "song.opus");
+        assert_eq!(
+            with_extension_of("photo.png", "audio/ogg"),
+            "photo.png.opus"
+        );
+        assert_eq!(
+            with_extension_of("song.flac", "image/avif"),
+            "song.flac.avif"
+        );
     }
 }

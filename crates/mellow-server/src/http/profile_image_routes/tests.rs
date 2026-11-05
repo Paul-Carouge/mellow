@@ -394,6 +394,44 @@ async fn pictures_whose_compression_was_lost_in_a_restart_are_compressed_after_i
 }
 
 #[tokio::test]
+async fn an_uploaded_wav_is_queued_and_stored_as_ogg_opus() {
+    use crate::domain::audio_transcoding::tests::chord_wav;
+
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let (owner, general) = owner_and_general_channel(&state).await;
+    let (_, body) = send(&state, authorized("GET", "/api/v1/users/@me", &owner, None)).await;
+    let owner_id = json::<CurrentUser>(&body).id;
+    let slot = state
+        .attachments
+        .start_upload(owner_id, general, "take 1.wav")
+        .await
+        .unwrap();
+    let uploaded = state
+        .attachments
+        .finish_upload(
+            slot,
+            chord_wav(44_100, 2, 3),
+            crate::domain::clock::now_unix_milliseconds(),
+        )
+        .await
+        .unwrap();
+
+    // The queue the upload filled, worked through as the worker would.
+    state.attachments.optimize_every_attachment_awaiting().await;
+    let stored = crate::storage::attachments::find_attachment(&database, uploaded.id)
+        .await
+        .unwrap()
+        .unwrap();
+    database.close().await;
+
+    assert_eq!(
+        (stored.file_name.as_str(), stored.content_type.as_str()),
+        ("take 1.opus", "audio/ogg")
+    );
+}
+
+#[tokio::test]
 async fn a_picture_whose_compression_died_with_the_process_is_not_tried_again() {
     use crate::domain::image_processing::tests::png;
 
