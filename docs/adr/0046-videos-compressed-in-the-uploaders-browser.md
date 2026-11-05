@@ -1,6 +1,6 @@
 # 0046. Videos compressed in the uploader's browser
 
-- Status: Proposed (the Content-Security-Policy change below waits for the owner's approval)
+- Status: Accepted (2026-11-05, the owner approved the Content-Security-Policy change)
 - Date: 2026-11-05
 - Amends: [ADR-0038](0038-play-audio-and-video-attachments-inline.md) (videos are no longer always stored as uploaded), [ADR-0019](0019-web-client-served-by-the-server-binary.md) (the policy's `worker-src`)
 
@@ -18,7 +18,7 @@ The owner wants videos "as small as possible at near-original quality". Phones r
 - **The original is kept** when: the browser cannot decode the video (HEVC on most non-Apple systems), the duration is unknown, the source is HDR (`pq` or `hlg` transfer: tone mapping to SDR H.264 washes it out), the browser has no H.264 encoder, the frame rate is unknown, the audio can be neither copied nor encoded, a track would be dropped, the conversion fails (logged, never lost), or an H.264 transcode is not at least 20 % smaller (unless the original is over the limit). A source already near the target (at most 1.25 times the target total rate, no scaling, at most 60 fps, within the limit) in H.264 is only remuxed (packets copied: milliseconds), and that remux is kept when it is not larger, for the faststart and the dropped tags.
 - **Channel.** Each tray item keeps the channel it was attached in and uploads there, whatever channel is open when its compression ends.
 - **Tray.** The Worker posts progress once per whole percent, not per frame. The item says "Compression… 42 %" / "Compressing… 42%" with the preview dimmed as while uploading, and a "Envoyer l'original" / "Send the original" link (the Retry link's style, labelled "Send the original of clip.mov") that stops compression and uploads the file as it is. The item's Remove button cancels: it stops the Worker and nothing is uploaded. Send waits for compressing files as for uploading ones. No new screen or token.
-- **Content-Security-Policy: `worker-src 'self'`** instead of `'none'`. Browsers load a worker script only when it is served with a JavaScript type; on this origin only the client's own hashed assets are, since uploads are sniffed to media types or `application/octet-stream` and served with `nosniff` (ADR-0020, ADR-0038), so an upload still cannot become a Worker or a service worker. **Not applied in this change**: without it the Worker is refused, the composer logs it and sends the original, so the feature is dormant until the owner approves the policy change and `web_client.rs` (both policies and their tests) is updated.
+- **Content-Security-Policy: `worker-src 'self'`** instead of `'none'`. Browsers load a worker script only when it is served with a JavaScript type; on this origin only the client's own hashed assets are, since uploads are sniffed to media types or `application/octet-stream` and served with `nosniff` (ADR-0020, ADR-0038), so an upload still cannot become a Worker or a service worker. Approved by the owner on 2026-11-05 and applied in `web_client.rs` (both policies and their tests).
 
 ## Measurements (2026-11-05)
 Headless Google Chrome on macOS (Apple silicon, VideoToolbox behind WebCodecs), the built Worker driven by Playwright; VMAF by libvmaf against the source, frames compared by index.
