@@ -52,6 +52,13 @@ describe("reactions", () => {
   });
 });
 
+describe("direct-message permissions", () => {
+  it("allow polls, checklists and progress bars, as direct_message_permissions on the server", () => {
+    expect(hasPermission(DIRECT_MESSAGE_PERMISSIONS, Permission.SEND_POLLS)).toBe(true);
+    expect(hasPermission(DIRECT_MESSAGE_PERMISSIONS, Permission.SEND_CHECKLISTS)).toBe(true);
+  });
+});
+
 describe("custom emoji", () => {
   const party = { id: "500", name: "party", is_animated: false };
   const parrot = { id: "501", name: "parrot", is_animated: true };

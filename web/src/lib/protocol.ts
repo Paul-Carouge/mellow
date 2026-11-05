@@ -1111,7 +1111,9 @@ export const DIRECT_MESSAGE_PERMISSIONS: PermissionBits = String(
     Permission.SEND_MESSAGES |
     Permission.READ_MESSAGE_HISTORY |
     Permission.ATTACH_FILES |
-    Permission.ADD_REACTIONS,
+    Permission.ADD_REACTIONS |
+    Permission.SEND_POLLS |
+    Permission.SEND_CHECKLISTS,
 );
 
 /**
