@@ -2239,6 +2239,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn checklists_and_progress_bars_go_with_their_message_and_refuse_bad_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) \
+             VALUES (30, 20, 1, ''), (31, 20, 1, ''), (32, 20, 1, ''); \
+             INSERT INTO checklists (message_id, title, revision, next_item_id) \
+             VALUES (30, 'Release', 1, 3), (31, 'Chores', 0, 2); \
+             INSERT INTO checklist_items (message_id, item_id, text, checked_by_user_id, \
+             checked_at_unix_milliseconds) VALUES (30, 1, 'Tag', 1, 5), (30, 2, 'Deploy', NULL, NULL), \
+             (31, 1, 'Dishes', NULL, NULL); \
+             INSERT INTO progress_bars (message_id, label, value, maximum, revision) \
+             VALUES (30, 'Sync', 3, 5, 0), (32, 'Migration', 1, 2, 0); \
+             DELETE FROM messages WHERE id = 30;",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let checklists: Vec<i64> = sqlx::query_scalar("SELECT message_id FROM checklists")
+            .fetch_all(database.writer())
+            .await
+            .unwrap();
+        let items: Vec<i64> = sqlx::query_scalar("SELECT message_id FROM checklist_items")
+            .fetch_all(database.writer())
+            .await
+            .unwrap();
+        let bars: Vec<i64> = sqlx::query_scalar("SELECT message_id FROM progress_bars")
+            .fetch_all(database.writer())
+            .await
+            .unwrap();
+        let above_maximum = sqlx::query("UPDATE progress_bars SET value = 3 WHERE message_id = 32")
+            .execute(database.writer())
+            .await;
+        let half_tick =
+            sqlx::query("UPDATE checklist_items SET checked_by_user_id = 1 WHERE message_id = 31")
+                .execute(database.writer())
+                .await;
+        database.close().await;
+
+        assert_eq!(checklists, [31]);
+        assert_eq!(items, [31]);
+        assert_eq!(bars, [32]);
+        assert!(above_maximum.is_err(), "a value is at most the maximum");
+        assert!(half_tick.is_err(), "who ticked and when go together");
+    }
+
+    #[tokio::test]
     async fn previews_stored_before_provider_embeds_keep_their_card_and_have_no_embed() {
         const LAST_VERSION_BEFORE_EMBEDS: i64 = 38;
         let directory = tempfile::tempdir().unwrap();
