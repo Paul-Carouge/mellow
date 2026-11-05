@@ -18,6 +18,9 @@ const MAXIMUM_REDIRECTS: usize = 5;
 /// The head of a page is enough; a longer page is read up to here and parsed as it is.
 const MAXIMUM_PAGE_BYTES: usize = 1024 * 1024;
 pub(crate) const MAXIMUM_PICTURE_BYTES: usize = 8 * 1024 * 1024;
+/// A provider's API or oEmbed answer (ADR-0044): a few kilobytes; a longer one is refused, since
+/// a truncated document cannot be read.
+const MAXIMUM_JSON_BYTES: usize = 64 * 1024;
 const PAGE_CONTENT_TYPES: [&str; 2] = ["text/html", "application/xhtml+xml"];
 
 #[derive(Debug, thiserror::Error)]
@@ -187,6 +190,33 @@ impl LinkFetcher {
             deadline,
         )
         .await
+    }
+
+    /// A provider's JSON answer (ADR-0044), read into `T`, under the same guard as pages.
+    ///
+    /// # Errors
+    /// Any refusal, network error, status other than 2xx, a type other than JSON, a body over
+    /// 64 KiB, or JSON that is not a `T`.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the provider fetchers of ADR-0044 call it")
+    )]
+    pub(crate) async fn fetch_json<T: serde::de::DeserializeOwned>(
+        &self,
+        url: Url,
+    ) -> Result<T, FetchError> {
+        let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;
+        let (_, response) = self
+            .get_following_redirects(url, "application/json", deadline)
+            .await?;
+        let content_type = content_type_of(&response);
+        // `application/json`, oEmbed's `application/json+oembed`, or a `+json` type.
+        if !content_type.starts_with("application/json") && !content_type.ends_with("+json") {
+            return Err(FetchError::Unsupported);
+        }
+        let body = read_at_most(response, MAXIMUM_JSON_BYTES, BodyOverflow::Fail, deadline).await?;
+        // Parsed in place: serde_json is linear and the body is 16 times smaller than a page.
+        serde_json::from_slice(&body).map_err(|_| FetchError::Unsupported)
     }
 
     async fn get_following_redirects(
@@ -384,6 +414,96 @@ mod tests {
         assert!(
             matches!(outcome, Err(FetchError::TooManyRedirects)),
             "{outcome:?}"
+        );
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct OEmbed {
+        title: String,
+    }
+
+    #[tokio::test]
+    async fn json_up_to_64_kib_is_read_and_longer_or_other_answers_are_refused() {
+        fn json_of_length(length: usize) -> String {
+            let padding = length - r#"{"title":"Talk","padding":""}"#.len();
+            format!(r#"{{"title":"Talk","padding":"{}"}}"#, "x".repeat(padding))
+        }
+        fn json(body: String) -> impl axum::response::IntoResponse {
+            (
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+        }
+        let site = axum::Router::new()
+            .route(
+                "/fits",
+                axum::routing::get(move || async move { json(json_of_length(MAXIMUM_JSON_BYTES)) }),
+            )
+            .route(
+                "/oembed",
+                axum::routing::get(|| async {
+                    (
+                        [(
+                            axum::http::header::CONTENT_TYPE,
+                            "application/json+oembed; charset=utf-8",
+                        )],
+                        r#"{"title":"Talk"}"#,
+                    )
+                }),
+            )
+            .route(
+                "/too-long",
+                axum::routing::get(
+                    move || async move { json(json_of_length(MAXIMUM_JSON_BYTES + 1)) },
+                ),
+            )
+            .route(
+                // No length announced: the cap holds while reading.
+                "/too-long-streamed",
+                axum::routing::get(|| async {
+                    let chunks = (0..=MAXIMUM_JSON_BYTES / 1024).map(|_| {
+                        Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(vec![b' '; 1024]))
+                    });
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        axum::body::Body::from_stream(futures_util::stream::iter(chunks)),
+                    )
+                }),
+            )
+            .route(
+                "/page",
+                axum::routing::get(|| async { axum::response::Html(r#"{"title":"Talk"}"#) }),
+            )
+            .route(
+                "/not-json",
+                axum::routing::get(|| async { json("<html>".into()) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, site).await });
+        let fetcher = LinkFetcher::allowing_loopback_for_tests();
+        let fetch = |path: &str| {
+            fetcher.fetch_json::<OEmbed>(Url::parse(&format!("http://{address}{path}")).unwrap())
+        };
+
+        assert_eq!(fetch("/fits").await.unwrap().title, "Talk");
+        assert_eq!(fetch("/oembed").await.unwrap().title, "Talk");
+        let too_long = fetch("/too-long").await;
+        assert!(
+            matches!(too_long, Err(FetchError::TooLarge)),
+            "{too_long:?}"
+        );
+        let streamed = fetch("/too-long-streamed").await;
+        assert!(
+            matches!(streamed, Err(FetchError::TooLarge)),
+            "{streamed:?}"
+        );
+        let page = fetch("/page").await;
+        assert!(matches!(page, Err(FetchError::Unsupported)), "{page:?}");
+        let not_json = fetch("/not-json").await;
+        assert!(
+            matches!(not_json, Err(FetchError::Unsupported)),
+            "{not_json:?}"
         );
     }
 
