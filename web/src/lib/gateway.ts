@@ -17,7 +17,11 @@ export type GatewayUpdate =
   | { kind: "event"; event: GatewayEvent }
   | { kind: "resumed" }
   | { kind: "disconnected" }
-  | { kind: "signed-out" };
+  | { kind: "signed-out" }
+  /** The network changed: the open socket is being checked, so it may be dead. */
+  | { kind: "checking-link" }
+  /** The socket answered that check: it is still live. */
+  | { kind: "link-answered" };
 
 interface ResumableSession {
   sessionId: string;
@@ -149,7 +153,10 @@ export class GatewayConnection {
         break;
       case "heartbeat_ack":
         this.isHeartbeatAcknowledged = true;
-        this.stopNetworkChangeCheckTimer();
+        if (this.networkChangeCheckTimer) {
+          this.stopNetworkChangeCheckTimer();
+          this.onUpdate({ kind: "link-answered" });
+        }
         break;
       case "dispatch":
         if (this.resumable) {
@@ -230,10 +237,12 @@ export class GatewayConnection {
       this.networkChangeCheckTimer = null;
       this.abandonSocket();
     }, NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT_MILLISECONDS);
+    this.onUpdate({ kind: "checking-link" });
   }
 
-  /** Waiting out the backoff (up to 30 s) would only delay the user. */
-  private reconnectNow(): void {
+  /** Waiting out the backoff (up to 30 s) would only delay the user. An attempt already under way
+   * (no timer pending) goes on. */
+  reconnectNow(): void {
     if (!this.reconnectTimer) {
       return;
     }

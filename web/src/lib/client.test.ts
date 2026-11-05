@@ -113,8 +113,60 @@ describe("MellowClient", () => {
     client.applyReady(ready());
     expect(gifSettings).toHaveBeenCalledTimes(1);
 
-    client["endSession"]();
+    client["endSession"](false);
     expect(client.gifSettings).toBeNull();
+  });
+
+  it("says the session ended when the instance ends it, but not after signing out here", async () => {
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, logout: () => Promise.resolve() }));
+    client.applyReady(ready());
+
+    client["applyGatewayUpdate"]({ kind: "signed-out" });
+    expect(client.status).toBe("signed-out");
+    expect(client.hasSessionEndedByItself).toBe(true);
+
+    client.applyReady(ready());
+    await client.signOut();
+    expect(client.status).toBe("signed-out");
+    expect(client.hasSessionEndedByItself).toBe(false);
+  });
+
+  it("says the session ended when a request finds it refused", async () => {
+    const client = new MellowClient(fakeRest({ ...QUIET_REST }));
+    client.applyReady(ready());
+
+    client["reportError"](new ApiError(401, "UNAUTHORIZED"), "test");
+
+    expect(client.status).toBe("signed-out");
+    expect(client.hasSessionEndedByItself).toBe(true);
+  });
+
+  it("is not live while the gateway checks its socket after a network change", () => {
+    const client = new MellowClient(fakeRest({ ...QUIET_REST }));
+    client.applyReady(ready());
+    const update = (kind: "checking-link" | "link-answered" | "disconnected") =>
+      client["applyGatewayUpdate"]({ kind });
+
+    update("checking-link");
+    expect(client.isCheckingLink).toBe(true);
+    update("link-answered");
+    expect(client.isCheckingLink).toBe(false);
+
+    update("checking-link");
+    update("disconnected");
+    expect(client.isCheckingLink).toBe(false);
+    expect(client.status).toBe("reconnecting");
+  });
+
+  it("keeps a sign-out from here a sign-out when a request refused by it answers late", async () => {
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, logout: () => Promise.resolve() }));
+    client.applyReady(ready());
+    await client.signOut();
+
+    client["reportError"](new ApiError(401, "UNAUTHORIZED"), "send message");
+
+    expect(client.status).toBe("signed-out");
+    expect(client.hasSessionEndedByItself).toBe(false);
   });
 
   it("drops GIF settings that answer after the session ended", async () => {
@@ -127,7 +179,7 @@ describe("MellowClient", () => {
     );
     const client = new MellowClient(fakeRest({ ...QUIET_REST, gifSettings }));
     client.applyReady(ready());
-    client["endSession"]();
+    client["endSession"](false);
     answer({ klipy_app_key: "key", customer_id: "c".repeat(32) });
     await Promise.resolve();
     await Promise.resolve();
