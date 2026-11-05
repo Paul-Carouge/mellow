@@ -57,6 +57,10 @@ const MAXIMUM_COMPRESSED_PICTURE_PIXELS: u32 = 16_000_000;
 /// full picture as soon as it is opened, and three times would weigh about 2.25 times as much.
 const PREVIEW_WIDTH_PIXELS: u32 = 800;
 const PREVIEW_HEIGHT_PIXELS: u32 = 600;
+/// Link preview pictures larger than this are not decoded at all (the preview keeps its text): a
+/// link preview runs beside the attachment worker, so it must never be a large job itself. 4 MP
+/// takes 16 MB decoded and still covers the 1200 × 630 to 2560 × 1440 pictures pages announce.
+const MAXIMUM_LINK_PREVIEW_SOURCE_PIXELS: u64 = 4_000_000;
 /// Pictures past this are only ever encoded by the single attachment worker, so two of them never
 /// run at once.
 const LARGE_PICTURE_PIXELS: u32 = 1_000_000;
@@ -593,6 +597,11 @@ pub(crate) fn link_preview_picture(
 ) -> Result<Option<(ProcessedImage, u32, u32)>, ImageProcessingError> {
     if !OPTIMIZABLE_CONTENT_TYPES.contains(&content_type) || is_animated_png(bytes)? {
         return Ok(None);
+    }
+    let format = image::guess_format(bytes).map_err(|_| ImageProcessingError::Unsupported)?;
+    let (width, height) = header_dimensions(bytes, format)?;
+    if u64::from(width) * u64::from(height) > MAXIMUM_LINK_PREVIEW_SOURCE_PIXELS {
+        return Err(ImageProcessingError::TooLarge);
     }
     let picture = decode_picture(bytes, |frame| {
         fit_within(frame, PREVIEW_WIDTH_PIXELS, PREVIEW_HEIGHT_PIXELS)
@@ -1642,6 +1651,20 @@ pub(crate) mod tests {
         let huge = png(MAXIMUM_SIDE_PIXELS + 1, 1);
         assert_eq!(
             process_profile_image(&huge, ProfileImageKind::Avatar, None),
+            Err(ImageProcessingError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn a_link_preview_picture_past_its_pixel_cap_is_refused_before_decoding() {
+        // One pixel over the cap, as wide as allowed: only its header can be read.
+        let over_the_cap = png(
+            8_000,
+            u32::try_from(MAXIMUM_LINK_PREVIEW_SOURCE_PIXELS / 8_000 + 1).unwrap(),
+        );
+        let far_from_deadline = Instant::now() + Duration::from_secs(60);
+        assert_eq!(
+            link_preview_picture(&over_the_cap, "image/png", far_from_deadline),
             Err(ImageProcessingError::TooLarge)
         );
     }

@@ -39,6 +39,11 @@ const DOWNLOAD_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5
 /// hundred MB and a core for seconds. Only the one background worker handles pictures over 1 MP,
 /// so at most one such job runs at a time (ADR-0033).
 const CONCURRENT_IMAGE_PROCESSING: usize = 2;
+/// Link preview pictures processed at once, apart from the slots above so a burst of links never
+/// makes an avatar upload answer "busy" (ADR-0041). A preview is skipped rather than waiting
+/// for it, and its source is at most `MAXIMUM_LINK_PREVIEW_SOURCE_PIXELS`, so it is never one of
+/// the large jobs above: a few tens of MB and well under a second of a core.
+const CONCURRENT_LINK_PREVIEW_PICTURES: usize = 1;
 
 /// Uploads waiting for compression; past this, new ones keep their original file.
 const OPTIMIZATION_QUEUE_CAPACITY: usize = 64;
@@ -303,6 +308,7 @@ pub(crate) struct Attachments {
     downloading_readers: Arc<Mutex<HashMap<Snowflake, Arc<Semaphore>>>>,
     uploading_users: Arc<std::sync::Mutex<HashSet<Snowflake>>>,
     image_processing: Arc<Semaphore>,
+    link_preview_pictures: Arc<Semaphore>,
     maximum_stored_bytes_per_user: u64,
     optimization_sender: mpsc::Sender<Snowflake>,
     /// Taken once by `optimize_attachments_in_background`.
@@ -329,10 +335,20 @@ impl Attachments {
             downloading_readers: Arc::default(),
             uploading_users: Arc::default(),
             image_processing: Arc::new(Semaphore::new(CONCURRENT_IMAGE_PROCESSING)),
+            link_preview_pictures: Arc::new(Semaphore::new(CONCURRENT_LINK_PREVIEW_PICTURES)),
             maximum_stored_bytes_per_user,
             optimization_sender,
             optimization_receiver: std::sync::Mutex::new(Some(optimization_receiver)),
         }
+    }
+
+    /// The slot of link preview pictures, held by a test as a preview being made would.
+    #[cfg(test)]
+    pub(crate) fn take_link_preview_picture_slot(&self) -> OwnedSemaphorePermit {
+        self.link_preview_pictures
+            .clone()
+            .try_acquire_owned()
+            .unwrap()
     }
 
     #[cfg(test)]
@@ -752,7 +768,8 @@ impl Attachments {
 
     /// Stores a link preview's picture (ADR-0041): recognised by its bytes, re-encoded by the
     /// visually lossless pipeline within the attachment preview box, sealed in the file store.
-    /// `None` when the bytes are no picture Mellow shows or nothing could be encoded.
+    /// `None` when the bytes are no picture Mellow shows, nothing could be encoded or another
+    /// preview picture is being made: the preview then keeps its text only.
     pub(crate) async fn store_link_preview_picture(
         &self,
         bytes: Vec<u8>,
@@ -761,7 +778,10 @@ impl Attachments {
         if !OPTIMIZABLE_CONTENT_TYPES.contains(&content_type) {
             return Ok(None);
         }
-        let permit = self.wait_for_image_processing_permit().await?;
+        let Ok(permit) = self.link_preview_pictures.clone().try_acquire_owned() else {
+            tracing::debug!("link preview picture skipped: another one is being made");
+            return Ok(None);
+        };
         let deadline = std::time::Instant::now() + PREVIEW_TIME_BUDGET;
         let processed = tokio::task::spawn_blocking(move || {
             let _permit = permit;

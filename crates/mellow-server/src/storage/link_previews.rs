@@ -189,18 +189,20 @@ pub(crate) async fn insert_preview(
     Ok(())
 }
 
-/// Makes `preview_ids` the message's previews, in order, if its content is still
-/// `expected_content` (an edit meanwhile queued its own previews). Returns how many previews it
-/// replaced, or `None` when it wrote nothing.
+/// Adds the previews a job found to the message, if its content is still `expected_content` (an
+/// edit meanwhile dropped what it removed and queued its own job). `links` are the message's
+/// links in order, each with the preview the job found for it, if any: a link without one keeps
+/// the preview it already shows, so a job cut short never takes a card away. Returns whether the
+/// message's previews changed, or `None` when it wrote nothing.
 ///
 /// # Errors
 /// Fails on database errors. Nothing is written then.
-pub(crate) async fn set_message_previews(
+pub(crate) async fn add_message_previews(
     database: &Database,
     message_id: Snowflake,
     expected_content: &str,
-    preview_ids: &[Snowflake],
-) -> Result<Option<u64>, MessageStorageError> {
+    links: &[(&str, Option<Snowflake>)],
+) -> Result<Option<bool>, MessageStorageError> {
     let message_id = to_sqlite_integer(message_id.raw())?;
     let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
     let is_unchanged: bool =
@@ -212,24 +214,76 @@ pub(crate) async fn set_message_previews(
     if !is_unchanged {
         return Ok(None);
     }
-    let removed = sqlx::query("DELETE FROM message_link_previews WHERE message_id = ?")
+    let shown = shown_previews(&mut transaction, message_id).await?;
+    let mut wanted = Vec::with_capacity(links.len());
+    for (url, found) in links {
+        let found = found.map(|id| to_sqlite_integer(id.raw())).transpose()?;
+        let already_shown = shown
+            .iter()
+            .find(|(_, shown_url)| shown_url == url)
+            .map(|(id, _)| *id);
+        wanted.extend(found.or(already_shown));
+    }
+    if shown.iter().map(|(id, _)| *id).eq(wanted.iter().copied()) {
+        return Ok(Some(false));
+    }
+    sqlx::query("DELETE FROM message_link_previews WHERE message_id = ?")
         .bind(message_id)
         .execute(&mut *transaction)
-        .await?
-        .rows_affected();
-    for (position, preview_id) in preview_ids.iter().enumerate() {
+        .await?;
+    for (position, preview_id) in wanted.into_iter().enumerate() {
         sqlx::query(
             "INSERT INTO message_link_previews (message_id, position, link_preview_id) \
              VALUES (?, ?, ?)",
         )
         .bind(message_id)
         .bind(convert_integer::<_, i64>(position)?)
-        .bind(to_sqlite_integer(preview_id.raw())?)
+        .bind(preview_id)
         .execute(&mut *transaction)
         .await?;
     }
     transaction.commit().await?;
-    Ok(Some(removed))
+    Ok(Some(true))
+}
+
+/// The message's previews, id and link, in order.
+async fn shown_previews(
+    connection: &mut sqlx::SqliteConnection,
+    message_id: i64,
+) -> Result<Vec<(i64, String)>, MessageStorageError> {
+    Ok(sqlx::query_as(
+        "SELECT link_previews.id, link_previews.url FROM message_link_previews \
+         JOIN link_previews ON link_previews.id = message_link_previews.link_preview_id \
+         WHERE message_link_previews.message_id = ? ORDER BY message_link_previews.position",
+    )
+    .bind(message_id)
+    .fetch_all(connection)
+    .await?)
+}
+
+/// Drops the message's previews of links no longer in `kept_links`, inside an edit's
+/// transaction: the edit itself takes away what it removed, whatever happens to its job.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn drop_previews_of_removed_links(
+    connection: &mut sqlx::SqliteConnection,
+    message_id: Snowflake,
+    kept_links: &[&str],
+) -> Result<(), MessageStorageError> {
+    let message_id = to_sqlite_integer(message_id.raw())?;
+    for (preview_id, url) in shown_previews(&mut *connection, message_id).await? {
+        if !kept_links.contains(&url.as_str()) {
+            sqlx::query(
+                "DELETE FROM message_link_previews WHERE message_id = ? AND link_preview_id = ?",
+            )
+            .bind(message_id)
+            .bind(preview_id)
+            .execute(&mut *connection)
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 /// The previews of each of `message_ids` that has some, in their order: one query.
@@ -420,7 +474,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn previews_are_set_only_on_the_text_the_job_saw_and_report_what_they_replaced() {
+    async fn previews_are_added_only_on_the_text_the_job_saw_and_kept_where_a_job_found_none() {
+        const TEXT: &str = "see https://a.example/ and https://b.example/";
+        let (_directory, database) = migrated_database().await;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 1, 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (20, 10, 'text', 'general', 0); \
+             INSERT INTO messages (id, channel_id, author_id, content) VALUES (30, 20, 1, '{TEXT}');"
+        )))
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let (a, b) = ("https://a.example/", "https://b.example/");
+        record(&database, preview(40, a, None), HOUR).await;
+        record(&database, preview(41, b, None), HOUR).await;
+        let message = Snowflake::from_raw(30);
+        let (preview_a, preview_b) = (Some(Snowflake::from_raw(40)), Some(Snowflake::from_raw(41)));
+        let shown_ids = async || -> Vec<u64> {
+            previews_of_messages(&database, &[message])
+                .await
+                .unwrap()
+                .remove(&message)
+                .unwrap_or_default()
+                .iter()
+                .map(|preview| preview.id.raw())
+                .collect()
+        };
+
+        let stale = add_message_previews(&database, message, "older text", &[(a, preview_a)])
+            .await
+            .unwrap();
+        let first_only =
+            add_message_previews(&database, message, TEXT, &[(a, preview_a), (b, None)])
+                .await
+                .unwrap();
+        let after_first = shown_ids().await;
+        let second_only =
+            add_message_previews(&database, message, TEXT, &[(a, None), (b, preview_b)])
+                .await
+                .unwrap();
+        let after_second = shown_ids().await;
+        let again = add_message_previews(&database, message, TEXT, &[(a, None), (b, preview_b)])
+            .await
+            .unwrap();
+        database.close().await;
+
+        assert_eq!(stale, None, "an edit happened since the job read the text");
+        assert_eq!(first_only, Some(true));
+        assert_eq!(after_first, [40]);
+        assert_eq!(second_only, Some(true));
+        assert_eq!(after_second, [40, 41], "in link order, the first one kept");
+        assert_eq!(again, Some(false), "nothing new to publish");
+    }
+
+    #[tokio::test]
+    async fn an_edit_drops_only_the_previews_of_the_links_it_removed() {
         let (_directory, database) = migrated_database().await;
         sqlx::raw_sql(
             "INSERT INTO users (id, username, display_name, email, password_hash, \
@@ -429,36 +541,40 @@ mod tests {
              VALUES (10, 'Club', 1, 0); \
              INSERT INTO channels (id, guild_id, kind, name, position) \
              VALUES (20, 10, 'text', 'general', 0); \
-             INSERT INTO messages (id, channel_id, author_id, content) \
-             VALUES (30, 20, 1, 'see https://a.example/');",
+             INSERT INTO messages (id, channel_id, author_id, content) VALUES (30, 20, 1, 'x');",
         )
         .execute(database.writer())
         .await
         .unwrap();
-        record(&database, preview(40, "https://a.example/", None), HOUR).await;
+        let (a, b) = ("https://a.example/", "https://b.example/");
+        record(&database, preview(40, a, None), HOUR).await;
+        record(&database, preview(41, b, None), HOUR).await;
         let message = Snowflake::from_raw(30);
-        let ids = [Snowflake::from_raw(40)];
+        add_message_previews(
+            &database,
+            message,
+            "x",
+            &[
+                (a, Some(Snowflake::from_raw(40))),
+                (b, Some(Snowflake::from_raw(41))),
+            ],
+        )
+        .await
+        .unwrap();
 
-        let stale = set_message_previews(&database, message, "older text", &ids)
+        let mut connection = database.writer().acquire().await.unwrap();
+        drop_previews_of_removed_links(&mut connection, message, &[b, "https://c.example/"])
             .await
             .unwrap();
-        let first = set_message_previews(&database, message, "see https://a.example/", &ids)
-            .await
-            .unwrap();
+        drop(connection);
         let shown = previews_of_messages(&database, &[message]).await.unwrap();
-        let cleared = set_message_previews(&database, message, "see https://a.example/", &[])
-            .await
-            .unwrap();
         database.close().await;
 
-        assert_eq!(stale, None, "an edit happened since the job read the text");
-        assert_eq!(first, Some(0));
-        assert_eq!(shown[&message].len(), 1);
-        assert_eq!(
-            cleared,
-            Some(1),
-            "the worker then tells clients they went away"
-        );
+        let urls: Vec<&str> = shown[&message]
+            .iter()
+            .map(|preview| preview.url.as_str())
+            .collect();
+        assert_eq!(urls, [b]);
     }
 
     #[tokio::test]
@@ -500,11 +616,11 @@ mod tests {
             2 * HOUR,
         )
         .await;
-        set_message_previews(
+        add_message_previews(
             &database,
             Snowflake::from_raw(30),
             "x",
-            &[Snowflake::from_raw(40)],
+            &[("https://shown.example/", Some(Snowflake::from_raw(40)))],
         )
         .await
         .unwrap();

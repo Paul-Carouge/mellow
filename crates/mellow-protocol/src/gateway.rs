@@ -395,7 +395,8 @@ pub enum GatewayEvent {
         id: Snowflake,
     },
     /// The message's link previews, all of them, as the server fetched them after a send or an
-    /// edit (ADR-0041); empty when an edit removed its links. Older clients skip it.
+    /// edit (ADR-0041); never empty: an edit drops the previews of the links it removed in its own
+    /// `MESSAGE_UPDATE`. Older clients skip it.
     MessageLinkPreviewsUpdate {
         /// `None` in a direct-message conversation, and then left out of the frame.
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1151,7 +1151,7 @@ async fn a_forward_shares_the_original_files_without_quota_and_keeps_them_once_i
 
 /// A site on this machine for link previews: a page with Open Graph tags and a picture, a
 /// redirect into a private network, plain text; it counts the page's fetches.
-async fn local_site() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+pub(super) async fn local_site() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
     use axum::response::IntoResponse as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

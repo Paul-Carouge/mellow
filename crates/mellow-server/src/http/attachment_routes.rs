@@ -462,4 +462,6 @@ fn percent_decode(encoded: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+mod link_preview_tests;
+#[cfg(test)]
 mod tests;
