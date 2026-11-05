@@ -283,6 +283,17 @@ pub(crate) fn parse_search_query(input: &str) -> Result<ParsedSearchQuery, Searc
         {
             token.push(character);
         }
+        // Names may hold spaces (ADR-0048), so `from:` and `mentions:` take a quoted value:
+        // `from:"Paul Carouge"`.
+        if !is_excluded
+            && matches!(token.to_lowercase().as_str(), "from:" | "mentions:")
+            && characters.next_if_eq(&'"').is_some()
+        {
+            let name: String = characters.by_ref().take_while(|&c| c != '"').collect();
+            if apply_filter(&mut parsed, &format!("{token}{name}")) {
+                continue;
+            }
+        }
         if is_excluded || !apply_filter(&mut parsed, &token) {
             let text = token.trim_end_matches('*');
             if holds_a_word(text) {
@@ -557,6 +568,24 @@ mod tests {
             ]
         );
         assert_eq!(parsed.first_day, None);
+    }
+
+    #[test]
+    fn quoted_names_with_spaces_are_one_filter_value() {
+        let parsed = parse_search_query(
+            r#"from:"Paul  Carouge" MENTIONS:"@Élodie M" hello colour:"red car""#,
+        )
+        .unwrap();
+        assert_eq!(parsed.author_usernames, ["paul carouge"]);
+        assert_eq!(parsed.mentioned_usernames, ["elodie m"]);
+        assert_eq!(
+            parsed.included_terms,
+            [
+                word("hello"),
+                word("colour:"),
+                SearchTerm::Phrase("red car".into())
+            ]
+        );
     }
 
     #[test]

@@ -97,6 +97,19 @@ describe("editing the query", () => {
     expect(from && withoutSearchQueryPart(query, from)).toBe("pizza has:link");
   });
 
+  it("quotes names holding spaces, and reads them back as one filter (ADR-0048)", () => {
+    const query = withSearchFilter("pizza", "from", "Paul Carouge");
+    expect(query).toBe('pizza from:"Paul Carouge"');
+    expect(withSearchFilter(query, "from", "paul carouge")).toBe(query);
+    expect(searchQueryParts(`${query} mentions:"" hi`).map(({ text, filter }) => ({ text, filter }))).toEqual([
+      { text: "pizza", filter: null },
+      { text: "from:Paul Carouge", filter: { key: "from", value: "Paul Carouge" } },
+      { text: "mentions:", filter: null },
+      { text: "hi", filter: null },
+    ]);
+    expect(searchCaretContext('from:"Paul C', 12)).toEqual({ kind: "value", key: "from", partial: "Paul C", start: 0, end: 12 });
+  });
+
   it("names a channel by id when its name would not stay one part", () => {
     expect(channelFilterValue({ id: "7", name: "général" })).toBe("général");
     expect(channelFilterValue({ id: "7", name: "Game night" })).toBe("7");
@@ -127,6 +140,8 @@ describe("searchSuggestions", () => {
     expect(people.map((suggestion) => (suggestion.kind === "person" ? suggestion.user.username : ""))).toEqual(["ada", "zoe"]);
     const [first] = people;
     expect(first && suggestionInsertion(first)).toEqual({ text: "from:ada", endsPart: true });
+    const paul = { ...ADA, username: "Paul Carouge" };
+    expect(suggestionInsertion({ kind: "person", key: "mentions", user: paul }).text).toBe('mentions:"Paul Carouge"');
   });
 
   it("suggests channels by name, writing the value that stays one part", () => {
