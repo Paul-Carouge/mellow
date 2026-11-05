@@ -38,7 +38,7 @@ Wide window (cozy list, video box within the image maxima of 400 × 300):
  +--------------------------------------------+
 ```
 
-Phone (390 px): the video box and the card take the column's width (`min(100%, …)`), the box keeps 16:9; the band and the controls stay one row (the name truncates in the middle, extension kept).
+Phone (390 px): the video box and the card take the column's width (`min(100%, …)`), the box keeps 16:9; the band and the controls stay one row (the name truncates in the middle, extension kept). Below `attachment.video-band-compact-width` (280 px of band, a 320 px phone's 232 px band) the size leaves the sight but not the screen reader's reading, after the name; once the name's start is gone its end ellipsizes inside the link instead of running under the size (design pass WP6, 2026-11-05: at 320 px `…version-finale.mp4` had its start cut to nothing and its end 12 px over "282,4 Ko"; it now reads "enre… nale.mp4").
 
 - **The box never moves.** Nothing is fetched before play, so the video's own size is unknown: the box is 16:9 (`min(100%, image-max-width, image-max-height × 16 / 9)`), or the stored width and height when an instance sends them (pictures do; videos not yet). A portrait or square video plays letterboxed on the stage: no layout shift while reading, and the list stays pinned.
 - The band: `video-band-padding-inline` (8 px) and `-block` (4 px), the name in `type-body` (`video-name-text`, the stage's text), the size in `type-body-sm` (`video-size-text`), the download icon in `video-download-icon` with `video-download-background-hover` behind it. 32 px targets, 44 px under a coarse pointer, as the file card.
@@ -60,7 +60,7 @@ Phone (390 px): the video box and the card take the column's width (`min(100%, �
 - The video is named "Vidéo clip.mp4", the sound "Audio mémo-vocal.mp3"; the band's name link reads "Télécharger clip.mp4". The duplicate download icons stay out of the Tab order (`aria-hidden`, `tabindex="-1"`), as on file cards.
 - Native controls are reachable with Tab and operable with Space, arrows and the browser's own shortcuts; focus rings are drawn in the stage's focus colour inside the video box.
 - Uploads come without caption tracks, so the Svelte `a11y_media_has_caption` check is silenced on that one element, with the reason beside it.
-- No motion is added; nothing autoplays (DESIGN.md 7.6). Text at 200 %: the band's name truncates and the size keeps its place; the card's note wraps.
+- No motion is added; nothing autoplays (DESIGN.md 7.6). Text at 200 %: the band's name truncates and the size keeps its place (out of sight on a band narrower than its compact width); the card's note wraps.
 - Contrast: `media.text` and `media.text-secondary` on `media.stage`, `text.secondary` on `surface.sidebar`, all already checked pairs.
 
 ## Defaults rejected
