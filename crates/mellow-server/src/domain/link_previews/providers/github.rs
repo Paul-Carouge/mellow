@@ -37,6 +37,8 @@ const MAXIMUM_LANGUAGE_CHARACTERS: usize = 64;
 const MAXIMUM_LICENCE_CHARACTERS: usize = 64;
 /// Bots' logins (`dependabot[bot]`) are longer than people's.
 const MAXIMUM_LOGIN_CHARACTERS: usize = 64;
+/// The excerpt shows 350 characters; links' addresses take room before they are dropped.
+const MAXIMUM_BODY_BYTES_READ: usize = 4 * 1024;
 /// GitHub's licence id when the licence is none it knows.
 const UNKNOWN_LICENCE_SPDX: &str = "NOASSERTION";
 /// Twice the card's 40 px avatar.
@@ -508,8 +510,9 @@ fn owner_and_repository_of_api_url(link: &str) -> Option<(String, String)> {
     }
 }
 
-/// The body's opening as one plain line: without the HTML comments of issue templates and
-/// without heading marks, which would otherwise be all a reader sees of many pull requests.
+/// The body's opening as one plain line: without the HTML comments of issue templates, heading
+/// and bold marks, or links' addresses, which would otherwise be all a reader sees of many pull
+/// requests.
 fn body_excerpt(body: &str) -> Option<String> {
     let mut text = String::with_capacity(body.len());
     let mut rest = body;
@@ -520,11 +523,40 @@ fn body_excerpt(body: &str) -> Option<String> {
             .map_or("", |end| &rest[start + end + "-->".len()..]);
     }
     text.push_str(rest);
+    let mut opening_end = text.len().min(MAXIMUM_BODY_BYTES_READ);
+    while !text.is_char_boundary(opening_end) {
+        opening_end -= 1;
+    }
+    let text = without_markdown_link_targets(&text[..opening_end]).replace("**", "");
     let lines: Vec<&str> = text
         .lines()
         .map(|line| line.trim_start().trim_start_matches('#'))
         .collect();
     plain_text(&lines.join("\n"), MAXIMUM_DESCRIPTION_CHARACTERS)
+}
+
+/// `[label](address)` and `![label](address)` as their label. Each `[` searches the rest of the
+/// text, so the text is cut to `MAXIMUM_BODY_BYTES_READ` first.
+fn without_markdown_link_targets(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let after_open = &rest[open + 1..];
+        let link = after_open.find("](").and_then(|close| {
+            let target_end = after_open[close + 2..].find(')')?;
+            (!after_open[..close].contains('[')).then_some((close, close + 2 + target_end + 1))
+        });
+        if let Some((label_end, link_end)) = link {
+            kept.push_str(rest[..open].strip_suffix('!').unwrap_or(&rest[..open]));
+            kept.push_str(&after_open[..label_end]);
+            rest = &after_open[link_end..];
+        } else {
+            kept.push_str(&rest[..=open]);
+            rest = after_open;
+        }
+    }
+    kept.push_str(rest);
+    kept
 }
 
 /// GitHub's `2026-11-03T10:00:00Z` (UTC, whole seconds) as Unix milliseconds.
@@ -727,5 +759,14 @@ mod tests {
             Some("Summary Stabilise `async || {}`.")
         );
         assert_eq!(body_excerpt("<!-- only a template -->\n"), None);
+        assert_eq!(
+            body_excerpt("This **stabilises** ([RFC 3668](https://rust-lang.github.io/rfcs/3668.html)) ![logo](x.png) [x] done [a [b](c)").as_deref(),
+            Some("This stabilises (RFC 3668) logo [x] done [a b")
+        );
+        let long_body = format!("{}é tail", "a".repeat(MAXIMUM_BODY_BYTES_READ - 1));
+        assert!(
+            body_excerpt(&long_body).is_some(),
+            "cut on a character boundary"
+        );
     }
 }
