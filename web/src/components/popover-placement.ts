@@ -2,6 +2,8 @@
 // room, else above, a gap away, and inside the window. A button inside a larger box (the composer)
 // marks that box with `data-popover-edge`, so the panel clears the box rather than overlapping it.
 
+import { menuTopNextToAnchor } from "./menu-placement";
+
 export interface AnchorEdges {
   /** Top and bottom of the box to keep clear of. */
   readonly top: number;
@@ -16,8 +18,7 @@ export interface Size {
 }
 
 export function popoverPositionBesideAnchor(anchor: AnchorEdges, panel: Size, viewport: Size, gap: number): { top: number; left: number } {
-  const fitsBelow = anchor.bottom + gap + panel.height <= viewport.height;
-  const top = fitsBelow ? anchor.bottom + gap : Math.max(anchor.top - gap - panel.height, 0);
+  const top = menuTopNextToAnchor(anchor, panel.height, viewport.height, gap);
   const left = Math.min(Math.max(anchor.right - panel.width, 0), viewport.width - panel.width);
   return { top, left: Math.max(left, 0) };
 }
