@@ -18,6 +18,7 @@
   import {
     type BlockedRun,
     type MessageListRow,
+    arrivalsSinceLeavingPresent,
     buildMessageRows,
     collapseBlockedRuns,
     isUnreadStartLoaded,
@@ -59,6 +60,8 @@
     onjumptopresent: () => void;
     /** After "Message" in an author's menu opened their conversation. */
     onopenedconversation: () => void;
+    /** Below the drawer breakpoint: the jump bar keeps only its action, on one line. */
+    isCompact: boolean;
   }
 
   let {
@@ -86,6 +89,7 @@
     oncopy,
     onjumptopresent,
     onopenedconversation,
+    isCompact,
   }: Props = $props();
 
   const INITIAL_SKELETON_COUNT = 5;
@@ -169,6 +173,13 @@
   // Not reactive: written by scrolling, read around DOM updates.
   let isPinnedToLatest = true;
   let isViewingOlderMessages = $state(false);
+  /** The newest message when the reader left the present: "· 3 new" counts what came after it. */
+  let latestMessageIdWhenLeavingPresent = $state<Snowflake | null>(null);
+  const arrivalsWhileAway = $derived(
+    latestMessageIdWhenLeavingPresent === null
+      ? 0
+      : arrivalsSinceLeavingPresent(messages, latestMessageIdWhenLeavingPresent, currentUser.id),
+  );
   let rovingKey = $state<string | null>(null);
   // The focused row may be gone (deleted, or a sent row replacing its pending one): the list
   // must keep its one Tab stop.
@@ -263,6 +274,11 @@
       client.noteReaderAtLatest(channelId);
     }
     isViewingOlderMessages = !isPinnedToLatest;
+    if (isPinnedToLatest) {
+      latestMessageIdWhenLeavingPresent = null;
+    } else {
+      latestMessageIdWhenLeavingPresent ??= messages.at(-1)?.id ?? null;
+    }
     loadOlderWhenNearTop();
     noteUnreadDividerSeen();
     releaseUnreadMarkerAtLatest();
@@ -430,6 +446,7 @@
     client.noteReaderAtLatest(channelId);
     isPinnedToLatest = true;
     isViewingOlderMessages = false;
+    latestMessageIdWhenLeavingPresent = null;
     viewport.scrollTop = viewport.scrollHeight;
   }
 
@@ -684,9 +701,17 @@
         onjumptopresent();
       }}
     >
-      <!-- On the narrowest phones the sentence wraps rather than losing its end. -->
-      <span class="min-w-0 flex-1 text-start type-body">{strings.messages.viewingOlder}</span>
-      <span class="shrink-0 type-button">{strings.messages.jumpToPresent}</span>
+      <!-- On phones the sentence is only read out: the bar keeps its action on one line instead of
+           growing over the last message (design pass L2). -->
+      <span class={isCompact ? "sr-only" : "min-w-0 flex-1 text-start type-body"}>{strings.messages.viewingOlder}</span>
+      <span class={["flex items-center gap-2xs type-button", isCompact ? "mx-auto min-w-0 text-center" : "shrink-0"]}>
+        {#if isCompact}
+          <Icon name="caret-down" class="size-(--mw-component-jump-bar-icon-size) shrink-0" />
+        {/if}
+        {arrivalsWhileAway > 0
+          ? strings.messages.jumpToPresentWithArrivals(arrivalsWhileAway)
+          : strings.messages.jumpToPresent}
+      </span>
     </button>
   {/if}
 

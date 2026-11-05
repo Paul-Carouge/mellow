@@ -119,6 +119,29 @@ export function unreadSummary(
   return { count, isPartial };
 }
 
+/**
+ * Messages others sent after `latestMessageIdWhenLeaving`, the newest message when the reader
+ * scrolled away from the present: "Jump to present · 3 new" (DESIGN.md §5.4).
+ */
+export function arrivalsSinceLeavingPresent(
+  messages: readonly Message[],
+  latestMessageIdWhenLeaving: Snowflake,
+  currentUserId: Snowflake | null,
+): number {
+  let count = 0;
+  // Oldest first: only the tail can be newer, so the scan stops at the first message that is not.
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message === undefined || compareSnowflakes(message.id, latestMessageIdWhenLeaving) <= 0) {
+      break;
+    }
+    if (message.author.id !== currentUserId) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 /** True when the first new message is loaded, so the "New" divider can sit above it. */
 export function isUnreadStartLoaded(messages: readonly Message[], marker: UnreadMarker, hasReachedStart: boolean): boolean {
   const oldestLoaded = messages[0];
