@@ -32,7 +32,9 @@ const SECONDS_PER_HOUR: u32 = 3_600;
 
 /// The link in the form its preview is fetched, cached under and shown with.
 pub(crate) fn canonical_link(link: &Url) -> Url {
-    canonical_youtube_link(link).unwrap_or_else(|| link.clone())
+    canonical_youtube_link(link)
+        .or_else(|| super::providers::canonical_link(link))
+        .unwrap_or_else(|| link.clone())
 }
 
 fn is_youtube_id_character(character: char) -> bool {
