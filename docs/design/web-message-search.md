@@ -15,17 +15,17 @@ The owner asked for search "in Elasticsearch mode": ranked results, filters, hig
 Item 12 turned "Go to… Ctrl K" into a search-looking field in the chat header. The first proposal replaced it with message search and kept the switcher behind `Ctrl+K` and a line in the search suggestions. **The owner chose to keep both** (2026-10-31): "Go to… Ctrl K" stays with its item 12 style and tokens, and message search sits beside it. What keeps them apart:
 
 - **Words and shortcuts, not only icons.** "Go to… Ctrl K" (« Aller à… ») and "Search Rust Lyon · Ctrl F" (« Rechercher dans Rust Lyon ») each say what they do; the switcher's is a compact button at its content's width, search is the field that grows when used.
-- **Collapse without two magnifiers.** Where the header lacks room, "Go to…" becomes a **compass** button (Phosphor `compass`, Fill; same name, "Go to a channel, server or person"): below `component.quick-switcher.trigger-collapse-width` (640 px of header) beside the search field, or below `size.chat.min-width` (480 px) beside search's magnifier, so on phones. Two identical magnifier buttons side by side would leave people guessing; the compass says "go somewhere", the magnifier keeps "search".
+- **Collapse without two magnifiers.** Where the header lacks room, "Go to…" becomes a **compass** button (Phosphor `compass`, Fill; same name, "Go to a channel, server or person"): below `component.quick-switcher.trigger-collapse-width` beside the search field (640 px of header at first, 976 px since the 2026-11 design pass so it gives way before the topic is cut), or below `size.chat.min-width` (480 px) beside search's magnifier. On phones it is an item of the chat header's "More options" menu since the design pass. Two identical magnifier buttons side by side would leave people guessing; the compass says "go somewhere", the magnifier keeps "search".
 - **The switcher's door stays in the suggestions.** An empty search field still ends its list with "Go to a channel, server or person · Ctrl K", for people who reach for the field first.
 
 | Header width | Quick switcher | Message search |
 |---|---|---|
-| Wide, results dock (window >= 1 224 px) and header >= 640 px | "Go to… Ctrl K", content width | The field, 208 px, 288 px focused or filled |
-| Wide, a sheet docked beside a narrow chat (header < 640 px) | Compass button | The field |
-| 816 to 1 223 px (results open over the chat) | "Go to… Ctrl K", 208 px, giving way to the topic | Magnifier button |
-| Phones (header < 480 px) | Compass button | Magnifier button |
+| Wide, results dock (window >= 1 224 px) and header >= 976 px | "Go to… Ctrl K", content width | The field, 208 px, 288 px focused or filled; "Search" at rest, its scope once focused |
+| Wide, a sheet docked beside the chat (header < 976 px) | Compass button | The field |
+| 816 to 1 223 px (results open over the chat) | "Go to… Ctrl K", 208 px, giving way to the topic (compass below 480 px of header) | Magnifier button |
+| Phones (drawer layout, < 816 px) | "Go to…" in the header's "More options" menu | Magnifier button |
 
-On phones the channel name keeps its room as with item 12 ("gene…" at 320 px; the header's buttons lose their gaps under a coarse pointer).
+On phones the channel name keeps its room: the header holds the drawer key, the name, search, members and "More options" (design pass H1; "#general" is whole at 320 px, where it was "gene…").
 
 ## 3. Design plan
 
