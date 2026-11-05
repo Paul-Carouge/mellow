@@ -65,6 +65,8 @@ export interface MessageMenuFacts {
   readonly isForward: boolean;
   /** A poll is neither edited nor forwarded (ADR-0043). */
   readonly isPoll: boolean;
+  /** A checklist or a progress bar is neither edited as text nor forwarded either (ADR-0047). */
+  readonly isTracker: boolean;
   /** Its author may end it early while it still takes votes. */
   readonly isPollOpen: boolean;
   readonly hasText: boolean;
@@ -86,8 +88,8 @@ export function messageMenuActions(facts: MessageMenuFacts): MenuLine<MessageMen
     [
       facts.canSendMessages && "reply",
       // Forwarding needs somewhere else to send to, which the dialog finds; reading is enough here.
-      !facts.isPoll && "forward",
-      facts.isOwn && !facts.isForward && !facts.isPoll && facts.canSendMessages && "edit",
+      !facts.isPoll && !facts.isTracker && "forward",
+      facts.isOwn && !facts.isForward && !facts.isPoll && !facts.isTracker && facts.canSendMessages && "edit",
       facts.hasText && "copy-text",
       facts.canManagePins && (facts.isPinned ? "unpin" : "pin"),
       facts.hasReactions && facts.canJoinReactions && "view-reactions",

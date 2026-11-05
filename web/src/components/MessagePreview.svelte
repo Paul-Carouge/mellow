@@ -3,6 +3,7 @@
   import Avatar from "./Avatar.svelte";
   import { displayName } from "./format";
   import { pollSummary } from "./poll-view";
+  import { trackerSummary } from "./tracker-view";
   import { messageAsPlainText } from "./role-mentions";
 
   // The message a dialog acts on, as a framed preview (DESIGN.md §6.35): author and plain text.
@@ -26,7 +27,9 @@
     <p
       class="max-h-(--mw-component-dialog-preview-body-max-height) overflow-hidden type-message break-words whitespace-pre-wrap text-(--mw-component-message-body-text)"
     >
-      {message.poll ? pollSummary(message.poll) : messageAsPlainText(message.content, roles)}
+      {message.poll
+        ? pollSummary(message.poll)
+        : (trackerSummary(message) ?? messageAsPlainText(message.content, roles))}
     </p>
   </div>
 </div>

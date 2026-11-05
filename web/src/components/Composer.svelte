@@ -40,6 +40,7 @@
   import { createPopoverToggle } from "./popover-toggle";
   import { noteEmojiUsed } from "./recent-emoji.svelte";
   import {
+    type DialogSlashCommandId,
     type NamedSlashCommand,
     type SlashCommandQuery,
     type TextEdit,
@@ -85,13 +86,16 @@
     canChooseGifs: boolean;
     /** The writer holds "Create polls" here (ADR-0043): the "/" menu offers the poll. */
     canCreatePolls: boolean;
+    /** And "Create checklists and progress bars" (ADR-0047): the menu offers both. */
+    canCreateChecklists: boolean;
     isGifPickerOpen: boolean;
     /** Escape marks the channel as read while the unread bar shows. */
     hasUnreadBar: boolean;
     maximumHeight: () => number;
     onopenemojipicker: (anchor: HTMLElement) => void;
     onopengifpicker: (anchor: HTMLElement) => void;
-    onopenpolldialog: () => void;
+    /** A "/" command that opens a dialog was chosen. */
+    onopendialog: (command: DialogSlashCommandId) => void;
     onmarkasread: () => void;
     oneditlastmessage: () => void;
     onsent: () => void;
@@ -117,12 +121,13 @@
     isEmojiPickerOpen,
     canChooseGifs,
     canCreatePolls,
+    canCreateChecklists,
     isGifPickerOpen,
     hasUnreadBar,
     maximumHeight,
     onopenemojipicker,
     onopengifpicker,
-    onopenpolldialog,
+    onopendialog,
     onmarkasread,
     oneditlastmessage,
     onsent,
@@ -177,7 +182,13 @@
   // English names find the commands in any language: "/bold" works in French too.
   const NAMED_SLASH_COMMANDS = namedSlashCommands(strings.chat.slashCommands, ENGLISH_SLASH_COMMANDS);
   const offeredSlashCommands = $derived(
-    canCreatePolls ? NAMED_SLASH_COMMANDS : NAMED_SLASH_COMMANDS.filter((named) => named.command.id !== "poll"),
+    NAMED_SLASH_COMMANDS.filter(({ command }) =>
+      command.id === "poll"
+        ? canCreatePolls
+        : command.id === "checklist" || command.id === "progressBar"
+          ? canCreateChecklists
+          : true,
+    ),
   );
   let suggestionQuery = $state<SuggestionQuery | null>(null);
   let dismissedSuggestionStart = $state<number | null>(null);
@@ -408,8 +419,9 @@
       if (suggestionQuery && field) {
         void writeEdit(applySlashCommand(field.value, suggestionQuery, suggestion.named.command, strings.chat.linkTextPlaceholder));
       }
-      if (suggestion.named.command.effect.kind === "dialog") {
-        onopenpolldialog();
+      const { id } = suggestion.named.command;
+      if (id === "poll" || id === "checklist" || id === "progressBar") {
+        onopendialog(id);
       }
       return;
     }

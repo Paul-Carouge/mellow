@@ -18,6 +18,7 @@ import { type BlockNode, type InlineNode, parseMessageMarkdown } from "./markdow
 import { doesMessageMentionReader } from "../lib/reader-mentions";
 import { mentionablePeople } from "./mentions";
 import { pollSummary } from "./poll-view";
+import { trackerSummary } from "./tracker-view";
 import { roleMentionLabel } from "./role-mentions";
 
 /** A message's place: a server's channel, or a conversation (no server). */
@@ -179,14 +180,15 @@ const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
  * roles as `@Name` among `roles` (`MellowClient.knownRoles`).
  */
 export function messagePreviewText(
-  message: Pick<Message, "content" | "attachments" | "poll">,
+  message: Pick<Message, "content" | "attachments" | "poll" | "checklist" | "progress_bar">,
   roles: ReadonlyMap<Snowflake, Role>,
 ): string {
   const roleMentions = { roles, isEveryoneMentioned: false };
   const text = (
     message.poll
       ? pollSummary(message.poll)
-      : blocksAsText(parseMessageMarkdown(message.content, NOBODY_TO_MENTION, new Map(), roleMentions))
+      : (trackerSummary(message) ??
+        blocksAsText(parseMessageMarkdown(message.content, NOBODY_TO_MENTION, new Map(), roleMentions)))
   )
     .replace(/\s+/gu, " ")
     .trim();

@@ -19,6 +19,7 @@ describe("messageMenuActions", () => {
     isOwn: false,
     isForward: false,
     isPoll: false,
+    isTracker: false,
     isPollOpen: false,
     hasText: true,
     hasReactions: false,

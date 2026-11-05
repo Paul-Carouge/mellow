@@ -9,7 +9,9 @@
     type CustomEmoji,
     type ForwardOrigin,
     type Message,
+    type NewChecklist,
     type NewPoll,
+    type NewProgressBar,
     Permission,
     type PublicUser,
     type Snowflake,
@@ -132,6 +134,11 @@
     canSendMessages && (channelPermissions === null || hasPermission(channelPermissions, Permission.SEND_POLLS)),
   );
   const canVoteInPolls = $derived(channel ? canReadHistory : canSendMessages);
+  // Checklists and progress bars (ADR-0047): sent with their own permission, ticked by writers.
+  const canCreateChecklists = $derived(
+    canSendMessages && (channelPermissions === null || hasPermission(channelPermissions, Permission.SEND_CHECKLISTS)),
+  );
+  const canTickChecklists = $derived(canSendMessages && canReadHistory);
   const composerLabel = $derived(
     channel
       ? strings.chat.composerInChannel(channel.name)
@@ -159,6 +166,9 @@
   let removingReactionsOf = $state<Message | null>(null);
   let viewingReactionsOfId = $state<Snowflake | null>(null);
   let isCreatingPoll = $state(false);
+  let isCreatingChecklist = $state(false);
+  /** The progress bar dialog: `message` null creates one, else updates that message's bar. */
+  let progressBarDialog = $state<{ message: Message | null } | null>(null);
   let viewingVotersOf = $state<{ message: Message; answerId: number } | null>(null);
   let endingPollOf = $state<Message | null>(null);
   let isPinsPanelOpen = $state(false);
@@ -355,10 +365,15 @@
     const lastOwn = channelId
       ? [...client.messages(channelId)]
           .reverse()
-          // A forward or a poll cannot be edited (ADR-0039, ADR-0043): Up goes to the last message you wrote.
+          // A forward, a poll, a checklist or a progress bar cannot be edited as text (ADR-0039,
+          // ADR-0043, ADR-0047): Up goes to the last message you wrote.
           .find(
             (message) =>
-              message.author.id === user?.id && message.forwarded_from === undefined && message.poll === undefined,
+              message.author.id === user?.id &&
+              message.forwarded_from === undefined &&
+              message.poll === undefined &&
+              message.checklist === undefined &&
+              message.progress_bar === undefined,
           )
       : undefined;
     if (lastOwn) {
@@ -569,6 +584,53 @@
     messageList?.jumpToPresent();
   }
 
+  function sendChecklist(checklist: NewChecklist) {
+    isCreatingChecklist = false;
+    notice = "";
+    void client.sendChecklist(checklist);
+    messageList?.jumpToPresent();
+  }
+
+  function saveProgressBar(bar: NewProgressBar) {
+    const target = progressBarDialog?.message ?? null;
+    progressBarDialog = null;
+    if (target === null) {
+      notice = "";
+      void client.sendProgressBar(bar);
+      messageList?.jumpToPresent();
+      return;
+    }
+    void runChecklistChange(target, strings.progressBars.updateFailed, () =>
+      client.updateProgressBar(target.channel_id, target.id, bar),
+    );
+  }
+
+  async function toggleChecklistItem(message: Message, itemId: number) {
+    actionError = "";
+    try {
+      await client.toggleChecklistItem(message.channel_id, message.id, itemId);
+    } catch (error) {
+      showActionError(message.channel_id, describeError(error, strings.checklists.tickFailed));
+    }
+  }
+
+  /** `true` once the instance took the change; a refusal is shown above the composer. */
+  async function runChecklistChange(message: Message, summary: string, change: () => Promise<void>): Promise<boolean> {
+    actionError = "";
+    try {
+      await change();
+      return true;
+    } catch (error) {
+      showActionError(message.channel_id, describeError(error, summary));
+      return false;
+    }
+  }
+
+  /** Its author while they may write here, or a server channel's moderator (`may_edit_tracker`). */
+  function canEditTracker(message: Message): boolean {
+    return (message.author.id === user?.id && canSendMessages && canReadHistory) || (canManageMessages && canReadHistory);
+  }
+
   const reactionAndPinActions: ReactionAndPinActions = $derived({
     canJoinReactions: canReadHistory,
     canAddReactions,
@@ -586,6 +648,23 @@
     removeOwnPollVotes: (message) => void removeOwnPollVotes(message),
     viewPollVoters: (message, answerId) => (viewingVotersOf = { message, answerId }),
     askToEndPoll: (message) => (endingPollOf = message),
+    canTickChecklists,
+    canEditTracker,
+    nameOfUser,
+    toggleChecklistItem: (message, itemId) => void toggleChecklistItem(message, itemId),
+    addChecklistItem: (message, text) =>
+      runChecklistChange(message, strings.checklists.changeFailed, () =>
+        client.addChecklistItem(message.channel_id, message.id, text),
+      ),
+    renameChecklistItem: (message, itemId, text) =>
+      runChecklistChange(message, strings.checklists.changeFailed, () =>
+        client.renameChecklistItem(message.channel_id, message.id, itemId, text),
+      ),
+    removeChecklistItem: (message, itemId) =>
+      void runChecklistChange(message, strings.checklists.changeFailed, () =>
+        client.removeChecklistItem(message.channel_id, message.id, itemId),
+      ),
+    updateProgressBar: (message) => (progressBarDialog = { message }),
   });
 
   async function startReply(message: Message) {
@@ -837,12 +916,21 @@
       isEmojiPickerOpen={picker !== null && picker.message === null}
       canChooseGifs={client.gifSettings !== null}
       {canCreatePolls}
+      {canCreateChecklists}
       isGifPickerOpen={gifPickerAnchor !== null}
       hasUnreadBar={unreadBar !== null}
       maximumHeight={maximumComposerHeight}
       onopenemojipicker={(anchor) => (picker = { message: null, anchor })}
       onopengifpicker={(anchor) => (gifPickerAnchor = anchor)}
-      onopenpolldialog={() => (isCreatingPoll = true)}
+      onopendialog={(command) => {
+        if (command === "poll") {
+          isCreatingPoll = true;
+        } else if (command === "checklist") {
+          isCreatingChecklist = true;
+        } else {
+          progressBarDialog = { message: null };
+        }
+      }}
       onmarkasread={markAsRead}
       oneditlastmessage={editLastOwnMessage}
       onsent={() => {
@@ -1008,6 +1096,28 @@
         isConversation={conversation !== null}
         onsend={sendPoll}
         onclose={() => (isCreatingPoll = false)}
+        fallbackFocus={focusComposer}
+      />
+    {/snippet}
+  </LazyComponent>
+{/if}
+
+{#if isCreatingChecklist}
+  <LazyComponent load={() => import("./CreateChecklistDialog.svelte")} onclose={() => (isCreatingChecklist = false)}>
+    {#snippet children({ default: CreateChecklistDialog })}
+      <CreateChecklistDialog onsend={sendChecklist} onclose={() => (isCreatingChecklist = false)} fallbackFocus={focusComposer} />
+    {/snippet}
+  </LazyComponent>
+{/if}
+
+{#if progressBarDialog}
+  {@const target = progressBarDialog.message}
+  <LazyComponent load={() => import("./ProgressBarDialog.svelte")} onclose={() => (progressBarDialog = null)}>
+    {#snippet children({ default: ProgressBarDialog })}
+      <ProgressBarDialog
+        bar={target?.progress_bar ?? null}
+        onsend={saveProgressBar}
+        onclose={() => (progressBarDialog = null)}
         fallbackFocus={focusComposer}
       />
     {/snippet}

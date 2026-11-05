@@ -187,6 +187,13 @@ describe("applySlashCommand", () => {
     expect(idsFor("poll", FRENCH)[0]).toBe("poll");
     expect(apply("poll", "Salut\n/sond|")).toEqual({ text: "Salut\n", selectionStart: 6, selectionEnd: 6 });
   });
+
+  it("finds the checklist and the progress bar as /checklist and /progression", () => {
+    expect(idsFor("checklist", FRENCH)[0]).toBe("checklist");
+    expect(idsFor("progression", FRENCH)[0]).toBe("progressBar");
+    expect(idsFor("progress", FRENCH)[0]).toBe("progressBar");
+    expect(idsFor("todo", FRENCH)[0]).toBe("checklist");
+  });
 });
 
 describe("formattingMarksForShortcut", () => {

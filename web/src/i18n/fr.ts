@@ -577,6 +577,8 @@ export const fr: Catalogue = {
       shrug: { name: "shrug", description: "Hausse les épaules" },
       tableflip: { name: "tableflip", description: "Renverse la table" },
       poll: { name: "Sondage", description: "Pose une question avec des réponses à voter" },
+      checklist: { name: "Checklist", description: "Une liste que le salon coche ensemble" },
+      progressBar: { name: "Progression", description: "Une barre qui montre où en est quelque chose" },
     },
     sendMessage: "Envoyer le message",
     cannotSend: "Tu n’as pas la permission d’envoyer des messages dans ce salon.",
@@ -782,6 +784,61 @@ export const fr: Catalogue = {
     textTooLong: (maximum) => `Au plus ${count(maximum)}${NO_BREAK_SPACE}caractères.`,
     tooFewAnswers: (minimum) => `Écris au moins ${count(minimum)}${NO_BREAK_SPACE}réponses.`,
     duplicateAnswer: (answer) => `«${NO_BREAK_SPACE}${answer}${NO_BREAK_SPACE}» est déjà une réponse.`,
+  },
+
+  checklists: {
+    summary: (title) => `Checklist${NO_BREAK_SPACE}: ${title}`,
+    done: (done, total) => `${count(done)}/${count(total)}`,
+    doneSpoken: (done, total) =>
+      `${count(done)}${NO_BREAK_SPACE}sur ${count(total)}${NO_BREAK_SPACE}${plural(done, { one: "faite", other: "faites" })}`,
+    tickedBy: (name, date) => `Cochée par ${name}, ${date}`,
+    tickFailed: "Impossible de cocher l’élément",
+    edit: "Modifier la liste",
+    doneEditing: "Terminé",
+    newItem: "Nouvel élément",
+    addItem: "Ajouter",
+    rename: (text) => `Renommer «${NO_BREAK_SPACE}${text}${NO_BREAK_SPACE}»`,
+    remove: (text) => `Retirer «${NO_BREAK_SPACE}${text}${NO_BREAK_SPACE}»`,
+    itemsLeft: (left) =>
+      left === 0
+        ? "Une checklist ne peut pas avoir plus d’éléments."
+        : `Tu peux en ajouter encore ${count(left)}.`,
+    lastItemStays: "Une checklist garde au moins un élément.",
+    changeFailed: "Impossible de modifier la checklist",
+    create: "Créer une checklist",
+    createSubtitle: "Tous ceux qui peuvent écrire ici cochent ses éléments ; toi et les modérateurs pouvez les changer.",
+    title: "Titre",
+    titlePlaceholder: "Qu’y a-t-il à faire ?",
+    items: "Éléments",
+    item: (position) => `Élément ${count(position)}`,
+    removeItem: (position) => `Retirer l’élément ${count(position)}`,
+    send: "Envoyer la checklist",
+    titleEmpty: "Écris le titre.",
+    tooFewItems: "Écris au moins un élément.",
+  },
+
+  progressBars: {
+    summary: (label) => `Progression${NO_BREAK_SPACE}: ${label}`,
+    figure: (value, maximum, percent) =>
+      maximum === 100 ? `${count(percent)}${NARROW_NO_BREAK_SPACE}%` : `${count(value)}/${count(maximum)}`,
+    spoken: (value, maximum, percent) =>
+      maximum === 100
+        ? `${count(percent)}${NARROW_NO_BREAK_SPACE}%`
+        : `${count(value)}${NO_BREAK_SPACE}sur ${count(maximum)}`,
+    update: "Mettre à jour",
+    create: "Créer une barre de progression",
+    edit: "Mettre à jour la progression",
+    createSubtitle: "Toi et les modérateurs pourrez la faire avancer ensuite.",
+    label: "Libellé",
+    labelPlaceholder: "Qu’est-ce qui avance ?",
+    value: "Valeur",
+    maximum: "Sur",
+    maximumHint: "Sur 100, elle s’affiche en pourcentage.",
+    send: "Envoyer la barre de progression",
+    save: "Enregistrer",
+    labelEmpty: "Écris le libellé.",
+    wholeNumberUpTo: (minimum, maximum) => `Un nombre entier de ${count(minimum)} à ${count(maximum)}.`,
+    updateFailed: "Impossible de mettre à jour la progression",
   },
 
   emojiPicker: {
@@ -1469,6 +1526,10 @@ export const fr: Catalogue = {
       attachFiles: { label: "Joindre des fichiers", description: "Ajouter des fichiers et des images à ses messages." },
       addReactions: { label: "Ajouter des réactions", description: "Réagir aux messages avec un nouvel emoji." },
       sendPolls: { label: "Créer des sondages", description: "Poser une question avec des réponses que les autres votent." },
+      sendChecklists: {
+        label: "Créer des checklists et des barres de progression",
+        description: "Partager une liste que les autres cochent, ou une barre qui montre où en est quelque chose.",
+      },
       mentionEveryone: {
         label: "Mentionner @everyone et tous les rôles",
         description: "Prévenir tout le monde dans un salon en une fois, et mentionner n’importe quel rôle, même ceux que personne d’autre ne peut mentionner.",
