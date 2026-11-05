@@ -20,6 +20,7 @@
   import { visibleChannelSections } from "./channel-settings";
   import Composer from "./Composer.svelte";
   import ContextMenu, { type ContextMenuEntry } from "./ContextMenu.svelte";
+  import { chatHeaderMenuActions, menuEntries } from "./context-menus";
   import { ComposerDrafts } from "./composer-drafts.svelte";
   import ConfirmMessageDialog from "./ConfirmMessageDialog.svelte";
   import { composerTextOf, withEmojiNamesAsMarkup } from "./custom-emoji";
@@ -434,14 +435,28 @@
     }
   }
 
-  const moreOptionsEntries = $derived.by((): ContextMenuEntry[] => [
-    { label: strings.chat.goTo, icon: "compass", keyShortcuts: "Control+K", onselect: onopenquickswitcher },
-    { label: strings.pins.pinnedMessages, icon: "push-pin", onselect: () => (isPinsPanelOpen = true) },
-    ...(isGroup ? [{ label: strings.groups.addFriendsToGroup, icon: "user-plus" as const, onselect: onaddtogroup }] : []),
-    ...(channel && canEditChannel
-      ? [{ label: strings.chat.channelSettings, icon: "gear-six" as const, onselect: () => oneditchannel(channel) }]
-      : []),
-  ]);
+  const moreOptionsEntries = $derived.by((): ContextMenuEntry[] =>
+    menuEntries(chatHeaderMenuActions({ isGroup, canEditChannel }), (action) => ({
+      onselect: () => {
+        switch (action) {
+          case "go-to":
+            onopenquickswitcher();
+            break;
+          case "pinned-messages":
+            isPinsPanelOpen = true;
+            break;
+          case "add-friends-to-group":
+            onaddtogroup();
+            break;
+          case "channel-settings":
+            if (channel) {
+              oneditchannel(channel);
+            }
+            break;
+        }
+      },
+    })),
+  );
 
   function openMoreOptions() {
     if (moreOptionsButton) {
@@ -662,7 +677,8 @@
       <span class="flex-1"></span>
     {/if}
     <!-- Where Discord has it; Ctrl+K stays the quick switcher, offered again in its suggestions. -->
-    {@render searchControl(hasNavigationDrawer)}
+    <!-- "Go to" folds into "More options" only where that key exists. -->
+    {@render searchControl(hasNavigationDrawer && Boolean(channel || conversation))}
     <!-- Phones fold these keys into "More options", after the member toggle. -->
     {#if channel && canEditChannel && !hasNavigationDrawer}
       <IconButton
