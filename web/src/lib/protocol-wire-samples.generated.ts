@@ -285,7 +285,7 @@ export const guildSamples = [
     },
     "id": "1",
     "my_join_sound_id": "600",
-    "my_permissions": "4194303",
+    "my_permissions": "8388607",
     "my_role_ids": [
       "20"
     ],
@@ -320,7 +320,7 @@ export const guildSamples = [
     "channels": [],
     "emojis": [],
     "id": "1",
-    "my_permissions": "4194303",
+    "my_permissions": "8388607",
     "my_role_ids": [],
     "name": "Mellow",
     "owner_id": "10",
@@ -434,6 +434,26 @@ export const messageSamples = [
     ],
     "nonce": "nonce-1",
     "pinned": true,
+    "poll": {
+      "allows_multiple_answers": true,
+      "answers": [
+        {
+          "id": 1,
+          "me_voted": true,
+          "text": "Pizza",
+          "vote_count": 3
+        },
+        {
+          "id": 2,
+          "me_voted": false,
+          "text": "Soup",
+          "vote_count": 0
+        }
+      ],
+      "ended_at_unix_milliseconds": 1700000050000,
+      "expires_at_unix_milliseconds": 1700000100000,
+      "question": "Lunch?"
+    },
     "reactions": [
       {
         "count": 3,
@@ -613,6 +633,26 @@ export const messageSearchResultsSamples = [
           ],
           "nonce": "nonce-1",
           "pinned": true,
+          "poll": {
+            "allows_multiple_answers": true,
+            "answers": [
+              {
+                "id": 1,
+                "me_voted": true,
+                "text": "Pizza",
+                "vote_count": 3
+              },
+              {
+                "id": 2,
+                "me_voted": false,
+                "text": "Soup",
+                "vote_count": 0
+              }
+            ],
+            "ended_at_unix_milliseconds": 1700000050000,
+            "expires_at_unix_milliseconds": 1700000100000,
+            "question": "Lunch?"
+          },
           "reactions": [
             {
               "count": 3,
@@ -968,7 +1008,7 @@ export const readySamples = [
         },
         "id": "1",
         "my_join_sound_id": "600",
-        "my_permissions": "4194303",
+        "my_permissions": "8388607",
         "my_role_ids": [
           "20"
         ],
@@ -1003,7 +1043,7 @@ export const readySamples = [
         "channels": [],
         "emojis": [],
         "id": "1",
-        "my_permissions": "4194303",
+        "my_permissions": "8388607",
         "my_role_ids": [],
         "name": "Mellow",
         "owner_id": "10",
@@ -1297,6 +1337,26 @@ export const gatewayEventSamples = [
       ],
       "nonce": "nonce-1",
       "pinned": true,
+      "poll": {
+        "allows_multiple_answers": true,
+        "answers": [
+          {
+            "id": 1,
+            "me_voted": true,
+            "text": "Pizza",
+            "vote_count": 3
+          },
+          {
+            "id": 2,
+            "me_voted": false,
+            "text": "Soup",
+            "vote_count": 0
+          }
+        ],
+        "ended_at_unix_milliseconds": 1700000050000,
+        "expires_at_unix_milliseconds": 1700000100000,
+        "question": "Lunch?"
+      },
       "reactions": [
         {
           "count": 3,
@@ -1391,6 +1451,26 @@ export const gatewayEventSamples = [
       ],
       "nonce": "nonce-1",
       "pinned": true,
+      "poll": {
+        "allows_multiple_answers": true,
+        "answers": [
+          {
+            "id": 1,
+            "me_voted": true,
+            "text": "Pizza",
+            "vote_count": 3
+          },
+          {
+            "id": 2,
+            "me_voted": false,
+            "text": "Soup",
+            "vote_count": 0
+          }
+        ],
+        "ended_at_unix_milliseconds": 1700000050000,
+        "expires_at_unix_milliseconds": 1700000100000,
+        "question": "Lunch?"
+      },
       "reactions": [
         {
           "count": 3,
@@ -1416,6 +1496,25 @@ export const gatewayEventSamples = [
       "id": "800"
     },
     "t": "MESSAGE_DELETE"
+  },
+  {
+    "data": {
+      "answer_id": 2,
+      "channel_id": "30",
+      "guild_id": "1",
+      "message_id": "800",
+      "user_id": "10"
+    },
+    "t": "MESSAGE_POLL_VOTE_ADD"
+  },
+  {
+    "data": {
+      "answer_id": 1,
+      "channel_id": "40",
+      "message_id": "800",
+      "user_id": "10"
+    },
+    "t": "MESSAGE_POLL_VOTE_REMOVE"
   },
   {
     "data": {
@@ -1541,7 +1640,7 @@ export const gatewayEventSamples = [
       },
       "id": "1",
       "my_join_sound_id": "600",
-      "my_permissions": "4194303",
+      "my_permissions": "8388607",
       "my_role_ids": [
         "20"
       ],
@@ -2061,7 +2160,7 @@ export const serverFrameSamples = [
           },
           "id": "1",
           "my_join_sound_id": "600",
-          "my_permissions": "4194303",
+          "my_permissions": "8388607",
           "my_role_ids": [
             "20"
           ],
@@ -2096,7 +2195,7 @@ export const serverFrameSamples = [
           "channels": [],
           "emojis": [],
           "id": "1",
-          "my_permissions": "4194303",
+          "my_permissions": "8388607",
           "my_role_ids": [],
           "name": "Mellow",
           "owner_id": "10",
@@ -2280,19 +2379,23 @@ export const sharedConstants = {
   "MAXIMUM_GIF_FAVOURITES": 200,
   "MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH": 100,
   "MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS": 10,
+  "MAXIMUM_POLL_ANSWERS": 10,
+  "MAXIMUM_POLL_ANSWER_LENGTH": 55,
+  "MAXIMUM_POLL_QUESTION_LENGTH": 300,
   "MAXIMUM_REACHABLE_SEARCH_RESULTS": 1000,
   "MAXIMUM_SEARCH_QUERY_LENGTH": 256,
   "MAXIMUM_SEARCH_QUERY_PARTS": 16,
   "MAXIMUM_SEARCH_RESULTS_PER_PAGE": 25,
   "MAXIMUM_VOICE_USER_LIMIT": 25,
   "MINIMUM_MILLISECONDS_BETWEEN_SOUNDS": 2000,
+  "MINIMUM_POLL_ANSWERS": 2,
   "SCREEN_SOUND_RECEIVE_SLOTS": 3,
   "VIDEO_RECEIVE_SLOTS": 9,
   "VOICE_RECEIVE_SLOTS": 16
 } as const;
 
 export const permissionBits = {
-  "channelScoped": "3999230",
+  "channelScoped": "8193534",
   "named": {
     "ADD_REACTIONS": "65536",
     "ADMINISTRATOR": "1",
@@ -2311,6 +2414,7 @@ export const permissionBits = {
     "MENTION_EVERYONE": "32",
     "READ_MESSAGE_HISTORY": "8",
     "SEND_MESSAGES": "4",
+    "SEND_POLLS": "4194304",
     "SPEAK": "524288",
     "STREAM": "2097152",
     "USE_SOUNDBOARD": "1048576",

@@ -21,6 +21,7 @@ pub(crate) mod link_previews;
 mod master_key;
 pub(crate) mod messages;
 mod migrations;
+pub(crate) mod polls;
 pub(crate) mod profile_images;
 pub(crate) mod reactions;
 pub(crate) mod relationships;

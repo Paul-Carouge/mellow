@@ -18,14 +18,15 @@ use mellow_protocol::{
     HighlightRange, InitialCategory, InitialTextChannel, Invite, LinkPreview, LinkPreviewImage,
     MAXIMUM_COUNTED_UNREAD_MENTIONS, MAXIMUM_GIF_FAVOURITES,
     MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH, MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
+    MAXIMUM_POLL_ANSWER_LENGTH, MAXIMUM_POLL_ANSWERS, MAXIMUM_POLL_QUESTION_LENGTH,
     MAXIMUM_REACHABLE_SEARCH_RESULTS, MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS,
     MAXIMUM_SEARCH_QUERY_LENGTH, MAXIMUM_SEARCH_QUERY_PARTS, MAXIMUM_SEARCH_RESULTS_PER_PAGE,
     MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
-    MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, Member, Message, MessageReaction, MessageSearchHit,
-    MessageSearchQuery, MessageSearchResults, MessageSearchSort, OverwriteKind,
-    PermissionOverwrite, Permissions, Presence, PresenceStatus, ProfileImage, PublicUser,
-    ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame,
-    SessionCreated, SimulcastLayer, Snowflake, SoundboardSound, VideoTileSize,
+    MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, MINIMUM_POLL_ANSWERS, Member, Message, MessageReaction,
+    MessageSearchHit, MessageSearchQuery, MessageSearchResults, MessageSearchSort, OverwriteKind,
+    PermissionOverwrite, Permissions, Poll, PollAnswer, PollVote, Presence, PresenceStatus,
+    ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind,
+    Role, ServerFrame, SessionCreated, SimulcastLayer, Snowflake, SoundboardSound, VideoTileSize,
     VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal, WatchedCamera,
 };
 use serde::Serialize;
@@ -337,6 +338,26 @@ fn message() -> Message {
         mention_ids: vec![id(10)],
         mention_role_ids: vec![id(20)],
         link_previews: vec![link_preview(), sparse_link_preview()],
+        poll: Some(Poll {
+            question: "Lunch?".into(),
+            answers: vec![
+                PollAnswer {
+                    id: 1,
+                    text: "Pizza".into(),
+                    vote_count: 3,
+                    me_voted: true,
+                },
+                PollAnswer {
+                    id: 2,
+                    text: "Soup".into(),
+                    vote_count: 0,
+                    me_voted: false,
+                },
+            ],
+            allows_multiple_answers: true,
+            expires_at_unix_milliseconds: 1_700_000_100_000,
+            ended_at_unix_milliseconds: Some(1_700_000_050_000),
+        }),
         forwarded_from: Some(ForwardOrigin {
             channel_id: id(31),
             message_id: id(700),
@@ -356,6 +377,7 @@ fn sparse_message() -> Message {
         mention_ids: Vec::new(),
         mention_role_ids: Vec::new(),
         link_previews: Vec::new(),
+        poll: None,
         forwarded_from: None,
         ..message()
     }
@@ -559,6 +581,20 @@ fn gateway_events() -> Vec<GatewayEvent> {
             channel_id: id(40),
             id: id(800),
         },
+        GatewayEvent::MessagePollVoteAdd(_) => GatewayEvent::MessagePollVoteAdd(PollVote {
+            guild_id: Some(id(1)),
+            channel_id: id(30),
+            message_id: id(800),
+            answer_id: 2,
+            user_id: id(10),
+        }),
+        GatewayEvent::MessagePollVoteRemove(_) => GatewayEvent::MessagePollVoteRemove(PollVote {
+            guild_id: None,
+            channel_id: id(40),
+            message_id: id(800),
+            answer_id: 1,
+            user_id: id(10),
+        }),
         GatewayEvent::MessageLinkPreviewsUpdate { .. } => GatewayEvent::MessageLinkPreviewsUpdate {
             guild_id: Some(id(1)),
             channel_id: id(30),
@@ -1048,6 +1084,10 @@ fn shared_constants() -> Value {
     json!({
         "MAXIMUM_COUNTED_UNREAD_MENTIONS": MAXIMUM_COUNTED_UNREAD_MENTIONS,
         "MAXIMUM_GIF_FAVOURITES": MAXIMUM_GIF_FAVOURITES,
+        "MAXIMUM_POLL_QUESTION_LENGTH": MAXIMUM_POLL_QUESTION_LENGTH,
+        "MINIMUM_POLL_ANSWERS": MINIMUM_POLL_ANSWERS,
+        "MAXIMUM_POLL_ANSWERS": MAXIMUM_POLL_ANSWERS,
+        "MAXIMUM_POLL_ANSWER_LENGTH": MAXIMUM_POLL_ANSWER_LENGTH,
         "MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH": MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH,
         "MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS": MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
         "MAXIMUM_REACHABLE_SEARCH_RESULTS": MAXIMUM_REACHABLE_SEARCH_RESULTS,

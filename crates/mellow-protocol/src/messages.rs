@@ -20,6 +20,57 @@ pub struct SendMessageRequest {
     /// and `attachment_ids` stay empty and `reply_to_id` absent. Left out of the body when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forwarded_from: Option<ForwardOrigin>,
+    /// Sends a poll (ADR-0043): `content`, `attachment_ids`, `reply_to_id` and `forwarded_from`
+    /// stay empty. Left out of the body when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll: Option<NewPoll>,
+}
+
+/// The poll a message asks (ADR-0043), as its author writes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NewPoll {
+    /// 1 to `MAXIMUM_POLL_QUESTION_LENGTH` characters.
+    pub question: String,
+    /// `MINIMUM_POLL_ANSWERS` to `MAXIMUM_POLL_ANSWERS`, each 1 to `MAXIMUM_POLL_ANSWER_LENGTH`
+    /// characters.
+    pub answers: Vec<String>,
+    #[serde(default)]
+    pub allows_multiple_answers: bool,
+    /// One of `POLL_DURATIONS_IN_HOURS`.
+    pub duration_hours: u32,
+}
+
+pub const MAXIMUM_POLL_QUESTION_LENGTH: usize = 300;
+pub const MINIMUM_POLL_ANSWERS: usize = 2;
+pub const MAXIMUM_POLL_ANSWERS: usize = 10;
+pub const MAXIMUM_POLL_ANSWER_LENGTH: usize = 55;
+/// What a poll may last, as on Discord.
+pub const POLL_DURATIONS_IN_HOURS: [u32; 7] = [1, 4, 8, 24, 72, 168, 336];
+
+/// A message's poll as the reader sees it (ADR-0043).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Poll {
+    pub question: String,
+    /// In the author's order; ids are 1, 2, … in that order.
+    pub answers: Vec<PollAnswer>,
+    pub allows_multiple_answers: bool,
+    /// Votes are refused from then on.
+    pub expires_at_unix_milliseconds: u64,
+    /// Set when the author ended the poll early.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at_unix_milliseconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PollAnswer {
+    pub id: u32,
+    pub text: String,
+    pub vote_count: u32,
+    /// The reader voted for it. Filled in REST answers only, like `ReactionSummary::me`; always
+    /// false in events, which clients follow with `MESSAGE_POLL_VOTE_ADD` and `_REMOVE`.
+    #[serde(default)]
+    pub me_voted: bool,
 }
 
 /// Where a forwarded message was first written (ADR-0039). Its date is the message id's.
@@ -140,6 +191,9 @@ pub struct Message {
     /// and from older servers' payloads.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub link_previews: Vec<LinkPreview>,
+    /// The message's poll (ADR-0043). Absent otherwise and from older servers' payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll: Option<Poll>,
     /// Set on a forward (ADR-0039): its content and files are a copy of that message's, taken
     /// when it was forwarded. Absent otherwise and from older servers' payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -230,6 +284,7 @@ mod tests {
             mention_ids: Vec::new(),
             mention_role_ids: Vec::new(),
             link_previews: Vec::new(),
+            poll: None,
             forwarded_from: Some(ForwardOrigin {
                 channel_id: Snowflake::from_raw(7),
                 message_id: Snowflake::from_raw(8),

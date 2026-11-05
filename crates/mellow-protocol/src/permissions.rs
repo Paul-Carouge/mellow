@@ -41,6 +41,9 @@ bitflags::bitflags! {
         /// Turning a camera on in a voice channel, and later sharing a screen; the interface
         /// calls it "Video" (ADR-0035, Discord's `STREAM`).
         const STREAM               = 1 << 21;
+        /// Sending a poll, with `SEND_MESSAGES`; the interface calls it "Create polls"
+        /// (ADR-0043, Discord's `SEND_POLLS`).
+        const SEND_POLLS           = 1 << 22;
     }
 }
 
@@ -59,7 +62,8 @@ impl Permissions {
         .union(Self::CONNECT)
         .union(Self::SPEAK)
         .union(Self::USE_SOUNDBOARD)
-        .union(Self::STREAM);
+        .union(Self::STREAM)
+        .union(Self::SEND_POLLS);
 
     /// Permissions granted to `@everyone` in a newly created guild.
     pub const DEFAULT_EVERYONE: Self = Self::VIEW_CHANNEL
@@ -72,7 +76,8 @@ impl Permissions {
         .union(Self::CONNECT)
         .union(Self::SPEAK)
         .union(Self::USE_SOUNDBOARD)
-        .union(Self::STREAM);
+        .union(Self::STREAM)
+        .union(Self::SEND_POLLS);
 }
 
 /// A member's permissions in a guild (ADR-0007 steps 1 to 3): the owner and administrators get

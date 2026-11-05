@@ -290,6 +290,18 @@ fn message_router(maximum_attachment_bytes: u64) -> Router<AppState> {
             delete(message_routes::remove_all_reactions),
         )
         .route(
+            "/api/v1/channels/{channel_id}/messages/{message_id}/poll/answers/{answer_id}/votes/@me",
+            put(message_routes::add_poll_vote).delete(message_routes::remove_poll_vote),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/messages/{message_id}/poll/answers/{answer_id}/voters",
+            get(message_routes::list_poll_voters),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/messages/{message_id}/poll/end",
+            post(message_routes::end_poll),
+        )
+        .route(
             "/api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}",
             get(message_routes::list_reacting_users).delete(message_routes::remove_emoji_reactions),
         )

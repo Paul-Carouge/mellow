@@ -6,6 +6,7 @@ mod direct_messages;
 mod group_conversations;
 mod link_previews;
 mod pins;
+mod polls;
 mod reactions;
 mod search;
 
@@ -42,6 +43,7 @@ use crate::storage::messages::{
     self as message_storage, CopiedAttachment, HistoryPage, MessageMentions, MessageStorageError,
     NewForward, NewMessage, StoredMessage,
 };
+use crate::storage::polls as poll_storage;
 use crate::storage::reactions as reaction_storage;
 
 #[derive(Debug, thiserror::Error)]
@@ -124,6 +126,7 @@ fn message_from_stored(
         // Filled by `fill_link_previews` for REST answers; events carry the stored ones too.
         link_previews: Vec::new(),
         forwarded_from: message.forwarded_from,
+        poll: None,
     }
 }
 
@@ -167,11 +170,13 @@ async fn attachments_of(
 /// A send checked against the channel's permissions, before the lock.
 struct SendInput {
     channel: MessageChannel,
-    /// The author's, in the channel: they decide which roles a mention reaches.
-    permissions: Permissions,
     forwarded: Option<ForwardedMessage>,
     content: String,
     has_files: bool,
+    /// A poll message's poll (ADR-0043).
+    poll: Option<polls::CheckedPoll>,
+    audience: MessageAudience,
+    mentions: MessageMentions,
 }
 
 /// The message `author_id` already sent to this channel with this nonce, as stored now, with the
@@ -191,6 +196,12 @@ async fn already_sent_with_nonce(
     let mut message = message_from_stored(already_sent, Some(nonce.to_owned()), attachments);
     fill_profile_images(database, [&mut message.author]).await?;
     fill_reactions(database, author_id, std::slice::from_mut(&mut message)).await?;
+    polls::fill_polls(
+        database,
+        Some(author_id),
+        std::slice::from_mut(&mut message),
+    )
+    .await?;
     link_previews::fill_link_previews(database, std::slice::from_mut(&mut message)).await?;
     Ok(Some(message))
 }
@@ -579,34 +590,22 @@ impl Messages {
         }
         let SendInput {
             channel,
-            permissions,
             forwarded,
             content,
             has_files,
+            poll,
+            audience,
+            mentions,
         } = self
             .checked_send_input(user_id, channel_id, &request)
             .await?;
-        // Decided before the lock and the write: a failure leaves nothing stored, and the scan of
-        // a restricted channel's members does not hold up every other send (ADR-0015).
-        let audience = self.audience(&channel).await?;
-        // A forward's text was written for another audience: it mentions no one (ADR-0039).
-        let mentions = if forwarded.is_some() {
-            MessageMentions::default()
-        } else {
-            mentions_in(
-                &self.database,
-                &channel,
-                &audience,
-                user_id,
-                permissions,
-                &content,
-            )
-            .await?
-        };
         let channel_id = channel.id();
         // Read before the write too, so nothing can fail between the insert and the events.
         let conversation_views = one_to_one_conversation_views(&self.database, &channel).await?;
         let send_order = self.send_order.clone();
+        let poll = poll.map(|poll| poll.into_stored(now_unix_milliseconds));
+        // What the event shows, known before the write: a poll starts without votes.
+        let published_poll = poll.as_ref().map(polls::poll_without_votes);
         let link_preview_ticket =
             self.link_previews
                 .ticket(channel.guild_id(), forwarded.is_some(), &content);
@@ -649,6 +648,7 @@ impl Messages {
                     attachment_ids: request.attachment_ids.clone(),
                     mentions,
                     forward,
+                    poll,
                 },
             )
             .await?;
@@ -665,6 +665,7 @@ impl Messages {
             let mut message = message_from_stored(stored, None, attachments);
             message.author.avatar = author_images.avatar;
             message.author.banner = author_images.banner;
+            message.poll = published_poll;
             // The nonce goes back to the sender only, never in the event.
             publish(
                 &guilds,
@@ -714,23 +715,46 @@ impl Messages {
             .map_or(!request.attachment_ids.is_empty(), |forwarded| {
                 !forwarded.attachments.is_empty()
             });
+        let poll = polls::checked_poll(request)?;
+        let needed = if poll.is_some() {
+            permissions_to_send(has_files) | Permissions::SEND_POLLS
+        } else {
+            permissions_to_send(has_files)
+        };
         let (channel, permissions) = self
-            .text_channel_and_permissions_requiring(
-                user_id,
-                channel_id,
-                permissions_to_send(has_files),
-            )
+            .text_channel_and_permissions_requiring(user_id, channel_id, needed)
             .await?;
-        let content = match &forwarded {
-            Some(forwarded) => forwarded.message.content.clone(),
-            None => validated_content_to_send(request)?,
+        let content = match (&forwarded, &poll) {
+            (Some(forwarded), _) => forwarded.message.content.clone(),
+            // A poll message has no text of its own.
+            (None, Some(_)) => String::new(),
+            (None, None) => validated_content_to_send(request)?,
+        };
+        // Decided before the lock and the write: a failure leaves nothing stored, and the scan of
+        // a restricted channel's members does not hold up every other send (ADR-0015).
+        let audience = self.audience(&channel).await?;
+        // A forward's text was written for another audience: it mentions no one (ADR-0039).
+        let mentions = if forwarded.is_some() {
+            MessageMentions::default()
+        } else {
+            mentions_in(
+                &self.database,
+                &channel,
+                &audience,
+                user_id,
+                permissions,
+                &content,
+            )
+            .await?
         };
         Ok(SendInput {
             channel,
-            permissions,
             forwarded,
             content,
             has_files,
+            poll,
+            audience,
+            mentions,
         })
     }
 
@@ -764,6 +788,10 @@ impl Messages {
         let message = self
             .message_in_channel(origin.channel_id, origin.message_id)
             .await?;
+        // Votes belong to their channel: a poll is not copied elsewhere (ADR-0043).
+        if poll_storage::has_poll(&self.database, message.id).await? {
+            return Err(MessageRuleViolation::PollChange.into());
+        }
         let attachments = attachments_of(&self.database, message.id).await?;
         Ok(ForwardedMessage {
             // A forward of a forward names the message written first.
@@ -822,6 +850,7 @@ impl Messages {
         )
         .await?;
         fill_reactions(&self.database, viewer_id, &mut messages).await?;
+        polls::fill_polls(&self.database, Some(viewer_id), &mut messages).await?;
         link_previews::fill_link_previews(&self.database, &mut messages).await?;
         Ok(messages)
     }
@@ -849,6 +878,9 @@ impl Messages {
         }
         if message.forwarded_from.is_some() {
             return Err(MessageRuleViolation::ForwardedMessageEdit.into());
+        }
+        if poll_storage::has_poll(&self.database, message.id).await? {
+            return Err(MessageRuleViolation::PollChange.into());
         }
         let content = normalize_line_endings(&request.content);
         validate_message_content(&content)?;
@@ -1168,6 +1200,7 @@ mod tests {
             nonce: None,
             attachment_ids: Vec::new(),
             forwarded_from: None,
+            poll: None,
         }
     }
 
@@ -1518,6 +1551,7 @@ mod tests {
                             copied_message_id: gone,
                             copied_attachments,
                         }),
+                        poll: None,
                     },
                 )
                 .await,
@@ -2163,6 +2197,7 @@ mod tests {
                     nonce: Some("outbox-1".into()),
                     attachment_ids: Vec::new(),
                     forwarded_from: None,
+                    poll: None,
                 },
                 NOW,
             )
@@ -2179,6 +2214,7 @@ mod tests {
                     nonce: None,
                     attachment_ids: Vec::new(),
                     forwarded_from: None,
+                    poll: None,
                 },
                 NOW,
             )
@@ -2212,6 +2248,7 @@ mod tests {
             nonce: Some("outbox-1".into()),
             attachment_ids: Vec::new(),
             forwarded_from: None,
+            poll: None,
         };
 
         let first = fixture
@@ -2277,6 +2314,7 @@ mod tests {
                     nonce: Some("outbox-2".into()),
                     attachment_ids: Vec::new(),
                     forwarded_from: None,
+                    poll: None,
                 },
                 NOW,
             )
@@ -2306,6 +2344,7 @@ mod tests {
             nonce: Some("outbox-3".into()),
             attachment_ids: Vec::new(),
             forwarded_from: None,
+            poll: None,
         };
         let first = fixture
             .messages
@@ -2865,6 +2904,181 @@ mod tests {
             .list_messages(viewer, channel, MessageHistoryQuery::default())
             .await
             .unwrap()
+    }
+
+    fn poll_request(allows_multiple_answers: bool) -> SendMessageRequest {
+        SendMessageRequest {
+            poll: Some(mellow_protocol::NewPoll {
+                question: "Lunch?".into(),
+                answers: vec!["Pizza".into(), "Soup".into(), "Salad".into()],
+                allows_multiple_answers,
+                duration_hours: 1,
+            }),
+            ..text("")
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // One scenario: create, vote, move, end, refuse.
+    async fn polls_are_created_with_their_permission_voted_on_until_they_end() {
+        use mellow_protocol::{OverwriteKind, SetPermissionOverwriteRequest};
+
+        const HOUR: u64 = 60 * 60 * 1_000;
+        let fixture = fixture().await;
+        let (messages, owner, member, general) = (
+            &fixture.messages,
+            fixture.owner,
+            fixture.member,
+            fixture.general,
+        );
+        let (key, mut owner_events) = fixture.events.register_session(owner, [0; 32], 1).unwrap();
+        fixture.events.activate_session(key, &[fixture.guild.id]);
+        let single = messages
+            .send(owner, general, poll_request(false), NOW)
+            .await
+            .unwrap();
+        let multiple = messages
+            .send(member, general, poll_request(true), NOW)
+            .await
+            .unwrap();
+        let with_text = messages
+            .send(
+                owner,
+                general,
+                SendMessageRequest {
+                    content: "and words".into(),
+                    ..poll_request(false)
+                },
+                NOW,
+            )
+            .await;
+        while owner_events.try_recv().is_ok() {}
+        let vote = |user, message: Snowflake, answer, now| {
+            messages.add_poll_vote(user, general, message, answer, now)
+        };
+        vote(member, single.id, 1, NOW).await.unwrap();
+        vote(member, single.id, 2, NOW).await.unwrap();
+        vote(owner, single.id, 2, NOW).await.unwrap();
+        vote(owner, multiple.id, 1, NOW).await.unwrap();
+        vote(owner, multiple.id, 3, NOW).await.unwrap();
+        vote(owner, multiple.id, 3, NOW).await.unwrap();
+        let no_such_answer = vote(owner, multiple.id, 9, NOW).await;
+        let vote_events = event_types(&mut owner_events);
+        messages
+            .remove_poll_vote(owner, general, multiple.id, 1, NOW)
+            .await
+            .unwrap();
+        let member_view = history(&fixture, member, general).await;
+        let owner_view = history(&fixture, owner, general).await;
+        let edit = messages
+            .edit(
+                owner,
+                general,
+                single.id,
+                EditMessageRequest {
+                    content: "changed".into(),
+                },
+                NOW,
+            )
+            .await;
+        let lounge = create_text_channel(&fixture, "lounge").await;
+        let forward = messages
+            .send(owner, lounge.id, forward_of(general, single.id), NOW)
+            .await;
+        let ended_by_other = messages.end_poll(member, general, single.id, NOW).await;
+        messages
+            .end_poll(owner, general, single.id, NOW)
+            .await
+            .unwrap();
+        let after_end = vote(member, single.id, 3, NOW).await;
+        let after_expiry = vote(owner, multiple.id, 2, NOW + HOUR).await;
+        fixture
+            .guilds
+            .set_permission_overwrite(
+                owner,
+                general,
+                fixture.guild.id,
+                SetPermissionOverwriteRequest {
+                    kind: OverwriteKind::Role,
+                    allow: Permissions::empty(),
+                    deny: Permissions::SEND_POLLS,
+                },
+            )
+            .await
+            .unwrap();
+        let without_permission = messages
+            .send(member, general, poll_request(false), NOW)
+            .await;
+        let final_view = history(&fixture, member, general).await;
+        fixture.database.close().await;
+
+        let poll_of = |view: &[Message], id: Snowflake| {
+            view.iter()
+                .find(|message| message.id == id)
+                .and_then(|message| message.poll.clone())
+                .unwrap()
+        };
+        let counts = |poll: &mellow_protocol::Poll| {
+            poll.answers
+                .iter()
+                .map(|answer| (answer.vote_count, answer.me_voted))
+                .collect::<Vec<_>>()
+        };
+        let created = single.poll.clone().unwrap();
+        assert_eq!(single.content, "");
+        assert_eq!(created.question, "Lunch?");
+        assert_eq!(created.expires_at_unix_milliseconds, NOW + HOUR);
+        assert!(matches!(
+            with_text,
+            Err(MessageError::InvalidInput(MessageRuleViolation::Poll))
+        ));
+        assert_eq!(
+            vote_events,
+            [
+                "MESSAGE_POLL_VOTE_ADD",
+                "MESSAGE_POLL_VOTE_REMOVE",
+                "MESSAGE_POLL_VOTE_ADD",
+                "MESSAGE_POLL_VOTE_ADD",
+                "MESSAGE_POLL_VOTE_ADD",
+                "MESSAGE_POLL_VOTE_ADD",
+            ],
+            "a single-choice vote moves; voting again sends nothing"
+        );
+        assert!(matches!(no_such_answer, Err(MessageError::MessageNotFound)));
+        assert_eq!(
+            counts(&poll_of(&member_view, single.id)),
+            [(0, false), (2, true), (0, false)]
+        );
+        assert_eq!(
+            counts(&poll_of(&owner_view, multiple.id)),
+            [(0, false), (0, false), (1, true)]
+        );
+        assert!(matches!(
+            edit,
+            Err(MessageError::InvalidInput(MessageRuleViolation::PollChange))
+        ));
+        assert!(matches!(
+            forward,
+            Err(MessageError::InvalidInput(MessageRuleViolation::PollChange))
+        ));
+        assert!(matches!(
+            ended_by_other,
+            Err(MessageError::Guild(GuildError::MissingPermissions))
+        ));
+        for refused in [after_end, after_expiry] {
+            assert!(matches!(
+                refused,
+                Err(MessageError::InvalidInput(MessageRuleViolation::PollEnded))
+            ));
+        }
+        assert!(matches!(
+            without_permission,
+            Err(MessageError::Guild(GuildError::MissingPermissions))
+        ));
+        assert_eq!(
+            poll_of(&final_view, single.id).ended_at_unix_milliseconds,
+            Some(NOW)
+        );
     }
 
     #[tokio::test]

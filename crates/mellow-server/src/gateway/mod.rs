@@ -925,6 +925,7 @@ pub(crate) mod tests {
                     nonce: Some(format!("private-{}", content.replace(' ', "-"))),
                     attachment_ids: Vec::new(),
                     forwarded_from: None,
+                    poll: None,
                 },
                 now(),
             )

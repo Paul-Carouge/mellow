@@ -19,6 +19,7 @@ import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
 import { CustomEmojiLibrary } from "./custom-emoji-library.svelte";
 import { reactionKey, withReactionAdded, withReactionRemoved, withoutEmoji } from "./reactions";
+import { withPollVote, withReaderVotesKept } from "./polls";
 import { type MentionReader, doesMessageMentionReader } from "./reader-mentions";
 import { Relationships } from "./relationships.svelte";
 import {
@@ -626,6 +627,8 @@ export class MellowClient {
               ? {
                   ...updated,
                   reactions: message.reactions,
+                  // Events never carry the reader's votes: their marks stay.
+                  poll: updated.poll ? withReaderVotesKept(updated.poll, message.poll) : updated.poll,
                   link_previews:
                     (message.edited_at_unix_milliseconds ?? 0) < (updated.edited_at_unix_milliseconds ?? 0)
                       ? updated.link_previews
@@ -787,6 +790,16 @@ export class MellowClient {
       case "RELATIONSHIP_REMOVE":
         this.relationships.forget(event.data.user_id);
         return;
+      case "MESSAGE_POLL_VOTE_ADD":
+      case "MESSAGE_POLL_VOTE_REMOVE": {
+        const { channel_id, message_id, answer_id, user_id } = event.data;
+        const change = event.t === "MESSAGE_POLL_VOTE_ADD" ? 1 : -1;
+        const isMine = user_id === this.user?.id;
+        this.updateCachedMessage(channel_id, message_id, (message) =>
+          message.poll ? { ...message, poll: withPollVote(message.poll, answer_id, change, isMine) } : message,
+        );
+        return;
+      }
       case "MESSAGE_REACTION_ADD": {
         const { channel_id, message_id, emoji, user_id } = event.data;
         const isMine = user_id === this.user?.id;
