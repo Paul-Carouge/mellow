@@ -121,6 +121,10 @@ export const fr: Catalogue = {
   connection: {
     connecting: "Connexion…",
     reconnecting: "Connexion perdue. Reconnexion…",
+    stillReconnecting: "Toujours en reconnexion. Tes messages partiront à ton retour.",
+    retryNow: "Réessayer maintenant",
+    offline: "Tu es hors ligne. Les messages enregistrés restent lisibles.",
+    backOnline: "De retour en ligne",
   },
 
   time: {

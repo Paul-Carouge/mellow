@@ -637,7 +637,12 @@
 {/snippet}
 
 <div class="safe-area-padding flex h-dvh flex-col bg-surface-rail font-sans text-text-normal">
-  <ConnectionBanner status={client.status} />
+  <ConnectionBanner
+    status={client.status}
+    isCheckingLink={client.isCheckingLink}
+    onretry={() => client.reconnectNow()}
+    fallbackFocus={focusComposer}
+  />
   <NotificationPermissionBar status={client.status} />
   <!-- As in the reference mockup, the ground shows twice the inset above the cards and after the
        last one (where the mockup keeps a row for its top bar and a column for the side sheet). -->
