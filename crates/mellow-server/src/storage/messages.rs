@@ -175,6 +175,8 @@ pub(crate) struct NewMessage {
     pub(crate) mentions: MessageMentions,
     /// A forward (ADR-0039): its origin, and its attachments as copies of the original's.
     pub(crate) forward: Option<NewForward>,
+    /// A poll (ADR-0043), stored in the same transaction.
+    pub(crate) poll: Option<crate::storage::polls::NewStoredPoll>,
 }
 
 /// What a forward copies, decided by the domain before the write.
@@ -284,6 +286,9 @@ pub(crate) async fn insert_message(
     }
     if let Some(forward) = &message.forward {
         copy_attachments(&mut transaction, message, forward).await?;
+    }
+    if let Some(poll) = &message.poll {
+        crate::storage::polls::insert_poll(&mut transaction, message.id, poll).await?;
     }
     insert_mentions(
         &mut transaction,

@@ -213,6 +213,76 @@ pub(crate) async fn list_reacting_users(
     ))
 }
 
+/// `PUT /api/v1/channels/{channel_id}/messages/{message_id}/poll/answers/{answer_id}/votes/@me`
+/// (ADR-0043). Shares the reactions' write budget.
+pub(crate) async fn add_poll_vote(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id, answer_id)): ApiPath<(Snowflake, Snowflake, u32)>,
+) -> Result<StatusCode, ApiError> {
+    limit_reaction_writes(&state, user.id, channel_id)?;
+    state
+        .messages
+        .add_poll_vote(
+            user.id,
+            channel_id,
+            message_id,
+            answer_id,
+            now_unix_milliseconds(),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/v1/channels/{channel_id}/messages/{message_id}/poll/answers/{answer_id}/votes/@me`.
+pub(crate) async fn remove_poll_vote(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id, answer_id)): ApiPath<(Snowflake, Snowflake, u32)>,
+) -> Result<StatusCode, ApiError> {
+    limit_reaction_writes(&state, user.id, channel_id)?;
+    state
+        .messages
+        .remove_poll_vote(
+            user.id,
+            channel_id,
+            message_id,
+            answer_id,
+            now_unix_milliseconds(),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /api/v1/channels/{channel_id}/messages/{message_id}/poll/answers/{answer_id}/voters`.
+pub(crate) async fn list_poll_voters(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id, answer_id)): ApiPath<(Snowflake, Snowflake, u32)>,
+    ApiQuery(query): ApiQuery<ReactionUsersQuery>,
+) -> Result<Json<Vec<PublicUser>>, ApiError> {
+    Ok(Json(
+        state
+            .messages
+            .list_poll_voters(user.id, channel_id, message_id, answer_id, query)
+            .await?,
+    ))
+}
+
+/// `POST /api/v1/channels/{channel_id}/messages/{message_id}/poll/end`: its author only.
+pub(crate) async fn end_poll(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiPath((channel_id, message_id)): ApiPath<(Snowflake, Snowflake)>,
+) -> Result<StatusCode, ApiError> {
+    limit_reaction_writes(&state, user.id, channel_id)?;
+    state
+        .messages
+        .end_poll(user.id, channel_id, message_id, now_unix_milliseconds())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `GET /api/v1/channels/{channel_id}/pins`.
 pub(crate) async fn list_pins(
     State(state): State<AppState>,

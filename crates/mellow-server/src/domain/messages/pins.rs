@@ -69,6 +69,7 @@ impl Messages {
         let author_images = profile_images_of_user(&self.database, message.author_id).await?;
         let attachments = attachments_of(&self.database, message.id).await?;
         let previews = super::link_previews::previews_of(&self.database, message.id).await?;
+        let poll = super::polls::poll_of(&self.database, message.id).await?;
         let audit = channel
             .guild_id()
             .map(|guild_id| {
@@ -115,6 +116,7 @@ impl Messages {
             changed.author.banner = author_images.banner;
             // Clients replace the message with the event's: it must keep its previews.
             changed.link_previews = previews;
+            changed.poll = poll;
             publish(
                 &self.guilds,
                 &audience,

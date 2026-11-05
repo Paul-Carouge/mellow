@@ -340,6 +340,18 @@ pub struct Presence {
     pub custom_status: Option<String>,
 }
 
+/// One vote added to or taken from a poll (ADR-0043).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PollVote {
+    /// `None` in a direct-message conversation, and then left out of the frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guild_id: Option<Snowflake>,
+    pub channel_id: Snowflake,
+    pub message_id: Snowflake,
+    pub answer_id: u32,
+    pub user_id: Snowflake,
+}
+
 /// Payload of `MESSAGE_REACTION_ADD` and `MESSAGE_REACTION_REMOVE`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageReaction {
@@ -441,6 +453,9 @@ pub enum GatewayEvent {
         sound_id: Option<Snowflake>,
     },
     /// Someone reacted to a message. Sent to the channel's viewers, the reacting user included.
+    /// A vote on a poll (ADR-0043); older clients skip it.
+    MessagePollVoteAdd(PollVote),
+    MessagePollVoteRemove(PollVote),
     MessageReactionAdd(MessageReaction),
     /// Someone took their reaction back, or a moderator removed it.
     MessageReactionRemove(MessageReaction),

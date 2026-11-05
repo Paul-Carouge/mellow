@@ -331,6 +331,50 @@ export interface Message {
   link_previews?: LinkPreview[];
   /** Set on a forward (ADR-0039): its content and files copy that message's. */
   forwarded_from?: ForwardOrigin;
+  /** The message's poll (ADR-0043); its content is then empty. */
+  poll?: Poll;
+}
+
+/** A message's poll (ADR-0043). Ended once `expires_at_unix_milliseconds` passed or `ended_at` is set. */
+export interface Poll {
+  question: string;
+  /** In the author's order; ids 1, 2, … */
+  answers: PollAnswer[];
+  allows_multiple_answers: boolean;
+  expires_at_unix_milliseconds: number;
+  ended_at_unix_milliseconds?: number;
+}
+
+export interface PollAnswer {
+  id: number;
+  text: string;
+  vote_count: number;
+  /** In REST answers only; events always say false (follow the vote events). */
+  me_voted: boolean;
+}
+
+/** What a poll is sent with (`SendMessageRequest.poll`). */
+export interface NewPoll {
+  question: string;
+  answers: string[];
+  allows_multiple_answers: boolean;
+  /** One of `POLL_DURATIONS_IN_HOURS`. */
+  duration_hours: number;
+}
+
+export const MAXIMUM_POLL_QUESTION_LENGTH = 300;
+export const MINIMUM_POLL_ANSWERS = 2;
+export const MAXIMUM_POLL_ANSWERS = 10;
+export const MAXIMUM_POLL_ANSWER_LENGTH = 55;
+export const POLL_DURATIONS_IN_HOURS = [1, 4, 8, 24, 72, 168, 336] as const;
+
+/** `MESSAGE_POLL_VOTE_ADD` and `MESSAGE_POLL_VOTE_REMOVE`. */
+export interface PollVote {
+  guild_id?: Snowflake;
+  channel_id: Snowflake;
+  message_id: Snowflake;
+  answer_id: number;
+  user_id: Snowflake;
 }
 
 /**
@@ -382,6 +426,8 @@ export interface SendMessageRequest {
    * stays empty, without `attachment_ids` or `reply_to_id`.
    */
   forwarded_from?: ForwardOrigin;
+  /** Sends a poll (ADR-0043), with empty `content` and nothing else. */
+  poll?: NewPoll;
 }
 
 export interface ReactionSummary {
@@ -706,6 +752,8 @@ export type GatewayEvent =
         link_previews: LinkPreview[];
       };
     }
+  | { t: "MESSAGE_POLL_VOTE_ADD"; data: PollVote }
+  | { t: "MESSAGE_POLL_VOTE_REMOVE"; data: PollVote }
   | { t: "MESSAGE_REACTION_ADD"; data: MessageReaction }
   | { t: "MESSAGE_REACTION_REMOVE"; data: MessageReaction }
   | {
@@ -841,6 +889,8 @@ export const Permission = {
   USE_SOUNDBOARD: 1n << 20n,
   /** Turn a camera on in a voice channel, later share a screen; "Video" in the interface (ADR-0035). */
   STREAM: 1n << 21n,
+  /** Send a poll, with `SEND_MESSAGES`; "Create polls" in the interface (ADR-0043). */
+  SEND_POLLS: 1n << 22n,
 } as const;
 
 /** What a channel overwrite may allow or deny (`Permissions::CHANNEL_SCOPED`). */
@@ -858,7 +908,8 @@ export const CHANNEL_SCOPED_PERMISSIONS =
   Permission.CONNECT |
   Permission.SPEAK |
   Permission.USE_SOUNDBOARD |
-  Permission.STREAM;
+  Permission.STREAM |
+  Permission.SEND_POLLS;
 
 export function hasPermission(bits: PermissionBits, permission: bigint): boolean {
   const value = BigInt(bits);

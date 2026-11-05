@@ -341,6 +341,7 @@ mod tests {
             nonce: None,
             attachment_ids: Vec::new(),
             forwarded_from: None,
+            poll: None,
         }
     }
 

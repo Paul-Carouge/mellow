@@ -497,6 +497,7 @@ async fn voice_states_reach_viewers_only_and_leave_or_session_end_remove_them() 
                 nonce: Some("voice-sentinel".into()),
                 attachment_ids: Vec::new(),
                 forwarded_from: None,
+                poll: None,
             },
             now(),
         )

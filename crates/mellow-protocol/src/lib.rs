@@ -25,8 +25,8 @@ pub use direct_messages::{
 pub use gateway::{
     ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS,
     MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_OFFER_BYTES, MAXIMUM_VOICE_RECEIVE_SLOTS,
-    MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, MessageReaction, Presence, PresenceStatus, Ready,
-    ServerFrame, SimulcastLayer, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal,
+    MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, MessageReaction, PollVote, Presence, PresenceStatus,
+    Ready, ServerFrame, SimulcastLayer, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal,
     VoiceState, VoiceVideoRefusal, WatchedCamera,
 };
 pub use gifs::{GifSettings, MAXIMUM_GIF_FAVOURITES};
@@ -44,8 +44,10 @@ pub use guilds::{
 pub use health::{HealthResponse, HealthStatus};
 pub use messages::{
     AcknowledgeRequest, Attachment, ChannelUnread, EditMessageRequest, ForwardOrigin, LinkPreview,
-    LinkPreviewImage, MAXIMUM_COUNTED_UNREAD_MENTIONS, Message, MessageHistoryQuery,
-    ReactionSummary, ReactionUsersQuery, ReadState, SendMessageRequest,
+    LinkPreviewImage, MAXIMUM_COUNTED_UNREAD_MENTIONS, MAXIMUM_POLL_ANSWER_LENGTH,
+    MAXIMUM_POLL_ANSWERS, MAXIMUM_POLL_QUESTION_LENGTH, MINIMUM_POLL_ANSWERS, Message,
+    MessageHistoryQuery, NewPoll, POLL_DURATIONS_IN_HOURS, Poll, PollAnswer, ReactionSummary,
+    ReactionUsersQuery, ReadState, SendMessageRequest,
 };
 pub use permissions::{
     Permissions, compute_channel_permissions, compute_guild_permissions, highest_role_position,

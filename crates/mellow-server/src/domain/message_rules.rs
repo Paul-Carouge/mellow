@@ -1,6 +1,9 @@
 //! Input rules for messages.
 
-use mellow_protocol::Snowflake;
+use mellow_protocol::{
+    MAXIMUM_POLL_ANSWER_LENGTH, MAXIMUM_POLL_ANSWERS, MAXIMUM_POLL_QUESTION_LENGTH,
+    MINIMUM_POLL_ANSWERS, POLL_DURATIONS_IN_HOURS, Snowflake,
+};
 
 use crate::domain::account_rules::is_invisible_format_character;
 
@@ -59,6 +62,14 @@ pub enum MessageRuleViolation {
     ForwardWithItsOwnContent,
     #[error("a forwarded message cannot be edited")]
     ForwardedMessageEdit,
+    #[error(
+        "a poll asks a question of 1 to {MAXIMUM_POLL_QUESTION_LENGTH} characters with {MINIMUM_POLL_ANSWERS} to {MAXIMUM_POLL_ANSWERS} different answers of 1 to {MAXIMUM_POLL_ANSWER_LENGTH} characters, for 1, 4, 8, 24, 72, 168 or 336 hours, and carries no text, files, reply or forward"
+    )]
+    Poll,
+    #[error("a poll cannot be edited or forwarded")]
+    PollChange,
+    #[error("this poll has ended")]
+    PollEnded,
     #[error(transparent)]
     SearchQuery(#[from] crate::domain::search_query::SearchQueryViolation),
 }
@@ -235,6 +246,43 @@ pub fn validate_message_content(content: &str) -> Result<(), MessageRuleViolatio
     }
 }
 
+/// A poll's question and answers, trimmed, once they are within the limits of ADR-0043: visible,
+/// without control or bidirectional characters, answers different from each other (case ignored).
+///
+/// # Errors
+/// `Poll` otherwise.
+pub fn validated_poll(
+    poll: &mellow_protocol::NewPoll,
+) -> Result<(String, Vec<String>), MessageRuleViolation> {
+    let is_valid_text = |text: &str, maximum: usize| {
+        let length = text.chars().count();
+        (1..=maximum).contains(&length)
+            && validate_message_content(text).is_ok()
+            && !text.contains('\n')
+    };
+    let question = poll.question.trim().to_owned();
+    let answers: Vec<String> = poll
+        .answers
+        .iter()
+        .map(|answer| answer.trim().to_owned())
+        .collect();
+    let mut folded: Vec<String> = answers.iter().map(|answer| answer.to_lowercase()).collect();
+    folded.sort_unstable();
+    folded.dedup();
+    let is_valid = is_valid_text(&question, MAXIMUM_POLL_QUESTION_LENGTH)
+        && (MINIMUM_POLL_ANSWERS..=MAXIMUM_POLL_ANSWERS).contains(&answers.len())
+        && folded.len() == answers.len()
+        && answers
+            .iter()
+            .all(|answer| is_valid_text(answer, MAXIMUM_POLL_ANSWER_LENGTH))
+        && POLL_DURATIONS_IN_HOURS.contains(&poll.duration_hours);
+    if is_valid {
+        Ok((question, answers))
+    } else {
+        Err(MessageRuleViolation::Poll)
+    }
+}
+
 /// # Errors
 /// `Nonce` when empty, too long or not printable ASCII.
 pub fn validate_nonce(nonce: &str) -> Result<(), MessageRuleViolation> {
@@ -401,6 +449,49 @@ pub fn reacting_users_page_size(requested: Option<u32>) -> Result<u32, MessageRu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn poll(question: &str, answers: &[&str], duration_hours: u32) -> mellow_protocol::NewPoll {
+        mellow_protocol::NewPoll {
+            question: question.into(),
+            answers: answers.iter().map(|answer| (*answer).into()).collect(),
+            allows_multiple_answers: false,
+            duration_hours,
+        }
+    }
+
+    #[test]
+    fn polls_ask_a_visible_question_with_two_to_ten_different_answers_for_a_set_time() {
+        assert_eq!(
+            validated_poll(&poll("  Lunch? ", &[" Pizza", "Soup "], 24)).unwrap(),
+            (
+                "Lunch?".to_owned(),
+                vec!["Pizza".to_owned(), "Soup".to_owned()]
+            )
+        );
+        let refused = [
+            poll("", &["a", "b"], 24),
+            poll("q", &["only one"], 24),
+            poll("q", &["same", "SAME"], 24),
+            poll("q", &["a", ""], 24),
+            poll("q", &["a", "b"], 5),
+            poll("q", &["a", &"x".repeat(56)], 24),
+            poll(&"q".repeat(301), &["a", "b"], 24),
+            poll("q", &["a", "b\u{202E}"], 24),
+            poll("two\nlines", &["a", "b"], 24),
+            poll(
+                "q",
+                &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"],
+                24,
+            ),
+        ];
+        for poll in refused {
+            assert_eq!(
+                validated_poll(&poll),
+                Err(MessageRuleViolation::Poll),
+                "{poll:?}"
+            );
+        }
+    }
 
     #[test]
     fn content_keeps_formatting_and_emoji_but_rejects_blank_and_control_characters() {
