@@ -544,7 +544,9 @@ const MAXIMUM_BACKUP_AGE_BEFORE_RECOMPRESSION_MILLISECONDS: u64 = 60 * 60 * 1_00
 /// Share of the bytes recompression saves, measured on ADR-0033's 25-picture corpus against what
 /// the lossless pipeline before it stored: attachments 17.4 MiB instead of 32.9 MiB; photo
 /// avatars a tenth of their 512 px lossless size and banners 2.7 MB down to 160 KB; a 256 px logo
-/// icon 16 KB down to 4 KB. A forecast: the real figure depends on the pictures.
+/// icon 16 KB down to 4 KB. Measured at a score of 85: since the 2026-11-05 amendment pictures are
+/// stored at 80, about 20 % smaller, so these forecasts are conservative. A forecast: the real
+/// figure depends on the pictures.
 const EXPECTED_SAVED_PERCENT_OF_ATTACHMENTS: u64 = 47;
 const EXPECTED_SAVED_PERCENT_OF_PROFILE_IMAGES: u64 = 90;
 const EXPECTED_SAVED_PERCENT_OF_ICONS: u64 = 75;

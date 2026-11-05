@@ -57,18 +57,20 @@ fn smaller(best: Option<Encoded>, candidate: Option<Encoded>) -> Option<Encoded>
 }
 
 /// The smallest passing result of `encode_if_passing` over qualities in
-/// `LOWEST_QUALITY..=HIGHEST_QUALITY`: a binary search from `first`, at most
-/// `MAXIMUM_ENCODES_PER_FORMAT` encodes, none started past `deadline`. The best result so far is
-/// kept, so stopping early still answers a valid one.
+/// `lowest..=HIGHEST_QUALITY`: a binary search from `first`, at most `encodes` encodes, none
+/// started past `deadline`. The best result so far is kept, so stopping early still answers a
+/// valid one.
 fn search_quality(
     first: u8,
+    lowest: u8,
+    encodes: usize,
     deadline: Instant,
     mut encode_if_passing: impl FnMut(u8) -> Result<Option<Vec<u8>>, ImageProcessingError>,
 ) -> Result<Option<Vec<u8>>, ImageProcessingError> {
-    let (mut lowest, mut highest) = (LOWEST_QUALITY, HIGHEST_QUALITY);
+    let (mut lowest, mut highest) = (lowest, HIGHEST_QUALITY);
     let mut quality = first;
     let mut best: Option<Vec<u8>> = None;
-    for _ in 0..MAXIMUM_ENCODES_PER_FORMAT {
+    for _ in 0..encodes {
         if Instant::now() >= deadline {
             break;
         }
@@ -93,7 +95,9 @@ fn search_quality(
 /// the lossless candidate when there is one. Bytes shrink as quality falls, so the lowest quality
 /// is probed first: when even it is no smaller than lossless, no quality can win and nothing is
 /// scored; when it passes, nothing smaller exists. A candidate at least as large as the bound is
-/// not scored (scoring is the slow part) and sends the search lower. Every bytes answered passed.
+/// not scored (scoring is the slow part) and sends the search lower. The probe counts as one of
+/// the `MAXIMUM_ENCODES_PER_FORMAT` encodes, and when it fails the search starts above it. Every
+/// bytes answered passed.
 fn smallest_passing_avif<Decoded>(
     lossless_size: Option<usize>,
     deadline: Instant,
@@ -101,6 +105,7 @@ fn smallest_passing_avif<Decoded>(
     mut passes: impl FnMut(&Decoded) -> bool,
 ) -> Result<Option<Vec<u8>>, ImageProcessingError> {
     let is_smaller = |bytes: &[u8]| lossless_size.is_none_or(|bound| bytes.len() < bound);
+    let (mut lowest, mut encodes) = (LOWEST_QUALITY, MAXIMUM_ENCODES_PER_FORMAT);
     if lossless_size.is_some() && Instant::now() < deadline {
         let (bytes, decoded) = encode(LOWEST_QUALITY)?;
         if !is_smaller(&bytes) {
@@ -109,8 +114,9 @@ fn smallest_passing_avif<Decoded>(
         if passes(&decoded) {
             return Ok(Some(bytes));
         }
+        (lowest, encodes) = (LOWEST_QUALITY + 1, MAXIMUM_ENCODES_PER_FORMAT - 1);
     }
-    let best = search_quality(AVIF_FIRST_QUALITY, deadline, |quality| {
+    let best = search_quality(AVIF_FIRST_QUALITY, lowest, encodes, deadline, |quality| {
         let (bytes, decoded) = encode(quality)?;
         if !is_smaller(&bytes) {
             // Answered as passing only to search lower: filtered out below.
@@ -295,10 +301,16 @@ pub(super) fn smallest_animation(
         bytes: lossless_webp(frames)?,
         content_type: WEBP_CONTENT_TYPE,
     };
-    let lossy = search_quality(LOSSY_WEBP_FIRST_QUALITY, deadline, |quality| {
-        let bytes = lossy_webp(frames, quality)?;
-        Ok(animation_passes(frames, &bytes).then_some(bytes))
-    })?
+    let lossy = search_quality(
+        LOSSY_WEBP_FIRST_QUALITY,
+        LOWEST_QUALITY,
+        MAXIMUM_ENCODES_PER_FORMAT,
+        deadline,
+        |quality| {
+            let bytes = lossy_webp(frames, quality)?;
+            Ok(animation_passes(frames, &bytes).then_some(bytes))
+        },
+    )?
     .map(|bytes| Encoded {
         bytes,
         content_type: WEBP_CONTENT_TYPE,
@@ -317,10 +329,16 @@ mod tests {
         let far = Instant::now() + std::time::Duration::from_secs(3_600);
         let mut tried = Vec::new();
         // Passes from 80 up; a lower quality gives fewer bytes.
-        let found = search_quality(AVIF_FIRST_QUALITY, far, |quality| {
-            tried.push(quality);
-            Ok((quality >= 80).then(|| vec![0; usize::from(quality)]))
-        })
+        let found = search_quality(
+            AVIF_FIRST_QUALITY,
+            LOWEST_QUALITY,
+            MAXIMUM_ENCODES_PER_FORMAT,
+            far,
+            |quality| {
+                tried.push(quality);
+                Ok((quality >= 80).then(|| vec![0; usize::from(quality)]))
+            },
+        )
         .unwrap();
         assert_eq!(tried, [88, 73, 80, 76]);
         assert_eq!(
@@ -330,17 +348,27 @@ mod tests {
         );
 
         let mut tried = Vec::new();
-        let none = search_quality(AVIF_FIRST_QUALITY, far, |quality| {
-            tried.push(quality);
-            Ok(None)
-        })
+        let none = search_quality(
+            AVIF_FIRST_QUALITY,
+            LOWEST_QUALITY,
+            MAXIMUM_ENCODES_PER_FORMAT,
+            far,
+            |quality| {
+                tried.push(quality);
+                Ok(None)
+            },
+        )
         .unwrap();
         assert_eq!((none, tried), (None, vec![88, 92, 94, 95]));
 
         let past = Instant::now();
-        let nothing_started = search_quality(AVIF_FIRST_QUALITY, past, |_| {
-            panic!("no encode starts past the deadline")
-        })
+        let nothing_started = search_quality(
+            AVIF_FIRST_QUALITY,
+            LOWEST_QUALITY,
+            MAXIMUM_ENCODES_PER_FORMAT,
+            past,
+            |_| panic!("no encode starts past the deadline"),
+        )
         .unwrap();
         assert_eq!(nothing_started, None);
     }
@@ -380,12 +408,13 @@ mod tests {
         );
         assert_eq!(
             bounded_search(Some(85)),
-            (Some(80), vec![60, 88, 73, 80, 76], vec![60, 73, 80, 76]),
-            "88 is larger than lossless: encoded, never scored"
+            (Some(81), vec![60, 88, 74, 81], vec![60, 74, 81]),
+            "the failed probe is one of four encodes and raises the floor; 88 is larger than \
+             lossless: encoded, never scored"
         );
         assert_eq!(
             bounded_search(Some(80)),
-            (None, vec![60, 88, 73, 80, 76], vec![60, 73, 76]),
+            (None, vec![60, 88, 74, 81], vec![60, 74]),
             "what passes is never smaller than lossless"
         );
     }
