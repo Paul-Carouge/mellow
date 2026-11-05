@@ -26,7 +26,7 @@
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import type { MenuOrigin } from "./menu-placement";
-  import type { ReactionAndPinActions } from "./message-actions";
+  import { type ReactionAndPinActions, hoverBarActions } from "./message-actions";
   import type { MessageEditor } from "./message-editor.svelte";
   import MessageReactions from "./MessageReactions.svelte";
   import { reactionKey } from "../lib/reactions";
@@ -251,7 +251,8 @@
       ? messageMenuActions({
           isOwn,
           isForward: forwardedFrom !== null,
-          isPoll: poll !== null,
+          // Checklists and progress bars follow polls here (ADR-0047).
+          isPoll: poll !== null || isTracker,
           isTracker,
           isPollOpen: poll !== null && !isPollEnded(poll, pollClockNow()),
           hasText: message.content.trim() !== "",
@@ -263,6 +264,43 @@
           canJoinReactions: actions.canJoinReactions,
           canRemoveReactions: actions.canRemoveReactions,
           canManagePins: actions.canManagePins,
+        })
+      : [],
+  );
+  // Shift held over the row with a mouse brings Delete into the bar, as on Discord. Only a row
+  // under the pointer listens, so the whole list does not.
+  let actionBar = $state<HTMLElement | null>(null);
+  let isShiftHeld = $state(false);
+  $effect(() => {
+    if (!isPointerOver) {
+      return;
+    }
+    // Not while focus is in the bar: there Shift is for Shift+Tab, and a button appearing then
+    // vanishing under focus would drop it to the page (keyboard users keep Delete in More).
+    const noteShift = (event: KeyboardEvent) =>
+      (isShiftHeld = event.shiftKey && !actionBar?.contains(document.activeElement));
+    const forgetShift = () => (isShiftHeld = false);
+    window.addEventListener("keydown", noteShift);
+    window.addEventListener("keyup", noteShift);
+    window.addEventListener("blur", forgetShift);
+    return () => {
+      window.removeEventListener("keydown", noteShift);
+      window.removeEventListener("keyup", noteShift);
+      window.removeEventListener("blur", forgetShift);
+    };
+  });
+  const hoverBar = $derived(
+    message
+      ? hoverBarActions({
+          isOwn,
+          isForward: forwardedFrom !== null,
+          // Checklists and progress bars follow polls here (ADR-0047).
+          isPoll: poll !== null || isTracker,
+          hasText: message.content.trim() !== "",
+          canSendMessages,
+          canManageMessages,
+          isShiftHeld: isPointerOver && isShiftHeld,
+          hasMenu: menuLines.length > 0,
         })
       : [],
   );
@@ -351,7 +389,10 @@
     onfocusrow();
   }}
   onfocusout={(event) => (hasFocusWithin = event.currentTarget.contains(event.relatedTarget as Node | null))}
-  onpointerenter={() => (isPointerOver = true)}
+  onpointerenter={(event) => {
+    isPointerOver = true;
+    isShiftHeld = event.shiftKey;
+  }}
   onpointerleave={(event) => {
     if (event.pointerType !== "touch") {
       isPointerOver = false;
@@ -597,11 +638,15 @@
     <!-- Hidden until the row is hovered or holds focus; hidden controls leave the Tab order. Its
          picker or menu open, it stays, so focus can come back to the button that opened them. -->
     <div
+      bind:this={actionBar}
       role="toolbar"
       aria-label={strings.messages.actions}
       class={[
         "invisible absolute top-(--mw-component-action-bar-offset-top) right-(--mw-component-action-bar-offset-trailing) z-10 flex rounded-(--mw-component-action-bar-radius) border border-(--mw-component-action-bar-border) bg-(--mw-component-action-bar-background) shadow-(--mw-component-action-bar-shadow) group-focus-within:visible group-hover:visible",
         (isMenuOpen || actions.heldMessageId === message.id) && "visible",
+        // On a touch screen the menu covers the message (a sheet on phones): the bar would only
+        // sit under it. Focus goes back to the message instead.
+        isMenuOpen && "pointer-coarse:invisible!",
       ]}
     >
       {#if actions.canAddReactions}
@@ -628,44 +673,42 @@
           onclick={(event) => pickerToggle.shouldOpenOnClick() && actions.openPicker(message, event.currentTarget)}
         />
       {/if}
-      {#if isOwn && canSendMessages && forwardedFrom === null && poll === null && !isTracker}
-        <IconButton icon="pencil-simple" label={strings.common.edit} class={buttonClass} {iconClass} onclick={() => onstartedit(message)} />
-      {/if}
-      {#if canSendMessages}
-        <IconButton icon="arrow-bend-up-left" label={strings.messages.reply} class={buttonClass} {iconClass} onclick={() => onreply(message)} />
-      {/if}
-      <!-- A poll, checklist or progress bar is neither forwarded nor copied as text (ADR-0043, ADR-0047). -->
-      {#if poll === null && !isTracker}
-        <IconButton icon="arrow-bend-up-right" label={strings.forward.forward} class={buttonClass} {iconClass} onclick={() => onforward(message)} />
-        <IconButton icon="copy" label={strings.messages.copyText} class={buttonClass} {iconClass} onclick={() => oncopy(message.content)} />
-      {/if}
-      {#if isOwn || canManageMessages}
-        <IconButton
-          icon="trash"
-          label={strings.common.delete}
-          class={[buttonClass, "hover:text-(--mw-component-action-bar-icon-danger-hover)"].join(" ")}
-          {iconClass}
-          onclick={(event) => ondelete(message, event.shiftKey)}
-        />
-      {/if}
-      {#if menuLines.length > 0}
-        <IconButton
-          bind:element={moreButton}
-          icon="dots-three"
-          label={strings.messages.more}
-          aria-haspopup="menu"
-          aria-expanded={isMenuOpen}
-          class={buttonClass}
-          {iconClass}
-          onpointerdown={menuToggle.notePress}
-          onclick={(event) => {
-            const button = event.currentTarget;
-            if (menuToggle.shouldOpenOnClick()) {
-              onopenmenu(message, menuLines, { kind: "anchor", bounds: button.getBoundingClientRect(), align: "end" }, button);
-            }
-          }}
-        />
-      {/if}
+      {#each hoverBar as action (action)}
+        {#if action === "edit"}
+          <IconButton icon="pencil-simple" label={strings.common.edit} class={buttonClass} {iconClass} onclick={() => onstartedit(message)} />
+        {:else if action === "reply"}
+          <IconButton icon="arrow-bend-up-left" label={strings.messages.reply} class={buttonClass} {iconClass} onclick={() => onreply(message)} />
+        {:else if action === "forward"}
+          <IconButton icon="arrow-bend-up-right" label={strings.forward.forward} class={buttonClass} {iconClass} onclick={() => onforward(message)} />
+        {:else if action === "copy-text"}
+          <IconButton icon="copy" label={strings.messages.copyText} class={buttonClass} {iconClass} onclick={() => oncopy(message.content)} />
+        {:else if action === "delete"}
+          <IconButton
+            icon="trash"
+            label={strings.common.delete}
+            class={[buttonClass, "hover:text-(--mw-component-action-bar-icon-danger-hover)"].join(" ")}
+            {iconClass}
+            onclick={(event) => ondelete(message, event.shiftKey)}
+          />
+        {:else if action === "more"}
+          <IconButton
+            bind:element={moreButton}
+            icon="dots-three"
+            label={strings.messages.more}
+            aria-haspopup="menu"
+            aria-expanded={isMenuOpen}
+            class={buttonClass}
+            {iconClass}
+            onpointerdown={menuToggle.notePress}
+            onclick={(event) => {
+              const button = event.currentTarget;
+              if (menuToggle.shouldOpenOnClick()) {
+                onopenmenu(message, menuLines, { kind: "anchor", bounds: button.getBoundingClientRect(), align: "end" }, button);
+              }
+            }}
+          />
+        {/if}
+      {/each}
     </div>
 
   {/if}
