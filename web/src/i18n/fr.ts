@@ -884,6 +884,7 @@ export const fr: Catalogue = {
     filesToSend: "Fichiers à envoyer",
     uploading: "Envoi…",
     remove: (fileName) => `Retirer ${fileName}`,
+    retry: (fileName) => `Réessayer d’envoyer ${fileName}`,
   },
 
   deleteMessage: {

@@ -49,6 +49,7 @@ export class ComposerDrafts {
       status: "uploading",
       attachment: null,
       error: "",
+      uploadAbort: new AbortController(),
     });
     // `push` stored a proxy of the literal, not the literal itself.
     const item = this.trayItems.at(-1);
@@ -58,27 +59,36 @@ export class ComposerDrafts {
     return item;
   }
 
+  /** Sets a failed file uploading again, with a fresh abort for its new request. */
+  restartUpload(item: AttachmentTrayItem): void {
+    item.status = "uploading";
+    item.error = "";
+    item.uploadAbort = new AbortController();
+  }
+
   removeTrayItem(key: number): void {
-    revokePreviews(this.trayItems.filter((item) => item.key === key));
+    letGo(this.trayItems.filter((item) => item.key === key));
     this.trayItems = this.trayItems.filter((item) => item.key !== key);
   }
 
   clearTray(): void {
-    revokePreviews(this.trayItems);
+    letGo(this.trayItems);
     this.trayItems = [];
   }
 
-  /** Frees every preview, the open channel's and the ones aside; for when the chat goes away. */
+  /** Stops every upload and frees every preview, open and aside; for when the chat goes away. */
   dispose(): void {
-    revokePreviews(this.trayItems);
+    letGo(this.trayItems);
     for (const draft of this.#draftsAside.values()) {
-      revokePreviews(draft.trayItems);
+      letGo(draft.trayItems);
     }
   }
 }
 
-function revokePreviews(items: readonly AttachmentTrayItem[]): void {
+/** Items leaving the tray: their uploads stop and their previews are freed. */
+function letGo(items: readonly AttachmentTrayItem[]): void {
   for (const item of items) {
+    item.uploadAbort.abort();
     if (item.previewUrl) {
       URL.revokeObjectURL(item.previewUrl);
     }

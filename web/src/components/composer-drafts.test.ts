@@ -130,4 +130,45 @@ describe("ComposerDrafts", () => {
 
     expect([...revokedPreviews].sort()).toEqual(["blob:preview-0", "blob:preview-1"]);
   });
+
+  it("aborts the upload of a removed file and leaves the others running", () => {
+    const drafts = new ComposerDrafts();
+    drafts.open(GENERAL);
+    const removed = drafts.attach(imageFile("one.png"));
+    const kept = drafts.attach(imageFile("two.png"));
+    const removedSignal = removed.uploadAbort.signal;
+
+    drafts.removeTrayItem(removed.key);
+
+    expect(removedSignal.aborted).toBe(true);
+    expect(kept.uploadAbort.signal.aborted).toBe(false);
+  });
+
+  it("aborts the open tray's uploads when cleared, and every upload when disposed", () => {
+    const drafts = new ComposerDrafts();
+    drafts.open(GENERAL);
+    const aside = drafts.attach(imageFile("aside.png")).uploadAbort.signal;
+    drafts.open(RANDOM);
+    const cleared = drafts.attach(imageFile("cleared.png")).uploadAbort.signal;
+
+    drafts.clearTray();
+    expect([cleared.aborted, aside.aborted]).toEqual([true, false]);
+
+    const open = drafts.attach(imageFile("open.png")).uploadAbort.signal;
+    drafts.dispose();
+    expect([open.aborted, aside.aborted]).toEqual([true, true]);
+  });
+
+  it("starts a failed file over with a fresh upload", () => {
+    const drafts = new ComposerDrafts();
+    drafts.open(GENERAL);
+    const item = drafts.attach(imageFile("cat.png"));
+    item.uploadAbort.abort();
+    item.status = "failed";
+    item.error = "Couldn't upload cat.png";
+
+    drafts.restartUpload(item);
+
+    expect([item.status, item.error, item.uploadAbort.signal.aborted]).toEqual(["uploading", "", false]);
+  });
 });
