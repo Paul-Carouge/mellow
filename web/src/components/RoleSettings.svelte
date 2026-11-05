@@ -17,6 +17,7 @@
     type RoleDraft,
     type RoleEdit,
     canManageRole,
+    canMoveAnyRole,
     canTogglePermission,
     draftOf,
     isRoleEditPending,
@@ -52,6 +53,8 @@
 
   const id = $props.id();
   const manager = $derived(roleManagerOf(guild, client.user?.id));
+  /** The move shortcuts always describe the list; they show only while a move is possible. */
+  const isMoveHintShown = $derived(canMoveAnyRole(guild, manager));
   const roles = $derived(rolesHighestFirst(guild));
   const members = $derived(client.membersByGuild.get(guild.id) ?? []);
 
@@ -335,7 +338,10 @@
           </li>
         {/each}
       </ul>
-      <p id="{id}-move-hint" class="mt-(--mw-component-settings-section-label-gap) type-body-sm text-(--mw-component-roles-note-text)">
+      <p
+        id="{id}-move-hint"
+        class={isMoveHintShown ? "mt-(--mw-component-settings-section-label-gap) type-body-sm text-(--mw-component-roles-note-text)" : "sr-only"}
+      >
         {strings.serverSettings.roles.moveHint}
       </p>
     </div>

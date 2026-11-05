@@ -162,6 +162,11 @@ export function roleIdsAfterMove(
   return named.map((candidate) => candidate.id);
 }
 
+/** Whether any two neighbouring roles may swap, so the move shortcuts are worth a visible hint. */
+export function canMoveAnyRole(guild: Guild, manager: RoleManager): boolean {
+  return guild.roles.some((role) => roleIdsAfterMove(guild, manager, role.id, "up") !== null);
+}
+
 function compareIds(left: Snowflake, right: Snowflake): number {
   const difference = BigInt(left) - BigInt(right);
   return difference === 0n ? 0 : difference < 0n ? -1 : 1;
