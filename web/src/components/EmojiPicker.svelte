@@ -11,7 +11,9 @@
   import { nextEmojiCell, sectionAtScrollTop } from "./emoji-grid";
   import Icon, { type IconName } from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import { anchorEdgesOf, popoverPositionBesideAnchor } from "./popover-placement";
   import { recentEmoji } from "./recent-emoji.svelte";
+  import { lengthTokenInPixels } from "./tokens";
 
   // The emoji picker (DESIGN.md §6.52): search first, then a bar of categories, then the recently
   // used, the open server's own emoji (§6.58) and the built-in set by category. One Tab stop each for the bar and the emoji; arrows move
@@ -98,17 +100,13 @@
     search?.focus();
   });
 
-  /** Beside the button, inside the window: below it when there is room, else above. */
+  /** Beside the button, a gap away, inside the window: below it when there is room, else above. */
   function place() {
     if (isCompact) {
       return;
     }
-    const anchorBounds = anchor.getBoundingClientRect();
-    const panelBounds = panel.getBoundingClientRect();
-    const fitsBelow = anchorBounds.bottom + panelBounds.height <= window.innerHeight;
-    const top = fitsBelow ? anchorBounds.bottom : Math.max(anchorBounds.top - panelBounds.height, 0);
-    const left = Math.min(Math.max(anchorBounds.right - panelBounds.width, 0), window.innerWidth - panelBounds.width);
-    position = { top, left: Math.max(left, 0) };
+    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    position = popoverPositionBesideAnchor(anchorEdgesOf(anchor), panel.getBoundingClientRect(), viewport, lengthTokenInPixels("component-emoji-picker-gap"));
   }
 
   function cells(): HTMLButtonElement[] {
