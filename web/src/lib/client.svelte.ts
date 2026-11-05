@@ -23,6 +23,7 @@ import { newestTracker, withItemTick } from "./checklists";
 import { ownVoteChangesForChoice, withPollVote } from "./polls";
 import { type MentionReader, doesMessageMentionReader } from "./reader-mentions";
 import { Relationships } from "./relationships.svelte";
+import type { TwoFactorChallenge } from "./protocol";
 import {
   type Attachment,
   type Channel,
@@ -398,8 +399,19 @@ export class MellowClient {
     this.connect();
   }
 
-  async signIn(login: string, password: string): Promise<void> {
-    this.user = (await this.rest.login(login, password)).user;
+  /** Signs in, or returns the challenge whose code `completeTwoFactorSignIn` sends (ADR-0049). */
+  async signIn(login: string, password: string): Promise<TwoFactorChallenge | null> {
+    const answer = await this.rest.login(login, password);
+    if ("two_factor_token" in answer) {
+      return answer;
+    }
+    this.user = answer.user;
+    this.connect();
+    return null;
+  }
+
+  async completeTwoFactorSignIn(challenge: TwoFactorChallenge, code: string): Promise<void> {
+    this.user = (await this.rest.completeTwoFactorSignIn(challenge.two_factor_token, code)).user;
     this.connect();
   }
 

@@ -40,6 +40,7 @@ import {
   type SoundboardSound,
   reactionsPath,
 } from "./protocol";
+import type { TwoFactorChallenge, TwoFactorEnrolment, TwoFactorRecoveryCodes, TwoFactorStatus } from "./protocol";
 
 export const HISTORY_PAGE_SIZE = 50;
 /** The largest history page the instance gives (`MAXIMUM_HISTORY_PAGE_SIZE` on the server). */
@@ -133,12 +134,39 @@ export class RestClient {
     return (await response.json()) as T;
   }
 
-  login(login: string, password: string): Promise<SessionCreated> {
-    return this.request<SessionCreated>("POST", "auth/login", {
+  /** A challenge instead of a session when the account has two-factor sign-in on (ADR-0049). */
+  login(login: string, password: string): Promise<SessionCreated | TwoFactorChallenge> {
+    return this.request("POST", "auth/login", {
       login,
       password,
       device_name: DEVICE_NAME,
     });
+  }
+
+  /** The second sign-in step: a code from the authenticator app, or a recovery code. */
+  completeTwoFactorSignIn(twoFactorToken: string, code: string): Promise<SessionCreated> {
+    return this.request("POST", "auth/login/two-factor", { two_factor_token: twoFactorToken, code });
+  }
+
+  twoFactorStatus(): Promise<TwoFactorStatus> {
+    return this.request("GET", "users/@me/two-factor");
+  }
+
+  /** A new secret; two-factor sign-in turns on only once `enableTwoFactor` confirms a code. */
+  startTwoFactorEnrolment(currentPassword: string): Promise<TwoFactorEnrolment> {
+    return this.request("POST", "users/@me/two-factor/enrolment", { current_password: currentPassword });
+  }
+
+  enableTwoFactor(code: string): Promise<TwoFactorRecoveryCodes> {
+    return this.request("POST", "users/@me/two-factor/enable", { code });
+  }
+
+  disableTwoFactor(currentPassword: string, code: string): Promise<void> {
+    return this.request("POST", "users/@me/two-factor/disable", { current_password: currentPassword, code });
+  }
+
+  regenerateRecoveryCodes(currentPassword: string, code: string): Promise<TwoFactorRecoveryCodes> {
+    return this.request("POST", "users/@me/two-factor/recovery-codes", { current_password: currentPassword, code });
   }
 
   register(username: string, email: string, password: string): Promise<SessionCreated> {

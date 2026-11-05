@@ -9,6 +9,7 @@
   import IconButton from "./IconButton.svelte";
   import NotificationSettings from "./NotificationSettings.svelte";
   import ProfileSettings from "./ProfileSettings.svelte";
+  import SecuritySettings from "./SecuritySettings.svelte";
   import VoiceSettings from "./VoiceSettings.svelte";
 
   // User settings (DESIGN.md §5.8 layout, §5.9 sections), over the whole window as on desktop: a
@@ -24,10 +25,11 @@
 
   let { client, isWide, onclose }: Props = $props();
 
-  type Section = "account" | "profile" | "accessibility" | "voice" | "notifications" | "about";
+  type Section = "account" | "profile" | "security" | "accessibility" | "voice" | "notifications" | "about";
   const SECTION_TITLES: Record<Section, string> = {
     account: strings.settings.myAccount,
     profile: strings.settings.profile,
+    security: strings.security.title,
     accessibility: strings.settings.accessibility,
     voice: strings.settings.voice,
     notifications: strings.settings.notifications,
@@ -39,6 +41,7 @@
   const id = $props.id();
   let dialog: HTMLDialogElement;
   let accountSettings = $state<{ closeOpenForm: () => boolean } | null>(null);
+  let securitySettings = $state<{ closeOpenForm: () => boolean } | null>(null);
   let pageHeading = $state<HTMLElement | null>(null);
   let section = $state<Section>("account");
   let isSectionShownOnPhone = $state(false);
@@ -154,7 +157,7 @@
     // Handled here rather than in `cancel`, which browsers stop honouring after repeated Esc.
     if (event.key === "Escape") {
       event.preventDefault();
-      if (!accountSettings?.closeOpenForm()) {
+      if (!accountSettings?.closeOpenForm() && !securitySettings?.closeOpenForm()) {
         onclose();
       }
     }
@@ -187,7 +190,7 @@
               : "px-(--mw-component-settings-content-padding-inline-narrow) py-xs",
           ]}
         >
-          {@render navGroup(strings.settings.userSettings, ["account", "profile"])}
+          {@render navGroup(strings.settings.userSettings, ["account", "profile", "security"])}
           {@render separator()}
           {@render navGroup(strings.settings.appSettings, ["accessibility", "voice", "notifications", "about"])}
           {@render separator()}
@@ -249,6 +252,8 @@
               <AccountSettings bind:this={accountSettings} {client} />
             {:else if section === "profile"}
               <ProfileSettings {client} />
+            {:else if section === "security"}
+              <SecuritySettings bind:this={securitySettings} {client} />
             {:else if section === "accessibility"}
               <AccessibilitySettings />
             {:else if section === "voice"}
