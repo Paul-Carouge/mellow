@@ -22,6 +22,9 @@
       document.activeElement instanceof HTMLElement && document.activeElement !== document.body
         ? document.activeElement
         : null;
+    // Opened by a tap or a click, the drawer gives focus back without the keyboard's ring, which
+    // would be noise on a phone; opened from the keyboard, the ring shows where focus went.
+    const wasOpenedFromKeyboard = opener?.matches(":focus-visible") ?? false;
     dialog.showModal();
     // The current channel takes focus, so the reader starts where they are, not on the first icon.
     const current = [...dialog.querySelectorAll<HTMLElement>("[aria-current=page]")].at(-1);
@@ -29,7 +32,9 @@
     return () => {
       dialog.close();
       if (opener?.isConnected && !dialog.contains(document.activeElement)) {
-        opener.focus();
+        // `focusVisible` (HTML FocusOptions) is not in TypeScript's DOM types yet.
+        const focusOptions: FocusOptions & { focusVisible: boolean } = { focusVisible: wasOpenedFromKeyboard };
+        opener.focus(focusOptions);
       }
     };
   });
