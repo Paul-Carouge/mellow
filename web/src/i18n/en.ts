@@ -121,6 +121,10 @@ export const en = {
   connection: {
     connecting: "Connecting…",
     reconnecting: "Connection lost. Reconnecting…",
+    stillReconnecting: "Still trying to reconnect. Messages you send will wait until you're back.",
+    retryNow: "Retry now",
+    offline: "You're offline. Showing saved messages.",
+    backOnline: "Back online",
   },
 
   time: {
