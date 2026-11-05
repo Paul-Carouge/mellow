@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { LinkPreview } from "../lib/protocol";
 import {
+  clockDurationLabel,
+  durationParts,
   knownLinkEmbedOf,
   linkHostName,
   linkPreviewBarColor,
@@ -121,6 +123,18 @@ describe("linkPreviewLayout", () => {
     expect(linkPreviewLayout(ARTICLE, VIDEO)).toBe("youtube");
   });
 
+  it("gives a YouTube Music track its card when the instance named its artist (ADR-0044)", () => {
+    const track: LinkPreview = {
+      ...ARTICLE,
+      url: "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+      embed: { kind: "youtube_music_track", video_id: "dQw4w9WgXcQ", artist: "Noëlle Dupuis" },
+    };
+    expect(linkPreviewLayout(track, VIDEO, knownLinkEmbedOf(track))).toBe("youtube-music");
+    expect(linkPreviewLayout(track, VIDEO, null)).toBe("youtube");
+    const otherTrack = knownLinkEmbedOf({ ...track, embed: { ...track.embed, video_id: "a_b-C1d2E3f" } as LinkPreview["embed"] });
+    expect(linkPreviewLayout(track, VIDEO, otherTrack)).toBe("youtube");
+  });
+
   it("never links anywhere but http(s)", () => {
     expect(linkPreviewLayout({ ...ARTICLE, url: "javascript:alert(1)" }, null)).toBe("none");
   });
@@ -202,6 +216,30 @@ describe("linkPreviewBarColor", () => {
     expect(linkPreviewBarColor(-1)).toBeNull();
     expect(linkPreviewBarColor(0x1000000)).toBeNull();
     expect(linkPreviewBarColor(1.5)).toBeNull();
+  });
+
+  it("falls back to the token for a white or near-white page background", () => {
+    expect(linkPreviewBarColor(0xffffff)).toBeNull();
+    expect(linkPreviewBarColor(0xf9f9f9)).toBeNull();
+    expect(linkPreviewBarColor(0xff0000)).toBe("#ff0000");
+    expect(linkPreviewBarColor(0xcccccc)).toBe("#cccccc");
+  });
+});
+
+describe("clockDurationLabel and durationParts", () => {
+  it.each([
+    [5, "0:05"],
+    [90, "1:30"],
+    [600, "10:00"],
+    [3723, "1:02:03"],
+    [86400, "24:00:00"],
+  ])("writes %i seconds as %s", (seconds, label) => {
+    expect(clockDurationLabel(seconds)).toBe(label);
+  });
+
+  it("splits a duration into whole hours, minutes and seconds", () => {
+    expect(durationParts(3723)).toEqual({ hours: 1, minutes: 2, seconds: 3 });
+    expect(durationParts(90)).toEqual({ hours: 0, minutes: 1, seconds: 30 });
   });
 });
 

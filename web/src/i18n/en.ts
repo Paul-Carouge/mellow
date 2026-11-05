@@ -881,7 +881,26 @@ export const en = {
 
   linkPreviews: {
     playYouTubeVideo: (title: string) => `Play YouTube video: ${title}`,
+    playYouTubeShort: (title: string) => `Play YouTube Short: ${title}`,
+    /** Added to the play key's name when the link starts the video later: ", starting at 1 minute 30 seconds". */
+    startingAt: (spokenTime: string) => `, starting at ${spokenTime}`,
+    spokenDuration: (hours: number, minutes: number, seconds: number) =>
+      [
+        hours > 0 && `${count(hours)} ${plural(hours, { one: "hour", other: "hours" })}`,
+        minutes > 0 && `${count(minutes)} ${plural(minutes, { one: "minute", other: "minutes" })}`,
+        seconds > 0 && `${count(seconds)} ${plural(seconds, { one: "second", other: "seconds" })}`,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    startsAt: (time: string) => `Starts at ${time}`,
     youTubePlayer: (title: string) => `YouTube video: ${title}`,
+    closePlayer: "Close player",
+    offlinePlayer: "You're offline, so the player can't load.",
+    listen: "Listen",
+    hidePlayer: "Hide player",
+    listenOn: (title: string, artist: string, service: string) => `Listen to ${title} by ${artist} on ${service}`,
+    loadsPlayer: (service: string) => `Loads ${service}'s player`,
+    playerTitle: (service: string, title: string) => `${service} player: ${title}`,
     pictureFrom: (hostName: string) => `Picture from ${hostName}`,
   },
 

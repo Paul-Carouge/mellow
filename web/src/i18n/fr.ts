@@ -855,7 +855,25 @@ export const fr: Catalogue = {
 
   linkPreviews: {
     playYouTubeVideo: (title) => `Lire la vidéo YouTube${NO_BREAK_SPACE}: ${title}`,
+    playYouTubeShort: (title) => `Lire le Short YouTube${NO_BREAK_SPACE}: ${title}`,
+    startingAt: (spokenTime) => `, à partir de ${spokenTime}`,
+    spokenDuration: (hours, minutes, seconds) =>
+      [
+        hours > 0 && `${count(hours)}${NO_BREAK_SPACE}h`,
+        minutes > 0 && `${count(minutes)}${NO_BREAK_SPACE}min`,
+        seconds > 0 && `${count(seconds)}${NO_BREAK_SPACE}s`,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    startsAt: (time) => `Commence à ${time}`,
     youTubePlayer: (title) => `Vidéo YouTube${NO_BREAK_SPACE}: ${title}`,
+    closePlayer: "Fermer le lecteur",
+    offlinePlayer: `Hors ligne${NO_BREAK_SPACE}: le lecteur ne peut pas se charger.`,
+    listen: "Écouter",
+    hidePlayer: "Masquer le lecteur",
+    listenOn: (title, artist, service) => `Écouter ${title} de ${artist} sur ${service}`,
+    loadsPlayer: (service) => `Charge le lecteur de ${service}`,
+    playerTitle: (service, title) => `Lecteur ${service}${NO_BREAK_SPACE}: ${title}`,
     pictureFrom: (hostName) => `Image de ${hostName}`,
   },
 

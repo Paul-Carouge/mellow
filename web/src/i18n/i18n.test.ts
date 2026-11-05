@@ -112,3 +112,11 @@ describe("catalogues", () => {
     expect(fr.common.withMentions("général", 100)).toBe("général, 99+ mentions");
   });
 });
+
+describe("linkPreviews.spokenDuration", () => {
+  it("says a video's start time in words, leaving out zero parts", () => {
+    expect(en.linkPreviews.spokenDuration(0, 1, 30)).toBe("1 minute 30 seconds");
+    expect(en.linkPreviews.spokenDuration(1, 0, 1)).toBe("1 hour 1 second");
+    expect(fr.linkPreviews.spokenDuration(1, 2, 3)).toBe("1 h 2 min 3 s");
+  });
+});
