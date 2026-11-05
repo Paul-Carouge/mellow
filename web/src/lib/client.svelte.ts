@@ -19,6 +19,7 @@ import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
 import { CustomEmojiLibrary } from "./custom-emoji-library.svelte";
 import { reactionKey, withEmojiFrom, withReactionAdded, withReactionRemoved, withoutEmoji } from "./reactions";
+import { newestTracker, withItemTick } from "./checklists";
 import { ownVoteChangesForChoice, withPollVote } from "./polls";
 import { type MentionReader, doesMessageMentionReader } from "./reader-mentions";
 import { Relationships } from "./relationships.svelte";
@@ -27,6 +28,7 @@ import {
   type Channel,
   type ChannelKind,
   type ChannelPlacement,
+  type Checklist,
   type ClientFrame,
   type GifSettings,
   type ChosenStatus,
@@ -41,11 +43,14 @@ import {
   type Message,
   type MessageSearchQuery,
   type MessageSearchResults,
+  type NewChecklist,
   type NewPoll,
+  type NewProgressBar,
   type PermissionBits,
   type PermissionOverwrite,
   type Presence,
   type PresenceStatus,
+  type ProgressBar,
   type PublicUser,
   type ReactionSummary,
   type Ready,
@@ -105,6 +110,9 @@ export interface PendingMessage {
   attachments: Attachment[];
   /** A poll goes alone: no text, files or reply (ADR-0043). */
   poll: NewPoll | null;
+  /** A checklist or a progress bar goes alone too (ADR-0047). */
+  checklist?: NewChecklist;
+  progressBar?: NewProgressBar;
   status: "sending" | "failed";
   /** Why the last attempt failed, shown under "Not sent."; absent while sending. */
   failureReason?: string;
@@ -212,6 +220,8 @@ export class MellowClient {
   private reactionsInFlight = new Set<string>();
   /** The polls (by message id) whose vote change from this user is still on its way. */
   private pollVotesInFlight = new Set<Snowflake>();
+  /** The checklist items (`messageId:itemId`) whose tick from this user is still on its way. */
+  private checklistTicksInFlight = new Set<string>();
   /** Channels whose pins changed while their list was loading: asked again once it arrives. */
   private pinsChangedWhileLoading = new Set<Snowflake>();
   /** Servers whose members changed while their list was loading: asked again once it arrives. */
@@ -678,6 +688,9 @@ export class MellowClient {
                             updated.poll.ended_at_unix_milliseconds ?? message.poll.ended_at_unix_milliseconds,
                         }
                       : updated.poll,
+                  // Keeps the newer copy: a pin's update may have read them before a tick.
+                  checklist: newestTracker(message.checklist, updated.checklist),
+                  progress_bar: newestTracker(message.progress_bar, updated.progress_bar),
                   link_previews:
                     (message.edited_at_unix_milliseconds ?? 0) < (updated.edited_at_unix_milliseconds ?? 0)
                       ? updated.link_previews
@@ -839,10 +852,16 @@ export class MellowClient {
       case "RELATIONSHIP_REMOVE":
         this.relationships.forget(event.data.user_id);
         return;
-      case "MESSAGE_CHECKLIST_UPDATE":
-      case "MESSAGE_PROGRESS_BAR_UPDATE":
-        // The web client shows checklists and progress bars in a later change.
+      case "MESSAGE_CHECKLIST_UPDATE": {
+        const { channel_id, message_id, checklist } = event.data;
+        this.applyChecklist(channel_id, message_id, checklist);
         return;
+      }
+      case "MESSAGE_PROGRESS_BAR_UPDATE": {
+        const { channel_id, message_id, progress_bar } = event.data;
+        this.applyProgressBar(channel_id, message_id, progress_bar);
+        return;
+      }
       case "MESSAGE_POLL_VOTE_ADD":
       case "MESSAGE_POLL_VOTE_REMOVE": {
         const { channel_id, message_id, answer_id, user_id } = event.data;
@@ -1616,7 +1635,22 @@ export class MellowClient {
   }
 
   /** A poll in the open channel (ADR-0043), through the outbox like any message. */
-  async sendPoll(poll: NewPoll): Promise<void> {
+  sendPoll(poll: NewPoll): Promise<void> {
+    return this.sendAlone({ poll });
+  }
+
+  /** A checklist in the open channel (ADR-0047), through the outbox like any message. */
+  sendChecklist(checklist: NewChecklist): Promise<void> {
+    return this.sendAlone({ poll: null, checklist });
+  }
+
+  /** A progress bar in the open channel (ADR-0047), through the outbox like any message. */
+  sendProgressBar(progressBar: NewProgressBar): Promise<void> {
+    return this.sendAlone({ poll: null, progressBar });
+  }
+
+  /** A message of one poll, checklist or progress bar, without text, files or reply. */
+  private async sendAlone(what: Pick<PendingMessage, "poll" | "checklist" | "progressBar">): Promise<void> {
     const channelId = this.selectedChannelId;
     if (!channelId) {
       return;
@@ -1627,7 +1661,7 @@ export class MellowClient {
       content: "",
       replyToId: null,
       attachments: [],
-      poll,
+      ...what,
       status: "sending",
     };
     this.pendingMessages = [...this.pendingMessages, pending];
@@ -1660,6 +1694,8 @@ export class MellowClient {
         pending.replyToId,
         pending.attachments.map((attachment) => attachment.id),
         pending.poll,
+        pending.checklist ?? null,
+        pending.progressBar ?? null,
       );
       this.pendingMessages = this.pendingMessages.filter((candidate) => candidate.nonce !== pending.nonce);
       this.takeInSentMessage(message);
@@ -1934,6 +1970,90 @@ export class MellowClient {
       this.reportError(error, "reload message");
       return false;
     }
+  }
+
+  // --- Checklists and progress bars (ADR-0047) ---------------------------------------------------
+
+  /**
+   * Ticks or unticks an item for the user: shown at once (with the user as who ticked it), then the
+   * instance's answer replaces it. Undone only when the instance refuses (an `ApiError` with a
+   * status) and nothing newer came meanwhile; a lost answer may hide a kept tick, so the instance's
+   * copy settles it. A click while the item's previous tick is on its way is ignored.
+   */
+  async toggleChecklistItem(channelId: Snowflake, messageId: Snowflake, itemId: number): Promise<void> {
+    const flightKey = `${messageId}:${itemId}`;
+    const before = this.cachedMessageAnywhere(channelId, messageId)?.checklist;
+    const item = before?.items.find((candidate) => candidate.id === itemId);
+    if (!before || !item || !this.user || this.checklistTicksInFlight.has(flightKey)) {
+      return;
+    }
+    const isTicking = item.checked === undefined;
+    const setLocally = (tick: typeof item.checked) =>
+      this.updateCachedMessage(channelId, messageId, (message) =>
+        message.checklist ? { ...message, checklist: withItemTick(message.checklist, itemId, tick) } : message,
+      );
+    this.checklistTicksInFlight.add(flightKey);
+    setLocally(isTicking ? { user_id: this.user.id, at_unix_milliseconds: Date.now() } : undefined);
+    try {
+      const checklist = await this.rest.setChecklistItemTicked(channelId, messageId, itemId, isTicking);
+      this.applyChecklist(channelId, messageId, checklist);
+    } catch (error) {
+      const isSettled =
+        !(error instanceof ApiError && error.status !== 0) &&
+        (await this.settleFromInstanceCopy(channelId, messageId, (cached, stored) => ({
+          ...cached,
+          // The instance's copy wins even at the same revision: the cached one holds the guess.
+          checklist:
+            stored.checklist && cached.checklist && stored.checklist.revision >= cached.checklist.revision
+              ? stored.checklist
+              : cached.checklist,
+        })));
+      const now = this.cachedMessageAnywhere(channelId, messageId)?.checklist;
+      if (!isSettled && now?.revision === before.revision) {
+        setLocally(item.checked);
+      }
+      this.reportError(error, "tick checklist item");
+      throw error;
+    } finally {
+      this.checklistTicksInFlight.delete(flightKey);
+    }
+  }
+
+  async addChecklistItem(channelId: Snowflake, messageId: Snowflake, text: string): Promise<void> {
+    this.applyChecklist(channelId, messageId, await this.rest.addChecklistItem(channelId, messageId, text));
+  }
+
+  async renameChecklistItem(channelId: Snowflake, messageId: Snowflake, itemId: number, text: string): Promise<void> {
+    this.applyChecklist(channelId, messageId, await this.rest.renameChecklistItem(channelId, messageId, itemId, text));
+  }
+
+  async removeChecklistItem(channelId: Snowflake, messageId: Snowflake, itemId: number): Promise<void> {
+    this.applyChecklist(channelId, messageId, await this.rest.removeChecklistItem(channelId, messageId, itemId));
+  }
+
+  async updateProgressBar(channelId: Snowflake, messageId: Snowflake, bar: NewProgressBar): Promise<void> {
+    this.applyProgressBar(channelId, messageId, await this.rest.updateProgressBar(channelId, messageId, bar));
+  }
+
+  private applyChecklist(channelId: Snowflake, messageId: Snowflake, checklist: Checklist): void {
+    this.updateCachedMessage(channelId, messageId, (message) => {
+      const newest = newestTracker(message.checklist, checklist);
+      return newest === message.checklist ? message : { ...message, checklist: newest };
+    });
+  }
+
+  private applyProgressBar(channelId: Snowflake, messageId: Snowflake, bar: ProgressBar): void {
+    this.updateCachedMessage(channelId, messageId, (message) => {
+      const newest = newestTracker(message.progress_bar, bar);
+      return newest === message.progress_bar ? message : { ...message, progress_bar: newest };
+    });
+  }
+
+  private cachedMessageAnywhere(channelId: Snowflake, messageId: Snowflake): Message | undefined {
+    return (
+      this.messages(channelId).find((candidate) => candidate.id === messageId) ??
+      this.pinnedMessages(channelId).find((candidate) => candidate.id === messageId)
+    );
   }
 
   listPollVoters(channelId: Snowflake, messageId: Snowflake, answerId: number, after?: Snowflake): Promise<PublicUser[]> {
@@ -2572,6 +2692,8 @@ function withWhatOnlyEventsBrought(incoming: Message, cached: Message): Message 
     link_previews: incoming.link_previews?.length ? incoming.link_previews : cached.link_previews,
     reactions: incoming.reactions?.length ? incoming.reactions : cached.reactions,
     poll: incoming.poll ?? cached.poll,
+    checklist: newestTracker(cached.checklist, incoming.checklist),
+    progress_bar: newestTracker(cached.progress_bar, incoming.progress_bar),
   };
 }
 

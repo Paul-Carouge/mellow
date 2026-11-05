@@ -24,7 +24,11 @@ import {
   type Message,
   type MessageSearchQuery,
   type MessageSearchResults,
+  type Checklist,
+  type NewChecklist,
   type NewPoll,
+  type NewProgressBar,
+  type ProgressBar,
   type PermissionBits,
   type PermissionOverwrite,
   type PublicUser,
@@ -401,6 +405,8 @@ export class RestClient {
     replyToId: Snowflake | null = null,
     attachmentIds: readonly Snowflake[] = [],
     poll: NewPoll | null = null,
+    checklist: NewChecklist | null = null,
+    progressBar: NewProgressBar | null = null,
   ): Promise<Message> {
     const body: SendMessageRequest = {
       content,
@@ -408,6 +414,8 @@ export class RestClient {
       nonce,
       ...(attachmentIds.length > 0 ? { attachment_ids: [...attachmentIds] } : {}),
       ...(poll ? { poll } : {}),
+      ...(checklist ? { checklist } : {}),
+      ...(progressBar ? { progress_bar: progressBar } : {}),
     };
     return this.request("POST", `channels/${channelId}/messages`, body);
   }
@@ -556,6 +564,35 @@ export class RestClient {
     return this.request("POST", `channels/${channelId}/messages/${messageId}/poll/end`);
   }
 
+  /** Ticks or unticks an item (ADR-0047); idempotent. Answers the checklist as it is now. */
+  setChecklistItemTicked(
+    channelId: Snowflake,
+    messageId: Snowflake,
+    itemId: number,
+    isTicked: boolean,
+  ): Promise<Checklist> {
+    return this.request(isTicked ? "PUT" : "DELETE", `${checklistItemPath(channelId, messageId, itemId)}/check`);
+  }
+
+  /** Its author or a moderator adds an item at the end. */
+  addChecklistItem(channelId: Snowflake, messageId: Snowflake, text: string): Promise<Checklist> {
+    return this.request("POST", `channels/${channelId}/messages/${messageId}/checklist/items`, { text });
+  }
+
+  renameChecklistItem(channelId: Snowflake, messageId: Snowflake, itemId: number, text: string): Promise<Checklist> {
+    return this.request("PATCH", checklistItemPath(channelId, messageId, itemId), { text });
+  }
+
+  /** Never the last item: the instance refuses it. */
+  removeChecklistItem(channelId: Snowflake, messageId: Snowflake, itemId: number): Promise<Checklist> {
+    return this.request("DELETE", checklistItemPath(channelId, messageId, itemId));
+  }
+
+  /** Its author or a moderator replaces the label and value (ADR-0047). */
+  updateProgressBar(channelId: Snowflake, messageId: Snowflake, bar: NewProgressBar): Promise<ProgressBar> {
+    return this.request("PATCH", `channels/${channelId}/messages/${messageId}/progress-bar`, bar);
+  }
+
   /** Searches a server's channels the user can read, or with `guildId` null their conversations. */
   searchMessages(guildId: Snowflake | null, query: MessageSearchQuery): Promise<MessageSearchResults> {
     // A POST, so the query text never shows in URLs and access logs.
@@ -679,6 +716,10 @@ export function pictureCropQuery(crop: PictureCrop | null, shape: "square" | "ba
 export function generateMessageNonce(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function checklistItemPath(channelId: Snowflake, messageId: Snowflake, itemId: number): string {
+  return `channels/${channelId}/messages/${messageId}/checklist/items/${itemId}`;
 }
 
 function pollAnswerPath(channelId: Snowflake, messageId: Snowflake, answerId: number): string {
