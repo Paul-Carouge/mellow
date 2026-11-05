@@ -3,3 +3,5 @@
 * text=auto eol=lf
 # Kept exactly as published upstream.
 design/icons/LICENSE -text
+# Applied with git apply: kept byte for byte.
+docs/adr/*.patch -text -whitespace
