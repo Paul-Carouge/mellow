@@ -3,7 +3,7 @@
 // `npm run check` type-checks every sample against protocol.ts; protocol.test.ts compares
 // the constants and permission bits.
 
-import type { ApiErrorCode, Attachment, AuditAction, AuditChange, AuditLogEntry, Ban, Channel, ChannelKind, ChannelPlacement, ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel, GatewayEvent, GifSettings, GitHubIssueState, Guild, GuildInvite, InitialCategory, Invite, LinkEmbed, Member, Message, MessageReaction, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicItem, MusicProvider, PermissionOverwrite, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer, SoundboardSound, TwitchItem, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal } from "./protocol";
+import type { ApiErrorCode, Attachment, AuditAction, AuditChange, AuditLogEntry, Ban, Channel, ChannelKind, ChannelPlacement, ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel, GatewayEvent, GifSettings, GitHubIssueState, Guild, GuildInvite, InitialCategory, Invite, LinkEmbed, Member, Message, MessageReaction, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicItem, MusicProvider, NameAvailability, PermissionOverwrite, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer, SoundboardSound, TwitchItem, TwoFactorChallenge, TwoFactorEnrolment, TwoFactorRecoveryCodes, TwoFactorStatus, UserProfile, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal } from "./protocol";
 
 /** `true` only when every member of `Union` has a sample. */
 type HasEveryMember<Union, Sampled> = [Exclude<Union, Sampled>] extends [never] ? true : false;
@@ -35,6 +35,7 @@ export const currentUserSamples = [
     "custom_status": "Writing notes",
     "display_name": "Ada",
     "email": "ada@example.org",
+    "friend_code": "LD0A-0DA8",
     "id": "10",
     "is_instance_administrator": true,
     "status": "do_not_disturb",
@@ -49,6 +50,12 @@ export const currentUserSamples = [
     "username": "ada"
   }
 ] satisfies CurrentUser[];
+
+export const nameAvailabilitySamples = [
+  {
+    "is_available": true
+  }
+] satisfies NameAvailability[];
 
 export const chosenStatusSamples = [
   "online",
@@ -136,6 +143,7 @@ export const sessionCreatedSamples = [
       "custom_status": "Writing notes",
       "display_name": "Ada",
       "email": "ada@example.org",
+      "friend_code": "LD0A-0DA8",
       "id": "10",
       "is_instance_administrator": true,
       "status": "do_not_disturb",
@@ -143,6 +151,40 @@ export const sessionCreatedSamples = [
     }
   }
 ] satisfies SessionCreated[];
+
+export const twoFactorChallengeSamples = [
+  {
+    "expires_in_seconds": 300,
+    "two_factor_token": "mlw_challenge"
+  }
+] satisfies TwoFactorChallenge[];
+
+export const twoFactorStatusSamples = [
+  {
+    "is_enabled": true,
+    "last_failed_code_at_unix_milliseconds": 1700000000000,
+    "recovery_codes_remaining": 9
+  },
+  {
+    "is_enabled": false,
+    "last_failed_code_at_unix_milliseconds": null,
+    "recovery_codes_remaining": 0
+  }
+] satisfies TwoFactorStatus[];
+
+export const twoFactorEnrolmentSamples = [
+  {
+    "secret": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+  }
+] satisfies TwoFactorEnrolment[];
+
+export const twoFactorRecoveryCodesSamples = [
+  {
+    "recovery_codes": [
+      "abcd-efgh-ijkl-mnop"
+    ]
+  }
+] satisfies TwoFactorRecoveryCodes[];
 
 export const channelKindSamples = [
   "category",
@@ -227,14 +269,45 @@ export const initialCategorySamples = [
 export const roleSamples = [
   {
     "color": 16746496,
+    "icon": {
+      "id": "900",
+      "is_animated": true
+    },
     "id": "20",
     "is_displayed_separately": true,
     "is_mentionable": true,
     "name": "Moderators",
     "permissions": "2112",
     "position": 1
+  },
+  {
+    "color": 16746496,
+    "id": "20",
+    "is_displayed_separately": true,
+    "is_mentionable": true,
+    "name": "Moderators",
+    "permissions": "2112",
+    "position": 1,
+    "unicode_emoji": "🔥"
   }
 ] satisfies Role[];
+
+export const userProfileSamples = [
+  {
+    "about_me": "Writes **notes**",
+    "links": [
+      {
+        "icon_id": "950",
+        "label": "Blog",
+        "url": "https://example.org/ada"
+      },
+      {
+        "url": "https://example.com/"
+      }
+    ],
+    "user_id": "10"
+  }
+] satisfies UserProfile[];
 
 export const guildSamples = [
   {
@@ -294,6 +367,10 @@ export const guildSamples = [
     "roles": [
       {
         "color": 16746496,
+        "icon": {
+          "id": "900",
+          "is_animated": true
+        },
         "id": "20",
         "is_displayed_separately": true,
         "is_mentionable": true,
@@ -1225,6 +1302,10 @@ export const readySamples = [
         "roles": [
           {
             "color": 16746496,
+            "icon": {
+              "id": "900",
+              "is_animated": true
+            },
             "id": "20",
             "is_displayed_separately": true,
             "is_mentionable": true,
@@ -1313,6 +1394,7 @@ export const readySamples = [
       "custom_status": "Writing notes",
       "display_name": "Ada",
       "email": "ada@example.org",
+      "friend_code": "LD0A-0DA8",
       "id": "10",
       "is_instance_administrator": true,
       "status": "do_not_disturb",
@@ -1475,7 +1557,8 @@ export const apiErrorCodeSamples = [
   "BANNED",
   "LIMIT_REACHED",
   "CONFLICT",
-  "INTERNAL"
+  "INTERNAL",
+  "INVALID_TWO_FACTOR_CODE"
 ] satisfies ApiErrorCode[];
 export const apiErrorCodeSamplesHaveEveryMember: HasEveryMember<ApiErrorCode, (typeof apiErrorCodeSamples)[number]> = true;
 
@@ -1969,6 +2052,10 @@ export const gatewayEventSamples = [
       "roles": [
         {
           "color": 16746496,
+          "icon": {
+            "id": "900",
+            "is_animated": true
+          },
           "id": "20",
           "is_displayed_separately": true,
           "is_mentionable": true,
@@ -2065,6 +2152,10 @@ export const gatewayEventSamples = [
       "roles": [
         {
           "color": 16746496,
+          "icon": {
+            "id": "900",
+            "is_animated": true
+          },
           "id": "20",
           "is_displayed_separately": true,
           "is_mentionable": true,
@@ -2489,6 +2580,10 @@ export const serverFrameSamples = [
           "roles": [
             {
               "color": 16746496,
+              "icon": {
+                "id": "900",
+                "is_animated": true
+              },
               "id": "20",
               "is_displayed_separately": true,
               "is_mentionable": true,
@@ -2577,6 +2672,7 @@ export const serverFrameSamples = [
         "custom_status": "Writing notes",
         "display_name": "Ada",
         "email": "ada@example.org",
+        "friend_code": "LD0A-0DA8",
         "id": "10",
         "is_instance_administrator": true,
         "status": "do_not_disturb",
@@ -2696,6 +2792,7 @@ export const clientFrameSamples = [
 export const clientFrameSamplesHaveEveryMember: HasEveryMember<ClientFrame["op"], (typeof clientFrameSamples)[number]["op"]> = true;
 
 export const sharedConstants = {
+  "MAXIMUM_ABOUT_ME_LENGTH": 190,
   "MAXIMUM_CHECKLIST_ITEMS": 25,
   "MAXIMUM_CHECKLIST_ITEM_LENGTH": 200,
   "MAXIMUM_CHECKLIST_TITLE_LENGTH": 300,
@@ -2706,6 +2803,9 @@ export const sharedConstants = {
   "MAXIMUM_POLL_ANSWERS": 10,
   "MAXIMUM_POLL_ANSWER_LENGTH": 55,
   "MAXIMUM_POLL_QUESTION_LENGTH": 300,
+  "MAXIMUM_PROFILE_LINKS": 5,
+  "MAXIMUM_PROFILE_LINK_LABEL_LENGTH": 40,
+  "MAXIMUM_PROFILE_LINK_URL_LENGTH": 300,
   "MAXIMUM_PROGRESS_BAR_LABEL_LENGTH": 300,
   "MAXIMUM_PROGRESS_BAR_MAXIMUM": 1000000,
   "MAXIMUM_REACHABLE_SEARCH_RESULTS": 1000,

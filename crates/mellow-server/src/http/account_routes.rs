@@ -8,16 +8,17 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use mellow_protocol::{
-    ChangePasswordRequest, CurrentUser, LoginRequest, RegisterRequest, SessionCreated,
-    UpdateCurrentUserRequest, UpdatePresenceRequest,
+    ChangePasswordRequest, CurrentUser, LoginRequest, NameAvailability, RegisterRequest,
+    SessionCreated, UpdateCurrentUserRequest, UpdatePresenceRequest,
 };
 use sha2::{Digest as _, Sha256};
 
+use crate::domain::account_names::account_name_key;
 use crate::domain::account_rules::normalize_login;
 use crate::domain::accounts::AccountError;
 use crate::domain::clock::now_unix_milliseconds;
 use crate::http::AppState;
-use crate::http::api_error::{ApiError, ApiJson};
+use crate::http::api_error::{ApiError, ApiJson, ApiQuery};
 use crate::http::authentication::{
     AuthenticatedUser, expired_session_cookie_header, session_cookie_header, session_token,
     wants_cookie_session,
@@ -26,8 +27,8 @@ use crate::http::client_address::{client_address_key, client_ipv6_site_key};
 use crate::http::rate_limit::{
     AUTHENTICATING_ADDRESSES_PER_IPV6_SITE, AUTHENTICATION_ATTEMPTS_PER_ADDRESS,
     LOGIN_ATTEMPTS_PER_ACCOUNT, LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS,
-    PASSWORD_CHECKS_PER_SESSION, PASSWORD_CHECKS_PER_USER, PROFILE_WRITES_PER_SESSION,
-    PROFILE_WRITES_PER_USER,
+    NAME_AVAILABILITY_CHECKS_PER_USER, PASSWORD_CHECKS_PER_SESSION, PASSWORD_CHECKS_PER_USER,
+    PROFILE_WRITES_PER_SESSION, PROFILE_WRITES_PER_USER,
 };
 
 /// Enough of SHA-256 to make rate-limit keys unique per login or session while keeping them small.
@@ -48,7 +49,7 @@ fn fixed_size_key(text: &str) -> String {
 
 /// A response carrying a session token must not be stored by any cache (RFC 6749 §5.1). The web
 /// client gets the token in an `HttpOnly` cookie instead, out of reach of page scripts.
-fn session_response(
+pub(crate) fn session_response(
     status: StatusCode,
     mut session: SessionCreated,
     request_headers: &HeaderMap,
@@ -74,7 +75,7 @@ fn session_response(
 /// window first takes one unit of its IPv6 /48's new-address budget: one /48 cycling through its
 /// 65 536 /64s adds at most a site's worth of address keys per window, while a single /64 over its
 /// own limit cannot use that budget up. Returns whether the limits still allow the attempt.
-fn record_authentication_attempt_per_client(
+pub(crate) fn record_authentication_attempt_per_client(
     state: &AppState,
     peer: SocketAddr,
     headers: &HeaderMap,
@@ -120,7 +121,12 @@ pub(crate) async fn login(
     ApiJson(request): ApiJson<LoginRequest>,
 ) -> Result<Response, ApiError> {
     let address = client_address_key(peer, &headers, &state.trusted_proxy_networks);
-    let account = fixed_size_key(&normalize_login(&request.login).map_err(AccountError::from)?);
+    // Keyed on the folded name key sign-in looks accounts up by, so respelling one name (accents,
+    // full-width letters, spaces) cannot reach one account under fresh limits. An email folds too,
+    // which only merges keys.
+    let account = fixed_size_key(&account_name_key(
+        &normalize_login(&request.login).map_err(AccountError::from)?,
+    ));
     let now = Instant::now();
     // Every attempt is counted before the password check, so concurrent requests cannot all
     // pass under the limit while Argon2 runs. The per-account limits are recorded only for
@@ -140,11 +146,20 @@ pub(crate) async fn login(
     if !(within_account_and_address_limit && within_account_limit) {
         return Err(ApiError::rate_limited());
     }
-    let session = state
-        .accounts
-        .login(request, now_unix_milliseconds())
-        .await?;
-    session_response(StatusCode::OK, session, &headers)
+    match state.accounts.login(request, now_unix_milliseconds()).await {
+        Ok(session) => session_response(StatusCode::OK, session, &headers),
+        // The password was right: the second step needs a code (ADR-0049).
+        Err(AccountError::SecondFactorRequired(login)) => {
+            let challenge = state.two_factor.issue_challenge(*login, now)?;
+            Ok((
+                StatusCode::ACCEPTED,
+                [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+                Json(challenge),
+            )
+                .into_response())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub(crate) async fn logout(
@@ -165,7 +180,7 @@ pub(crate) async fn current_user(AuthenticatedUser(user): AuthenticatedUser) -> 
 
 /// Counts a current-password check, before Argon2 runs. The user's budget is counted only for checks
 /// the session's budget allows, so one session adds at most its own budget to it and cannot fill it.
-fn is_password_check_allowed(state: &AppState, user: &CurrentUser, token: &str) -> bool {
+pub(crate) fn is_password_check_allowed(state: &AppState, user: &CurrentUser, token: &str) -> bool {
     let now = Instant::now();
     state.rate_limiter.record_event(
         &format!("password-check:{}", fixed_size_key(token)),
@@ -200,9 +215,7 @@ pub(crate) async fn update_current_user(
     ApiJson(request): ApiJson<UpdateCurrentUserRequest>,
 ) -> Result<Json<CurrentUser>, ApiError> {
     let token = session_token(&headers)?;
-    if !is_profile_write_allowed(&state, &user, token)
-        || (request.current_password.is_some() && !is_password_check_allowed(&state, &user, token))
-    {
+    if !is_profile_write_allowed(&state, &user, token) {
         return Err(ApiError::rate_limited());
     }
     Ok(Json(
@@ -211,6 +224,32 @@ pub(crate) async fn update_current_user(
             .update_current_user(token, request, now_unix_milliseconds())
             .await?,
     ))
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NameAvailabilityQuery {
+    name: String,
+}
+
+/// Answers whether the name is free, never who holds it; rate-limited so names cannot be listed.
+pub(crate) async fn name_availability(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiQuery(query): ApiQuery<NameAvailabilityQuery>,
+) -> Result<Json<NameAvailability>, ApiError> {
+    if !state.rate_limiter.record_event(
+        &format!("name-availability:{}", user.id),
+        NAME_AVAILABILITY_CHECKS_PER_USER,
+        Instant::now(),
+    ) {
+        return Err(ApiError::rate_limited());
+    }
+    let is_available = state
+        .accounts
+        .is_name_available(user.id, &query.name)
+        .await?;
+    Ok(Json(NameAvailability { is_available }))
 }
 
 pub(crate) async fn update_presence(

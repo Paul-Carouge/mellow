@@ -6,6 +6,7 @@
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import type { PublicUser, Relationship, Snowflake } from "../lib/protocol";
   import AddFriendForm from "./AddFriendForm.svelte";
+  import FriendCode from "./FriendCode.svelte";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
   import { contextMenuTrigger } from "./context-menu-trigger";
@@ -407,8 +408,14 @@
       class="tab-enter flex min-h-0 flex-1 flex-col overflow-y-auto px-(--mw-component-friends-list-padding-inline) pb-md [scrollbar-width:thin]"
     >
       {#if tab === "add"}
-        <div class="pt-md">
+        <div class="flex flex-col gap-lg pt-md">
           <AddFriendForm bind:this={addFriendForm} {client} />
+          <AddFriendForm {client} lookup="friendCode" />
+          {#if client.user?.friend_code}
+            <div class="max-w-(--mw-component-friends-content-max-width)">
+              <FriendCode code={client.user.friend_code} />
+            </div>
+          {/if}
         </div>
       {:else if groups.length === 0}
         {#if isNoFriendsInvitationShown}

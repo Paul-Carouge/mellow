@@ -946,6 +946,7 @@ mod tests {
                 banner: None,
                 status: mellow_protocol::ChosenStatus::Online,
                 custom_status: None,
+                friend_code: None,
             },
             guilds: vec![Guild {
                 icon: None,
@@ -1267,6 +1268,8 @@ mod tests {
             permissions,
             is_displayed_separately: false,
             is_mentionable: false,
+            icon: None,
+            unicode_emoji: None,
         };
         let everyone = role(CLUB, 0, Permissions::DEFAULT_EVERYONE);
         let mut state = ready_state();

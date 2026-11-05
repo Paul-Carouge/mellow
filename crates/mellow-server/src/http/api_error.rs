@@ -102,7 +102,9 @@ impl From<AccountError> for ApiError {
             AccountError::RegistrationClosed => {
                 (StatusCode::FORBIDDEN, ApiErrorCode::RegistrationClosed)
             }
-            AccountError::InvalidCredentials => {
+            // Only the login route turns a second factor into a challenge; anywhere else it is a
+            // refusal.
+            AccountError::InvalidCredentials | AccountError::SecondFactorRequired(_) => {
                 (StatusCode::UNAUTHORIZED, ApiErrorCode::InvalidCredentials)
             }
             AccountError::AccountDisabled => (StatusCode::FORBIDDEN, ApiErrorCode::AccountDisabled),
@@ -116,6 +118,30 @@ impl From<AccountError> for ApiError {
             status,
             code,
             message: error.to_string(),
+        }
+    }
+}
+
+impl From<crate::domain::two_factor::TwoFactorError> for ApiError {
+    fn from(error: crate::domain::two_factor::TwoFactorError) -> Self {
+        use crate::domain::two_factor::TwoFactorError;
+        let message = error.to_string();
+        let (status, code) = match error {
+            TwoFactorError::Account(error) => return Self::from(error),
+            TwoFactorError::InvalidCode => {
+                (StatusCode::UNAUTHORIZED, ApiErrorCode::InvalidTwoFactorCode)
+            }
+            TwoFactorError::AlreadyEnabled | TwoFactorError::NotEnabled => {
+                (StatusCode::CONFLICT, ApiErrorCode::Conflict)
+            }
+            TwoFactorError::CodesLocked => {
+                (StatusCode::TOO_MANY_REQUESTS, ApiErrorCode::RateLimited)
+            }
+        };
+        Self {
+            status,
+            code,
+            message,
         }
     }
 }
@@ -193,6 +219,17 @@ impl From<MessageError> for ApiError {
                 message: "Your files take all the storage this instance gives each account.".into(),
             },
             MessageError::Internal(source) => Self::internal_or_busy("a message request", &*source),
+        }
+    }
+}
+
+impl From<crate::domain::profiles::ProfileError> for ApiError {
+    fn from(error: crate::domain::profiles::ProfileError) -> Self {
+        use crate::domain::profiles::ProfileError;
+        match error {
+            ProfileError::Rule(violation) => Self::validation(violation.to_string()),
+            ProfileError::NotFound => Self::not_found(),
+            ProfileError::Message(error) => error.into(),
         }
     }
 }

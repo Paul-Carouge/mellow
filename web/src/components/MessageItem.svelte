@@ -51,6 +51,7 @@
   import { pollClockNow } from "./poll-clock.svelte";
   import { pendingPollPreview } from "./poll-view";
   import { durationTokenInMilliseconds } from "./tokens";
+  import RoleIcon from "./RoleIcon.svelte";
 
   // One message row (DESIGN.md §5.4): group start with avatar, author and time, or a continuation
   // aligned on the gutter; the hover bar with its actions; the inline editor; outbox states.
@@ -61,6 +62,8 @@
     replyReference: { author: PublicUser | null; text: string } | null;
     /** The author's role colour, already readable on the sheet; null keeps the heading colour. */
     authorColor: string | null;
+    /** The author's highest role with an icon, shown after their name (ADR-0050); null for none. */
+    authorRoleIcon?: Role | null;
     /** Who "@name" can point at here: the server's members or the conversation's people. */
     mentionablePeople: MentionablePeople;
     /** The custom emoji whose picture the user may load (`MellowClient.knownCustomEmojis`). */
@@ -114,6 +117,7 @@
     currentUser,
     replyReference,
     authorColor,
+    authorRoleIcon = null,
     mentionablePeople,
     customEmojis,
     roles,
@@ -444,6 +448,10 @@
         style:color={authorColor}
         {@attach authorMenuTrigger}>{displayName(author)}</span
       >
+      {#if authorRoleIcon}
+        <!-- After the name, before the time, as on Discord; the role's name is its label. -->
+        <span class="inline-flex self-center"><RoleIcon role={authorRoleIcon} sizeToken="--mw-component-role-icon-message-size" /></span>
+      {/if}
       {#if sentAt !== null}
         <time
           datetime={new Date(sentAt).toISOString()}

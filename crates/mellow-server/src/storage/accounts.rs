@@ -25,13 +25,17 @@ pub struct StoredUser {
     pub banner: Option<ProfileImage>,
     pub status: ChosenStatus,
     pub custom_status: Option<String>,
+    /// `None` only until the server's first start after migration 0041 (ADR-0048).
+    pub friend_code: Option<u64>,
 }
 
+/// `username` and `display_name` both hold the account's name (ADR-0048).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewUser {
     pub id: Snowflake,
-    pub username: String,
-    pub display_name: String,
+    pub name: String,
+    pub name_key: String,
+    pub friend_code: u64,
     pub email: String,
     pub password_hash: String,
     pub is_instance_administrator: bool,
@@ -61,6 +65,10 @@ pub enum AccountStorageError {
     UsernameTaken,
     #[error("this email address is already used")]
     EmailTaken,
+    #[error("this friend code is already given")]
+    FriendCodeTaken,
+    #[error("the operating system has no randomness to give")]
+    RandomGeneratorFailed(#[from] getrandom::Error),
     #[error(transparent)]
     IntegerOutOfRange(#[from] IntegerOutOfRange),
     #[error("unknown presence status in the database")]
@@ -83,6 +91,7 @@ type StoredUserRow = (
     bool,
     String,
     Option<String>,
+    Option<i64>,
 );
 
 /// A macro, not a `const`, so queries can be built with `concat!` and stay `&'static str`
@@ -92,7 +101,7 @@ macro_rules! select_user_columns {
         "users.id, users.username, users.display_name, users.email, users.password_hash, \
          users.is_instance_administrator, users.disabled_at_unix_milliseconds, users.avatar_id, \
          users.avatar_is_animated, users.banner_id, users.banner_is_animated, \
-         users.presence_status, users.custom_status"
+         users.presence_status, users.custom_status, users.friend_code"
     };
 }
 
@@ -111,6 +120,7 @@ fn stored_user_from_row(row: StoredUserRow) -> Result<StoredUser, AccountStorage
         banner_is_animated,
         presence_status,
         custom_status,
+        friend_code,
     ) = row;
     let profile_image = |id: Option<i64>, is_animated: bool| {
         id.map(|id| {
@@ -133,6 +143,7 @@ fn stored_user_from_row(row: StoredUserRow) -> Result<StoredUser, AccountStorage
         banner: profile_image(banner_id, banner_is_animated)?,
         status: chosen_status_from_column(&presence_status)?,
         custom_status,
+        friend_code: friend_code.map(convert_integer::<_, u64>).transpose()?,
     })
 }
 
@@ -157,15 +168,17 @@ fn chosen_status_from_column(column: &str) -> Result<ChosenStatus, AccountStorag
 }
 
 /// # Errors
-/// `UsernameTaken` / `EmailTaken` when a unique constraint rejects the row (case-insensitive).
+/// `UsernameTaken` / `EmailTaken` / `FriendCodeTaken` when a unique constraint rejects the row.
 pub async fn insert_user(database: &Database, user: &NewUser) -> Result<(), AccountStorageError> {
     let result = sqlx::query(
-        "INSERT INTO users (id, username, display_name, email, password_hash, \
-         is_instance_administrator, created_at_unix_milliseconds) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO users (id, username, display_name, name_key, friend_code, email, \
+         password_hash, is_instance_administrator, created_at_unix_milliseconds) \
+         VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )
     .bind(to_sqlite_integer(user.id.raw())?)
-    .bind(&user.username)
-    .bind(&user.display_name)
+    .bind(&user.name)
+    .bind(&user.name_key)
+    .bind(to_sqlite_integer(user.friend_code)?)
     .bind(&user.email)
     .bind(&user.password_hash)
     .bind(user.is_instance_administrator)
@@ -175,14 +188,17 @@ pub async fn insert_user(database: &Database, user: &NewUser) -> Result<(), Acco
     result.map(|_| ()).map_err(unique_violation_as_taken)
 }
 
-fn unique_violation_as_taken(error: sqlx::Error) -> AccountStorageError {
+pub(crate) fn unique_violation_as_taken(error: sqlx::Error) -> AccountStorageError {
     match error {
         sqlx::Error::Database(database_error)
             if database_error.code().as_deref() == Some(SQLITE_UNIQUE_CONSTRAINT_ERROR_CODE) =>
         {
             // SQLite names the violated column: "UNIQUE constraint failed: users.email".
-            if database_error.message().contains("users.email") {
+            let message = database_error.message();
+            if message.contains("users.email") {
                 AccountStorageError::EmailTaken
+            } else if message.contains("users.friend_code") {
+                AccountStorageError::FriendCodeTaken
             } else {
                 AccountStorageError::UsernameTaken
             }
@@ -191,48 +207,22 @@ fn unique_violation_as_taken(error: sqlx::Error) -> AccountStorageError {
     }
 }
 
-/// Applies the given names (`None` keeps the stored one) in one statement, so concurrent changes of
-/// different fields both land, and returns the stored `(username, display_name)`; `None` for an
-/// unknown user.
-///
-/// # Errors
-/// `UsernameTaken` when another account has this username (case-insensitive); database errors.
-pub async fn update_user_names(
-    database: &Database,
-    user_id: Snowflake,
-    username: Option<&str>,
-    display_name: Option<&str>,
-) -> Result<Option<(String, String)>, AccountStorageError> {
-    sqlx::query_as(
-        "UPDATE users SET username = COALESCE(?, username), \
-         display_name = COALESCE(?, display_name) WHERE id = ? RETURNING username, display_name",
-    )
-    .bind(username)
-    .bind(display_name)
-    .bind(to_sqlite_integer(user_id.raw())?)
-    .fetch_optional(database.writer())
-    .await
-    .map_err(unique_violation_as_taken)
-}
-
-/// Makes the account named `username` an instance administrator or takes it away. Returns whether
+/// Makes the account whose name has the folded key `name_key` (ADR-0048) an instance administrator or takes it away. Returns whether
 /// such an account exists.
 ///
 /// # Errors
 /// Fails on database errors.
 pub async fn set_instance_administrator(
     database: &Database,
-    username: &str,
+    name_key: &str,
     is_instance_administrator: bool,
 ) -> Result<bool, AccountStorageError> {
-    let updated = sqlx::query(
-        "UPDATE users SET is_instance_administrator = ? WHERE lower(username) = lower(?)",
-    )
-    .bind(is_instance_administrator)
-    .bind(username)
-    .execute(database.writer())
-    .await?
-    .rows_affected();
+    let updated = sqlx::query("UPDATE users SET is_instance_administrator = ? WHERE name_key = ?")
+        .bind(is_instance_administrator)
+        .bind(name_key)
+        .execute(database.writer())
+        .await?
+        .rows_affected();
     Ok(updated > 0)
 }
 
@@ -331,8 +321,6 @@ pub async fn replace_password_and_delete_other_sessions(
     Ok(true)
 }
 
-/// Looks up by username or email, both case-insensitive (`COLLATE NOCASE`).
-///
 /// # Errors
 /// Fails on database errors only; an unknown id is `Ok(None)`.
 pub async fn find_user_by_id(
@@ -350,18 +338,23 @@ pub async fn find_user_by_id(
     row.map(stored_user_from_row).transpose()
 }
 
+/// Looks up by the folded key of the account's name (ADR-0048) or by email (`COLLATE NOCASE`).
+/// Names never hold an "@" and emails always do, so at most one account answers.
+///
 /// # Errors
 /// Fails on database errors only; an unknown login is `Ok(None)`.
 pub async fn find_user_by_login(
     database: &Database,
-    login: &str,
+    name_key: &str,
+    email: &str,
 ) -> Result<Option<StoredUser>, AccountStorageError> {
     let row: Option<StoredUserRow> = sqlx::query_as(concat!(
         "SELECT ",
         select_user_columns!(),
-        " FROM users WHERE users.username = ?1 OR users.email = ?1"
+        " FROM users WHERE users.name_key = ? OR users.email = ?"
     ))
-    .bind(login)
+    .bind(name_key)
+    .bind(email)
     .fetch_optional(database.readers())
     .await?;
     row.map(stored_user_from_row).transpose()

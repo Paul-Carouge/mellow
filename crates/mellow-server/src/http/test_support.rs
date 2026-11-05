@@ -42,20 +42,26 @@ pub(crate) fn test_state(database: Database, registration_mode: RegistrationMode
         files.clone(),
         crate::config::DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER,
     ));
+    let profile_images = Arc::new(crate::domain::profile_images::ProfileImages::new(
+        database.clone(),
+        ids.clone(),
+        files.clone(),
+        attachments.clone(),
+        events.clone(),
+    ));
     AppState {
+        two_factor: Arc::new(crate::domain::two_factor::TwoFactor::new(database.clone())),
         accounts: Arc::new(Accounts::new(
             database.clone(),
             registration_mode,
             ids.clone(),
             events.clone(),
         )),
-        profile_images: Arc::new(crate::domain::profile_images::ProfileImages::new(
+        profiles: Arc::new(crate::domain::profiles::Profiles::new(
             database.clone(),
-            ids.clone(),
-            files.clone(),
-            attachments.clone(),
-            events.clone(),
+            profile_images.clone(),
         )),
+        profile_images,
         attachments,
         maximum_attachment_bytes: crate::config::DEFAULT_MAXIMUM_ATTACHMENT_BYTES,
         messages,

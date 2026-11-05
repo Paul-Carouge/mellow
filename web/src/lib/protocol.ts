@@ -15,6 +15,7 @@ export interface ProfileImage {
 
 export interface CurrentUser {
   id: Snowflake;
+  /** Deprecated alias of `display_name`, the account's unique name (ADR-0048). */
   username: string;
   display_name: string;
   email: string;
@@ -25,6 +26,13 @@ export interface CurrentUser {
   /** Absent from older servers, which only knew "online". */
   status?: ChosenStatus;
   custom_status?: string | null;
+  /** `XXXX-XXXX`, permanent, sent only to its owner (ADR-0048); absent from older servers. */
+  friend_code?: string | null;
+}
+
+/** `GET /users/name-availability?name=`: never says who holds a taken name (ADR-0048). */
+export interface NameAvailability {
+  is_available: boolean;
 }
 
 /** The status a user picks for themselves (`PUT /users/@me/presence`). Others see "invisible" as offline. */
@@ -56,6 +64,8 @@ export interface PublicUser {
 
 /** Mirrors the server's rule (mellow-server domain/account_rules.rs); the server still decides. */
 export const MINIMUM_PASSWORD_LENGTH = 10;
+/** Mirrors the server's rule (mellow-server domain/account_names.rs, ADR-0048); the server still decides. */
+export const MAXIMUM_ACCOUNT_NAME_LENGTH = 32;
 
 /** Mirrors the server's rules (mellow-server domain/guild_rules.rs); the server still decides. */
 export const MAXIMUM_SERVER_NAME_LENGTH = 100;
@@ -164,6 +174,30 @@ export interface SessionCreated {
   user: CurrentUser;
 }
 
+/** `POST /auth/login` answers this (202) instead of a session when the account has two-factor
+ * sign-in on (ADR-0049); the token goes with a code to `POST /auth/login/two-factor`. */
+export interface TwoFactorChallenge {
+  two_factor_token: string;
+  expires_in_seconds: number;
+}
+
+export interface TwoFactorStatus {
+  is_enabled: boolean;
+  recovery_codes_remaining: number;
+  /** When a wrong code was last typed for the account; `null` when none was or it is off. */
+  last_failed_code_at_unix_milliseconds: number | null;
+}
+
+/** Unpadded base32: SHA-1, 6 digits, 30-second steps (the `otpauth://` defaults). */
+export interface TwoFactorEnrolment {
+  secret: string;
+}
+
+/** Shown once; the instance keeps only their hashes. */
+export interface TwoFactorRecoveryCodes {
+  recovery_codes: string[];
+}
+
 /** A voice channel is joined, never opened: it has no messages (ADR-0030). */
 export type ChannelKind = "category" | "text" | "voice";
 
@@ -225,6 +259,48 @@ export interface Role {
    * (ADR-0040). Never set on `@everyone`. Absent from older servers.
    */
   is_mentionable?: boolean;
+  /**
+   * A small picture shown next to its members' names (ADR-0050), served like an icon
+   * (`iconUrl`). Never with `unicode_emoji`. Absent when none, and from older servers.
+   */
+  icon?: ProfileImage | null;
+  /** A Unicode emoji shown in the picture's place (ADR-0050). */
+  unicode_emoji?: string | null;
+}
+
+/** Uploaded role icon pictures larger than this are refused (ADR-0050). */
+export const MAXIMUM_ROLE_ICON_UPLOAD_BYTES = 256 * 1024;
+
+/** `GET /api/v1/users/{id}/profile` (ADR-0050): readable by whoever shares something with the user. */
+export interface UserProfile {
+  user_id: Snowflake;
+  /** Inline Markdown only; empty when none. */
+  about_me: string;
+  links: ProfileLink[];
+}
+
+export interface ProfileLink {
+  /** An `https` address, as the instance wrote it back. */
+  url: string;
+  label?: string | null;
+  /** The site's icon, fetched by the instance (`linkIconUrl`); absent until fetched or when the site has none. */
+  icon_id?: Snowflake | null;
+}
+
+/** Body of `PUT /api/v1/users/@me/profile`: replaces both fields. */
+export interface UpdateUserProfileRequest {
+  about_me: string;
+  links: { url: string; label?: string }[];
+}
+
+export const MAXIMUM_ABOUT_ME_LENGTH = 190;
+export const MAXIMUM_PROFILE_LINKS = 5;
+export const MAXIMUM_PROFILE_LINK_URL_LENGTH = 300;
+export const MAXIMUM_PROFILE_LINK_LABEL_LENGTH = 40;
+
+/** A profile link's site icon, stored by the instance: browsers never ask the site (ADR-0050). */
+export function linkIconUrl(iconId: Snowflake): string {
+  return `/api/v1/link-icons/${iconId}`;
 }
 
 export interface Guild {
@@ -915,7 +991,8 @@ export type ApiErrorCode =
   | "BANNED"
   | "LIMIT_REACHED"
   | "CONFLICT"
-  | "INTERNAL";
+  | "INTERNAL"
+  | "INVALID_TWO_FACTOR_CODE";
 
 export type GatewayEvent =
   | { t: "MESSAGE_CREATE"; data: Message }

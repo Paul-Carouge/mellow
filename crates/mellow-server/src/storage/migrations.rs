@@ -38,6 +38,8 @@ pub enum MigrationError {
          first, it migrates the database"
     )]
     Pending { count: usize },
+    #[error("cannot give older accounts their unique name and friend code")]
+    AccountNames(#[source] Box<crate::storage::accounts::AccountStorageError>),
 }
 
 /// What happened, for the startup log line.
@@ -73,6 +75,17 @@ pub async fn migrate_with_backup(
         _ => None,
     };
     MIGRATOR.run(pool).await?;
+    // Migration 0041's data half: SQLite cannot fold Unicode names (ADR-0048).
+    let named_accounts =
+        crate::storage::account_names::give_names_and_friend_codes_to_older_accounts(database)
+            .await
+            .map_err(|error| MigrationError::AccountNames(Box::new(error)))?;
+    if named_accounts > 0 {
+        tracing::warn!(
+            named_accounts,
+            "accounts given a unique name and a friend code"
+        );
+    }
     Ok(MigrationOutcome {
         applied_versions: pending_versions,
         backup_path,
@@ -2297,6 +2310,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn existing_roles_have_no_icon_and_profiles_go_with_their_user() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        // The last migration before role icons and profile links (0043).
+        MIGRATOR.run_to(40, database.writer()).await.unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 2, 0); \
+             INSERT INTO roles (id, guild_id, name, color, permissions, position) \
+             VALUES (10, 10, '@everyone', 0, 0, 0), (11, 10, 'Helpers', 0, 0, 1);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let icons: Vec<(Option<i64>, i64, Option<String>)> = sqlx::query_as(
+            "SELECT icon_id, icon_is_animated, unicode_emoji FROM roles ORDER BY id",
+        )
+        .fetch_all(database.writer())
+        .await
+        .unwrap();
+        let both = sqlx::query("UPDATE roles SET icon_id = 5, unicode_emoji = 'x' WHERE id = 11")
+            .execute(database.writer())
+            .await;
+        sqlx::raw_sql(
+            "INSERT INTO user_profiles (user_id, about_me) VALUES (1, 'Hi'), (2, 'Yo'); \
+             INSERT INTO user_profile_links (user_id, position, url, label, host) \
+             VALUES (1, 0, 'https://a.example/', NULL, 'a.example'), \
+             (2, 4, 'https://b.example/', 'B', 'b.example'); \
+             INSERT INTO profile_link_icons (host, file_id, size_bytes, \
+             refresh_after_unix_milliseconds) VALUES ('a.example', 7, 100, 0), \
+             ('b.example', NULL, NULL, 0); \
+             DELETE FROM users WHERE id = 1;",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let profiles: Vec<i64> = sqlx::query_scalar("SELECT user_id FROM user_profiles")
+            .fetch_all(database.writer())
+            .await
+            .unwrap();
+        let links: Vec<i64> = sqlx::query_scalar("SELECT user_id FROM user_profile_links")
+            .fetch_all(database.writer())
+            .await
+            .unwrap();
+        let sixth_link = sqlx::query(
+            "INSERT INTO user_profile_links (user_id, position, url, host) \
+             VALUES (2, 5, 'https://c.example/', 'c.example')",
+        )
+        .execute(database.writer())
+        .await;
+        let file_without_size =
+            sqlx::query("UPDATE profile_link_icons SET file_id = 8 WHERE host = 'b.example'")
+                .execute(database.writer())
+                .await;
+        database.close().await;
+
+        assert_eq!(icons, [(None, 0, None), (None, 0, None)]);
+        assert!(both.is_err(), "a picture or an emoji, never both");
+        assert_eq!(profiles, [2]);
+        assert_eq!(links, [2]);
+        assert!(sixth_link.is_err(), "five links at most");
+        assert!(
+            file_without_size.is_err(),
+            "a file and its size go together"
+        );
+    }
+
+    #[tokio::test]
     async fn previews_stored_before_provider_embeds_keep_their_card_and_have_no_embed() {
         const LAST_VERSION_BEFORE_EMBEDS: i64 = 38;
         let directory = tempfile::tempdir().unwrap();
@@ -2361,6 +2450,151 @@ mod tests {
         assert!(shown.iter().all(|preview| preview.embed.is_none()));
         assert_eq!(embeds, [None, None, None]);
         assert!(invalid.is_err(), "the column only holds JSON");
+    }
+
+    /// The owner's instance shape: a few dozen accounts, accented names, names shared in another
+    /// case or accent, emoji, a disabled account, an old username that is the reserved word.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // The accounts and what each becomes, side by side.
+    async fn older_accounts_keep_their_name_when_free_oldest_first_and_all_get_a_friend_code() {
+        const LAST_VERSION_BEFORE_UNIQUE_NAMES: i64 = 40;
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        MIGRATOR
+            .run_to(LAST_VERSION_BEFORE_UNIQUE_NAMES, database.writer())
+            .await
+            .unwrap();
+        // (id, created at, username, display name, name expected after the migration)
+        let mut accounts: Vec<(i64, i64, String, String, String)> = [
+            (1, 100, "paul", "Paul Carouge", "Paul Carouge"),
+            (2, 200, "elodie", "Élodie", "Élodie 2"),
+            (3, 150, "elo", "elodie", "elodie"),
+            (4, 300, "aurore", "Aurore 🌸", "Aurore"),
+            (5, 310, "aurore.b", "aurore", "aurore 2"),
+            (6, 320, "flower", "🌸🌸", "flower"),
+            (7, 330, "flower2", "flower", "flower 2"),
+            (8, 340, "twin.a", "Twin", "Twin"),
+            (9, 340, "twin.b", "TWIN", "TWIN 2"),
+            (10, 340, "twin.c", "twïn", "twïn 3"),
+            (11, 350, "everyone", "Everyone", "everyone 1"),
+            (12, 360, "ghost", "Paul Carouge", "Paul Carouge 2"),
+            (13, 370, "jp", "Jean-Paul (admin)", "Jean-Paul admin"),
+            (
+                14,
+                380,
+                "long",
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef",
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef",
+            ),
+            (
+                15,
+                390,
+                "long2",
+                "abcdefghijklmnopqrstuvwxyzabcdef",
+                "abcdefghijklmnopqrstuvwxyzabcd 2",
+            ),
+        ]
+        .into_iter()
+        .map(|(id, created_at, username, display_name, expected)| {
+            (
+                id,
+                created_at,
+                username.into(),
+                display_name.into(),
+                expected.into(),
+            )
+        })
+        .collect();
+        for number in 16..=40 {
+            accounts.push((
+                number,
+                400 + number,
+                format!("member{number}"),
+                format!("Membre {number}"),
+                format!("Membre {number}"),
+            ));
+        }
+        for (id, created_at, username, display_name, _) in &accounts {
+            sqlx::query(
+                "INSERT INTO users (id, username, display_name, email, password_hash, \
+                 created_at_unix_milliseconds) VALUES (?, ?, ?, ?, 'x', ?)",
+            )
+            .bind(id)
+            .bind(username)
+            .bind(display_name)
+            .bind(format!("{username}@example.org"))
+            .bind(created_at)
+            .execute(database.writer())
+            .await
+            .unwrap();
+        }
+        sqlx::query("UPDATE users SET disabled_at_unix_milliseconds = 1 WHERE id = 12")
+            .execute(database.writer())
+            .await
+            .unwrap();
+
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let read_rows = || async {
+            sqlx::query_as::<_, (i64, String, String, String, i64)>(
+                "SELECT id, username, display_name, name_key, friend_code FROM users ORDER BY id",
+            )
+            .fetch_all(database.writer())
+            .await
+            .unwrap()
+        };
+        let rows = read_rows().await;
+        let given_again =
+            crate::storage::account_names::give_names_and_friend_codes_to_older_accounts(&database)
+                .await
+                .unwrap();
+        let rows_after_a_restart = read_rows().await;
+        let found_by_folded_name = crate::storage::accounts::find_user_by_login(
+            &database,
+            &crate::domain::account_names::account_name_key("ÉLODIE"),
+            "ÉLODIE",
+        )
+        .await
+        .unwrap()
+        .map(|user| user.id.raw());
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "EXPLAIN QUERY PLAN SELECT id FROM users WHERE name_key = 'x' OR email = 'x'",
+        )
+        .fetch_all(database.writer())
+        .await
+        .unwrap();
+        let plan: Vec<String> = plan.into_iter().map(|row| row.3).collect();
+        database.close().await;
+
+        assert_eq!(rows.len(), accounts.len());
+        for ((id, username, display_name, name_key, friend_code), account) in
+            rows.iter().zip(&accounts)
+        {
+            assert_eq!(*id, account.0);
+            assert_eq!(display_name, &account.4, "account {id}");
+            assert_eq!(username, display_name, "the deprecated username follows");
+            assert_eq!(
+                name_key,
+                &crate::domain::account_names::account_name_key(display_name)
+            );
+            assert!((0..1_i64 << 40).contains(friend_code));
+        }
+        let keys: std::collections::HashSet<_> = rows.iter().map(|row| &row.3).collect();
+        let codes: std::collections::HashSet<_> = rows.iter().map(|row| row.4).collect();
+        assert_eq!((keys.len(), codes.len()), (rows.len(), rows.len()));
+        assert_eq!(given_again, 0);
+        assert_eq!(
+            rows_after_a_restart, rows,
+            "names and codes never change again"
+        );
+        assert_eq!(found_by_folded_name, Some(3));
+        assert!(
+            plan.iter().all(|line| !line.starts_with("SCAN")),
+            "sign-in reads two indexes: {plan:?}"
+        );
     }
 
     #[tokio::test]

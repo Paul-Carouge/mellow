@@ -187,6 +187,7 @@
         <RoleSettings
           {client}
           {guild}
+          isCompact={!isWide}
           {attention}
           onunsavedchange={(hasChanges) => noteUnsavedChanges("roles", hasChanges)}
         />

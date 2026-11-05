@@ -1,6 +1,7 @@
 //! Use cases and invariants. Knows nothing about HTTP; storage is reached through
 //! `crate::storage` functions (ARCHITECTURE.md §4.1).
 
+pub mod account_names;
 pub mod account_rules;
 pub mod accounts;
 pub(crate) mod attachments;
@@ -19,10 +20,14 @@ pub(crate) mod messages;
 pub(crate) mod password;
 pub(crate) mod permissions;
 pub(crate) mod profile_images;
+pub(crate) mod profile_rules;
+pub(crate) mod profiles;
 pub(crate) mod relationships;
 pub(crate) mod search_query;
 pub(crate) mod session_token;
 pub mod snowflake_generator;
 pub(crate) mod sound_rules;
+pub(crate) mod totp;
+pub(crate) mod two_factor;
 pub(crate) mod video_rules;
 pub(crate) mod voice_rules;

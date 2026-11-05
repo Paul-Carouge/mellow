@@ -181,7 +181,8 @@ pub(crate) async fn purge_attachments_periodically(attachments: Arc<Attachments>
 }
 
 /// The id of every file a row points at: attachments and their previews, avatars, banners, icons,
-/// sounds and link preview pictures, which share the file store (ADR-0021, ADR-0032, ADR-0041).
+/// sounds, link preview pictures and profile links' site icons, which share the file store
+/// (ADR-0021, ADR-0032, ADR-0041, ADR-0050).
 pub(crate) async fn file_ids_in_use(
     database: &Database,
 ) -> Result<HashSet<Snowflake>, MessageError> {
@@ -200,6 +201,7 @@ pub(crate) async fn file_ids_in_use(
                 .map_err(crate::domain::guilds::GuildError::from)?,
         )
         .chain(link_preview_storage::all_preview_image_file_ids(database).await?)
+        .chain(crate::storage::user_profiles::all_link_icon_file_ids(database).await?)
         .collect())
 }
 

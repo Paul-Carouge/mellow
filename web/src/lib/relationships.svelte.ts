@@ -3,7 +3,7 @@
 
 import { SvelteMap } from "svelte/reactivity";
 
-import { ApiError, type RestClient } from "./api";
+import { ApiError, type FriendRequestTarget, type RestClient } from "./api";
 import type { PublicUser, Relationship, RelationshipKind, Snowflake } from "./protocol";
 
 export class Relationships {
@@ -61,11 +61,13 @@ export class Relationships {
   }
 
   /**
-   * Asks `username` to be friends, or accepts their request. The answer is applied at once; the
-   * gateway's `RELATIONSHIP_ADD` brings the same.
+   * Asks the account with this name or friend code to be friends, or accepts their request. The
+   * answer is applied at once; the gateway's `RELATIONSHIP_ADD` brings the same.
    */
-  async sendFriendRequest(username: string): Promise<Relationship> {
-    const relationship = await this.rest.sendFriendRequest(username.trim());
+  async sendFriendRequest(target: FriendRequestTarget): Promise<Relationship> {
+    const relationship = await this.rest.sendFriendRequest(
+      "friend_code" in target ? { friend_code: target.friend_code.trim() } : { username: target.username.trim() },
+    );
     this.apply(relationship);
     return relationship;
   }

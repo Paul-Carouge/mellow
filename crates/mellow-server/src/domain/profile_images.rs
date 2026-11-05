@@ -281,6 +281,16 @@ impl ProfileImages {
         Ok(id)
     }
 
+    /// Writes an already processed picture under an id the caller chose (a random one for site
+    /// icons, ADR-0050).
+    pub(crate) async fn write_file(
+        &self,
+        id: Snowflake,
+        bytes: Vec<u8>,
+    ) -> Result<(), MessageError> {
+        Ok(self.files.write(id, bytes).await?)
+    }
+
     /// Stores an avatar or banner kept before ADR-0033 again through today's pipeline, under a new
     /// id since its URL is cached as immutable, and tells the user's sessions and guilds
     /// (`USER_UPDATE`). A picture that is no longer the user's, or that comes out no smaller, is

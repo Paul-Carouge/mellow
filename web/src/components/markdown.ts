@@ -124,6 +124,17 @@ export function parseMessageMarkdown(
   return parseBlocks(content, { people, customEmojis, roleMentions, nextSpoilerId: 0 }, false);
 }
 
+/**
+ * A profile's "about me" (ADR-0050): inline Markdown only, so headings, lists, quotes and code
+ * blocks stay as written; line breaks are kept by the paragraph's `whitespace-pre-wrap`. Nobody
+ * is mentioned and no custom emoji is loaded: the text is read outside any server.
+ */
+export function parseInlineMarkdown(content: string): BlockNode[] {
+  parserStepCount = 0;
+  const context: ParseContext = { people: new Map(), customEmojis: new Map(), roleMentions: NO_ROLE_MENTIONS, nextSpoilerId: 0 };
+  return content === "" ? [] : [{ kind: "paragraph", children: parseInline(content, context, 0, true) }];
+}
+
 /** Test entry point: `parseMessageMarkdown` and the loop iterations it took. */
 export function parseMessageMarkdownCountingSteps(
   content: string,

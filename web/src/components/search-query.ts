@@ -16,6 +16,8 @@ const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})$/u;
 const FIRST_SEARCHABLE_YEAR = 1970;
 /** A filter value ends at whitespace or a quote: names holding either are named by id instead. */
 const VALUE_THAT_STAYS_ONE_PART = /^[^\s"]+$/u;
+/** Filters whose value may be quoted, as names hold spaces (ADR-0048): `from:"Paul Carouge"`. */
+const KEYS_TAKING_A_QUOTED_NAME = new Set(["from:", "mentions:"]);
 
 export interface SearchFilter {
   key: SearchFilterKey;
@@ -68,6 +70,16 @@ export function searchQueryParts(query: string): SearchQueryPart[] {
       index += 1;
     }
     const token = query.slice(tokenStart, index);
+    if (!isExcluded && query.charAt(index) === '"' && KEYS_TAKING_A_QUOTED_NAME.has(token.toLowerCase())) {
+      // As on the instance: the quoted name is the value; an empty one leaves the key a word.
+      const closing = query.indexOf('"', index + 1);
+      const end = closing === -1 ? query.length : closing + 1;
+      const name = query.slice(index + 1, closing === -1 ? query.length : closing);
+      const filter = searchFilterOf(`${token}${name}`);
+      parts.push({ start, end, isExcluded, isPhrase: false, text: filter ? `${token}${name}` : token, filter });
+      index = end;
+      continue;
+    }
     parts.push({
       start,
       end: index,
@@ -102,7 +114,7 @@ function isValidFilterValue(key: SearchFilterKey, value: string): boolean {
   switch (key) {
     case "from":
     case "mentions":
-      return value.replace(/^@+/u, "") !== "";
+      return value.replace(/^@+/u, "").trim() !== "";
     case "in":
       return value.replace(/^#+/u, "") !== "";
     case "has":
@@ -189,7 +201,7 @@ export function searchCaretContext(query: string, caret: number): SearchCaretCon
   }
   const key = typed.slice(0, colon).toLowerCase();
   return isSearchFilterKey(key)
-    ? { kind: "value", key, partial: typed.slice(colon + 1), start: part.start, end: part.end }
+    ? { kind: "value", key, partial: typed.slice(colon + 1).replace(/^"/u, ""), start: part.start, end: part.end }
     : { kind: "none" };
 }
 
@@ -228,7 +240,12 @@ export function withSearchFilter(query: string, key: SearchFilterKey, value: str
     return query;
   }
   const trimmed = query.trimEnd();
-  return `${trimmed}${trimmed === "" ? "" : " "}${key}:${value}`;
+  return `${trimmed}${trimmed === "" ? "" : " "}${searchFilterText(key, value)}`;
+}
+
+/** `key:value` as the query holds it: a value with spaces quoted (names, ADR-0048). */
+export function searchFilterText(key: SearchFilterKey, value: string): string {
+  return `${key}:${VALUE_THAT_STAYS_ONE_PART.test(value) ? value : `"${value}"`}`;
 }
 
 /** `query` without the part at `start..end`, and without the space it leaves behind. */

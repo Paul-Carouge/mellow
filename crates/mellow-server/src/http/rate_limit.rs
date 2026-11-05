@@ -162,6 +162,12 @@ pub(crate) const FRIEND_REQUESTS_PER_USER_PER_DAY: RateLimit = RateLimit {
     maximum_events: 100,
     window: Duration::from_hours(24),
 };
+/// Name availability checks per user (ADR-0048): enough to check as someone types, too few to
+/// list who is on the instance.
+pub(crate) const NAME_AVAILABILITY_CHECKS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 30,
+    window: Duration::from_secs(60),
+};
 /// Accepting, refusing, removing, blocking and unblocking, per user.
 pub(crate) const RELATIONSHIP_WRITES_PER_USER: RateLimit = RateLimit {
     maximum_events: 30,
@@ -181,6 +187,16 @@ pub(crate) const PROFILE_IMAGE_WRITES_PER_USER: RateLimit = RateLimit {
 /// Avatar, banner and icon downloads per user: small, cached for good, many at once on a member list.
 pub(crate) const PROFILE_IMAGE_DOWNLOADS_PER_USER: RateLimit = RateLimit {
     maximum_events: 1_200,
+    window: Duration::from_mins(1),
+};
+/// "About me" and profile link saves (ADR-0050): each may queue fetches of five sites' icons.
+pub(crate) const PROFILE_DETAILS_WRITES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_mins(10),
+};
+/// Profile reads: one per profile opened, a few a minute in normal use.
+pub(crate) const PROFILE_READS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 120,
     window: Duration::from_mins(1),
 };
 /// Starring and unstarring GIFs (ADR-0042): a few clicks a minute, never a script's loop.

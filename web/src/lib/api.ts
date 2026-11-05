@@ -22,6 +22,7 @@ import {
   type Invite,
   type Member,
   type Message,
+  type NameAvailability,
   type MessageSearchQuery,
   type MessageSearchResults,
   type Checklist,
@@ -38,8 +39,11 @@ import {
   type SessionCreated,
   type Snowflake,
   type SoundboardSound,
+  type UpdateUserProfileRequest,
+  type UserProfile,
   reactionsPath,
 } from "./protocol";
+import type { TwoFactorChallenge, TwoFactorEnrolment, TwoFactorRecoveryCodes, TwoFactorStatus } from "./protocol";
 
 export const HISTORY_PAGE_SIZE = 50;
 /** The largest history page the instance gives (`MAXIMUM_HISTORY_PAGE_SIZE` on the server). */
@@ -50,6 +54,9 @@ export const REACTING_USERS_PAGE_SIZE = 100;
 export const POLL_VOTERS_PAGE_SIZE = 100;
 /** The path segment of `/users/@me/{kind}` (ADR-0021). */
 export type ProfileImageKind = "avatar" | "banner";
+
+/** Who a friend request is for: an account's name (any case), or its friend code (ADR-0048). */
+export type FriendRequestTarget = { readonly username: string } | { readonly friend_code: string };
 
 /** What `POST /guilds/{id}/invites` accepts: up to 10 000 uses and 30 days, `null` for no limit. */
 export interface InviteLimits {
@@ -133,17 +140,46 @@ export class RestClient {
     return (await response.json()) as T;
   }
 
-  login(login: string, password: string): Promise<SessionCreated> {
-    return this.request<SessionCreated>("POST", "auth/login", {
+  /** A challenge instead of a session when the account has two-factor sign-in on (ADR-0049). */
+  login(login: string, password: string): Promise<SessionCreated | TwoFactorChallenge> {
+    return this.request("POST", "auth/login", {
       login,
       password,
       device_name: DEVICE_NAME,
     });
   }
 
-  register(username: string, email: string, password: string): Promise<SessionCreated> {
+  /** The second sign-in step: a code from the authenticator app, or a recovery code. */
+  completeTwoFactorSignIn(twoFactorToken: string, code: string): Promise<SessionCreated> {
+    return this.request("POST", "auth/login/two-factor", { two_factor_token: twoFactorToken, code });
+  }
+
+  twoFactorStatus(): Promise<TwoFactorStatus> {
+    return this.request("GET", "users/@me/two-factor");
+  }
+
+  /** A new secret; two-factor sign-in turns on only once `enableTwoFactor` confirms a code. */
+  startTwoFactorEnrolment(currentPassword: string): Promise<TwoFactorEnrolment> {
+    return this.request("POST", "users/@me/two-factor/enrolment", { current_password: currentPassword });
+  }
+
+  enableTwoFactor(code: string): Promise<TwoFactorRecoveryCodes> {
+    return this.request("POST", "users/@me/two-factor/enable", { code });
+  }
+
+  disableTwoFactor(currentPassword: string, code: string): Promise<void> {
+    return this.request("POST", "users/@me/two-factor/disable", { current_password: currentPassword, code });
+  }
+
+  regenerateRecoveryCodes(currentPassword: string, code: string): Promise<TwoFactorRecoveryCodes> {
+    return this.request("POST", "users/@me/two-factor/recovery-codes", { current_password: currentPassword, code });
+  }
+
+  /** `username` is only the deprecated alias of the name (ADR-0048). */
+  register(name: string, email: string, password: string): Promise<SessionCreated> {
     return this.request<SessionCreated>("POST", "auth/register", {
-      username,
+      username: name,
+      display_name: name,
       email,
       password,
       device_name: DEVICE_NAME,
@@ -158,13 +194,14 @@ export class RestClient {
     return this.request("GET", "users/@me");
   }
 
-  /** Absent fields stay unchanged; a new username needs the current password. */
-  updateCurrentUser(changes: {
-    display_name?: string;
-    username?: string;
-    current_password?: string;
-  }): Promise<CurrentUser> {
+  /** Renames the account; `USERNAME_TAKEN` when another account has the name (ADR-0048). */
+  updateCurrentUser(changes: { display_name: string }): Promise<CurrentUser> {
     return this.request("PATCH", "users/@me", changes);
+  }
+
+  /** Whether the signed-in user could take `name`; `VALIDATION_FAILED` when it breaks the rules. */
+  nameAvailability(name: string): Promise<NameAvailability> {
+    return this.request("GET", `users/name-availability?name=${encodeURIComponent(name)}`);
   }
 
   /** Replaces both; a blank or absent custom status clears it. */
@@ -448,6 +485,28 @@ export class RestClient {
     return this.request("DELETE", `users/@me/${kind}`);
   }
 
+  /** "About me" and links (ADR-0050); `NOT_FOUND` for someone the reader shares nothing with. */
+  userProfile(userId: Snowflake): Promise<UserProfile> {
+    return this.request("GET", `users/${userId}/profile`);
+  }
+
+  updateMyProfile(request: UpdateUserProfileRequest): Promise<UserProfile> {
+    return this.request("PUT", "users/@me/profile", request);
+  }
+
+  /** The picture as the raw body, its centred square kept; it replaces an emoji (ADR-0050). */
+  setRoleIconPicture(guildId: Snowflake, roleId: Snowflake, file: File): Promise<Role> {
+    return this.sendFile("PUT", `guilds/${guildId}/roles/${roleId}/icon`, file);
+  }
+
+  setRoleIconEmoji(guildId: Snowflake, roleId: Snowflake, emoji: string): Promise<Role> {
+    return this.request("PUT", `guilds/${guildId}/roles/${roleId}/icon/emoji`, { unicode_emoji: emoji });
+  }
+
+  removeRoleIcon(guildId: Snowflake, roleId: Snowflake): Promise<Role> {
+    return this.request("DELETE", `guilds/${guildId}/roles/${roleId}/icon`);
+  }
+
   /**
    * `extraHeaders` may replace the generic `Content-Type`. Fails with `NETWORK` when `signal`
    * aborts or the upload outlives `uploadTimeoutMilliseconds`.
@@ -647,8 +706,8 @@ export class RestClient {
   }
 
   /** Asks them to be friends, or accepts their request; a missing account or a block is `NOT_FOUND`. */
-  sendFriendRequest(username: string): Promise<Relationship> {
-    return this.request("POST", "users/@me/relationships", { username });
+  sendFriendRequest(target: FriendRequestTarget): Promise<Relationship> {
+    return this.request("POST", "users/@me/relationships", target);
   }
 
   /** `friend` accepts their request; `blocked` blocks them. */

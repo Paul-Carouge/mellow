@@ -11,11 +11,14 @@ mod gif_routes;
 mod guild_routes;
 mod message_routes;
 mod profile_image_routes;
+mod profile_routes;
 pub(crate) mod rate_limit;
 mod relationship_routes;
+mod role_icon_routes;
 mod sound_routes;
 #[cfg(test)]
 pub(crate) mod test_support;
+mod two_factor_routes;
 pub(crate) mod web_client;
 
 use std::net::SocketAddr;
@@ -34,7 +37,7 @@ use mellow_protocol::{HealthResponse, HealthStatus};
 
 use crate::config::ServerConfig;
 use crate::domain::accounts::Accounts;
-use crate::domain::guild_rules::MAXIMUM_EMOJI_UPLOAD_BYTES;
+use crate::domain::guild_rules::{MAXIMUM_EMOJI_UPLOAD_BYTES, MAXIMUM_ROLE_ICON_UPLOAD_BYTES};
 use crate::domain::guilds::Guilds;
 use crate::domain::messages::Messages;
 use crate::domain::snowflake_generator::SnowflakeGenerator;
@@ -46,11 +49,15 @@ use crate::http::rate_limit::RateLimiter;
 pub(crate) struct AppState {
     pub(crate) database: Database,
     pub(crate) accounts: Arc<Accounts>,
+    /// Two-factor sign-in (ADR-0049), with the sign-ins waiting for their code.
+    pub(crate) two_factor: Arc<crate::domain::two_factor::TwoFactor>,
     pub(crate) guilds: Arc<Guilds>,
     pub(crate) messages: Arc<Messages>,
     pub(crate) relationships: Arc<crate::domain::relationships::Relationships>,
     pub(crate) attachments: Arc<crate::domain::attachments::Attachments>,
     pub(crate) profile_images: Arc<crate::domain::profile_images::ProfileImages>,
+    /// "About me" texts and profile links (ADR-0050).
+    pub(crate) profiles: Arc<crate::domain::profiles::Profiles>,
     pub(crate) maximum_attachment_bytes: u64,
     pub(crate) events: Arc<EventHub>,
     pub(crate) gateway_sessions: Arc<crate::gateway::SessionRegistry>,
@@ -117,16 +124,22 @@ impl AppState {
             attachment_files.clone(),
             config.maximum_attachment_storage_bytes_per_user,
         ));
+        let profile_images = Arc::new(crate::domain::profile_images::ProfileImages::new(
+            database.clone(),
+            ids.clone(),
+            attachment_files,
+            attachments.clone(),
+            events.clone(),
+        ));
         Self {
-            profile_images: Arc::new(crate::domain::profile_images::ProfileImages::new(
+            profiles: Arc::new(crate::domain::profiles::Profiles::new(
                 database.clone(),
-                ids.clone(),
-                attachment_files,
-                attachments.clone(),
-                events.clone(),
+                profile_images.clone(),
             )),
+            profile_images,
             attachments,
             maximum_attachment_bytes: config.maximum_attachment_bytes,
+            two_factor: Arc::new(crate::domain::two_factor::TwoFactor::new(database.clone())),
             accounts: Arc::new(Accounts::new(
                 database.clone(),
                 config.registration_mode,
@@ -181,9 +194,14 @@ fn account_router() -> Router<AppState> {
         .route("/api/v1/auth/register", post(account_routes::register))
         .route("/api/v1/auth/login", post(account_routes::login))
         .route("/api/v1/auth/logout", post(account_routes::logout))
+        .merge(two_factor_routes::router())
         .route(
             "/api/v1/users/@me",
             get(account_routes::current_user).patch(account_routes::update_current_user),
+        )
+        .route(
+            "/api/v1/users/name-availability",
+            get(account_routes::name_availability),
         )
         .route(
             "/api/v1/users/@me/password",
@@ -378,6 +396,33 @@ fn message_router(maximum_attachment_bytes: u64) -> Router<AppState> {
         )
 }
 
+/// Profiles' text and links (ADR-0050), and role icons.
+fn profile_router() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/v1/users/@me/profile",
+            get(profile_routes::get_my_profile).put(profile_routes::put_my_profile),
+        )
+        .route(
+            "/api/v1/users/{user_id}/profile",
+            get(profile_routes::get_user_profile),
+        )
+        .route(
+            "/api/v1/link-icons/{id}",
+            get(profile_routes::get_link_icon),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/roles/{role_id}/icon",
+            put(role_icon_routes::put_role_icon)
+                .delete(role_icon_routes::delete_role_icon)
+                .layer(DefaultBodyLimit::max(MAXIMUM_ROLE_ICON_UPLOAD_BYTES)),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/roles/{role_id}/icon/emoji",
+            put(role_icon_routes::put_role_emoji),
+        )
+}
+
 fn relationship_router() -> Router<AppState> {
     Router::new()
         .route(
@@ -401,6 +446,7 @@ pub(crate) fn router(state: AppState) -> Router {
             get(guild_routes::list_my_guilds),
         )
         .merge(relationship_router())
+        .merge(profile_router())
         .merge(group_conversation_router())
         .route(
             "/api/v1/users/@me/channels",

@@ -8,6 +8,7 @@ import {
   ApiError,
   HISTORY_PAGE_SIZE,
   MAXIMUM_HISTORY_PAGE_SIZE,
+  type FriendRequestTarget,
   type InviteLimits,
   type PictureCrop,
   type ProfileImageKind,
@@ -23,6 +24,7 @@ import { newestTracker, withItemTick } from "./checklists";
 import { ownVoteChangesForChoice, withPollVote } from "./polls";
 import { type MentionReader, doesMessageMentionReader } from "./reader-mentions";
 import { Relationships } from "./relationships.svelte";
+import type { TwoFactorChallenge } from "./protocol";
 import {
   type Attachment,
   type Channel,
@@ -59,6 +61,8 @@ import {
   type Role,
   type Snowflake,
   type SoundboardSound,
+  type UpdateUserProfileRequest,
+  type UserProfile,
   type VoiceState,
   DIRECT_MESSAGE_PERMISSIONS,
   MAXIMUM_COUNTED_UNREAD_MENTIONS,
@@ -398,8 +402,19 @@ export class MellowClient {
     this.connect();
   }
 
-  async signIn(login: string, password: string): Promise<void> {
-    this.user = (await this.rest.login(login, password)).user;
+  /** Signs in, or returns the challenge whose code `completeTwoFactorSignIn` sends (ADR-0049). */
+  async signIn(login: string, password: string): Promise<TwoFactorChallenge | null> {
+    const answer = await this.rest.login(login, password);
+    if ("two_factor_token" in answer) {
+      return answer;
+    }
+    this.user = answer.user;
+    this.connect();
+    return null;
+  }
+
+  async completeTwoFactorSignIn(challenge: TwoFactorChallenge, code: string): Promise<void> {
+    this.user = (await this.rest.completeTwoFactorSignIn(challenge.two_factor_token, code)).user;
     this.connect();
   }
 
@@ -2152,14 +2167,14 @@ export class MellowClient {
 
   // --- Account -------------------------------------------------------------------------------
 
+  /** Renames the account (ADR-0048): its one name, unique whatever the case and accents. */
   async updateDisplayName(displayName: string): Promise<void> {
     this.applyCurrentUser(await this.rest.updateCurrentUser({ display_name: displayName.trim() }));
   }
 
-  async updateUsername(username: string, currentPassword: string): Promise<void> {
-    this.applyCurrentUser(
-      await this.rest.updateCurrentUser({ username: username.trim(), current_password: currentPassword }),
-    );
+  /** Never says who holds a taken name; rejects with `VALIDATION_FAILED` for a name breaking the rules. */
+  async isNameAvailable(name: string): Promise<boolean> {
+    return (await this.rest.nameAvailability(name)).is_available;
   }
 
   /**
@@ -2195,8 +2210,8 @@ export class MellowClient {
     return this.relationships.isBlocked(userId);
   }
 
-  sendFriendRequest(username: string): Promise<Relationship> {
-    return this.relationships.sendFriendRequest(username);
+  sendFriendRequest(target: FriendRequestTarget): Promise<Relationship> {
+    return this.relationships.sendFriendRequest(target);
   }
 
   acceptFriendRequest(userId: Snowflake): Promise<void> {
@@ -2443,6 +2458,38 @@ export class MellowClient {
       guildId,
       this.rolesOf(guildId).filter((role) => role.id !== roleId),
     );
+  }
+
+  /** The new icon arrives with the gateway's `GUILD_ROLES_UPDATE`, as other role edits (ADR-0050). */
+  async setRoleIcon(
+    guildId: Snowflake,
+    roleId: Snowflake,
+    icon: { kind: "picture"; file: File } | { kind: "emoji"; emoji: string } | { kind: "none" },
+  ): Promise<void> {
+    switch (icon.kind) {
+      case "picture":
+        await this.rest.setRoleIconPicture(guildId, roleId, icon.file);
+        return;
+      case "emoji":
+        await this.rest.setRoleIconEmoji(guildId, roleId, icon.emoji);
+        return;
+      case "none":
+        await this.rest.removeRoleIcon(guildId, roleId);
+        return;
+      default: {
+        const unknown: never = icon;
+        throw new Error(`unknown role icon change ${JSON.stringify(unknown)}`);
+      }
+    }
+  }
+
+  /** "About me" and links (ADR-0050), read when a profile opens: no gateway event carries them. */
+  loadUserProfile(userId: Snowflake): Promise<UserProfile> {
+    return this.rest.userProfile(userId);
+  }
+
+  updateMyProfile(request: UpdateUserProfileRequest): Promise<UserProfile> {
+    return this.rest.updateMyProfile(request);
   }
 
   async reorderRoles(guildId: Snowflake, roleIds: readonly Snowflake[]): Promise<void> {

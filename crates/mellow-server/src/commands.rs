@@ -134,7 +134,8 @@ fn write_new_file(path: &Path, content: &str) -> Result<()> {
         .with_context(|| format!("cannot write {}", path.display()))
 }
 
-/// Starts the background link preview fetcher when previews are on (ADR-0041).
+/// Starts the background link preview and site icon fetchers when previews are on (ADR-0041,
+/// ADR-0050).
 fn start_link_previews(
     config: &ServerConfig,
     state: &AppState,
@@ -148,13 +149,20 @@ fn start_link_previews(
     ))
     .context("cannot build the link preview client")?;
     state.messages.enable_link_previews();
-    Ok(Some(tokio::spawn(
-        crate::domain::messages::fetch_link_previews_in_background(
-            state.messages.clone(),
-            state.attachments.clone(),
-            fetcher,
-        ),
-    )))
+    // Profile links' site icons come from the sites members name, as previews do (ADR-0050).
+    state.profiles.enable_link_icons();
+    let link_icons = crate::domain::profiles::fetch_link_icons_in_background(
+        state.profiles.clone(),
+        fetcher.clone(),
+    );
+    let previews = crate::domain::messages::fetch_link_previews_in_background(
+        state.messages.clone(),
+        state.attachments.clone(),
+        fetcher,
+    );
+    Ok(Some(tokio::spawn(async move {
+        tokio::join!(previews, link_icons);
+    })))
 }
 
 /// Opens the database, applies migrations, then serves HTTP until `shutdown` completes.
@@ -338,7 +346,7 @@ pub async fn set_instance_administrator(
     let result = async {
         let exists = crate::storage::accounts::set_instance_administrator(
             &database,
-            username,
+            &crate::domain::account_names::account_name_key(username),
             is_instance_administrator,
         )
         .await?;
@@ -346,6 +354,31 @@ pub async fn set_instance_administrator(
             bail!("no account is named {username}");
         }
         Ok(())
+    }
+    .await;
+    database.close().await;
+    result
+}
+
+/// `mellow-server admin reset-two-factor`: turns off an account's two-factor sign-in for a user who
+/// lost both their device and their recovery codes (ADR-0049). The reset is recorded in
+/// `two_factor_resets`, in the same transaction. Returns whether two-factor sign-in was on. Safe
+/// while `serve` runs (SQLite WAL); sign-ins waiting for a code then fail and start again.
+///
+/// # Errors
+/// Fails on a missing database or key, or an unknown username.
+pub async fn reset_two_factor(config: &ServerConfig, username: &str) -> Result<bool> {
+    use crate::storage::two_factor::{TwoFactorReset, reset_two_factor_by_username};
+    let database = open_instance_database(config).await?;
+    let result = async {
+        let now = crate::domain::clock::now_unix_milliseconds();
+        let reset_id =
+            crate::domain::snowflake_generator::SnowflakeGenerator::default().next_id(now)?;
+        match reset_two_factor_by_username(&database, username, reset_id, now).await? {
+            TwoFactorReset::UnknownUser => bail!("no account is named {username}"),
+            TwoFactorReset::WasNotEnabled => Ok(false),
+            TwoFactorReset::Reset => Ok(true),
+        }
     }
     .await;
     database.close().await;
@@ -928,6 +961,60 @@ mod tests {
         assert!(promoted);
         assert!(!demoted);
         assert!(unknown.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_administrator_resets_two_factor_sign_in_and_the_reset_is_recorded() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = initialize_instance(&options_in(directory.path()))
+            .await
+            .unwrap();
+        let user = create_user(&config, new_user("paul", false)).await.unwrap();
+        let key = MasterKey::read_file(&config.master_key_file)
+            .unwrap()
+            .derive_database_key();
+        let database = open_encrypted_database(&config.database_path(), &key)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO two_factor_secrets (user_id, secret, enabled_at_unix_milliseconds, \
+             created_at_unix_milliseconds) VALUES (?, zeroblob(20), 1, 1)",
+        )
+        .bind(i64::try_from(user.id.raw()).unwrap())
+        .execute(database.writer())
+        .await
+        .unwrap();
+        database.close().await;
+
+        let first = reset_two_factor(&config, "Paul").await.unwrap();
+        let second = reset_two_factor(&config, "paul").await.unwrap();
+        let unknown = reset_two_factor(&config, "nobody").await;
+
+        let database = open_encrypted_database(&config.database_path(), &key)
+            .await
+            .unwrap();
+        let (secrets, resets): (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM two_factor_secrets), \
+             (SELECT COUNT(*) FROM two_factor_resets)",
+        )
+        .fetch_one(database.readers())
+        .await
+        .unwrap();
+        // The trail names the account as stored, and outlives it.
+        sqlx::query("DELETE FROM users")
+            .execute(database.writer())
+            .await
+            .unwrap();
+        let recorded: String = sqlx::query_scalar("SELECT username FROM two_factor_resets")
+            .fetch_one(database.readers())
+            .await
+            .unwrap();
+        database.close().await;
+        assert_eq!(recorded, "paul");
+        assert!(first);
+        assert!(!second, "nothing left to reset");
+        assert!(unknown.is_err());
+        assert_eq!((secrets, resets), (0, 1));
     }
 
     async fn is_administrator(config: &ServerConfig, username: &str) -> bool {

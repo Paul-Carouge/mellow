@@ -1,5 +1,6 @@
 //! SQLite storage, encrypted at rest with SQLCipher (ADR-0002, ADR-0006).
 
+pub(crate) mod account_names;
 pub(crate) mod accounts;
 pub(crate) mod attachment_files;
 pub(crate) mod attachments;
@@ -28,6 +29,8 @@ pub(crate) mod reactions;
 pub(crate) mod relationships;
 pub(crate) mod search;
 mod sqlite_integers;
+pub(crate) mod two_factor;
+pub(crate) mod user_profiles;
 
 pub use database::{Database, DatabaseKey, StorageError, open_encrypted_database};
 pub use master_key::{MasterKey, MasterKeyError};

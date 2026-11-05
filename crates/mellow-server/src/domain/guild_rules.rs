@@ -46,6 +46,8 @@ pub const MAXIMUM_MEMBERS_LISTED: u32 = 1_000;
 pub const MAXIMUM_EMOJIS_PER_GUILD_AND_KIND: u32 = 50;
 pub const MINIMUM_EMOJI_NAME_LENGTH: usize = 2;
 pub const MAXIMUM_EMOJI_NAME_LENGTH: usize = 32;
+/// Uploaded role icon pictures larger than this are refused before processing (ADR-0050).
+pub const MAXIMUM_ROLE_ICON_UPLOAD_BYTES: usize = 256 * 1024;
 /// Uploaded emoji pictures larger than this are refused before processing.
 pub const MAXIMUM_EMOJI_UPLOAD_BYTES: usize = 256 * 1024;
 /// A processed emoji larger than this (its still frame included) is refused.
@@ -134,6 +136,8 @@ pub enum GuildRuleViolation {
     SoundName,
     #[error("a sound's emoji is one emoji, or one of this server's custom emoji")]
     SoundEmoji,
+    #[error("a role's icon is one Unicode emoji, or a picture")]
+    RoleIconEmoji,
     #[error(
         "a sound is a PCM WAV, mono, 48 kHz, 16-bit, with a 44-byte header and at most {MAXIMUM_SOUND_DURATION_MILLISECONDS} ms of samples"
     )]

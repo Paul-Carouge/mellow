@@ -6,8 +6,9 @@ use crate::Snowflake;
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegisterRequest {
+    /// Deprecated alias of the account's name (ADR-0048): the name when `display_name` is absent.
     pub username: String,
-    /// Defaults to the username when absent.
+    /// The account's name, unique whatever its case and accents (ADR-0048).
     pub display_name: Option<String>,
     pub email: String,
     pub password: String,
@@ -19,7 +20,7 @@ pub struct RegisterRequest {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoginRequest {
-    /// Username or email address.
+    /// The account's name (in any case) or email address.
     pub login: String,
     pub password: String,
     pub device_name: String,
@@ -37,6 +38,7 @@ pub struct SessionCreated {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentUser {
     pub id: Snowflake,
+    /// Deprecated alias of `display_name`, the account's name (ADR-0048).
     pub username: String,
     pub display_name: String,
     pub email: String,
@@ -50,6 +52,10 @@ pub struct CurrentUser {
     pub status: ChosenStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_status: Option<String>,
+    /// The permanent code others add this account by, as `XXXX-XXXX` (ADR-0048); absent from
+    /// older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub friend_code: Option<String>,
 }
 
 /// The status a user picks for themselves. Others see `Invisible` as offline.
@@ -79,13 +85,22 @@ pub struct UpdatePresenceRequest {
 #[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateCurrentUserRequest {
+    /// Deprecated alias of `display_name` (ADR-0048), used when `display_name` is absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// A new name for the account, refused with `USERNAME_TAKEN` when another account has it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
-    /// Required to change the username.
+    /// No longer needed, names change without it (ADR-0048); kept so older clients still pass.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_password: Option<String>,
+}
+
+/// Answer to `GET /api/v1/users/name-availability?name=`: whether an account could take this name
+/// now. It never says who holds a taken name (ADR-0048).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameAvailability {
+    pub is_available: bool,
 }
 
 /// Body of `POST /api/v1/users/@me/password`. Every other session of the user is signed out; the
@@ -133,6 +148,8 @@ pub enum ApiErrorCode {
     /// refresh and try again.
     Conflict,
     Internal,
+    /// The two-factor code (or recovery code) is wrong, already used, or from too long ago.
+    InvalidTwoFactorCode,
 }
 
 const REDACTED: &str = "<redacted>";
@@ -238,6 +255,7 @@ mod tests {
                 banner: None,
                 status: ChosenStatus::Online,
                 custom_status: None,
+                friend_code: Some("LD0A-0DA8".into()),
             },
         };
         let password_change = ChangePasswordRequest {

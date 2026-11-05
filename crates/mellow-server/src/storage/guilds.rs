@@ -11,7 +11,7 @@ use mellow_protocol::{
 
 use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
 use crate::storage::guild_channels::{StoredChannel, channel_kind_to_text};
-use crate::storage::guild_roles::{RoleRow, role_from_row, roles_of_guild};
+use crate::storage::guild_roles::{RoleRow, role_columns, role_from_row, roles_of_guild};
 use crate::storage::sqlite_integers::{
     IntegerOutOfRange, lookup_integer, to_snowflake, to_sqlite_integer,
 };
@@ -202,12 +202,13 @@ pub(crate) async fn find_membership(
     let Some((guild_name, owner_id, icon_id, icon_is_animated)) = row else {
         return Ok(None);
     };
-    let rows: Vec<RoleRow> = sqlx::query_as(
-        "SELECT id, name, color, position, permissions, is_displayed_separately, is_mentionable \
-         FROM roles WHERE id = ? OR id IN \
+    let rows: Vec<RoleRow> = sqlx::query_as(concat!(
+        "SELECT ",
+        role_columns!(),
+        " FROM roles WHERE id = ? OR id IN \
          (SELECT role_id FROM member_roles WHERE guild_id = ? AND user_id = ?) \
-         ORDER BY position, id",
-    )
+         ORDER BY position, id"
+    ))
     .bind(guild_id)
     .bind(guild_id)
     .bind(user_id)

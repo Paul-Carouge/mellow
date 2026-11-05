@@ -1,6 +1,6 @@
 //! Guild roles and who holds them (migration 0002).
 
-use mellow_protocol::{Permissions, Role, Snowflake};
+use mellow_protocol::{Permissions, ProfileImage, Role, Snowflake};
 
 use super::Database;
 use super::guilds::{
@@ -12,10 +12,41 @@ use crate::storage::sqlite_integers::{
     convert_integer, lookup_integer, to_snowflake, to_sqlite_integer,
 };
 
-pub(super) type RoleRow = (i64, String, i64, i64, i64, bool, bool);
+pub(super) type RoleRow = (
+    i64,
+    String,
+    i64,
+    i64,
+    i64,
+    bool,
+    bool,
+    Option<i64>,
+    bool,
+    Option<String>,
+);
+
+/// The columns `RoleRow` reads, in its order, for `concat!` into a query.
+macro_rules! role_columns {
+    () => {
+        "id, name, color, position, permissions, is_displayed_separately, is_mentionable, \
+         icon_id, icon_is_animated, unicode_emoji"
+    };
+}
+pub(super) use role_columns;
 
 pub(super) fn role_from_row(row: RoleRow) -> Result<Role, GuildStorageError> {
-    let (id, name, color, position, permissions, is_displayed_separately, is_mentionable) = row;
+    let (
+        id,
+        name,
+        color,
+        position,
+        permissions,
+        is_displayed_separately,
+        is_mentionable,
+        icon_id,
+        icon_is_animated,
+        unicode_emoji,
+    ) = row;
     Ok(Role {
         id: to_snowflake(id)?,
         name,
@@ -24,6 +55,15 @@ pub(super) fn role_from_row(row: RoleRow) -> Result<Role, GuildStorageError> {
         permissions: permissions_from_integer(permissions),
         is_displayed_separately,
         is_mentionable,
+        icon: icon_id
+            .map(|id| {
+                Ok::<_, GuildStorageError>(ProfileImage {
+                    id: to_snowflake(id)?,
+                    is_animated: icon_is_animated,
+                })
+            })
+            .transpose()?,
+        unicode_emoji,
     })
 }
 
@@ -42,12 +82,11 @@ pub(super) async fn roles_of_guild(
     executor: impl sqlx::SqliteExecutor<'_>,
     guild_id: Snowflake,
 ) -> Result<Vec<Role>, GuildStorageError> {
-    let rows: Vec<RoleRow> = sqlx::query_as(
-        "SELECT id, name, color, position, permissions, is_displayed_separately, is_mentionable \
-         FROM roles \
-         WHERE guild_id = ? \
-         ORDER BY position, id",
-    )
+    let rows: Vec<RoleRow> = sqlx::query_as(concat!(
+        "SELECT ",
+        role_columns!(),
+        " FROM roles WHERE guild_id = ? ORDER BY position, id"
+    ))
     .bind(to_sqlite_integer(guild_id.raw())?)
     .fetch_all(executor)
     .await?;
@@ -134,15 +173,14 @@ pub(crate) async fn update_role_fields(
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
         .await?;
-    let row: Option<RoleRow> = sqlx::query_as(
+    let row: Option<RoleRow> = sqlx::query_as(concat!(
         "UPDATE roles SET name = COALESCE(?, name), color = COALESCE(?, color), \
          permissions = COALESCE((permissions & ~?) | (? & ?), permissions), \
          is_displayed_separately = COALESCE(?, is_displayed_separately), \
          is_mentionable = COALESCE(?, is_mentionable) \
-         WHERE id = ? AND guild_id = ? \
-         RETURNING id, name, color, position, permissions, is_displayed_separately, \
-         is_mentionable",
-    )
+         WHERE id = ? AND guild_id = ? RETURNING ",
+        role_columns!()
+    ))
     .bind(changes.name)
     .bind(changes.color.map(i64::from))
     .bind(permissions_to_integer(changeable_permissions))
@@ -225,16 +263,22 @@ pub(crate) async fn delete_role(
         .writer()
         .begin_with(BEGIN_WRITE_TRANSACTION)
         .await?;
-    let deleted_position: Option<i64> = sqlx::query_scalar(
-        "DELETE FROM roles WHERE id = ? AND guild_id = ? AND id != guild_id RETURNING position",
+    let deleted_position: Option<(i64, Option<i64>)> = sqlx::query_as(
+        "DELETE FROM roles WHERE id = ? AND guild_id = ? AND id != guild_id \
+         RETURNING position, icon_id",
     )
     .bind(role_id)
     .bind(guild_id)
     .fetch_optional(&mut *transaction)
     .await?;
-    let Some(deleted_position) = deleted_position else {
+    let Some((deleted_position, icon_id)) = deleted_position else {
         return Ok(false);
     };
+    // Its picture's file goes with the next sweep of files no row names.
+    sqlx::query("DELETE FROM guild_images WHERE id = ?")
+        .bind(icon_id)
+        .execute(&mut *transaction)
+        .await?;
     sqlx::query("UPDATE roles SET position = position - 1 WHERE guild_id = ? AND position > ?")
         .bind(guild_id)
         .bind(deleted_position)

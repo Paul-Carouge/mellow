@@ -1,6 +1,6 @@
 //! Guild and channel icons (migration 0014); their sealed files are in `attachment_files`.
 
-use mellow_protocol::{AuditChange, AuditChangeKey, GuildSummary, ProfileImage, Snowflake};
+use mellow_protocol::{AuditChange, AuditChangeKey, GuildSummary, ProfileImage, Role, Snowflake};
 use sqlx::SqliteConnection;
 
 use super::Database;
@@ -9,6 +9,7 @@ use crate::storage::audit_log::{NewAuditEntry, insert_audit_entry};
 use crate::storage::guild_channels::{
     ChannelRow, StoredChannel, attach_overwrites_to_channel, channel_from_row,
 };
+use crate::storage::guild_roles::{RoleRow, role_columns, role_from_row};
 use crate::storage::guilds::{BEGIN_WRITE_TRANSACTION, GuildStorageError};
 use crate::storage::profile_images::NewProfileImage;
 use crate::storage::sqlite_integers::{lookup_integer, to_snowflake, to_sqlite_integer};
@@ -229,6 +230,96 @@ pub(crate) async fn replace_channel_icon(
         .ok_or(GuildStorageError::ReferenceMissing)?;
     transaction.commit().await?;
     Ok(IconChange::Changed { updated, replaced })
+}
+
+/// A role's new icon (ADR-0050).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RoleIconChange<'a> {
+    Picture(NewProfileImage),
+    Emoji(&'a str),
+    None,
+}
+
+/// Makes the change the named role's icon, in place of a picture or emoji it had, recording
+/// `audit` with the change, in one transaction. Answers the updated role.
+///
+/// # Errors
+/// Fails on database errors; nothing is written then.
+pub(crate) async fn replace_role_icon(
+    database: &Database,
+    guild_id: Snowflake,
+    role_id: Snowflake,
+    change: RoleIconChange<'_>,
+    audit: &NewAuditEntry,
+    now_unix_milliseconds: u64,
+) -> Result<IconChange<Role>, GuildStorageError> {
+    let (Some(guild), Some(role)) = (lookup_integer(guild_id), lookup_integer(role_id)) else {
+        return Ok(IconChange::NotFound);
+    };
+    let mut transaction = database
+        .writer()
+        .begin_with(BEGIN_WRITE_TRANSACTION)
+        .await?;
+    let row: Option<(Option<i64>, Option<String>)> = sqlx::query_as(
+        "SELECT icon_id, unicode_emoji FROM roles WHERE id = ? AND guild_id = ? AND id != guild_id",
+    )
+    .bind(role)
+    .bind(guild)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some((previous_icon, previous_emoji)) = row else {
+        return Ok(IconChange::NotFound);
+    };
+    let is_unchanged = match change {
+        RoleIconChange::None => previous_icon.is_none() && previous_emoji.is_none(),
+        RoleIconChange::Emoji(emoji) => previous_emoji.as_deref() == Some(emoji),
+        RoleIconChange::Picture(_) => false,
+    };
+    if is_unchanged {
+        return Ok(IconChange::Unchanged);
+    }
+    let new_picture = match change {
+        RoleIconChange::Picture(image) => Some(image),
+        RoleIconChange::Emoji(_) | RoleIconChange::None => None,
+    };
+    let new_id = insert_guild_image(
+        &mut transaction,
+        guild,
+        None,
+        new_picture,
+        now_unix_milliseconds,
+    )
+    .await?;
+    let new_emoji = match change {
+        RoleIconChange::Emoji(emoji) => Some(emoji),
+        RoleIconChange::Picture(_) | RoleIconChange::None => None,
+    };
+    let row: RoleRow = sqlx::query_as(concat!(
+        "UPDATE roles SET icon_id = ?, icon_is_animated = ?, unicode_emoji = ? \
+         WHERE id = ? RETURNING ",
+        role_columns!()
+    ))
+    .bind(new_id)
+    .bind(new_picture.is_some_and(|image| image.still_id.is_some()))
+    .bind(new_emoji)
+    .bind(role)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let replaced = delete_guild_image(&mut transaction, previous_icon).await?;
+    let audit = NewAuditEntry {
+        changes: vec![AuditChange {
+            key: AuditChangeKey::Icon,
+            old_value: previous_emoji.unwrap_or_else(|| icon_id_as_audit_text(previous_icon)),
+            new_value: new_emoji.map_or_else(|| icon_id_as_audit_text(new_id), str::to_owned),
+        }],
+        ..audit.clone()
+    };
+    insert_audit_entry(&mut transaction, &audit).await?;
+    transaction.commit().await?;
+    Ok(IconChange::Changed {
+        updated: role_from_row(row)?,
+        replaced,
+    })
 }
 
 pub(crate) async fn find_guild_image(
