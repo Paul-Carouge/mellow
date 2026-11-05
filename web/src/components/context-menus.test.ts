@@ -17,6 +17,8 @@ describe("messageMenuActions", () => {
   const reader: MessageMenuFacts = {
     isOwn: false,
     isForward: false,
+    isPoll: false,
+    isPollOpen: false,
     hasText: true,
     hasReactions: false,
     isPinned: false,
@@ -66,6 +68,13 @@ describe("messageMenuActions", () => {
       "remove-all-reactions",
       "delete",
     ]);
+  });
+
+  it("never edits or forwards a poll, and lets its author end it while it is open (ADR-0043)", () => {
+    const poll = { ...reader, isOwn: true, isPoll: true, isPollOpen: true, hasText: false };
+    expect(messageMenuActions(poll)).toEqual(["add-reaction", "separator", "reply", "separator", "end-poll", "delete"]);
+    expect(messageMenuActions({ ...poll, isPollOpen: false })).not.toContain("end-poll");
+    expect(messageMenuActions({ ...poll, isOwn: false })).not.toContain("end-poll");
   });
 
   it("offers Unpin on a pinned message", () => {

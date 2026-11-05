@@ -2,12 +2,14 @@
   import { type Snippet, onDestroy, tick } from "svelte";
 
   import { strings } from "../i18n";
+  import { ApiError } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
   import {
     type Channel,
     type CustomEmoji,
     type ForwardOrigin,
     type Message,
+    type NewPoll,
     Permission,
     type PublicUser,
     type Snowflake,
@@ -116,6 +118,11 @@
   const canAttachFiles = $derived(
     canSendMessages && (channelPermissions === null || hasPermission(channelPermissions, Permission.ATTACH_FILES)),
   );
+  // In conversations everyone who may write there creates and votes in polls (ADR-0043).
+  const canCreatePolls = $derived(
+    canSendMessages && (channelPermissions === null || hasPermission(channelPermissions, Permission.SEND_POLLS)),
+  );
+  const canVoteInPolls = $derived(channel ? canReadHistory : canSendMessages);
   const composerLabel = $derived(
     channel
       ? strings.chat.composerInChannel(channel.name)
@@ -142,6 +149,9 @@
   let pinning = $state<{ message: Message; isPinned: boolean } | null>(null);
   let removingReactionsOf = $state<Message | null>(null);
   let viewingReactionsOfId = $state<Snowflake | null>(null);
+  let isCreatingPoll = $state(false);
+  let viewingVotersOf = $state<{ message: Message; answerId: number } | null>(null);
+  let endingPollOf = $state<Message | null>(null);
   let isPinsPanelOpen = $state(false);
   let pinsButton = $state<HTMLButtonElement | null>(null);
   const pinsPanelToggle = createPopoverToggle(() => isPinsPanelOpen);
@@ -321,8 +331,11 @@
     const lastOwn = channelId
       ? [...client.messages(channelId)]
           .reverse()
-          // A forward cannot be edited (ADR-0039): Up goes to the last message you wrote.
-          .find((message) => message.author.id === user?.id && message.forwarded_from === undefined)
+          // A forward or a poll cannot be edited (ADR-0039, ADR-0043): Up goes to the last message you wrote.
+          .find(
+            (message) =>
+              message.author.id === user?.id && message.forwarded_from === undefined && message.poll === undefined,
+          )
       : undefined;
     if (lastOwn) {
       editingMessageId = lastOwn.id;
@@ -441,6 +454,47 @@
     return message ? { message, reactions: message.reactions ?? [] } : null;
   });
 
+  async function choosePollAnswer(message: Message, answerId: number) {
+    actionError = "";
+    try {
+      await client.choosePollAnswer(message.channel_id, message.id, answerId);
+    } catch (error) {
+      showActionError(message.channel_id, pollVoteErrorSentence(error, strings.polls.voteFailed));
+    }
+  }
+
+  async function removeOwnPollVotes(message: Message) {
+    actionError = "";
+    try {
+      await client.removeOwnPollVotes(message.channel_id, message.id);
+    } catch (error) {
+      showActionError(message.channel_id, pollVoteErrorSentence(error, strings.polls.removeVoteFailed));
+    }
+  }
+
+  /** The instance refuses votes once a poll has ended, which this client's minute clock may not know yet. */
+  function pollVoteErrorSentence(error: unknown, summary: string): string {
+    return error instanceof ApiError && error.code === "VALIDATION_FAILED"
+      ? strings.polls.hasEnded
+      : describeError(error, summary);
+  }
+
+  async function endPoll(message: Message) {
+    actionError = "";
+    try {
+      await client.endPoll(message);
+    } catch (error) {
+      showActionError(message.channel_id, describeError(error, strings.polls.endFailed));
+    }
+  }
+
+  function sendPoll(poll: NewPoll) {
+    isCreatingPoll = false;
+    notice = "";
+    void client.sendPoll(poll);
+    messageList?.jumpToPresent();
+  }
+
   const reactionAndPinActions: ReactionAndPinActions = $derived({
     canJoinReactions: canReadHistory,
     canAddReactions,
@@ -453,6 +507,11 @@
     askToPin: (message, isPinned) => (pinning = { message, isPinned }),
     viewReactions: (message) => (viewingReactionsOfId = message.id),
     askToRemoveAllReactions: (message) => (removingReactionsOf = message),
+    canVoteInPolls,
+    choosePollAnswer: (message, answerId) => void choosePollAnswer(message, answerId),
+    removeOwnPollVotes: (message) => void removeOwnPollVotes(message),
+    viewPollVoters: (message, answerId) => (viewingVotersOf = { message, answerId }),
+    askToEndPoll: (message) => (endingPollOf = message),
   });
 
   async function startReply(message: Message) {
@@ -662,11 +721,13 @@
       {notice}
       isEmojiPickerOpen={picker !== null && picker.message === null}
       canChooseGifs={client.gifSettings !== null}
+      {canCreatePolls}
       isGifPickerOpen={gifPickerAnchor !== null}
       hasUnreadBar={unreadBarText !== ""}
       maximumHeight={maximumComposerHeight}
       onopenemojipicker={(anchor) => (picker = { message: null, anchor })}
       onopengifpicker={(anchor) => (gifPickerAnchor = anchor)}
+      onopenpolldialog={() => (isCreatingPoll = true)}
       onmarkasread={markAsRead}
       oneditlastmessage={editLastOwnMessage}
       onsent={() => {
@@ -821,6 +882,53 @@
     loadUsers={(emoji) => client.listReactingUsers(message.channel_id, message.id, emoji)}
     onremove={(emoji, userId) => client.removeUserReaction(message.channel_id, message.id, emoji, userId)}
     onclose={() => (viewingReactionsOfId = null)}
+    fallbackFocus={focusComposer}
+  />
+{/if}
+
+{#if isCreatingPoll}
+  <LazyComponent load={() => import("./CreatePollDialog.svelte")} onclose={() => (isCreatingPoll = false)}>
+    {#snippet children({ default: CreatePollDialog })}
+      <CreatePollDialog
+        isConversation={conversation !== null}
+        onsend={sendPoll}
+        onclose={() => (isCreatingPoll = false)}
+        fallbackFocus={focusComposer}
+      />
+    {/snippet}
+  </LazyComponent>
+{/if}
+
+{#if viewingVotersOf}
+  {@const { message, answerId } = viewingVotersOf}
+  <LazyComponent load={() => import("./PollVotersDialog.svelte")} onclose={() => (viewingVotersOf = null)}>
+    {#snippet children({ default: PollVotersDialog })}
+      <PollVotersDialog
+        answerText={message.poll?.answers.find((answer) => answer.id === answerId)?.text ?? ""}
+        loadVoters={(after) => client.listPollVoters(message.channel_id, message.id, answerId, after)}
+        onclose={() => (viewingVotersOf = null)}
+        fallbackFocus={focusComposer}
+      />
+    {/snippet}
+  </LazyComponent>
+{/if}
+
+{#if endingPollOf}
+  {@const message = endingPollOf}
+  <ConfirmMessageDialog
+    roles={client.knownRoles}
+    {message}
+    title={strings.polls.endTitle}
+    subtitle={strings.polls.endSubtitle}
+    submitLabel={strings.polls.end}
+    isDanger
+    onclose={() => (endingPollOf = null)}
+    onconfirm={() => {
+      // Read before clearing: `message` follows `endingPollOf` and would read null after.
+      const target = message;
+      endingPollOf = null;
+      void endPoll(target);
+    }}
     fallbackFocus={focusComposer}
   />
 {/if}

@@ -3,6 +3,7 @@
 import { strings } from "../i18n";
 import type { Message, PublicUser, Role, Snowflake } from "../lib/protocol";
 import { attachmentCountLabel } from "./format";
+import { pollSummary } from "./poll-view";
 import { messageAsPlainText } from "./role-mentions";
 
 export interface ReplyReference {
@@ -17,8 +18,14 @@ export type ReplyReferenceLookup = (
   roles: ReadonlyMap<Snowflake, Role>,
 ) => ReplyReference | null;
 
-/** The text, roles named, then "2 attachments" when files came with it (DESIGN.md §7.3). */
+/**
+ * The text, roles named, then "2 attachments" when files came with it (DESIGN.md §7.3); a poll's
+ * question for a poll (ADR-0043).
+ */
 export function messageSummary(message: Message, roles: ReadonlyMap<Snowflake, Role>): string {
+  if (message.poll) {
+    return pollSummary(message.poll);
+  }
   return [messageAsPlainText(message.content, roles), attachmentCountLabel(message.attachments?.length ?? 0)]
     .filter(Boolean)
     .join(" ");

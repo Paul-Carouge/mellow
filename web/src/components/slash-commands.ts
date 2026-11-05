@@ -21,7 +21,8 @@ export type SlashCommandId =
   | "numberedList"
   | "link"
   | "shrug"
-  | "tableflip";
+  | "tableflip"
+  | "poll";
 
 type SlashCommandEffect =
   /** Starts the line: the spaces and the "/query" in front of it are replaced. */
@@ -31,13 +32,15 @@ type SlashCommandEffect =
   | { kind: "codeBlock" }
   /** `[text](https://)` with the text selected, ready to be typed over. */
   | { kind: "link" }
-  | { kind: "text"; text: string };
+  | { kind: "text"; text: string }
+  /** Opens a dialog (a poll, ADR-0043): the "/query" goes, nothing is written. */
+  | { kind: "dialog" };
 
 export interface SlashCommand {
   id: SlashCommandId;
   icon: IconName;
   effect: SlashCommandEffect;
-  /** What the command writes, shown at the end of its row. */
+  /** What the command writes, shown at the end of its row; empty for a dialog. */
   markup: string;
   /** Words that find it in any language: Markdown's own names ("h1"), short forms. */
   keywords: readonly string[];
@@ -51,7 +54,10 @@ export const SHRUG_MARKDOWN = "¯\\\\\\_(ツ)\\_/¯";
 const TABLEFLIP_TEXT = "(╯°□°)╯︵ ┻━┻";
 const CODE_FENCE = "```";
 
-/** In the order the menu lists them before anything is typed: headings, inline marks, blocks, extras. */
+/**
+ * In the order the menu lists them before anything is typed: headings, inline marks, blocks,
+ * extras, then the poll, the one command that opens a dialog instead of writing Markdown.
+ */
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { id: "heading1", icon: "text-h-one", effect: { kind: "linePrefix", prefix: "# " }, markup: "#", keywords: ["h1"] },
   { id: "heading2", icon: "text-h-two", effect: { kind: "linePrefix", prefix: "## " }, markup: "##", keywords: ["h2"] },
@@ -69,6 +75,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { id: "link", icon: "link-simple", effect: { kind: "link" }, markup: "[ ]( )", keywords: ["url"] },
   { id: "shrug", icon: "smiley-meh", effect: { kind: "text", text: SHRUG_MARKDOWN }, markup: "¯\\_(ツ)_/¯", keywords: [] },
   { id: "tableflip", icon: "smiley-angry", effect: { kind: "text", text: TABLEFLIP_TEXT }, markup: TABLEFLIP_TEXT, keywords: [] },
+  { id: "poll", icon: "chart-bar-horizontal", effect: { kind: "dialog" }, markup: "", keywords: ["vote"] },
 ];
 
 // --- Finding the "/co" being typed -----------------------------------------------------------
@@ -220,6 +227,8 @@ export function applySlashCommand(
       const inserted = after === "" || /^\s/u.test(after) ? effect.text : `${effect.text} `;
       return caretAfter(before, inserted, after);
     }
+    case "dialog":
+      return caretAfter(before, "", after);
   }
 }
 

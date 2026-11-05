@@ -176,10 +176,16 @@ describe("applySlashCommand", () => {
     expect(parseMessageMarkdown(code, new Map())).toEqual([{ kind: "codeBlock", language: null, text: "let a = 1;" }]);
   });
 
-  it("shows each command's own Markdown in its row", () => {
+  it("shows each command's own Markdown in its row, and none for the poll's dialog", () => {
     for (const command of SLASH_COMMANDS) {
-      expect(command.markup).not.toBe("");
+      expect(command.markup === "").toBe(command.effect.kind === "dialog");
     }
+  });
+
+  it("finds the poll by its name in either language, and only removes the /query", () => {
+    expect(idsFor("sond", FRENCH)[0]).toBe("poll");
+    expect(idsFor("poll", FRENCH)[0]).toBe("poll");
+    expect(apply("poll", "Salut\n/sond|")).toEqual({ text: "Salut\n", selectionStart: 6, selectionEnd: 6 });
   });
 });
 

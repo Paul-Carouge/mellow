@@ -205,6 +205,8 @@
           return { onselect: () => actions.viewReactions(message) };
         case "remove-all-reactions":
           return { onselect: () => actions.askToRemoveAllReactions(message) };
+        case "end-poll":
+          return { onselect: () => actions.askToEndPoll(message) };
         case "delete":
           return { onselect: () => ondelete(message, false) };
       }

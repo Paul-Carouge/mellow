@@ -55,12 +55,17 @@ export type MessageMenuAction =
   | "unpin"
   | "view-reactions"
   | "remove-all-reactions"
+  | "end-poll"
   | "delete";
 
 export interface MessageMenuFacts {
   readonly isOwn: boolean;
   /** A forward copies someone's words: it cannot be edited (ADR-0039). */
   readonly isForward: boolean;
+  /** A poll is neither edited nor forwarded (ADR-0043). */
+  readonly isPoll: boolean;
+  /** Its author may end it early while it still takes votes. */
+  readonly isPollOpen: boolean;
   readonly hasText: boolean;
   readonly hasReactions: boolean;
   readonly isPinned: boolean;
@@ -80,13 +85,14 @@ export function messageMenuActions(facts: MessageMenuFacts): MenuLine<MessageMen
     [
       facts.canSendMessages && "reply",
       // Forwarding needs somewhere else to send to, which the dialog finds; reading is enough here.
-      "forward",
-      facts.isOwn && !facts.isForward && facts.canSendMessages && "edit",
+      !facts.isPoll && "forward",
+      facts.isOwn && !facts.isForward && !facts.isPoll && facts.canSendMessages && "edit",
       facts.hasText && "copy-text",
       facts.canManagePins && (facts.isPinned ? "unpin" : "pin"),
       facts.hasReactions && facts.canJoinReactions && "view-reactions",
     ],
     [
+      facts.isOwn && facts.isPoll && facts.isPollOpen && "end-poll",
       facts.hasReactions && facts.canRemoveReactions && "remove-all-reactions",
       (facts.isOwn || facts.canManageMessages) && "delete",
     ],
@@ -291,6 +297,7 @@ const LOOKS: Record<MenuAction, MenuItemLook> = {
   unpin: { label: strings.pins.unpin, icon: "push-pin-slash", tone: "normal" },
   "view-reactions": { label: strings.reactions.reactions, icon: "users", tone: "normal" },
   "remove-all-reactions": { label: strings.reactions.removeAll, icon: "x-circle", tone: "danger" },
+  "end-poll": { label: strings.polls.end, icon: "chart-bar-horizontal", tone: "danger" },
   delete: { label: strings.contextMenu.deleteMessage, icon: "trash", tone: "danger" },
   profile: { label: strings.members.profile, icon: "at", tone: "normal" },
   message: { label: strings.contextMenu.message, icon: "chat-circle", tone: "normal" },

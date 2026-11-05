@@ -25,6 +25,13 @@ describe("createReplyReferenceLookup", () => {
     expect(lookup(original, byId([original, reply]), nobodyBlocked, NO_ROLES)).toBeNull();
   });
 
+  it("quotes a poll by its question (ADR-0043)", () => {
+    const poll = { question: "Lunch?", answers: [], allows_multiple_answers: false, expires_at_unix_milliseconds: 0 };
+    const pollMessage = { ...message("10", ana, ""), poll };
+    const lookup = createReplyReferenceLookup();
+    expect(lookup(reply, byId([pollMessage, reply]), nobodyBlocked, NO_ROLES)?.text).toBe(strings.polls.summary("Lunch?"));
+  });
+
   it("returns the same object while the original stays the same", () => {
     const lookup = createReplyReferenceLookup();
     const first = lookup(reply, byId([original, reply]), nobodyBlocked, NO_ROLES);
