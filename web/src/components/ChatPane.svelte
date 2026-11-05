@@ -689,6 +689,7 @@
         bind:this={messageList}
         {client}
         {channelId}
+        isCompact={hasNavigationDrawer}
         currentUser={user}
         channelLabel={channel ? `#${channel.name}` : conversationName}
         heroIcon={channel ? "hash" : isGroup ? "users" : "at"}

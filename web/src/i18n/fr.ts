@@ -598,6 +598,8 @@ export const fr: Catalogue = {
     newPill: "Nouveau",
     viewingOlder: "Tu consultes des messages plus anciens",
     jumpToPresent: "Revenir au présent",
+    jumpToPresentWithArrivals: (arrivals) =>
+      `Revenir au présent · ${count(arrivals)} ${plural(arrivals, { one: "nouveau", other: "nouveaux" })}`,
     dayAndNewSince: (day, time) => `${day}, nouveaux messages depuis ${time}`,
     originalUnavailable: "Le message d’origine a été supprimé ou n’est pas chargé",
     deletedRoleName: "rôle-supprimé",

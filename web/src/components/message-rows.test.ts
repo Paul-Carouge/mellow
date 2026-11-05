@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { PendingMessage } from "../lib/client.svelte";
 import type { Message } from "../lib/protocol";
 import {
+  arrivalsSinceLeavingPresent,
   buildMessageRows,
   collapseBlockedRuns,
   localDayStart,
@@ -208,5 +209,15 @@ describe("day dividers", () => {
       [`blocked-${early}`, false],
       [early, true],
     ]);
+  });
+});
+
+describe("arrivalsSinceLeavingPresent", () => {
+  it("counts what others sent after the reader scrolled away, never the reader's own", () => {
+    const left = message("4194304010");
+    const mine = { ...message("4194304011"), author: { id: "1", username: "me", display_name: "" } };
+    const messages = [message("4194304009"), left, mine, message("4194304012"), message("4194304013")];
+    expect(arrivalsSinceLeavingPresent(messages, left.id, "1")).toBe(2);
+    expect(arrivalsSinceLeavingPresent(messages, "4194304013", "1")).toBe(0);
   });
 });

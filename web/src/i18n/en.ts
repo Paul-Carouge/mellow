@@ -606,6 +606,8 @@ export const en = {
     newPill: "New",
     viewingOlder: "You're viewing older messages",
     jumpToPresent: "Jump to present",
+    /** On the bottom jump bar when others wrote while the reader scrolled up (DESIGN.md §5.4). */
+    jumpToPresentWithArrivals: (arrivals: number) => `Jump to present · ${count(arrivals)} new`,
     /** A day divider that is also the unread divider, read out as one separator. */
     dayAndNewSince: (day: string, time: string) => `${day}, new messages since ${time}`,
     originalUnavailable: "Original message was deleted or is not loaded",
