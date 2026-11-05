@@ -382,7 +382,13 @@
     hasShownUnreadDivider = true;
     const distanceAboveView = viewport.getBoundingClientRect().top - divider.getBoundingClientRect().top;
     if (distanceAboveView > 0) {
-      const clearanceUnderJumpBar = lengthTokenInPixels("component-jump-bar-height") + lengthTokenInPixels("space-md");
+      // The chat's top unread bar wraps on phones and grows to 44 px under touch: clear what it
+      // really covers, so the divider and its date are not left under it.
+      const topUnreadBar = viewport.closest("section")?.querySelector<HTMLElement>(".unread-bar");
+      const coveredHeight = topUnreadBar
+        ? Math.max(0, topUnreadBar.getBoundingClientRect().bottom - viewport.getBoundingClientRect().top)
+        : lengthTokenInPixels("component-jump-bar-height");
+      const clearanceUnderJumpBar = coveredHeight + lengthTokenInPixels("space-md");
       viewport.scrollTop -= distanceAboveView + clearanceUnderJumpBar;
       isPinnedToLatest = false;
       isViewingOlderMessages = true;
