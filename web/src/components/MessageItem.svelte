@@ -2,7 +2,15 @@
   import { onMount } from "svelte";
 
   import { strings } from "../i18n";
-  import type { CustomEmoji, ForwardOrigin, Message, PublicUser, Role, Snowflake } from "../lib/protocol";
+  import {
+    type CustomEmoji,
+    type ForwardOrigin,
+    type Message,
+    type PublicUser,
+    type Role,
+    type Snowflake,
+    MAXIMUM_MESSAGE_LENGTH,
+  } from "../lib/protocol";
   import { type MentionReader, doesMessageMentionReader } from "../lib/reader-mentions";
   import { autosize } from "./autosize";
   import Avatar from "./Avatar.svelte";
@@ -19,6 +27,7 @@
   import IconButton from "./IconButton.svelte";
   import type { MenuOrigin } from "./menu-placement";
   import type { ReactionAndPinActions } from "./message-actions";
+  import type { MessageEditor } from "./message-editor.svelte";
   import MessageReactions from "./MessageReactions.svelte";
   import { reactionKey } from "../lib/reactions";
   import { messageGifMediaOf } from "../lib/klipy";
@@ -32,6 +41,7 @@
   import MessageGif from "./MessageGif.svelte";
   import MessageLinkPreviews from "./MessageLinkPreviews.svelte";
   import MessageMarkdown from "./MessageMarkdown.svelte";
+  import { MESSAGE_LENGTH_COUNTER_THRESHOLD } from "./message-length";
   import type { MessageListRow } from "./message-rows";
   import { isPollEnded } from "../lib/polls";
   import PollCard from "./PollCard.svelte";
@@ -67,6 +77,8 @@
     canManageMessages: boolean;
     reactionAndPinActions: ReactionAndPinActions;
     isEditing: boolean;
+    /** The chat's inline editor: its text while `isEditing`. */
+    messageEditor: MessageEditor;
     isRovingTarget: boolean;
     /** The list's message menu is open on this message. */
     isMenuOpen: boolean;
@@ -83,7 +95,7 @@
     /** The footer of a forward: its original, in its own channel. */
     onopenforwardorigin: (origin: ForwardOrigin) => void;
     onstartedit: (message: Message) => void;
-    onsaveedit: (message: Message, text: string) => void;
+    onsaveedit: (message: Message) => void;
     oncanceledit: () => void;
     /** `skipConfirmation` when Shift was held, as on Discord. */
     ondelete: (message: Message, skipConfirmation: boolean) => void;
@@ -109,6 +121,7 @@
     canManageMessages,
     reactionAndPinActions: actions,
     isEditing,
+    messageEditor: editor,
     isRovingTarget,
     isMenuOpen,
     onopenmenu,
@@ -170,15 +183,6 @@
         markdownMentionsUser(contentBlocks, currentUser.id)),
   );
 
-  // Taken from the message when the editor opens; later updates to the message keep the typing.
-  let draft = $state("");
-  let wasEditing = false;
-  $effect.pre(() => {
-    if (isEditing && !wasEditing && message) {
-      draft = message.content;
-    }
-    wasEditing = isEditing;
-  });
 
   // "Sending…" appears only after a delay, so fast sends do not flicker (DESIGN.md §5.4).
   let isSendingLabelShown = $state(false);
@@ -186,6 +190,8 @@
     const timer = setTimeout(() => (isSendingLabelShown = true), durationTokenInMilliseconds("motion-delay-pending-label"));
     return () => clearTimeout(timer);
   });
+
+  const isEditorCounterShown = $derived(isEditing && editor.charactersLeft <= MESSAGE_LENGTH_COUNTER_THRESHOLD);
 
   function handleEditorKeydown(event: KeyboardEvent & { currentTarget: HTMLTextAreaElement }) {
     if (!message) {
@@ -197,7 +203,7 @@
       oncanceledit();
     } else if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
-      onsaveedit(message, draft);
+      onsaveedit(message);
     }
   }
 
@@ -404,30 +410,49 @@
   {#if isEditing && message}
     <div class="flex flex-col gap-(--mw-component-message-editor-hint-gap) py-(--mw-space-3xs)">
       <textarea
-        bind:value={draft}
+        bind:value={editor.text}
         rows="1"
         aria-label={strings.messages.editMessage}
-        aria-describedby="edit-hint-{message.id}"
+        aria-describedby={isEditorCounterShown
+          ? `edit-hint-${message.id} edit-characters-left-${message.id}`
+          : `edit-hint-${message.id}`}
         class="w-full resize-none rounded-(--mw-component-message-editor-radius) bg-(--mw-component-message-editor-background) px-(--mw-component-message-editor-padding-inline) py-(--mw-component-message-editor-padding-block) type-message text-(--mw-component-message-editor-text) focus-visible:focus-ring-inset"
         onkeydown={handleEditorKeydown}
-        {@attach autosize(() => draft, maximumEditorHeight)}
+        {@attach autosize(() => editor.text, maximumEditorHeight)}
         {@attach focusEditorAtEnd}
       ></textarea>
-      <p id="edit-hint-{message.id}" class="type-message-subtext text-(--mw-component-message-editor-hint-text)">
-        {strings.messages.escTo} <button
-          type="button"
-          class="text-(--mw-component-message-editor-hint-link) hover:underline"
-          aria-label={strings.messages.cancelEditing}
-          onclick={oncanceledit}>{strings.messages.cancelLowercase}</button
-        >
-        {strings.messages.enterTo}
-        <button
-          type="button"
-          class="text-(--mw-component-message-editor-hint-link) hover:underline"
-          aria-label={strings.messages.saveChanges}
-          onclick={() => onsaveedit(message, draft)}>{strings.messages.saveLowercase}</button
-        >
-      </p>
+      {#if editor.isTooLong && editor.hasTriedSavingTooLong}
+        <p role="alert" class="type-message-subtext text-(--mw-component-composer-error-text)">
+          {strings.chat.messageTooLong(MAXIMUM_MESSAGE_LENGTH)}
+        </p>
+      {/if}
+      <div class="flex gap-xs type-message-subtext text-(--mw-component-message-editor-hint-text)">
+        <p id="edit-hint-{message.id}" class="min-w-0 flex-1">
+          {strings.messages.escTo} <button
+            type="button"
+            class="text-(--mw-component-message-editor-hint-link) hover:underline"
+            aria-label={strings.messages.cancelEditing}
+            onclick={oncanceledit}>{strings.messages.cancelLowercase}</button
+          >
+          {strings.messages.enterTo}
+          <button
+            type="button"
+            class="text-(--mw-component-message-editor-hint-link) hover:underline"
+            aria-label={strings.messages.saveChanges}
+            onclick={() => onsaveedit(message)}>{strings.messages.saveLowercase}</button
+          >
+        </p>
+        {#if isEditorCounterShown}
+          <!-- The composer's counter: only near the limit, the number alone on screen. -->
+          <span
+            id="edit-characters-left-{message.id}"
+            class={["shrink-0 tabular-nums", editor.isTooLong && "text-(--mw-component-composer-error-text)"]}
+          >
+            <span aria-hidden="true">{editor.charactersLeft}</span>
+            <span class="sr-only">{strings.chat.messageCharactersLeft(editor.charactersLeft)}</span>
+          </span>
+        {/if}
+      </div>
     </div>
   {:else if forwardedFrom && forwardOriginSentAt !== null}
     <!-- A forward (ADR-0039): the copied words and files held by the quote bar, named "Forwarded"
