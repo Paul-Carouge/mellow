@@ -479,8 +479,8 @@ pub(crate) async fn list_messages(
     rows.into_iter().map(message_from_row).collect()
 }
 
-/// Replaces the content and stamps the edit time; returns the updated message, or `None` if it
-/// was deleted meanwhile.
+/// Replaces the content, stamps the edit time and drops the previews of links not in
+/// `kept_links` (ADR-0041); returns the updated message, or `None` if it was deleted meanwhile.
 ///
 /// # Errors
 /// Fails on database errors.
@@ -490,6 +490,7 @@ pub(crate) async fn update_message_content(
     message_id: Snowflake,
     content: &str,
     mentions: &MessageMentions,
+    kept_links: &[&str],
     edited_at_unix_milliseconds: u64,
 ) -> Result<Option<StoredMessage>, MessageStorageError> {
     let mut transaction = database.writer().begin_with("BEGIN IMMEDIATE").await?;
@@ -517,6 +518,12 @@ pub(crate) async fn update_message_content(
             .await?;
     }
     insert_mentions(&mut transaction, channel_id, message_id, mentions).await?;
+    crate::storage::link_previews::drop_previews_of_removed_links(
+        &mut transaction,
+        message_id,
+        kept_links,
+    )
+    .await?;
     transaction.commit().await?;
     // RETURNING ran before the mentions were replaced.
     Ok(Some(StoredMessage {

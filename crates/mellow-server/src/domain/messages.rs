@@ -12,7 +12,7 @@ mod search;
 
 pub(crate) use link_previews::fetch_link_previews_in_background;
 #[cfg(test)]
-pub(crate) use link_previews::fetch_queued_link_previews;
+pub(crate) use link_previews::{fetch_queued_link_previews, run_queued_link_preview_jobs};
 pub(crate) use reactions::ReactionRemoval;
 
 use std::collections::{HashMap, HashSet};
@@ -27,6 +27,7 @@ use mellow_protocol::{
 };
 
 use crate::domain::guilds::{ChannelAudience, GuildError, Guilds};
+use crate::domain::link_previews::links::links_to_preview;
 use crate::domain::mentions::{self, MentionablePerson, RoleMentionReach, RoleWithMentionSetting};
 use crate::domain::message_rules::{
     MAXIMUM_ATTACHMENTS_PER_MESSAGE, MessageRuleViolation, history_page_size,
@@ -249,6 +250,7 @@ fn permissions_to_send(has_files: bool) -> Permissions {
 }
 
 /// Where a message action happens.
+#[derive(Clone)]
 enum MessageChannel {
     Guild(StoredChannel),
     Direct {
@@ -623,7 +625,7 @@ impl Messages {
         let published_poll = poll.as_ref().map(polls::poll_without_votes);
         let link_preview_ticket =
             self.link_previews
-                .ticket(channel.guild_id(), forwarded.is_some(), &content);
+                .ticket(&channel, user_id, forwarded.is_some(), &content);
         let database = self.database.clone();
         let ids = self.ids.clone();
         let guilds = self.guilds.clone();
@@ -692,7 +694,7 @@ impl Messages {
                 &event,
             );
             if let Some(ticket) = link_preview_ticket {
-                ticket.queue_for(&message, audience);
+                ticket.queue_for(&message);
             }
             Ok(message)
         })
@@ -921,13 +923,22 @@ impl Messages {
         // between the commit and the event.
         let author_images = profile_images_of_user(&self.database, user_id).await?;
         let attachments = attachments_of(&self.database, message.id).await?;
-        let previews_before = link_previews::previews_of(&self.database, message.id).await?;
+        // The edit itself drops the previews of the links it removed, whatever becomes of its job
+        // (previews off, queue full, job failed or out of time); the job only adds.
+        let links = links_to_preview(&content);
+        let kept_links: Vec<&str> = links.iter().map(url::Url::as_str).collect();
+        let mut previews_kept = link_previews::previews_of(&self.database, message.id).await?;
+        previews_kept.retain(|preview| kept_links.contains(&preview.url.as_str()));
+        let link_preview_ticket = self
+            .link_previews
+            .ticket(&channel, user_id, false, &content);
         let updated = message_storage::update_message_content(
             &self.database,
             channel.id(),
             message.id,
             &content,
             &mentions,
+            &kept_links,
             now_unix_milliseconds,
         )
         .await?
@@ -935,22 +946,15 @@ impl Messages {
         let mut updated = message_from_stored(updated, None, attachments);
         updated.author.avatar = author_images.avatar;
         updated.author.banner = author_images.banner;
-        // The previews of the text before the edit, until the fetcher answers for the new one.
-        updated.link_previews = previews_before;
+        // The previews of the links the edit kept, until the fetcher answers for the new ones.
+        updated.link_previews = previews_kept;
         publish(
             &self.guilds,
             &audience,
             &GatewayEvent::MessageUpdate(updated.clone()),
         );
-        if let Some(sender) = self.link_previews.sender_if_enabled() {
-            link_previews::queue(
-                Some(&sender),
-                Some(link_previews::PreviewJob::for_edit(
-                    channel.guild_id(),
-                    &updated,
-                    audience,
-                )),
-            );
+        if let Some(ticket) = link_preview_ticket {
+            ticket.queue_for(&updated);
         }
         // Only the editor's answer carries reactions; a failure here leaves the edit published.
         fill_reactions(&self.database, user_id, std::slice::from_mut(&mut updated)).await?;
