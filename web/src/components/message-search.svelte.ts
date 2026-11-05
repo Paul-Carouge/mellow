@@ -109,7 +109,10 @@ export class MessageSearch {
     this.fieldElement = element;
     if (element !== null && this.isFieldFocusWanted) {
       this.isFieldFocusWanted = false;
-      this.focusField();
+      // The panel may have closed without clear() (Escape, quick switcher, member sheet).
+      if (this.isPanelOpen) {
+        this.focusField();
+      }
     }
   }
 

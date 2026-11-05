@@ -181,6 +181,7 @@ describe("MessageSearch field focus", () => {
 
   it("focuses the results panel's field once it is shown, when it was still loading", () => {
     const search = new MessageSearch(fakeInstance().searchMessages);
+    search.isPanelOpen = true;
     search.focusFieldOnceShown();
     const { field, element } = fakeField();
     search.registerField(element);
@@ -198,5 +199,20 @@ describe("MessageSearch field focus", () => {
     const { field, element } = fakeField();
     search.registerField(element);
     expect(field.focus).not.toHaveBeenCalled();
+  });
+
+  it("forgets the wish when the panel closes on its own before its field is shown", () => {
+    const search = new MessageSearch(fakeInstance().searchMessages);
+    search.isPanelOpen = true;
+    search.focusFieldOnceShown();
+    // Escape on the sheet, the quick switcher or the member sheet close it without clear().
+    search.isPanelOpen = false;
+    const { field, element } = fakeField();
+    search.registerField(element);
+    expect(field.focus).not.toHaveBeenCalled();
+    // Nor does a field shown later, once the window is wide again.
+    const later = fakeField();
+    search.registerField(later.element);
+    expect(later.field.focus).not.toHaveBeenCalled();
   });
 });
