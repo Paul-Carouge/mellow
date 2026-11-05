@@ -155,7 +155,6 @@
   shouldReturnFocusToOpener={() => !hasSucceeded}
   title={isJoining ? strings.addServer.joinTitle : strings.addServer.createTitle}
   subtitle={isJoining ? strings.addServer.joinSubtitle : strings.addServer.createSubtitle}
-  isHeadingCentered
   isWide={!isJoining}
   errorMessage={error && error.isJoin === isJoining ? error.text : ""}
   {isBusy}
@@ -244,12 +243,15 @@
             class="sr-only"
             onchange={(event) => chooseFile(event.currentTarget)}
           />
-          <Button
-            id="{id}-icon-upload"
-            variant="ghost"
-            aria-describedby={icon ? undefined : `${id}-icon-note`}
-            onclick={() => fileInput?.click()}>{strings.iconEditor.upload}</Button
-          >
+          <!-- Pulled by its padding, so its label lines up with the icon above. -->
+          <div class="-ms-(--mw-component-button-padding-inline)">
+            <Button
+              id="{id}-icon-upload"
+              variant="ghost"
+              aria-describedby={icon ? undefined : `${id}-icon-note`}
+              onclick={() => fileInput?.click()}>{strings.iconEditor.upload}</Button
+            >
+          </div>
           {#if icon}
             <Button
               variant="ghost"
@@ -288,9 +290,9 @@
     </div>
   {/if}
   {#if !client.mayCreateGuilds}
-    <p class="text-center type-body text-(--mw-component-dialog-hint-text)">{strings.addServer.creationReservedToAdministrators}</p>
+    <p class="type-body text-(--mw-component-dialog-hint-text)">{strings.addServer.creationReservedToAdministrators}</p>
   {:else if !isCreatedWithoutIcon}
-    <p class="flex flex-wrap items-center justify-center gap-x-(--mw-space-2xs) type-body text-(--mw-component-dialog-hint-text)">
+    <p class="flex flex-wrap items-center gap-x-(--mw-space-2xs) type-body text-(--mw-component-dialog-hint-text)">
       {isJoining ? strings.addServer.hasNoInvite : strings.addServer.hasInvite}
       <button
         type="button"
