@@ -121,7 +121,7 @@ async function compressInput(
   if (bytes === null) {
     throw new Error("the conversion finished without an output buffer");
   }
-  return isOutputWorthSending(plan.kind, file.size, bytes.byteLength)
+  return isOutputWorthSending(plan, file.size, bytes.byteLength, maximumAttachmentBytes)
     ? { bytes }
     : { keptOriginalBecause: "not-smaller" };
 }
