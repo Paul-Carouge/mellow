@@ -210,10 +210,10 @@ describe("placeMenu at tiny windows and edges", () => {
     expect(placement.isAbove).toBe(true);
   });
 
-  it("anchor with stretch ignores window clamping (documented: left = bounds.left)", () => {
+  it("anchor with stretch is kept inside the window, at least its element's width", () => {
     const bounds = { top: 10, bottom: 40, left: 900, right: 1100 };
     const placement = placeMenu({ kind: "anchor", bounds, align: "stretch" }, { width: 50, height: 50 }, { width: 1000, height: 800 }, 4, margin);
-    expect(placement).toMatchObject({ left: 900, width: 200 });
+    expect(placement).toMatchObject({ left: 800, minimumWidth: 200 });
   });
 });
 

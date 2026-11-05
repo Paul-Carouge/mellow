@@ -28,7 +28,7 @@ describe("placeMenu", () => {
       expect(placeMenu({ kind: "point", x: 300, y: 200 }, menu, desktop, 4, 4)).toEqual({
         top: 200,
         left: 300,
-        width: null,
+        minimumWidth: null,
         isAbove: false,
       });
     });
@@ -62,7 +62,7 @@ describe("placeMenu", () => {
       expect(placeMenu({ kind: "anchor", bounds, align: "end" }, menu, desktop, 4, 4)).toEqual({
         top: 136,
         left: 440,
-        width: null,
+        minimumWidth: null,
         isAbove: false,
       });
     });
@@ -72,11 +72,19 @@ describe("placeMenu", () => {
       expect(placeMenu({ kind: "anchor", bounds: nearTheRight, align: "start" }, menu, desktop, 4, 4).left).toBe(800);
     });
 
-    it("takes the element's width when stretched", () => {
+    it("is at least the element's width when stretched", () => {
       expect(placeMenu({ kind: "anchor", bounds, align: "stretch" }, menu, desktop, 4, 4)).toMatchObject({
         left: 400,
-        width: 240,
+        minimumWidth: 240,
       });
+    });
+
+    it("keeps a stretched menu wider than its element inside the window", () => {
+      // The server header in a drawer on a 320 px phone, with a menu whose longest item needs 260 px.
+      const header = { top: 40, bottom: 88, left: 80, right: 260 };
+      expect(
+        placeMenu({ kind: "anchor", bounds: header, align: "stretch" }, { width: 260, height: 200 }, { width: 320, height: 640 }, 4, 4),
+      ).toMatchObject({ left: 60, minimumWidth: 180 });
     });
 
     it("opens above an element near the bottom", () => {

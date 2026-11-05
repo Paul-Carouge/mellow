@@ -13,7 +13,7 @@ export interface MenuAnchorBounds {
 /**
  * What opened the menu: a pointer (right-click, long press) at a point, or an element (a button,
  * or the focused item for Shift+F10 and the Menu key). `align` says which of the element's edges
- * the menu lines up with; `stretch` makes it as wide as the element.
+ * the menu lines up with; `stretch` makes it at least as wide as the element, from its leading edge.
  */
 export type MenuOrigin =
   | { readonly kind: "point"; readonly x: number; readonly y: number }
@@ -22,8 +22,8 @@ export type MenuOrigin =
 export interface MenuPlacement {
   readonly top: number;
   readonly left: number;
-  /** Set for a stretched menu only; the others keep their own width. */
-  readonly width: number | null;
+  /** A stretched menu's least width (its element's); the others keep their own width. */
+  readonly minimumWidth: number | null;
   /** The menu opened above its origin: it lifts in rather than drops in. */
   readonly isAbove: boolean;
 }
@@ -66,17 +66,25 @@ export function placeMenu(
     return {
       top,
       left: clampIntoWindow(fitsRight ? origin.x : origin.x - menu.width, menu.width, viewport.width, margin),
-      width: null,
+      minimumWidth: null,
       isAbove: top < origin.y,
     };
   }
   const { bounds, align } = origin;
   const top = menuTopNextToAnchor(bounds, menu.height, viewport.height, gap);
+  if (align === "stretch") {
+    // At least as wide as the element; wider when an item needs it, still inside the window.
+    const minimumWidth = bounds.right - bounds.left;
+    return {
+      top,
+      left: clampIntoWindow(bounds.left, Math.max(menu.width, minimumWidth), viewport.width, 0),
+      minimumWidth,
+      isAbove: top < bounds.top,
+    };
+  }
   const left =
     align === "end"
       ? Math.max(bounds.right - menu.width, 0)
-      : align === "start"
-        ? clampIntoWindow(bounds.left, menu.width, viewport.width, 0)
-        : bounds.left;
-  return { top, left, width: align === "stretch" ? bounds.right - bounds.left : null, isAbove: top < bounds.top };
+      : clampIntoWindow(bounds.left, menu.width, viewport.width, 0);
+  return { top, left, minimumWidth: null, isAbove: top < bounds.top };
 }
