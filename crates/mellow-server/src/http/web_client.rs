@@ -40,8 +40,9 @@ const KLIPY_MEDIA_ORIGINS: &str =
 /// this origin only; connections to this origin only (REST and the gateway). Inline styles are
 /// allowed for Svelte transitions; inline scripts never are. `blob:` images are the composer's
 /// previews of files about to be uploaded. The manifest makes the client installable as an app;
-/// there is no service worker (Chrome installs without one), and `worker-src 'none'` keeps a script
-/// served from this origin, such as an upload, from becoming one. `'wasm-unsafe-eval'` lets the
+/// there is no service worker (Chrome installs without one). `worker-src 'self'` lets the composer
+/// compress videos in a dedicated Worker (ADR-0046); an upload still cannot become one, because
+/// uploads are never served with a JavaScript type and always with `nosniff`. `'wasm-unsafe-eval'` lets the
 /// voice noise suppressor compile its WebAssembly (ADR-0031); it allows no JavaScript `eval`.
 /// Frames come only from `PLAYER_FRAME_ORIGINS`.
 ///
@@ -61,7 +62,7 @@ pub(crate) fn content_security_policy(klipy_app_key: Option<&str>) -> String {
     format!(
         "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
          style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:{klipy_images};{klipy_media} \
-         font-src 'self'; connect-src 'self'{klipy_api}; manifest-src 'self'; worker-src 'none'; \
+         font-src 'self'; connect-src 'self'{klipy_api}; manifest-src 'self'; worker-src 'self'; \
          object-src 'none'; frame-src {frame_origins}; \
          base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
     )
@@ -543,7 +544,7 @@ mod tests {
         assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
         let policy = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
         assert!(policy.contains("manifest-src 'self'"), "{policy}");
-        assert!(policy.contains("worker-src 'none'"), "{policy}");
+        assert!(policy.contains("worker-src 'self'"), "{policy}");
         assert!(
             policy.contains(
                 "frame-src https://www.youtube-nocookie.com https://open.spotify.com \
@@ -594,7 +595,7 @@ mod tests {
             format!(
                 "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
                  style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; \
-                 connect-src 'self'; manifest-src 'self'; worker-src 'none'; object-src 'none'; \
+                 connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; \
                  {frame_sources} base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
             )
         );
@@ -609,7 +610,7 @@ mod tests {
         assert!(on.contains("https://static2.klipy.com"), "{on}");
         // Everything else stays as strict as without GIFs.
         for directive in [
-            "worker-src 'none'",
+            "worker-src 'self'",
             "object-src 'none'",
             "frame-ancestors 'none'",
             &frame_sources,
