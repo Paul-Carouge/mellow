@@ -591,6 +591,7 @@
             roles={client.knownRoles}
             {mentionReader}
             doesServerFindMentions={client.doesServerFindMentions}
+            areGifsShown={client.gifSettings !== null}
             authorColor={authorColors.get(row.kind === "sent" ? row.message.author.id : currentUser.id) ?? null}
             replyReference={row.kind === "sent"
               ? replyReferenceOf(row.message, messagesById, (userId) => client.isBlocked(userId), client.knownRoles)

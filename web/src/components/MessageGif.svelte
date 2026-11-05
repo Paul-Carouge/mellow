@@ -2,11 +2,13 @@
   import { strings } from "../i18n";
   import type { MessageGifMedia } from "../lib/klipy";
   import { isPictureAnimationWanted } from "../lib/motion.svelte";
+  import { containedFrame } from "./gif-picker";
   import Icon from "./Icon.svelte";
 
   // A message whose whole text is one Klipy media address shows the GIF itself (ADR-0042,
-  // docs/design/web-gif-picker.md): as high as `component.gif.message-height` whatever its size,
-  // so nothing moves when it loads, narrower when the column is. It plays as custom emoji do;
+  // docs/design/web-gif-picker.md): always `component.gif.message-height` high, whatever its size
+  // and the column's width, so the list never moves when it loads; the width follows its shape
+  // and a picture wider than the column is letterboxed. It plays as custom emoji do;
   // while animated pictures are kept still it shows its first frame and a "GIF" key that plays it.
   // A GIF Klipy no longer serves (or a page without Klipy in its policy) gives the link back.
   interface Props {
@@ -24,6 +26,8 @@
   let video = $state<HTMLVideoElement | null>(null);
   let stillFrame = $state<HTMLCanvasElement | null>(null);
   let hasLoaded = $state(false);
+  let boxWidth = $state(0);
+  let boxHeight = $state(0);
 
   function takeSize(width: number, height: number) {
     if (width > 0 && height > 0) {
@@ -32,13 +36,23 @@
     hasLoaded = true;
   }
 
-  // An <img> cannot pause: the first frame is painted on a canvas instead, which never moves.
+  // An <img> cannot pause: the first frame is painted on a canvas instead, which never moves. It
+  // is drawn at the box's size in device pixels (not the picture's, which may be far larger), and
+  // again when the box changes width.
   $effect(() => {
-    if (!isAnimated && hasLoaded && picture && stillFrame) {
-      stillFrame.width = picture.naturalWidth;
-      stillFrame.height = picture.naturalHeight;
-      stillFrame.getContext("2d")?.drawImage(picture, 0, 0);
+    if (isAnimated || !hasLoaded || !picture || !stillFrame) {
+      return;
     }
+    const pixelRatio = window.devicePixelRatio || 1;
+    const width = Math.round(boxWidth * pixelRatio);
+    const height = Math.round(boxHeight * pixelRatio);
+    const frame = containedFrame(width, height, picture.naturalWidth, picture.naturalHeight);
+    if (!frame) {
+      return;
+    }
+    stillFrame.width = width;
+    stillFrame.height = height;
+    stillFrame.getContext("2d")?.drawImage(picture, frame.x, frame.y, frame.width, frame.height);
   });
 
   $effect(() => {
@@ -55,9 +69,10 @@
 </script>
 
 <div
-  class="relative max-w-full overflow-hidden rounded-(--mw-component-gif-message-radius) bg-(--mw-component-gif-message-placeholder)"
+  bind:clientWidth={boxWidth}
+  bind:clientHeight={boxHeight}
+  class="relative h-(--mw-component-gif-message-height) max-w-full overflow-hidden rounded-(--mw-component-gif-message-radius) bg-(--mw-component-gif-message-placeholder)"
   style:width="min(100%, var(--mw-component-gif-message-max-width), calc(var(--mw-component-gif-message-height) * {aspectRatio}))"
-  style:aspect-ratio={aspectRatio}
 >
   {#if media.isVideo}
     <video
@@ -89,7 +104,7 @@
     {#if !isAnimated && hasLoaded}
       <!-- The hidden <img> leaves the accessibility tree: the frame takes its name. -->
       <div role="img" aria-label={strings.gifs.messageGif} class="absolute inset-0">
-        <canvas bind:this={stillFrame} aria-hidden="true" class="size-full object-contain"></canvas>
+        <canvas bind:this={stillFrame} aria-hidden="true" class="block size-full"></canvas>
       </div>
     {/if}
   {/if}
