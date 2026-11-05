@@ -14,10 +14,10 @@ use super::{ImageProcessingError, avif, quality};
 
 pub(super) const AVIF_CONTENT_TYPE: &str = "image/avif";
 pub(super) const WEBP_CONTENT_TYPE: &str = "image/webp";
-/// The qualities searched; below 60 no measured picture kept a score of 85.
+/// The qualities searched; below 60 no picture of the 2026-11-02 spike kept a score of 85.
 const LOWEST_QUALITY: u8 = 60;
 const HIGHEST_QUALITY: u8 = 95;
-/// Where the search starts: the median quality that kept a score of 85 in the spike.
+/// Where the search starts: the median quality that kept a score of 85 in the 2026-11-02 spike.
 const AVIF_FIRST_QUALITY: u8 = 88;
 const LOSSY_WEBP_FIRST_QUALITY: u8 = 90;
 /// Encodes per format and picture: each AVIF of a 15 MP photo takes 20–30 s of one core.
