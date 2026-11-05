@@ -410,13 +410,21 @@ export interface LinkPreview {
    * What a known provider says about the link (ADR-0044); `title`, `description` and `image` keep
    * the title, the summary and the one picture. Absent for other links and from older servers.
    */
-  embed?: LinkEmbed;
+  embed?: LinkEmbed | UnknownLinkEmbed;
+}
+
+/**
+ * An embed from a newer server, of a kind this client does not know: never narrowed to a
+ * `LinkEmbed` by its `kind`, so readers go through `knownLinkEmbedOf` and show the plain card.
+ */
+export interface UnknownLinkEmbed {
+  kind: string & {};
 }
 
 /**
  * A provider's facts about a link (ADR-0044), told apart by `kind`. A newer server may send kinds
- * and values this list lacks: show the plain card for them. Re-check every id before building a
- * player's address from it.
+ * and values this list lacks: read `embed` only through `knownLinkEmbedOf`. Re-check every id
+ * before building a player's address from it.
  */
 export type LinkEmbed =
   | ({ kind: "youtube_video" } & YouTubeVideoEmbed)
@@ -484,6 +492,8 @@ export interface MusicEmbed {
   item: MusicItem;
   /** The provider's id of the item (Bandcamp's is numeric). */
   id: string;
+  /** Apple Music's storefront, two lowercase letters (`fr`), which its player's address needs. */
+  storefront?: string;
   artist?: string;
   track_count?: number;
   duration_seconds?: number;

@@ -1,4 +1,4 @@
-import type { LinkPreview, Snowflake } from "../lib/protocol";
+import type { GitHubIssueState, LinkEmbed, LinkPreview, MusicItem, MusicProvider, Snowflake, TwitchItem } from "../lib/protocol";
 import { safeHttpUrl } from "./markdown";
 
 /**
@@ -167,4 +167,69 @@ export function thumbnailWidth(image: { width: number; height: number }): string
 
 function hasUsableSize(image: { width: number; height: number }): boolean {
   return Number.isInteger(image.width) && Number.isInteger(image.height) && image.width > 0 && image.height > 0;
+}
+
+// Records, so a value added to the protocol fails type-checking until it is listed here.
+const KNOWN_LINK_EMBED_KINDS: Record<LinkEmbed["kind"], true> = {
+  youtube_video: true,
+  youtube_music_track: true,
+  github_repository: true,
+  github_issue: true,
+  github_pull_request: true,
+  music: true,
+  vimeo_video: true,
+  twitch: true,
+  wikipedia_article: true,
+};
+const KNOWN_GITHUB_ISSUE_STATES: Record<GitHubIssueState, true> = {
+  open: true,
+  draft: true,
+  merged: true,
+  completed: true,
+  not_planned: true,
+  closed: true,
+};
+const KNOWN_MUSIC_PROVIDERS: Record<MusicProvider, true> = {
+  spotify: true,
+  deezer: true,
+  soundcloud: true,
+  apple_music: true,
+  bandcamp: true,
+};
+const KNOWN_MUSIC_ITEMS: Record<MusicItem, true> = {
+  track: true,
+  album: true,
+  playlist: true,
+  episode: true,
+  show: true,
+  artist: true,
+};
+const KNOWN_TWITCH_ITEMS: Record<TwitchItem, true> = { channel: true, video: true, clip: true };
+
+function isKnown<Value extends string>(known: Record<Value, true>, value: unknown): value is Value {
+  return typeof value === "string" && Object.hasOwn(known, value);
+}
+
+/**
+ * The preview's embed when this client knows its kind and every enumerated value in it, else
+ * null: a newer server's kinds and values get the plain card (ADR-0044).
+ */
+export function knownLinkEmbedOf(preview: LinkPreview): LinkEmbed | null {
+  const { embed } = preview;
+  if (embed === undefined || !isKnown(KNOWN_LINK_EMBED_KINDS, embed.kind)) {
+    return null;
+  }
+  // Its kind is one of `LinkEmbed`'s, checked just above.
+  const known = embed as LinkEmbed;
+  switch (known.kind) {
+    case "github_issue":
+    case "github_pull_request":
+      return isKnown(KNOWN_GITHUB_ISSUE_STATES, known.state) ? known : null;
+    case "music":
+      return isKnown(KNOWN_MUSIC_PROVIDERS, known.provider) && isKnown(KNOWN_MUSIC_ITEMS, known.item) ? known : null;
+    case "twitch":
+      return isKnown(KNOWN_TWITCH_ITEMS, known.item) ? known : null;
+    default:
+      return known;
+  }
 }

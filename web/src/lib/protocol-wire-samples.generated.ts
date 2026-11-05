@@ -568,6 +568,16 @@ export const linkEmbedSamples = [
     "provider": "bandcamp"
   },
   {
+    "artist": "Daft Punk",
+    "duration_seconds": 4440,
+    "id": "1440818839",
+    "item": "track",
+    "kind": "music",
+    "provider": "apple_music",
+    "storefront": "fr",
+    "track_count": 14
+  },
+  {
     "hash": "8272103f6e",
     "kind": "vimeo_video",
     "video_id": "76979871"

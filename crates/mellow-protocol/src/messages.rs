@@ -255,6 +255,9 @@ pub struct MusicEmbed {
     /// The provider's id of the item, which its player's address is built from (Bandcamp's is
     /// numeric).
     pub id: String,
+    /// Apple Music's storefront, two lowercase letters (`fr`), which its player's address needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storefront: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artist: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -588,6 +591,7 @@ mod tests {
             provider: MusicProvider::SoundCloud,
             item: MusicItem::Track,
             id: "1".into(),
+            storefront: None,
             artist: None,
             track_count: None,
             duration_seconds: None,
