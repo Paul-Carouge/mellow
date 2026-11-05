@@ -1988,6 +1988,9 @@ export const en = {
     // The one-time permission bar.
     barText: "Get a notification when someone mentions you or writes to you.",
     turnOn: "Turn on notifications",
+    /** The phone bar's one row; the full sentence stays its accessible name. */
+    barTextShort: "Notifications are off",
+    turnOnShort: "Turn on",
     notNow: "Not now",
     turnedOn: "Notifications turned on.",
     refused: "Your browser blocked notifications. You can allow them later in the site settings.",

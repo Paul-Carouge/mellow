@@ -1962,6 +1962,8 @@ export const fr: Catalogue = {
     channelInServer: (channel, server) => `#${channel} · ${server}`,
     barText: "Reçois une notification quand quelqu’un te mentionne ou t’écrit.",
     turnOn: "Activer les notifications",
+    barTextShort: "Notifications désactivées",
+    turnOnShort: "Activer",
     notNow: "Plus tard",
     turnedOn: "Notifications activées.",
     refused: "Ton navigateur a bloqué les notifications. Tu pourras les autoriser plus tard dans les paramètres du site.",

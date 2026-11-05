@@ -643,7 +643,7 @@
     onretry={() => client.reconnectNow()}
     fallbackFocus={focusComposer}
   />
-  <NotificationPermissionBar status={client.status} />
+  <NotificationPermissionBar status={client.status} isCompact={!hasRoomForNavigator.current} />
   <!-- As in the reference mockup, the ground shows twice the inset above the cards and after the
        last one (where the mockup keeps a row for its top bar and a column for the side sheet). -->
   <div
