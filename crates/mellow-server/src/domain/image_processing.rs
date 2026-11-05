@@ -28,6 +28,10 @@ use encoding::{Encoded, last_resort_still, smallest_animation, smallest_still};
 const MAXIMUM_SIDE_PIXELS: u32 = 8_192;
 const MAXIMUM_TOTAL_PIXELS: u64 = 24_000_000;
 const MAXIMUM_FRAMES: usize = 600;
+/// Browsers play a frame of this long or shorter at `CLAMPED_FRAME_DELAY_MS`; the stored animation
+/// keeps the speed they showed the upload at.
+const LONGEST_CLAMPED_FRAME_DELAY_MS: u32 = 10;
+const CLAMPED_FRAME_DELAY_MS: u32 = 100;
 /// Stored sizes: three times the largest CSS size each is shown at, for high-density screens
 /// (ADR-0033). Avatars show at most at 80 px (profile popover), banners in a 300 × 120 px card
 /// that covers its box, so only a 5:2 band of a banner is stored.
@@ -196,7 +200,10 @@ fn collect_frames(
             return Err(ImageProcessingError::TooLarge);
         }
         let (numerator, denominator) = frame.delay().numer_denom_ms();
-        let delay = numerator.checked_div(denominator).unwrap_or(0).max(20);
+        let delay = match numerator.checked_div(denominator).unwrap_or(0) {
+            delay if delay <= LONGEST_CLAMPED_FRAME_DELAY_MS => CLAMPED_FRAME_DELAY_MS,
+            delay => delay,
+        };
         collected.push((shrink(frame.into_buffer()), delay));
     }
     if collected.is_empty() {
@@ -1367,6 +1374,39 @@ pub(crate) mod tests {
             source.iter().map(|(frame, _)| frame).zip(&stored).collect();
         let score = quality::worst_score(&pairs, avif::Primaries::Srgb).unwrap();
         assert!(score >= quality::MINIMUM_SCORE, "{score}");
+    }
+
+    #[test]
+    fn gif_frames_of_ten_milliseconds_or_less_play_at_a_hundred_as_in_browsers() {
+        let mut gif = Vec::new();
+        {
+            let mut encoder = GifEncoder::new(&mut gif);
+            encoder.set_repeat(Repeat::Infinite).unwrap();
+            for (index, delay) in [0u8, 10, 50].into_iter().enumerate() {
+                // Distinct frames, so the encoder merges none.
+                let index = u8::try_from(index).unwrap();
+                let image = RgbaImage::from_fn(16, 16, |x, _| {
+                    Rgba([index * 80, u8::try_from(x * 15).unwrap(), 200, 255])
+                });
+                encoder
+                    .encode_frame(Frame::from_parts(
+                        image,
+                        0,
+                        0,
+                        Delay::from_numer_denom_ms(u32::from(delay), 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        let stored = optimize_attachment(&gif, "image/gif", no_deadline())
+            .unwrap()
+            .unwrap();
+        let delays: Vec<u32> = WebPDecoder::new(Cursor::new(&stored.bytes))
+            .unwrap()
+            .into_frames()
+            .map(|frame| frame.unwrap().delay().numer_denom_ms().0)
+            .collect();
+        assert_eq!(delays, [100, 100, 50]);
     }
 
     #[test]
