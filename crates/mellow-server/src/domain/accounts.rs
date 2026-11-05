@@ -19,7 +19,9 @@ use crate::domain::account_rules::{
 };
 use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::password::{PasswordHashError, hash_password, verify_password};
-use crate::domain::session_token::{generate_session_token, session_token_sha256};
+use crate::domain::session_token::{
+    SessionTokenSha256, generate_session_token, session_token_sha256,
+};
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::events::ChosenPresence;
 use crate::storage::account_names::{is_name_key_taken_by_another_account, rename_account};
@@ -29,6 +31,7 @@ use crate::storage::accounts::{
     record_session_use, replace_password_and_delete_other_sessions, update_user_presence,
 };
 use crate::storage::guilds::{GuildStorageError, list_user_guilds};
+use crate::storage::two_factor::is_two_factor_enabled;
 
 /// A session lasts 90 days, then the user signs in again.
 const SESSION_LIFETIME: Duration = Duration::from_hours(90 * 24);
@@ -59,6 +62,10 @@ pub enum AccountError {
     Unauthorized,
     #[error("the server is busy; try again shortly")]
     ServerBusy,
+    /// The password was right, but the account has two-factor sign-in on (ADR-0049): no session
+    /// until a code is checked. Refused like a wrong login by any caller that does not handle it.
+    #[error("a second factor is required")]
+    SecondFactorRequired(Box<VerifiedLogin>),
     #[error("internal error")]
     Internal(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
@@ -97,6 +104,26 @@ impl From<mellow_protocol::SnowflakeError> for AccountError {
 impl From<getrandom::Error> for AccountError {
     fn from(error: getrandom::Error) -> Self {
         Self::Internal(Box::new(error))
+    }
+}
+
+/// A sign-in whose password was checked, waiting for its second factor.
+#[derive(Clone, PartialEq, Eq)]
+pub struct VerifiedLogin {
+    pub(crate) user_id: Snowflake,
+    /// The session opens only while the account still has this password.
+    pub(crate) verified_password_hash: String,
+    pub(crate) device_name: String,
+}
+
+/// The password hash is never printed.
+impl std::fmt::Debug for VerifiedLogin {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VerifiedLogin")
+            .field("user_id", &self.user_id)
+            .field("device_name", &self.device_name)
+            .finish_non_exhaustive()
     }
 }
 
@@ -242,7 +269,8 @@ impl Accounts {
 
     /// # Errors
     /// `InvalidCredentials` for an unknown login or a wrong password (indistinguishable, and
-    /// equally slow); `AccountDisabled` only once the password is proven right.
+    /// equally slow); `AccountDisabled` only once the password is proven right;
+    /// `SecondFactorRequired` when the account has two-factor sign-in on.
     pub async fn login(
         &self,
         request: LoginRequest,
@@ -262,6 +290,15 @@ impl Accounts {
         };
         if user.is_disabled {
             return Err(AccountError::AccountDisabled);
+        }
+        if is_two_factor_enabled(&self.database, user.id).await? {
+            return Err(AccountError::SecondFactorRequired(Box::new(
+                VerifiedLogin {
+                    user_id: user.id,
+                    verified_password_hash: user.password_hash,
+                    device_name,
+                },
+            )));
         }
         self.open_session(user, device_name, now_unix_milliseconds)
             .await
@@ -474,8 +511,18 @@ impl Accounts {
         Ok(())
     }
 
+    /// Ends the live gateway sessions of every session token of the user but `kept`, once their
+    /// sessions were deleted.
+    pub(crate) fn disconnect_user_except_token(
+        &self,
+        user_id: Snowflake,
+        kept: &SessionTokenSha256,
+    ) {
+        self.events.disconnect_user_except_token(user_id, kept);
+    }
+
     /// The enabled user behind an unexpired session, with their password hash.
-    async fn verified_session_owner(
+    pub(crate) async fn verified_session_owner(
         &self,
         token: &str,
         now_unix_milliseconds: u64,
@@ -490,7 +537,9 @@ impl Accounts {
         Ok(owner.user)
     }
 
-    async fn open_session(
+    /// Opens a session for a user whose credentials were checked; refused if their password
+    /// changed or the account was disabled since.
+    pub(crate) async fn open_session(
         &self,
         user: StoredUser,
         device_name: String,

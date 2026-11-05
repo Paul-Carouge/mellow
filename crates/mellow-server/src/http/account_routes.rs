@@ -49,7 +49,7 @@ fn fixed_size_key(text: &str) -> String {
 
 /// A response carrying a session token must not be stored by any cache (RFC 6749 §5.1). The web
 /// client gets the token in an `HttpOnly` cookie instead, out of reach of page scripts.
-fn session_response(
+pub(crate) fn session_response(
     status: StatusCode,
     mut session: SessionCreated,
     request_headers: &HeaderMap,
@@ -75,7 +75,7 @@ fn session_response(
 /// window first takes one unit of its IPv6 /48's new-address budget: one /48 cycling through its
 /// 65 536 /64s adds at most a site's worth of address keys per window, while a single /64 over its
 /// own limit cannot use that budget up. Returns whether the limits still allow the attempt.
-fn record_authentication_attempt_per_client(
+pub(crate) fn record_authentication_attempt_per_client(
     state: &AppState,
     peer: SocketAddr,
     headers: &HeaderMap,
@@ -146,11 +146,20 @@ pub(crate) async fn login(
     if !(within_account_and_address_limit && within_account_limit) {
         return Err(ApiError::rate_limited());
     }
-    let session = state
-        .accounts
-        .login(request, now_unix_milliseconds())
-        .await?;
-    session_response(StatusCode::OK, session, &headers)
+    match state.accounts.login(request, now_unix_milliseconds()).await {
+        Ok(session) => session_response(StatusCode::OK, session, &headers),
+        // The password was right: the second step needs a code (ADR-0049).
+        Err(AccountError::SecondFactorRequired(login)) => {
+            let challenge = state.two_factor.issue_challenge(*login, now)?;
+            Ok((
+                StatusCode::ACCEPTED,
+                [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+                Json(challenge),
+            )
+                .into_response())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub(crate) async fn logout(
@@ -171,7 +180,7 @@ pub(crate) async fn current_user(AuthenticatedUser(user): AuthenticatedUser) -> 
 
 /// Counts a current-password check, before Argon2 runs. The user's budget is counted only for checks
 /// the session's budget allows, so one session adds at most its own budget to it and cannot fill it.
-fn is_password_check_allowed(state: &AppState, user: &CurrentUser, token: &str) -> bool {
+pub(crate) fn is_password_check_allowed(state: &AppState, user: &CurrentUser, token: &str) -> bool {
     let now = Instant::now();
     state.rate_limiter.record_event(
         &format!("password-check:{}", fixed_size_key(token)),

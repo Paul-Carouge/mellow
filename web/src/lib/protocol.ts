@@ -174,6 +174,30 @@ export interface SessionCreated {
   user: CurrentUser;
 }
 
+/** `POST /auth/login` answers this (202) instead of a session when the account has two-factor
+ * sign-in on (ADR-0049); the token goes with a code to `POST /auth/login/two-factor`. */
+export interface TwoFactorChallenge {
+  two_factor_token: string;
+  expires_in_seconds: number;
+}
+
+export interface TwoFactorStatus {
+  is_enabled: boolean;
+  recovery_codes_remaining: number;
+  /** When a wrong code was last typed for the account; `null` when none was or it is off. */
+  last_failed_code_at_unix_milliseconds: number | null;
+}
+
+/** Unpadded base32: SHA-1, 6 digits, 30-second steps (the `otpauth://` defaults). */
+export interface TwoFactorEnrolment {
+  secret: string;
+}
+
+/** Shown once; the instance keeps only their hashes. */
+export interface TwoFactorRecoveryCodes {
+  recovery_codes: string[];
+}
+
 /** A voice channel is joined, never opened: it has no messages (ADR-0030). */
 export type ChannelKind = "category" | "text" | "voice";
 
@@ -925,7 +949,8 @@ export type ApiErrorCode =
   | "BANNED"
   | "LIMIT_REACHED"
   | "CONFLICT"
-  | "INTERNAL";
+  | "INTERNAL"
+  | "INVALID_TWO_FACTOR_CODE";
 
 export type GatewayEvent =
   | { t: "MESSAGE_CREATE"; data: Message }

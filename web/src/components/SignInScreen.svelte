@@ -2,8 +2,9 @@
   import { onMount, tick } from "svelte";
 
   import { strings } from "../i18n";
+  import { ApiError } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
-  import { MAXIMUM_ACCOUNT_NAME_LENGTH, MINIMUM_PASSWORD_LENGTH } from "../lib/protocol";
+  import { MAXIMUM_ACCOUNT_NAME_LENGTH, MINIMUM_PASSWORD_LENGTH, type TwoFactorChallenge } from "../lib/protocol";
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
   import Melli from "./Melli.svelte";
@@ -25,6 +26,10 @@
   let username = $state("");
   let password = $state("");
   let isBusy = $state(false);
+  /** The second step of a sign-in whose password was right, when the account asks for a code (ADR-0049). */
+  let challenge = $state<TwoFactorChallenge | null>(null);
+  let isUsingRecoveryCode = $state(false);
+  let code = $state("");
   let errorMessage = $state("");
   /** Field id to Mellow's own error: the form has `novalidate`, so no browser bubble. */
   let fieldErrors = $state(new Map<string, string>());
@@ -47,6 +52,10 @@
   onMount(focusFirstFieldToFill);
 
   async function switchMode() {
+    if (challenge) {
+      await backToPassword("");
+      return;
+    }
     isRegistering = !isRegistering;
     errorMessage = "";
     fieldErrors = new Map();
@@ -60,8 +69,68 @@
     }
   }
 
+  /** Back to the password step; the login stays filled in, the code is dropped. */
+  async function backToPassword(message: string) {
+    challenge = null;
+    code = "";
+    isUsingRecoveryCode = false;
+    password = "";
+    errorMessage = message;
+    fieldErrors = new Map();
+    await tick();
+    focusFirstFieldToFill();
+  }
+
+  async function switchCodeKind() {
+    isUsingRecoveryCode = !isUsingRecoveryCode;
+    code = "";
+    errorMessage = "";
+    fieldErrors = new Map();
+    await tick();
+    focusFirstFieldToFill();
+  }
+
+  async function verifyCode(pending: TwoFactorChallenge) {
+    fieldErrors = fieldErrorsBeforeSending([
+      {
+        id: "sign-in-code",
+        value: code.trim(),
+        emptyError: isUsingRecoveryCode ? strings.security.signIn.recoveryCodeMissing : strings.security.signIn.codeMissing,
+      },
+    ]);
+    if (fieldErrors.size > 0) {
+      errorMessage = "";
+      await tick();
+      document.getElementById("sign-in-code")?.focus();
+      return;
+    }
+    isBusy = true;
+    errorMessage = "";
+    try {
+      await client.completeTwoFactorSignIn(pending, code.trim());
+    } catch (error) {
+      isBusy = false;
+      // The challenge expired, was used up by wrong codes, or the instance restarted.
+      if (error instanceof ApiError && error.code === "UNAUTHORIZED") {
+        await backToPassword(strings.security.signIn.expired);
+        return;
+      }
+      // Too many wrong codes lock app codes on the account; a recovery code still works.
+      errorMessage =
+        error instanceof ApiError && error.code === "RATE_LIMITED" && !isUsingRecoveryCode
+          ? strings.security.signIn.codesLocked
+          : describeError(error, strings.security.signIn.verifyFailed);
+      await tick();
+      document.getElementById("sign-in-code")?.focus();
+    }
+  }
+
   async function submit() {
     if (isBusy) {
+      return;
+    }
+    if (challenge) {
+      await verifyCode(challenge);
       return;
     }
     fieldErrors = fieldErrorsBeforeSending(
@@ -96,7 +165,14 @@
       if (isRegistering) {
         await client.register(username.trim(), email.trim(), password);
       } else {
-        await client.signIn(login.trim(), password);
+        const pending = await client.signIn(login.trim(), password);
+        if (pending) {
+          challenge = pending;
+          password = "";
+          isBusy = false;
+          await tick();
+          focusFirstFieldToFill();
+        }
       }
     } catch (error) {
       errorMessage = describeError(error, isRegistering ? strings.signIn.registerFailed : strings.signIn.signInFailed);
@@ -127,9 +203,17 @@
     </span>
     <div class="flex flex-col gap-(--mw-component-auth-card-subtitle-gap) text-center">
       <h1 id="sign-in-title" class="type-heading-xl break-words text-(--mw-component-auth-card-title-text)">
-        {isRegistering ? strings.signIn.registerTitle(instanceName) : strings.signIn.signInTitle(instanceName)}
+        {#if challenge}
+          {strings.security.twoFactorHeading}
+        {:else}
+          {isRegistering ? strings.signIn.registerTitle(instanceName) : strings.signIn.signInTitle(instanceName)}
+        {/if}
       </h1>
-      {#if client.hasSessionEndedByItself && !isRegistering}
+      {#if challenge}
+        <p class="type-body-lg text-(--mw-component-auth-card-subtitle-text)">
+          {isUsingRecoveryCode ? strings.security.signIn.recoverySubtitle : strings.security.signIn.subtitle}
+        </p>
+      {:else if client.hasSessionEndedByItself && !isRegistering}
         <!-- An alert, so it is read when the card replaces the shell under the reader. -->
         <p role="alert" class="type-body-lg text-(--mw-component-auth-card-subtitle-text)">{strings.signIn.sessionEnded(instanceName)}</p>
       {:else}
@@ -140,7 +224,28 @@
     </div>
 
     <div class="flex flex-col gap-(--mw-component-text-field-field-gap)">
-      {#if isRegistering}
+      {#if challenge}
+        {#key isUsingRecoveryCode}
+          <TextField
+            id="sign-in-code"
+            label={isUsingRecoveryCode ? strings.security.signIn.recoveryCode : strings.security.signIn.code}
+            autocomplete="one-time-code"
+            inputmode={isUsingRecoveryCode ? "text" : "numeric"}
+            autocapitalize="none"
+            spellcheck={false}
+            isMonospace
+            error={fieldErrors.get("sign-in-code")}
+            oninput={() => forgetFieldError("sign-in-code")}
+            bind:value={code}
+          />
+        {/key}
+        <button
+          type="button"
+          class="self-start text-start type-body text-(--mw-component-auth-card-link-text) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
+          onclick={() => void switchCodeKind()}
+          >{isUsingRecoveryCode ? strings.security.signIn.useAuthenticator : strings.security.signIn.useRecoveryCode}</button
+        >
+      {:else if isRegistering}
         <TextField
           id="register-email"
           label={strings.signIn.email}
@@ -207,7 +312,9 @@
         {/if}
       </div>
       <Button type="submit" variant="primary" isFullWidth isDisabled={isBusy}>
-        {#if isRegistering}
+        {#if challenge}
+          {isBusy ? strings.security.signIn.verifying : strings.security.signIn.verify}
+        {:else if isRegistering}
           {isBusy ? strings.signIn.creatingAccount : strings.signIn.createAccount}
         {:else}
           {isBusy ? strings.signIn.signingIn : strings.signIn.signIn}
@@ -215,11 +322,18 @@
       </Button>
     </div>
     <p class="flex flex-wrap items-center justify-center gap-x-2xs type-body text-(--mw-component-auth-card-hint-text)">
-      {isRegistering ? strings.signIn.hasAccount : strings.signIn.hasNoAccount}
+      {#if !challenge}
+        {isRegistering ? strings.signIn.hasAccount : strings.signIn.hasNoAccount}
+      {/if}
       <button
         type="button"
         class="text-(--mw-component-auth-card-link-text) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min) pointer-coarse:min-w-(--mw-size-hit-web-min)"
-        onclick={switchMode}>{isRegistering ? strings.signIn.signIn : strings.signIn.createAnAccount}</button
+        onclick={switchMode}
+        >{challenge
+          ? strings.security.signIn.backToSignIn
+          : isRegistering
+            ? strings.signIn.signIn
+            : strings.signIn.createAnAccount}</button
       >
     </p>
   </form>

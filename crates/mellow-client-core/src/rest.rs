@@ -178,7 +178,9 @@ impl RestClient {
     }
 
     /// # Errors
-    /// `Api` with `InvalidCredentials`, `AccountDisabled`, `RateLimited`…
+    /// `Api` with `InvalidCredentials`, `AccountDisabled`, `RateLimited`…; `UnexpectedResponse`
+    /// for an account with two-factor sign-in on, whose second step (ADR-0049) this core does not
+    /// offer yet: it comes with the native client's ADR.
     pub async fn login(&mut self, request: &LoginRequest) -> Result<SessionCreated, ClientError> {
         let session: SessionCreated = self.post_json("api/v1/auth/login", request, false).await?;
         self.token = Some(Zeroizing::new(session.token.clone()));

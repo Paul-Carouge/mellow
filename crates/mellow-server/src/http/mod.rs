@@ -16,6 +16,7 @@ mod relationship_routes;
 mod sound_routes;
 #[cfg(test)]
 pub(crate) mod test_support;
+mod two_factor_routes;
 pub(crate) mod web_client;
 
 use std::net::SocketAddr;
@@ -46,6 +47,8 @@ use crate::http::rate_limit::RateLimiter;
 pub(crate) struct AppState {
     pub(crate) database: Database,
     pub(crate) accounts: Arc<Accounts>,
+    /// Two-factor sign-in (ADR-0049), with the sign-ins waiting for their code.
+    pub(crate) two_factor: Arc<crate::domain::two_factor::TwoFactor>,
     pub(crate) guilds: Arc<Guilds>,
     pub(crate) messages: Arc<Messages>,
     pub(crate) relationships: Arc<crate::domain::relationships::Relationships>,
@@ -127,6 +130,7 @@ impl AppState {
             )),
             attachments,
             maximum_attachment_bytes: config.maximum_attachment_bytes,
+            two_factor: Arc::new(crate::domain::two_factor::TwoFactor::new(database.clone())),
             accounts: Arc::new(Accounts::new(
                 database.clone(),
                 config.registration_mode,
@@ -181,6 +185,7 @@ fn account_router() -> Router<AppState> {
         .route("/api/v1/auth/register", post(account_routes::register))
         .route("/api/v1/auth/login", post(account_routes::login))
         .route("/api/v1/auth/logout", post(account_routes::logout))
+        .merge(two_factor_routes::router())
         .route(
             "/api/v1/users/@me",
             get(account_routes::current_user).patch(account_routes::update_current_user),

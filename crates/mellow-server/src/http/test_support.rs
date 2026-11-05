@@ -43,6 +43,7 @@ pub(crate) fn test_state(database: Database, registration_mode: RegistrationMode
         crate::config::DEFAULT_MAXIMUM_ATTACHMENT_STORAGE_BYTES_PER_USER,
     ));
     AppState {
+        two_factor: Arc::new(crate::domain::two_factor::TwoFactor::new(database.clone())),
         accounts: Arc::new(Accounts::new(
             database.clone(),
             registration_mode,
