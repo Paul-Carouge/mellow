@@ -270,7 +270,7 @@
 
 <div class="flex flex-1 flex-col">
   <div class="flex flex-wrap items-center gap-(--mw-component-settings-action-gap)">
-    <Button variant="primary" isDisabled={busy !== null} onclick={() => void createRole()}>
+    <Button isDisabled={busy !== null} onclick={() => void createRole()}>
       {busy === "create" ? strings.serverSettings.roles.creating : strings.serverSettings.roles.createRole}
     </Button>
     {#if roles.length === 1}

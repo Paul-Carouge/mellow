@@ -222,7 +222,7 @@
 <div class="flex flex-1 flex-col">
   <p class="type-body text-(--mw-component-settings-body-text)">{words.intro(channel.name)}</p>
   <div class="mt-(--mw-component-settings-action-gap)">
-    <Button variant="primary" isDisabled={busy !== null} aria-haspopup="dialog" onclick={() => {
+    <Button isDisabled={busy !== null} aria-haspopup="dialog" onclick={() => {
       if (hasChanges) {
         localAttention += 1;
       } else {
