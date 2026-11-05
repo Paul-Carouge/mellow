@@ -246,6 +246,8 @@
       ? ""
       : unreadBarLabel(summary, unixMillisecondsOfSnowflake(marker.lastReadMessageId), new Date());
   });
+  // Handed to the list, which opens on the "New" divider below whatever height the bar wraps to.
+  let unreadBar = $state<HTMLElement | null>(null);
 
   function markAsRead() {
     if (channelId) {
@@ -671,6 +673,7 @@
   {#if unreadBarText}
     <!-- Over the list, under the header, so the rows being read do not move. -->
     <div
+      bind:this={unreadBar}
       class="unread-bar absolute inset-x-md top-[calc(var(--mw-component-chat-header-height)_+_var(--mw-space-2xs))] z-10 flex min-h-(--mw-component-jump-bar-height) items-center justify-between gap-xs rounded-(--mw-component-jump-bar-radius) bg-(--mw-component-jump-bar-background) ps-sm pe-2xs type-body font-semibold text-(--mw-component-jump-bar-text) pointer-coarse:min-h-(--mw-size-hit-web-min)"
     >
       <span class="min-w-0">{unreadBarText}</span>
@@ -690,6 +693,7 @@
         {client}
         {channelId}
         isCompact={hasNavigationDrawer}
+        topUnreadBar={unreadBar}
         currentUser={user}
         channelLabel={channel ? `#${channel.name}` : conversationName}
         heroIcon={channel ? "hash" : isGroup ? "users" : "at"}
