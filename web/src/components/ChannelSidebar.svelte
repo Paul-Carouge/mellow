@@ -647,7 +647,7 @@
     {#if guild}
       {@render guildChannels(guild)}
     {:else}
-      <ConversationList {client} onopenmenu={openConversationMenu} {onnavigate} />
+      <ConversationList {client} onopenmenu={openConversationMenu} {onnavigate} {onnewmessage} />
     {/if}
   </nav>
 </div>

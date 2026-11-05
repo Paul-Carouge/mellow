@@ -3,6 +3,7 @@
   import type { MellowClient } from "../lib/client.svelte";
   import type { DirectMessageChannel, PublicUser, Snowflake } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
+  import Button from "./Button.svelte";
   import { contextMenuTrigger } from "./context-menu-trigger";
   import { nameWithUnreadState } from "./format";
   import GroupAvatar from "./GroupAvatar.svelte";
@@ -30,9 +31,11 @@
     ) => boolean;
     /** After Friends or a conversation was chosen (the narrow layout closes its drawer). */
     onnavigate: () => void;
+    /** The empty list's action: the people picker, as the header's "+". */
+    onnewmessage: () => void;
   }
 
-  let { client, onopenmenu, onnavigate }: Props = $props();
+  let { client, onopenmenu, onnavigate, onnewmessage }: Props = $props();
 
   const user = $derived(client.user);
   const incomingRequests = $derived(client.incomingRequestCount());
@@ -64,9 +67,12 @@
   </button>
 </div>
 {#if client.conversations.length === 0}
-  <p class="mt-xs me-(--mw-component-channel-row-margin-inline) px-(--mw-component-channel-row-padding-inline) type-body text-text-muted">
-    {strings.sidebar.noConversations}
-  </p>
+  <!-- DESIGN.md §5: a short title, one sentence, one action (the header's "+" opens the same picker). -->
+  <div class="mt-md me-(--mw-component-channel-row-margin-inline) flex flex-col items-start gap-xs px-(--mw-component-channel-row-padding-inline)">
+    <h3 class="type-channel-name text-text-heading">{strings.sidebar.noConversationsTitle}</h3>
+    <p class="type-body-sm text-text-secondary">{strings.sidebar.noConversations}</p>
+    <Button aria-haspopup="dialog" onclick={onnewmessage}>{strings.groups.newMessage}</Button>
+  </div>
 {:else}
   <ul class="mt-xs">
     {#each client.conversations as conversation (conversation.id)}
