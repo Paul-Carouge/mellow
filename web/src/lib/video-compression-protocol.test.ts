@@ -128,6 +128,20 @@ describe("answerVideoCompressionRequests", () => {
     ]);
   });
 
+  it("posts progress once per whole percent, not once per frame", async () => {
+    const scope = new FakeScope();
+    answerVideoCompressionRequests(scope, async (_request, onprogress) => {
+      for (let frame = 1; frame <= 1000; frame++) {
+        onprogress(frame / 1000);
+      }
+      return { keptOriginalBecause: "not-smaller" };
+    });
+    await scope.request({ file: ORIGINAL, maximumAttachmentBytes: null });
+    const fractions = scope.answers.flatMap(({ answer }) => (answer.kind === "progress" ? [answer.fraction] : []));
+    expect(fractions.length).toBeLessThanOrEqual(101);
+    expect(fractions.at(-1)).toBe(1);
+  });
+
   it("says why the original stays", async () => {
     const scope = new FakeScope();
     answerVideoCompressionRequests(scope, async () => ({ keptOriginalBecause: "not-smaller" }));
