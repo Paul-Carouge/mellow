@@ -1,5 +1,6 @@
 //! SQLite storage, encrypted at rest with SQLCipher (ADR-0002, ADR-0006).
 
+pub(crate) mod account_names;
 pub(crate) mod accounts;
 pub(crate) mod attachment_files;
 pub(crate) mod attachments;

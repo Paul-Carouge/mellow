@@ -1,7 +1,8 @@
 // `@name` mentions in message text (DESIGN.md §5.4).
 // shortcut: the protocol has no mention syntax or mention list yet, so mentions are found here by
-// matching "@username" (or a one-word display name) against the people this client knows; move to
-// the instance's own mention ids once the protocol carries them.
+// matching the name written after an "@" against the people this client knows, the longest name
+// first since names may hold spaces and dashes (ADR-0048); move to the instance's own mention ids
+// once the protocol carries them.
 
 import type { PublicUser, Snowflake } from "../lib/protocol";
 import { foldForSearch } from "../lib/search-text";
@@ -19,16 +20,16 @@ export const EVERYONE_MENTION_WORD = "everyone";
 /** People by the lowercase names they can be mentioned with. */
 export type MentionablePeople = ReadonlyMap<string, PublicUser>;
 
-/** Usernames and display names are at most 32 characters (`account_rules.rs` on the server). */
+/** Names are at most 32 characters (`account_names.rs` on the server). */
 const MAXIMUM_NAME_LENGTH = 32;
 /**
- * An "@" at the start or after a space, then a name's characters (dots allowed inside), one more
- * for a closing full stop. `Alphabetic` keeps combining vowel signs in names, as the server's
- * `char::is_alphanumeric` does. Bounded and followed by no name character, so a long run of dots or
- * letters is never a mention and costs a constant amount of work.
+ * An "@" at the start or after a space, then a name's characters, then up to a name's length (one
+ * more for a closing full stop) of name characters, spaces and dashes, which names may hold.
+ * `Alphabetic` keeps combining vowel signs in names, as the server's `char::is_alphanumeric` does.
+ * Bounded, so a long run is read in constant work; `findMentioned` then picks the longest name.
  */
 const MENTION_CANDIDATE = new RegExp(
-  `(?<=^|\\s)@([\\p{Alphabetic}\\p{N}_.]{1,${MAXIMUM_NAME_LENGTH + 1}})(?![\\p{Alphabetic}\\p{N}_.])`,
+  `(?<=^|\\s)@([\\p{Alphabetic}\\p{N}_.][\\p{Alphabetic}\\p{N}_. -]{0,${MAXIMUM_NAME_LENGTH}})`,
   "gu",
 );
 
@@ -40,7 +41,7 @@ export function mentionablePeople(people: readonly PublicUser[]): MentionablePeo
   // Display names first, so a username always wins over someone else's display name.
   for (const person of people) {
     const displayName = person.display_name.trim();
-    if (displayName !== "" && !/\s/u.test(displayName)) {
+    if (displayName !== "") {
       const name = displayName.toLowerCase();
       const holder = byName.get(name);
       if (holder && holder.id !== person.id) {
@@ -79,21 +80,35 @@ export function memoizedMentionablePeople(): (people: readonly PublicUser[]) => 
   };
 }
 
-function findMentioned(name: string, people: MentionablePeople): { user: PublicUser; length: number } | null {
-  // "@paul." at the end of a sentence: the trailing dots are punctuation unless they are the name's.
-  // Lengths come from the original text: lowercasing can change a string's length.
-  for (const candidate of [name, name.replace(/\.+$/u, "")]) {
-    const user = candidate === "" ? undefined : people.get(candidate.toLowerCase());
-    if (user) {
-      return { user, length: candidate.length };
+/**
+ * The longest name among `people` that `run` (what follows the "@", read by `MENTION_CANDIDATE`)
+ * starts with, ending where a word does: before a space, a dash, punctuation or the text's end
+ * (`after` is the character right after the run).
+ */
+function findMentioned(run: string, after: string, people: MentionablePeople): { user: PublicUser; length: number } | null {
+  for (let end = run.length; end > 0; end -= 1) {
+    const next = end < run.length ? run[end] : after;
+    if (!NAME_CHARACTER.test(run[end - 1] ?? "") || NAME_CHARACTER.test(next ?? "")) {
+      continue;
+    }
+    const name = run.slice(0, end);
+    // "@paul." at the end of a sentence: the trailing dots are punctuation unless they are the name's.
+    // Lengths come from the original text: lowercasing can change a string's length.
+    for (const candidate of [name, name.replace(/\.+$/u, "")]) {
+      const user = candidate === "" ? undefined : people.get(candidate.toLowerCase());
+      if (user) {
+        return { user, length: candidate.length };
+      }
     }
   }
   return null;
 }
 
-/** Whether `name` (after the "@") is the everyone word, a closing full stop allowed. */
-function isEveryoneWord(name: string): boolean {
-  return name.replace(/\.+$/u, "").toLowerCase() === EVERYONE_MENTION_WORD;
+/** Whether `run` (after the "@") starts with the everyone word as a whole word, a closing full stop allowed. */
+function isEveryoneWord(run: string, after: string): boolean {
+  const firstWord = /^[\p{Alphabetic}\p{N}_.]+/u.exec(run)?.[0] ?? "";
+  const isWholeWord = firstWord.length < run.length || !NAME_CHARACTER.test(after);
+  return isWholeWord && firstWord.replace(/\.+$/u, "").toLowerCase() === EVERYONE_MENTION_WORD;
 }
 
 /**
@@ -104,9 +119,10 @@ export function splitMentions(text: string, people: MentionablePeople, isEveryon
   const segments: MentionSegment[] = [];
   let textStart = 0;
   for (const match of text.matchAll(MENTION_CANDIDATE)) {
-    const name = match[1] ?? "";
-    const isEveryone = isEveryoneWord(name);
-    const found = isEveryone ? null : findMentioned(name, people);
+    const run = match[1] ?? "";
+    const after = text[match.index + 1 + run.length] ?? "";
+    const isEveryone = isEveryoneWord(run, after);
+    const found = isEveryone ? null : findMentioned(run, after, people);
     if (!found && !(isEveryone && isEveryoneMentioned)) {
       continue;
     }

@@ -338,7 +338,7 @@ pub async fn set_instance_administrator(
     let result = async {
         let exists = crate::storage::accounts::set_instance_administrator(
             &database,
-            username,
+            &crate::domain::account_names::account_name_key(username),
             is_instance_administrator,
         )
         .await?;

@@ -249,6 +249,37 @@ async fn login_attempts_are_limited_per_account_and_address_before_the_password_
 }
 
 #[tokio::test]
+async fn spelling_one_name_differently_shares_the_per_account_login_limit() {
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    send(
+        &state,
+        post_json("/api/v1/auth/register", &registration("elodie")),
+    )
+    .await;
+    let attacker = "198.51.100.1:1000";
+    let limit = rate_limit::LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS.maximum_events;
+    // Each spelling folds to the same name key, so each one must count against the same account.
+    let spellings: Vec<String> = (0..=limit)
+        .map(|accents| format!("E{}LODIE", "\u{301}".repeat(accents as usize)))
+        .collect();
+    let mut statuses = Vec::new();
+    for spelling in &spellings {
+        let ((status, _), _) = send_from(&state, attacker, wrong_login(spelling)).await;
+        statuses.push(status);
+    }
+    let ((full_width_status, _), _) = send_from(&state, attacker, wrong_login("ｅlodie")).await;
+    database.close().await;
+    assert!(
+        statuses[..limit as usize]
+            .iter()
+            .all(|status| *status == StatusCode::UNAUTHORIZED)
+    );
+    assert_eq!(statuses[limit as usize], StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(full_width_status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
 async fn forwarded_for_from_the_loopback_proxy_separates_clients() {
     let (_directory, database) = migrated_database().await;
     let mut state = test_state(database.clone(), RegistrationMode::Closed);
@@ -418,4 +449,49 @@ async fn password_checks_and_profile_writes_are_rate_limited_per_session() {
     let (last, allowed) = renames.split_last().unwrap();
     assert!(allowed.iter().all(|status| *status == StatusCode::OK));
     assert_eq!(*last, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn name_availability_says_free_or_taken_never_who_and_is_rate_limited() {
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let token = registered_token(&state, "aurore").await;
+    registered_token(&state, "elodie").await;
+    let check = |name: &str| {
+        with_bearer(
+            &format!("/api/v1/users/name-availability?name={name}"),
+            "GET",
+            &token,
+        )
+    };
+
+    let (_, free) = send(&state, check("Basile%20B")).await;
+    let (_, name_taken) = send(&state, check("%C3%89LODIE")).await;
+    let (_, own) = send(&state, check("AURORE")).await;
+    let (invalid, _) = send(&state, check("a")).await;
+    let (signed_out, _) = send(
+        &state,
+        Request::get("/api/v1/users/name-availability?name=Basile")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let mut statuses = Vec::new();
+    for _ in 0..rate_limit::NAME_AVAILABILITY_CHECKS_PER_USER.maximum_events {
+        statuses.push(send(&state, check("Basile")).await.0);
+    }
+    database.close().await;
+
+    let is_available = |body: &[u8]| json::<mellow_protocol::NameAvailability>(body).is_available;
+    assert!(is_available(&free));
+    assert!(!is_available(&name_taken));
+    assert_eq!(
+        String::from_utf8_lossy(&name_taken),
+        r#"{"is_available":false}"#,
+        "never who"
+    );
+    assert!(is_available(&own), "one's own name in another case");
+    assert_eq!(invalid, StatusCode::BAD_REQUEST);
+    assert_eq!(signed_out, StatusCode::UNAUTHORIZED);
+    assert_eq!(statuses.last(), Some(&StatusCode::TOO_MANY_REQUESTS));
 }

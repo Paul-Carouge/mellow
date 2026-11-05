@@ -8,6 +8,7 @@ import {
   ApiError,
   HISTORY_PAGE_SIZE,
   MAXIMUM_HISTORY_PAGE_SIZE,
+  type FriendRequestTarget,
   type InviteLimits,
   type PictureCrop,
   type ProfileImageKind,
@@ -2164,14 +2165,14 @@ export class MellowClient {
 
   // --- Account -------------------------------------------------------------------------------
 
+  /** Renames the account (ADR-0048): its one name, unique whatever the case and accents. */
   async updateDisplayName(displayName: string): Promise<void> {
     this.applyCurrentUser(await this.rest.updateCurrentUser({ display_name: displayName.trim() }));
   }
 
-  async updateUsername(username: string, currentPassword: string): Promise<void> {
-    this.applyCurrentUser(
-      await this.rest.updateCurrentUser({ username: username.trim(), current_password: currentPassword }),
-    );
+  /** Never says who holds a taken name; rejects with `VALIDATION_FAILED` for a name breaking the rules. */
+  async isNameAvailable(name: string): Promise<boolean> {
+    return (await this.rest.nameAvailability(name)).is_available;
   }
 
   /**
@@ -2207,8 +2208,8 @@ export class MellowClient {
     return this.relationships.isBlocked(userId);
   }
 
-  sendFriendRequest(username: string): Promise<Relationship> {
-    return this.relationships.sendFriendRequest(username);
+  sendFriendRequest(target: FriendRequestTarget): Promise<Relationship> {
+    return this.relationships.sendFriendRequest(target);
   }
 
   acceptFriendRequest(userId: Snowflake): Promise<void> {

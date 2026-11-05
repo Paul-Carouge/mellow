@@ -27,13 +27,14 @@ use mellow_protocol::{
     MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
     MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, MINIMUM_POLL_ANSWERS, Member, Message, MessageReaction,
     MessageSearchHit, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicEmbed,
-    MusicItem, MusicProvider, OverwriteKind, PermissionOverwrite, Permissions, Poll, PollAnswer,
-    PollVote, Presence, PresenceStatus, ProfileImage, ProgressBar, PublicUser, ReactionSummary,
-    ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated,
-    SimulcastLayer, Snowflake, SoundboardSound, TwitchEmbed, TwitchItem, TwoFactorChallenge,
-    TwoFactorEnrolment, TwoFactorRecoveryCodes, TwoFactorStatus, VideoTileSize, VimeoVideoEmbed,
-    VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal, WatchedCamera,
-    WikipediaArticleEmbed, YouTubeMusicTrackEmbed, YouTubeVideoEmbed,
+    MusicItem, MusicProvider, NameAvailability, OverwriteKind, PermissionOverwrite, Permissions,
+    Poll, PollAnswer, PollVote, Presence, PresenceStatus, ProfileImage, ProgressBar, PublicUser,
+    ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame,
+    SessionCreated, SimulcastLayer, Snowflake, SoundboardSound, TwitchEmbed, TwitchItem, TwoFactorChallenge,
+    TwoFactorEnrolment, TwoFactorRecoveryCodes, TwoFactorStatus,
+    VideoTileSize, VimeoVideoEmbed, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState,
+    VoiceVideoRefusal, WatchedCamera, WikipediaArticleEmbed, YouTubeMusicTrackEmbed,
+    YouTubeVideoEmbed,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -139,6 +140,7 @@ fn current_user() -> CurrentUser {
         banner: Some(picture()),
         status: ChosenStatus::DoNotDisturb,
         custom_status: Some("Writing notes".into()),
+        friend_code: Some("LD0A-0DA8".into()),
     }
 }
 
@@ -147,6 +149,7 @@ fn sparse_current_user() -> CurrentUser {
         avatar: None,
         banner: None,
         custom_status: None,
+        friend_code: None,
         ..current_user()
     }
 }
@@ -1014,6 +1017,11 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
             "CurrentUser",
             Interface,
             &[current_user(), sparse_current_user()],
+        )?,
+        sampled(
+            "NameAvailability",
+            Interface,
+            &[NameAvailability { is_available: true }],
         )?,
         sampled(
             "ChosenStatus",

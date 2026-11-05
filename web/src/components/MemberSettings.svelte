@@ -69,7 +69,6 @@
           <div class="flex min-w-0 flex-1 flex-col gap-(--mw-component-server-settings-text-gap)">
             <p class="flex min-w-0 flex-wrap items-baseline gap-x-(--mw-component-server-settings-row-gap)">
               <span class="truncate type-member-name text-text-heading">{name}</span>
-              <span class="truncate type-body-sm text-(--mw-component-server-settings-secondary-text)">@{member.user.username}</span>
             </p>
             <RoleChips {guild} roleIds={member.role_ids} isOwner={member.user.id === guild.owner_id} label={strings.serverSettings.members.memberRoles(name)} />
           </div>

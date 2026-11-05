@@ -138,6 +138,7 @@ enum AdminCommand {
     CreateUser {
         #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
         config: PathBuf,
+        /// The account's name, unique whatever its case and accents (ADR-0048).
         #[arg(long)]
         username: String,
         #[arg(long)]

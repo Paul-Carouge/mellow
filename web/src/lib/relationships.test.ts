@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ApiError } from "./api";
+import { ApiError, type FriendRequestTarget } from "./api";
 import type { Relationship, RelationshipKind } from "./protocol";
 import { Relationships } from "./relationships.svelte";
 
@@ -47,17 +47,18 @@ describe("Relationships", () => {
     expect(book.isBlocked(ZOE.user.id)).toBe(false);
   });
 
-  it("applies the instance's answer at once, with the name trimmed", async () => {
-    const asked: string[] = [];
+  it("applies the instance's answer at once, with the name or friend code trimmed", async () => {
+    const asked: FriendRequestTarget[] = [];
     const book = relationships({
-      sendFriendRequest: (username) => {
-        asked.push(username);
+      sendFriendRequest: (target) => {
+        asked.push(target);
         return Promise.resolve({ ...BOB, kind: "outgoing_request" });
       },
       setRelationship: (userId, kind) => Promise.resolve({ ...BOB, user: { ...BOB.user, id: userId }, kind }),
     });
-    await book.sendFriendRequest("  bob ");
-    expect(asked).toEqual(["bob"]);
+    await book.sendFriendRequest({ username: "  bob " });
+    await book.sendFriendRequest({ friend_code: " ld0a-0da8 " });
+    expect(asked).toEqual([{ username: "bob" }, { friend_code: "ld0a-0da8" }]);
     expect(book.ofKind("outgoing_request")).toHaveLength(1);
     await book.acceptFriendRequest(BOB.user.id);
     expect(book.byUserId.get(BOB.user.id)?.kind).toBe("friend");

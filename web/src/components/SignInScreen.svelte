@@ -4,7 +4,7 @@
   import { strings } from "../i18n";
   import { ApiError } from "../lib/api";
   import { type MellowClient, describeError } from "../lib/client.svelte";
-  import { MINIMUM_PASSWORD_LENGTH, type TwoFactorChallenge } from "../lib/protocol";
+  import { MAXIMUM_ACCOUNT_NAME_LENGTH, MINIMUM_PASSWORD_LENGTH, type TwoFactorChallenge } from "../lib/protocol";
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
   import Melli from "./Melli.svelte";
@@ -260,9 +260,10 @@
           id="register-username"
           label={strings.signIn.username}
           autocomplete="username"
-          autocapitalize="none"
+          autocapitalize="words"
           spellcheck={false}
           helper={strings.signIn.usernameHelper}
+          maxlength={MAXIMUM_ACCOUNT_NAME_LENGTH}
           error={fieldErrors.get("register-username")}
           oninput={() => forgetFieldError("register-username")}
           bind:value={username}

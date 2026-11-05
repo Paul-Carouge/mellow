@@ -1,6 +1,7 @@
 //! Who a message mentions, with the rule the web client uses to draw mention chips
 //! (`web/src/components/mentions.ts`): "@" at the start, after a space or a formatting mark, then
-//! a username, or a display name of one word, outside Markdown code. The protocol has no mention
+//! a person's name, outside Markdown code; names may hold spaces and dashes (ADR-0048), so the
+//! longest name written there wins ("@Paul Carouge" over "@Paul"). The protocol has no mention
 //! syntax yet, so the server finds them in the text the same way.
 //! shortcut: escapes ("\*@paul") are not read as Markdown here, so the rare mention right after
 //! one shows a chip but counts for no one; send mention ids from the composer to drop the guess.
@@ -77,10 +78,16 @@ pub(crate) fn text_outside_code(content: &str) -> String {
     kept
 }
 
-/// The names written after an "@", in order, each with its spellings to try, lowercased: as
-/// written, without trailing dots ("@paul." at the end of a sentence), and without a closing
-/// italic mark ("_@paul_").
-fn mention_candidates(content: &str) -> Vec<[String; 3]> {
+/// What may continue a name after its first character: names hold spaces and dashes too.
+fn may_continue_a_name(character: char) -> bool {
+    is_name_character(character) || matches!(character, ' ' | '-')
+}
+
+/// The names that may be written after each "@", in order, each with its spellings to try,
+/// lowercased and longest first: every run of words up to a name's length, each as written,
+/// without trailing dots ("@paul." at the end of a sentence), and without a closing italic mark
+/// ("_@paul_").
+fn mention_candidates(content: &str) -> Vec<Vec<String>> {
     let text = text_outside_code(content);
     let characters: Vec<char> = text.chars().collect();
     let mut candidates = Vec::new();
@@ -89,18 +96,31 @@ fn mention_candidates(content: &str) -> Vec<[String; 3]> {
         if *character != '@' || !is_after_space_or_start {
             continue;
         }
-        let name: String = characters[index + 1..]
+        // One character past the longest name, so a longer run of name characters is no name.
+        let run: Vec<char> = characters[index + 1..]
             .iter()
-            .take_while(|character| is_name_character(**character))
+            .copied()
+            .take(MAXIMUM_CANDIDATE_LENGTH + 1)
+            .take_while(|character| may_continue_a_name(*character))
             .collect();
-        let length = name.chars().count();
-        if length == 0 || length > MAXIMUM_CANDIDATE_LENGTH {
+        if !run.first().is_some_and(|first| is_name_character(*first)) {
             continue;
         }
-        let name = name.to_lowercase();
-        let without_trailing_dots = name.trim_end_matches('.').to_owned();
-        let without_closing_italic = name.trim_end_matches(['.', '_']).to_owned();
-        candidates.push([name, without_trailing_dots, without_closing_italic]);
+        let mut spellings = Vec::new();
+        for end in (1..=run.len().min(MAXIMUM_CANDIDATE_LENGTH)).rev() {
+            let ends_a_word = is_name_character(run[end - 1])
+                && run.get(end).is_none_or(|next| !is_name_character(*next));
+            if !ends_a_word {
+                continue;
+            }
+            let name: String = run[..end].iter().collect::<String>().to_lowercase();
+            let without_trailing_dots = name.trim_end_matches('.').to_owned();
+            let without_closing_italic = name.trim_end_matches(['.', '_']).to_owned();
+            spellings.extend([name, without_trailing_dots, without_closing_italic]);
+        }
+        if !spellings.is_empty() {
+            candidates.push(spellings);
+        }
     }
     candidates
 }
@@ -118,7 +138,7 @@ pub(crate) fn mentioned_ids(
     let mut by_name: HashMap<String, Option<Snowflake>> = HashMap::new();
     for person in people {
         let display_name = person.display_name.trim();
-        if !display_name.is_empty() && !display_name.contains(char::is_whitespace) {
+        if !display_name.is_empty() {
             by_name
                 .entry(display_name.to_lowercase())
                 .and_modify(|owner| {
@@ -256,7 +276,23 @@ mod tests {
             person(4, "ali", "Someone"),
             person(5, "eve", "Twin"),
             person(6, "mallory", "twin"),
+            person(7, "Paul Carouge", "Paul Carouge"),
+            person(8, "Jean-Paul", "Jean-Paul"),
         ]
+    }
+
+    #[test]
+    fn names_with_spaces_and_dashes_are_mentions_and_the_longest_name_wins() {
+        assert_eq!(mentioned("@Paul Carouge salut"), [7]);
+        assert_eq!(mentioned("@paul carouge."), [7], "a closing full stop");
+        assert_eq!(mentioned("@Paul salut"), [1]);
+        assert_eq!(mentioned("@Jean Bob et @jean-paul"), [3, 8]);
+        assert_eq!(mentioned("@Paul-Henri"), [1], "a dash ends a shorter name");
+        assert_eq!(mentioned("@Jean"), Vec::<u64>::new(), "no part of a name");
+        assert_eq!(
+            mentioned(&format!("@Paul{}", "x".repeat(40))),
+            Vec::<u64>::new()
+        );
     }
 
     fn mentioned(content: &str) -> Vec<u64> {
@@ -270,7 +306,7 @@ mod tests {
     fn usernames_and_one_word_display_names_are_mentions_in_order_once() {
         assert_eq!(mentioned("@Paul hello @ALICE and @paul"), [1, 2]);
         assert_eq!(mentioned("hi @alice."), [2], "a closing full stop");
-        assert_eq!(mentioned("@Jean"), Vec::<u64>::new(), "no multi-word names");
+        assert_eq!(mentioned("@Jean"), Vec::<u64>::new(), "no part of a name");
         assert_eq!(
             mentioned("@twin @eve"),
             [5],

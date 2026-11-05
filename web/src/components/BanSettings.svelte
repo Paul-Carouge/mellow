@@ -90,7 +90,6 @@
         <div class="flex min-w-0 flex-1 flex-col gap-(--mw-component-server-settings-text-gap)">
           <p class="flex min-w-0 flex-wrap items-baseline gap-x-(--mw-component-server-settings-row-gap)">
             <span class="truncate type-member-name text-text-heading">{name}</span>
-            <span class="truncate type-body-sm text-(--mw-component-server-settings-secondary-text)">@{ban.user.username}</span>
           </p>
           <p class="type-body text-(--mw-component-settings-body-text)">{ban.reason || strings.serverSettings.bans.noReason}</p>
           <p class="type-body-sm text-(--mw-component-server-settings-secondary-text)">

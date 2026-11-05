@@ -10,10 +10,12 @@ use mellow_protocol::{
 };
 use zeroize::Zeroizing;
 
+use crate::domain::account_names::{
+    account_name_key, format_friend_code, generate_friend_code, normalize_account_name,
+};
 use crate::domain::account_rules::{
     AccountRuleViolation, RegistrationMode, normalize_custom_status, normalize_device_name,
-    normalize_display_name, normalize_email, normalize_login, validate_password_length,
-    validate_password_maximum_length, validate_username,
+    normalize_email, normalize_login, validate_password_length, validate_password_maximum_length,
 };
 use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::password::{PasswordHashError, hash_password, verify_password};
@@ -22,11 +24,11 @@ use crate::domain::session_token::{
 };
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::events::ChosenPresence;
+use crate::storage::account_names::{is_name_key_taken_by_another_account, rename_account};
 use crate::storage::accounts::{
     AccountStorageError, NewSession, NewUser, StoredUser, delete_expired_sessions, delete_session,
     find_session_owner, find_user_by_login, find_user_presence, insert_session, insert_user,
-    record_session_use, replace_password_and_delete_other_sessions, update_user_names,
-    update_user_presence,
+    record_session_use, replace_password_and_delete_other_sessions, update_user_presence,
 };
 use crate::storage::guilds::{GuildStorageError, list_user_guilds};
 use crate::storage::two_factor::is_two_factor_enabled;
@@ -39,12 +41,14 @@ const EXPIRED_SESSION_PURGE_INTERVAL: Duration = Duration::from_hours(1);
 const EXPIRED_SESSION_PURGE_GRACE: Duration = Duration::from_hours(24);
 /// `sessions.last_seen_at` is precise to this much, for a future list of signed-in devices.
 const SESSION_USE_RECORD_INTERVAL: Duration = Duration::from_hours(1);
+/// Random 40-bit codes almost never collide; a few draws make a failure practically impossible.
+const FRIEND_CODE_DRAWS_PER_NEW_ACCOUNT: usize = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AccountError {
     #[error(transparent)]
     InvalidInput(#[from] AccountRuleViolation),
-    #[error("this username is already taken")]
+    #[error("this name is already taken")]
     UsernameTaken,
     #[error("this email address is already used")]
     EmailTaken,
@@ -222,26 +226,35 @@ impl Accounts {
         account: NewAccount,
         now_unix_milliseconds: u64,
     ) -> Result<StoredUser, AccountError> {
-        validate_username(&account.username)?;
-        let display_name =
-            normalize_display_name(account.display_name.as_deref().unwrap_or(&account.username))?;
+        let name =
+            normalize_account_name(account.display_name.as_deref().unwrap_or(&account.username))?;
         let email = normalize_email(&account.email)?;
         validate_password_length(&account.password)?;
         let password_hash = hash_password(account.password).await?;
-        let new_user = NewUser {
+        let mut new_user = NewUser {
             id: self.ids.next_id(now_unix_milliseconds)?,
-            username: account.username,
-            display_name,
+            name_key: account_name_key(&name),
+            name,
+            friend_code: generate_friend_code()?,
             email,
             password_hash,
             is_instance_administrator: account.is_instance_administrator,
             created_at_unix_milliseconds: now_unix_milliseconds,
         };
-        insert_user(&self.database, &new_user).await?;
+        let mut draws_left = FRIEND_CODE_DRAWS_PER_NEW_ACCOUNT;
+        loop {
+            match insert_user(&self.database, &new_user).await {
+                Err(AccountStorageError::FriendCodeTaken) if draws_left > 1 => {
+                    draws_left -= 1;
+                    new_user.friend_code = generate_friend_code()?;
+                }
+                result => break result?,
+            }
+        }
         Ok(StoredUser {
             id: new_user.id,
-            username: new_user.username,
-            display_name: new_user.display_name,
+            username: new_user.name.clone(),
+            display_name: new_user.name,
             email: new_user.email,
             password_hash: new_user.password_hash,
             is_instance_administrator: new_user.is_instance_administrator,
@@ -250,6 +263,7 @@ impl Accounts {
             banner: None,
             status: ChosenStatus::Online,
             custom_status: None,
+            friend_code: Some(new_user.friend_code),
         })
     }
 
@@ -267,7 +281,7 @@ impl Accounts {
         let password = Zeroizing::new(request.password);
         // Bounds Argon2 input; only the maximum, so older passwords keep working.
         validate_password_maximum_length(&password)?;
-        let user = find_user_by_login(&self.database, &login).await?;
+        let user = find_user_by_login(&self.database, &account_name_key(&login), &login).await?;
         let stored_hash = user.as_ref().map(|user| user.password_hash.clone());
         let is_password_correct = verify_password(password, stored_hash).await?;
         let user = match user {
@@ -327,58 +341,56 @@ impl Accounts {
         Ok(())
     }
 
-    /// Changes the signed-in user's username and display name, and tells everyone who can see them.
-    /// A new username needs the current password, as the username is how others find the account.
+    /// Whether `user_id` could take `name` now: their own name, in another case, stays available.
+    /// Never says who holds a taken name.
     ///
     /// # Errors
-    /// `Unauthorized` for an invalid token, `InvalidCredentials` for a username change without the
-    /// right current password, invalid input, or a username taken by another account.
+    /// Invalid input for a name breaking the rules; database errors.
+    pub async fn is_name_available(
+        &self,
+        user_id: Snowflake,
+        name: &str,
+    ) -> Result<bool, AccountError> {
+        let name = normalize_account_name(name)?;
+        Ok(
+            !is_name_key_taken_by_another_account(
+                &self.database,
+                &account_name_key(&name),
+                user_id,
+            )
+            .await?,
+        )
+    }
+
+    /// Renames the signed-in user and tells everyone who can see them (ADR-0048). The old name is
+    /// free for anyone at once; the friend code keeps pointing to the account.
+    ///
+    /// # Errors
+    /// `Unauthorized` for an invalid token, invalid input, or a name another account holds.
     pub async fn update_current_user(
         &self,
         token: &str,
         request: UpdateCurrentUserRequest,
         now_unix_milliseconds: u64,
     ) -> Result<CurrentUser, AccountError> {
-        if let Some(username) = &request.username {
-            validate_username(username)?;
-        }
-        let display_name = request
+        let name = request
             .display_name
+            .or(request.username)
             .as_deref()
-            .map(normalize_display_name)
+            .map(normalize_account_name)
             .transpose()?;
         let user = self
             .verified_session_owner(token, now_unix_milliseconds)
             .await?;
-        let username = request
-            .username
-            .filter(|username| *username != user.username);
-        let display_name = display_name.filter(|display_name| *display_name != user.display_name);
-        if username.is_none() && display_name.is_none() {
+        let Some(name) = name.filter(|name| *name != user.display_name) else {
             return Ok(current_user(user));
+        };
+        if !rename_account(&self.database, user.id, &name, &account_name_key(&name)).await? {
+            return Err(AccountError::Unauthorized);
         }
-        if username.is_some() {
-            let current_password = Zeroizing::new(
-                request
-                    .current_password
-                    .ok_or(AccountError::InvalidCredentials)?,
-            );
-            validate_password_maximum_length(&current_password)?;
-            if !verify_password(current_password, Some(user.password_hash.clone())).await? {
-                return Err(AccountError::InvalidCredentials);
-            }
-        }
-        let (username, display_name) = update_user_names(
-            &self.database,
-            user.id,
-            username.as_deref(),
-            display_name.as_deref(),
-        )
-        .await?
-        .ok_or(AccountError::Unauthorized)?;
         let updated = current_user(StoredUser {
-            username,
-            display_name,
+            username: name.clone(),
+            display_name: name,
             ..user
         });
         let guild_ids: Vec<_> = list_user_guilds(&self.database, updated.id)
@@ -603,6 +615,7 @@ pub(crate) fn current_user(user: StoredUser) -> CurrentUser {
         banner: user.banner,
         status: user.status,
         custom_status: user.custom_status,
+        friend_code: user.friend_code.map(format_friend_code),
     }
 }
 
@@ -746,7 +759,7 @@ pub(crate) mod tests {
         assert!(matches!(
             bad_username,
             Err(AccountError::InvalidInput(
-                AccountRuleViolation::InvalidUsername
+                AccountRuleViolation::InvalidAccountName
             ))
         ));
         assert!(matches!(closed, Err(AccountError::RegistrationClosed)));
@@ -927,7 +940,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn renaming_validates_refuses_taken_usernames_and_tells_the_user_sessions() {
+    async fn renaming_checks_the_name_frees_the_old_one_and_tells_the_user_sessions() {
         let (_directory, database) = migrated_database().await;
         let events = std::sync::Arc::new(crate::events::EventHub::default());
         let accounts = Accounts::new(
@@ -940,8 +953,8 @@ pub(crate) mod tests {
             .register(register_request("aurore", "aurore@example.org"), NOW)
             .await
             .unwrap();
-        accounts
-            .register(register_request("basile", "basile@example.org"), NOW)
+        let basile = accounts
+            .register(register_request("Basile", "basile@example.org"), NOW)
             .await
             .unwrap();
         let (session_key, mut session_events) = events
@@ -952,81 +965,117 @@ pub(crate) mod tests {
         let token = aurore.token.as_str();
 
         let unchanged = accounts
-            .update_current_user(token, rename(Some("aurore"), Some(" aurore "), None), NOW)
+            .update_current_user(token, rename(None, Some(" aurore "), None), NOW)
             .await
             .unwrap();
         let nothing_published = session_events.try_recv().is_err();
-        let username_taken = accounts
-            .update_current_user(token, rename(Some("basile"), None, Some(PASSWORD)), NOW)
+        let name_taken = accounts
+            .update_current_user(token, rename(None, Some("BASILÉ"), None), NOW)
+            .await;
+        let taken_by_alias = accounts
+            .update_current_user(token, rename(Some("basile"), None, None), NOW)
             .await;
         let invalid = accounts
             .update_current_user(token, rename(None, Some("   "), None), NOW)
             .await;
-        let without_password = accounts
-            .update_current_user(token, rename(Some("aurore.b"), None, None), NOW)
-            .await;
-        let wrong_password = accounts
-            .update_current_user(token, rename(Some("aurore.b"), None, Some("nope")), NOW)
-            .await;
-        let display_name_only = accounts
-            .update_current_user(token, rename(None, Some("  Aurore B  "), None), NOW)
+        let own_name_available = accounts
+            .is_name_available(aurore.user.id, "AURORE")
             .await
             .unwrap();
-        let first_event = session_events.try_recv().unwrap().payload_json.to_string();
+        let other_name_available = accounts
+            .is_name_available(aurore.user.id, "basile")
+            .await
+            .unwrap();
         let renamed = accounts
-            .update_current_user(token, rename(Some("aurore.b"), None, Some(PASSWORD)), NOW)
+            .update_current_user(token, rename(None, Some("  Aurore   B  "), None), NOW)
             .await
             .unwrap();
-        let second_event = session_events.try_recv().unwrap().payload_json.to_string();
+        let event = session_events.try_recv().unwrap().payload_json.to_string();
+        let old_name_taken_by_basile = accounts
+            .update_current_user(&basile.token, rename(Some("Aurore"), None, None), NOW)
+            .await
+            .unwrap();
         let stored = accounts.authenticate(token, NOW).await.unwrap();
+        let signed_in_by_new_name = accounts
+            .login(login_request("aurore b", PASSWORD), NOW)
+            .await
+            .unwrap();
         database.close().await;
 
         assert_eq!(unchanged, aurore.user);
         assert!(nothing_published);
-        assert!(matches!(username_taken, Err(AccountError::UsernameTaken)));
+        assert!(matches!(name_taken, Err(AccountError::UsernameTaken)));
+        assert!(matches!(taken_by_alias, Err(AccountError::UsernameTaken)));
         assert!(matches!(
             invalid,
             Err(AccountError::InvalidInput(
-                AccountRuleViolation::InvalidDisplayName
+                AccountRuleViolation::InvalidAccountName
             ))
         ));
-        assert!(matches!(
-            without_password,
-            Err(AccountError::InvalidCredentials)
-        ));
-        assert!(matches!(
-            wrong_password,
-            Err(AccountError::InvalidCredentials)
-        ));
-        assert_eq!(display_name_only.username, "aurore");
+        assert!(own_name_available && !other_name_available);
         assert_eq!(
             (renamed.username.as_str(), renamed.display_name.as_str()),
-            ("aurore.b", "Aurore B")
+            ("Aurore B", "Aurore B"),
+            "the deprecated username follows the name"
         );
+        assert_eq!(renamed.friend_code, aurore.user.friend_code, "permanent");
         assert_eq!(stored, renamed);
-        let event = |json: &str| serde_json::from_str::<GatewayEvent>(json).unwrap();
+        assert_eq!(old_name_taken_by_basile.display_name, "Aurore");
+        assert_eq!(signed_in_by_new_name.user.id, aurore.user.id);
         assert_eq!(
-            event(&first_event),
+            serde_json::from_str::<GatewayEvent>(&event).unwrap(),
             GatewayEvent::UserUpdate(PublicUser {
                 id: renamed.id,
-                username: "aurore".into(),
+                username: "Aurore B".into(),
                 display_name: "Aurore B".into(),
-                avatar: None,
-                banner: None,
-            })
-        );
-        assert_eq!(
-            event(&second_event),
-            GatewayEvent::UserUpdate(PublicUser {
-                id: renamed.id,
-                username: renamed.username.clone(),
-                display_name: renamed.display_name.clone(),
                 avatar: None,
                 banner: None,
             })
         );
     }
 
+    #[tokio::test]
+    async fn names_are_unique_whatever_their_case_and_accents_and_sign_in_by_any_case() {
+        let (_directory, database) = migrated_database().await;
+        let accounts = Accounts::new(
+            database.clone(),
+            RegistrationMode::Open,
+            std::sync::Arc::default(),
+            std::sync::Arc::default(),
+        );
+        let mut elodie = register_request("elodie", "elodie@example.org");
+        elodie.display_name = Some("Élodie".into());
+        let elodie = accounts.register(elodie, NOW).await.unwrap();
+        let mut twin = register_request("x", "twin@example.org");
+        twin.display_name = Some("ELODIE".into());
+        let twin = accounts.register(twin, NOW).await;
+        let other = accounts
+            .register(register_request("paul", "paul@example.org"), NOW)
+            .await
+            .unwrap();
+        let by_folded_name = accounts
+            .login(login_request("  eLoDiE ", PASSWORD), NOW)
+            .await
+            .unwrap();
+        let by_email = accounts
+            .login(login_request("ELODIE@example.org", PASSWORD), NOW)
+            .await
+            .unwrap();
+        database.close().await;
+
+        assert_eq!(
+            elodie.user.display_name, "Élodie",
+            "capitals and accents kept"
+        );
+        assert_eq!(elodie.user.username, "Élodie");
+        assert!(matches!(twin, Err(AccountError::UsernameTaken)));
+        assert_eq!(by_folded_name.user.id, elodie.user.id);
+        assert_eq!(by_email.user.id, elodie.user.id);
+        let code = elodie.user.friend_code.clone().unwrap();
+        assert_eq!(code.len(), 9);
+        assert_eq!(&code[4..5], "-");
+        assert_ne!(elodie.user.friend_code, other.user.friend_code);
+    }
     /// A login or a password change verified against the old hash must not land after another
     /// password change committed meanwhile.
     #[tokio::test]
@@ -1042,7 +1091,7 @@ pub(crate) mod tests {
             .register(register_request("aurore", "aurore@example.org"), NOW)
             .await
             .unwrap();
-        let old_hash = find_user_by_login(&database, "aurore")
+        let old_hash = find_user_by_login(&database, "aurore", "aurore")
             .await
             .unwrap()
             .unwrap()
@@ -1083,7 +1132,7 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        let stored_hash = find_user_by_login(&database, "aurore")
+        let stored_hash = find_user_by_login(&database, "aurore", "aurore")
             .await
             .unwrap()
             .unwrap()

@@ -2277,10 +2277,10 @@ describe("Friends", () => {
     const client = new MellowClient(
       fakeRest({
         ...QUIET_REST,
-        sendFriendRequest: (username: string) => {
-          sentTo.push(username);
+        sendFriendRequest: (target: { username: string }) => {
+          sentTo.push(target.username);
           return Promise.resolve(
-            relationshipWith("30", "outgoing_request", username),
+            relationshipWith("30", "outgoing_request", target.username),
           );
         },
         setRelationship: (userId: string, kind: "friend" | "blocked") =>
@@ -2305,7 +2305,7 @@ describe("Friends", () => {
     ).toEqual(["anna", "zoe"]);
 
     await client.acceptFriendRequest("20");
-    await client.sendFriendRequest("  carol ");
+    await client.sendFriendRequest({ username: "  carol " });
     await client.blockUser("22");
     await client.removeRelationship("21");
     client.applyEvent(

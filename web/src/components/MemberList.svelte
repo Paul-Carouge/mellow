@@ -202,7 +202,7 @@
                       isDisabled={isChangingRelationship}
                       onclick={() =>
                         void changeRelationship(
-                          () => client.sendFriendRequest(user.username),
+                          () => client.sendFriendRequest({ username: user.username }),
                           strings.friends.sent(person),
                           strings.members.friendRequestFailed,
                           "block",
