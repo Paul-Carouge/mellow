@@ -6,6 +6,7 @@ import {
   auditChangeLines,
   auditEntrySentence,
   canManageRole,
+  canMoveAnyRole,
   canOpenServerSettings,
   focusAfterRemoval,
   isRoleEditPending,
@@ -129,6 +130,14 @@ describe("roles", () => {
     expect(roleIdsAfterMove(guild(0n), owner, ADMIN.id, "up")).toBeNull();
     expect(roleIdsAfterMove(guild(0n), owner, HELPER.id, "down")).toBeNull();
     expect(roleIdsAfterMove(moderatorGuild, moderator, HELPER.id, "up")).toBeNull();
+  });
+
+  it("offers the move hint only when two neighbouring roles may swap", () => {
+    const owner = roleManagerOf(guild(BigInt.asUintN(64, -1n)), OWNER);
+    expect(canMoveAnyRole(guild(0n), owner)).toBe(true);
+    expect(canMoveAnyRole(moderatorGuild, moderator)).toBe(false);
+    const onlyOneNamedRole = { ...guild(0n), roles: guild(0n).roles.filter((candidate) => candidate.id === GUILD || candidate.id === HELPER.id) };
+    expect(canMoveAnyRole(onlyOneNamedRole, owner)).toBe(false);
   });
 
   it("keeps a draft's own changes on top of a role changed meanwhile", () => {
