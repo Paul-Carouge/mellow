@@ -125,24 +125,6 @@ pub(crate) async fn are_friends(
     .await?)
 }
 
-/// The enabled account with this username, case-insensitively.
-///
-/// # Errors
-/// Fails on database errors.
-pub(crate) async fn find_enabled_user_id_by_username(
-    database: &Database,
-    username: &str,
-) -> Result<Option<Snowflake>, RelationshipStorageError> {
-    let id: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM users WHERE username = ? COLLATE NOCASE \
-         AND disabled_at_unix_milliseconds IS NULL",
-    )
-    .bind(username)
-    .fetch_optional(database.readers())
-    .await?;
-    Ok(id.map(to_snowflake).transpose()?)
-}
-
 /// Whether two people may open and write direct messages to each other (ADR-0025): they share a
 /// guild or are friends, and neither blocked the other.
 ///

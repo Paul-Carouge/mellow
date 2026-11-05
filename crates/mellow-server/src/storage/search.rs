@@ -27,9 +27,9 @@ pub(crate) struct SearchCriteria {
     pub(crate) match_expression: Option<String>,
     /// FTS5 expression the content must not match.
     pub(crate) exclusion_expression: Option<String>,
-    /// Any of them wrote it.
+    /// Any of them wrote it: folded name keys (ADR-0048).
     pub(crate) author_usernames: Vec<String>,
-    /// It mentions any of them.
+    /// It mentions any of them: folded name keys.
     pub(crate) mentioned_usernames: Vec<String>,
     pub(crate) required_contents: RequiredContents,
     /// Inclusive.
@@ -58,11 +58,11 @@ macro_rules! search_conditions {
     () => {
         " AND messages.channel_id IN (SELECT value FROM json_each(?2)) \
          AND (?3 IS NULL OR messages.author_id IN (SELECT users.id FROM users \
-             WHERE users.username IN (SELECT value FROM json_each(?3)))) \
+             WHERE users.name_key IN (SELECT value FROM json_each(?3)))) \
          AND (?4 IS NULL OR EXISTS (SELECT 1 FROM message_mentions \
              JOIN users ON users.id = message_mentions.user_id \
              WHERE message_mentions.message_id = messages.id \
-             AND users.username IN (SELECT value FROM json_each(?4)))) \
+             AND users.name_key IN (SELECT value FROM json_each(?4)))) \
          AND (?5 = 0 OR EXISTS (SELECT 1 FROM attachments \
              WHERE attachments.message_id = messages.id)) \
          AND (?6 = 0 OR EXISTS (SELECT 1 FROM attachments \
@@ -96,7 +96,7 @@ macro_rules! filtered_messages {
     (by_author) => {
         filtered_messages!(
             "messages.author_id IN (SELECT users.id FROM users \
-             WHERE users.username IN (SELECT value FROM json_each(?3)))"
+             WHERE users.name_key IN (SELECT value FROM json_each(?3)))"
         )
     };
     ($first_condition:literal) => {

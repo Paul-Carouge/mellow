@@ -7,22 +7,41 @@
   import { friendRequestOutcome } from "./friends";
   import Icon from "./Icon.svelte";
 
-  // "Add friend" (DESIGN.md §5.6.1, ADR-0025): one username field with the request button inside
-  // it, as on Discord; the answer is said under it in words and read out. A missing account,
-  // yourself and someone who blocked you read the same, so the form tells nothing about blocks.
+  // "Add friend" (DESIGN.md §5.6.1, ADR-0025): one field, a name or a friend code (ADR-0048), with
+  // the request button inside it, as on Discord; the answer is said under it in words and read
+  // out. A missing account, yourself and someone who blocked you read the same, so the form tells
+  // nothing about blocks.
   interface Props {
     client: MellowClient;
+    /** What the field takes: a name (any case) or a friend code (`XXXX-XXXX`, any case). */
+    lookup?: "name" | "friendCode";
   }
 
-  let { client }: Props = $props();
+  let { client, lookup = "name" }: Props = $props();
+
+  const words = $derived(
+    lookup === "name"
+      ? {
+          title: strings.friends.addTitle,
+          hint: strings.friends.addSubtitle(window.location.host),
+          label: strings.friends.username,
+          placeholder: strings.friends.usernamePlaceholder,
+        }
+      : {
+          title: strings.friends.addByCodeTitle,
+          hint: strings.friends.addByCodeSubtitle,
+          label: strings.friends.friendCode,
+          placeholder: strings.friends.friendCodePlaceholder,
+        },
+  );
 
   const id = $props.id();
-  let username = $state("");
+  let typed = $state("");
   let isSending = $state(false);
   let result = $state<{ isSuccess: boolean; text: string } | null>(null);
   let field = $state<HTMLInputElement | null>(null);
 
-  const canSend = $derived(username.trim() !== "" && !isSending);
+  const canSend = $derived(typed.trim() !== "" && !isSending);
 
   export function focusField(): void {
     field?.focus();
@@ -36,7 +55,9 @@
     result = null;
     const kindsBefore = new Map([...client.relationshipByUserId].map(([userId, relationship]) => [userId, relationship.kind]));
     try {
-      const relationship = await client.sendFriendRequest(username);
+      const relationship = await client.sendFriendRequest(
+        lookup === "name" ? { username: typed } : { friend_code: typed },
+      );
       const person = displayName(relationship.user);
       const outcome = friendRequestOutcome(kindsBefore.get(relationship.user.id), relationship.kind);
       result = {
@@ -50,7 +71,7 @@
                 ? strings.friends.alreadySent(person)
                 : strings.friends.sent(person),
       };
-      username = "";
+      typed = "";
     } catch (error) {
       result = { isSuccess: false, text: refusalText(error) };
     } finally {
@@ -82,22 +103,22 @@
     void send();
   }}
 >
-  <h2 id="{id}-title" class="type-heading-lg text-text-heading">{strings.friends.addTitle}</h2>
-  <p id="{id}-hint" class="type-body text-text-secondary">{strings.friends.addSubtitle(window.location.host)}</p>
+  <h2 id="{id}-title" class="type-heading-lg text-text-heading">{words.title}</h2>
+  <p id="{id}-hint" class="type-body text-text-secondary">{words.hint}</p>
   <!-- The button sits inside the field, as on Discord; on a phone it wraps under the name. -->
   <div
     class="mt-xs flex flex-wrap items-center gap-xs rounded-(--mw-component-text-field-radius) border-(length:--mw-component-text-field-border-width) border-(--mw-component-text-field-border) bg-(--mw-component-text-field-background) p-2xs ps-(--mw-component-text-field-padding-inline) focus-within:focus-ring"
   >
-    <label for="{id}-username" class="sr-only">{strings.friends.username}</label>
+    <label for="{id}-username" class="sr-only">{words.label}</label>
     <input
       bind:this={field}
-      bind:value={username}
+      bind:value={typed}
       id="{id}-username"
       type="text"
       autocomplete="off"
       autocapitalize="none"
       spellcheck="false"
-      placeholder={strings.friends.usernamePlaceholder}
+      placeholder={words.placeholder}
       aria-describedby="{id}-hint {id}-result"
       aria-invalid={result !== null && !result.isSuccess}
       readonly={isSending}

@@ -1,7 +1,5 @@
 <script lang="ts">
-  /** Usernames are ASCII, so the browser's UTF-16 count matches the server's (account rules). */
-  const MAXIMUM_USERNAME_LENGTH = 32;
-  import { tick } from "svelte";
+  import { onDestroy, tick } from "svelte";
 
   import { ApiError } from "../lib/api";
   import { strings } from "../i18n";
@@ -9,20 +7,22 @@
   import { MINIMUM_PASSWORD_LENGTH } from "../lib/protocol";
   import AccountEditForm from "./AccountEditForm.svelte";
   import Button from "./Button.svelte";
+  import FriendCode from "./FriendCode.svelte";
   import Icon from "./Icon.svelte";
+  import { NameAvailabilityCheck, tidiedName } from "./name-availability.svelte";
   import TextField from "./TextField.svelte";
 
-  // User settings, My account (DESIGN.md §5.9): Discord's account card with display name, username
-  // and email, each editable field opening its form in place, then the password section. One form
-  // is open at a time, so an error always sits under the form that raised it.
+  // User settings, My account (DESIGN.md §5.9): the account card with the name (one per account,
+  // unique, ADR-0048), the friend code and the email, the name's form opening in place with a live
+  // availability check, then the password section. One form is open at a time, so an error always
+  // sits under the form that raised it.
   interface Props {
     client: MellowClient;
   }
 
   let { client }: Props = $props();
 
-  type AccountForm = "display-name" | "username" | "password";
-
+  type AccountForm = "display-name" | "password";
 
   const id = $props.id();
   const user = $derived(client.user);
@@ -32,17 +32,32 @@
   let errorMessage = $state("");
   let notice = $state<{ form: AccountForm; text: string } | null>(null);
   let displayNameDraft = $state("");
-  let usernameDraft = $state("");
   let currentPasswordDraft = $state("");
   let newPasswordDraft = $state("");
   let confirmPasswordDraft = $state("");
   let firstField = $state<HTMLInputElement | null>(null);
+  const nameAvailability = new NameAvailabilityCheck((name) => client.isNameAvailable(name));
+  onDestroy(() => nameAvailability.cancel());
 
   const canSaveDisplayName = $derived(
-    displayNameDraft.trim() !== "" && displayNameDraft.trim() !== user?.display_name,
+    tidiedName(displayNameDraft) !== "" &&
+      tidiedName(displayNameDraft) !== user?.display_name &&
+      nameAvailability.state !== "taken" &&
+      nameAvailability.state !== "invalid",
   );
-  const canSaveUsername = $derived(
-    usernameDraft.trim() !== "" && usernameDraft.trim() !== user?.username && currentPasswordDraft !== "",
+  const nameProblem = $derived(
+    nameAvailability.state === "taken"
+      ? strings.account.nameTaken
+      : nameAvailability.state === "invalid"
+        ? strings.account.nameInvalid
+        : "",
+  );
+  const nameStatus = $derived(
+    nameAvailability.state === "checking"
+      ? strings.account.nameChecking
+      : nameAvailability.state === "available"
+        ? strings.account.nameAvailable
+        : "",
   );
   const doesConfirmationMatch = $derived(confirmPasswordDraft === newPasswordDraft);
   const canChangePassword = $derived(
@@ -59,7 +74,7 @@
 
   function clearDrafts() {
     displayNameDraft = "";
-    usernameDraft = "";
+    nameAvailability.cancel();
     currentPasswordDraft = "";
     newPasswordDraft = "";
     confirmPasswordDraft = "";
@@ -70,8 +85,6 @@
     // Prefilled, as Discord does: the change is usually small.
     if (form === "display-name") {
       displayNameDraft = user?.display_name ?? "";
-    } else if (form === "username") {
-      usernameDraft = user?.username ?? "";
     }
     errorMessage = "";
     notice = null;
@@ -114,7 +127,11 @@
       notice = { form, text: successText };
       await close();
     } catch (error) {
-      // No login was typed here: only the current password can be wrong.
+      // No login was typed here: only the current password can be wrong. A name taken meanwhile
+      // shows under the field, as the live check does.
+      if (error instanceof ApiError && error.code === "USERNAME_TAKEN") {
+        nameAvailability.state = "taken";
+      }
       errorMessage =
         error instanceof ApiError && error.code === "INVALID_CREDENTIALS"
           ? strings.errors.withReason(failureSummary, strings.account.wrongCurrentPassword)
@@ -130,13 +147,6 @@
       () => client.updateDisplayName(displayNameDraft),
       strings.account.displayNameFailed,
       strings.account.displayNameSaved,
-    );
-  const saveUsername = () =>
-    save(
-      "username",
-      () => client.updateUsername(usernameDraft, currentPasswordDraft),
-      strings.account.usernameFailed,
-      strings.account.usernameSaved,
     );
   const changePassword = () =>
     save(
@@ -199,50 +209,23 @@
         id="{id}-display-name"
         label={strings.account.displayName}
         helper={strings.account.displayNameHelper}
-        autocomplete="nickname"
+        error={nameProblem}
+        autocomplete="username"
+        spellcheck={false}
         readonly={isBusy}
         bind:value={displayNameDraft}
         bind:element={firstField}
+        oninput={(event) => nameAvailability.update(event.currentTarget.value, user?.display_name ?? "")}
       />
+      <!-- Polite: "free" is read once the check answers; "taken" is the field's error. -->
+      <p aria-live="polite" class="type-body-sm text-text-secondary">{nameStatus}</p>
     </AccountEditForm>
   {:else}
     {@render editableField("display-name", strings.account.displayName, strings.account.editDisplayName, user?.display_name ?? "")}
   {/if}
 
-  {#if openForm === "username"}
-    <AccountEditForm
-      label={strings.account.changeUsername}
-      saveLabel={strings.common.save}
-      busyLabel={strings.common.saving}
-      isSaveEnabled={canSaveUsername}
-      {isBusy}
-      {errorMessage}
-      onsave={() => void saveUsername()}
-      oncancel={() => void close()}
-    >
-      <TextField
-        id="{id}-username"
-        label={strings.account.username}
-        helper={strings.signIn.usernameHelper}
-        autocomplete="username"
-        autocapitalize="none"
-        spellcheck={false}
-        maxlength={MAXIMUM_USERNAME_LENGTH}
-        readonly={isBusy}
-        bind:value={usernameDraft}
-        bind:element={firstField}
-      />
-      <TextField
-        id="{id}-username-password"
-        label={strings.account.currentPassword}
-        isPassword
-        autocomplete="current-password"
-        readonly={isBusy}
-        bind:value={currentPasswordDraft}
-      />
-    </AccountEditForm>
-  {:else}
-    {@render editableField("username", strings.account.username, strings.account.editUsername, `@${user?.username ?? ""}`)}
+  {#if user?.friend_code}
+    <FriendCode code={user.friend_code} />
   {/if}
 
   {@render fieldValue(strings.account.email, user?.email ?? "")}

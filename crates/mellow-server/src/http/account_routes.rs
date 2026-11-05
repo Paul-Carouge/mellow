@@ -8,8 +8,8 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use mellow_protocol::{
-    ChangePasswordRequest, CurrentUser, LoginRequest, RegisterRequest, SessionCreated,
-    UpdateCurrentUserRequest, UpdatePresenceRequest,
+    ChangePasswordRequest, CurrentUser, LoginRequest, NameAvailability, RegisterRequest,
+    SessionCreated, UpdateCurrentUserRequest, UpdatePresenceRequest,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -17,7 +17,7 @@ use crate::domain::account_rules::normalize_login;
 use crate::domain::accounts::AccountError;
 use crate::domain::clock::now_unix_milliseconds;
 use crate::http::AppState;
-use crate::http::api_error::{ApiError, ApiJson};
+use crate::http::api_error::{ApiError, ApiJson, ApiQuery};
 use crate::http::authentication::{
     AuthenticatedUser, expired_session_cookie_header, session_cookie_header, session_token,
     wants_cookie_session,
@@ -26,8 +26,8 @@ use crate::http::client_address::{client_address_key, client_ipv6_site_key};
 use crate::http::rate_limit::{
     AUTHENTICATING_ADDRESSES_PER_IPV6_SITE, AUTHENTICATION_ATTEMPTS_PER_ADDRESS,
     LOGIN_ATTEMPTS_PER_ACCOUNT, LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS,
-    PASSWORD_CHECKS_PER_SESSION, PASSWORD_CHECKS_PER_USER, PROFILE_WRITES_PER_SESSION,
-    PROFILE_WRITES_PER_USER,
+    NAME_AVAILABILITY_CHECKS_PER_USER, PASSWORD_CHECKS_PER_SESSION, PASSWORD_CHECKS_PER_USER,
+    PROFILE_WRITES_PER_SESSION, PROFILE_WRITES_PER_USER,
 };
 
 /// Enough of SHA-256 to make rate-limit keys unique per login or session while keeping them small.
@@ -211,6 +211,32 @@ pub(crate) async fn update_current_user(
             .update_current_user(token, request, now_unix_milliseconds())
             .await?,
     ))
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NameAvailabilityQuery {
+    name: String,
+}
+
+/// Answers whether the name is free, never who holds it; rate-limited so names cannot be listed.
+pub(crate) async fn name_availability(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    ApiQuery(query): ApiQuery<NameAvailabilityQuery>,
+) -> Result<Json<NameAvailability>, ApiError> {
+    if !state.rate_limiter.record_event(
+        &format!("name-availability:{}", user.id),
+        NAME_AVAILABILITY_CHECKS_PER_USER,
+        Instant::now(),
+    ) {
+        return Err(ApiError::rate_limited());
+    }
+    let is_available = state
+        .accounts
+        .is_name_available(user.id, &query.name)
+        .await?;
+    Ok(Json(NameAvailability { is_available }))
 }
 
 pub(crate) async fn update_presence(

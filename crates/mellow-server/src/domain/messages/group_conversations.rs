@@ -274,6 +274,7 @@ mod tests {
                     users[asker],
                     SendFriendRequest {
                         username: names[answerer].into(),
+                        friend_code: None,
                     },
                     NOW,
                 )

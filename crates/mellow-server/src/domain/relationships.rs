@@ -8,18 +8,24 @@ use mellow_protocol::{
     SendFriendRequest, SetRelationshipKind, Snowflake,
 };
 
+use crate::domain::account_names::{
+    MAXIMUM_ACCOUNT_NAME_LENGTH, account_name_key, parse_friend_code,
+};
 use crate::domain::guilds::GuildError;
 use crate::domain::profile_images::fill_profile_images;
 use crate::events::EventHub;
 use crate::storage::Database;
+use crate::storage::account_names::{
+    find_enabled_user_id_by_friend_code, find_enabled_user_id_by_name_key,
+};
 use crate::storage::guilds as guild_storage;
 use crate::storage::messages as message_storage;
 use crate::storage::relationships::{
     self as storage, AcceptOutcome, FriendRequestOutcome, Removal,
 };
 
-/// Usernames are at most 32 characters (`account_rules.rs`): anything longer names no one.
-const MAXIMUM_USERNAME_LENGTH: usize = 32;
+/// A friend code as typed, dashes and spaces included, is never longer than this.
+const MAXIMUM_TYPED_FRIEND_CODE_LENGTH: usize = 16;
 /// Requests waiting for one person's answer. Past it, new requests to them are refused like a
 /// block, so strangers cannot fill someone's list (blocks never count).
 const MAXIMUM_INCOMING_REQUESTS: usize = 200;
@@ -102,12 +108,22 @@ impl Relationships {
         request: SendFriendRequest,
         now_unix_milliseconds: u64,
     ) -> Result<Relationship, GuildError> {
-        let username = request.username.trim();
-        if username.is_empty() || username.chars().count() > MAXIMUM_USERNAME_LENGTH {
-            return Err(GuildError::NotFound);
-        }
-        let other_id = storage::find_enabled_user_id_by_username(&self.database, username)
-            .await?
+        let found = if let Some(friend_code) = &request.friend_code {
+            let friend_code = (friend_code.chars().count() <= MAXIMUM_TYPED_FRIEND_CODE_LENGTH)
+                .then(|| parse_friend_code(friend_code))
+                .flatten()
+                .ok_or(GuildError::NotFound)?;
+            find_enabled_user_id_by_friend_code(&self.database, friend_code).await
+        } else {
+            // Bounded before folding: anything longer than a name names no one.
+            let name = request.username.trim();
+            if name.is_empty() || name.chars().count() > MAXIMUM_ACCOUNT_NAME_LENGTH * 2 {
+                return Err(GuildError::NotFound);
+            }
+            find_enabled_user_id_by_name_key(&self.database, &account_name_key(name)).await
+        };
+        let other_id = found
+            .map_err(internal)?
             .filter(|other_id| *other_id != user_id)
             .ok_or(GuildError::NotFound)?;
         // Read before the write, so nothing can fail between the commit and the events.
@@ -398,6 +414,7 @@ mod tests {
     fn request(username: &str) -> SendFriendRequest {
         SendFriendRequest {
             username: username.into(),
+            friend_code: None,
         }
     }
 
@@ -541,6 +558,50 @@ mod tests {
             assert!(matches!(refusal, Err(GuildError::NotFound)), "{refusal:?}");
         }
         assert_eq!(mutual.kind, RelationshipKind::Friend);
+    }
+
+    #[tokio::test]
+    async fn a_friend_code_finds_its_account_typed_loosely_and_whatever_its_name() {
+        let fixture = fixture().await;
+        let (alice, bob) = (fixture.alice, fixture.bob);
+        let relationships = &fixture.relationships;
+        let bob_code = crate::storage::accounts::find_user_by_id(&fixture.database, bob)
+            .await
+            .unwrap()
+            .unwrap()
+            .friend_code
+            .map(crate::domain::account_names::format_friend_code)
+            .unwrap();
+        let by_code = |code: &str| SendFriendRequest {
+            username: "carol".into(),
+            friend_code: Some(code.into()),
+        };
+        let mut refusals = Vec::new();
+        for code in ["", "not a code", "0000-0000-0000-0000-00"] {
+            refusals.push(
+                relationships
+                    .send_friend_request(alice, by_code(code), NOW)
+                    .await
+                    .map(|relationship| relationship.kind),
+            );
+        }
+        let typed_loosely = bob_code.to_lowercase().replace('-', " ");
+        let requested = relationships
+            .send_friend_request(alice, by_code(&typed_loosely), NOW)
+            .await
+            .unwrap();
+        let by_name_in_another_case = relationships
+            .send_friend_request(bob, request("ALICE"), NOW)
+            .await
+            .unwrap();
+        fixture.database.close().await;
+
+        for refusal in refusals {
+            assert!(matches!(refusal, Err(GuildError::NotFound)), "{refusal:?}");
+        }
+        assert_eq!(requested.user.id, bob, "the code wins over the name");
+        assert_eq!(requested.kind, RelationshipKind::OutgoingRequest);
+        assert_eq!(by_name_in_another_case.kind, RelationshipKind::Friend);
     }
 
     #[tokio::test]

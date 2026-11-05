@@ -28,12 +28,17 @@ pub struct Relationship {
     pub since_unix_milliseconds: u64,
 }
 
-/// Body of `POST /api/v1/users/@me/relationships`: asks `username` to be friends, or accepts
-/// their request if they already asked.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Body of `POST /api/v1/users/@me/relationships`: asks the account with this friend code, or else
+/// this name, to be friends, or accepts their request if they already asked (ADR-0048).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SendFriendRequest {
+    /// The account's name, in any case; ignored when `friend_code` is given.
+    #[serde(default)]
     pub username: String,
+    /// `XXXX-XXXX`, in any case, the dash optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub friend_code: Option<String>,
 }
 
 /// Body of `PUT /api/v1/users/@me/relationships/{user_id}`: `friend` accepts their request,
