@@ -246,7 +246,12 @@ pub(crate) async fn add_message_previews(
             .iter()
             .find(|(_, shown_url)| shown_url == url)
             .map(|(id, _)| *id);
-        wanted.extend(found.or(already_shown));
+        // A repeated id would reach clients, which key preview cards by id.
+        if let Some(id) = found.or(already_shown)
+            && !wanted.contains(&id)
+        {
+            wanted.push(id);
+        }
     }
     if shown.iter().map(|(id, _)| *id).eq(wanted.iter().copied()) {
         return Ok(Some(false));
@@ -562,6 +567,10 @@ mod tests {
         let again = add_message_previews(&database, message, TEXT, &[(a, None), (b, preview_b)])
             .await
             .unwrap();
+        add_message_previews(&database, message, TEXT, &[(a, preview_a), (b, preview_a)])
+            .await
+            .unwrap();
+        let after_repeat = shown_ids().await;
         database.close().await;
 
         assert_eq!(stale, None, "an edit happened since the job read the text");
@@ -570,6 +579,7 @@ mod tests {
         assert_eq!(second_only, Some(true));
         assert_eq!(after_second, [40, 41], "in link order, the first one kept");
         assert_eq!(again, Some(false), "nothing new to publish");
+        assert_eq!(after_repeat, [40], "one preview once, never twice");
     }
 
     #[tokio::test]

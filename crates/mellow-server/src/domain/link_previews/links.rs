@@ -2,6 +2,7 @@
 
 use url::Url;
 
+use super::canonical_links::canonical_link;
 use super::fetcher::is_klipy_host;
 use crate::domain::mentions::text_outside_code;
 
@@ -69,7 +70,8 @@ fn is_previewable(url: &Url) -> bool {
         && url.password().is_none()
 }
 
-/// The links of `content` to preview, in order, once each, without their fragment: `http` and
+/// The links of `content` to preview, in order, once each in their canonical form (ADR-0044),
+/// without their fragment: `http` and
 /// `https` without credentials, outside code and spoilers (ports and addresses are the fetcher's
 /// to refuse), not written `<https://…>` (which
 /// keeps a link without preview, as on Discord).
@@ -103,6 +105,8 @@ pub(crate) fn links_to_preview(content: &str) -> Vec<Url> {
             continue;
         };
         url.set_fragment(None);
+        // Compared in canonical form: two spellings of one video would share one preview row.
+        let url = canonical_link(&url);
         if is_previewable(&url) && !links.contains(&url) {
             links.push(url);
             if links.len() == MAXIMUM_PREVIEWED_LINKS_PER_MESSAGE {
@@ -191,5 +195,19 @@ mod tests {
         // Once quadratic: one parenthesis trimmed per pass, recounted each time.
         let hostile = format!("{}{}", "http://[".repeat(167), ")".repeat(2_667));
         assert_eq!(links(&hostile), Vec::<String>::new());
+    }
+
+    #[test]
+    fn two_spellings_of_one_youtube_video_are_one_link_in_its_canonical_form() {
+        // Two would share one cached preview, and the client keys preview cards by id.
+        assert_eq!(
+            links(
+                "https://youtu.be/dQw4w9WgXcQ https://www.youtube.com/watch?v=dQw4w9WgXcQ&si=x https://a.example/"
+            ),
+            [
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "https://a.example/"
+            ]
+        );
     }
 }

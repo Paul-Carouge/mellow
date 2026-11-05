@@ -18,7 +18,6 @@ use super::{
 };
 use crate::domain::attachments::{Attachments, LinkPreviewPicture};
 use crate::domain::guilds::GuildError;
-use crate::domain::link_previews::canonical_links::canonical_link;
 use crate::domain::link_previews::fetcher::{Fetched, LinkFetcher};
 use crate::domain::link_previews::links::links_to_preview;
 use crate::domain::link_previews::page::PageDetails;
@@ -460,10 +459,9 @@ impl PreviewWorker {
         link_error.map_or(Ok(()), Err)
     }
 
-    /// The link's fresh preview, fetched and recorded when there is none, under its canonical
-    /// form (ADR-0044).
+    /// The link's fresh preview, fetched and recorded when there is none; `link` is already in
+    /// its canonical form (ADR-0044).
     async fn preview_of(&self, link: &Url) -> Result<StoredLinkPreview, MessageError> {
-        let link = &canonical_link(link);
         let url_sha256: [u8; 32] = Sha256::digest(link.as_str().as_bytes()).into();
         let now = crate::domain::clock::now_unix_milliseconds();
         if let Some(preview) =
