@@ -169,6 +169,14 @@ export const en = {
     signInFailed: "Couldn't sign in",
     registerFailed: "Couldn't create your account",
     showPassword: "Show password",
+    /** Replaces the subtitle when the instance ended the session (expired, or signed out elsewhere). */
+    sessionEnded: (instance: string) => `Your session on ${instance} has ended. Sign in again to keep chatting.`,
+    loginMissing: "Enter your username or email.",
+    passwordMissing: "Enter your password.",
+    emailMissing: "Enter your email.",
+    emailMalformed: "Enter an email address, like ana@example.org.",
+    usernameMissing: "Choose a username.",
+    newPasswordMissing: "Choose a password.",
   },
 
   rail: {
