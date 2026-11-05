@@ -69,7 +69,7 @@
 
   let menu = $state<HTMLElement | null>(null);
   let invoker: HTMLElement | null = null;
-  let placement = $state({ top: 0, left: 0, bottom: null as number | null, width: null as number | null, isAbove: false });
+  let placement = $state({ top: 0, left: 0, bottom: null as number | null, minimumWidth: null as number | null, isAbove: false });
   let isWaiting = $state(false);
   let waitingError = $state("");
   let announcement = $state("");
@@ -166,9 +166,9 @@
   aria-label={label}
   aria-busy={isWaiting || undefined}
   class={[
-    "fixed inset-auto m-0 min-w-(--mw-component-context-menu-min-width) outline-none flex-col rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) p-(--mw-component-context-menu-padding) shadow-(--mw-component-context-menu-shadow) [&:popover-open]:flex",
-    // A stretched menu is as wide as its opener (the server header, the user card).
-    placement.width === null && "w-max max-w-(--mw-component-context-menu-max-width)",
+    "fixed inset-auto m-0 w-max max-w-[min(var(--mw-component-context-menu-max-width),calc(100vw-2*var(--mw-component-context-menu-viewport-margin)))] min-w-(--mw-component-context-menu-min-width) outline-none flex-col rounded-(--mw-component-context-menu-radius) border-(length:--mw-component-context-menu-border-width) border-(--mw-component-context-menu-border) bg-(--mw-component-context-menu-background) p-(--mw-component-context-menu-padding) shadow-(--mw-component-context-menu-shadow) [&:popover-open]:flex",
+    // At least the opener's width when stretched (the server header, the user card), and as wide
+    // as its longest item up to the maximum, so no item wraps (N2).
     placement.isAbove
       ? "[&:popover-open]:animate-[mw-lift-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]"
       : "[&:popover-open]:animate-[mw-drop-in_var(--mw-motion-duration-fast)_var(--mw-motion-easing-enter)_both]",
@@ -176,7 +176,7 @@
   style:top={placement.bottom === null ? `${placement.top}px` : "auto"}
   style:bottom={placement.bottom === null ? "auto" : `${placement.bottom}px`}
   style:left="{placement.left}px"
-  style:width={placement.width === null ? undefined : `${placement.width}px`}
+  style:min-width={placement.minimumWidth === null ? undefined : `${placement.minimumWidth}px`}
   onkeydown={(event) => moveFocusWithinMenu(event, menu)}
   oncontextmenu={(event) => event.preventDefault()}
   ontoggle={(event) => {
