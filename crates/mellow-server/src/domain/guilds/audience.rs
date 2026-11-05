@@ -6,6 +6,7 @@ use mellow_protocol::{GatewayEvent, Guild, PermissionOverwrite, Permissions, Rol
 
 use super::{GuildError, Guilds, guild_seen_by_member};
 use crate::domain::permissions::{channel_permissions_with_role_ids, is_visible_to_every_member};
+use crate::events::Recipients;
 use crate::storage::guild_channels::{self as channel_storage, StoredChannel};
 use crate::storage::guild_sounds as guild_sounds_storage;
 use crate::storage::guilds::{self as guild_storage, StoredPermissionSnapshot};
@@ -116,6 +117,18 @@ impl Guilds {
     /// Direct-message events, which have no guild to fan out through.
     pub(crate) fn publish_to_users(&self, user_ids: &[Snowflake], event: &GatewayEvent) {
         self.events.publish_to_users(user_ids, event);
+    }
+
+    /// `event` to `recipients`, but `own_event` to `own_user_id`'s sessions among them.
+    pub(crate) fn publish_with_own_copy(
+        &self,
+        recipients: &Recipients<'_>,
+        own_user_id: Snowflake,
+        own_event: &GatewayEvent,
+        event: &GatewayEvent,
+    ) {
+        self.events
+            .publish_with_own_copy(recipients, own_user_id, own_event, event);
     }
 
     /// Sends each affected online member a fresh snapshot, since a permission change may have

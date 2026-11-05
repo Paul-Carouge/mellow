@@ -934,7 +934,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn identify_returns_ready_then_live_dispatches_without_the_nonce() {
+    async fn identify_returns_ready_then_live_dispatches_the_nonce_to_its_sender_only() {
         let fixture = fixture().await;
         let (mut socket, ready) = identified(fixture.address, &fixture.member_token).await;
         assert_eq!(ready.user.username, "member");
@@ -942,6 +942,7 @@ pub(crate) mod tests {
         assert!(ready.online_user_ids.contains(&ready.user.id));
         // The fixture's instance lets everyone create servers.
         assert!(ready.may_create_guilds);
+        let (mut sender_socket, _) = identified(fixture.address, &fixture.owner_token).await;
 
         let posted = post_message(&fixture, &fixture.owner_token, "hello").await;
         let (sequence, event) = receive_dispatch(&mut socket, |event| {
@@ -953,6 +954,18 @@ pub(crate) mod tests {
             GatewayEvent::MessageCreate(message) => {
                 assert_eq!(message.id, posted.id);
                 assert_eq!(message.nonce, None, "the nonce stays private to the sender");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // The sender's own sessions match the event to their pending send by its nonce.
+        let (_, event) = receive_dispatch(&mut sender_socket, |event| {
+            matches!(event, GatewayEvent::MessageCreate(_))
+        })
+        .await;
+        match event {
+            GatewayEvent::MessageCreate(message) => {
+                assert_eq!(message.id, posted.id);
+                assert_eq!(message.nonce.as_deref(), Some("private-hello"));
             }
             other => panic!("unexpected {other:?}"),
         }

@@ -161,7 +161,10 @@ pub struct Message {
     /// May point to a message that has since been deleted ("Original message was deleted").
     pub reply_to_id: Option<Snowflake>,
     pub edited_at_unix_milliseconds: Option<u64>,
-    /// Echo of the sender's nonce, only in the response to the sender.
+    /// Echo of the sender's nonce, only to the sender: in the response to their send and in the
+    /// `MESSAGE_CREATE` sent to their own sessions, never to anyone else. Absent from older
+    /// servers' events.
+    #[serde(default)]
     pub nonce: Option<String>,
     /// Absent from older servers' payloads.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

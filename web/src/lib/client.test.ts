@@ -181,6 +181,37 @@ describe("MellowClient", () => {
     expect(client.hasUnread(third.id)).toBe(true);
   });
 
+  it("takes the user's own MESSAGE_CREATE for its pending message, even when the answer is lost", async () => {
+    let loseAnswer: () => void = () => undefined;
+    const nonces: string[] = [];
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        sendMessage: (_channelId: string, _content: string, nonce: string) => {
+          nonces.push(nonce);
+          return new Promise((_resolve, reject) => (loseAnswer = () => reject(new ApiError(0, "NETWORK"))));
+        },
+      }),
+    );
+    const start = ready();
+    client.user = start.user;
+    client.applyReady(start);
+    const sending = client.sendMessage("hi");
+    const [nonce] = nonces;
+    const own: Message = { ...message("300"), author: { id: ME, username: "me", display_name: "Me" }, nonce };
+    // Someone else's message never matches, whatever it carries.
+    client.applyEvent({ t: "MESSAGE_CREATE", data: { ...message("299"), nonce } }, 0);
+    expect(client.pendingMessages).toHaveLength(1);
+
+    client.applyEvent({ t: "MESSAGE_CREATE", data: own }, 0);
+    expect(client.pendingMessages).toEqual([]);
+    expect(client.messages(GENERAL).filter((cached) => cached.id === "300")).toHaveLength(1);
+
+    loseAnswer();
+    await sending;
+    expect(client.pendingMessages).toEqual([]);
+  });
+
   it("resends failed messages in order and stops at a failure that may pass", async () => {
     const sent: string[] = [];
     let isInstanceBusy = true;

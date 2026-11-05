@@ -583,7 +583,16 @@ export class MellowClient {
   applyEvent(event: GatewayEvent, now: number): void {
     switch (event.t) {
       case "MESSAGE_CREATE": {
-        const message = event.data;
+        const { nonce, ...message } = event.data;
+        // The user's own sessions get the send's nonce: its pending twin goes, even when the
+        // send's answer is lost or comes later.
+        if (
+          nonce &&
+          message.author.id === this.user?.id &&
+          this.pendingMessages.some((pending) => pending.nonce === nonce)
+        ) {
+          this.pendingMessages = this.pendingMessages.filter((pending) => pending.nonce !== nonce);
+        }
         if (!this.isKnownChannel(message.channel_id)) {
           return;
         }
