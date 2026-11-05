@@ -20,14 +20,14 @@
   import { holds } from "./server-settings";
   import SoundboardPopover from "./SoundboardPopover.svelte";
   import { minimumWidthQueryForPanes } from "./tokens";
-  import { problemLook, signalLook } from "./voice-panel";
+  import { describeMissingDevices, describeSharedSound, problemLook, screenSoundNoticeSentence, signalLook } from "./voice-panel";
   import { LIVE_BADGE_CLASS } from "./live-badge";
 
   // The voice panel (DESIGN.md §5.3, ADR-0030): a card like the user card, directly above it, in
   // the connection dock's slot (§4.2). While connected: the state with its signal bars, the channel
   // and server (a link to the server), and Disconnect. After a problem: what happened, how to fix
-  // it, Try again when it may pass, and Close. Nothing while idle; the live regions always exist,
-  // so their first change is read out.
+  // it, Try again when it may pass, and Close. Loaded only while voice is in use or a problem shows;
+  // its live regions are `VoiceAnnouncements`, which always exist so their first change is read out.
   interface Props {
     client: MellowClient;
     /** After the channel line opened its server (the narrow layout closes its drawer). */
@@ -120,29 +120,9 @@
     return channel?.name ?? strings.voice.voiceChannel;
   });
   const look = $derived(problem ? problemLook(problem, problemChannelName) : null);
-  const soundNoticeSentence = $derived(
-    voice.screenSoundNotice === null
-      ? ""
-      : voice.screenSoundNotice === "no-sound"
-        ? strings.screenShare.soundNotices["no-sound"][soundAdvice]
-        : strings.screenShare.soundNotices["source-unavailable"],
-  );
+  const soundNoticeSentence = $derived(screenSoundNoticeSentence(voice.screenSoundNotice, soundAdvice));
   const shownSoundDeviceId = $derived(shownScreenSoundDeviceId(voice.screenSoundDevices, voice.screenSoundDeviceId));
-  // What your share sends as sound, said under the live line so it is never a guess.
-  const sharedSoundLine = $derived.by(() => {
-    switch (voice.sharedSound) {
-      case "screen":
-        return strings.screenShare.sharedSound.screen;
-      case "input": {
-        const source = voice.screenSoundDevices.find((device) => device.deviceId === voice.screenSoundDeviceId);
-        return strings.screenShare.sharedSound.input(source?.label ?? strings.screenShare.audioInputHint);
-      }
-      case "none":
-        return strings.screenShare.sharedSound.none;
-      default:
-        return "";
-    }
-  });
+  const sharedSoundLine = $derived(describeSharedSound(voice));
   // Leaving voice takes the soundboard with it.
   $effect(() => {
     if (voice.phase === "idle") {
@@ -152,35 +132,8 @@
   const statusLabel = $derived(
     voice.phase === "connected" ? strings.voice.connected : voice.phase === "reconnecting" ? strings.voice.reconnecting : strings.voice.connecting,
   );
-  const phaseSentence = $derived.by(() => {
-    const name = place?.channel.name;
-    if (!name) {
-      return "";
-    }
-    switch (voice.phase) {
-      case "connecting":
-        return strings.voice.connectingTo(name);
-      case "connected":
-        // Push-to-talk said once on connecting: otherwise silence would be a mystery.
-        return voice.settings.inputMode === "push-to-talk"
-          ? `${strings.voice.connectedTo(name)} ${pushToTalkSentence}`
-          : strings.voice.connectedTo(name);
-      case "reconnecting":
-        return strings.voice.reconnectingTo(name);
-      default:
-        return "";
-    }
-  });
   const pushToTalkKey = $derived(voice.settings.pushToTalkKey);
-  const pushToTalkSentence = $derived(
-    pushToTalkKey ? `${strings.voice.pushToTalkHint(pushToTalkKey.label)}.` : strings.voice.pushToTalkNoKey,
-  );
-  const deviceNotices = $derived(
-    [
-      voice.isInputDeviceMissing && strings.voice.inputDeviceMissing,
-      voice.isOutputDeviceMissing && strings.voice.outputDeviceMissing,
-    ].filter((notice): notice is string => typeof notice === "string"),
-  );
+  const deviceNotices = $derived(describeMissingDevices(voice));
   const signalClass = $derived(
     voice.phase !== "connected" || signal.quality === null
       ? "text-(--mw-component-voice-panel-signal-unknown)"
@@ -229,7 +182,7 @@
   </button>
 {/snippet}
 
-<div class="col-span-full min-w-0">
+<div class="min-w-0">
   {#if voice.phase !== "idle" && place}
     <section aria-label={strings.voice.panel} class={cardClass}>
       <div class="flex min-w-0 items-center gap-xs">
@@ -575,13 +528,4 @@
       {/snippet}
     </LazyComponent>
   {/if}
-  <p class="sr-only" aria-live="polite">{phaseSentence}</p>
-  <p class="sr-only" aria-live="polite">{voice.isSharingScreen ? strings.screenShare.youAreSharing : ""}</p>
-  <p class="sr-only" aria-live="polite">{voice.isCameraOn ? strings.camera.isOn : ""}</p>
-  <p class="sr-only" aria-live="polite">{voice.phase === "idle" ? "" : (voice.cameraProblem && strings.camera.problems[voice.cameraProblem]) || ""}</p>
-  <p class="sr-only" aria-live="polite">{voice.phase === "idle" ? "" : (voice.screenShareProblem && strings.screenShare.problems[voice.screenShareProblem]) || ""}</p>
-  <p class="sr-only" aria-live="polite">{soundNoticeSentence && `${sharedSoundLine}. ${soundNoticeSentence}`}</p>
-  <p class="sr-only" aria-live="polite">{voice.isMutedMicrophoneHeardInShare ? strings.screenShare.mutedMicrophoneHeard : ""}</p>
-  <p class="sr-only" aria-live="polite">{client.voiceAnnouncement}</p>
-  <p class="sr-only" aria-live="polite">{voice.phase === "idle" ? "" : deviceNotices.join(" ")}</p>
 </div>

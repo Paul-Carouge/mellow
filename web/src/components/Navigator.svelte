@@ -4,9 +4,10 @@
   import type { MellowClient } from "../lib/client.svelte";
   import type { Channel, Snowflake } from "../lib/protocol";
   import ChannelSidebar, { type ServerDialog } from "./ChannelSidebar.svelte";
+  import LazyComponent from "./LazyComponent.svelte";
   import ServerRail from "./ServerRail.svelte";
   import UserCard from "./UserCard.svelte";
-  import VoicePanel from "./VoicePanel.svelte";
+  import VoiceAnnouncements from "./VoiceAnnouncements.svelte";
 
   // The navigator (ADR-0022 §1): one card holding the server strip, the channel list and, across
   // its whole width at the foot, the voice panel while connected, then the user card. In narrow
@@ -39,6 +40,10 @@
     onopenusersettings,
   }: Props =
     $props();
+
+  // The panel's chunk is gone (a tab opened before an update) and the reader declined to reload:
+  // voice still works, its announcements still speak, until the next reload.
+  let isVoicePanelUnavailable = $state(false);
 </script>
 
 <div
@@ -55,7 +60,16 @@
   <ServerRail {client} {onaddserver} {onopendialog} {onnavigate} />
   <ChannelSidebar {client} {collapsedCategoryIds} {onnewmessage} {onopendialog} {oncreatechannelin} {oneditchannel} {onnavigate} />
   <!-- Voice stays connected wherever the reader goes: its panel lives here, above the user card. -->
-  <VoicePanel {client} {onnavigate} onaddsounds={(guildId) => onopendialog("server-soundboard", guildId)} />
+  <div class="col-span-full min-w-0">
+    {#if (client.voice.phase !== "idle" || client.voice.problem) && !isVoicePanelUnavailable}
+      <LazyComponent load={() => import("./VoicePanel.svelte")} onclose={() => (isVoicePanelUnavailable = true)}>
+        {#snippet children({ default: VoicePanel })}
+          <VoicePanel {client} {onnavigate} onaddsounds={(guildId) => onopendialog("server-soundboard", guildId)} />
+        {/snippet}
+      </LazyComponent>
+    {/if}
+    <VoiceAnnouncements {client} />
+  </div>
   {#if client.user}
     <UserCard {client} user={client.user} {onopenusersettings} />
   {/if}
