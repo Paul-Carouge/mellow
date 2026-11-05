@@ -140,3 +140,41 @@ export function tileAspectRatio(item: KlipyItem): number {
   const ratio = width && height ? width / height : AD_ASPECT_RATIO;
   return Math.min(Math.max(ratio, MINIMUM_TILE_ASPECT_RATIO), MAXIMUM_TILE_ASPECT_RATIO);
 }
+
+/**
+ * The `{#each}` key of an item: its place first, since Klipy may repeat a GIF across pages
+ * (trending shifts between two requests) and a repeated key throws in production.
+ */
+export function gifItemKey(item: KlipyItem, index: number): string {
+  return item.kind === "gif" ? `${index}-${item.slug}` : `ad-${index}`;
+}
+
+/**
+ * The next page of favourites, cut from the list as it was when the first page loaded: stars
+ * changed while browsing reorder the live list, and paging over it would show a GIF twice.
+ */
+export function favouritesPage(
+  frozenSlugs: readonly string[],
+  askedCount: number,
+  pageSize: number,
+): { slugs: string[]; askedCount: number; hasNext: boolean } {
+  const slugs = frozenSlugs.slice(askedCount, askedCount + pageSize);
+  const nextAskedCount = askedCount + slugs.length;
+  return { slugs, askedCount: nextAskedCount, hasNext: nextAskedCount < frozenSlugs.length };
+}
+
+/** Where a `width` × `height` picture goes in a box, as `object-fit: contain` places it; null without a size. */
+export function containedFrame(
+  boxWidth: number,
+  boxHeight: number,
+  width: number,
+  height: number,
+): { x: number; y: number; width: number; height: number } | null {
+  if (boxWidth <= 0 || boxHeight <= 0 || width <= 0 || height <= 0) {
+    return null;
+  }
+  const scale = Math.min(boxWidth / width, boxHeight / height);
+  const fittedWidth = width * scale;
+  const fittedHeight = height * scale;
+  return { x: (boxWidth - fittedWidth) / 2, y: (boxHeight - fittedHeight) / 2, width: fittedWidth, height: fittedHeight };
+}
