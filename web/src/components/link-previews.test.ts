@@ -123,6 +123,23 @@ describe("linkPreviewLayout", () => {
   it("never links anywhere but http(s)", () => {
     expect(linkPreviewLayout({ ...ARTICLE, url: "javascript:alert(1)" }, null)).toBe("none");
   });
+
+  it("shows the plain card for an embed kind from a newer server (ADR-0044)", () => {
+    const preview: LinkPreview = JSON.parse(
+      '{"id":"1","url":"https://example.org/article","title":"An article","embed":{"kind":"hologram","depth":3}}',
+    );
+    expect(linkPreviewLayout(preview, null)).toBe("text-only");
+  });
+});
+
+describe("youTubeEmbedOf on the instance's canonical links (ADR-0044)", () => {
+  it.each([
+    [`https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=${PLAYLIST_ID}&t=90`, { ...VIDEO, playlistId: PLAYLIST_ID, startSeconds: 90 }],
+    ["https://www.youtube.com/shorts/a_b-C1d2E3f?t=5", { ...SHORT, startSeconds: 5 }],
+    ["https://music.youtube.com/watch?v=dQw4w9WgXcQ", VIDEO],
+  ])("still plays %s", (link, expected) => {
+    expect(youTubeEmbedOf(link)).toEqual(expected);
+  });
 });
 
 describe("linkPreviewImageUrl", () => {
