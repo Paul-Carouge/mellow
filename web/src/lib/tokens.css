@@ -1304,7 +1304,7 @@
   --mw-elevation-low: 0 0.0625rem 0 0 #02020233;
   --mw-elevation-medium: 0 0.25rem 0.25rem 0 #00000029;
   --mw-font-family-emoji: Twemoji, "Noto Color Emoji";
-  --mw-font-family-mono: "Source Code Pro", "Noto Sans Mono", monospace;
+  --mw-font-family-mono: "Source Code Pro", ui-monospace, Menlo, Consolas, "Noto Sans Mono", monospace;
   --mw-font-family-sans: Figtree, "Noto Sans", sans-serif;
   --mw-font-weight-bold: 700;
   --mw-font-weight-extrabold: 800;
@@ -1421,7 +1421,7 @@
   --mw-type-channel-name-font-weight: 500;
   --mw-type-channel-name-line-height: 1.3333;
   --mw-type-channel-name-letter-spacing: 0;
-  --mw-type-code-font-family: "Source Code Pro", "Noto Sans Mono", monospace;
+  --mw-type-code-font-family: "Source Code Pro", ui-monospace, Menlo, Consolas, "Noto Sans Mono", monospace;
   --mw-type-code-font-size: 0.875rem;
   --mw-type-code-font-weight: 400;
   --mw-type-code-line-height: 1.2857;
