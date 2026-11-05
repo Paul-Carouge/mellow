@@ -20,11 +20,23 @@ pub(crate) struct ProviderPreview {
     pub(crate) embed: LinkEmbed,
 }
 
-/// The provider's preview of `link` (already canonical), or none when no provider knows the link
-/// or its provider did not answer.
-pub(crate) async fn provider_preview(fetcher: &LinkFetcher, link: &Url) -> Option<ProviderPreview> {
+/// What the provider of a link answered.
+#[derive(Debug)]
+pub(crate) enum ProviderAnswer {
+    /// No provider knows the link, or its provider says the item is unknown or private: the
+    /// link gets the page's card.
+    NotProvided,
+    Preview(Box<ProviderPreview>),
+    /// The provider did not answer this time (timeout, network, 429, 5xx): no card for now, and
+    /// the link is asked again soon rather than given the page's card, which for YouTube can be
+    /// its consent wall, for a whole day.
+    Unavailable,
+}
+
+/// The provider's answer for `link` (already canonical).
+pub(crate) async fn provider_answer(fetcher: &LinkFetcher, link: &Url) -> ProviderAnswer {
     if let Some(youtube_link) = youtube::youtube_link_of(link) {
         return youtube::youtube_preview(fetcher, &youtube_link).await;
     }
-    None
+    ProviderAnswer::NotProvided
 }

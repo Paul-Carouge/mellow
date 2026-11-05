@@ -21,7 +21,7 @@ use crate::domain::guilds::GuildError;
 use crate::domain::link_previews::fetcher::{Fetched, LinkFetcher};
 use crate::domain::link_previews::links::links_to_preview;
 use crate::domain::link_previews::page::PageDetails;
-use crate::domain::link_previews::providers::provider_preview;
+use crate::domain::link_previews::providers::{ProviderAnswer, provider_answer};
 use crate::storage::link_previews::{self as storage, NewLinkPreview, StoredLinkPreview};
 
 /// Messages waiting for their previews; a full queue drops the newest, which simply get none.
@@ -470,13 +470,17 @@ impl PreviewWorker {
         {
             return Ok(preview);
         }
-        let (details, picture, embed) =
-            if let Some(provider) = provider_preview(&self.fetcher, link).await {
+        let (details, picture, embed) = match provider_answer(&self.fetcher, link).await {
+            ProviderAnswer::Preview(provider) => {
                 (provider.details, provider.picture, Some(provider.embed))
-            } else {
+            }
+            ProviderAnswer::NotProvided => {
                 let (details, picture) = self.page_preview(link).await;
                 (details, picture, None)
-            };
+            }
+            // Recorded empty, so asked again within the hour like a page that did not answer.
+            ProviderAnswer::Unavailable => (PageDetails::default(), None, None),
+        };
         let picture = match picture {
             Some(bytes) => self.attachments.store_link_preview_picture(bytes).await?,
             None => LinkPreviewPicture::NotShown,
