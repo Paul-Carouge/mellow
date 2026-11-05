@@ -1,14 +1,15 @@
 //! Whether a compressed picture looks like its source: SSIMULACRA2 (ADR-0033), whose authors read
-//! 85 as "not noticeable in an in-place comparison at 1:1".
+//! 80 as "not noticeable side by side" and 85 as "not noticeable in an in-place comparison at 1:1".
 
 use image::{GenericImageView as _, Rgba, RgbaImage};
 use ssimulacra2::{ColorPrimaries, Rgb, TransferCharacteristic, compute_frame_ssimulacra2};
 
 use super::avif::Primaries;
 
-/// The lowest score stored: 90 ("not noticeable in a flicker test") costs about 22 % more space
-/// for attachments and 50 % more for banners, against a difference no one sees in normal use.
-pub(super) const MINIMUM_SCORE: f64 = 85.0;
+/// The lowest score stored, previews included (owner's decision, 2026-11-05: as small as possible
+/// while staying close to the real picture). 85 costs about 25 % more space for attachments and
+/// 90 ("not noticeable in a flicker test") about 22 % more than 85.
+pub(super) const MINIMUM_SCORE: f64 = 80.0;
 /// Large pictures are scored on this many tiles spread over them: the whole of a 15 MP photo
 /// takes 14 s and 2.7 GB, 8 tiles about 0.5 s, choosing a quality within ±2 steps of it. Four
 /// tiles chose 50 instead of 65 on a high-density screenshot.
