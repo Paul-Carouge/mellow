@@ -171,3 +171,32 @@ describe("MessageSearch", () => {
     expect(search.query).toBe("");
   });
 });
+
+describe("MessageSearch field focus", () => {
+  /** Only what `MessageSearch` touches of an input: Node has no DOM. */
+  function fakeField() {
+    const field = { isConnected: true, focus: vi.fn(), select: vi.fn() };
+    return { field, element: field as unknown as HTMLInputElement };
+  }
+
+  it("focuses the results panel's field once it is shown, when it was still loading", () => {
+    const search = new MessageSearch(fakeInstance().searchMessages);
+    search.focusFieldOnceShown();
+    const { field, element } = fakeField();
+    search.registerField(element);
+    expect(field.focus).toHaveBeenCalledOnce();
+    // Only the field the wish was for: a later one does not take focus.
+    const later = fakeField();
+    search.registerField(later.element);
+    expect(later.field.focus).not.toHaveBeenCalled();
+  });
+
+  it("forgets the wish when the search closes before its field is shown", () => {
+    const search = new MessageSearch(fakeInstance().searchMessages);
+    search.focusFieldOnceShown();
+    search.clear();
+    const { field, element } = fakeField();
+    search.registerField(element);
+    expect(field.focus).not.toHaveBeenCalled();
+  });
+});

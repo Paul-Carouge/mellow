@@ -73,6 +73,7 @@ export class MessageSearch {
   private waitingRequest: SearchRequest | null = null;
   private typingTimer: ReturnType<typeof setTimeout> | null = null;
   private fieldElement: HTMLInputElement | null = null;
+  private isFieldFocusWanted = false;
 
   constructor(private readonly searchMessages: SearchMessages) {}
 
@@ -106,6 +107,15 @@ export class MessageSearch {
   /** The field registers itself, so Ctrl+F and the panel can give it focus. */
   registerField(element: HTMLInputElement | null): void {
     this.fieldElement = element;
+    if (element !== null && this.isFieldFocusWanted) {
+      this.isFieldFocusWanted = false;
+      this.focusField();
+    }
+  }
+
+  /** Focuses the field shown now, or else the next one shown (the results panel, still loading). */
+  focusFieldOnceShown(): void {
+    this.isFieldFocusWanted = !this.focusField();
   }
 
   /** Focuses the field shown now; false when none is (the panel must open with its own). */
@@ -202,6 +212,7 @@ export class MessageSearch {
     this.draft = "";
     this.showNothing();
     this.isPanelOpen = false;
+    this.isFieldFocusWanted = false;
   }
 
   private showNothing(): void {
