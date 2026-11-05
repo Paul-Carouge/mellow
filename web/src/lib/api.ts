@@ -16,6 +16,7 @@ import {
   type CustomEmoji,
   type DirectMessageChannel,
   type ForwardOrigin,
+  type GifSettings,
   type Guild,
   type GuildInvite,
   type Invite,
@@ -555,6 +556,25 @@ export class RestClient {
 
   openDirectMessage(recipientId: Snowflake): Promise<DirectMessageChannel> {
     return this.request("POST", "users/@me/channels", { recipient_id: recipientId });
+  }
+
+  /** What this browser needs to call Klipy (ADR-0042); `NOT_FOUND` when the instance has no GIFs. */
+  gifSettings(): Promise<GifSettings> {
+    return this.request("GET", "gifs/settings");
+  }
+
+  /** The member's starred GIFs, as Klipy slugs, newest first. */
+  listGifFavourites(): Promise<string[]> {
+    return this.request("GET", "users/@me/gif-favourites");
+  }
+
+  /** `CONFLICT` past `MAXIMUM_GIF_FAVOURITES`. */
+  addGifFavourite(slug: string): Promise<void> {
+    return this.request("PUT", `users/@me/gif-favourites/${encodeURIComponent(slug)}`);
+  }
+
+  removeGifFavourite(slug: string): Promise<void> {
+    return this.request("DELETE", `users/@me/gif-favourites/${encodeURIComponent(slug)}`);
   }
 }
 

@@ -70,9 +70,40 @@ function fakeRest(overrides: Partial<Record<keyof RestClient, unknown>>): RestCl
   }) as unknown as RestClient;
 }
 
-const QUIET_REST = { listMessages: () => Promise.resolve([]), listMembers: () => Promise.resolve([]), acknowledge: () => Promise.resolve() };
+const QUIET_REST = {
+  listMessages: () => Promise.resolve([]),
+  listMembers: () => Promise.resolve([]),
+  acknowledge: () => Promise.resolve(),
+  // An instance without GIFs (ADR-0042).
+  gifSettings: () => Promise.reject(new ApiError(404, "NOT_FOUND")),
+};
 
 describe("MellowClient", () => {
+  it("asks for the GIF settings once per session and forgets them at sign-out", async () => {
+    const settings = { klipy_app_key: "key", customer_id: "c".repeat(32) };
+    const gifSettings = vi.fn(() => Promise.resolve(settings));
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, gifSettings }));
+    client.applyReady(ready());
+    await vi.waitFor(() => expect(client.gifSettings).toEqual(settings));
+    client.applyReady(ready());
+    expect(gifSettings).toHaveBeenCalledTimes(1);
+
+    client["endSession"]();
+    expect(client.gifSettings).toBeNull();
+  });
+
+  it("drops GIF settings that answer after the session ended", async () => {
+    let answer: (settings: { klipy_app_key: string; customer_id: string }) => void = () => {};
+    const gifSettings = vi.fn(() => new Promise((resolve) => (answer = resolve)));
+    const client = new MellowClient(fakeRest({ ...QUIET_REST, gifSettings }));
+    client.applyReady(ready());
+    client["endSession"]();
+    answer({ klipy_app_key: "key", customer_id: "c".repeat(32) });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(client.gifSettings).toBeNull();
+  });
+
   it("opens the first server at the first Ready, not home", () => {
     const client = new MellowClient(fakeRest(QUIET_REST));
     client.user = ready().user;

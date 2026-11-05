@@ -751,6 +751,46 @@ export const en = {
     },
   },
 
+  /** The GIF picker and GIFs in messages (ADR-0042, docs/design/web-gif-picker.md). "KLIPY" stays as Klipy writes it. */
+  gifs: {
+    chooseGif: "Choose a GIF",
+    label: "GIF picker",
+    search: "Search GIFs on KLIPY",
+    /** Klipy requires exactly this placeholder, in every language. */
+    placeholder: "Search KLIPY",
+    /** Klipy's attribution, in every language. */
+    poweredBy: "Powered by KLIPY",
+    lists: "GIF lists",
+    favourites: "Favourites",
+    trending: "Trending",
+    results: (query: string) => `GIFs for “${query}”`,
+    help: "Arrows to move, Enter to send, Tab to reach the star, Esc to close.",
+    loading: "Loading GIFs…",
+    loadMore: "More GIFs",
+    untitled: "Untitled GIF",
+    count: (shown: number) => `${count(shown)} ${plural(shown, { one: "GIF", other: "GIFs" })} shown.`,
+    noResults: (query: string) => `No GIF for “${query}”. Try another word.`,
+    nothingTrending: "KLIPY has no trending GIFs right now. Search for one instead.",
+    noFavourites: "No favourites yet. Star a GIF to find it here.",
+    offline: "You’re offline. GIFs come back with the connection.",
+    failed: "Couldn’t reach KLIPY. Check your connection, then try again.",
+    rateLimited: "KLIPY is getting too many requests from this instance. Try again in a few minutes.",
+    refused: "KLIPY refused this instance’s key. Tell the instance’s administrator.",
+    favouritesFailed: "Couldn’t load your favourites.",
+    retry: "Try again",
+    addFavourite: (title: string) => `Add “${title}” to favourites`,
+    removeFavourite: (title: string) => `Remove “${title}” from favourites`,
+    favouriteAdded: "Added to favourites.",
+    favouriteRemoved: "Removed from favourites.",
+    tooManyFavourites: (maximum: number) => `${count(maximum)} favourites at most: remove a star to add this one.`,
+    favouritesBusy: "Too many changes at once. Wait a moment, then try again.",
+    favouriteFailed: "Couldn’t change your favourites",
+    sponsored: "Sponsored",
+    sponsoredLabel: "Sponsored content from KLIPY",
+    /** A GIF in a message: its link names no title. */
+    messageGif: "GIF from KLIPY",
+    playGif: "Play the GIF",
+  },
   /** Forwarding a message (DESIGN.md §5.4, ADR-0039). */
   forward: {
     forward: "Forward",

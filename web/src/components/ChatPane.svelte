@@ -44,6 +44,7 @@
   import { createPopoverToggle } from "./popover-toggle";
   import { noteEmojiUsed } from "./recent-emoji.svelte";
   import { rolesWriterMayMention, withRoleNamesAsMarkup } from "./role-mentions";
+  import { triggerKlipyShare } from "../lib/klipy";
 
   // The chat pane (DESIGN.md §5.4, §5.5): header, message list, composer and typing band.
   interface Props {
@@ -136,6 +137,8 @@
   let forwardingMessage = $state<Message | null>(null);
   /** For a message's reactions, or, without one, for the composer. */
   let picker = $state<{ message: Message | null; anchor: HTMLElement } | null>(null);
+  /** The GIF picker's button, while it is open (ADR-0042). */
+  let gifPickerAnchor = $state<HTMLElement | null>(null);
   let pinning = $state<{ message: Message; isPinned: boolean } | null>(null);
   let removingReactionsOf = $state<Message | null>(null);
   let viewingReactionsOfId = $state<Snowflake | null>(null);
@@ -179,6 +182,7 @@
     actionError = "";
     notice = "";
     picker = null;
+    gifPickerAnchor = null;
     isPinsPanelOpen = false;
   });
 
@@ -657,9 +661,12 @@
       {typing}
       {notice}
       isEmojiPickerOpen={picker !== null && picker.message === null}
+      canChooseGifs={client.gifSettings !== null}
+      isGifPickerOpen={gifPickerAnchor !== null}
       hasUnreadBar={unreadBarText !== ""}
       maximumHeight={maximumComposerHeight}
       onopenemojipicker={(anchor) => (picker = { message: null, anchor })}
+      onopengifpicker={(anchor) => (gifPickerAnchor = anchor)}
       onmarkasread={markAsRead}
       oneditlastmessage={editLastOwnMessage}
       onsent={() => {
@@ -716,6 +723,33 @@
     onpick={pickEmoji}
     onclose={closePicker}
   />
+{/if}
+
+{#if gifPickerAnchor && client.gifSettings}
+  {@const anchor = gifPickerAnchor}
+  {@const settings = client.gifSettings}
+  <LazyComponent load={() => import("./GifPicker.svelte")} onclose={() => (gifPickerAnchor = null)}>
+    {#snippet children({ default: GifPicker })}
+      <GifPicker
+        {anchor}
+        isCompact={hasNavigationDrawer}
+        {settings}
+        rest={client.rest}
+        onpick={(gif, query) => {
+          gifPickerAnchor = null;
+          composer?.sendGif(gif.messageUrl);
+          triggerKlipyShare(settings, gif.slug, query);
+          focusComposer();
+        }}
+        onclose={(shouldReturnFocus) => {
+          gifPickerAnchor = null;
+          if (shouldReturnFocus && anchor.isConnected) {
+            anchor.focus();
+          }
+        }}
+      />
+    {/snippet}
+  </LazyComponent>
 {/if}
 
 {#if isPinsPanelOpen && channelId && pinsButton}
