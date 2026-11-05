@@ -15,6 +15,12 @@ export const TARGET_BITS_PER_PIXEL = 0.1;
 export const MINIMUM_BITS_PER_PIXEL = 0.05;
 /** A source at most this much above the target is not worth a lossy second generation: remux it only. */
 export const REMUX_SOURCE_BITRATE_RATIO = 1.25;
+/**
+ * A source in a codec not every browser plays is made H.264 at no more than this times its rate:
+ * H.264 needs about half again HEVC's or VP9's bits for the same picture.
+ * shortcut: one ratio for HEVC, VP9 and AV1 (AV1 needs nearer twice), measure per codec if it matters.
+ */
+export const COMPATIBILITY_BITRATE_RATIO = 1.5;
 /** A transcode is kept only when it saves at least this share of the original's bytes. */
 export const MINIMUM_TRANSCODE_SAVING = 0.2;
 /** Room left under the instance's limit for container overhead and VBR overshoot. */
@@ -52,10 +58,10 @@ export interface EncoderSupport {
 export type KeepOriginalReason =
   | "undecodable-video"
   | "unknown-duration"
+  | "unknown-frame-rate"
   | "high-dynamic-range"
   | "no-h264-encoder"
   | "no-audio-encoder"
-  | "already-small"
   | "too-long-for-limit";
 
 export type AudioPlan =
@@ -75,6 +81,8 @@ export type VideoCompressionPlan =
       readonly frameRate: number | null;
       readonly videoBitrate: number;
       readonly audio: AudioPlan;
+      /** The source's codec does not play in every browser: H.264 is worth it even without a saving. */
+      readonly isForCompatibility: boolean;
     };
 
 /** Scaled down to fit the 1080p box, never up; even sides, as H.264 encoders want. */
@@ -126,7 +134,8 @@ function audioBitrateOf(audio: AudioPlan, sourceTotalBitrate: number): number {
 
 /**
  * Decides once per file: transcode to H.264 at the bits-per-pixel target (and within the instance's
- * limit when it is known), remux a source already near the target, or keep the original.
+ * limit when it is known), remux an H.264 source already near the target and within the limit, or
+ * keep the original. Other codecs are always transcoded, so every browser plays the result.
  */
 export function planVideoCompression(
   source: VideoSource,
@@ -138,6 +147,9 @@ export function planVideoCompression(
   }
   if (!(source.durationSeconds > 0)) {
     return { kind: "keep-original", reason: "unknown-duration" };
+  }
+  if (!(Number.isFinite(source.frameRate) && source.frameRate > 0)) {
+    return { kind: "keep-original", reason: "unknown-frame-rate" };
   }
   // Tone mapping to SDR H.264 washes HDR out; kept until the ADR handles it.
   if (source.isHighDynamicRange) {
@@ -153,13 +165,15 @@ export function planVideoCompression(
   const audioBitrate = audioBitrateOf(audio, sourceTotalBitrate);
   const targetVideoBitrate = bitrateAt(TARGET_BITS_PER_PIXEL, width, height, frameRate);
   const isResized = width < evenAtMost(source.displayWidth) || height < evenAtMost(source.displayHeight);
+  // Only H.264 is copied: the MP4 must play in Safari and Firefox too.
+  const isForCompatibility = source.videoCodec !== "avc";
   const isNearTarget =
     !isResized &&
     source.frameRate <= MAXIMUM_OUTPUT_FRAME_RATE &&
     sourceTotalBitrate <= (targetVideoBitrate + audioBitrate) * REMUX_SOURCE_BITRATE_RATIO;
-  if (isNearTarget) {
-    // Only H.264 is copied: the MP4 must play in Safari and Firefox too.
-    return source.videoCodec === "avc" ? { kind: "remux", audio } : { kind: "keep-original", reason: "already-small" };
+  const isWithinLimit = maximumAttachmentBytes === null || source.byteSize <= maximumAttachmentBytes;
+  if (isNearTarget && !isForCompatibility && isWithinLimit) {
+    return { kind: "remux", audio };
   }
   if (!support.canEncodeH264) {
     return { kind: "keep-original", reason: "no-h264-encoder" };
@@ -168,10 +182,14 @@ export function planVideoCompression(
     maximumAttachmentBytes === null
       ? Number.POSITIVE_INFINITY
       : (maximumAttachmentBytes * 8 * LIMIT_BUDGET_SHARE) / source.durationSeconds - audioBitrate;
-  const videoBitrate = Math.min(targetVideoBitrate, Math.floor(limitVideoBitrate));
-  if (videoBitrate < bitrateAt(MINIMUM_BITS_PER_PIXEL, width, height, frameRate)) {
+  if (Math.min(targetVideoBitrate, limitVideoBitrate) < bitrateAt(MINIMUM_BITS_PER_PIXEL, width, height, frameRate)) {
     return { kind: "keep-original", reason: "too-long-for-limit" };
   }
+  // A low-rate source is not inflated to the target: its picture has no more detail to keep.
+  const compatibilityVideoBitrate = isForCompatibility
+    ? sourceTotalBitrate * COMPATIBILITY_BITRATE_RATIO
+    : Number.POSITIVE_INFINITY;
+  const videoBitrate = Math.floor(Math.min(targetVideoBitrate, limitVideoBitrate, compatibilityVideoBitrate));
   return {
     kind: "transcode",
     width,
@@ -179,18 +197,29 @@ export function planVideoCompression(
     frameRate: source.frameRate > MAXIMUM_OUTPUT_FRAME_RATE ? MAXIMUM_OUTPUT_FRAME_RATE : null,
     videoBitrate,
     audio,
+    isForCompatibility,
   };
 }
 
-/** A transcode must save a fifth to be worth its generation loss; a remux only must not grow. */
+/**
+ * An original over the limit would be refused: any output that fits goes. Otherwise a transcode
+ * must save a fifth to be worth its generation loss, unless it is for compatibility, which only
+ * must fit; a remux only must not grow.
+ */
 export function isOutputWorthSending(
-  planKind: "remux" | "transcode",
+  plan: { readonly kind: "remux" } | { readonly kind: "transcode"; readonly isForCompatibility: boolean },
   originalBytes: number,
   outputBytes: number,
+  maximumAttachmentBytes: number | null,
 ): boolean {
-  return planKind === "remux"
-    ? outputBytes <= originalBytes
-    : outputBytes <= originalBytes * (1 - MINIMUM_TRANSCODE_SAVING);
+  const fitsLimit = maximumAttachmentBytes === null || outputBytes <= maximumAttachmentBytes;
+  if (maximumAttachmentBytes !== null && originalBytes > maximumAttachmentBytes) {
+    return fitsLimit;
+  }
+  if (plan.kind === "remux") {
+    return outputBytes <= originalBytes;
+  }
+  return plan.isForCompatibility ? fitsLimit : outputBytes <= originalBytes * (1 - MINIMUM_TRANSCODE_SAVING);
 }
 
 /** The compressed file's name: the original's, with the MP4 extension it now has. */
