@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use mellow_protocol::Snowflake;
+use mellow_protocol::{LinkEmbed, Snowflake};
 
 use super::Database;
 use crate::storage::messages::{MessageStorageError, json_array_of_ids};
@@ -29,6 +29,8 @@ pub(crate) struct StoredLinkPreview {
     pub(crate) site_name: Option<String>,
     pub(crate) theme_color: Option<u32>,
     pub(crate) image: Option<StoredPreviewImage>,
+    /// A known provider's facts (migration 0039, ADR-0044); never `LinkEmbed::Unknown`.
+    pub(crate) embed: Option<LinkEmbed>,
     /// The fetch gave nothing to show: kept only so the link is not fetched again too soon.
     pub(crate) is_empty: bool,
 }
@@ -45,7 +47,8 @@ pub(crate) struct NewLinkPreview {
 const PREVIEW_COLUMNS: &str = "link_previews.id, link_previews.url, link_previews.title, \
     link_previews.description, link_previews.site_name, link_previews.theme_color, \
     link_previews.image_file_id, link_previews.image_content_type, link_previews.image_size_bytes, \
-    link_previews.image_width, link_previews.image_height, link_previews.is_empty";
+    link_previews.image_width, link_previews.image_height, link_previews.is_empty, \
+    link_previews.embed";
 
 type PreviewRow = (
     i64,
@@ -60,6 +63,7 @@ type PreviewRow = (
     Option<i64>,
     Option<i64>,
     bool,
+    Option<String>,
 );
 
 /// A message's id, then a preview's columns.
@@ -77,7 +81,24 @@ type MessagePreviewRow = (
     Option<i64>,
     Option<i64>,
     bool,
+    Option<String>,
 );
+
+/// The stored embed, or none when this binary cannot read it: a row written by a newer release
+/// (after a rollback) then shows the plain card instead of failing the whole history page.
+fn embed_from_column(embed: Option<String>) -> Option<LinkEmbed> {
+    embed
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .filter(|embed| *embed != LinkEmbed::Unknown)
+}
+
+/// The embed as stored.
+fn embed_column(embed: Option<&LinkEmbed>) -> Result<Option<String>, MessageStorageError> {
+    embed
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|_| MessageStorageError::UnwritableLinkEmbed)
+}
 
 fn preview_from_row(row: PreviewRow) -> Result<StoredLinkPreview, MessageStorageError> {
     let (
@@ -93,6 +114,7 @@ fn preview_from_row(row: PreviewRow) -> Result<StoredLinkPreview, MessageStorage
         image_width,
         image_height,
         is_empty,
+        embed,
     ) = row;
     let image = match (
         image_file_id,
@@ -120,6 +142,7 @@ fn preview_from_row(row: PreviewRow) -> Result<StoredLinkPreview, MessageStorage
         site_name,
         theme_color: theme_color.map(convert_integer).transpose()?,
         image,
+        embed: embed_from_column(embed),
         is_empty,
     })
 }
@@ -158,8 +181,8 @@ pub(crate) async fn insert_preview(
     sqlx::query(
         "INSERT INTO link_previews (id, url_sha256, url, title, description, site_name, \
          theme_color, image_file_id, image_content_type, image_size_bytes, image_width, \
-         image_height, is_empty, fetched_at_unix_milliseconds, expires_at_unix_milliseconds) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         image_height, is_empty, fetched_at_unix_milliseconds, expires_at_unix_milliseconds, \
+         embed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(to_sqlite_integer(preview.id.raw())?)
     .bind(new.url_sha256.as_slice())
@@ -184,6 +207,7 @@ pub(crate) async fn insert_preview(
     .bind(preview.is_empty)
     .bind(to_sqlite_integer(new.fetched_at_unix_milliseconds)?)
     .bind(to_sqlite_integer(new.expires_at_unix_milliseconds)?)
+    .bind(embed_column(preview.embed.as_ref())?)
     .execute(database.writer())
     .await?;
     Ok(())
@@ -337,6 +361,7 @@ pub(crate) async fn previews_of_messages(
             width,
             height,
             is_empty,
+            embed,
         ) = row;
         previews
             .entry(to_snowflake(message_id)?)
@@ -354,6 +379,7 @@ pub(crate) async fn previews_of_messages(
                 width,
                 height,
                 is_empty,
+                embed,
             ))?);
     }
     Ok(previews)
@@ -469,6 +495,7 @@ mod tests {
                 width: 4,
                 height: 3,
             }),
+            embed: None,
             is_empty: false,
         }
     }
@@ -651,5 +678,49 @@ mod tests {
         let mut pictures: Vec<u64> = pictures.into_iter().map(Snowflake::raw).collect();
         pictures.sort_unstable();
         assert_eq!(pictures, [400, 420], "shown and fresh pictures stay");
+    }
+
+    #[tokio::test]
+    async fn embeds_are_stored_and_read_back_and_unreadable_ones_show_the_plain_card() {
+        let (_directory, database) = migrated_database().await;
+        let embed = LinkEmbed::Twitch(mellow_protocol::TwitchEmbed {
+            item: mellow_protocol::TwitchItem::Clip,
+            id: "AwkwardHelplessSalamander".into(),
+        });
+        record(
+            &database,
+            StoredLinkPreview {
+                embed: Some(embed.clone()),
+                ..preview(40, "https://clips.twitch.tv/a", None)
+            },
+            HOUR,
+        )
+        .await;
+        let stored = find_fresh_preview(&database, &[40; 32], 0).await.unwrap();
+        // A row this release cannot read (a field missing), and a newer release's kind.
+        sqlx::query("UPDATE link_previews SET embed = ? WHERE id = 40")
+            .bind(r#"{"kind":"twitch","item":"clip"}"#)
+            .execute(database.writer())
+            .await
+            .unwrap();
+        let missing_id = find_fresh_preview(&database, &[40; 32], 0).await.unwrap();
+        sqlx::query("UPDATE link_previews SET embed = ? WHERE id = 40")
+            .bind(r#"{"kind":"hologram"}"#)
+            .execute(database.writer())
+            .await
+            .unwrap();
+        let unknown = find_fresh_preview(&database, &[40; 32], 0).await.unwrap();
+        let not_an_object = sqlx::query("UPDATE link_previews SET embed = '[1]' WHERE id = 40")
+            .execute(database.writer())
+            .await;
+        database.close().await;
+
+        assert_eq!(stored.unwrap().embed, Some(embed));
+        assert_eq!(missing_id.unwrap().embed, None);
+        assert_eq!(unknown.unwrap().embed, None, "clients never get `unknown`");
+        assert!(
+            not_an_object.is_err(),
+            "the column holds an object with a kind"
+        );
     }
 }

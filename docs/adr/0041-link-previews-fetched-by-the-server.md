@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-11-04
 - Amends: [ADR-0019](0019-web-client-served-by-the-server-binary.md) (the web client's Content-Security-Policy gains one `frame-src`)
+- Amended by: [ADR-0044](0044-provider-embeds.md) (provider embeds, providers' JSON, canonical links, the players' `frame-src`)
 
 ## Context
 ROADMAP item 18 asks for link previews (plain pages, YouTube, Spotify, YouTube Music, Deezer) and YouTube videos playable in the app, with `youtube-nocookie.com` embeds by default (an ad-free player goes against YouTube's terms and waits for the owner's decision and its own ADR). A preview needs the page's title, description and picture. Someone has to fetch the page: if every reader's browser did, each would reveal its address to the site and need the site in the policy's `connect-src` and `img-src`; and the browser cannot read another site's page anyway (CORS). The server can, once, for everyone, but then any member can make the instance send requests where they choose, including to the instance's own network (server-side request forgery). Mellow has made no outbound HTTP request so far, apart from ACME.

@@ -122,6 +122,207 @@ pub struct LinkPreview {
     /// `GET /api/v1/channels/{channel_id}/messages/{message_id}/link-previews/{id}/image`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<LinkPreviewImage>,
+    /// What a known provider says about the link, beyond the card (ADR-0044). The card's `title`,
+    /// `description` and `image` still carry the title, the summary and the one picture (cover,
+    /// avatar, poster or thumbnail). Absent for any other link and from older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed: Option<LinkEmbed>,
+}
+
+/// A provider's facts about a link (ADR-0044), told apart by `kind`. Every id is the provider's,
+/// checked by the server; clients check it again before building a player's address from it. A
+/// kind this client does not know reads as `Unknown`, which clients ignore (they show the card).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum LinkEmbed {
+    /// A YouTube video or Short.
+    #[serde(rename = "youtube_video")]
+    YouTubeVideo(YouTubeVideoEmbed),
+    /// A YouTube Music track: `title` is the track's, `image` its square cover.
+    #[serde(rename = "youtube_music_track")]
+    YouTubeMusicTrack(YouTubeMusicTrackEmbed),
+    /// A GitHub repository: `description` is the repository's, `image` the owner's avatar.
+    #[serde(rename = "github_repository")]
+    GitHubRepository(GitHubRepositoryEmbed),
+    /// A GitHub issue: `title` is the issue's.
+    #[serde(rename = "github_issue")]
+    GitHubIssue(GitHubIssueEmbed),
+    /// A GitHub pull request: `title` is the pull request's.
+    #[serde(rename = "github_pull_request")]
+    GitHubPullRequest(GitHubIssueEmbed),
+    /// A track, album, playlist, episode or show of a music service: `image` is its cover.
+    #[serde(rename = "music")]
+    Music(MusicEmbed),
+    #[serde(rename = "vimeo_video")]
+    VimeoVideo(VimeoVideoEmbed),
+    /// A Twitch channel, video or clip.
+    #[serde(rename = "twitch")]
+    Twitch(TwitchEmbed),
+    /// A Wikipedia article: `description` is its summary, `image` its thumbnail.
+    #[serde(rename = "wikipedia_article")]
+    WikipediaArticle(WikipediaArticleEmbed),
+    /// A kind from a newer server.
+    #[serde(other, rename = "unknown")]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct YouTubeVideoEmbed {
+    pub video_id: String,
+    /// A Short plays in a 9:16 frame.
+    #[serde(default)]
+    pub is_short: bool,
+    /// Where the link starts the video, in whole seconds above zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_seconds: Option<u32>,
+    /// A public playlist the link plays the video in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct YouTubeMusicTrackEmbed {
+    /// Plays in the visible YouTube player (YouTube's terms forbid audio only).
+    pub video_id: String,
+    pub artist: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubRepositoryEmbed {
+    pub owner: String,
+    pub name: String,
+    #[serde(default)]
+    pub stars: u64,
+    #[serde(default)]
+    pub forks: u64,
+    /// The main language, as GitHub names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// The language's colour, `0xRRGGBB`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language_color: Option<u32>,
+    #[serde(default)]
+    pub topics: Vec<String>,
+    /// An SPDX licence id, such as `MIT` or `AGPL-3.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub licence_spdx: Option<String>,
+    #[serde(default)]
+    pub is_archived: bool,
+}
+
+/// An issue or a pull request (the variant says which).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubIssueEmbed {
+    pub owner: String,
+    pub repository: String,
+    pub number: u64,
+    pub state: GitHubIssueState,
+    /// The author's login.
+    pub author: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_at_unix_milliseconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_at_unix_milliseconds: Option<u64>,
+    #[serde(default)]
+    pub comments: u32,
+}
+
+/// `Draft` and `Merged` for pull requests, `Completed` and `NotPlanned` for closed issues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitHubIssueState {
+    Open,
+    Draft,
+    Merged,
+    Completed,
+    NotPlanned,
+    Closed,
+    /// A state from a newer server.
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MusicEmbed {
+    pub provider: MusicProvider,
+    pub item: MusicItem,
+    /// The provider's id of the item, which its player's address is built from (Bandcamp's is
+    /// numeric).
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MusicProvider {
+    Spotify,
+    Deezer,
+    #[serde(rename = "soundcloud")]
+    SoundCloud,
+    AppleMusic,
+    Bandcamp,
+    /// A provider from a newer server.
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MusicItem {
+    Track,
+    Album,
+    Playlist,
+    Episode,
+    Show,
+    Artist,
+    /// An item from a newer server.
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VimeoVideoEmbed {
+    pub video_id: String,
+    /// The privacy hash of an unlisted video (`h=`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TwitchEmbed {
+    pub item: TwitchItem,
+    /// The channel's login, the video's number or the clip's slug.
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TwitchItem {
+    Channel,
+    Video,
+    Clip,
+    /// An item from a newer server.
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WikipediaArticleEmbed {
+    /// The wiki's language code, `fr` for `fr.wikipedia.org`.
+    pub language: String,
+    #[serde(default)]
+    pub is_disambiguation: bool,
 }
 
 /// A link preview's picture, as stored: its size in pixels, so clients hold its place.
@@ -347,5 +548,77 @@ mod tests {
         )
         .unwrap();
         assert_eq!(from_older_server, file);
+    }
+
+    #[test]
+    fn embeds_are_tagged_by_kind_and_round_trip() {
+        let embed = LinkEmbed::YouTubeVideo(YouTubeVideoEmbed {
+            video_id: "dQw4w9WgXcQ".into(),
+            is_short: false,
+            start_seconds: Some(90),
+            playlist_id: None,
+            duration_seconds: None,
+        });
+        let json = serde_json::to_value(&embed).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "youtube_video", "video_id": "dQw4w9WgXcQ",
+                "is_short": false, "start_seconds": 90})
+        );
+        assert_eq!(serde_json::from_value::<LinkEmbed>(json).unwrap(), embed);
+
+        let pull_request = LinkEmbed::GitHubPullRequest(GitHubIssueEmbed {
+            owner: "rust-lang".into(),
+            repository: "rust".into(),
+            number: 12,
+            state: GitHubIssueState::NotPlanned,
+            author: "ada".into(),
+            opened_at_unix_milliseconds: Some(1),
+            merged_at_unix_milliseconds: None,
+            comments: 3,
+        });
+        let json = serde_json::to_value(&pull_request).unwrap();
+        assert_eq!(json["kind"], "github_pull_request");
+        assert_eq!(json["state"], "not_planned");
+        assert_eq!(
+            serde_json::from_value::<LinkEmbed>(json).unwrap(),
+            pull_request
+        );
+        let music = serde_json::to_value(LinkEmbed::Music(MusicEmbed {
+            provider: MusicProvider::SoundCloud,
+            item: MusicItem::Track,
+            id: "1".into(),
+            artist: None,
+            track_count: None,
+            duration_seconds: None,
+        }))
+        .unwrap();
+        assert_eq!(music["provider"], "soundcloud");
+    }
+
+    #[test]
+    fn kinds_and_values_from_a_newer_server_do_not_break_the_preview() {
+        let preview: LinkPreview = serde_json::from_str(
+            r#"{"id":"1","url":"https://example.org/","embed":{"kind":"hologram","depth":3}}"#,
+        )
+        .unwrap();
+        assert_eq!(preview.embed, Some(LinkEmbed::Unknown));
+
+        let music: LinkEmbed = serde_json::from_str(
+            r#"{"kind":"music","provider":"tidal","item":"mixtape","id":"9","extra":true}"#,
+        )
+        .unwrap();
+        let LinkEmbed::Music(music) = music else {
+            panic!("{music:?}");
+        };
+        assert_eq!(
+            (music.provider, music.item),
+            (MusicProvider::Unknown, MusicItem::Unknown)
+        );
+
+        let older: LinkPreview =
+            serde_json::from_str(r#"{"id":"1","url":"https://example.org/"}"#).unwrap();
+        assert_eq!(older.embed, None);
+        assert!(serde_json::to_value(&older).unwrap().get("embed").is_none());
     }
 }

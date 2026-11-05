@@ -14,8 +14,9 @@ use mellow_protocol::{
     ApiErrorCode, Attachment, AuditAction, AuditChange, AuditChangeKey, AuditLogEntry,
     AuthorSearchFacet, Ban, Channel, ChannelKind, ChannelPlacement, ChannelSearchFacet,
     ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel,
-    ForwardOrigin, GatewayEvent, GifSettings, Guild, GuildInvite, GuildSummary, Hello,
-    HighlightRange, InitialCategory, InitialTextChannel, Invite, LinkPreview, LinkPreviewImage,
+    ForwardOrigin, GatewayEvent, GifSettings, GitHubIssueEmbed, GitHubIssueState,
+    GitHubRepositoryEmbed, Guild, GuildInvite, GuildSummary, Hello, HighlightRange,
+    InitialCategory, InitialTextChannel, Invite, LinkEmbed, LinkPreview, LinkPreviewImage,
     MAXIMUM_COUNTED_UNREAD_MENTIONS, MAXIMUM_GIF_FAVOURITES,
     MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH, MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
     MAXIMUM_POLL_ANSWER_LENGTH, MAXIMUM_POLL_ANSWERS, MAXIMUM_POLL_QUESTION_LENGTH,
@@ -23,11 +24,13 @@ use mellow_protocol::{
     MAXIMUM_SEARCH_QUERY_LENGTH, MAXIMUM_SEARCH_QUERY_PARTS, MAXIMUM_SEARCH_RESULTS_PER_PAGE,
     MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
     MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, MINIMUM_POLL_ANSWERS, Member, Message, MessageReaction,
-    MessageSearchHit, MessageSearchQuery, MessageSearchResults, MessageSearchSort, OverwriteKind,
-    PermissionOverwrite, Permissions, Poll, PollAnswer, PollVote, Presence, PresenceStatus,
-    ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind,
-    Role, ServerFrame, SessionCreated, SimulcastLayer, Snowflake, SoundboardSound, VideoTileSize,
+    MessageSearchHit, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicEmbed,
+    MusicItem, MusicProvider, OverwriteKind, PermissionOverwrite, Permissions, Poll, PollAnswer,
+    PollVote, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState,
+    Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer,
+    Snowflake, SoundboardSound, TwitchEmbed, TwitchItem, VideoTileSize, VimeoVideoEmbed,
     VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal, WatchedCamera,
+    WikipediaArticleEmbed, YouTubeMusicTrackEmbed, YouTubeVideoEmbed,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -291,6 +294,7 @@ fn link_preview() -> LinkPreview {
             width: 400,
             height: 210,
         }),
+        embed: Some(LinkEmbed::YouTubeVideo(youtube_video())),
     }
 }
 
@@ -303,7 +307,114 @@ fn sparse_link_preview() -> LinkPreview {
         site_name: None,
         theme_color: None,
         image: None,
+        embed: None,
     }
+}
+
+fn youtube_video() -> YouTubeVideoEmbed {
+    YouTubeVideoEmbed {
+        video_id: "dQw4w9WgXcQ".into(),
+        is_short: false,
+        start_seconds: Some(90),
+        playlist_id: Some("PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG".into()),
+        duration_seconds: Some(213),
+    }
+}
+
+/// The values a server sends, from samples whose last is `Unknown` (`every_variant!` checks it is):
+/// `Unknown` only stands for a newer server's value, read by Rust clients.
+fn known<T>(mut samples: Vec<T>) -> Vec<T> {
+    samples.pop();
+    samples
+}
+
+/// Every kind but `Unknown`, which servers never send; optional fields filled once, left out once.
+fn link_embeds() -> Vec<LinkEmbed> {
+    let issue = GitHubIssueEmbed {
+        owner: "rust-lang".into(),
+        repository: "rust".into(),
+        number: 4242,
+        state: GitHubIssueState::Merged,
+        author: "ada".into(),
+        opened_at_unix_milliseconds: Some(1_700_000_000_000),
+        merged_at_unix_milliseconds: Some(1_700_000_100_000),
+        comments: 7,
+    };
+    let music = MusicEmbed {
+        provider: MusicProvider::Spotify,
+        item: MusicItem::Album,
+        id: "4aawyAB9vmqN3uQ7FjRGTy".into(),
+        artist: Some("Daft Punk".into()),
+        track_count: Some(14),
+        duration_seconds: Some(4_440),
+    };
+    known(every_variant!(LinkEmbed {
+        LinkEmbed::YouTubeVideo(_) => LinkEmbed::YouTubeVideo(youtube_video()),
+        LinkEmbed::YouTubeVideo(_) => LinkEmbed::YouTubeVideo(YouTubeVideoEmbed {
+            is_short: true,
+            start_seconds: None,
+            playlist_id: None,
+            duration_seconds: None,
+            ..youtube_video()
+        }),
+        LinkEmbed::YouTubeMusicTrack(_) => LinkEmbed::YouTubeMusicTrack(YouTubeMusicTrackEmbed {
+            video_id: "lYBUbBu4W08".into(),
+            artist: "Daft Punk".into(),
+            album: Some("Discovery".into()),
+            duration_seconds: Some(320),
+        }),
+        LinkEmbed::GitHubRepository(_) => LinkEmbed::GitHubRepository(GitHubRepositoryEmbed {
+            owner: "rust-lang".into(),
+            name: "rust".into(),
+            stars: 104_238,
+            forks: 13_400,
+            language: Some("Rust".into()),
+            language_color: Some(0x00de_a584),
+            topics: vec!["compiler".into(), "language".into()],
+            licence_spdx: Some("MIT".into()),
+            is_archived: false,
+        }),
+        LinkEmbed::GitHubRepository(_) => LinkEmbed::GitHubRepository(GitHubRepositoryEmbed {
+            owner: "ada".into(),
+            name: "notes".into(),
+            stars: 0,
+            forks: 0,
+            language: None,
+            language_color: None,
+            topics: Vec::new(),
+            licence_spdx: None,
+            is_archived: true,
+        }),
+        LinkEmbed::GitHubIssue(_) => LinkEmbed::GitHubIssue(GitHubIssueEmbed {
+            state: GitHubIssueState::NotPlanned,
+            opened_at_unix_milliseconds: None,
+            merged_at_unix_milliseconds: None,
+            ..issue.clone()
+        }),
+        LinkEmbed::GitHubPullRequest(_) => LinkEmbed::GitHubPullRequest(issue),
+        LinkEmbed::Music(_) => LinkEmbed::Music(music.clone()),
+        LinkEmbed::Music(_) => LinkEmbed::Music(MusicEmbed {
+            provider: MusicProvider::Bandcamp,
+            item: MusicItem::Track,
+            id: "1234567890".into(),
+            artist: None,
+            track_count: None,
+            duration_seconds: None,
+        }),
+        LinkEmbed::VimeoVideo(_) => LinkEmbed::VimeoVideo(VimeoVideoEmbed {
+            video_id: "76979871".into(),
+            hash: Some("8272103f6e".into()),
+        }),
+        LinkEmbed::Twitch(_) => LinkEmbed::Twitch(TwitchEmbed {
+            item: TwitchItem::Clip,
+            id: "AwkwardHelplessSalamanderSwiftRage".into(),
+        }),
+        LinkEmbed::WikipediaArticle(_) => LinkEmbed::WikipediaArticle(WikipediaArticleEmbed {
+            language: "fr".into(),
+            is_disambiguation: false,
+        }),
+        LinkEmbed::Unknown => LinkEmbed::Unknown,
+    }))
 }
 
 fn sparse_attachment() -> Attachment {
@@ -922,6 +1033,33 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
             &[attachment(), sparse_attachment()],
         )?,
         sampled("Message", Interface, &[message(), sparse_message()])?,
+        sampled("LinkEmbed", TaggedUnion("kind"), &link_embeds())?,
+        sampled(
+            "GitHubIssueState",
+            StringUnion,
+            &known(every_variant!(GitHubIssueState:
+                Open, Draft, Merged, Completed, NotPlanned, Closed, Unknown,
+            )),
+        )?,
+        sampled(
+            "MusicProvider",
+            StringUnion,
+            &known(every_variant!(MusicProvider:
+                Spotify, Deezer, SoundCloud, AppleMusic, Bandcamp, Unknown,
+            )),
+        )?,
+        sampled(
+            "MusicItem",
+            StringUnion,
+            &known(every_variant!(MusicItem:
+                Track, Album, Playlist, Episode, Show, Artist, Unknown,
+            )),
+        )?,
+        sampled(
+            "TwitchItem",
+            StringUnion,
+            &known(every_variant!(TwitchItem: Channel, Video, Clip, Unknown)),
+        )?,
         sampled("ReactionSummary", Interface, &[reaction_summary()])?,
         sampled(
             "MessageReaction",

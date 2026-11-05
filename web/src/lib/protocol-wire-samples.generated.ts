@@ -3,7 +3,7 @@
 // `npm run check` type-checks every sample against protocol.ts; protocol.test.ts compares
 // the constants and permission bits.
 
-import type { ApiErrorCode, Attachment, AuditAction, AuditChange, AuditLogEntry, Ban, Channel, ChannelKind, ChannelPlacement, ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel, GatewayEvent, GifSettings, Guild, GuildInvite, InitialCategory, Invite, Member, Message, MessageReaction, MessageSearchQuery, MessageSearchResults, MessageSearchSort, PermissionOverwrite, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer, SoundboardSound, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal } from "./protocol";
+import type { ApiErrorCode, Attachment, AuditAction, AuditChange, AuditLogEntry, Ban, Channel, ChannelKind, ChannelPlacement, ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel, GatewayEvent, GifSettings, GitHubIssueState, Guild, GuildInvite, InitialCategory, Invite, LinkEmbed, Member, Message, MessageReaction, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicItem, MusicProvider, PermissionOverwrite, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer, SoundboardSound, TwitchItem, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal } from "./protocol";
 
 /** `true` only when every member of `Union` has a sample. */
 type HasEveryMember<Union, Sampled> = [Exclude<Union, Sampled>] extends [never] ? true : false;
@@ -410,6 +410,14 @@ export const messageSamples = [
     "link_previews": [
       {
         "description": "What it says",
+        "embed": {
+          "duration_seconds": 213,
+          "is_short": false,
+          "kind": "youtube_video",
+          "playlist_id": "PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG",
+          "start_seconds": 90,
+          "video_id": "dQw4w9WgXcQ"
+        },
         "id": "900",
         "image": {
           "height": 210,
@@ -478,6 +486,140 @@ export const messageSamples = [
     "reply_to_id": null
   }
 ] satisfies Message[];
+
+export const linkEmbedSamples = [
+  {
+    "duration_seconds": 213,
+    "is_short": false,
+    "kind": "youtube_video",
+    "playlist_id": "PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG",
+    "start_seconds": 90,
+    "video_id": "dQw4w9WgXcQ"
+  },
+  {
+    "is_short": true,
+    "kind": "youtube_video",
+    "video_id": "dQw4w9WgXcQ"
+  },
+  {
+    "album": "Discovery",
+    "artist": "Daft Punk",
+    "duration_seconds": 320,
+    "kind": "youtube_music_track",
+    "video_id": "lYBUbBu4W08"
+  },
+  {
+    "forks": 13400,
+    "is_archived": false,
+    "kind": "github_repository",
+    "language": "Rust",
+    "language_color": 14591364,
+    "licence_spdx": "MIT",
+    "name": "rust",
+    "owner": "rust-lang",
+    "stars": 104238,
+    "topics": [
+      "compiler",
+      "language"
+    ]
+  },
+  {
+    "forks": 0,
+    "is_archived": true,
+    "kind": "github_repository",
+    "name": "notes",
+    "owner": "ada",
+    "stars": 0,
+    "topics": []
+  },
+  {
+    "author": "ada",
+    "comments": 7,
+    "kind": "github_issue",
+    "number": 4242,
+    "owner": "rust-lang",
+    "repository": "rust",
+    "state": "not_planned"
+  },
+  {
+    "author": "ada",
+    "comments": 7,
+    "kind": "github_pull_request",
+    "merged_at_unix_milliseconds": 1700000100000,
+    "number": 4242,
+    "opened_at_unix_milliseconds": 1700000000000,
+    "owner": "rust-lang",
+    "repository": "rust",
+    "state": "merged"
+  },
+  {
+    "artist": "Daft Punk",
+    "duration_seconds": 4440,
+    "id": "4aawyAB9vmqN3uQ7FjRGTy",
+    "item": "album",
+    "kind": "music",
+    "provider": "spotify",
+    "track_count": 14
+  },
+  {
+    "id": "1234567890",
+    "item": "track",
+    "kind": "music",
+    "provider": "bandcamp"
+  },
+  {
+    "hash": "8272103f6e",
+    "kind": "vimeo_video",
+    "video_id": "76979871"
+  },
+  {
+    "id": "AwkwardHelplessSalamanderSwiftRage",
+    "item": "clip",
+    "kind": "twitch"
+  },
+  {
+    "is_disambiguation": false,
+    "kind": "wikipedia_article",
+    "language": "fr"
+  }
+] satisfies LinkEmbed[];
+export const linkEmbedSamplesHaveEveryMember: HasEveryMember<LinkEmbed["kind"], (typeof linkEmbedSamples)[number]["kind"]> = true;
+
+export const gitHubIssueStateSamples = [
+  "open",
+  "draft",
+  "merged",
+  "completed",
+  "not_planned",
+  "closed"
+] satisfies GitHubIssueState[];
+export const gitHubIssueStateSamplesHaveEveryMember: HasEveryMember<GitHubIssueState, (typeof gitHubIssueStateSamples)[number]> = true;
+
+export const musicProviderSamples = [
+  "spotify",
+  "deezer",
+  "soundcloud",
+  "apple_music",
+  "bandcamp"
+] satisfies MusicProvider[];
+export const musicProviderSamplesHaveEveryMember: HasEveryMember<MusicProvider, (typeof musicProviderSamples)[number]> = true;
+
+export const musicItemSamples = [
+  "track",
+  "album",
+  "playlist",
+  "episode",
+  "show",
+  "artist"
+] satisfies MusicItem[];
+export const musicItemSamplesHaveEveryMember: HasEveryMember<MusicItem, (typeof musicItemSamples)[number]> = true;
+
+export const twitchItemSamples = [
+  "channel",
+  "video",
+  "clip"
+] satisfies TwitchItem[];
+export const twitchItemSamplesHaveEveryMember: HasEveryMember<TwitchItem, (typeof twitchItemSamples)[number]> = true;
 
 export const reactionSummarySamples = [
   {
@@ -609,6 +751,14 @@ export const messageSearchResultsSamples = [
           "link_previews": [
             {
               "description": "What it says",
+              "embed": {
+                "duration_seconds": 213,
+                "is_short": false,
+                "kind": "youtube_video",
+                "playlist_id": "PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG",
+                "start_seconds": 90,
+                "video_id": "dQw4w9WgXcQ"
+              },
               "id": "900",
               "image": {
                 "height": 210,
@@ -1314,6 +1464,14 @@ export const gatewayEventSamples = [
       "link_previews": [
         {
           "description": "What it says",
+          "embed": {
+            "duration_seconds": 213,
+            "is_short": false,
+            "kind": "youtube_video",
+            "playlist_id": "PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG",
+            "start_seconds": 90,
+            "video_id": "dQw4w9WgXcQ"
+          },
           "id": "900",
           "image": {
             "height": 210,
@@ -1428,6 +1586,14 @@ export const gatewayEventSamples = [
       "link_previews": [
         {
           "description": "What it says",
+          "embed": {
+            "duration_seconds": 213,
+            "is_short": false,
+            "kind": "youtube_video",
+            "playlist_id": "PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG",
+            "start_seconds": 90,
+            "video_id": "dQw4w9WgXcQ"
+          },
           "id": "900",
           "image": {
             "height": 210,
@@ -1524,6 +1690,14 @@ export const gatewayEventSamples = [
       "link_previews": [
         {
           "description": "What it says",
+          "embed": {
+            "duration_seconds": 213,
+            "is_short": false,
+            "kind": "youtube_video",
+            "playlist_id": "PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG",
+            "start_seconds": 90,
+            "video_id": "dQw4w9WgXcQ"
+          },
           "id": "900",
           "image": {
             "height": 210,
