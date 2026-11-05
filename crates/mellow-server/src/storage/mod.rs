@@ -28,6 +28,7 @@ pub(crate) mod reactions;
 pub(crate) mod relationships;
 pub(crate) mod search;
 mod sqlite_integers;
+pub(crate) mod user_profiles;
 
 pub use database::{Database, DatabaseKey, StorageError, open_encrypted_database};
 pub use master_key::{MasterKey, MasterKeyError};

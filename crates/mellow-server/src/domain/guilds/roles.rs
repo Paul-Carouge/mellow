@@ -21,7 +21,7 @@ use crate::storage::guilds as guild_storage;
 impl Guilds {
     /// The member acting on roles and the role they target, or `NotFound` for non-members and
     /// roles of other guilds, `MissingPermissions` outside the hierarchy (`RoleManager`).
-    async fn manager_and_manageable_role(
+    pub(super) async fn manager_and_manageable_role(
         &self,
         user_id: Snowflake,
         guild_id: Snowflake,
@@ -46,7 +46,7 @@ impl Guilds {
         }
     }
 
-    fn publish_roles(&self, guild_id: Snowflake, roles: Vec<Role>) {
+    pub(super) fn publish_roles(&self, guild_id: Snowflake, roles: Vec<Role>) {
         self.events.publish_to_guild(
             guild_id,
             &GatewayEvent::GuildRolesUpdate { guild_id, roles },
@@ -93,6 +93,8 @@ impl Guilds {
                 permissions,
                 is_displayed_separately: request.is_displayed_separately,
                 is_mentionable: request.is_mentionable,
+                icon: None,
+                unicode_emoji: None,
             },
             MAXIMUM_ROLES_PER_GUILD,
             &audit,

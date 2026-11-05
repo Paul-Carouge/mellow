@@ -9,6 +9,7 @@ mod guilds;
 mod health;
 mod messages;
 mod permissions;
+mod profiles;
 mod relationships;
 mod search;
 mod snowflake;
@@ -56,6 +57,11 @@ pub use messages::{
 };
 pub use permissions::{
     Permissions, compute_channel_permissions, compute_guild_permissions, highest_role_position,
+};
+pub use profiles::{
+    MAXIMUM_ABOUT_ME_LENGTH, MAXIMUM_PROFILE_LINK_LABEL_LENGTH, MAXIMUM_PROFILE_LINK_URL_LENGTH,
+    MAXIMUM_PROFILE_LINKS, NewProfileLink, ProfileLink, SetRoleEmojiRequest,
+    UpdateUserProfileRequest, UserProfile,
 };
 pub use relationships::{
     MAXIMUM_RELATIONSHIPS_PER_USER, Relationship, RelationshipKind, SendFriendRequest,

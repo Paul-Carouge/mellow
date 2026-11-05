@@ -71,7 +71,8 @@ impl FetchError {
 /// What a link leads to.
 #[derive(Debug)]
 pub(crate) enum Fetched {
-    Page(PageDetails),
+    /// Boxed: a page's details are ten times the size of the other variant.
+    Page(Box<PageDetails>),
     /// The link is a picture itself: its bytes, not yet checked as a picture.
     Picture(Vec<u8>),
 }
@@ -225,7 +226,7 @@ impl LinkFetcher {
             })
             .await
             .map_err(|_| FetchError::Unsupported)?;
-            return Ok(Fetched::Page(details));
+            return Ok(Fetched::Page(Box::new(details)));
         }
         if content_type.starts_with("image/") {
             let body = read_at_most(

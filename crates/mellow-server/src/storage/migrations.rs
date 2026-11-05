@@ -2297,6 +2297,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn existing_roles_have_no_icon_and_profiles_go_with_their_user() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        // The last migration before role icons and profile links (0043).
+        MIGRATOR.run_to(40, database.writer()).await.unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0); \
+             INSERT INTO guilds (id, name, owner_id, created_at_unix_milliseconds) \
+             VALUES (10, 'Club', 2, 0); \
+             INSERT INTO roles (id, guild_id, name, color, permissions, position) \
+             VALUES (10, 10, '@everyone', 0, 0, 0), (11, 10, 'Helpers', 0, 0, 1);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let icons: Vec<(Option<i64>, i64, Option<String>)> = sqlx::query_as(
+            "SELECT icon_id, icon_is_animated, unicode_emoji FROM roles ORDER BY id",
+        )
+        .fetch_all(database.writer())
+        .await
+        .unwrap();
+        let both = sqlx::query("UPDATE roles SET icon_id = 5, unicode_emoji = 'x' WHERE id = 11")
+            .execute(database.writer())
+            .await;
+        sqlx::raw_sql(
+            "INSERT INTO user_profiles (user_id, about_me) VALUES (1, 'Hi'), (2, 'Yo'); \
+             INSERT INTO user_profile_links (user_id, position, url, label, host) \
+             VALUES (1, 0, 'https://a.example/', NULL, 'a.example'), \
+             (2, 4, 'https://b.example/', 'B', 'b.example'); \
+             INSERT INTO profile_link_icons (host, file_id, size_bytes, \
+             refresh_after_unix_milliseconds) VALUES ('a.example', 7, 100, 0), \
+             ('b.example', NULL, NULL, 0); \
+             DELETE FROM users WHERE id = 1;",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let profiles: Vec<i64> = sqlx::query_scalar("SELECT user_id FROM user_profiles")
+            .fetch_all(database.writer())
+            .await
+            .unwrap();
+        let links: Vec<i64> = sqlx::query_scalar("SELECT user_id FROM user_profile_links")
+            .fetch_all(database.writer())
+            .await
+            .unwrap();
+        let sixth_link = sqlx::query(
+            "INSERT INTO user_profile_links (user_id, position, url, host) \
+             VALUES (2, 5, 'https://c.example/', 'c.example')",
+        )
+        .execute(database.writer())
+        .await;
+        let file_without_size =
+            sqlx::query("UPDATE profile_link_icons SET file_id = 8 WHERE host = 'b.example'")
+                .execute(database.writer())
+                .await;
+        database.close().await;
+
+        assert_eq!(icons, [(None, 0, None), (None, 0, None)]);
+        assert!(both.is_err(), "a picture or an emoji, never both");
+        assert_eq!(profiles, [2]);
+        assert_eq!(links, [2]);
+        assert!(sixth_link.is_err(), "five links at most");
+        assert!(
+            file_without_size.is_err(),
+            "a file and its size go together"
+        );
+    }
+
+    #[tokio::test]
     async fn previews_stored_before_provider_embeds_keep_their_card_and_have_no_embed() {
         const LAST_VERSION_BEFORE_EMBEDS: i64 = 38;
         let directory = tempfile::tempdir().unwrap();

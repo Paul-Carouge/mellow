@@ -225,6 +225,48 @@ export interface Role {
    * (ADR-0040). Never set on `@everyone`. Absent from older servers.
    */
   is_mentionable?: boolean;
+  /**
+   * A small picture shown next to its members' names (ADR-0050), served like an icon
+   * (`iconUrl`). Never with `unicode_emoji`. Absent when none, and from older servers.
+   */
+  icon?: ProfileImage | null;
+  /** A Unicode emoji shown in the picture's place (ADR-0050). */
+  unicode_emoji?: string | null;
+}
+
+/** Uploaded role icon pictures larger than this are refused (ADR-0050). */
+export const MAXIMUM_ROLE_ICON_UPLOAD_BYTES = 256 * 1024;
+
+/** `GET /api/v1/users/{id}/profile` (ADR-0050): readable by whoever shares something with the user. */
+export interface UserProfile {
+  user_id: Snowflake;
+  /** Inline Markdown only; empty when none. */
+  about_me: string;
+  links: ProfileLink[];
+}
+
+export interface ProfileLink {
+  /** An `https` address, as the instance wrote it back. */
+  url: string;
+  label?: string | null;
+  /** The site's icon, fetched by the instance (`linkIconUrl`); absent until fetched or when the site has none. */
+  icon_id?: Snowflake | null;
+}
+
+/** Body of `PUT /api/v1/users/@me/profile`: replaces both fields. */
+export interface UpdateUserProfileRequest {
+  about_me: string;
+  links: { url: string; label?: string }[];
+}
+
+export const MAXIMUM_ABOUT_ME_LENGTH = 190;
+export const MAXIMUM_PROFILE_LINKS = 5;
+export const MAXIMUM_PROFILE_LINK_URL_LENGTH = 300;
+export const MAXIMUM_PROFILE_LINK_LABEL_LENGTH = 40;
+
+/** A profile link's site icon, stored by the instance: browsers never ask the site (ADR-0050). */
+export function linkIconUrl(iconId: Snowflake): string {
+  return `/api/v1/link-icons/${iconId}`;
 }
 
 export interface Guild {

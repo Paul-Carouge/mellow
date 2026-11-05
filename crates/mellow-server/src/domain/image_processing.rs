@@ -45,6 +45,10 @@ const CHANNEL_ICON_SIDE_PIXELS: u32 = 96;
 /// Custom emoji show at most at 48 px (jumbo, alone in a message), so they are stored at 128 px,
 /// as on Discord (ADR-0028).
 const EMOJI_SIDE_PIXELS: u32 = 128;
+/// Role icons show at 20 px beside names and site icons at 16 px beside profile links, so both
+/// are stored at 64 px, over three times either (ADR-0050).
+const ROLE_ICON_SIDE_PIXELS: u32 = 64;
+const LINK_ICON_SIDE_PIXELS: u32 = 64;
 /// Larger attachments are kept as uploaded (a JPEG stripped of its metadata), so one job stays
 /// near 1 GB. Peak memory of one job, measured in release: 0.67 GB for a 12.2 MP JPEG photo,
 /// 0.99 GB for it as PNG (lossless WebP is tried too), 0.84 GB at 16 MP as JPEG, 1.23 GB as PNG,
@@ -101,6 +105,10 @@ pub(crate) enum IconKind {
     Channel,
     /// A custom emoji (ADR-0028); may be animated.
     Emoji,
+    /// A role's icon (ADR-0050); may be animated, like an emoji.
+    Role,
+    /// A profile link's site icon (ADR-0050); always still.
+    LinkIcon,
 }
 
 /// The square of a picture an icon keeps, in pixels of the picture as shown.
@@ -492,9 +500,11 @@ pub(crate) fn process_icon(
         IconKind::Guild => GUILD_ICON_SIDE_PIXELS,
         IconKind::Channel => CHANNEL_ICON_SIDE_PIXELS,
         IconKind::Emoji => EMOJI_SIDE_PIXELS,
+        IconKind::Role => ROLE_ICON_SIDE_PIXELS,
+        IconKind::LinkIcon => LINK_ICON_SIDE_PIXELS,
     };
     let mut picture = decode_picture(bytes, |frame| crop_square_and_shrink(&frame, crop, side))?;
-    if kind == IconKind::Channel {
+    if matches!(kind, IconKind::Channel | IconKind::LinkIcon) {
         // shortcut: every frame is decoded and shrunk before the first is kept; stop decoding
         // after it if long GIFs as channel icons hit the processing time budget.
         picture.frames.truncate(1);

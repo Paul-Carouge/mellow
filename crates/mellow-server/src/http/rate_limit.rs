@@ -183,6 +183,16 @@ pub(crate) const PROFILE_IMAGE_DOWNLOADS_PER_USER: RateLimit = RateLimit {
     maximum_events: 1_200,
     window: Duration::from_mins(1),
 };
+/// "About me" and profile link saves (ADR-0050): each may queue fetches of five sites' icons.
+pub(crate) const PROFILE_DETAILS_WRITES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_mins(10),
+};
+/// Profile reads: one per profile opened, a few a minute in normal use.
+pub(crate) const PROFILE_READS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 120,
+    window: Duration::from_mins(1),
+};
 /// Starring and unstarring GIFs (ADR-0042): a few clicks a minute, never a script's loop.
 pub(crate) const GIF_FAVOURITE_CHANGES_PER_USER: RateLimit = RateLimit {
     maximum_events: 30,

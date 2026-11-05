@@ -134,7 +134,8 @@ fn write_new_file(path: &Path, content: &str) -> Result<()> {
         .with_context(|| format!("cannot write {}", path.display()))
 }
 
-/// Starts the background link preview fetcher when previews are on (ADR-0041).
+/// Starts the background link preview and site icon fetchers when previews are on (ADR-0041,
+/// ADR-0050).
 fn start_link_previews(
     config: &ServerConfig,
     state: &AppState,
@@ -148,13 +149,20 @@ fn start_link_previews(
     ))
     .context("cannot build the link preview client")?;
     state.messages.enable_link_previews();
-    Ok(Some(tokio::spawn(
-        crate::domain::messages::fetch_link_previews_in_background(
-            state.messages.clone(),
-            state.attachments.clone(),
-            fetcher,
-        ),
-    )))
+    // Profile links' site icons come from the sites members name, as previews do (ADR-0050).
+    state.profiles.enable_link_icons();
+    let link_icons = crate::domain::profiles::fetch_link_icons_in_background(
+        state.profiles.clone(),
+        fetcher.clone(),
+    );
+    let previews = crate::domain::messages::fetch_link_previews_in_background(
+        state.messages.clone(),
+        state.attachments.clone(),
+        fetcher,
+    );
+    Ok(Some(tokio::spawn(async move {
+        tokio::join!(previews, link_icons);
+    })))
 }
 
 /// Opens the database, applies migrations, then serves HTTP until `shutdown` completes.

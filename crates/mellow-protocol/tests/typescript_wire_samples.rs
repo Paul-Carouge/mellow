@@ -17,22 +17,25 @@ use mellow_protocol::{
     CustomEmoji, DirectMessageChannel, ForwardOrigin, GatewayEvent, GifSettings, GitHubIssueEmbed,
     GitHubIssueState, GitHubRepositoryEmbed, Guild, GuildInvite, GuildSummary, Hello,
     HighlightRange, InitialCategory, InitialTextChannel, Invite, LinkEmbed, LinkPreview,
-    LinkPreviewImage, MAXIMUM_CHECKLIST_ITEM_LENGTH, MAXIMUM_CHECKLIST_ITEMS,
-    MAXIMUM_CHECKLIST_TITLE_LENGTH, MAXIMUM_COUNTED_UNREAD_MENTIONS, MAXIMUM_GIF_FAVOURITES,
-    MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH, MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
-    MAXIMUM_POLL_ANSWER_LENGTH, MAXIMUM_POLL_ANSWERS, MAXIMUM_POLL_QUESTION_LENGTH,
-    MAXIMUM_PROGRESS_BAR_LABEL_LENGTH, MAXIMUM_PROGRESS_BAR_MAXIMUM,
-    MAXIMUM_REACHABLE_SEARCH_RESULTS, MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS,
-    MAXIMUM_SEARCH_QUERY_LENGTH, MAXIMUM_SEARCH_QUERY_PARTS, MAXIMUM_SEARCH_RESULTS_PER_PAGE,
-    MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
+    LinkPreviewImage, MAXIMUM_ABOUT_ME_LENGTH, MAXIMUM_CHECKLIST_ITEM_LENGTH,
+    MAXIMUM_CHECKLIST_ITEMS, MAXIMUM_CHECKLIST_TITLE_LENGTH, MAXIMUM_COUNTED_UNREAD_MENTIONS,
+    MAXIMUM_GIF_FAVOURITES, MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH,
+    MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS, MAXIMUM_POLL_ANSWER_LENGTH, MAXIMUM_POLL_ANSWERS,
+    MAXIMUM_POLL_QUESTION_LENGTH, MAXIMUM_PROFILE_LINK_LABEL_LENGTH,
+    MAXIMUM_PROFILE_LINK_URL_LENGTH, MAXIMUM_PROFILE_LINKS, MAXIMUM_PROGRESS_BAR_LABEL_LENGTH,
+    MAXIMUM_PROGRESS_BAR_MAXIMUM, MAXIMUM_REACHABLE_SEARCH_RESULTS,
+    MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS, MAXIMUM_SEARCH_QUERY_LENGTH, MAXIMUM_SEARCH_QUERY_PARTS,
+    MAXIMUM_SEARCH_RESULTS_PER_PAGE, MAXIMUM_VIDEO_RECEIVE_SLOTS,
+    MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
     MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, MINIMUM_POLL_ANSWERS, Member, Message, MessageReaction,
     MessageSearchHit, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicEmbed,
     MusicItem, MusicProvider, OverwriteKind, PermissionOverwrite, Permissions, Poll, PollAnswer,
-    PollVote, Presence, PresenceStatus, ProfileImage, ProgressBar, PublicUser, ReactionSummary,
-    ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated,
-    SimulcastLayer, Snowflake, SoundboardSound, TwitchEmbed, TwitchItem, VideoTileSize,
-    VimeoVideoEmbed, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal,
-    WatchedCamera, WikipediaArticleEmbed, YouTubeMusicTrackEmbed, YouTubeVideoEmbed,
+    PollVote, Presence, PresenceStatus, ProfileImage, ProfileLink, ProgressBar, PublicUser,
+    ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame,
+    SessionCreated, SimulcastLayer, Snowflake, SoundboardSound, TwitchEmbed, TwitchItem,
+    UserProfile, VideoTileSize, VimeoVideoEmbed, VoiceDisconnectReason, VoiceJoinRefusal,
+    VoiceState, VoiceVideoRefusal, WatchedCamera, WikipediaArticleEmbed, YouTubeMusicTrackEmbed,
+    YouTubeVideoEmbed,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -233,6 +236,35 @@ fn role() -> Role {
         permissions: Permissions::MANAGE_MESSAGES | Permissions::KICK_MEMBERS,
         is_displayed_separately: true,
         is_mentionable: true,
+        icon: Some(picture()),
+        unicode_emoji: None,
+    }
+}
+
+fn emoji_role() -> Role {
+    Role {
+        icon: None,
+        unicode_emoji: Some("\u{1f525}".into()),
+        ..role()
+    }
+}
+
+fn user_profile() -> UserProfile {
+    UserProfile {
+        user_id: id(10),
+        about_me: "Writes **notes**".into(),
+        links: vec![
+            ProfileLink {
+                url: "https://example.org/ada".into(),
+                label: Some("Blog".into()),
+                icon_id: Some(id(950)),
+            },
+            ProfileLink {
+                url: "https://example.com/".into(),
+                label: None,
+                icon_id: None,
+            },
+        ],
     }
 }
 
@@ -1082,7 +1114,8 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
                 }],
             }],
         )?,
-        sampled("Role", Interface, &[role()])?,
+        sampled("Role", Interface, &[role(), emoji_role()])?,
+        sampled("UserProfile", Interface, &[user_profile()])?,
         sampled("Guild", Interface, &[guild(), sparse_guild()])?,
         sampled("Member", Interface, &[member()])?,
         sampled(
@@ -1291,6 +1324,10 @@ fn shared_constants() -> Value {
         "MAXIMUM_CHECKLIST_ITEM_LENGTH": MAXIMUM_CHECKLIST_ITEM_LENGTH,
         "MAXIMUM_PROGRESS_BAR_LABEL_LENGTH": MAXIMUM_PROGRESS_BAR_LABEL_LENGTH,
         "MAXIMUM_PROGRESS_BAR_MAXIMUM": MAXIMUM_PROGRESS_BAR_MAXIMUM,
+        "MAXIMUM_ABOUT_ME_LENGTH": MAXIMUM_ABOUT_ME_LENGTH,
+        "MAXIMUM_PROFILE_LINKS": MAXIMUM_PROFILE_LINKS,
+        "MAXIMUM_PROFILE_LINK_URL_LENGTH": MAXIMUM_PROFILE_LINK_URL_LENGTH,
+        "MAXIMUM_PROFILE_LINK_LABEL_LENGTH": MAXIMUM_PROFILE_LINK_LABEL_LENGTH,
         "MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH": MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH,
         "MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS": MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
         "MAXIMUM_REACHABLE_SEARCH_RESULTS": MAXIMUM_REACHABLE_SEARCH_RESULTS,

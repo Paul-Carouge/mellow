@@ -197,6 +197,17 @@ impl From<MessageError> for ApiError {
     }
 }
 
+impl From<crate::domain::profiles::ProfileError> for ApiError {
+    fn from(error: crate::domain::profiles::ProfileError) -> Self {
+        use crate::domain::profiles::ProfileError;
+        match error {
+            ProfileError::Rule(violation) => Self::validation(violation.to_string()),
+            ProfileError::NotFound => Self::not_found(),
+            ProfileError::Message(error) => error.into(),
+        }
+    }
+}
+
 /// `Query` whose rejections (unknown or malformed parameters) use our error format.
 #[derive(Debug, FromRequestParts)]
 #[from_request(via(axum::extract::Query), rejection(ApiError))]

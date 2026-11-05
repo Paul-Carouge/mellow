@@ -119,7 +119,7 @@ pub(crate) async fn delete_banner(
     replace(&state, user, ProfileImageSlot::Banner, None).await
 }
 
-fn record_download(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
+pub(crate) fn record_download(state: &AppState, user_id: Snowflake) -> Result<(), ApiError> {
     if state.rate_limiter.record_event(
         &format!("profile-image-download:{user_id}"),
         PROFILE_IMAGE_DOWNLOADS_PER_USER,
@@ -142,7 +142,10 @@ async fn serve(
     Ok(picture_response(bytes, permit))
 }
 
-fn picture_response(bytes: Vec<u8>, permit: tokio::sync::OwnedSemaphorePermit) -> Response {
+pub(crate) fn picture_response(
+    bytes: Vec<u8>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Response {
     (
         StatusCode::OK,
         [
@@ -192,7 +195,7 @@ pub(crate) async fn get_profile_image_still(
 }
 
 /// All three crop values or none, as `IconCropQuery` says.
-fn square_crop_from_query(query: IconCropQuery) -> Result<Option<SquareCrop>, ApiError> {
+pub(crate) fn square_crop_from_query(query: IconCropQuery) -> Result<Option<SquareCrop>, ApiError> {
     match (query.crop_x, query.crop_y, query.crop_size) {
         (Some(x), Some(y), Some(size)) if size > 0 => Ok(Some(SquareCrop { x, y, size })),
         (None, None, None) => Ok(None),

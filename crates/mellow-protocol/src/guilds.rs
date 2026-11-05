@@ -148,6 +148,14 @@ pub struct Role {
     /// `@everyone`. Added after `v0.39.0`.
     #[serde(default)]
     pub is_mentionable: bool,
+    /// A small picture shown next to its members' names (ADR-0050), served like an icon at
+    /// `GET /api/v1/icons/{id}` to the guild's members. Never on `@everyone`; never with
+    /// `unicode_emoji`. Added after `v0.47.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<ProfileImage>,
+    /// A Unicode emoji shown in the picture's place (ADR-0050). Added after `v0.47.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unicode_emoji: Option<String>,
 }
 
 /// Body of `POST /api/v1/guilds/{guild_id}/roles`. The role is created just above `@everyone`.
