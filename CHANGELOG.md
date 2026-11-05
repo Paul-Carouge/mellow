@@ -4,6 +4,13 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-11-05
+Polls in messages (ADR-0043). Database migration 0038; the protocol gains `poll` on messages and sends, the poll routes, the `MESSAGE_POLL_VOTE_ADD` and `_REMOVE` events and the `SEND_POLLS` permission, which older clients ignore.
+
+### Added
+- "/sondage" in the composer creates a poll: a question, 2 to 10 answers, one or several choices, from 1 hour to 2 weeks. Readers vote and change their vote until it ends; results show once you vote or it ends; the author can end it early; each answer lists its voters.
+- New permission "Créer des sondages", given to everyone on existing servers as on Discord.
+
 ## [0.44.0] - 2026-11-05
 GIFs from Klipy, with favourites (ADR-0042). Off until the instance's owner sets a Klipy key. Database migration 0037; the protocol gains `GET /api/v1/gifs/settings` and the GIF favourites routes.
 
