@@ -196,6 +196,7 @@ describe("MellowClient", () => {
     const start = ready();
     client.user = start.user;
     client.applyReady(start);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const sending = client.sendMessage("hi");
     const [nonce] = nonces;
     const own: Message = { ...message("300"), author: { id: ME, username: "me", display_name: "Me" }, nonce };
@@ -209,6 +210,42 @@ describe("MellowClient", () => {
 
     loseAnswer();
     await sending;
+    expect(client.pendingMessages).toEqual([]);
+    // The message is there: its lost answer is no send failure to tell.
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("keeps resending the batch when its own MESSAGE_CREATE confirms one of its messages meanwhile", async () => {
+    const sent: string[] = [];
+    const start = ready();
+    const client = new MellowClient(
+      fakeRest({
+        ...QUIET_REST,
+        sendMessage: (_channelId: string, content: string) => {
+          sent.push(content);
+          if (content === "first") {
+            // The second one's earlier, timed-out attempt did reach the instance.
+            const second: Message = { ...message("250"), author: { id: ME, username: "me", display_name: "Me" }, nonce: "n1" };
+            client.applyEvent({ t: "MESSAGE_CREATE", data: second }, 0);
+          }
+          return Promise.resolve(message(String(200 + sent.length)));
+        },
+      }),
+    );
+    client.user = start.user;
+    client.applyReady(start);
+    client.pendingMessages = ["first", "second", "third"].map((content, index) => ({
+      nonce: `n${index}`,
+      channelId: GENERAL,
+      content,
+      replyToId: null,
+      attachments: [],
+      poll: null,
+      status: "failed" as const,
+    }));
+    await client["resendFailedMessages"]();
+    expect(sent).toEqual(["first", "third"]);
     expect(client.pendingMessages).toEqual([]);
   });
 
@@ -801,6 +838,39 @@ describe("reactions and pins", () => {
     expect(reactionsOf(client)).toEqual([]);
   });
 
+  it("undo a reaction whose answer was lost when the instance's copy is out of reach too", async () => {
+    let isOffline = false;
+    const client = await clientWithHistory({
+      addReaction: () => Promise.reject(new ApiError(0, "NETWORK")),
+      listMessages: () => (isOffline ? Promise.reject(new ApiError(0, "NETWORK")) : Promise.resolve([message("200")])),
+    });
+    isOffline = true;
+    await expect(client.toggleReaction(GENERAL, "200", "👍")).rejects.toBeInstanceOf(ApiError);
+    expect(reactionsOf(client)).toEqual([]);
+  });
+
+  it("settle only the emoji whose answer was lost, so another one in flight keeps its state", async () => {
+    let isLoaded = false;
+    let loseAnswer: () => void = () => undefined;
+    const client = await clientWithHistory({
+      addReaction: (_channelId: string, _messageId: string, emoji: string) =>
+        emoji === "👍"
+          ? new Promise((_resolve, reject) => (loseAnswer = () => reject(new ApiError(0, "NETWORK"))))
+          : new Promise(() => undefined),
+      listMessages: () =>
+        Promise.resolve([{ ...message("200"), reactions: isLoaded ? [{ emoji: "👍", count: 1, me: true }] : [] }]),
+    });
+    isLoaded = true;
+    const lost = client.toggleReaction(GENERAL, "200", "👍");
+    void client.toggleReaction(GENERAL, "200", "❤");
+    loseAnswer();
+    await expect(lost).rejects.toBeInstanceOf(ApiError);
+    expect(reactionsOf(client)).toEqual([
+      { emoji: "👍", count: 1, me: true },
+      { emoji: "❤", count: 1, me: true },
+    ]);
+  });
+
   describe("polls", () => {
     const poll = (allowsMultipleAnswers: boolean, endedAt?: number) => ({
       question: "Lunch?",
@@ -935,6 +1005,21 @@ describe("reactions and pins", () => {
       // The request never reached the instance: no phantom vote stays.
       client.applyEvent({ t: "MESSAGE_POLL_VOTE_REMOVE", data: vote(1) }, 0);
       isKeptByInstance = false;
+      await expect(client.choosePollAnswer(GENERAL, "200", 1)).rejects.toBeInstanceOf(ApiError);
+      expect(countsOf(client)).toEqual([
+        [2, false],
+        [0, false],
+      ]);
+    });
+
+    it("undo a vote whose answer was lost when the instance's copy is out of reach too", async () => {
+      let isOffline = false;
+      const client = await clientWithHistory({
+        listMessages: () =>
+          isOffline ? Promise.reject(new ApiError(0, "NETWORK")) : Promise.resolve([pollMessage()]),
+        addPollVote: () => Promise.reject(new ApiError(0, "NETWORK")),
+      });
+      isOffline = true;
       await expect(client.choosePollAnswer(GENERAL, "200", 1)).rejects.toBeInstanceOf(ApiError);
       expect(countsOf(client)).toEqual([
         [2, false],

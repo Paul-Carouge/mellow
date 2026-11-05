@@ -73,6 +73,21 @@ export function withoutEmoji(reactions: readonly ReactionSummary[], key: string)
   return reactions.filter((reaction) => reaction.emoji !== key);
 }
 
+/** The `key` entry taken from `source` (gone if `source` has none); the other emoji stay as they are. */
+export function withEmojiFrom(
+  reactions: readonly ReactionSummary[],
+  key: string,
+  source: readonly ReactionSummary[],
+): ReactionSummary[] {
+  const replacement = source.find((reaction) => reaction.emoji === key);
+  if (!replacement) {
+    return withoutEmoji(reactions, key);
+  }
+  return reactions.some((reaction) => reaction.emoji === key)
+    ? reactions.map((reaction) => (reaction.emoji === key ? replacement : reaction))
+    : [...reactions, replacement];
+}
+
 // --- Recently used emoji --------------------------------------------------------------------
 
 const RECENT_EMOJI_STORAGE_KEY = "mellow.recent-emoji";
