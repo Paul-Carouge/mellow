@@ -15,7 +15,7 @@ use mellow_protocol::{ProfileLink, Snowflake, UpdateUserProfileRequest, UserProf
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
 use crate::domain::clock::now_unix_milliseconds;
-use crate::domain::image_processing::{IconKind, ImageProcessingError, process_icon};
+use crate::domain::image_processing::{ImageProcessingError, process_site_icon};
 use crate::domain::link_previews::fetcher::LinkFetcher;
 use crate::domain::messages::MessageError;
 use crate::domain::profile_images::ProfileImages;
@@ -142,10 +142,10 @@ impl Profiles {
 
     fn queue_stale_icons(&self, links: &[StoredLink], now_unix_milliseconds: u64) {
         for link in links {
-            let is_stale = link
-                .icon_refresh_after_unix_milliseconds
-                .is_none_or(|refresh_after| refresh_after <= now_unix_milliseconds);
-            if is_stale {
+            if is_icon_stale(
+                link.icon_refresh_after_unix_milliseconds,
+                now_unix_milliseconds,
+            ) {
                 self.queue_link_icon(&link.host);
             }
         }
@@ -172,16 +172,17 @@ impl Profiles {
         host: &str,
     ) -> Result<(), ProfileError> {
         let Ok(bytes) = site_icons::fetch_site_icon(fetcher, host).await else {
-            storage::postpone_link_icon_refresh(
-                &self.database,
-                host,
-                now_unix_milliseconds() + LINK_ICON_RETRY_MILLISECONDS,
-            )
-            .await?;
-            return Ok(());
+            return self.postpone_link_icon_refresh(host).await;
         };
         let file = match bytes {
-            Some(bytes) => self.store_link_icon(bytes).await?,
+            Some(bytes) => match self.store_link_icon(bytes).await {
+                Ok(file) => file,
+                Err(error) => {
+                    // Otherwise every profile read would fetch and process the site again.
+                    self.postpone_link_icon_refresh(host).await?;
+                    return Err(error);
+                }
+            },
             None => None,
         };
         let recorded = storage::record_link_icon(
@@ -198,6 +199,7 @@ impl Profiles {
                 if let Some((file_id, _)) = file {
                     self.images.delete_files(file_id, None).await;
                 }
+                self.postpone_link_icon_refresh(host).await?;
                 return Err(error.into());
             }
         };
@@ -207,20 +209,28 @@ impl Profiles {
         Ok(())
     }
 
+    /// Keeps the icon stored, if any, and asks the site again after `LINK_ICON_RETRY_MILLISECONDS`.
+    async fn postpone_link_icon_refresh(&self, host: &str) -> Result<(), ProfileError> {
+        storage::postpone_link_icon_refresh(
+            &self.database,
+            host,
+            now_unix_milliseconds() + LINK_ICON_RETRY_MILLISECONDS,
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Processes a fetched icon and writes it under a random id; `None` when it is not a picture
-    /// the pipeline reads or comes out too large.
+    /// the pipeline reads or comes out too large. Takes none of the upload slots: the single
+    /// background worker processes one icon at a time, and `process_site_icon` keeps each a small
+    /// job, so icons never make an avatar upload answer "busy".
     async fn store_link_icon(
         &self,
         bytes: Vec<u8>,
     ) -> Result<Option<(Snowflake, u64)>, ProfileError> {
-        let permit = self.images.wait_for_image_processing_permit().await?;
-        let processed = tokio::task::spawn_blocking(move || {
-            // Held until the work really ends.
-            let _permit = permit;
-            process_icon(&bytes, IconKind::LinkIcon, None)
-        })
-        .await
-        .map_err(|error| MessageError::Internal(Box::new(error)))?;
+        let processed = tokio::task::spawn_blocking(move || process_site_icon(&bytes))
+            .await
+            .map_err(|error| MessageError::Internal(Box::new(error)))?;
         let picture = match processed {
             Ok(processed) => processed.picture.bytes,
             Err(ImageProcessingError::Unsupported | ImageProcessingError::TooLarge) => {
@@ -238,6 +248,12 @@ impl Profiles {
         self.images.write_file(file_id, picture).await?;
         Ok(Some((file_id, size_bytes)))
     }
+}
+
+/// Whether a host's icon is due: never fetched, or its refresh time has come.
+fn is_icon_stale(refresh_after_unix_milliseconds: Option<u64>, now_unix_milliseconds: u64) -> bool {
+    refresh_after_unix_milliseconds
+        .is_none_or(|refresh_after| refresh_after <= now_unix_milliseconds)
 }
 
 /// A site icon's id, random rather than a Snowflake: icons are shared by every profile linking
@@ -301,5 +317,19 @@ pub(crate) async fn fetch_queued_link_icons(profiles: &Profiles, fetcher: &LinkF
         };
         profiles.refresh_link_icon(fetcher, &host).await.unwrap();
         profiles.link_icons.hosts().remove(&host);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_icon_is_due_when_never_fetched_and_from_its_refresh_time_on() {
+        const REFRESH_AFTER: u64 = 1_000 + LINK_ICON_LIFETIME_MILLISECONDS;
+
+        assert!(is_icon_stale(None, 0));
+        assert!(!is_icon_stale(Some(REFRESH_AFTER), REFRESH_AFTER - 1));
+        assert!(is_icon_stale(Some(REFRESH_AFTER), REFRESH_AFTER));
     }
 }

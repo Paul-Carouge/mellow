@@ -3,12 +3,13 @@
 //! asks for them.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use mellow_protocol::{ApiErrorBody, ApiErrorCode, UserProfile};
+use mellow_protocol::{ApiErrorBody, ApiErrorCode, Snowflake, UserProfile};
 
 use crate::domain::account_rules::RegistrationMode;
 use crate::domain::accounts::tests::migrated_database;
+use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::image_processing::tests::png;
 use crate::domain::link_previews::fetcher::LinkFetcher;
 use crate::domain::profiles::fetch_queued_link_icons;
@@ -27,6 +28,11 @@ async fn profile_of(
 ) -> (StatusCode, Option<UserProfile>) {
     let (status, body) = send(state, authorized("GET", path, token, None)).await;
     (status, (status == StatusCode::OK).then(|| json(&body)))
+}
+
+async fn user_id_of(state: &AppState, token: &str) -> Snowflake {
+    let (_, own) = profile_of(state, token, "/api/v1/users/@me/profile").await;
+    own.unwrap().user_id
 }
 
 #[tokio::test]
@@ -105,22 +111,60 @@ async fn profiles_are_checked_saved_and_shown_only_to_people_who_share_something
     );
 }
 
+#[tokio::test]
+async fn blocking_someone_never_opens_their_profile() {
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let target = registered_token(&state, "target").await;
+    let stranger = registered_token(&state, "stranger").await;
+    let target_id = user_id_of(&state, &target).await;
+    send(
+        &state,
+        put_profile(&target, serde_json::json!({ "about_me": "Private" })),
+    )
+    .await;
+
+    let (blocked_status, _) = send(
+        &state,
+        authorized(
+            "PUT",
+            &format!("/api/v1/users/@me/relationships/{target_id}"),
+            &stranger,
+            Some(serde_json::json!({ "kind": "blocked" })),
+        ),
+    )
+    .await;
+    let (by_blocker, _) = profile_of(
+        &state,
+        &stranger,
+        &format!("/api/v1/users/{target_id}/profile"),
+    )
+    .await;
+    database.close().await;
+
+    assert_eq!(blocked_status, StatusCode::OK);
+    assert_eq!(by_blocker, StatusCode::NOT_FOUND);
+}
+
 /// What the stand-in sites served.
 #[derive(Default)]
 struct SiteRequests {
     pictured_icon: AtomicUsize,
     other_favicon: AtomicUsize,
+    /// `flaky.example` answers 503 while set.
+    is_flaky_site_down: AtomicBool,
 }
 
 /// One server standing in for every host (`LinkFetcher::stand_in_for_every_host_for_tests`):
 /// `pictured.example`'s home page names a PNG icon, `ico.example` has only an ICO favicon holding
-/// a PNG, `bare.example` has nothing.
+/// a PNG, `bare.example` has nothing, `flaky.example` has a PNG favicon unless it is down.
 async fn stand_in_sites() -> (String, Arc<SiteRequests>) {
     use axum::routing::get;
 
     let requests = Arc::new(SiteRequests::default());
     let pictured = requests.clone();
     let favicon = requests.clone();
+    let flaky = requests.clone();
     let site = axum::Router::new()
         .route(
             "/pictured.example/",
@@ -147,6 +191,19 @@ async fn stand_in_sites() -> (String, Arc<SiteRequests>) {
                         [(header::CONTENT_TYPE, "image/x-icon")],
                         ico_file(&[(32, &png(32, 32))]),
                     )
+                }
+            }),
+        )
+        .route(
+            "/flaky.example/favicon.ico",
+            get(move || {
+                let is_down = flaky.is_flaky_site_down.load(Ordering::SeqCst);
+                async move {
+                    if is_down {
+                        StatusCode::SERVICE_UNAVAILABLE.into_response()
+                    } else {
+                        ([(header::CONTENT_TYPE, "image/png")], png(32, 32)).into_response()
+                    }
                 }
             }),
         );
@@ -276,4 +333,70 @@ async fn without_link_previews_no_site_is_ever_asked_for_its_icon() {
 
     assert_eq!(requests.pictured_icon.load(Ordering::SeqCst), 0);
     assert_eq!(profile.unwrap().links[0].icon_id, None);
+}
+
+#[tokio::test]
+async fn an_icon_lasts_a_week_and_a_site_that_stops_answering_keeps_it_and_is_asked_within_an_hour()
+{
+    const HOUR_MILLISECONDS: u64 = 60 * 60 * 1_000;
+    const WEEK_MILLISECONDS: u64 = 7 * 24 * HOUR_MILLISECONDS;
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let guest = registered_token(&state, "guest").await;
+    let guest_id = user_id_of(&state, &guest).await;
+    let (site, requests) = stand_in_sites().await;
+    let fetcher = LinkFetcher::stand_in_for_every_host_for_tests(&site);
+    state.profiles.enable_link_icons();
+    let stored_link = || async {
+        crate::storage::user_profiles::profile_of_user(&state.database, guest_id)
+            .await
+            .unwrap()
+            .links
+            .remove(0)
+    };
+
+    let first_fetch_start = now_unix_milliseconds();
+    send(
+        &state,
+        put_profile(
+            &guest,
+            serde_json::json!({ "links": [{ "url": "https://flaky.example/" }] }),
+        ),
+    )
+    .await;
+    fetch_queued_link_icons(&state.profiles, &fetcher).await;
+    let first_fetch_end = now_unix_milliseconds();
+    let first_fetch = stored_link().await;
+    // The week has passed, and the site is down.
+    crate::storage::user_profiles::postpone_link_icon_refresh(&state.database, "flaky.example", 0)
+        .await
+        .unwrap();
+    requests.is_flaky_site_down.store(true, Ordering::SeqCst);
+    let retry_start = now_unix_milliseconds();
+    profile_of(&state, &guest, "/api/v1/users/@me/profile").await;
+    fetch_queued_link_icons(&state.profiles, &fetcher).await;
+    let retry_end = now_unix_milliseconds();
+    let after_failure = stored_link().await;
+    let ((kept_status, _), _) = send_from(
+        &state,
+        TEST_PEER,
+        authorized(
+            "GET",
+            &format!("/api/v1/link-icons/{}", first_fetch.icon_file_id.unwrap()),
+            &guest,
+            None,
+        ),
+    )
+    .await;
+    database.close().await;
+
+    let lifetime = first_fetch.icon_refresh_after_unix_milliseconds.unwrap();
+    assert!(
+        (first_fetch_start + WEEK_MILLISECONDS..=first_fetch_end + WEEK_MILLISECONDS)
+            .contains(&lifetime)
+    );
+    assert_eq!(after_failure.icon_file_id, first_fetch.icon_file_id, "kept");
+    let retry = after_failure.icon_refresh_after_unix_milliseconds.unwrap();
+    assert!((retry_start + HOUR_MILLISECONDS..=retry_end + HOUR_MILLISECONDS).contains(&retry));
+    assert_eq!(kept_status, StatusCode::OK);
 }

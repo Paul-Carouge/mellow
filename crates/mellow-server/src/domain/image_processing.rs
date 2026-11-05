@@ -65,6 +65,9 @@ const PREVIEW_HEIGHT_PIXELS: u32 = 600;
 /// link preview runs beside the attachment worker, so it must never be a large job itself. 4 MP
 /// takes 16 MB decoded and still covers the 1200 × 630 to 2560 × 1440 pictures pages announce.
 const MAXIMUM_LINK_PREVIEW_SOURCE_PIXELS: u64 = 4_000_000;
+/// Site icons larger than this are not decoded: they are shown at 16 px, and the largest icons
+/// sites announce (`apple-touch-icon`, 180 px; PWA icons, 512 px) are well under it.
+const MAXIMUM_SITE_ICON_SOURCE_PIXELS: u64 = 1_000_000;
 /// Pictures past this are only ever encoded by the single attachment worker, so two of them never
 /// run at once.
 const LARGE_PICTURE_PIXELS: u32 = 1_000_000;
@@ -510,6 +513,37 @@ pub(crate) fn process_icon(
         picture.frames.truncate(1);
     }
     encode_with_still(&picture)
+}
+
+/// A site icon fetched from another site (ADR-0050). Like a link preview picture (ADR-0041) it
+/// is never a large job: sources over `MAXIMUM_SITE_ICON_SOURCE_PIXELS` are not decoded, and only
+/// an animation's first frame is, so the background fetcher never needs the upload slots.
+pub(crate) fn process_site_icon(
+    bytes: &[u8],
+) -> Result<ProcessedProfileImage, ImageProcessingError> {
+    let format = image::guess_format(bytes).map_err(|_| ImageProcessingError::Unsupported)?;
+    let (width, height) = header_dimensions(bytes, format)?;
+    if u64::from(width) * u64::from(height) > MAXIMUM_SITE_ICON_SOURCE_PIXELS {
+        return Err(ImageProcessingError::TooLarge);
+    }
+    if !matches!(format, ImageFormat::Gif | ImageFormat::WebP) {
+        // PNG and JPEG decode one frame, with their colour profile.
+        return process_icon(bytes, IconKind::LinkIcon, None);
+    }
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    reader.limits(limits());
+    // `decode` reads an animation's first frame only.
+    let first_frame = reader
+        .decode()
+        .map_err(|error| as_processing_error(&error))?;
+    encode_with_still(&DecodedPicture {
+        frames: vec![(
+            crop_square_and_shrink(&first_frame.into_rgba8(), None, LINK_ICON_SIDE_PIXELS),
+            0,
+        )],
+        colour: ColourSpace::Srgb,
+        is_photo: false,
+    })
 }
 
 /// The content types `optimize_attachment` may make smaller.
@@ -1214,6 +1248,19 @@ pub(crate) mod tests {
         assert!(emoji.still.is_some());
         let decoder = webp_animation::Decoder::new(&emoji.picture.bytes).unwrap();
         assert_eq!(decoder.dimensions(), (128, 128));
+    }
+
+    #[test]
+    fn site_icons_are_small_jobs_first_frame_only_and_refused_past_their_source_cap() {
+        let animated = process_site_icon(&animated_gif(128, 128, 4)).unwrap();
+        let still = process_site_icon(&png(1000, 1000)).unwrap();
+        let too_large = process_site_icon(&png(1001, 1000));
+
+        assert!(!animated.picture.is_animated);
+        assert!(animated.still.is_none());
+        assert_eq!(stored_dimensions(&animated.picture.bytes), (64, 64));
+        assert_eq!(stored_dimensions(&still.picture.bytes), (64, 64));
+        assert_eq!(too_large.err(), Some(ImageProcessingError::TooLarge));
     }
 
     #[test]

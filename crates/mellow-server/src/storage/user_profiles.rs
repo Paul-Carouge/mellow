@@ -34,7 +34,9 @@ pub(crate) struct StoredProfile {
 }
 
 /// Whether `viewer_id` may read `user_id`'s profile: their own, or someone they share a server,
-/// a conversation or a relationship with. `false` for an unknown user.
+/// a conversation or a relationship with. A block does not count: it is written on the blocker's
+/// side only, without telling the user blocked, so anyone could otherwise read any profile.
+/// `false` for an unknown user.
 pub(crate) async fn may_view_profile(
     database: &Database,
     viewer_id: Snowflake,
@@ -50,7 +52,8 @@ pub(crate) async fn may_view_profile(
          OR EXISTS (SELECT 1 FROM direct_message_participants AS mine \
              JOIN direct_message_participants AS theirs \
              ON theirs.channel_id = mine.channel_id AND theirs.user_id = ?2 WHERE mine.user_id = ?1) \
-         OR EXISTS (SELECT 1 FROM relationships WHERE user_id = ?1 AND other_user_id = ?2))",
+         OR EXISTS (SELECT 1 FROM relationships WHERE user_id = ?1 AND other_user_id = ?2 \
+             AND kind != 'blocked'))",
     )
     .bind(viewer)
     .bind(user)
