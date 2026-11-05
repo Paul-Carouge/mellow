@@ -32,8 +32,9 @@ pub(crate) enum FetchError {
     Network(#[from] reqwest::Error),
     #[error("too many redirects")]
     TooManyRedirects,
-    #[error("unexpected status")]
-    Status,
+    /// A status that is neither a success nor a redirect, or a redirect without a location.
+    #[error("unexpected status {0}")]
+    Status(reqwest::StatusCode),
     #[error("unsupported content")]
     Unsupported,
     #[error("too large")]
@@ -42,6 +43,24 @@ pub(crate) enum FetchError {
     TimedOut,
     #[error("cannot build the HTTP client")]
     Client,
+}
+
+impl FetchError {
+    /// The site may answer if asked again soon: it did not answer in time, the network failed,
+    /// or it said it is busy or broken (429, 5xx). Any other error is the site's answer.
+    pub(crate) fn is_transient(&self) -> bool {
+        match self {
+            Self::TimedOut | Self::Network(_) => true,
+            Self::Status(status) => {
+                *status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+            }
+            Self::NotAllowed
+            | Self::TooManyRedirects
+            | Self::Unsupported
+            | Self::TooLarge
+            | Self::Client => false,
+        }
+    }
 }
 
 /// What a link leads to.
@@ -272,12 +291,12 @@ impl LinkFetcher {
                     .headers()
                     .get(LOCATION)
                     .and_then(|value| value.to_str().ok())
-                    .ok_or(FetchError::Status)?;
+                    .ok_or(FetchError::Status(status))?;
                 url = url.join(location).map_err(|_| FetchError::NotAllowed)?;
                 continue;
             }
             if !status.is_success() {
-                return Err(FetchError::Status);
+                return Err(FetchError::Status(status));
             }
             return Ok((url, response));
         }

@@ -620,3 +620,89 @@ async fn youtube_links_get_their_embed_from_oembed_once_for_every_spelling() {
         ))
     );
 }
+
+/// A stand-in for YouTube whose oEmbed endpoint answers `oembed_status` with no body, and whose
+/// watch page has an Open Graph title; it counts the page's fetches.
+async fn stand_in_youtube_without_oembed(oembed_status: StatusCode) -> (String, Arc<AtomicUsize>) {
+    let page_fetches = Arc::new(AtomicUsize::new(0));
+    let counter = page_fetches.clone();
+    let site = axum::Router::new()
+        .route(
+            "/www.youtube.com/oembed",
+            axum::routing::get(move || async move { oembed_status }),
+        )
+        .route(
+            "/www.youtube.com/watch",
+            axum::routing::get(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                async {
+                    (
+                        [(header::CONTENT_TYPE, "text/html")],
+                        r#"<html><head><meta property="og:title" content="A private video"></head></html>"#,
+                    )
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, site).await });
+    (format!("http://{address}"), page_fetches)
+}
+
+/// The link's one recorded preview and how long it is kept, after one message sharing it.
+async fn youtube_preview_recorded_with_oembed_answering(
+    oembed_status: StatusCode,
+) -> (Vec<Message>, i64, usize) {
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let (owner, general) = owner_and_general_channel(&state).await;
+    let (site, page_fetches) = stand_in_youtube_without_oembed(oembed_status).await;
+    let fetcher = LinkFetcher::stand_in_for_every_host_for_tests(&site);
+    state.messages.enable_link_previews();
+    let messages_path = format!("/api/v1/channels/{general}/messages");
+
+    send(
+        &state,
+        post_message(
+            &messages_path,
+            &owner,
+            "https://www.youtube.com/watch?v=lYBUbBu4W08",
+        ),
+    )
+    .await;
+    fetch_queued_link_previews(&state.messages, &state.attachments, &fetcher).await;
+    let messages = history(&state, &messages_path, &owner).await;
+    let lifetime: i64 = sqlx::query_scalar(
+        "SELECT expires_at_unix_milliseconds - fetched_at_unix_milliseconds FROM link_previews",
+    )
+    .fetch_one(database.readers())
+    .await
+    .unwrap();
+    database.close().await;
+    (messages, lifetime, page_fetches.load(Ordering::SeqCst))
+}
+
+/// A video oEmbed refuses (private, removed) gets the page's card, without an embed.
+#[tokio::test]
+async fn a_youtube_video_oembed_refuses_gets_the_page_card_without_an_embed() {
+    let (messages, lifetime, page_fetches) =
+        youtube_preview_recorded_with_oembed_answering(StatusCode::NOT_FOUND).await;
+
+    assert_eq!(page_fetches, 1);
+    let preview = &messages[0].link_previews[0];
+    assert_eq!(preview.title.as_deref(), Some("A private video"));
+    assert_eq!(preview.embed, None);
+    assert_eq!(lifetime, 24 * 60 * 60 * 1_000);
+}
+
+/// A busy or broken oEmbed leaves the link without a card for now and asks again within the
+/// hour: the page, which can be YouTube's consent wall, is not shown for a day instead.
+#[tokio::test]
+async fn a_youtube_link_whose_oembed_is_busy_is_asked_again_within_the_hour() {
+    let (messages, lifetime, page_fetches) =
+        youtube_preview_recorded_with_oembed_answering(StatusCode::SERVICE_UNAVAILABLE).await;
+
+    assert_eq!(page_fetches, 0, "the page is not asked");
+    assert!(messages[0].link_previews.is_empty(), "no card for now");
+    assert_eq!(lifetime, 60 * 60 * 1_000);
+}

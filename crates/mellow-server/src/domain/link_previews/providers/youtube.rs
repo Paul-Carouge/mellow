@@ -6,7 +6,7 @@
 use mellow_protocol::{LinkEmbed, YouTubeMusicTrackEmbed, YouTubeVideoEmbed};
 use url::Url;
 
-use super::ProviderPreview;
+use super::{ProviderAnswer, ProviderPreview};
 use crate::domain::link_previews::canonical_links::{
     is_public_youtube_playlist_id, is_youtube_video_id,
 };
@@ -73,14 +73,28 @@ struct OEmbedAnswer {
     author_name: Option<String>,
 }
 
-/// The video's card and embed, or none when YouTube's oEmbed does not answer (a private, removed
-/// or unknown video), so the link gets the page's card as before.
-pub(super) async fn youtube_preview(
-    fetcher: &LinkFetcher,
-    link: &YouTubeLink,
-) -> Option<ProviderPreview> {
-    let answer: OEmbedAnswer = fetcher.fetch_json(oembed_url(&link.video_id)?).await.ok()?;
-    let title = plain_text(&answer.title, MAXIMUM_TITLE_CHARACTERS)?;
+/// The video's card and embed. When oEmbed refuses the video (a private, removed or unknown
+/// video, or one its owner keeps from being embedded), the link gets the page's card as before;
+/// when oEmbed does not answer, none for now.
+pub(super) async fn youtube_preview(fetcher: &LinkFetcher, link: &YouTubeLink) -> ProviderAnswer {
+    let Some(oembed) = oembed_url(&link.video_id) else {
+        return ProviderAnswer::NotProvided;
+    };
+    let answer: OEmbedAnswer = match fetcher.fetch_json(oembed).await {
+        Ok(answer) => answer,
+        Err(error) => {
+            // The error's text only: its debug form can hold the link (logs rule).
+            tracing::debug!(error = %error, "youtube oembed did not answer");
+            return if error.is_transient() {
+                ProviderAnswer::Unavailable
+            } else {
+                ProviderAnswer::NotProvided
+            };
+        }
+    };
+    let Some(title) = plain_text(&answer.title, MAXIMUM_TITLE_CHARACTERS) else {
+        return ProviderAnswer::NotProvided;
+    };
     let author = answer
         .author_name
         .and_then(|author| plain_text(&author, MAXIMUM_TITLE_CHARACTERS));
@@ -105,7 +119,7 @@ pub(super) async fn youtube_preview(
     } else {
         YOUTUBE_SITE_NAME
     };
-    Some(ProviderPreview {
+    ProviderAnswer::Preview(Box::new(ProviderPreview {
         details: PageDetails {
             title: Some(title),
             // The channel, or the artist of a track: what an older client's card says under
@@ -117,7 +131,7 @@ pub(super) async fn youtube_preview(
         },
         picture: poster(fetcher, &link.video_id).await,
         embed,
-    })
+    }))
 }
 
 /// "Noëlle Dupuis" for YouTube's generated channel "Noëlle Dupuis - Topic"; other channels as
@@ -202,11 +216,14 @@ mod tests {
         assert_eq!(artist_of_channel(" - Topic"), " - Topic");
     }
 
-    /// A stand-in for YouTube: oEmbed answers for `known` ids only, `maxresdefault` exists for
-    /// `with_largest_thumbnail` only, `hqdefault` for every id. Records each path asked.
+    /// A stand-in for YouTube: oEmbed answers for `dQw4w9WgXcQ` only (with `channel` as its
+    /// author, none when empty) and with `other_status` for any other id, `maxresdefault`
+    /// exists for `with_largest_thumbnail` only, `hqdefault` for every id. Records each path
+    /// asked.
     async fn stand_in_youtube(
         channel: &'static str,
         with_largest_thumbnail: bool,
+        other_status: StatusCode,
     ) -> (String, Arc<Mutex<Vec<String>>>) {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let recorder = asked.clone();
@@ -221,17 +238,19 @@ mod tests {
                             if query.get("url").map(String::as_str)
                                 != Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
                             {
-                                return StatusCode::NOT_FOUND.into_response();
+                                return other_status.into_response();
+                            }
+                            let mut answer = serde_json::json!({
+                                "title": "Les Cités d'or",
+                                "thumbnail_url": "https://elsewhere.example/poster.jpg",
+                                "html": "<iframe></iframe>",
+                            });
+                            if !channel.is_empty() {
+                                answer["author_name"] = channel.into();
                             }
                             (
                                 [(header::CONTENT_TYPE, "application/json")],
-                                serde_json::json!({
-                                    "title": "Les Cités d'or",
-                                    "author_name": channel,
-                                    "thumbnail_url": "https://elsewhere.example/poster.jpg",
-                                    "html": "<iframe></iframe>",
-                                })
-                                .to_string(),
+                                answer.to_string(),
                             )
                                 .into_response()
                         },
@@ -270,11 +289,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_video_gets_its_card_from_oembed_and_its_largest_poster() {
-        let (site, asked) = stand_in_youtube("RustConf", true).await;
+        let (site, asked) = stand_in_youtube("RustConf", true, StatusCode::NOT_FOUND).await;
         let fetcher = LinkFetcher::stand_in_for_every_host_for_tests(&site);
         let video = link("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=90").unwrap();
 
-        let preview = youtube_preview(&fetcher, &video).await.unwrap();
+        let preview = preview_of(youtube_preview(&fetcher, &video).await);
 
         assert_eq!(preview.details.title.as_deref(), Some("Les Cités d'or"));
         assert_eq!(preview.details.description.as_deref(), Some("RustConf"));
@@ -302,11 +321,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_music_track_names_its_artist_and_falls_back_to_the_smaller_poster() {
-        let (site, _) = stand_in_youtube("Noëlle Dupuis - Topic", false).await;
+        let (site, _) =
+            stand_in_youtube("Noëlle Dupuis - Topic", false, StatusCode::NOT_FOUND).await;
         let fetcher = LinkFetcher::stand_in_for_every_host_for_tests(&site);
         let track = link("https://music.youtube.com/watch?v=dQw4w9WgXcQ").unwrap();
 
-        let preview = youtube_preview(&fetcher, &track).await.unwrap();
+        let preview = preview_of(youtube_preview(&fetcher, &track).await);
 
         assert_eq!(preview.details.site_name.as_deref(), Some("YouTube Music"));
         assert_eq!(
@@ -321,13 +341,64 @@ mod tests {
         assert_eq!(preview.picture.as_deref(), Some(&b"hqdefault.jpg"[..]));
     }
 
-    #[tokio::test]
-    async fn a_video_oembed_does_not_know_gets_no_provider_preview() {
-        let (site, asked) = stand_in_youtube("RustConf", true).await;
-        let fetcher = LinkFetcher::stand_in_for_every_host_for_tests(&site);
-        let unknown = link("https://www.youtube.com/watch?v=aaaaaaaaaaa").unwrap();
+    fn preview_of(answer: ProviderAnswer) -> ProviderPreview {
+        match answer {
+            ProviderAnswer::Preview(preview) => *preview,
+            other => panic!("no preview: {other:?}"),
+        }
+    }
 
-        assert!(youtube_preview(&fetcher, &unknown).await.is_none());
-        assert_eq!(*asked.lock().unwrap(), ["/www.youtube.com/oembed"]);
+    #[tokio::test]
+    async fn a_video_oembed_refuses_gets_the_page_card() {
+        for refusal in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+        ] {
+            let (site, asked) = stand_in_youtube("RustConf", true, refusal).await;
+            let fetcher = LinkFetcher::stand_in_for_every_host_for_tests(&site);
+            let unknown = link("https://www.youtube.com/watch?v=aaaaaaaaaaa").unwrap();
+
+            let answer = youtube_preview(&fetcher, &unknown).await;
+
+            assert!(matches!(answer, ProviderAnswer::NotProvided), "{refusal}");
+            assert_eq!(*asked.lock().unwrap(), ["/www.youtube.com/oembed"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_busy_or_broken_oembed_is_asked_again_rather_than_the_page() {
+        for failure in [
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            let (site, asked) = stand_in_youtube("RustConf", true, failure).await;
+            let fetcher = LinkFetcher::stand_in_for_every_host_for_tests(&site);
+            let video = link("https://www.youtube.com/watch?v=aaaaaaaaaaa").unwrap();
+
+            let answer = youtube_preview(&fetcher, &video).await;
+
+            assert!(matches!(answer, ProviderAnswer::Unavailable), "{failure}");
+            assert_eq!(*asked.lock().unwrap(), ["/www.youtube.com/oembed"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_music_link_without_a_channel_gets_a_video_embed() {
+        let (site, _) = stand_in_youtube("", true, StatusCode::NOT_FOUND).await;
+        let fetcher = LinkFetcher::stand_in_for_every_host_for_tests(&site);
+        let track = link("https://music.youtube.com/watch?v=dQw4w9WgXcQ").unwrap();
+
+        let preview = preview_of(youtube_preview(&fetcher, &track).await);
+
+        assert_eq!(preview.details.site_name.as_deref(), Some("YouTube"));
+        assert_eq!(preview.details.description, None);
+        assert!(
+            matches!(preview.embed, LinkEmbed::YouTubeVideo(ref video) if video.video_id == "dQw4w9WgXcQ"),
+            "{:?}",
+            preview.embed
+        );
     }
 }
