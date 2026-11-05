@@ -15,13 +15,14 @@ The owner asked for search "in Elasticsearch mode": ranked results, filters, hig
 Item 12 turned "Go to… Ctrl K" into a search-looking field in the chat header. The first proposal replaced it with message search and kept the switcher behind `Ctrl+K` and a line in the search suggestions. **The owner chose to keep both** (2026-10-31): "Go to… Ctrl K" stays with its item 12 style and tokens, and message search sits beside it. What keeps them apart:
 
 - **Words and shortcuts, not only icons.** "Go to… Ctrl K" (« Aller à… ») and "Search Rust Lyon · Ctrl F" (« Rechercher dans Rust Lyon ») each say what they do; the switcher's is a compact button at its content's width, search is the field that grows when used.
-- **Collapse without two magnifiers.** Where the header lacks room, "Go to…" becomes a **compass** button (Phosphor `compass`, Fill; same name, "Go to a channel, server or person"): below `component.quick-switcher.trigger-collapse-width` beside the search field (640 px of header at first, 976 px since the 2026-11 design pass so it gives way before the topic is cut), or below `size.chat.min-width` (480 px) beside search's magnifier. On phones it is an item of the chat header's "More options" menu since the design pass. Two identical magnifier buttons side by side would leave people guessing; the compass says "go somewhere", the magnifier keeps "search".
+- **Collapse without two magnifiers.** Where the header lacks room, "Go to…" becomes a **compass** button (Phosphor `compass`, Fill; same name, "Go to a channel, server or person"): beside the search field, below the chat's minimum width plus the trigger and the field at rest (480 + 208 + 208 = 896 px of header, summed from the tokens since the 2026-11 design pass so it gives way before the topic is cut; the `trigger-collapse-width` token of 640 px is gone), or below `size.chat.min-width` (480 px) beside search's magnifier. On phones it is an item of the chat header's "More options" menu since the design pass. Two identical magnifier buttons side by side would leave people guessing; the compass says "go somewhere", the magnifier keeps "search".
 - **The switcher's door stays in the suggestions.** An empty search field still ends its list with "Go to a channel, server or person · Ctrl K", for people who reach for the field first.
 
 | Header width | Quick switcher | Message search |
 |---|---|---|
-| Wide, results dock (window >= 1 224 px) and header >= 976 px | "Go to… Ctrl K", content width | The field, 208 px, 288 px focused or filled; "Search" at rest, its scope once focused |
-| Wide, a sheet docked beside the chat (header < 976 px) | Compass button | The field |
+| Wide, results dock (window >= 1 224 px) and header >= 896 px | "Go to… Ctrl K", content width | The field, 208 px, 288 px focused or filled (the topic gives up the extra 80 px); "Search" at rest, its scope once focused |
+| 1 280 px window, nothing docked (header 944 px with a 240 px channel list) | "Go to… Ctrl K", content width | The field |
+| Wide, a sheet docked beside the chat (header < 896 px; members at 1 440 px leave about 855 px) | Compass button | The field |
 | 816 to 1 223 px (results open over the chat) | "Go to… Ctrl K", 208 px, giving way to the topic (compass below 480 px of header) | Magnifier button |
 | Phones (drawer layout, < 816 px) | "Go to…" in the header's "More options" menu | Magnifier button |
 
@@ -43,7 +44,7 @@ On phones the channel name keeps its room: the header holds the drawer key, the 
 | `component.search.facet-*`, `filter-*`, `sort-*` | `surface.input` chips, `state.selected` for applied filters and the chosen sort, 28 px (44 px under a coarse pointer) | Facets narrow, applied filters show what narrows. |
 | `component.message.highlight-background` | now `color.match.background` (was the mention wash) | The message a result opened. A mention row already wears the mention wash, so the old value would have been invisible there. |
 | `motion.delay.jump-highlight` (new) | 2 000 ms | How long the opened message stays lit; kept under reduced motion, where it holds still and then goes. |
-| `component.quick-switcher.trigger-*` (kept), `trigger-collapse-width` (new) | 208 px, 16 px magnifier; 640 px | "Go to… Ctrl K" keeps item 12's look; below 640 px of header beside the search field (480 px beside search's magnifier) it becomes a compass button. |
+| `component.quick-switcher.trigger-*` (kept) | 208 px, 16 px magnifier | "Go to… Ctrl K" keeps item 12's look; below `size.chat.min-width` + `trigger-width` + `search.field-width` (896 px) of header beside the search field (480 px beside search's magnifier) it becomes a compass button. The first `trigger-collapse-width` token (640 px) was removed in the 2026-11 design pass: the sum follows the tokens it is made of. |
 
 Type: the existing scale. The count titles the sheet in `type.heading-md` with tabular figures; results use the message styles (`type.message-author`, `type.message-timestamp`, `type.message`), so a result reads like the line it came from. Channel labels are `type.body-sm` semibold in `text.muted`, the facet group labels `type.body-sm` muted, chips `type.body-sm`.
 
