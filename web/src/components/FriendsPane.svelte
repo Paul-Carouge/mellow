@@ -54,6 +54,8 @@
   const incomingCount = $derived(client.incomingRequestCount());
   const hasFriends = $derived(client.relationshipsOfKind("friend").length > 0);
   const groups = $derived(tab === "add" ? [] : friendsGroupsIn(client, tab));
+  /** The empty list's own "Add friend" button is then the screen's one apricot fill. */
+  const isNoFriendsInvitationShown = $derived(groups.length === 0 && (tab === "online" || tab === "all") && !hasFriends);
 
   let panel = $state<HTMLElement | null>(null);
   let addFriendForm = $state<{ focusField: () => void } | null>(null);
@@ -258,8 +260,8 @@
   const tabClass = (isSelected: boolean, isAdd: boolean) => [
     "flex h-(--mw-component-friends-tab-height) shrink-0 items-center justify-center gap-2xs rounded-(--mw-component-friends-tab-radius) px-(--mw-component-friends-tab-padding-inline) type-button whitespace-nowrap transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) pointer-coarse:h-(--mw-size-hit-web-min) pointer-coarse:min-w-(--mw-size-hit-web-min)",
     isAdd
-      ? isSelected
-        ? "text-(--mw-component-friends-add-tab-text-selected)"
+      ? isSelected || isNoFriendsInvitationShown
+        ? "text-(--mw-component-friends-add-tab-text-selected) hover:bg-(--mw-component-friends-tab-background-hover)"
         : "bg-(--mw-component-friends-add-tab-background) text-(--mw-component-friends-add-tab-text) hover:bg-(--mw-component-friends-add-tab-background-hover)"
       : isSelected
         ? "bg-(--mw-component-friends-tab-background-selected) text-(--mw-component-friends-tab-text-selected)"
@@ -409,7 +411,7 @@
           <AddFriendForm bind:this={addFriendForm} {client} />
         </div>
       {:else if groups.length === 0}
-        {#if (tab === "online" || tab === "all") && !hasFriends}
+        {#if isNoFriendsInvitationShown}
           {@render emptyState("idle", strings.friends.noFriendsYet, true)}
         {:else if tab === "online"}
           {@render emptyState("sleeping", strings.friends.emptyOnline, false)}
