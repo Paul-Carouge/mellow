@@ -6,7 +6,7 @@
 use mellow_protocol::{LinkEmbed, YouTubeMusicTrackEmbed, YouTubeVideoEmbed};
 use url::Url;
 
-use super::{ProviderAnswer, ProviderPreview};
+use super::{ProviderOutcome, ProviderPreview};
 use crate::domain::link_previews::canonical_links::{
     is_public_youtube_playlist_id, is_youtube_video_id,
 };
@@ -76,9 +76,9 @@ struct OEmbedAnswer {
 /// The video's card and embed. When oEmbed refuses the video (a private, removed or unknown
 /// video, or one its owner keeps from being embedded), the link gets the page's card as before;
 /// when oEmbed does not answer, none for now.
-pub(super) async fn youtube_preview(fetcher: &LinkFetcher, link: &YouTubeLink) -> ProviderAnswer {
+pub(super) async fn youtube_preview(fetcher: &LinkFetcher, link: &YouTubeLink) -> ProviderOutcome {
     let Some(oembed) = oembed_url(&link.video_id) else {
-        return ProviderAnswer::NotProvided;
+        return ProviderOutcome::NotProvided;
     };
     let answer: OEmbedAnswer = match fetcher.fetch_json(oembed).await {
         Ok(answer) => answer,
@@ -86,14 +86,14 @@ pub(super) async fn youtube_preview(fetcher: &LinkFetcher, link: &YouTubeLink) -
             // The error's text only: its debug form can hold the link (logs rule).
             tracing::debug!(error = %error, "youtube oembed did not answer");
             return if error.is_transient() {
-                ProviderAnswer::Unavailable
+                ProviderOutcome::Unavailable
             } else {
-                ProviderAnswer::NotProvided
+                ProviderOutcome::NotProvided
             };
         }
     };
     let Some(title) = plain_text(&answer.title, MAXIMUM_TITLE_CHARACTERS) else {
-        return ProviderAnswer::NotProvided;
+        return ProviderOutcome::NotProvided;
     };
     let author = answer
         .author_name
@@ -119,7 +119,7 @@ pub(super) async fn youtube_preview(fetcher: &LinkFetcher, link: &YouTubeLink) -
     } else {
         YOUTUBE_SITE_NAME
     };
-    ProviderAnswer::Preview(Box::new(ProviderPreview {
+    ProviderOutcome::Found(Box::new(ProviderPreview {
         details: PageDetails {
             title: Some(title),
             // The channel, or the artist of a track: what an older client's card says under
@@ -341,9 +341,9 @@ mod tests {
         assert_eq!(preview.picture.as_deref(), Some(&b"hqdefault.jpg"[..]));
     }
 
-    fn preview_of(answer: ProviderAnswer) -> ProviderPreview {
+    fn preview_of(answer: ProviderOutcome) -> ProviderPreview {
         match answer {
-            ProviderAnswer::Preview(preview) => *preview,
+            ProviderOutcome::Found(preview) => *preview,
             other => panic!("no preview: {other:?}"),
         }
     }
@@ -362,7 +362,7 @@ mod tests {
 
             let answer = youtube_preview(&fetcher, &unknown).await;
 
-            assert!(matches!(answer, ProviderAnswer::NotProvided), "{refusal}");
+            assert!(matches!(answer, ProviderOutcome::NotProvided), "{refusal}");
             assert_eq!(*asked.lock().unwrap(), ["/www.youtube.com/oembed"]);
         }
     }
@@ -380,7 +380,7 @@ mod tests {
 
             let answer = youtube_preview(&fetcher, &video).await;
 
-            assert!(matches!(answer, ProviderAnswer::Unavailable), "{failure}");
+            assert!(matches!(answer, ProviderOutcome::Unavailable), "{failure}");
             assert_eq!(*asked.lock().unwrap(), ["/www.youtube.com/oembed"]);
         }
     }

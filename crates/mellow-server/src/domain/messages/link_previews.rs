@@ -21,7 +21,7 @@ use crate::domain::guilds::GuildError;
 use crate::domain::link_previews::fetcher::{Fetched, LinkFetcher};
 use crate::domain::link_previews::links::links_to_preview;
 use crate::domain::link_previews::page::PageDetails;
-use crate::domain::link_previews::providers::{ProviderAnswer, provider_answer};
+use crate::domain::link_previews::providers::{ProviderOutcome, ProviderPreview};
 use crate::storage::link_previews::{self as storage, NewLinkPreview, StoredLinkPreview};
 
 /// Messages waiting for their previews; a full queue drops the newest, which simply get none.
@@ -470,16 +470,39 @@ impl PreviewWorker {
         {
             return Ok(preview);
         }
-        let (details, picture, embed) = match provider_answer(&self.fetcher, link).await {
-            ProviderAnswer::Preview(provider) => {
-                (provider.details, provider.picture, Some(provider.embed))
+        let provided = self
+            .fetcher
+            .providers()
+            .preview_of(&self.fetcher, link)
+            .await;
+        // The page's card when its provider failed is kept only an hour, so the provider's card
+        // comes once it answers again (GitHub's budget resets every hour).
+        let is_provider_fallback = provided == ProviderOutcome::Failed;
+        let (details, embed, picture) = match provided {
+            ProviderOutcome::Found(found) => {
+                let ProviderPreview {
+                    details,
+                    picture,
+                    embed,
+                } = *found;
+                let picture = match picture {
+                    Some(bytes) => Some(bytes),
+                    None => self.picture_of(&details).await,
+                };
+                (details, Some(embed), picture)
             }
-            ProviderAnswer::NotProvided => {
-                let (details, picture) = self.page_preview(link).await;
-                (details, picture, None)
+            ProviderOutcome::NotProvided | ProviderOutcome::Failed => {
+                match self.fetcher.fetch_page_or_picture(link.clone()).await {
+                    Ok(Fetched::Page(details)) => {
+                        let picture = self.picture_of(&details).await;
+                        (details, None, picture)
+                    }
+                    Ok(Fetched::Picture(bytes)) => (PageDetails::default(), None, Some(bytes)),
+                    Err(_) => (PageDetails::default(), None, None),
+                }
             }
             // Recorded empty, so asked again within the hour like a page that did not answer.
-            ProviderAnswer::Unavailable => (PageDetails::default(), None, None),
+            ProviderOutcome::Unavailable => (PageDetails::default(), None, None),
         };
         let picture = match picture {
             Some(bytes) => self.attachments.store_link_preview_picture(bytes).await?,
@@ -494,7 +517,7 @@ impl PreviewWorker {
         let fetched_at = crate::domain::clock::now_unix_milliseconds();
         // A card whose picture was skipped for a busy slot is fetched again soon, so one member
         // keeping the slot busy cannot leave everyone's cards without pictures for a day.
-        let lifetime = if is_empty || is_picture_skipped {
+        let lifetime = if is_empty || is_picture_skipped || is_provider_fallback {
             EMPTY_PREVIEW_LIFETIME_MILLISECONDS
         } else {
             PREVIEW_LIFETIME_MILLISECONDS
@@ -523,18 +546,9 @@ impl PreviewWorker {
         Ok(preview)
     }
 
-    /// What the link's page says and its picture's bytes, or the picture the link points at.
-    async fn page_preview(&self, link: &Url) -> (PageDetails, Option<Vec<u8>>) {
-        match self.fetcher.fetch_page_or_picture(link.clone()).await {
-            Ok(Fetched::Page(details)) => {
-                let picture = match &details.image_url {
-                    Some(image_url) => self.fetcher.fetch_picture(image_url.clone()).await.ok(),
-                    None => None,
-                };
-                (details, picture)
-            }
-            Ok(Fetched::Picture(bytes)) => (PageDetails::default(), Some(bytes)),
-            Err(_) => (PageDetails::default(), None),
-        }
+    /// The bytes of the picture the page or provider names, if it gives them.
+    async fn picture_of(&self, details: &PageDetails) -> Option<Vec<u8>> {
+        let image_url = details.image_url.clone()?;
+        self.fetcher.fetch_picture(image_url).await.ok()
     }
 }

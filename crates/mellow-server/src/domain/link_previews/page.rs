@@ -7,7 +7,7 @@ use url::Url;
 use crate::domain::message_rules::is_forbidden_in_messages;
 
 pub(crate) const MAXIMUM_TITLE_CHARACTERS: usize = 256;
-const MAXIMUM_DESCRIPTION_CHARACTERS: usize = 350;
+pub(crate) const MAXIMUM_DESCRIPTION_CHARACTERS: usize = 350;
 const MAXIMUM_SITE_NAME_CHARACTERS: usize = 64;
 /// Attribute values longer than this are not read: no real `content` needs more.
 const MAXIMUM_ATTRIBUTE_VALUE_BYTES: usize = 4_096;

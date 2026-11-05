@@ -4,10 +4,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::header::{ACCEPT, CONTENT_TYPE, LOCATION};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, LOCATION};
 use url::{Host, Url};
 
 use super::page::{PageDetails, page_details};
+use super::providers::LinkProviders;
 use super::public_addresses::{AddressPolicy, PublicAddressResolver};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -32,9 +33,13 @@ pub(crate) enum FetchError {
     Network(#[from] reqwest::Error),
     #[error("too many redirects")]
     TooManyRedirects,
-    /// A status that is neither a success nor a redirect, or a redirect without a location.
-    #[error("unexpected status {0}")]
-    Status(reqwest::StatusCode),
+    /// A status other than 2xx, or a redirect without a place; the headers say when a provider
+    /// takes requests again (ADR-0044).
+    #[error("unexpected status")]
+    Status {
+        status: reqwest::StatusCode,
+        headers: Box<HeaderMap>,
+    },
     #[error("unsupported content")]
     Unsupported,
     #[error("too large")]
@@ -51,7 +56,7 @@ impl FetchError {
     pub(crate) fn is_transient(&self) -> bool {
         match self {
             Self::TimedOut | Self::Network(_) => true,
-            Self::Status(status) => {
+            Self::Status { status, .. } => {
                 *status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
             }
             Self::NotAllowed
@@ -78,6 +83,8 @@ pub(crate) struct LinkFetcher {
     /// The local site standing in for every host; only tests set it
     /// (`stand_in_for_every_host_for_tests`).
     stand_in_site: Option<Url>,
+    /// Where the providers' APIs are, and GitHub's rate-limit guard, shared by every clone.
+    providers: LinkProviders,
 }
 
 /// Whether the fetcher may request `url` (before any name resolution, which the resolver
@@ -155,6 +162,16 @@ impl LinkFetcher {
         request_url
     }
 
+    /// With the providers' APIs served by test sites.
+    #[cfg(test)]
+    pub(crate) fn with_providers_for_tests(self, providers: LinkProviders) -> Self {
+        Self { providers, ..self }
+    }
+
+    pub(crate) fn providers(&self) -> &LinkProviders {
+        &self.providers
+    }
+
     fn with_policy(user_agent: &str, policy: AddressPolicy) -> Result<Self, FetchError> {
         let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS
             .iter()
@@ -176,6 +193,7 @@ impl LinkFetcher {
             client,
             policy,
             stand_in_site: None,
+            providers: LinkProviders::default(),
         })
     }
 
@@ -252,6 +270,17 @@ impl LinkFetcher {
         &self,
         url: Url,
     ) -> Result<T, FetchError> {
+        Ok(self.fetch_json_and_headers(url).await?.1)
+    }
+
+    /// As `fetch_json`, with the answer's headers (a provider's rate-limit counters).
+    ///
+    /// # Errors
+    /// As `fetch_json`.
+    pub(crate) async fn fetch_json_and_headers<T: serde::de::DeserializeOwned>(
+        &self,
+        url: Url,
+    ) -> Result<(HeaderMap, T), FetchError> {
         let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;
         let (_, response) = self
             .get_following_redirects(url, "application/json", deadline)
@@ -261,9 +290,11 @@ impl LinkFetcher {
         if !content_type.starts_with("application/json") && !content_type.ends_with("+json") {
             return Err(FetchError::Unsupported);
         }
+        let headers = response.headers().clone();
         let body = read_at_most(response, MAXIMUM_JSON_BYTES, BodyOverflow::Fail, deadline).await?;
         // Parsed in place: serde_json is linear and the body is 16 times smaller than a page.
-        serde_json::from_slice(&body).map_err(|_| FetchError::Unsupported)
+        let value = serde_json::from_slice(&body).map_err(|_| FetchError::Unsupported)?;
+        Ok((headers, value))
     }
 
     async fn get_following_redirects(
@@ -291,16 +322,23 @@ impl LinkFetcher {
                     .headers()
                     .get(LOCATION)
                     .and_then(|value| value.to_str().ok())
-                    .ok_or(FetchError::Status(status))?;
+                    .ok_or_else(|| status_error(&response))?;
                 url = url.join(location).map_err(|_| FetchError::NotAllowed)?;
                 continue;
             }
             if !status.is_success() {
-                return Err(FetchError::Status(status));
+                return Err(status_error(&response));
             }
             return Ok((url, response));
         }
         Err(FetchError::TooManyRedirects)
+    }
+}
+
+fn status_error(response: &reqwest::Response) -> FetchError {
+    FetchError::Status {
+        status: response.status(),
+        headers: Box::new(response.headers().clone()),
     }
 }
 
