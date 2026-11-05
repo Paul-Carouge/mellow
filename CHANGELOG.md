@@ -4,6 +4,16 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-11-05
+GIFs from Klipy, with favourites (ADR-0042). Off until the instance's owner sets a Klipy key. Database migration 0037; the protocol gains `GET /api/v1/gifs/settings` and the GIF favourites routes.
+
+### Added
+- With `[gifs] klipy_app_key` in `mellow.toml`, a GIF button in the composer searches Klipy ("Search KLIPY"), shows trending GIFs and your favourites, and sends the GIF; a message that is only a Klipy GIF shows the GIF itself.
+- Star GIFs in the picker to find them again (200 at most).
+
+### Security
+- Members' browsers reach Klipy directly, as Klipy's terms require: Klipy sees their address, never their account. The page's policy opens to Klipy's media hosts and to its API under the instance's own key only, and only when a key is set. The link preview fetcher never fetches Klipy's media.
+
 ## [0.43.0] - 2026-11-04
 A "/" menu in the composer and formatting shortcuts. Web client only: no database migration and no protocol change.
 
