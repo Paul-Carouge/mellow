@@ -4,6 +4,7 @@
 
   import { formattingLocale, strings } from "../i18n";
   import { type MellowClient, describeError } from "../lib/client.svelte";
+  import { foldForSearch } from "../lib/search-text";
   import {
     MAXIMUM_REACHABLE_SEARCH_RESULTS,
     MAXIMUM_SEARCH_QUERY_LENGTH,
@@ -164,13 +165,15 @@
     switch (filter.key) {
       case "from":
       case "mentions": {
-        const username = value.replace(/^@+/u, "").toLowerCase();
+        const typedName = value.replace(/^@+/u, "").trim();
+        // Folded as the instance compares names (ADR-0048): "élodie" names Élodie.
+        const nameKey = foldForSearch(typedName.replace(/\s+/gu, " "));
         const person =
-          search.authorFacets.find((facet) => facet.author.username.toLowerCase() === username)?.author ??
+          search.authorFacets.find((facet) => foldForSearch(facet.author.username) === nameKey)?.author ??
           (guild ? (client.membersByGuild.get(guild.id) ?? []).map((member) => member.user) : client.conversations.flatMap((c) => c.recipients)).find(
-            (candidate) => candidate.username.toLowerCase() === username,
+            (candidate) => foldForSearch(candidate.username) === nameKey,
           );
-        return strings.search.filterChip[filter.key](person ? displayName(person) : username);
+        return strings.search.filterChip[filter.key](person ? displayName(person) : typedName);
       }
       case "in": {
         const reference = value.replace(/^#+/u, "");

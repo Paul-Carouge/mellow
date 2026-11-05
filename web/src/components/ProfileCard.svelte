@@ -68,6 +68,5 @@
   <svelte:element this={nameElement} class="mt-xs type-heading-lg break-words text-(--mw-component-profile-popover-name-text)">
     {displayName(user)}
   </svelte:element>
-  <p class="type-body break-words text-(--mw-component-profile-popover-username-text)">@{user.username}</p>
   {@render children?.()}
 </div>

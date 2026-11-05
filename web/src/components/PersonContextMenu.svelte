@@ -114,7 +114,7 @@
         return {
           onselectAndWait: async () => {
             try {
-              const relationship = await client.sendFriendRequest(user.username);
+              const relationship = await client.sendFriendRequest({ username: user.username });
               return {
                 announcement:
                   relationship.kind === "friend" ? strings.friends.acceptedTheirs(person) : strings.friends.sent(person),

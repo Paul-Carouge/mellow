@@ -1175,6 +1175,11 @@
   --mw-component-settings-section-label-gap: 0.5rem;
   --mw-component-settings-section-label-text: #A99FAA;
   --mw-component-settings-sidebar-background: #110B11;
+  --mw-component-settings-two-factor-code-text: #F8F4F8;
+  --mw-component-settings-two-factor-qr-background: #FFFFFF;
+  --mw-component-settings-two-factor-qr-module: #110B11;
+  --mw-component-settings-two-factor-qr-radius: 0.75rem;
+  --mw-component-settings-two-factor-qr-size: 11.5rem;
   --mw-component-settings-voice-column-min-width: 16.25rem;
   --mw-component-sheet-inset: 0.5rem;
   --mw-component-sheet-radius: 1rem;
@@ -2048,6 +2053,7 @@
     --mw-component-settings-page-title-text: #221B23;
     --mw-component-settings-section-label-text: #695F6B;
     --mw-component-settings-sidebar-background: #F5F1F6;
+    --mw-component-settings-two-factor-code-text: #221B23;
     --mw-component-side-sheet-background: #FFFFFF;
     --mw-component-sidebar-background: #F5F1F6;
     --mw-component-sidebar-header-background-hover: #ECE6ED;
@@ -2606,6 +2612,7 @@
   --mw-component-settings-page-title-text: #221B23;
   --mw-component-settings-section-label-text: #695F6B;
   --mw-component-settings-sidebar-background: #F5F1F6;
+  --mw-component-settings-two-factor-code-text: #221B23;
   --mw-component-side-sheet-background: #FFFFFF;
   --mw-component-sidebar-background: #F5F1F6;
   --mw-component-sidebar-header-background-hover: #ECE6ED;

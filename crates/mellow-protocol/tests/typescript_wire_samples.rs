@@ -29,10 +29,11 @@ use mellow_protocol::{
     MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
     MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, MINIMUM_POLL_ANSWERS, Member, Message, MessageReaction,
     MessageSearchHit, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicEmbed,
-    MusicItem, MusicProvider, OverwriteKind, PermissionOverwrite, Permissions, Poll, PollAnswer,
-    PollVote, Presence, PresenceStatus, ProfileImage, ProfileLink, ProgressBar, PublicUser,
-    ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame,
-    SessionCreated, SimulcastLayer, Snowflake, SoundboardSound, TwitchEmbed, TwitchItem,
+    MusicItem, MusicProvider, NameAvailability, OverwriteKind, PermissionOverwrite, Permissions,
+    Poll, PollAnswer, PollVote, Presence, PresenceStatus, ProfileImage, ProfileLink, ProgressBar,
+    PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role,
+    ServerFrame, SessionCreated, SimulcastLayer, Snowflake, SoundboardSound, TwitchEmbed,
+    TwitchItem, TwoFactorChallenge, TwoFactorEnrolment, TwoFactorRecoveryCodes, TwoFactorStatus,
     UserProfile, VideoTileSize, VimeoVideoEmbed, VoiceDisconnectReason, VoiceJoinRefusal,
     VoiceState, VoiceVideoRefusal, WatchedCamera, WikipediaArticleEmbed, YouTubeMusicTrackEmbed,
     YouTubeVideoEmbed,
@@ -141,6 +142,7 @@ fn current_user() -> CurrentUser {
         banner: Some(picture()),
         status: ChosenStatus::DoNotDisturb,
         custom_status: Some("Writing notes".into()),
+        friend_code: Some("LD0A-0DA8".into()),
     }
 }
 
@@ -149,6 +151,7 @@ fn sparse_current_user() -> CurrentUser {
         avatar: None,
         banner: None,
         custom_status: None,
+        friend_code: None,
         ..current_user()
     }
 }
@@ -1047,6 +1050,11 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
             &[current_user(), sparse_current_user()],
         )?,
         sampled(
+            "NameAvailability",
+            Interface,
+            &[NameAvailability { is_available: true }],
+        )?,
+        sampled(
             "ChosenStatus",
             StringUnion,
             &every_variant!(ChosenStatus: Online, Idle, DoNotDisturb, Invisible),
@@ -1070,6 +1078,44 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
             &[SessionCreated {
                 token: "mlw_token".into(),
                 user: current_user(),
+            }],
+        )?,
+        sampled(
+            "TwoFactorChallenge",
+            Interface,
+            &[TwoFactorChallenge {
+                two_factor_token: "mlw_challenge".into(),
+                expires_in_seconds: 300,
+            }],
+        )?,
+        sampled(
+            "TwoFactorStatus",
+            Interface,
+            &[
+                TwoFactorStatus {
+                    is_enabled: true,
+                    recovery_codes_remaining: 9,
+                    last_failed_code_at_unix_milliseconds: Some(1_700_000_000_000),
+                },
+                TwoFactorStatus {
+                    is_enabled: false,
+                    recovery_codes_remaining: 0,
+                    last_failed_code_at_unix_milliseconds: None,
+                },
+            ],
+        )?,
+        sampled(
+            "TwoFactorEnrolment",
+            Interface,
+            &[TwoFactorEnrolment {
+                secret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP".into(),
+            }],
+        )?,
+        sampled(
+            "TwoFactorRecoveryCodes",
+            Interface,
+            &[TwoFactorRecoveryCodes {
+                recovery_codes: vec!["abcd-efgh-ijkl-mnop".into()],
             }],
         )?,
         sampled(
@@ -1301,7 +1347,7 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
                 ValidationFailed, UsernameTaken, EmailTaken, RegistrationClosed,
                 InvalidCredentials, Unauthorized, AccountDisabled, RateLimited, ServerBusy,
                 NotFound, MissingPermissions, InvalidInvite, OwnerCannotLeave, Banned,
-                LimitReached, Conflict, Internal,
+                LimitReached, Conflict, Internal, InvalidTwoFactorCode,
             ),
         )?,
         sampled("GatewayEvent", TaggedUnion("t"), &gateway_events())?,

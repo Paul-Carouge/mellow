@@ -15,6 +15,7 @@ export interface ProfileImage {
 
 export interface CurrentUser {
   id: Snowflake;
+  /** Deprecated alias of `display_name`, the account's unique name (ADR-0048). */
   username: string;
   display_name: string;
   email: string;
@@ -25,6 +26,13 @@ export interface CurrentUser {
   /** Absent from older servers, which only knew "online". */
   status?: ChosenStatus;
   custom_status?: string | null;
+  /** `XXXX-XXXX`, permanent, sent only to its owner (ADR-0048); absent from older servers. */
+  friend_code?: string | null;
+}
+
+/** `GET /users/name-availability?name=`: never says who holds a taken name (ADR-0048). */
+export interface NameAvailability {
+  is_available: boolean;
 }
 
 /** The status a user picks for themselves (`PUT /users/@me/presence`). Others see "invisible" as offline. */
@@ -56,6 +64,8 @@ export interface PublicUser {
 
 /** Mirrors the server's rule (mellow-server domain/account_rules.rs); the server still decides. */
 export const MINIMUM_PASSWORD_LENGTH = 10;
+/** Mirrors the server's rule (mellow-server domain/account_names.rs, ADR-0048); the server still decides. */
+export const MAXIMUM_ACCOUNT_NAME_LENGTH = 32;
 
 /** Mirrors the server's rules (mellow-server domain/guild_rules.rs); the server still decides. */
 export const MAXIMUM_SERVER_NAME_LENGTH = 100;
@@ -162,6 +172,30 @@ export const MAXIMUM_CHANNEL_TOPIC_LENGTH = 1024;
 export interface SessionCreated {
   token: string;
   user: CurrentUser;
+}
+
+/** `POST /auth/login` answers this (202) instead of a session when the account has two-factor
+ * sign-in on (ADR-0049); the token goes with a code to `POST /auth/login/two-factor`. */
+export interface TwoFactorChallenge {
+  two_factor_token: string;
+  expires_in_seconds: number;
+}
+
+export interface TwoFactorStatus {
+  is_enabled: boolean;
+  recovery_codes_remaining: number;
+  /** When a wrong code was last typed for the account; `null` when none was or it is off. */
+  last_failed_code_at_unix_milliseconds: number | null;
+}
+
+/** Unpadded base32: SHA-1, 6 digits, 30-second steps (the `otpauth://` defaults). */
+export interface TwoFactorEnrolment {
+  secret: string;
+}
+
+/** Shown once; the instance keeps only their hashes. */
+export interface TwoFactorRecoveryCodes {
+  recovery_codes: string[];
 }
 
 /** A voice channel is joined, never opened: it has no messages (ADR-0030). */
@@ -957,7 +991,8 @@ export type ApiErrorCode =
   | "BANNED"
   | "LIMIT_REACHED"
   | "CONFLICT"
-  | "INTERNAL";
+  | "INTERNAL"
+  | "INVALID_TWO_FACTOR_CODE";
 
 export type GatewayEvent =
   | { t: "MESSAGE_CREATE"; data: Message }

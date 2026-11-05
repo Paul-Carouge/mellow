@@ -92,7 +92,6 @@
             <button type="button" class={rowClass} onclick={() => void add({ kind: "member", id: member.user.id })}>
               <Avatar user={member.user} sizeToken="--mw-component-channel-settings-target-avatar-size" />
               <span class="min-w-0 truncate">{displayName(member.user)}</span>
-              <span class="min-w-0 truncate type-body-sm text-(--mw-component-server-settings-secondary-text)">@{member.user.username}</span>
             </button>
           </li>
         {/each}

@@ -569,9 +569,9 @@ async fn account_settings_round_trip_through_the_rest_client() {
     assert!(is_refused_with(&taken, ApiErrorCode::UsernameTaken));
     let renamed = owner
         .update_current_user(&UpdateCurrentUserRequest {
-            username: Some("the.owner".into()),
+            username: None,
             display_name: Some("The Owner".into()),
-            current_password: Some(PASSWORD.into()),
+            current_password: None,
         })
         .await
         .unwrap();
@@ -591,7 +591,7 @@ async fn account_settings_round_trip_through_the_rest_client() {
 
     let mut other_device = RestClient::new(instance.address.clone()).unwrap();
     let login = |password: &str| LoginRequest {
-        login: "the.owner".into(),
+        login: "the owner".into(),
         password: password.into(),
         device_name: "other".into(),
     };

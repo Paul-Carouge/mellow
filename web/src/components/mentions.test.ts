@@ -47,6 +47,32 @@ describe("splitMentions", () => {
   });
 });
 
+describe("splitMentions with names holding spaces and dashes (ADR-0048)", () => {
+  const paulCarouge: PublicUser = { id: "7", username: "Paul Carouge", display_name: "Paul Carouge" };
+  const shortPaul: PublicUser = { id: "8", username: "Paul", display_name: "Paul" };
+  const jeanPaul: PublicUser = { id: "9", username: "Jean-Paul", display_name: "Jean-Paul" };
+  const named = mentionablePeople([paulCarouge, shortPaul, jeanPaul]);
+
+  it("mentions the longest name written after the @, as the server does", () => {
+    expect(splitMentions("@paul carouge, salut", named)).toEqual([
+      { kind: "mention", text: "@paul carouge", user: paulCarouge },
+      { kind: "text", text: ", salut" },
+    ]);
+    expect(splitMentions("@Paul salut", named)).toEqual([
+      { kind: "mention", text: "@Paul", user: shortPaul },
+      { kind: "text", text: " salut" },
+    ]);
+    expect(splitMentions("@Jean-Paul.", named)).toEqual([
+      { kind: "mention", text: "@Jean-Paul", user: jeanPaul },
+      { kind: "text", text: "." },
+    ]);
+    expect(splitMentions("@Paul-Henri", named)).toEqual([
+      { kind: "mention", text: "@Paul", user: shortPaul },
+      { kind: "text", text: "-Henri" },
+    ]);
+  });
+});
+
 describe("splitMentions on hostile text", () => {
   // The candidate pattern is bounded and must not be followed by a name character, so these runs
   // cost constant work by construction; a clock cannot check that deterministically.

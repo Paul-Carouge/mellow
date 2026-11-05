@@ -162,6 +162,12 @@ pub(crate) const FRIEND_REQUESTS_PER_USER_PER_DAY: RateLimit = RateLimit {
     maximum_events: 100,
     window: Duration::from_hours(24),
 };
+/// Name availability checks per user (ADR-0048): enough to check as someone types, too few to
+/// list who is on the instance.
+pub(crate) const NAME_AVAILABILITY_CHECKS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 30,
+    window: Duration::from_secs(60),
+};
 /// Accepting, refusing, removing, blocking and unblocking, per user.
 pub(crate) const RELATIONSHIP_WRITES_PER_USER: RateLimit = RateLimit {
     maximum_events: 30,

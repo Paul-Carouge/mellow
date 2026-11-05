@@ -254,7 +254,6 @@
                 <Avatar user={person} sizeToken="--mw-component-people-picker-avatar-size" />
                 <span class="flex min-w-0 flex-1 flex-col">
                   <span class="truncate type-member-name text-(--mw-component-people-picker-name-text)">{displayName(person)}</span>
-                  <span class="truncate type-body-sm text-(--mw-component-people-picker-username-text)">{person.username}</span>
                 </span>
                 <!-- Native, so Space, the screen reader's "checked" and forced colours come free. -->
                 <input
