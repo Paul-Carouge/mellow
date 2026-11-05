@@ -21,6 +21,7 @@ use crate::domain::guilds::GuildError;
 use crate::domain::link_previews::fetcher::{Fetched, LinkFetcher};
 use crate::domain::link_previews::links::links_to_preview;
 use crate::domain::link_previews::page::PageDetails;
+use crate::domain::link_previews::providers::provider_preview;
 use crate::storage::link_previews::{self as storage, NewLinkPreview, StoredLinkPreview};
 
 /// Messages waiting for their previews; a full queue drops the newest, which simply get none.
@@ -469,17 +470,13 @@ impl PreviewWorker {
         {
             return Ok(preview);
         }
-        let (details, picture) = match self.fetcher.fetch_page_or_picture(link.clone()).await {
-            Ok(Fetched::Page(details)) => {
-                let picture = match &details.image_url {
-                    Some(image_url) => self.fetcher.fetch_picture(image_url.clone()).await.ok(),
-                    None => None,
-                };
-                (details, picture)
-            }
-            Ok(Fetched::Picture(bytes)) => (PageDetails::default(), Some(bytes)),
-            Err(_) => (PageDetails::default(), None),
-        };
+        let (details, picture, embed) =
+            if let Some(provider) = provider_preview(&self.fetcher, link).await {
+                (provider.details, provider.picture, Some(provider.embed))
+            } else {
+                let (details, picture) = self.page_preview(link).await;
+                (details, picture, None)
+            };
         let picture = match picture {
             Some(bytes) => self.attachments.store_link_preview_picture(bytes).await?,
             None => LinkPreviewPicture::NotShown,
@@ -506,7 +503,7 @@ impl PreviewWorker {
             site_name: details.site_name,
             theme_color: details.theme_color,
             image,
-            embed: None,
+            embed,
             is_empty,
         };
         storage::insert_preview(
@@ -520,5 +517,20 @@ impl PreviewWorker {
         )
         .await?;
         Ok(preview)
+    }
+
+    /// What the link's page says and its picture's bytes, or the picture the link points at.
+    async fn page_preview(&self, link: &Url) -> (PageDetails, Option<Vec<u8>>) {
+        match self.fetcher.fetch_page_or_picture(link.clone()).await {
+            Ok(Fetched::Page(details)) => {
+                let picture = match &details.image_url {
+                    Some(image_url) => self.fetcher.fetch_picture(image_url.clone()).await.ok(),
+                    None => None,
+                };
+                (details, picture)
+            }
+            Ok(Fetched::Picture(bytes)) => (PageDetails::default(), Some(bytes)),
+            Err(_) => (PageDetails::default(), None),
+        }
     }
 }

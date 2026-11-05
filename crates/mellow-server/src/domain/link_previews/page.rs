@@ -6,7 +6,7 @@ use url::Url;
 
 use crate::domain::message_rules::is_forbidden_in_messages;
 
-const MAXIMUM_TITLE_CHARACTERS: usize = 256;
+pub(crate) const MAXIMUM_TITLE_CHARACTERS: usize = 256;
 const MAXIMUM_DESCRIPTION_CHARACTERS: usize = 350;
 const MAXIMUM_SITE_NAME_CHARACTERS: usize = 64;
 /// Attribute values longer than this are not read: no real `content` needs more.
@@ -261,7 +261,7 @@ fn decode_entities(text: &str) -> String {
 
 /// One line of text without control characters, cut to `maximum` characters with an ellipsis;
 /// `None` when nothing is left.
-fn plain_text(text: &str, maximum: usize) -> Option<String> {
+pub(crate) fn plain_text(text: &str, maximum: usize) -> Option<String> {
     let words: Vec<&str> = text
         .split(|character: char| {
             // Direction overrides would let a page make its title read as something else.

@@ -535,3 +535,88 @@ async fn an_edit_carries_the_card_a_job_recorded_while_the_edit_waited_for_the_w
     assert_eq!(updates.len(), 1);
     assert_eq!(updates[0]["link_previews"][0]["title"], "A card");
 }
+
+/// A stand-in for YouTube's oEmbed endpoint and thumbnail host (`LinkFetcher`'s stand-in site);
+/// it counts oEmbed's answers.
+async fn stand_in_youtube() -> (String, Arc<AtomicUsize>) {
+    use axum::response::IntoResponse as _;
+
+    let oembed_answers = Arc::new(AtomicUsize::new(0));
+    let counter = oembed_answers.clone();
+    let site = axum::Router::new()
+        .route(
+            "/www.youtube.com/oembed",
+            axum::routing::get(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                async {
+                    (
+                        [(header::CONTENT_TYPE, "application/json")],
+                        r#"{"title":"Les Cités d'or","author_name":"Noëlle Dupuis - Topic"}"#,
+                    )
+                }
+            }),
+        )
+        .route(
+            "/i.ytimg.com/vi/{id}/maxresdefault.jpg",
+            axum::routing::get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "image/png")],
+                    crate::domain::image_processing::tests::png(160, 90),
+                )
+                    .into_response()
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, site).await });
+    (format!("http://{address}"), oembed_answers)
+}
+
+/// YouTube links get their card and embed from oEmbed, never from the page behind the consent
+/// wall, and two sharers' spellings of one track share one preview (ADR-0044).
+#[tokio::test]
+async fn youtube_links_get_their_embed_from_oembed_once_for_every_spelling() {
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let (owner, general) = owner_and_general_channel(&state).await;
+    let (site, oembed_answers) = stand_in_youtube().await;
+    let fetcher = LinkFetcher::stand_in_for_every_host_for_tests(&site);
+    state.messages.enable_link_previews();
+    let messages_path = format!("/api/v1/channels/{general}/messages");
+
+    for content in [
+        "https://music.youtube.com/watch?v=lYBUbBu4W08&si=first-sharer",
+        "https://music.youtube.com/watch?si=second-sharer&v=lYBUbBu4W08",
+    ] {
+        send(&state, post_message(&messages_path, &owner, content)).await;
+        fetch_queued_link_previews(&state.messages, &state.attachments, &fetcher).await;
+    }
+    let messages = history(&state, &messages_path, &owner).await;
+    database.close().await;
+
+    assert_eq!(oembed_answers.load(Ordering::SeqCst), 1, "one cached row");
+    let previews: Vec<_> = messages
+        .iter()
+        .map(|message| message.link_previews[0].clone())
+        .collect();
+    assert_eq!(previews[0], previews[1]);
+    let preview = &previews[0];
+    assert_eq!(preview.url, "https://music.youtube.com/watch?v=lYBUbBu4W08");
+    assert_eq!(preview.title.as_deref(), Some("Les Cités d'or"));
+    assert_eq!(preview.site_name.as_deref(), Some("YouTube Music"));
+    assert_eq!(
+        preview.image.map(|image| (image.width, image.height)),
+        Some((160, 90))
+    );
+    assert_eq!(
+        preview.embed,
+        Some(mellow_protocol::LinkEmbed::YouTubeMusicTrack(
+            mellow_protocol::YouTubeMusicTrackEmbed {
+                video_id: "lYBUbBu4W08".into(),
+                artist: "Noëlle Dupuis".into(),
+                album: None,
+                duration_seconds: None,
+            }
+        ))
+    );
+}
