@@ -187,6 +187,7 @@ One PR each, in this order. **WP0 lands first**: it is the only package that edi
 - Files: `markdown.ts` + tests, `MessageMarkdown.svelte`.
 - Content: C1.
 - Acceptance: `1. a` / `2. b` renders an ordered list starting at its number, `-# petit` renders subtext, an indented `- b` under `- a` nests once, nothing renders as HTML, all existing markdown tests pass.
+- Done (2026-11-05): `web-markdown-lists-and-subtext.md`.
 
 ### WP6. Attachments and polls on narrow screens (S)
 - Files: `MessageAttachments.svelte`, `PollCard.svelte`.

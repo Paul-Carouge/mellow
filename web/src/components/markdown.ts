@@ -29,11 +29,27 @@ export type InlineNode =
   /** `isMasked` for `[text](url)`, whose destination is not the visible text. */
   | { kind: "link"; url: string; isMasked: boolean; children: InlineNode[] };
 
+/** A `-`/`*` or `1.`/`1)` list; items hold one level of sublists, as Discord nests by indentation. */
+export interface MarkdownList {
+  kind: "list";
+  /** The number written on the first item of a numbered list; null for bullets. */
+  start: number | null;
+  items: MarkdownListItem[];
+}
+
+export interface MarkdownListItem {
+  children: InlineNode[];
+  /** Indented items under this one; a switch between bullets and numbers starts another sublist. */
+  sublists: MarkdownList[];
+}
+
 export type BlockNode =
   | { kind: "paragraph"; children: InlineNode[] }
   | { kind: "heading"; level: 1 | 2 | 3; children: InlineNode[] }
+  /** `-# text`: small, muted text under the rest. */
+  | { kind: "subtext"; children: InlineNode[] }
   | { kind: "quote"; children: BlockNode[] }
-  | { kind: "list"; items: InlineNode[][] }
+  | MarkdownList
   | { kind: "codeBlock"; language: string | null; text: string };
 
 /** Deeper formatting is shown as plain text; Discord stops nesting well before people do. */
@@ -42,7 +58,12 @@ const FENCE = "```";
 const QUOTE_LINE_PREFIX = "> ";
 const QUOTE_REST_PREFIX = ">>> ";
 const HEADING_LINE = /^(#{1,3}) (.*\S.*)$/u;
-const LIST_ITEM_LINE = /^[-*] (.*\S.*)$/u;
+const SUBTEXT_LINE = /^-# (.*\S.*)$/u;
+/**
+ * A bullet or numbered item: two spaces or a tab before the marker nest it under the item above,
+ * one space keeps it out of the list. Numbers stop at nine digits, as in CommonMark.
+ */
+const LIST_ITEM_LINE = /^(?:(\t| {2})[ \t]*)?(?:[-*]|(\d{1,9})[.)]) (.*\S.*)$/u;
 const FENCE_LANGUAGE = /([a-z0-9_+\-.#]+)\n/iuy;
 /** Discord's custom emoji syntax, `<:name:id>` or `<a:name:id>` (ADR-0028), read at one position. */
 const CUSTOM_EMOJI_MARKUP = /<a?:([A-Za-z0-9_]{2,32}):(\d{1,20})>/uy;
@@ -119,11 +140,12 @@ export function markdownMentionsUser(blocks: readonly BlockNode[], userId: Snowf
     switch (block.kind) {
       case "paragraph":
       case "heading":
+      case "subtext":
         return inlinesMention(block.children);
       case "quote":
         return markdownMentionsUser(block.children, userId);
       case "list":
-        return block.items.some(inlinesMention);
+        return block.items.some((item) => inlinesMention(item.children) || markdownMentionsUser(item.sublists, userId));
       case "codeBlock":
         return false;
     }
@@ -229,22 +251,20 @@ function parseBlocks(source: string, context: ParseContext, isInsideQuote: boole
         continue;
       }
 
-      if (LIST_ITEM_LINE.test(line)) {
+      const subtext = SUBTEXT_LINE.exec(line);
+      if (subtext?.[1] !== undefined) {
         flushParagraph(position);
-        const items: InlineNode[][] = [];
-        let next = position;
-        while (next < source.length) {
-          parserStepCount += 1;
-          const itemLineEnd = findEndOfLine(source, next);
-          const item = LIST_ITEM_LINE.exec(source.slice(next, itemLineEnd));
-          if (item?.[1] === undefined) {
-            break;
-          }
-          items.push(parseInline(item[1], context, 0, true));
-          next = itemLineEnd + 1;
-        }
-        blocks.push({ kind: "list", items });
-        position = paragraphStart = next;
+        blocks.push({ kind: "subtext", children: parseInline(subtext[1], context, 0, true) });
+        position = paragraphStart = lineEnd + 1;
+        continue;
+      }
+
+      const firstItem = readListItemLine(line);
+      if (firstItem && !firstItem.isNested) {
+        flushParagraph(position);
+        const list = parseList(source, position, firstItem.start, context);
+        blocks.push(list.block);
+        position = paragraphStart = list.end;
         continue;
       }
     }
@@ -272,6 +292,52 @@ function parseBlocks(source: string, context: ParseContext, isInsideQuote: boole
   }
   flushParagraph(source.length);
   return blocks;
+}
+
+interface ListItemLine {
+  isNested: boolean;
+  start: number | null;
+  text: string;
+}
+
+function readListItemLine(line: string): ListItemLine | null {
+  const match = LIST_ITEM_LINE.exec(line);
+  if (match?.[3] === undefined) {
+    return null;
+  }
+  return { isNested: match[1] !== undefined, start: match[2] === undefined ? null : Number(match[2]), text: match[3] };
+}
+
+/**
+ * The list whose first, unindented item starts at `start`, up to the first line that is not an
+ * item of it; `end` is where the next block starts.
+ */
+function parseList(source: string, from: number, start: number | null, context: ParseContext): { block: MarkdownList; end: number } {
+  const block: MarkdownList = { kind: "list", start, items: [] };
+  const isSameKind = (list: MarkdownList, line: ListItemLine) => (list.start === null) === (line.start === null);
+  let next = from;
+  while (next < source.length) {
+    parserStepCount += 1;
+    const lineEnd = findEndOfLine(source, next);
+    const line = readListItemLine(source.slice(next, lineEnd));
+    if (!line || (!line.isNested && !isSameKind(block, line))) {
+      break;
+    }
+    const children = parseInline(line.text, context, 0, true);
+    const parent = block.items.at(-1);
+    if (line.isNested && parent) {
+      const sublist = parent.sublists.at(-1);
+      if (sublist && isSameKind(sublist, line)) {
+        sublist.items.push({ children, sublists: [] });
+      } else {
+        parent.sublists.push({ kind: "list", start: line.start, items: [{ children, sublists: [] }] });
+      }
+    } else {
+      block.items.push({ children, sublists: [] });
+    }
+    next = lineEnd + 1;
+  }
+  return { block, end: next };
 }
 
 /** A fenced code block starting at `start`; "unclosed" when no "```" follows, so none can close later. */

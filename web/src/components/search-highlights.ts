@@ -2,7 +2,7 @@
 // in UTF-16 units and never markup, so the client cuts the parsed message's text with them.
 
 import type { HighlightRange } from "../lib/protocol";
-import type { BlockNode, InlineNode } from "./markdown";
+import type { BlockNode, InlineNode, MarkdownList } from "./markdown";
 
 export interface TextSegment {
   text: string;
@@ -136,17 +136,22 @@ export function withSearchHighlights(blocks: readonly BlockNode[], content: stri
       switch (block.kind) {
         case "paragraph":
         case "heading":
+        case "subtext":
           return { ...block, children: markInlines(block.children) };
         case "quote":
           return { ...block, children: markBlocks(block.children) };
         case "list":
-          return { ...block, items: block.items.map(markInlines) };
+          return markList(block);
         case "codeBlock":
           // shortcut: matches inside code blocks are not marked; split the block's text if people miss it.
           locate(block.text);
           return block;
       }
     });
+  }
+
+  function markList(list: MarkdownList): MarkdownList {
+    return { ...list, items: list.items.map((item) => ({ children: markInlines(item.children), sublists: item.sublists.map(markList) })) };
   }
 
   return markBlocks(blocks);

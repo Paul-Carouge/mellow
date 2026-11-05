@@ -90,6 +90,17 @@ describe("withSearchHighlights", () => {
     expect(matches).toHaveLength(2);
   });
 
+  it("marks words in numbered and nested list items and in subtext", () => {
+    const content = "1. pizza\n  - pizza\n-# pizza";
+    const ranges = [
+      { start: 3, end: 8 },
+      { start: 13, end: 18 },
+      { start: 22, end: 27 },
+    ];
+    const matches = JSON.stringify(marked(content, ranges)).match(/"kind":"match","text":"pizza"/g) ?? [];
+    expect(matches).toHaveLength(3);
+  });
+
   it("leaves a mention chip whole and unlit when its name matched (documented shortcut)", () => {
     const ada = { id: "1", username: "ada", display_name: "Ada" };
     const content = "ask @ada about pizza";
