@@ -154,7 +154,7 @@
     row.kind === "sent"
       ? (row.message.poll ?? null)
       : row.pending.poll
-        ? pendingPollPreview(row.pending.poll, Date.now())
+        ? pendingPollPreview(row.pending.poll, pollClockNow())
         : null,
   );
   // Only a forward's place is looked up, among the channels the reader knows.

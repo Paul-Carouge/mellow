@@ -62,6 +62,10 @@
     }
     const radios = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("[role=radio]")];
     const current = radios.indexOf(document.activeElement as HTMLButtonElement);
+    // The voters buttons sit in the group too: arrows there keep their usual meaning.
+    if (current === -1) {
+      return;
+    }
     event.preventDefault();
     radios[(current + step + radios.length) % radios.length]?.focus();
   }

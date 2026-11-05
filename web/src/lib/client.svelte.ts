@@ -634,7 +634,16 @@ export class MellowClient {
                   reactions: message.reactions,
                   // Votes follow their own events, as reactions do: an update may have read the
                   // counts before a vote, so only the poll's end is taken from it.
-                  poll: updated.poll && message.poll ? { ...updated.poll, answers: message.poll.answers } : updated.poll,
+                  poll:
+                    updated.poll && message.poll
+                      ? {
+                          ...updated.poll,
+                          answers: message.poll.answers,
+                          // An end never reverts: a pin's update may have read the poll before it.
+                          ended_at_unix_milliseconds:
+                            updated.poll.ended_at_unix_milliseconds ?? message.poll.ended_at_unix_milliseconds,
+                        }
+                      : updated.poll,
                   link_previews:
                     (message.edited_at_unix_milliseconds ?? 0) < (updated.edited_at_unix_milliseconds ?? 0)
                       ? updated.link_previews
@@ -801,9 +810,11 @@ export class MellowClient {
         const { channel_id, message_id, answer_id, user_id } = event.data;
         const change = event.t === "MESSAGE_POLL_VOTE_ADD" ? 1 : -1;
         const isMine = user_id === this.user?.id;
-        this.updateCachedMessage(channel_id, message_id, (message) =>
-          message.poll ? { ...message, poll: withPollVote(message.poll, answer_id, change, isMine) } : message,
-        );
+        this.updateCachedMessage(channel_id, message_id, (message) => {
+          const poll = message.poll ? withPollVote(message.poll, answer_id, change, isMine) : message.poll;
+          // An echo of the reader's own vote changes nothing: the row keeps its identity.
+          return poll === message.poll ? message : { ...message, poll };
+        });
         return;
       }
       case "MESSAGE_REACTION_ADD": {
@@ -1815,10 +1826,13 @@ export class MellowClient {
         sent += 1;
       }
     } catch (error) {
-      // Only what the instance did not take is undone: a move is one request, so all of it; a
-      // "Remove my vote" keeps the removals that went through.
-      for (const { answerId, change } of changes.slice(sent).reverse()) {
-        applyLocally(answerId, change === 1 ? -1 : 1);
+      // Only a refusal is undone, and only what the instance did not take: a move is one request,
+      // so all of it; a "Remove my vote" keeps the removals that went through. A lost answer may
+      // hide a vote the instance kept: its echo or the next `Ready` settles it.
+      if (error instanceof ApiError) {
+        for (const { answerId, change } of changes.slice(sent).reverse()) {
+          applyLocally(answerId, change === 1 ? -1 : 1);
+        }
       }
       this.reportError(error, "vote in poll");
       throw error;
