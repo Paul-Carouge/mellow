@@ -14,6 +14,7 @@
   import type { MessageEditor } from "./message-editor.svelte";
   import type { MenuOrigin } from "./menu-placement";
   import MessageItem from "./MessageItem.svelte";
+  import MessageMenuQuickReactions from "./MessageMenuQuickReactions.svelte";
   import { memoizedMentionablePeople } from "./mentions";
   import {
     type BlockedRun,
@@ -730,7 +731,21 @@
   bind:this={messageMenu}
   label={strings.messages.actions}
   entries={messageMenuEntries}
+  isSheetOnTouchPhones
+  sheetHeader={reactionAndPinActions.canAddReactions ? quickReactions : undefined}
   fallbackFocus={() => list?.querySelector<HTMLElement>('[tabindex="0"]')?.focus()}
   onclose={() => (menuTarget = null)}
 />
+{#snippet quickReactions()}
+  {#if menuTarget}
+    {@const target = menuTarget.message}
+    <MessageMenuQuickReactions
+      reactions={target.reactions ?? []}
+      onreact={(emoji) => {
+        messageMenu?.close();
+        reactionAndPinActions.toggleReaction(target, emoji);
+      }}
+    />
+  {/if}
+{/snippet}
 <PersonContextMenu bind:this={personMenu} {client} {onopenedconversation} />
