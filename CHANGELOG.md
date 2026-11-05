@@ -4,6 +4,30 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-11-05
+Rich link embeds, smaller media, checklists and progress bars, and a full design pass of the web client. Database migrations 0039 (link preview embeds) and 0040 (checklists and progress bars); the protocol gains `LinkPreview.embed`, checklists, progress bars, their events and the `SEND_CHECKLISTS` permission, which older clients ignore. Building from source now requires cmake (libopus, ADR-0045).
+
+### Added
+- YouTube links show a clean in-message player: title and channel from YouTube's oEmbed (no more consent wall), the start time shown, Shorts in a portrait player, one player at a time. YouTube Music links get a track card with cover, title, artist and "Écouter" (ADR-0044).
+- GitHub links show a banner: a repository with its owner's avatar, description, topics, language, stars, forks and licence; an issue or pull request with its state, author and dates, in Mellow's colours. When GitHub rate-limits the instance, links keep the usual card until the limit resets.
+- Wikipedia links show the article's opening extract and thumbnail.
+- Checklists and progress bars in messages ("/checklist" and "/progression"): members tick items and see who ticked each one; the author or a moderator edits items or updates the bar. New permission "Create checklists and progress bars", given to @everyone (ADR-0047). Polls, checklists and progress bars work in direct and group conversations.
+- Messages show numbered lists, one level of nested lists and subtext (`-# small text`), and are divided by day.
+- A connection bar says when you are offline, reconnecting and back online, with "Retry now" after 30 s; the sign-in screen says when your session ended and shows Mellow's own field errors.
+- On touch phones the message menu opens as a bottom sheet with 48 px rows.
+
+### Changed
+- Videos are compressed in your browser before upload (H.264 MP4, up to 1080p, about four times smaller), with "Send the original"; HEVC clips become playable everywhere (ADR-0046; the page now allows same-origin workers).
+- Audio attachments (WAV, FLAC and high-bitrate MP3, AAC, M4A) are stored as Ogg Opus, often 3 to 15 times smaller (ADR-0045). Safari plays them from 18.4; older versions offer a download.
+- Design pass of the web client: code in Source Code Pro; neutral switches, add-server key and choice rows instead of Discord's green; one apricot action per page; neutral disabled buttons; the composer's focus ring only from the keyboard; a phone chat header that keeps the channel name whole with a "More options" menu; a shorter hover bar (Delete in More, or with Shift); readable file names and polls on narrow screens; a live header preview when renaming a server.
+
+### Fixed
+- Different links to the same YouTube video share one preview, and a message never shows the same preview twice.
+
+### Security
+- Untrusted audio is decoded under strict budgets, and only the codec its container usually holds is taken (a crafted file could otherwise make the decoder allocate gigabytes).
+- Provider players are framed with a closed list of origins, `sandbox` and per-player permissions; nothing is loaded from a provider before you press play.
+
 ## [0.46.0] - 2026-11-05
 A robustness, performance and compression pass after an audit of the whole project, and YouTube links that play in the message. No database migration; the protocol gains `maximum_attachment_bytes` in `READY` and the send's `nonce` in the author's own `MESSAGE_CREATE`, which older clients ignore.
 
