@@ -7,6 +7,7 @@ import {
   avatarInitial,
   avatarTintToken,
   calendarDayLabel,
+  dayDividerLabel,
   fileNameStartAndEnd,
   fullTimestampLabel,
   humanFileSize,
@@ -96,6 +97,15 @@ describe("cached date formatters", () => {
       new Date(moment).toLocaleString("en-US", { dateStyle: "short", timeStyle: "short" }),
     );
     expect(messageTimestampLabel(moment, now, "en-GB")).toBe("19/10/2026, 08:30");
+  });
+});
+
+describe("dayDividerLabel", () => {
+  it("writes the day with its month in words, in the reader's order", () => {
+    const fifthOfNovember = new Date(2026, 10, 5).getTime();
+    expect(dayDividerLabel(fifthOfNovember, "fr-FR")).toBe("5 novembre 2026");
+    expect(dayDividerLabel(fifthOfNovember, "en-US")).toBe("November 5, 2026");
+    expect(dayDividerLabel(fifthOfNovember, "en-GB")).toBe("5 November 2026");
   });
 });
 

@@ -606,6 +606,8 @@ export const en = {
     newPill: "New",
     viewingOlder: "You're viewing older messages",
     jumpToPresent: "Jump to present",
+    /** A day divider that is also the unread divider, read out as one separator. */
+    dayAndNewSince: (day: string, time: string) => `${day}, new messages since ${time}`,
     originalUnavailable: "Original message was deleted or is not loaded",
     /** A role mention whose role this client does not know, shown after "@". */
     deletedRoleName: "deleted-role",
