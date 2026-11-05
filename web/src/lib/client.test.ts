@@ -1552,12 +1552,133 @@ describe("reactions and pins", () => {
       };
       await client.sendPoll(newPoll);
       expect(calls).toEqual([
-        [GENERAL, "", expect.any(String), null, [], newPoll],
+        [GENERAL, "", expect.any(String), null, [], newPoll, null, null],
       ]);
       expect(client.pendingMessages).toEqual([]);
       expect(
         client.messages(GENERAL).map((candidate) => candidate.id),
       ).toContain("300");
+    });
+  });
+
+  describe("checklists and progress bars", () => {
+    const checklist = (revision: number, isFirstTicked = false) => ({
+      title: "Release",
+      items: [
+        {
+          id: 1,
+          text: "Tag",
+          ...(isFirstTicked ? { checked: { user_id: OTHER, at_unix_milliseconds: 5 } } : {}),
+        },
+        { id: 2, text: "Deploy" },
+      ],
+      revision,
+    });
+    const checklistMessage = (revision = 0, isFirstTicked = false): Message => ({
+      ...message("200"),
+      content: "",
+      checklist: checklist(revision, isFirstTicked),
+    });
+    const ticksOf = (client: MellowClient) =>
+      client.messages(GENERAL)[0]?.checklist?.items.map((item) => item.checked?.user_id ?? null);
+    const checklistUpdate = (revision: number, isFirstTicked = false) =>
+      ({
+        t: "MESSAGE_CHECKLIST_UPDATE",
+        data: { channel_id: GENERAL, message_id: "200", checklist: checklist(revision, isFirstTicked) },
+      }) as const;
+
+    it("tick at once as the user, take the answer, and keep the newest revision", async () => {
+      const client = await clientWithHistory({
+        listMessages: () => Promise.resolve([checklistMessage()]),
+        setChecklistItemTicked: () => Promise.resolve(checklist(1, true)),
+      });
+      const ticking = client.toggleChecklistItem(GENERAL, "200", 2);
+      expect(ticksOf(client)).toEqual([null, ME]);
+      await ticking;
+      expect(ticksOf(client)).toEqual([OTHER, null]);
+      // A pin's update read before the tick does not undo it.
+      client.applyEvent({ t: "MESSAGE_UPDATE", data: { ...checklistMessage(0), pinned: true } }, 0);
+      expect(ticksOf(client)).toEqual([OTHER, null]);
+      client.applyEvent(checklistUpdate(2), 0);
+      expect(ticksOf(client)).toEqual([null, null]);
+    });
+
+    it("undo a refused tick, but not over a newer change", async () => {
+      let refuse: () => void = () => undefined;
+      const client = await clientWithHistory({
+        listMessages: () => Promise.resolve([checklistMessage()]),
+        setChecklistItemTicked: () =>
+          new Promise((_resolve, reject) => {
+            refuse = () => reject(new ApiError(403, "MISSING_PERMISSIONS"));
+          }),
+      });
+      const refused = client.toggleChecklistItem(GENERAL, "200", 1);
+      refuse();
+      await expect(refused).rejects.toBeInstanceOf(ApiError);
+      expect(ticksOf(client)).toEqual([null, null]);
+
+      const overtaken = client.toggleChecklistItem(GENERAL, "200", 2);
+      client.applyEvent(checklistUpdate(3, true), 0);
+      refuse();
+      await expect(overtaken).rejects.toBeInstanceOf(ApiError);
+      expect(ticksOf(client)).toEqual([OTHER, null]);
+    });
+
+    it("settle a tick whose answer was lost from the instance's copy", async () => {
+      let isStored = false;
+      const client = await clientWithHistory({
+        listMessages: () => Promise.resolve([isStored ? checklistMessage(1, true) : checklistMessage()]),
+        setChecklistItemTicked: () => Promise.reject(new ApiError(0, "NETWORK")),
+      });
+      isStored = true;
+      await expect(client.toggleChecklistItem(GENERAL, "200", 1)).rejects.toBeInstanceOf(ApiError);
+      expect(ticksOf(client)).toEqual([OTHER, null]);
+    });
+
+    it("drop a lost tick the instance never got", async () => {
+      const client = await clientWithHistory({
+        listMessages: () => Promise.resolve([checklistMessage()]),
+        setChecklistItemTicked: () => Promise.reject(new ApiError(0, "NETWORK")),
+      });
+      await expect(client.toggleChecklistItem(GENERAL, "200", 1)).rejects.toBeInstanceOf(ApiError);
+      expect(ticksOf(client)).toEqual([null, null]);
+    });
+
+    it("send a checklist and a progress bar through the outbox, alone", async () => {
+      const calls: unknown[] = [];
+      const client = await clientWithHistory({
+        sendMessage: (...parameters: unknown[]) => {
+          calls.push(parameters);
+          return Promise.resolve({ ...checklistMessage(), id: String(300 + calls.length) });
+        },
+      });
+      client.selectChannel(GENERAL);
+      const newChecklist = { title: "Release", items: ["Tag"] };
+      const newBar = { label: "Sync", value: 3, maximum: 5 };
+      await client.sendChecklist(newChecklist);
+      await client.sendProgressBar(newBar);
+      expect(calls).toEqual([
+        [GENERAL, "", expect.any(String), null, [], null, newChecklist, null],
+        [GENERAL, "", expect.any(String), null, [], null, null, newBar],
+      ]);
+      expect(client.pendingMessages).toEqual([]);
+    });
+
+    it("keep the newest progress bar over a late answer", async () => {
+      const bar = (value: number, revision: number) => ({ label: "Sync", value, maximum: 5, revision });
+      const client = await clientWithHistory({
+        listMessages: () => Promise.resolve([{ ...message("200"), content: "", progress_bar: bar(1, 0) }]),
+        updateProgressBar: () => Promise.resolve(bar(3, 1)),
+      });
+      client.applyEvent(
+        {
+          t: "MESSAGE_PROGRESS_BAR_UPDATE",
+          data: { channel_id: GENERAL, message_id: "200", progress_bar: bar(4, 2) },
+        },
+        0,
+      );
+      await client.updateProgressBar(GENERAL, "200", { label: "Sync", value: 3, maximum: 5 });
+      expect(client.messages(GENERAL)[0]?.progress_bar?.value).toBe(4);
     });
   });
 
