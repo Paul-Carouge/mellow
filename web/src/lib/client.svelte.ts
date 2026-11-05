@@ -820,6 +820,10 @@ export class MellowClient {
       case "RELATIONSHIP_REMOVE":
         this.relationships.forget(event.data.user_id);
         return;
+      case "MESSAGE_CHECKLIST_UPDATE":
+      case "MESSAGE_PROGRESS_BAR_UPDATE":
+        // The web client shows checklists and progress bars in a later change.
+        return;
       case "MESSAGE_POLL_VOTE_ADD":
       case "MESSAGE_POLL_VOTE_REMOVE": {
         const { channel_id, message_id, answer_id, user_id } = event.data;

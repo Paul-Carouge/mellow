@@ -304,6 +304,8 @@ mod tests {
                 attachment_ids: Vec::new(),
                 forwarded_from: None,
                 poll: None,
+                checklist: None,
+                progress_bar: None,
             };
             self.state
                 .messages

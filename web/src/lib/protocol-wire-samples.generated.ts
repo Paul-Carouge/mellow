@@ -285,7 +285,7 @@ export const guildSamples = [
     },
     "id": "1",
     "my_join_sound_id": "600",
-    "my_permissions": "8388607",
+    "my_permissions": "16777215",
     "my_role_ids": [
       "20"
     ],
@@ -320,7 +320,7 @@ export const guildSamples = [
     "channels": [],
     "emojis": [],
     "id": "1",
-    "my_permissions": "8388607",
+    "my_permissions": "16777215",
     "my_role_ids": [],
     "name": "Mellow",
     "owner_id": "10",
@@ -400,6 +400,24 @@ export const messageSamples = [
       "username": "ada"
     },
     "channel_id": "30",
+    "checklist": {
+      "items": [
+        {
+          "checked": {
+            "at_unix_milliseconds": 1700000060000,
+            "user_id": "10"
+          },
+          "id": 1,
+          "text": "Tag"
+        },
+        {
+          "id": 3,
+          "text": "Deploy"
+        }
+      ],
+      "revision": 4,
+      "title": "Release"
+    },
     "content": "Hello @ada and <@&20>",
     "edited_at_unix_milliseconds": 1700000000500,
     "forwarded_from": {
@@ -461,6 +479,12 @@ export const messageSamples = [
       "ended_at_unix_milliseconds": 1700000050000,
       "expires_at_unix_milliseconds": 1700000100000,
       "question": "Lunch?"
+    },
+    "progress_bar": {
+      "label": "Migration",
+      "maximum": 5,
+      "revision": 2,
+      "value": 3
     },
     "reactions": [
       {
@@ -751,6 +775,24 @@ export const messageSearchResultsSamples = [
             "username": "ada"
           },
           "channel_id": "30",
+          "checklist": {
+            "items": [
+              {
+                "checked": {
+                  "at_unix_milliseconds": 1700000060000,
+                  "user_id": "10"
+                },
+                "id": 1,
+                "text": "Tag"
+              },
+              {
+                "id": 3,
+                "text": "Deploy"
+              }
+            ],
+            "revision": 4,
+            "title": "Release"
+          },
           "content": "Hello @ada and <@&20>",
           "edited_at_unix_milliseconds": 1700000000500,
           "forwarded_from": {
@@ -812,6 +854,12 @@ export const messageSearchResultsSamples = [
             "ended_at_unix_milliseconds": 1700000050000,
             "expires_at_unix_milliseconds": 1700000100000,
             "question": "Lunch?"
+          },
+          "progress_bar": {
+            "label": "Migration",
+            "maximum": 5,
+            "revision": 2,
+            "value": 3
           },
           "reactions": [
             {
@@ -1168,7 +1216,7 @@ export const readySamples = [
         },
         "id": "1",
         "my_join_sound_id": "600",
-        "my_permissions": "8388607",
+        "my_permissions": "16777215",
         "my_role_ids": [
           "20"
         ],
@@ -1203,7 +1251,7 @@ export const readySamples = [
         "channels": [],
         "emojis": [],
         "id": "1",
-        "my_permissions": "8388607",
+        "my_permissions": "16777215",
         "my_role_ids": [],
         "name": "Mellow",
         "owner_id": "10",
@@ -1464,6 +1512,24 @@ export const gatewayEventSamples = [
         "username": "ada"
       },
       "channel_id": "30",
+      "checklist": {
+        "items": [
+          {
+            "checked": {
+              "at_unix_milliseconds": 1700000060000,
+              "user_id": "10"
+            },
+            "id": 1,
+            "text": "Tag"
+          },
+          {
+            "id": 3,
+            "text": "Deploy"
+          }
+        ],
+        "revision": 4,
+        "title": "Release"
+      },
       "content": "Hello @ada and <@&20>",
       "edited_at_unix_milliseconds": 1700000000500,
       "forwarded_from": {
@@ -1525,6 +1591,12 @@ export const gatewayEventSamples = [
         "ended_at_unix_milliseconds": 1700000050000,
         "expires_at_unix_milliseconds": 1700000100000,
         "question": "Lunch?"
+      },
+      "progress_bar": {
+        "label": "Migration",
+        "maximum": 5,
+        "revision": 2,
+        "value": 3
       },
       "reactions": [
         {
@@ -1586,6 +1658,24 @@ export const gatewayEventSamples = [
         "username": "ada"
       },
       "channel_id": "30",
+      "checklist": {
+        "items": [
+          {
+            "checked": {
+              "at_unix_milliseconds": 1700000060000,
+              "user_id": "10"
+            },
+            "id": 1,
+            "text": "Tag"
+          },
+          {
+            "id": 3,
+            "text": "Deploy"
+          }
+        ],
+        "revision": 4,
+        "title": "Release"
+      },
       "content": "Hello @ada and <@&20>",
       "edited_at_unix_milliseconds": 1700000000500,
       "forwarded_from": {
@@ -1648,6 +1738,12 @@ export const gatewayEventSamples = [
         "expires_at_unix_milliseconds": 1700000100000,
         "question": "Lunch?"
       },
+      "progress_bar": {
+        "label": "Migration",
+        "maximum": 5,
+        "revision": 2,
+        "value": 3
+      },
       "reactions": [
         {
           "count": 3,
@@ -1673,6 +1769,45 @@ export const gatewayEventSamples = [
       "id": "800"
     },
     "t": "MESSAGE_DELETE"
+  },
+  {
+    "data": {
+      "channel_id": "30",
+      "checklist": {
+        "items": [
+          {
+            "checked": {
+              "at_unix_milliseconds": 1700000060000,
+              "user_id": "10"
+            },
+            "id": 1,
+            "text": "Tag"
+          },
+          {
+            "id": 3,
+            "text": "Deploy"
+          }
+        ],
+        "revision": 4,
+        "title": "Release"
+      },
+      "guild_id": "1",
+      "message_id": "800"
+    },
+    "t": "MESSAGE_CHECKLIST_UPDATE"
+  },
+  {
+    "data": {
+      "channel_id": "40",
+      "message_id": "800",
+      "progress_bar": {
+        "label": "Migration",
+        "maximum": 5,
+        "revision": 2,
+        "value": 3
+      }
+    },
+    "t": "MESSAGE_PROGRESS_BAR_UPDATE"
   },
   {
     "data": {
@@ -1825,7 +1960,7 @@ export const gatewayEventSamples = [
       },
       "id": "1",
       "my_join_sound_id": "600",
-      "my_permissions": "8388607",
+      "my_permissions": "16777215",
       "my_role_ids": [
         "20"
       ],
@@ -2345,7 +2480,7 @@ export const serverFrameSamples = [
           },
           "id": "1",
           "my_join_sound_id": "600",
-          "my_permissions": "8388607",
+          "my_permissions": "16777215",
           "my_role_ids": [
             "20"
           ],
@@ -2380,7 +2515,7 @@ export const serverFrameSamples = [
           "channels": [],
           "emojis": [],
           "id": "1",
-          "my_permissions": "8388607",
+          "my_permissions": "16777215",
           "my_role_ids": [],
           "name": "Mellow",
           "owner_id": "10",
@@ -2561,6 +2696,9 @@ export const clientFrameSamples = [
 export const clientFrameSamplesHaveEveryMember: HasEveryMember<ClientFrame["op"], (typeof clientFrameSamples)[number]["op"]> = true;
 
 export const sharedConstants = {
+  "MAXIMUM_CHECKLIST_ITEMS": 25,
+  "MAXIMUM_CHECKLIST_ITEM_LENGTH": 200,
+  "MAXIMUM_CHECKLIST_TITLE_LENGTH": 300,
   "MAXIMUM_COUNTED_UNREAD_MENTIONS": 100,
   "MAXIMUM_GIF_FAVOURITES": 200,
   "MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH": 100,
@@ -2568,6 +2706,8 @@ export const sharedConstants = {
   "MAXIMUM_POLL_ANSWERS": 10,
   "MAXIMUM_POLL_ANSWER_LENGTH": 55,
   "MAXIMUM_POLL_QUESTION_LENGTH": 300,
+  "MAXIMUM_PROGRESS_BAR_LABEL_LENGTH": 300,
+  "MAXIMUM_PROGRESS_BAR_MAXIMUM": 1000000,
   "MAXIMUM_REACHABLE_SEARCH_RESULTS": 1000,
   "MAXIMUM_SEARCH_QUERY_LENGTH": 256,
   "MAXIMUM_SEARCH_QUERY_PARTS": 16,
@@ -2581,7 +2721,7 @@ export const sharedConstants = {
 } as const;
 
 export const permissionBits = {
-  "channelScoped": "8193534",
+  "channelScoped": "16582142",
   "named": {
     "ADD_REACTIONS": "65536",
     "ADMINISTRATOR": "1",
@@ -2599,6 +2739,7 @@ export const permissionBits = {
     "MANAGE_ROLES": "256",
     "MENTION_EVERYONE": "32",
     "READ_MESSAGE_HISTORY": "8",
+    "SEND_CHECKLISTS": "8388608",
     "SEND_MESSAGES": "4",
     "SEND_POLLS": "4194304",
     "SPEAK": "524288",

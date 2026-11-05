@@ -2,6 +2,7 @@
 //! (`Guilds::channel_and_member_permissions`, ADR-0007), or for a direct-message conversation
 //! through its participants (`permissions::direct_message_permissions`).
 
+mod checklists;
 mod direct_messages;
 mod group_conversations;
 mod link_previews;
@@ -38,6 +39,7 @@ use crate::domain::profile_images::{fill_profile_images, profile_images_of_user}
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::events::Recipients;
 use crate::storage::attachments::{self as attachment_storage, StoredAttachment};
+use crate::storage::checklists::{self as tracker_storage, NewTracker};
 use crate::storage::direct_messages as direct_message_storage;
 use crate::storage::guild_channels::StoredChannel;
 use crate::storage::guild_roles as role_storage;
@@ -129,6 +131,8 @@ fn message_from_stored(
         link_previews: Vec::new(),
         forwarded_from: message.forwarded_from,
         poll: None,
+        checklist: None,
+        progress_bar: None,
     }
 }
 
@@ -177,6 +181,8 @@ struct SendInput {
     has_files: bool,
     /// A poll message's poll (ADR-0043).
     poll: Option<polls::CheckedPoll>,
+    /// A checklist or progress bar message's (ADR-0047).
+    tracker: Option<NewTracker>,
     audience: MessageAudience,
     mentions: MessageMentions,
 }
@@ -204,6 +210,7 @@ async fn already_sent_with_nonce(
         std::slice::from_mut(&mut message),
     )
     .await?;
+    checklists::fill_trackers(database, std::slice::from_mut(&mut message)).await?;
     link_previews::fill_link_previews(database, std::slice::from_mut(&mut message)).await?;
     Ok(Some(message))
 }
@@ -611,6 +618,7 @@ impl Messages {
             content,
             has_files,
             poll,
+            tracker,
             audience,
             mentions,
         } = self
@@ -666,6 +674,7 @@ impl Messages {
                     mentions,
                     forward,
                     poll,
+                    tracker: tracker.clone(),
                 },
             )
             .await?;
@@ -683,6 +692,9 @@ impl Messages {
             message.author.avatar = author_images.avatar;
             message.author.banner = author_images.banner;
             message.poll = published_poll;
+            if let Some(tracker) = &tracker {
+                checklists::show_new_tracker(&mut message, tracker);
+            }
             let event = GatewayEvent::MessageCreate(message.clone());
             message.nonce = request.nonce;
             // The nonce goes to the sender only: in this answer and in their own sessions' event,
@@ -740,19 +752,20 @@ impl Messages {
             validate_nonce(nonce)?;
         }
         let poll = polls::checked_poll(request)?;
-        let needed = if poll.is_some() {
-            permissions_to_send(has_files) | Permissions::SEND_POLLS
-        } else {
-            permissions_to_send(has_files)
+        let tracker = checklists::checked_tracker(request)?;
+        let needed = match (&poll, &tracker) {
+            (Some(_), _) => permissions_to_send(has_files) | Permissions::SEND_POLLS,
+            (None, Some(_)) => permissions_to_send(has_files) | Permissions::SEND_CHECKLISTS,
+            (None, None) => permissions_to_send(has_files),
         };
         let (channel, permissions) = self
             .text_channel_and_permissions_requiring(user_id, channel_id, needed)
             .await?;
-        let content = match (&forwarded, &poll) {
-            (Some(forwarded), _) => forwarded.message.content.clone(),
-            // A poll message has no text of its own.
-            (None, Some(_)) => String::new(),
-            (None, None) => validated_content_to_send(request)?,
+        let content = match (&forwarded, &poll, &tracker) {
+            (Some(forwarded), _, _) => forwarded.message.content.clone(),
+            // A poll, checklist or progress bar message has no text of its own.
+            (None, Some(_), _) | (None, None, Some(_)) => String::new(),
+            (None, None, None) => validated_content_to_send(request)?,
         };
         // Decided before the lock and the write: a failure leaves nothing stored, and the scan of
         // a restricted channel's members does not hold up every other send (ADR-0015).
@@ -777,6 +790,7 @@ impl Messages {
             content,
             has_files,
             poll,
+            tracker,
             audience,
             mentions,
         })
@@ -815,6 +829,10 @@ impl Messages {
         // Votes belong to their channel: a poll is not copied elsewhere (ADR-0043).
         if poll_storage::has_poll(&self.database, message.id).await? {
             return Err(MessageRuleViolation::PollChange.into());
+        }
+        // Ticks belong to their channel too (ADR-0047).
+        if tracker_storage::has_tracker(&self.database, message.id).await? {
+            return Err(MessageRuleViolation::TrackerChange.into());
         }
         let attachments = attachments_of(&self.database, message.id).await?;
         Ok(ForwardedMessage {
@@ -875,6 +893,7 @@ impl Messages {
         .await?;
         fill_reactions(&self.database, viewer_id, &mut messages).await?;
         polls::fill_polls(&self.database, Some(viewer_id), &mut messages).await?;
+        checklists::fill_trackers(&self.database, &mut messages).await?;
         link_previews::fill_link_previews(&self.database, &mut messages).await?;
         Ok(messages)
     }
@@ -905,6 +924,9 @@ impl Messages {
         }
         if poll_storage::has_poll(&self.database, message.id).await? {
             return Err(MessageRuleViolation::PollChange.into());
+        }
+        if tracker_storage::has_tracker(&self.database, message.id).await? {
+            return Err(MessageRuleViolation::TrackerChange.into());
         }
         let content = normalize_line_endings(&request.content);
         validate_message_content(&content)?;
@@ -1229,6 +1251,8 @@ mod tests {
             attachment_ids: Vec::new(),
             forwarded_from: None,
             poll: None,
+            checklist: None,
+            progress_bar: None,
         }
     }
 
@@ -1580,6 +1604,7 @@ mod tests {
                             copied_attachments,
                         }),
                         poll: None,
+                        tracker: None,
                     },
                 )
                 .await,
@@ -2226,6 +2251,8 @@ mod tests {
                     attachment_ids: Vec::new(),
                     forwarded_from: None,
                     poll: None,
+                    checklist: None,
+                    progress_bar: None,
                 },
                 NOW,
             )
@@ -2243,6 +2270,8 @@ mod tests {
                     attachment_ids: Vec::new(),
                     forwarded_from: None,
                     poll: None,
+                    checklist: None,
+                    progress_bar: None,
                 },
                 NOW,
             )
@@ -2277,6 +2306,8 @@ mod tests {
             attachment_ids: Vec::new(),
             forwarded_from: None,
             poll: None,
+            checklist: None,
+            progress_bar: None,
         };
 
         let first = fixture
@@ -2343,6 +2374,8 @@ mod tests {
                     attachment_ids: Vec::new(),
                     forwarded_from: None,
                     poll: None,
+                    checklist: None,
+                    progress_bar: None,
                 },
                 NOW,
             )
@@ -2373,6 +2406,8 @@ mod tests {
             attachment_ids: Vec::new(),
             forwarded_from: None,
             poll: None,
+            checklist: None,
+            progress_bar: None,
         };
         let first = fixture
             .messages
@@ -3143,6 +3178,333 @@ mod tests {
         assert_eq!(
             poll_of(&final_view, single.id).ended_at_unix_milliseconds,
             Some(NOW)
+        );
+    }
+
+    fn checklist_request(items: &[&str]) -> SendMessageRequest {
+        SendMessageRequest {
+            checklist: Some(mellow_protocol::NewChecklist {
+                title: "Release".into(),
+                items: items.iter().map(|item| (*item).to_owned()).collect(),
+            }),
+            ..text("")
+        }
+    }
+
+    fn progress_bar_request(value: u32, maximum: u32) -> SendMessageRequest {
+        SendMessageRequest {
+            progress_bar: Some(mellow_protocol::NewProgressBar {
+                label: "Migration".into(),
+                value,
+                maximum,
+            }),
+            ..text("")
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // One scenario: create, tick, edit, refuse.
+    async fn checklists_are_ticked_by_writers_and_edited_by_their_author_or_moderators() {
+        use mellow_protocol::{
+            ChecklistItemRequest, MAXIMUM_CHECKLIST_ITEMS, OverwriteKind,
+            SetPermissionOverwriteRequest,
+        };
+
+        let fixture = fixture().await;
+        let (messages, owner, member, general) = (
+            &fixture.messages,
+            fixture.owner,
+            fixture.member,
+            fixture.general,
+        );
+        let (key, mut owner_events) = fixture.events.register_session(owner, [0; 32], 1).unwrap();
+        fixture.events.activate_session(key, &[fixture.guild.id]);
+        let checklist = messages
+            .send(member, general, checklist_request(&["Tag", "Build"]), NOW)
+            .await
+            .unwrap();
+        let owners = messages
+            .send(owner, general, checklist_request(&["Mine"]), NOW)
+            .await
+            .unwrap();
+        let with_text = messages
+            .send(
+                member,
+                general,
+                SendMessageRequest {
+                    content: "and words".into(),
+                    ..checklist_request(&["a"])
+                },
+                NOW,
+            )
+            .await;
+        let with_long_nonce = messages
+            .send(
+                member,
+                general,
+                SendMessageRequest {
+                    nonce: Some("n".repeat(65)),
+                    ..checklist_request(&["a"])
+                },
+                NOW,
+            )
+            .await;
+        let conversation = messages
+            .open_direct_message(member, open_with(owner), NOW)
+            .await
+            .unwrap();
+        let in_conversation = messages
+            .send(member, conversation.id, checklist_request(&["a"]), NOW)
+            .await
+            .unwrap();
+        while owner_events.try_recv().is_ok() {}
+        let tick = |user, item, is_ticked, now| {
+            messages.tick_checklist_item(user, general, checklist.id, item, is_ticked, now)
+        };
+        let item = |text: &str| ChecklistItemRequest { text: text.into() };
+        tick(owner, 1, true, NOW).await.unwrap();
+        // Ticking a ticked item again keeps the first tick and sends nothing.
+        tick(member, 1, true, NOW + 1).await.unwrap();
+        tick(member, 2, true, NOW + 2).await.unwrap();
+        tick(member, 2, false, NOW + 3).await.unwrap();
+        let no_such_item = tick(member, 9, true, NOW).await;
+        messages
+            .add_checklist_item(owner, general, checklist.id, &item(" Deploy "))
+            .await
+            .unwrap();
+        messages
+            .rename_checklist_item(member, general, checklist.id, 2, &item("Build it"))
+            .await
+            .unwrap();
+        let after_removal = messages
+            .remove_checklist_item(member, general, checklist.id, 3)
+            .await
+            .unwrap();
+        let checklist_events = event_types(&mut owner_events);
+        let added_by_other = messages
+            .add_checklist_item(member, general, owners.id, &item("theirs"))
+            .await;
+        let last_item = messages
+            .remove_checklist_item(owner, general, owners.id, 1)
+            .await;
+        for index in 1..MAXIMUM_CHECKLIST_ITEMS {
+            messages
+                .add_checklist_item(owner, general, owners.id, &item(&index.to_string()))
+                .await
+                .unwrap();
+        }
+        let past_the_maximum = messages
+            .add_checklist_item(owner, general, owners.id, &item("one more"))
+            .await;
+        let view = history(&fixture, member, general).await;
+        let edit = messages
+            .edit(
+                member,
+                general,
+                checklist.id,
+                EditMessageRequest {
+                    content: "changed".into(),
+                },
+                NOW,
+            )
+            .await;
+        let lounge = create_text_channel(&fixture, "lounge").await;
+        let forward = messages
+            .send(owner, lounge.id, forward_of(general, checklist.id), NOW)
+            .await;
+        fixture
+            .guilds
+            .set_permission_overwrite(
+                owner,
+                general,
+                fixture.guild.id,
+                SetPermissionOverwriteRequest {
+                    kind: OverwriteKind::Role,
+                    allow: Permissions::empty(),
+                    deny: Permissions::SEND_CHECKLISTS | Permissions::SEND_MESSAGES,
+                },
+            )
+            .await
+            .unwrap();
+        let without_permission = messages
+            .send(member, general, checklist_request(&["a"]), NOW)
+            .await;
+        let tick_without_writing = tick(member, 1, false, NOW).await;
+        fixture.database.close().await;
+
+        let created = checklist.checklist.clone().unwrap();
+        assert_eq!(checklist.content, "");
+        assert_eq!(created.revision, 0);
+        assert_eq!(
+            created
+                .items
+                .iter()
+                .map(|item| (item.id, item.text.as_str(), item.checked))
+                .collect::<Vec<_>>(),
+            [(1, "Tag", None), (2, "Build", None)]
+        );
+        assert!(matches!(
+            with_text,
+            Err(MessageError::InvalidInput(MessageRuleViolation::Checklist))
+        ));
+        assert!(
+            matches!(
+                with_long_nonce,
+                Err(MessageError::InvalidInput(MessageRuleViolation::Nonce))
+            ),
+            "a checklist's nonce is checked like any other"
+        );
+        assert!(
+            in_conversation.checklist.is_some(),
+            "participants send them"
+        );
+        assert_eq!(
+            checklist_events, ["MESSAGE_CHECKLIST_UPDATE"; 6],
+            "two ticks, an untick, an add, a rename and a removal; ticking again sends nothing"
+        );
+        assert!(matches!(no_such_item, Err(MessageError::MessageNotFound)));
+        assert_eq!(after_removal.revision, 6);
+        let stored = view
+            .iter()
+            .find(|message| message.id == checklist.id)
+            .and_then(|message| message.checklist.clone())
+            .unwrap();
+        assert_eq!(stored, after_removal, "history shows the last change");
+        assert_eq!(
+            stored
+                .items
+                .iter()
+                .map(|item| (item.id, item.text.as_str(), item.checked))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    1,
+                    "Tag",
+                    Some(mellow_protocol::ChecklistTick {
+                        user_id: owner,
+                        at_unix_milliseconds: NOW
+                    })
+                ),
+                (2, "Build it", None)
+            ]
+        );
+        assert!(matches!(
+            added_by_other,
+            Err(MessageError::Guild(GuildError::MissingPermissions))
+        ));
+        for refused in [last_item, past_the_maximum] {
+            assert!(matches!(
+                refused,
+                Err(MessageError::InvalidInput(MessageRuleViolation::Checklist))
+            ));
+        }
+        for refused in [edit.map(|_| ()), forward.map(|_| ())] {
+            assert!(matches!(
+                refused,
+                Err(MessageError::InvalidInput(
+                    MessageRuleViolation::TrackerChange
+                ))
+            ));
+        }
+        assert!(matches!(
+            without_permission,
+            Err(MessageError::Guild(GuildError::MissingPermissions))
+        ));
+        assert!(matches!(
+            tick_without_writing,
+            Err(MessageError::Guild(GuildError::MissingPermissions))
+        ));
+    }
+
+    #[tokio::test]
+    async fn progress_bars_are_updated_by_their_author_or_moderators() {
+        let fixture = fixture().await;
+        let (messages, owner, member, general) = (
+            &fixture.messages,
+            fixture.owner,
+            fixture.member,
+            fixture.general,
+        );
+        let (key, mut owner_events) = fixture.events.register_session(owner, [0; 32], 1).unwrap();
+        fixture.events.activate_session(key, &[fixture.guild.id]);
+        let members = messages
+            .send(member, general, progress_bar_request(3, 5), NOW)
+            .await
+            .unwrap();
+        let owners = messages
+            .send(owner, general, progress_bar_request(10, 100), NOW)
+            .await
+            .unwrap();
+        let past_maximum = messages
+            .send(member, general, progress_bar_request(6, 5), NOW)
+            .await;
+        let both = messages
+            .send(
+                member,
+                general,
+                SendMessageRequest {
+                    checklist: checklist_request(&["a"]).checklist,
+                    ..progress_bar_request(1, 2)
+                },
+                NOW,
+            )
+            .await;
+        while owner_events.try_recv().is_ok() {}
+        let update = |value| mellow_protocol::NewProgressBar {
+            label: "Migration".into(),
+            value,
+            maximum: 5,
+        };
+        messages
+            .update_progress_bar(member, general, members.id, &update(4))
+            .await
+            .unwrap();
+        let by_moderator = messages
+            .update_progress_bar(owner, general, members.id, &update(5))
+            .await
+            .unwrap();
+        let events = event_types(&mut owner_events);
+        let by_other = messages
+            .update_progress_bar(member, general, owners.id, &update(1))
+            .await;
+        let invalid = messages
+            .update_progress_bar(member, general, members.id, &update(9))
+            .await;
+        let view = history(&fixture, member, general).await;
+        fixture.database.close().await;
+
+        assert_eq!(
+            members
+                .progress_bar
+                .as_ref()
+                .map(|bar| (bar.value, bar.maximum, bar.revision)),
+            Some((3, 5, 0))
+        );
+        for refused in [past_maximum, both] {
+            assert!(matches!(
+                refused,
+                Err(MessageError::InvalidInput(
+                    MessageRuleViolation::ProgressBar | MessageRuleViolation::Checklist
+                ))
+            ));
+        }
+        assert_eq!(events, ["MESSAGE_PROGRESS_BAR_UPDATE"; 2]);
+        assert_eq!((by_moderator.value, by_moderator.revision), (5, 2));
+        assert!(matches!(
+            by_other,
+            Err(MessageError::Guild(GuildError::MissingPermissions))
+        ));
+        assert!(matches!(
+            invalid,
+            Err(MessageError::InvalidInput(
+                MessageRuleViolation::ProgressBar
+            ))
+        ));
+        assert_eq!(
+            view.iter()
+                .find(|message| message.id == members.id)
+                .and_then(|message| message.progress_bar.clone()),
+            Some(by_moderator)
         );
     }
 

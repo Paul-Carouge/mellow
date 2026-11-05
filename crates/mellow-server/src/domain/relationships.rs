@@ -454,6 +454,8 @@ mod tests {
                     attachment_ids: Vec::new(),
                     forwarded_from: None,
                     poll: None,
+                    checklist: None,
+                    progress_bar: None,
                 },
                 NOW,
             )
@@ -584,6 +586,8 @@ mod tests {
                     attachment_ids: Vec::new(),
                     forwarded_from: None,
                     poll: None,
+                    checklist: None,
+                    progress_bar: None,
                 },
                 NOW,
             )

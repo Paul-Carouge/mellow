@@ -294,6 +294,23 @@ fn message_router(maximum_attachment_bytes: u64) -> Router<AppState> {
             put(message_routes::add_poll_vote).delete(message_routes::remove_poll_vote),
         )
         .route(
+            "/api/v1/channels/{channel_id}/messages/{message_id}/checklist/items",
+            post(message_routes::add_checklist_item),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/messages/{message_id}/checklist/items/{item_id}",
+            patch(message_routes::rename_checklist_item)
+                .delete(message_routes::remove_checklist_item),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/messages/{message_id}/checklist/items/{item_id}/check",
+            put(message_routes::tick_checklist_item).delete(message_routes::untick_checklist_item),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/messages/{message_id}/progress-bar",
+            patch(message_routes::update_progress_bar),
+        )
+        .route(
             "/api/v1/channels/{channel_id}/messages/{message_id}/poll/answers/{answer_id}/voters",
             get(message_routes::list_poll_voters),
         )

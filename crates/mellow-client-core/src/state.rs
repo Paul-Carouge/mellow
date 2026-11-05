@@ -93,6 +93,8 @@ impl PendingMessage {
             attachment_ids: Vec::new(),
             forwarded_from: None,
             poll: None,
+            checklist: None,
+            progress_bar: None,
         }
     }
 }
@@ -389,7 +391,7 @@ impl ClientState {
                 StateChange::Presence
             }
             GatewayEvent::UserUpdate(user) => self.rename_user(&user),
-            // shortcut: friends, groups, reactions, link previews, polls, custom emoji and voice are web-only (ADR-0023) until the desktop port.
+            // shortcut: friends, groups, reactions, link previews, polls, checklists, progress bars, custom emoji and voice are web-only (ADR-0023) until the desktop port.
             GatewayEvent::RelationshipAdd(_)
             | GatewayEvent::RelationshipRemove { .. }
             | GatewayEvent::DirectMessageChannelUpdate(_)
@@ -401,6 +403,8 @@ impl ClientState {
             | GatewayEvent::MessageLinkPreviewsUpdate { .. }
             | GatewayEvent::MessagePollVoteAdd(_)
             | GatewayEvent::MessagePollVoteRemove(_)
+            | GatewayEvent::MessageChecklistUpdate { .. }
+            | GatewayEvent::MessageProgressBarUpdate { .. }
             | GatewayEvent::GuildEmojisUpdate { .. }
             | GatewayEvent::GuildSoundsUpdate { .. }
             | GatewayEvent::MyJoinSoundUpdate { .. }
@@ -921,6 +925,8 @@ mod tests {
             mention_role_ids: Vec::new(),
             link_previews: Vec::new(),
             poll: None,
+            checklist: None,
+            progress_bar: None,
             forwarded_from: None,
         }
     }

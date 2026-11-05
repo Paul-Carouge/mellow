@@ -6,9 +6,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Channel, ChannelUnread, CurrentUser, CustomEmoji, DirectMessageChannel, Guild, GuildSummary,
-    LinkPreview, Member, Message, PublicUser, ReadState, Relationship, Role, Snowflake,
-    SoundboardSound,
+    Channel, ChannelUnread, Checklist, CurrentUser, CustomEmoji, DirectMessageChannel, Guild,
+    GuildSummary, LinkPreview, Member, Message, ProgressBar, PublicUser, ReadState, Relationship,
+    Role, Snowflake, SoundboardSound,
 };
 
 pub const GATEWAY_VERSION: u32 = 1;
@@ -463,6 +463,26 @@ pub enum GatewayEvent {
     MessagePollVoteAdd(PollVote),
     /// Someone took their vote back, or moved it (a single-choice poll).
     MessagePollVoteRemove(PollVote),
+    /// A checklist's item was ticked, unticked, added, renamed or removed (ADR-0047): the whole
+    /// checklist after the change. Sent to the channel's viewers; clients keep it only if its
+    /// `revision` is above theirs. Older clients skip it.
+    MessageChecklistUpdate {
+        /// `None` in a direct-message conversation, and then left out of the frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guild_id: Option<Snowflake>,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        checklist: Checklist,
+    },
+    /// A progress bar was updated (ADR-0047), as `MESSAGE_CHECKLIST_UPDATE`.
+    MessageProgressBarUpdate {
+        /// `None` in a direct-message conversation, and then left out of the frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guild_id: Option<Snowflake>,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        progress_bar: ProgressBar,
+    },
     /// Someone reacted to a message. Sent to the channel's viewers, the reacting user included.
     MessageReactionAdd(MessageReaction),
     /// Someone took their reaction back, or a moderator removed it.

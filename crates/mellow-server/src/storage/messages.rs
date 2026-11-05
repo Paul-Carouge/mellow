@@ -180,6 +180,8 @@ pub(crate) struct NewMessage {
     pub(crate) forward: Option<NewForward>,
     /// A poll (ADR-0043), stored in the same transaction.
     pub(crate) poll: Option<crate::storage::polls::NewStoredPoll>,
+    /// A checklist or a progress bar (ADR-0047), stored in the same transaction.
+    pub(crate) tracker: Option<crate::storage::checklists::NewTracker>,
 }
 
 /// What a forward copies, decided by the domain before the write.
@@ -292,6 +294,9 @@ pub(crate) async fn insert_message(
     }
     if let Some(poll) = &message.poll {
         crate::storage::polls::insert_poll(&mut transaction, message.id, poll).await?;
+    }
+    if let Some(tracker) = &message.tracker {
+        crate::storage::checklists::insert_tracker(&mut transaction, message.id, tracker).await?;
     }
     insert_mentions(
         &mut transaction,

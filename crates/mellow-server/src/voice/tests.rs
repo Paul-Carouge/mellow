@@ -498,6 +498,8 @@ async fn voice_states_reach_viewers_only_and_leave_or_session_end_remove_them() 
                 attachment_ids: Vec::new(),
                 forwarded_from: None,
                 poll: None,
+                checklist: None,
+                progress_bar: None,
             },
             now(),
         )

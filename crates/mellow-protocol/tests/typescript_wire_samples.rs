@@ -13,24 +13,26 @@ use std::path::PathBuf;
 use mellow_protocol::{
     ApiErrorCode, Attachment, AuditAction, AuditChange, AuditChangeKey, AuditLogEntry,
     AuthorSearchFacet, Ban, Channel, ChannelKind, ChannelPlacement, ChannelSearchFacet,
-    ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel,
-    ForwardOrigin, GatewayEvent, GifSettings, GitHubIssueEmbed, GitHubIssueState,
-    GitHubRepositoryEmbed, Guild, GuildInvite, GuildSummary, Hello, HighlightRange,
-    InitialCategory, InitialTextChannel, Invite, LinkEmbed, LinkPreview, LinkPreviewImage,
-    MAXIMUM_COUNTED_UNREAD_MENTIONS, MAXIMUM_GIF_FAVOURITES,
+    ChannelUnread, Checklist, ChecklistItem, ChecklistTick, ChosenStatus, ClientFrame, CurrentUser,
+    CustomEmoji, DirectMessageChannel, ForwardOrigin, GatewayEvent, GifSettings, GitHubIssueEmbed,
+    GitHubIssueState, GitHubRepositoryEmbed, Guild, GuildInvite, GuildSummary, Hello,
+    HighlightRange, InitialCategory, InitialTextChannel, Invite, LinkEmbed, LinkPreview,
+    LinkPreviewImage, MAXIMUM_CHECKLIST_ITEM_LENGTH, MAXIMUM_CHECKLIST_ITEMS,
+    MAXIMUM_CHECKLIST_TITLE_LENGTH, MAXIMUM_COUNTED_UNREAD_MENTIONS, MAXIMUM_GIF_FAVOURITES,
     MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH, MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
     MAXIMUM_POLL_ANSWER_LENGTH, MAXIMUM_POLL_ANSWERS, MAXIMUM_POLL_QUESTION_LENGTH,
+    MAXIMUM_PROGRESS_BAR_LABEL_LENGTH, MAXIMUM_PROGRESS_BAR_MAXIMUM,
     MAXIMUM_REACHABLE_SEARCH_RESULTS, MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS,
     MAXIMUM_SEARCH_QUERY_LENGTH, MAXIMUM_SEARCH_QUERY_PARTS, MAXIMUM_SEARCH_RESULTS_PER_PAGE,
     MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
     MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, MINIMUM_POLL_ANSWERS, Member, Message, MessageReaction,
     MessageSearchHit, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicEmbed,
     MusicItem, MusicProvider, OverwriteKind, PermissionOverwrite, Permissions, Poll, PollAnswer,
-    PollVote, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState,
-    Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer,
-    Snowflake, SoundboardSound, TwitchEmbed, TwitchItem, VideoTileSize, VimeoVideoEmbed,
-    VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal, WatchedCamera,
-    WikipediaArticleEmbed, YouTubeMusicTrackEmbed, YouTubeVideoEmbed,
+    PollVote, Presence, PresenceStatus, ProfileImage, ProgressBar, PublicUser, ReactionSummary,
+    ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated,
+    SimulcastLayer, Snowflake, SoundboardSound, TwitchEmbed, TwitchItem, VideoTileSize,
+    VimeoVideoEmbed, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal,
+    WatchedCamera, WikipediaArticleEmbed, YouTubeMusicTrackEmbed, YouTubeVideoEmbed,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -478,10 +480,43 @@ fn message() -> Message {
             expires_at_unix_milliseconds: 1_700_000_100_000,
             ended_at_unix_milliseconds: Some(1_700_000_050_000),
         }),
+        checklist: Some(checklist()),
+        progress_bar: Some(progress_bar()),
         forwarded_from: Some(ForwardOrigin {
             channel_id: id(31),
             message_id: id(700),
         }),
+    }
+}
+
+fn checklist() -> Checklist {
+    Checklist {
+        title: "Release".into(),
+        items: vec![
+            ChecklistItem {
+                id: 1,
+                text: "Tag".into(),
+                checked: Some(ChecklistTick {
+                    user_id: id(10),
+                    at_unix_milliseconds: 1_700_000_060_000,
+                }),
+            },
+            ChecklistItem {
+                id: 3,
+                text: "Deploy".into(),
+                checked: None,
+            },
+        ],
+        revision: 4,
+    }
+}
+
+fn progress_bar() -> ProgressBar {
+    ProgressBar {
+        label: "Migration".into(),
+        value: 3,
+        maximum: 5,
+        revision: 2,
     }
 }
 
@@ -498,6 +533,8 @@ fn sparse_message() -> Message {
         mention_role_ids: Vec::new(),
         link_previews: Vec::new(),
         poll: None,
+        checklist: None,
+        progress_bar: None,
         forwarded_from: None,
         ..message()
     }
@@ -702,6 +739,18 @@ fn gateway_events() -> Vec<GatewayEvent> {
             guild_id: None,
             channel_id: id(40),
             id: id(800),
+        },
+        GatewayEvent::MessageChecklistUpdate { .. } => GatewayEvent::MessageChecklistUpdate {
+            guild_id: Some(id(1)),
+            channel_id: id(30),
+            message_id: id(800),
+            checklist: checklist(),
+        },
+        GatewayEvent::MessageProgressBarUpdate { .. } => GatewayEvent::MessageProgressBarUpdate {
+            guild_id: None,
+            channel_id: id(40),
+            message_id: id(800),
+            progress_bar: progress_bar(),
         },
         GatewayEvent::MessagePollVoteAdd(_) => GatewayEvent::MessagePollVoteAdd(PollVote {
             guild_id: Some(id(1)),
@@ -1237,6 +1286,11 @@ fn shared_constants() -> Value {
         "MINIMUM_POLL_ANSWERS": MINIMUM_POLL_ANSWERS,
         "MAXIMUM_POLL_ANSWERS": MAXIMUM_POLL_ANSWERS,
         "MAXIMUM_POLL_ANSWER_LENGTH": MAXIMUM_POLL_ANSWER_LENGTH,
+        "MAXIMUM_CHECKLIST_TITLE_LENGTH": MAXIMUM_CHECKLIST_TITLE_LENGTH,
+        "MAXIMUM_CHECKLIST_ITEMS": MAXIMUM_CHECKLIST_ITEMS,
+        "MAXIMUM_CHECKLIST_ITEM_LENGTH": MAXIMUM_CHECKLIST_ITEM_LENGTH,
+        "MAXIMUM_PROGRESS_BAR_LABEL_LENGTH": MAXIMUM_PROGRESS_BAR_LABEL_LENGTH,
+        "MAXIMUM_PROGRESS_BAR_MAXIMUM": MAXIMUM_PROGRESS_BAR_MAXIMUM,
         "MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH": MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH,
         "MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS": MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
         "MAXIMUM_REACHABLE_SEARCH_RESULTS": MAXIMUM_REACHABLE_SEARCH_RESULTS,
