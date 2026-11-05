@@ -22,7 +22,7 @@ const ignore = () => {};
 function renderedEditingRow(editor: MessageEditor): string {
   return render(MessageItem, {
     props: {
-      row: { kind: "sent", key: MESSAGE.id, message: MESSAGE, sentAt: 0, startsAuthorGroup: true, isFirstUnread: false },
+      row: { kind: "sent", key: MESSAGE.id, message: MESSAGE, sentAt: 0, startsAuthorGroup: true, isFirstUnread: false, dayStart: null },
       currentUser: AUTHOR,
       replyReference: null,
       authorColor: null,

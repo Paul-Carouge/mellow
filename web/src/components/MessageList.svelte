@@ -8,7 +8,7 @@
   import { type MenuLine, type MessageMenuAction, menuEntries } from "./context-menus";
   import ContextMenu from "./ContextMenu.svelte";
   import type { ForwardOrigin, Message, PublicUser, Snowflake } from "../lib/protocol";
-  import { displayName, timeOfDayLabel } from "./format";
+  import { dayDividerLabel, displayName, timeOfDayLabel } from "./format";
   import Icon, { type IconName } from "./Icon.svelte";
   import type { ReactionAndPinActions } from "./message-actions";
   import type { MessageEditor } from "./message-editor.svelte";
@@ -141,7 +141,14 @@
   const rows = $derived.by(() => {
     const built = reuseUnchangedRows(
       previousRowsByKey,
-      buildMessageRows(messages, client.pendingMessagesIn(channelId), currentUser.id, Date.now(), dividerAfterMessageId),
+      buildMessageRows(
+        messages,
+        client.pendingMessagesIn(channelId),
+        currentUser.id,
+        Date.now(),
+        dividerAfterMessageId,
+        client.reachedStartChannelIds.has(channelId),
+      ),
     );
     previousRowsByKey = new Map(built.map((row) => [row.key, row]));
     return built;
@@ -537,7 +544,42 @@
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <ol bind:this={list} aria-label={strings.messages.messagesIn(channelLabel)} class="pb-xs" onkeydown={moveFocus}>
       {#each entries as row (row.key)}
-        {#if (row.kind === "sent" || row.kind === "blocked-run") && row.isFirstUnread}
+        {@const isFirstUnread = row.kind !== "pending" && row.isFirstUnread}
+        {#if row.dayStart !== null}
+          {@const day = dayDividerLabel(row.dayStart)}
+          <!-- A day divider: the date between two rules (DESIGN.md §5.4). Where new messages start
+               the same day, it is the unread divider too, as on Discord: one apricot line, one date,
+               the "New" pill at its end. -->
+          <li
+            data-unread-divider={isFirstUnread ? "" : undefined}
+            role="separator"
+            aria-label={isFirstUnread
+              ? strings.messages.dayAndNewSince(day, timeOfDayLabel(row.sentAt))
+              : day}
+            class="mx-md mt-(--mw-component-message-group-gap) flex items-center gap-xs"
+          >
+            <span
+              class={[
+                "h-(--mw-component-unread-divider-line-width) flex-1",
+                isFirstUnread ? "bg-(--mw-component-unread-divider-line)" : "bg-border-divider",
+              ]}
+            ></span>
+            <span class="type-message-timestamp text-text-muted">{day}</span>
+            <span
+              class={[
+                "h-(--mw-component-unread-divider-line-width) flex-1",
+                isFirstUnread ? "bg-(--mw-component-unread-divider-line)" : "bg-border-divider",
+              ]}
+            ></span>
+            {#if isFirstUnread}
+              <span
+                aria-hidden="true"
+                class="-ms-xs grid h-(--mw-component-unread-divider-pill-height) place-items-center rounded-(--mw-component-unread-divider-pill-radius) bg-(--mw-component-unread-divider-pill-background) px-xs type-badge text-(--mw-component-unread-divider-pill-text)"
+                >{strings.messages.newPill}</span
+              >
+            {/if}
+          </li>
+        {:else if isFirstUnread}
           <!-- An apricot line with its "New" pill: new messages are "now" (DESIGN.md §2.3, §5.4). -->
           <li
             data-unread-divider

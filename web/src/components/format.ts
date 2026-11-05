@@ -24,13 +24,14 @@ function isSameLocalDay(left: Date, right: Date): boolean {
   );
 }
 
-type DateTimeShape = "time-of-day" | "short-date-and-time" | "full-date-and-time" | "medium-date";
+type DateTimeShape = "time-of-day" | "short-date-and-time" | "full-date-and-time" | "medium-date" | "long-date";
 
 const DATE_TIME_SHAPE_OPTIONS: Record<DateTimeShape, Intl.DateTimeFormatOptions> = {
   "time-of-day": { hour: "2-digit", minute: "2-digit" },
   "short-date-and-time": { dateStyle: "short", timeStyle: "short" },
   "full-date-and-time": { dateStyle: "full", timeStyle: "short" },
   "medium-date": { dateStyle: "medium" },
+  "long-date": { dateStyle: "long" },
 };
 
 /** Building a formatter costs tens of microseconds, and every message row formats up to three dates. */
@@ -78,6 +79,11 @@ export function upcomingTimeLabel(unixMilliseconds: number, now: Date, locale: s
 /** Full date and time, for tooltips and screen readers. */
 export function fullTimestampLabel(unixMilliseconds: number, locale: string = wordedFormattingLocale): string {
   return dateTimeFormat(locale, "full-date-and-time").format(unixMilliseconds);
+}
+
+/** A day divider's date, the month in words: « 5 novembre 2026 », "November 5, 2026" (DESIGN.md §5.4). */
+export function dayDividerLabel(unixMilliseconds: number, locale: string = wordedFormattingLocale): string {
+  return dateTimeFormat(locale, "long-date").format(unixMilliseconds);
 }
 
 /** A `YYYY-MM-DD` day as the reader writes dates: "30 Oct 2026", « 30 oct. 2026 ». */
