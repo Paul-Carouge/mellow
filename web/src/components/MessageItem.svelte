@@ -54,6 +54,11 @@
     mentionReader: MentionReader;
     /** The server fills `mention_ids` (absent when empty): it decides who a message mentions. */
     doesServerFindMentions: boolean;
+    /**
+     * The instance has GIFs (ADR-0042): only then does its page's policy let Klipy's media in, so
+     * only then is a Klipy address shown as the GIF rather than as its link.
+     */
+    areGifsShown: boolean;
     canSendMessages: boolean;
     canManageMessages: boolean;
     reactionAndPinActions: ReactionAndPinActions;
@@ -95,6 +100,7 @@
     roles,
     mentionReader,
     doesServerFindMentions,
+    areGifsShown,
     canSendMessages,
     canManageMessages,
     reactionAndPinActions: actions,
@@ -136,7 +142,7 @@
   const isJumbo = $derived(isJumboEmojiMessage(contentBlocks));
   // A message that is only a Klipy media address is the GIF itself (ADR-0042); the link comes
   // back when the GIF cannot be shown.
-  const gifMedia = $derived(messageGifMediaOf(content));
+  const gifMedia = $derived(areGifsShown ? messageGifMediaOf(content) : null);
   let failedGifUrl = $state<string | null>(null);
   const forwardedFrom = $derived(message?.forwarded_from ?? null);
   // Only a forward's place is looked up, among the channels the reader knows.
