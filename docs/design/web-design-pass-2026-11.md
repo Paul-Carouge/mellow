@@ -192,6 +192,7 @@ One PR each, in this order. **WP0 lands first**: it is the only package that edi
 - Files: `MessageAttachments.svelte`, `PollCard.svelte`.
 - Content: C2, C3.
 - Acceptance: at 320 px the video band never overlaps name and size; a four-word poll answer fits on at most three lines; screen readers still hear vote counts.
+- Done (branch `fix/web-narrow-attachments-and-polls`): both components measure their own width (`bind:clientWidth`) against the WP0 tokens through `components/tokens.ts`, as the quick switcher does, since a container query cannot read `var()`. Measured in Chrome at 320 px light: the video band (232 px) no longer runs a name's end 12 px under the size, which is out of sight but still read after the name; a 150 px band ellipsizes the name's end inside the link. A poll answer gets 111 to 128 px instead of 86 to 91 (the long answer six lines to four, "Pizzeria du coin" two to one, "Sandwichs au parc" stays at two); 390 px is compact too (302 px card), 1440 px is unchanged.
 
 ### WP7. Connection, notification and sign-in states (M)
 - Files: `ConnectionBanner.svelte`, `NotificationPermissionBar.svelte`, `SignInScreen.svelte`, a small addition in `web/src/lib/client.svelte.ts` (coordinate with whoever owns the client model).

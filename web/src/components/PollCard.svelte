@@ -6,6 +6,7 @@
   import Icon from "./Icon.svelte";
   import { pollClockNow, watchPollClock } from "./poll-clock.svelte";
   import { pollEndUnixMilliseconds, pollResults, pollTimeLeft, pollTimeLeftLabel } from "./poll-view";
+  import { lengthTokenInPixels } from "./tokens";
 
   // A poll in a message (DESIGN.md §5.4, docs/design/web-polls.md, ADR-0043): the question, one row
   // per answer, and a footer. Results stay hidden until the reader votes, asks to see them, or the
@@ -29,6 +30,10 @@
   const timeLeft = $derived(pollTimeLeft(poll, pollClockNow()));
   const canVoteNow = $derived(canVote && !isPending && !isEnded);
   let isRevealed = $state(false);
+  // A narrow card (phones) keeps only the percentage in the results column, so answers keep their
+  // room; the vote count stays in each row's accessible description and the voters button's name.
+  let cardWidth: number | undefined = $state();
+  const isCompact = $derived(cardWidth !== undefined && cardWidth < lengthTokenInPixels("component-poll-compact-width"));
   const areResultsShown = $derived(!isPending && (isEnded || results.hasReaderVoted || isRevealed));
   const role = $derived(poll.allows_multiple_answers ? "checkbox" : "radio");
   // A radio group is one Tab stop: the checked answer, else the first.
@@ -73,6 +78,7 @@
 
 <section
   aria-labelledby="{id}-question"
+  bind:clientWidth={cardWidth}
   class="mt-3xs flex w-full max-w-(--mw-component-poll-max-width) flex-col gap-(--mw-component-poll-gap) rounded-(--mw-component-poll-radius) border-(length:--mw-component-poll-border-width) border-(--mw-component-poll-border) bg-(--mw-component-poll-background) p-(--mw-component-poll-padding)"
 >
   <div class="flex flex-col gap-(--mw-component-poll-header-gap)">
@@ -122,7 +128,9 @@
           aria-describedby={areResultsShown ? `${id}-results-${answer.id}` : undefined}
           tabindex={poll.allows_multiple_answers || answer.id === tabStopAnswerId ? 0 : -1}
           class={[
-            "relative flex min-w-0 flex-1 items-center gap-(--mw-component-poll-answer-inner-gap) px-(--mw-component-poll-answer-padding-inline) py-(--mw-component-poll-answer-padding-block) text-start focus-visible:focus-ring-inset",
+            "relative flex min-w-0 flex-1 items-center gap-(--mw-component-poll-answer-inner-gap) ps-(--mw-component-poll-answer-padding-inline) py-(--mw-component-poll-answer-padding-block) text-start focus-visible:focus-ring-inset",
+            // Compact, the results column's own padding parts the answer from its percentage.
+            isCompact && areResultsShown ? "pe-2xs" : "pe-(--mw-component-poll-answer-padding-inline)",
             canVoteNow ? "cursor-pointer" : "cursor-default",
           ]}
           onclick={() => choose(answer.id)}
@@ -158,19 +166,26 @@
           {@const share = strings.polls.percent(percent)}
           <span id="{id}-results-{answer.id}" class="sr-only">{strings.polls.answerResults(answer.vote_count, percent)}</span>
           {#snippet figures()}
-            <span aria-hidden="true" class="type-body-sm text-(--mw-component-poll-count-text)">{count}</span>
+            {#if !isCompact}
+              <span aria-hidden="true" class="type-body-sm text-(--mw-component-poll-count-text)">{count}</span>
+            {/if}
             <span aria-hidden="true" class="type-body font-semibold text-(--mw-component-poll-percent-text)">{share}</span>
           {/snippet}
+          {@const columnClass = isCompact ? "px-2xs" : "min-w-(--mw-component-poll-count-min-width) px-(--mw-component-poll-answer-padding-inline)"}
           {#if answer.vote_count > 0 && onviewvoters}
             <button
               type="button"
               aria-label="{strings.polls.answerResults(answer.vote_count, percent)}{strings.polls.seeVoters(answer.text)}"
-              class="relative flex min-w-(--mw-component-poll-count-min-width) shrink-0 flex-col items-end justify-center rounded-(--mw-component-poll-answer-radius) px-(--mw-component-poll-answer-padding-inline) tabular-nums hover:underline focus-visible:focus-ring-inset"
+              class={[
+                "relative flex shrink-0 flex-col items-end justify-center rounded-(--mw-component-poll-answer-radius) tabular-nums hover:underline focus-visible:focus-ring-inset",
+                columnClass,
+                // Compact, the voters button keeps a hit target's width even for "8 %".
+                isCompact && "min-w-(--mw-size-hit-desktop-min) pointer-coarse:min-w-(--mw-size-hit-web-min)",
+              ]}
               onclick={() => onviewvoters?.(answer.id)}>{@render figures()}</button
             >
           {:else}
-            <span
-              class="relative flex min-w-(--mw-component-poll-count-min-width) shrink-0 flex-col items-end justify-center px-(--mw-component-poll-answer-padding-inline) tabular-nums"
+            <span class={["relative flex shrink-0 flex-col items-end justify-center tabular-nums", columnClass]}
               >{@render figures()}</span
             >
           {/if}
