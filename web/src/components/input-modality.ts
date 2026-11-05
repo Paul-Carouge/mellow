@@ -4,20 +4,47 @@
 
 export type InputModality = "keyboard" | "pointer";
 
+export interface InputModalityState {
+  /** Null until the first navigation key or pointer press. */
+  readonly modality: InputModality | null;
+  /** The last key was Tab or F6: it counts as navigation only if focus moves next. */
+  readonly isFocusMoveFromKeyAwaited: boolean;
+}
+
+export type InputModalityEvent =
+  | { readonly kind: "keydown"; readonly key: string; readonly isInTextField: boolean }
+  | { readonly kind: "focusin" }
+  | { readonly kind: "pointerdown" };
+
+export const INITIAL_INPUT_MODALITY_STATE: InputModalityState = { modality: null, isFocusMoveFromKeyAwaited: false };
+
 /** Keys that move focus between controls: Tab (with or without Shift), F6 between regions. */
 const FOCUS_MOVING_KEYS: ReadonlySet<string> = new Set(["Tab", "F6"]);
 const ARROW_KEYS: ReadonlySet<string> = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
 
 /**
- * "keyboard" when `key` navigates, null when it leaves the modality as it was. Arrows navigate in
- * lists and menus, but inside a text field they only move the caret: typing after a click is
- * still a pointer session.
+ * The modality after `event`. Tab and F6 count once focus actually moves: the composer keeps Tab
+ * to accept a suggestion, and that is still typing. Arrows navigate in lists and menus, but inside
+ * a text field they only move the caret.
  */
-export function inputModalityAfterKeyDown(key: string, isInTextField: boolean): InputModality | null {
-  if (FOCUS_MOVING_KEYS.has(key) || (ARROW_KEYS.has(key) && !isInTextField)) {
-    return "keyboard";
+export function nextInputModalityState(state: InputModalityState, event: InputModalityEvent): InputModalityState {
+  switch (event.kind) {
+    case "pointerdown":
+      return { modality: "pointer", isFocusMoveFromKeyAwaited: false };
+    case "focusin":
+      return state.isFocusMoveFromKeyAwaited ? { modality: "keyboard", isFocusMoveFromKeyAwaited: false } : state;
+    case "keydown": {
+      const isArrowNavigation = ARROW_KEYS.has(event.key) && !event.isInTextField;
+      return {
+        modality: isArrowNavigation ? "keyboard" : state.modality,
+        isFocusMoveFromKeyAwaited: FOCUS_MOVING_KEYS.has(event.key),
+      };
+    }
+    default: {
+      const unreachable: never = event;
+      return unreachable;
+    }
   }
-  return null;
 }
 
 function isTextField(target: EventTarget | null): boolean {
@@ -25,23 +52,27 @@ function isTextField(target: EventTarget | null): boolean {
 }
 
 /**
- * Writes the modality on `root` from the window's key and pointer presses, in the capture phase so
- * a handler stopping the event cannot hide it; until the returned function is called.
+ * Writes the modality on `root` from the window's key presses, focus moves and pointer presses, in
+ * the capture phase so a handler stopping the event cannot hide it; until the returned function is
+ * called.
  */
 export function trackInputModality(target: Window, root: HTMLElement): () => void {
-  const noteKey = (event: KeyboardEvent) => {
-    const modality = inputModalityAfterKeyDown(event.key, isTextField(event.target));
-    if (modality !== null) {
-      root.dataset.inputModality = modality;
+  let state = INITIAL_INPUT_MODALITY_STATE;
+  const apply = (event: InputModalityEvent) => {
+    state = nextInputModalityState(state, event);
+    if (state.modality !== null) {
+      root.dataset.inputModality = state.modality;
     }
   };
-  const notePointer = () => {
-    root.dataset.inputModality = "pointer";
-  };
+  const noteKey = (event: KeyboardEvent) => apply({ kind: "keydown", key: event.key, isInTextField: isTextField(event.target) });
+  const noteFocus = () => apply({ kind: "focusin" });
+  const notePointer = () => apply({ kind: "pointerdown" });
   target.addEventListener("keydown", noteKey, { capture: true });
+  target.addEventListener("focusin", noteFocus, { capture: true });
   target.addEventListener("pointerdown", notePointer, { capture: true });
   return () => {
     target.removeEventListener("keydown", noteKey, { capture: true });
+    target.removeEventListener("focusin", noteFocus, { capture: true });
     target.removeEventListener("pointerdown", notePointer, { capture: true });
     delete root.dataset.inputModality;
   };
