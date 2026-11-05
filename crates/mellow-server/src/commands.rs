@@ -1018,6 +1018,10 @@ mod tests {
         let avatar_file = give_legacy_avatar(&config, "paul", true).await;
         let write_under_way = avatar_file.with_extension("partial");
         std::fs::write(&write_under_way, b"half a file").unwrap();
+        let marker_of_finished_move = config
+            .attachment_directory()
+            .join(crate::storage::attachment_files::NAME_OF_MARKER_OF_FINISHED_MOVE);
+        std::fs::write(&marker_of_finished_move, b"").unwrap();
 
         let backup = back_up_instance(&config, None).await.unwrap();
 
@@ -1058,6 +1062,10 @@ mod tests {
         assert!(
             !copy_of(&write_under_way).exists(),
             "a write under way is not a file"
+        );
+        assert!(
+            !copy_of(&marker_of_finished_move).exists(),
+            "a restored backup checks its shards again"
         );
     }
 

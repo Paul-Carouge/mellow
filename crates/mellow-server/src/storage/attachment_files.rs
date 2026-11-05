@@ -13,6 +13,10 @@ use mellow_protocol::Snowflake;
 use zeroize::Zeroizing;
 
 pub(crate) const SUFFIX_OF_TEMPORARY_FILES: &str = ".partial";
+/// Written in the attachment directory once a move left every file in its shard, so later starts
+/// skip the listing (ADR-0034). Not a directory: `backup` does not copy it, so a restored backup
+/// is walked again once.
+pub(crate) const NAME_OF_MARKER_OF_FINISHED_MOVE: &str = ".moved-to-shards";
 
 /// Files a sweep deleted, and files it could not delete and left for the next sweep.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -175,13 +179,18 @@ impl AttachmentFiles {
     /// directory: atomic, so a crash leaves every file in one place or the other, and the next
     /// start goes on. Temporary files stay where they are, for the sweep. Only shard directories
     /// are listed. A file or a directory that cannot be moved or listed is counted and left, still
-    /// found where it is: reads fall back to the old place, so this never stops the start.
+    /// found where it is: reads fall back to the old place, so this never stops the start. A move
+    /// without failure leaves a marker, and a start that finds it lists nothing.
     pub(crate) async fn move_files_to_their_shards(
         &self,
     ) -> Result<MovedFiles, AttachmentFileError> {
         let store = self.clone();
         tokio::task::spawn_blocking(move || {
             let mut moved_files = MovedFiles::default();
+            let marker = store.directory.join(NAME_OF_MARKER_OF_FINISHED_MOVE);
+            if marker.is_file() {
+                return Ok(moved_files);
+            }
             let Ok(shards) = std::fs::read_dir(&store.directory) else {
                 return Ok(moved_files);
             };
@@ -235,6 +244,12 @@ impl AttachmentFiles {
                         }
                     }
                 }
+            }
+            if moved_files.failed == 0
+                && let Err(error) = write_private_file(&marker, &[])
+            {
+                // Only costs a listing at the next start, which tries again.
+                tracing::warn!(%error, "cannot record that attachment files are in their shards");
             }
             Ok(moved_files)
         })
@@ -535,5 +550,45 @@ mod tests {
             }
         );
         assert_eq!(store.existing_path_of(id), Some(store.path_of(id)));
+        assert!(
+            !directory
+                .path()
+                .join(NAME_OF_MARKER_OF_FINISHED_MOVE)
+                .exists(),
+            "a move with a failure is tried again at the next start"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_finished_move_is_not_tried_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = files(directory.path());
+        let [first, second] = generated_ids(2)[..] else {
+            unreachable!()
+        };
+        write_in_legacy_place(&store, first).await;
+        let first_start = store.move_files_to_their_shards().await.unwrap();
+        // Put back in the old place after the move: only a new listing would move it.
+        write_in_legacy_place(&store, second).await;
+
+        let second_start = store.move_files_to_their_shards().await.unwrap();
+
+        assert_eq!(
+            first_start,
+            MovedFiles {
+                moved: 1,
+                failed: 0
+            }
+        );
+        assert_eq!(second_start, MovedFiles::default());
+        assert_eq!(
+            store.existing_path_of(second),
+            Some(store.legacy_path_of(second)),
+            "not listed again"
+        );
+        assert_eq!(
+            store.read(second).await.unwrap(),
+            second.raw().to_le_bytes()
+        );
     }
 }
