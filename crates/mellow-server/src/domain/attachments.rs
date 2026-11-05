@@ -15,6 +15,7 @@ use crate::domain::image_processing::{
 use crate::storage::link_previews::{self as link_preview_storage, StoredPreviewImage};
 
 use crate::domain::image_recompression::ImageRecompression;
+use crate::domain::media_headers;
 use crate::domain::message_rules::{UNKNOWN_CONTENT_TYPE, clean_file_name, sniff_content_type};
 use crate::domain::messages::{MessageError, Messages};
 use crate::domain::snowflake_generator::SnowflakeGenerator;
@@ -83,25 +84,32 @@ pub(crate) async fn optimize_attachments_in_background(
     }
 }
 
-/// The bytes to store and, for a picture, the size they show at. A photo goes without its EXIF,
-/// XMP and other metadata (GPS positions), before anyone can download it: a byte scan, no
-/// decoding. A JPEG whose metadata cannot be found is refused rather than published with it.
+/// The bytes to store and, for a picture or a video, the size they show at. A photo goes without
+/// its EXIF, XMP and other metadata (GPS positions), and an MP4 or `QuickTime` file without its
+/// `udta` and `meta` boxes (where phones write the place), before anyone can download it: byte
+/// scans, no decoding. A file whose metadata cannot be found is refused rather than published
+/// with it.
 async fn stored_form_and_dimensions(
     bytes: Vec<u8>,
     content_type: String,
 ) -> Result<(Vec<u8>, Option<(u32, u32)>), MessageError> {
-    let stored = tokio::task::spawn_blocking(move || {
-        let bytes = if content_type == "image/jpeg" {
+    tokio::task::spawn_blocking(move || {
+        let mut bytes = if content_type == "image/jpeg" {
             crate::domain::image_processing::strip_jpeg_metadata(&bytes)?
         } else {
             bytes
         };
-        let dimensions = crate::domain::image_processing::displayed_dimensions(&bytes);
-        Ok::<_, crate::domain::image_processing::ImageProcessingError>((bytes, dimensions))
+        let dimensions = match content_type.as_str() {
+            "video/mp4" | "video/quicktime" | "audio/mp4" => {
+                media_headers::blank_metadata_and_read_video_dimensions(&mut bytes)?
+            }
+            "video/webm" => media_headers::webm_video_dimensions(&bytes),
+            _ => crate::domain::image_processing::displayed_dimensions(&bytes),
+        };
+        Ok::<_, MessageError>((bytes, dimensions))
     })
     .await
-    .map_err(|error| MessageError::Internal(Box::new(error)))?;
-    Ok(stored?)
+    .map_err(|error| MessageError::Internal(Box::new(error)))?
 }
 
 /// `photo.jpg` stored as AVIF becomes `photo.avif`; a name without a picture extension gains one.
