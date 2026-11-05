@@ -86,6 +86,11 @@ export function dayDividerLabel(unixMilliseconds: number, locale: string = worde
   return dateTimeFormat(locale, "long-date").format(unixMilliseconds);
 }
 
+/** A moment's day as the reader writes dates: "Nov 3, 2026", « 3 nov. 2026 ». */
+export function mediumDateLabel(unixMilliseconds: number, locale: string = wordedFormattingLocale): string {
+  return dateTimeFormat(locale, "medium-date").format(unixMilliseconds);
+}
+
 /** A `YYYY-MM-DD` day as the reader writes dates: "30 Oct 2026", « 30 oct. 2026 ». */
 export function calendarDayLabel(isoDay: string, locale: string = wordedFormattingLocale): string {
   const [year = 0, month = 1, day = 1] = isoDay.split("-").map(Number);
