@@ -57,6 +57,77 @@ describe("MessageEditor", () => {
     expect(editor.text).toBe("two, edited");
   });
 
+  it("reopens with the typed text when the save is rejected, or keeps it when the chat moved on", async () => {
+    const editor = new MessageEditor(asTyped);
+    const edited = message("1", "helo");
+    editor.open(edited);
+    editor.text = "hello, fixed";
+    const text = editor.takeTextToSave() ?? "";
+    let isChatStillOnTheMessage = true;
+    const refusal = new Error("refused");
+
+    const saving = editor.sendOrGiveBack(
+      edited,
+      text,
+      () => Promise.reject(refusal),
+      () => ({ canReopen: isChatStillOnTheMessage, shouldTakeFocus: true }),
+    );
+    await expect(saving).rejects.toBe(refusal);
+    expect([editor.messageId, editor.text, editor.shouldTakeFocus]).toEqual(["1", "hello, fixed", true]);
+
+    editor.close();
+    isChatStillOnTheMessage = false;
+    await expect(
+      editor.sendOrGiveBack(
+        edited,
+        "moved on",
+        () => Promise.reject(refusal),
+        () => ({ canReopen: isChatStillOnTheMessage, shouldTakeFocus: true }),
+      ),
+    ).rejects.toBe(refusal);
+    expect(editor.messageId).toBeNull();
+    editor.open(edited);
+    expect(editor.text).toBe("moved on");
+  });
+
+  it("leaves the editor closed when the save succeeds", async () => {
+    const editor = new MessageEditor(asTyped);
+    const edited = message("1", "helo");
+    editor.open(edited);
+    editor.text = "hello";
+    const text = editor.takeTextToSave() ?? "";
+
+    await editor.sendOrGiveBack(
+      edited,
+      text,
+      () => Promise.resolve(),
+      () => ({ canReopen: true, shouldTakeFocus: true }),
+    );
+
+    expect(editor.messageId).toBeNull();
+  });
+
+  it("reopens without taking focus while the reader types elsewhere, and takes it again on the next open", async () => {
+    const editor = new MessageEditor(asTyped);
+    const edited = message("1", "helo");
+    editor.open(edited);
+    const text = editor.takeTextToSave() ?? "";
+
+    await expect(
+      editor.sendOrGiveBack(
+        edited,
+        text,
+        () => Promise.reject(new Error("refused")),
+        () => ({ canReopen: true, shouldTakeFocus: false }),
+      ),
+    ).rejects.toThrow("refused");
+    expect([editor.messageId, editor.shouldTakeFocus]).toEqual(["1", false]);
+
+    editor.close();
+    editor.open(edited);
+    expect(editor.shouldTakeFocus).toBe(true);
+  });
+
   it("counts characters as sent and refuses to save a text that is too long, staying open", () => {
     const editor = new MessageEditor((text) => text.replaceAll(":wave:", "<:wave:123>"));
     editor.open(message("1", ""));

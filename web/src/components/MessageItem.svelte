@@ -263,6 +263,9 @@
   const authorMenuTrigger = contextMenuTrigger((origin, invoker) => onopenauthormenu(author, origin, invoker));
 
   function focusEditorAtEnd(textarea: HTMLTextAreaElement) {
+    if (!editor.shouldTakeFocus) {
+      return;
+    }
     textarea.focus();
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
   }
