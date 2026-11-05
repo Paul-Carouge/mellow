@@ -660,6 +660,8 @@ export interface Ready {
   voice_states?: VoiceState[];
   /** Voice is on and its UDP port is open on this instance; absent (false) on older servers. */
   voice_enabled?: boolean;
+  /** The largest attachment the instance accepts, in bytes; absent from older servers (added after v0.45.0). */
+  maximum_attachment_bytes?: number;
 }
 
 /** One person connected to a voice channel; a user has at most one (ADR-0030). */

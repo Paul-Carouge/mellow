@@ -252,6 +252,11 @@ pub struct Ready {
     /// actions otherwise. Added after `v0.22.0`: older servers have no voice.
     #[serde(default)]
     pub voice_enabled: bool,
+    /// The largest file the instance accepts as an attachment, in bytes (`maximum_attachment_bytes`
+    /// in its configuration), so clients refuse a larger one before uploading it. Added after
+    /// `v0.45.0`: absent from older servers, where the upload's answer tells.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_attachment_bytes: Option<u64>,
 }
 
 /// One person connected to a voice channel, as the channel's viewers see it.
@@ -793,6 +798,19 @@ mod tests {
         assert_eq!(ready.user.custom_status, None);
         assert_eq!(ready.voice_states, Vec::new());
         assert!(!ready.voice_enabled);
+        assert_eq!(ready.maximum_attachment_bytes, None);
+    }
+
+    #[test]
+    fn ready_carries_the_upload_limit_both_ways() {
+        let ready: Ready = serde_json::from_str(
+            r#"{"session_id":"s","user":{"id":"1","username":"a","display_name":"A","email":"a@example.org","is_instance_administrator":false},"guilds":[],"read_states":[],"online_user_ids":[],"maximum_attachment_bytes":26214400}"#,
+        )
+        .unwrap();
+        assert_eq!(ready.maximum_attachment_bytes, Some(26_214_400));
+        let json = serde_json::to_value(&ready).unwrap();
+        assert_eq!(json["maximum_attachment_bytes"], 26_214_400);
+        assert_eq!(serde_json::from_value::<Ready>(json).unwrap(), ready);
     }
 
     #[test]

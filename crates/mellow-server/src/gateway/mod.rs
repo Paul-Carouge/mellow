@@ -509,6 +509,7 @@ async fn build_ready(
             .may_create_guilds(user.is_instance_administrator),
         voice_states,
         voice_enabled: state.voice.is_available(),
+        maximum_attachment_bytes: Some(state.maximum_attachment_bytes),
     })
 }
 

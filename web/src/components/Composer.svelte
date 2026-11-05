@@ -298,7 +298,8 @@
   }
 
   function uploadErrorSentence(file: File, error: unknown): string {
-    // The instance does not tell its limit, so the sentence names the size and the instance (DESIGN.md §8).
+    // Refused by the client before upload (`Ready.maximum_attachment_bytes`) or by an older instance;
+    // the sentence names the size and the instance (DESIGN.md §8).
     if (error instanceof ApiError && error.code === "FILE_TOO_LARGE") {
       return strings.chat.fileTooLarge(file.name, humanFileSize(file.size), window.location.host);
     }

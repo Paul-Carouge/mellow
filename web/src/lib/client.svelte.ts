@@ -231,6 +231,8 @@ export class MellowClient {
   mayCreateGuilds = $state(true);
   /** Klipy's key and this member's customer id (ADR-0042); null while unknown or when the instance has no GIFs. */
   gifSettings = $state<GifSettings | null>(null);
+  /** `Ready.maximum_attachment_bytes`; null with servers that predate it, whose upload answer tells. */
+  private maximumAttachmentBytes: number | null = null;
 
   /** Who is in which voice channel, by user (one connection each, ADR-0030), in join order. */
   voiceStatesByUserId = new SvelteMap<Snowflake, VoiceState>();
@@ -502,6 +504,7 @@ export class MellowClient {
     this.hasReceivedReady = true;
     this.user = ready.user;
     this.mayCreateGuilds = ready.may_create_guilds ?? true;
+    this.maximumAttachmentBytes = ready.maximum_attachment_bytes ?? null;
     if (this.gifSettings === null) {
       void this.loadGifSettings(ready.user.id);
     }
@@ -1523,6 +1526,10 @@ export class MellowClient {
     const channelId = this.selectedChannelId;
     if (!channelId) {
       return Promise.reject(new ApiError(404, "NOT_FOUND"));
+    }
+    // Refused here, as the instance would, without sending the whole file first.
+    if (this.maximumAttachmentBytes !== null && file.size > this.maximumAttachmentBytes) {
+      return Promise.reject(new ApiError(413, "FILE_TOO_LARGE"));
     }
     return this.rest.uploadAttachment(channelId, file, signal);
   }

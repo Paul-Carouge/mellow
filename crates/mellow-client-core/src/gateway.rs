@@ -381,6 +381,7 @@ mod tests {
                 relationships: Vec::new(),
                 voice_states: Vec::new(),
                 voice_enabled: false,
+                maximum_attachment_bytes: None,
             }),
         }
     }
