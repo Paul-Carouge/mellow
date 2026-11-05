@@ -24,7 +24,7 @@ function isSameLocalDay(left: Date, right: Date): boolean {
   );
 }
 
-type DateTimeShape = "time-of-day" | "short-date-and-time" | "full-date-and-time" | "medium-date" | "long-date";
+type DateTimeShape = "time-of-day" | "short-date-and-time" | "full-date-and-time" | "medium-date" | "long-date" | "day-and-month";
 
 const DATE_TIME_SHAPE_OPTIONS: Record<DateTimeShape, Intl.DateTimeFormatOptions> = {
   "time-of-day": { hour: "2-digit", minute: "2-digit" },
@@ -32,6 +32,7 @@ const DATE_TIME_SHAPE_OPTIONS: Record<DateTimeShape, Intl.DateTimeFormatOptions>
   "full-date-and-time": { dateStyle: "full", timeStyle: "short" },
   "medium-date": { dateStyle: "medium" },
   "long-date": { dateStyle: "long" },
+  "day-and-month": { day: "numeric", month: "short" },
 };
 
 /** Building a formatter costs tens of microseconds, and every message row formats up to three dates. */
@@ -89,6 +90,18 @@ export function dayDividerLabel(unixMilliseconds: number, locale: string = worde
 /** A moment's day as the reader writes dates: "Nov 3, 2026", « 3 nov. 2026 ». */
 export function mediumDateLabel(unixMilliseconds: number, locale: string = wordedFormattingLocale): string {
   return dateTimeFormat(locale, "medium-date").format(unixMilliseconds);
+}
+
+/** A moment's day beside an earlier one: "Nov 5" in the earlier one's year, else "Nov 5, 2026" (also without one). */
+export function mediumDateLabelWithoutRepeatedYear(
+  unixMilliseconds: number,
+  earlierUnixMilliseconds: number | undefined,
+  locale: string = wordedFormattingLocale,
+): string {
+  const isSameYear =
+    earlierUnixMilliseconds !== undefined &&
+    new Date(unixMilliseconds).getFullYear() === new Date(earlierUnixMilliseconds).getFullYear();
+  return dateTimeFormat(locale, isSameYear ? "day-and-month" : "medium-date").format(unixMilliseconds);
 }
 
 /** A `YYYY-MM-DD` day as the reader writes dates: "30 Oct 2026", « 30 oct. 2026 ». */

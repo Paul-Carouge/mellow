@@ -3,7 +3,7 @@
 
   import { formattingLocale, strings } from "../../i18n";
   import type { LinkEmbed, LinkPreview, Snowflake } from "../../lib/protocol";
-  import { mediumDateLabel } from "../format";
+  import { mediumDateLabel, mediumDateLabelWithoutRepeatedYear } from "../format";
   import Icon from "../Icon.svelte";
   import { retryImageOnceThenMarkFailed } from "../image-retry";
   import { compactCount, issueStateBadge, type IssueStateTone, languageColorOf, MAXIMUM_SHOWN_TOPICS } from "./provider-cards";
@@ -175,7 +175,9 @@
           <span>{strings.providerCards.openedBy(embed.author, mediumDateLabel(embed.opened_at_unix_milliseconds))}</span>
         {/if}
         {#if embed.merged_at_unix_milliseconds !== undefined}
-          <span>{strings.providerCards.mergedOn(mediumDateLabel(embed.merged_at_unix_milliseconds))}</span>
+          <!-- The opening date just before shows the year (§4.3), so the line stays one line. -->
+          {@const shownOpenedAt = embed.author === "" ? undefined : embed.opened_at_unix_milliseconds}
+          <span>{strings.providerCards.mergedOn(mediumDateLabelWithoutRepeatedYear(embed.merged_at_unix_milliseconds, shownOpenedAt))}</span>
         {/if}
         <span class="inline-flex items-center gap-2xs">
           <Icon name="chat-circle" class="size-(--mw-component-link-preview-stat-icon-size) text-(--mw-component-link-preview-stat-icon)" />

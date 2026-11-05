@@ -11,6 +11,7 @@ import {
   fileNameStartAndEnd,
   fullTimestampLabel,
   humanFileSize,
+  mediumDateLabelWithoutRepeatedYear,
   mentionBadgeText,
   messageTimestampLabel,
   middleTruncate,
@@ -87,6 +88,16 @@ describe("cached date formatters", () => {
       }
     }
     expect(calendarDayLabel("2026-10-30", locale)).toBe(new Date(2026, 9, 30).toLocaleDateString(locale, { dateStyle: "medium" }));
+  });
+
+  it("leave out a year the earlier date already shows", () => {
+    const opened = new Date(2026, 10, 3, 10, 0).getTime();
+    const mergedSameYear = new Date(2026, 10, 5, 8, 30).getTime();
+    const mergedNextYear = new Date(2027, 0, 4, 8, 30).getTime();
+    expect(mediumDateLabelWithoutRepeatedYear(mergedSameYear, opened, "en-US")).toBe("Nov 5");
+    expect(mediumDateLabelWithoutRepeatedYear(mergedSameYear, opened, "fr-FR")).toBe("5 nov.");
+    expect(mediumDateLabelWithoutRepeatedYear(mergedNextYear, opened, "en-US")).toBe("Jan 4, 2027");
+    expect(mediumDateLabelWithoutRepeatedYear(mergedSameYear, undefined, "en-US")).toBe("Nov 5, 2026");
   });
 
   it("keep each locale apart", () => {
