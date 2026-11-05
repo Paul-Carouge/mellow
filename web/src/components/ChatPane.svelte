@@ -366,12 +366,24 @@
     }
     actionError = "";
     try {
-      await client.editMessage(message, trimmed);
-    } catch (error) {
       // The typed text is not lost: the editor reopens with it, or keeps it for the next edit.
-      messageEditor.giveBack(message, text, message.channel_id === channelId && canSendMessages);
+      await messageEditor.sendOrGiveBack(
+        message,
+        text,
+        () => client.editMessage(message, trimmed),
+        () => ({
+          canReopen: message.channel_id === channelId && canSendMessages,
+          shouldTakeFocus: !isTypingInAField(document.activeElement),
+        }),
+      );
+    } catch (error) {
       showActionError(message.channel_id, describeError(error, strings.chat.editFailed));
     }
+  }
+
+  /** The reader moved on to another message: a reopened editor must not take their keystrokes. */
+  function isTypingInAField(element: Element | null): boolean {
+    return (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) && element.value !== "";
   }
 
   /** An answer that comes back after the reader moved on is not told under another channel. */

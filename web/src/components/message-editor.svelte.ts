@@ -15,6 +15,8 @@ export class MessageEditor {
   readonly isTooLong = $derived(this.charactersLeft < 0);
   /** The instance would refuse it: say why at the first try, until the editor closes. */
   hasTriedSavingTooLong = $state(false);
+  /** False when a refused save reopens the editor while the reader types elsewhere: no focus theft. */
+  shouldTakeFocus = $state(true);
   // Refused saves of messages whose editor could not reopen, until the message is edited again.
   readonly #refusedTextByMessageId = new Map<Snowflake, string>();
   readonly #textAsSent: (text: string) => string;
@@ -28,6 +30,7 @@ export class MessageEditor {
     this.text = this.#refusedTextByMessageId.get(message.id) ?? message.content;
     this.#refusedTextByMessageId.delete(message.id);
     this.hasTriedSavingTooLong = false;
+    this.shouldTakeFocus = true;
   }
 
   close(): void {
@@ -47,13 +50,33 @@ export class MessageEditor {
   }
 
   /**
+   * Sends `text` (taken by `takeTextToSave`); when `sendEdit` rejects, gives the text back and
+   * rethrows. `whereToGiveBack` is asked after the answer, as the chat may have moved on meanwhile.
+   */
+  async sendOrGiveBack(
+    message: EditedMessage,
+    text: string,
+    sendEdit: () => Promise<void>,
+    whereToGiveBack: () => { canReopen: boolean; shouldTakeFocus: boolean },
+  ): Promise<void> {
+    try {
+      await sendEdit();
+    } catch (error) {
+      const { canReopen, shouldTakeFocus } = whereToGiveBack();
+      this.giveBack(message, text, canReopen, shouldTakeFocus);
+      throw error;
+    }
+  }
+
+  /**
    * A refused save: the editor reopens with `text` when it is free and `canReopen` (the message is
    * still in the open chat); otherwise the text waits for the message's next edit.
    */
-  giveBack(message: EditedMessage, text: string, canReopen: boolean): void {
+  giveBack(message: EditedMessage, text: string, canReopen: boolean, shouldTakeFocus = true): void {
     if (canReopen && this.messageId === null) {
       this.open(message);
       this.text = text;
+      this.shouldTakeFocus = shouldTakeFocus;
     } else if (this.messageId !== message.id) {
       this.#refusedTextByMessageId.set(message.id, text);
     }
