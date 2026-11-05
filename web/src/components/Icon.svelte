@@ -23,6 +23,7 @@
     | "cell-signal-high"
     | "cell-signal-low"
     | "cell-signal-medium"
+    | "chart-bar-horizontal"
     | "chat-circle"
     | "check"
     | "clock"
