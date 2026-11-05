@@ -13,6 +13,7 @@ use mellow_protocol::{
 };
 use sha2::{Digest as _, Sha256};
 
+use crate::domain::account_names::account_name_key;
 use crate::domain::account_rules::normalize_login;
 use crate::domain::accounts::AccountError;
 use crate::domain::clock::now_unix_milliseconds;
@@ -120,7 +121,12 @@ pub(crate) async fn login(
     ApiJson(request): ApiJson<LoginRequest>,
 ) -> Result<Response, ApiError> {
     let address = client_address_key(peer, &headers, &state.trusted_proxy_networks);
-    let account = fixed_size_key(&normalize_login(&request.login).map_err(AccountError::from)?);
+    // Keyed on the folded name key sign-in looks accounts up by, so respelling one name (accents,
+    // full-width letters, spaces) cannot reach one account under fresh limits. An email folds too,
+    // which only merges keys.
+    let account = fixed_size_key(&account_name_key(
+        &normalize_login(&request.login).map_err(AccountError::from)?,
+    ));
     let now = Instant::now();
     // Every attempt is counted before the password check, so concurrent requests cannot all
     // pass under the limit while Argon2 runs. The per-account limits are recorded only for
@@ -200,9 +206,7 @@ pub(crate) async fn update_current_user(
     ApiJson(request): ApiJson<UpdateCurrentUserRequest>,
 ) -> Result<Json<CurrentUser>, ApiError> {
     let token = session_token(&headers)?;
-    if !is_profile_write_allowed(&state, &user, token)
-        || (request.current_password.is_some() && !is_password_check_allowed(&state, &user, token))
-    {
+    if !is_profile_write_allowed(&state, &user, token) {
         return Err(ApiError::rate_limited());
     }
     Ok(Json(

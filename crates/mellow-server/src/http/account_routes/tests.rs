@@ -249,6 +249,37 @@ async fn login_attempts_are_limited_per_account_and_address_before_the_password_
 }
 
 #[tokio::test]
+async fn spelling_one_name_differently_shares_the_per_account_login_limit() {
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    send(
+        &state,
+        post_json("/api/v1/auth/register", &registration("elodie")),
+    )
+    .await;
+    let attacker = "198.51.100.1:1000";
+    let limit = rate_limit::LOGIN_ATTEMPTS_PER_ACCOUNT_AND_ADDRESS.maximum_events;
+    // Each spelling folds to the same name key, so each one must count against the same account.
+    let spellings: Vec<String> = (0..=limit)
+        .map(|accents| format!("E{}LODIE", "\u{301}".repeat(accents as usize)))
+        .collect();
+    let mut statuses = Vec::new();
+    for spelling in &spellings {
+        let ((status, _), _) = send_from(&state, attacker, wrong_login(spelling)).await;
+        statuses.push(status);
+    }
+    let ((full_width_status, _), _) = send_from(&state, attacker, wrong_login("ｅlodie")).await;
+    database.close().await;
+    assert!(
+        statuses[..limit as usize]
+            .iter()
+            .all(|status| *status == StatusCode::UNAUTHORIZED)
+    );
+    assert_eq!(statuses[limit as usize], StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(full_width_status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
 async fn forwarded_for_from_the_loopback_proxy_separates_clients() {
     let (_directory, database) = migrated_database().await;
     let mut state = test_state(database.clone(), RegistrationMode::Closed);
