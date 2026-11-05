@@ -4,6 +4,31 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-11-05
+A robustness, performance and compression pass after an audit of the whole project, and YouTube links that play in the message. No database migration; the protocol gains `maximum_attachment_bytes` in `READY` and the send's `nonce` in the author's own `MESSAGE_CREATE`, which older clients ignore.
+
+### Added
+- YouTube Shorts, live, embed and youtube-nocookie links play inline, from their start time (`t=`, `start=`) and inside their public playlist; Shorts play in a vertical 9:16 frame. The server follows up to five redirects (was three), so links behind YouTube's consent redirect get their card and player.
+- Portrait phone videos show in a portrait player (the server reads the video's size at upload).
+- The web client knows the instance's upload limit and refuses a file that is too large before uploading it.
+
+### Changed
+- Pictures are stored smaller: lossless screenshots about 5 times smaller, and pictures and previews now aim at a SSIMULACRA2 score of 80 instead of 85 (attachments about 20 % smaller, the message list about 27 % lighter), still visually close to the original (ADR-0033 amended).
+- The web client downloads about 10 % less at startup: only your language, and the voice and search panels when first used.
+- Faster gateway fan-out to restricted channels (about 3 times on 10 000 members), and no directory walk of attachments at each start once the move to shards is done.
+
+### Fixed
+- GIF frames with delays of 10 ms or less play at 100 ms, as in browsers.
+- A reaction or poll vote whose answer was lost ends in the server's state, with no phantom vote; your own message no longer shows twice when the send's answer is lost.
+- Removing a file from the tray stops its upload; a stalled upload gives up and offers Retry; a refused edit keeps your text.
+- A dead gateway connection after a network change is found within 10 seconds and the session resumes.
+- Editing a message removes the previews of deleted links; a slow link no longer loses the other links' previews.
+
+### Security
+- MP4, MOV and M4A uploads lose their location and other metadata (`udta`, `meta`, XMP) before anyone can download them (ADR-0038 amended).
+- A client reading very slowly can no longer hold download slots for hours: each response must arrive at 30 s plus 1 s per 32 KiB, and one account holds at most 3 of the 8 attachment download slots.
+- Link previews can no longer starve avatar uploads or other members: at most 4 preview jobs per member, preview pictures capped at 4 MP with their own slot, and a member who lost access to a channel no longer receives its previews (ADR-0041 amended).
+
 ## [0.45.0] - 2026-11-05
 Polls in messages (ADR-0043). Database migration 0038; the protocol gains `poll` on messages and sends, the poll routes, the `MESSAGE_POLL_VOTE_ADD` and `_REMOVE` events and the `SEND_POLLS` permission, which older clients ignore.
 
