@@ -129,6 +129,20 @@ describe("GatewayConnection", () => {
     expect(FakeWebSocket.opened).toHaveLength(1);
   });
 
+  it("keeps an open socket when a regular heartbeat tick falls inside the network change check", () => {
+    attachedGateway();
+    const socket = FakeWebSocket.opened[0]!;
+    vi.advanceTimersByTime(HEARTBEAT_INTERVAL_MILLISECONDS - 1_000);
+
+    fakeWindow.dispatchEvent(new Event("online"));
+    // The regular tick fires while the check still waits for its ack.
+    vi.advanceTimersByTime(2_000);
+    socket.receive({ op: "heartbeat_ack" });
+    vi.advanceTimersByTime(NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT_MILLISECONDS);
+
+    expect(FakeWebSocket.opened).toHaveLength(1);
+  });
+
   it("stops listening for the network once closed", () => {
     const gateway = gatewayWaitingToReconnect();
     gateway.close();
