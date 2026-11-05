@@ -17,7 +17,9 @@ use crate::domain::account_rules::{
 };
 use crate::domain::clock::now_unix_milliseconds;
 use crate::domain::password::{PasswordHashError, hash_password, verify_password};
-use crate::domain::session_token::{generate_session_token, session_token_sha256};
+use crate::domain::session_token::{
+    SessionTokenSha256, generate_session_token, session_token_sha256,
+};
 use crate::domain::snowflake_generator::SnowflakeGenerator;
 use crate::events::ChosenPresence;
 use crate::storage::accounts::{
@@ -495,6 +497,16 @@ impl Accounts {
         self.events
             .disconnect_user_except_token(user.id, &token_sha256);
         Ok(())
+    }
+
+    /// Ends the live gateway sessions of every session token of the user but `kept`, once their
+    /// sessions were deleted.
+    pub(crate) fn disconnect_user_except_token(
+        &self,
+        user_id: Snowflake,
+        kept: &SessionTokenSha256,
+    ) {
+        self.events.disconnect_user_except_token(user_id, kept);
     }
 
     /// The enabled user behind an unexpired session, with their password hash.

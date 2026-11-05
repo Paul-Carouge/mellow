@@ -115,7 +115,11 @@
         await backToPassword(strings.security.signIn.expired);
         return;
       }
-      errorMessage = describeError(error, strings.security.signIn.verifyFailed);
+      // Too many wrong codes lock app codes on the account; a recovery code still works.
+      errorMessage =
+        error instanceof ApiError && error.code === "RATE_LIMITED" && !isUsingRecoveryCode
+          ? strings.security.signIn.codesLocked
+          : describeError(error, strings.security.signIn.verifyFailed);
       await tick();
       document.getElementById("sign-in-code")?.focus();
     }

@@ -154,7 +154,13 @@ export const twoFactorChallengeSamples = [
 export const twoFactorStatusSamples = [
   {
     "is_enabled": true,
+    "last_failed_code_at_unix_milliseconds": 1700000000000,
     "recovery_codes_remaining": 9
+  },
+  {
+    "is_enabled": false,
+    "last_failed_code_at_unix_milliseconds": null,
+    "recovery_codes_remaining": 0
   }
 ] satisfies TwoFactorStatus[];
 

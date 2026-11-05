@@ -134,6 +134,9 @@ impl From<crate::domain::two_factor::TwoFactorError> for ApiError {
             TwoFactorError::AlreadyEnabled | TwoFactorError::NotEnabled => {
                 (StatusCode::CONFLICT, ApiErrorCode::Conflict)
             }
+            TwoFactorError::CodesLocked => {
+                (StatusCode::TOO_MANY_REQUESTS, ApiErrorCode::RateLimited)
+            }
         };
         Self {
             status,

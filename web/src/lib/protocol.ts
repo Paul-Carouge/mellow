@@ -174,6 +174,8 @@ export interface TwoFactorChallenge {
 export interface TwoFactorStatus {
   is_enabled: boolean;
   recovery_codes_remaining: number;
+  /** When a wrong code was last typed for the account; `null` when none was or it is off. */
+  last_failed_code_at_unix_milliseconds: number | null;
 }
 
 /** Unpadded base32: SHA-1, 6 digits, 30-second steps (the `otpauth://` defaults). */

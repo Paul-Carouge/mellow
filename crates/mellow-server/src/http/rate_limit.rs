@@ -54,14 +54,6 @@ pub(crate) const LOGIN_ATTEMPTS_PER_ACCOUNT: RateLimit = RateLimit {
     window: Duration::from_mins(15),
 };
 
-/// Second-step codes on one account, from all addresses (ADR-0049). Each challenge needs the
-/// right password first; this caps what an attacker who has it can try at 10 codes per quarter of
-/// an hour, about 0.3 % of luck a day against a 6-digit code accepted for three steps.
-pub(crate) const TWO_FACTOR_CODES_PER_ACCOUNT: RateLimit = RateLimit {
-    maximum_events: 10,
-    window: Duration::from_mins(15),
-};
-
 /// Current-password checks (password change, username change) per session: a stolen session must
 /// not be able to guess the password quickly. Per session, not per user, so a thief cannot use up
 /// the budget of the owner's own devices and keep them from changing the password.

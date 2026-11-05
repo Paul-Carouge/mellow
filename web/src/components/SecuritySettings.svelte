@@ -10,7 +10,8 @@
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
   import TextField from "./TextField.svelte";
-  import { groupedSecret, isSixDigitCode, otpauthUri, recoveryCodesFileText } from "./two-factor";
+  import { messageTimestampLabel } from "./format";
+  import { groupedSecret, isSixDigitCode, isWrongCodeRecent, otpauthUri, recoveryCodesFileText } from "./two-factor";
 
   // User settings, Security (ADR-0049): two-factor sign-in in the account card's look. Off, a
   // short why and one button; turning it on asks for the password, then shows the QR code (drawn
@@ -25,7 +26,8 @@
   type Form = "password" | "scan" | "disable" | "regenerate";
 
   const id = $props.id();
-  const host = window.location.host;
+  // Without the port: authenticator apps split the account label at a colon.
+  const host = window.location.hostname;
   let status = $state<TwoFactorStatus | null>(null);
   let hasLoadFailed = $state(false);
   let openForm = $state<Form | null>(null);
@@ -141,7 +143,7 @@
   const enable = () =>
     run(async () => {
       const answer = await client.rest.enableTwoFactor(codeDraft);
-      status = { is_enabled: true, recovery_codes_remaining: answer.recovery_codes.length };
+      status = { is_enabled: true, recovery_codes_remaining: answer.recovery_codes.length, last_failed_code_at_unix_milliseconds: null };
       notice = strings.security.turnedOn;
       await showRecoveryCodes(answer.recovery_codes);
     }, strings.security.enableFailed);
@@ -149,7 +151,7 @@
   const regenerate = () =>
     run(async () => {
       const answer = await client.rest.regenerateRecoveryCodes(passwordDraft, codeDraft);
-      status = { is_enabled: true, recovery_codes_remaining: answer.recovery_codes.length };
+      status = { ...(status ?? { last_failed_code_at_unix_milliseconds: null }), is_enabled: true, recovery_codes_remaining: answer.recovery_codes.length };
       notice = strings.security.newCodesReady;
       await showRecoveryCodes(answer.recovery_codes);
     }, strings.security.regenerateFailed);
@@ -157,7 +159,7 @@
   const disable = () =>
     run(async () => {
       await client.rest.disableTwoFactor(passwordDraft, codeDraft);
-      status = { is_enabled: false, recovery_codes_remaining: 0 };
+      status = { is_enabled: false, recovery_codes_remaining: 0, last_failed_code_at_unix_milliseconds: null };
       notice = strings.security.turnedOff;
       openForm = null;
       clearDrafts();
@@ -187,7 +189,8 @@
     link.href = url;
     link.download = strings.security.codesFileName;
     link.click();
-    URL.revokeObjectURL(url);
+    // Some browsers (Safari, older Firefox) start the download after `click` returns.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   async function finishWithCodes() {
@@ -345,6 +348,12 @@
         ? strings.security.noRecoveryCodesLeft
         : strings.security.recoveryCodesLeft(status.recovery_codes_remaining)}
     </p>
+    {#if status.last_failed_code_at_unix_milliseconds !== null && isWrongCodeRecent(status.last_failed_code_at_unix_milliseconds, Date.now())}
+      <p class="flex gap-(--mw-component-settings-error-icon-gap) type-body text-(--mw-component-settings-error-text)">
+        <Icon name="warning-circle" class="size-(--mw-component-settings-error-icon-size) shrink-0 text-(--mw-component-settings-error-icon)" />
+        <span>{strings.security.wrongCodeTyped(messageTimestampLabel(status.last_failed_code_at_unix_milliseconds, new Date()))}</span>
+      </p>
+    {/if}
     <div class="flex flex-wrap gap-(--mw-component-settings-account-button-gap)">
       <Button id={openerId("regenerate")} onclick={() => void open("regenerate")}>{strings.security.newRecoveryCodes}</Button>
       <Button id={openerId("disable")} variant="danger" onclick={() => void open("disable")}>{strings.security.turnOff}</Button>

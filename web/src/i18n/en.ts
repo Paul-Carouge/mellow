@@ -2255,6 +2255,8 @@ export const en = {
     enableFailed: "Couldn't turn on two-factor sign-in",
     disableFailed: "Couldn't turn off two-factor sign-in",
     regenerateFailed: "Couldn't get new recovery codes",
+    wrongCodeTyped: (when: string) =>
+      `Last wrong code typed for your account: ${when}. If it wasn't you, someone knows your password: change it.`,
     signIn: {
       subtitle: "Open your authenticator app and enter the code it shows for this account.",
       recoverySubtitle: "Enter one of the recovery codes you saved. Each works once.",
@@ -2269,6 +2271,7 @@ export const en = {
       backToSignIn: "Back to sign in",
       verifyFailed: "Couldn't sign in",
       expired: "This sign-in took too long. Enter your password again.",
+      codesLocked: "Too many wrong codes: app codes are refused for a while. Try again later or use a recovery code.",
     },
   },
 };

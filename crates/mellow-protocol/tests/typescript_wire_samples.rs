@@ -1052,10 +1052,18 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
         sampled(
             "TwoFactorStatus",
             Interface,
-            &[TwoFactorStatus {
-                is_enabled: true,
-                recovery_codes_remaining: 9,
-            }],
+            &[
+                TwoFactorStatus {
+                    is_enabled: true,
+                    recovery_codes_remaining: 9,
+                    last_failed_code_at_unix_milliseconds: Some(1_700_000_000_000),
+                },
+                TwoFactorStatus {
+                    is_enabled: false,
+                    recovery_codes_remaining: 0,
+                    last_failed_code_at_unix_milliseconds: None,
+                },
+            ],
         )?,
         sampled(
             "TwoFactorEnrolment",

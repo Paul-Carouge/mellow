@@ -20,7 +20,6 @@ use crate::http::account_routes::{
 };
 use crate::http::api_error::{ApiError, ApiJson};
 use crate::http::authentication::{AuthenticatedUser, session_token};
-use crate::http::rate_limit::TWO_FACTOR_CODES_PER_ACCOUNT;
 use crate::storage::accounts::StoredUser;
 
 pub(super) fn router() -> Router<AppState> {
@@ -58,18 +57,8 @@ async fn complete_sign_in(
     if !record_authentication_attempt_per_client(&state, peer, &headers, now) {
         return Err(ApiError::rate_limited());
     }
-    let user_id = state
-        .two_factor
-        .challenge_owner(&request.two_factor_token, now)
-        .ok_or_else(ApiError::unauthorized)?;
-    // Per account, whatever the address or the challenge: the limit on guessing codes.
-    if !state.unauthenticated_rate_limiter.record_event(
-        &format!("two-factor:{user_id}"),
-        TWO_FACTOR_CODES_PER_ACCOUNT,
-        now,
-    ) {
-        return Err(ApiError::rate_limited());
-    }
+    // Per account, wrong codes lock app codes in the database (`TwoFactor::check_code`); recovery
+    // codes stay usable, so someone who has the password cannot lock the owner out.
     let session = state
         .two_factor
         .complete_sign_in(
@@ -130,7 +119,13 @@ async fn enable(
     let user = checked_user(&state, &user, &headers).await?;
     let codes = state
         .two_factor
-        .enable(user.id, &request.code, now_unix_milliseconds())
+        .enable(
+            &state.accounts,
+            session_token(&headers)?,
+            user.id,
+            &request.code,
+            now_unix_milliseconds(),
+        )
         .await?;
     Ok(uncached(codes))
 }

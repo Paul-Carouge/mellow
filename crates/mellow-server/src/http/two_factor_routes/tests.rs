@@ -108,7 +108,7 @@ async fn sign_in_with_two_factor_takes_a_challenge_then_a_code() {
 }
 
 #[tokio::test]
-async fn codes_are_limited_per_account_across_challenges() {
+async fn wrong_codes_lock_app_codes_across_challenges_but_not_recovery_codes() {
     let (_directory, database) = migrated_database().await;
     let state = test_state(database.clone(), RegistrationMode::Open);
     let token = registered_token(&state, "aurore").await;
@@ -123,7 +123,7 @@ async fn codes_are_limited_per_account_across_challenges() {
     )
     .await;
     let secret = json::<TwoFactorEnrolment>(&body).secret;
-    send(
+    let (_, body) = send(
         &state,
         authorized(
             "POST",
@@ -133,9 +133,10 @@ async fn codes_are_limited_per_account_across_challenges() {
         ),
     )
     .await;
+    let recovery_codes = json::<TwoFactorRecoveryCodes>(&body).recovery_codes;
 
     let mut statuses = Vec::new();
-    // Three challenges of five attempts: the eleventh code on the account is refused.
+    // Three challenges of five attempts: the tenth wrong code locks app codes on the account.
     for _ in 0..3 {
         let (_, body) = send(&state, post_json("/api/v1/auth/login", &login())).await;
         let challenge: TwoFactorChallenge = json(&body);
@@ -154,7 +155,30 @@ async fn codes_are_limited_per_account_across_challenges() {
             statuses.push(status);
         }
     }
+    // From another address: the first one used up its own authentication budget.
+    let owner_peer = "192.0.2.20:40000";
+    let ((_, body), _) = send_from(
+        &state,
+        owner_peer,
+        post_json("/api/v1/auth/login", &login()),
+    )
+    .await;
+    let challenge: TwoFactorChallenge = json(&body);
+    let second_step = |code: &str| {
+        post_json(
+            "/api/v1/auth/login/two-factor",
+            &serde_json::json!({"two_factor_token": challenge.two_factor_token, "code": code}),
+        )
+    };
+    let ((locked_app_code, body), _) =
+        send_from(&state, owner_peer, second_step(&code(&secret, 1))).await;
+    let locked_code = json::<ApiErrorBody>(&body).code;
+    let ((recovery, _), _) = send_from(&state, owner_peer, second_step(&recovery_codes[0])).await;
     database.close().await;
+
+    assert_eq!(locked_app_code, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(locked_code, ApiErrorCode::RateLimited);
+    assert_eq!(recovery, StatusCode::OK, "the owner still gets in");
 
     assert!(
         statuses[..10]

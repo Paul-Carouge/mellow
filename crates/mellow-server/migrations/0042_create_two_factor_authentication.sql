@@ -8,6 +8,12 @@ CREATE TABLE two_factor_secrets (
     enabled_at_unix_milliseconds INTEGER,
     -- The newest time step whose code was accepted: a code works once (RFC 6238 §5.2).
     last_used_time_step INTEGER NOT NULL DEFAULT -1,
+    -- Wrong codes in a row since the last right one; every tenth refuses app codes for a while
+    -- (until the next column), doubling each time, so guessing stays slow across restarts.
+    failed_code_streak INTEGER NOT NULL DEFAULT 0,
+    codes_locked_until_unix_milliseconds INTEGER NOT NULL DEFAULT 0,
+    -- Shown on the owner's Security page: a wrong code means someone may know the password.
+    last_failed_code_at_unix_milliseconds INTEGER,
     created_at_unix_milliseconds INTEGER NOT NULL
 ) STRICT;
 
@@ -19,10 +25,12 @@ CREATE TABLE two_factor_recovery_codes (
 ) STRICT, WITHOUT ROWID;
 
 -- Resets made by an instance administrator with `mellow-server admin reset-two-factor`, kept as
--- the audit trail of an action that removes an account's protection.
+-- the audit trail of an action that removes an account's protection. No foreign key: the trail
+-- outlives the account, which is when an investigation may need it.
 CREATE TABLE two_factor_resets (
     id INTEGER PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
     reset_at_unix_milliseconds INTEGER NOT NULL
 ) STRICT;
 

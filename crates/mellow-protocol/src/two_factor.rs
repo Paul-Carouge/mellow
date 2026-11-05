@@ -27,6 +27,10 @@ pub struct CompleteTwoFactorSignInRequest {
 pub struct TwoFactorStatus {
     pub is_enabled: bool,
     pub recovery_codes_remaining: u32,
+    /// When a wrong code was last typed for this account (sign-in or settings): someone who is not
+    /// the owner may know the password. `null` when none was, or when two-factor sign-in is off.
+    #[serde(default)]
+    pub last_failed_code_at_unix_milliseconds: Option<u64>,
 }
 
 /// Body of `POST /api/v1/users/@me/two-factor/enrolment`: starts (or restarts) an enrolment.

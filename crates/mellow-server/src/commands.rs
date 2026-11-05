@@ -992,7 +992,17 @@ mod tests {
         .fetch_one(database.readers())
         .await
         .unwrap();
+        // The trail names the account as stored, and outlives it.
+        sqlx::query("DELETE FROM users")
+            .execute(database.writer())
+            .await
+            .unwrap();
+        let recorded: String = sqlx::query_scalar("SELECT username FROM two_factor_resets")
+            .fetch_one(database.readers())
+            .await
+            .unwrap();
         database.close().await;
+        assert_eq!(recorded, "paul");
         assert!(first);
         assert!(!second, "nothing left to reset");
         assert!(unknown.is_err());

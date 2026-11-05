@@ -2226,6 +2226,8 @@ export const fr: Catalogue = {
     enableFailed: "Impossible d’activer la connexion en deux étapes",
     disableFailed: "Impossible de désactiver la connexion en deux étapes",
     regenerateFailed: "Impossible de générer de nouveaux codes de secours",
+    wrongCodeTyped: (when: string) =>
+      `Dernier code erroné saisi pour ton compte${NO_BREAK_SPACE}: ${when}. Si ce n’était pas toi, quelqu’un connaît ton mot de passe${NO_BREAK_SPACE}: change-le.`,
     signIn: {
       subtitle: "Ouvre ton application d’authentification et saisis le code affiché pour ce compte.",
       recoverySubtitle: "Saisis l’un des codes de secours que tu as gardés. Chacun ne fonctionne qu’une fois.",
@@ -2240,6 +2242,7 @@ export const fr: Catalogue = {
       backToSignIn: "Retour à la connexion",
       verifyFailed: "Impossible de te connecter",
       expired: "Cette connexion a pris trop de temps. Saisis à nouveau ton mot de passe.",
+      codesLocked: `Trop de codes erronés${NO_BREAK_SPACE}: les codes de l’application sont refusés pour un moment. Réessaie plus tard ou utilise un code de secours.`,
     },
   },
 };

@@ -24,8 +24,8 @@ use crate::domain::totp::{
 use crate::storage::Database;
 use crate::storage::accounts::{AccountStorageError, StoredUser, find_user_by_id};
 use crate::storage::two_factor::{
-    delete_two_factor, enable_two_factor, find_two_factor, replace_recovery_codes, start_enrolment,
-    use_recovery_code, use_time_step,
+    delete_two_factor, enable_two_factor, find_two_factor, lock_codes, record_wrong_code,
+    replace_recovery_codes, start_enrolment, use_recovery_code, use_time_step,
 };
 
 /// Long enough to open an authenticator app, short enough that a stolen token goes stale.
@@ -34,6 +34,30 @@ pub(crate) const SIGN_IN_CHALLENGE_LIFETIME: Duration = Duration::from_mins(5);
 const CODE_ATTEMPTS_PER_CHALLENGE: u8 = 5;
 /// Bounds the memory pending sign-ins take; each needed a right password, which is rate limited.
 const MAXIMUM_PENDING_SIGN_INS: usize = 10_000;
+/// Pending sign-ins one account may hold: past it the oldest is dropped, so a few accounts cannot
+/// fill `MAXIMUM_PENDING_SIGN_INS` and keep everyone else from signing in.
+const MAXIMUM_PENDING_SIGN_INS_PER_USER: usize = 3;
+/// Wrong codes in a row after which app codes are refused for a while (recovery codes still work).
+const WRONG_CODES_PER_LOCK: u32 = 10;
+const FIRST_CODE_LOCK: Duration = Duration::from_mins(15);
+/// Locks double up to this: past it, someone with the password tries 10 codes a day, about
+/// 0.003 % of luck a day against three accepted codes in a million.
+const LONGEST_CODE_LOCK: Duration = Duration::from_hours(24);
+
+/// How long app codes are refused after the `wrong_codes_in_a_row`-th wrong code: every tenth
+/// locks them, 15 minutes the first time and twice as long each next time, at most a day.
+fn code_lock_after(wrong_codes_in_a_row: u32) -> Option<Duration> {
+    if wrong_codes_in_a_row == 0 || !wrong_codes_in_a_row.is_multiple_of(WRONG_CODES_PER_LOCK) {
+        return None;
+    }
+    let doublings = wrong_codes_in_a_row / WRONG_CODES_PER_LOCK - 1;
+    let factor = 1_u32.checked_shl(doublings).unwrap_or(u32::MAX);
+    Some(
+        FIRST_CODE_LOCK
+            .saturating_mul(factor)
+            .min(LONGEST_CODE_LOCK),
+    )
+}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TwoFactorError {
@@ -45,6 +69,8 @@ pub(crate) enum TwoFactorError {
     AlreadyEnabled,
     #[error("two-factor sign-in is off")]
     NotEnabled,
+    #[error("too many wrong codes: app codes are refused for a while, recovery codes still work")]
+    CodesLocked,
 }
 
 impl From<AccountStorageError> for TwoFactorError {
@@ -102,10 +128,12 @@ impl TwoFactor {
             Some(stored) if stored.is_enabled => TwoFactorStatus {
                 is_enabled: true,
                 recovery_codes_remaining: stored.recovery_codes_remaining,
+                last_failed_code_at_unix_milliseconds: stored.last_failed_code_at_unix_milliseconds,
             },
             _ => TwoFactorStatus {
                 is_enabled: false,
                 recovery_codes_remaining: 0,
+                last_failed_code_at_unix_milliseconds: None,
             },
         })
     }
@@ -131,17 +159,21 @@ impl TwoFactor {
         })
     }
 
-    /// Turns two-factor sign-in on with a code from the enrolment's secret, and returns the
-    /// recovery codes (shown once).
+    /// Turns two-factor sign-in on with a code from the enrolment's secret, signs out every other
+    /// session of the user, and returns the recovery codes (shown once).
     ///
     /// # Errors
-    /// `InvalidCode`, `AlreadyEnabled`, `NotEnabled` without an enrolment.
+    /// `InvalidCode`, `AlreadyEnabled`, `NotEnabled` without an enrolment, `Unauthorized` for a
+    /// malformed session token.
     pub(crate) async fn enable(
         &self,
+        accounts: &Accounts,
+        session_token: &str,
         user_id: Snowflake,
         code: &str,
         now_unix_milliseconds: u64,
     ) -> Result<TwoFactorRecoveryCodes, TwoFactorError> {
+        let kept_session = session_token_sha256(session_token).ok_or(AccountError::Unauthorized)?;
         let stored = find_two_factor(&self.database, user_id)
             .await?
             .ok_or(TwoFactorError::NotEnabled)?;
@@ -160,12 +192,14 @@ impl TwoFactor {
             &stored.secret,
             step,
             &hashes,
+            &kept_session,
             now_unix_milliseconds,
         )
         .await?
         {
             return Err(TwoFactorError::InvalidCode);
         }
+        accounts.disconnect_user_except_token(user_id, &kept_session);
         Ok(codes)
     }
 
@@ -208,7 +242,9 @@ impl TwoFactor {
         Ok(codes)
     }
 
-    /// Accepts a current TOTP code (once) or spends a recovery code.
+    /// Accepts a current TOTP code (once) or spends a recovery code. Wrong codes are counted per
+    /// account in the database, wherever they are typed (sign-in, turning off, new codes), and
+    /// every tenth in a row locks app codes for longer each time.
     async fn check_code(
         &self,
         user_id: Snowflake,
@@ -220,8 +256,20 @@ impl TwoFactor {
             .filter(|stored| stored.is_enabled)
             .ok_or(TwoFactorError::NotEnabled)?;
         let is_accepted = if let Some(totp_code) = normalize_totp_code(code) {
+            if stored.codes_locked_until_unix_milliseconds > now_unix_milliseconds {
+                return Err(TwoFactorError::CodesLocked);
+            }
             match matching_time_step(stored.secret.as_ref(), *totp_code, now_unix_milliseconds) {
-                Some(step) => use_time_step(&self.database, user_id, &stored.secret, step).await?,
+                Some(step) => {
+                    use_time_step(
+                        &self.database,
+                        user_id,
+                        &stored.secret,
+                        step,
+                        now_unix_milliseconds,
+                    )
+                    .await?
+                }
                 None => false,
             }
         } else if let Some(recovery_code) = recovery_code_sha256(code) {
@@ -230,10 +278,20 @@ impl TwoFactor {
             false
         };
         if is_accepted {
-            Ok(())
-        } else {
-            Err(TwoFactorError::InvalidCode)
+            return Ok(());
         }
+        let wrong_codes_in_a_row =
+            record_wrong_code(&self.database, user_id, now_unix_milliseconds).await?;
+        if let Some(lock) = wrong_codes_in_a_row.and_then(code_lock_after) {
+            let lock_milliseconds = u64::try_from(lock.as_millis()).unwrap_or(u64::MAX);
+            lock_codes(
+                &self.database,
+                user_id,
+                now_unix_milliseconds.saturating_add(lock_milliseconds),
+            )
+            .await?;
+        }
+        Err(TwoFactorError::InvalidCode)
     }
 
     /// Holds a sign-in whose password was right until its code comes.
@@ -250,6 +308,19 @@ impl TwoFactor {
             AccountError::Internal("a generated token failed its own format check".into())
         })?;
         let mut pending = self.lock_pending_sign_ins();
+        // O(n) under the lock, but n is bounded and each call already cost a password hash.
+        let users_pending: Vec<_> = pending
+            .iter()
+            .filter(|(_, sign_in)| sign_in.login.user_id == login.user_id)
+            .map(|(token_sha256, sign_in)| (*token_sha256, sign_in.expires_at))
+            .collect();
+        if users_pending.len() >= MAXIMUM_PENDING_SIGN_INS_PER_USER
+            && let Some((oldest, _)) = users_pending
+                .iter()
+                .min_by_key(|(_, expires_at)| *expires_at)
+        {
+            pending.remove(oldest);
+        }
         if pending.len() >= MAXIMUM_PENDING_SIGN_INS {
             pending.retain(|_, sign_in| sign_in.expires_at > now);
             if pending.len() >= MAXIMUM_PENDING_SIGN_INS {
@@ -269,15 +340,6 @@ impl TwoFactor {
             expires_in_seconds: u32::try_from(SIGN_IN_CHALLENGE_LIFETIME.as_secs())
                 .unwrap_or(u32::MAX),
         })
-    }
-
-    /// The account a live challenge signs into, so its attempts can be counted per account.
-    pub(crate) fn challenge_owner(&self, token: &str, now: Instant) -> Option<Snowflake> {
-        let token_sha256 = session_token_sha256(token)?;
-        self.lock_pending_sign_ins()
-            .get(&token_sha256)
-            .filter(|sign_in| sign_in.expires_at > now)
-            .map(|sign_in| sign_in.login.user_id)
     }
 
     /// The second sign-in step: a TOTP code or a recovery code opens the session, and the

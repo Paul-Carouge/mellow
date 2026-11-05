@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use mellow_protocol::LoginRequest;
+use mellow_protocol::{ChangePasswordRequest, LoginRequest};
 
 use super::*;
 use crate::domain::account_rules::RegistrationMode;
@@ -15,6 +15,8 @@ struct Fixture {
     accounts: Accounts,
     two_factor: TwoFactor,
     user: StoredUser,
+    /// The session `register` opened.
+    session_token: String,
 }
 
 async fn fixture() -> Fixture {
@@ -39,6 +41,7 @@ async fn fixture() -> Fixture {
         database,
         accounts,
         user,
+        session_token: registered.token,
     }
 }
 
@@ -72,7 +75,13 @@ async fn enabled(fixture: &Fixture) -> (String, Vec<String>) {
         .unwrap();
     let codes = fixture
         .two_factor
-        .enable(fixture.user.id, &code(&enrolment.secret, NOW), NOW)
+        .enable(
+            &fixture.accounts,
+            &fixture.session_token,
+            fixture.user.id,
+            &code(&enrolment.secret, NOW),
+            NOW,
+        )
         .await
         .unwrap();
     (enrolment.secret, codes.recovery_codes)
@@ -244,10 +253,6 @@ async fn a_challenge_expires_and_dies_after_five_wrong_codes() {
     );
 
     let token = challenge(&fixture, now).await;
-    assert_eq!(
-        fixture.two_factor.challenge_owner(&token, now),
-        Some(fixture.user.id)
-    );
     for _ in 0..CODE_ATTEMPTS_PER_CHALLENGE {
         let wrong = fixture
             .two_factor
@@ -269,7 +274,6 @@ async fn a_challenge_expires_and_dies_after_five_wrong_codes() {
         ),
         "{right_but_too_late:?}"
     );
-    assert_eq!(fixture.two_factor.challenge_owner(&token, now), None);
     fixture.database.close().await;
 }
 
@@ -301,7 +305,13 @@ async fn enrolment_needs_the_password_and_a_code_from_its_own_secret() {
         .unwrap();
     let stale = fixture
         .two_factor
-        .enable(fixture.user.id, &code(&first.secret, NOW), NOW)
+        .enable(
+            &fixture.accounts,
+            &fixture.session_token,
+            fixture.user.id,
+            &code(&first.secret, NOW),
+            NOW,
+        )
         .await;
     assert!(
         matches!(stale, Err(TwoFactorError::InvalidCode)),
@@ -318,7 +328,13 @@ async fn enrolment_needs_the_password_and_a_code_from_its_own_secret() {
 
     fixture
         .two_factor
-        .enable(fixture.user.id, &code(&second.secret, NOW), NOW)
+        .enable(
+            &fixture.accounts,
+            &fixture.session_token,
+            fixture.user.id,
+            &code(&second.secret, NOW),
+            NOW,
+        )
         .await
         .unwrap();
     let again = fixture
@@ -397,7 +413,8 @@ async fn disabling_and_new_recovery_codes_need_the_password_and_a_code() {
         fixture.two_factor.status(fixture.user.id).await.unwrap(),
         TwoFactorStatus {
             is_enabled: false,
-            recovery_codes_remaining: 0
+            recovery_codes_remaining: 0,
+            last_failed_code_at_unix_milliseconds: None,
         }
     );
     let session = fixture
@@ -412,5 +429,259 @@ async fn disabling_and_new_recovery_codes_need_the_password_and_a_code() {
         )
         .await;
     assert!(session.is_ok(), "{session:?}");
+    fixture.database.close().await;
+}
+
+fn login_request() -> LoginRequest {
+    LoginRequest {
+        login: "aurore".into(),
+        password: PASSWORD.into(),
+        device_name: "Laptop".into(),
+    }
+}
+
+async fn session_count(database: &Database) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM sessions")
+        .fetch_one(database.readers())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_challenge_dies_with_a_password_change_or_a_disabled_account() {
+    let fixture = fixture().await;
+    let (secret, _) = enabled(&fixture).await;
+    let now = Instant::now();
+    let later = NOW + STEP_MILLISECONDS;
+    let before_password_change = challenge(&fixture, now).await;
+    fixture
+        .accounts
+        .change_password(
+            &fixture.session_token,
+            ChangePasswordRequest {
+                current_password: PASSWORD.into(),
+                new_password: "another long password".into(),
+            },
+            NOW,
+        )
+        .await
+        .unwrap();
+    let sessions_before = session_count(&fixture.database).await;
+
+    let after_password_change = fixture
+        .two_factor
+        .complete_sign_in(
+            &fixture.accounts,
+            &before_password_change,
+            &code(&secret, later),
+            now,
+            later,
+        )
+        .await;
+
+    assert!(
+        matches!(
+            after_password_change,
+            Err(TwoFactorError::Account(AccountError::InvalidCredentials))
+        ),
+        "{after_password_change:?}"
+    );
+    assert_eq!(session_count(&fixture.database).await, sessions_before);
+    fixture.database.close().await;
+}
+
+#[tokio::test]
+async fn a_challenge_dies_with_a_disabled_account() {
+    let fixture = fixture().await;
+    let (secret, _) = enabled(&fixture).await;
+    let now = Instant::now();
+    let later = NOW + STEP_MILLISECONDS;
+    let token = challenge(&fixture, now).await;
+    sqlx::query("UPDATE users SET disabled_at_unix_milliseconds = ? WHERE id = ?")
+        .bind(i64::try_from(NOW).unwrap())
+        .bind(i64::try_from(fixture.user.id.raw()).unwrap())
+        .execute(fixture.database.writer())
+        .await
+        .unwrap();
+    let sessions_before = session_count(&fixture.database).await;
+
+    let refused = fixture
+        .two_factor
+        .complete_sign_in(&fixture.accounts, &token, &code(&secret, later), now, later)
+        .await;
+
+    assert!(
+        matches!(
+            refused,
+            Err(TwoFactorError::Account(AccountError::InvalidCredentials))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(session_count(&fixture.database).await, sessions_before);
+    fixture.database.close().await;
+}
+
+#[tokio::test]
+async fn one_account_holds_only_a_few_pending_sign_ins() {
+    let fixture = fixture().await;
+    let (secret, _) = enabled(&fixture).await;
+    let now = Instant::now();
+    let later = NOW + STEP_MILLISECONDS;
+    let mut tokens = Vec::new();
+    for second in 0..=MAXIMUM_PENDING_SIGN_INS_PER_USER {
+        let issued_at = now + Duration::from_secs(u64::try_from(second).unwrap());
+        tokens.push(challenge(&fixture, issued_at).await);
+    }
+
+    assert_eq!(
+        fixture.two_factor.lock_pending_sign_ins().len(),
+        MAXIMUM_PENDING_SIGN_INS_PER_USER
+    );
+    let oldest = fixture
+        .two_factor
+        .complete_sign_in(
+            &fixture.accounts,
+            &tokens[0],
+            &code(&secret, later),
+            now,
+            later,
+        )
+        .await;
+    assert!(
+        matches!(
+            oldest,
+            Err(TwoFactorError::Account(AccountError::Unauthorized))
+        ),
+        "the oldest challenge made room: {oldest:?}"
+    );
+    let newest = fixture
+        .two_factor
+        .complete_sign_in(
+            &fixture.accounts,
+            tokens.last().unwrap(),
+            &code(&secret, later),
+            now,
+            later,
+        )
+        .await;
+    assert!(newest.is_ok(), "{newest:?}");
+    fixture.database.close().await;
+}
+
+#[test]
+fn every_tenth_wrong_code_in_a_row_locks_app_codes_longer() {
+    let minutes = |count: u64| Some(Duration::from_mins(count));
+    assert_eq!(code_lock_after(0), None);
+    assert_eq!(code_lock_after(9), None);
+    assert_eq!(code_lock_after(10), minutes(15));
+    assert_eq!(code_lock_after(11), None);
+    assert_eq!(code_lock_after(20), minutes(30));
+    assert_eq!(code_lock_after(30), minutes(60));
+    assert_eq!(code_lock_after(80), minutes(24 * 60));
+    assert_eq!(code_lock_after(u32::MAX / 10 * 10), minutes(24 * 60));
+}
+
+/// Types `count` wrong codes at `at` (never a right one by chance), all refused as wrong.
+async fn wrong_codes(fixture: &Fixture, count: u32, at: u64) {
+    for _ in 0..count {
+        let wrong = fixture
+            .two_factor
+            .check_code(fixture.user.id, "not a code", at)
+            .await;
+        assert!(
+            matches!(wrong, Err(TwoFactorError::InvalidCode)),
+            "{wrong:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn wrong_codes_lock_app_codes_across_windows_but_not_recovery_codes() {
+    let fixture = fixture().await;
+    let (secret, recovery_codes) = enabled(&fixture).await;
+    let first_lock = 15 * 60 * 1_000;
+    let mut now = NOW + STEP_MILLISECONDS;
+
+    wrong_codes(&fixture, 10, now).await;
+    let locked = fixture
+        .two_factor
+        .check_code(fixture.user.id, &code(&secret, now), now)
+        .await;
+    assert!(
+        matches!(locked, Err(TwoFactorError::CodesLocked)),
+        "{locked:?}"
+    );
+    // The lock is in the database: it holds for a new process too.
+    let restarted = TwoFactor::new(fixture.database.clone());
+    let still_locked = restarted
+        .check_code(fixture.user.id, &code(&secret, now), now)
+        .await;
+    assert!(
+        matches!(still_locked, Err(TwoFactorError::CodesLocked)),
+        "{still_locked:?}"
+    );
+    let status = fixture.two_factor.status(fixture.user.id).await.unwrap();
+    assert_eq!(status.last_failed_code_at_unix_milliseconds, Some(now));
+
+    // Ten more wrong codes once it ends: twice as long, a window does not forgive them.
+    now += first_lock;
+    wrong_codes(&fixture, 10, now).await;
+    let locked_longer = fixture
+        .two_factor
+        .check_code(
+            fixture.user.id,
+            &code(&secret, now + first_lock),
+            now + first_lock,
+        )
+        .await;
+    assert!(
+        matches!(locked_longer, Err(TwoFactorError::CodesLocked)),
+        "{locked_longer:?}"
+    );
+    // The owner's recovery code still works and lifts the lock.
+    fixture
+        .two_factor
+        .check_code(fixture.user.id, &recovery_codes[0], now)
+        .await
+        .unwrap();
+    fixture
+        .two_factor
+        .check_code(fixture.user.id, &code(&secret, now), now)
+        .await
+        .unwrap();
+    // A right code forgives the streak: nine wrong codes do not lock.
+    wrong_codes(&fixture, 9, now).await;
+    let later = now + STEP_MILLISECONDS;
+    fixture
+        .two_factor
+        .check_code(fixture.user.id, &code(&secret, later), later)
+        .await
+        .unwrap();
+    fixture.database.close().await;
+}
+
+#[tokio::test]
+async fn turning_two_factor_on_signs_out_the_other_sessions() {
+    let fixture = fixture().await;
+    let other = fixture.accounts.login(login_request(), NOW).await.unwrap();
+
+    enabled(&fixture).await;
+
+    assert!(
+        fixture
+            .accounts
+            .authenticate(&other.token, NOW)
+            .await
+            .is_err(),
+        "the other session ended"
+    );
+    assert!(
+        fixture
+            .accounts
+            .authenticate(&fixture.session_token, NOW)
+            .await
+            .is_ok(),
+        "the session that turned it on stays"
+    );
     fixture.database.close().await;
 }
