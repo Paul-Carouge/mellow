@@ -12,9 +12,11 @@
   // The browser's prompt only ever opens from "Turn on notifications", never by itself.
   interface Props {
     status: ConnectionStatus;
+    /** Phones and narrow windows: one 48 px row with short words, the sentence kept as its name. */
+    isCompact?: boolean;
   }
 
-  let { status }: Props = $props();
+  let { status, isCompact = false }: Props = $props();
 
   let announcement = $state("");
   const isShown = $derived(
@@ -46,15 +48,25 @@
 <p class="sr-only" role="status">{announcement}</p>
 {#if isShown}
   <section
-    aria-label={strings.notifications.title}
-    class="flex flex-wrap items-center justify-end gap-x-md gap-y-2xs border-s-(length:--mw-component-notice-bar-invite-bar-width) border-(--mw-component-notice-bar-invite-bar) bg-(--mw-component-notice-bar-invite-background) px-(--mw-component-notice-bar-padding-inline) py-(--mw-component-notice-bar-padding-block) text-(--mw-component-notice-bar-invite-text)"
+    aria-label={isCompact ? strings.notifications.barText : strings.notifications.title}
+    class={[
+      "flex items-center border-s-(length:--mw-component-notice-bar-invite-bar-width) border-(--mw-component-notice-bar-invite-bar) bg-(--mw-component-notice-bar-invite-background) text-(--mw-component-notice-bar-invite-text)",
+      isCompact
+        ? "gap-xs ps-(--mw-component-notice-bar-padding-inline) pe-2xs py-3xs"
+        : "flex-wrap justify-end gap-x-md gap-y-2xs px-(--mw-component-notice-bar-padding-inline) py-(--mw-component-notice-bar-padding-block)",
+    ]}
   >
     <p class="flex min-w-0 flex-[1_1_auto] items-center gap-(--mw-component-notice-bar-icon-gap) type-body">
-      <Icon name="bell" class="size-(--mw-component-notice-bar-icon-size)" />
-      <span class="min-w-0">{strings.notifications.barText}</span>
+      <Icon name="bell" class="size-(--mw-component-notice-bar-icon-size) shrink-0" />
+      <!-- Hidden from screen readers when short: the section's name already says the sentence. -->
+      <span class="min-w-0" aria-hidden={isCompact || undefined}
+        >{isCompact ? strings.notifications.barTextShort : strings.notifications.barText}</span
+      >
     </p>
-    <div class="flex items-center gap-2xs">
-      <Button variant="primary" onclick={() => void turnOn()}>{strings.notifications.turnOn}</Button>
+    <div class="flex shrink-0 items-center gap-2xs">
+      <Button variant="primary" aria-label={isCompact ? strings.notifications.turnOn : undefined} onclick={() => void turnOn()}
+        >{isCompact ? strings.notifications.turnOnShort : strings.notifications.turnOn}</Button
+      >
       <IconButton
         icon="x"
         label={strings.notifications.notNow}
