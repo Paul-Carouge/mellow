@@ -106,8 +106,17 @@ export type CompressVideo = (
 /** The Worker's end: answers each request; a failure keeps the original rather than losing the file. */
 export function answerVideoCompressionRequests(scope: CompressionWorkerScope, compress: CompressVideo): void {
   scope.onmessage = async ({ data: request }) => {
+    // The encoder reports every frame; the tray shows whole percents, so the main thread gets no more.
+    let postedPercent = -1;
+    const onprogress = (fraction: number) => {
+      const percent = Math.floor(fraction * 100);
+      if (percent !== postedPercent) {
+        postedPercent = percent;
+        scope.postMessage({ kind: "progress", fraction });
+      }
+    };
     try {
-      const result = await compress(request, (fraction) => scope.postMessage({ kind: "progress", fraction }));
+      const result = await compress(request, onprogress);
       if ("bytes" in result) {
         scope.postMessage({ kind: "compressed", bytes: result.bytes }, [result.bytes]);
       } else {
