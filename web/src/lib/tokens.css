@@ -122,6 +122,7 @@
   --mw-component-attachment-row-icon-size: 1rem;
   --mw-component-attachment-row-text: #C5BEC6;
   --mw-component-attachment-video-background: #110B11;
+  --mw-component-attachment-video-band-compact-width: 17.5rem;
   --mw-component-attachment-video-band-padding-block: 0.25rem;
   --mw-component-attachment-video-band-padding-inline: 0.75rem;
   --mw-component-attachment-video-download-background-hover: #362E37;
@@ -157,7 +158,9 @@
   --mw-component-button-danger-background: #DA373C;
   --mw-component-button-danger-background-hover: #A12829;
   --mw-component-button-danger-text: #FFFFFF;
+  --mw-component-button-disabled-background: #362E37;
   --mw-component-button-disabled-opacity: 0.5;
+  --mw-component-button-disabled-text: #A99FAA;
   --mw-component-button-height: 2.5rem;
   --mw-component-button-height-large: 2.75rem;
   --mw-component-button-height-small: 2rem;
@@ -282,7 +285,7 @@
   --mw-component-choice-background-checked: #362E37;
   --mw-component-choice-background-hover: #221B23;
   --mw-component-choice-border: #3C353E;
-  --mw-component-choice-border-checked: #F2A46E;
+  --mw-component-choice-border-checked: #8C828D;
   --mw-component-choice-border-width: 0.0625rem;
   --mw-component-choice-description-text: #A99FAA;
   --mw-component-choice-description-text-checked: #C5BEC6;
@@ -593,6 +596,7 @@
   --mw-component-link-preview-bar-width: 0.25rem;
   --mw-component-link-preview-border: #3C353E;
   --mw-component-link-preview-border-width: 0.0625rem;
+  --mw-component-link-preview-description-lines: 3;
   --mw-component-link-preview-description-text: #D6D0D7;
   --mw-component-link-preview-gap: 0.5rem;
   --mw-component-link-preview-max-width: 27rem;
@@ -612,6 +616,7 @@
   --mw-component-link-preview-text-gap: 0.125rem;
   --mw-component-link-preview-thumbnail-size: 5rem;
   --mw-component-link-preview-title-text: #33B8FF;
+  --mw-component-link-preview-wikipedia-extract-lines: 6;
   --mw-component-live-badge-background: #60443A;
   --mw-component-live-badge-background-hover: #F2A46E;
   --mw-component-live-badge-height: 1rem;
@@ -838,6 +843,7 @@
   --mw-component-poll-bar-mine: #60443A;
   --mw-component-poll-border: #3C353E;
   --mw-component-poll-border-width: 0.0625rem;
+  --mw-component-poll-compact-width: 22.5rem;
   --mw-component-poll-count-min-width: 3.5rem;
   --mw-component-poll-count-text: #C5BEC6;
   --mw-component-poll-footer-gap: 0.5rem;
@@ -890,9 +896,9 @@
   --mw-component-quick-switcher-trigger-icon-size: 1rem;
   --mw-component-quick-switcher-trigger-width: 13rem;
   --mw-component-quick-switcher-width: 35.625rem;
-  --mw-component-rail-add-background-hover: #23A55A;
-  --mw-component-rail-add-icon: #23A55A;
-  --mw-component-rail-add-icon-hover: #FFFFFF;
+  --mw-component-rail-add-background-hover: #362E37;
+  --mw-component-rail-add-icon: #C5BEC6;
+  --mw-component-rail-add-icon-hover: #F8F4F8;
   --mw-component-rail-background: #110B11;
   --mw-component-rail-icon-background-active: #362E37;
   --mw-component-rail-icon-background-rest: #312A32;
@@ -1151,14 +1157,15 @@
   --mw-component-stream-view-volume-width: 10rem;
   --mw-component-switch-disabled-opacity: 0.5;
   --mw-component-switch-glyph-off: #554C56;
-  --mw-component-switch-glyph-on: #23A55A;
+  --mw-component-switch-glyph-on: #F8F4F8;
   --mw-component-switch-glyph-size: 0.75rem;
   --mw-component-switch-height: 1.5rem;
-  --mw-component-switch-knob: #FFFFFF;
   --mw-component-switch-knob-inset: 0.1875rem;
+  --mw-component-switch-knob-off: #FFFFFF;
+  --mw-component-switch-knob-on: #221B23;
   --mw-component-switch-knob-size: 1.125rem;
   --mw-component-switch-track-off: #554C56;
-  --mw-component-switch-track-on: #23A55A;
+  --mw-component-switch-track-on: #F8F4F8;
   --mw-component-switch-width: 2.5rem;
   --mw-component-tabs-divider: #3C353E;
   --mw-component-tabs-gap: 2rem;
@@ -1588,6 +1595,8 @@
     --mw-component-auth-card-link-text: #005FCC;
     --mw-component-auth-card-subtitle-text: #594E5B;
     --mw-component-auth-card-title-text: #221B23;
+    --mw-component-button-disabled-background: #DFD8DF;
+    --mw-component-button-disabled-text: #695F6B;
     --mw-component-button-primary-background: #E8894B;
     --mw-component-button-primary-background-hover: #E07B39;
     --mw-component-button-primary-background-pressed: #CC6A2C;
@@ -1637,7 +1646,6 @@
     --mw-component-choice-background-checked: #DFD8DF;
     --mw-component-choice-background-hover: #ECE6ED;
     --mw-component-choice-border: #E3DDE4;
-    --mw-component-choice-border-checked: #A84F1A;
     --mw-component-choice-description-text: #695F6B;
     --mw-component-choice-description-text-checked: #594E5B;
     --mw-component-choice-icon: #594E5B;
@@ -1785,7 +1793,7 @@
     --mw-component-message-channel-start-icon-background: #695F6B;
     --mw-component-message-channel-start-title-text: #221B23;
     --mw-component-message-code-background: #F8F4F8;
-    --mw-component-message-code-border: #F5F1F6;
+    --mw-component-message-code-border: #E3DDE4;
     --mw-component-message-code-control-background-hover: #ECE6ED;
     --mw-component-message-code-control-text: #594E5B;
     --mw-component-message-code-control-text-hover: #392F3A;
@@ -1856,8 +1864,9 @@
     --mw-component-quick-switcher-input-icon: #695F6B;
     --mw-component-quick-switcher-trigger-icon: #695F6B;
     --mw-component-quick-switcher-trigger-icon-hover: #594E5B;
-    --mw-component-rail-add-background-hover: #1A7F45;
-    --mw-component-rail-add-icon: #1A7F45;
+    --mw-component-rail-add-background-hover: #DFD8DF;
+    --mw-component-rail-add-icon: #594E5B;
+    --mw-component-rail-add-icon-hover: #221B23;
     --mw-component-rail-background: #F5F1F6;
     --mw-component-rail-icon-background-active: #DFD8DF;
     --mw-component-rail-icon-background-rest: #F5F1F6;
@@ -1967,9 +1976,10 @@
     --mw-component-stream-view-background: #FFFFFF;
     --mw-component-stream-view-sound-status-text: #695F6B;
     --mw-component-switch-glyph-off: #695F6B;
-    --mw-component-switch-glyph-on: #1A7F45;
+    --mw-component-switch-glyph-on: #221B23;
+    --mw-component-switch-knob-on: #FFFFFF;
     --mw-component-switch-track-off: #695F6B;
-    --mw-component-switch-track-on: #1A7F45;
+    --mw-component-switch-track-on: #221B23;
     --mw-component-tabs-divider: #E3DDE4;
     --mw-component-tabs-indicator: #CC6A2C;
     --mw-component-tabs-text: #594E5B;
@@ -2117,6 +2127,8 @@
   --mw-component-auth-card-link-text: #005FCC;
   --mw-component-auth-card-subtitle-text: #594E5B;
   --mw-component-auth-card-title-text: #221B23;
+  --mw-component-button-disabled-background: #DFD8DF;
+  --mw-component-button-disabled-text: #695F6B;
   --mw-component-button-primary-background: #E8894B;
   --mw-component-button-primary-background-hover: #E07B39;
   --mw-component-button-primary-background-pressed: #CC6A2C;
@@ -2166,7 +2178,6 @@
   --mw-component-choice-background-checked: #DFD8DF;
   --mw-component-choice-background-hover: #ECE6ED;
   --mw-component-choice-border: #E3DDE4;
-  --mw-component-choice-border-checked: #A84F1A;
   --mw-component-choice-description-text: #695F6B;
   --mw-component-choice-description-text-checked: #594E5B;
   --mw-component-choice-icon: #594E5B;
@@ -2314,7 +2325,7 @@
   --mw-component-message-channel-start-icon-background: #695F6B;
   --mw-component-message-channel-start-title-text: #221B23;
   --mw-component-message-code-background: #F8F4F8;
-  --mw-component-message-code-border: #F5F1F6;
+  --mw-component-message-code-border: #E3DDE4;
   --mw-component-message-code-control-background-hover: #ECE6ED;
   --mw-component-message-code-control-text: #594E5B;
   --mw-component-message-code-control-text-hover: #392F3A;
@@ -2385,8 +2396,9 @@
   --mw-component-quick-switcher-input-icon: #695F6B;
   --mw-component-quick-switcher-trigger-icon: #695F6B;
   --mw-component-quick-switcher-trigger-icon-hover: #594E5B;
-  --mw-component-rail-add-background-hover: #1A7F45;
-  --mw-component-rail-add-icon: #1A7F45;
+  --mw-component-rail-add-background-hover: #DFD8DF;
+  --mw-component-rail-add-icon: #594E5B;
+  --mw-component-rail-add-icon-hover: #221B23;
   --mw-component-rail-background: #F5F1F6;
   --mw-component-rail-icon-background-active: #DFD8DF;
   --mw-component-rail-icon-background-rest: #F5F1F6;
@@ -2496,9 +2508,10 @@
   --mw-component-stream-view-background: #FFFFFF;
   --mw-component-stream-view-sound-status-text: #695F6B;
   --mw-component-switch-glyph-off: #695F6B;
-  --mw-component-switch-glyph-on: #1A7F45;
+  --mw-component-switch-glyph-on: #221B23;
+  --mw-component-switch-knob-on: #FFFFFF;
   --mw-component-switch-track-off: #695F6B;
-  --mw-component-switch-track-on: #1A7F45;
+  --mw-component-switch-track-on: #221B23;
   --mw-component-tabs-divider: #E3DDE4;
   --mw-component-tabs-indicator: #CC6A2C;
   --mw-component-tabs-text: #594E5B;

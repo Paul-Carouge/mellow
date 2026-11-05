@@ -38,10 +38,10 @@
   >
     <span
       class={[
-        "absolute top-(--mw-component-switch-knob-inset) grid size-(--mw-component-switch-knob-size) place-items-center rounded-full bg-(--mw-component-switch-knob) transition-[inset-inline-start] duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard)",
+        "absolute top-(--mw-component-switch-knob-inset) grid size-(--mw-component-switch-knob-size) place-items-center rounded-full transition-[inset-inline-start] duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard)",
         isOn
-          ? "start-[calc(var(--mw-component-switch-width)-var(--mw-component-switch-knob-size)-var(--mw-component-switch-knob-inset))] text-(--mw-component-switch-glyph-on)"
-          : "start-(--mw-component-switch-knob-inset) text-(--mw-component-switch-glyph-off)",
+          ? "start-[calc(var(--mw-component-switch-width)-var(--mw-component-switch-knob-size)-var(--mw-component-switch-knob-inset))] bg-(--mw-component-switch-knob-on) text-(--mw-component-switch-glyph-on)"
+          : "start-(--mw-component-switch-knob-inset) bg-(--mw-component-switch-knob-off) text-(--mw-component-switch-glyph-off)",
       ]}
     >
       <Icon name={isOn ? "check" : "x"} class="size-(--mw-component-switch-glyph-size)" />
