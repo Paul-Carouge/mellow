@@ -10,6 +10,7 @@ import {
   rememberEmoji,
   withReactionAdded,
   withReactionRemoved,
+  withEmojiFrom,
   withoutEmoji,
 } from "./reactions";
 
@@ -35,6 +36,14 @@ describe("reaction counts", () => {
     expect(withoutEmoji([THUMBS, { emoji: "❤", count: 1, me: true }], "👍")).toEqual([
       { emoji: "❤", count: 1, me: true },
     ]);
+  });
+
+  it("take one emoji's entry from another copy and leave the other emoji alone", () => {
+    const heart = { emoji: "❤", count: 1, me: true };
+    const stored = [{ emoji: "👍", count: 5, me: true }];
+    expect(withEmojiFrom([THUMBS, heart], "👍", stored)).toEqual([stored[0], heart]);
+    expect(withEmojiFrom([heart], "👍", stored)).toEqual([heart, stored[0]]);
+    expect(withEmojiFrom([THUMBS, heart], "👍", [])).toEqual([heart]);
   });
 });
 

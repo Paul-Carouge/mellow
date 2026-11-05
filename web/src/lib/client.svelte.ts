@@ -18,7 +18,7 @@ import {
 import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
 import { CustomEmojiLibrary } from "./custom-emoji-library.svelte";
-import { reactionKey, withReactionAdded, withReactionRemoved, withoutEmoji } from "./reactions";
+import { reactionKey, withEmojiFrom, withReactionAdded, withReactionRemoved, withoutEmoji } from "./reactions";
 import { ownVoteChangesForChoice, withPollVote } from "./polls";
 import { type MentionReader, doesMessageMentionReader } from "./reader-mentions";
 import { Relationships } from "./relationships.svelte";
@@ -1630,6 +1630,11 @@ export class MellowClient {
       this.takeInSentMessage(message);
       return "sent";
     } catch (error) {
+      if (!this.pendingMessages.some((candidate) => candidate.nonce === pending.nonce)) {
+        // Its own `MESSAGE_CREATE` already confirmed the send (or the message's channel is gone):
+        // the lost answer is no failure to tell.
+        return "sent";
+      }
       this.setPendingStatus(pending.nonce, "failed", errorReason(error));
       this.reportError(error, "send message");
       return error instanceof ApiError && REFUSED_FOR_GOOD.has(error.code) ? "refused" : "failed";
@@ -1695,8 +1700,11 @@ export class MellowClient {
       nonces.has(pending.nonce) ? { ...pending, status: "sending" } : pending,
     );
     for (const [index, pending] of batch.entries()) {
-      if (this.gateway !== gateway || !this.pendingMessages.some((candidate) => candidate.nonce === pending.nonce)) {
+      if (this.gateway !== gateway) {
         return;
+      }
+      if (!this.pendingMessages.some((candidate) => candidate.nonce === pending.nonce)) {
+        continue; // Its own `MESSAGE_CREATE` confirmed it meanwhile: the rest of the batch still goes.
       }
       if ((await this.deliver(pending)) === "failed") {
         for (const remaining of batch.slice(index + 1)) {
@@ -1755,10 +1763,14 @@ export class MellowClient {
         await this.rest.addReaction(channelId, messageId, emoji);
       }
     } catch (error) {
-      if (error instanceof ApiError && error.status !== 0) {
+      const isSettled =
+        !(error instanceof ApiError && error.status !== 0) &&
+        (await this.settleFromInstanceCopy(channelId, messageId, (cached, stored) => ({
+          ...cached,
+          reactions: withEmojiFrom(cached.reactions ?? [], key, stored.reactions ?? []),
+        })));
+      if (!isSettled) {
         applyOwnReactionLocally(isRemoving);
-      } else {
-        await this.settleReactionsAndPoll(channelId, messageId);
       }
       this.reportError(error, "react");
       throw error;
@@ -1842,16 +1854,20 @@ export class MellowClient {
         sent += 1;
       }
     } catch (error) {
-      // Only a refusal is undone, and only what the instance did not take: a move is one request,
-      // so all of it; a "Remove my vote" keeps the removals that went through. A lost answer may
-      // hide a vote the instance kept, and its echo may already have come: the instance's copy
-      // settles it.
-      if (error instanceof ApiError && error.status !== 0) {
+      // A lost answer may hide a vote the instance kept, and its echo may already have come: the
+      // instance's copy settles it. A refusal, or a copy out of reach, undoes only what the
+      // instance did not take: a move is one request, so all of it; a "Remove my vote" keeps the
+      // removals that went through.
+      const isSettled =
+        !(error instanceof ApiError && error.status !== 0) &&
+        (await this.settleFromInstanceCopy(channelId, messageId, (cached, stored) => ({
+          ...cached,
+          poll: stored.poll ?? cached.poll,
+        })));
+      if (!isSettled) {
         for (const { answerId, change } of changes.slice(sent).reverse()) {
           applyLocally(answerId, change === 1 ? -1 : 1);
         }
-      } else {
-        await this.settleReactionsAndPoll(channelId, messageId);
       }
       this.reportError(error, "vote in poll");
       throw error;
@@ -1862,24 +1878,26 @@ export class MellowClient {
 
   /**
    * After an answer lost on the way (status 0, timeouts included), the change may or may not have
-   * been kept: the instance's copy of the message settles the reactions and the poll. Called while
-   * the change is still in flight, so no newer click can be overwritten by this copy.
+   * been kept: `settle` takes from the instance's copy of the message only what the failed change
+   * touched (one emoji, or the poll), so the user's other changes in flight keep their state.
+   * `false` when the copy could not be read (offline, most often): the caller undoes its change.
    */
-  private async settleReactionsAndPoll(channelId: Snowflake, messageId: Snowflake): Promise<void> {
+  private async settleFromInstanceCopy(
+    channelId: Snowflake,
+    messageId: Snowflake,
+    settle: (cached: Message, stored: Message) => Message,
+  ): Promise<boolean> {
     try {
       // The page just before the next id holds the message alone (there is no single-message route).
       const [stored] = await this.rest.listMessages(channelId, (BigInt(messageId) + 1n).toString(), 1);
       if (stored?.id !== messageId) {
-        return; // Deleted meanwhile: its `MESSAGE_DELETE` takes the row away.
+        return true; // Deleted meanwhile: its `MESSAGE_DELETE` takes the row away.
       }
-      this.updateCachedMessage(channelId, messageId, (cached) => ({
-        ...cached,
-        reactions: stored.reactions ?? [],
-        poll: stored.poll ?? cached.poll,
-      }));
+      this.updateCachedMessage(channelId, messageId, (cached) => settle(cached, stored));
+      return true;
     } catch (error) {
-      // The optimistic state stays until the next `Ready` reloads the history.
       this.reportError(error, "reload message");
+      return false;
     }
   }
 
