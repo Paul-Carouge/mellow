@@ -21,6 +21,8 @@ runtime-shaders = ["gpui_platform/runtime_shaders"]
 
 [dependencies]
 anyhow.workspace = true
+avif-parse.workspace = true
+dirs.workspace = true
 # GPUI from Longbridge's weekly crates.io snapshot of Zed (crates.io only, Apache-2.0). gpui-pre,
 # gpui-pre-platform and gpui-component are pinned together and upgraded together (ADR-0051).
 gpui = { package = "gpui-pre", version = "=0.3.11" }
@@ -29,14 +31,29 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features =
 gpui-component = "=0.9.0"
 # Pinned with gpui-component, which depends on it; Mellow calls it to re-read reduced motion.
 gpui-base = "=0.9.0"
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+# GIF, JPEG, PNG and WebP pictures, still and animated: the version GPUI's own frames use.
+image.workspace = true
+mellow-client-core.workspace = true
+moxcms.workspace = true
+rav1d.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 # `tracing-log` forwards the `log` records of GPUI and wgpu, whose errors would otherwise be lost.
 tracing-subscriber = { workspace = true, features = ["tracing-log"] }
 
+# rav1d's x86-64 assembly builds with nasm (already needed by the server's rav1e); its arm64
+# assembly does not build from the published crate (`src/arm/asm-offsets.h` is left out of the
+# package), so arm64 decodes with the Rust code paths.
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+rav1d = { workspace = true, features = ["asm"] }
+
 [dev-dependencies]
+mellow-protocol.workspace = true
 gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] }
-tokio = { workspace = true, features = ["sync"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["sync", "macros", "io-util", "test-util"] }
+zeroize.workspace = true
 
 [lints]
 workspace = true
