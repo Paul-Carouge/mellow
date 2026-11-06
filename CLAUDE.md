@@ -18,6 +18,7 @@ Read before working:
 | `crates/mellow-protocol` | Wire types only (DTOs, gateway events, ids, permission bitflags). No I/O, no workspace dependencies. |
 | `crates/mellow-server` | Server binary. Modules `http`, `gateway`, `admin` → `domain` → `storage`. Never the reverse. |
 | `crates/mellow-client-core` | Client logic for native clients to come (connections, state, cache, outbox). No UI code. |
+| `crates/mellow-media` | The desktop client's voice engine (ADR-0051): WebRTC peer, audio devices, processing, Opus. No UI code. |
 | `crates/mellow-update` | Signed self-update of `mellow-server` (`mellow-server update`, the Docker kit). |
 | `web/` | The web client (Svelte 5, Tailwind 4), built into `web/dist` and embedded in the server binary. |
 | `design/tokens.json` | Single source of truth for design tokens. Never hard-code colours or sizes in the web client or admin CSS. Icons in `design/icons`, fonts in `design/fonts`. |
@@ -31,7 +32,7 @@ cargo deny check
 cargo xtask tokens          # regenerate web/src/lib/tokens.css, the favicon and web app icons after editing design/tokens.json (--check in CI)
 cd web && npm ci && npm run check && npm test && npm run build
 ```
-Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (`init`, `serve`, `update`, `backup`, `admin …`: REST API, WebSocket gateway, voice SFU, embedded web client), `mellow-client-core` (REST, gateway, state), `mellow-update` and `xtask` (design token generator) exist. Update this section when run commands appear.
+Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (`init`, `serve`, `update`, `backup`, `admin …`: REST API, WebSocket gateway, voice SFU, embedded web client), `mellow-client-core` (REST, gateway, state), `mellow-media` (desktop voice engine), `mellow-update` and `xtask` (design token generator) exist. Update this section when run commands appear.
 CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux only (ADR-0036).
 
 ## Rules specific to this project
