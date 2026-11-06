@@ -231,7 +231,64 @@ impl Render for ConnectionBanner {
 
 #[cfg(test)]
 mod tests {
+    use gpui::{AppContext as _, TestAppContext};
+    use mellow_client_core::GatewayUpdate;
+
     use super::*;
+
+    fn drive(session: &Entity<Session>, update: GatewayUpdate, cx: &mut TestAppContext) {
+        session.update(cx, |session, cx| {
+            session.apply_gateway_updates_of_this_session(vec![update], cx);
+        });
+        cx.run_until_parked();
+    }
+
+    fn read(
+        banner: &Entity<ConnectionBanner>,
+        cx: &mut TestAppContext,
+    ) -> (Option<ConnectionTrouble>, bool) {
+        banner.read_with(cx, |banner, _| {
+            (banner.trouble(), banner.is_back_online_shown())
+        })
+    }
+
+    #[gpui::test]
+    fn the_bar_offers_retry_after_a_while_then_says_back_online(cx: &mut TestAppContext) {
+        let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
+        let banner = cx.new(|cx| ConnectionBanner::new(session.clone(), cx));
+        let one_second = Duration::from_secs(1);
+
+        drive(&session, GatewayUpdate::Disconnected, cx);
+        assert_eq!(
+            read(&banner, cx),
+            (Some(ConnectionTrouble::Reconnecting), false)
+        );
+        cx.executor()
+            .advance_clock(STILL_RECONNECTING_AFTER.checked_sub(one_second).unwrap());
+        assert_eq!(
+            read(&banner, cx),
+            (Some(ConnectionTrouble::Reconnecting), false)
+        );
+        cx.executor().advance_clock(one_second);
+        assert_eq!(
+            read(&banner, cx),
+            (Some(ConnectionTrouble::StillReconnecting), false)
+        );
+
+        drive(&session, GatewayUpdate::Resumed, cx);
+        assert_eq!(read(&banner, cx), (None, true));
+        cx.executor().advance_clock(BACK_ONLINE_SHOWN_FOR);
+        assert_eq!(read(&banner, cx), (None, false));
+
+        // A new loss starts its own wait: the earlier one does not carry over.
+        drive(&session, GatewayUpdate::Disconnected, cx);
+        cx.executor()
+            .advance_clock(STILL_RECONNECTING_AFTER.checked_sub(one_second).unwrap());
+        assert_eq!(
+            read(&banner, cx),
+            (Some(ConnectionTrouble::Reconnecting), false)
+        );
+    }
 
     #[test]
     fn the_bar_follows_the_connection_status() {
