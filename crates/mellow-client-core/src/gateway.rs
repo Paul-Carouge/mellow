@@ -464,7 +464,7 @@ async fn run_connection(
 
 enum IncomingFrame {
     Known(ServerFrame),
-    /// A dispatch whose event this client does not know (a newer server).
+    /// A dispatch whose event this client cannot parse (a newer server, or a type mismatch).
     UnknownDispatch {
         sequence: u64,
     },
@@ -489,14 +489,22 @@ where
             Ok(WebSocketMessage::Text(text)) => match serde_json::from_str(&text) {
                 Ok(frame) => return Some(IncomingFrame::Known(frame)),
                 Err(error) => {
+                    // Never the error text itself: serde quotes the offending value, which may
+                    // be message content.
                     if let Ok(DispatchSequence { op, s }) = serde_json::from_str(&text)
                         && op == "dispatch"
                     {
-                        tracing::debug!(sequence = s, "skipping an unknown gateway event");
+                        // `warn`: a known event that no longer parses (a client and server type
+                        // mismatch) is lost for good once counted, so it must show by default.
+                        tracing::warn!(
+                            sequence = s,
+                            category = ?error.classify(),
+                            line = error.line(),
+                            column = error.column(),
+                            "skipping a gateway event this client cannot parse"
+                        );
                         return Some(IncomingFrame::UnknownDispatch { sequence: s });
                     }
-                    // Never the error text itself: serde quotes the offending value, which may
-                    // be message content.
                     tracing::warn!(
                         category = ?error.classify(),
                         line = error.line(),
