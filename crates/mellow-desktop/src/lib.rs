@@ -1,6 +1,7 @@
 //! Mellow's native desktop client on GPUI (ADR-0051): the theme generated from the design tokens,
 //! the bridge to the Tokio runtime the network runs on, and the Dusk shell.
 
+pub mod pictures;
 pub mod shell;
 pub mod theme;
 pub mod tokio_bridge;
