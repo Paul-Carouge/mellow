@@ -1,6 +1,7 @@
 //! Two voice engines join a voice channel of a real in-process `mellow-server` through its
 //! gateway and UDP port: one speaks a synthetic tone, the other must decode and play it, and the
-//! server must hear the speaker's audio level. No real audio device is touched.
+//! server must hear the speaker's audio level; then the speaker loses its network path and must
+//! reconnect on a new one by itself. No real audio device is touched.
 
 // The server refuses Windows until its master key file can be protected there (ADR-0006).
 #![cfg(not(windows))]
@@ -14,8 +15,9 @@ use std::time::{Duration, Instant};
 use futures_util::{SinkExt as _, StreamExt as _};
 use mellow_client_core::{InstanceAddress, RestClient};
 use mellow_media::{
-    NoiseSuppressionMode, PlaybackProbe, ProcessingSettings, StreamFormat, SyntheticAudioDevices,
-    SyntheticSound, VoiceSession, VoiceSessionEvent, VoiceSessionOptions,
+    InMemoryPersonVoiceSettings, NoiseSuppressionMode, PlaybackProbe, ProcessingSettings,
+    StreamFormat, SyntheticAudioDevices, SyntheticSound, VoicePhase, VoiceSession,
+    VoiceSessionEvent, VoiceSessionOptions,
 };
 use mellow_protocol::{
     ChannelKind, ClientFrame, CreateChannelRequest, CreateInviteRequest, GatewayEvent,
@@ -30,6 +32,8 @@ use tokio_tungstenite::tungstenite::Message;
 const PASSWORD: &str = "correct horse battery staple";
 /// Generous: the engines run in real time, and a loaded CI machine is slow to connect.
 const HEARING_TIMEOUT: Duration = Duration::from_secs(30);
+/// ICE must notice the silence, wait out its 3 s grace, then connect on a new path.
+const RECONNECTION_TIMEOUT: Duration = Duration::from_secs(60);
 const LOOPBACK: Ipv4Addr = Ipv4Addr::LOCALHOST;
 /// Half a second of a 44.1 kHz stereo output playing the tone.
 const AUDIBLE_SAMPLES_EXPECTED: u64 = 44_100;
@@ -196,7 +200,12 @@ struct Participant {
 }
 
 impl Participant {
-    fn join(gateway: Gateway, channel_id: Snowflake, sound: SyntheticSound) -> Self {
+    fn join(
+        gateway: Gateway,
+        channel_id: Snowflake,
+        own_user_id: Snowflake,
+        sound: SyntheticSound,
+    ) -> Self {
         let devices = SyntheticAudioDevices::new(
             sound,
             StreamFormat {
@@ -210,7 +219,7 @@ impl Participant {
             },
         );
         let probe = devices.probe();
-        let mut options = VoiceSessionOptions::new(channel_id, LOOPBACK);
+        let mut options = VoiceSessionOptions::new(channel_id, own_user_id, LOOPBACK);
         // A steady tone is what noise suppression removes, and gain control would reshape it.
         options.processing = ProcessingSettings {
             noise_suppression: NoiseSuppressionMode::Off,
@@ -221,9 +230,8 @@ impl Participant {
         let (session, session_events) = VoiceSession::join(
             options,
             Box::new(devices),
-            Box::new(move |frame| {
-                let _ = outgoing.send(frame);
-            }),
+            Box::new(move |frame| outgoing.send(frame).is_ok()),
+            Arc::new(InMemoryPersonVoiceSettings::default()),
         )
         .unwrap();
         Self {
@@ -248,9 +256,10 @@ impl Participant {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_speaker_is_heard_decoded_by_another_engine_and_seen_speaking_by_the_server() {
-    let instance = RunningInstance::start().await;
+/// The speaker and the listener, both joining a new voice channel of `instance`.
+async fn speaker_and_listener_in_a_channel(
+    instance: &RunningInstance,
+) -> (Participant, Participant, Snowflake, Snowflake) {
     let (owner, speaker_id) = instance.registered("speaker").await;
     let (listener, listener_id) = instance.registered("listener").await;
     let guild = owner.create_guild("Club").await.unwrap();
@@ -276,16 +285,29 @@ async fn a_speaker_is_heard_decoded_by_another_engine_and_seen_speaking_by_the_s
     let speaker_gateway = identified_gateway(instance.listen_address, owner.token().unwrap()).await;
     let listener_gateway =
         identified_gateway(instance.listen_address, listener.token().unwrap()).await;
-    let mut speaker = Participant::join(
+    let speaker = Participant::join(
         speaker_gateway,
         lounge.id,
+        speaker_id,
         SyntheticSound::Sine {
             frequency: 440.0,
             amplitude: 0.3,
         },
     );
-    let mut listener = Participant::join(listener_gateway, lounge.id, SyntheticSound::Silence);
+    let listener = Participant::join(
+        listener_gateway,
+        lounge.id,
+        listener_id,
+        SyntheticSound::Silence,
+    );
+    (speaker, listener, speaker_id, listener_id)
+}
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_speaker_is_heard_decoded_by_another_engine_and_seen_speaking_by_the_server() {
+    let instance = RunningInstance::start().await;
+    let (mut speaker, mut listener, speaker_id, listener_id) =
+        speaker_and_listener_in_a_channel(&instance).await;
     let deadline = Instant::now() + HEARING_TIMEOUT;
     let mut is_speaker_seen_speaking = false;
     while !(is_speaker_seen_speaking
@@ -339,6 +361,78 @@ async fn a_speaker_is_heard_decoded_by_another_engine_and_seen_speaking_by_the_s
     );
     assert!(speaker.probe.played_samples() > 0, "the output still runs");
     assert_ne!(speaker_id, listener_id);
+
+    speaker.session.leave();
+    listener.session.leave();
+    instance.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_network_path_is_noticed_and_voice_comes_back_on_a_new_one() {
+    let instance = RunningInstance::start().await;
+    let (mut speaker, mut listener, _, _) = speaker_and_listener_in_a_channel(&instance).await;
+
+    let deadline = Instant::now() + HEARING_TIMEOUT;
+    while listener.probe.audible_samples() < AUDIBLE_SAMPLES_EXPECTED {
+        assert!(
+            Instant::now() < deadline,
+            "never heard: {:?}",
+            speaker.seen_session_events
+        );
+        speaker.pump();
+        listener.pump();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    speaker.session.drop_network_path_for_tests();
+    let deadline = Instant::now() + RECONNECTION_TIMEOUT;
+    let is_reconnected = |events: &[VoiceSessionEvent]| {
+        events
+            .iter()
+            .skip_while(|event| {
+                **event != VoiceSessionEvent::PhaseChanged(VoicePhase::Reconnecting)
+            })
+            .any(|event| *event == VoiceSessionEvent::PhaseChanged(VoicePhase::Connected))
+    };
+    while !is_reconnected(&speaker.seen_session_events) {
+        assert!(
+            Instant::now() < deadline,
+            "no reconnection: {:?}",
+            speaker.seen_session_events
+        );
+        speaker.pump();
+        listener.pump();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Voice flows again over the new path.
+    let heard_before = listener.probe.audible_samples();
+    let deadline = Instant::now() + HEARING_TIMEOUT;
+    while listener.probe.audible_samples() < heard_before + AUDIBLE_SAMPLES_EXPECTED {
+        assert!(Instant::now() < deadline, "not heard after reconnecting");
+        speaker.pump();
+        listener.pump();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    speaker.pump();
+    assert_eq!(
+        speaker
+            .seen_session_events
+            .iter()
+            .filter(|event| **event == VoiceSessionEvent::Connected)
+            .count(),
+        1,
+        "the join cue plays once: {:?}",
+        speaker.seen_session_events
+    );
+    assert!(
+        !speaker
+            .seen_session_events
+            .iter()
+            .any(|event| matches!(event, VoiceSessionEvent::ConnectionFailed(_))),
+        "{:?}",
+        speaker.seen_session_events
+    );
 
     speaker.session.leave();
     listener.session.leave();

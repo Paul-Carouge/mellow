@@ -34,15 +34,6 @@ pub(crate) fn mix_into(mix: &mut Frame, source: &Frame, gain: f32) {
     }
 }
 
-/// Keeps the mix within full scale: several loud voices at 200 % would otherwise wrap or clip
-/// harshly in the device's integer format.
-// shortcut: a hard clip, not the web's limiter; add a look-ahead limiter if clipping is heard.
-pub(crate) fn limit_to_full_scale(mix: &mut Frame) {
-    for sample in mix {
-        *sample = sample.clamp(-1.0, 1.0);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,13 +51,10 @@ mod tests {
     }
 
     #[test]
-    fn two_sources_add_up_and_the_mix_stays_within_full_scale() {
+    fn two_sources_add_up() {
         let mut mix = [0.0; SAMPLES_PER_FRAME];
         mix_into(&mut mix, &[0.25; SAMPLES_PER_FRAME], 1.0);
         mix_into(&mut mix, &[0.5; SAMPLES_PER_FRAME], 0.5);
         assert!(mix.iter().all(|sample| (sample - 0.5).abs() < 1e-6));
-        mix_into(&mut mix, &[1.0; SAMPLES_PER_FRAME], 2.0);
-        limit_to_full_scale(&mut mix);
-        assert!(mix.iter().all(|sample| (sample - 1.0).abs() < f32::EPSILON));
     }
 }
