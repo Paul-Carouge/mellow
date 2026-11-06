@@ -1,4 +1,4 @@
-//! Test-pattern producer shared by the integration tests and `encode_bench`:
+//! Test-pattern producer shared by the integration tests:
 //! a pool of VA surfaces, each exported once as a DMA-BUF.
 
 use std::ffi::c_int;
@@ -10,7 +10,7 @@ use vesper_core::{DmaBufPlane, ReleaseGuard, VideoFrame};
 use vesper_encode::ffmpeg as ff;
 
 /// Gray level of [`Producer::noise`] at `x`, `y`: white noise.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "encode.rs uses it, busy_gpu.rs does not")]
 pub fn noise(x: u32, y: u32) -> u8 {
     let mut h = x.wrapping_mul(0x9E37_79B1) ^ y.wrapping_mul(0x85EB_CA77);
     h ^= h >> 15;
@@ -98,7 +98,7 @@ impl Producer {
 
     /// Like [`Producer::frame`], but gray [`noise`]: what a downscale that
     /// skips pixels gets most wrong.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "encode.rs uses it, busy_gpu.rs does not")]
     pub unsafe fn noise(&self, id: usize, t: u32, pts: Duration) -> VideoFrame {
         unsafe { self.draw(id, t, 0, pts, true) }
     }
