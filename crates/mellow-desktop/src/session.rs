@@ -28,7 +28,7 @@ use crate::tokio_bridge::spawn_on_network_runtime;
 /// Bounds what a stalled UI lets the gateway buffer; the gateway task waits when it is full.
 const GATEWAY_UPDATE_QUEUE_CAPACITY: usize = 256;
 /// Quitting waits this long at most for a sign-out to reach the instance.
-const LOGOUT_ON_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
+pub const LOGOUT_ON_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Where the app stands with its session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +83,9 @@ pub struct Session {
     sign_out_error: Option<String>,
     /// False in tests: nothing goes to the secret store or the preferences file of the machine.
     is_kept_on_this_device: bool,
+    /// Kept, not detached, so quitting can wait for it: a revoked token left in the secret store
+    /// would greet the next launch with "your session ended".
+    stored_session_forget_in_flight: Option<Task<Result<(), JoinError>>>,
 }
 
 impl std::fmt::Debug for Session {
@@ -144,6 +147,7 @@ impl Session {
             is_signing_out: false,
             sign_out_error: None,
             is_kept_on_this_device,
+            stored_session_forget_in_flight: None,
         }
     }
 
@@ -393,7 +397,14 @@ impl Session {
         self.is_signing_out = false;
         self.sign_out_error = None;
         if self.is_kept_on_this_device {
-            spawn_on_network_runtime(cx, session_store::forget_stored_session()).detach();
+            // The previous forget keeps running when detached; only the latest matters at quit.
+            if let Some(previous_forget) = self.stored_session_forget_in_flight.take() {
+                previous_forget.detach();
+            }
+            self.stored_session_forget_in_flight = Some(spawn_on_network_runtime(
+                cx,
+                session_store::forget_stored_session(),
+            ));
         }
         cx.notify();
     }
@@ -520,25 +531,52 @@ impl Session {
         }
     }
 
-    /// Called as the app quits. A stored session stays open for the next launch; one the secret
-    /// store did not take is revoked, since nobody could use it again. Blocks the main thread for
-    /// at most `LOGOUT_ON_EXIT_TIMEOUT`: the window is already closing.
+    /// Called as the app quits. A stored session stays open for the next launch. One the secret
+    /// store did not take is revoked, since nobody could use it again, and so is one whose sign-out
+    /// was still in flight: the runtime drops unfinished tasks at exit, so that revocation might
+    /// never leave, and the next launch would sign the user back in. A revoked session is also
+    /// forgotten, and a forget still running is awaited. Blocks the main thread for at most
+    /// `LOGOUT_ON_EXIT_TIMEOUT`: the window is already closing.
     fn end_connection_before_exit(&mut self, cx: &App) {
-        let Some(connection) = self.connection.take() else {
-            return;
-        };
-        if connection.is_session_stored {
+        let pending_forget = self.stored_session_forget_in_flight.take();
+        let is_signing_out = self.is_signing_out;
+        let session_to_revoke = self
+            .connection
+            .take()
+            .filter(|connection| is_signing_out || !connection.is_session_stored)
+            .map(|connection| connection.rest);
+        if session_to_revoke.is_none() && pending_forget.is_none() {
             return;
         }
-        let mut rest = connection.rest.clone();
-        drop(connection);
-        let logout = spawn_on_network_runtime(cx, async move {
-            tokio::time::timeout(LOGOUT_ON_EXIT_TIMEOUT, rest.logout()).await
+        let is_kept_on_this_device = self.is_kept_on_this_device;
+        let revoke = session_to_revoke.map(|mut rest| {
+            spawn_on_network_runtime(cx, async move {
+                let is_revoked =
+                    match tokio::time::timeout(LOGOUT_ON_EXIT_TIMEOUT, rest.logout()).await {
+                        Ok(Ok(())) => true,
+                        // A session the instance already refuses is as good as revoked.
+                        Ok(Err(error)) => error.needs_new_login(),
+                        Err(_elapsed) => false,
+                    };
+                if is_revoked && is_kept_on_this_device {
+                    session_store::forget_stored_session().await;
+                }
+                is_revoked
+            })
         });
-        let answer = cx
+        let exit_work = async move {
+            if let Some(pending_forget) = pending_forget {
+                let _ = pending_forget.await;
+            }
+            match revoke {
+                Some(revoke) => matches!(revoke.await, Ok(true)),
+                None => true,
+            }
+        };
+        let is_done = cx
             .foreground_executor()
-            .block_with_timeout(LOGOUT_ON_EXIT_TIMEOUT, logout);
-        if !matches!(answer, Ok(Ok(Ok(Ok(()))))) {
+            .block_with_timeout(LOGOUT_ON_EXIT_TIMEOUT, exit_work);
+        if !matches!(is_done, Ok(true)) {
             tracing::warn!("could not end the session on the instance before exiting");
         }
     }
@@ -581,4 +619,56 @@ fn now_unix_milliseconds() -> u64 {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use gpui::{AppContext as _, TestAppContext};
+
+    use super::*;
+
+    #[gpui::test]
+    fn updates_of_an_ended_session_are_dropped(cx: &mut TestAppContext) {
+        let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
+        let ended_generation = session.read_with(cx, |session, _| session.generation);
+        session.update(cx, |session, cx| session.end_session(false, cx));
+
+        session.update(cx, |session, cx| {
+            session.apply_gateway_updates(ended_generation, vec![GatewayUpdate::Disconnected], cx);
+        });
+
+        session.read_with(cx, |session, _| {
+            assert_eq!(session.status(), ConnectionStatus::SignedOut);
+            assert_eq!(session.phase(), SessionPhase::SignedOut);
+        });
+    }
+
+    #[gpui::test]
+    fn a_burst_of_updates_costs_one_notify(cx: &mut TestAppContext) {
+        let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
+        let notify_count = Rc::new(Cell::new(0_u32));
+        let counted = Rc::clone(&notify_count);
+        let _subscription =
+            cx.update(|cx| cx.observe(&session, move |_, _| counted.set(counted.get() + 1)));
+
+        session.update(cx, |session, cx| {
+            session.apply_gateway_updates_of_this_session(
+                vec![
+                    GatewayUpdate::Disconnected,
+                    GatewayUpdate::Resumed,
+                    GatewayUpdate::Disconnected,
+                ],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        assert_eq!(notify_count.get(), 1);
+        session.read_with(cx, |session, _| {
+            assert_eq!(session.status(), ConnectionStatus::Reconnecting);
+        });
+    }
 }
