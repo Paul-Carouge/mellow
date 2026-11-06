@@ -92,6 +92,10 @@ skip = [
     { crate = "rcgen@0.14.10", reason = "dimpl 0.7; the server and rustls-acme 0.15 use rcgen 0.13" },
     { crate = "yasna@0.6.0", reason = "rcgen 0.14, see above" },
     { crate = "base64@0.22.1", reason = "axum 0.8, sqlx-core 0.9, rustls-acme 0.15 and pem 3; reqwest and usvg use 0.23" },
+    # cpal's Android backend (never built for the desktop, but Android is in the checked targets).
+    { crate = "thiserror@1.0.69", reason = "ndk 0.9 under cpal 0.18" },
+    { crate = "thiserror-impl@1.0.69", reason = "thiserror 1, see above" },
+    { crate = "jni-sys@0.3.1", reason = "ndk 0.9 and ndk-sys 0.6 under cpal 0.18; jni 0.22 uses 0.4" },
 ]
 
 [sources]

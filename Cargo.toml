@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/mellow-client-core",
+    "crates/mellow-media",
     "crates/mellow-protocol",
     "crates/mellow-server",
     "crates/mellow-update",
@@ -25,6 +26,8 @@ axum-server = "0.8.0"
 argon2 = "0.6.0"
 axum = { version = "0.8.9", features = ["macros", "ws"] }
 clap = { version = "4.6.7", features = ["derive"] }
+# Audio devices of the desktop voice engine: CoreAudio, WASAPI, ALSA (ADR-0051).
+cpal = "0.18.2"
 futures-util = { version = "0.3.34", default-features = false, features = ["sink"] }
 getrandom = "0.4.3"
 hkdf = "0.13.0"
@@ -45,8 +48,11 @@ ipnet = { version = "2.12.2", features = ["serde"] }
 mellow-protocol = { path = "crates/mellow-protocol" }
 mellow-client-core = { path = "crates/mellow-client-core" }
 mellow-update = { path = "crates/mellow-update" }
+mellow-media = { path = "crates/mellow-media" }
 # Already in the tree through `image`; colour profiles of uploaded pictures (ADR-0033).
 moxcms = "0.8.1"
+# RNNoise in pure Rust, the "advanced" noise suppression of the desktop voice engine (ADR-0051).
+nnnoiseless = { version = "0.5.2", default-features = false }
 # Ed25519 minisign verification only, no dependencies of its own (ADR-0016).
 minisign-verify = "0.3.0"
 # Already in the tree through the workspace's dependencies; compares release versions.
@@ -62,11 +68,15 @@ libsqlite3-sys = { version = "0.37", default-features = false }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "http2", "query"] }
 rpassword = "7.5.4"
+# Wait-free single-producer single-consumer queues between audio callbacks and the voice engine.
+rtrb = "0.4.1"
 rustix = { version = "1.1.5", default-features = false, features = ["std", "process"] }
 rustls-acme = { version = "0.15.4", features = ["axum"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
+# Echo cancellation, noise suppression and gain control: WebRTC's audio processing in pure Rust (ADR-0051).
+sonora = "0.2.0"
 # Already in the tree through Tokio: larger UDP buffers for camera bursts (ADR-0035).
 socket2 = "0.6.5"
 # WebRTC in sans-IO style for the voice SFU (ADR-0030); its crypto is the aws-lc-rs already in the tree.
@@ -124,4 +134,11 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.yuvxyb]
+opt-level = 3
+
+# Voice tests process audio in real time: unoptimised, the echo canceller and RNNoise fall behind.
+[profile.dev.package.sonora]
+opt-level = 3
+
+[profile.dev.package.nnnoiseless]
 opt-level = 3

@@ -20,7 +20,8 @@ env:
   RUSTFLAGS: -D warnings
   # The server's AVIF encoder (rav1e) assembles its x86-64 code with nasm (ADR-0033); libopus,
   # linked into the server for audio attachments, is built from source by cmake (ADR-0045).
-  SERVER_BUILD_PACKAGES: nasm cmake
+  # The desktop voice engine's audio devices go through ALSA's headers (ADR-0051).
+  SERVER_BUILD_PACKAGES: nasm cmake libasound2-dev
 
 jobs:
   lint:
