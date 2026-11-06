@@ -95,9 +95,28 @@ fn sampled<T: Serialize>(
         shape,
         samples: samples
             .iter()
-            .map(serde_json::to_value)
+            .map(|sample| serde_json::to_value(sample).map(with_sorted_keys))
             .collect::<serde_json::Result<_>>()?,
     })
+}
+
+/// `serde_json` keeps insertion order when another workspace crate (GPUI) turns on its
+/// `preserve_order` feature; sorting keys keeps the generated file the same either way.
+fn with_sorted_keys(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<(String, Value)> = map.into_iter().collect();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key, with_sorted_keys(value)))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(with_sorted_keys).collect()),
+        other => other,
+    }
 }
 
 const fn id(raw: u64) -> Snowflake {
@@ -1448,8 +1467,8 @@ fn render(sampled_types: &[SampledType]) -> serde_json::Result<String> {
     }
     sections.push(format!(
         "\nexport const sharedConstants = {} as const;\n\nexport const permissionBits = {} as const;\n",
-        serde_json::to_string_pretty(&shared_constants())?,
-        serde_json::to_string_pretty(&permission_bits())?,
+        serde_json::to_string_pretty(&with_sorted_keys(shared_constants()))?,
+        serde_json::to_string_pretty(&with_sorted_keys(permission_bits()))?,
     ));
     Ok(sections.concat())
 }
