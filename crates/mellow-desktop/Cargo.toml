@@ -29,6 +29,9 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features =
 gpui-component = "=0.9.0"
 # Pinned with gpui-component, which depends on it; Mellow calls it to re-read reduced motion.
 gpui-base = "=0.9.0"
+# The web client's pure rules (avatar tint, badge text, accent folding) the primitives share.
+mellow-client-core.workspace = true
+mellow-protocol.workspace = true
 # The OS's preferred languages; already in the tree through GPUI (same version), so nothing new
 # is built or audited.
 sys-locale = "0.3.2"
