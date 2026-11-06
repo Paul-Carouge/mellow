@@ -247,10 +247,11 @@ impl DriftSteering {
         if self.smoothed_error_samples.abs() < DEAD_BAND_SAMPLES {
             return 1.0;
         }
-        let deviation = (self.smoothed_error_samples / FULL_DEVIATION_ERROR_SAMPLES
-            * MAXIMUM_RATIO_DEVIATION)
-            .clamp(-MAXIMUM_RATIO_DEVIATION, MAXIMUM_RATIO_DEVIATION);
-        1.0 - deviation
+        let deviation =
+            self.smoothed_error_samples / FULL_DEVIATION_ERROR_SAMPLES * MAXIMUM_RATIO_DEVIATION;
+        // The resampler accepts `1 / MAXIMUM_STEERING_RATIO` at the slow end, not `1 - 0.005`:
+        // computing the bound the way it does keeps the comparison exact.
+        (1.0 - deviation).clamp(1.0 / MAXIMUM_STEERING_RATIO, MAXIMUM_STEERING_RATIO)
     }
 
     pub(crate) fn reset(&mut self) {
@@ -480,6 +481,26 @@ mod tests {
             (steered - target).abs() < 1_500.0,
             "steered depth {steered} stays within a packet and a half of the target"
         );
+    }
+
+    #[test]
+    fn steering_never_leaves_the_range_its_resampler_accepts() {
+        let mut resampler = crate::resampling::StreamResampler::new(
+            48_000,
+            48_000,
+            960,
+            crate::resampling::Interpolation::Cubic,
+            MAXIMUM_STEERING_RATIO,
+        )
+        .unwrap();
+        let mut steering = DriftSteering::default();
+        // Far too deep, then far too shallow: both ends of the range.
+        for (depth, target) in [(9_600, 960), (0, 9_600)] {
+            for _ in 0..1_000 {
+                let ratio = steering.update(depth, target);
+                assert!(resampler.set_relative_ratio(ratio).is_ok(), "ratio {ratio}");
+            }
+        }
     }
 
     #[test]

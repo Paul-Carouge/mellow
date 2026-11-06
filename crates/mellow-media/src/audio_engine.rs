@@ -534,7 +534,7 @@ impl AudioEngine {
         while self.playback.stream.is_some()
             && self.playback.queued_milliseconds() < OUTPUT_QUEUE_MILLISECONDS
         {
-            self.mix_one_frame()?;
+            self.mix_one_frame();
             self.capture.processor.analyze_playback(&self.mix);
             let (Some(stream), Some(resampler)) = (
                 self.playback.stream.as_mut(),
@@ -560,11 +560,19 @@ impl AudioEngine {
         Ok(())
     }
 
-    fn mix_one_frame(&mut self) -> Result<(), AudioEngineError> {
+    fn mix_one_frame(&mut self) {
         self.mix.fill(0.0);
         for slot in &mut self.slots {
-            if !slot.render(&mut self.slot_frame)? {
-                continue;
+            match slot.render(&mut self.slot_frame) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    // One received voice failing must not reopen everyone's output: that voice
+                    // starts over with its next packet.
+                    tracing::warn!(%error, "a received voice could not be resampled; resetting it");
+                    slot.reset();
+                    continue;
+                }
             }
             // Audio may come before its slot assignment: play it at the default volume.
             let user_id = slot.user_id;
@@ -589,6 +597,170 @@ impl AudioEngine {
             mix_into(&mut self.mix, &self.slot_frame, gain);
         }
         limit_to_full_scale(&mut self.mix);
-        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::mpsc;
+
+    use super::*;
+    use crate::devices::{StreamFormat, SyntheticAudioDevices, SyntheticSound};
+    use crate::processing::NoiseSuppressionMode;
+
+    const TONE_AMPLITUDE: f32 = 0.3;
+
+    fn speaker() -> Snowflake {
+        Snowflake::from_raw(3)
+    }
+
+    /// The engine, never run: tests drive its steps by hand, so no device is opened.
+    struct DrivenEngine {
+        engine: AudioEngine,
+        incoming: Sender<IncomingAudioPacket>,
+        outgoing: Receiver<OutgoingVoicePacket>,
+        voice_mid: Mid,
+    }
+
+    fn driven_engine() -> DrivenEngine {
+        let format = StreamFormat {
+            sample_rate: VOICE_SAMPLE_RATE,
+            channels: 1,
+        };
+        let devices = SyntheticAudioDevices::new(SyntheticSound::Silence, format, format);
+        let (_commands, command_receiver) = mpsc::channel();
+        let (incoming, incoming_receiver) = mpsc::channel();
+        let (outgoing, outgoing_receiver) = mpsc::channel();
+        let (events, _event_receiver) = mpsc::channel();
+        let voice_mid = Mid::from("v1");
+        let settings = AudioSettings {
+            is_muted: false,
+            is_deafened: false,
+            input_mode: InputMode::default(),
+            // A steady tone is what these would remove or reshape.
+            processing: ProcessingSettings {
+                is_echo_cancellation_on: false,
+                noise_suppression: NoiseSuppressionMode::Off,
+                is_automatic_gain_on: false,
+                ..ProcessingSettings::default()
+            },
+            output_volume: 1.0,
+            input_device_id: None,
+            output_device_id: None,
+        };
+        let engine = AudioEngine::new(
+            Box::new(devices),
+            AudioEngineChannels {
+                commands: command_receiver,
+                incoming: incoming_receiver,
+                outgoing,
+                events,
+            },
+            settings,
+            [(voice_mid, ReceiveSlotKind::Voice)].into_iter(),
+        )
+        .unwrap();
+        DrivenEngine {
+            engine,
+            incoming,
+            outgoing: outgoing_receiver,
+            voice_mid,
+        }
+    }
+
+    fn tone_frame(phase: &mut f32) -> Frame {
+        let mut frame = [0.0; SAMPLES_PER_FRAME];
+        for sample in &mut frame {
+            *phase += std::f32::consts::TAU * 440.0 / 48_000.0;
+            *sample = phase.sin() * TONE_AMPLITUDE;
+        }
+        frame
+    }
+
+    /// Voice packets sent for a second of microphone tone.
+    fn voice_packets_sent(driven: &mut DrivenEngine) -> usize {
+        let mut phase = 0.0;
+        for _ in 0..100 {
+            let mut frame = tone_frame(&mut phase);
+            driven
+                .engine
+                .process_microphone_frame(&mut frame, 0)
+                .unwrap();
+        }
+        driven
+            .outgoing
+            .try_iter()
+            .filter(|packet| packet.is_voice)
+            .count()
+    }
+
+    /// The loudest 10 ms played while a second of the speaker's tone arrives in order.
+    fn loudest_played_frame(driven: &mut DrivenEngine) -> f32 {
+        let mut encoder = VoiceEncoder::new().unwrap();
+        let mut phase = 0.0;
+        let mut loudest: f32 = 0.0;
+        for index in 0..50_u64 {
+            let mut packet = Vec::with_capacity(SAMPLES_PER_PACKET);
+            packet.extend_from_slice(&tone_frame(&mut phase));
+            packet.extend_from_slice(&tone_frame(&mut phase));
+            if let Some(payload) = encoder.encode(&packet).unwrap() {
+                driven
+                    .incoming
+                    .send(IncomingAudioPacket {
+                        mid: driven.voice_mid,
+                        rtp_timestamp: index * SAMPLES_PER_PACKET as u64,
+                        arrival: driven.engine.clock_origin + Duration::from_millis(index * 20),
+                        payload: Arc::from(payload),
+                    })
+                    .unwrap();
+            }
+            driven.engine.receive_packets();
+            for _ in 0..2 {
+                driven.engine.mix_one_frame();
+                loudest = loudest.max(root_mean_square(&driven.engine.mix));
+            }
+        }
+        loudest
+    }
+
+    #[test]
+    fn the_microphone_is_sent_unless_muted_or_deafened() {
+        assert!(voice_packets_sent(&mut driven_engine()) > 0);
+        for command in [
+            AudioCommand::SetMuted(true),
+            AudioCommand::SetDeafened(true),
+        ] {
+            let mut driven = driven_engine();
+            driven.engine.handle_command(command);
+            assert_eq!(voice_packets_sent(&mut driven), 0);
+        }
+    }
+
+    #[test]
+    fn received_voices_are_heard_unless_deafened_or_muted_for_this_user() {
+        let assign = |driven: &mut DrivenEngine| {
+            let mid = driven.voice_mid;
+            driven.engine.handle_command(AudioCommand::AssignSlot {
+                mid,
+                user_id: speaker(),
+            });
+        };
+        let mut driven = driven_engine();
+        assign(&mut driven);
+        assert!(loudest_played_frame(&mut driven) > TONE_AMPLITUDE / 2.0);
+        let silencers = [
+            AudioCommand::SetDeafened(true),
+            AudioCommand::SetPersonLocallyMuted {
+                user_id: speaker(),
+                is_muted: true,
+            },
+        ];
+        for silencer in silencers {
+            let mut driven = driven_engine();
+            assign(&mut driven);
+            driven.engine.handle_command(silencer);
+            assert!(loudest_played_frame(&mut driven) < f32::EPSILON);
+        }
     }
 }
