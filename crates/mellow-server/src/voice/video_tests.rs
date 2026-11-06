@@ -1129,3 +1129,100 @@ async fn an_h264_camera_reaches_only_the_watchers_that_decode_h264() {
     assert!(!is_slot_given_without_vp8, "nor one that cannot decode VP8");
     assert_eq!(vp8_frames_at_the_h264_client, 0);
 }
+
+/// Reads `socket` until `user_id`'s voice state shows their camera on in `codec`.
+async fn wait_for_camera_in(socket: &mut ClientSocket, user_id: Snowflake, codec: VideoCodec) {
+    loop {
+        let state = next_voice_state_update(socket, user_id).await;
+        if state.self_video && state.video_codec == Some(codec) {
+            return;
+        }
+    }
+}
+
+/// Reads `socket` until `camera_id`'s voice state shows their camera on in `codec`, then for
+/// `SETTLE_TIME` more, and tells whether a slot for that camera was given meanwhile: a camera's
+/// reconnection gives its watchers their slots before its voice state is sent.
+async fn is_slot_given_while_camera_turns_on_in(
+    socket: &mut ClientSocket,
+    camera_id: Snowflake,
+    codec: VideoCodec,
+) -> bool {
+    let mut is_slot_given = false;
+    let mut deadline = tokio::time::Instant::now() + HEARING_TIMEOUT;
+    let mut is_camera_on = false;
+    while let Ok(Some(Ok(message))) = tokio::time::timeout_at(deadline, socket.next()).await {
+        let Message::Text(text) = message else {
+            continue;
+        };
+        let ServerFrame::Dispatch { event, .. } = serde_json::from_str(&text).unwrap() else {
+            continue;
+        };
+        match *event {
+            GatewayEvent::VoiceSlotAssigned { user_id, .. } if user_id == camera_id => {
+                is_slot_given = true;
+            }
+            GatewayEvent::VoiceStateUpdate { voice_state }
+                if !is_camera_on
+                    && voice_state.user_id == camera_id
+                    && voice_state.self_video
+                    && voice_state.video_codec == Some(codec) =>
+            {
+                is_camera_on = true;
+                deadline = tokio::time::Instant::now() + SETTLE_TIME;
+            }
+            _ => {}
+        }
+    }
+    assert!(is_camera_on, "the camera never turned on in {codec:?}");
+    is_slot_given
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_camera_reconnecting_in_another_codec_loses_and_regains_its_watchers_slots() {
+    let fixture = fixture().await;
+    let (mut owner, mut member) = identified_pair(&fixture).await;
+    let owner_id = fixture.user_id("owner");
+    let vp8_camera = join_with_codecs(&mut owner, fixture.lounge, 1, BotCodecs::Vp8).await;
+    let vp8_only_watcher = join_with_codecs(&mut member, fixture.lounge, 2, BotCodecs::Vp8).await;
+    send(&mut owner, &camera_state(true)).await;
+    wait_for_camera_in(&mut member, owner_id, VideoCodec::Vp8).await;
+    send(&mut member, &watch(owner_id, VideoTileSize::Small)).await;
+    camera_slot_of(&mut member, owner_id).await;
+    vp8_only_watcher.wait_until_receiving(1, "q").await;
+
+    // The camera reconnects from a client that sends H.264 only; the watcher keeps its tile.
+    drop(vp8_camera);
+    let h264_camera = join_with_codecs(&mut owner, fixture.lounge, 1, BotCodecs::H264).await;
+    send(&mut owner, &camera_state(true)).await;
+    let is_slot_given_for_h264 =
+        is_slot_given_while_camera_turns_on_in(&mut member, owner_id, VideoCodec::H264).await;
+    let frames_before = vp8_only_watcher.received(1, "q");
+    tokio::time::sleep(SETTLE_TIME).await;
+    let frames_while_h264 = vp8_only_watcher.received(1, "q") - frames_before;
+
+    // Back on VP8, the watcher's slot returns without it asking again.
+    drop(h264_camera);
+    let vp8_camera_again = join_with_codecs(&mut owner, fixture.lounge, 1, BotCodecs::Vp8).await;
+    send(&mut owner, &camera_state(true)).await;
+    let is_slot_given_for_vp8_again =
+        is_slot_given_while_camera_turns_on_in(&mut member, owner_id, VideoCodec::Vp8).await;
+    let frames_before_vp8_again = vp8_only_watcher.received(1, "q");
+    let deadline = tokio::time::Instant::now() + HEARING_TIMEOUT;
+    while vp8_only_watcher.received(1, "q") == frames_before_vp8_again
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let frames_on_vp8_again = vp8_only_watcher.received(1, "q") - frames_before_vp8_again;
+    drop((vp8_camera_again, vp8_only_watcher));
+    fixture.close().await;
+
+    assert!(
+        !is_slot_given_for_h264,
+        "no slot for a codec it cannot decode"
+    );
+    assert_eq!(frames_while_h264, 0);
+    assert!(is_slot_given_for_vp8_again);
+    assert!(frames_on_vp8_again > 0, "the camera reaches it again");
+}
