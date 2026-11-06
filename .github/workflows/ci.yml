@@ -26,8 +26,11 @@ env:
   # X11 backends (ADR-0051); the jobs building the whole workspace need them. Zed's list.
   DESKTOP_BUILD_PACKAGES: pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan1 libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
   # Vesper's Linux capture and encoder (ADR-0051): PipeWire, VA-API and FFmpeg's headers and
-  # libraries, and libclang for the bindgen runs of pipewire-sys and rusty_ffmpeg.
+  # libraries, and libclang for the bindgen runs of pipewire-sys and rusty_ffmpeg. The code calls
+  # only libavcodec, libavfilter and libavutil, but rusty_ffmpeg's build script probes all seven.
   VESPER_BUILD_PACKAGES: libpipewire-0.3-dev libva-dev libclang-dev libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev
+  # The camera decoder's tests make their JPEGs with the ffmpeg command and skip without it.
+  VESPER_TEST_PACKAGES: ffmpeg
 
 jobs:
   lint:
@@ -69,7 +72,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           # shellcheck disable=SC2086 # the package list is split into words on purpose
-          sudo apt-get update && sudo apt-get install --yes --no-install-recommends ${SERVER_BUILD_PACKAGES} ${DESKTOP_BUILD_PACKAGES} ${VESPER_BUILD_PACKAGES}
+          sudo apt-get update && sudo apt-get install --yes --no-install-recommends ${SERVER_BUILD_PACKAGES} ${DESKTOP_BUILD_PACKAGES} ${VESPER_BUILD_PACKAGES} ${VESPER_TEST_PACKAGES}
       # Every crate's tests run even when one fails, so one platform gap hides nothing else.
       # The desktop client is tested apart: built together, Cargo would unify GPUI's features
       # (serde_json `preserve_order`, ...) into the server, which its release build (`-p
