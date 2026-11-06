@@ -50,7 +50,7 @@ impl ClientError {
     /// the instance kept the change, and its copy settles it.
     #[must_use]
     pub fn is_refused_by_instance(&self) -> bool {
-        matches!(self, Self::Api { .. })
+        matches!(self, Self::Api { .. } | Self::FileTooLarge)
     }
 
     /// True when the same request may succeed later: the instance was out of reach, too busy or
@@ -59,10 +59,11 @@ impl ClientError {
     pub fn is_worth_retrying(&self) -> bool {
         match self {
             Self::Api { status, .. } => *status == 429 || *status >= 500,
-            Self::Network(_) | Self::UnexpectedResponse(_) => true,
+            Self::Network(_) | Self::UnexpectedResponse(_) | Self::TransferStalled => true,
             Self::InvalidInstanceAddress(_)
             | Self::NotSignedIn
-            | Self::RandomGeneratorFailed(_) => false,
+            | Self::RandomGeneratorFailed(_)
+            | Self::FileTooLarge => false,
         }
     }
 
