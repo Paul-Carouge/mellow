@@ -1,14 +1,20 @@
-//! Typed calls to the REST API (`/api/v1`).
+//! Typed calls to the REST API (`/api/v1`). Routes are grouped by area in the submodules; files
+//! (downloads and uploads) are in `files`.
+
+mod accounts;
+mod files;
+mod guilds;
+mod messages;
 
 use std::time::Duration;
 
 use mellow_protocol::{
-    AcknowledgeRequest, ApiErrorBody, Attachment, AuditLogEntry, AuditLogQuery, Ban,
-    ChangePasswordRequest, Channel, CreateBanRequest, CreateChannelRequest, CreateGuildRequest,
-    CreateInviteRequest, CreateRoleRequest, CurrentUser, DirectMessageChannel, EditMessageRequest,
-    Guild, Invite, LoginRequest, Member, Message, MessageHistoryQuery, OpenDirectMessageRequest,
-    RegisterRequest, ReorderRolesRequest, Role, SendMessageRequest, SessionCreated,
-    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateCurrentUserRequest,
+    AcknowledgeRequest, ApiErrorBody, AuditLogEntry, AuditLogQuery, Ban, ChangePasswordRequest,
+    Channel, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
+    CreateRoleRequest, CurrentUser, DirectMessageChannel, EditMessageRequest, Guild, Invite,
+    LoginRequest, Member, Message, MessageHistoryQuery, OpenDirectMessageRequest, RegisterRequest,
+    ReorderRolesRequest, Role, SendMessageRequest, SessionCreated, SetPermissionOverwriteRequest,
+    Snowflake, TwoFactorChallenge, UpdateChannelRequest, UpdateCurrentUserRequest,
     UpdateRoleRequest,
 };
 use reqwest::{Method, RequestBuilder, StatusCode};
@@ -16,6 +22,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use zeroize::Zeroizing;
 
+pub use self::files::{Download, DownloadableFile, DownloadedFile, UploadProgress};
 use crate::error::ClientError;
 use crate::instance::InstanceAddress;
 
@@ -24,6 +31,16 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Far above any honest answer (a 1 000-member list or a page of messages); bounds what a
 /// hostile instance can make the client buffer.
 const MAXIMUM_RESPONSE_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// How a password sign-in ended.
+#[derive(Debug)]
+pub enum SignIn {
+    /// Signed in; the token is kept for later calls.
+    SignedIn(SessionCreated),
+    /// The password was right; the sign-in ends once this challenge's token is sent with a code
+    /// (ADR-0049). Its `Debug` hides the token.
+    TwoFactorRequired(TwoFactorChallenge),
+}
 
 #[derive(Clone)]
 pub struct RestClient {
@@ -100,37 +117,99 @@ impl RestClient {
         builder: RequestBuilder,
     ) -> Result<T, ClientError> {
         let response = Self::response_or_api_error(builder).await?;
+        Self::decode_json(response).await
+    }
+
+    async fn decode_json<T: DeserializeOwned>(
+        response: reqwest::Response,
+    ) -> Result<T, ClientError> {
         let body = Self::bounded_body(response).await?;
         serde_json::from_slice(&body)
             .map_err(|error| ClientError::UnexpectedResponse(format!("{:?}", error.classify())))
+    }
+
+    /// An authenticated call without a body, answered with JSON.
+    async fn call<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+    ) -> Result<T, ClientError> {
+        Self::send_and_decode_json(self.request(method, path, true)?).await
+    }
+
+    /// An authenticated call with a JSON body, answered with JSON.
+    async fn call_with_json<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<T, ClientError> {
+        Self::send_and_decode_json(self.request(method, path, true)?.json(body)).await
+    }
+
+    /// An authenticated call without a body, answered with `204 No Content`.
+    async fn call_without_answer(&self, method: Method, path: &str) -> Result<(), ClientError> {
+        Self::send_and_discard_body(self.request(method, path, true)?).await
+    }
+
+    /// An authenticated call with a JSON body, answered with `204 No Content`.
+    async fn call_with_json_without_answer(
+        &self,
+        method: Method,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<(), ClientError> {
+        Self::send_and_discard_body(self.request(method, path, true)?.json(body)).await
     }
 
     async fn send_and_discard_body(builder: RequestBuilder) -> Result<(), ClientError> {
         Self::response_or_api_error(builder).await.map(|_| ())
     }
 
-    async fn bounded_body(mut response: reqwest::Response) -> Result<Vec<u8>, ClientError> {
-        let too_large = || ClientError::UnexpectedResponse("response body too large".into());
+    async fn bounded_body(response: reqwest::Response) -> Result<Vec<u8>, ClientError> {
+        // The call's own 20 s deadline already bounds these bodies.
+        Self::body_within(response, MAXIMUM_RESPONSE_BODY_BYTES, REQUEST_TIMEOUT)
+            .await?
+            .ok_or_else(|| ClientError::UnexpectedResponse("response body too large".into()))
+    }
+
+    /// The whole body, or `None` as soon as it is known to exceed `maximum_bytes`; `TransferStalled`
+    /// when no byte arrives for `stall_timeout`.
+    async fn body_within(
+        mut response: reqwest::Response,
+        maximum_bytes: usize,
+        stall_timeout: Duration,
+    ) -> Result<Option<Vec<u8>>, ClientError> {
         if response
             .content_length()
-            .is_some_and(|length| length > MAXIMUM_RESPONSE_BODY_BYTES as u64)
+            .is_some_and(|length| length > maximum_bytes as u64)
         {
-            return Err(too_large());
+            return Ok(None);
         }
         let mut body = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(ClientError::Network)? {
-            if body.len() + chunk.len() > MAXIMUM_RESPONSE_BODY_BYTES {
-                return Err(too_large());
+        while let Some(chunk) = tokio::time::timeout(stall_timeout, response.chunk())
+            .await
+            .map_err(|_| ClientError::TransferStalled)?
+            .map_err(ClientError::Network)?
+        {
+            if body.len() + chunk.len() > maximum_bytes {
+                return Ok(None);
             }
             body.extend_from_slice(&chunk);
         }
-        Ok(body)
+        Ok(Some(body))
     }
 
     async fn response_or_api_error(
         builder: RequestBuilder,
     ) -> Result<reqwest::Response, ClientError> {
         let response = builder.send().await.map_err(ClientError::Network)?;
+        Self::api_error_unless_success(response).await
+    }
+
+    async fn api_error_unless_success(
+        response: reqwest::Response,
+    ) -> Result<reqwest::Response, ClientError> {
         let status = response.status();
         if status.is_success() {
             return Ok(response);
@@ -177,14 +256,24 @@ impl RestClient {
         Ok(session)
     }
 
+    /// Signs in, or answers the challenge to finish with [`Self::complete_two_factor_sign_in`]
+    /// when the password was right but the account has two-factor sign-in on (ADR-0049).
+    ///
     /// # Errors
-    /// `Api` with `InvalidCredentials`, `AccountDisabled`, `RateLimited`…; `UnexpectedResponse`
-    /// for an account with two-factor sign-in on, whose second step (ADR-0049) this core does not
-    /// offer yet: it comes with the native client's ADR.
-    pub async fn login(&mut self, request: &LoginRequest) -> Result<SessionCreated, ClientError> {
-        let session: SessionCreated = self.post_json("api/v1/auth/login", request, false).await?;
+    /// `Api` with `InvalidCredentials`, `AccountDisabled`, `RateLimited`…
+    pub async fn login(&mut self, request: &LoginRequest) -> Result<SignIn, ClientError> {
+        let builder = self
+            .request(Method::POST, "api/v1/auth/login", false)?
+            .json(request);
+        let response = Self::response_or_api_error(builder).await?;
+        if response.status() == StatusCode::ACCEPTED {
+            return Ok(SignIn::TwoFactorRequired(
+                Self::decode_json(response).await?,
+            ));
+        }
+        let session: SessionCreated = Self::decode_json(response).await?;
         self.token = Some(Zeroizing::new(session.token.clone()));
-        Ok(session)
+        Ok(SignIn::SignedIn(session))
     }
 
     /// Ends the session on the server and forgets the token.
@@ -312,29 +401,6 @@ impl RestClient {
             true,
         )?)
         .await
-    }
-
-    /// Uploads one file to a channel; send its id in a message within the hour (ADR-0020).
-    ///
-    /// # Errors
-    /// Network or API errors; the instance refuses files over its size limit.
-    pub async fn upload_attachment(
-        &self,
-        channel_id: Snowflake,
-        file_name: &str,
-        bytes: Vec<u8>,
-    ) -> Result<Attachment, ClientError> {
-        let builder = self
-            .request(
-                Method::POST,
-                &format!("api/v1/channels/{channel_id}/attachments"),
-                true,
-            )?
-            // In a header, never in the URL: proxy logs must not hold file names.
-            .header("x-mellow-file-name", percent_encode(file_name))
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(bytes);
-        Self::send_and_decode_json(builder).await
     }
 
     /// The one-to-one conversation with that user, opened if needed.

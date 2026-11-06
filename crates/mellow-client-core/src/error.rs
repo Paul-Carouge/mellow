@@ -19,6 +19,13 @@ pub enum ClientError {
     NotSignedIn,
     #[error("the system random generator is unavailable")]
     RandomGeneratorFailed(#[source] getrandom::Error),
+    /// An upload the instance refused for its size (`413`), or a download larger than the cap
+    /// the caller gave.
+    #[error("the file is too large")]
+    FileTooLarge,
+    /// A download whose answer or body stopped arriving for longer than the stall timeout.
+    #[error("the transfer stalled")]
+    TransferStalled,
 }
 
 impl ClientError {
@@ -34,7 +41,7 @@ impl ClientError {
                     | ApiErrorCode::MissingPermissions
                     | ApiErrorCode::LimitReached,
                 ..
-            }
+            } | Self::FileTooLarge
         )
     }
 
@@ -65,6 +72,7 @@ mod tests {
         };
         assert!(api(ApiErrorCode::ValidationFailed).refuses_message_for_good());
         assert!(api(ApiErrorCode::NotFound).refuses_message_for_good());
+        assert!(ClientError::FileTooLarge.refuses_message_for_good());
         for retryable in [
             ApiErrorCode::RateLimited,
             ApiErrorCode::ServerBusy,
