@@ -123,7 +123,8 @@ fn encoder_threads(width: u32, height: u32) -> u32 {
     wanted.min(available.max(1))
 }
 
-/// libvpx's speed for real time: negative means "adapt to the deadline", larger is faster.
+/// libvpx's speed for real time: negative is a fixed speed of its absolute value (positive would
+/// let libvpx pick one from the deadline), larger is faster, as Chrome sets it.
 /// Small layers are cheap, so they get a slower, better setting (Chrome's choice).
 fn encoder_speed(width: u32, height: u32) -> c_int {
     if u64::from(width) * u64::from(height) <= 352 * 288 {
