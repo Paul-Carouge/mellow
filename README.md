@@ -4,7 +4,7 @@ A calm, self-hostable alternative to Discord, written in Rust.
 
 - **Self-hosting in minutes:** one server binary, one data directory, no Docker, no external database, one-command updates.
 - **Feels like Discord:** same layout and habits (servers, channels, DMs, roles, attachments), with Mellow's own brand.
-- **Clients:** a web client served by the instance itself (Svelte), installable as an app from Chrome. Native desktop and mobile clients come after it ([ADR-0036](docs/adr/0036-web-client-only-and-native-clients-later.md)).
+- **Clients:** a web client served by the instance itself (Svelte), installable as an app from Chrome. A native desktop app in Rust with GPUI is being built at parity with it ([ADR-0051](docs/adr/0051-gpui-desktop-client.md)); a mobile client comes later.
 - **Private by default:** TLS everywhere, data encrypted at rest, no telemetry.
 
 > Status: the web client is the focus. Servers, channels, roles and permissions, moderation, direct messages and groups, friends, reactions, search, custom emoji, notifications and voice channels work end to end in it. See [ROADMAP.md](ROADMAP.md).

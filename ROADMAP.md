@@ -2,9 +2,9 @@
 
 Each milestone ends with something usable end to end. Scope changes are made here first.
 
-## Status (2026-11-05)
+## Status (2026-11-06)
 
-**Current focus: the web client only** (owner's decisions, 2026-10-22 and 2026-11-02, [ADR-0036](docs/adr/0036-web-client-only-and-native-clients-later.md)). Until the web client is finished, all new features, UI work and fixes target `web/` and the server and protocol it needs. The Slint desktop app was removed on 2026-11-02 (it stays in the git history); native desktop and mobile clients come back once the web is done, with their own ADR (the owner is considering Rust with GPUI), built on `mellow-client-core`. Reason: building every feature twice halved the pace.
+**Current focus: the GPUI desktop client** (owner's decision, 2026-11-06, [ADR-0051](docs/adr/0051-gpui-desktop-client.md), superseding ADR-0036): the web client is done apart from comfort additions, and the desktop app is built in Rust with GPUI at parity with it (same design, every feature, native voice, camera and screen sharing reusing Vesper), on the same server. The web client keeps receiving fixes and comfort features; from now on new features reach both clients. Work order and progress: M3 below.
 
 ### Done
 Merged into `main`: #1 to #272. Released up to `v0.48.0` (2026-11-05), which runs on the owner's instance (server and embedded web client); `v0.8.0` is the last release with a desktop app, removed since (ADR-0036).
@@ -117,9 +117,18 @@ Native clients (desktop, mobile) and the admin web UI wait until the web is fini
 - Browser session handling (cookie flow), Content-Security-Policy, HSTS.
 - Sign-in, servers, channels, messages, settings (done, and much more since: see "Next, in order").
 
-## M3 — Native clients (after the web client, ADR-0036)
-- A native desktop client and a mobile client on `mellow-client-core`, toolkit decided in their ADR (GPUI is the owner's candidate for the desktop).
-- Push notifications for mobile (ADR-0008, set aside until then).
+## M3 — Native desktop client in GPUI (started 2026-11-06, [ADR-0051](docs/adr/0051-gpui-desktop-client.md))
+Each step is merged and usable; parity is checked against the web client's features (14 modules, research of 2026-11-06).
+1. Foundations: `mellow-client-core` at the whole protocol (every route and event, outbound frames, the web's model and tests), `mellow-media` skeleton, Rust tokens from `cargo xtask tokens`, generated i18n, fonts, icons, Dusk primitives, sign-in with the token in the OS keychain.
+2. Shell and navigation: the Navigator, server rail, channel sidebar, member sheet, resizable columns, connection banner, quick switcher, shortcuts.
+3. Messages and composer: virtualised history, Markdown, mentions, emoji, replies, pictures (AVIF decoded in the app), reactions, edit and delete, pins, typing, read states, uploads, drafts.
+4. Conversations, friends, presence, profiles, OS notifications with badge and tray, context menus.
+5. Rich messages and composer: polls, checklists, progress bars, forwards, link previews and provider cards (players open in the browser), GIFs, audio attachments, "/" menu, autocomplete, emoji and GIF pickers.
+6. Search; user, server and channel settings.
+7. Voice: `str0m` client, audio processing, push-to-talk while unfocused, voice panel, soundboard.
+8. Video: receiving cameras and shares, camera sending (VP8 simulcast), screen sharing on Vesper's engine (its own ADR), share sound captured natively.
+9. Video attachments and MP4 GIFs, compression before upload, packaging (.app, Linux tarball), self-update, macOS signing (owner's decision), then Windows.
+- Later: a mobile client (push notifications, ADR-0008, set aside until then).
 
 ## M4 — Self-hosting polish and first release
 - `mellow-server update` with signed releases and rollback: written early (2026-10-20), with a Docker Compose kit; `backup` is done, service install remains.

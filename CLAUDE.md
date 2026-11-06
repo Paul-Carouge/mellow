@@ -3,13 +3,13 @@
 Project-specific instructions. Global rules (`~/.claude/CLAUDE.md`, `~/.claude/rules/`) still apply; this file only adds what is specific to Mellow.
 
 ## What Mellow is
-A self-hostable, open-source (AGPL-3.0) Discord alternative. Rust on the server and in the client core; the client today is the web client (Svelte), embedded in the server binary. Native clients come later, possibly with GPUI (ADR-0036). The defining product promise is **trivial self-hosting**: one binary, one data directory, no Docker, one-command updates. Any change that makes installing, updating or backing up an instance harder needs an ADR.
+A self-hostable, open-source (AGPL-3.0) Discord alternative. Rust on the server and in the client core; the client today is the web client (Svelte), embedded in the server binary. A native desktop client in Rust with GPUI is being built at parity with the web client (ADR-0051). The defining product promise is **trivial self-hosting**: one binary, one data directory, no Docker, one-command updates. Any change that makes installing, updating or backing up an instance harder needs an ADR.
 
 Read before working:
 - [ARCHITECTURE.md](ARCHITECTURE.md) — components, layers, data model, protocol, security.
 - [DESIGN.md](DESIGN.md) — visual identity, design tokens, screens, accessibility. The UI follows the Dusk direction (ADR-0022, superseding ADR-0012): Discord's concepts and shortcuts in Mellow's own layout (the Navigator), colour, type, shape and motion; never Discord's blurple, logo or fonts. Reference mockup: `design/mockups/dusk-direction.html`.
 - [docs/adr/](docs/adr/) — why things are the way they are. Do not contradict an accepted ADR silently: propose a new ADR that supersedes it.
-- [ROADMAP.md](ROADMAP.md) — milestones and current scope. **Current focus: the web client only** (owner's decisions, 2026-10-22 and 2026-11-02, ADR-0036): new work targets `web/` and the server it needs; the Slint desktop app was removed and native clients (desktop, mobile) come back after the web client, with their own ADR.
+- [ROADMAP.md](ROADMAP.md) — milestones and current scope. **Current focus: the GPUI desktop client** (owner's decision, 2026-11-06, ADR-0051, superseding ADR-0036): `crates/mellow-desktop` (GPUI + gpui-component) and `crates/mellow-media` (voice, camera, screen engine) at parity with the web client, which keeps receiving fixes and comfort features; new features reach both clients.
 - [docs/development-notes.md](docs/development-notes.md) — where the PR stack stands, the workflow, and traps already hit. Update it at the end of each iteration.
 
 ## Repository layout
