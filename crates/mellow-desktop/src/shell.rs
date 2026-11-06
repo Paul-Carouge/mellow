@@ -7,6 +7,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled, Window, div, prelude::FluentBuilder as _,
 };
 
+use crate::i18n::{Strings, strings};
 use crate::theme::tokens::{
     COMPONENT_CHAT_HEADER_HEIGHT, COMPONENT_COMPOSER_MARGIN_BOTTOM,
     COMPONENT_COMPOSER_MARGIN_INLINE, COMPONENT_COMPOSER_MIN_HEIGHT, COMPONENT_COMPOSER_RADIUS,
@@ -97,7 +98,9 @@ impl Render for DuskShell {
                     .pr(length(trailing_padding))
                     .gap(inset)
             })
-            .when(!is_full_bleed, |ground| ground.child(navigator(tokens)))
+            .when(!is_full_bleed, |ground| {
+                ground.child(navigator(tokens, strings(cx)))
+            })
             .child(sheet(tokens, is_full_bleed))
             .when(
                 layout == ShellLayout::NavigatorSheetAndSideSheet,
@@ -106,9 +109,12 @@ impl Render for DuskShell {
     }
 }
 
-fn navigator(tokens: &ThemeTokens) -> impl IntoElement {
+fn navigator(tokens: &ThemeTokens, strings: Strings) -> impl IntoElement {
     let server_rail = div()
         .debug_selector(|| "server-rail".to_owned())
+        .id("server-rail")
+        .role(Role::Navigation)
+        .aria_label(strings.rail().servers())
         .flex_none()
         .w(length(COMPONENT_NAVIGATOR_STRIP_WIDTH))
         .pt(length(COMPONENT_RAIL_PADDING_TOP))
@@ -134,6 +140,7 @@ fn navigator(tokens: &ThemeTokens) -> impl IntoElement {
         .debug_selector(|| "navigator".to_owned())
         .id("navigator")
         .role(Role::Navigation)
+        .aria_label(strings.shell().servers_and_channels())
         .flex_none()
         .w(length(
             COMPONENT_NAVIGATOR_STRIP_WIDTH + COMPONENT_SIDEBAR_WIDTH,
