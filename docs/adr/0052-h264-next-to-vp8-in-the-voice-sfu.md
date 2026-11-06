@@ -10,6 +10,7 @@ The SFU answers and forwards VP8 only (ADR-0035): one codec for a whole channel,
 
 Facts this decision relies on (checked in `str0m` 0.24.1, the version in `Cargo.lock`):
 - `str0m` packetises and depacketises H.264 in packetisation mode 1 (STAP-A, FU-A) and hands frames in Annex B form. `MediaData::is_keyframe` is true for an access unit holding an IDR slice.
+- Its FU-A reassembly (`H264Depacketizer`) keeps every fragment until one carries the end bit, with no size limit and across frames, so a sender that never sets it grows the server's memory without bound. Upstream `main` does the same.
 - Its payload matching (`PayloadParams::match_score`) requires the same packetisation mode and the same profile, and tolerates any level. `Writer::match_params` matches against the session's codec configuration, not the m-line's: forwarding must itself make sure a watcher's line negotiated the codec.
 - Constrained Baseline has no B-frames, so frames arrive in decoding order with increasing timestamps, which an SFU that forwards frames as they come needs. Every browser Mellow supports decodes it (Chromium, Safari, Firefox through its OpenH264 plugin); some Chromium builds without proprietary codecs, and a Firefox that has not downloaded the plugin yet, do not.
 
@@ -19,6 +20,7 @@ Facts this decision relies on (checked in `str0m` 0.24.1, the version in `Cargo.
 - **A sender's codec is fixed for its media session.** It is VP8 whenever the camera line negotiated VP8 (every client decodes it), otherwise H.264. A client that wants to send H.264 offers only H.264 on its camera line. Frames in another codec than the session's are dropped.
 - H.264 takes the same path as VP8: the same simulcast RIDs `h`, `l`, `q`, the same per-layer byte budgets, keyframe requests per layer, layer switches at keyframes, silent cameras and lost layers, packet budgets.
 - **Keyframe size checks** are the H.264 equivalent of VP8's (`domain::h264_keyframes`): an IDR access unit must carry a sequence parameter set that is Constrained Baseline (`profile_idc` 66 with `constraint_set1_flag`) and whose cropped picture fits the layer (`q` 640 × 360, `l` 1280 × 720, `h` 2560 × 1440). Anything else reaches no one. The server reads a few dozen bits of the SPS (exp-Golomb, emulation prevention removed) and never decodes a picture.
+- **`str0m` is patched** (`vendor/str0m`, through `[patch.crates-io]`): a start fragment begins a new FU-A unit, fragments without one are dropped, any other packet ends an unfinished unit, and a unit over 2 MiB is refused with a packet error. The SRTP payload is encrypted, so the server cannot bound this before `str0m`. The rest of the crate is 0.24.1 as published, without its examples and integration tests; the patch goes once an upstream release bounds the buffer.
 
 ### Who receives what
 - **Receivers say what they decode in their offer**: the codecs their video receive m-lines negotiate. The server counts a codec as decoded when every receive line carries it, so any free slot can take a picture in it.
@@ -37,6 +39,7 @@ Facts this decision relies on (checked in `str0m` 0.24.1, the version in `Cargo.
 ## Consequences
 - Native shares can stay on the GPU from capture to network; the server's cost per forwarded packet does not change (it reads an SPS only on keyframes; not measured separately).
 - A watcher whose browser cannot decode H.264 sees a sentence instead of a native sharer's picture. It is rare (see above) and visible; the fix is on the sender's side (send VP8) or the watcher's (another browser), never transcoding on the server (ADR-0035 rejected it for its cost).
+- Browsers that only received VP8 now also decode H.264 bitstreams written by other members, so their H.264 decoders become reachable from a channel. That is the usual cost of WebRTC; release notes say so.
 - **Offer size.** H.264 on the 9 receive slots adds one codec with its RTX to each, a few hundred bytes per line: estimated 3 to 6 kB more for Chromium, inside the 48 KiB cap (`MAXIMUM_VOICE_OFFER_BYTES`). To be measured in a real browser when the web change ships.
 - One codec per sender, not per channel: two watchers of one camera may need different codecs only if the sender could send both, which this decision forbids (VP8 wins when both are negotiated). Simulcast in two codecs at once would double the sender's uplink; not done.
 - ADR-0035's codec section ("VP8 only") and ADR-0037's "VP8 and Opus only" are amended: VP8 stays the default and what browsers send.
