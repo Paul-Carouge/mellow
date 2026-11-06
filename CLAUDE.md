@@ -18,6 +18,7 @@ Read before working:
 | `crates/mellow-protocol` | Wire types only (DTOs, gateway events, ids, permission bitflags). No I/O, no workspace dependencies. |
 | `crates/mellow-server` | Server binary. Modules `http`, `gateway`, `admin` → `domain` → `storage`. Never the reverse. |
 | `crates/mellow-client-core` | Client logic for native clients to come (connections, state, cache, outbox). No UI code. |
+| `crates/mellow-desktop` | The native desktop client, binary `mellow` (GPUI, ADR-0051). `src/theme/tokens.rs` and `icons.rs` are generated. |
 | `crates/mellow-media` | The desktop client's voice engine (ADR-0051): WebRTC peer, audio devices, processing, Opus. No UI code. |
 | `crates/mellow-update` | Signed self-update of `mellow-server` (`mellow-server update`, the Docker kit). |
 | `web/` | The web client (Svelte 5, Tailwind 4), built into `web/dist` and embedded in the server binary. |
@@ -29,11 +30,12 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check
-cargo xtask tokens          # regenerate web/src/lib/tokens.css, the favicon and web app icons after editing design/tokens.json (--check in CI)
+cargo xtask tokens          # regenerate web/src/lib/tokens.css, the favicon, web app icons and the desktop's tokens.rs and icons.rs after editing design/ (--check in CI)
+cargo run -p mellow-desktop # the desktop client (Linux needs GPUI's packages, see DESKTOP_BUILD_PACKAGES in ci.yml)
 cd web && npm ci && npm run check && npm test && npm run build
 ```
-Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (`init`, `serve`, `update`, `backup`, `admin …`: REST API, WebSocket gateway, voice SFU, embedded web client), `mellow-client-core` (REST, gateway, state), `mellow-media` (desktop voice engine), `mellow-update` and `xtask` (design token generator) exist. Update this section when run commands appear.
-CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux only (ADR-0036).
+Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (`init`, `serve`, `update`, `backup`, `admin …`: REST API, WebSocket gateway, voice SFU, embedded web client), `mellow-client-core` (REST, gateway, state), `mellow-desktop` (GPUI desktop client), `mellow-media` (desktop voice engine), `mellow-update` and `xtask` (design token generator) exist. Update this section when run commands appear.
+CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux only and a macOS build of `mellow-desktop` and `mellow-media` (ADR-0051).
 
 ## Rules specific to this project
 - **Protocol changes** start in `mellow-protocol` and are made in the same commit on server and clients. API is versioned (`/api/v1`, `/gateway?v=1`); never break a released version.
