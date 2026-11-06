@@ -366,3 +366,41 @@ fn enter_on_the_dialogs_action_submits_it_once(cx: &mut TestAppContext) {
     press(cx, "enter");
     assert_eq!(harness.read_with(cx, |harness, _| harness.submissions), 1);
 }
+
+struct TallBody;
+
+impl Render for TallBody {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().h(gpui::px(TALL_BODY_HEIGHT))
+    }
+}
+
+/// Far taller than any window, so only a scrolling body keeps the footer on screen.
+const TALL_BODY_HEIGHT: f32 = 4000.0;
+const SMALL_WINDOW_HEIGHT: f32 = 480.0;
+
+#[gpui::test]
+fn a_tall_dialog_scrolls_its_body_and_keeps_its_buttons_visible(cx: &mut TestAppContext) {
+    set_up(cx);
+    let (_dialog, cx) = cx.add_window_view(|window, cx| {
+        let body = cx.new(|_| TallBody);
+        ModalDialog::new("Create a poll", "Cancel", window, cx)
+            .submit("Create", "Creating…", false)
+            .body(body.into())
+    });
+    cx.simulate_resize(gpui::size(gpui::px(800.0), gpui::px(SMALL_WINDOW_HEIGHT)));
+    cx.run_until_parked();
+
+    let footer = cx
+        .debug_bounds("dialog-footer")
+        .unwrap_or_else(|| panic!("the footer was not drawn"));
+    assert!(
+        footer.size.height > gpui::px(0.0),
+        "the footer keeps its height"
+    );
+    assert!(
+        footer.bottom() <= gpui::px(SMALL_WINDOW_HEIGHT),
+        "the footer stays inside the window, at {:?}",
+        footer.bottom()
+    );
+}

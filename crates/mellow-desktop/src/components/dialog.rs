@@ -232,6 +232,8 @@ impl Render for ModalDialog {
         let submit_entity = entity.clone();
 
         let footer = div()
+            .debug_selector(|| "dialog-footer".to_owned())
+            .flex_none()
             .flex()
             .flex_wrap()
             .justify_end()
@@ -269,7 +271,12 @@ impl Render for ModalDialog {
                 )
             });
 
+        // The body scrolls and the footer stays, as `overflow-y-auto` does in ModalDialog.svelte.
         let content = div()
+            .id("dialog-content")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap(length(COMPONENT_DIALOG_SECTION_GAP))
