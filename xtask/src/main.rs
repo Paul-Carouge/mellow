@@ -1,3 +1,6 @@
+//! `cargo xtask i18n [--check]`: generates the desktop client's string catalogue from the web
+//! client's (`web/src/i18n`).
+//!
 //! `cargo xtask tokens [--check]`: generates the web token stylesheet, the app icons, the web app
 //! manifest and the desktop client's token and icon modules from `design/tokens.json` and
 //! `design/icons`, and enforces the declared WCAG contrast pairs (DESIGN.md §3.5).
@@ -9,6 +12,7 @@ mod app_icons;
 mod css_tokens;
 mod design_tokens;
 mod favicon;
+mod i18n;
 mod rust_tokens;
 mod web_manifest;
 
@@ -19,7 +23,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 
 use crate::design_tokens::{DesignTokens, Rgba, Theme, contrast_ratio};
 
-const USAGE: &str = "usage: cargo xtask tokens [--check]";
+const USAGE: &str = "usage: cargo xtask tokens [--check] | cargo xtask i18n [--check]";
 const TOKENS_SOURCE_PATH: &str = "design/tokens.json";
 const CSS_TOKENS_OUTPUT_PATH: &str = "web/src/lib/tokens.css";
 const FAVICON_OUTPUT_PATH: &str = "web/public/favicon.svg";
@@ -47,6 +51,8 @@ fn run(arguments: &[String]) -> Result<()> {
     match arguments.as_slice() {
         ["tokens"] => generate_tokens(false),
         ["tokens", "--check"] => generate_tokens(true),
+        ["i18n"] => generate_i18n_catalogue(false),
+        ["i18n", "--check"] => generate_i18n_catalogue(true),
         _ => bail!("{USAGE}"),
     }
 }
@@ -143,6 +149,32 @@ fn generate_tokens(is_check_only: bool) -> Result<()> {
     if is_check_only {
         eprintln!("design tokens are up to date");
     }
+    Ok(())
+}
+
+fn generate_i18n_catalogue(is_check_only: bool) -> Result<()> {
+    let root = workspace_root()?;
+    let i18n_directory = root.join(i18n::I18N_SOURCE_DIRECTORY);
+    let read_source = |relative_path: &str| -> Result<String> {
+        let path = i18n_directory.join(relative_path);
+        std::fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))
+    };
+    let generated = i18n::generate_catalogue(&read_source)?;
+    let output_path = root.join(i18n::CATALOGUE_OUTPUT_PATH);
+    let current = std::fs::read_to_string(&output_path).unwrap_or_default();
+    if current == generated {
+        eprintln!("the string catalogue is up to date");
+        return Ok(());
+    }
+    if is_check_only {
+        bail!(
+            "{} is out of date; run `cargo xtask i18n`",
+            output_path.display()
+        );
+    }
+    std::fs::write(&output_path, generated)
+        .with_context(|| format!("cannot write {}", output_path.display()))?;
+    eprintln!("wrote {}", output_path.display());
     Ok(())
 }
 

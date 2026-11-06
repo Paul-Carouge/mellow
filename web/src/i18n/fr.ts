@@ -2307,4 +2307,8 @@ export const fr: Catalogue = {
     unreadable: "l’image est illisible. Choisis-en une autre.",
     currentIcon: (role) => `Icône de ${role}`,
   },
+
+  desktop: {
+    quitMellow: "Quitter Mellow",
+  },
 };

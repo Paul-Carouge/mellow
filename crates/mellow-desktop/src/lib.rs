@@ -1,6 +1,9 @@
 //! Mellow's native desktop client on GPUI (ADR-0051): the theme generated from the design tokens,
-//! the bridge to the Tokio runtime the network runs on, and the Dusk shell.
+//! the interface strings generated from the web's catalogues, the bridge to the Tokio runtime the
+//! network runs on, and the Dusk shell.
 
+pub mod components;
+pub mod i18n;
 pub mod shell;
 pub mod theme;
 pub mod tokio_bridge;
@@ -29,12 +32,14 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     // OS reduced-motion setting into `App::reduce_motion`, but follows it live on Linux only.
     gpui_component::init(cx);
     theme::register_embedded_fonts(cx)?;
+    components::bind_tab_navigation(cx);
     tokio_bridge::install_network_runtime(network_runtime, cx);
 
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.bind_keys([KeyBinding::new(QUIT_KEYSTROKE, Quit, None)]);
-    // shortcut: English menu label; the interface strings come from the web's catalogues later.
-    cx.set_menus([Menu::new(WINDOW_TITLE).items([MenuItem::action("Quit Mellow", Quit)])]);
+    i18n::use_language(i18n::Language::from_operating_system(), cx);
+    let quit_label = i18n::strings(cx).desktop().quit_mellow();
+    cx.set_menus([Menu::new(WINDOW_TITLE).items([MenuItem::action(quit_label, Quit)])]);
     // One window for now: closing it ends the app, on macOS too.
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
@@ -43,6 +48,15 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     })
     .detach();
 
+    if let Some(forced_appearance) = components::gallery::gallery_requested() {
+        cx.open_window(
+            components::gallery::gallery_window_options(cx),
+            |window, cx| components::gallery::open_gallery(forced_appearance, window, cx),
+        )
+        .context("cannot open the component gallery")?;
+        cx.activate(true);
+        return Ok(());
+    }
     cx.open_window(window_chrome::main_window_options(cx), |window, cx| {
         theme::follow_window_appearance(window, cx);
         cx.new(|cx| {
