@@ -3,7 +3,7 @@
 //! [`VoiceSession::handle_gateway_event`] (events in), so the desktop wires it to the client
 //! core's gateway and tests to a plain WebSocket.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -50,7 +50,8 @@ pub enum VoiceSessionEvent {
     JoinRefused(VoiceJoinRefusal),
     /// The server ended the session; it has stopped.
     Disconnected(VoiceDisconnectReason),
-    /// The media connection failed or stopped answering; it has stopped. Rejoining makes a new
+    /// The media connection failed or stopped answering; its threads have stopped (the microphone
+    /// is closed). Drop the session or call [`VoiceSession::leave`]; rejoining makes a new
     /// session.
     MediaConnectionLost,
     /// The user's own speaking ring (the server never reports a user to themselves).
@@ -69,12 +70,14 @@ pub struct VoiceToggles {
 }
 
 impl VoiceToggles {
+    /// The three fields as the web client stores them (`readVoiceToggles`): deafened always
+    /// means muted, whatever was stored.
     #[must_use]
-    pub fn new(is_muted: bool, is_deafened: bool) -> Self {
+    pub fn new(is_muted: bool, is_deafened: bool, was_muted_before_deafening: bool) -> Self {
         Self {
             is_muted: is_muted || is_deafened,
             is_deafened,
-            was_muted_before_deafening: is_muted,
+            was_muted_before_deafening,
         }
     }
 
@@ -86,6 +89,13 @@ impl VoiceToggles {
     #[must_use]
     pub fn is_deafened(self) -> bool {
         self.is_deafened
+    }
+
+    /// The microphone's state when deafening started, restored when it ends; stored with the
+    /// other two.
+    #[must_use]
+    pub fn was_muted_before_deafening(self) -> bool {
+        self.was_muted_before_deafening
     }
 
     pub fn set_muted(&mut self, is_muted: bool) {
@@ -110,8 +120,9 @@ impl VoiceToggles {
 #[derive(Debug, Clone)]
 pub struct VoiceSessionOptions {
     pub channel_id: Snowflake,
-    /// The instance's address: the local interface facing it becomes the ICE candidate.
-    pub server_address: IpAddr,
+    /// The instance's IPv4 address (its media socket listens on IPv4 only): the local interface
+    /// facing it becomes the ICE candidate.
+    pub server_address: Ipv4Addr,
     pub toggles: VoiceToggles,
     pub input_mode: InputMode,
     pub processing: ProcessingSettings,
@@ -124,7 +135,7 @@ pub struct VoiceSessionOptions {
 impl VoiceSessionOptions {
     /// Default settings, unmuted.
     #[must_use]
-    pub fn new(channel_id: Snowflake, server_address: IpAddr) -> Self {
+    pub fn new(channel_id: Snowflake, server_address: Ipv4Addr) -> Self {
         Self {
             channel_id,
             server_address,
@@ -174,13 +185,8 @@ impl std::fmt::Debug for VoiceSession {
 }
 
 /// The local address the system routes to `server` from, found without sending anything.
-fn local_address_towards(server: IpAddr) -> std::io::Result<IpAddr> {
-    let unspecified: IpAddr = if server.is_ipv4() {
-        Ipv4Addr::UNSPECIFIED.into()
-    } else {
-        Ipv6Addr::UNSPECIFIED.into()
-    };
-    let probe = UdpSocket::bind((unspecified, 0))?;
+fn local_address_towards(server: Ipv4Addr) -> std::io::Result<IpAddr> {
+    let probe = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
     // Port 9 (discard): connecting a UDP socket only picks the route.
     probe.connect((server, 9))?;
     Ok(probe.local_addr()?.ip())
@@ -198,9 +204,14 @@ impl VoiceSession {
         devices: Box<dyn AudioDevices>,
         signalling: Box<dyn VoiceSignalling>,
     ) -> Result<(Self, Receiver<VoiceSessionEvent>), VoiceSessionError> {
-        let local_ip = local_address_towards(options.server_address)?;
-        let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0))?;
-        let peer = new_peer(socket.local_addr()?, Instant::now())?;
+        // Bound to every interface so the system picks the source per destination (the server
+        // may answer from another of its addresses); only the candidate names one interface.
+        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+        let local_candidate = SocketAddr::new(
+            local_address_towards(options.server_address)?,
+            socket.local_addr()?.port(),
+        );
+        let peer = new_peer(local_candidate, Instant::now())?;
         let (events, event_receiver) = mpsc::channel();
         let (audio_commands, audio_command_receiver) = mpsc::channel();
         let (transport_commands, transport_command_receiver) = mpsc::channel();
@@ -249,11 +260,13 @@ impl VoiceSession {
             rtc: peer.rtc,
             pending_offer: Some(peer.pending),
             socket,
+            local_candidate,
             media_lines: peer.media_lines,
             commands: transport_command_receiver,
             outgoing: outgoing_receiver,
             incoming,
             events: events.clone(),
+            audio_commands: audio_commands.clone(),
         };
         let transport_thread = std::thread::Builder::new()
             .name("mellow-voice-network".into())
@@ -443,7 +456,7 @@ mod tests {
 
     #[test]
     fn deafening_mutes_and_undeafening_restores_the_microphone() {
-        let mut toggles = VoiceToggles::new(false, false);
+        let mut toggles = VoiceToggles::new(false, false, false);
         toggles.set_deafened(true);
         assert!(toggles.is_muted() && toggles.is_deafened());
         toggles.set_deafened(false);
@@ -457,15 +470,128 @@ mod tests {
 
     #[test]
     fn unmuting_while_deafened_undeafens() {
-        let mut toggles = VoiceToggles::new(false, true);
+        let mut toggles = VoiceToggles::new(false, true, false);
         assert!(toggles.is_muted());
         toggles.set_muted(false);
         assert!(!toggles.is_muted() && !toggles.is_deafened());
     }
 
     #[test]
+    fn stored_toggles_restore_the_microphone_state_from_before_deafening() {
+        let mut toggles = VoiceToggles::new(true, true, false);
+        assert!(!toggles.was_muted_before_deafening());
+        toggles.set_deafened(false);
+        assert!(
+            !toggles.is_muted(),
+            "unmuted before deafening, unmuted after"
+        );
+    }
+
+    /// A session without its threads, and the ends of its channels.
+    fn session_without_threads() -> (
+        VoiceSession,
+        Receiver<AudioCommand>,
+        Receiver<TransportCommand>,
+        Receiver<VoiceSessionEvent>,
+    ) {
+        let peer = new_peer(
+            SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 9),
+            Instant::now(),
+        )
+        .unwrap();
+        let (events, event_receiver) = mpsc::channel();
+        let (audio_commands, audio_command_receiver) = mpsc::channel();
+        let (transport_commands, transport_command_receiver) = mpsc::channel();
+        let session = VoiceSession {
+            channel_id: Snowflake::from_raw(1),
+            offer_id: 1,
+            toggles: VoiceToggles::default(),
+            signalling: Box::new(|_| {}),
+            media_lines: peer.media_lines,
+            events,
+            audio_commands,
+            transport_commands,
+            threads: Vec::new(),
+        };
+        (
+            session,
+            audio_command_receiver,
+            transport_command_receiver,
+            event_receiver,
+        )
+    }
+
+    #[test]
+    fn events_for_another_channel_or_offer_are_ignored() {
+        let (mut session, audio, transport, events) = session_without_threads();
+        let other_channel = Snowflake::from_raw(2);
+        session.handle_gateway_event(&GatewayEvent::VoiceSessionDescription {
+            channel_id: session.channel_id,
+            offer_id: 2,
+            sdp_answer: "not even sdp".into(),
+        });
+        session.handle_gateway_event(&GatewayEvent::VoiceJoinRefused {
+            channel_id: other_channel,
+            offer_id: 1,
+            reason: VoiceJoinRefusal::ChannelFull,
+        });
+        session.handle_gateway_event(&GatewayEvent::VoiceDisconnected {
+            channel_id: other_channel,
+            reason: VoiceDisconnectReason::ChannelDeleted,
+        });
+        let voice_mid = session.media_lines.voice_receive[0];
+        session.handle_gateway_event(&GatewayEvent::VoiceSlotAssigned {
+            channel_id: other_channel,
+            mid: voice_mid.to_string(),
+            user_id: Snowflake::from_raw(3),
+        });
+        assert!(audio.try_recv().is_err());
+        assert!(transport.try_recv().is_err());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn only_audio_slots_are_assigned_to_the_audio_thread() {
+        let (mut session, audio, _transport, _events) = session_without_threads();
+        let camera_mid = session.media_lines.camera_receive[0];
+        let voice_mid = session.media_lines.voice_receive[0];
+        let user_id = Snowflake::from_raw(3);
+        for mid in [camera_mid, voice_mid] {
+            session.handle_gateway_event(&GatewayEvent::VoiceSlotAssigned {
+                channel_id: session.channel_id,
+                mid: mid.to_string(),
+                user_id,
+            });
+        }
+        assert!(matches!(
+            audio.try_recv(),
+            Ok(AudioCommand::AssignSlot { mid, user_id: assigned })
+                if mid == voice_mid && assigned == user_id
+        ));
+        assert!(audio.try_recv().is_err(), "the camera slot is not audio");
+    }
+
+    #[test]
+    fn a_refusal_of_this_offer_stops_the_session() {
+        let (mut session, audio, transport, events) = session_without_threads();
+        session.handle_gateway_event(&GatewayEvent::VoiceJoinRefused {
+            channel_id: session.channel_id,
+            offer_id: 1,
+            reason: VoiceJoinRefusal::ChannelFull,
+        });
+        assert!(matches!(audio.try_recv(), Ok(AudioCommand::Stop)));
+        assert!(matches!(transport.try_recv(), Ok(TransportCommand::Stop)));
+        assert_eq!(
+            events.try_recv(),
+            Ok(VoiceSessionEvent::JoinRefused(
+                VoiceJoinRefusal::ChannelFull
+            ))
+        );
+    }
+
+    #[test]
     fn the_loopback_server_is_reached_from_the_loopback_interface() {
-        let local = local_address_towards(Ipv4Addr::LOCALHOST.into()).unwrap();
+        let local = local_address_towards(Ipv4Addr::LOCALHOST).unwrap();
         assert!(local.is_loopback());
     }
 }

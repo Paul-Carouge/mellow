@@ -3,7 +3,7 @@
 //! received audio packets to the audio thread.
 
 use std::io::ErrorKind;
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
@@ -14,6 +14,7 @@ use str0m::media::{Frequency, MediaTime, Mid, Pt};
 use str0m::net::{Protocol, Receive};
 use str0m::{Event, IceConnectionState, Input, Output, Rtc};
 
+use crate::audio_engine::AudioCommand;
 use crate::offer::MediaLines;
 use crate::session::VoiceSessionEvent;
 
@@ -53,11 +54,15 @@ pub(crate) struct Transport {
     pub(crate) rtc: Rtc,
     pub(crate) pending_offer: Option<SdpPendingOffer>,
     pub(crate) socket: UdpSocket,
+    /// The address announced to the server; the socket itself listens on every interface.
+    pub(crate) local_candidate: SocketAddr,
     pub(crate) media_lines: MediaLines,
     pub(crate) commands: Receiver<TransportCommand>,
     pub(crate) outgoing: Receiver<OutgoingVoicePacket>,
     pub(crate) incoming: Sender<IncomingAudioPacket>,
     pub(crate) events: Sender<VoiceSessionEvent>,
+    /// To stop the microphone when the connection is lost, before saying so.
+    pub(crate) audio_commands: Sender<AudioCommand>,
 }
 
 impl std::fmt::Debug for Transport {
@@ -74,15 +79,13 @@ impl Transport {
     pub(crate) fn run(mut self) {
         if let Err(reason) = self.run_until_stopped() {
             tracing::warn!(%reason, "voice connection failed");
+            // The session may already be stopping the audio thread itself.
+            let _ = self.audio_commands.send(AudioCommand::Stop);
             let _ = self.events.send(VoiceSessionEvent::MediaConnectionLost);
         }
     }
 
     fn run_until_stopped(&mut self) -> Result<(), String> {
-        let local_address = self
-            .socket
-            .local_addr()
-            .map_err(|error| error.to_string())?;
         let mut buffer = vec![0_u8; RECEIVE_BUFFER_BYTES];
         let mut voice_payload_type: Option<Pt> = None;
         loop {
@@ -123,7 +126,7 @@ impl Transport {
                         Receive {
                             proto: Protocol::Udp,
                             source,
-                            destination: local_address,
+                            destination: self.local_candidate,
                             contents,
                         },
                     )

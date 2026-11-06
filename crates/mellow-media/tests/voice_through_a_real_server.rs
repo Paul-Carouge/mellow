@@ -7,7 +7,7 @@
 // Test helpers outside `#[test]` functions: failing loudly is the point.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -30,7 +30,7 @@ use tokio_tungstenite::tungstenite::Message;
 const PASSWORD: &str = "correct horse battery staple";
 /// Generous: the engines run in real time, and a loaded CI machine is slow to connect.
 const HEARING_TIMEOUT: Duration = Duration::from_secs(30);
-const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+const LOOPBACK: Ipv4Addr = Ipv4Addr::LOCALHOST;
 /// Half a second of a 44.1 kHz stereo output playing the tone.
 const AUDIBLE_SAMPLES_EXPECTED: u64 = 44_100;
 
