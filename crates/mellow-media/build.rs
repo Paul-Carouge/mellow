@@ -14,10 +14,12 @@ use std::process::Command;
 use sha2::{Digest as _, Sha256};
 
 const LIBVPX_VERSION: &str = "1.17.0";
+/// The `WebM` project's own release tarball: fixed bytes, unlike GitHub's tag archives, which are
+/// generated on demand and have changed before (2023), breaking every pinned digest.
 const LIBVPX_ARCHIVE_URL: &str =
-    "https://github.com/webmproject/libvpx/archive/refs/tags/v1.17.0.tar.gz";
+    "https://storage.googleapis.com/downloads.webmproject.org/releases/webm/libvpx-1.17.0.tar.gz";
 const LIBVPX_ARCHIVE_SHA256: &str =
-    "1020f184046187baa2985dbde38e0691f49c44088bca7a1842b0236c6081dc0a";
+    "7f98aae5c52c46e85b7b26feabcab9b1554605e771bd1df1d6e6a00ee22fa8ed";
 const SOURCE_DIRECTORY_VARIABLE: &str = "MELLOW_LIBVPX_SOURCE_DIR";
 /// The server refuses larger `h` keyframes (ADR-0037), so the decoder never needs more: a
 /// crafted stream cannot make it allocate beyond this.
