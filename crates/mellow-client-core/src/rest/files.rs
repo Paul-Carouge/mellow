@@ -42,7 +42,7 @@ fn transfer_timeout(bytes: u64) -> Duration {
 }
 
 /// A file the instance serves to signed-in users who may see it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DownloadableFile {
     /// An avatar or banner, as stored (possibly animated). Immutable: cache it for good.
     ProfileImage(Snowflake),
