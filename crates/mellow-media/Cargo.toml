@@ -1,0 +1,35 @@
+[package]
+name = "mellow-media"
+description = "The desktop client's voice engine: WebRTC peer, audio devices, processing and codecs. No UI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+cpal.workspace = true
+mellow-protocol.workspace = true
+nnnoiseless.workspace = true
+opus.workspace = true
+rtrb.workspace = true
+rubato.workspace = true
+sonora.workspace = true
+str0m.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+futures-util.workspace = true
+mellow-client-core.workspace = true
+# Integration tests run a real in-process server; the engine never depends on it otherwise.
+mellow-server = { path = "../mellow-server" }
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite.workspace = true
+
+[lints]
+workspace = true
