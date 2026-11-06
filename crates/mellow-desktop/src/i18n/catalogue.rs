@@ -2143,6 +2143,13 @@ impl ScreenShareStrings {
         }
     }
 
+    pub fn undecodable(self) -> &'static str {
+        match self.language {
+            Language::English => "This browser can't play this screen's picture (H.264). Watch it from another browser.",
+            Language::French => "Ce navigateur ne sait pas lire l’image de cet écran (H.264). Regarde-le depuis un autre navigateur.",
+        }
+    }
+
     pub fn stream_volume(self) -> &'static str {
         match self.language {
             Language::English => "Stream volume",
@@ -2792,6 +2799,13 @@ impl CallStrings {
         match self.language {
             Language::English => "Connection too slow",
             Language::French => "Connexion trop lente",
+        }
+    }
+
+    pub fn undecodable(self) -> &'static str {
+        match self.language {
+            Language::English => "Picture not supported by this browser",
+            Language::French => "Image non prise en charge par ce navigateur",
         }
     }
 
