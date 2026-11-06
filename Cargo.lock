@@ -4707,6 +4707,8 @@ dependencies = [
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
+ "mellow-client-core",
+ "mellow-protocol",
  "tokio",
  "tracing",
  "tracing-subscriber",

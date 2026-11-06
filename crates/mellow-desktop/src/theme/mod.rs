@@ -45,13 +45,19 @@ impl ActiveTheme {
 
 /// Sets the theme from the window's appearance and keeps following the OS while the window lives.
 pub fn follow_window_appearance(window: &mut Window, cx: &mut App) {
-    cx.set_global(ActiveTheme::for_appearance(window.appearance()));
+    apply_theme(ActiveTheme::for_appearance(window.appearance()), cx);
     window
         .observe_window_appearance(|window, cx| {
-            cx.set_global(ActiveTheme::for_appearance(window.appearance()));
+            apply_theme(ActiveTheme::for_appearance(window.appearance()), cx);
             window.refresh();
         })
         .detach();
+}
+
+/// Installs a theme, including in gpui-component's text input, which paints from its own theme.
+pub fn apply_theme(active_theme: ActiveTheme, cx: &mut App) {
+    cx.set_global(active_theme);
+    crate::components::sync_text_input_colours(active_theme.tokens, cx);
 }
 
 /// The theme's tokens; `follow_window_appearance` installs the global before any view renders.
