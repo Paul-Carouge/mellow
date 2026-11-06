@@ -3,29 +3,34 @@
 
 use super::Language;
 
+/// `Intl.NumberFormat` and `Intl.PluralRules`' default.
+const DEFAULT_MAXIMUM_FRACTION_DIGITS: usize = 3;
+
 /// `Intl.PluralRules(language).select(count) === "one"` (`web/src/i18n/plural.ts`). English: only
 /// 1. French: 0 and 1 and everything between, so "0 pièce jointe".
 #[must_use]
 pub fn is_plural_one(language: Language, count: f64) -> bool {
-    let magnitude = count.abs();
+    // ECMA-402 applies the CLDR rule to the number as formatted with at most three fraction
+    // digits, so 1.0001 reads "1" (English singular) and 1.9996 reads "2" (French plural).
+    let rounded = format_number(
+        Language::English,
+        count.abs(),
+        0,
+        DEFAULT_MAXIMUM_FRACTION_DIGITS,
+    );
+    let (integer, fraction) = rounded.split_once('.').unwrap_or((&rounded, ""));
     match language {
-        // CLDR `i = 1 and v = 0`: a JavaScript number equal to 1 has no visible fraction digits.
-        #[allow(
-            clippy::float_cmp,
-            reason = "the rule is exact: 1.0000001 is already plural"
-        )]
-        Language::English => magnitude == 1.0,
+        // CLDR `i = 1 and v = 0`.
+        Language::English => integer == "1" && fraction.is_empty(),
         // CLDR `i = 0,1`.
-        Language::French => (0.0..2.0).contains(&magnitude),
+        Language::French => integer == "0" || integer == "1",
     }
 }
 
 /// `value.toLocaleString(language)`: grouped, at most three fraction digits.
 #[must_use]
 pub fn format_count(language: Language, value: f64) -> String {
-    /// `Intl.NumberFormat`'s default.
-    const MAXIMUM_FRACTION_DIGITS: usize = 3;
-    format_number(language, value, 0, MAXIMUM_FRACTION_DIGITS)
+    format_number(language, value, 0, DEFAULT_MAXIMUM_FRACTION_DIGITS)
 }
 
 /// `value.toLocaleString(language, { minimumFractionDigits, maximumFractionDigits })`: rounded
@@ -169,6 +174,11 @@ mod tests {
         assert!(is_plural_one(Language::English, -1.0));
         assert!(!is_plural_one(Language::English, 0.0));
         assert!(!is_plural_one(Language::English, 1.5));
+        assert!(is_plural_one(Language::English, 1.0001));
+        assert!(!is_plural_one(Language::English, 0.9994));
+        assert!(!is_plural_one(Language::English, f64::INFINITY));
+        assert!(!is_plural_one(Language::French, 1.9996));
+        assert!(is_plural_one(Language::French, 1.9994));
         assert!(is_plural_one(Language::French, 0.0));
         assert!(is_plural_one(Language::French, 1.5));
         assert!(!is_plural_one(Language::French, 2.0));
